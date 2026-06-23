@@ -86,6 +86,11 @@ ShapedRun TextShaper::Shape(
         sg.advanceY = static_cast<float>(glyphPos[i].y_advance) / 64.0f;
         sg.offsetX = static_cast<float>(glyphPos[i].x_offset) / 64.0f;
         sg.offsetY = static_cast<float>(glyphPos[i].y_offset) / 64.0f;
+        // Carry the face/font this run was shaped with so downstream
+        // rasterization (FreeTypeTextFormat::GenerateGlyphQuads) uses the
+        // correct face even when glyphs come from a fallback run.
+        sg.face = face;
+        sg.fontId = fontId;
         run.glyphs.push_back(sg);
     }
 

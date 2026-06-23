@@ -290,6 +290,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private const int DirtyHistoryCount = 2;
     private readonly Rect[][] _dirtyHistory = new Rect[DirtyHistoryCount][];
     private int _dirtyHistoryIndex;
+    // ── FLIP_SEQUENTIAL follow-up flush ──────────────────────────────────
+    // A one-shot present (partial OR full) refreshes only the CURRENT swap-chain
+    // back buffer; the other buffer(s) keep stale/blank pixels. The dirty-history
+    // fold only repairs them on a SUBSEQUENT rendered frame, which the idle-frame-
+    // skip (see RenderFrame) suppresses once activity settles — so the last change
+    // shows through as intermittent blank nav text / page cards until a resize
+    // forces a full present. After a successful non-empty present we arm this
+    // counter with (swapBufferCount - 1) follow-up "flush" frames that re-present
+    // the dirty-history union so every back buffer converges. Drained one-per-frame
+    // in RenderFrame; a flush frame NEVER re-arms it (isFlushFrame guard), so it
+    // decreases strictly to 0 — no render loop. UI-thread only (RenderFrame).
+    private int _partialPresentsToFlush;
+    // Live swap-chain back-buffer count, refreshed from the GPU stats query in
+    // CompleteEndDrawOrHandleFailure. Defaults to kDefaultSwapBufferCount (2) so the
+    // first arm is correct before any stats arrive; a JALIUM_SWAPCHAIN_BUFFERS=3
+    // override is picked up after the first present so the flush still covers every
+    // buffer.
+    private int _lastSwapBufferCount = 2;
     private long _lastRenderTicks;          // Timestamp of last completed render (for rate-limiting)
     private Timer? _renderThrottleTimer;    // Deferred render when rate-limited or waiting for the GPU
     private long _suppressEscapeUntilTick;
@@ -2253,20 +2271,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public virtual void Show()
     {
-        // Startup tracing 默认开启:整个 Show 路径加约 9 次 Stopwatch + 几次 Trace.WriteLine,
-        // 总开销 < 1ms,production 无感。JALIUM_STARTUP_TRACE=0 显式关闭。
-        bool trace = Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") != "0";
-        long tShowEnter = trace ? Stopwatch.GetTimestamp() : 0;
-        long tStyles = 0, tEnsureHandle = 0, tRefreshRate = 0, tStartupLoc = 0;
-        long tPrepareSize = 0, tFirstFrame = 0, tShowWindow = 0, tEvents = 0;
-
         // Ensure implicit styles are applied to the entire visual tree.
         // This handles the case where elements (e.g., TitleBar) were created in the
         // Window constructor BEFORE the theme was loaded by the Xaml module initializer.
         // In non-AOT mode, the theme loads lazily when XamlReader is first accessed
         // (during InitializeComponent), but TitleBar is created earlier in Window().
         EnsureImplicitStyles();
-        if (trace) tStyles = Stopwatch.GetTimestamp();
 
         _dispatcher = Dispatcher.CurrentDispatcher;
         CompositionTarget.FrameStarting += OnFrameStarting;
@@ -2277,16 +2287,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         var desiredState = WindowState;
 
         EnsureHandle();
-        if (trace) tEnsureHandle = Stopwatch.GetTimestamp();
 
         // Detect monitor refresh rate and update CompositionTarget for adaptive frame rate
         var refreshRate = DetectMonitorRefreshRate();
         CompositionTarget.UpdateRefreshRate(refreshRate);
-        if (trace) tRefreshRate = Stopwatch.GetTimestamp();
 
         // Apply startup location before showing
         ApplyWindowStartupLocation();
-        if (trace) tStartupLoc = Stopwatch.GetTimestamp();
 
         var showCmd = desiredState switch
         {
@@ -2318,10 +2325,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         //      instantly, content paints a moment later" instead of "window
         //      doesn't appear for 400 ms" or "window opens white for 500 ms".
         PrepareInitialRenderTargetSize(desiredState);
-        if (trace) tPrepareSize = Stopwatch.GetTimestamp();
 
         PaintInitialBackgroundFrame();
-        long tPaintBg = trace ? Stopwatch.GetTimestamp() : 0;
 
         if (_platformWindow != null)
         {
@@ -2342,7 +2347,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 EnterFullScreen();
             }
         }
-        if (trace) tShowWindow = Stopwatch.GetTimestamp();
 
         // Now that the surface is on-screen, register with CompositionTarget so
         // its frame timer thread can run. ShowWindow with SW_SHOW after a hidden
@@ -2358,7 +2362,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // pre-show background frame, so the wait reads as "content appearing"
         // rather than "app stuck loading".
         TryRenderInitialFrame();
-        if (trace) tFirstFrame = Stopwatch.GetTimestamp();
 
         // SWP_FRAMECHANGED for custom title bar was already applied in EnsureHandle
         // (combined with DPI adjustment), so no additional call is needed here.
@@ -2373,87 +2376,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         OnShown(EventArgs.Empty);
-        if (trace)
-        {
-            tEvents = Stopwatch.GetTimestamp();
-            static long Ms(long start, long end) =>
-                (long)Stopwatch.GetElapsedTime(start, end).TotalMilliseconds;
-            // Measure the *real* user-perceived startup window: from process
-            // creation (CLR boot + JIT + assembly load + Main entry + everything
-            // before this constructor) to when ShowWindow returns.  Process.StartTime
-            // is set by the kernel at CreateProcess time and is accurate to ~10 ms.
-            // Split into three intervals so we can attribute the cost:
-            //   process-start → module-load: CLR boot + Jalium.UI.Controls JIT/load
-            //   module-load   → app-ctor:    user Main + AppBuilder + builder.Build
-            //   app-ctor      → window-visible: framework Application ctor + Window.Show
-            double processToVisibleMs = 0, processToFirstFrameMs = 0;
-            double processToModuleLoadMs = 0, moduleLoadToAppCtorMs = 0, appCtorToVisibleMs = 0;
-            long appCtorExit = Application.ApplicationCtorExitTimestamp;
-            try
-            {
-                var processStart = System.Diagnostics.Process.GetCurrentProcess().StartTime;
-                processToVisibleMs = (DateTime.Now.Subtract(TimeSpan.FromMilliseconds(Ms(tShowWindow, tEvents))) - processStart).TotalMilliseconds;
-                processToFirstFrameMs = (DateTime.Now.Subtract(TimeSpan.FromMilliseconds(Ms(tFirstFrame, tEvents))) - processStart).TotalMilliseconds;
-
-                // Four-segment breakdown using the inline static timestamps:
-                //   process-start → module-load (GpuPrewarmInitializer)
-                //   module-load   → app-ctor enter (CLR + Main + AppBuilder.Build)
-                //   app-ctor (91 ms or so) — captured by Application's own trace
-                //   app-ctor exit → Show entry (user MainWindow construction)
-                //   Show entry → ShowWindow (framework)
-                long moduleLoad = GpuPrewarmInitializer.ModuleLoadTimestamp;
-                long appCtorEnter = Application.ApplicationCtorEnterTimestamp;
-                if (moduleLoad != 0 && appCtorEnter != 0)
-                {
-                    moduleLoadToAppCtorMs = Ms(moduleLoad, appCtorEnter);
-                    appCtorToVisibleMs = Ms(appCtorEnter, tShowWindow);
-                    processToModuleLoadMs = processToVisibleMs - moduleLoadToAppCtorMs - appCtorToVisibleMs;
-                }
-            }
-            catch { /* StartTime can fail under some sandboxes; report only Show-relative timing */ }
-
-            XamlLoadStartupTrace.Emit(
-                $"[Jalium.UI startup] Window.Show: total {Ms(tShowEnter, tEvents)}ms " +
-                $"(styles {Ms(tShowEnter, tStyles)}ms, EnsureHandle {Ms(tStyles, tEnsureHandle)}ms, " +
-                $"refresh-rate {Ms(tEnsureHandle, tRefreshRate)}ms, startup-loc {Ms(tRefreshRate, tStartupLoc)}ms, " +
-                $"prepare-size {Ms(tStartupLoc, tPrepareSize)}ms, paint-bg {Ms(tPrepareSize, tPaintBg)}ms, " +
-                $"ShowWindow {Ms(tPaintBg, tShowWindow)}ms, first-frame {Ms(tShowWindow, tFirstFrame)}ms, " +
-                $"events {Ms(tFirstFrame, tEvents)}ms)");
-            double appCtorBodyMs = (Application.ApplicationCtorEnterTimestamp != 0 && appCtorExit != 0)
-                ? Ms(Application.ApplicationCtorEnterTimestamp, appCtorExit) : 0;
-            double userMainWindowMs = (appCtorExit != 0)
-                ? Ms(appCtorExit, tShowEnter) : 0;
-            double frameworkShowMs = Ms(tShowEnter, tShowWindow);
-
-            XamlLoadStartupTrace.Emit(
-                $"[Jalium.UI startup] === PROCESS-START → WINDOW-VISIBLE: {processToVisibleMs:F0}ms === " +
-                $"(process→module {processToModuleLoadMs:F0}ms, " +
-                $"module→app-ctor {moduleLoadToAppCtorMs:F0}ms, " +
-                $"app-ctor-body {appCtorBodyMs:F0}ms, " +
-                $"user-MainWindow-construction {userMainWindowMs:F0}ms, " +
-                $"framework-Show {frameworkShowMs:F0}ms; " +
-                $"to first-frame {processToFirstFrameMs:F0}ms)");
-
-            // jalxaml load aggregate: how much of the user-MainWindow-construction
-            // is the framework's XamlReader.LoadComponent — counts every
-            // InitializeComponent invocation across MainWindow + each Page +
-            // every ResourceDictionary parsed from a code path under the user app.
-            long xamlCalls = Interlocked.Read(ref XamlLoadStartupTrace.LoadCallCount);
-            long xamlTicks = Interlocked.Read(ref XamlLoadStartupTrace.LoadTotalTicks);
-            double xamlTotalMs = xamlTicks > 0
-                ? Stopwatch.GetElapsedTime(0, xamlTicks).TotalMilliseconds
-                : 0;
-            XamlLoadStartupTrace.Emit(
-                $"[Jalium.UI startup]   jalxaml deserialization: {xamlCalls} LoadComponent calls totaling {xamlTotalMs:F0}ms " +
-                $"(avg {(xamlCalls > 0 ? xamlTotalMs / xamlCalls : 0):F1}ms/call)");
-        }
-
-        // 详细 Top-N profile — 仅在 JALIUM_XAML_PROFILE=1 或 JALIUM_STARTUP_TRACE=1
-        // 时被启用 (XamlLoadStartupTrace.Enabled),关闭时是一个 ldsfld + brfalse,
-        // 多窗口下用 Interlocked sentinel 保证只输出一次。这里不在 trace 块里
-        // 因为我们想让用户单独通过 JALIUM_XAML_PROFILE=1 也能拿到详细分桶,
-        // 而不必启用整个 startup trace。
-        XamlLoadStartupTrace.DumpTopN();
     }
 
     /// <summary>
@@ -2905,6 +2827,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // waitable HANDLE belongs to the swap chain and is closed during
         // RenderTarget.Dispose, so the pacer must already be off the wait.
         StopFramePacer();
+        // Same HANDLE-lifetime rule for the external-pacing registered wait:
+        // unregister before the swap chain closes the waitable.
+        StopExternalPresentPacing();
 
         // Dispose render target
         RenderTarget?.Dispose();
@@ -3059,13 +2984,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         // ---- Windows code path (Win32) ----
-        bool trace = Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") != "0";
-        long tEnter = trace ? Stopwatch.GetTimestamp() : 0;
-        long tRegisterClass = 0, tCreateWindow = 0, tSetWindowPos = 0, tEnsureRT = 0, tBackdrop = 0, tOleDrop = 0;
-
         // Register window class if needed
         RegisterWindowClass();
-        if (trace) tRegisterClass = Stopwatch.GetTimestamp();
 
         // Determine window style based on WindowStyle/ResizeMode/TitleBarStyle.
         // For custom title bar we keep standard caption style bits and remove the
@@ -3123,7 +3043,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             nint.Zero,
             GetModuleHandle(null),
             nint.Zero);
-        if (trace) tCreateWindow = Stopwatch.GetTimestamp();
 
         if (Handle == nint.Zero)
         {
@@ -3176,7 +3095,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 needsDpiAdjust ? physicalHeight : 0,
                 needsDpiAdjust ? (flags | SWP_NOMOVE) : flags);
         }
-        if (trace) tSetWindowPos = Stopwatch.GetTimestamp();
 
         // Create render target for this window.
         // During GPU switching this can fail transiently; defer to render-loop recovery.
@@ -3188,34 +3106,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             ScheduleRenderRecoveryRetry();
         }
-        if (trace) tEnsureRT = Stopwatch.GetTimestamp();
 
         // Apply system backdrop after render target is ready
         if (SystemBackdrop != WindowBackdropType.None)
         {
             ApplySystemBackdrop(SystemBackdrop);
         }
-        if (trace) tBackdrop = Stopwatch.GetTimestamp();
 
         // Register OLE drop target for external drag-and-drop (e.g. files from Explorer)
         OleDropTarget.RegisterWindow(this);
-        if (trace) tOleDrop = Stopwatch.GetTimestamp();
 
         UpdateInputMethodAssociation();
 
         OnSourceInitialized(EventArgs.Empty);
-
-        if (trace)
-        {
-            static long Ms(long start, long end) =>
-                (long)Stopwatch.GetElapsedTime(start, end).TotalMilliseconds;
-            long tExit = Stopwatch.GetTimestamp();
-            XamlLoadStartupTrace.Emit(
-                $"[Jalium.UI startup]   EnsureHandle breakdown: total {Ms(tEnter, tExit)}ms " +
-                $"(register-class {Ms(tEnter, tRegisterClass)}ms, CreateWindowEx {Ms(tRegisterClass, tCreateWindow)}ms, " +
-                $"SetWindowPos {Ms(tCreateWindow, tSetWindowPos)}ms, EnsureRenderTarget {Ms(tSetWindowPos, tEnsureRT)}ms, " +
-                $"backdrop {Ms(tEnsureRT, tBackdrop)}ms, ole-drop {Ms(tBackdrop, tOleDrop)}ms, source-init {Ms(tOleDrop, tExit)}ms)");
-        }
     }
 
     /// <summary>
@@ -3498,7 +3401,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 break;
 
             case PlatformEventType.LowMemory:
-                _drawingContext?.ClearBitmapCache();
+                // FIX: _drawingContext caches are render-thread-owned while _rtActive
+                // (PresentCaptureOnRenderThread reads/writes them); draining first
+                // avoids a two-thread Dictionary mutation + native bitmap use-after-free.
+                // FIX #5 consistency: honor a failed park — skip the trim rather
+                // than mutate caches under an in-flight present (same contract as
+                // resize/recovery/SIZEMOVE callers).
+                if (_rtActive)
+                {
+                    if (RequestRenderThreadIdle())
+                    {
+                        _drawingContext?.ClearBitmapCache();
+                    }
+                    ResumeRenderThread();
+                }
+                else
+                {
+                    _drawingContext?.ClearBitmapCache();
+                }
                 break;
 
             case PlatformEventType.SafeAreaChanged:
@@ -4323,15 +4243,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        bool trace = Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") != "0";
-        long tEnter = trace ? Stopwatch.GetTimestamp() : 0;
-
         var requestedBackend = _renderBackendOverride != RenderBackend.Auto
             ? _renderBackendOverride
             : RenderBackend.Auto;
 
         var context = RenderContext.GetOrCreateCurrent(requestedBackend, forceReplace: forceNewContext);
-        long tContext = trace ? Stopwatch.GetTimestamp() : 0;
 
         try
         {
@@ -4385,17 +4301,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         StartFramePacerIfSupported();
         StartRenderThreadIfSupported();
-
-        if (trace)
-        {
-            static long Ms(long start, long end) =>
-                (long)Stopwatch.GetElapsedTime(start, end).TotalMilliseconds;
-            long tExit = Stopwatch.GetTimestamp();
-            XamlLoadStartupTrace.Emit(
-                $"[Jalium.UI startup]     EnsureRenderTarget: total {Ms(tEnter, tExit)}ms " +
-                $"(GetOrCreateCurrent {Ms(tEnter, tContext)}ms — was the bg prewarm done?, " +
-                $"CreateRenderTarget+swap-chain {Ms(tContext, tExit)}ms)");
-        }
+        // After StartRenderThreadIfSupported — render-thread mode keeps native
+        // pacing (it is the waitable's sole consumer there); this no-ops then.
+        StartExternalPresentPacingIfSupported();
     }
 
     /// <summary>
@@ -4437,6 +4345,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         try
         {
+            // FIX #2: a composition (DComp) swap chain is incompatible with the
+            // render thread (StartRenderThreadIfSupported refuses composition), so
+            // a window transitioning to composition must stop+join the render
+            // thread BEFORE disposing the RenderTarget it owns.
+            StopRenderThread();
+
             var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
 
             // Dispose the old render target BEFORE changing the window style.
@@ -4453,6 +4367,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             var oldRenderTarget = RenderTarget;
             RenderTarget = null;
+            // The swap wait targets the old swap chain's waitable HANDLE —
+            // unregister before Dispose closes it. (The DComp replacement
+            // target never re-arms pacing: StartExternalPresentPacingIfSupported
+            // skips composition swap chains.)
+            StopExternalPresentPacing();
             oldRenderTarget?.Dispose();
 
             // Now safe to change window style — any WM_PAINT during SetWindowPos
@@ -5473,6 +5392,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     int sizeType = (int)wParam.ToInt64();
                     int width = (int)(lParam.ToInt64() & 0xFFFF);
                     int height = (int)((lParam.ToInt64() >> 16) & 0xFFFF);
+                    if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] WM_SIZE {width}x{height} type={sizeType} isSizing={window._isSizing}");
 
                     // Synchronize WindowState with the actual window state
                     // This handles system-forced state changes (Win+Down, taskbar click, etc.)
@@ -5604,19 +5524,58 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
                 case WM_ENTERSIZEMOVE:
                     window._isSizing = true;
-                    // Disable VSync during resize for faster frame updates
-                    window.RenderTarget?.SetVSyncEnabled(false);
+                    // Disable VSync during resize for faster frame updates.
+                    // FIX #2: drain the render thread around the swap-chain param
+                    // change — Present is not safe against a concurrent sync-interval
+                    // mutation from another thread. (No-op when the render thread is off.)
+                    // FIX #5 consistency: honor a failed park — skip the mutation
+                    // rather than race an in-flight Present; the resize degrade
+                    // path works (slightly slower) with vsync still on.
+                    //
+                    // External pacing 下跳过：Present 本就恒 sync-interval 0（关 vsync
+                    // 零收益），而 vsyncEnabled_=false 会让 presentFlags 引入
+                    // DXGI_PRESENT_ALLOW_TEARING——远程/虚拟显示器(IDD)环境实测
+                    // tearing present 不被 DWM 合成，整个拖拽期间窗口停在旧帧、
+                    // 新暴露区域全黑（"resize 空白不刷新"的根因）。
+                    if (!window._swapPacingActive)
+                    {
+                        if (window.RequestRenderThreadIdle())
+                        {
+                            window.RenderTarget?.SetVSyncEnabled(false);
+                        }
+                        window.ResumeRenderThread();
+                    }
                     return nint.Zero;
 
                 case WM_EXITSIZEMOVE:
                     window._isSizing = false;
                     // Re-enable VSync after resize (honour the JALIUM_DISABLE_VSYNC
                     // opt-out so a benchmark session that disabled it stays disabled).
-                    window.RenderTarget?.SetVSyncEnabled(!VSyncDisabledByEnv);
+                    // FIX #2: drain the render thread around the swap-chain param change.
+                    // FIX #5 consistency: honor a failed park (see WM_ENTERSIZEMOVE).
+                    // External pacing 下对称跳过（ENTERSIZEMOVE 没改过 vsync）。
+                    if (!window._swapPacingActive)
+                    {
+                        if (window.RequestRenderThreadIdle())
+                        {
+                            window.RenderTarget?.SetVSyncEnabled(!VSyncDisabledByEnv);
+                        }
+                        window.ResumeRenderThread();
+                    }
                     // Do final resize to ensure correct buffer size (physical pixels)
                     int finalPhysW = (int)(window.Width * window._dpiScale);
                     int finalPhysH = (int)(window.Height * window._dpiScale);
                     window.TryResizeRenderTarget(finalPhysW, finalPhysH, "ExitSizeMoveResize");
+                    // 强制重画一帧 _isSizing=false 的正常帧。拖拽期间每帧画的是 _isSizing=true 的
+                    // backdrop 降级帧（折射型特效被简化/跳过），松手时 _isSizing 刚变 false，但
+                    // 内容没变（无 dirty）、最后一帧已把 _fullInvalidation 清为 false、且本帧
+                    // TryResizeRenderTarget 多半因尺寸已一致而 no-op（不重设 _fullInvalidation）——
+                    // 若不在此显式 RequestFullInvalidation，下面 RedrawWindow 触发的 RenderFrame 会在
+                    // "!_fullInvalidation && 无 dirty" 处 skip，屏幕停在 _isSizing=true 的降级坏帧
+                    // （所有特效失效），直到鼠标移动经 InvalidateWindow 才恢复。这才是 resize 后
+                    // "特效失效 + 需鼠标刷新" 的主因（与 TryBeginDrawOrScheduleRetry 的重试修复互补：
+                    // 此处保证发起重画，那里保证重画帧 GPU 忙时也会重试到成功）。
+                    window.RequestFullInvalidation();
                     // Force a final repaint with correct buffer size
                     _ = RedrawWindow(hWnd, nint.Zero, nint.Zero, RDW_INVALIDATE | RDW_UPDATENOW);
                     return nint.Zero;
@@ -5954,6 +5913,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         var rt = RenderTarget;
         if (_resizeInProgress || HasRenderFlag(RenderFlag_Rendering) || (rt != null && rt.IsDrawing))
         {
+            if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] DEFER {physicalWidth}x{physicalHeight} stage={stage} inProg={_resizeInProgress} rendering={HasRenderFlag(RenderFlag_Rendering)} drawing={rt?.IsDrawing}");
             _pendingResizeWidth = physicalWidth;
             _pendingResizeHeight = physicalHeight;
             _hasPendingResize = true;
@@ -5963,6 +5923,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] APPLY-DIRECT {physicalWidth}x{physicalHeight} stage={stage}");
         ApplyRenderTargetResize(physicalWidth, physicalHeight, stage);
 
         // A resize may have been deferred while we held _resizeInProgress above
@@ -5974,6 +5935,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // Applies a resize that was deferred because it arrived mid-frame. MUST only
     // be called from a safe point — never between BeginDraw and EndDraw. Called
     // by RenderFrame just before it begins drawing.
+    // 临时诊断（JALIUM_RESIZE_TRACE=1）：定位"拖拽中交换链不跟新尺寸"的断点。
+    private static readonly bool ResizeTraceEnabled = IsEnvironmentSwitchEnabled("JALIUM_RESIZE_TRACE");
+
+    // 临时诊断（JALIUM_PACING_TRACE=1）：定位"extPacing=1 但 Present 仍阻塞"
+    // 的调度旁路——打印 pacing 激活分支与每次 BeginDraw 时的调度状态。
+    private static readonly bool PacingTraceEnabled = IsEnvironmentSwitchEnabled("JALIUM_PACING_TRACE");
+    private long _pacingTraceCount;
+
     private void FlushPendingRenderTargetResize()
     {
         if (!_hasPendingResize || _resizeInProgress)
@@ -5982,6 +5951,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         int w = _pendingResizeWidth;
         int h = _pendingResizeHeight;
         _hasPendingResize = false;
+        if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] FLUSH {w}x{h}");
         ApplyRenderTargetResize(w, h, "PendingResize");
 
         // ResizeBuffers discarded the back-buffer contents — force a full repaint
@@ -6011,7 +5981,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Park the render thread before ResizeBuffers — it must NOT be mid-
         // BeginDraw..EndDraw when DXGI discards/recreates the back buffers.
         // (No-op when the render thread is disabled, which is the default.)
-        RequestRenderThreadIdle();
+        // FIX #5: if it didn't park in time (a hung present), do NOT ResizeBuffers
+        // under an in-flight frame — skip this resize and let a later tick retry.
+        if (!RequestRenderThreadIdle())
+        {
+            ResumeRenderThread();
+            _resizeInProgress = false;
+            // "Let a later tick retry" must actually arrange that retry: re-stash
+            // the size (FlushPendingRenderTargetResize cleared _hasPendingResize
+            // before calling us) and schedule a frame — otherwise the final
+            // EXITSIZEMOVE resize can be silently dropped and the swap chain
+            // stays at the stale size until the next external invalidation.
+            _pendingResizeWidth = physicalWidth;
+            _pendingResizeHeight = physicalHeight;
+            _hasPendingResize = true;
+            RequestFullInvalidation();
+            return;
+        }
         try
         {
             // Defensive: if a draw session is somehow still open, close it before
@@ -6023,7 +6009,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             _debugHud.OnResize();
-            renderTarget.Resize(physicalWidth, physicalHeight);
+            if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] NATIVE-RESIZE {physicalWidth}x{physicalHeight} stage={stage}");
+            var resizeResult = renderTarget.Resize(physicalWidth, physicalHeight);
+            if (resizeResult == JaliumResult.Busy)
+            {
+                // Native refused: a command list is still open and references the
+                // back buffers (a cross-thread render in flight, or a frame left
+                // open). Freeing them now would be the #921 use-after-free. Re-stash
+                // and retry at the next safe point — FlushPendingRenderTargetResize
+                // runs at the top of RenderFrame, before BeginDraw, when the list is
+                // provably closed. Mirrors the FIX #5 park-failure re-stash. The
+                // finally below still runs (ResumeRenderThread + _resizeInProgress
+                // = false), so the swap chain is never left wedged, and no present
+                // credit was consumed (no ResizeBuffers ran) so none is returned.
+                if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] NATIVE-RESIZE BUSY→deferred {physicalWidth}x{physicalHeight} stage={stage}");
+                _pendingResizeWidth = physicalWidth;
+                _pendingResizeHeight = physicalHeight;
+                _hasPendingResize = true;
+                RequestFullInvalidation();
+                return;
+            }
+            if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] NATIVE-RESIZE OK rt={renderTarget.Width}x{renderTarget.Height}");
+            // ResizeBuffers leaves the frame-latency waitable's signal count in
+            // an unspecified state (in-flight presents were discarded). Reset
+            // the present credit optimistically: the resized swap chain has no
+            // queued frames, so an immediate BeginDraw is always safe — worst
+            // case Present briefly queues inside DXGI instead of deadlocking
+            // the event-driven scheduler on a signal that never comes.
+            ReturnSwapCreditAfterFailedPresent();
         }
         catch (RenderPipelineException ex)
         {
@@ -6072,6 +6085,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         _renderRecoveryInProgress = true;
+        // FIX #2/#5: park the render thread before disposing/recreating the
+        // RenderTarget it owns. If it can't park in time (a hung present during the
+        // device-removed/TDR stall that triggers recovery), do NOT dispose the RT
+        // under an in-flight present — resume and reschedule recovery.
+        if (!RequestRenderThreadIdle())
+        {
+            ResumeRenderThread();
+            _renderRecoveryInProgress = false;
+            ScheduleRenderRecoveryRetry(escalateBackoff: false);
+            return false;
+        }
 
         try
         {
@@ -6082,9 +6106,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 failedBackend = parsedBackend;
             }
 
+            // Retained GPU layers bake textures on the failed device. Evict the
+            // whole tree's handles and destroy them through the OLD render
+            // target NOW, while its backend graveyard still exists (a removed
+            // device's fence reads completed, so reclamation never blocks).
+            // Skipping this would composite stale-device textures into the new
+            // device's first frame (the original GPU-switch AV signature), and
+            // draining later would destroy the handles on the NEW target whose
+            // backend pointer they don't belong to.
+            Visual.ReleaseRetainedLayersRecursive(this);
+            _drawingContext?.DrainPendingRetainedLayers();
+
             _drawingContext?.ClearCache();
             _drawingContext = null;
 
+            // The registered swap wait targets the waitable HANDLE that
+            // RenderTarget.Dispose is about to close — unregister first
+            // (waiting on a closed handle is undefined behaviour).
+            StopExternalPresentPacing();
             RenderTarget?.Dispose();
             RenderTarget = null;
 
@@ -6130,6 +6169,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         finally
         {
+            ResumeRenderThread();
             _renderRecoveryInProgress = false;
         }
     }
@@ -6145,14 +6185,33 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         _renderRecoveryInProgress = true;
+        // FIX #2/#5: park the render thread before disposing/recreating the
+        // RenderTarget it owns. If it can't park in time (a hung present during the
+        // device-removed/TDR stall that triggers recovery), do NOT dispose the RT
+        // under an in-flight present — resume and reschedule recovery.
+        if (!RequestRenderThreadIdle())
+        {
+            ResumeRenderThread();
+            _renderRecoveryInProgress = false;
+            ScheduleRenderRecoveryRetry(escalateBackoff: false);
+            return false;
+        }
 
         try
         {
             RenderBackend failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
 
+            // Evict + drain retained layers on the OLD target before disposing
+            // it (same rule as the exception-typed recovery overload above).
+            Visual.ReleaseRetainedLayersRecursive(this);
+            _drawingContext?.DrainPendingRetainedLayers();
+
             _drawingContext?.ClearCache();
             _drawingContext = null;
 
+            // Unregister the swap wait before Dispose closes its HANDLE
+            // (same rule as the exception-typed recovery overload above).
+            StopExternalPresentPacing();
             RenderTarget?.Dispose();
             RenderTarget = null;
 
@@ -6198,6 +6257,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         finally
         {
+            ResumeRenderThread();
             _renderRecoveryInProgress = false;
         }
     }
@@ -6240,6 +6300,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             return false;
         }
+
+        // The failed frame may have consumed a present credit at BeginDraw
+        // without reaching a successful Present. This is the single funnel all
+        // recoverable mid-frame failures pass through (the RenderFrame inner
+        // catches return via here without touching the outer catch), so return
+        // the credit here or the event-driven scheduler deadlocks when the
+        // recovery is deferred (_renderRecoveryInProgress / park failure) and
+        // no RT rebuild resets pacing. Over-return is harmless: the flag
+        // saturates at 1 and a spurious credit degrades to one bounded DXGI
+        // queue wait inside Present.
+        ReturnSwapCreditAfterFailedPresent();
 
         // Preserve a full repaint request when a frame dies after we already
         // committed dirty state, so the eventual retry never resumes from a
@@ -6431,6 +6502,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (endResult == JaliumResult.Ok)
         {
             _debugHud.OnEndDraw();
+            // This frame's BeginDraw blocking wait (swap-chain frame-latency
+            // waitable + GPU fence) in ns — peeled out of the "BeginDraw"
+            // DRAW-API row below so a multi-ms wait doesn't masquerade as CPU
+            // work. Filled inside the gpuStats block; stays 0 when unavailable.
+            long beginBlockingWaitNs = 0;
+            // This frame's Present blocking time in ns — peeled out of the
+            // "EndDraw" DRAW-API row the same way. Under a slow compositor a
+            // vsync-aligned Present stalls for the whole DWM buffer-retire
+            // interval; without the split that stall reads as EndDraw CPU work.
+            long presentBlockNs = 0;
             // GPU resource snapshot (glyph atlas, path cache, textures) for
             // the Perf tab. Best-effort — a backend that hasn't implemented
             // the query just leaves LatestGpuSnapshot unchanged.
@@ -6449,6 +6530,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     gpuStats.SwapBufferCount,
                     gpuStats.LastFramePresentToReadyNs,
                     gpuStats.FrameWaitableWaitNs);
+                // Cache the live back-buffer count so the FLIP_SEQUENTIAL follow-up
+                // flush (HandlePresentedFrameFlush) covers every buffer even under a
+                // JALIUM_SWAPCHAIN_BUFFERS override (default kDefaultSwapBufferCount=2).
+                if (gpuStats.SwapBufferCount > 0) _lastSwapBufferCount = gpuStats.SwapBufferCount;
+                // Same two blocking waits, used to split the BeginDraw API row.
+                beginBlockingWaitNs = gpuStats.FrameWaitableWaitNs + gpuStats.FrameGpuWaitNs;
+                presentBlockNs = gpuStats.PresentBlockNs;
             }
             // GPU breakdown via hardware timestamp queries — gated behind the
             // same ApiStatsEnabled flag the path/bitmap/retained queries use.
@@ -6467,7 +6555,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Per-frame draw-API call counters → DevTools Perf tab. Only
             // publishes when ApiStatsEnabled (set by the Perf tab while it's
             // visible) so production frames pay zero overhead.
-            Jalium.UI.Diagnostics.RenderDiagnostics.PublishAndResetApiStats();
+            Jalium.UI.Diagnostics.RenderDiagnostics.PublishAndResetApiStats(beginBlockingWaitNs, presentBlockNs);
             // Native path-rasterization cache hit/miss counters (D3D12 Impeller).
             // Cumulative atomics in native — diff against the previous frame's
             // values to get per-frame deltas.
@@ -6477,9 +6565,43 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 PublishTextCacheStatsFromNative();
                 PublishRetainedCacheStatsFromManaged();
             }
+            if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] PRESENTED rt={renderTarget.Width}x{renderTarget.Height} win={Width:F0}x{Height:F0}");
             _lastRenderTicks = Environment.TickCount64;
             ResetRenderRecoveryBackoff();
+            // Pre-arm the swap wait right after a successful present: the DWM
+            // retire signal then converts to a credit as soon as it lands, so a
+            // continuous animation's next tick finds the credit already in hand
+            // (inline fast path) instead of paying a miss → register → callback
+            // → dispatch round-trip every frame. No-op when pacing is inactive;
+            // a spare armed wait is harmless (the callback just banks the credit).
+            if (_swapPacingActive) EnsureSwapWaitRegistered();
             return true;
+        }
+
+        // The frame consumed a present credit at BeginDraw but never reached a
+        // successful Present — return the credit or the event-driven scheduler
+        // waits forever for a DWM retire that will never come. (Recoverable and
+        // throwing paths both end without a present; the RT-recreation path
+        // also resets pacing state, making a double return harmless.)
+        ReturnSwapCreditAfterFailedPresent();
+
+        if (endResult == JaliumResult.PresentFailed)
+        {
+            // Transient Present failure (mode change, resize race) on a HEALTHY
+            // device — native reports it (instead of swallowing it as Ok) only
+            // under external pacing, precisely so the credit return above runs.
+            // The device needs no recovery: repaint fully (the dropped frame
+            // breaks the FLIP_SEQUENTIAL dirty-rect chain's assumption that the
+            // previous frame reached the screen) and schedule a retry. No
+            // RT rebuild, no backoff escalation, no exception — any of those
+            // would turn a one-frame hiccup into a visible stall.
+            lock (_dirtyLock)
+            {
+                _fullInvalidation = true;
+            }
+
+            ScheduleRenderRecoveryRetry(escalateBackoff: false);
+            return false;
         }
 
         if (IsRecoverableRenderPipelineFailure(endResult, "End"))
@@ -6716,8 +6838,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        Render(recorder);                              // walk tree → command list
-        var drawing = host.FinishRecord(recorder);     // immutable Drawing
+        object drawing;
+        try
+        {
+            Render(recorder);                          // walk tree → command list
+        }
+        finally
+        {
+            // Always exit the whole-frame recording scope, even if the tree walk
+            // throws — otherwise s_wholeFrameRecording would leak true on this thread.
+            drawing = host.FinishRecord(recorder);     // immutable Drawing
+        }
+
+        // schema-gap: if the capture hit content it can't represent (windowless
+        // WebView punch, video surface, ink-layer blit, transition shader …),
+        // discard it and direct-render so nothing is silently dropped.
+        if (drawing is Jalium.UI.Media.Rendering.Drawing dr && !dr.IsFullyRecordable)
+        {
+            Render(ctx);
+            return;
+        }
 
         var savedOffset = ctx.Offset;
         ctx.Offset = Point.Zero;                       // whole-frame Drawing is absolute from 0
@@ -6745,10 +6885,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private volatile bool _rtPause;
     private ManualResetEventSlim? _rtIdle;
     private volatile bool _rtActive;
+    private volatile bool _rtBusy;   // render thread is mid BeginDraw..EndDraw (back-pressure gate)
+    private bool _renderThreadDisabledForSchemaGap;  // latched after un-recordable content; do not resurrect the render thread on RT recreate
 
     private void StartRenderThreadIfSupported()
     {
         if (!EnableRenderThread || _renderThread != null) return;
+        if (_renderThreadDisabledForSchemaGap) return;  // latched off after un-recordable content — don't flap back on RT recreate
+        // The render thread is Windows/HWND-only by design (it owns the swap-chain
+        // present). On non-Windows _platformWindow drives rendering, and
+        // ShouldUseCompositionRenderTarget()'s user32 GetWindowLong P/Invoke would
+        // throw DllNotFoundException there — bail BEFORE touching it.
+        if (_platformWindow != null) return;
         if (RenderTarget == null || ShouldUseCompositionRenderTarget()) return;  // DComp → inline path
         if (Visual.RenderCacheHost == null) return;                              // no whole-frame capture
         _renderThreadStop = false;
@@ -6760,29 +6908,39 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         t.Start();
     }
 
-    private void StopRenderThread()
+    private bool StopRenderThread()
     {
         var t = _renderThread;
-        if (t == null) return;
+        if (t == null) return true;
         _rtActive = false;
         _renderThreadStop = true;
         _rtPause = false;
         _rtFrameAvailable?.Set();
-        t.Join(500);
+        // FIX #2: join generously — a present can run long during a device-removed /
+        // TDR stall (well beyond steady state). Cover the ~2s Windows TDR window so a
+        // caller doesn't dispose the RenderTarget out from under an in-flight present.
+        bool joined = t.Join(2000);
         _renderThread = null;
         lock (_rtChannelLock) { _rtPendingFrame = null; }
+        return joined;
     }
 
     // Park the render thread (provably out of BeginDraw..EndDraw) so the UI thread
     // can safely Resize / Dispose / recreate the RenderTarget the render thread owns.
-    private void RequestRenderThreadIdle()
+    /// <returns>
+    /// True if the render thread actually parked within the timeout (or there is
+    /// no render thread). FIX #5: callers that then dispose/resize/recreate the
+    /// RenderTarget MUST honor a false result — skip the teardown and reschedule
+    /// rather than free the RT out from under an in-flight present.
+    /// </returns>
+    private bool RequestRenderThreadIdle()
     {
         var t = _renderThread;
-        if (t == null || !t.IsAlive) return;
+        if (t == null || !t.IsAlive) return true;   // nothing to drain
         _rtIdle?.Reset();
         _rtPause = true;
         _rtFrameAvailable?.Set();
-        _rtIdle?.Wait(1000);
+        return _rtIdle?.Wait(1000) ?? true;
     }
 
     private void ResumeRenderThread()
@@ -6805,7 +6963,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (cap == null) continue;
             try { PresentCaptureOnRenderThread(cap); }
             catch (RenderPipelineException ex) { MarshalRenderRecovery(ex); }
-            catch { /* swallow — the next published frame will retry */ }
+            catch
+            {
+                // The capture is lost and dirty was already cleared at publish
+                // time — without re-invalidation a static scene would keep the
+                // stale frame on screen until the next external invalidation.
+                // Marshal a full invalidation back to the UI thread so the
+                // scene re-records and re-publishes.
+                try { _dispatcher?.BeginInvokeCritical(() => { RequestFullInvalidation(); InvalidateWindow(); }); }
+                catch { /* shutting down */ }
+            }
         }
     }
 
@@ -6816,37 +6983,125 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         var host = Visual.RenderCacheHost;
         if (host == null) return;
 
-        rt.SetFullInvalidation();
-        if (!rt.TryBeginDraw()) return;   // GPU busy → drop this frame; UI thread will publish another
+        // The render thread EXCLUSIVELY owns _drawingContext on this path (the UI
+        // thread no longer touches it — see RenderFrame). Create + maintain it here
+        // so the brush-cache trim and Replay run on a single thread.
+        var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+        var dc = _drawingContext ??= new RenderTargetDrawingContext(rt, context);
+        // backdrop/LiquidGlass（snapshot/背景折射型 effect）在拖拽中仍降级回扁平 overlay：
+        // 其背景 snapshot 滞后于 in-flight 的 resize back buffer，真折射会采到错位的屏幕区域
+        // → 玻璃内容"跑到面板外"。glow/shadow 是 element-capture 型、不采背景，故不受此 flag 影响。
+        dc.SimplifyBackdropEffects = _isSizing;
+        dc.DrainPendingRetainedLayers();
 
+        rt.SetFullInvalidation();
+        if (!rt.TryBeginDraw())
+        {
+            // GPU/swap-chain busy. Do NOT silently drop the capture: dirty was
+            // already cleared when this frame was published, so on a static
+            // scene nothing would ever re-publish and the last frame would
+            // never reach the screen (same "needs a mouse-move to refresh"
+            // failure mode the inline path fixed in TryBeginDrawOrScheduleRetry).
+            // Put the capture back (UI thread's newer frame wins if one landed
+            // meanwhile) and re-wake the loop — BeginDraw's internal 16 ms
+            // waitable wait is the retry back-off, and it blocks only this
+            // render thread, never the UI thread.
+            lock (_rtChannelLock) { _rtPendingFrame ??= cap; }
+            _rtFrameAvailable?.Set();
+            return;
+        }
+
+        _rtBusy = true;
         bool ended = false;
         try
         {
             ClearBackground();
-            _drawingContext!.Offset = Point.Zero;
-            host.Replay(cap.Drawing, _drawingContext);
+            dc.Offset = Point.Zero;
+            host.Replay(cap.Drawing, dc);
             OnRender(rt);
-            ended = rt.TryEndDraw() == JaliumResult.Ok;   // non-throwing; Ok or failure result
+            JaliumResult endResult = rt.TryEndDraw();   // non-throwing; Ok or failure result
+            ended = endResult == JaliumResult.Ok;
+            if (ended && _consecutiveRecoverableRenderFailures != 0)
+            {
+                // Mirror the inline path's "successful present resets the
+                // backoff" rule (CompleteEndDrawOrHandleFailure) — otherwise
+                // failures accumulate across unrelated incidents for the
+                // lifetime of the render thread and the SECOND incident, months
+                // later, would trip the backend-fallback threshold. Racy read is
+                // fine: a missed reset is retried on the next presented frame.
+                _dispatcher?.BeginInvokeCritical(ResetRenderRecoveryBackoff);
+            }
+            if (!ended && IsRecoverableRenderPipelineFailure(endResult, "End"))
+            {
+                // Surface device loss to the UI thread NOW instead of waiting
+                // for the next frame's TryBeginDraw to throw — saves a frame of
+                // latency and stops this loop from re-submitting against a
+                // removed device meanwhile. External present pacing is never
+                // active while the render thread runs, so there is no credit
+                // to return on this path.
+                MarshalRenderRecovery(new RenderPipelineException(
+                    stage: "End",
+                    result: endResult,
+                    resultCode: (int)endResult,
+                    hwnd: Handle,
+                    width: rt.Width,
+                    height: rt.Height,
+                    dpiX: (float)(_dpiScale * 96.0),
+                    dpiY: (float)(_dpiScale * 96.0),
+                    backend: rt.Backend.ToString()));
+            }
         }
         finally
         {
             if (!ended && rt.IsDrawing) { try { rt.TryEndDraw(); } catch { } }
+            dc.TrimCacheIfNeeded();   // FIX: cache trim now on the owning (render) thread
+            _rtBusy = false;
         }
     }
 
+    // Nonzero while a render-thread-marshalled recovery is queued or running on
+    // the UI thread. One GPU switch produces a burst of failures on the render
+    // thread (EndDraw DEVICE_LOST, then next frame's BeginDraw throw, ...);
+    // without this latch each one queues its own recovery, the second disposes
+    // the RT the first just rebuilt, and two MarkRecoverableRenderFailure calls
+    // from a single incident trip the backend-fallback threshold — permanently
+    // downgrading the window to the software backend.
+    private int _recoveryMarshalPending;
+
     private void MarshalRenderRecovery(RenderPipelineException ex)
     {
+        if (Interlocked.CompareExchange(ref _recoveryMarshalPending, 1, 0) != 0)
+        {
+            return; // a recovery for this incident is already queued — coalesce
+        }
+
         try
         {
             _dispatcher?.BeginInvokeCritical(() =>
             {
-                RequestRenderThreadIdle();
-                if (RenderTarget?.IsDrawing == true) { try { RenderTarget.TryEndDraw(); } catch { } }
-                HandleRecoverableRenderPipelineFailure(ex, "RenderThread");
-                ResumeRenderThread();
+                try
+                {
+                    // FIX #5 contract: only touch the RT from this thread when the
+                    // render thread actually parked. If it is wedged inside a
+                    // native present (>1 s), a concurrent EndDraw here would be
+                    // two threads in the same swap chain — the recovery path
+                    // re-parks and safely defers instead.
+                    bool parked = RequestRenderThreadIdle();
+                    if (parked && RenderTarget?.IsDrawing == true) { try { RenderTarget.TryEndDraw(); } catch { } }
+                    HandleRecoverableRenderPipelineFailure(ex, "RenderThread");
+                    ResumeRenderThread();
+                }
+                finally
+                {
+                    Volatile.Write(ref _recoveryMarshalPending, 0);
+                }
             });
         }
-        catch { /* shutting down */ }
+        catch
+        {
+            // shutting down — release the latch so a later marshal isn't blocked
+            Volatile.Write(ref _recoveryMarshalPending, 0);
+        }
     }
 
     // UI thread: record the whole tree into a Drawing and hand it to the render
@@ -6854,16 +7109,65 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // return immediately. Never blocks on the present.
     private void PublishFrameToRenderThread()
     {
+        // Back-pressure (FIX): if the render thread is still presenting the
+        // previous frame and a capture is already queued, skip recording this tick
+        // — the expensive Render walk would only overwrite the unconsumed pending
+        // frame. Reschedule so the latest state still reaches the screen once the
+        // render thread drains. Checked before allocating a recorder.
+        if (_rtBusy)
+        {
+            lock (_rtChannelLock)
+            {
+                if (_rtPendingFrame != null) { ScheduleDeferredRender(1); return; }
+            }
+        }
+
         var host = Visual.RenderCacheHost;
         var recorder = host?.CreateFrameRecorder();
         if (host == null || recorder == null)
         {
-            _rtActive = false;   // host can't capture → fall back to inline next frame
+            // Host can't whole-frame capture: latch to inline for this window and
+            // JOIN the render thread (FIX: don't leave it alive owning the RT while
+            // the UI thread resumes ownership).
+            _renderThreadDisabledForSchemaGap = true;
+            StopRenderThread();
+            // The window now lives on the inline path permanently — hand present
+            // pacing to the event-driven scheduler it would otherwise have missed
+            // (StartRenderThreadIfSupported won't resurrect the thread: the latch
+            // blocks it), so a slow compositor can't pin the UI thread here either.
+            StartExternalPresentPacingIfSupported();
+            ScheduleDeferredRender(1);
             return;
         }
-        Render(recorder);
-        try { DevToolsOverlay?.DrawOverlay(recorder); } catch { }
-        var drawing = host.FinishRecord(recorder);
+
+        object drawing;
+        try
+        {
+            Render(recorder);
+            try { DevToolsOverlay?.DrawOverlay(recorder); } catch { }
+        }
+        finally
+        {
+            // Always exit the whole-frame scope even if the tree walk throws.
+            drawing = host.FinishRecord(recorder);
+        }
+
+        // schema-gap (render-thread path): the capture hit content it can't
+        // represent (windowless WebView punch, video surface, ink-layer blit, …).
+        // Don't publish a lossy frame — permanently fall back to the inline UI
+        // path for this window (latch so RT recreation can't resurrect the lossy
+        // path) and STOP+JOIN the render thread before the UI resumes RT ownership.
+        // Dirty state is preserved so the rescheduled inline frame repaints.
+        if (drawing is Jalium.UI.Media.Rendering.Drawing d && !d.IsFullyRecordable)
+        {
+            _renderThreadDisabledForSchemaGap = true;
+            StopRenderThread();          // drains + joins; sets _rtActive = false
+            // Same as the host-null latch above: the inline path this window
+            // falls back to gets event-driven present pacing.
+            StartExternalPresentPacingIfSupported();
+            ScheduleDeferredRender(1);   // repaint inline (dirty intact)
+            return;
+        }
 
         lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
 
@@ -6875,6 +7179,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void StartFramePacerIfSupported()
     {
         if (!EnableFramePacer) return;
+        // FIX: the swap-chain frame-latency waitable is auto-reset / single-
+        // consumer. The render thread (when enabled) is the consumer that moves
+        // the BeginDraw wait off the UI thread; the legacy pacer must NOT also
+        // wait on the same handle — that is the v5 two-waiter trap where each
+        // signal is won by one thread and the loser stalls to the 16ms timeout.
+        // Render thread supersedes the pacer.
+        if (EnableRenderThread) return;
         if (_framePacerThread != null) return;  // already started
         var rt = RenderTarget;
         if (rt == null) return;
@@ -6925,8 +7236,293 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
+    // ── External present pacing（事件驱动 present 调度）─────────────────────
+    // 根治"慢合成环境（核显切换 / 遮挡节流 / 远程虚拟显示器）整窗卡死"：
+    // 旧模型里 UI 线程要么阻塞在 Present(1)（vsync 对齐，实测 DWM buffer-retire
+    // 130-460ms 全落 UI 线程），要么阻塞在 BeginDraw 的 16ms-waitable 超时 +
+    // 1ms timer 重试忙等循环（每帧 ~30 圈，等待只是换了位置——见 D3D12RT
+    // CreateSwapChain 内的 4 配置 A/B 注释）。新模型把 swap-chain frame-latency
+    // waitable 的消费权上移到这里：线程池 RegisterWaitForSingleObject 把信号转成
+    // 一个 present credit，UI 线程只在拿到 credit 时才进 BeginDraw（native 在
+    // external-pacing 模式下不再等 waitable，Present 永远 sync-interval 0 不阻塞）。
+    // DWM 慢只会降低上屏频率（dirty 自然累积、丢帧合并、动画时钟照常推进），
+    // 永远不再阻塞输入 / 布局 / 动画。正常环境下 waitable 以 vblank 节奏 signal，
+    // 帧节奏与旧 vsync 模型一致。
+    //
+    // credit 守恒：waitable 是 auto-reset、计数 = MaxFrameLatency(=1)，消费即
+    // 拥有。一个 credit 只在两种情况下回到池里：① present 成功 → DWM retire →
+    // waitable signal → 回调转 credit；② 本帧消费了 credit 但最终没 present
+    // （BeginDraw fence 失败 / TryEndDraw 失败）→ 显式归还。漏掉任何一条都会
+    // 死锁在"credit 永远不来"；多归还则退化为 Present 内 DXGI 自身排队（短暂
+    // 阻塞，不丢正确性）。resize / RT 重建后信号计数语义不可依赖，统一重置。
+    private volatile bool _swapPacingActive;
+    private int _swapCredit;            // 可立即开帧的 present 名额（计数信号量，上限 _swapCreditCap）
+    private int _swapCreditCap = 1;     // = swap chain 的 MaxFrameLatency（默认 1；JALIUM_MAX_FRAME_LATENCY 实验旋钮）
+    private int _swapWaitRegistered;    // 1 = 线程池等待已挂（CAS 幂等）
+    private volatile bool _renderPendingOnSwap;  // miss 时置位：credit 到位后需要调度渲染
+    private RegisteredWaitHandle? _swapRegisteredWait;
+    private ManualResetEvent? _swapWaitEvent;   // 包装 native HANDLE（不拥有）
+    private long _swapWaitTimeoutCount;          // 诊断：500ms 兜底超时次数
+    // 串行化 arm/disarm 与线程池超时回调的重注册：CAS 成功到 _swapRegisteredWait
+    // 赋值之间若被 Stop 插入，新注册会逃过 Unregister、随后在已被 RT.Dispose 关闭
+    // 的 HANDLE 上等待（UB）。低频路径，锁无热路径代价。
+    private readonly object _swapPacingLock = new();
+
+    private void StartExternalPresentPacingIfSupported()
+    {
+        void Trace(string reason)
+        {
+            if (PacingTraceEnabled) Console.Error.WriteLine($"[pacing-trace] Start: {reason} (win={Title})");
+        }
+
+        StopExternalPresentPacing();   // RT 重建路径：刷新句柄 + 重置状态
+        // Cross-platform host (Android 等)：无 user32、无 DXGI waitable，且下面的
+        // ShouldUseCompositionRenderTarget 会 P/Invoke user32（StartRenderThreadIfSupported
+        // 规避过的同一个陷阱）。
+        if (_platformWindow != null) { Trace("skip: platformWindow"); return; }
+        // 渲染线程运行中不启用：present 阻塞落在渲染线程，本就不卡 UI；且
+        // waitable 必须单消费者（v5 双等待者陷阱），渲染线程路径里 native
+        // BeginDraw 是那个消费者。判定用"线程实际存活"而非 EnableRenderThread
+        // 环境变量——schema-gap latch 会永久停掉渲染线程改走 inline 路径，
+        // 那之后这个窗口理应获得 inline 路径的全部能力（latch 点会重新调用
+        // 本方法接管 pacing）。
+        if (_renderThread?.IsAlive == true) { Trace("skip: renderThread alive"); return; }
+        // JALIUM_DISABLE_VSYNC 是 benchmark/动画人群的显式选择：非对齐 present、
+        // 不限帧。健康合成器上旧 inline 路径的 waitable 等待即到即过，没有本
+        // 调度器要解决的 16ms 卡顿；接管反而给每帧加一圈线程池+dispatcher 跳。
+        if (VSyncDisabledByEnv) { Trace("skip: JALIUM_DISABLE_VSYNC"); return; }
+        var rt = RenderTarget;
+        if (rt == null || !rt.IsValid || ShouldUseCompositionRenderTarget()) { Trace("skip: rt/composition"); return; }
+        nint waitable = rt.GetFrameLatencyWaitable();
+        if (waitable == nint.Zero) { Trace("skip: no waitable"); return; }   // 非 D3D12 / 降级阶梯 Flags=0 → 旧路径
+        // legacy frame-pacer 实验（JALIUM_ENABLE_FRAME_PACER）也常驻等待同一个
+        // auto-reset waitable——本调度器接管前必须停掉它，否则两个消费者抢信号，
+        // pacer 抢到的每个信号都被无声丢弃（其 _framePending 无人置位），credit
+        // 永远不来。external pacing 是 pacer 思路的功能超集。
+        StopFramePacer();
+        lock (_swapPacingLock)
+        {
+            var ev = new ManualResetEvent(false);
+            ev.SafeWaitHandle.Dispose();
+            // ownsHandle:false——HANDLE 归 swap chain 所有，RenderTarget.Dispose 关闭它；
+            // StopExternalPresentPacing 必须先于 RT Dispose 执行（见窗口关闭路径）。
+            ev.SafeWaitHandle = new Microsoft.Win32.SafeHandles.SafeWaitHandle(waitable, ownsHandle: false);
+            _swapWaitEvent = ev;
+            rt.SetExternalPresentPacing(true);
+            // credit 播 0：swap chain 创建时 DXGI 已预置 MaxFrameLatency 个信号，
+            // 由首次 miss 挂上的回调立即转换成 credit（信号 pending 时注册即刻满足）。
+            // 播种非零会与预置信号叠加，让稳态管线静默加深。桶深 = native 的
+            // 真实 MaxFrameLatency（默认 3，JALIUM_MAX_FRAME_LATENCY 可覆盖）——
+            // 唯一真源是 native，经 GetPresentInfo 回读，绝不双轨配置。
+            int cap = 1;
+            var presentInfo = rt.GetPresentInfo();
+            if (presentInfo is { MaxFrameLatency: > 0 } pi)
+            {
+                cap = Math.Min(pi.MaxFrameLatency, 8);
+            }
+            _swapCreditCap = cap;
+            Interlocked.Exchange(ref _swapCredit, 0);
+            Interlocked.Exchange(ref _swapWaitRegistered, 0);
+            _renderPendingOnSwap = false;
+            _swapPacingActive = true;
+        }
+        Trace($"ACTIVE cap={_swapCreditCap}");
+    }
+
+    private void StopExternalPresentPacing()
+    {
+        RegisteredWaitHandle? rw;
+        ManualResetEvent? ev;
+        lock (_swapPacingLock)
+        {
+            _swapPacingActive = false;
+            _renderPendingOnSwap = false;
+            rw = _swapRegisteredWait;
+            _swapRegisteredWait = null;
+            Interlocked.Exchange(ref _swapWaitRegistered, 0);
+            ev = _swapWaitEvent;
+            _swapWaitEvent = null;
+        }
+        if (rw != null)
+        {
+            // 阻塞式注销：调用方紧接着就会 RenderTarget.Dispose 关闭 waitable
+            // HANDLE——必须确保在途回调与底层等待已完全离开该句柄（对注册等待中
+            // 的句柄 CloseHandle 是未定义行为）。100ms 上限防线程池饥饿恶化成卡死。
+            var done = new ManualResetEvent(false);
+            try { if (rw.Unregister(done)) done.WaitOne(100); }
+            catch { /* already gone */ }
+            finally { done.Dispose(); }
+        }
+        try { ev?.Dispose(); } catch { /* non-owning wrapper */ }
+        try
+        {
+            var rt = RenderTarget;
+            if (rt != null && rt.IsValid) rt.SetExternalPresentPacing(false);
+        }
+        catch { /* RT mid-teardown */ }
+    }
+
+    private void EnsureSwapWaitRegistered()
+    {
+        if (!_swapPacingActive) return;
+        if (Interlocked.CompareExchange(ref _swapWaitRegistered, 1, 0) != 0) return;
+        lock (_swapPacingLock)
+        {
+            // 复查：CAS 与进锁之间 Stop 可能已经 disarm（并清掉了 registered 标志，
+            // 但本线程的 CAS 又把它置回了 1）——这里必须回滚并放弃注册。
+            if (!_swapPacingActive || _swapWaitEvent == null)
+            {
+                Interlocked.Exchange(ref _swapWaitRegistered, 0);
+                return;
+            }
+            try
+            {
+                // 500ms 超时只是防"信号丢失"的心跳兜底：超时回调不伪造 credit（伪造
+                // 会让 Present 落回 DXGI 排队阻塞），只在 credit 仍未到时继续追等。
+                _swapRegisteredWait = ThreadPool.RegisterWaitForSingleObject(
+                    _swapWaitEvent, OnSwapWaitableSignaled, null, 500, executeOnlyOnce: true);
+            }
+            catch
+            {
+                Interlocked.Exchange(ref _swapWaitRegistered, 0);
+                ScheduleDeferredRender(GpuBusyRetryDelayMs);   // 兜底退回 timer 重试
+            }
+        }
+    }
+
+    private void OnSwapWaitableSignaled(object? state, bool timedOut)
+    {
+        Interlocked.Exchange(ref _swapWaitRegistered, 0);
+        if (timedOut)
+        {
+            Interlocked.Increment(ref _swapWaitTimeoutCount);
+            // 不伪造 credit；present 仍在 DWM 手里（慢合成下 retire 可达 460ms+，
+            // 多个 500ms 周期是预期内的），credit 没回来就继续追下一个信号。
+            if (_swapPacingActive && Volatile.Read(ref _swapCredit) < _swapCreditCap)
+            {
+                EnsureSwapWaitRegistered();
+            }
+            return;
+        }
+        // credit 的唯一节拍源就是 waitable 信号本身——它是"上一帧已 retire、
+        // back buffer 可写、下一次 Present 不会阻塞"的权威信号。
+        //
+        // 【撤回记录 2026-06-10】曾在此叠加 DwmFlush"合成节拍门"（密集期等一拍
+        // 全局合成再发 credit，防连续动画 40fps 白渲染占线）。两个致命缺陷：
+        // ① DWM 合成按需——静止桌面不合成，无条件门让低频应用陷入
+        //   渲染等credit→credit等合成→合成等屏幕变化 的循环依赖（帧间隔 1.8s+）；
+        // ② 改成"密集期才过门"后仍错：DwmFlush 是【全局】合成节拍，而 retire 是
+        //   【per-window】的——大窗口（如 1344x852 Gallery）在远程 IDD 上 retire
+        //   ~164ms 慢于全局节拍 ~110ms，门过早放行 credit → 下一帧 Present 撞
+        //   MFL=1 的未-retire 墙 → presentBlock 164ms 落回 UI 线程（恰是本调度器
+        //   要消灭的形态）。小窗探针（retire 25ms）测不出此失配。
+        // 防占线的正确手段是"只在有渲染意图时调度"（下方 pending 检查），而重帧
+        // 应用的 retire 本来就慢，渲染节奏天然被 waitable 配平。
+        AddSwapCredit();
+        if (!_swapPacingActive) return;
+        // MFL>1 时一次只消费得到一个信号；若还差名额（credit 未满且仍有
+        // pending in-flight），立刻续挂等待去收下一个。
+        if (Volatile.Read(ref _swapCredit) < _swapCreditCap)
+        {
+            EnsureSwapWaitRegistered();
+        }
+        // 只在确有挂起的渲染意图时调度——无条件调度会在连续动画下叠加每秒
+        // 几十次 dispatcher 空转，进一步挤压输入处理。丢失唤醒由
+        // TryBeginDrawOrScheduleRetry 的 double-check 兜底（pending 置位后
+        // 它会再取一次 credit）。
+        if (_renderPendingOnSwap)
+        {
+            _renderPendingOnSwap = false;
+            try { _dispatcher?.BeginInvokeCritical(ProcessRender); } catch { /* shutting down */ }
+        }
+    }
+
+    /// <summary>
+    /// 本帧消费了 present credit 但最终没有 present 成功（BeginDraw 的 fence /
+    /// 设备失败、TryEndDraw 失败）——归还 credit，否则 DWM 永远不会 retire 出
+    /// 新信号，调度死锁在"credit 永远不来"。
+    /// </summary>
+    private void ReturnSwapCreditAfterFailedPresent()
+    {
+        if (_swapPacingActive) AddSwapCredit();
+    }
+
+    /// <summary>计数信号量入账，clamp 到 MaxFrameLatency 上限（多还塌缩，无害）。</summary>
+    private void AddSwapCredit()
+    {
+        if (Interlocked.Increment(ref _swapCredit) > _swapCreditCap)
+        {
+            Interlocked.Decrement(ref _swapCredit);
+        }
+    }
+
+    /// <summary>尝试消费一个 present 名额；失败时余额不变。</summary>
+    private bool TryTakeSwapCredit()
+    {
+        if (Interlocked.Decrement(ref _swapCredit) >= 0) return true;
+        Interlocked.Increment(ref _swapCredit);
+        return false;
+    }
+
     private bool TryBeginDrawOrScheduleRetry()
     {
+        if (PacingTraceEnabled && _pacingTraceCount < 200)
+        {
+            _pacingTraceCount++;
+            Console.Error.WriteLine($"[pacing-trace] TryBegin: active={_swapPacingActive} sizing={_isSizing} credit={Volatile.Read(ref _swapCredit)} cap={_swapCreditCap} pending={_renderPendingOnSwap}");
+        }
+        if (_swapPacingActive)
+        {
+            // 拖拽 resize（modal sizing loop）期间旁路 credit 门：每个 WM_SIZE
+            // 都必须即时重画，否则新暴露的区域要等合成节拍（慢合成下 ~9fps）
+            // 才被填充，体感是"空白慢慢填、松手才正常"。直接操纵反馈优先于
+            // 限流：Present(0) 不阻塞、深桶+DXGI 队列吸收突发；期间账本只进
+            // 不出（present 的 ack 照常经回调入账并被 clamp 塌缩），无泄漏。
+            if (_isSizing)
+            {
+                if (RenderTarget?.TryBeginDraw() == true) return true;
+                if (ResizeTraceEnabled) Console.Error.WriteLine("[resize-trace] BEGIN-FAIL (sizing bypass)");
+                _debugHud.OnBeginFail();
+                ScheduleDeferredRender(GpuBusyRetryDelayMs);
+                return false;
+            }
+            if (!TryTakeSwapCredit())
+            {
+                // 先声明渲染意图再挂等待：回调只在 pending 置位时才调度
+                // ProcessRender（防连续动画下每信号一次的 dispatcher 空转）。
+                _renderPendingOnSwap = true;
+                EnsureSwapWaitRegistered();
+                // double-check：信号可能在上面消费尝试与 Register 之间被一个
+                // 在途回调转成 credit——丢失唤醒会让本次渲染请求等满一整个
+                // DWM 周期（慢合成下 460ms+），这里补救性再取一次。
+                if (!TryTakeSwapCredit())
+                {
+                    // Not a "begin fail" for the HUD: a credit miss is the
+                    // event-driven scheduler's normal deferral, not a GPU stall.
+                    if (DebugRender) System.Diagnostics.Debug.WriteLine("[TryBeginDraw] SKIP: no present credit (event-driven wait armed)");
+                    // dirty 保留；OnSwapWaitableSignaled 到点调度 ProcessRender。
+                    // 不再走 1ms timer 重试——那个循环每圈都在 native waitable 上
+                    // 阻塞 16ms，慢合成下 UI 线程 94% 时间被钉死，正是本次重构
+                    // 要根治的形态。
+                    return false;
+                }
+                // double-check 拿到了 credit——渲染意图已兑现，撤销 pending
+                // 防止下一个回调多调度一轮（无害但白占 dispatcher）。
+                _renderPendingOnSwap = false;
+            }
+            if (RenderTarget?.TryBeginDraw() == true)
+            {
+                return true;
+            }
+            // external pacing 下 BeginDraw 不等 waitable，失败=fence/设备问题。
+            // 本帧没花掉 present 名额 → 归还 credit，沿用 timer 重试兜底。
+            ReturnSwapCreditAfterFailedPresent();
+            _debugHud.OnBeginFail();
+            if (DebugRender) System.Diagnostics.Debug.WriteLine("[TryBeginDraw] FAIL: fence/device busy (credit returned)");
+            ScheduleDeferredRender(GpuBusyRetryDelayMs);
+            return false;
+        }
+
         if (RenderTarget?.TryBeginDraw() == true)
         {
             return true;
@@ -6934,14 +7530,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         _debugHud.OnBeginFail();
         if (DebugRender) System.Diagnostics.Debug.WriteLine("[TryBeginDraw] FAIL: GPU busy");
-        if (CompositionTarget.IsActive)
-        {
-            SetRenderFlag(RenderFlag_DirtyBetween);
-        }
-        else
-        {
-            ScheduleDeferredRender(GpuBusyRetryDelayMs);
-        }
+
+        // 总是显式调度一次重试——绝不能依赖 CompositionTarget.IsActive 下"下一个动画 tick 会
+        // 顺带重绘"。IsActive 只表示存在长寿命订阅者（状态栏时钟、未结束的滚动惯性等），并不
+        // 保证 tick 真的会及时到来；漏掉调度时，BeginDraw 失败的那一帧（典型：resize 刚结束、
+        // 内容仍处 backdrop 降级 + 尺寸过渡态）会一直停在屏幕上，直到鼠标移动经
+        // InvalidateWindow 才被调度——正是"resize 后所有特效失效 / 内容向右下偏移 / 需鼠标
+        // 经过才刷新"的根因。InvalidateWindow 早先已对同一个 IsActive 陷阱做过同款修复（不再
+        // 依赖 RenderFlag_DirtyBetween，总是调度 ProcessRender），这里与之对齐。
+        // ScheduleDeferredRender 经 TrySetRenderFlag(Scheduled) 幂等：动画进行中与动画 tick
+        // 并存也不会重复渲染（先到者渲染并清 dirty，后到者 RenderFlag_Rendering 早退）。
+        ScheduleDeferredRender(GpuBusyRetryDelayMs);
 
         return false;
     }
@@ -6962,7 +7561,48 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     ///   preventing GPU saturation from rapid input events (scrolling, mouse drag).
     /// </summary>
     private int _renderFrameLogCount;
-    private bool _firstFrameTraceLogged;
+    // ── Off-thread animation probe (Increment 1 — architecture hard gate) ──
+    // Env-gated (JALIUM_DCOMP_ANIM_PROBE). On the first frame of a COMPOSITION
+    // window (AllowsTransparency=true → WS_EX_NOREDIRECTIONBITMAP), creates ONE
+    // self-driving DComp visual, then lets the app go idle. The whole off-thread
+    // architecture rests on one unverified assumption: that DWM drives an
+    // IDCompositionAnimation autonomously at vblank with NO app present. This probe
+    // measures exactly that, cheaply. Put it on a composition window with NO other
+    // animation (so the app genuinely idles), then confirm with PresentMon that the
+    // app present rate is ≈0 while the amber block keeps sliding. If the block
+    // freezes when the app idles, the direction is void — abandon for the cost of
+    // one native function.
+    private static readonly bool AnimProbeEnabled = IsEnvironmentSwitchEnabled("JALIUM_DCOMP_ANIM_PROBE");
+    private bool _animProbeDone;
+    private nint _animProbeVisual;
+
+    private void MaybeFireAnimProbe()
+    {
+        if (!AnimProbeEnabled || _animProbeDone) return;
+        var rt = RenderTarget;
+        if (rt == null || !rt.IsValid) return;   // not ready yet — retry next frame
+        if (!ShouldUseCompositionRenderTarget())
+        {
+            _animProbeDone = true;
+            Console.Error.WriteLine("[AnimProbe] SKIP: window is NOT a composition window. Set AllowsTransparency=true on the test window to evaluate the gate.");
+            return;
+        }
+        _animProbeDone = true;
+
+        int w = Math.Clamp(rt.Width / 3, 80, 320);
+        int h = Math.Max(12, (int)(16 * _dpiScale));
+        int x = 40;
+        int y = Math.Max(0, rt.Height / 2 - h / 2);
+        float travel = Math.Max(1, rt.Width - w - 80);
+        const float periodSec = 1.0f / 1.2f;     // mirror ProgressBar IndeterminateSpeedPerSecond (1.2 track/sec)
+        const uint amber = 0xFFFFC107u;           // accent color (matches the screenshot)
+
+        if (rt.TryCreateAnimProbe(x, y, w, h, travel, periodSec, amber, vertical: false, out _animProbeVisual))
+            Console.Error.WriteLine($"[AnimProbe] OK — self-driving DComp visual created (bounds=({x},{y},{w},{h}), travel={travel}px). The app may now idle; the amber block MUST keep sliding. Measure app present rate with PresentMon (expect ≈0).");
+        else
+            Console.Error.WriteLine("[AnimProbe] FAILED — CreateAnimProbe returned NOT_SUPPORTED/error. Gate cannot be evaluated on this backend/window.");
+    }
+
     private void RenderFrame()
     { _debugHud.OnRenderFrame();
         if (HasRenderFlag(RenderFlag_Rendering)) return;
@@ -6980,14 +7620,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (WindowState == WindowState.Minimized) return;
         SetRenderFlag(RenderFlag_Rendering);
         ClearRenderFlag(RenderFlag_Requested);
-
-        // First-frame breakdown trace — only emitted on the very first paint
-        // when JALIUM_STARTUP_TRACE=1; cheap branch on subsequent frames.
-        bool firstFrameTrace = !_firstFrameTraceLogged
-            && Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") == "1";
-        long fEnter = firstFrameTrace ? Stopwatch.GetTimestamp() : 0;
-        long fAfterLayout = 0, fAfterDirtyCalc = 0, fAfterBeginDraw = 0;
-        long fAfterClear = 0, fAfterRender = 0, fAfterEndDraw = 0;
 
         try
         {
@@ -7011,15 +7643,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (RenderTarget == null || !RenderTarget.IsValid)
                 return;
 
+            // Increment-1 architecture gate (env-gated, one-shot). Safe here: no
+            // frame command list is open yet, so the probe's one-shot clear queues
+            // cleanly on the shared command queue before this frame's BeginDraw.
+            MaybeFireAnimProbe();
+
             // Perform layout before rendering (queue-based: only dirty elements).
             // UpdateLayout may trigger further invalidations via AddDirtyElement.
             UpdateLayout();
             _debugHud.MarkLayout();
-            if (firstFrameTrace) fAfterLayout = Stopwatch.GetTimestamp();
 
             // ── Compute dirty region from accumulated dirty elements ──
             // Check dirty AFTER UpdateLayout so layout-triggered invalidations are included.
             bool fullInvalidation;
+            bool isFlushFrame = false;
             DirtyRegionAggregator? aggregator = null;
             // D3D12 now uses retained-mode dirty rects by default.
             // If a specific driver shows stale-buffer artifacts, the old behavior can be
@@ -7033,40 +7670,55 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // frames where there is genuinely nothing to render.
                 if (!_fullInvalidation && _dirtyElements.Count == 0 && _dirtyFreeRects.Count == 0)
                 {
-                    _debugHud.OnSkipped();
-                    if (DebugRender) System.Diagnostics.Debug.WriteLine("[RenderFrame] SKIP: no dirty, no fullInvalidation");
-                    return;
-                }
-
-                fullInvalidation = _fullInvalidation || requiresFullReplay;
-                if (DebugRender)
-                {
-                    var reason = _fullInvalidation ? "_fullInvalidation" : requiresFullReplay ? "forceFullReplay" : "dirty";
-                    System.Diagnostics.Debug.WriteLine($"[RenderFrame] path={( fullInvalidation ? "FULL" : "PARTIAL")} reason={reason} dirtyCount={_dirtyElements.Count} fullInv={_fullInvalidation}");
-                    if (_dirtyElements.Count > 0 && _dirtyElements.Count <= 10)
+                    // FLIP_SEQUENTIAL follow-up flush: nothing changed this frame, but a
+                    // prior present painted the just-changed region onto the CURRENT back
+                    // buffer only. Nothing else schedules a frame, so the alternate
+                    // buffer(s) keep stale/blank pixels until a resize. Instead of
+                    // skipping, re-present the dirty-history union onto the next buffer.
+                    // _partialPresentsToFlush is armed after a real present (below) and a
+                    // flush frame NEVER re-arms it, so it strictly decreases to 0.
+                    if (_partialPresentsToFlush <= 0)
                     {
-                        foreach (var (el, entry) in _dirtyElements)
-                            System.Diagnostics.Debug.WriteLine($"  dirty: {el.GetType().Name} bounds={entry.PreLayoutBounds}");
+                        _debugHud.OnSkipped();
+                        if (DebugRender) System.Diagnostics.Debug.WriteLine("[RenderFrame] SKIP: no dirty, no fullInvalidation");
+                        return;
                     }
+                    isFlushFrame = true;
                 }
 
-                if (!fullInvalidation)
+                if (isFlushFrame)
                 {
-                    aggregator = ComputeDirtyRegions();
+                    // A flush is always a partial-style present rebuilt from the history
+                    // ring (see BuildFlushAggregator below) — never a full replay, which
+                    // would reseed history mid-drain.
+                    fullInvalidation = false;
                 }
-                _debugHud.SetDirtyInfo(_dirtyElements.Count, aggregator?.GetBoundingBox() ?? Rect.Empty);
+                else
+                {
+                    fullInvalidation = _fullInvalidation || requiresFullReplay;
+                    if (DebugRender)
+                    {
+                        var reason = _fullInvalidation ? "_fullInvalidation" : requiresFullReplay ? "forceFullReplay" : "dirty";
+                        System.Diagnostics.Debug.WriteLine($"[RenderFrame] path={( fullInvalidation ? "FULL" : "PARTIAL")} reason={reason} dirtyCount={_dirtyElements.Count} fullInv={_fullInvalidation}");
+                        if (_dirtyElements.Count > 0 && _dirtyElements.Count <= 10)
+                        {
+                            foreach (var (el, entry) in _dirtyElements)
+                                System.Diagnostics.Debug.WriteLine($"  dirty: {el.GetType().Name} bounds={entry.PreLayoutBounds}");
+                        }
+                    }
+
+                    if (!fullInvalidation)
+                    {
+                        aggregator = ComputeDirtyRegions();
+                    }
+                    _debugHud.SetDirtyInfo(_dirtyElements.Count, aggregator?.GetBoundingBox() ?? Rect.Empty);
+                }
 
                 // NOTE: do NOT clear _dirtyElements here.  BeginDraw may fail
                 // (GPU still busy with the previous frame) and we need to preserve
                 // dirty state so the next attempt can render them.
             }
 
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
-            _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
-            _drawingContext.SimplifyGpuEffects = _isSizing;
-            // Destroy retained GPU layers orphaned by idle-eviction / detach since
-            // the last frame (fence-gated native release) before drawing.
-            _drawingContext.DrainPendingRetainedLayers();
             _debugHud.SetBackend(RenderTarget.Backend.ToString());
             _debugHud.SetEngine(RenderTarget.RenderingEngine.ToString());
             _debugHud.SetWindowSize(RenderTarget.Width, RenderTarget.Height);
@@ -7084,11 +7736,47 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // thread and hand it to the render thread, which does BeginDraw/Replay/
             // EndDraw — so the ~110ms iGPU present never blocks the message pump.
             // Full-render only; DComp windows keep _rtActive=false (inline path).
+            // FIX (CRASH): on the render-thread path the render thread EXCLUSIVELY
+            // owns _drawingContext — creation,
+            // DrainPendingRetainedLayers, draw, and TrimCacheIfNeeded all happen in
+            // PresentCaptureOnRenderThread. The UI thread must NOT touch it; it
+            // previously created / mutated / trimmed _drawingContext while the
+            // render thread was mid-Replay into the same context → native brush
+            // use-after-free + Dictionary corruption. So publish and return BEFORE
+            // creating _drawingContext below.
             if (_rtActive)
             {
+                // The render-thread path is full-present-every-frame (it calls
+                // SetFullInvalidation before each BeginDraw), so it has no partial
+                // stale-buffer tail and never arms the flush counter. A flush frame
+                // must not be published there — drop it defensively.
+                if (isFlushFrame) { _partialPresentsToFlush = 0; return; }
                 PublishFrameToRenderThread();
-                _drawingContext?.TrimCacheIfNeeded();
                 return;
+            }
+
+            // Inline (default) path: only reached when the render thread is off, so
+            // the UI thread solely owns _drawingContext from here on.
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+            _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
+            // backdrop/LiquidGlass（snapshot/背景折射型）拖拽中仍降级：snapshot 滞后于 in-flight
+            // resize buffer，真折射采到错位屏幕区域（玻璃"跑到面板外"）。glow/shadow 不受影响。
+            _drawingContext.SimplifyBackdropEffects = _isSizing;
+            // Destroy retained GPU layers orphaned by idle-eviction / detach since
+            // the last frame (fence-gated native release) before drawing.
+            _drawingContext.DrainPendingRetainedLayers();
+
+            if (isFlushFrame)
+            {
+                // Rebuild the dirty region from the history ring (read-only — a flush
+                // must NOT advance/overwrite history). This is the set of recently
+                // presented regions the alternate FLIP buffer has not received yet.
+                aggregator = BuildFlushAggregator(windowBounds);
+                if (aggregator == null || aggregator.IsEmpty)
+                {
+                    _partialPresentsToFlush = 0;   // nothing to propagate — stop the chain
+                    return;
+                }
             }
 
             if (fullInvalidation)
@@ -7100,7 +7788,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // repaint everything on those buffers.
                 SeedDirtyHistoryFullWindow(windowBounds);
                 RenderTarget.SetFullInvalidation();
-                if (firstFrameTrace) fAfterDirtyCalc = Stopwatch.GetTimestamp();
 
                 // TryBeginDraw: non-blocking.  If the GPU hasn't finished the
                 // previous frame for this swap chain buffer, skip this frame
@@ -7110,7 +7797,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 {
                     return;
                 }
-                if (firstFrameTrace) fAfterBeginDraw = Stopwatch.GetTimestamp();
 
                 // GPU is ready — commit dirty state now.
                 lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
@@ -7119,27 +7805,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 {
                     _debugHud.OnFull();
                     ClearBackground();
-                    if (firstFrameTrace) fAfterClear = Stopwatch.GetTimestamp();
                     _drawingContext.Offset = Point.Zero;
                     RenderTreeOrCapture(_drawingContext);
                     _debugHud.MarkRender();
-                    if (firstFrameTrace) fAfterRender = Stopwatch.GetTimestamp();
                     DevToolsOverlay?.DrawOverlay(_drawingContext);
                     OnRender(RenderTarget);
                     if (!CompleteEndDrawOrHandleFailure()) { return; }
-                    if (firstFrameTrace) fAfterEndDraw = Stopwatch.GetTimestamp();
+                    // A full present refreshes only the CURRENT back buffer; arm the
+                    // follow-up flush so the alternate FLIP buffer(s) converge before the
+                    // idle-skip stops further frames. (isFlushFrame is always false on the
+                    // full path — flush frames force a partial present.)
+                    HandlePresentedFrameFlush(isFlushFrame);
                     _debugHud.UpdateOverlay(_debugHudOverlay);
-                    if (firstFrameTrace)
-                    {
-                        _firstFrameTraceLogged = true;
-                        static long Ms(long start, long end) =>
-                            (long)Stopwatch.GetElapsedTime(start, end).TotalMilliseconds;
-                        Console.Error.WriteLine(
-                            $"[Jalium.UI startup]   first RenderFrame breakdown: total {Ms(fEnter, fAfterEndDraw)}ms " +
-                            $"(UpdateLayout {Ms(fEnter, fAfterLayout)}ms, dirty-prep {Ms(fAfterLayout, fAfterDirtyCalc)}ms, " +
-                            $"BeginDraw {Ms(fAfterDirtyCalc, fAfterBeginDraw)}ms, ClearBackground {Ms(fAfterBeginDraw, fAfterClear)}ms, " +
-                            $"Render+overlay {Ms(fAfterClear, fAfterRender)}ms, EndDraw+Present {Ms(fAfterRender, fAfterEndDraw)}ms)");
-                    }
                 }
                 catch (RenderPipelineException ex)
                 {
@@ -7164,41 +7841,50 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // Dirty elements exist but their visible bounds are outside the window
                 // (e.g., ProgressBar animating off-screen). Nothing to render — GPU idle.
                 lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
+                // This real frame presented nothing, but an earlier present may have armed a
+                // follow-up flush whose alternate buffer still needs converging — keep it alive.
+                RescheduleFlushIfArmed();
                 return;
             }
             else
             {
                 // ── Retained mode partial render ──
-                // Capture this frame's raw rects BEFORE folding in history — we
-                // store the raw snapshot (what actually changed this frame) in
-                // the ring buffer; history folding is applied to the working
-                // aggregator only, so we don't compound history indefinitely.
-                var rawSnapshot = aggregator.Rects.ToArray();
-
-                // Fold in dirty regions from the last N-1 frames so that every
-                // FLIP_SEQUENTIAL buffer has its stale pixels repainted. Because
-                // aggregator absorbs redundant rects the fold is idempotent for
-                // regions that haven't changed.
-                for (int h = 0; h < DirtyHistoryCount; h++)
+                if (!isFlushFrame)
                 {
-                    var history = _dirtyHistory[h];
-                    if (history == null) continue;
-                    foreach (var r in history) aggregator.Add(r);
-                }
-                _dirtyHistory[_dirtyHistoryIndex] = rawSnapshot;
-                _dirtyHistoryIndex = (_dirtyHistoryIndex + 1) % DirtyHistoryCount;
+                    // Capture this frame's raw rects BEFORE folding in history — we
+                    // store the raw snapshot (what actually changed this frame) in
+                    // the ring buffer; history folding is applied to the working
+                    // aggregator only, so we don't compound history indefinitely.
+                    var rawSnapshot = aggregator.Rects.ToArray();
 
-                // DPI-aware margin. Anti-aliased edges on high-density displays
-                // can exceed 2 device pixels; scale the DIP margin accordingly
-                // to avoid subpixel leaks outside the clip.
-                double margin = Math.Max(2.0, 2.0 * Math.Max(1.0, _dpiScale));
-                aggregator.Inflate(margin, windowBounds);
+                    // Fold in dirty regions from the last N-1 frames so that every
+                    // FLIP_SEQUENTIAL buffer has its stale pixels repainted. Because
+                    // aggregator absorbs redundant rects the fold is idempotent for
+                    // regions that haven't changed.
+                    for (int h = 0; h < DirtyHistoryCount; h++)
+                    {
+                        var history = _dirtyHistory[h];
+                        if (history == null) continue;
+                        foreach (var r in history) aggregator.Add(r);
+                    }
+                    _dirtyHistory[_dirtyHistoryIndex] = rawSnapshot;
+                    _dirtyHistoryIndex = (_dirtyHistoryIndex + 1) % DirtyHistoryCount;
 
-                if (aggregator.IsEmpty)
-                {
-                    lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
-                    return;
+                    // DPI-aware margin. Anti-aliased edges on high-density displays
+                    // can exceed 2 device pixels; scale the DIP margin accordingly
+                    // to avoid subpixel leaks outside the clip.
+                    double margin = Math.Max(2.0, 2.0 * Math.Max(1.0, _dpiScale));
+                    aggregator.Inflate(margin, windowBounds);
+
+                    if (aggregator.IsEmpty)
+                    {
+                        lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
+                        RescheduleFlushIfArmed();
+                        return;
+                    }
                 }
+                // NOTE: a flush frame arrives with an already-built, already-inflated
+                // aggregator from BuildFlushAggregator and must NOT touch the history ring.
 
                 // ── 50 % area check, now measured against the TRUE covered
                 //    pixel area rather than the bounding box. A caret at (10,10)
@@ -7208,7 +7894,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 //    redraw would actually touch > half the pixels of a full frame.
                 double windowArea = ActualWidth * ActualHeight;
                 double realArea = aggregator.ComputeRealArea();
-                bool promoteToFull = windowArea > 0 && realArea > windowArea * 0.5;
+                // A flush frame must never promote to full: it is a targeted re-present
+                // of already-known history regions and must not call
+                // SeedDirtyHistoryFullWindow (which would reseed the ring mid-drain).
+                bool promoteToFull = !isFlushFrame && windowArea > 0 && realArea > windowArea * 0.5;
                 _debugHud.SetDirtyRegionStats(
                     aggregator.Count,
                     windowArea > 0 ? realArea / windowArea : 0);
@@ -7232,6 +7921,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         _debugHud.UpdateOverlay(_debugHudOverlay);
                         OnRender(RenderTarget);
                         if (!CompleteEndDrawOrHandleFailure()) { return; }
+                        // Promoted full present refreshes only the current buffer; arm the
+                        // follow-up flush (isFlushFrame is always false — flush never promotes).
+                        HandlePresentedFrameFlush(isFlushFrame);
                     }
                     catch (RenderPipelineException ex)
                     {
@@ -7268,6 +7960,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     if (clipRegion.IsEmpty)
                     {
                         lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
+                        // Don't strand an armed follow-up flush on a degenerate clip — keep the
+                        // FLIP convergence chain alive so the alternate buffer still converges.
+                        RescheduleFlushIfArmed();
                         return;
                     }
 
@@ -7288,6 +7983,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         _debugHud.UpdateOverlay(_debugHudOverlay);
                         OnRender(RenderTarget);
                         if (!CompleteEndDrawOrHandleFailure()) { return; }
+                        // Real partial present painted only the current FLIP buffer → arm
+                        // the follow-up flush. On a flush frame this instead drains one and
+                        // chains the next (never re-arms → terminates).
+                        HandlePresentedFrameFlush(isFlushFrame);
                     }
                     catch (RenderPipelineException ex)
                     {
@@ -7314,6 +8013,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         catch (RenderPipelineException ex)
         {
+            // The frame may have consumed a present credit at BeginDraw without
+            // reaching a successful Present — return it or the event-driven
+            // scheduler deadlocks on a DWM retire that never comes. Over-return
+            // is harmless (recovery's StartExternalPresentPacingIfSupported
+            // resets to one credit anyway; a spurious extra degrades to a brief
+            // DXGI queue wait inside Present).
+            ReturnSwapCreditAfterFailedPresent();
             if (HandleRecoverableRenderPipelineFailure(ex, "RenderFrame"))
             {
                 return;
@@ -7324,6 +8030,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         catch (Exception ex)
         {
+            // Same credit-conservation rule as the pipeline-exception path above:
+            // a mid-frame failure after BeginDraw must not strand the credit.
+            ReturnSwapCreditAfterFailedPresent();
             // Restore full invalidation so dirty elements aren't permanently lost.
             // Without this, the stale error frame stays on screen because the dirty
             // tracking was already cleared before rendering began.
@@ -7374,26 +8083,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             if (entry.PreciseLocalRects is { Count: > 0 } preciseLocal)
             {
-                // Translate local sub-rects into screen space using the CURRENT
-                // screen offset (post-layout).  The pre-layout bounds are still
-                // submitted below so vacated pixels get repainted even when a
-                // precise list is also present.
-                var postBounds = element.GetScreenBounds();
+                // Map each local sub-rect into screen space through the element's FULL
+                // local→screen matrix (ancestor + own RenderTransform), NOT a plain translate
+                // by the screen origin: under scale/rotate the origin is the AABB corner, so a
+                // translate would mis-place and un-scale the rect → under-coverage smear. With
+                // no transform on the chain MapLocalRectToScreen is a pure translation, so this
+                // is byte-identical to the old path in the common case. The pre-layout bounds
+                // are still submitted below so vacated pixels get repainted.
                 foreach (var local in preciseLocal)
                 {
-                    var screenRect = new Rect(
-                        postBounds.X + local.X,
-                        postBounds.Y + local.Y,
-                        local.Width,
-                        local.Height);
-                    var clipped = screenRect.Intersect(windowBounds);
-                    if (!clipped.IsEmpty) agg.Add(clipped);
+                    var screenRect = element.MapLocalRectToScreen(local).Intersect(windowBounds);
+                    if (!screenRect.IsEmpty) agg.Add(screenRect);
                 }
             }
             else
             {
-                // Post-layout bounds: where the element IS now.
-                var postLayoutBounds = element.GetScreenBounds().Intersect(windowBounds);
+                // Post-layout bounds: where the element IS now — transform-aware so the dirty
+                // region follows an animating RenderTransform instead of the static layout box.
+                var postLayoutBounds = element.GetRenderBounds().Intersect(windowBounds);
                 if (!postLayoutBounds.IsEmpty) agg.Add(postLayoutBounds);
             }
 
@@ -7436,6 +8143,91 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         var seed = new[] { windowBounds };
         for (int h = 0; h < DirtyHistoryCount; h++) _dirtyHistory[h] = seed;
         _dirtyHistoryIndex = 0;
+    }
+
+    /// <summary>
+    /// Builds the dirty region for a FLIP_SEQUENTIAL "flush" frame: the union of
+    /// every snapshot still in the dirty-history ring, inflated and clamped to the
+    /// window. This is the set of regions recently presented to the current back
+    /// buffer that the alternate buffer(s) have not yet received. Read-only over the
+    /// ring — a flush must NOT advance or overwrite history. Returns <c>null</c> when
+    /// the ring holds nothing to propagate.
+    /// </summary>
+    private DirtyRegionAggregator? BuildFlushAggregator(Rect windowBounds)
+    {
+        DirtyRegionAggregator? agg = null;
+        for (int h = 0; h < DirtyHistoryCount; h++)
+        {
+            var history = _dirtyHistory[h];
+            if (history == null) continue;
+            foreach (var r in history)
+            {
+                var clipped = r.Intersect(windowBounds);
+                if (clipped.IsEmpty) continue;
+                agg ??= new DirtyRegionAggregator(capacity: 32);
+                agg.Add(clipped);
+            }
+        }
+        if (agg == null) return null;
+        // Same DPI-aware margin as the normal partial path so the flush covers the
+        // same anti-aliased fringe the original present did.
+        double margin = Math.Max(2.0, 2.0 * Math.Max(1.0, _dpiScale));
+        agg.Inflate(margin, windowBounds);
+        return agg;
+    }
+
+    /// <summary>
+    /// Follow-up-flush bookkeeping, called after a SUCCESSFUL present. On a REAL
+    /// frame (<paramref name="isFlushFrame"/> = false) it arms (swapBufferCount - 1)
+    /// flush frames so every other FLIP_SEQUENTIAL back buffer receives the
+    /// just-presented content before the idle-skip halts rendering. On a FLUSH frame
+    /// it consumes one and schedules the next if buffers remain. A flush frame NEVER
+    /// re-arms, so the counter strictly decreases to 0 — no render loop. UI-thread
+    /// only (called from RenderFrame).
+    /// </summary>
+    private void HandlePresentedFrameFlush(bool isFlushFrame)
+    {
+        if (isFlushFrame)
+        {
+            if (_partialPresentsToFlush > 0) _partialPresentsToFlush--;
+            if (_partialPresentsToFlush > 0) ScheduleDeferredRender(1);
+            return;
+        }
+        // Cover every OTHER back buffer. With kDefaultSwapBufferCount=2 this is a
+        // single follow-up flush; a JALIUM_SWAPCHAIN_BUFFERS=3 override yields 2.
+        // INVARIANT: the dirty-history ring must be deep enough to rebuild the
+        // regions for every alternate buffer, i.e. DirtyHistoryCount >= swapBufferCount-1.
+        // Native clamps swapBufferCount to [2, FrameCount=3] (d3d12_render_target.h),
+        // so DirtyHistoryCount(=2) covers the deepest reachable config. Assert it so
+        // raising the native buffer cap without growing the ring fails loudly in Debug
+        // instead of silently re-introducing the stale-buffer bug on the deepest buffer.
+        System.Diagnostics.Debug.Assert(
+            DirtyHistoryCount >= _lastSwapBufferCount - 1,
+            $"Dirty-history ring too shallow (DirtyHistoryCount={DirtyHistoryCount}) for " +
+            $"swapBufferCount={_lastSwapBufferCount}: the deepest FLIP buffer would stay stale.");
+        // Arm one flush per OTHER back buffer, but NEVER more than the dirty-history ring can
+        // rebuild (BuildFlushAggregator unions exactly DirtyHistoryCount frames). In the
+        // reachable config (native clamps N to [2, FrameCount=3]) N-1 ∈ {1,2} == DirtyHistoryCount,
+        // so this clamp is a no-op today; it future-proofs a native FrameCount bump (the assert
+        // above only fires in Debug) against re-introducing the stale-deepest-buffer bug in Release.
+        _partialPresentsToFlush = Math.Clamp(_lastSwapBufferCount - 1, 1, DirtyHistoryCount);
+        ScheduleDeferredRender(1);
+    }
+
+    /// <summary>
+    /// Called from a RenderFrame early-return that did NOT present (empty aggregator / empty
+    /// clip). If a FLIP_SEQUENTIAL follow-up flush is still armed, the alternate back buffer
+    /// has not converged — post a deferred render so the armed counter is drained on a later
+    /// frame. Without this, an armed flush whose drain frame hits an empty-region guard is
+    /// stranded (nothing else schedules a frame in the default swap-pacing-off inline path) and
+    /// the alternate buffer keeps stale pixels. Idempotent via the RenderFlag_Scheduled gate in
+    /// ScheduleDeferredRender; a flush frame never re-arms, so the chain strictly terminates.
+    /// UI-thread only.
+    /// </summary>
+    private void RescheduleFlushIfArmed()
+    {
+        if (_partialPresentsToFlush > 0)
+            ScheduleDeferredRender(1);
     }
 
     /// <summary>
@@ -7749,7 +8541,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
             _dirtyElements[element] = new DirtyElementEntry
             {
-                PreLayoutBounds = element.GetScreenBounds(),
+                // Transform-aware: capture where the element actually rasterizes (incl. any
+                // RenderTransform in effect) so a moved/scaled/rotated element leaves no stale
+                // pixels. No-transform chains fall back to GetScreenBounds (identical).
+                PreLayoutBounds = element.GetRenderBounds(),
                 PreciseLocalRects = null,
             };
         }
@@ -7775,7 +8570,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 entry = new DirtyElementEntry
                 {
-                    PreLayoutBounds = element.GetScreenBounds(),
+                    // Transform-aware (see AddDirtyElement(element) overload).
+                    PreLayoutBounds = element.GetRenderBounds(),
                     PreciseLocalRects = new List<Rect>(2),
                 };
                 _dirtyElements[element] = entry;

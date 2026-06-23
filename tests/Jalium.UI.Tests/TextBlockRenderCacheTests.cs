@@ -62,11 +62,21 @@ public sealed class TextBlockRenderCacheTests
     [Fact]
     public void TextBlock_Render_ShouldOnlyDrawVisibleLines_WhenClipped()
     {
+        // The four lines are laid out from the top (VerticalAlignment.Top + content-
+        // sized height) so "Line 1" sits at the very top; a 16px-tall clip band at the
+        // top therefore contains only the first line and the viewport-culling path in
+        // DrawTextLines must skip the other three.
+        //
+        // NOTE: TextBlock vertically centers its lines inside any *extra* height
+        // (GetVerticalContentOffset). A fixed Height taller than the content would push
+        // every line below a top-anchored clip band, so a faithful cull would correctly
+        // drop all four — which is why this test keeps the box content-sized and
+        // top-aligned instead of giving it an oversized Height.
         var textBlock = new TextBlock
         {
             Text = "Line 1\nLine 2\nLine 3\nLine 4",
             Width = 240,
-            Height = 120
+            VerticalAlignment = VerticalAlignment.Top
         };
 
         textBlock.Measure(new Size(240, 120));
@@ -77,6 +87,50 @@ public sealed class TextBlockRenderCacheTests
 
         Assert.Single(drawingContext.DrawnTexts);
         Assert.Equal("Line 1", drawingContext.DrawnTexts[0].Text);
+    }
+
+    [Fact]
+    public void TextBlock_Render_ShouldRebuildWrappedLines_WhenWidthChangesButLineCountStaysSame()
+    {
+        // Regression for the word-wrap clipping bug: a width-only relayout that
+        // lands on the SAME line count but DIFFERENT break points must refresh
+        // the per-line FormattedText cache. Previously the cache was rebuilt only
+        // when the line *count* changed, so the wider fragments stayed cached and
+        // were redrawn into the now-narrower box — clipping the overflow.
+        //
+        // "abcd abcd abcd abcd" at fontSize 10:
+        //   width 90 -> 3 words + 1  => ["abcd abcd abcd ", "abcd"]
+        //   width 60 -> 2 words + 2  => ["abcd abcd ", "abcd abcd"]
+        // Both are two lines; the per-word split (3+1 vs 2+2) is identical under
+        // the headless estimate measurer and a real DirectWrite context, so the
+        // expected fragments are stable regardless of which one is active.
+        var textBlock = new TextBlock
+        {
+            Text = "abcd abcd abcd abcd",
+            FontSize = 10,
+            TextWrapping = TextWrapping.Wrap
+        };
+
+        textBlock.Measure(new Size(90, double.PositiveInfinity));
+        textBlock.Arrange(new Rect(0, 0, 90, 64));
+        var wideContext = new TrackingDrawingContext();
+        textBlock.Render(wideContext);
+
+        Assert.Equal(
+            new[] { "abcd abcd abcd ", "abcd" },
+            wideContext.DrawnTexts.Select(t => t.Text));
+
+        textBlock.InvalidateMeasure();
+        textBlock.Measure(new Size(60, double.PositiveInfinity));
+        textBlock.Arrange(new Rect(0, 0, 60, 64));
+        var narrowContext = new TrackingDrawingContext();
+        textBlock.Render(narrowContext);
+
+        // The cache must reflect the NEW (narrow) break points. Before the fix
+        // this drew the stale ["abcd abcd abcd ", "abcd"] and clipped line 1.
+        Assert.Equal(
+            new[] { "abcd abcd ", "abcd abcd" },
+            narrowContext.DrawnTexts.Select(t => t.Text));
     }
 
     private class TrackingDrawingContext : DrawingContext

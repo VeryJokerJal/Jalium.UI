@@ -286,6 +286,7 @@ internal static partial class NativeMethods
         public int Reserved0;
         public long LastFramePresentToReadyNs;
         public long FrameWaitableWaitNs;
+        public long PresentBlockNs;
     }
 
     /// <summary>
@@ -409,6 +410,15 @@ internal static partial class NativeMethods
     internal static partial void RenderTargetSetVSync(nint renderTarget, int enabled);
 
     /// <summary>
+    /// Hands present pacing to the managed scheduler: BeginDraw stops waiting
+    /// on the swap-chain frame-latency waitable (the caller consumes it via a
+    /// thread-pool wait callback) and Present uses sync interval 0 so it never
+    /// blocks on the compositor. No-op on backends without a waitable.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_set_external_present_pacing")]
+    internal static partial void RenderTargetSetExternalPresentPacing(nint renderTarget, int enabled);
+
+    /// <summary>
     /// Sets the path stencil-then-cover MSAA sample count (1/2/4/8). Applied at
     /// the next frame boundary; backends without an MSAA path renderer ignore it.
     /// </summary>
@@ -487,6 +497,30 @@ internal static partial class NativeMethods
         int height,
         int contentOffsetX,
         int contentOffsetY);
+
+    /// <summary>
+    /// Off-thread animation probe (Increment 1 hard gate): creates a self-driving
+    /// DComp child visual (solid-color content + autonomous offset animation).
+    /// Returns the native visual pointer; non-zero result code means unsupported.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_create_anim_probe")]
+    internal static partial int RenderTargetCreateAnimProbe(
+        nint renderTarget,
+        int x,
+        int y,
+        int width,
+        int height,
+        float travelPx,
+        float periodSec,
+        uint colorArgb,
+        int vertical,
+        out nint visualTarget);
+
+    /// <summary>
+    /// Destroys a probe visual previously created by RenderTargetCreateAnimProbe.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_destroy_anim_probe")]
+    internal static partial int RenderTargetDestroyAnimProbe(nint renderTarget, nint visualTarget);
 
     #endregion
 
@@ -1503,7 +1537,7 @@ internal static partial class NativeMethods
     // --- Android-specific ---
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_android_set_native_window")]
-    internal static partial void AndroidSetNativeWindow(nint nativeWindow);
+    internal static partial void AndroidSetNativeWindow(nint nativeWindow, int width, int height);
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_android_set_density")]
     internal static partial void AndroidSetDensity(float density);

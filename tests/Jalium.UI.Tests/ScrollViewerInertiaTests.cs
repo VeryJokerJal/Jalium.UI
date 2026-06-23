@@ -133,6 +133,87 @@ public class ScrollViewerInertiaTests
         Assert.Equal(expected, viewer.VerticalOffset, precision: 3);
     }
 
+    [Fact]
+    public void ScrollViewer_ThumbTrackDrag_ShouldCoalesceContentApplyToOnePerFrame()
+    {
+        var viewer = CreateConfiguredViewer(
+            initialVerticalOffset: 0,
+            extentHeight: 2000,
+            viewportHeight: 100,
+            extentWidth: 100,
+            viewportWidth: 100,
+            width: 200,
+            height: 120);
+
+        var verticalBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
+
+        // Several ThumbTrack events in the same frame (what a fast drag on a high-poll mouse
+        // produces). None of them may move the content synchronously — the expensive realize
+        // is coalesced to one apply per frame, mirroring the wheel's smooth-scroll pacing.
+        verticalBar.RaiseEvent(new ScrollEventArgs(ScrollBar.ScrollEvent, ScrollEventType.ThumbTrack, 300.0) { Source = verticalBar });
+        verticalBar.RaiseEvent(new ScrollEventArgs(ScrollBar.ScrollEvent, ScrollEventType.ThumbTrack, 600.0) { Source = verticalBar });
+        verticalBar.RaiseEvent(new ScrollEventArgs(ScrollBar.ScrollEvent, ScrollEventType.ThumbTrack, 900.0) { Source = verticalBar });
+
+        Assert.Equal(0.0, viewer.VerticalOffset, precision: 3);
+        Assert.True(GetPrivateField<bool>(viewer, "_hasPendingDragVerticalScroll"));
+        Assert.Equal(900.0, GetPrivateField<double>(viewer, "_pendingDragVerticalOffset"), precision: 3);
+
+        // The per-frame tick applies only the most recent thumb position, exactly once.
+        bool applied = InvokePrivateMethodReturningBool(viewer, "FlushPendingDragScroll");
+
+        Assert.True(applied);
+        Assert.Equal(900.0, viewer.VerticalOffset, precision: 3);
+        Assert.False(GetPrivateField<bool>(viewer, "_hasPendingDragVerticalScroll"));
+    }
+
+    [Fact]
+    public void ScrollViewer_ThumbTrackEndScroll_ShouldApplyFinalPositionImmediately()
+    {
+        var viewer = CreateConfiguredViewer(
+            initialVerticalOffset: 0,
+            extentHeight: 2000,
+            viewportHeight: 100,
+            extentWidth: 100,
+            viewportWidth: 100,
+            width: 200,
+            height: 120);
+
+        var verticalBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
+
+        // A drag in progress is coalesced (no synchronous content move)...
+        verticalBar.RaiseEvent(new ScrollEventArgs(ScrollBar.ScrollEvent, ScrollEventType.ThumbTrack, 500.0) { Source = verticalBar });
+        Assert.Equal(0.0, viewer.VerticalOffset, precision: 3);
+
+        // ...but releasing the thumb must land the final position immediately, without waiting
+        // for a frame tick, and must clear any pending coalesced value.
+        verticalBar.RaiseEvent(new ScrollEventArgs(ScrollBar.ScrollEvent, ScrollEventType.EndScroll, 750.0) { Source = verticalBar });
+
+        Assert.Equal(750.0, viewer.VerticalOffset, precision: 3);
+        Assert.False(GetPrivateField<bool>(viewer, "_hasPendingDragVerticalScroll"));
+    }
+
+    [Fact]
+    public void ScrollViewer_PageClick_ShouldApplyImmediately()
+    {
+        var viewer = CreateConfiguredViewer(
+            initialVerticalOffset: 0,
+            extentHeight: 2000,
+            viewportHeight: 100,
+            extentWidth: 100,
+            viewportWidth: 100,
+            width: 200,
+            height: 120);
+
+        var verticalBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
+
+        // A page-down click (LargeIncrement) is a discrete interaction, not a drag — it must
+        // apply immediately rather than being deferred to a frame tick.
+        verticalBar.RaiseEvent(new ScrollEventArgs(ScrollBar.ScrollEvent, ScrollEventType.LargeIncrement, 100.0) { Source = verticalBar });
+
+        Assert.Equal(100.0, viewer.VerticalOffset, precision: 3);
+        Assert.False(GetPrivateField<bool>(viewer, "_hasPendingDragVerticalScroll"));
+    }
+
     private static double SimulateSmoothTickProgress(int frameMs, int totalMs)
     {
         var viewer = CreateConfiguredViewer(initialVerticalOffset: 0);
@@ -248,5 +329,14 @@ public class ScrollViewerInertiaTests
         var method = typeof(ScrollViewer).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         method!.Invoke(viewer, null);
+    }
+
+    private static bool InvokePrivateMethodReturningBool(ScrollViewer viewer, string methodName)
+    {
+        var method = typeof(ScrollViewer).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        var result = method!.Invoke(viewer, null);
+        Assert.NotNull(result);
+        return (bool)result!;
     }
 }

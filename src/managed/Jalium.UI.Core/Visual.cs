@@ -689,12 +689,33 @@ public abstract class Visual : DependencyObject
                 (float)cr.TopLeft, (float)cr.TopRight,
                 (float)cr.BottomRight, (float)cr.BottomLeft);
         }
-        // Clearing here is correct for the damage-driven gate (Phase 4) because a
-        // subtree is only ever SKIPPED (not walked) when it is content-clean
-        // (!IsRenderDirty && !IsSubtreeDirty) — a skipped child therefore has
-        // nothing pending to lose. A composition-dirty child is re-marked every
-        // frame the animation actually moves (Part A gates invalidation on real
-        // value change), so clearing the composition flag here cannot strand a
+        // Clearing this visual's own dirty flags here is correct for the
+        // damage-driven gate (Phase 4). The child loop above is UNCONDITIONAL
+        // with respect to dirty state: every non-template-root child is handed
+        // to RenderChildVisualInline — content-dirty / subtree-dirty does NOT
+        // gate the walk (there is no IsSubtreeDirty-gated skip anywhere in it).
+        // RenderChildVisualInline skips a child only for the reasons below,
+        // none of which loses pending work when this visual resets its OWN
+        // aggregate flags:
+        //   - Visibility != Visible: an invisible child legitimately renders
+        //     nothing this frame.
+        //   - clip-bounds culling (ShouldRenderChild): the child's bounds miss
+        //     the context's CurrentClipBounds (viewport / damage region). This
+        //     is ORTHOGONAL to dirty state — a content-dirty child can be
+        //     culled — but a culled child is never walked, so its OWN flags are
+        //     left intact and its pending work rides on the child itself, not
+        //     on this visual's aggregate flags that we clear here.
+        //   - the retained-layer composite fast path (TryCompositeChildLayer),
+        //     which is taken only for a content-clean child (its
+        //     !_isRenderDirty && !_isSubtreeDirty gate) — so a composited child
+        //     genuinely has nothing pending either.
+        // _isSubtreeDirty is consumed only by that composite gate, and any
+        // later content change re-runs SetRenderDirty -> MarkSubtreeDirtyUp,
+        // re-propagating it (and _layerContentDirty) back up through this
+        // visual; so resetting the baseline here cannot strand future work. A
+        // composition-dirty child is likewise re-marked every frame the
+        // animation actually moves (Part A gates invalidation on real value
+        // change), so clearing the composition flag here cannot strand a
         // pending composite.
         _isRenderDirty = false;
         _isSubtreeDirty = false;
@@ -721,15 +742,41 @@ public abstract class Visual : DependencyObject
             return true;
         }
 
-        var childBounds = new Rect(childOffset.X, childOffset.Y, child.VisualBounds.Width, child.VisualBounds.Height);
+        // CurrentClipBounds is expressed in the final drawing surface space. Use the
+        // child's render-space AABB as well: testing the static layout box here culls a
+        // translated/rotated/scaled child as soon as an animation moves it away from its
+        // original slot. The dirty region then gets cleared but the Path subtree is never
+        // submitted, which makes vector content blink between swap-chain buffers.
+        Rect childBounds;
         if (child.Effect is IEffect effect && effect.HasEffect)
         {
             var padding = effect.EffectPadding;
+            var size = child.RenderSize;
+            childBounds = child.MapLocalRectToScreen(new Rect(
+                -padding.Left,
+                -padding.Top,
+                size.Width + padding.Left + padding.Right,
+                size.Height + padding.Top + padding.Bottom));
+        }
+        else
+        {
+            childBounds = child.GetRenderBounds();
+        }
+
+        // Render() is also used by detached/offscreen callers that seed a non-zero
+        // DrawingContext.Offset. GetRenderBounds is rooted in the visual tree, so retain
+        // the caller's ambient offset by translating from the tree-space layout origin to
+        // the live childOffset. In the normal Window path this delta is exactly zero.
+        var treeSpaceOrigin = child.GetScreenBounds();
+        double offsetDeltaX = childOffset.X - treeSpaceOrigin.X;
+        double offsetDeltaY = childOffset.Y - treeSpaceOrigin.Y;
+        if (offsetDeltaX != 0 || offsetDeltaY != 0)
+        {
             childBounds = new Rect(
-                childBounds.X - padding.Left,
-                childBounds.Y - padding.Top,
-                childBounds.Width + padding.Left + padding.Right,
-                childBounds.Height + padding.Top + padding.Bottom);
+                childBounds.X + offsetDeltaX,
+                childBounds.Y + offsetDeltaY,
+                childBounds.Width,
+                childBounds.Height);
         }
 
         return clipBounds.IntersectsWith(childBounds);
@@ -763,6 +810,27 @@ public abstract class Visual : DependencyObject
             s_pendingLayerDestroy.Enqueue(v._cachedLayer);
             v._cachedLayer = 0;
             v._layerContentDirty = true;
+        }
+    }
+
+    /// <summary>
+    /// Releases the retained GPU layers of <paramref name="root"/>'s entire
+    /// subtree into the pending-destroy queue. Called by the window's
+    /// device-lost recovery BEFORE the failed render target is disposed: layer
+    /// textures live on the failed device, so every cached handle must be
+    /// destroyed through the OLD target (whose native graveyard is still
+    /// alive) and re-realized from scratch on the new device. Leaving them
+    /// cached would composite stale-device textures into the new device's
+    /// first frame — the same driver AV the recovery is escaping from.
+    /// </summary>
+    internal static void ReleaseRetainedLayersRecursive(Visual root)
+    {
+        ReleaseLayerIfAny(root);
+        int count = root.VisualChildrenCount;
+        for (int i = 0; i < count; i++)
+        {
+            if (root.GetVisualChild(i) is Visual child)
+                ReleaseRetainedLayersRecursive(child);
         }
     }
 
@@ -816,6 +884,18 @@ public abstract class Visual : DependencyObject
             return false;
         }
 
+        // 子树（任意后代）含 effect → 必须退出 retained 模式。:786 已对 child 自身的 Effect
+        // 做了同样的排除，但漏了后代：retained-layer capture 会渲染整个子树，子树里 effect
+        // 元素的 BeginEffectCapture→BeginOffscreenCapture 会因 inRetainedCapture_=true 被
+        // guard 拒绝（offscreen capture 不能嵌套 retained capture，EndOffscreenCapture 会把
+        // RT 恢复成 swap-chain 而非 layer），导致 glow/阴影/backdrop 等 effect 静默消失。
+        // resize 把带动画的容器翻上 layer 路径正是触发点（独显才有 retained-layer 优化）。
+        if (SubtreeHasEffect(child))
+        {
+            ReleaseLayerIfAny(child);
+            return false;
+        }
+
         var worldBounds = new Rect(childOffset.X, childOffset.Y, size.Width, size.Height);
 
         nint layer = child._cachedLayer;
@@ -823,7 +903,18 @@ public abstract class Visual : DependencyObject
         {
             nint realized = layerCtx.BeginLayerCapture(layer, worldBounds);
             if (realized == 0)
+            {
+                // A refused handle must not stay cached. After device-lost
+                // recovery, a stale-device layer that escaped the recovery
+                // sweep (subtree detached at recovery time, reattached later)
+                // is refused by the native generation guard FOREVER — keeping
+                // it would leak the native wrapper and pin the removed device
+                // in memory. Transient refusals (nested capture, ancestor
+                // state) only lose a texture that re-realizes next frame.
+                if (layer != 0)
+                    ReleaseLayerIfAny(child);
                 return false; // ancestor transform/opacity, nested capture, or unsupported → fall back
+            }
 
             var savedOffset = offsetContext.Offset;
             offsetContext.Offset = childOffset;
@@ -858,6 +949,24 @@ public abstract class Visual : DependencyObject
         child._lastRenderedTickMs = Environment.TickCount64;
         VisualRenderedObserver?.Invoke(child);
         return true;
+    }
+
+    // 元素或任意后代是否带活动 effect。effect 通过 offscreen capture 渲染，而 offscreen
+    // capture 不能嵌套进 retained-layer capture（见 TryCompositeChildLayer 的说明），故含
+    // effect 的子树不可作为 retained layer 合成，否则 effect 会静默失效。只在已判定 eligible
+    // 的动画容器上调用，递归开销可控。
+    private static bool SubtreeHasEffect(Visual visual)
+    {
+        if (visual is UIElement ue && ue.Effect is IEffect e && e.HasEffect)
+            return true;
+        int n = visual.VisualChildrenCount;
+        for (int i = 0; i < n; i++)
+        {
+            var c = visual.GetVisualChild(i);
+            if (c != null && SubtreeHasEffect(c))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>

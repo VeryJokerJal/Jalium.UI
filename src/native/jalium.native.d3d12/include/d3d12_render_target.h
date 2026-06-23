@@ -7,6 +7,7 @@
 #include "d3d12_impeller_engine.h"
 #include "d3d12_ink_layer.h"
 #include <dcomp.h>
+#include <dcompanimation.h>   // IDCompositionAnimation — off-thread indicator-visual probe
 #include <stack>
 #include <unordered_map>
 #include <vector>
@@ -72,6 +73,19 @@ public:
         void* visual,
         int32_t x, int32_t y, int32_t width, int32_t height,
         int32_t contentOffsetX, int32_t contentOffsetY) override;
+
+    // --- Off-thread animation probe (Increment 1 — architecture hard gate) ---
+    // Creates a child DComp visual whose content is a solid-color mini composition
+    // swap chain, binds an autonomous IDCompositionAnimation to its X (or Y) offset,
+    // and Commits ONCE. Thereafter DWM drives the offset at vblank with NO app-side
+    // Present / Commit — the WPF independent-animation model. Used only to PROVE the
+    // primitive self-drives on real iGPU hardware (PresentMon: app present ≈ 0 while
+    // the block visibly slides). Env-gated by the managed layer; not a production path.
+    JaliumResult CreateAnimProbe(
+        int32_t x, int32_t y, int32_t width, int32_t height,
+        float travelPx, float periodSec, uint32_t colorArgb, int32_t vertical,
+        void** visualOut) override;
+    JaliumResult DestroyAnimProbe(void* visual) override;
     void Clear(float r, float g, float b, float a) override;
 
     void FillRectangle(float x, float y, float w, float h, Brush* brush) override;
@@ -113,6 +127,7 @@ public:
     void PopOpacity() override;
     void SetShapeType(int type, float n) override;
     void SetVSyncEnabled(bool enabled) override;
+    void SetExternalPresentPacing(bool enabled) override;
     void SetPathMsaaSampleCount(uint32_t sampleCount) override;
     void SetDpi(float dpiX, float dpiY) override;
     void AddDirtyRect(float x, float y, float w, float h) override;
@@ -145,6 +160,14 @@ public:
     void  RealizeLayerEnd(void* layer) override;
     void  CompositeLayer(void* layer, float x, float y, float w, float h, float opacity) override;
     void  DestroyRetainedLayer(void* layer) override;
+
+    /// --- TEST-ONLY device-removal injection (see RenderTarget base) ---
+    bool DebugRemoveDevice() override;
+    bool DebugGetRetainedDestroyCounts(uint64_t* orphaned, uint64_t* graveyard) override;
+    uint64_t DebugDevicePointer() override;
+    bool DebugInOffscreenCapture() override;
+    int32_t DebugForceLeakedCommandListResize(int32_t width, int32_t height, int32_t* outListClosed) override;
+    int32_t DebugForceVelloOutputOrphan(int32_t* outAlive) override;
 
     void DrawBackdropFilter(
         float x, float y, float w, float h,
@@ -231,14 +254,19 @@ private:
     static constexpr uint32_t FrameCount = 3;
 
     // 运行期 swapchain 后台缓冲数。默认 2(双缓冲)——相比 3 少一整张窗口
-    // 尺寸后台缓冲及其 WDDM 驱动镜像/压缩元数据，vsync UI 下基本无感知。
+    // 尺寸后台缓冲及其 WDDM 驱动镜像/压缩元数据。
+    // 【撤回记录 2026-06-10】曾随"令牌桶"实验改默认 3+MFL3：合成探针数据好看
+    // （hover 158→95ms），但真实应用 idle 攒满 3 credit 后突发连画 3 帧，
+    // FLIP_SEQUENTIAL 严格按序展示，慢合成(9fps)下清空队列 ~340ms，交互帧排
+    // 队尾反而更糟（"快 ack≈discard"推断不成立，ack 只是收件回执）。
     // 环境变量 JALIUM_SWAPCHAIN_BUFFERS=2|3 可覆盖(钳到 [2, FrameCount])。
     // 在 CreateSwapChain() 里解析一次后固定。
     static constexpr uint32_t kDefaultSwapBufferCount = 2;
     uint32_t swapBufferCount_ = kDefaultSwapBufferCount;
 
-    // SetMaximumFrameLatency 的值。独显=1(最低延迟)；核显(UMA)=2(给 CPU 一帧余量，
-    // 吸收 DWM 窗口合成的 back-buffer 释放抖动)。在 CreateSwapChain() 按 adapter 定一次。
+    // SetMaximumFrameLatency 的值。核显独显一律 1（最低延迟）。历史上核显曾放宽到
+    // 2+3buffer，实测只多攒一帧输入延迟、对 DWM 的 buffer 释放节奏毫无影响，已撤回
+    // （见 CreateSwapChain 内注释）。
     uint32_t maxFrameLatency_ = 1;
 
     // 是否核显(UMA)。仅用于诊断/标签。
@@ -292,6 +320,37 @@ private:
     bool FillBrushToInstance(Brush* brush, SdfRectInstance& inst);
     bool ExtractBrushColor(Brush* brush, float& r, float& g, float& b, float& a);
 
+    // Brush → EngineBrushData (solid + linear/radial gradients), for the Impeller
+    // engine path/stroke/polygon encoders. Stop storage is owned by the caller-
+    // supplied vector; bd.stops aliases stopStore.data(), so the vector MUST
+    // outlive the EncodeXxx call that consumes bd. For gradient brushes bd carries
+    // the gradient geometry + stops AND a flat fallback color (first stop) in
+    // bd.r/g/b/a, used by the engine routes that have no gradient sampler (strokes,
+    // polygon fills) so a gradient stroke degrades to a representative solid
+    // instead of vanishing. Opacity is folded into the (straight-alpha) stops.
+    bool BrushToEngineBrush(Brush* brush, float opacity, EngineBrushData& bd,
+                            std::vector<EngineBrushData::GradientStop>& stopStore);
+
+    // Like ExtractBrushColor but also accepts gradient brushes, returning a
+    // representative solid (first stop, straight alpha — callers apply opacity
+    // separately via SdfRectInstance.opacity). Used by the SDF stroke primitives
+    // (DrawRectangle / DrawRoundedRectangle / DrawPerCornerRoundedRectangle /
+    // DrawEllipse / DrawContentBorder) whose border is a solid color with no
+    // per-pixel gradient support, so a gradient outline degrades to a solid
+    // instead of being dropped.
+    bool ExtractStrokeColor(Brush* brush, float& r, float& g, float& b, float& a);
+
+    // Routes a gradient-brush outline (line/rect/rounded-rect/ellipse), supplied
+    // as a path command buffer, through the Impeller stroke engine so it renders
+    // a TRUE per-pixel gradient stroke. Returns false (no-op) for solid brushes,
+    // non-Impeller engines, or on encode failure — the caller then falls back to
+    // its solid SDF border path. cmds use tag 0=LineTo[0,x,y], 1=CubicTo
+    // [1,c1x,c1y,c2x,c2y,ex,ey], 5=ClosePath.
+    bool TryStrokeGradientPath(Brush* brush, float strokeWidth,
+                               float startX, float startY,
+                               const std::vector<float>& cmds, bool closed,
+                               int32_t lineJoin, float miterLimit, int32_t lineCap);
+
     D3D12Backend* backend_;
     HWND hwnd_;
 
@@ -326,6 +385,11 @@ private:
     bool tearingSupported_ = false;
     bool isComposition_ = false;
     bool vsyncEnabled_ = false;
+    // External present pacing (managed scheduler owns the frame-latency
+    // waitable): BeginDraw skips the waitable wait and Present uses sync
+    // interval 0 so the UI thread never blocks on the compositor. See
+    // RenderTarget::SetExternalPresentPacing.
+    bool externalPresentPacing_ = false;
 
     // Opacity stack (DirectRenderer only has SetOpacity, so we manage the stack here)
     std::stack<float> opacityStack_;
@@ -370,6 +434,16 @@ private:
         ComPtr<IDCompositionVisual> targetVisual;
     };
     std::unordered_map<IDCompositionVisual*, WebViewVisualEntry> webViewVisuals_;
+
+    // Off-thread animation probe (Increment 1 hard gate). All GPU resources are
+    // ComPtr members so teardown is automatic on DestroyAnimProbe / RT destruction.
+    struct AnimProbeEntry {
+        ComPtr<IDCompositionVisual>          visual;          // child visual (above swap-chain visual)
+        ComPtr<IDXGISwapChain1>              contentSwapChain; // static solid-color content
+        ComPtr<IDCompositionAnimation>       anim;            // autonomous back-and-forth curve
+        ComPtr<IDCompositionRectangleClip>   clip;            // track-rect clamp
+    };
+    std::unordered_map<IDCompositionVisual*, AnimProbeEntry> animProbes_;
 
     // Dirty rect tracking with aggregation (containment / intersection /
     // near-adjacency merging). When the rect count would exceed MaxDirtyRects

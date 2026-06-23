@@ -294,6 +294,65 @@ HRESULT D3D12TextFormat::CreateLayout(
     return hr;
 }
 
+const D3D12TextFormat::FontFaceMetrics& D3D12TextFormat::EnsureFontFaceMetrics()
+{
+    if (fontFaceMetrics_.attempted) {
+        return fontFaceMetrics_;
+    }
+    fontFaceMetrics_.attempted = true;
+
+    if (!format_) {
+        return fontFaceMetrics_;  // resolved stays false -> callers use the line-metric fallback
+    }
+
+    ComPtr<IDWriteFontCollection> fontCollection;
+    format_->GetFontCollection(&fontCollection);
+    if (!fontCollection) {
+        return fontFaceMetrics_;
+    }
+
+    UINT32 familyNameLen = format_->GetFontFamilyNameLength() + 1;
+    std::vector<WCHAR> familyNameBuf(familyNameLen);
+    format_->GetFontFamilyName(familyNameBuf.data(), familyNameLen);
+
+    uint32_t familyIndex = 0;
+    BOOL exists = FALSE;
+    fontCollection->FindFamilyName(familyNameBuf.data(), &familyIndex, &exists);
+    if (!exists) {
+        return fontFaceMetrics_;
+    }
+
+    ComPtr<IDWriteFontFamily> fontFamily;
+    fontCollection->GetFontFamily(familyIndex, &fontFamily);
+    if (!fontFamily) {
+        return fontFaceMetrics_;
+    }
+
+    ComPtr<IDWriteFont> font;
+    fontFamily->GetFirstMatchingFont(
+        format_->GetFontWeight(),
+        format_->GetFontStretch(),
+        format_->GetFontStyle(),
+        &font);
+    if (!font) {
+        return fontFaceMetrics_;
+    }
+
+    DWRITE_FONT_METRICS fontMetrics;
+    font->GetMetrics(&fontMetrics);
+
+    // Convert design units to DIPs (designUnitsPerEm is the scale factor).
+    const float scale = fontSize_ / static_cast<float>(fontMetrics.designUnitsPerEm);
+    fontFaceMetrics_.ascent  = fontMetrics.ascent * scale;
+    fontFaceMetrics_.descent = fontMetrics.descent * scale;
+    fontFaceMetrics_.lineGap = fontMetrics.lineGap * scale;
+    // WPF-style natural line height: ascent + descent + lineGap.
+    fontFaceMetrics_.lineHeight =
+        fontFaceMetrics_.ascent + fontFaceMetrics_.descent + fontFaceMetrics_.lineGap;
+    fontFaceMetrics_.resolved = true;
+    return fontFaceMetrics_;
+}
+
 JaliumResult D3D12TextFormat::MeasureText(
     const wchar_t* text,
     uint32_t textLength,
@@ -339,43 +398,22 @@ JaliumResult D3D12TextFormat::MeasureText(
         metrics->ascent = lineMetrics.baseline;
         metrics->descent = lineMetrics.height - lineMetrics.baseline;
 
-        // Try to get more accurate font metrics from the font face
-        ComPtr<IDWriteFontCollection> fontCollection;
-        format_->GetFontCollection(&fontCollection);
-        if (fontCollection) {
-            uint32_t familyIndex = 0;
-            BOOL exists = FALSE;
-            UINT32 familyNameLen = format_->GetFontFamilyNameLength() + 1;
-            std::vector<WCHAR> familyNameBuf(familyNameLen);
-            format_->GetFontFamilyName(familyNameBuf.data(), familyNameLen);
-            fontCollection->FindFamilyName(familyNameBuf.data(), &familyIndex, &exists);
-
-            if (exists) {
-                ComPtr<IDWriteFontFamily> fontFamily;
-                fontCollection->GetFontFamily(familyIndex, &fontFamily);
-                if (fontFamily) {
-                    ComPtr<IDWriteFont> font;
-                    fontFamily->GetFirstMatchingFont(
-                        format_->GetFontWeight(),
-                        format_->GetFontStretch(),
-                        format_->GetFontStyle(),
-                        &font);
-
-                    if (font) {
-                        DWRITE_FONT_METRICS fontMetrics;
-                        font->GetMetrics(&fontMetrics);
-
-                        // Convert design units to DIPs
-                        // designUnitsPerEm is the scale factor
-                        float scale = fontSize_ / static_cast<float>(fontMetrics.designUnitsPerEm);
-                        metrics->ascent = fontMetrics.ascent * scale;
-                        metrics->descent = fontMetrics.descent * scale;
-                        metrics->lineGap = fontMetrics.lineGap * scale;
-                        // WPF-style line height: ascent + descent + lineGap
-                        metrics->lineHeight = metrics->ascent + metrics->descent + metrics->lineGap;
-                    }
-                }
-            }
+        // Per-format font-face metrics (ascent / descent / lineGap and the
+        // WPF-style lineHeight) are constant for this format's immutable font
+        // identity, so resolve them once and reuse. The old code re-ran the full
+        // GetFontCollection -> FindFamilyName -> GetFirstMatchingFont ->
+        // GetMetrics chain on EVERY MeasureText (even when the shaped layout was
+        // a cache hit), which dominated the managed measure pass while scrolling
+        // recycled rows. When the face does not resolve, ascent/descent/lineGap/
+        // lineHeight keep the line-metric values computed just above — exactly as
+        // the old `if (font)`-guarded block left them.
+        const FontFaceMetrics& faceMetrics = EnsureFontFaceMetrics();
+        if (faceMetrics.resolved) {
+            metrics->ascent = faceMetrics.ascent;
+            metrics->descent = faceMetrics.descent;
+            metrics->lineGap = faceMetrics.lineGap;
+            // WPF-style line height: ascent + descent + lineGap
+            metrics->lineHeight = faceMetrics.lineHeight;
         }
     } else {
         // Fallback: use approximate values

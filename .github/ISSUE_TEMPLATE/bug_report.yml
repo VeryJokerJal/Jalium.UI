@@ -1,0 +1,148 @@
+name: 🐞 Bug Report
+description: Report a reproducible functional defect (wrong behavior, crash, exception, layout/binding/input bug).
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report! 🙏
+
+        Please fill out the form below as completely as possible — a **minimal, runnable reproduction** is the single most helpful thing you can provide.
+
+        - 🎨 For **visual / rendering artifacts** (flicker, garbled output, wrong colors, broken effects) please use the *Rendering & Visual Issue* template instead.
+        - 🐢 For **performance / frame-pacing / input-latency** problems please use the *Performance Issue* template instead.
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have searched [existing issues](https://github.com/VeryJokerJal/Jalium.UI/issues?q=is%3Aissue) and this has not been reported yet.
+          required: true
+        - label: I have reproduced this on the latest published `26.10.x-preview` version (or a recent `master` build).
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Jalium.UI version
+      description: The NuGet package version or git commit SHA you are running.
+      placeholder: e.g. 26.10.6-preview / commit 6d63e6f6
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      description: Where did you observe the bug?
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux
+        - Android
+        - macOS
+        - Other (describe below)
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version / build
+      placeholder: e.g. Windows 11 26100.xxxx / Android 14 / Ubuntu 24.04
+    validations:
+      required: false
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Rendering backend
+      description: Which backend was active? (Set via `JALIUM_RENDER_BACKEND`, or the platform default.)
+      options:
+        - DirectX 12 (Windows default)
+        - Vulkan (Linux / Android)
+        - Metal (macOS)
+        - Software
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: dotnet
+    attributes:
+      label: .NET SDK version
+      placeholder: e.g. 10.0.100
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area(s)
+      description: Select the package(s) or feature area(s) most relevant to this bug.
+      multiple: true
+      options:
+        - Core (DP system / visual tree / layout / routed events)
+        - Binding / MVVM
+        - Animation / Storyboard
+        - Controls (Button, TextBox, DataGrid, TreeView, ...)
+        - Text / editing / IME
+        - JALXAML parsing / Razor markup
+        - Source generator / build (Jalium.UI.Build / jalxamlc)
+        - Input (mouse / keyboard / touch / stylus)
+        - Windowing / docking / dialogs
+        - Media (audio / video / imaging)
+        - WebView / WindowsFormsHost interop
+        - Accessibility (UIA)
+        - Other / not sure
+    validations:
+      required: false
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the bug
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Steps to reproduce
+      description: Step-by-step instructions to reproduce the behavior.
+      placeholder: |
+        1. Create a Window with '...'
+        2. Set '...' to '...'
+        3. Click / resize / type '...'
+        4. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: false
+  - type: textarea
+    id: repro-code
+    attributes:
+      label: Minimal reproduction (C# / JALXAML)
+      description: The smallest code or markup that reproduces the issue. A link to a repository is even better.
+      render: csharp
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / exception / stack trace
+      description: Paste any relevant exception, stack trace, or console output.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else — screenshots, GPU model, related issues, workarounds you tried.
+    validations:
+      required: false

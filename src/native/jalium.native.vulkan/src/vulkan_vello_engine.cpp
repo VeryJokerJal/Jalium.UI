@@ -39,16 +39,19 @@ void VelloVulkanEngine::BeginFrame(uint32_t viewportWidth, uint32_t viewportHeig
     batches_.clear();
     encodedPathCount_ = 0;
     flatPoints_.clear();
+    sceneEncoder_.BeginFrame(viewportWidth, viewportHeight);
 }
 
 void VelloVulkanEngine::SetScissorRect(float left, float top, float right, float bottom) {
     scissorLeft_ = left; scissorTop_ = top;
     scissorRight_ = right; scissorBottom_ = bottom;
     hasScissor_ = true;
+    sceneEncoder_.SetScissor(left, top, right, bottom);
 }
 
 void VelloVulkanEngine::ClearScissorRect() {
     hasScissor_ = false;
+    sceneEncoder_.ClearScissor();
 }
 
 bool VelloVulkanEngine::Execute(void* /*commandList*/, void* /*renderTarget*/,
@@ -57,11 +60,11 @@ bool VelloVulkanEngine::Execute(void* /*commandList*/, void* /*renderTarget*/,
 }
 
 bool VelloVulkanEngine::HasPendingWork() const {
-    return !batches_.empty();
+    return computeMode_ ? sceneEncoder_.HasWork() : !batches_.empty();
 }
 
 uint32_t VelloVulkanEngine::GetEncodedPathCount() const {
-    return encodedPathCount_;
+    return computeMode_ ? sceneEncoder_.PathCount() : encodedPathCount_;
 }
 
 bool VelloVulkanEngine::ExpandStroke(
@@ -215,6 +218,10 @@ bool VelloVulkanEngine::EncodeFillPath(
     int32_t edgeMode)
 {
     (void)edgeMode;  // Vello path currently runs analytic AA only.
+    if (computeMode_) {
+        return sceneEncoder_.EncodeFillPath(startX, startY, commands, commandLength,
+                                            brush, fillRule, transform);
+    }
     if (brush.type == 1 || brush.type == 2 || brush.type == 3) {
         float gradMaxScale = MaxScale(transform);
         float gradTolerance = (gradMaxScale > 0.001f)
@@ -323,6 +330,11 @@ bool VelloVulkanEngine::EncodeStrokePath(
     int32_t edgeMode)
 {
     (void)edgeMode;  // Vello path currently runs analytic AA only.
+    if (computeMode_) {
+        return sceneEncoder_.EncodeStrokePath(startX, startY, commands, commandLength, brush,
+                                              strokeWidth, closed, lineJoin, miterLimit, lineCap,
+                                              dashPattern, dashCount, dashOffset, transform);
+    }
     float maxScale = MaxScale(transform);
     float pxStrokeWidth = strokeWidth * maxScale;
     float pxDashOffset  = dashOffset  * maxScale;
@@ -452,6 +464,9 @@ bool VelloVulkanEngine::EncodeFillPolygon(
     FillRule fillRule,
     const EngineTransform& transform)
 {
+    if (computeMode_) {
+        return sceneEncoder_.EncodeFillPolygon(points, pointCount, brush, fillRule, transform);
+    }
     if (pointCount < 3) return false;
 
     float r = brush.r * brush.a;
@@ -488,6 +503,9 @@ bool VelloVulkanEngine::EncodeFillEllipse(
     const EngineBrushData& brush,
     const EngineTransform& transform)
 {
+    if (computeMode_) {
+        return sceneEncoder_.EncodeFillEllipse(cx, cy, rx, ry, brush, transform);
+    }
     float r = brush.r * brush.a;
     float g = brush.g * brush.a;
     float b = brush.b * brush.a;

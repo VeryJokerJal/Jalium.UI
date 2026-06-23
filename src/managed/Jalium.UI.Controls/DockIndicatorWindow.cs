@@ -337,7 +337,12 @@ internal sealed partial class DockIndicatorWindow : IDisposable
 
         try
         {
-            renderTarget.Resize(width, height);
+            // Busy is unreachable here: dock-indicator windows render inline (never
+            // a render thread), so Resize takes the same-thread close path and
+            // returns Ok. Discard the result — these transient overlays are
+            // full-invalidated on each show, so a (hypothetical) deferred resize
+            // would self-heal.
+            _ = renderTarget.Resize(width, height);
         }
         catch (RenderPipelineException ex)
         {
@@ -376,6 +381,12 @@ internal sealed partial class DockIndicatorWindow : IDisposable
         _renderRecoveryInProgress = true;
         try
         {
+            // Evict + drain the indicator tree's retained layers on the OLD
+            // target before it is replaced (mirrors Window's device-lost
+            // recovery; stale handles would otherwise reach the new device).
+            Visual.ReleaseRetainedLayersRecursive(_visual);
+            _drawingContext?.DrainPendingRetainedLayers();
+
             _drawingContext?.ClearCache();
             _drawingContext = null;
 

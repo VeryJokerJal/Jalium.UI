@@ -279,6 +279,27 @@ private:
     float fontSize_ = 0.0f;
     uint32_t maxLines_ = 0;  // 0 = unlimited
 
+    // Per-format font-face metrics (ascent / descent / lineGap and the derived
+    // WPF-style lineHeight) depend ONLY on this format's immutable font identity
+    // (family / size / weight / style), all fixed at construction — none of the
+    // public setters touch them. Resolving them costs a GetFontCollection ->
+    // FindFamilyName -> GetFirstMatchingFont -> GetMetrics chain, which the old
+    // MeasureText ran on EVERY call (even on a layout-cache hit) purely to fill
+    // ascent/descent/lineGap. Resolve once and reuse: MeasureText keeps doing the
+    // per-text layout + line metrics, but the constant font-face portion becomes
+    // an O(1) struct copy. `resolved` records whether a matching font face was
+    // found so the no-face fallback path is reproduced exactly.
+    struct FontFaceMetrics {
+        bool  attempted  = false;  // have we tried to resolve yet?
+        bool  resolved   = false;  // was a matching font face found?
+        float ascent     = 0.0f;
+        float descent    = 0.0f;
+        float lineGap    = 0.0f;
+        float lineHeight = 0.0f;
+    };
+    const FontFaceMetrics& EnsureFontFaceMetrics();
+    FontFaceMetrics fontFaceMetrics_;
+
     // Bounded LRU of shaped layouts. Cap covers a data-heavy frame's full
     // visible text set (hundreds of unique strings) so it reuses across
     // frames instead of thrashing. Layouts are small (DirectWrite internal

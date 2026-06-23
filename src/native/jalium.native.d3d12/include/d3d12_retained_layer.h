@@ -3,6 +3,7 @@
 #include "d3d12_backend.h"
 #include <d3d12.h>
 #include <wrl/client.h>
+#include <atomic>
 #include <cstdint>
 #include <new>
 #include <utility>
@@ -10,6 +11,15 @@
 namespace jalium {
 
 using Microsoft::WRL::ComPtr;
+
+// TEST-ONLY observability for the two retained-layer destroy paths. Which
+// branch a destroy takes (fence-gated graveyard vs. removed-device orphan)
+// is invisible to managed code, so the device-removal injection harness
+// reads these process-wide counters through
+// jalium_render_target_debug_retained_destroy_counts. Always incremented —
+// two relaxed atomic adds per layer destroy are noise.
+inline std::atomic<uint64_t> g_retainedLayerOrphanedCount{0};
+inline std::atomic<uint64_t> g_retainedLayerGraveyardCount{0};
 
 // Persistent offscreen RGBA texture holding a visual subtree's rasterized
 // CONTENT for the retained-layer composited-animation fast path. A content-clean
@@ -72,6 +82,7 @@ public:
             &heapProps, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_COMMON, &clear, IID_PPV_ARGS(&texture_));
         if (FAILED(hr)) { texture_.Reset(); return false; }
+        texture_->SetName(L"JaliumRetainedLayer");  // [JALIUM-921 diag]
         state_ = D3D12_RESOURCE_STATE_COMMON;
 
         D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
@@ -113,9 +124,41 @@ public:
     uint32_t                    PixelWidth()  const { return pw_; }
     uint32_t                    PixelHeight() const { return ph_; }
     DXGI_FORMAT                 Format()  const { return format_; }
+    // Creating device — generation marker for device-lost recovery. A layer
+    // whose Device() differs from the renderer's current device must never be
+    // sampled or re-targeted by that renderer (foreign-device resources in a
+    // command list are a driver AV). Held as a ComPtr so a destroy arriving
+    // after a context swap can still safely ask the creating device whether it
+    // was actually removed (a removed device object stays callable; keeping it
+    // alive costs only memory).
+    ID3D12Device*               Device()  const { return device_.Get(); }
+
+    // True when the CREATING device has been removed (GPU switch / TDR) —
+    // the only condition under which bypassing the fence-gated graveyard is
+    // sound (nothing can be in flight on a removed device). A merely
+    // *different but healthy* device (staggered multi-window recovery,
+    // Create-stage context swap) must keep using backend_'s graveyard.
+    bool CreatingDeviceRemoved() const
+    {
+        return device_ && FAILED(device_->GetDeviceRemovedReason());
+    }
+
+    // Drop all GPU references WITHOUT the fence-gated graveyard. Only valid
+    // when CreatingDeviceRemoved(): nothing can still be in flight on a
+    // removed device, and backend_ may already dangle, so Release()'s
+    // RetireGpuResource must not be touched.
+    void OrphanGpuResources()
+    {
+        texture_.Reset();
+        rtvHeap_.Reset();
+        rtvCpu_ = {};
+        pw_ = ph_ = 0;
+        state_ = D3D12_RESOURCE_STATE_COMMON;
+        backend_ = nullptr;
+    }
 
 private:
-    ID3D12Device*                device_  = nullptr;
+    ComPtr<ID3D12Device>         device_;
     D3D12Backend*                backend_ = nullptr;
 
     ComPtr<ID3D12Resource>       texture_;

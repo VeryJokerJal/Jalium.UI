@@ -144,6 +144,18 @@ internal static class ExpandCollapseAnimator
         panel.Height = ctx.StartHeight + (ctx.TargetHeight - ctx.StartHeight) * eased;
         panel.Opacity = ctx.StartOpacity + (ctx.TargetOpacity - ctx.StartOpacity) * eased;
 
+        // Changing Height re-flows this panel's own content (children revealed by
+        // the growing clip) AND every SIBLING below it (they shift down/up). Those
+        // re-arranged elements are not otherwise invalidated this frame, so under
+        // the partial dirty-rect Present they get rendered into the back buffer but
+        // their shifted pixels are never Present1'd — the screen keeps the previous
+        // front buffer there, leaving stale/blank labels next to the chevron (which
+        // IS explicitly invalidated below). Mark the whole re-flowed band — from the
+        // panel's top down to the bottom of its hosting container — dirty so it is
+        // both rendered AND presented. Walk to the items host (or root) and let the
+        // dirty-region aggregator's area check promote to a full frame if needed.
+        InvalidateReflowBelow(panel);
+
         if (ctx.Arrow != null)
         {
             var angle = ctx.StartArrowAngle + (ctx.TargetArrowAngle - ctx.StartArrowAngle) * eased;
@@ -188,6 +200,30 @@ internal static class ExpandCollapseAnimator
         }
     }
 
+    /// <summary>
+    /// Marks the re-flowed region dirty when an animating panel's Height changes.
+    /// Setting <c>panel.Height</c> re-arranges the panel's siblings below it (they
+    /// shift) and reveals its own children through the growing clip. Those moved
+    /// elements are not otherwise invalidated this frame, so under the partial
+    /// dirty-rect Present their shifted pixels are rendered into the back buffer
+    /// but never Present1'd — the screen keeps the previous front buffer there,
+    /// leaving stale/blank labels beside the explicitly-invalidated chevron.
+    /// <para>
+    /// <see cref="UIElement.InvalidateComposition"/> on the visual root keeps every
+    /// element's recorded command list (no re-record / no cache blow-out) but
+    /// re-composites the subtree at its CURRENT positions and marks the frame for
+    /// present, so the whole re-flowed column is both drawn and shown. (This could
+    /// be narrowed to the panel's screen band for efficiency; the whole-root form
+    /// is the safe, always-correct version.)
+    /// </para>
+    /// </summary>
+    private static void InvalidateReflowBelow(FrameworkElement panel)
+    {
+        UIElement node = panel;
+        while (node.VisualParent is UIElement parent) node = parent;
+        node.InvalidateComposition();
+    }
+
     private static double ResolveCurrentHeight(FrameworkElement panel)
     {
         if (!double.IsNaN(panel.Height) && panel.Height >= 0.0)
@@ -220,12 +256,22 @@ internal static class ExpandCollapseAnimator
 
     private static RotateTransform EnsureRotateTransform(Shapes.Path arrow)
     {
-        if (arrow.RenderTransform is RotateTransform existing)
-            return existing;
+        // 绝对像素轴心：把旋转中心烘进 RotateTransform 的本地坐标，与渲染时的 RenderSize 解耦。
+        // 旧实现靠 RenderTransformOrigin(0.5,0.5)×RenderSize 在绘制那一刻现算轴心，
+        // 在 Stretch 缩放 / 首帧布局未稳定时会算偏，旋转后箭头偏移甚至漂出槽位
+        // （与 TreeView.SetExpanderAngle / ComboBox / NavigationViewItem 同策）。
+        // 每次调用都按最新 ActualWidth/Height 刷新中心；RenderTransformOrigin 保持默认 (0,0)。
+        var rt = arrow.RenderTransform as RotateTransform;
+        if (rt == null)
+        {
+            rt = new RotateTransform();
+            arrow.RenderTransform = rt;
+        }
 
-        var rt = new RotateTransform();
-        arrow.RenderTransformOrigin = new Point(0.5, 0.5);
-        arrow.RenderTransform = rt;
+        var w = arrow.ActualWidth > 0 ? arrow.ActualWidth : arrow.Width;
+        var h = arrow.ActualHeight > 0 ? arrow.ActualHeight : arrow.Height;
+        rt.CenterX = (double.IsNaN(w) || w <= 0) ? 4 : w / 2;
+        rt.CenterY = (double.IsNaN(h) || h <= 0) ? 4 : h / 2;
         return rt;
     }
 

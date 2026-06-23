@@ -5,6 +5,9 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cwctype>
+#include <mutex>
+#include <string>
 #include <unordered_map>
 
 namespace jalium {
@@ -41,7 +44,131 @@ inline uint64_t MakeFontKey(uint32_t fontFamilyId, int height, int weight, bool 
          | ((static_cast<uint64_t>(quality) & 0xFFu) << 49);
 }
 
+// ── Font-family resolution (DirectWrite parity for the GDI text path) ─────────
+
+// Lowercases a family string for CSS-generic keyword matching.
+std::wstring ToLowerAscii(const std::wstring& s)
+{
+    std::wstring out;
+    out.reserve(s.size());
+    for (wchar_t c : s) out.push_back(static_cast<wchar_t>(towlower(c)));
+    return out;
+}
+
+// Trims leading/trailing whitespace and a surrounding pair of single/double
+// quotes (CSS font-family names may be quoted, e.g. 'Cascadia Code').
+std::wstring TrimAndUnquote(const std::wstring& s)
+{
+    size_t b = 0, e = s.size();
+    auto isWs = [](wchar_t c) { return c == L' ' || c == L'\t' || iswspace(c) != 0; };
+    while (b < e && isWs(s[b])) ++b;
+    while (e > b && isWs(s[e - 1])) --e;
+    if (e - b >= 2 && ((s[b] == L'"' && s[e - 1] == L'"') ||
+                       (s[b] == L'\'' && s[e - 1] == L'\''))) {
+        ++b; --e;
+        while (b < e && isWs(s[b])) ++b;
+        while (e > b && isWs(s[e - 1])) --e;
+    }
+    return s.substr(b, e - b);
+}
+
+// Maps a CSS generic family keyword to a concrete installed Windows face.
+// Returns nullptr when `lower` is not a recognised generic.
+const wchar_t* MapGenericFamily(const std::wstring& lower)
+{
+    if (lower == L"monospace" || lower == L"ui-monospace")   return L"Consolas";
+    if (lower == L"sans-serif" || lower == L"ui-sans-serif" ||
+        lower == L"system-ui"  || lower == L"ui-rounded")    return L"Segoe UI";
+    if (lower == L"serif" || lower == L"ui-serif")           return L"Times New Roman";
+    if (lower == L"cursive")                                 return L"Segoe Script";
+    if (lower == L"fantasy")                                 return L"Impact";
+    return nullptr;
+}
+
+// Returns true if `face` names an installed GDI font family (exact face-name
+// match, charset-agnostic). Empty / over-long names are treated as not found.
+bool IsFontInstalled(const std::wstring& face)
+{
+    if (face.empty() || face.size() >= LF_FACESIZE) return false;
+    HDC dc = GetDC(nullptr);
+    if (!dc) return false;
+    LOGFONTW lf{};
+    lf.lfCharSet = DEFAULT_CHARSET;
+    wcsncpy_s(lf.lfFaceName, LF_FACESIZE, face.c_str(), _TRUNCATE);
+    bool found = false;
+    EnumFontFamiliesExW(
+        dc, &lf,
+        [](const LOGFONTW*, const TEXTMETRICW*, DWORD, LPARAM lp) -> int {
+            *reinterpret_cast<bool*>(lp) = true;
+            return 0;  // first match is enough — stop enumeration
+        },
+        reinterpret_cast<LPARAM>(&found), 0);
+    ReleaseDC(nullptr, dc);
+    return found;
+}
+
 } // namespace
+
+std::wstring Win32GdiPool::ResolveGdiFaceName(const wchar_t* fontFamily)
+{
+    // Process-wide cache (mutex-guarded): the resolution probes installed fonts
+    // via EnumFontFamiliesExW, which is comparatively expensive, but the answer
+    // is stable for a given input. A single global cache means each distinct
+    // family string is probed at most once for the WHOLE process — not once per
+    // render/measure thread — so the render path and the measurement path never
+    // re-enumerate a family that any thread already resolved. (A thread_local
+    // cache would re-probe on every thread that draws text, which on a busy UI
+    // shows up as sustained CPU.) Returned by value so the map can't be
+    // invalidated under callers.
+    static std::unordered_map<std::wstring, std::wstring> g_faceCache;
+    static std::mutex g_faceCacheMutex;
+
+    std::wstring key = fontFamily ? fontFamily : L"";
+    {
+        std::lock_guard<std::mutex> lock(g_faceCacheMutex);
+        if (auto it = g_faceCache.find(key); it != g_faceCache.end()) {
+            return it->second;
+        }
+    }
+
+    // Resolve outside the lock — the EnumFontFamiliesExW probe is the expensive
+    // part and must not hold the cache mutex. A first-time race between threads
+    // resolving the same family just probes twice and emplaces idempotently.
+    std::wstring resolved;
+    size_t start = 0;
+    const size_t n = key.size();
+    while (start <= n) {
+        const size_t comma = key.find(L',', start);
+        std::wstring candidate = TrimAndUnquote(
+            key.substr(start, comma == std::wstring::npos ? std::wstring::npos
+                                                          : comma - start));
+        if (!candidate.empty()) {
+            const std::wstring lower = ToLowerAscii(candidate);
+            if (const wchar_t* generic = MapGenericFamily(lower)) {
+                // A CSS generic terminates the list — DirectWrite maps it to its
+                // platform default; we map to a concrete installed face.
+                resolved = generic;
+                break;
+            }
+            if (IsFontInstalled(candidate)) {
+                resolved = candidate;
+                break;
+            }
+        }
+        if (comma == std::wstring::npos) break;
+        start = comma + 1;
+    }
+
+    if (resolved.empty()) {
+        // Nothing in the stack resolved. Match DirectWrite's sans-serif fallback
+        // (Segoe UI) instead of letting the GDI mapper pick a serif/MS-Sans face.
+        resolved = L"Segoe UI";
+    }
+
+    std::lock_guard<std::mutex> lock(g_faceCacheMutex);
+    auto inserted = g_faceCache.emplace(std::move(key), std::move(resolved));
+    return inserted.first->second;
+}
 
 HFONT Win32GdiPool::AcquireFont(uint32_t fontFamilyId,
                                 const wchar_t* fontFamily,
@@ -63,6 +190,12 @@ HFONT Win32GdiPool::AcquireFont(uint32_t fontFamilyId,
         return it->second;
     }
 
+    // Resolve the (possibly comma-separated / CSS-generic) family to a single
+    // installed face so GDI doesn't substitute a serif/monospace default — see
+    // ResolveGdiFaceName. The resolution is cached, so this is cheap on the hot
+    // (cache-hit) path; AcquireFont itself only reaches here on an HFONT miss.
+    const std::wstring face = ResolveGdiFaceName(fontFamily);
+
     HFONT font = CreateFontW(
         height,
         0, 0, 0,
@@ -75,7 +208,7 @@ HFONT Win32GdiPool::AcquireFont(uint32_t fontFamilyId,
         CLIP_DEFAULT_PRECIS,
         quality,
         DEFAULT_PITCH | FF_DONTCARE,
-        fontFamily);
+        face.c_str());
     if (!font) {
         return nullptr;
     }

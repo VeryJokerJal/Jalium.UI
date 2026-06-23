@@ -276,9 +276,6 @@ public sealed class Setter
         // clearing this layer's contribution, mirroring the TemplateBinding transfer guards.
         if (!actualProperty.IsValidType(valueToSet))
         {
-            System.Diagnostics.Trace.WriteLine(
-                $"[Jalium.UI] Style Setter skip: 值 '{valueToSet ?? "<null>"}' 与目标 DP " +
-                $"{actualProperty.OwnerType.Name}.{actualProperty.Name} ({actualProperty.PropertyType.Name}) 不兼容，回退默认值。");
             target.ClearLayerValue(actualProperty, DependencyObject.LayerValueSource.StyleSetter);
             return;
         }
@@ -301,16 +298,39 @@ public sealed class Setter
         // String to target type conversion
         if (value is string stringValue)
         {
+            // Numeric / bool / enum string conversions are best-effort: on an
+            // unparseable value we fall through to `return value` (below), so the
+            // caller's IsValidType guard (Setter.Apply / ApplyTriggerSetters) skips
+            // the setter instead of this throwing and tearing down the whole style
+            // application. (Real bug this caught: a default StatusBar-family trigger
+            // setting a double property to "Auto" — WPF's spelling of double.NaN —
+            // used to throw FormatException out of double.Parse and crash startup.)
             if (actualType == typeof(double))
-                return double.Parse(stringValue, System.Globalization.CultureInfo.InvariantCulture);
+            {
+                if (stringValue.Equals("Auto", StringComparison.OrdinalIgnoreCase) ||
+                    stringValue.Equals("NaN", StringComparison.OrdinalIgnoreCase))
+                    return double.NaN;
+                return double.TryParse(stringValue, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.InvariantCulture, out var parsedDouble)
+                    ? parsedDouble
+                    : value;
+            }
             if (actualType == typeof(float))
-                return float.Parse(stringValue, System.Globalization.CultureInfo.InvariantCulture);
+            {
+                if (stringValue.Equals("Auto", StringComparison.OrdinalIgnoreCase) ||
+                    stringValue.Equals("NaN", StringComparison.OrdinalIgnoreCase))
+                    return float.NaN;
+                return float.TryParse(stringValue, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.InvariantCulture, out var parsedFloat)
+                    ? parsedFloat
+                    : value;
+            }
             if (actualType == typeof(int))
-                return int.Parse(stringValue, System.Globalization.CultureInfo.InvariantCulture);
+                return int.TryParse(stringValue, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var parsedInt)
+                    ? parsedInt
+                    : value;
             if (actualType == typeof(bool))
-                return bool.Parse(stringValue);
+                return bool.TryParse(stringValue, out var parsedBool) ? parsedBool : value;
             if (actualType.IsEnum)
-                return Enum.Parse(actualType, stringValue, ignoreCase: true);
+                return Enum.TryParse(actualType, stringValue, ignoreCase: true, out var parsedEnum) ? parsedEnum : value;
             if (actualType == typeof(CornerRadius))
                 return ParseCornerRadius(stringValue);
             if (actualType == typeof(Thickness))
@@ -614,8 +634,6 @@ public abstract class TriggerBase
             // 这取代了之前“转换前判断 + 排除 string”的守卫——后者漏掉了无法转换的字符串这一情形。
             if (!actualProperty.IsValidType(valueToSet))
             {
-                System.Diagnostics.Trace.WriteLine(
-                    $"[Jalium.UI] ApplyTriggerSetters skip: 值 '{valueToSet ?? "<null>"}' 与 DP {actualProperty.OwnerType.Name}.{actualProperty.Name} ({actualProperty.PropertyType.Name}) 不兼容。");
                 continue;
             }
 
@@ -725,16 +743,39 @@ public abstract class TriggerBase
         // String to target type conversion
         if (value is string stringValue)
         {
+            // Numeric / bool / enum string conversions are best-effort: on an
+            // unparseable value we fall through to `return value` (below), so the
+            // caller's IsValidType guard (Setter.Apply / ApplyTriggerSetters) skips
+            // the setter instead of this throwing and tearing down the whole style
+            // application. (Real bug this caught: a default StatusBar-family trigger
+            // setting a double property to "Auto" — WPF's spelling of double.NaN —
+            // used to throw FormatException out of double.Parse and crash startup.)
             if (actualType == typeof(double))
-                return double.Parse(stringValue, System.Globalization.CultureInfo.InvariantCulture);
+            {
+                if (stringValue.Equals("Auto", StringComparison.OrdinalIgnoreCase) ||
+                    stringValue.Equals("NaN", StringComparison.OrdinalIgnoreCase))
+                    return double.NaN;
+                return double.TryParse(stringValue, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.InvariantCulture, out var parsedDouble)
+                    ? parsedDouble
+                    : value;
+            }
             if (actualType == typeof(float))
-                return float.Parse(stringValue, System.Globalization.CultureInfo.InvariantCulture);
+            {
+                if (stringValue.Equals("Auto", StringComparison.OrdinalIgnoreCase) ||
+                    stringValue.Equals("NaN", StringComparison.OrdinalIgnoreCase))
+                    return float.NaN;
+                return float.TryParse(stringValue, System.Globalization.NumberStyles.Float | System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.InvariantCulture, out var parsedFloat)
+                    ? parsedFloat
+                    : value;
+            }
             if (actualType == typeof(int))
-                return int.Parse(stringValue, System.Globalization.CultureInfo.InvariantCulture);
+                return int.TryParse(stringValue, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var parsedInt)
+                    ? parsedInt
+                    : value;
             if (actualType == typeof(bool))
-                return bool.Parse(stringValue);
+                return bool.TryParse(stringValue, out var parsedBool) ? parsedBool : value;
             if (actualType.IsEnum)
-                return Enum.Parse(actualType, stringValue, ignoreCase: true);
+                return Enum.TryParse(actualType, stringValue, ignoreCase: true, out var parsedEnum) ? parsedEnum : value;
             if (actualType == typeof(CornerRadius))
                 return ParseCornerRadius(stringValue);
             if (actualType == typeof(Thickness))
@@ -1376,10 +1417,20 @@ public sealed class DataTrigger : TriggerBase
 
     private readonly Dictionary<FrameworkElement, ElementState> _elementStates = new();
 
-    // Shadow property for receiving binding updates
-    private static readonly DependencyProperty TriggerValueProperty =
-        DependencyProperty.RegisterAttached("_DataTriggerValue", typeof(object),
-            typeof(DataTrigger), new PropertyMetadata(null));
+    // Shadow property for receiving binding updates. ONE UNIQUE attached property per DataTrigger
+    // INSTANCE (lazily registered). A single property shared across all instances made two
+    // DataTriggers on the SAME element clobber each other's binding — the later Attach's
+    // SetBinding overwrote the earlier trigger's binding, so the earlier one never saw its value
+    // and never fired (e.g. a hover DataTrigger + a selected DataTrigger on one border: hover died).
+    // Distinct instances now use distinct properties; per-element attached values keep multiple
+    // elements sharing one style independent. Mirrors MultiDataTrigger's per-condition shadow props.
+    private static int _propertyCounter;
+    private DependencyProperty? _shadowProperty;
+
+    private DependencyProperty ShadowProperty =>
+        _shadowProperty ??= DependencyProperty.RegisterAttached(
+            $"_DataTriggerValue{Interlocked.Increment(ref _propertyCounter)}",
+            typeof(object), typeof(DataTrigger), new PropertyMetadata(null));
 
     /// <summary>
     /// Gets or sets the binding that produces the value to compare with Value.
@@ -1398,10 +1449,12 @@ public sealed class DataTrigger : TriggerBase
         var state = new ElementState();
         _elementStates[element] = state;
 
+        var shadowProp = ShadowProperty;
+
         // Create a closure that captures this specific element
         state.Handler = (dp, oldValue, newValue) =>
         {
-            if (dp == TriggerValueProperty)
+            if (dp == shadowProp)
             {
                 EvaluateTriggerForElement(element, newValue);
             }
@@ -1413,11 +1466,11 @@ public sealed class DataTrigger : TriggerBase
         // Set up binding to the shadow property
         if (Binding != null)
         {
-            state.BindingExpression = BindingOperations.SetBinding(element, TriggerValueProperty, Binding);
+            state.BindingExpression = BindingOperations.SetBinding(element, shadowProp, Binding);
         }
 
         // Check initial state
-        var currentValue = element.GetValue(TriggerValueProperty);
+        var currentValue = element.GetValue(shadowProp);
         EvaluateTriggerForElement(element, currentValue);
     }
 
@@ -1435,7 +1488,7 @@ public sealed class DataTrigger : TriggerBase
             // Clear binding
             if (state.BindingExpression != null)
             {
-                BindingOperations.ClearBinding(element, TriggerValueProperty);
+                BindingOperations.ClearBinding(element, ShadowProperty);
             }
 
             if (state.IsActive)
@@ -1460,7 +1513,13 @@ public sealed class DataTrigger : TriggerBase
     {
         if (!_elementStates.TryGetValue(element, out var state)) return;
 
-        var shouldBeActive = Equals(currentValue, Value);
+        // Coerce the (typically XAML-authored string) Value to the binding result's RUNTIME type
+        // before comparing. The property-based Trigger converts Value to Property.PropertyType; a
+        // DataTrigger has no static target type, so convert against currentValue's runtime type.
+        // Without this a XAML Value="True" (string) never equals a bool binding result (e.g.
+        // IsMouseOver) and the trigger silently never activates.
+        var triggerValue = currentValue != null ? ConvertValueIfNeeded(Value, currentValue.GetType()) : Value;
+        var shouldBeActive = Equals(currentValue, triggerValue);
 
         if (shouldBeActive != state.IsActive)
         {
@@ -1659,7 +1718,13 @@ public sealed class MultiDataTrigger : TriggerBase
             }
 
             var currentValue = element.GetValue(state.ShadowProperties[i]);
-            if (!Equals(currentValue, condition.Value))
+            // Coerce condition.Value (typically a XAML string) to the binding result's runtime type
+            // before comparing — same reason as DataTrigger.EvaluateTriggerForElement: a string
+            // "True" must match a bool binding result, etc.
+            var conditionValue = currentValue != null
+                ? ConvertValueIfNeeded(condition.Value, currentValue.GetType())
+                : condition.Value;
+            if (!Equals(currentValue, conditionValue))
             {
                 shouldBeActive = false;
                 break;

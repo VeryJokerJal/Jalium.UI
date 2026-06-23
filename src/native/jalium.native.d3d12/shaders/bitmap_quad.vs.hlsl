@@ -13,6 +13,8 @@ struct BitmapInstance
     float  opacity;
     float  samplerIdx;  // 0=linear, 1=point/nearest, 2=anisotropic
     float2 _pad;
+    float4 xform0;      // m11, m12, m21, m22  (per-instance 2x3 affine)
+    float4 xform1;      // dx, dy, _, _
 };
 
 StructuredBuffer<BitmapInstance> bitmaps : register(t0);
@@ -39,7 +41,16 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
 
     BitmapInstance b = bitmaps[instanceId + baseInstanceOffset];
     float2 corner = corners[vertexId];
-    float2 pixelPos = b.position + corner * b.size;
+
+    // Per-instance 2x3 affine applied to the quad corners — rotation /
+    // negative-diagonal (180 deg) / skew now render correctly. The corner-indexed
+    // UV below is unchanged, so a 180-deg flip naturally maps uvMax to the
+    // opposite screen corner (the content flips, fixing the old upright bug).
+    // Identity transform => bit-identical to the legacy axis-aligned quad.
+    float2 localPt = b.position + corner * b.size;
+    float2 pixelPos = float2(
+        localPt.x * b.xform0.x + localPt.y * b.xform0.z + b.xform1.x,
+        localPt.x * b.xform0.y + localPt.y * b.xform0.w + b.xform1.y);
 
     VsOutput o;
     o.clipPos = float4(

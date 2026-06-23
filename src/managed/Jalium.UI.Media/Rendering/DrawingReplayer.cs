@@ -226,7 +226,15 @@ internal static class DrawingReplayer
                     }
                     break;
 
+                case DrawCommandKind.SetShapeType:
+                    // Re-apply the SuperEllipse shape-type state in draw order so
+                    // the following rounded-rect fill replays as a squircle (and
+                    // in-order, not via the out-of-order geometry/Impeller path).
+                    target.SetShapeType((int)c.V0, (float)c.V1);
+                    break;
+
             }
         }
     }
+
 }

@@ -12,6 +12,11 @@ internal sealed class ItemHeightIndex
     private float[] _measuredHeights = [];
     private float[] _blockSums = [];
     private float[] _blockPrefixes = [0f];
+    // Per-block count of still-unmeasured items. Lets an estimate change be applied to the
+    // unmeasured items incrementally across blocks (O(blocks)) instead of rebuilding the whole
+    // index (O(itemCount)). Maintained alongside _blockSums (rebuilt together, decremented when
+    // an item becomes measured).
+    private int[] _blockUnmeasured = [];
     private int _count;
     private float _estimatedHeight;
     private int _measuredCount;
@@ -172,9 +177,10 @@ internal sealed class ItemHeightIndex
 
         var newHeight = CoerceHeight(height);
         var oldMeasured = _measuredHeights[index];
-        var oldResolved = oldMeasured > 0 ? oldMeasured : _estimatedHeight;
+        var wasUnmeasured = oldMeasured <= 0;
+        var oldResolved = wasUnmeasured ? _estimatedHeight : oldMeasured;
 
-        if (oldMeasured > 0)
+        if (!wasUnmeasured)
         {
             _measuredTotal += newHeight - oldMeasured;
         }
@@ -186,27 +192,69 @@ internal sealed class ItemHeightIndex
 
         _measuredHeights[index] = newHeight;
 
+        var block = index / BlockSize;
+        if (block < 0 || block >= _blockSums.Length || _blockUnmeasured.Length != _blockSums.Length)
+        {
+            // Structure desynced (shouldn't happen) — rebuild defensively.
+            RebuildBlockSums();
+            return;
+        }
+
+        // This item just became measured: drop it from its block's unmeasured count so a
+        // subsequent estimate change is no longer applied to it.
+        if (wasUnmeasured && _blockUnmeasured[block] > 0)
+        {
+            _blockUnmeasured[block]--;
+        }
+
         var candidate = _measuredCount > 0 ? (float)(_measuredTotal / _measuredCount) : _estimatedHeight;
         candidate = CoerceHeight(candidate);
 
-        // Rebuild when estimate drift is material so unknown items converge quickly.
+        // When the running average drifts materially from the estimate, retarget it so unknown
+        // items converge quickly — but apply the change to the still-unmeasured items
+        // INCREMENTALLY across blocks (O(blocks)), instead of rebuilding the whole index from
+        // _measuredHeights (O(itemCount)). The full rebuild was an O(itemCount) cliff that fired
+        // repeatedly during convergence — pathological on huge lists (e.g. 1,000,000 rows),
+        // showing up as multi-millisecond layout spikes while scrolling. Both this item's own
+        // height delta and the estimate delta are folded into the block sums, then prefixes and
+        // total are recomputed once (O(blocks)).
         if (_measuredCount >= 8 && Math.Abs(candidate - _estimatedHeight) > 0.5f)
         {
+            var itemDelta = newHeight - oldResolved;
+            if (itemDelta != 0f)
+            {
+                _blockSums[block] += itemDelta;
+            }
+
+            var estimateDelta = candidate - _estimatedHeight;
             _estimatedHeight = candidate;
-            RebuildBlockSums();
+            for (int b = 0; b < _blockSums.Length; b++)
+            {
+                var unmeasured = _blockUnmeasured[b];
+                if (unmeasured > 0)
+                {
+                    _blockSums[b] += estimateDelta * unmeasured;
+                }
+            }
+
+            float running = 0f;
+            double total = 0d;
+            for (int b = 0; b < _blockSums.Length; b++)
+            {
+                _blockPrefixes[b] = running;
+                running += _blockSums[b];
+                total += _blockSums[b];
+            }
+
+            _blockPrefixes[_blockSums.Length] = running;
+            _totalHeight = total;
             return;
         }
 
+        // No estimate change — propagate just this item's height delta.
         var delta = newHeight - oldResolved;
         if (Math.Abs(delta) <= double.Epsilon)
         {
-            return;
-        }
-
-        var block = index / BlockSize;
-        if (block < 0 || block >= _blockSums.Length)
-        {
-            RebuildBlockSums();
             return;
         }
 
@@ -329,6 +377,7 @@ internal sealed class ItemHeightIndex
         {
             _blockSums = [];
             _blockPrefixes = [0f];
+            _blockUnmeasured = [];
             _measuredCount = 0;
             _measuredTotal = 0;
             _totalHeight = 0;
@@ -338,6 +387,7 @@ internal sealed class ItemHeightIndex
         var blockCount = (_count + BlockSize - 1) / BlockSize;
         _blockSums = new float[blockCount];
         _blockPrefixes = new float[blockCount + 1];
+        _blockUnmeasured = new int[blockCount];
 
         _measuredCount = 0;
         _measuredTotal = 0;
@@ -347,13 +397,17 @@ internal sealed class ItemHeightIndex
         {
             var measured = _measuredHeights[i];
             var resolved = measured > 0 ? measured : _estimatedHeight;
+            var block = i / BlockSize;
             if (measured > 0)
             {
                 _measuredCount++;
                 _measuredTotal += measured;
             }
+            else
+            {
+                _blockUnmeasured[block]++;
+            }
 
-            var block = i / BlockSize;
             _blockSums[block] += resolved;
             _totalHeight += resolved;
         }

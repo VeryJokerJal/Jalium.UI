@@ -473,7 +473,17 @@ public class TextBlock : FrameworkElement
                 var formattedText = new FormattedText(lineText, fontFamily, fontSize)
                 {
                     Foreground = Foreground,
-                    MaxTextWidth = TextWrapping == TextWrapping.NoWrap ? double.MaxValue : Math.Max(renderWidth, line.Width),
+                    // Each _layoutLines entry is already a final, pre-broken visual
+                    // line (wrapping was decided in FindWrapLength). Render it with
+                    // no wrapping constraint so DirectWrite can never re-break the
+                    // fragment onto a hidden second row that MaxTextHeight = lineHeight
+                    // would clip — the symptom behind "viewer with" collapsing to a
+                    // clipped first line. Horizontal alignment is applied separately
+                    // via GetLineOriginX, so MaxTextWidth only governs wrapping here;
+                    // genuine overflow (the rare single-word-too-long fallback) is
+                    // clipped at the edge by the OnRender PushClip — visible, not
+                    // silently swallowed.
+                    MaxTextWidth = double.MaxValue,
                     MaxTextHeight = lineHeight,
                     FontWeight = fontWeight,
                     FontStyle = fontStyle,
@@ -507,11 +517,44 @@ public class TextBlock : FrameworkElement
             _foregroundCacheNeedsSync = false;
         }
 
+        // Viewport culling: when the context can report its effective clip bounds
+        // (e.g. a ScrollViewer viewport, or this element's own RenderSize clip) and
+        // the element's drawing offset, skip lines whose vertical band lies entirely
+        // outside the clip. CurrentClipBounds is in absolute drawing coordinates, so
+        // a line's absolute band is [Offset.Y + lineY, Offset.Y + lineY + lineHeight]
+        // where lineY = verticalOffset + i * lineHeight (the same y handed to
+        // DrawText). Skipping a long off-screen block (e.g. a 10 000-line TextBlock
+        // scrolled to the middle) turns O(lines) DrawText calls into O(visible lines).
+        Rect? clipBounds = null;
+        var offsetY = 0.0;
+        if (dc is IClipBoundsDrawingContext { CurrentClipBounds: Rect cb } &&
+            dc is IOffsetDrawingContext offsetContext)
+        {
+            clipBounds = cb;
+            offsetY = offsetContext.Offset.Y;
+        }
+
         for (int i = 0; i < _cachedFormattedLines.Count; i++)
         {
             var ft = _cachedFormattedLines[i];
             if (ft == null) continue;
-            dc.DrawText(ft, new Point(GetLineOriginX(_layoutLines[i], renderWidth), verticalOffset + i * lineHeight));
+
+            var lineY = verticalOffset + i * lineHeight;
+
+            if (clipBounds is Rect clip)
+            {
+                var top = offsetY + lineY;
+                var bottom = top + lineHeight;
+                // Cull when the band is fully above or fully below the clip. Touching
+                // edges (bottom == clip top, or top == clip bottom) contribute no
+                // visible pixels, so they are culled too.
+                if (bottom <= clip.Y || top >= clip.Y + clip.Height)
+                {
+                    continue;
+                }
+            }
+
+            dc.DrawText(ft, new Point(GetLineOriginX(_layoutLines[i], renderWidth), lineY));
         }
     }
 
@@ -1024,12 +1067,33 @@ public class TextBlock : FrameworkElement
     {
         if (!_layoutDirty &&
             string.Equals(Text, _layoutText, StringComparison.Ordinal) &&
-            Math.Abs(_layoutConstraintWidth - constraintWidth) < 0.001)
+            ConstraintWidthUnchanged(_layoutConstraintWidth, constraintWidth))
         {
             return;
         }
 
         RebuildLayout(constraintWidth);
+    }
+
+    /// <summary>
+    /// Returns whether two layout constraint widths are effectively the same.
+    /// <see cref="GetLayoutConstraintWidth"/> hands back <see cref="double.PositiveInfinity"/>
+    /// as the "no horizontal wrap limit" sentinel (NoWrap, or no finite width
+    /// available). A plain <c>Math.Abs(a - b) &lt; eps</c> test fails for that case
+    /// because <c>∞ - ∞</c> is <c>NaN</c> and <c>NaN &lt; eps</c> is false — which made
+    /// EnsureLayout rebuild the layout (and, with the cache-invalidation fix, the
+    /// per-line FormattedText cache) on every single render of any NoWrap
+    /// TextBlock. Compare infinities by equality and only finite widths by
+    /// tolerance.
+    /// </summary>
+    private static bool ConstraintWidthUnchanged(double previous, double current)
+    {
+        if (double.IsInfinity(previous) || double.IsInfinity(current))
+        {
+            return previous.Equals(current);
+        }
+
+        return Math.Abs(previous - current) < 0.001;
     }
 
     private void RebuildLayout(double constraintWidth)
@@ -1038,6 +1102,17 @@ public class TextBlock : FrameworkElement
         _layoutText = Text;
         _layoutConstraintWidth = constraintWidth;
         _layoutDirty = false;
+
+        // Recomputing the wrapped lines invalidates the per-line FormattedText
+        // cache: each cached entry bakes in its line's text *and* the render
+        // width that was current when it was built. A relayout that lands on the
+        // same line *count* but different break points (the common width-change
+        // case) would otherwise keep the stale fragments — the wider, previously
+        // computed line text gets redrawn into the now-narrower box and clipped.
+        // Marking the cache dirty here guarantees DrawTextLines rebuilds it from
+        // the fresh _layoutLines. The count-mismatch check below is no longer the
+        // only safeguard.
+        _formattedLinesCacheDirty = true;
 
         if (string.IsNullOrEmpty(Text))
         {

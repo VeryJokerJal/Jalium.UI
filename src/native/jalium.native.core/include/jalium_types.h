@@ -34,6 +34,19 @@ typedef enum JaliumResult {
     JALIUM_ERROR_INITIALIZATION_FAILED = 6,
     JALIUM_ERROR_RESOURCE_CREATION_FAILED = 7,
     JALIUM_ERROR_INVALID_STATE = 8,
+    /// Present submission failed transiently (e.g. DXGI_ERROR_INVALID_CALL
+    /// during a mode change) on a HEALTHY device: the frame's GPU work was
+    /// submitted but never reached the screen. Distinct from
+    /// JALIUM_ERROR_INVALID_STATE so the managed side can return the consumed
+    /// present credit and simply repaint — recreating the render target for a
+    /// dropped present would turn a one-frame hiccup into a visible stall.
+    JALIUM_ERROR_PRESENT_FAILED = 9,
+    /// A resize / swap-chain operation was refused because a command list is
+    /// still open and references the resources it would free (cross-thread
+    /// render in flight, or a frame left open). NOT a failure — the managed
+    /// caller re-stashes and retries at the next safe point. Introduced to
+    /// avoid the #921 OBJECT_DELETED_WHILE_STILL_IN_USE use-after-free on resize.
+    JALIUM_ERROR_BUSY = 10,
     JALIUM_ERROR_UNKNOWN = 99
 } JaliumResult;
 
@@ -298,6 +311,7 @@ typedef struct JaliumGpuStats {
     int32_t reserved0;               ///< Padding for 8-byte alignment of the next int64_t.
     int64_t lastFramePresentToReadyNs; ///< Wall time between previous EndFrame's queue Signal and this frame's first observed fence completion. **Not** pure GPU work — includes DWM composition, DXGI runtime queue latency, swap-chain back-pressure. The hardware-timestamp GPU breakdown (see JaliumGpuTimingStats.totalGpuNs) is the canonical "what did the GPU actually do" number.
     int64_t frameWaitableWaitNs;     ///< UI-thread wall time spent waiting on the swap-chain frame-latency waitable across BeginFrame attempts. Captures the OS / DWM portion of present-to-ready latency that fence waits miss.
+    int64_t presentBlockNs;          ///< Wall time the most recent EndDraw spent blocked inside the swap-chain Present call itself. Under a slow compositor (occlusion throttling, remote/virtual displays) Present(1) stalls until the DWM retires the previous frame — this field separates that stall from genuine CPU encode work in the EndDraw timing row.
 } JaliumGpuStats;
 
 /// Per-frame GPU work breakdown by draw-call category, sourced from

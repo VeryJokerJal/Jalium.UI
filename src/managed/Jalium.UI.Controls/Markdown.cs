@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Linq;
+using System.Text;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -44,10 +46,35 @@ public class Markdown : Control
         "mailto"
     };
 
+    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(90, 51, 153, 255));
+
     private Border? _container;
     private ScrollViewer? _scrollViewer;
     private StackPanel? _contentHost;
     private IReadOnlyList<MarkdownBlock> _blocks = Array.Empty<MarkdownBlock>();
+
+    private readonly List<MarkdownSegment> _segments = new();
+    private int _selectionAnchor;
+    private int _selectionGlobalStart;
+    private int _selectionGlobalEnd;
+    private int _totalSelectableLength;
+    private bool _isSelecting;
+
+    private sealed class MarkdownSegment
+    {
+        public MarkdownSegment(IMarkdownSelectable selectable, UIElement element, int blockIndex)
+        {
+            Selectable = selectable;
+            Element = element;
+            BlockIndex = blockIndex;
+        }
+
+        public IMarkdownSelectable Selectable { get; }
+        public UIElement Element { get; }
+        public int BlockIndex { get; }
+        public int GlobalStart { get; set; }
+        public int Length { get; set; }
+    }
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
@@ -109,10 +136,24 @@ public class Markdown : Control
         DependencyProperty.Register(nameof(TableHeaderBackground), typeof(Brush), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownVisualChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty IsTextSelectionEnabledProperty =
+        DependencyProperty.Register(nameof(IsTextSelectionEnabled), typeof(bool), typeof(Markdown),
+            new PropertyMetadata(true, OnSelectionEnabledChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty SelectionBrushProperty =
+        DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(Markdown),
+            new PropertyMetadata(null, OnMarkdownVisualChanged));
+
     public Markdown()
     {
-        Focusable = false;
+        Focusable = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnSelectionMouseDown));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnSelectionMouseMove));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnSelectionMouseUp));
+        BuildContextMenu();
         ParseMarkdown();
     }
 
@@ -252,6 +293,26 @@ public class Markdown : Control
     }
 
     /// <summary>
+    /// Gets or sets whether the rendered content can be selected with the mouse and copied.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public bool IsTextSelectionEnabled
+    {
+        get => (bool)GetValue(IsTextSelectionEnabledProperty)!;
+        set => SetValue(IsTextSelectionEnabledProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the brush used to paint the text selection highlight.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Brush? SelectionBrush
+    {
+        get => (Brush?)GetValue(SelectionBrushProperty);
+        set => SetValue(SelectionBrushProperty, value);
+    }
+
+    /// <summary>
     /// Occurs when a rendered Markdown link is clicked.
     /// </summary>
     public event EventHandler<MarkdownLinkClickedEventArgs>? LinkClicked;
@@ -351,6 +412,11 @@ public class Markdown : Control
         {
             _contentHost.Children.Add(CreateBlockElement(block, inListItem: false));
         }
+
+        _selectionGlobalStart = 0;
+        _selectionGlobalEnd = 0;
+        _isSelecting = false;
+        CollectSelectables();
     }
 
     private UIElement CreateBlockElement(MarkdownBlock block, bool inListItem)
@@ -536,6 +602,17 @@ public class Markdown : Control
 
     private UIElement CreateCodeBlockElement(MarkdownCodeBlock code)
     {
+        if (!string.IsNullOrEmpty(code.Language) &&
+            string.Equals(code.Language.Trim(), "mermaid", StringComparison.OrdinalIgnoreCase))
+        {
+            var diagram = TryCreateMermaidElement(code.Text);
+            if (diagram != null)
+            {
+                return diagram;
+            }
+            // Fall back to the syntax-highlighted source view when the diagram cannot be parsed.
+        }
+
         var codeView = new MarkdownCodeBlockView
         {
             Text = code.Text,
@@ -553,6 +630,28 @@ public class Markdown : Control
             CornerRadius = new CornerRadius(8),
             Margin = new Thickness(0, 0, 0, 12),
             Child = codeView
+        };
+    }
+
+    private UIElement? TryCreateMermaidElement(string source)
+    {
+        var diagram = new Jalium.UI.Controls.Charts.MermaidDiagram { Source = source };
+        if (diagram.DiagramKind == Jalium.UI.Controls.Charts.MermaidDiagramKind.Unknown)
+        {
+            return null;
+        }
+
+        // Diagrams render dark strokes on light fills (the classic mermaid look), so host them on
+        // a light surface card to stay readable regardless of the surrounding app theme.
+        return new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(0xFA, 0xFB, 0xFE)),
+            BorderBrush = ResolveBrush(TableBorderBrush, "ControlBorder", new SolidColorBrush(Color.FromRgb(220, 220, 224))),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(12),
+            Margin = new Thickness(0, 0, 0, 12),
+            Child = diagram
         };
     }
 
@@ -713,4 +812,365 @@ public class Markdown : Control
 
     private string ResolveMonoFontFamily() =>
         TryFindResource("MonoFontFamily") as string ?? "Cascadia Code";
+
+    #region Content extraction (translation / programmatic copy)
+
+    /// <summary>
+    /// Returns the rendered content as plain text with all Markdown markers removed.
+    /// Useful for feeding the content to translation or text-to-speech services.
+    /// </summary>
+    public string GetPlainText() => MarkdownSerializer.ToPlainText(_blocks);
+
+    /// <summary>
+    /// Returns the Markdown source (the value of <see cref="Text"/>).
+    /// </summary>
+    public string GetMarkdownText() => Text ?? string.Empty;
+
+    /// <summary>
+    /// Returns the content rendered as a standalone HTML document.
+    /// </summary>
+    public string GetHtml() => MarkdownSerializer.ToHtmlDocument(_blocks);
+
+    /// <summary>
+    /// Returns the content rendered as an RTF document.
+    /// </summary>
+    public string GetRtf() => MarkdownSerializer.ToRtf(_blocks);
+
+    /// <summary>
+    /// Gets the currently selected text as plain text, or an empty string when nothing is selected.
+    /// </summary>
+    public string SelectedText => HasSelection ? BuildSelectedText() : string.Empty;
+
+    /// <summary>
+    /// Gets whether a non-empty selection currently exists.
+    /// </summary>
+    public bool HasSelection => _selectionGlobalEnd > _selectionGlobalStart;
+
+    #endregion
+
+    #region Copy commands
+
+    /// <summary>
+    /// Copies the selection (or the whole document when nothing is selected) to the clipboard in
+    /// plain-text, HTML, and RTF formats so it can be pasted into any target.
+    /// </summary>
+    public void Copy()
+    {
+        var blocks = HasSelection ? GetTouchedBlocks() : _blocks;
+        if (blocks.Count == 0)
+        {
+            return;
+        }
+
+        var plain = HasSelection ? BuildSelectedText() : MarkdownSerializer.ToPlainText(blocks);
+        var data = new ClipboardDataObject();
+        data.SetData(DataFormats.Text, plain);
+        data.SetData(DataFormats.Html, MarkdownSerializer.ToHtmlFragment(blocks));
+        data.SetData(DataFormats.Rtf, MarkdownSerializer.ToRtf(blocks));
+        Clipboard.SetDataObject(data);
+    }
+
+    /// <summary>
+    /// Copies the selection (or the whole document) as plain text without Markdown markers.
+    /// </summary>
+    public void CopyAsPlainText()
+        => Clipboard.SetText(HasSelection ? BuildSelectedText() : GetPlainText());
+
+    /// <summary>
+    /// Copies the selection (or the whole document) as Markdown source (text with markers).
+    /// </summary>
+    public void CopyAsMarkdownText()
+    {
+        var markdown = HasSelection ? MarkdownSerializer.ToMarkdown(GetTouchedBlocks()) : GetMarkdownText();
+        Clipboard.SetText(markdown);
+    }
+
+    /// <summary>
+    /// Copies the selection (or the whole document) as rich text (HTML + RTF, plus a plain-text fallback).
+    /// </summary>
+    public void CopyAsRichText() => Copy();
+
+    /// <summary>
+    /// Selects the entire rendered document.
+    /// </summary>
+    public void SelectAll()
+    {
+        if (!IsTextSelectionEnabled || _segments.Count == 0)
+        {
+            return;
+        }
+
+        RecomputeSegmentOffsets();
+        ApplyGlobalSelection(0, _totalSelectableLength);
+        Focus();
+    }
+
+    /// <summary>
+    /// Clears the current selection.
+    /// </summary>
+    public void ClearSelection()
+    {
+        _selectionGlobalStart = 0;
+        _selectionGlobalEnd = 0;
+        foreach (var segment in _segments)
+        {
+            segment.Selectable.ClearSelectionRange();
+        }
+    }
+
+    #endregion
+
+    #region Selection coordination
+
+    private static void OnSelectionEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Markdown markdown && e.NewValue is false)
+        {
+            markdown.ClearSelection();
+        }
+    }
+
+    private void CollectSelectables()
+    {
+        _segments.Clear();
+        if (_contentHost == null)
+        {
+            return;
+        }
+
+        var selectionBrush = ResolveBrush(SelectionBrush, "AccentBrush", s_defaultSelectionBrush);
+        var count = Math.Min(_contentHost.Children.Count, _blocks.Count);
+        for (var i = 0; i < count; i++)
+        {
+            CollectSelectablesFrom(_contentHost.Children[i], i, selectionBrush);
+        }
+    }
+
+    private void CollectSelectablesFrom(DependencyObject node, int blockIndex, Brush selectionBrush)
+    {
+        if (node is IMarkdownSelectable selectable && node is UIElement element)
+        {
+            selectable.SelectionBrush = selectionBrush;
+            _segments.Add(new MarkdownSegment(selectable, element, blockIndex));
+        }
+
+        var childCount = VisualTreeHelper.GetChildrenCount(node);
+        for (var i = 0; i < childCount; i++)
+        {
+            var child = VisualTreeHelper.GetChild(node, i);
+            if (child != null)
+            {
+                CollectSelectablesFrom(child, blockIndex, selectionBrush);
+            }
+        }
+    }
+
+    private void RecomputeSegmentOffsets()
+    {
+        var global = 0;
+        foreach (var segment in _segments)
+        {
+            segment.GlobalStart = global;
+            segment.Length = segment.Selectable.SelectableLength;
+            global += segment.Length + 1; // +1 for the implicit newline between segments
+        }
+        _totalSelectableLength = global > 0 ? global - 1 : 0;
+    }
+
+    private void ApplyGlobalSelection(int start, int end)
+    {
+        _selectionGlobalStart = Math.Min(start, end);
+        _selectionGlobalEnd = Math.Max(start, end);
+
+        foreach (var segment in _segments)
+        {
+            var localStart = Math.Clamp(_selectionGlobalStart - segment.GlobalStart, 0, segment.Length);
+            var localEnd = Math.Clamp(_selectionGlobalEnd - segment.GlobalStart, 0, segment.Length);
+            if (localEnd > localStart)
+            {
+                segment.Selectable.SetSelectionRange(localStart, localEnd);
+            }
+            else
+            {
+                segment.Selectable.ClearSelectionRange();
+            }
+        }
+    }
+
+    private string BuildSelectedText()
+    {
+        var sb = new StringBuilder();
+        var first = true;
+        foreach (var segment in _segments)
+        {
+            var localStart = Math.Clamp(_selectionGlobalStart - segment.GlobalStart, 0, segment.Length);
+            var localEnd = Math.Clamp(_selectionGlobalEnd - segment.GlobalStart, 0, segment.Length);
+            if (localEnd > localStart)
+            {
+                if (!first)
+                {
+                    sb.Append('\n');
+                }
+                sb.Append(segment.Selectable.GetSelectionText(localStart, localEnd));
+                first = false;
+            }
+        }
+        return sb.ToString();
+    }
+
+    private IReadOnlyList<MarkdownBlock> GetTouchedBlocks()
+    {
+        var indices = new SortedSet<int>();
+        foreach (var segment in _segments)
+        {
+            var localStart = Math.Clamp(_selectionGlobalStart - segment.GlobalStart, 0, segment.Length);
+            var localEnd = Math.Clamp(_selectionGlobalEnd - segment.GlobalStart, 0, segment.Length);
+            if (localEnd > localStart)
+            {
+                indices.Add(segment.BlockIndex);
+            }
+        }
+
+        var result = new List<MarkdownBlock>(indices.Count);
+        foreach (var index in indices)
+        {
+            if (index >= 0 && index < _blocks.Count)
+            {
+                result.Add(_blocks[index]);
+            }
+        }
+        return result;
+    }
+
+    private bool TryHitTestGlobal(MouseEventArgs e, out int globalIndex)
+    {
+        globalIndex = 0;
+        MarkdownSegment? best = null;
+        var bestDistance = double.PositiveInfinity;
+        var bestLocal = default(Point);
+
+        foreach (var segment in _segments)
+        {
+            var local = e.GetPosition(segment.Element);
+            var height = segment.Element.RenderSize.Height;
+            var distance = local.Y < 0 ? -local.Y : (local.Y > height ? local.Y - height : 0);
+            if (distance < bestDistance)
+            {
+                bestDistance = distance;
+                best = segment;
+                bestLocal = local;
+            }
+        }
+
+        if (best == null)
+        {
+            return false;
+        }
+
+        if (best.Selectable.TryHitTestCharacter(bestLocal, out var charIndex))
+        {
+            globalIndex = best.GlobalStart + Math.Clamp(charIndex, 0, best.Length);
+            return true;
+        }
+
+        globalIndex = best.GlobalStart;
+        return true;
+    }
+
+    private void OnSelectionMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!IsTextSelectionEnabled || e.ChangedButton != MouseButton.Left || _segments.Count == 0)
+        {
+            return;
+        }
+
+        RecomputeSegmentOffsets();
+        if (!TryHitTestGlobal(e, out var anchor))
+        {
+            return;
+        }
+
+        _selectionAnchor = anchor;
+        _isSelecting = true;
+        Focus();
+        CaptureMouse();
+        ApplyGlobalSelection(anchor, anchor);
+        e.Handled = true;
+    }
+
+    private void OnSelectionMouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_isSelecting)
+        {
+            return;
+        }
+
+        if (TryHitTestGlobal(e, out var caret))
+        {
+            ApplyGlobalSelection(_selectionAnchor, caret);
+        }
+        e.Handled = true;
+    }
+
+    private void OnSelectionMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isSelecting)
+        {
+            return;
+        }
+
+        _isSelecting = false;
+        ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    /// <inheritdoc />
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (!IsTextSelectionEnabled)
+        {
+            return;
+        }
+
+        if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+        {
+            if (e.Key == Key.C)
+            {
+                Copy();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.A)
+            {
+                SelectAll();
+                e.Handled = true;
+            }
+        }
+        else if (e.Key == Key.Escape && HasSelection)
+        {
+            ClearSelection();
+            e.Handled = true;
+        }
+    }
+
+    private void BuildContextMenu()
+    {
+        var menu = new ContextMenu();
+
+        var copyPlain = new MenuItem { Header = "复制纯文本" };
+        copyPlain.Click += (_, _) => CopyAsPlainText();
+
+        var copyMarkdown = new MenuItem { Header = "复制 Markdown" };
+        copyMarkdown.Click += (_, _) => CopyAsMarkdownText();
+
+        var copyRich = new MenuItem { Header = "复制富文本" };
+        copyRich.Click += (_, _) => CopyAsRichText();
+
+        menu.Items.Add(copyPlain);
+        menu.Items.Add(copyMarkdown);
+        menu.Items.Add(copyRich);
+        ContextMenu = menu;
+    }
+
+    #endregion
 }

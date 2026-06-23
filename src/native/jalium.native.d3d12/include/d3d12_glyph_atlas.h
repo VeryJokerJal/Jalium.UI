@@ -45,11 +45,30 @@ struct GlyphEntry {
 // Key for glyph cache lookup
 // ============================================================================
 
+// Quantization granularity for the per-axis transform scale baked into GlyphKey
+// (scaleXQ/scaleYQ = round(scale * kGlyphScaleQuant); the value kGlyphScaleQuant
+// itself == 1.0x == identity). Finer = smoother thin strokes during an animated
+// deform: the bitmap is rasterized at the bucket scale but DISPLAYED at the
+// actual (continuous) scale, so the in-bucket residual (±0.5/bucket) point-scales
+// the stem and makes it shimmer thicker/thinner as the drag drifts within a
+// bucket. 1/16 halves that residual vs 1/8. Cost: more cached deformation buckets.
+// uint8 cap => max scale kGlyphScaleQuant-relative is 255/16 ≈ 15.9x (ample).
+static constexpr int kGlyphScaleQuant = 16;
+
 struct GlyphKey {
     IDWriteFontFace* fontFace;
     uint16_t glyphIndex;
-    uint16_t fontSize;      // physical pixel size (rounded, no further quantization)
-    uint8_t  subpixelX;     // sub-pixel X offset quantized to 1/4 pixel (0..3)
+    uint16_t fontSize;      // BASE physical pixel size = round(fontSize*dpi), NO transform scale
+    uint8_t  subpixelX;     // sub-pixel X offset quantized to 1/8 pixel (0..7)
+    // Per-axis transform scale, quantized to 1/kGlyphScaleQuant steps (value =
+    // round(scale*kGlyphScaleQuant); kGlyphScaleQuant == 1.0x == unscaled). The
+    // glyph is rasterized at the FINAL deformed pixel size via a
+    // DWRITE_MATRIX(scaleX,0,0,scaleY) so e.g. a liquid-glass squeeze
+    // (scaleX≈0.63, scaleY≈2.17) produces an already-compressed crisp bitmap —
+    // instead of point-minifying an isotropic atlas (which dropped thin stems:
+    // d→c, r→l). Both == kGlyphScaleQuant means identity == normal text path.
+    uint8_t  scaleXQ = (uint8_t)kGlyphScaleQuant;
+    uint8_t  scaleYQ = (uint8_t)kGlyphScaleQuant;
     // Per-glyph rendering mode resolved from the source TextFormat's
     // TextRenderingMode / TextHintingMode. Cached separately for each combo
     // because the rasterized bitmap differs:
@@ -70,7 +89,9 @@ struct GlyphKey {
                fontSize == other.fontSize &&
                subpixelX == other.subpixelX &&
                aaMode == other.aaMode &&
-               hintingMode == other.hintingMode;
+               hintingMode == other.hintingMode &&
+               scaleXQ == other.scaleXQ &&
+               scaleYQ == other.scaleYQ;
     }
 };
 
@@ -79,19 +100,21 @@ struct GlyphKeyHash {
         size_t h = std::hash<void*>{}(k.fontFace);
         // Pack every per-glyph field into a 40-bit slot in one uint64 so each
         // tuple gets a distinct hash input. Layout (LSB → MSB):
-        //   [ 0.. 1] subpixelX  (2 bits — only 4 sub-pixel buckets ever exist)
-        //   [ 2.. 4] aaMode     (3 bits — 0..3 today, 1 bit headroom)
-        //   [ 5.. 7] hintingMode(3 bits — 0..2 today, 1 bit headroom)
-        //   [ 8..23] fontSize   (16 bits — full uint16 range)
-        //   [24..39] glyphIndex (16 bits — full uint16 range)
+        //   [ 0.. 2] subpixelX  (3 bits — 8 sub-pixel buckets, 1/8 px each)
+        //   [ 3.. 5] aaMode     (3 bits — 0..3 today)
+        //   [ 6.. 8] hintingMode(3 bits — 0..2 today)
+        //   [ 9..24] fontSize   (16 bits — full uint16 range)
+        //   [25..40] glyphIndex (16 bits — full uint16 range)
         // No fields overlap, so two different keys hash through different
         // packed words (the secondary collision risk is the std::hash
         // distribution itself, which is independent of our packing).
-        uint64_t packed = ((uint64_t)(k.subpixelX & 0x3))
-                        | ((uint64_t)(k.aaMode    & 0x7) << 2)
-                        | ((uint64_t)(k.hintingMode & 0x7) << 5)
-                        | ((uint64_t)k.fontSize   << 8)
-                        | ((uint64_t)k.glyphIndex << 24);
+        uint64_t packed = ((uint64_t)(k.subpixelX & 0x7))
+                        | ((uint64_t)(k.aaMode    & 0x7) << 3)
+                        | ((uint64_t)(k.hintingMode & 0x7) << 6)
+                        | ((uint64_t)k.fontSize   << 9)
+                        | ((uint64_t)k.glyphIndex << 25)
+                        | ((uint64_t)k.scaleXQ    << 41)   // per-axis transform scale
+                        | ((uint64_t)k.scaleYQ    << 49);
         h ^= std::hash<uint64_t>{}(packed) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
     }
@@ -145,6 +168,16 @@ public:
     /// the historical "process-wide only" behaviour, which still re-resolves
     /// against the global setting on every call (since aaMode=0 / Auto is the
     /// signal that nobody asked for an explicit override).
+    ///
+    /// `rasterScale` (>= 1.0, default 1.0) is the effective magnification the
+    /// caller's transform will apply to this text (max of the transform's two
+    /// axis scales, quantized + capped by the caller). The glyph is rasterized
+    /// at fontSize * dpiScale * rasterScale so a magnified glyph samples a
+    /// high-resolution atlas bitmap instead of a stretched base-size one (which
+    /// is what made scaled text mosaic). The emitted quad geometry is divided
+    /// back down to BASE-DIP space, so the caller's existing post-transform
+    /// quad scaling reproduces the correct on-screen size. rasterScale is part
+    /// of the per-layout memo key (it changes the atlas slots / UVs).
     uint32_t GenerateGlyphs(
         IDWriteTextLayout* layout,
         float originX, float originY,
@@ -153,7 +186,9 @@ public:
         std::vector<TextDecorationRect>* outDecorations = nullptr,
         uint64_t layoutKey = 0,
         int32_t aaMode = 0,
-        int32_t hintingMode = 0);
+        int32_t hintingMode = 0,
+        float scaleX = 1.0f,
+        float scaleY = 1.0f);
 
     /// Uploads any pending glyph data to the GPU atlas texture.
     /// Must be called before rendering text in a frame.
@@ -282,7 +317,8 @@ private:
     static uint64_t HashInstanceKey(uint64_t layoutKey,
                                     float dpiScale,
                                     int32_t aaMode,
-                                    int32_t hintingMode) noexcept;
+                                    int32_t hintingMode,
+                                    float scaleX, float scaleY) noexcept;
 
     // Simple row-based atlas packer
     uint16_t packX_ = 0;

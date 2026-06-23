@@ -46,6 +46,20 @@ public static class XamlReader
     }
 
     /// <summary>
+    /// Hot-reload variant of <see cref="Parse(string)"/>: builds a standalone object tree (no existing
+    /// root) but wires inline event handlers to <paramref name="codeBehindForEvents"/> — the live
+    /// instance being patched — so a grafted new element's Click/KeyDown/etc. handlers work without a
+    /// full restart. Used by <c>HotReloadRuntime.ApplyPatch</c>.
+    /// </summary>
+    internal static object ParseForHotReload(string xaml, object? codeBehindForEvents)
+    {
+        ArgumentNullException.ThrowIfNull(xaml);
+
+        using var xmlReader = JalxamlParser.CreateReader(xaml);
+        return LoadInternal(xmlReader, null, null, null, codeBehindForEvents: codeBehindForEvents);
+    }
+
+    /// <summary>
     /// Reads XAML from a stream and creates an object tree.
     /// </summary>
     /// <param name="stream">The stream containing XAML.</param>
@@ -161,41 +175,24 @@ public static class XamlReader
         ArgumentNullException.ThrowIfNull(component);
         ArgumentNullException.ThrowIfNull(resourceName);
 
-        long traceStart = System.Diagnostics.Stopwatch.GetTimestamp();
-        var scopeDepth = Jalium.UI.Controls.XamlLoadStartupTrace.BeginLoadScope();
-
         assembly ??= component.GetType().Assembly;
 
         var stream = GetResourceStream(resourceName, assembly);
         if (stream == null)
         {
-            Jalium.UI.Controls.XamlLoadStartupTrace.EndLoadScope(scopeDepth, resourceName, 0);
             throw new XamlParseException($"Cannot find embedded resource '{resourceName}' in assembly '{assembly.GetName().Name}'.");
         }
 
-        try
+        using (stream)
         {
-            using (stream)
-            {
-                var content = new StreamReader(stream).ReadToEnd();
-                var baseUri = new Uri($"resource:///{assembly.GetName().Name}/{resourceName}", UriKind.Absolute);
+            var content = new StreamReader(stream).ReadToEnd();
+            var baseUri = new Uri($"resource:///{assembly.GetName().Name}/{resourceName}", UriKind.Absolute);
 
-                using var xmlReader = JalxamlParser.CreateReader(content);
-                LoadInternal(xmlReader, component, baseUri, assembly, namedElementsOut: namedElements);
-            }
+            using var xmlReader = JalxamlParser.CreateReader(content);
+            LoadInternal(xmlReader, component, baseUri, assembly, namedElementsOut: namedElements);
+        }
 
-            HotReloadRuntime.RegisterComponent(component);
-        }
-        finally
-        {
-            // Aggregate startup-trace counters live in Jalium.UI.Controls (target of
-            // InternalsVisibleTo) so Window.Show can summarize them without forcing
-            // a Controls→Xaml dependency.
-            long elapsedTicks = System.Diagnostics.Stopwatch.GetTimestamp() - traceStart;
-            Interlocked.Increment(ref Jalium.UI.Controls.XamlLoadStartupTrace.LoadCallCount);
-            Interlocked.Add(ref Jalium.UI.Controls.XamlLoadStartupTrace.LoadTotalTicks, elapsedTicks);
-            Jalium.UI.Controls.XamlLoadStartupTrace.EndLoadScope(scopeDepth, resourceName, elapsedTicks);
-        }
+        HotReloadRuntime.RegisterComponent(component);
     }
 
     // Per-assembly cache of manifest resource names for O(1) case-insensitive lookup.
@@ -308,7 +305,8 @@ public static class XamlReader
     }
 
     private static object LoadInternal(XmlReader reader, object? existingInstance, Uri? baseUri, Assembly? sourceAssembly,
-        ResourceDictionary? parentResourceDictionary = null, Dictionary<string, object>? namedElementsOut = null)
+        ResourceDictionary? parentResourceDictionary = null, Dictionary<string, object>? namedElementsOut = null,
+        object? codeBehindForEvents = null)
     {
 
         var context = new XamlParserContext
@@ -316,7 +314,11 @@ public static class XamlReader
             BaseUri = baseUri,
             SourceAssembly = sourceAssembly,
             ParentResourceDictionary = parentResourceDictionary,
-            CodeBehindInstance = existingInstance
+            // Hot reload parses a STANDALONE source tree (existingInstance == null) yet still needs its
+            // inline event handlers (Click=…) to bind to the LIVE instance's code-behind so grafted new
+            // elements stay interactive. codeBehindForEvents carries that target and affects ONLY event
+            // wiring — the root is still built fresh because existingInstance remains null.
+            CodeBehindInstance = codeBehindForEvents ?? existingInstance
         };
 
         while (reader.Read())
@@ -383,9 +385,6 @@ public static class XamlReader
     [RequiresUnreferencedCode("Wires named XAML elements onto fields/properties of the component runtime type via reflection. Code-behind types reachable from XAML are preserved via XamlTypeRegistry/DAM annotations.")]
     private static void WireUpNamedElements(object component, Dictionary<string, object> namedElements)
     {
-        bool profile = Jalium.UI.Controls.XamlLoadStartupTrace.Enabled;
-        long tStart = profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-
         var type = component.GetType();
         var bindingFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
@@ -406,16 +405,6 @@ public static class XamlReader
             {
                 property.SetValue(component, element);
             }
-            else
-            {
-            }
-        }
-
-        if (profile)
-        {
-            Jalium.UI.Controls.XamlLoadStartupTrace.AddPhase(
-                Jalium.UI.Controls.XamlLoadStartupTrace.PhaseWireNamed,
-                System.Diagnostics.Stopwatch.GetTimestamp() - tStart);
         }
     }
 
@@ -426,7 +415,6 @@ public static class XamlReader
         var lineInfo = reader as IXmlLineInfo;
         var lineNumber = lineInfo != null && lineInfo.HasLineInfo() ? lineInfo.LineNumber : 0;
         var linePosition = lineInfo != null && lineInfo.HasLineInfo() ? lineInfo.LinePosition : 0;
-        bool profile = Jalium.UI.Controls.XamlLoadStartupTrace.Enabled;
 
         object instance;
         Type? resolvedType = null;
@@ -439,14 +427,7 @@ public static class XamlReader
         else
         {
             // Resolve the type and create new instance (AOT-safe: types are pre-registered)
-            long tResolveStart = profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             resolvedType = context.ResolveType(namespaceUri, elementName);
-            if (profile)
-            {
-                Jalium.UI.Controls.XamlLoadStartupTrace.AddPhase(
-                    Jalium.UI.Controls.XamlLoadStartupTrace.PhaseTypeResolve,
-                    System.Diagnostics.Stopwatch.GetTimestamp() - tResolveStart);
-            }
             if (resolvedType == null)
             {
                 throw new XamlParseException($"Cannot resolve type '{elementName}' in namespace '{namespaceUri}'.");
@@ -459,16 +440,8 @@ public static class XamlReader
             }
             else
             {
-                long tInstStart = profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
                 instance = Activator.CreateInstance(resolvedType)
                     ?? throw new XamlParseException($"Failed to create instance of type '{resolvedType.FullName}'.");
-                if (profile)
-                {
-                    long delta = System.Diagnostics.Stopwatch.GetTimestamp() - tInstStart;
-                    Jalium.UI.Controls.XamlLoadStartupTrace.AddPhase(
-                        Jalium.UI.Controls.XamlLoadStartupTrace.PhaseInstantiate, delta);
-                    Jalium.UI.Controls.XamlLoadStartupTrace.AddTypeInstantiate(resolvedType, delta);
-                }
             }
         }
 
@@ -476,14 +449,7 @@ public static class XamlReader
         // can replace the placeholder instance with an x:Class-derived dictionary.
         if (reader.HasAttributes)
         {
-            long tAttrStart = profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             instance = ParseAttributes(reader, instance, context);
-            if (profile)
-            {
-                Jalium.UI.Controls.XamlLoadStartupTrace.AddPhase(
-                    Jalium.UI.Controls.XamlLoadStartupTrace.PhaseParseAttributes,
-                    System.Diagnostics.Stopwatch.GetTimestamp() - tAttrStart);
-            }
         }
 
         // Push to parent stack for context tracking
@@ -492,38 +458,17 @@ public static class XamlReader
         // Special handling for ControlTemplate - capture inner XML for deferred parsing
         if (instance is ControlTemplate controlTemplate && !reader.IsEmptyElement)
         {
-            long tTplStart = profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             ParseControlTemplateContent(reader, controlTemplate, context);
-            if (profile)
-            {
-                Jalium.UI.Controls.XamlLoadStartupTrace.AddPhase(
-                    Jalium.UI.Controls.XamlLoadStartupTrace.PhaseTemplateDefer,
-                    System.Diagnostics.Stopwatch.GetTimestamp() - tTplStart);
-            }
         }
         // Special handling for DataTemplate - capture inner XML for deferred parsing
         else if (instance is DataTemplate dataTemplate && !reader.IsEmptyElement)
         {
-            long tTplStart = profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             ParseDataTemplateContent(reader, dataTemplate, context);
-            if (profile)
-            {
-                Jalium.UI.Controls.XamlLoadStartupTrace.AddPhase(
-                    Jalium.UI.Controls.XamlLoadStartupTrace.PhaseTemplateDefer,
-                    System.Diagnostics.Stopwatch.GetTimestamp() - tTplStart);
-            }
         }
         // Special handling for ItemsPanelTemplate - capture inner XML for deferred parsing
         else if (instance is ItemsPanelTemplate itemsPanelTemplate && !reader.IsEmptyElement)
         {
-            long tTplStart = profile ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
             ParseItemsPanelTemplateContent(reader, itemsPanelTemplate, context);
-            if (profile)
-            {
-                Jalium.UI.Controls.XamlLoadStartupTrace.AddPhase(
-                    Jalium.UI.Controls.XamlLoadStartupTrace.PhaseTemplateDefer,
-                    System.Diagnostics.Stopwatch.GetTimestamp() - tTplStart);
-            }
         }
         // Parse child content normally
         else if (!reader.IsEmptyElement)
@@ -536,8 +481,6 @@ public static class XamlReader
             context.ResolvePendingGridReferences(grid);
         }
 
-        bool needsPostprocess = instance is Setter or Trigger or DataTrigger or MultiTrigger;
-        long tPostStart = (profile && needsPostprocess) ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
         // Post-process Setter to convert Value based on Property type
         if (instance is Setter setter)
         {
@@ -557,12 +500,6 @@ public static class XamlReader
         else if (instance is MultiTrigger multiTrigger)
         {
             PostProcessMultiTrigger(multiTrigger, context, lineNumber, linePosition);
-        }
-        if (profile && needsPostprocess)
-        {
-            Jalium.UI.Controls.XamlLoadStartupTrace.AddPhase(
-                Jalium.UI.Controls.XamlLoadStartupTrace.PhaseSetterPostprocess,
-                System.Diagnostics.Stopwatch.GetTimestamp() - tPostStart);
         }
         context.PopParent();
 
@@ -3241,9 +3178,7 @@ public static class XamlReader
         if (value == null)
         {
             // Match the runtime parser's behaviour: an unresolved StaticResource is
-            // silently swallowed (the value stays at the property's default). The
-            // streaming parser logs to Debug; we follow suit.
-            System.Diagnostics.Debug.WriteLine($"[StaticResource] Cannot find resource '{key}' for {target.GetType().Name}.{propertyName}.");
+            // silently swallowed (the value stays at the property's default).
             return;
         }
 
@@ -3637,11 +3572,9 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         var cacheKey = new TypeCacheKey(namespaceUri, typeName, SourceAssembly);
         if (s_typeCache.TryGetValue(cacheKey, out var cachedType))
         {
-            Interlocked.Increment(ref Jalium.UI.Controls.XamlLoadStartupTrace.TypeCacheHits);
             return cachedType;
         }
 
-        Interlocked.Increment(ref Jalium.UI.Controls.XamlLoadStartupTrace.TypeCacheMisses);
         var resolved = ResolveTypeUncached(namespaceUri, typeName);
         // null 也 cache —— 见 s_typeCache 注释。
         s_typeCache.TryAdd(cacheKey, resolved);

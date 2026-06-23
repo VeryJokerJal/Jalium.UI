@@ -424,14 +424,19 @@ void ConfigureBlend(VkPipelineColorBlendAttachmentState& a, VulkanBrushBlendMode
 // ───────────────────────────────────────────────────────────────────────────
 // VulkanBrushPipeline
 // ───────────────────────────────────────────────────────────────────────────
-VulkanBrushPipeline::VulkanBrushPipeline(const VulkanDeviceContext& ctx)
-    : ctx_(ctx), fns_(std::make_unique<VkInkFunctions>()) {}
+VulkanBrushPipeline::VulkanBrushPipeline(std::shared_ptr<VulkanDeviceGeneration> generation)
+    : gen_(std::move(generation)),
+      ctx_(gen_ ? gen_->ctx : VulkanDeviceContext{}),
+      fns_(std::make_unique<VkInkFunctions>()) {}
 
 VulkanBrushPipeline::~VulkanBrushPipeline() {
     if (!fns_) return;
     VkDevice device = ctx_.device;
     if (device == VK_NULL_HANDLE) return;
-    if (fns_->deviceWaitIdle) fns_->deviceWaitIdle(device);
+    // gen_ keeps the VkDevice alive until after these destroys, so the handles
+    // below always target a live device — possibly a *lost* one, on which
+    // destruction stays legal but waiting would only return DEVICE_LOST.
+    if (!DeviceLost() && fns_->deviceWaitIdle) fns_->deviceWaitIdle(device);
     if (inkRenderPass_ != VK_NULL_HANDLE) fns_->destroyRenderPass(device, inkRenderPass_, nullptr);
     if (pipelineLayout_ != VK_NULL_HANDLE) fns_->destroyPipelineLayout(device, pipelineLayout_, nullptr);
     if (descriptorSetLayout_ != VK_NULL_HANDLE) fns_->destroyDescriptorSetLayout(device, descriptorSetLayout_, nullptr);
@@ -443,7 +448,7 @@ bool VulkanBrushPipeline::Initialize() {
     if (attempted_) return false;
     attempted_ = true;
 
-    if (!ctx_.valid || ctx_.device == VK_NULL_HANDLE) return false;
+    if (!ctx_.valid || ctx_.device == VK_NULL_HANDLE || DeviceLost()) return false;
     if (!fns_->Load(ctx_)) {
         INK_LOG("device function table load failed");
         return false;
@@ -553,7 +558,7 @@ bool VulkanBrushPipeline::Initialize() {
 
 std::unique_ptr<VulkanBrushShader> VulkanBrushPipeline::CreateBrushShader(
     const char* shaderKey, const char* brushMainHlsl, VulkanBrushBlendMode blendMode) {
-    if (!Initialize() || !brushMainHlsl) return nullptr;
+    if (!Initialize() || !brushMainHlsl || DeviceLost()) return nullptr;
     VkDevice device = ctx_.device;
 
     std::string psSource;
@@ -643,19 +648,21 @@ std::unique_ptr<VulkanBrushShader> VulkanBrushPipeline::CreateBrushShader(
         return nullptr;
     }
 
+    // shared_from_this is always valid here: pipelines are exclusively created
+    // through std::make_shared in VulkanBackend::EnsureBrushPipeline.
     return std::make_unique<VulkanBrushShader>(
-        this, fragModule, pipeline, blendMode, shaderKey ? shaderKey : "");
+        shared_from_this(), fragModule, pipeline, blendMode, shaderKey ? shaderKey : "");
 }
 
 // ───────────────────────────────────────────────────────────────────────────
 // VulkanBrushShader
 // ───────────────────────────────────────────────────────────────────────────
-VulkanBrushShader::VulkanBrushShader(VulkanBrushPipeline* owner,
+VulkanBrushShader::VulkanBrushShader(std::shared_ptr<VulkanBrushPipeline> owner,
                                      VkShaderModule fragmentModule,
                                      VkPipeline pipeline,
                                      VulkanBrushBlendMode blendMode,
                                      std::string shaderKey)
-    : owner_(owner), fragmentModule_(fragmentModule), pipeline_(pipeline),
+    : owner_(std::move(owner)), fragmentModule_(fragmentModule), pipeline_(pipeline),
       blendMode_(blendMode), shaderKey_(std::move(shaderKey)) {}
 
 VulkanBrushShader::~VulkanBrushShader() {
@@ -663,7 +670,10 @@ VulkanBrushShader::~VulkanBrushShader() {
     const VkInkFunctions& fns = owner_->Fns();
     VkDevice device = owner_->Context().device;
     if (device == VK_NULL_HANDLE) return;
-    if (fns.deviceWaitIdle) fns.deviceWaitIdle(device);
+    // owner_ (shared) keeps pipeline + device generation alive; the device is
+    // live here even after the creating render target died. Skip the wait on a
+    // lost generation, destroy regardless (legal on a lost device).
+    if (!owner_->DeviceLost() && fns.deviceWaitIdle) fns.deviceWaitIdle(device);
     if (pipeline_ != VK_NULL_HANDLE) fns.destroyPipeline(device, pipeline_, nullptr);
     if (fragmentModule_ != VK_NULL_HANDLE) fns.destroyShaderModule(device, fragmentModule_, nullptr);
 }
@@ -671,11 +681,18 @@ VulkanBrushShader::~VulkanBrushShader() {
 // ───────────────────────────────────────────────────────────────────────────
 // VulkanInkLayerBitmap
 // ───────────────────────────────────────────────────────────────────────────
-VulkanInkLayerBitmap::VulkanInkLayerBitmap(VulkanBrushPipeline* pipeline)
-    : pipeline_(pipeline), fns_(pipeline ? &pipeline->Fns() : nullptr) {}
+VulkanInkLayerBitmap::VulkanInkLayerBitmap(std::shared_ptr<VulkanBrushPipeline> pipeline)
+    : pipeline_(std::move(pipeline)), fns_(pipeline_ ? &pipeline_->Fns() : nullptr) {}
 
 VulkanInkLayerBitmap::~VulkanInkLayerBitmap() {
-    if (fns_ && fns_->deviceWaitIdle && pipeline_->Context().device != VK_NULL_HANDLE) {
+    // pipeline_ (shared) keeps the device generation alive: every handle below
+    // targets a live VkDevice even when the creating render target — or the
+    // whole device generation — went away first. On a lost generation skip the
+    // wait (it would just return DEVICE_LOST) but still destroy everything;
+    // that is legal on a lost-but-not-freed device and releases the driver's
+    // bookkeeping.
+    if (!DeviceLost() && fns_ && fns_->deviceWaitIdle && pipeline_ &&
+        pipeline_->Context().device != VK_NULL_HANDLE) {
         fns_->deviceWaitIdle(pipeline_->Context().device);
     }
     ReleaseResources();
@@ -692,7 +709,7 @@ VulkanInkLayerBitmap::~VulkanInkLayerBitmap() {
 }
 
 bool VulkanInkLayerBitmap::Initialize(uint32_t width, uint32_t height) {
-    if (!pipeline_ || !pipeline_->IsReady() || !fns_) return false;
+    if (!pipeline_ || !pipeline_->IsReady() || !fns_ || DeviceLost()) return false;
     VkDevice device = pipeline_->Context().device;
 
     // One-time scratch: command pool + buffer, fence, descriptor pool + set.
@@ -742,12 +759,22 @@ bool VulkanInkLayerBitmap::Initialize(uint32_t width, uint32_t height) {
 
 bool VulkanInkLayerBitmap::Resize(uint32_t width, uint32_t height) {
     if (width == width_ && height == height_) return true;
-    if (!fns_) return false;
+    if (!fns_ || DeviceLost()) return false;  // lost generation → caller keeps the old extent / skips
     VkDevice device = pipeline_->Context().device;
-    if (fns_->deviceWaitIdle) fns_->deviceWaitIdle(device);
+    if (fns_->deviceWaitIdle) {
+        // Classify the drain result: a device that died since the entry check
+        // latches here, so the destroy/recreate below is skipped and every
+        // later ink op fails fast instead of probing the dead driver.
+        VkResult vr = fns_->deviceWaitIdle(device);
+        if (vr != VK_SUCCESS) {
+            NoteResult(vr);
+            if (DeviceLost()) return false;
+        }
+    }
     ReleaseResources();
     if (!CreateResources(width, height)) return false;
-    Clear(0.0f, 0.0f, 0.0f, 0.0f);
+    Clear(0.0f, 0.0f, 0.0f, 0.0f);  // bumps the content version on success
+    BumpContentVersion();           // and bump regardless — the extent changed
     return true;
 }
 
@@ -868,16 +895,35 @@ bool VulkanInkLayerBitmap::BeginCommands() {
     return fns_->beginCommandBuffer(cmdBuffer_, &begin) == VK_SUCCESS;
 }
 
+void VulkanInkLayerBitmap::NoteResult(VkResult result) {
+    if (result == VK_ERROR_DEVICE_LOST && pipeline_ && pipeline_->Generation()) {
+        pipeline_->Generation()->MarkLost();
+    }
+}
+
 bool VulkanInkLayerBitmap::SubmitAndWait() {
-    if (fns_->endCommandBuffer(cmdBuffer_) != VK_SUCCESS) return false;
+    if (DeviceLost()) return false;
+    VkResult vr = fns_->endCommandBuffer(cmdBuffer_);
+    if (vr != VK_SUCCESS) { NoteResult(vr); return false; }
     VkDevice device = pipeline_->Context().device;
-    fns_->resetFences(device, 1, &fence_);
+    // A failed reset (OOM-class, near theoretical) leaves the fence SIGNALED;
+    // proceeding to wait on it would return immediately while the GPU still
+    // runs the dispatch, racing the mapped readback buffers. Abort instead —
+    // the fence stays signaled so the next ink op is unaffected.
+    vr = fns_->resetFences(device, 1, &fence_);
+    if (vr != VK_SUCCESS) { NoteResult(vr); return false; }
     VkSubmitInfo submit{};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmdBuffer_;
-    if (fns_->queueSubmit(pipeline_->Context().graphicsQueue, 1, &submit, fence_) != VK_SUCCESS) return false;
-    fns_->waitForFences(device, 1, &fence_, VK_TRUE, UINT64_MAX);
+    vr = fns_->queueSubmit(pipeline_->Context().graphicsQueue, 1, &submit, fence_);
+    if (vr != VK_SUCCESS) { NoteResult(vr); return false; }
+    // The wait must not be fire-and-forget: a DEVICE_LOST here means the
+    // dispatch never completed — report failure (the managed caller ignores
+    // the code, so this stroke just doesn't reach the GPU layer) and latch
+    // the generation so later ink ops fail fast.
+    vr = fns_->waitForFences(device, 1, &fence_, VK_TRUE, UINT64_MAX);
+    if (vr != VK_SUCCESS) { NoteResult(vr); return false; }
     return true;
 }
 
@@ -901,7 +947,7 @@ void VulkanInkLayerBitmap::BarrierToLayout(VkImageLayout newLayout,
 }
 
 void VulkanInkLayerBitmap::Clear(float r, float g, float b, float a) {
-    if (!fns_ || image_ == VK_NULL_HANDLE) return;
+    if (!fns_ || image_ == VK_NULL_HANDLE || DeviceLost()) return;
     if (!BeginCommands()) return;
 
     BarrierToLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -920,7 +966,9 @@ void VulkanInkLayerBitmap::Clear(float r, float g, float b, float a) {
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 
-    SubmitAndWait();
+    if (SubmitAndWait()) {
+        BumpContentVersion();
+    }
 }
 
 int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
@@ -929,6 +977,17 @@ int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
                                         const void* extraParams, uint32_t extraParamsSize) {
     if (!fns_ || !shader || !strokePoints || !managedConstants || pointCount < 2) return -1;
     if (image_ == VK_NULL_HANDLE || framebuffer_ == VK_NULL_HANDLE) return -2;
+    // Lost generation → refuse before touching buffers/descriptors. (The
+    // managed caller ignores the code and skips the GPU layer for this
+    // stroke; committed ink on a lost device is rebuilt by the canvas's own
+    // layer-recreation path.)
+    if (DeviceLost()) return -6;
+    // Generation pairing: the shader's VkPipeline and this bitmap's command
+    // buffer/render pass must come from the SAME pipeline (device). Mixing
+    // generations — bitmap created before a device swap, shader compiled
+    // after it (or vice versa) — would bind one device's pipeline into
+    // another device's command buffer: cross-device UB.
+    if (shader->OwnerPipeline() != pipeline_.get()) return -7;
     VkDevice device = pipeline_->Context().device;
 
     constexpr VkDeviceSize kBrushConstantsBytes = 96; // 80 managed + 16 framework
@@ -1045,12 +1104,13 @@ int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 
     if (!SubmitAndWait()) return -5;
+    BumpContentVersion();
     return 0;
 }
 
 bool VulkanInkLayerBitmap::ReadbackBgra(std::vector<uint8_t>& outBgra) {
     if (!fns_ || !fns_->cmdCopyImageToBuffer || image_ == VK_NULL_HANDLE) return false;
-    if (width_ == 0 || height_ == 0) return false;
+    if (width_ == 0 || height_ == 0 || DeviceLost()) return false;
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(width_) * height_ * 4u;
     if (!EnsureBuffer(readbackBuffer_, readbackMemory_, readbackMapped_, readbackCapacity_,
                       bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
@@ -1074,14 +1134,42 @@ bool VulkanInkLayerBitmap::ReadbackBgra(std::vector<uint8_t>& outBgra) {
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
     if (!SubmitAndWait()) return false;
 
-    // Image is R8G8B8A8 → convert to BGRA8 for the CPU pixelBuffer_ convention.
+    // The ink image is R8G8B8A8 PREMULTIPLIED (the brush shaders emit
+    // premultiplied RGBA and the ink brush pipeline blends with
+    // srcColorBlendFactor = ONE; Clear() also writes premultiplied). Convert to
+    // STRAIGHT (un-premultiplied) BGRA8 for the CPU pixelBuffer_ convention.
+    //
+    // Both consumers of this readback are STRAIGHT-alpha compositors:
+    //   • the CPU whole-frame fallback (BlendBuffer → BlendPixel) applies
+    //     SrcOver as src.rgb * src.a, and
+    //   • the foreign-device (cross-VkDevice) path re-uploads these pixels as an
+    //     ordinary bitmap composited through the STRAIGHT bitmapPipeline.
+    // Feeding premultiplied data into either would multiply by alpha a second
+    // time, darkening AA edges and translucent strokes (the same class of bug
+    // the dedicated GPU inkCompositePipeline fixes for the resident path). So
+    // un-premultiply here: straight = premul * 255 / a, with a == 0 meaning a
+    // fully transparent texel (straight colour is undefined → emit 0).
     outBgra.resize(static_cast<size_t>(bytes));
     const uint8_t* src = static_cast<const uint8_t*>(readbackMapped_);
     for (size_t i = 0; i + 3 < static_cast<size_t>(bytes); i += 4) {
-        outBgra[i + 0] = src[i + 2]; // B
-        outBgra[i + 1] = src[i + 1]; // G
-        outBgra[i + 2] = src[i + 0]; // R
-        outBgra[i + 3] = src[i + 3]; // A
+        const uint8_t a = src[i + 3];
+        if (a == 0) {
+            outBgra[i + 0] = 0; // B
+            outBgra[i + 1] = 0; // G
+            outBgra[i + 2] = 0; // R
+            outBgra[i + 3] = 0; // A
+        } else {
+            // (c * 255 + a/2) / a — rounded divide, clamped (premul <= a for a
+            // valid premultiplied texel, so the result is <= 255 bar rounding).
+            const auto unpremultiply = [a](uint8_t c) -> uint8_t {
+                const uint32_t v = (static_cast<uint32_t>(c) * 255u + (a >> 1)) / a;
+                return static_cast<uint8_t>(v > 255u ? 255u : v);
+            };
+            outBgra[i + 0] = unpremultiply(src[i + 2]); // B
+            outBgra[i + 1] = unpremultiply(src[i + 1]); // G
+            outBgra[i + 2] = unpremultiply(src[i + 0]); // R
+            outBgra[i + 3] = a;                         // A unchanged
+        }
     }
     return true;
 }

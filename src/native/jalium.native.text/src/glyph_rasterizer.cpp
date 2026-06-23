@@ -39,10 +39,10 @@ RasterizedGlyph GlyphRasterizer::Rasterize(
         static_cast<FT_F26Dot6>(fontSizePx * 64.0f), 72, 72);
     if (err) return result;
 
-    // Apply sub-pixel offset using FreeType's sub-pixel positioning
-    // subpixelX is 0..3, representing 0, 0.25, 0.5, 0.75 pixel offsets
+    // Apply sub-pixel offset using FreeType's sub-pixel positioning.
+    // subpixelX is 0..7, representing 0, 0.125, 0.25 ... 0.875 pixel offsets.
     FT_Vector subpixelOffset{};
-    subpixelOffset.x = static_cast<FT_Pos>(subpixelX * 16); // 26.6 format: 16 = 0.25 pixels
+    subpixelOffset.x = static_cast<FT_Pos>(subpixelX * 8); // 26.6 format: 8 = 0.125 pixels
     subpixelOffset.y = 0;
     FT_Set_Transform(face, nullptr, &subpixelOffset);
 

@@ -1,0 +1,64 @@
+name: ✨ Feature Request
+description: Suggest a new control, API, WPF-parity feature, or improvement.
+title: "[Feature]: "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping shape Jalium.UI! Jalium aims for a **WPF-style programming model**, so concrete references to how WPF (or another framework) solves the same problem are very welcome.
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have searched [existing issues](https://github.com/VeryJokerJal/Jalium.UI/issues?q=is%3Aissue) and this has not been requested yet.
+          required: true
+  - type: dropdown
+    id: type
+    attributes:
+      label: Request type
+      options:
+        - New control
+        - New API / property / event on an existing type
+        - WPF parity (match an existing WPF API or behavior)
+        - JALXAML / Razor markup feature
+        - Rendering / effects / media capability
+        - Platform support (Linux / macOS / Android / new arch)
+        - Tooling / build / source generator
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do, and what is missing or painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the API, control, or behavior you would like. A code or markup sketch is very welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: wpf-reference
+    attributes:
+      label: WPF / other framework reference
+      description: If this exists in WPF, Avalonia, WinUI, etc., link the relevant API or documentation.
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+    validations:
+      required: false

@@ -29,6 +29,15 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     private readonly Dictionary<string, NativeTextFormat> _textFormatCache = new();
     private readonly Dictionary<ImageSource, BitmapCacheEntry> _bitmapCache = new();
     private readonly Stack<DrawingState> _stateStack = new();
+
+    // Sub-pixel outward nudge applied ONLY to the managed cull clip (CurrentClipBounds),
+    // never to the native GPU scissor. It converts Rect.IntersectsWith's strict-edge test into
+    // a real overlap so an element flush against the pixel-snapped clip boundary is still
+    // admitted for redraw, guaranteeing the cull clip is a SUPERSET of the cleared pixels on a
+    // partial frame. Under-admit after a clear = 1-frame flicker; over-admit = harmless
+    // overdraw (still scissored by the unchanged aliased clip).
+    private const double ClipCullEpsilon = 0.25;
+
     private readonly Stack<Rect?> _clipBoundsStack = new();
     private readonly Stack<PushedEffect> _effectStack = new();
 
@@ -57,6 +66,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     private bool? _supportsRetainedLayers;
     private static readonly bool s_retainedLayersDisabled =
         Environment.GetEnvironmentVariable("JALIUM_DISABLE_RETAINED_LAYERS") == "1";
+
     // True between BeginLayerCapture / EndLayerCapture (the RT is redirected into a
     // layer texture). Prevents nested layer capture.
     private bool _inLayerCapture;
@@ -408,16 +418,19 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         if (_renderTarget == null || _renderTarget.Handle == nint.Zero) return;
         while (Visual.TryDequeuePendingLayerDestroy(out nint h))
         {
-            if (h != 0) NativeMethods.RenderTargetDestroyRetainedLayer(_renderTarget.Handle, h);
+            if (h != 0) _renderTarget.DestroyRetainedLayer(h);
         }
     }
 
     /// <summary>
-    /// When true, temporarily replaces GPU-expensive effects with cheap overlays.
-    /// Intended for interactive resize / recovery scenarios where stability matters
-    /// more than perfect visual fidelity.
+    /// Downgrade ONLY the snapshot/background-sampling effects (backdrop filter +
+    /// LiquidGlass refraction) to their cheap flat fallbacks. Set true during live
+    /// resize (_isSizing): the background snapshot lags the in-flight resized buffer,
+    /// so the real refraction samples the wrong screen region and the glass content
+    /// appears displaced ("outside the panel"). Glow/shadow effects are element-capture
+    /// based (not snapshot based) and are unaffected — they keep rendering fully.
     /// </summary>
-    internal bool SimplifyGpuEffects { get; set; }
+    internal bool SimplifyBackdropEffects { get; set; }
 
     /// <summary>
     /// Begins batching ellipse draw calls. While batching is active, DrawEllipse calls
@@ -531,8 +544,6 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             (float)Math.Min(Sanitize(bl), halfMin));
     }
 
-    private const double SnapEpsilon = 0.0001;
-
     private void FillTransientOverlay(float x, float y, float width, float height, float radiusX, float radiusY,
         float r, float g, float b, float a)
     {
@@ -574,32 +585,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
     private static float SnapCoordinate(double value)
     {
-        if (!double.IsFinite(value))
-        {
-            return 0f;
-        }
-
-        // Only snap when the caller already lined up with a device-pixel boundary
-        // (integer for even-width strokes, half-pixel for odd-width). For any
-        // genuinely fractional value — e.g. a spring animation passing through
-        // 2.49 → 2.50 → 2.51 — we MUST let the float through unchanged. The
-        // previous "fallback return rounded" path collapsed those three values
-        // into {2, 2.5, 3}, which is exactly the 1px hop the user sees as jitter.
+        // Pixel snapping is disabled: render coordinates pass through unchanged.
         // The native renderer does sub-pixel AA, so fractional positions render
-        // cleanly without any layout-side rounding.
-        var rounded = Math.Round(value);
-        if (Math.Abs(value - rounded) < SnapEpsilon)
-        {
-            return (float)rounded;
-        }
-
-        var halfPixel = Math.Floor(value) + 0.5;
-        if (Math.Abs(value - halfPixel) < SnapEpsilon)
-        {
-            return (float)halfPixel;
-        }
-
-        return (float)value; // pass fractional values through; AA handles them
+        // cleanly. Previously this locked values already sitting on an integer or
+        // half-pixel boundary to a hard device-pixel edge; with snapping off they
+        // render at their exact position (mild AA at rest, smooth sub-pixel motion
+        // when animated).
+        return double.IsFinite(value) ? (float)value : 0f;
     }
 
     /// <inheritdoc />
@@ -1013,7 +1005,10 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
 
         var rawScaledFontSize = formattedText.FontSize * fontScale;
-        var effectiveFontSize = Math.Max(1.0, Math.Round(rawScaledFontSize));
+        // Pixel snapping is disabled: the em size is NOT rounded to a whole pixel,
+        // so font-size animations scale smoothly. (Cost: fractional sizes create
+        // more glyph-atlas entries; the native atlas absorbs this.)
+        var effectiveFontSize = Math.Max(1.0, rawScaledFontSize);
 
         // Weight degradation threshold: 13px is the knee where YaHei Bold strokes
         // start merging on a 1:1 pixel grid. Below that, fall back to Medium/Regular
@@ -1037,7 +1032,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             if (format == null) return;
 
             var x = (float)mx;
-            var y = (float)Math.Round(my);
+            var y = (float)my; // pixel snapping disabled: baseline Y passes through
             _renderTarget.DrawText(formattedText.Text, format, x, y, width, height, brush);
             return;
         }
@@ -1053,11 +1048,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         if (scaledFormat == null) return;
 
         // Screen-space origin = current matrix applied to (mx, my).
+        // Pixel snapping is disabled: baseline Y is NOT rounded so vertical text
+        // animation under a scale transform stays smooth.
         var screenX = (float)(nm11 * mx + nm21 * my + ndx);
-        var screenY = (float)Math.Round(nm12 * mx + nm22 * my + ndy);
+        var screenY = (float)(nm12 * mx + nm22 * my + ndy);
 
         // Layout bounding box scales with the actual em size used, so wrap positions
-        // stay consistent with the (snapped) glyph metrics rather than the mathematical scale.
+        // stay consistent with the effective glyph metrics.
         var effectiveScale = effectiveFontSize / formattedText.FontSize;
         var scaledWidth = (float)(width * effectiveScale);
         var scaledHeight = (float)(height * effectiveScale);
@@ -1184,37 +1181,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
         else if (geometry is CombinedGeometry combined)
         {
-            switch (combined.GeometryCombineMode)
-            {
-                case GeometryCombineMode.Exclude:
-                    // Draw Geometry1 only; Geometry2 defines the excluded region.
-                    // A proper implementation requires native CSG; for now draw Geometry1
-                    // which is visually closer than drawing both.
-                    if (combined.Geometry1 != null) DrawGeometry(brush, pen, combined.Geometry1);
-                    break;
-                case GeometryCombineMode.Intersect:
-                    // Intersection is hard to approximate without native support.
-                    // Draw the smaller geometry as a rough approximation.
-                    if (combined.Geometry1 != null && combined.Geometry2 != null)
-                    {
-                        var b1 = combined.Geometry1.Bounds;
-                        var b2 = combined.Geometry2.Bounds;
-                        DrawGeometry(brush, pen,
-                            (b1.Width * b1.Height <= b2.Width * b2.Height) ? combined.Geometry1 : combined.Geometry2);
-                    }
-                    else
-                    {
-                        if (combined.Geometry1 != null) DrawGeometry(brush, pen, combined.Geometry1);
-                    }
-                    break;
-                case GeometryCombineMode.Xor:
-                case GeometryCombineMode.Union:
-                default:
-                    // Union / Xor: draw both geometries
-                    if (combined.Geometry1 != null) DrawGeometry(brush, pen, combined.Geometry1);
-                    if (combined.Geometry2 != null) DrawGeometry(brush, pen, combined.Geometry2);
-                    break;
-            }
+            // Route through the real boolean combiner (Geometry.Combine via
+            // GetFlattenedPathGeometry) so the GPU path matches the software backend
+            // instead of the old per-mode bounding-box approximations. The flattened
+            // result carries FillRule.Nonzero and is filled by the standard path pipeline.
+            var flat = combined.GetFlattenedPathGeometry();
+            if (!flat.IsEmpty())
+                DrawPathGeometry(brush, pen, flat);
         }
         else if (geometry is StreamGeometry streamGeom)
         {
@@ -2137,6 +2110,43 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
     private const double FlatteningTolerance = 0.25;
 
+    /// <summary>
+    /// True when the active backend's bitmap pipeline blends premultiplied alpha
+    /// (SrcBlend=ONE) and therefore needs textures uploaded premultiplied. D3D12 does;
+    /// Vulkan and the software backend blend straight alpha, so they keep the original
+    /// straight pixels. (Metal mirrors D3D12's premultiplied model but is intentionally
+    /// excluded here until verified on a Metal device.)
+    /// </summary>
+    private static bool BackendExpectsPremultipliedBitmaps(RenderBackend backend)
+        => backend == RenderBackend.D3D12;
+
+    /// <summary>
+    /// Returns a premultiplied copy of straight BGRA8 pixels (RGB *= A). The source array is
+    /// never mutated, so other consumers that read it as straight alpha (software rasterizer,
+    /// downscale cache, average-colour sampling) are unaffected.
+    /// </summary>
+    private static byte[] PremultiplyBgraCopy(byte[] src, int width, int height, int stride)
+    {
+        if (stride <= 0) stride = width * 4;
+        var dst = (byte[])src.Clone();
+        for (int y = 0; y < height; y++)
+        {
+            int row = y * stride;
+            for (int x = 0; x < width; x++)
+            {
+                int o = row + x * 4;
+                if (o + 3 >= dst.Length) break;
+                byte a = dst[o + 3];
+                if (a == 255) continue;            // opaque → premultiply is identity
+                if (a == 0) { dst[o] = dst[o + 1] = dst[o + 2] = 0; continue; }
+                dst[o]     = (byte)((dst[o]     * a + 127) / 255);
+                dst[o + 1] = (byte)((dst[o + 1] * a + 127) / 255);
+                dst[o + 2] = (byte)((dst[o + 2] * a + 127) / 255);
+            }
+        }
+        return dst;
+    }
+
     private List<Point> GetBezierPoints(Point p0, Point p1, Point p2, Point p3)
     {
         var points = new List<Point>();
@@ -2304,8 +2314,8 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             if (!d3dImage.IsFrontBufferAvailable || d3dImage.NativeHandle == nint.Zero) return;
             if (d3dImage.ResourceType == Jalium.UI.Media.D3DResourceType.NativeVideoSurface)
             {
-                var rx = (float)Math.Round(rectangle.X + Offset.X);
-                var ry = (float)Math.Round(rectangle.Y + Offset.Y);
+                var rx = (float)(rectangle.X + Offset.X);
+                var ry = (float)(rectangle.Y + Offset.Y);
                 _renderTarget.DrawVideoSurface(d3dImage.NativeHandle, rx, ry,
                     (float)rectangle.Width, (float)rectangle.Height, 1.0f, scalingMode);
                 return;
@@ -2343,10 +2353,32 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             var drawing = vectorDrawing;
             if (vectorViewport.IsEmpty || vectorViewport.Width <= 0 || vectorViewport.Height <= 0) return;
 
-            // Target pixel size for cache key (round to int to avoid sub-pixel churn)
-            var targetW = (int)Math.Ceiling(rectangle.Width);
-            var targetH = (int)Math.Ceiling(rectangle.Height);
+            // Rasterize at device-pixel resolution so the software anti-aliasing isn't
+            // softened by a subsequent GPU upscale. An ancestor scale/rotate transform is
+            // mirrored in _currentNativeMatrix, so fold its effective per-axis scale into
+            // the raster size exactly as the bitmap-downscale branch below does. With no
+            // in-tree transform sx=sy=1 and this matches a bare ceil(); the raster is then
+            // drawn back at the logical rectangle size, so it is sampled 1:1 or minified,
+            // never magnified. Clamped to bound memory under extreme zoom.
+            // (Pure window DPI > 100% is applied by the native layer below the bitmap
+            // upload, identical to the BitmapImage path, so it is intentionally not folded
+            // here — matching the rest of the image pipeline rather than over-sampling.)
+            double svgSx = Math.Sqrt(_currentNativeMatrix[0] * _currentNativeMatrix[0]
+                                   + _currentNativeMatrix[1] * _currentNativeMatrix[1]);
+            double svgSy = Math.Sqrt(_currentNativeMatrix[2] * _currentNativeMatrix[2]
+                                   + _currentNativeMatrix[3] * _currentNativeMatrix[3]);
+            if (svgSx <= 0 || double.IsNaN(svgSx)) svgSx = 1;
+            if (svgSy <= 0 || double.IsNaN(svgSy)) svgSy = 1;
+            svgSx = Math.Min(svgSx, 8.0);
+            svgSy = Math.Min(svgSy, 8.0);
+            var targetW = (int)Math.Ceiling(rectangle.Width * svgSx);
+            var targetH = (int)Math.Ceiling(rectangle.Height * svgSy);
             if (targetW <= 0 || targetH <= 0) return;
+            // Cap the raster buffer so a near-viewport SVG at extreme zoom can't OOM
+            // (≤4096 per edge ≈ 64MB BGRA worst case); it degrades to slightly soft, not crash.
+            const int MaxSvgRasterEdge = 4096;
+            if (targetW > MaxSvgRasterEdge) targetW = MaxSvgRasterEdge;
+            if (targetH > MaxSvgRasterEdge) targetH = MaxSvgRasterEdge;
 
             // ── Check cache: reuse rasterized BitmapImage if size matches ──
             if (_vectorDrawingCache.TryGetValue(imageSource, out var cached) &&
@@ -2357,8 +2389,8 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 var cachedNative = GetNativeBitmap(cached.RasterizedBitmap);
                 if (cachedNative != null)
                 {
-                    var cx = (float)Math.Round(rectangle.X + Offset.X);
-                    var cy = (float)Math.Round(rectangle.Y + Offset.Y);
+                    var cx = (float)(rectangle.X + Offset.X);
+                    var cy = (float)(rectangle.Y + Offset.Y);
                     _renderTarget.DrawBitmap(cachedNative, cx, cy, (float)rectangle.Width, (float)rectangle.Height, 1.0f, scalingMode);
 
                     var frameNum2 = System.Threading.Interlocked.Increment(ref s_svgFrameNumber);
@@ -2406,8 +2438,8 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 var nativeBmp = GetNativeBitmap(rasterized);
                 if (nativeBmp != null)
                 {
-                    var cx = (float)Math.Round(rectangle.X + Offset.X);
-                    var cy = (float)Math.Round(rectangle.Y + Offset.Y);
+                    var cx = (float)(rectangle.X + Offset.X);
+                    var cy = (float)(rectangle.Y + Offset.Y);
                     _renderTarget.DrawBitmap(nativeBmp, cx, cy, (float)rectangle.Width, (float)rectangle.Height, 1.0f, scalingMode);
                 }
             }
@@ -2481,9 +2513,10 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var bitmap = GetNativeBitmap(drawSource);
         if (bitmap == null) return;
 
-        // Round to pixel boundaries to prevent sub-pixel jittering
-        var x = (float)Math.Round(rectangle.X + Offset.X);
-        var y = (float)Math.Round(rectangle.Y + Offset.Y);
+        // Pixel snapping disabled: pass the origin through so animated images move
+        // smoothly at sub-pixel precision instead of stepping by whole pixels.
+        var x = (float)(rectangle.X + Offset.X);
+        var y = (float)(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
 
@@ -2501,14 +2534,14 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         // Check if there's any effect to apply
         if (effect == null || !effect.HasEffect) return;
 
-        // Round to pixel boundaries to prevent sub-pixel jittering
-        var x = (float)Math.Round(rectangle.X + Offset.X);
-        var y = (float)Math.Round(rectangle.Y + Offset.Y);
+        // Pixel snapping disabled: pass the backdrop origin through unchanged.
+        var x = (float)(rectangle.X + Offset.X);
+        var y = (float)(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
         var normalizedCornerRadius = cornerRadius.Normalize(rectangle.Width, rectangle.Height);
 
-        if (SimplifyGpuEffects)
+        if (SimplifyBackdropEffects)
         {
             DrawSimplifiedBackdropEffect(x, y, width, height, cornerRadius, effect);
             return;
@@ -2608,12 +2641,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         if (_closed || parameters is null) return;
 
         var rectangle = parameters.Rectangle;
-        var x = (float)Math.Round(rectangle.X + Offset.X);
-        var y = (float)Math.Round(rectangle.Y + Offset.Y);
+        var x = (float)(rectangle.X + Offset.X);
+        var y = (float)(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
 
-        if (SimplifyGpuEffects)
+        if (SimplifyBackdropEffects)
         {
             float overlayAlpha = Math.Clamp(
                 parameters.TintOpacity > 0 ? parameters.TintOpacity : 0.22f,
@@ -2939,7 +2972,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// </summary>
     /// <param name="type">0 = RoundedRect, 1 = SuperEllipse.</param>
     /// <param name="n">SuperEllipse exponent (e.g. 4.0 for squircle).</param>
-    public void SetShapeType(int type, float n)
+    public override void SetShapeType(int type, float n)
     {
         if (_closed) return;
         _renderTarget.SetShapeType(type, n);
@@ -3033,17 +3066,31 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
-        var x = (float)Math.Floor(dirtyRegion.X);
-        var y = (float)Math.Floor(dirtyRegion.Y);
-        var w = (float)Math.Ceiling(dirtyRegion.X + dirtyRegion.Width) - x;
-        var h = (float)Math.Ceiling(dirtyRegion.Y + dirtyRegion.Height) - y;
+        // Pixel-snap OUTWARD (floor/ceil) — exactly the box the ALIASED GPU scissor below
+        // covers, hence (clamped by that scissor) exactly the box ClearBackground clears on a
+        // partial frame. Computed once so the SAME snapped box feeds both the managed cull clip
+        // and the native scissor: if they diverge a cleared edge pixel can be culled-but-not-
+        // repainted, which blinks grazing Path icons every frame an animation drives the clip.
+        double snapX = Math.Floor(dirtyRegion.X);
+        double snapY = Math.Floor(dirtyRegion.Y);
+        double snapW = Math.Ceiling(dirtyRegion.X + dirtyRegion.Width) - snapX;
+        double snapH = Math.Ceiling(dirtyRegion.Y + dirtyRegion.Height) - snapY;
 
-        PushClipBounds(dirtyRegion);
+        // CULL clip (the managed culling hint read by Visual.ShouldRenderChild AND
+        // DrawingReplayer) = the snapped box grown by a sub-pixel epsilon on every side, so an
+        // element flush against the snapped integer boundary still STRICTLY overlaps under
+        // Rect.IntersectsWith. This makes the cull clip a guaranteed SUPERSET of the cleared
+        // pixels; the native renderer owns the REAL clip via PushClipAliased below, so an
+        // over-large managed cull hint is always safe (over-cull = harmless overdraw).
+        PushClipBounds(new Rect(
+            snapX - ClipCullEpsilon,
+            snapY - ClipCullEpsilon,
+            snapW + 2 * ClipCullEpsilon,
+            snapH + 2 * ClipCullEpsilon));
 
-        // Push D2D clip with ALIASED mode — hard pixel boundary, no semi-transparent
-        // edge artifacts. PER_PRIMITIVE mode creates anti-aliased clip edges that
-        // produce visible seam lines when the clip boundary intersects opaque content.
-        _renderTarget.PushClipAliased(x, y, w, h);
+        // GPU scissor — TIGHT and unchanged: the same floor/ceil-snapped integer box, NO
+        // epsilon. ALIASED mode = hard pixel boundary, no semi-transparent edge seams.
+        _renderTarget.PushClipAliased((float)snapX, (float)snapY, (float)snapW, (float)snapH);
         _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
     }
 
@@ -3151,12 +3198,6 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         // at (x - captureOriginX, y - captureOriginY) inside the texture.
         float uvOffX = x - captureOriginX;
         float uvOffY = y - captureOriginY;
-
-        if (SimplifyGpuEffects)
-        {
-            _renderTarget.DrawCapturedTransition(0, x, y, w, h, 1.0f);
-            return;
-        }
 
         if (effect is Media.Effects.BlurEffect blur)
         {
@@ -3969,8 +4010,26 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                     bitmapImage.PixelWidth > 0 &&
                     bitmapImage.PixelHeight > 0)
                 {
+                    // BitmapImage.RawPixelData is straight (non-premultiplied) alpha: WIC
+                    // decodes to 32bppBGRA and IconHelper's GetDIBits is straight too.
+                    // D3D12's bitmap pipeline blends premultiplied (SrcBlend=ONE) and its
+                    // pixel shader does NOT premultiply, so straight pixels make anti-aliased
+                    // edges bleed bright RGB → a white fringe (most visible on the round
+                    // auto window icon). Upload a premultiplied COPY on backends whose bitmap
+                    // blend expects premultiplied textures (D3D12). RawPixelData itself is
+                    // left untouched — the software rasterizer and the downscale cache read it
+                    // as straight; Vulkan/software blend straight and keep the original.
+                    var uploadPixels = bitmapImage.RawPixelData;
+                    if (BackendExpectsPremultipliedBitmaps(_context.Backend))
+                    {
+                        uploadPixels = PremultiplyBgraCopy(
+                            bitmapImage.RawPixelData,
+                            bitmapImage.PixelWidth,
+                            bitmapImage.PixelHeight,
+                            bitmapImage.PixelStride);
+                    }
                     nativeBitmap = _context.CreateBitmapFromPixels(
-                        bitmapImage.RawPixelData,
+                        uploadPixels,
                         bitmapImage.PixelWidth,
                         bitmapImage.PixelHeight,
                         bitmapImage.PixelStride);
@@ -3988,8 +4047,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         else if (imageSource is Jalium.UI.Media.WriteableBitmap writeable &&
                  writeable.PixelWidth > 0 && writeable.PixelHeight > 0)
         {
-            // WriteableBitmap's backing buffer is Pbgra32 (BGRA8 pre-multiplied)
-            // which matches the native CreateBitmapFromPixels expectation.
+            // WriteableBitmap defaults to straight (non-premultiplied) Bgra32, and
+            // neither SetPixel nor WritePixels premultiply, so its buffer is straight
+            // in the common case — correct for the straight-alpha Vulkan/software
+            // blend, uploaded verbatim. (Genuinely premultiplied Pbgra32 content and
+            // the D3D12 premultiply-on-upload path that the BitmapImage branch above
+            // applies are deliberately left to a separate WriteableBitmap alpha-mode fix.)
             try
             {
                 nativeBitmap = _context.CreateBitmapFromPixels(

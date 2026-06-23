@@ -11,15 +11,13 @@ namespace Jalium.UI.Controls;
 public class ComboBox : Selector
 {
     private const double DefaultToggleButtonWidth = 28;
-    private const double ArrowOpenDurationMs = 260;
-    private const double ArrowCloseDurationMs = 180;
     private const double PopupOpenDurationMs = 250;
     private const double PopupCloseDurationMs = 150;
     private const double PopupSlideOffsetY = -6;
-    private static readonly CubicEase s_arrowOpenEase = new() { EasingMode = EasingMode.EaseOut };
-    private static readonly CubicEase s_arrowCloseEase = new() { EasingMode = EasingMode.EaseInOut };
+    private const double ArrowFlipDurationMs = 220;
     private static readonly BackEase s_popupOpenEase = new() { EasingMode = EasingMode.EaseOut, Amplitude = 0.85 };
     private static readonly CubicEase s_popupCloseEase = new() { EasingMode = EasingMode.EaseInOut };
+    private static readonly CubicEase s_arrowFlipEase = new() { EasingMode = EasingMode.EaseInOut };
 
     /// <inheritdoc />
     protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
@@ -36,10 +34,27 @@ public class ComboBox : Selector
     private bool _isUpdatingEditableText;
 
     private Shapes.Path? _arrowPath;
-    private RotateTransform? _arrowRotate;
+    private string? _arrowDownData;
     private bool _isCloseAnimating;
-    private Threading.DispatcherTimer? _arrowAnimTimer;
     private Threading.DispatcherTimer? _popupAnimTimer;
+
+    // 平滑翻转动画：把 chevron【逐帧旋转烘进几何坐标】（送 native 始终是正常正定路径），
+    // 而不是用 180° RenderTransform —— 后者产生 (-1,0,0,-1) 负对角矩阵，触发 native FillPath
+    // 的光栅化 bug（路径被整体平移一个 Offset、箭头飞到下方/消失，Vello/Impeller 两引擎共有，
+    // 已用渲染层埋点实证）。_chevronBase 为预拉伸到箭头方框、居中后的基准几何（Stretch=None），
+    // 绕其中心旋转尺寸恒定、无抖动。
+    private Threading.DispatcherTimer? _arrowAnimTimer;
+    private PathGeometry? _chevronBase;
+    private double _chevronCenterX;
+    private double _chevronCenterY;
+    private double _arrowAngle;
+
+    // 朝下 chevron 兜底数据（与模板一致）；朝上=朝下绕原点 180°（取负，保 winding/sweep）。
+    // 仅在无法构建 _chevronBase 时作"瞬时切换"降级用。
+    private const string ArrowDownData =
+        "M 733.87,841.90 L 1160.54,273.07 A 170.67,170.67,0,0,0,1024.00,0 H 170.67 A 170.67,170.67,0,0,0,34.14,273.07 L 460.80,841.90 A 170.67,170.67,0,0,0,733.87,841.90 Z";
+    private const string ArrowUpData =
+        "M -733.87,-841.90 L -1160.54,-273.07 A 170.67,170.67,0,0,0,-1024.00,0 H -170.67 A 170.67,170.67,0,0,0,-34.14,-273.07 L -460.80,-841.90 A 170.67,170.67,0,0,0,-733.87,-841.90 Z";
 
     #region Dependency Properties
 
@@ -294,13 +309,14 @@ public class ComboBox : Selector
 
         UpdatePopupPlacementAndWidth();
 
-        // Find the arrow Path inside ToggleButton's template for rotation animation
+        // Find the arrow Path inside ToggleButton's template for the open/close indicator.
         _arrowPath = FindDescendant<Shapes.Path>(_toggleButton);
         if (_arrowPath != null)
         {
-            _arrowRotate = new RotateTransform();
-            _arrowPath.RenderTransformOrigin = new Point(0.5, 0.5);
-            _arrowPath.RenderTransform = _arrowRotate;
+            _arrowDownData = string.IsNullOrWhiteSpace(_arrowPath.Data) ? ArrowDownData : _arrowPath.Data!;
+            BuildChevronBase();
+            _arrowAngle = _isDropDownOpen ? 180.0 : 0.0;
+            ApplyArrowAngle(_arrowAngle);
         }
 
         // Update selection box
@@ -329,7 +345,7 @@ public class ComboBox : Selector
         if (_toggleButton != null)
             _toggleButton.IsChecked = false;
 
-        AnimateArrowRotation(0, ArrowCloseDurationMs, s_arrowCloseEase);
+        SetArrowDirection(false);
 
         SetValue(IsDropDownOpenProperty, false);
         DropDownClosed?.Invoke(this, EventArgs.Empty);
@@ -898,7 +914,7 @@ public class ComboBox : Selector
             _popupAnimTimer.Start();
         }
 
-        AnimateArrowRotation(180, ArrowOpenDurationMs, s_arrowOpenEase);
+        SetArrowDirection(true);
     }
 
     private void AnimateClose()
@@ -953,40 +969,179 @@ public class ComboBox : Selector
             _isCloseAnimating = false;
         }
 
-        AnimateArrowRotation(0, ArrowCloseDurationMs, s_arrowCloseEase);
+        SetArrowDirection(false);
     }
 
-    private void AnimateArrowRotation(double toAngle, double durationMs, EasingFunctionBase ease)
+    /// <summary>
+    /// 翻转下拉箭头指示方向（展开→朝上 180°，收起→朝下 0°），平滑过渡。
+    /// 翻转通过【逐帧把 chevron 几何旋转到当前角度】实现，而不是 180° RenderTransform ——
+    /// 后者向 native 提交 (-1,0,0,-1) 负对角矩阵，触发 native FillPath 的光栅化 bug
+    /// （路径被整体平移一个 Offset，箭头飞到下方/消失；Vello/Impeller 两引擎共有，
+    /// 已用渲染层埋点 PUSH#/GEOM# 实证：managed 侧矩阵全对、仅 native 应用出错）。
+    /// 烘进几何的旋转点恒为正常正定路径，彻底绕开该 bug。
+    /// </summary>
+    private void SetArrowDirection(bool open)
     {
-        if (_arrowRotate == null) return;
+        AnimateArrowFlip(open ? 180.0 : 0.0);
+    }
+
+    // 把朝下 chevron 预拉伸到箭头方框、居中，作为旋转基准（Stretch 改 None，旋转时尺寸恒定不抖动）。
+    private void BuildChevronBase()
+    {
+        _chevronBase = null;
+        if (_arrowPath == null) return;
+
+        var data = _arrowDownData ?? ArrowDownData;
+        if (Geometry.Parse(data) is not PathGeometry parsed || parsed.Figures.Count == 0)
+            return;
+
+        var boxW = !double.IsNaN(_arrowPath.Width) && _arrowPath.Width > 0 ? _arrowPath.Width : 9.0;
+        var boxH = !double.IsNaN(_arrowPath.Height) && _arrowPath.Height > 0 ? _arrowPath.Height : boxW;
+
+        _chevronBase = StretchUniform(parsed, boxW, boxH);
+        _chevronCenterX = boxW / 2.0;
+        _chevronCenterY = boxH / 2.0;
+        _arrowPath.Stretch = Stretch.None; // 几何已是目标尺寸，禁用 Path 自身的拉伸/重拟合
+    }
+
+    private void AnimateArrowFlip(double toAngle)
+    {
+        if (_arrowPath == null) return;
+
+        // 无法构建基准几何时降级为瞬时切换（朝上/朝下静态 chevron）。
+        if (_chevronBase == null)
+        {
+            _arrowPath.Data = toAngle >= 90.0 ? ArrowUpData : (_arrowDownData ?? ArrowDownData);
+            return;
+        }
 
         _arrowAnimTimer?.Stop();
 
-        var fromAngle = _arrowRotate.Angle;
-        var startTick = Environment.TickCount64;
+        var fromAngle = _arrowAngle;
+        if (Math.Abs(fromAngle - toAngle) < 0.5)
+        {
+            ApplyArrowAngle(toAngle);
+            return;
+        }
 
+        var startTick = Environment.TickCount64;
         _arrowAnimTimer = new Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(Math.Max(1, CompositionTarget.FrameIntervalMs))
         };
-
         _arrowAnimTimer.Tick += (_, _) =>
         {
             var elapsed = Environment.TickCount64 - startTick;
-            var progress = Math.Clamp(elapsed / durationMs, 0.0, 1.0);
-            var easedProgress = ease.Ease(progress);
-
-            _arrowRotate.Angle = fromAngle + (toAngle - fromAngle) * easedProgress;
-            _arrowPath?.InvalidateVisual();
+            var progress = Math.Clamp(elapsed / ArrowFlipDurationMs, 0.0, 1.0);
+            var eased = s_arrowFlipEase.Ease(progress);
+            ApplyArrowAngle(fromAngle + (toAngle - fromAngle) * eased);
 
             if (progress >= 1.0)
             {
                 _arrowAnimTimer.Stop();
                 _arrowAnimTimer = null;
+                ApplyArrowAngle(toAngle);
             }
         };
-
         _arrowAnimTimer.Start();
+    }
+
+    private void ApplyArrowAngle(double angle)
+    {
+        _arrowAngle = angle;
+        if (_arrowPath == null || _chevronBase == null) return;
+        _arrowPath.Geometry = RotateChevron(_chevronBase, angle, _chevronCenterX, _chevronCenterY);
+    }
+
+    // 均匀拉伸 src 至 boxW×boxH 并居中（圆弧半径同比缩放）。
+    private static PathGeometry StretchUniform(PathGeometry src, double boxW, double boxH)
+    {
+        var b = src.Bounds;
+        if (b.Width <= 0 || b.Height <= 0) return src;
+
+        var s = Math.Min(boxW / b.Width, boxH / b.Height);
+        var contentW = b.Width * s;
+        var contentH = b.Height * s;
+        var dx = (boxW - contentW) / 2.0 - b.X * s;
+        var dy = (boxH - contentH) / 2.0 - b.Y * s;
+
+        return TransformGeometry(src,
+            p => new Point(p.X * s + dx, p.Y * s + dy),
+            sz => new Size(sz.Width * s, sz.Height * s));
+    }
+
+    // 绕 (cx,cy) 旋转 angleDeg（圆弧半径不随旋转改变，故 size 透传）。
+    private static PathGeometry RotateChevron(PathGeometry src, double angleDeg, double cx, double cy)
+    {
+        var r = angleDeg * Math.PI / 180.0;
+        var cos = Math.Cos(r);
+        var sin = Math.Sin(r);
+
+        Point Rot(Point p)
+        {
+            var dx = p.X - cx;
+            var dy = p.Y - cy;
+            return new Point(cx + dx * cos - dy * sin, cy + dx * sin + dy * cos);
+        }
+
+        return TransformGeometry(src, Rot, sz => sz);
+    }
+
+    // 把点变换 tp / 圆弧尺寸变换 ts 应用到 src 的每个图形/段，返回新 PathGeometry（结构同 Path.ClonePathGeometry）。
+    private static PathGeometry TransformGeometry(PathGeometry src, Func<Point, Point> tp, Func<Size, Size> ts)
+    {
+        var clone = new PathGeometry { FillRule = src.FillRule };
+        foreach (var fig in src.Figures)
+        {
+            var nf = new PathFigure
+            {
+                StartPoint = tp(fig.StartPoint),
+                IsClosed = fig.IsClosed,
+                IsFilled = fig.IsFilled,
+            };
+            foreach (var seg in fig.Segments)
+            {
+                switch (seg)
+                {
+                    case LineSegment l:
+                        nf.Segments.Add(new LineSegment(tp(l.Point), l.IsStroked));
+                        break;
+                    case PolyLineSegment pl:
+                    {
+                        var s = new PolyLineSegment { IsStroked = pl.IsStroked };
+                        foreach (var pt in pl.Points) s.Points.Add(tp(pt));
+                        nf.Segments.Add(s);
+                        break;
+                    }
+                    case ArcSegment a:
+                        nf.Segments.Add(new ArcSegment(tp(a.Point), ts(a.Size), a.RotationAngle,
+                            a.IsLargeArc, a.SweepDirection, a.IsStroked));
+                        break;
+                    case BezierSegment bz:
+                        nf.Segments.Add(new BezierSegment(tp(bz.Point1), tp(bz.Point2), tp(bz.Point3), bz.IsStroked));
+                        break;
+                    case PolyBezierSegment pb:
+                    {
+                        var s = new PolyBezierSegment { IsStroked = pb.IsStroked };
+                        foreach (var pt in pb.Points) s.Points.Add(tp(pt));
+                        nf.Segments.Add(s);
+                        break;
+                    }
+                    case QuadraticBezierSegment q:
+                        nf.Segments.Add(new QuadraticBezierSegment(tp(q.Point1), tp(q.Point2), q.IsStroked));
+                        break;
+                    case PolyQuadraticBezierSegment pq:
+                    {
+                        var s = new PolyQuadraticBezierSegment { IsStroked = pq.IsStroked };
+                        foreach (var pt in pq.Points) s.Points.Add(tp(pt));
+                        nf.Segments.Add(s);
+                        break;
+                    }
+                }
+            }
+            clone.Figures.Add(nf);
+        }
+        return clone;
     }
 
     private static T? FindDescendant<T>(Visual? root) where T : Visual

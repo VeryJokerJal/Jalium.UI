@@ -107,6 +107,19 @@ private:
 
     void ApplyAlignment(LayoutResult& layout, float maxWidth, float maxHeight);
 
+    /// Shapes text, splitting it into per-face runs so codepoints the primary
+    /// face lacks (e.g. CJK) are shaped+measured with a Unicode fallback face.
+    /// All-primary text takes a fast path identical to shaping with face_ alone.
+    ShapedRun ShapeWithFallback(const wchar_t* text, uint32_t textLength);
+
+    /// Picks the face that should render a codepoint: primary if it has the
+    /// glyph, else the fallback face if it does, else primary (renders .notdef).
+    FT_Face ChooseFaceForCodepoint(uint32_t codepoint, uint64_t& outFontId) const;
+
+    /// Lazily loads fallbackFace_ from the provider's fallback family. No-op
+    /// after the first attempt; safe when the platform has no fallback font.
+    void EnsureFallbackFace();
+
     // Font state
     TextEngine*     engine_;
     FT_Face         face_ = nullptr;
@@ -115,6 +128,13 @@ private:
     std::wstring    fontFamily_;
     int32_t         fontWeight_;
     int32_t         fontStyle_;
+
+    // Unicode-coverage fallback face (e.g. Noto Sans CJK), loaded lazily the
+    // first time the primary face lacks a glyph. A distinct fallbackFontId_
+    // keeps its atlas entries from colliding with the primary face's.
+    FT_Face         fallbackFace_ = nullptr;
+    uint64_t        fallbackFontId_ = 0;
+    bool            fallbackAttempted_ = false;
 
     // Layout settings
     int32_t  alignment_ = 0;           ///< JaliumTextAlignment

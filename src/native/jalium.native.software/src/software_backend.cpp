@@ -991,22 +991,96 @@ void SoftwareRenderTarget::DrawHLine(int32_t x0, int32_t x1, int32_t y,
     }
 }
 
+// ----------------------------------------------------------------------------
+// Sub-pixel coverage rasterizer (shared by the shape primitives)
+// ----------------------------------------------------------------------------
+// An animated transform feeds a continuous, usually-fractional origin into the
+// shape primitives below. The legacy code truncated that origin with an (int)
+// cast (`ix = (int32_t)tx`) before stepping integer pixels, which pinned the
+// shape to a whole-pixel grid and made smooth animations step 1px at a time.
+//
+// RasterizeCoverageAA keeps the origin in float. It walks the device pixels the
+// shape's float bounding box can touch and, for each, evaluates the caller's
+// `inside` predicate at 4x4 sub-sample positions expressed in shape-local space
+// (sample center minus the float origin). The fraction of covered sub-samples
+// becomes the pixel alpha, so the shape tracks its true sub-pixel position AND
+// gains edge anti-aliasing matching the GPU backends. Whole-pixel-aligned
+// (static) geometry still renders crisply because an integer origin yields full
+// or zero coverage with no partial edge.
+template <typename InsidePred>
+void SoftwareRenderTarget::RasterizeCoverageAA(
+    float devOriginX, float devOriginY,
+    float localMinX, float localMinY, float localMaxX, float localMaxY,
+    Brush* brush, InsidePred inside)
+{
+    constexpr int kSub = 4;
+    constexpr float kStep = 1.0f / kSub;
+    constexpr float kInvSamples = 1.0f / (kSub * kSub);
+
+    int32_t px0 = std::max(0, (int32_t)std::floor(devOriginX + localMinX));
+    int32_t py0 = std::max(0, (int32_t)std::floor(devOriginY + localMinY));
+    int32_t px1 = std::min(width_, (int32_t)std::ceil(devOriginX + localMaxX));
+    int32_t py1 = std::min(height_, (int32_t)std::ceil(devOriginY + localMaxY));
+
+    for (int32_t py = py0; py < py1; py++) {
+        for (int32_t px = px0; px < px1; px++) {
+            if (!clipStack_.empty() && IsClipped((float)px + 0.5f, (float)py + 0.5f)) continue;
+
+            int hits = 0;
+            for (int sy = 0; sy < kSub; sy++) {
+                float ly = ((float)py + (sy + 0.5f) * kStep) - devOriginY;
+                for (int sx = 0; sx < kSub; sx++) {
+                    float lx = ((float)px + (sx + 0.5f) * kStep) - devOriginX;
+                    if (inside(lx, ly)) hits++;
+                }
+            }
+            if (hits == 0) continue;
+
+            uint8_t r, g, b, a;
+            GetBrushColor(brush, (float)px + 0.5f, (float)py + 0.5f, r, g, b, a);
+            if (hits < kSub * kSub) {
+                a = (uint8_t)((float)a * ((float)hits * kInvSamples) + 0.5f);
+            }
+            if (a == 0) continue;
+            fb_.BlendPixel(px, py, r, g, b, a);
+        }
+    }
+}
+
 void SoftwareRenderTarget::FillScanlineRect(float x, float y, float w, float h, Brush* brush)
 {
     float tx, ty, tx2, ty2;
     currentTransform_.Apply(x, y, tx, ty);
     currentTransform_.Apply(x + w, y + h, tx2, ty2);
 
-    int32_t ix = (int32_t)tx;
-    int32_t iy = (int32_t)ty;
-    int32_t ix2 = (int32_t)(tx2 + 0.5f);
-    int32_t iy2 = (int32_t)(ty2 + 0.5f);
+    // Keep the rectangle edges in float and weight each boundary pixel by the
+    // fraction it is actually covered (analytic 1px AA). The origin is no longer
+    // truncated to an integer, so an animated rect moves smoothly sub-pixel
+    // instead of snapping a whole pixel each frame. min/max also lets a flipped
+    // (negative-scale) transform fill correctly.
+    float left = std::min(tx, tx2), right = std::max(tx, tx2);
+    float top = std::min(ty, ty2), bottom = std::max(ty, ty2);
+    if (right - left <= 0.0f || bottom - top <= 0.0f) return;
 
-    for (int32_t row = iy; row < iy2; row++) {
-        for (int32_t col = ix; col < ix2; col++) {
-            if (!clipStack_.empty() && IsClipped((float)col, (float)row)) continue;
+    int32_t px0 = std::max(0, (int32_t)std::floor(left));
+    int32_t py0 = std::max(0, (int32_t)std::floor(top));
+    int32_t px1 = std::min(width_, (int32_t)std::ceil(right));
+    int32_t py1 = std::min(height_, (int32_t)std::ceil(bottom));
+
+    for (int32_t row = py0; row < py1; row++) {
+        float covY = std::min((float)row + 1.0f, bottom) - std::max((float)row, top);
+        if (covY <= 0.0f) continue;
+        if (covY > 1.0f) covY = 1.0f;
+        for (int32_t col = px0; col < px1; col++) {
+            if (!clipStack_.empty() && IsClipped((float)col + 0.5f, (float)row + 0.5f)) continue;
+            float covX = std::min((float)col + 1.0f, right) - std::max((float)col, left);
+            if (covX <= 0.0f) continue;
+            if (covX > 1.0f) covX = 1.0f;
+            float cov = covX * covY;
             uint8_t r, g, b, a;
-            GetBrushColor(brush, (float)col, (float)row, r, g, b, a);
+            GetBrushColor(brush, (float)col + 0.5f, (float)row + 0.5f, r, g, b, a);
+            if (cov < 1.0f) a = (uint8_t)((float)a * cov + 0.5f);
+            if (a == 0) continue;
             fb_.BlendPixel(col, row, r, g, b, a);
         }
     }
@@ -1014,14 +1088,33 @@ void SoftwareRenderTarget::FillScanlineRect(float x, float y, float w, float h, 
 
 void SoftwareRenderTarget::StrokeScanlineRect(float x, float y, float w, float h, Brush* brush, float strokeWidth)
 {
-    // Top edge
-    FillScanlineRect(x, y, w, strokeWidth, brush);
-    // Bottom edge
-    FillScanlineRect(x, y + h - strokeWidth, w, strokeWidth, brush);
-    // Left edge
-    FillScanlineRect(x, y + strokeWidth, strokeWidth, h - strokeWidth * 2, brush);
-    // Right edge
-    FillScanlineRect(x + w - strokeWidth, y + strokeWidth, strokeWidth, h - strokeWidth * 2, brush);
+    if (!brush) return;
+
+    float tx, ty, tx2, ty2;
+    currentTransform_.Apply(x, y, tx, ty);
+    currentTransform_.Apply(x + w, y + h, tx2, ty2);
+    float tw = tx2 - tx, th = ty2 - ty;
+    if (tw <= 0.0f || th <= 0.0f) return;
+    float sx = (w > 0) ? (tw / w) : 1.0f;
+    float sy = (h > 0) ? (th / h) : 1.0f;
+    float tswX = strokeWidth * sx;   // left/right edge thickness (device px)
+    float tswY = strokeWidth * sy;   // top/bottom edge thickness (device px)
+
+    // Single coverage pass instead of tiling four FillScanlineRect bands. With
+    // analytic edge coverage the old four-band approach double-blended the single
+    // boundary row where the top/bottom band met the left/right band, leaving a
+    // faint under-covered seam at each corner for fractional stroke/origin. The
+    // ring predicate (inside the outer rect AND outside the inner hole) evaluates
+    // and blends every pixel exactly once.
+    RasterizeCoverageAA(tx, ty, 0.0f, 0.0f, tw, th, brush,
+        [tw, th, tswX, tswY](float lx, float ly) -> bool {
+            if (lx < 0.0f || lx > tw || ly < 0.0f || ly > th) return false;
+            float innerL = tswX, innerR = tw - tswX;
+            float innerT = tswY, innerB = th - tswY;
+            if (innerR <= innerL || innerB <= innerT) return true;   // stroke fills whole rect
+            if (lx >= innerL && lx <= innerR && ly >= innerT && ly <= innerB) return false;
+            return true;
+        });
 }
 
 void SoftwareRenderTarget::DrawBresenhamLine(float x1, float y1, float x2, float y2,
@@ -1031,31 +1124,44 @@ void SoftwareRenderTarget::DrawBresenhamLine(float x1, float y1, float x2, float
     currentTransform_.Apply(x1, y1, tx1, ty1);
     currentTransform_.Apply(x2, y2, tx2, ty2);
 
-    int32_t ix1 = (int32_t)tx1, iy1 = (int32_t)ty1;
-    int32_t ix2 = (int32_t)tx2, iy2 = (int32_t)ty2;
-
-    int32_t dx = std::abs(ix2 - ix1);
-    int32_t dy = std::abs(iy2 - iy1);
-    int32_t sx = ix1 < ix2 ? 1 : -1;
-    int32_t sy = iy1 < iy2 ? 1 : -1;
-    int32_t err = dx - dy;
-
-    // Scale strokeWidth by the average scale factor of the current transform
+    // Float distance-to-segment coverage instead of an integer-seeded Bresenham
+    // stamp: the transformed endpoints stay fractional, so an animated/rotated
+    // line moves smoothly across the pixel grid and gets a 1px analytic AA edge,
+    // matching the GPU backends' feathered lines (no whole-pixel snapping).
     float avgScale = (std::abs(currentTransform_.m[0]) + std::abs(currentTransform_.m[3])) * 0.5f;
-    int32_t halfStroke = std::max(0, (int32_t)(strokeWidth * avgScale * 0.5f));
+    float halfW = std::max(0.5f, strokeWidth * avgScale * 0.5f);
 
-    while (true) {
-        for (int32_t dy2 = -halfStroke; dy2 <= halfStroke; dy2++) {
-            for (int32_t dx2 = -halfStroke; dx2 <= halfStroke; dx2++) {
-                if (!clipStack_.empty() && IsClipped((float)(ix1 + dx2), (float)(iy1 + dy2))) continue;
-                fb_.BlendPixel(ix1 + dx2, iy1 + dy2, r, g, b, a);
-            }
+    float minXf = std::min(tx1, tx2) - halfW - 1.0f;
+    float maxXf = std::max(tx1, tx2) + halfW + 1.0f;
+    float minYf = std::min(ty1, ty2) - halfW - 1.0f;
+    float maxYf = std::max(ty1, ty2) + halfW + 1.0f;
+
+    int32_t px0 = std::max(0, (int32_t)std::floor(minXf));
+    int32_t py0 = std::max(0, (int32_t)std::floor(minYf));
+    int32_t px1 = std::min(width_, (int32_t)std::ceil(maxXf));
+    int32_t py1 = std::min(height_, (int32_t)std::ceil(maxYf));
+
+    float segDX = tx2 - tx1, segDY = ty2 - ty1;
+    float lenSq = segDX * segDX + segDY * segDY;
+
+    for (int32_t py = py0; py < py1; py++) {
+        float fy = (float)py + 0.5f;
+        for (int32_t px = px0; px < px1; px++) {
+            float fx = (float)px + 0.5f;
+            float t = (lenSq > 0.0f)
+                ? std::clamp(((fx - tx1) * segDX + (fy - ty1) * segDY) / lenSq, 0.0f, 1.0f)
+                : 0.0f;
+            float cxp = tx1 + t * segDX, cyp = ty1 + t * segDY;
+            float ddx = fx - cxp, ddy = fy - cyp;
+            float dist = std::sqrt(ddx * ddx + ddy * ddy);
+            float cov = halfW + 0.5f - dist;
+            if (cov <= 0.0f) continue;
+            if (cov > 1.0f) cov = 1.0f;
+            if (!clipStack_.empty() && IsClipped(fx, fy)) continue;
+            uint8_t aa = (cov < 1.0f) ? (uint8_t)((float)a * cov + 0.5f) : a;
+            if (aa == 0) continue;
+            fb_.BlendPixel(px, py, r, g, b, aa);
         }
-
-        if (ix1 == ix2 && iy1 == iy2) break;
-        int32_t e2 = 2 * err;
-        if (e2 > -dy) { err -= dy; ix1 += sx; }
-        if (e2 < dx) { err += dx; iy1 += sy; }
     }
 }
 
@@ -1084,43 +1190,34 @@ void SoftwareRenderTarget::FillRoundedRectangle(float x, float y, float w, float
     float th = ty2 - ty;
     float sx = (w > 0) ? (tw / w) : 1.0f;
     float sy = (h > 0) ? (th / h) : 1.0f;
+    if (tw <= 0.0f || th <= 0.0f) return;
     float trx = rx * sx, try_ = ry * sy;
 
-    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
-    int32_t iw = (int32_t)(tw + 0.5f), ih = (int32_t)(th + 0.5f);
-
-    for (int32_t row = 0; row < ih; row++) {
-        for (int32_t col = 0; col < iw; col++) {
-            float cx = (float)col, cy = (float)row;
-            bool inside = true;
-            // Check corners using transformed radii
+    // Sub-pixel + AA fill: feed the float origin (tx,ty) to RasterizeCoverageAA
+    // instead of truncating it, so an animated rounded rect tracks its true
+    // position and the corners are anti-aliased like the GPU backends.
+    RasterizeCoverageAA(tx, ty, 0.0f, 0.0f, tw, th, brush,
+        [tw, th, trx, try_](float cx, float cy) -> bool {
+            if (cx < 0.0f || cx > tw || cy < 0.0f || cy > th) return false;
+            if (trx <= 0.0f || try_ <= 0.0f) return true;
             if (cx < trx && cy < try_) {
-                float dx = (cx - trx) / trx;
-                float dy = (cy - try_) / try_;
-                inside = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx > tw - trx && cy < try_) {
-                float dx = (cx - (tw - trx)) / trx;
-                float dy = (cy - try_) / try_;
-                inside = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx < trx && cy > th - try_) {
-                float dx = (cx - trx) / trx;
-                float dy = (cy - (th - try_)) / try_;
-                inside = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx > tw - trx && cy > th - try_) {
-                float dx = (cx - (tw - trx)) / trx;
-                float dy = (cy - (th - try_)) / try_;
-                inside = (dx * dx + dy * dy) <= 1.0f;
+                float dx = (cx - trx) / trx, dy = (cy - try_) / try_;
+                return dx * dx + dy * dy <= 1.0f;
             }
-
-            if (inside) {
-                int32_t fx = ix + col, fy = iy + row;
-                if (!clipStack_.empty() && IsClipped((float)fx, (float)fy)) continue;
-                uint8_t r, g, b, a;
-                GetBrushColor(brush, (float)fx, (float)fy, r, g, b, a);
-                fb_.BlendPixel(fx, fy, r, g, b, a);
+            if (cx > tw - trx && cy < try_) {
+                float dx = (cx - (tw - trx)) / trx, dy = (cy - try_) / try_;
+                return dx * dx + dy * dy <= 1.0f;
             }
-        }
-    }
+            if (cx < trx && cy > th - try_) {
+                float dx = (cx - trx) / trx, dy = (cy - (th - try_)) / try_;
+                return dx * dx + dy * dy <= 1.0f;
+            }
+            if (cx > tw - trx && cy > th - try_) {
+                float dx = (cx - (tw - trx)) / trx, dy = (cy - (th - try_)) / try_;
+                return dx * dx + dy * dy <= 1.0f;
+            }
+            return true;
+        });
 }
 
 void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth)
@@ -1136,65 +1233,57 @@ void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float
     float th = ty2 - ty;
     float sx = (w > 0) ? (tw / w) : 1.0f;
     float sy = (h > 0) ? (th / h) : 1.0f;
+    if (tw <= 0.0f || th <= 0.0f) return;
     float trx = rx * sx, try_ = ry * sy;
     float tsw = strokeWidth * std::min(sx, sy);
     float innerRx = std::max(0.0f, trx - tsw);
     float innerRy = std::max(0.0f, try_ - tsw);
 
-    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
-    int32_t iw = (int32_t)(tw + 0.5f), ih = (int32_t)(th + 0.5f);
-
-    // Rasterize only the stroke ring by testing outer and inner rounded rects
-    for (int32_t row = 0; row < ih; row++) {
-        for (int32_t col = 0; col < iw; col++) {
-            float cx = (float)col, cy = (float)row;
-            // Check if inside outer rounded rect
-            bool insideOuter = true;
-            if (cx < trx && cy < try_) {
-                float dx = (cx - trx) / trx; float dy = (cy - try_) / try_;
-                insideOuter = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx > tw - trx && cy < try_) {
-                float dx = (cx - (tw - trx)) / trx; float dy = (cy - try_) / try_;
-                insideOuter = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx < trx && cy > th - try_) {
-                float dx = (cx - trx) / trx; float dy = (cy - (th - try_)) / try_;
-                insideOuter = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx > tw - trx && cy > th - try_) {
-                float dx = (cx - (tw - trx)) / trx; float dy = (cy - (th - try_)) / try_;
-                insideOuter = (dx * dx + dy * dy) <= 1.0f;
-            }
-            if (!insideOuter) continue;
-
-            // Check if outside inner rounded rect (i.e., in the stroke ring)
-            float icx = cx - tsw, icy = cy - tsw;
-            float innerW = tw - tsw * 2, innerH = th - tsw * 2;
-            bool insideInner = false;
-            if (innerW > 0 && innerH > 0 && icx >= 0 && icy >= 0 && icx <= innerW && icy <= innerH) {
-                insideInner = true;
-                if (icx < innerRx && icy < innerRy && innerRx > 0 && innerRy > 0) {
-                    float dx = (icx - innerRx) / innerRx; float dy = (icy - innerRy) / innerRy;
-                    insideInner = (dx * dx + dy * dy) <= 1.0f;
-                } else if (icx > innerW - innerRx && icy < innerRy && innerRx > 0 && innerRy > 0) {
-                    float dx = (icx - (innerW - innerRx)) / innerRx; float dy = (icy - innerRy) / innerRy;
-                    insideInner = (dx * dx + dy * dy) <= 1.0f;
-                } else if (icx < innerRx && icy > innerH - innerRy && innerRx > 0 && innerRy > 0) {
-                    float dx = (icx - innerRx) / innerRx; float dy = (icy - (innerH - innerRy)) / innerRy;
-                    insideInner = (dx * dx + dy * dy) <= 1.0f;
-                } else if (icx > innerW - innerRx && icy > innerH - innerRy && innerRx > 0 && innerRy > 0) {
-                    float dx = (icx - (innerW - innerRx)) / innerRx; float dy = (icy - (innerH - innerRy)) / innerRy;
-                    insideInner = (dx * dx + dy * dy) <= 1.0f;
+    // Sub-pixel + AA stroke ring: covered when inside the outer rounded rect AND
+    // outside the inner one. Float origin → no whole-pixel snapping under
+    // animation; partial coverage anti-aliases both ring edges.
+    RasterizeCoverageAA(tx, ty, 0.0f, 0.0f, tw, th, brush,
+        [tw, th, trx, try_, tsw, innerRx, innerRy](float cx, float cy) -> bool {
+            // Inside the outer rounded rect?
+            if (cx < 0.0f || cx > tw || cy < 0.0f || cy > th) return false;
+            if (trx > 0.0f && try_ > 0.0f) {
+                if (cx < trx && cy < try_) {
+                    float dx = (cx - trx) / trx, dy = (cy - try_) / try_;
+                    if (dx * dx + dy * dy > 1.0f) return false;
+                } else if (cx > tw - trx && cy < try_) {
+                    float dx = (cx - (tw - trx)) / trx, dy = (cy - try_) / try_;
+                    if (dx * dx + dy * dy > 1.0f) return false;
+                } else if (cx < trx && cy > th - try_) {
+                    float dx = (cx - trx) / trx, dy = (cy - (th - try_)) / try_;
+                    if (dx * dx + dy * dy > 1.0f) return false;
+                } else if (cx > tw - trx && cy > th - try_) {
+                    float dx = (cx - (tw - trx)) / trx, dy = (cy - (th - try_)) / try_;
+                    if (dx * dx + dy * dy > 1.0f) return false;
                 }
             }
-
-            if (!insideInner) {
-                int32_t fx = ix + col, fy = iy + row;
-                if (!clipStack_.empty() && IsClipped((float)fx, (float)fy)) continue;
-                uint8_t r, g, b, a;
-                GetBrushColor(brush, (float)fx, (float)fy, r, g, b, a);
-                fb_.BlendPixel(fx, fy, r, g, b, a);
+            // Outside the inner rounded rect (i.e. within the stroke ring)?
+            float icx = cx - tsw, icy = cy - tsw;
+            float innerW = tw - tsw * 2.0f, innerH = th - tsw * 2.0f;
+            if (innerW <= 0.0f || innerH <= 0.0f) return true;
+            if (icx < 0.0f || icy < 0.0f || icx > innerW || icy > innerH) return true;
+            if (innerRx > 0.0f && innerRy > 0.0f) {
+                if (icx < innerRx && icy < innerRy) {
+                    float dx = (icx - innerRx) / innerRx, dy = (icy - innerRy) / innerRy;
+                    return dx * dx + dy * dy > 1.0f;
+                } else if (icx > innerW - innerRx && icy < innerRy) {
+                    float dx = (icx - (innerW - innerRx)) / innerRx, dy = (icy - innerRy) / innerRy;
+                    return dx * dx + dy * dy > 1.0f;
+                } else if (icx < innerRx && icy > innerH - innerRy) {
+                    float dx = (icx - innerRx) / innerRx, dy = (icy - (innerH - innerRy)) / innerRy;
+                    return dx * dx + dy * dy > 1.0f;
+                } else if (icx > innerW - innerRx && icy > innerH - innerRy) {
+                    float dx = (icx - (innerW - innerRx)) / innerRx, dy = (icy - (innerH - innerRy)) / innerRy;
+                    return dx * dx + dy * dy > 1.0f;
+                }
             }
-        }
-    }
+            // Inside the inner straight region → part of the hole, not the ring.
+            return false;
+        });
 }
 
 void SoftwareRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w, float h,
@@ -1216,20 +1305,13 @@ void SoftwareRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float
     float s = std::min(sx, sy);
     float ttl = tl * s, ttr = tr * s, tbr = br * s, tbl = bl * s;
 
-    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
-    int32_t iw = (int32_t)(tw + 0.5f), ih = (int32_t)(th + 0.5f);
+    if (tw <= 0.0f || th <= 0.0f) return;
 
-    for (int32_t row = 0; row < ih; row++) {
-        for (int32_t col = 0; col < iw; col++) {
-            if (IsInsidePerCornerRoundedRect((float)col, (float)row, tw, th, ttl, ttr, tbr, tbl)) {
-                int32_t fx = ix + col, fy = iy + row;
-                if (!clipStack_.empty() && IsClipped((float)fx, (float)fy)) continue;
-                uint8_t r, g, b, a;
-                GetBrushColor(brush, (float)fx, (float)fy, r, g, b, a);
-                fb_.BlendPixel(fx, fy, r, g, b, a);
-            }
-        }
-    }
+    // Sub-pixel + AA fill of a per-corner rounded rect (float origin, no snap).
+    RasterizeCoverageAA(tx, ty, 0.0f, 0.0f, tw, th, brush,
+        [tw, th, ttl, ttr, tbr, tbl](float cx, float cy) -> bool {
+            return IsInsidePerCornerRoundedRect(cx, cy, tw, th, ttl, ttr, tbr, tbl);
+        });
 }
 
 void SoftwareRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
@@ -1251,33 +1333,21 @@ void SoftwareRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float
     float s = std::min(sx, sy);
     float ttl = tl * s, ttr = tr * s, tbr = br * s, tbl = bl * s;
     float tsw = strokeWidth * s;
-
-    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
-    int32_t iw = (int32_t)(tw + 0.5f), ih = (int32_t)(th + 0.5f);
+    if (tw <= 0.0f || th <= 0.0f) return;
 
     float iTl = std::max(0.0f, ttl - tsw), iTr = std::max(0.0f, ttr - tsw);
     float iBr = std::max(0.0f, tbr - tsw), iBl = std::max(0.0f, tbl - tsw);
-    float innerW = tw - tsw * 2, innerH = th - tsw * 2;
+    float innerW = tw - tsw * 2.0f, innerH = th - tsw * 2.0f;
 
-    for (int32_t row = 0; row < ih; row++) {
-        for (int32_t col = 0; col < iw; col++) {
-            bool insideOuter = IsInsidePerCornerRoundedRect((float)col, (float)row, tw, th, ttl, ttr, tbr, tbl);
-            if (!insideOuter) continue;
-
-            bool insideInner = false;
-            if (innerW > 0 && innerH > 0) {
-                float icx = (float)col - tsw, icy = (float)row - tsw;
-                insideInner = IsInsidePerCornerRoundedRect(icx, icy, innerW, innerH, iTl, iTr, iBr, iBl);
-            }
-            if (insideInner) continue;
-
-            int32_t fx = ix + col, fy = iy + row;
-            if (!clipStack_.empty() && IsClipped((float)fx, (float)fy)) continue;
-            uint8_t r, g, b, a;
-            GetBrushColor(brush, (float)fx, (float)fy, r, g, b, a);
-            fb_.BlendPixel(fx, fy, r, g, b, a);
-        }
-    }
+    // Sub-pixel + AA stroke ring of a per-corner rounded rect (float origin).
+    RasterizeCoverageAA(tx, ty, 0.0f, 0.0f, tw, th, brush,
+        [tw, th, ttl, ttr, tbr, tbl, tsw, iTl, iTr, iBr, iBl, innerW, innerH](float cx, float cy) -> bool {
+            if (!IsInsidePerCornerRoundedRect(cx, cy, tw, th, ttl, ttr, tbr, tbl)) return false;
+            if (innerW > 0.0f && innerH > 0.0f &&
+                IsInsidePerCornerRoundedRect(cx - tsw, cy - tsw, innerW, innerH, iTl, iTr, iBr, iBl))
+                return false;
+            return true;
+        });
 }
 
 void SoftwareRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush)
@@ -1287,59 +1357,44 @@ void SoftwareRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, B
     currentTransform_.Apply(cx, cy, tx, ty);
     currentTransform_.Apply(cx + rx, cy + ry, tx2, ty2);
     float trx = tx2 - tx, try_ = ty2 - ty;
-    int32_t irx = (int32_t)(trx + 0.5f), iry = (int32_t)(try_ + 0.5f);
+    if (trx <= 0.0f || try_ <= 0.0f) return;
 
-    for (int32_t dy = -iry; dy <= iry; dy++) {
-        for (int32_t dx = -irx; dx <= irx; dx++) {
-            float ex = (float)dx / trx;
-            float ey = (float)dy / try_;
-            if (ex * ex + ey * ey <= 1.0f) {
-                int32_t px = (int32_t)tx + dx;
-                int32_t py = (int32_t)ty + dy;
-                if (!clipStack_.empty() && IsClipped((float)px, (float)py)) continue;
-                uint8_t r, g, b, a;
-                GetBrushColor(brush, (float)px, (float)py, r, g, b, a);
-                fb_.BlendPixel(px, py, r, g, b, a);
-            }
-        }
-    }
+    // Sub-pixel + AA fill: origin is the float ellipse centre; samples are taken
+    // relative to it, so an animated ellipse tracks its true position smoothly.
+    RasterizeCoverageAA(tx, ty, -trx, -try_, trx, try_, brush,
+        [trx, try_](float lx, float ly) -> bool {
+            float ex = lx / trx, ey = ly / try_;
+            return ex * ex + ey * ey <= 1.0f;
+        });
 }
 
 void SoftwareRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth)
 {
     if (!brush) return;
-    uint8_t r, g, b, a;
-    GetBrushColor(brush, cx, cy, r, g, b, a);
 
     float tx, ty, tx2, ty2;
     currentTransform_.Apply(cx, cy, tx, ty);
     currentTransform_.Apply(cx + rx, cy + ry, tx2, ty2);
     float trx = tx2 - tx, try_ = ty2 - ty;
+    if (trx <= 0.0f || try_ <= 0.0f) return;
     float s = std::min(trx / std::max(rx, 0.001f), try_ / std::max(ry, 0.001f));
     float tsw = strokeWidth * s;
-
-    // Midpoint ellipse algorithm for outline
-    float outerRx = trx, outerRy = try_;
     float innerRx = std::max(0.0f, trx - tsw);
     float innerRy = std::max(0.0f, try_ - tsw);
 
-    int32_t irx = (int32_t)(outerRx + 0.5f), iry = (int32_t)(outerRy + 0.5f);
-    for (int32_t dy = -iry; dy <= iry; dy++) {
-        for (int32_t dx = -irx; dx <= irx; dx++) {
-            float eOuter = ((float)dx / outerRx) * ((float)dx / outerRx) +
-                           ((float)dy / outerRy) * ((float)dy / outerRy);
-            float eInner = (innerRx > 0 && innerRy > 0) ?
-                ((float)dx / innerRx) * ((float)dx / innerRx) +
-                ((float)dy / innerRy) * ((float)dy / innerRy) : 2.0f;
-
-            if (eOuter <= 1.0f && eInner > 1.0f) {
-                int32_t px = (int32_t)tx + dx;
-                int32_t py = (int32_t)ty + dy;
-                if (!clipStack_.empty() && IsClipped((float)px, (float)py)) continue;
-                fb_.BlendPixel(px, py, r, g, b, a);
+    // Sub-pixel + AA stroke ring: covered when inside the outer ellipse AND
+    // outside the inner one. Float centre → no whole-pixel snapping when the
+    // ellipse (e.g. a Slider thumb ring, Calendar today-ring) is animated.
+    RasterizeCoverageAA(tx, ty, -trx, -try_, trx, try_, brush,
+        [trx, try_, innerRx, innerRy](float lx, float ly) -> bool {
+            float exo = lx / trx, eyo = ly / try_;
+            if (exo * exo + eyo * eyo > 1.0f) return false;
+            if (innerRx > 0.0f && innerRy > 0.0f) {
+                float exi = lx / innerRx, eyi = ly / innerRy;
+                if (exi * exi + eyi * eyi <= 1.0f) return false;
             }
-        }
-    }
+            return true;
+        });
 }
 
 void SoftwareRenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth)
@@ -1370,86 +1425,94 @@ void SoftwareRenderTarget::FillPolygon(const float* points, uint32_t pointCount,
         maxY = std::max(maxY, tpts[i * 2 + 1]);
     }
 
-    int32_t iy0 = (int32_t)minY, iy1 = (int32_t)(maxY + 1);
-    iy0 = std::max(iy0, 0); iy1 = std::min(iy1, height_);
+    // Float bounding box. Span endpoints and scanline extent are kept in float
+    // (no (int32_t) truncation), so an animated / rotated / DPI-scaled polygon's
+    // fill boundary tracks its true sub-pixel position instead of stepping 1px.
+    // 4 vertical sub-scanlines + analytic horizontal coverage give edge AA that
+    // matches the rest of the backend and the GPU feathered fills.
+    int32_t ix0 = std::max(0, (int32_t)std::floor(minX));
+    int32_t ix1 = std::min(width_, (int32_t)std::ceil(maxX));
+    int32_t iy0 = std::max(0, (int32_t)std::floor(minY));
+    int32_t iy1 = std::min(height_, (int32_t)std::ceil(maxY));
+    if (ix1 <= ix0 || iy1 <= iy0) return;
 
-    bool useWinding = (fillRule == 1);
+    const bool useWinding = (fillRule == 1);
+    constexpr int kSub = 4;
+    constexpr float kInv = 1.0f / kSub;
+    const int32_t rowW = ix1 - ix0;
+    std::vector<float> cov(static_cast<size_t>(rowW));
 
-    for (int32_t scanY = iy0; scanY < iy1; scanY++) {
-        float sy = (float)scanY + 0.5f;
+    // Accumulate analytic horizontal coverage for one filled span [xL,xR],
+    // weighted by the per-sub-scanline weight.
+    auto accumulateSpan = [&](float xL, float xR) {
+        if (xR <= xL) return;
+        int32_t cx0 = std::max(ix0, (int32_t)std::floor(xL));
+        int32_t cx1 = std::min(ix1, (int32_t)std::ceil(xR));
+        for (int32_t px = cx0; px < cx1; px++) {
+            float c = std::min((float)px + 1.0f, xR) - std::max((float)px, xL);
+            if (c <= 0.0f) continue;
+            if (c > 1.0f) c = 1.0f;
+            cov[static_cast<size_t>(px - ix0)] += c * kInv;
+        }
+    };
 
-        if (useWinding) {
-            // Winding number rule: track crossing directions
-            std::vector<std::pair<float, int>> crossings; // (x, direction)
-            for (uint32_t i = 0; i < pointCount; i++) {
-                uint32_t j = (i + 1) % pointCount;
-                float y0 = tpts[i * 2 + 1], y1 = tpts[j * 2 + 1];
-                float x0 = tpts[i * 2], x1 = tpts[j * 2];
+    std::vector<float> intersections;
+    std::vector<std::pair<float, int>> crossings;
 
-                if ((y0 <= sy && y1 > sy) || (y1 <= sy && y0 > sy)) {
-                    float t = (sy - y0) / (y1 - y0);
-                    float ix = x0 + t * (x1 - x0);
-                    int dir = (y1 > y0) ? 1 : -1;
-                    crossings.push_back({ix, dir});
-                }
-            }
-            std::sort(crossings.begin(), crossings.end(),
-                [](const auto& a, const auto& b) { return a.first < b.first; });
+    for (int32_t row = iy0; row < iy1; row++) {
+        std::fill(cov.begin(), cov.end(), 0.0f);
 
-            int winding = 0;
-            for (size_t i = 0; i < crossings.size(); i++) {
-                int prevWinding = winding;
-                winding += crossings[i].second;
-                // Fill when winding number transitions to/from zero
-                if (prevWinding == 0 && winding != 0) {
-                    // Start of filled span
-                } else if (prevWinding != 0 && winding == 0 && i > 0) {
-                    // Find the start of this span
-                    float spanStart = crossings[i - 1].first;
-                    // Backtrack to find where winding became non-zero
-                    int w2 = 0;
-                    for (size_t k = 0; k <= i; k++) {
-                        int prev2 = w2;
-                        w2 += crossings[k].second;
-                        if (prev2 == 0 && w2 != 0) {
-                            spanStart = crossings[k].first;
-                        }
-                    }
-                    int32_t xStart = std::max(0, (int32_t)spanStart);
-                    int32_t xEnd = std::min(width_ - 1, (int32_t)crossings[i].first);
-                    for (int32_t x = xStart; x <= xEnd; x++) {
-                        if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
-                        uint8_t r, g, b, a;
-                        GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
-                        fb_.BlendPixel(x, scanY, r, g, b, a);
+        for (int k = 0; k < kSub; k++) {
+            float sy = (float)row + (k + 0.5f) * kInv;
+
+            if (useWinding) {
+                crossings.clear();
+                for (uint32_t i = 0; i < pointCount; i++) {
+                    uint32_t j = (i + 1) % pointCount;
+                    float y0 = tpts[i * 2 + 1], y1 = tpts[j * 2 + 1];
+                    float x0 = tpts[i * 2], x1 = tpts[j * 2];
+                    if ((y0 <= sy && y1 > sy) || (y1 <= sy && y0 > sy)) {
+                        float t = (sy - y0) / (y1 - y0);
+                        crossings.push_back({ x0 + t * (x1 - x0), (y1 > y0) ? 1 : -1 });
                     }
                 }
-            }
-        } else {
-            // Even-odd rule (original behavior)
-            std::vector<float> intersections;
-            for (uint32_t i = 0; i < pointCount; i++) {
-                uint32_t j = (i + 1) % pointCount;
-                float y0 = tpts[i * 2 + 1], y1 = tpts[j * 2 + 1];
-                float x0 = tpts[i * 2], x1 = tpts[j * 2];
-
-                if ((y0 <= sy && y1 > sy) || (y1 <= sy && y0 > sy)) {
-                    float t = (sy - y0) / (y1 - y0);
-                    intersections.push_back(x0 + t * (x1 - x0));
+                std::sort(crossings.begin(), crossings.end(),
+                    [](const auto& a, const auto& b) { return a.first < b.first; });
+                int winding = 0;
+                float spanStart = 0.0f;
+                for (size_t i = 0; i < crossings.size(); i++) {
+                    int prev = winding;
+                    winding += crossings[i].second;
+                    if (prev == 0 && winding != 0) spanStart = crossings[i].first;
+                    else if (prev != 0 && winding == 0) accumulateSpan(spanStart, crossings[i].first);
+                }
+            } else {
+                intersections.clear();
+                for (uint32_t i = 0; i < pointCount; i++) {
+                    uint32_t j = (i + 1) % pointCount;
+                    float y0 = tpts[i * 2 + 1], y1 = tpts[j * 2 + 1];
+                    float x0 = tpts[i * 2], x1 = tpts[j * 2];
+                    if ((y0 <= sy && y1 > sy) || (y1 <= sy && y0 > sy)) {
+                        float t = (sy - y0) / (y1 - y0);
+                        intersections.push_back(x0 + t * (x1 - x0));
+                    }
+                }
+                std::sort(intersections.begin(), intersections.end());
+                for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
+                    accumulateSpan(intersections[i], intersections[i + 1]);
                 }
             }
-            std::sort(intersections.begin(), intersections.end());
+        }
 
-            for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
-                int32_t xStart = std::max(0, (int32_t)intersections[i]);
-                int32_t xEnd = std::min(width_ - 1, (int32_t)intersections[i + 1]);
-                for (int32_t x = xStart; x <= xEnd; x++) {
-                    if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
-                    uint8_t r, g, b, a;
-                    GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
-                    fb_.BlendPixel(x, scanY, r, g, b, a);
-                }
-            }
+        for (int32_t px = ix0; px < ix1; px++) {
+            float c = cov[static_cast<size_t>(px - ix0)];
+            if (c <= 0.0f) continue;
+            if (!clipStack_.empty() && IsClipped((float)px + 0.5f, (float)row + 0.5f)) continue;
+            uint8_t r, g, b, a;
+            GetBrushColor(brush, (float)px + 0.5f, (float)row + 0.5f, r, g, b, a);
+            if (c < 1.0f) a = (uint8_t)((float)a * c + 0.5f);
+            if (a == 0) continue;
+            fb_.BlendPixel(px, row, r, g, b, a);
         }
     }
 }
@@ -1958,10 +2021,20 @@ void SoftwareRenderTarget::RenderTextWithGlyphAtlas(
     uint32_t atlasW = atlas->GetWidth();
     uint32_t atlasH = atlas->GetHeight();
 
-    // Blit each glyph quad from atlas onto framebuffer
+    // Blit each glyph quad from atlas onto framebuffer.
+    // Horizontal sub-pixel position is already baked into the atlas raster (8
+    // sub-pixel buckets per pixel via subpixelX), so X blits at an integer
+    // column. The vertical axis has no such bucket, so each source row's
+    // coverage is distributed across the two straddling destination rows by the
+    // fractional part of posY. This keeps vertically-animated text moving
+    // smoothly instead of snapping a whole pixel per frame; when posY is integer
+    // (fracY == 0) the upper-row weight is zero and the blit is identical to the
+    // previous single-row path, so static text is unchanged.
     for (const auto& quad : quads) {
         int32_t dstX = static_cast<int32_t>(std::floor(quad.posX));
         int32_t dstY = static_cast<int32_t>(std::floor(quad.posY));
+        float fracY = quad.posY - static_cast<float>(dstY);
+        float wLo = 1.0f - fracY;
         int32_t qw = static_cast<int32_t>(std::ceil(quad.sizeX));
         int32_t qh = static_cast<int32_t>(std::ceil(quad.sizeY));
 
@@ -1969,14 +2042,14 @@ void SoftwareRenderTarget::RenderTextWithGlyphAtlas(
         int32_t srcX = static_cast<int32_t>(quad.uvMinX * atlasW);
         int32_t srcY = static_cast<int32_t>(quad.uvMinY * atlasH);
 
-        // Early rejection: quad completely outside framebuffer
-        if (dstX + qw <= 0 || dstX >= width_ || dstY + qh <= 0 || dstY >= height_)
+        // Early rejection: quad completely outside framebuffer (+1 row for the
+        // vertical sub-pixel spread).
+        if (dstX + qw <= 0 || dstX >= width_ || dstY + qh + 1 <= 0 || dstY >= height_)
             continue;
 
         for (int32_t row = 0; row < qh; ++row) {
-            int32_t dy = dstY + row;
             int32_t sy = srcY + row;
-            if (dy < 0 || dy >= height_ || sy < 0 || sy >= static_cast<int32_t>(atlasH))
+            if (sy < 0 || sy >= static_cast<int32_t>(atlasH))
                 continue;
 
             for (int32_t col = 0; col < qw; ++col) {
@@ -1985,18 +2058,24 @@ void SoftwareRenderTarget::RenderTextWithGlyphAtlas(
                 if (dx < 0 || dx >= width_ || sx < 0 || sx >= static_cast<int32_t>(atlasW))
                     continue;
 
-                // Clip stack check
-                if (IsClipped(dx + 0.5f, dy + 0.5f))
-                    continue;
-
                 // Sample coverage from glyph atlas (RGBA8: A = max coverage)
                 size_t atlasIdx = (static_cast<size_t>(sy) * atlasW + sx) * 4;
                 uint8_t coverage = atlasData[atlasIdx + 3];
                 if (coverage == 0) continue;
 
-                // Final alpha = text opacity * glyph coverage
-                uint8_t alpha = static_cast<uint8_t>(textAlpha * 255.0f * coverage / 255.0f);
-                fb_.BlendPixel(dx, dy, textR, textG, textB, alpha);
+                // Base alpha = text opacity * glyph coverage, split vertically.
+                float baseAlpha = textAlpha * 255.0f * (static_cast<float>(coverage) / 255.0f);
+
+                int32_t dyLo = dstY + row;
+                if (wLo > 0.0f && dyLo >= 0 && dyLo < height_ && !IsClipped(dx + 0.5f, dyLo + 0.5f)) {
+                    uint8_t alpha = static_cast<uint8_t>(baseAlpha * wLo + 0.5f);
+                    if (alpha > 0) fb_.BlendPixel(dx, dyLo, textR, textG, textB, alpha);
+                }
+                int32_t dyHi = dyLo + 1;
+                if (fracY > 0.0f && dyHi >= 0 && dyHi < height_ && !IsClipped(dx + 0.5f, dyHi + 0.5f)) {
+                    uint8_t alpha = static_cast<uint8_t>(baseAlpha * fracY + 0.5f);
+                    if (alpha > 0) fb_.BlendPixel(dx, dyHi, textR, textG, textB, alpha);
+                }
             }
         }
     }
@@ -2062,21 +2141,42 @@ void SoftwareRenderTarget::RenderTextWithGDI(
 
         DrawTextW(hdc, text, textLength, &rc, dtFlags);
 
-        // Copy rendered text to framebuffer with alpha blending
+        // Copy rendered text to framebuffer with alpha blending. The block is
+        // sampled with a fractional (bilinear) phase so an animated text origin
+        // moves smoothly sub-pixel instead of snapping to a whole pixel. When
+        // (tx,ty) are integer (fracX/fracY == 0) the sampling reduces to the
+        // original 1:1 copy, so static text is unchanged.
         uint8_t* textBits = static_cast<uint8_t*>(bits);
-        int32_t ix = static_cast<int32_t>(tx), iy = static_cast<int32_t>(ty);
-        for (int32_t row = 0; row < (int32_t)h && iy + row < height_; row++) {
-            for (int32_t col = 0; col < (int32_t)w && ix + col < width_; col++) {
-                int srcIdx = (row * (int32_t)w + col) * 4;
-                uint8_t sr = textBits[srcIdx + 2];
-                uint8_t sg = textBits[srcIdx + 1];
-                uint8_t sb = textBits[srcIdx + 0];
-                // Use luminance as alpha for ClearType simulation
-                uint8_t sa = static_cast<uint8_t>(std::min(255, (sr + sg + sb) / 3));
-                if (sa > 0) {
-                    sa = static_cast<uint8_t>((sa / 255.0f) * a);
-                    fb_.BlendPixel(ix + col, iy + row, r, g, b, sa);
-                }
+        int32_t bw = (int32_t)w, bh = (int32_t)h;
+        int32_t ix = static_cast<int32_t>(std::floor(tx));
+        int32_t iy = static_cast<int32_t>(std::floor(ty));
+        float fracX = tx - static_cast<float>(ix);
+        float fracY = ty - static_cast<float>(iy);
+        auto blockLum = [&](int32_t cc, int32_t rr) -> float {
+            if (cc < 0 || cc >= bw || rr < 0 || rr >= bh) return 0.0f;
+            int srcIdx = (rr * bw + cc) * 4;
+            return (textBits[srcIdx + 2] + textBits[srcIdx + 1] + textBits[srcIdx + 0]) / 3.0f;
+        };
+        for (int32_t row = 0; row <= bh; row++) {
+            int32_t dyy = iy + row;
+            if (dyy < 0 || dyy >= height_) continue;
+            float sv = static_cast<float>(row) - fracY;
+            int32_t sv0 = static_cast<int32_t>(std::floor(sv));
+            float fv = sv - static_cast<float>(sv0);
+            for (int32_t col = 0; col <= bw; col++) {
+                int32_t dxx = ix + col;
+                if (dxx < 0 || dxx >= width_) continue;
+                float su = static_cast<float>(col) - fracX;
+                int32_t su0 = static_cast<int32_t>(std::floor(su));
+                float fu = su - static_cast<float>(su0);
+                float lum = blockLum(su0, sv0)         * (1.0f - fu) * (1.0f - fv)
+                          + blockLum(su0 + 1, sv0)     * fu          * (1.0f - fv)
+                          + blockLum(su0, sv0 + 1)     * (1.0f - fu) * fv
+                          + blockLum(su0 + 1, sv0 + 1) * fu          * fv;
+                if (lum <= 0.0f) continue;
+                uint8_t sa = static_cast<uint8_t>(std::clamp((lum / 255.0f) * a + 0.5f, 0.0f, 255.0f));
+                if (sa == 0) continue;
+                fb_.BlendPixel(dxx, dyy, r, g, b, sa);
             }
         }
 
@@ -2278,26 +2378,74 @@ void SoftwareRenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w,
 
     float tx, ty;
     currentTransform_.Apply(x, y, tx, ty);
-    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
-    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+    if (w <= 0.0f || h <= 0.0f) return;
 
-    for (int32_t row = 0; row < ih; row++) {
-        int32_t srcRow = (int32_t)((float)row / ih * sb->height_);
-        if (srcRow >= (int32_t)sb->height_) continue;
+    // Keep the destination origin in float and bilinear-sample the source, so an
+    // animated image translates smoothly sub-pixel instead of snapping its
+    // top-left to a whole pixel; boundary pixels are weighted by analytic edge
+    // coverage. The destination extent stays the caller's w/h (matching the
+    // previous behaviour) — only the origin handling changes.
+    float left = tx, top = ty, right = tx + w, bottom = ty + h;
+    int32_t px0 = std::max(0, (int32_t)std::floor(left));
+    int32_t py0 = std::max(0, (int32_t)std::floor(top));
+    int32_t px1 = std::min(width_, (int32_t)std::ceil(right));
+    int32_t py1 = std::min(height_, (int32_t)std::ceil(bottom));
 
-        for (int32_t col = 0; col < iw; col++) {
-            int32_t srcCol = (int32_t)((float)col / iw * sb->width_);
-            if (srcCol >= (int32_t)sb->width_) continue;
+    const int32_t sw = (int32_t)sb->width_;
+    const int32_t shh = (int32_t)sb->height_;
+    if (sw <= 0 || shh <= 0) return;
+    const float invW = 1.0f / w, invH = 1.0f / h;
+    const float globalOpacity = opacity * currentOpacity_;
 
-            size_t srcIdx = ((size_t)srcRow * sb->width_ + srcCol) * 4;
-            uint8_t sb_ = sb->pixels_[srcIdx + 0];
-            uint8_t sg = sb->pixels_[srcIdx + 1];
-            uint8_t sr = sb->pixels_[srcIdx + 2];
-            uint8_t sa = (uint8_t)(sb->pixels_[srcIdx + 3] * opacity * currentOpacity_);
+    for (int32_t dy = py0; dy < py1; dy++) {
+        float covY = std::min((float)dy + 1.0f, bottom) - std::max((float)dy, top);
+        if (covY <= 0.0f) continue;
+        if (covY > 1.0f) covY = 1.0f;
+        float v = ((float)dy + 0.5f - top) * invH * (float)shh - 0.5f;
+        float v0f = std::floor(v);
+        int32_t v0 = std::clamp((int32_t)v0f, 0, shh - 1);
+        int32_t v1 = std::clamp((int32_t)v0f + 1, 0, shh - 1);
+        float fv = v - v0f;
 
-            int32_t dx = ix + col, dy = iy + row;
-            if (!clipStack_.empty() && IsClipped((float)dx, (float)dy)) continue;
-            fb_.BlendPixel(dx, dy, sr, sg, sb_, sa);
+        for (int32_t dx = px0; dx < px1; dx++) {
+            if (!clipStack_.empty() && IsClipped((float)dx + 0.5f, (float)dy + 0.5f)) continue;
+            float covX = std::min((float)dx + 1.0f, right) - std::max((float)dx, left);
+            if (covX <= 0.0f) continue;
+            if (covX > 1.0f) covX = 1.0f;
+
+            float u = ((float)dx + 0.5f - left) * invW * (float)sw - 0.5f;
+            float u0f = std::floor(u);
+            int32_t u0 = std::clamp((int32_t)u0f, 0, sw - 1);
+            int32_t u1 = std::clamp((int32_t)u0f + 1, 0, sw - 1);
+            float fu = u - u0f;
+
+            auto texel = [&](int32_t sxc, int32_t syc, float& tb, float& tg, float& tr, float& ta) {
+                size_t i = ((size_t)syc * (size_t)sw + (size_t)sxc) * 4;
+                tb = sb->pixels_[i + 0];
+                tg = sb->pixels_[i + 1];
+                tr = sb->pixels_[i + 2];
+                ta = sb->pixels_[i + 3];
+            };
+            float b00, g00, r00, a00, b10, g10, r10, a10, b01, g01, r01, a01, b11, g11, r11, a11;
+            texel(u0, v0, b00, g00, r00, a00);
+            texel(u1, v0, b10, g10, r10, a10);
+            texel(u0, v1, b01, g01, r01, a01);
+            texel(u1, v1, b11, g11, r11, a11);
+            float w00 = (1.0f - fu) * (1.0f - fv), w10 = fu * (1.0f - fv);
+            float w01 = (1.0f - fu) * fv,          w11 = fu * fv;
+            float sbb = b00 * w00 + b10 * w10 + b01 * w01 + b11 * w11;
+            float sg  = g00 * w00 + g10 * w10 + g01 * w01 + g11 * w11;
+            float sr  = r00 * w00 + r10 * w10 + r01 * w01 + r11 * w11;
+            float sa  = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
+
+            float alpha = sa * globalOpacity * covX * covY;
+            uint8_t fa = (uint8_t)std::clamp(alpha + 0.5f, 0.0f, 255.0f);
+            if (fa == 0) continue;
+            fb_.BlendPixel(dx, dy,
+                (uint8_t)std::clamp(sr + 0.5f, 0.0f, 255.0f),
+                (uint8_t)std::clamp(sg + 0.5f, 0.0f, 255.0f),
+                (uint8_t)std::clamp(sbb + 0.5f, 0.0f, 255.0f),
+                fa);
         }
     }
 }
@@ -2470,24 +2618,19 @@ void SoftwareRenderTarget::FillEllipseBatch(const float* data, uint32_t count)
         float cb = ((packed >> 16) & 0xFF) / 255.0f;
         float ca = ((packed >> 24) & 0xFF) / 255.0f;
 
-        // Rasterize ellipse directly with the color
+        // Rasterize the ellipse with a float centre + AA coverage so animated
+        // particles move smoothly instead of snapping their centre to whole
+        // pixels. Radii stay in caller units (the batch is pre-scaled, as before).
         float tx, ty;
         currentTransform_.Apply(cx, cy, tx, ty);
-        int32_t irx = (int32_t)(rx + 0.5f), iry = (int32_t)(ry + 0.5f);
-        uint8_t r = FloatToU8(cr), g = FloatToU8(cg), b = FloatToU8(cb), a = FloatToU8(ca * currentOpacity_);
+        if (rx <= 0.0f || ry <= 0.0f) continue;
 
-        for (int32_t dy = -iry; dy <= iry; dy++) {
-            for (int32_t dx = -irx; dx <= irx; dx++) {
-                float ex = (float)dx / rx;
-                float ey = (float)dy / ry;
-                if (ex * ex + ey * ey <= 1.0f) {
-                    int32_t px = (int32_t)tx + dx;
-                    int32_t py = (int32_t)ty + dy;
-                    if (!clipStack_.empty() && IsClipped((float)px, (float)py)) continue;
-                    fb_.BlendPixel(px, py, r, g, b, a);
-                }
-            }
-        }
+        SoftwareSolidBrush particleBrush(cr, cg, cb, ca);
+        RasterizeCoverageAA(tx, ty, -rx, -ry, rx, ry, &particleBrush,
+            [rx, ry](float lx, float ly) -> bool {
+                float ex = lx / rx, ey = ly / ry;
+                return ex * ex + ey * ey <= 1.0f;
+            });
     }
 }
 

@@ -159,6 +159,7 @@ bool D3D12InkLayerBitmap::EnsureDispatchResources()
         cmdAlloc_.Get(), nullptr,
         IID_PPV_ARGS(cmdList_.GetAddressOf()));
     if (FAILED(hr)) return false;
+    cmdList_->SetName(L"JaliumInkCmdList");  // [JALIUM-921 diag]
     cmdList_->Close();
 
     hr = device_->CreateFence(0, D3D12_FENCE_FLAG_NONE,

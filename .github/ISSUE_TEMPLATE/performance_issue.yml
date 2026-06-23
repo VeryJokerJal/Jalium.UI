@@ -1,0 +1,116 @@
+name: 🐢 Performance Issue
+description: Report low FPS, stutter, input latency, high GPU/CPU usage, slow startup, or memory growth.
+title: "[Perf]: "
+labels: ["performance", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Performance on Jalium.UI is sensitive to the **GPU type** (integrated vs discrete), the **backend**, and **present pacing**. Concrete numbers help enormously.
+
+        💡 Open **DevTools → Performance tab** and capture frame timings, FPS, and the GPU/CPU breakdown where possible. The render-thread mode (`JALIUM_RENDER_THREAD`) can also affect results.
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have searched [existing issues](https://github.com/VeryJokerJal/Jalium.UI/issues?q=is%3Aissue) and this has not been reported yet.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Jalium.UI version
+      placeholder: e.g. 26.10.6-preview / commit 6d63e6f6
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Rendering backend
+      options:
+        - DirectX 12
+        - Vulkan
+        - Metal
+        - Software
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Rendering engine
+      options:
+        - Auto (default)
+        - Vello
+        - Impeller
+        - Not sure
+    validations:
+      required: false
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU model
+      placeholder: e.g. Intel Iris Xe / NVIDIA RTX 4070 / AMD Radeon 780M / Apple M3
+    validations:
+      required: true
+  - type: dropdown
+    id: gpu-type
+    attributes:
+      label: GPU configuration
+      description: Integrated GPUs (iGPU) have known present-pacing characteristics — please be precise.
+      options:
+        - Integrated GPU (iGPU)
+        - Discrete GPU
+        - Laptop with switchable / hybrid GPU
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: symptom
+    attributes:
+      label: Symptom(s)
+      multiple: true
+      options:
+        - Low frame rate (FPS)
+        - Stutter / judder / hitching
+        - Input latency (lag between input and on-screen response)
+        - High GPU usage
+        - High CPU usage
+        - Memory grows over time
+        - Slow startup / first frame
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the performance problem
+      description: What is slow, when, and how bad? Include FPS / latency / millisecond numbers if you have them.
+    validations:
+      required: true
+  - type: textarea
+    id: measurements
+    attributes:
+      label: Measurements (DevTools Performance tab, FPS, frame times)
+      description: Paste numbers from the DevTools Performance tab, an external FPS overlay, or a profiler.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: input
+    id: comparison
+    attributes:
+      label: Does it differ by backend / engine / GPU?
+      placeholder: e.g. 220 FPS on discrete D3D12, drops to 30 FPS on the iGPU
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+    validations:
+      required: false

@@ -97,6 +97,7 @@ public class Polygon : Shape
             {
                 StartLineCap = StrokeStartLineCap,
                 EndLineCap = StrokeEndLineCap,
+                DashCap = StrokeDashCap,
                 LineJoin = StrokeLineJoin,
                 MiterLimit = StrokeMiterLimit
             };
@@ -107,28 +108,34 @@ public class Polygon : Shape
             }
         }
 
-        if (_cachedGeometry == null)
-        {
-            var geometry = new PathGeometry();
-            var figure = new PathFigure
-            {
-                StartPoint = points[0],
-                IsClosed = true,
-                IsFilled = fill != null
-            };
-
-            for (int i = 1; i < points.Count; i++)
-            {
-                figure.Segments.Add(new LineSegment(points[i]));
-            }
-
-            geometry.Figures.Add(figure);
-            geometry.FillRule = FillRule;
-            _cachedGeometry = geometry;
-        }
-
-        dc.DrawGeometry(fill, pen, _cachedGeometry);
+        var geometry = EnsureGeometry();
+        if (geometry == null) return;
+        dc.DrawGeometry(fill, pen, geometry);
     }
+
+    /// <summary>
+    /// Builds (and caches) the polygon's closed <see cref="PathGeometry"/> from
+    /// <see cref="Points"/>. IsFilled is left true unconditionally — whether the interior
+    /// is painted is decided by the brush passed to DrawGeometry, not the figure flag —
+    /// so the same cached geometry serves both rendering and <see cref="Shape.DefiningGeometry"/>.
+    /// </summary>
+    private PathGeometry? EnsureGeometry()
+    {
+        if (_cachedGeometry != null) return _cachedGeometry;
+        var points = Points;
+        if (points == null || points.Count < 3) return null;
+
+        var geometry = new PathGeometry { FillRule = FillRule };
+        var figure = new PathFigure { StartPoint = points[0], IsClosed = true, IsFilled = true };
+        for (int i = 1; i < points.Count; i++)
+            figure.Segments.Add(new LineSegment(points[i]));
+        geometry.Figures.Add(figure);
+        _cachedGeometry = geometry;
+        return geometry;
+    }
+
+    /// <inheritdoc />
+    protected override Geometry? DefiningGeometry => EnsureGeometry();
 
     private static Rect GetBounds(PointCollection points)
     {

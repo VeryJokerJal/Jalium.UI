@@ -35,11 +35,22 @@ public sealed class Drawing
     /// </summary>
     internal Rect? Bounds;
 
-    internal Drawing(DrawCommand[] commands, int count, Rect? bounds)
+    /// <summary>
+    /// False when whole-frame capture encountered content it cannot represent
+    /// as a <see cref="DrawCommand"/> (e.g. a windowless WebView transparent
+    /// punch, video surface, ink-layer blit, or transition shader reached only
+    /// via an <c>is RenderTargetDrawingContext</c> cast that the recorder fails).
+    /// The render loop discards such a Drawing and direct-renders the frame so
+    /// nothing is silently dropped. Always true for per-visual recordings.
+    /// </summary>
+    internal readonly bool FullyRecordable;
+
+    internal Drawing(DrawCommand[] commands, int count, Rect? bounds, bool fullyRecordable = true)
     {
         Commands = commands;
         Count = count;
         Bounds = bounds;
+        FullyRecordable = fullyRecordable;
     }
 
     /// <summary>
@@ -53,4 +64,11 @@ public sealed class Drawing
     /// iterates the underlying array directly.
     /// </summary>
     public int CommandCount => Count;
+
+    /// <summary>
+    /// False when whole-frame capture hit content that cannot be represented as
+    /// draw commands; the caller must discard this Drawing and direct-render the
+    /// frame. Always true for per-visual recordings and for <see cref="Empty"/>.
+    /// </summary>
+    public bool IsFullyRecordable => FullyRecordable;
 }

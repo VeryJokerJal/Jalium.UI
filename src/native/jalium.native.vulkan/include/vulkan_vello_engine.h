@@ -5,6 +5,7 @@
 #include "jalium_impeller_stroke.h"
 #include "jalium_gradient_sample.h"
 #include "jalium_triangulate.h"
+#include "jalium_vello_encode.h"      // VelloSceneEncoder / VelloScene — the GPU compute path
 #include "vulkan_impeller_engine.h"   // for VkImpellerVertex / VkImpellerDrawBatch — Vello shares the same on-wire type
 #include "vulkan_minimal.h"
 #include <vector>
@@ -104,6 +105,21 @@ public:
     const std::vector<VkVelloDrawBatch>& GetBatches() const { return batches_; }
     void ClearBatches() { batches_.clear(); }
 
+    // ── Real Vello GPU compute path ────────────────────────────────────────
+    // When the render target's VelloComputePipeline is live (the device exposes
+    // scalarBlockLayout), it calls SetComputeMode(true): Encode* then feed the
+    // backend-agnostic VelloSceneEncoder (producing the GPU scene buffers) INSTEAD
+    // of the CPU-tessellation batch path, and the render target consumes
+    // GetScene() through the compute graph + composite. When compute is
+    // unavailable the engine keeps the batch path (the Impeller-equivalent
+    // fallback) so Vello still renders on devices without scalar block layout.
+    void SetComputeMode(bool on) { computeMode_ = on; }
+    bool IsComputeMode() const { return computeMode_; }
+    // Closes any open scissor-clip and computes the draw monoids. Call once per
+    // frame before reading GetScene().
+    void FinalizeScene() { sceneEncoder_.Finalize(); }
+    const VelloScene& GetScene() const { return sceneEncoder_.scene(); }
+
     void PushBatch(VkVelloDrawBatch&& batch) {
         batch.hasScissor = hasScissor_;
         if (hasScissor_) {
@@ -174,6 +190,10 @@ private:
     float flattenTolerance_ = 0.25f;
 
     TrigCache trigCache_;
+
+    // The real Vello GPU-compute scene encoder (active when computeMode_).
+    VelloSceneEncoder sceneEncoder_;
+    bool computeMode_ = false;
 };
 
 } // namespace jalium

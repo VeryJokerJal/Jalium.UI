@@ -561,9 +561,14 @@ public class NavigationViewItem : ContentControl
             return;
         }
 
+        // 绝对像素轴心，避免 RenderTransformOrigin 相对单位在 Stretch 缩放/布局未稳定时算偏
+        // （与 TreeView.SetExpanderAngle / ComboBox / Expander 同策）。RenderTransformOrigin 保持默认 (0,0)。
         var rotateTransform = _chevron.RenderTransform as RotateTransform ?? new RotateTransform();
+        var w = _chevron.ActualWidth > 0 ? _chevron.ActualWidth : _chevron.Width;
+        var h = _chevron.ActualHeight > 0 ? _chevron.ActualHeight : _chevron.Height;
+        rotateTransform.CenterX = (double.IsNaN(w) || w <= 0) ? 4 : w / 2;
+        rotateTransform.CenterY = (double.IsNaN(h) || h <= 0) ? 4 : h / 2;
         rotateTransform.Angle = angle;
-        _chevron.RenderTransformOrigin = new Point(0.5, 0.5);
         _chevron.RenderTransform = rotateTransform;
         _chevron.InvalidateVisual();
     }

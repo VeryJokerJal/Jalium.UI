@@ -1140,25 +1140,31 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     public void InvalidateMeasure()
     {
-        var wasValid = _isMeasureValid;
         _isMeasureValid = false;
         _isArrangeValid = false;
-        var layoutManager = FindLayoutManager();
+        FindLayoutManager()?.InvalidateMeasure(this);
 
-        if (wasValid)
-        {
-            // First invalidation: notify LayoutManager and mark parent dirty
-            layoutManager?.InvalidateMeasure(this);
-            InvalidateLayoutVisual();
-        }
-        else
-        {
-            // Already invalid. If this element became invalid while detached,
-            // it may not be in the current LayoutManager queue yet.
-            // Re-queue is idempotent (LayoutManager uses HashSet).
-            layoutManager?.InvalidateMeasure(this);
-            GetWindowHost()?.InvalidateWindow();
-        }
+        // Always register this element in the window's dirty-element set — NOT only
+        // on the first valid->invalid transition, which is what the old code did (it
+        // took a cheaper "already invalid -> just InvalidateWindow()" branch).
+        //
+        // ComputeDirtyRegions builds the partial dirty-rect present purely from
+        // _dirtyElements; the layout pass itself never adds to that set (Arrange only
+        // flips the per-visual _isRenderDirty flag, it does not call AddDirtyElement).
+        // So when InvalidateMeasure skipped registration for an ALREADY measure-invalid
+        // element, two common cases left the element render-dirty but absent from
+        // _dirtyElements — its region was then excluded from the present and it rendered
+        // BLANK until a full present (a resize) repainted it:
+        //   1. a freshly-created subtree — its _isMeasureValid starts false, so the very
+        //      first InvalidateMeasure would otherwise skip registration (this is the
+        //      "navigate to a page and the whole content card is blank" case: the
+        //      ContentControl swaps in the new page and InvalidateMeasure's on the
+        //      content host / new subtree fall into the skip branch);
+        //   2. an element re-invalidated after an intervening render already cleared
+        //      _dirtyElements (the "nav label intermittently missing" case).
+        // Registering unconditionally is cheap: AddDirtyElement dedupes per frame and
+        // SetRenderDirty short-circuits at already-marked ancestors.
+        InvalidateLayoutVisual();
 
         if (LayoutDiagnostics.IsRecording)
             LayoutDiagnostics.NotifyInvalidation(this, LayoutDiagnostics.InvalidationKind.Measure);
@@ -1169,23 +1175,14 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     public void InvalidateArrange()
     {
-        var wasValid = _isArrangeValid;
         _isArrangeValid = false;
-        var layoutManager = FindLayoutManager();
+        FindLayoutManager()?.InvalidateArrange(this);
 
-        if (wasValid)
-        {
-            // First invalidation: notify LayoutManager and mark parent dirty
-            layoutManager?.InvalidateArrange(this);
-            InvalidateLayoutVisual();
-        }
-        else
-        {
-            // Same rationale as InvalidateMeasure: keep queue membership correct
-            // when transitioning from detached -> attached while already invalid.
-            layoutManager?.InvalidateArrange(this);
-            GetWindowHost()?.InvalidateWindow();
-        }
+        // Always register as dirty — same reasoning as InvalidateMeasure above. An
+        // element arrange-invalidated while already arrange-invalid (a fresh subtree,
+        // or one re-invalidated after a render cleared _dirtyElements) would otherwise
+        // never enter _dirtyElements and would render blank until a full present.
+        InvalidateLayoutVisual();
 
         if (LayoutDiagnostics.IsRecording)
             LayoutDiagnostics.NotifyInvalidation(this, LayoutDiagnostics.InvalidationKind.Arrange);
@@ -1421,6 +1418,159 @@ public abstract partial class UIElement : Visual, IInputElement
         var ro = RenderOffset;
         return new Rect(_cachedScreenOffset.X + ro.X, _cachedScreenOffset.Y + ro.Y,
                         _renderSize.Width, _renderSize.Height);
+    }
+
+    /// <summary>
+    /// Gets the screen-space bounds of this element relative to its Window, composing the
+    /// full ancestor + own <see cref="RenderTransform"/> chain so the returned AABB matches
+    /// where pixels actually rasterize.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="GetScreenBounds"/> reports only the static layout box (ancestor
+    /// <see cref="Visual.VisualBounds"/> offsets + own <see cref="RenderOffset"/>) and is
+    /// intentionally left transform-unaware for drag/drop hit math. This method additionally
+    /// folds in every <see cref="RenderTransform"/> on the chain from this element up to (but
+    /// excluding) the window, applied around each level's <see cref="RenderTransformOrigin"/>
+    /// scaled by that level's <see cref="RenderSize"/> — exactly matching the live draw path
+    /// <c>Visual.RenderChildVisualInline</c> (offset set first, then
+    /// <c>PushTransform(transform, origin.X*RenderSize.Width, origin.Y*RenderSize.Height)</c>).
+    /// </para>
+    /// <para>
+    /// The D3D12 inline partial-present path derives its dirty region (and FLIP_SEQUENTIAL
+    /// Present1 dirty rects) from this AABB. If it tracked the static layout box instead, a
+    /// RenderTransform animation (scale/rotate/translate — spinners, slide/scale transitions,
+    /// hover/press scale, expand/collapse) would rasterize content at the transformed position
+    /// while invalidating the un-transformed box → the transformed pixels fall outside the clip
+    /// and the alternate FLIP buffer keeps stale pixels → all Path icons flicker. When no
+    /// element on the chain carries a RenderTransform the result is identical to
+    /// <see cref="GetScreenBounds"/>, returned directly as a fast path.
+    /// </para>
+    /// </remarks>
+    internal Rect GetRenderBounds()
+    {
+        // Fast path: identical to GetScreenBounds() when nothing on the chain carries a
+        // RenderTransform (the overwhelmingly common case → no matrix math, cache-friendly).
+        if (!ChainHasRenderTransform())
+            return GetScreenBounds();
+
+        return TransformLocalRectToScreen(GetRenderMatrix(), 0, 0, _renderSize.Width, _renderSize.Height);
+    }
+
+    /// <summary>
+    /// Maps a rect expressed in THIS element's local content space into screen space through
+    /// the full local→screen render matrix (ancestor + own <see cref="RenderTransform"/>).
+    /// When no transform is on the chain this reduces to a pure translation by the element's
+    /// screen origin — byte-identical to the legacy translate-by-origin behavior, so callers
+    /// (e.g. the precise-rect dirty path) need no special-casing.
+    /// </summary>
+    internal Rect MapLocalRectToScreen(Rect local)
+    {
+        if (!ChainHasRenderTransform())
+        {
+            var origin = GetScreenBounds();
+            return new Rect(origin.X + local.X, origin.Y + local.Y, local.Width, local.Height);
+        }
+
+        return TransformLocalRectToScreen(GetRenderMatrix(), local.X, local.Y, local.Width, local.Height);
+    }
+
+    /// <summary>
+    /// Builds the local→screen affine matrix for this element, composing the full ancestor
+    /// chain in the SAME row-vector order the renderer uses.
+    /// </summary>
+    /// <remarks>
+    /// Row-vector convention (point * matrix; see <see cref="Matrix"/>). For each level k from
+    /// this element UP to the window the local contribution is
+    /// <c>level_k = aboutOrigin_k * T(off_k)</c> with
+    /// <c>off_k = (VisualBounds.X + RenderOffset.X, VisualBounds.Y + RenderOffset.Y)</c>,
+    /// <c>aboutOrigin_k = T(-o) * RenderTransform.Value * T(+o)</c> (omitted when the transform
+    /// is null) and <c>o = (RenderTransformOrigin.X * RenderSize.Width, .Y * RenderSize.Height)</c>.
+    /// Accumulated self-first (<c>acc = acc * level</c>) so this element is applied innermost,
+    /// reproducing the renderer's "add absolute Offset to local coords, then apply the
+    /// conjugated T(-Offset)*R*T(+Offset) stack with nested LEFT-multiply" pipeline for single
+    /// AND nested transforms — derived and verified against <c>RenderTargetDrawingContext</c>.
+    /// </remarks>
+    internal Matrix GetRenderMatrix()
+    {
+        var acc = Matrix.Identity;
+        Visual? current = this;
+        while (current != null && current is not IWindowHost)
+        {
+            if (current is UIElement ui)
+            {
+                var vb = ui.VisualBounds;
+                var ro = ui.RenderOffset;
+                double offX = vb.X + ro.X;
+                double offY = vb.Y + ro.Y;
+
+                Matrix level;
+                var rt = ui.RenderTransform;
+                if (rt != null)
+                {
+                    var size = ui._renderSize;
+                    var origin = ui.RenderTransformOrigin;
+                    double ox = origin.X * size.Width;
+                    double oy = origin.Y * size.Height;
+
+                    // aboutOrigin = T(-o) * R * T(+o) — transform about the (scaled) origin.
+                    var r = rt.Value;
+                    var pre = new Matrix(1, 0, 0, 1, -ox, -oy);
+                    var post = new Matrix(1, 0, 0, 1, ox, oy);
+                    var aboutOrigin = Matrix.Multiply(Matrix.Multiply(pre, r), post);
+
+                    // level = aboutOrigin * T(off): the layout/render offset positions the
+                    // whole transformed subtree (offset applied AFTER the about-origin transform).
+                    level = Matrix.Multiply(aboutOrigin, new Matrix(1, 0, 0, 1, offX, offY));
+                }
+                else
+                {
+                    level = new Matrix(1, 0, 0, 1, offX, offY);
+                }
+
+                // Self-first accumulation (inner applied first): acc = acc * level.
+                acc = Matrix.Multiply(acc, level);
+            }
+
+            current = current.VisualParent;
+        }
+
+        return acc;
+    }
+
+    /// <summary>
+    /// True if this element or any ancestor up to the window carries a non-null
+    /// <see cref="RenderTransform"/>. Cheap pre-check that lets <see cref="GetRenderBounds"/>
+    /// and <see cref="MapLocalRectToScreen"/> short-circuit to the transform-free fast path.
+    /// </summary>
+    private bool ChainHasRenderTransform()
+    {
+        Visual? current = this;
+        while (current != null && current is not IWindowHost)
+        {
+            if (current is UIElement ui && ui.RenderTransform != null)
+                return true;
+            current = current.VisualParent;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Axis-aligned screen bounds of a local-space rect under <paramref name="m"/> (four-corner
+    /// transform). Inlined here because <c>BoundsAccumulator.TransformBounds</c> is internal to
+    /// the Jalium.UI.Media assembly and not visible to Jalium.UI.Core.
+    /// </summary>
+    private static Rect TransformLocalRectToScreen(Matrix m, double x, double y, double w, double h)
+    {
+        var p0 = m.Transform(new Point(x, y));
+        var p1 = m.Transform(new Point(x + w, y));
+        var p2 = m.Transform(new Point(x, y + h));
+        var p3 = m.Transform(new Point(x + w, y + h));
+        double minX = Math.Min(Math.Min(p0.X, p1.X), Math.Min(p2.X, p3.X));
+        double minY = Math.Min(Math.Min(p0.Y, p1.Y), Math.Min(p2.Y, p3.Y));
+        double maxX = Math.Max(Math.Max(p0.X, p1.X), Math.Max(p2.X, p3.X));
+        double maxY = Math.Max(Math.Max(p0.Y, p1.Y), Math.Max(p2.Y, p3.Y));
+        return new Rect(minX, minY, maxX - minX, maxY - minY);
     }
 
     /// <summary>

@@ -17,6 +17,7 @@ set(JALIUM_STB_ROOT "${JALIUM_SDK_ROOT}/stb")
 set(HEADERS
     include/text_cache.h
     include/vulkan_backend.h
+    include/vulkan_glyph_atlas.h
     include/vulkan_impeller_engine.h
     include/vulkan_ink_layer.h
     include/vulkan_render_target.h
@@ -24,11 +25,13 @@ set(HEADERS
     include/vulkan_runtime.h
     include/vulkan_shader_compiler.h
     include/vulkan_vello_engine.h
+    include/vulkan_vello_compute.h
 )
 
 set(SOURCES
     src/text_cache.cpp
     src/vulkan_backend.cpp
+    src/vulkan_glyph_atlas.cpp
     src/vulkan_impeller_engine.cpp
     src/vulkan_init.cpp
     src/vulkan_ink_layer.cpp
@@ -38,6 +41,7 @@ set(SOURCES
     src/vulkan_shader_compiler.cpp
     src/vulkan_video_surface.cpp
     src/vulkan_vello_engine.cpp
+    src/vulkan_vello_compute.cpp
 )
 
 if(WIN32)
@@ -78,6 +82,11 @@ if(WIN32)
     target_link_libraries(${PROJECT_NAME}
         PRIVATE
             ${JALIUM_VULKAN_SDK_ROOT}/Lib/vulkan-1.lib
+            # DirectWrite: Windows-Vulkan text rasterization + layout mirrors the
+            # D3D12 backend's DWrite path (IDWriteFactory5, IDWriteTextLayout,
+            # IDWriteGlyphRunAnalysis). Required since the GDI text path was
+            # replaced with DirectWrite for D3D12 parity.
+            dwrite
     )
 elseif(ANDROID)
     target_link_libraries(${PROJECT_NAME}

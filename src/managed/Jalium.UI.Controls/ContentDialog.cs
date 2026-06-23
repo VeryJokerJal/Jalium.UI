@@ -1093,12 +1093,9 @@ public class ContentDialog : ContentControl
 
     private static double SnapDialogLayoutValue(double value)
     {
-        if (!double.IsFinite(value))
-        {
-            return 0;
-        }
-
-        return Math.Round(value, MidpointRounding.AwayFromZero);
+        // Pixel snapping is disabled: the dialog-overlay origin passes through as
+        // continuous floating-point, consistent with FrameworkElement.SnapLayoutValue.
+        return double.IsFinite(value) ? value : 0;
     }
 
     private void ScheduleInitialFocus()

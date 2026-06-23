@@ -13,10 +13,16 @@ namespace Jalium.UI.Media.Rendering;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Recorders are pooled process-wide. Render is single-threaded on the UI
-/// thread, so the pool is guarded by a single lock rather than per-thread
-/// storage — contention is only possible if a background thread drives an
-/// out-of-band render, which currently no pipeline does.
+/// Recorders are pooled process-wide under a single lock. Even on the
+/// render-thread path (JALIUM_RENDER_THREAD) the pool stays single-producer:
+/// <see cref="CreateFrameRecorder"/> + <see cref="FinishRecord"/> both run on the
+/// UI thread inside <c>Window.PublishFrameToRenderThread</c>; the render thread
+/// only calls <see cref="Replay"/>, which is read-only over the published
+/// <see cref="Drawing"/> and never touches the pool. So the single lock suffices —
+/// do not add per-thread pools unless a future path lets a non-UI thread
+/// allocate/commit a recorder. (Whole-frame freeze-clone snapshots, written by
+/// <see cref="DrawInputSnapshotter"/> during record on the UI thread, are likewise
+/// only dereferenced — never mutated — on the render thread via the published Drawing.)
 /// </para>
 /// <para>
 /// Setting environment variable <c>JALIUM_DISABLE_RENDER_CACHE=1</c> before

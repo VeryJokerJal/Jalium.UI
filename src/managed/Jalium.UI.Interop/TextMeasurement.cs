@@ -38,6 +38,74 @@ public static class TextMeasurement
     private static readonly Dictionary<string, TextMetrics> _metricsCache = new(StringComparer.Ordinal);
     private static readonly object _metricsLock = new();
 
+    // 文本「测量结果」缓存。MeasureText 之前对每个 (文本, 字体, 字号, 粗细, 样式, 约束) 都要 P/Invoke 进
+    // DirectWrite 做一次完整的 CreateTextLayout + 整形（昂贵）。虚拟化大列表滚动时，每个新实例化的行单元
+    // 都会冷测量，回滚或重复文本更是反复测量同一串。这里按完整测量签名缓存 TextMetrics 结果：命中即 O(1)
+    // 返回，免去 DWrite 整形。键用 struct 避免命中路径分配字符串；LRU 有界，唯一文本不会无界增长。
+    private const int MaxMeasureCacheEntries = 4096;
+
+    private readonly struct MeasureKey : IEquatable<MeasureKey>
+    {
+        public readonly string Text;
+        public readonly string FontFamily;
+        public readonly float FontSize;
+        public readonly int FontWeight;
+        public readonly int FontStyle;
+        public readonly float MaxWidth;
+        public readonly float MaxHeight;
+
+        public MeasureKey(string text, string fontFamily, float fontSize, int fontWeight, int fontStyle, float maxWidth, float maxHeight)
+        {
+            Text = text;
+            FontFamily = fontFamily;
+            FontSize = fontSize;
+            FontWeight = fontWeight;
+            FontStyle = fontStyle;
+            MaxWidth = maxWidth;
+            MaxHeight = maxHeight;
+        }
+
+        public bool Equals(MeasureKey other) =>
+            FontSize == other.FontSize
+            && FontWeight == other.FontWeight
+            && FontStyle == other.FontStyle
+            && MaxWidth == other.MaxWidth
+            && MaxHeight == other.MaxHeight
+            && string.Equals(FontFamily, other.FontFamily, StringComparison.Ordinal)
+            && string.Equals(Text, other.Text, StringComparison.Ordinal);
+
+        public override bool Equals(object? obj) => obj is MeasureKey other && Equals(other);
+
+        public override int GetHashCode()
+        {
+            var hash = new HashCode();
+            hash.Add(Text, StringComparer.Ordinal);
+            hash.Add(FontFamily, StringComparer.Ordinal);
+            hash.Add(FontSize);
+            hash.Add(FontWeight);
+            hash.Add(FontStyle);
+            hash.Add(MaxWidth);
+            hash.Add(MaxHeight);
+            return hash.ToHashCode();
+        }
+    }
+
+    private sealed class MeasureCacheEntry
+    {
+        public MeasureCacheEntry(TextMetrics metrics, LinkedListNode<MeasureKey> lruNode)
+        {
+            Metrics = metrics;
+            LruNode = lruNode;
+        }
+
+        public TextMetrics Metrics { get; }
+        public LinkedListNode<MeasureKey> LruNode { get; }
+    }
+
+    private static readonly Dictionary<MeasureKey, MeasureCacheEntry> _measureCache = new();
+    private static readonly LinkedList<MeasureKey> _measureLruKeys = new();
+    private static readonly object _measureLock = new();
+
     /// <summary>
     /// Measures text and populates the FormattedText with accurate metrics.
     /// Uses DirectWrite for WPF-style text measurement with actual font metrics.
@@ -75,8 +143,44 @@ public static class TextMeasurement
         if (double.IsInfinity(maxHeight) || double.IsNaN(maxHeight) || maxHeight <= 0)
             maxHeight = 100000;
 
+        // 先查测量结果缓存：命中即免去一次 DirectWrite CreateTextLayout + 整形（虚拟化滚动的主成本）。
+        var measureKey = new MeasureKey(
+            formattedText.Text,
+            formattedText.FontFamily ?? string.Empty,
+            (float)formattedText.FontSize,
+            formattedText.FontWeight,
+            formattedText.FontStyle,
+            (float)maxWidth,
+            (float)maxHeight);
+
+        lock (_measureLock)
+        {
+            if (_measureCache.TryGetValue(measureKey, out var cachedEntry))
+            {
+                TouchMeasureKey(cachedEntry.LruNode);
+                ApplyMetrics(formattedText, cachedEntry.Metrics);
+                return true;
+            }
+        }
+
         var metrics = format.MeasureText(formattedText.Text, (float)maxWidth, (float)maxHeight);
 
+        lock (_measureLock)
+        {
+            if (!_measureCache.ContainsKey(measureKey))
+            {
+                var lruNode = _measureLruKeys.AddLast(measureKey);
+                _measureCache[measureKey] = new MeasureCacheEntry(metrics, lruNode);
+                TrimMeasureCacheIfNeeded();
+            }
+        }
+
+        ApplyMetrics(formattedText, metrics);
+        return true;
+    }
+
+    private static void ApplyMetrics(FormattedText formattedText, TextMetrics metrics)
+    {
         formattedText.Width = metrics.Width;
         formattedText.Height = metrics.Height;
         formattedText.LineHeight = metrics.LineHeight;
@@ -86,8 +190,24 @@ public static class TextMeasurement
         formattedText.Baseline = metrics.Baseline;
         formattedText.LineCount = (int)metrics.LineCount;
         formattedText.IsMeasured = true;
+    }
 
-        return true;
+    private static void TouchMeasureKey(LinkedListNode<MeasureKey> node)
+    {
+        if (!ReferenceEquals(node, _measureLruKeys.Last))
+        {
+            _measureLruKeys.Remove(node);
+            _measureLruKeys.AddLast(node);
+        }
+    }
+
+    private static void TrimMeasureCacheIfNeeded()
+    {
+        while (_measureCache.Count > MaxMeasureCacheEntries && _measureLruKeys.First is { } oldest)
+        {
+            _measureLruKeys.RemoveFirst();
+            _measureCache.Remove(oldest.Value);
+        }
     }
 
     /// <summary>
@@ -304,6 +424,21 @@ public static class TextMeasurement
             }
             _formatCache.Clear();
             _lruKeys.Clear();
+        }
+
+        // Measured sizes depend on the (now-changed) fonts, so drop the result cache too.
+        lock (_measureLock)
+        {
+            _measureCache.Clear();
+            _measureLruKeys.Clear();
+        }
+
+        // Font-face metrics (ascent / descent / lineHeight) are font-derived as well,
+        // so a "fonts changed" clear must drop them too — otherwise GetFontMetrics /
+        // GetLineHeight keep serving line heights resolved from the stale font set.
+        lock (_metricsLock)
+        {
+            _metricsCache.Clear();
         }
     }
 

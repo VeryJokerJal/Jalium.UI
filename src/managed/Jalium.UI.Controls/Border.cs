@@ -760,7 +760,7 @@ public class Border : FrameworkElement
 
             // Cache screen-space rect for neighbor fusion queries
             _lgScreenRect = new Rect(
-                Math.Round(glassRect.X + offset.X), Math.Round(glassRect.Y + offset.Y),
+                glassRect.X + offset.X, glassRect.Y + offset.Y,
                 glassRect.Width, glassRect.Height);
             _lgAvgCornerRadius = avgRadius;
 
@@ -873,69 +873,46 @@ public class Border : FrameworkElement
         {
             var seN = SuperEllipseN;
 
-            // Use SDF super ellipse rendering via the direct renderer for pixel-perfect AA.
-            // Set shape type to SuperEllipse (1) before drawing, then reset to RoundedRect (0).
-            if (dc is Interop.RenderTargetDrawingContext seDc)
+            // SuperEllipse via SetShapeType + DrawRoundedRectangle. SetShapeType is
+            // a recordable DrawingContext op, so this works on the live
+            // RenderTargetDrawingContext AND through the cached / whole-frame
+            // recorder (which replays both in draw order) — the path Android's
+            // renderer uses. The previous `else` branch fell back to a Bezier
+            // DrawGeometry for non-RenderTarget (recorder) contexts; that squircle
+            // fill went through the engine batch which drains AFTER the in-order
+            // replay commands, so a card's background painted over its own text.
+            // DrawRoundedRectangle under shapeType==1 records in order instead.
+            // Contexts that don't model a superellipse get the no-op SetShapeType
+            // default and render an ordinary rounded rectangle.
+            dc.SetShapeType(1, (float)seN);
+
+            // Pass the element's REAL CornerRadius (not min(w,h)/2). A squircle is
+            // a rounded rect with continuous-curvature corners of that radius +
+            // straight edges; min(w,h)/2 would collapse a wide/short element into a
+            // flattened oval (the "squished" shape). The native squircle tessellator
+            // clamps each corner to the half-extent.
+            if (Background != null && !LiquidGlass)
             {
-                seDc.SetShapeType(1, (float)seN);
-
-                if (Background != null && !LiquidGlass)
-                {
-                    var backgroundRect = new Rect(
-                        rect.X + halfBorder,
-                        rect.Y + halfBorder,
-                        Math.Max(0, rect.Width - borderWidth),
-                        Math.Max(0, rect.Height - borderWidth));
-
-                    // Use a single average corner radius — the SDF super ellipse shape
-                    // is defined by the exponent N, not by per-corner radii.
-                    var avgRadius = Math.Min(backgroundRect.Width, backgroundRect.Height) / 2.0;
-                    dc.DrawRoundedRectangle(Background, null, backgroundRect,
-                        new CornerRadius(avgRadius));
-                }
-
-                if (BorderBrush != null && borderWidth > 0)
-                {
-                    var pen = GetOrCreateBorderPen(BorderBrush, borderWidth);
-                    var borderRect = new Rect(
-                        rect.X + halfBorder,
-                        rect.Y + halfBorder,
-                        Math.Max(0, rect.Width - borderWidth),
-                        Math.Max(0, rect.Height - borderWidth));
-
-                    var avgRadius = Math.Min(borderRect.Width, borderRect.Height) / 2.0;
-                    dc.DrawRoundedRectangle(null, pen, borderRect,
-                        new CornerRadius(avgRadius));
-                }
-
-                seDc.SetShapeType(0, 4.0f);
+                var backgroundRect = new Rect(
+                    rect.X + halfBorder,
+                    rect.Y + halfBorder,
+                    Math.Max(0, rect.Width - borderWidth),
+                    Math.Max(0, rect.Height - borderWidth));
+                dc.DrawRoundedRectangle(Background, null, backgroundRect, cornerRadius);
             }
-            else
+
+            if (BorderBrush != null && borderWidth > 0)
             {
-                // Fallback for non-D3D12 drawing contexts: use Bezier geometry
-                if (Background != null && !LiquidGlass)
-                {
-                    var backgroundRect = new Rect(
-                        rect.X + halfBorder,
-                        rect.Y + halfBorder,
-                        Math.Max(0, rect.Width - borderWidth),
-                        Math.Max(0, rect.Height - borderWidth));
-                    var bgGeo = CreateSuperEllipseGeometry(backgroundRect, seN);
-                    dc.DrawGeometry(Background, null, bgGeo);
-                }
-
-                if (BorderBrush != null && borderWidth > 0)
-                {
-                    var pen = GetOrCreateBorderPen(BorderBrush, borderWidth);
-                    var borderRect = new Rect(
-                        rect.X + halfBorder,
-                        rect.Y + halfBorder,
-                        Math.Max(0, rect.Width - borderWidth),
-                        Math.Max(0, rect.Height - borderWidth));
-                    var borderGeo = CreateSuperEllipseGeometry(borderRect, seN);
-                    dc.DrawGeometry(null, pen, borderGeo);
-                }
+                var pen = GetOrCreateBorderPen(BorderBrush, borderWidth);
+                var borderRect = new Rect(
+                    rect.X + halfBorder,
+                    rect.Y + halfBorder,
+                    Math.Max(0, rect.Width - borderWidth),
+                    Math.Max(0, rect.Height - borderWidth));
+                dc.DrawRoundedRectangle(null, pen, borderRect, cornerRadius);
             }
+
+            dc.SetShapeType(0, 4.0f);
         }
         else
         {

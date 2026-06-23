@@ -1315,7 +1315,7 @@ public partial class DevToolsWindow : Window
 
                     AddSection("Typography");
                     AddNum("FontSize", control.FontSize, "F1", v => control.FontSize = v);
-                    AddFontFamily("FontFamily", control.FontFamily);
+                    AddFontFamily("FontFamily", control.FontFamily, control);
                     AddFontWeight("FontWeight", control.FontWeight);
                     AddEnum("HorizContentAlign", control.HorizontalContentAlignment);
                     AddEnum("VertContentAlign", control.VerticalContentAlignment);
@@ -1333,7 +1333,7 @@ public partial class DevToolsWindow : Window
                     AddSection("Typography");
                     AddBrush("Foreground", tb.Foreground, v => ForceSetValue(tb, TextBlock.ForegroundProperty, v));
                     AddNum("FontSize", tb.FontSize, "F1", v => ForceSetValue(tb, TextBlock.FontSizeProperty, (double)v));
-                    AddFontFamily("FontFamily", tb.FontFamily);
+                    AddFontFamily("FontFamily", tb.FontFamily, tb);
                     AddFontWeight("FontWeight", tb.FontWeight);
                 }
 
@@ -1805,11 +1805,66 @@ public partial class DevToolsWindow : Window
                 break;
 
             default:
-                AddFormattedDependencyPropertyValue(property.Name, value, nameBrush);
+                if (!TryAddSerializableEditor(target, property, value, nameBrush))
+                {
+                    AddFormattedDependencyPropertyValue(property.Name, value, nameBrush);
+                }
                 break;
         }
 
         AppendValueSourceBadge(target, property);
+    }
+
+    /// <summary>
+    /// For property types that can round-trip through a string (an <see cref="ValueSerializer"/>
+    /// such as ImageSource via its Uri, Geometry via path markup, etc.), renders an editable text
+    /// box instead of a read-only type string. Returns false when the value cannot be serialized.
+    /// </summary>
+    private bool TryAddSerializableEditor(DependencyObject target, DependencyProperty property, object value, Brush? nameBrush)
+    {
+        if (property.ReadOnly)
+        {
+            return false;
+        }
+
+        var serializer = ValueSerializer.GetSerializerFor(property.PropertyType);
+        if (serializer == null ||
+            !serializer.CanConvertToString(value, null) ||
+            !serializer.CanConvertFromString(string.Empty, null))
+        {
+            return false;
+        }
+
+        string text;
+        try
+        {
+            text = serializer.ConvertToString(value, null);
+        }
+        catch
+        {
+            return false;
+        }
+
+        AddEditable(property.Name, text, v => SetFromValueSerializer(target, property, serializer, v), nameBrush);
+        return true;
+    }
+
+    private static void SetFromValueSerializer(DependencyObject target, DependencyProperty property, ValueSerializer serializer, string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        try
+        {
+            var converted = serializer.ConvertFromString(text, null);
+            TrySetDependencyPropertyValue(target, property, converted);
+        }
+        catch
+        {
+            // Ignore conversion failures while the user is still typing a valid value.
+        }
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("DevTools diagnostic that reflects on the runtime DependencyObject type to read CLR property values.")]
@@ -3105,17 +3160,135 @@ public partial class DevToolsWindow : Window
     }
 
     // 鈹€鈹€ 11. Font family (rendered in that font) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    private void AddFontFamily(string name, string? fontFamily)
+    private void AddFontFamily(string name, string? fontFamily, DependencyObject? target = null)
     {
         var row = Row(name);
-        var display = fontFamily ?? "(default)";
-        row.Children.Add(new TextBlock
+
+        if (target == null)
         {
-            Text = $"\"{display}\"",
-            Foreground = BrushString,
+            var display = fontFamily ?? "(default)";
+            row.Children.Add(new TextBlock
+            {
+                Text = $"\"{display}\"",
+                Foreground = BrushString,
+                FontSize = 11,
+                FontFamily = fontFamily ?? FrameworkElement.DefaultFontFamilyName
+            });
+            return;
+        }
+
+        // The family is a plain string, so offer direct text editing on every platform.
+        var editor = new TextBox
+        {
+            Text = fontFamily ?? string.Empty,
             FontSize = 11,
+            Foreground = BrushString,
+            Background = BrushEditBg,
+            BorderBrush = BrushEditBorder,
+            BorderThickness = new Thickness(1),
+            Padding = new Thickness(3, 1, 3, 1),
+            MinWidth = 140,
             FontFamily = fontFamily ?? FrameworkElement.DefaultFontFamilyName
-        });
+        };
+        editor.TextChanged += (_, _) => SetTargetFontFamily(target, editor.Text);
+        row.Children.Add(editor);
+
+        // Windows additionally hosts the native common font dialog (family + size + weight + style + color).
+        if (Jalium.UI.Controls.Platform.PlatformFactory.IsWindows)
+        {
+            var button = new Border
+            {
+                Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0)),
+                Padding = new Thickness(6, 0, 6, 0),
+                Margin = new Thickness(8, 0, 0, 0),
+                CornerRadius = new CornerRadius(3)
+            };
+            button.Child = new TextBlock
+            {
+                Text = "Aa…",
+                Foreground = BrushType,
+                FontSize = 11
+            };
+            button.MouseDown += (_, _) => ShowFontDialogFor(target, fontFamily);
+            row.Children.Add(button);
+        }
+    }
+
+    private static void SetTargetFontFamily(DependencyObject target, string value)
+    {
+        try
+        {
+            switch (target)
+            {
+                case TextBlock tb:
+                    ForceSetValue(tb, TextBlock.FontFamilyProperty, value);
+                    break;
+                case Control c:
+                    ForceSetValue(c, Control.FontFamilyProperty, value);
+                    break;
+            }
+        }
+        catch
+        {
+            // DevTools should never crash the host because a font edit failed.
+        }
+    }
+
+    private void ShowFontDialogFor(DependencyObject target, string? currentFamily)
+    {
+        try
+        {
+            var dialog = new FontDialog();
+            if (!string.IsNullOrWhiteSpace(currentFamily))
+            {
+                dialog.FontFamily = new FontFamily(currentFamily);
+            }
+
+            switch (target)
+            {
+                case TextBlock tb:
+                    dialog.FontSize = tb.FontSize;
+                    dialog.FontWeight = tb.FontWeight;
+                    dialog.FontStyle = tb.FontStyle;
+                    break;
+                case Control c:
+                    dialog.FontSize = c.FontSize;
+                    dialog.FontWeight = c.FontWeight;
+                    dialog.FontStyle = c.FontStyle;
+                    break;
+            }
+
+            if (!dialog.ShowDialog())
+            {
+                return;
+            }
+
+            var family = dialog.FontFamily?.Source;
+            switch (target)
+            {
+                case TextBlock tb:
+                    if (!string.IsNullOrEmpty(family)) ForceSetValue(tb, TextBlock.FontFamilyProperty, family);
+                    ForceSetValue(tb, TextBlock.FontSizeProperty, dialog.FontSize);
+                    ForceSetValue(tb, TextBlock.FontWeightProperty, dialog.FontWeight);
+                    ForceSetValue(tb, TextBlock.FontStyleProperty, dialog.FontStyle);
+                    break;
+                case Control c:
+                    if (!string.IsNullOrEmpty(family)) ForceSetValue(c, Control.FontFamilyProperty, family);
+                    ForceSetValue(c, Control.FontSizeProperty, dialog.FontSize);
+                    ForceSetValue(c, Control.FontWeightProperty, dialog.FontWeight);
+                    ForceSetValue(c, Control.FontStyleProperty, dialog.FontStyle);
+                    break;
+            }
+
+            if (_selectedVisual != null)
+            {
+                UpdatePropertiesPanel(_selectedVisual);
+            }
+        }
+        catch
+        {
+            // DevTools should never crash the host because a font edit failed.
+        }
     }
 
     // 鈹€鈹€ 12. Font weight (rendered with that weight) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€

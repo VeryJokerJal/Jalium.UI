@@ -78,6 +78,22 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     internal nint Handle => _hwnd;
 
+    /// <summary>
+    /// 拥有此外飞弹窗的顶层 <see cref="Window"/>。
+    /// <para>
+    /// 级联弹窗（在一个已经外飞成独立 <see cref="PopupWindow"/> 的菜单里再打开子菜单）需要它来把
+    /// 窗口本地坐标换算回正确的窗口原点：子菜单的 PlacementTarget 位于父菜单的 PopupWindow 内，
+    /// 向上走 VisualParent 不会遇到 <see cref="Window"/>，必须经由本属性解析到真正的宿主窗口。
+    /// 否则从非主窗口打开的子菜单会按主窗口原点做 ClientToScreen，导致整体偏移。
+    /// </para>
+    /// <para>
+    /// 因为每个 PopupWindow 都以真正的顶层 Window 作为 parent（见 Popup.OpenAsExternalWindow，其
+    /// <c>_parentWindow</c> 由 Popup.GetParentWindow 解析而来），所以即便多层嵌套，OwnerWindow 也始终
+    /// 指向真正的顶层窗口，单跳解析即可。
+    /// </para>
+    /// </summary>
+    internal Window OwnerWindow => _parentWindow;
+
     internal PopupWindow(Window parentWindow, PopupRoot popupRoot)
     {
         _parentWindow = parentWindow;
@@ -382,7 +398,11 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
         try
         {
-            renderTarget.Resize(width, height);
+            // Busy is unreachable here: popup windows render inline (never a render
+            // thread), so Resize takes the same-thread close path and returns Ok.
+            // Discard the result — these transient overlays are full-invalidated on
+            // each show, so a (hypothetical) deferred resize would self-heal.
+            _ = renderTarget.Resize(width, height);
         }
         catch (RenderPipelineException ex)
         {
@@ -429,6 +449,13 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _renderRecoveryInProgress = true;
         try
         {
+            // Retained GPU layers bake textures on the failed device — evict
+            // the popup tree's handles and destroy them through the OLD render
+            // target before it is replaced (mirrors Window's device-lost
+            // recovery; stale handles would otherwise reach the new device).
+            Visual.ReleaseRetainedLayersRecursive(this);
+            _drawingContext?.DrainPendingRetainedLayers();
+
             _drawingContext?.ClearCache();
             _drawingContext = null;
 

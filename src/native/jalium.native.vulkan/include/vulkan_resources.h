@@ -11,8 +11,28 @@ namespace jalium { class TextEngine; class FreeTypeTextFormat; }
 #include <vector>
 #include <memory>
 #include <cstdint>
+#include <list>
+#include <unordered_map>
+
+#ifdef _WIN32
+// DirectWrite text path (mirrors the D3D12 backend's DWrite usage so Windows
+// Vulkan text measurement matches the DirectWrite rendering later batches add).
+// dwrite_3.h is required for IDWriteFactory5; wrl/client.h supplies ComPtr.
+#include <dwrite_3.h>
+#include <wrl/client.h>
+#endif
 
 namespace jalium {
+
+#ifdef _WIN32
+// Process-shared DirectWrite factory accessor (Windows only). Mirrors the way
+// the D3D12 backend funnels every IDWriteTextFormat / IDWriteTextLayout through
+// a single factory. Returned as a raw pointer — the factory is owned by an
+// internal function-local static and outlives every caller. MAY be nullptr if
+// DWriteCreateFactory / QueryInterface fails, so every caller MUST null-check.
+// Both this batch (VulkanTextFormat) and a later glyph-atlas batch use it.
+IDWriteFactory5* GetSharedDWriteFactory();
+#endif
 
 class VulkanSolidBrush : public Brush {
 public:
@@ -159,6 +179,25 @@ public:
         uint32_t textPosition, int32_t isTrailingHit,
         JaliumTextHitTestResult* result) override;
 
+#ifdef _WIN32
+    /// Creates an IDWriteTextLayout with the current format settings (including
+    /// maxLines). Cached two-tier exactly like D3D12TextFormat::CreateLayout —
+    /// DirectWrite shaping/itemization/line-breaking is expensive and a
+    /// data-heavy frame issues hundreds of identical calls. The shaped layout
+    /// depends only on (text, maxWidth, maxHeight, maxLines) for THIS format
+    /// object, so the physical cache keys on (text + maxLines) and re-applies
+    /// width/height on hit. A later render-target batch calls this to render.
+    /// `outKey` (optional) receives a globally-unique content hash of the
+    /// shaped layout (text + this format object + constraints) for the glyph
+    /// instance cache one tier above.
+    HRESULT CreateLayout(const wchar_t* text, uint32_t textLength,
+                         float maxWidth, float maxHeight,
+                         IDWriteTextLayout** layout,
+                         uint64_t* outKey = nullptr);
+
+    IDWriteTextFormat* GetDWriteFormat() const { return dwFormat_.Get(); }
+#endif
+
     const std::wstring& GetFontFamily() const { return fontFamily_; }
     float GetFontSize() const { return fontSize_; }
     int32_t GetAlignment() const { return alignment_; }
@@ -174,6 +213,22 @@ public:
 #endif
 
 private:
+#ifdef _WIN32
+    /// Cache key intentionally excludes maxWidth / maxHeight (mirrors D3D12):
+    /// those dimensions are re-applied to the cached layout via
+    /// SetMaxWidth/SetMaxHeight on hit, while the expensive CreateTextLayout
+    /// (text parsing + script analysis + font fallback + glyph shaping) runs
+    /// only when the text content or the maxLines clamp actually changes.
+    uint64_t HashLayoutKey(const wchar_t* text, uint32_t textLength) const noexcept;
+    /// Drop all cached layouts. Called by every setter that mutates a
+    /// layout-affecting format property so stale layouts are never served.
+    void InvalidateLayoutCache() noexcept;
+    /// Apply the maxLines_ height clamp to a layout. DirectWrite has no
+    /// SetMaxLines API, so max height is constrained to the summed height of the
+    /// first maxLines_ lines. Runs on BOTH the cache-miss and cache-hit paths.
+    void ApplyMaxLinesClamp(IDWriteTextLayout* layout) const noexcept;
+#endif
+
     std::wstring fontFamily_;
     float fontSize_ = 12.0f;
     int32_t fontWeight_ = 400;
@@ -186,6 +241,22 @@ private:
     float lineSpacingMultiplier_ = 0.0f;
     float lineSpacingBaseline_ = 0.0f;
     uint32_t maxLines_ = 0;
+
+#ifdef _WIN32
+    // DirectWrite format object for this font identity. Created from the
+    // process-shared IDWriteFactory5 at construction; may stay null if the
+    // factory or CreateTextFormat fails, in which case the measurement methods
+    // fall back to the approximate-metrics path.
+    Microsoft::WRL::ComPtr<IDWriteTextFormat> dwFormat_;
+
+    // Bounded LRU of shaped layouts (same structure + cap as D3D12). Cap covers
+    // a data-heavy frame's full visible text set so it reuses across frames
+    // instead of thrashing. Layouts are small (a few KB of DWrite buffers).
+    struct LayoutCacheEntry { uint64_t key; Microsoft::WRL::ComPtr<IDWriteTextLayout> layout; };
+    std::list<LayoutCacheEntry> layoutLru_;
+    std::unordered_map<uint64_t, std::list<LayoutCacheEntry>::iterator> layoutMap_;
+    static constexpr size_t kLayoutCacheCap = 2048;
+#endif
 
 #ifndef _WIN32
     // FreeType + HarfBuzz text engine (non-Windows)

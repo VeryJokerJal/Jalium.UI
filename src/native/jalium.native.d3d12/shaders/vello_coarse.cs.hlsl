@@ -142,6 +142,10 @@ void write_color(uint rgba_color)
     cmd_offset += 2u;
 }
 
+// CONTRACT: emits EXACTLY 8 PTCL words — 1 opcode (ty) + 7 payload
+// (gradIndex + gp0..gp5). The fine-shader CMD_LIN_GRAD/CMD_RAD_GRAD/
+// CMD_SWEEP_GRAD readers MUST consume exactly 7 payload words (advance cmd_ix
+// by 8 total). Reading an 8th payload word desyncs the rest of the tile's PTCL.
 void write_grad(uint ty, uint gradIndex, PathDraw pd)
 {
     alloc_cmd(8u);

@@ -26,6 +26,25 @@ public:
     JaliumBackend GetType() const override { return JALIUM_BACKEND_VULKAN; }
     const wchar_t* GetName() const override { return L"Vulkan"; }
 
+    /// Override: reports the registered device generation's lost state.
+    /// Vulkan has no GetDeviceRemovedReason-style query — the only signal is a
+    /// VK_ERROR_DEVICE_LOST from an actual call — so the render targets latch
+    /// the loss into their VulkanDeviceGeneration and this override surfaces
+    /// it (the base default would report a permanently healthy device,
+    /// leaving jalium_context_check_device_status blind on Vulkan). With no
+    /// generation registered yet there is nothing to be lost → OK, matching
+    /// the pre-first-window state.
+    ///
+    /// Semantics caveat (differs from D3D12's single global device): Vulkan
+    /// creates one VkDevice per render target, and this reports only the MOST
+    /// RECENTLY REGISTERED generation — with multiple windows it can miss an
+    /// older window's loss or report a loss the other windows don't share.
+    /// The recovery chain does not consume it (each RT's BeginDraw/EndDraw
+    /// gate reports its own precise state); this exists for ABI completeness
+    /// and diagnostics. It is also passively latched, not an active probe: a
+    /// dead-but-unobserved device still reports OK until some call fails.
+    JaliumResult CheckDeviceStatus() override;
+
     /// Override: returns the GPU adapter that the first render target picked
     /// during VulkanRenderTarget::Impl::Initialize. VulkanBackend itself does
     /// not own a VkInstance / VkPhysicalDevice (each render target creates its
@@ -98,11 +117,27 @@ public:
                           const void* constants,
                           const void* extraParams, uint32_t extraParamsSize) override;
 
-    /// Called by the first VulkanRenderTarget::Impl once it has a live device,
-    /// so backend-owned resources (ink layers / brush shaders) can be created
-    /// on the same device the window composites with. Idempotent; a second
-    /// registration with the same device is a no-op.
-    void RegisterDeviceContext(const VulkanDeviceContext& ctx);
+    /// Called by every VulkanRenderTarget::Impl once it has a live device, so
+    /// backend-owned resources (ink layers / brush shaders) can be created on
+    /// the same device the window composites with. Most-recent registration
+    /// wins. A registration with the same device is a no-op; a different
+    /// device drops only the backend's reference to the previous brush
+    /// pipeline — ink objects still alive on the old generation keep it (and
+    /// its VkDevice) alive through their own shared_ptr references, so they
+    /// stay destructible and CPU-readable instead of dangling.
+    void RegisterDeviceContext(std::shared_ptr<VulkanDeviceGeneration> generation);
+
+    /// Called by VulkanRenderTarget::Impl::Destroy. If the dying render
+    /// target's generation is the one currently registered, the backend drops
+    /// its references (generation + brush pipeline) so (a) a closed window's
+    /// VkDevice/VkInstance don't stay resident behind the backend's pin, and
+    /// (b) ink layers are never silently created on a dead window's orphan
+    /// device. Ink objects already alive keep their own shared_ptr keep-alive;
+    /// with no generation registered, new ink requests return the
+    /// "unsupported" sentinel and managed falls back to CPU ink until the next
+    /// render target registers. A different registered generation (another
+    /// window superseded this one) is left untouched.
+    void UnregisterDeviceContext(const std::shared_ptr<VulkanDeviceGeneration>& generation);
 
 #ifndef _WIN32
     TextEngine* GetTextEngine() const { return textEngine_.get(); }
@@ -127,14 +162,18 @@ private:
     mutable VkPhysicalDevice cachedPhysicalDevice_ = VK_NULL_HANDLE;
 
     // ── Backend-owned ink pipeline ──────────────────────────────────────────
-    // brushPipeline_ is lazily built on the registered device the first time an
-    // ink layer or brush shader is requested. EnsureBrushPipeline() returns it
-    // (or nullptr when no device / DXC). Guarded by inkMutex_ because ink ops
-    // can in principle arrive from more than one window thread.
-    VulkanBrushPipeline* EnsureBrushPipeline();
+    // brushPipeline_ is lazily built on the registered device generation the
+    // first time an ink layer or brush shader is requested.
+    // EnsureBrushPipeline() returns it (or nullptr when no device / lost
+    // generation / DXC). Both the pipeline and the generation are shared_ptr:
+    // ink objects handed out to managed code co-own them, so swapping the
+    // registered generation never dangles a live ink object. Guarded by
+    // inkMutex_ because ink ops can in principle arrive from more than one
+    // window thread.
+    std::shared_ptr<VulkanBrushPipeline> EnsureBrushPipeline();
     std::mutex inkMutex_;
-    VulkanDeviceContext deviceContext_{};
-    std::unique_ptr<VulkanBrushPipeline> brushPipeline_;
+    std::shared_ptr<VulkanDeviceGeneration> deviceGeneration_;
+    std::shared_ptr<VulkanBrushPipeline> brushPipeline_;
     bool brushPipelineAttempted_ = false;
 };
 

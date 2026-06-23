@@ -21,7 +21,9 @@ struct Instance
     float4 stop12BA;
     float4 stop23GB;
     float4 stop3Color;
-    float4 _pad;
+    float4 _pad;        // x=shapeType, y=shapeN, zw unused
+    float4 xform0;      // m11, m12, m21, m22  (per-instance 2x3 affine)
+    float4 xform1;      // dx, dy, _, _
 };
 
 StructuredBuffer<Instance> instances : register(t0);
@@ -61,8 +63,27 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     Instance inst = instances[instanceId + baseInstanceOffset];
     float2 corner = corners[vertexId];
 
-    float2 expand = float2(1.0, 1.0);
-    float2 pixelPos = inst.position - expand + corner * (inst.size + expand * 2.0);
+    // Per-instance 2x3 affine — applied to the quad corners here so rotation /
+    // negative-diagonal (180 deg) / skew render as a correctly oriented quad
+    // instead of the legacy axis-aligned + sign-stripped-scale one. For an
+    // un-transformed element this is identity and the output is bit-identical.
+    float m11 = inst.xform0.x, m12 = inst.xform0.y;
+    float m21 = inst.xform0.z, m22 = inst.xform0.w;
+    float2 xfT = inst.xform1.xy;
+
+    // 1px AA headroom, grown in the PRE-transform (local) frame by the inverse
+    // on-screen scale of each axis so the smoothstep band still spans ~1px on
+    // screen after the affine (the PS fwidth() normalizes the band WIDTH; this
+    // only keeps the geometric quad big enough to contain it). Identity =>
+    // sx=sy=1 => expand=(1,1) => the legacy 1px screen expand exactly.
+    float sx = length(float2(m11, m12));
+    float sy = length(float2(m21, m22));
+    float2 expand = float2(1.0 / max(sx, 1e-4), 1.0 / max(sy, 1e-4));
+
+    float2 localPos = corner * (inst.size + expand * 2.0) - expand;
+    float2 localPt  = inst.position + localPos;
+    float2 pixelPos = float2(localPt.x * m11 + localPt.y * m21 + xfT.x,
+                             localPt.x * m12 + localPt.y * m22 + xfT.y);
 
     VsOutput o;
     o.clipPos = float4(
@@ -70,7 +91,7 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
         1.0 - pixelPos.y * invScreenSize.y * 2.0,
         0.0, 1.0);
 
-    o.localPos     = corner * (inst.size + expand * 2.0) - expand;
+    o.localPos     = localPos;
     o.rectSize     = inst.size;
     o.cornerRadius = inst.cornerRadius;
     o.fillColor    = inst.fillColor * inst.opacity;

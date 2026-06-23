@@ -140,30 +140,22 @@ public partial class FrameworkElement : UIElement
     internal static double LayoutDpiScale { get; set; } = 1.0;
 
     /// <summary>
-    /// Snaps a layout value to the nearest physical pixel boundary so that
-    /// arranged children and any geometry a parent paints around those
-    /// children (background fills, border strokes) land on the same pixel
-    /// rows/columns. Internal callers must use this when computing rects
-    /// that need to align with a child's <c>_visualBounds</c> — otherwise
-    /// fractional thicknesses (e.g. mid-transition values like 2.5) leave
-    /// 0.5 px seams between the parent's background and the child.
+    /// Pixel snapping is DISABLED. This method returns the value unchanged
+    /// (identity), keeping layout in continuous floating-point space. It is
+    /// retained — rather than removed — so the many Border / StackPanel call
+    /// sites that snapped <see cref="Thickness"/> sides and arrange offsets
+    /// stay in agreement without per-site edits.
     /// </summary>
+    /// <remarks>
+    /// Forcing arranged children and the geometry painted around them onto the
+    /// physical-pixel grid quantizes smooth animations (e.g. a spring sweeping
+    /// a Margin by sub-pixel amounts) into 1px step jitter. The native renderer
+    /// performs sub-pixel positioning / AA at draw time, so fractional layout
+    /// values render cleanly. Matches WPF, where layout rounding is opt-in via
+    /// UseLayoutRounding (default off).
+    /// </remarks>
     internal static double SnapLayoutValue(double value)
-    {
-        if (!double.IsFinite(value))
-        {
-            return 0;
-        }
-
-        double scale = LayoutDpiScale;
-        if (scale <= 1.0)
-        {
-            return Math.Round(value, MidpointRounding.AwayFromZero);
-        }
-
-        // Snap to nearest physical pixel boundary to prevent sub-pixel misalignment
-        return Math.Round(value * scale, MidpointRounding.AwayFromZero) / scale;
-    }
+        => double.IsFinite(value) ? value : 0;
 
     #region Dependency Properties
 

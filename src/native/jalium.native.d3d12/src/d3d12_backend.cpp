@@ -14,17 +14,6 @@
 
 namespace jalium {
 
-void JaliumD3D12InitLog(const char* msg) {
-    if (!msg) return;
-    OutputDebugStringA(msg);
-    char* path = nullptr; size_t len = 0;
-    if (_dupenv_s(&path, &len, "JALIUM_INIT_LOG") == 0 && path && path[0]) {
-        FILE* f = nullptr;
-        if (fopen_s(&f, path, "a") == 0 && f) { fputs(msg, f); fclose(f); }
-    }
-    if (path) free(path);
-}
-
 namespace {
 bool IsWarpForced()
 {
@@ -495,30 +484,6 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
     hr = device_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue_));
     if (FAILED(hr)) {
         return false;
-    }
-
-    // Init diagnostics — record exactly which adapter/device we ended up on and
-    // whether the UMA/architecture query succeeded, so a degraded init (WARP
-    // fallback, wrong adapter under hybrid graphics, failed UMA query) is visible
-    // in JALIUM_INIT_LOG without attaching a debugger.
-    {
-        D3D12_FEATURE_DATA_ARCHITECTURE1 arch = {};
-        arch.NodeIndex = 0;
-        bool umaOk = SUCCEEDED(device_->CheckFeatureSupport(
-            D3D12_FEATURE_ARCHITECTURE1, &arch, sizeof(arch)));
-        bool isWarp = (adapterDesc_.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0
-                    || adapterDesc_.VendorId == 0x1414;
-        char buf[768];
-        sprintf_s(buf,
-            "[D3D12 init] device OK. adapter='%ls' vendor=0x%04X device=0x%04X "
-            "dedVRAM=%lluMB sharedMem=%lluMB WARP=%d archQueryOK=%d UMA=%d cacheCoherentUMA=%d "
-            "tileBased=%d cmdQueue=%d gpuPrefEnv=%d\n",
-            adapterDesc_.Description, adapterDesc_.VendorId, adapterDesc_.DeviceId,
-            (unsigned long long)(adapterDesc_.DedicatedVideoMemory / (1024ull * 1024ull)),
-            (unsigned long long)(adapterDesc_.SharedSystemMemory / (1024ull * 1024ull)),
-            isWarp ? 1 : 0, umaOk ? 1 : 0, arch.UMA ? 1 : 0, arch.CacheCoherentUMA ? 1 : 0,
-            arch.TileBasedRenderer ? 1 : 0, commandQueue_ ? 1 : 0, (int)gpuPrefFromEnv_);
-        JaliumD3D12InitLog(buf);
     }
 
     return true;

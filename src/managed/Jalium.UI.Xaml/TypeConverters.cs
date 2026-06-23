@@ -52,6 +52,24 @@ public sealed class ThicknessConverter : TypeConverter
 }
 
 /// <summary>
+/// Converts a path mini-language string (e.g. <c>"M 0,0 L 10,10 Z"</c>) to a
+/// <see cref="Geometry"/>, mirroring WPF's GeometryConverter. Lets any Geometry-typed
+/// property (Path.Geometry, PathIcon.Data, UIElement.Clip, …) accept the string form in
+/// JALXAML. Invalid input yields <see langword="null"/> (the property keeps its default)
+/// rather than throwing.
+/// </summary>
+public sealed class GeometryTypeConverter : TypeConverter
+{
+    public override object? ConvertFrom(object? value)
+    {
+        if (value is Geometry g) return g;
+        if (value is not string str) return null;
+        try { return Geometry.Parse(str); }
+        catch (FormatException) { return null; }
+    }
+}
+
+/// <summary>
 /// Converts strings to CornerRadius values.
 /// </summary>
 public sealed class CornerRadiusConverter : TypeConverter
@@ -566,6 +584,7 @@ public static class TypeConverterRegistry
         [typeof(Point)] = new PointConverter(),
         [typeof(Vector)] = new VectorConverter(),
         [typeof(Size)] = new SizeConverter(),
+        [typeof(Geometry)] = new GeometryTypeConverter(),
     };
 
     /// <summary>

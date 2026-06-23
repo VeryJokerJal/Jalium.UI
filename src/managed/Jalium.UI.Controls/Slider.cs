@@ -369,7 +369,11 @@ public class Slider : Control
 
             if (_selectionRangeBorder != null)
             {
-                _selectionRangeBorder.Width = thumbX + ThumbSize / 2;
+                // The fill starts at x=ThumbSize/2 (its 8px left margin) and must end at the
+                // thumb's CENTER (thumbX + ThumbSize/2), so width = thumbX. Ending at the thumb's
+                // right edge (thumbX + ThumbSize/2 here) lets the fill's square corners spill past
+                // the rounded thumb. This mirrors DrawFilledTrack's fallback math.
+                _selectionRangeBorder.Width = thumbX;
             }
         }
         else

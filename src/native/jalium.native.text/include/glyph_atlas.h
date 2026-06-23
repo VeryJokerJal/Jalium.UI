@@ -37,7 +37,7 @@ struct AtlasGlyphKey {
     uint64_t fontId;         ///< Hash of font family + weight + style
     uint16_t glyphIndex;     ///< HarfBuzz output glyph index
     uint16_t fontSize;       ///< Physical pixel size
-    uint8_t  subpixelX;     ///< 1/4 pixel quantization (0..3)
+    uint8_t  subpixelX;     ///< 1/8 pixel quantization (0..7)
 
     bool operator==(const AtlasGlyphKey& other) const {
         return fontId == other.fontId &&
@@ -50,11 +50,13 @@ struct AtlasGlyphKey {
 struct AtlasGlyphKeyHash {
     size_t operator()(const AtlasGlyphKey& k) const {
         size_t h = std::hash<uint64_t>{}(k.fontId);
-        h ^= std::hash<uint32_t>{}(
-            ((uint32_t)k.glyphIndex << 16) |
-            ((uint32_t)k.fontSize << 2) |
-            k.subpixelX
-        ) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        // Pack non-overlapping in a uint64: subpixelX needs 3 bits now (0..7,
+        // 1/8-pixel buckets), so widen past the old uint32 layout where it would
+        // collide with fontSize. [0..2] subpixelX | [3..18] fontSize | [19..34] glyphIndex.
+        uint64_t packed = ((uint64_t)(k.subpixelX & 0x7))
+                        | ((uint64_t)k.fontSize   << 3)
+                        | ((uint64_t)k.glyphIndex << 19);
+        h ^= std::hash<uint64_t>{}(packed) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
     }
 };
@@ -85,7 +87,7 @@ public:
     /// @param fontId Unique identifier for the font (family+weight+style hash).
     /// @param glyphIndex Glyph index from HarfBuzz.
     /// @param fontSizePx Font size in pixels.
-    /// @param subpixelX Sub-pixel X quantization (0..3).
+    /// @param subpixelX Sub-pixel X quantization (0..7).
     /// @return Atlas entry, or invalid entry if atlas is full.
     const AtlasGlyphEntry& GetOrInsert(
         GlyphRasterizer& rasterizer,

@@ -198,6 +198,7 @@ ID3D12Resource* D3D12Bitmap::GetOrCreateD3D12Texture(ID3D12Device* device, ID3D1
             D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
             IID_PPV_ARGS(&newTexture));
         if (FAILED(hr)) return nullptr;
+        newTexture->SetName(L"JaliumBitmapTexture");  // [JALIUM-921 diag] name so #921 points at the culprit
     }
 
     // Compute footprints / sizes for every mip level so we can pack them all

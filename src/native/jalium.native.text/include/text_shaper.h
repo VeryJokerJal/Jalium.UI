@@ -27,6 +27,12 @@ struct ShapedGlyph {
     float    advanceY;      ///< Vertical advance
     float    offsetX;       ///< Horizontal offset from pen position
     float    offsetY;       ///< Vertical offset from pen position
+    // Face/font this glyph must be rasterized from. Normally the format's
+    // primary face, but for codepoints the primary lacks (e.g. CJK rendered
+    // through a Noto Sans CJK fallback) these point at the fallback face so the
+    // atlas lookup uses the correct face + a collision-free fontId.
+    FT_Face  face = nullptr;
+    uint64_t fontId = 0;
 };
 
 /// A run of shaped glyphs with a single font and direction.

@@ -47,7 +47,7 @@ public:
     /// @param face FreeType font face (caller retains ownership).
     /// @param glyphIndex Glyph index from HarfBuzz shaping.
     /// @param fontSizePx Font size in pixels.
-    /// @param subpixelX Sub-pixel X offset quantized to 1/4 pixel (0..3).
+    /// @param subpixelX Sub-pixel X offset quantized to 1/8 pixel (0..7).
     /// @return Rasterized glyph data, or empty on failure.
     RasterizedGlyph Rasterize(
         FT_Face face,

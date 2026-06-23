@@ -19,7 +19,9 @@
 // Frame flow:
 //   • First stencil-path batch in this frame:
 //       – Lazy-create 8× MSAA color + 8× MSAA depth-stencil + 1× resolve
-//         texture at viewport size (recreated on resize).
+//         texture sized to the path-content extent. Grow-only (high-water-mark):
+//         a window-sized request reuses the buffers; an oversized element-effect
+//         capture grows them once, then the common case keeps hitting the cache.
 //       – Clear MSAA color (transparent) and stencil (0). RTV/DSV bound.
 //   • Each stencil-path batch:
 //       – Stencil pass (write stencil only) + cover pass (write color
@@ -40,6 +42,7 @@
 #include <d3dcompiler.h>
 #include <cstring>
 #include <cstdlib>
+#include <algorithm>
 
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -104,6 +107,18 @@ static const char* kPathResolveHLSL = R"(
 Texture2D<float4> srcTex : register(t0);
 SamplerState srcSampler : register(s0);
 
+// uvScale.xy maps the fullscreen-triangle's [0,1] uv onto only the
+// [0,contentW]×[0,contentH] sub-region of the resolve texture. The MSAA scratch
+// and the resolve texture are grow-only (sized to the high-water-mark content
+// extent) and can therefore be LARGER than this path run's content when an
+// earlier oversized element-effect capture grew them; the scale samples just the
+// used top-left corner so the blit stays 1:1 in texels. It is (1,1) whenever the
+// texture is exactly content-sized — the common case — reproducing the original
+// full-texture blit bit-for-bit.
+cbuffer ResolveParams : register(b0) {
+    float4 uvScale;  // .xy = contentSize / textureSize, .zw unused
+};
+
 struct VSOut { float4 svpos : SV_POSITION; float2 uv : TEXCOORD0; };
 
 VSOut VSMain(uint vid : SV_VertexID) {
@@ -115,7 +130,7 @@ VSOut VSMain(uint vid : SV_VertexID) {
     ndc.y = (vid == 2) ? 3.0 : -1.0;
     VSOut o;
     o.svpos = float4(ndc, 0.0, 1.0);
-    o.uv = float2((ndc.x + 1.0) * 0.5, (1.0 - ndc.y) * 0.5);
+    o.uv = float2((ndc.x + 1.0) * 0.5, (1.0 - ndc.y) * 0.5) * uvScale.xy;
     return o;
 }
 
@@ -223,7 +238,12 @@ bool D3D12DirectRenderer::CreateStencilPathResources()
         }
     }
 
-    // ── Root signature for resolve (one SRV descriptor table + static sampler).
+    // ── Root signature for resolve: SRV descriptor table (t0, pixel) + uv-scale
+    //    root constants (b0, vertex) + static sampler (s0). Param order is kept
+    //    table-first so the existing SetGraphicsRootDescriptorTable(0,…) call in
+    //    exitPathMode is unchanged; the uv-scale (param 1) lets the resolve sample
+    //    only the used sub-region of a grow-only resolve texture (see
+    //    kPathResolveHLSL / EnsureStencilDepthBuffer).
     {
         D3D12_DESCRIPTOR_RANGE srvRange = {};
         srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -231,11 +251,18 @@ bool D3D12DirectRenderer::CreateStencilPathResources()
         srvRange.BaseShaderRegister = 0;
         srvRange.OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
 
-        D3D12_ROOT_PARAMETER param = {};
-        param.ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-        param.DescriptorTable.NumDescriptorRanges = 1;
-        param.DescriptorTable.pDescriptorRanges = &srvRange;
-        param.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        D3D12_ROOT_PARAMETER params[2] = {};
+        // param 0: SRV descriptor table (t0) — pixel shader samples the resolve.
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[0].DescriptorTable.NumDescriptorRanges = 1;
+        params[0].DescriptorTable.pDescriptorRanges = &srvRange;
+        params[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        // param 1: uv-scale root constants (b0) — vertex shader scales the uv.
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[1].Constants.ShaderRegister = 0;
+        params[1].Constants.RegisterSpace = 0;
+        params[1].Constants.Num32BitValues = 4;  // float4 uvScale
+        params[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
         D3D12_STATIC_SAMPLER_DESC sampler = {};
         sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
@@ -246,8 +273,8 @@ bool D3D12DirectRenderer::CreateStencilPathResources()
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = 1;
-        rsDesc.pParameters = &param;
+        rsDesc.NumParameters = 2;
+        rsDesc.pParameters = params;
         rsDesc.NumStaticSamplers = 1;
         rsDesc.pStaticSamplers = &sampler;
         rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -456,13 +483,50 @@ void D3D12DirectRenderer::SetPathMsaaSampleCount(uint32_t sampleCount)
 bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
 {
     if (!stencilPathReady_) return false;
+
+    // Grow-only: the MSAA scratch + 1× resolve are sized to the high-water-mark
+    // of every content extent requested so far (normally the window viewport;
+    // larger when a stencil path is rendered inside an oversized element-effect
+    // capture — pw>viewportWidth_ or ph>viewportHeight_). A request that already
+    // fits the current allocation reuses it, so a one-off oversized capture grows
+    // the textures ONCE and the common window-sized path rendering keeps hitting
+    // this cache with no per-frame churn. The resolve blit samples only the
+    // [0,width]×[0,height] sub-region via a uv-scale (exitPathMode /
+    // kPathResolveHLSL), so a texture larger than the content renders identically.
     if (pathMsaaColor_ && pathMsaaDepth_ && pathResolveTexture_
-        && width == pathMsaaWidth_ && height == pathMsaaHeight_) {
+        && width <= pathMsaaWidth_ && height <= pathMsaaHeight_) {
         return true;
     }
 
-    // BeginFrame has already waited on the per-frame fence, so any previous
-    // GPU work that referenced these resources has drained.
+    // [#921] Mid-frame growth is unsafe. FlushGraphicsForCompute records pending
+    // draws into the STILL-OPEN command list without closing it, so an earlier
+    // path batch this frame may already have bound the current pathMsaa* scratch
+    // (a smaller, e.g. viewport-sized capture) into that open list. The Reset()
+    // below would then free a resource the list still references → D3D12 #921
+    // OBJECT_DELETED_WHILE_STILL_IN_USE at the eventual Close. Mirror the
+    // offscreen/blur usedThisFrame_ guard: refuse to regrow once the scratch has
+    // been used this frame; the caller renders into the existing scratch and the
+    // resolve blit samples only the [0,w]×[0,h] sub-region, so an oversized path
+    // is at worst clipped for one frame. The regrow then happens cleanly at the
+    // next frame's first path (before any record), and the viewport-inclusive
+    // base allocation below means the common ≤viewport case never needs a
+    // mid-frame regrow at all.
+    if (pathMsaaUsedThisFrame_) {
+        return pathMsaaColor_ && pathMsaaDepth_ && pathResolveTexture_;
+    }
+
+    // Never shrink a dimension: allocate the max of the request and the current
+    // size (a width-grows / height-shrinks request must not drop the height below
+    // an earlier high-water-mark, or the two would ping-pong recreate). ALSO cover
+    // the viewport so a small first path still allocates a viewport-sized scratch
+    // and later viewport-extent path batches this frame reuse it without a
+    // mid-frame regrow (which the guard above would otherwise have to refuse).
+    const UINT allocW = (std::max)((std::max)(width,  pathMsaaWidth_),  viewportWidth_);
+    const UINT allocH = (std::max)((std::max)(height, pathMsaaHeight_), viewportHeight_);
+
+    // First use this frame (guard above) — the open list does not yet reference
+    // these, and BeginFrame has already waited on the per-frame fence so any
+    // previous frame's GPU work that referenced them has drained.
     pathMsaaColor_.Reset();
     pathMsaaDepth_.Reset();
     pathResolveTexture_.Reset();
@@ -477,8 +541,8 @@ bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
     {
         D3D12_RESOURCE_DESC rd = {};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Width  = width;
-        rd.Height = height;
+        rd.Width  = allocW;
+        rd.Height = allocH;
         rd.DepthOrArraySize = 1;
         rd.MipLevels = 1;
         rd.Format = kColorFmt;
@@ -495,6 +559,7 @@ bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
                 IID_PPV_ARGS(&pathMsaaColor_)))) {
             return false;
         }
+        pathMsaaColor_->SetName(L"JaliumPathMsaaColor");  // [JALIUM-921 diag]
         pathMsaaColorState_ = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
         D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
@@ -508,8 +573,8 @@ bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
     {
         D3D12_RESOURCE_DESC rd = {};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Width  = width;
-        rd.Height = height;
+        rd.Width  = allocW;
+        rd.Height = allocH;
         rd.DepthOrArraySize = 1;
         rd.MipLevels = 1;
         rd.Format = kDsFmt;
@@ -527,6 +592,7 @@ bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
                 IID_PPV_ARGS(&pathMsaaDepth_)))) {
             return false;
         }
+        pathMsaaDepth_->SetName(L"JaliumPathMsaaDepth");  // [JALIUM-921 diag]
 
         D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
         dsvDesc.Format = kDsFmt;
@@ -539,8 +605,8 @@ bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
     {
         D3D12_RESOURCE_DESC rd = {};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-        rd.Width  = width;
-        rd.Height = height;
+        rd.Width  = allocW;
+        rd.Height = allocH;
         rd.DepthOrArraySize = 1;
         rd.MipLevels = 1;
         rd.Format = kColorFmt;
@@ -553,11 +619,12 @@ bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
                 IID_PPV_ARGS(&pathResolveTexture_)))) {
             return false;
         }
+        pathResolveTexture_->SetName(L"JaliumPathResolve");  // [JALIUM-921 diag]
         pathResolveTexState_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     }
 
-    pathMsaaWidth_  = width;
-    pathMsaaHeight_ = height;
+    pathMsaaWidth_  = allocW;
+    pathMsaaHeight_ = allocH;
     return true;
 }
 

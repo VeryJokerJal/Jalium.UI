@@ -33,8 +33,26 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
 
     public int EndDraw(nint renderTarget) => EndDrawResult;
 
+    /// <summary>
+    /// Reported engine for the fake target. Returning a value here keeps
+    /// <see cref="RenderTarget.RenderingEngine"/> off a real native P/Invoke,
+    /// which would dereference <see cref="CreatedHandle"/> (a non-owned handle)
+    /// and crash the test host with an AccessViolation.
+    /// </summary>
+    public RenderingEngine EngineValue { get; set; } = RenderingEngine.Auto;
+
+    public RenderingEngine GetEngine(nint renderTarget) => EngineValue;
+
     public void SetVSyncEnabled(nint renderTarget, bool enabled)
     {
+    }
+
+    /// <summary>Last external-pacing state requested (see <see cref="IRenderTargetNative.SetExternalPresentPacing"/>).</summary>
+    public bool LastExternalPresentPacing { get; private set; }
+
+    public void SetExternalPresentPacing(nint renderTarget, bool enabled)
+    {
+        LastExternalPresentPacing = enabled;
     }
 
     public void SetFullInvalidation(nint renderTarget)
@@ -50,6 +68,11 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
     }
 
     public bool SupportsPartialPresentation(nint renderTarget) => SupportsPartialPresentationValue;
+
+    /// <summary>Number of retained-layer destroy requests routed through the seam.</summary>
+    public int DestroyRetainedLayerCalls { get; private set; }
+
+    public void DestroyRetainedLayer(nint renderTarget, nint layer) => DestroyRetainedLayerCalls++;
 
     public void Destroy(nint renderTarget)
     {

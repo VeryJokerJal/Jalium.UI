@@ -254,6 +254,15 @@ JALIUM_API void jalium_render_target_clear(JaliumRenderTarget* rt, float r, floa
 /// @param enabled 1 to enable VSync, 0 to disable.
 JALIUM_API void jalium_render_target_set_vsync(JaliumRenderTarget* rt, int32_t enabled);
 
+/// Hands present pacing to the caller. While enabled, BeginDraw skips the
+/// swap-chain frame-latency waitable wait (the caller owns and consumes the
+/// HANDLE from jalium_render_target_get_frame_latency_waitable) and Present
+/// uses sync interval 0 so it never blocks on the compositor. Backends
+/// without a frame-latency waitable ignore the call.
+/// @param rt The render target.
+/// @param enabled 1 to enable external pacing, 0 to restore internal pacing.
+JALIUM_API void jalium_render_target_set_external_present_pacing(JaliumRenderTarget* rt, int32_t enabled);
+
 /// Sets the DPI for the render target.
 /// Updates D2D context so DIP coordinates are correctly mapped to physical pixels.
 /// @param rt The render target.
@@ -329,6 +338,44 @@ JALIUM_API JaliumResult jalium_render_target_set_webview_visual_placement(
     int32_t height,
     int32_t content_offset_x,
     int32_t content_offset_y);
+
+/// Off-thread animation probe (Increment 1 — architecture hard gate). Creates a
+/// child composition visual filled with a solid color and bound to an autonomous
+/// IDCompositionAnimation on its offset, then Commits ONCE. DWM then drives the
+/// offset at vblank with NO further app-side present/commit — proving the WPF
+/// independent-animation primitive self-drives on the host GPU. Only the D3D12
+/// composition backend implements it; otherwise returns JALIUM_ERROR_NOT_SUPPORTED.
+/// @param rt The render target (must be a composition render target).
+/// @param x Left coordinate (composition space, physical px).
+/// @param y Top coordinate (composition space, physical px).
+/// @param width Content width in physical px.
+/// @param height Content height in physical px.
+/// @param travel_px Total travel distance along the animated axis in physical px.
+/// @param period_sec One-way travel time in seconds (matches the bar's speed).
+/// @param color_argb Solid fill color, 0xAARRGGBB (straight alpha; premultiplied internally).
+/// @param vertical Non-zero animates Y instead of X.
+/// @param visual_out Output visual pointer (pass to jalium_render_target_destroy_anim_probe).
+/// @return JALIUM_OK on success.
+JALIUM_API JaliumResult jalium_render_target_create_anim_probe(
+    JaliumRenderTarget* rt,
+    int32_t x,
+    int32_t y,
+    int32_t width,
+    int32_t height,
+    float travel_px,
+    float period_sec,
+    uint32_t color_argb,
+    int32_t vertical,
+    void** visual_out);
+
+/// Destroys an animation probe visual previously created by
+/// jalium_render_target_create_anim_probe.
+/// @param rt The render target.
+/// @param visual The visual pointer to destroy.
+/// @return JALIUM_OK on success.
+JALIUM_API JaliumResult jalium_render_target_destroy_anim_probe(
+    JaliumRenderTarget* rt,
+    void* visual);
 
 // ============================================================================
 // Drawing Commands

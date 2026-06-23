@@ -29,6 +29,7 @@ jmethodID  g_recycleMethod         = nullptr;
 jclass     g_OptionsClass          = nullptr;   // global ref (BitmapFactory$Options)
 jmethodID  g_OptionsCtor           = nullptr;
 jfieldID   g_OptionsInPreferredCfg = nullptr;
+jfieldID   g_OptionsInPremultiplied = nullptr;  // BitmapFactory$Options.inPremultiplied (boolean)
 jobject    g_ConfigArgb8888        = nullptr;   // global ref to Bitmap$Config.ARGB_8888
 
 bool EnsureJniCache(JNIEnv* env)
@@ -68,6 +69,10 @@ bool EnsureJniCache(JNIEnv* env)
     g_OptionsCtor = env->GetMethodID(g_OptionsClass, "<init>", "()V");
     g_OptionsInPreferredCfg = env->GetFieldID(g_OptionsClass, "inPreferredConfig",
                                               "Landroid/graphics/Bitmap$Config;");
+    // inPremultiplied (public boolean, since API 19) lets us force STRAIGHT
+    // (non-premultiplied) output. Always present on the API 24-29 range this JNI
+    // fallback serves; a pending exception from a missing field is cleared below.
+    g_OptionsInPremultiplied = env->GetFieldID(g_OptionsClass, "inPremultiplied", "Z");
 
     // Resolve Bitmap$Config.ARGB_8888 (static enum constant).
     jclass localCfg = env->FindClass("android/graphics/Bitmap$Config");
@@ -86,8 +91,9 @@ bool EnsureJniCache(JNIEnv* env)
     return true;
 }
 
-// Build a fresh BitmapFactory.Options with inPreferredConfig=ARGB_8888.
-// Returns a local ref the caller must delete; nullptr on failure.
+// Build a fresh BitmapFactory.Options with inPreferredConfig=ARGB_8888 and
+// inPremultiplied=false. Returns a local ref the caller must delete; nullptr on
+// failure.
 jobject CreateOptionsArgb8888(JNIEnv* env)
 {
     if (!g_OptionsClass || !g_OptionsCtor) return nullptr;
@@ -98,6 +104,14 @@ jobject CreateOptionsArgb8888(JNIEnv* env)
     }
     if (g_OptionsInPreferredCfg && g_ConfigArgb8888) {
         env->SetObjectField(opts, g_OptionsInPreferredCfg, g_ConfigArgb8888);
+    }
+    if (g_OptionsInPremultiplied) {
+        // Request STRAIGHT alpha. BitmapFactory premultiplies by default, but the
+        // renderer's bitmap pipeline blends straight alpha (VK_BLEND_FACTOR_SRC_ALPHA)
+        // and would otherwise multiply by alpha twice, darkening translucent images.
+        // No inScaled/inDensity is set, so no scaling occurs and the straight pixels
+        // are returned faithfully via AndroidBitmap_lockPixels.
+        env->SetBooleanField(opts, g_OptionsInPremultiplied, JNI_FALSE);
     }
     return opts;
 }

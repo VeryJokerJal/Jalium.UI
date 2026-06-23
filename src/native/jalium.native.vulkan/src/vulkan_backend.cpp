@@ -319,42 +319,74 @@ Bitmap* VulkanBackend::CreateBitmapFromPixels(const uint8_t* pixels, uint32_t wi
 
 // ── InkCanvas GPU pipeline ──────────────────────────────────────────────────
 
-void VulkanBackend::RegisterDeviceContext(const VulkanDeviceContext& ctx)
+JaliumResult VulkanBackend::CheckDeviceStatus()
 {
     std::lock_guard<std::mutex> lk(inkMutex_);
-    if (deviceContext_.valid && deviceContext_.device == ctx.device) {
+    if (deviceGeneration_ && deviceGeneration_->IsLost()) {
+        return JALIUM_ERROR_DEVICE_LOST;
+    }
+    return JALIUM_OK;
+}
+
+void VulkanBackend::RegisterDeviceContext(std::shared_ptr<VulkanDeviceGeneration> generation)
+{
+    if (!generation || !generation->ctx.valid) return;
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    if (deviceGeneration_ && deviceGeneration_->ctx.device == generation->ctx.device) {
         return;  // same device already registered
     }
-    // A different device superseded the old one (e.g. the first window closed
-    // and a new one opened). Drop the stale pipeline so it rebuilds on demand.
-    if (deviceContext_.valid && deviceContext_.device != ctx.device) {
+    // A different device superseded the old one (second window, or a fresh
+    // render target after device-lost recovery). Drop only the backend's
+    // references; ink bitmaps / brush shaders still alive on the old
+    // generation co-own the pipeline and the generation, so the old VkDevice
+    // outlives them and their destructors stay safe.
+    if (deviceGeneration_) {
         brushPipeline_.reset();
         brushPipelineAttempted_ = false;
     }
-    deviceContext_ = ctx;
+    deviceGeneration_ = std::move(generation);
 }
 
-VulkanBrushPipeline* VulkanBackend::EnsureBrushPipeline()
+void VulkanBackend::UnregisterDeviceContext(const std::shared_ptr<VulkanDeviceGeneration>& generation)
 {
-    if (brushPipeline_ && brushPipeline_->IsReady()) return brushPipeline_.get();
+    if (!generation) return;
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    if (deviceGeneration_ == generation) {
+        brushPipeline_.reset();
+        brushPipelineAttempted_ = false;
+        deviceGeneration_.reset();
+    }
+}
+
+std::shared_ptr<VulkanBrushPipeline> VulkanBackend::EnsureBrushPipeline()
+{
+    if (brushPipeline_ && brushPipeline_->IsReady()) return brushPipeline_;
     if (brushPipelineAttempted_) return nullptr;
-    if (!deviceContext_.valid || deviceContext_.device == VK_NULL_HANDLE) return nullptr;
+    if (!deviceGeneration_ || !deviceGeneration_->ctx.valid ||
+        deviceGeneration_->ctx.device == VK_NULL_HANDLE ||
+        deviceGeneration_->IsLost()) {
+        // No device yet, or the registered generation is lost — building GPU
+        // objects on it would fail call by call. The recovery chain registers
+        // the replacement render target's healthy generation, which also
+        // resets brushPipelineAttempted_.
+        return nullptr;
+    }
     brushPipelineAttempted_ = true;
-    auto pipeline = std::make_unique<VulkanBrushPipeline>(deviceContext_);
+    auto pipeline = std::make_shared<VulkanBrushPipeline>(deviceGeneration_);
     if (!pipeline->Initialize()) {
         return nullptr;  // DXC missing or GPU object failure → CPU fallback
     }
     brushPipeline_ = std::move(pipeline);
-    return brushPipeline_.get();
+    return brushPipeline_;
 }
 
 void* VulkanBackend::CreateInkLayerBitmap(uint32_t width, uint32_t height)
 {
     if (width == 0 || height == 0) return nullptr;
     std::lock_guard<std::mutex> lk(inkMutex_);
-    VulkanBrushPipeline* pipeline = EnsureBrushPipeline();
+    std::shared_ptr<VulkanBrushPipeline> pipeline = EnsureBrushPipeline();
     if (!pipeline) return nullptr;
-    auto* bitmap = new (std::nothrow) VulkanInkLayerBitmap(pipeline);
+    auto* bitmap = new (std::nothrow) VulkanInkLayerBitmap(std::move(pipeline));
     if (!bitmap) return nullptr;
     if (!bitmap->Initialize(width, height)) {
         delete bitmap;
@@ -388,8 +420,11 @@ void* VulkanBackend::CreateBrushShader(const char* shaderKey, const char* brushM
 {
     if (!brushMainHlsl) return nullptr;
     std::lock_guard<std::mutex> lk(inkMutex_);
-    VulkanBrushPipeline* pipeline = EnsureBrushPipeline();
+    std::shared_ptr<VulkanBrushPipeline> pipeline = EnsureBrushPipeline();
     if (!pipeline) return nullptr;
+    // The shader captures the pipeline via shared_from_this inside
+    // CreateBrushShader, so the raw handle handed to managed code co-owns the
+    // pipeline + device generation.
     auto shader = pipeline->CreateBrushShader(
         shaderKey, brushMainHlsl, static_cast<VulkanBrushBlendMode>(blendMode));
     return shader.release();

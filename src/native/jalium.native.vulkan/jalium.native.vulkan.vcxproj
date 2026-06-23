@@ -75,7 +75,7 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(ProjectDir)$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
       <AdditionalLibraryDirectories>$(VulkanSdkRoot)\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>vulkan-1.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vulkan-1.lib;Dwrite.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -97,13 +97,15 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <ProgramDatabaseFile>$(ProjectDir)$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
       <AdditionalLibraryDirectories>$(VulkanSdkRoot)\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
-      <AdditionalDependencies>vulkan-1.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>vulkan-1.lib;Dwrite.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\text_cache.h" />
     <ClInclude Include="include\vulkan_backend.h" />
     <ClInclude Include="include\vulkan_embedded_shaders.h" />
+    <ClInclude Include="include\vulkan_glyph_atlas.h" />
+    <ClInclude Include="include\vulkan_text_glyph_shaders.h" />
     <ClInclude Include="include\vulkan_impeller_engine.h" />
     <ClInclude Include="include\vulkan_ink_layer.h" />
     <ClInclude Include="include\vulkan_render_target.h" />
@@ -111,11 +113,13 @@
     <ClInclude Include="include\vulkan_runtime.h" />
     <ClInclude Include="include\vulkan_shader_compiler.h" />
     <ClInclude Include="include\vulkan_vello_engine.h" />
+    <ClInclude Include="include\vulkan_vello_compute.h" />
     <ClInclude Include="include\win32_gdi_pool.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\text_cache.cpp" />
     <ClCompile Include="src\vulkan_backend.cpp" />
+    <ClCompile Include="src\vulkan_glyph_atlas.cpp" />
     <ClCompile Include="src\vulkan_impeller_engine.cpp" />
     <ClCompile Include="src\vulkan_init.cpp" />
     <ClCompile Include="src\vulkan_ink_layer.cpp" />
@@ -124,6 +128,7 @@
     <ClCompile Include="src\vulkan_shader_compiler.cpp" />
     <ClCompile Include="src\vulkan_runtime.cpp" />
     <ClCompile Include="src\vulkan_vello_engine.cpp" />
+    <ClCompile Include="src\vulkan_vello_compute.cpp" />
     <ClCompile Include="src\vulkan_video_surface.cpp" />
     <ClCompile Include="src\win32_gdi_pool.cpp" />
   </ItemGroup>

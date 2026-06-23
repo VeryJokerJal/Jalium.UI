@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using Jalium.UI.Media;
 
@@ -133,10 +132,6 @@ public static class ThemeManager
     {
         ArgumentNullException.ThrowIfNull(app);
 
-        bool trace = Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") != "0";
-        long t0 = trace ? Stopwatch.GetTimestamp() : 0;
-        long tEnsureXaml = 0, tPlatform = 0, tGeneric = 0, tAccent = 0, tTypo = 0;
-
         _application = app;
         SyncThemeFromCurrentThemeKey();
         ResourceDictionary.CurrentThemeKey = CurrentTheme.ToString();
@@ -148,7 +143,6 @@ public static class ThemeManager
         }
 
         EnsureXamlLoaderRegistered();
-        if (trace) tEnsureXaml = Stopwatch.GetTimestamp();
 
         // Loading Jalium.UI.Xaml may re-enter ThemeManager.Initialize via ThemeLoader.Initialize().
         // If that already completed initialization, stop here to avoid duplicate dictionary insertion.
@@ -169,7 +163,6 @@ public static class ThemeManager
         // Windows) a chance to register a SystemAccentResolver before we
         // build the accent dictionary.
         EnsurePlatformIntegrationLoaded();
-        if (trace) tPlatform = Stopwatch.GetTimestamp();
 
         var platformAccent = TryGetPlatformAccent();
         if (platformAccent.HasValue)
@@ -182,32 +175,16 @@ public static class ThemeManager
         {
             app.Resources.MergedDictionaries.Add(_genericThemeDictionary);
         }
-        if (trace) tGeneric = Stopwatch.GetTimestamp();
 
         _accentDictionary = BuildAccentDictionary(CurrentAccentColor);
-        if (trace) tAccent = Stopwatch.GetTimestamp();
 
         _typographyDictionary = BuildTypographyDictionary(CurrentDisplayFontFamily, CurrentBodyFontFamily, CurrentMonospaceFontFamily, CurrentBodyFontSize);
-        if (trace) tTypo = Stopwatch.GetTimestamp();
 
         app.Resources.MergedDictionaries.Add(_accentDictionary);
         app.Resources.MergedDictionaries.Add(_typographyDictionary);
 
         _initialized = true;
         ForceThemeRefresh();
-
-        if (trace)
-        {
-            static long Ms(long a, long b) => (long)Stopwatch.GetElapsedTime(a, b).TotalMilliseconds;
-            long tEnd = Stopwatch.GetTimestamp();
-            XamlLoadStartupTrace.Emit(
-                $"[Jalium.UI startup]   ThemeManager.Initialize breakdown: total {Ms(t0, tEnd)}ms " +
-                $"(EnsureXamlLoaderRegistered {Ms(t0, tEnsureXaml)}ms, " +
-                $"EnsurePlatformIntegrationLoaded {Ms(tEnsureXaml, tPlatform)}ms, " +
-                $"LoadGenericTheme[+27 nested dicts] {Ms(tPlatform, tGeneric)}ms, " +
-                $"BuildAccentDictionary {Ms(tGeneric, tAccent)}ms, " +
-                $"BuildTypographyDictionary {Ms(tAccent, tTypo)}ms)");
-        }
     }
 
     /// <summary>

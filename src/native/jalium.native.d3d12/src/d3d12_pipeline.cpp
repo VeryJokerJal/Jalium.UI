@@ -425,6 +425,7 @@ bool PipelineContext::Initialize() {
         commandAllocator_.Get(), nullptr,
         IID_PPV_ARGS(&commandList_));
     if (FAILED(hr)) return false;
+    commandList_->SetName(L"JaliumPipelineCmdList");  // [JALIUM-921 diag]
     commandList_->Close();
     commandListOpen_ = false;
 
@@ -439,6 +440,7 @@ bool PipelineContext::Initialize() {
         uploadAllocator_.Get(), nullptr,
         IID_PPV_ARGS(&uploadCommandList_));
     if (FAILED(hr)) return false;
+    uploadCommandList_->SetName(L"JaliumPipelineUploadCmdList");  // [JALIUM-921 diag]
     uploadCommandList_->Close();
 
     hr = device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&uploadFence_));
