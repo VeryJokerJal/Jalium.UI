@@ -990,28 +990,39 @@ public partial class Popup : FrameworkElement
 
     private Window? GetParentWindow()
     {
-        // First try from this popup
-        Visual? current = this;
+        // 先从 Popup 自身向上找，再从 PlacementTarget 向上找。
+        //
+        // 级联场景（子菜单的 Popup 挂在一个已经外飞成独立 PopupWindow 的父菜单里）下，向上走 VisualParent
+        // 不会遇到 Window，而是先遇到父菜单的 PopupWindow —— 它不是 Window，且自身没有通向 Window 的
+        // VisualParent。必须经由 PopupWindow.OwnerWindow 解析到真正的顶层窗口，否则会一路走到 fallback 的
+        // Application.Current.MainWindow：在主窗口里这恰好等于正确窗口（bug 隐身），但从第二个窗口打开时，
+        // 就会按主窗口原点做 ClientToScreen，使子菜单整体偏移（偏移量 = 两窗口客户区原点之差）。
+        return ResolveOwningWindow(this)
+            ?? ResolveOwningWindow(PlacementTarget)
+            // Fallback: use Application.Current.MainWindow. This handles cases where the visual
+            // tree is not fully connected (e.g., programmatically created Popups for ToolTips).
+            ?? Jalium.UI.Application.Current?.MainWindow;
+    }
+
+    /// <summary>
+    /// 从 <paramref name="start"/> 沿 VisualParent 向上解析所属的顶层 <see cref="Window"/>。
+    /// 遇到 <see cref="PopupWindow"/>（外飞弹窗宿主，本身不是 Window）时返回它的
+    /// <see cref="PopupWindow.OwnerWindow"/>，从而让嵌套在弹窗里的目标也能拿到正确的窗口原点。
+    /// 找不到则返回 <see langword="null"/>，由调用方决定回退策略。
+    /// </summary>
+    private static Window? ResolveOwningWindow(Visual? start)
+    {
+        var current = start;
         while (current != null)
         {
             if (current is Window window)
                 return window;
+            if (current is PopupWindow popupWindow)
+                return popupWindow.OwnerWindow;
             current = current.VisualParent;
         }
 
-        // If not found, try from PlacementTarget
-        current = PlacementTarget;
-        while (current != null)
-        {
-            if (current is Window window)
-                return window;
-            current = current.VisualParent;
-        }
-
-        // Fallback: use Application.Current.MainWindow
-        // This handles cases where the visual tree is not fully connected
-        // (e.g., programmatically created Popups for ToolTips)
-        return Jalium.UI.Application.Current?.MainWindow;
+        return null;
     }
 
     #endregion

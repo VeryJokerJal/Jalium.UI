@@ -237,6 +237,46 @@ public abstract class Shape : FrameworkElement
 
     #endregion
 
+    #region Geometry (WPF Shape contract)
+
+    /// <summary>
+    /// When overridden in a derived class, gets the <see cref="Geometry"/> that defines
+    /// the shape's outline (WPF: <c>Shape.DefiningGeometry</c>), expressed in the shape's
+    /// render coordinate space. Used by <see cref="RenderedGeometry"/> and for hit-testing
+    /// / animation interop. Returns <see langword="null"/> by default (the shape draws
+    /// without an explicit <see cref="Geometry"/> object, e.g. before layout).
+    /// </summary>
+    protected virtual Geometry? DefiningGeometry => null;
+
+    /// <summary>
+    /// Gets the transform applied to <see cref="DefiningGeometry"/> to produce the final
+    /// rendered outline (WPF: <c>Shape.GeometryTransform</c>). The base implementation is
+    /// the identity transform; <see cref="Path"/> overrides it with its stretch matrix.
+    /// </summary>
+    public virtual Transform GeometryTransform => Transform.Identity;
+
+    /// <summary>
+    /// Gets the final, rendered outline of the shape with <see cref="GeometryTransform"/>
+    /// applied (WPF: <c>Shape.RenderedGeometry</c>). Returns <see cref="Geometry.Empty"/>
+    /// when the shape has no geometry yet. As in WPF, this may return the shape's internal
+    /// geometry instance (not a defensive copy), so treat the result as read-only.
+    /// </summary>
+    public virtual Geometry RenderedGeometry
+    {
+        get
+        {
+            var def = DefiningGeometry;
+            if (def == null) return Geometry.Empty;
+            var gt = GeometryTransform;
+            if (gt == null || gt.Value.IsIdentity) return def;
+            var clone = def.Clone();
+            clone.Transform = gt;
+            return clone;
+        }
+    }
+
+    #endregion
+
     #region Property Changed
 
     private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

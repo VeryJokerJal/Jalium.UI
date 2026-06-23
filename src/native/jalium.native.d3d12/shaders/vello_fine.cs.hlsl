@@ -229,10 +229,12 @@ void main(uint3 gId : SV_GroupID, uint3 lId : SV_GroupThreadID)
             float p0y = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
             float p1x = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
             float p1y = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
-            float extF = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
-            // Remaining gradient params
-            float dummy1 = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
-            float dummy2 = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
+            float extF = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;   // gp4 (extend; Pad)
+            // gp5 (written by coarse write_grad, unused here). Skip EXACTLY this
+            // one trailing word so the reader advances by 7 payload words —
+            // write_grad emits 8 total (opcode + gradIndex + gp0..gp5 = 1+7).
+            // Reading an 8th payload word here desyncs the rest of the tile PTCL.
+            cmd_ix++;
 
             [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
                 if (area[pi] > 1.0 / 255.0) {
@@ -254,9 +256,11 @@ void main(uint3 gId : SV_GroupID, uint3 lId : SV_GroupThreadID)
             float cy = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
             float rx = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
             float ry = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
-            float ox = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
-            float oy = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
-            float extF2 = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
+            float ox = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;   // gp4
+            float oy = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;   // gp5
+            // radial consumes 7 payload words (gradIndex + cx,cy,rx,ry,ox,oy);
+            // do NOT read an 8th — write_grad only emits 7 (alloc_cmd(8u) incl.
+            // the opcode). An extra Load here desyncs the rest of the tile PTCL.
 
             [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
                 if (area[pi] > 1.0 / 255.0) {
@@ -278,9 +282,10 @@ void main(uint3 gId : SV_GroupID, uint3 lId : SV_GroupThreadID)
             float scy = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
             float st0 = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
             float st1 = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
-            float extF3 = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
-            float dummy3 = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
-            float dummy4 = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;
+            float extF3 = asfloat(ptcl.Load(cmd_ix * 4)); cmd_ix++;  // gp4 (extend; Pad)
+            // gp5 (unused). Skip EXACTLY one trailing word: 7 payload total,
+            // matching write_grad's alloc_cmd(8u). A further Load desyncs the PTCL.
+            cmd_ix++;
 
             [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
                 if (area[pi] > 1.0 / 255.0) {

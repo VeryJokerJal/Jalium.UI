@@ -100,12 +100,17 @@ public static class AndroidActivityBridge
     }
 
     /// <summary>
-    /// Called when the native window is created (onNativeWindowCreated).
+    /// Called when the native window is created or its surface size changes
+    /// (onNativeWindowCreated / SurfaceHolder.Callback.surfaceChanged). The
+    /// <paramref name="width"/>/<paramref name="height"/> are the authoritative
+    /// post-rotation surface pixels reported by surfaceChanged — passing them through
+    /// lets the native layer dispatch a RESIZE with correct dims instead of inferring
+    /// possibly-stale ones via ANativeWindow_getWidth/Height during a device rotation.
     /// </summary>
-    public static void OnNativeWindowCreated(nint nativeWindow)
+    public static void OnNativeWindowCreated(nint nativeWindow, int width, int height)
     {
         s_nativeWindow = nativeWindow;
-        NativeMethods.AndroidSetNativeWindow(nativeWindow);
+        NativeMethods.AndroidSetNativeWindow(nativeWindow, width, height);
         NativeWindowCreated?.Invoke(nativeWindow);
     }
 
@@ -115,7 +120,7 @@ public static class AndroidActivityBridge
     public static void OnNativeWindowDestroyed()
     {
         s_nativeWindow = nint.Zero;
-        NativeMethods.AndroidSetNativeWindow(nint.Zero);
+        NativeMethods.AndroidSetNativeWindow(nint.Zero, 0, 0);
         NativeWindowDestroyed?.Invoke();
     }
 

@@ -205,6 +205,15 @@ const wchar_t* FontProviderAndroid::GetDefaultFontFamily() const
     return L"Roboto";
 }
 
+const wchar_t* FontProviderAndroid::GetFallbackFontFamily() const
+{
+    // Registered in ParseFontsXml() -> /system/fonts/NotoSansCJK-Regular.ttc.
+    // Covers CJK (Chinese/Japanese/Korean) plus Latin, so primary-face glyph
+    // gaps (the app requests Windows family names that resolve to Roboto, which
+    // has no CJK) are filled instead of dropped to blank.
+    return L"Noto Sans CJK";
+}
+
 } // namespace jalium
 
 #endif // __ANDROID__

@@ -14,11 +14,6 @@ namespace jalium {
 
 using Microsoft::WRL::ComPtr;
 
-/// Diagnostic init logger: writes msg to OutputDebugStringA AND, if the env var
-/// JALIUM_INIT_LOG points to a file, appends msg there. Surfaces GPU device /
-/// swap-chain creation + any fallback/degradation without needing a debugger.
-void JaliumD3D12InitLog(const char* msg);
-
 /// D3D12 rendering backend implementation.
 class D3D12Backend : public IRenderBackend {
 public:

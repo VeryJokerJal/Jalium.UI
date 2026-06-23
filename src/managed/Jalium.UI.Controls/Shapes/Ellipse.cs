@@ -67,6 +67,7 @@ public class Ellipse : Shape
             {
                 StartLineCap = StrokeStartLineCap,
                 EndLineCap = StrokeEndLineCap,
+                DashCap = StrokeDashCap,
                 LineJoin = StrokeLineJoin,
                 MiterLimit = StrokeMiterLimit
             };
@@ -78,6 +79,26 @@ public class Ellipse : Shape
         }
 
         dc.DrawEllipse(Fill, pen, new Point(centerX, centerY), radiusX, radiusY);
+    }
+
+    /// <inheritdoc />
+    protected override Geometry? DefiningGeometry
+    {
+        get
+        {
+            var width = RenderSize.Width;
+            var height = RenderSize.Height;
+            if (width <= 0 || height <= 0) return null;
+            var strokeThickness = StrokeThickness;
+            var radiusX = Math.Max(0, (width - strokeThickness) / 2);
+            var radiusY = Math.Max(0, (height - strokeThickness) / 2);
+            return new EllipseGeometry
+            {
+                Center = new Point(width / 2, height / 2),
+                RadiusX = radiusX,
+                RadiusY = radiusY,
+            };
+        }
     }
 
     #endregion

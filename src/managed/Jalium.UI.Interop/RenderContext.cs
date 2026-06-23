@@ -34,6 +34,12 @@ public sealed class RenderContext : IDisposable
     private nint _handle;
     private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for thread-safety)
     private bool _retireRequested;
+    // Number of live resources whose native lifetime is bound to this context's
+    // backend: render targets AND backend-owned dependent handles
+    // (InkLayerBitmap, BrushShaderHandle, …). A retired context must not destroy
+    // its backend while this is non-zero — those handles route their native
+    // destroy back through the creating backend, so destroying the backend first
+    // would be a use-after-free. See RegisterRenderTarget / UnregisterRenderTarget.
     private int _activeRenderTargetCount;
 
     /// <summary>
@@ -149,15 +155,58 @@ public sealed class RenderContext : IDisposable
 
     /// <summary>
     /// Gets the current context or creates a new one when unavailable.
-    /// Optionally forces a replacement to recover from device-lost scenarios.
     /// </summary>
+    /// <param name="backend">
+    /// The desired backend. <see cref="RenderBackend.Auto"/> accepts whatever
+    /// context already exists (or creates the platform default when there is
+    /// none). An explicit backend (e.g. <see cref="RenderBackend.Vulkan"/>) is a
+    /// hard requirement: if the current context runs a <em>different</em> backend
+    /// and the requested one is available, the current context is retired and
+    /// replaced with one running the requested backend. (If the requested backend
+    /// is unavailable the current context is left untouched rather than downgraded
+    /// to the software rasterizer.) This is what makes a single
+    /// <c>GetOrCreateCurrent(RenderBackend.Vulkan)</c>
+    /// reliably switch even after the background GPU prewarm
+    /// (<see cref="RenderBackend.Auto"/> → platform default, D3D12 on Windows)
+    /// has already populated <see cref="Current"/>. Call it before the first
+    /// window builds its render target: a context still pinned by a live render
+    /// target (see <see cref="RegisterRenderTarget"/>) is retired but cannot be
+    /// torn down until that target is released, so an already-rendering window
+    /// keeps its original backend until its render target is recreated.
+    /// </param>
+    /// <param name="gpuPreference">GPU adapter preference for multi-GPU systems.</param>
+    /// <param name="forceReplace">
+    /// Forces a brand-new context even when the current one already satisfies the
+    /// request (used to recover from device-lost scenarios).
+    /// </param>
     public static RenderContext GetOrCreateCurrent(RenderBackend backend = RenderBackend.Auto, GpuPreference gpuPreference = GpuPreference.Auto, bool forceReplace = false)
     {
+        // Capture whether the caller named a concrete backend BEFORE Auto is
+        // resolved to the platform default. Only an explicitly requested backend
+        // is enforced against the existing context; an Auto request is satisfied
+        // by whatever context is already current. That asymmetry is deliberate:
+        // it lets the prewarm's Auto call and the window's Auto call happily reuse
+        // a Vulkan context an explicit caller installed, instead of clobbering it
+        // back to the platform default.
+        bool explicitBackend = backend != RenderBackend.Auto;
         backend = NormalizeRequestedBackend(backend);
         gpuPreference = NormalizeGpuPreference(gpuPreference);
 
+        // Only enforce (i.e. retire + replace a different-backend current context)
+        // when the requested backend is genuinely available. If it is not, the
+        // constructor would fall back to Software (see ContextCreate → Software),
+        // which would needlessly downgrade a working GPU context to the software
+        // rasterizer — and, because the created context's Backend could then never
+        // equal the request, every subsequent explicit call would churn another
+        // fallback context. Probing availability here also performs the same lazy
+        // backend-DLL load the constructor relies on. Short-circuits for Auto so
+        // the common path pays no native query.
+        bool enforceBackend = explicitBackend &&
+            NativeMethods.IsBackendAvailable(backend) != 0;
+
         var current = _current;
-        if (!forceReplace && current != null && current.IsValid)
+        if (!forceReplace && current != null && current.IsValid &&
+            (!enforceBackend || current.Backend == backend))
         {
             return current;
         }
@@ -168,7 +217,8 @@ public sealed class RenderContext : IDisposable
         lock (s_sync)
         {
             current = _current;
-            if (!forceReplace && current != null && current.IsValid)
+            if (!forceReplace && current != null && current.IsValid &&
+                (!enforceBackend || current.Backend == backend))
             {
                 return current;
             }
@@ -178,10 +228,15 @@ public sealed class RenderContext : IDisposable
             _current = context;
             clearTextMeasurementCache = previous != null && !ReferenceEquals(previous, context);
 
+            // Retire the displaced context when we forced a replacement, or when an
+            // available explicit backend request swapped out a context running a
+            // different backend. Retirement defers native teardown until the
+            // context's last render target / dependent handle is released, so this
+            // stays safe even if something still holds the old context.
             if (previous != null &&
                 previous.IsValid &&
                 !ReferenceEquals(previous, context) &&
-                forceReplace)
+                (forceReplace || (enforceBackend && previous.Backend != backend)))
             {
                 previous._retireRequested = true;
                 _retiredContexts.Add(previous);
@@ -197,11 +252,25 @@ public sealed class RenderContext : IDisposable
         return context;
     }
 
+    /// <summary>
+    /// Pins this context as having one more live backend-bound resource (a
+    /// render target or a backend-owned dependent handle such as
+    /// <see cref="InkLayerBitmap"/> / <see cref="BrushShaderHandle"/>). While the
+    /// count is non-zero a retired context will not destroy its native backend,
+    /// keeping any handle that routes its destroy through that backend safe.
+    /// Every call must be balanced by exactly one <see cref="UnregisterRenderTarget"/>.
+    /// </summary>
     internal void RegisterRenderTarget()
     {
         _ = Interlocked.Increment(ref _activeRenderTargetCount);
     }
 
+    /// <summary>
+    /// Releases a pin taken by <see cref="RegisterRenderTarget"/>. When the last
+    /// pin is released this drives the deferred disposal of any retired context
+    /// whose resources have now fully drained (the only safe point at which a
+    /// retired backend may be destroyed).
+    /// </summary>
     internal void UnregisterRenderTarget()
     {
         var remaining = Interlocked.Decrement(ref _activeRenderTargetCount);

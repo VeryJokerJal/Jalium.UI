@@ -468,6 +468,18 @@ public partial class ScrollViewer : Control
     private double _deferredVerticalOffset;
     private double _deferredHorizontalOffset;
 
+    // Live thumb-drag coalescing. A thumb drag raises ScrollBar.Scroll(ThumbTrack) once per
+    // physical mouse-move (a 125–1000 Hz hardware rate, not the frame rate). Applying the
+    // offset on every event would trigger a full virtualized realize per move (flushed
+    // synchronously by the next move's hit-test), so the most recent thumb-mapped offset is
+    // stashed here and applied at most once per rendered frame — the same frame pacing the
+    // wheel's smooth-scroll timer uses, which is why wheel scrolling is already smooth.
+    private DispatcherTimer? _dragScrollCoalesceTimer;
+    private bool _hasPendingDragVerticalScroll;
+    private bool _hasPendingDragHorizontalScroll;
+    private double _pendingDragVerticalOffset;
+    private double _pendingDragHorizontalOffset;
+
     // Direct viewer-level thumb drag fallback (used by synthetic input paths in tests)
     private bool _isDraggingVerticalThumb;
     private double _dragStartMouseY;
@@ -2248,56 +2260,140 @@ public partial class ScrollViewer : Control
 
         // Mouse-wheel input on the scrollbar track bubbles up to ScrollViewer.OnMouseWheel
         // (ScrollBar no longer handles the wheel itself), so every Scroll event that reaches
-        // this handler comes from a direct interaction — thumb drag, page click, or line click —
-        // and should apply the new value immediately. Any in-flight wheel-driven smooth scroll
-        // must be cancelled so the direct interaction does not compete with an animation.
+        // this handler comes from a direct interaction — thumb drag, page click, or line click.
+        // Any in-flight wheel-driven smooth scroll must be cancelled so the direct interaction
+        // does not compete with an animation.
         CancelSmoothScroll();
 
-        if (isVertical)
-        {
-            HandleScrollBarValueChange(
-                e,
-                ScrollableHeight,
-                value => _deferredVerticalOffset = value,
-                () => _deferredVerticalOffset,
-                ScrollToVerticalOffset);
-        }
-        else
-        {
-            HandleScrollBarValueChange(
-                e,
-                ScrollableWidth,
-                value => _deferredHorizontalOffset = value,
-                () => _deferredHorizontalOffset,
-                ScrollToHorizontalOffset);
-        }
+        HandleScrollBarValueChange(e, isVertical ? ScrollableHeight : ScrollableWidth, isVertical);
     }
 
-    private void HandleScrollBarValueChange(
-        ScrollEventArgs e,
-        double maxValue,
-        Action<double> setDeferredValue,
-        Func<double> getDeferredValue,
-        Action<double> applyValue)
+    private void HandleScrollBarValueChange(ScrollEventArgs e, double maxValue, bool isVertical)
     {
         var clampedValue = Math.Clamp(e.NewValue, 0, Math.Max(0, maxValue));
 
+        // Deferred scrolling (opt-in): keep the content still while the thumb is being
+        // dragged and apply the offset only once, when the thumb is released.
         if (IsDeferredScrollingEnabled && e.ScrollEventType == ScrollEventType.ThumbTrack)
         {
             _isDeferredScrolling = true;
-            setDeferredValue(clampedValue);
+            if (isVertical)
+                _deferredVerticalOffset = clampedValue;
+            else
+                _deferredHorizontalOffset = clampedValue;
             return;
         }
 
         if (IsDeferredScrollingEnabled && e.ScrollEventType == ScrollEventType.EndScroll && _isDeferredScrolling)
         {
-            applyValue(getDeferredValue());
+            StopDragScrollCoalesce();
+            ApplyScrollOffset(isVertical, isVertical ? _deferredVerticalOffset : _deferredHorizontalOffset);
             _isDeferredScrolling = false;
             return;
         }
 
         _isDeferredScrolling = false;
-        applyValue(clampedValue);
+
+        // Live thumb drag (default path): coalesce the content-offset apply to one update per
+        // rendered frame, mirroring the wheel's smooth-scroll frame pacing.
+        //
+        // A thumb drag raises ThumbTrack once per physical mouse-move (a 125–1000 Hz hardware
+        // rate, not the frame rate). Applying the offset on every event schedules a layout /
+        // virtualization pass that the *next* move's hit-test flushes synchronously
+        // (WindowInputDispatcher.HandleMouseMove → Window.HitTestElement →
+        // EnsureLayoutValidForInput → UpdateLayout), so a virtualized list realizes a full
+        // viewport of containers many times per frame → visible jank. The wheel stays smooth
+        // precisely because its DispatcherTimer is frame-paced (one realize per frame).
+        // Coalescing the drag onto the same per-frame cadence removes the multiplication while
+        // the thumb itself keeps following the cursor on every move.
+        if (e.ScrollEventType == ScrollEventType.ThumbTrack)
+        {
+            ScheduleCoalescedDragScroll(isVertical, clampedValue);
+            return;
+        }
+
+        // Line/page clicks and thumb release (EndScroll) apply immediately. Stop any in-flight
+        // drag coalescing first so the final position is exact and discrete clicks stay instant.
+        StopDragScrollCoalesce();
+        ApplyScrollOffset(isVertical, clampedValue);
+    }
+
+    private void ApplyScrollOffset(bool isVertical, double value)
+    {
+        if (isVertical)
+            ScrollToVerticalOffset(value);
+        else
+            ScrollToHorizontalOffset(value);
+    }
+
+    // ── Live thumb-drag coalescing ─────────────────────────────────────
+    // Stash the most recent thumb-mapped offset and apply it at most once per rendered frame.
+    // The timer interval is the frame interval, which folds the timer onto
+    // CompositionTarget.Rendering (see DispatcherTimer.ShouldUseCompositionTarget) — the exact
+    // mechanism StartSmoothScroll uses for the wheel, so drag and wheel share the same
+    // one-realize-per-frame guarantee. The thumb visual still tracks the cursor on every move
+    // (ScrollBar.Value is set per DragDelta); only the expensive content realize is throttled.
+
+    private void ScheduleCoalescedDragScroll(bool isVertical, double value)
+    {
+        if (isVertical)
+        {
+            _pendingDragVerticalOffset = value;
+            _hasPendingDragVerticalScroll = true;
+        }
+        else
+        {
+            _pendingDragHorizontalOffset = value;
+            _hasPendingDragHorizontalScroll = true;
+        }
+
+        if (_dragScrollCoalesceTimer == null)
+        {
+            _dragScrollCoalesceTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(SmoothScrollIntervalMs)
+            };
+            _dragScrollCoalesceTimer.Tick += OnDragScrollCoalesceTick;
+        }
+
+        if (!_dragScrollCoalesceTimer.IsEnabled)
+            _dragScrollCoalesceTimer.Start();
+    }
+
+    private void OnDragScrollCoalesceTick(object? sender, EventArgs e)
+    {
+        // Apply the latest thumb position once this frame. When the user stops moving the
+        // thumb no fresh value arrives, so the next idle tick stops the timer.
+        if (!FlushPendingDragScroll())
+            _dragScrollCoalesceTimer?.Stop();
+    }
+
+    private bool FlushPendingDragScroll()
+    {
+        bool applied = false;
+
+        if (_hasPendingDragVerticalScroll)
+        {
+            _hasPendingDragVerticalScroll = false;
+            ScrollToVerticalOffset(_pendingDragVerticalOffset);
+            applied = true;
+        }
+
+        if (_hasPendingDragHorizontalScroll)
+        {
+            _hasPendingDragHorizontalScroll = false;
+            ScrollToHorizontalOffset(_pendingDragHorizontalOffset);
+            applied = true;
+        }
+
+        return applied;
+    }
+
+    private void StopDragScrollCoalesce()
+    {
+        _hasPendingDragVerticalScroll = false;
+        _hasPendingDragHorizontalScroll = false;
+        _dragScrollCoalesceTimer?.Stop();
     }
 
     private void UpdateScrollBarMetrics()

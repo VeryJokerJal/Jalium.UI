@@ -363,9 +363,10 @@ extern "C" JavaVM* jalium_android_get_java_vm(void)
 // ============================================================================
 
 // Called from NativeActivity.onCreate or when native window is created
-extern "C" void jalium_android_set_native_window(ANativeWindow* nativeWindow)
+extern "C" void jalium_android_set_native_window(ANativeWindow* nativeWindow, int width, int height)
 {
-    LOGI("jalium_android_set_native_window: win=%p, g_mainWindow=%p", nativeWindow, g_mainWindow);
+    LOGI("jalium_android_set_native_window: win=%p, g_mainWindow=%p, w=%d h=%d",
+         nativeWindow, g_mainWindow, width, height);
 
     if (nativeWindow)
         ANativeWindow_setBuffersGeometry(nativeWindow, 0, 0, WINDOW_FORMAT_RGBA_8888);
@@ -375,23 +376,31 @@ extern "C" void jalium_android_set_native_window(ANativeWindow* nativeWindow)
         g_mainWindow->nativeWindow = nativeWindow;
         if (nativeWindow)
         {
-            g_mainWindow->width = ANativeWindow_getWidth(nativeWindow);
-            g_mainWindow->height = ANativeWindow_getHeight(nativeWindow);
+            // Prefer the authoritative dimensions plumbed from
+            // SurfaceHolder.Callback.surfaceChanged(width,height): they reflect the
+            // post-rotation surface size immediately, whereas ANativeWindow_getWidth/
+            // Height can lag during a device rotation. Fall back to the query only
+            // when the caller didn't supply usable dims.
+            int w = width  > 0 ? width  : ANativeWindow_getWidth(nativeWindow);
+            int h = height > 0 ? height : ANativeWindow_getHeight(nativeWindow);
+            g_mainWindow->width = w;
+            g_mainWindow->height = h;
 
-            LOGI("jalium_android_set_native_window: dispatching RESIZE w=%d h=%d",
-                 g_mainWindow->width, g_mainWindow->height);
+            LOGI("jalium_android_set_native_window: dispatching RESIZE w=%d h=%d", w, h);
 
             JaliumPlatformEvent evt{};
             evt.type = JALIUM_EVENT_RESIZE;
             evt.window = g_mainWindow;
-            evt.resize.width = g_mainWindow->width;
-            evt.resize.height = g_mainWindow->height;
+            evt.resize.width = w;
+            evt.resize.height = h;
             g_mainWindow->DispatchEvent(evt);
         }
     }
     else
     {
-        // Window not yet created — store for jalium_window_create() to pick up
+        // Window not yet created — store for jalium_window_create() to pick up. The
+        // cold-start size resolves via ANativeWindow_getWidth/Height inside
+        // jalium_window_create (reliable for the initial, non-rotated orientation).
         LOGI("jalium_android_set_native_window: storing as pendingNativeWindow");
         g_pendingNativeWindow = nativeWindow;
     }

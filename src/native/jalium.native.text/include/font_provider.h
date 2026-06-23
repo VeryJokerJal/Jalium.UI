@@ -45,6 +45,12 @@ public:
 
     /// Gets the default UI font family name for the current platform.
     virtual const wchar_t* GetDefaultFontFamily() const = 0;
+
+    /// Returns a font family with broad Unicode coverage (CJK, etc.) to use
+    /// when the primary face lacks a glyph. Non-pure so platforms opt in and
+    /// any provider without CJK coverage (or future ones) compile cleanly.
+    /// nullptr (the default) disables glyph-level fallback.
+    virtual const wchar_t* GetFallbackFontFamily() const { return nullptr; }
 };
 
 // ============================================================================
@@ -60,6 +66,7 @@ public:
     bool FindFont(const wchar_t* familyName, int32_t weight, int32_t style,
                   std::string& outPath, int& outFaceIndex) override;
     const wchar_t* GetDefaultFontFamily() const override;
+    const wchar_t* GetFallbackFontFamily() const override;
 
 private:
     void* fcConfig_ = nullptr;  // FcConfig* (opaque to avoid header dep)
@@ -74,6 +81,7 @@ public:
     bool FindFont(const wchar_t* familyName, int32_t weight, int32_t style,
                   std::string& outPath, int& outFaceIndex) override;
     const wchar_t* GetDefaultFontFamily() const override;
+    const wchar_t* GetFallbackFontFamily() const override;
 
 private:
     void ParseFontsXml();

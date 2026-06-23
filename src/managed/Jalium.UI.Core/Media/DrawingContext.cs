@@ -7,6 +7,56 @@ namespace Jalium.UI.Media;
 /// </summary>
 public abstract class DrawingContext : IDisposable, IClipDrawingContext
 {
+    // ── Whole-frame recordability signal (JALIUM_RENDER_THREAD path) ──────
+    // During whole-frame recording (DrawingRecorder.BindWholeFrame) the tree is
+    // captured as pure data. Content reached ONLY through an
+    // `is RenderTargetDrawingContext` cast (transparent punch, video surface,
+    // ink-layer blit, transition shader, …) has no DrawCommand representation;
+    // when that cast fails against the recorder the call site flips this
+    // thread-static flag so the render loop discards the capture and
+    // direct-renders the frame instead of silently dropping the content.
+    // No-op outside a whole-frame scope, so the default UI path and the
+    // per-visual retained cache are completely unaffected.
+    [ThreadStatic] private static bool s_wholeFrameRecording;
+    [ThreadStatic] private static bool s_wholeFrameUnrecordable;
+
+    /// <summary>True while a whole-frame recorder is active on this thread.</summary>
+    public static bool IsWholeFrameRecording => s_wholeFrameRecording;
+
+    /// <summary>
+    /// Enters a whole-frame recording scope and returns the previous state so
+    /// the caller can restore it (reentrancy-safe). Used by
+    /// <c>DrawingRecorder.BindWholeFrame</c>.
+    /// </summary>
+    public static (bool recording, bool unrecordable) BeginWholeFrameRecordingScope()
+    {
+        var prev = (s_wholeFrameRecording, s_wholeFrameUnrecordable);
+        s_wholeFrameRecording = true;
+        s_wholeFrameUnrecordable = false;
+        return prev;
+    }
+
+    /// <summary>
+    /// Exits the current whole-frame recording scope, restoring the saved outer
+    /// state and returning whether any un-recordable content was seen.
+    /// </summary>
+    public static bool EndWholeFrameRecordingScope((bool recording, bool unrecordable) saved)
+    {
+        bool unrecordable = s_wholeFrameUnrecordable;
+        s_wholeFrameRecording = saved.recording;
+        s_wholeFrameUnrecordable = saved.unrecordable;
+        return unrecordable;
+    }
+
+    /// <summary>
+    /// Marks the in-progress whole-frame recording as not fully recordable, so
+    /// the render loop falls back to a direct render for this frame. No-op when
+    /// no whole-frame recording is active (default UI path / per-visual cache).
+    /// </summary>
+    public static void MarkCurrentFrameUnrecordable()
+    {
+        if (s_wholeFrameRecording) s_wholeFrameUnrecordable = true;
+    }
 
     /// <summary>
     /// Draws a line between two points.
@@ -368,6 +418,21 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
         CornerRadius cornerRadius);
 
     /// <summary>
+    /// Selects the shape the next rounded-rectangle fills/strokes describe:
+    /// <c>0</c> = ordinary rounded rectangle (default), <c>1</c> = SuperEllipse
+    /// (iOS-style squircle) with the given Lamé exponent. State, not a draw —
+    /// callers set it, draw one or more rounded rectangles, then reset to 0.
+    /// </summary>
+    /// <remarks>
+    /// Virtual (not abstract) with a no-op default so contexts that don't model
+    /// a superellipse simply render a rounded rectangle. The recording context
+    /// captures it as a command so cached/whole-frame replays reproduce the
+    /// SuperEllipse intent in draw order (otherwise <see cref="Jalium.UI.Controls"/>
+    /// Border would fall back to a geometry fill that draws out of order).
+    /// </remarks>
+    public virtual void SetShapeType(int type, float exponent) { }
+
+    /// <summary>
     /// Pushes a transform onto the transform stack.
     /// </summary>
     /// <param name="transform">The transform to push.</param>
@@ -546,6 +611,26 @@ public class Pen
         Brush = brush;
         Thickness = thickness;
     }
+
+    /// <summary>
+    /// Creates a copy of this pen (mirrors WPF <c>Pen.Clone</c>). The <see cref="Brush"/> is
+    /// shared (brushes are not yet cloneable); the <see cref="DashStyle"/> is deep-copied so
+    /// the clone's dash pattern is independent of the original.
+    /// </summary>
+    public Pen Clone()
+    {
+        return new Pen
+        {
+            Brush = Brush,
+            Thickness = Thickness,
+            StartLineCap = StartLineCap,
+            EndLineCap = EndLineCap,
+            DashCap = DashCap,
+            LineJoin = LineJoin,
+            MiterLimit = MiterLimit,
+            DashStyle = DashStyle?.Clone(),
+        };
+    }
 }
 
 /// <summary>
@@ -580,6 +665,9 @@ public sealed class DashStyle
         Dashes.AddRange(dashes);
         Offset = offset;
     }
+
+    /// <summary>Creates a copy of this dash style with an independent dashes list.</summary>
+    public DashStyle Clone() => new DashStyle(Dashes, Offset);
 
     /// <summary>
     /// Gets a solid (no dashes) style.
@@ -826,10 +914,31 @@ public abstract class Geometry
     public bool IsFrozen => _isFrozen;
 
     /// <summary>
-    /// Makes this geometry immutable. After calling Freeze, any attempt to modify
-    /// the geometry will throw an InvalidOperationException.
+    /// Gets whether this geometry can be frozen (WPF <c>Freezable.CanFreeze</c>). Composite
+    /// geometries return false when any child cannot be frozen.
     /// </summary>
-    public void Freeze() { _isFrozen = true; }
+    public virtual bool CanFreeze => true;
+
+    /// <summary>
+    /// Makes this geometry immutable (WPF <c>Freezable.Freeze</c> semantics): recursively
+    /// freezes child geometries first, then marks this one frozen. No-op if already frozen.
+    /// <para>Enforcement is currently cooperative/opt-in: <see cref="IsFrozen"/> is a flag that
+    /// consumers (e.g. the render thread sharing geometry by reference) honor; property setters
+    /// do not yet throw on mutating a frozen geometry.</para>
+    /// </summary>
+    public void Freeze()
+    {
+        if (_isFrozen) return;
+        if (!CanFreeze)
+            throw new InvalidOperationException("This Geometry has a child that cannot be frozen.");
+        FreezeCore();
+        _isFrozen = true;
+    }
+
+    /// <summary>
+    /// When overridden, recursively freezes child geometries before this one is sealed.
+    /// </summary>
+    protected virtual void FreezeCore() { }
 
     /// <summary>
     /// Verifies that the geometry is not frozen before allowing modification.
@@ -863,6 +972,18 @@ public abstract class Geometry
     /// Gets an empty Geometry.
     /// </summary>
     public static Geometry Empty { get; } = new GeometryGroup();
+
+    /// <summary>
+    /// Returns true if this geometry contains no drawable content. Subclasses override
+    /// with a cheaper/exact test; the default uses the bounding box.
+    /// </summary>
+    public virtual bool IsEmpty() => Bounds.IsEmpty;
+
+    /// <summary>
+    /// Returns true if this geometry may contain curved (non-line) segments. Subclasses
+    /// that can hold curves override; the default (rectangles, lines, etc.) is false.
+    /// </summary>
+    public virtual bool MayHaveCurves() => false;
 
     /// <summary>
     /// Returns true if the specified point is within the filled area of the geometry.
@@ -1148,6 +1269,13 @@ public abstract class Geometry
             }
         }
 
+        // Boolean output is expressed with the nonzero winding rule: outer contours, holes,
+        // and the reversed clip contours (Exclude/Xor) cancel by winding sign — which the
+        // even-odd default cannot represent. Previously this was left at PathGeometry's
+        // default (EvenOdd), so Exclude/Xor produced wrong results and Union hollowed out
+        // overlaps. (Exact arbitrary concave/self-intersecting boolean still needs a full
+        // plane-sweep solver; this correctly handles the common winding-regular inputs.)
+        result.FillRule = FillRule.Nonzero;
         return result;
     }
 
@@ -1715,6 +1843,24 @@ public sealed class GeometryGroup : Geometry
         }
         return clone;
     }
+
+    /// <inheritdoc />
+    public override bool CanFreeze
+    {
+        get
+        {
+            foreach (var child in Children)
+                if (!child.CanFreeze) return false;
+            return true;
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void FreezeCore()
+    {
+        foreach (var child in Children)
+            child.Freeze();
+    }
 }
 
 /// <summary>
@@ -1783,7 +1929,11 @@ public sealed class CombinedGeometry : Geometry
         if (Geometry1 == null) return Geometry2!.GetFlattenedPathGeometry(tolerance, toleranceType);
         if (Geometry2 == null) return Geometry1.GetFlattenedPathGeometry(tolerance, toleranceType);
 
-        return Geometry.Combine(Geometry1, Geometry2, GeometryCombineMode, Transform);
+        // Pass a null transform: like every other Geometry.GetFlattenedPathGeometry the result
+        // stays in local space, and this geometry's own Transform is applied once by the consumer
+        // (DrawGeometry's PushTransform / the software context's WithTransform). Baking Transform
+        // in here would double-apply it (once baked, once pushed).
+        return Geometry.Combine(Geometry1, Geometry2, GeometryCombineMode, null);
     }
 
     /// <inheritdoc />
@@ -1796,6 +1946,17 @@ public sealed class CombinedGeometry : Geometry
             GeometryCombineMode = GeometryCombineMode,
             Transform = Transform
         };
+    }
+
+    /// <inheritdoc />
+    public override bool CanFreeze =>
+        (Geometry1?.CanFreeze ?? true) && (Geometry2?.CanFreeze ?? true);
+
+    /// <inheritdoc />
+    protected override void FreezeCore()
+    {
+        Geometry1?.Freeze();
+        Geometry2?.Freeze();
     }
 }
 
@@ -1855,6 +2016,37 @@ public sealed class PathGeometry : Geometry
     /// Gets or sets the fill rule for this geometry.
     /// </summary>
     public FillRule FillRule { get; set; } = FillRule.EvenOdd;
+
+    /// <inheritdoc />
+    public override bool IsEmpty() => Figures.Count == 0;
+
+    /// <inheritdoc />
+    public override bool MayHaveCurves()
+    {
+        foreach (var figure in Figures)
+            foreach (var segment in figure.Segments)
+                if (segment is BezierSegment or QuadraticBezierSegment
+                    or PolyBezierSegment or PolyQuadraticBezierSegment or ArcSegment)
+                    return true;
+        return false;
+    }
+
+    /// <summary>
+    /// Appends the figures of <paramref name="geometry"/> to this path. A
+    /// <see cref="PathGeometry"/> source contributes its figures directly (curves
+    /// preserved); any other geometry is flattened first.
+    /// </summary>
+    public void AddGeometry(Geometry geometry)
+    {
+        if (geometry == null) return;
+        // Deep-copy so the appended figures are independent of the source (no aliasing of the
+        // source's mutable PathFigure instances): a PathGeometry source is cloned; any other
+        // geometry is flattened (which already yields a fresh copy).
+        var source = geometry is PathGeometry pg ? pg.ClonePathGeometry() : geometry.GetFlattenedPathGeometry();
+        if (source == null) return;
+        foreach (var figure in source.Figures)
+            Figures.Add(figure);
+    }
 
     /// <inheritdoc />
     public override Rect Bounds
@@ -2844,7 +3036,7 @@ public sealed class PathGeometry : Geometry
     /// </summary>
     public PathGeometry ClonePathGeometry()
     {
-        var clone = new PathGeometry { FillRule = FillRule };
+        var clone = new PathGeometry { FillRule = FillRule, Transform = Transform };
         foreach (var figure in Figures)
         {
             var newFigure = new PathFigure
@@ -3567,6 +3759,18 @@ public sealed class PolyBezierSegment : PathSegment
     /// </summary>
     public List<Point> Points { get; } = new();
 
+    /// <summary>Initializes a new empty instance.</summary>
+    public PolyBezierSegment()
+    {
+    }
+
+    /// <summary>Initializes a new instance from points (in groups of 3) and a stroke flag.</summary>
+    public PolyBezierSegment(IEnumerable<Point> points, bool isStroked = true)
+    {
+        Points.AddRange(points);
+        IsStroked = isStroked;
+    }
+
     /// <inheritdoc />
     public override IEnumerable<Point> GetPoints() => Points;
 
@@ -3626,6 +3830,18 @@ public sealed class PolyQuadraticBezierSegment : PathSegment
     /// Gets the collection of points (in groups of 2: control, end).
     /// </summary>
     public List<Point> Points { get; } = new();
+
+    /// <summary>Initializes a new empty instance.</summary>
+    public PolyQuadraticBezierSegment()
+    {
+    }
+
+    /// <summary>Initializes a new instance from points (in groups of 2) and a stroke flag.</summary>
+    public PolyQuadraticBezierSegment(IEnumerable<Point> points, bool isStroked = true)
+    {
+        Points.AddRange(points);
+        IsStroked = isStroked;
+    }
 
     /// <inheritdoc />
     public override IEnumerable<Point> GetPoints() => Points;

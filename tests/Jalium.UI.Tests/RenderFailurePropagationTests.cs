@@ -7,6 +7,27 @@ using Jalium.UI.Interop;
 
 namespace Jalium.UI.Tests;
 
+/// <summary>
+/// Guards how a non-recoverable BeginDraw failure is surfaced, which differs by window kind:
+/// <list type="bullet">
+/// <item><see cref="Window"/> renders from the top-level loop, so the failure must
+/// PROPAGATE as a <see cref="RenderPipelineException"/> (Stage "Begin").</item>
+/// <item><see cref="PopupWindow"/> / <see cref="DockIndicatorWindow"/> render inside a
+/// native WM_PAINT / dispatcher-critical callback, where an escaping exception triggers a
+/// 0xC000041D process crash — so their RenderFrame must SWALLOW the failure and never throw.</item>
+/// </list>
+/// </summary>
+/// <remarks>
+/// All three use the non-recoverable <see cref="JaliumResult.InitializationFailed"/> so the
+/// behavior is exercised at full strength. DeviceLost / InvalidState / ResourceCreationFailed
+/// are classified recoverable by IsRecoverableRenderPipelineException and are intentionally
+/// recovered (device re-create / GPU-busy retry); those recoverable paths are covered by
+/// WindowRenderSchedulingTests.
+/// </remarks>
+// [Collection("Application")]: constructs Window/PopupWindow — running in
+// parallel with other Window-constructing classes races DP-metadata
+// registration (random flaky failures).
+[Collection("Application")]
 public class RenderFailurePropagationTests
 {
     [Fact]
@@ -20,7 +41,7 @@ public class RenderFailurePropagationTests
 
         var native = new RenderTargetTestNative
         {
-            BeginDrawResult = (int)JaliumResult.DeviceLost
+            BeginDrawResult = (int)JaliumResult.InitializationFailed
         };
 
         using var renderTarget = CreateRenderTarget(native, width: 300, height: 200, hwnd: new nint(0x2001));
@@ -31,7 +52,7 @@ public class RenderFailurePropagationTests
     }
 
     [Fact]
-    public void PopupWindow_RenderFrame_WhenBeginDrawFails_Throws()
+    public void PopupWindow_RenderFrame_WhenBeginDrawFails_DoesNotThrow()
     {
         var parentWindow = new Window
         {
@@ -44,7 +65,7 @@ public class RenderFailurePropagationTests
 
         var native = new RenderTargetTestNative
         {
-            BeginDrawResult = (int)JaliumResult.DeviceLost
+            BeginDrawResult = (int)JaliumResult.InitializationFailed
         };
 
         using var renderTarget = CreateRenderTarget(native, width: 160, height: 120, hwnd: new nint(0x2002));
@@ -52,17 +73,20 @@ public class RenderFailurePropagationTests
         SetPrivateField(popupWindow, "_width", 160);
         SetPrivateField(popupWindow, "_height", 120);
 
-        var exception = Assert.Throws<RenderPipelineException>(() => InvokePrivateMethod(popupWindow, "RenderFrame"));
-        Assert.Equal("Begin", exception.Stage);
+        // PopupWindow.RenderFrame runs inside a native WM_PAINT / dispatcher-critical
+        // callback; letting a RenderPipelineException escape would trigger a 0xC000041D
+        // process crash. Even a non-recoverable BeginDraw failure must be swallowed.
+        var exception = Record.Exception(() => InvokePrivateMethod(popupWindow, "RenderFrame"));
+        Assert.Null(exception);
     }
 
     [Fact]
-    public void DockIndicatorWindow_RenderFrame_WhenBeginDrawFails_Throws()
+    public void DockIndicatorWindow_RenderFrame_WhenBeginDrawFails_DoesNotThrow()
     {
         var dockWindow = new DockIndicatorWindow(showCenterCross: true, showEdgeButtons: true);
         var native = new RenderTargetTestNative
         {
-            BeginDrawResult = (int)JaliumResult.DeviceLost
+            BeginDrawResult = (int)JaliumResult.InitializationFailed
         };
 
         using var renderTarget = CreateRenderTarget(native, width: 200, height: 120, hwnd: new nint(0x2003));
@@ -70,8 +94,10 @@ public class RenderFailurePropagationTests
         SetPrivateField(dockWindow, "_width", 200);
         SetPrivateField(dockWindow, "_height", 120);
 
-        var exception = Assert.Throws<RenderPipelineException>(() => InvokePrivateMethod(dockWindow, "RenderFrame"));
-        Assert.Equal("Begin", exception.Stage);
+        // Same native-callback constraint as PopupWindow: a non-recoverable BeginDraw
+        // failure must be swallowed, never thrown (an escaping exception → 0xC000041D).
+        var exception = Record.Exception(() => InvokePrivateMethod(dockWindow, "RenderFrame"));
+        Assert.Null(exception);
     }
 
     private static RenderTarget CreateRenderTarget(RenderTargetTestNative native, int width, int height, nint hwnd)

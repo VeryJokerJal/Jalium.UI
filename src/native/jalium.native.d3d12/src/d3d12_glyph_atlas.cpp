@@ -265,12 +265,13 @@ public:
         return E_NOINTERFACE;
     }
 
-    // IDWritePixelSnapping — enable snapping at 96 DPI (ppd = 1.0) so glyph
-    // advances are rounded to integer DIP boundaries.  This produces crisp,
-    // consistent character spacing because every glyph lands on the same
-    // sub-pixel grid.  Sub-pixel ClearType rendering is then handled by our
-    // own pipeline (CreateGlyphRunAnalysis with quantized offsets).
-    HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* disabled) override { *disabled = FALSE; return S_OK; }
+    // IDWritePixelSnapping — pixel snapping is DISABLED so glyph advances stay
+    // fractional (continuous), keeping horizontal text positioning and scale
+    // animation smooth instead of quantizing inter-glyph spacing to integer DIP
+    // boundaries.  Sub-pixel ClearType sharpness is unaffected: it is produced by
+    // a separate path (CreateGlyphRunAnalysis with quantized offsets) that is
+    // retained.
+    HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* disabled) override { *disabled = TRUE; return S_OK; }
     HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* transform) override {
         *transform = { 1, 0, 0, 1, 0, 0 };
         return S_OK;
@@ -374,6 +375,7 @@ bool D3D12GlyphAtlas::Initialize()
             D3D12_RESOURCE_STATE_COMMON, nullptr,
             IID_PPV_ARGS(&atlasTexture_))))
         return false;
+    atlasTexture_->SetName(L"JaliumGlyphAtlas");  // [JALIUM-921 diag]
 
     // Upload buffer for atlas updates — size = width * height * 4 (RGBA = 4 bytes per pixel)
     // Add row alignment padding (D3D12 requires 256-byte row pitch alignment)
@@ -510,6 +512,7 @@ bool D3D12GlyphAtlas::GrowAtlas(uint32_t reqW, uint32_t reqH)
             IID_PPV_ARGS(&newTex)))) {
         return false;
     }
+    newTex->SetName(L"JaliumGlyphAtlas");  // [JALIUM-921 diag]
 
     UINT rowPitch = (newW * 4 + 255) & ~255u;
     UINT64 uploadSize = (UINT64)rowPitch * newH;
@@ -702,7 +705,8 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
         // Sub-pixel X offset: the glyph's appearance depends on where it falls
         // relative to the physical pixel grid.  We rasterize at the quantized
         // sub-pixel offset so each cached variant matches a specific position.
-        float subpixelOffset = key.subpixelX / 4.0f;
+        // 1/8-pixel buckets (must match the subpixelQuant denominator above).
+        float subpixelOffset = key.subpixelX / 8.0f;
 
         // Ask the font face which rendering mode and grid-fit policy is right
         // for this em size.  Hard-coding GRID_FIT_MODE_ENABLED forces every
@@ -782,9 +786,18 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
         const size_t bytesPerPixel = grayscale ? 1u : 3u;
 
         ComPtr<IDWriteGlyphRunAnalysis> analysis;
+        // Per-axis transform (liquid-glass deform etc.): rasterize the glyph
+        // ALREADY-deformed (scaleX wide, scaleY tall) so it stays crisp displayed
+        // 1:1 — no point-minification of an isotropic atlas erasing thin stems
+        // (d->c, r->l). 8/8 == 1.0x -> identity -> nullptr (normal text path).
+        const DWRITE_MATRIX glyphXform {
+            key.scaleXQ / (float)kGlyphScaleQuant, 0.0f, 0.0f, key.scaleYQ / (float)kGlyphScaleQuant, 0.0f, 0.0f
+        };
+        const bool hasGlyphXform = (key.scaleXQ != (uint8_t)kGlyphScaleQuant ||
+                                    key.scaleYQ != (uint8_t)kGlyphScaleQuant);
         HRESULT hr = useGdiFallback ? E_FAIL : dwriteFactory3_->CreateGlyphRunAnalysis(
             &glyphRun,
-            nullptr,  // no transform
+            hasGlyphXform ? &glyphXform : nullptr,
             renderingMode,
             DWRITE_MEASURING_MODE_NATURAL,
             gridFitMode,
@@ -887,7 +900,7 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
     RECT clearRect = { 0, 0, glyphW, glyphH };
     FillRect(hdc, &clearRect, (HBRUSH)GetStockObject(BLACK_BRUSH));
 
-    float subpixelOffset = key.subpixelX / 4.0f;
+    float subpixelOffset = key.subpixelX / 8.0f;  // 1/8-pixel buckets (match primary path)
     float originX = -(metrics.leftSideBearing * scale) + 2 + subpixelOffset;
     float originY = (metrics.verticalOriginY - metrics.topSideBearing) * scale + 1;
 
@@ -980,7 +993,13 @@ bool D3D12GlyphAtlas::RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entry
     glyphRun.glyphCount = 1;
     glyphRun.glyphIndices = &key.glyphIndex;
 
-    const float subpixelOffset = key.subpixelX / 4.0f;
+    // 1/8-pixel buckets: the denominator must stay consistent with the
+    // subpixelQuant *8 (clamp 7) store site in GenerateGlyphs and the two mono
+    // bake sites' /8.0f. This offset is baked into baselineOrigin below, flows
+    // through the layer union bounds into entry.bearingX, and ultimately into
+    // the emitted glyphX — using /4.0f here shifts colour/emoji glyphs in
+    // buckets 4..7 a full pixel right of the surrounding monochrome text.
+    const float subpixelOffset = key.subpixelX / 8.0f;
 
     // Translate into per-layer sub-runs. DWRITE_E_NOCOLOR signals "this
     // specific glyph has no colour layers" — common when a colour font holds
@@ -1362,7 +1381,8 @@ bool D3D12GlyphAtlas::RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entry
 uint64_t D3D12GlyphAtlas::HashInstanceKey(uint64_t layoutKey,
                                           float dpiScale,
                                           int32_t aaMode,
-                                          int32_t hintingMode) noexcept
+                                          int32_t hintingMode,
+                                          float scaleX, float scaleY) noexcept
 {
     uint64_t h = 0xCBF29CE484222325ull;  // FNV-1a 64-bit
     auto mix = [&h](const void* p, size_t n) {
@@ -1371,6 +1391,11 @@ uint64_t D3D12GlyphAtlas::HashInstanceKey(uint64_t layoutKey,
     };
     mix(&layoutKey, sizeof(layoutKey));
     mix(&dpiScale, sizeof(dpiScale));
+    // Per-axis transform scale changes the rasterized (deformed) bitmap + atlas
+    // slots/UVs for the SAME layout, so it must key the memo: a run cached at one
+    // deformation must not be served at another (it would be the wrong stretch).
+    mix(&scaleX, sizeof(scaleX));
+    mix(&scaleY, sizeof(scaleY));
     // Mode bits must enter the key — two text elements with the same
     // layoutKey but different TextRenderingMode/TextHintingMode would
     // otherwise hand back the cached run rasterized in the other element's
@@ -1394,9 +1419,34 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     std::vector<TextDecorationRect>* outDecorations,
     uint64_t layoutKey,
     int32_t aaMode,
-    int32_t hintingMode)
+    int32_t hintingMode,
+    float scaleX,
+    float scaleY)
 {
     if (!layout || !initialized_) return 0;
+
+    // Quantize per-axis transform scale to 1/kGlyphScaleQuant steps (value ==
+    // kGlyphScaleQuant means 1.0x == identity raster == normal-text path). The
+    // glyph is rasterized at the FINAL deformed pixel size via a DWRITE_MATRIX
+    // (e.g. a liquid-glass squeeze scaleX≈0.63 -> a correctly-thin CRISP stem;
+    // stretch scaleY≈2.17 -> tall crisp glyph), instead of point-minifying an
+    // isotropic atlas (which dropped thin stems: d->c, r->l). Quantization bounds
+    // the cache to a few buckets during a smooth drag; AddText post-scales the
+    // quad by the ACTUAL scale, so the in-bucket residual is a small magnification
+    // (finer quant -> smaller residual -> less thin-stroke shimmer during motion),
+    // never an erased stroke. Near-1.0 scales fold to identity -> normal path.
+    if (!(scaleX > 0.0f)) scaleX = 1.0f;   // NaN / degenerate guard
+    if (!(scaleY > 0.0f)) scaleY = 1.0f;
+    auto quantScale = [](float s) -> uint8_t {
+        long q = std::lround(s * (float)kGlyphScaleQuant);
+        if (q < 1)   q = 1;      // floor
+        if (q > 255) q = 255;    // uint8 ceil; the 512px glyph cap guards bigger
+        return (uint8_t)q;
+    };
+    const uint8_t scaleXQ = quantScale(scaleX);
+    const uint8_t scaleYQ = quantScale(scaleY);
+    const float   sxR = scaleXQ / (float)kGlyphScaleQuant;   // dequantized raster scale (matches the key)
+    const float   syR = scaleYQ / (float)kGlyphScaleQuant;
 
     // Detect a runtime process-wide ClearType↔Grayscale swap. SyncAntialiasMode()
     // bumps needsReset_ when it spots a mode change so cached glyph pixels
@@ -1508,7 +1558,8 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     // run hits every frame regardless of where on screen it lands.
     if (layoutKey != 0) {
         const uint64_t ck = HashInstanceKey(layoutKey, dpiScale_,
-                                            effectiveAaMode, effectiveHintingMode);
+                                            effectiveAaMode, effectiveHintingMode,
+                                            sxR, syR);
         auto mit = instMap_.find(ck);
         if (mit != instMap_.end()) {
             if (mit->second->run.gen == atlasGeneration_) {
@@ -1555,15 +1606,25 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
 
     for (auto& run : collector.runs) {
         float penX = run.baselineX;
-        // Apply DPI scale to get physical pixel size for rasterization.
-        // Do NOT quantize fontSize — it must match the size DirectWrite used
-        // to compute glyph advances, otherwise spacing errors accumulate.
+        // Rasterize at the BASE physical em = round(fontSize * dpiScale). The
+        // transform scale is NOT folded into the em — instead the per-axis
+        // deformation (sxR, syR) is applied as a DWRITE_MATRIX inside
+        // RasterizeGlyph, so the cached bitmap is already the FINAL deformed shape
+        // and stays crisp when displayed 1:1 (point sampling is exact at 1:1).
+        // This is what fixes the anisotropic squeeze dropping thin stems (d->c):
+        // a 0.63x-wide glyph is rasterized correctly thin, not minified away.
+        // Advances/penX stay in base layout units; the quad geometry is divided by
+        // the per-axis raster scale and AddText re-applies the actual transform.
         float scaledSize = run.fontSize * dpiScale_;
         if (scaledSize <= 0) continue;
         uint16_t fontSize = (uint16_t)std::round(scaledSize);
         if (fontSize < 1) fontSize = 1;
 
         float invDpi = 1.0f / dpiScale_;
+        float invRasterX = 1.0f / sxR;   // map deformed-X atlas geometry back to base-DIP
+        float invRasterY = 1.0f / syR;   // (AddText post-scales by the actual transform)
+        const bool deformed = (scaleXQ != (uint8_t)kGlyphScaleQuant ||
+                               scaleYQ != (uint8_t)kGlyphScaleQuant);
 
         for (uint32_t i = 0; i < run.glyphIndices.size(); i++) {
             // Apply DirectWrite glyph offsets (kerning adjustments, mark positioning, etc.)
@@ -1576,14 +1637,30 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
             // Compute pen position in physical pixels for sub-pixel ClearType.
             float penXPhysical = (penX + offsetX) * dpiScale_;
             float subpixelF = penXPhysical - std::floor(penXPhysical);
-            // Quantize to 1/4 pixel (4 cached variants per glyph)
-            uint8_t subpixelQuant = (uint8_t)std::min((int)(subpixelF * 4.0f), 3);
+            // Quantize to 1/8 pixel (8 cached variants per glyph). At 1/4 pixel
+            // the optical residual is up to 0.25px; being size-invariant it is a
+            // visible fraction of a small advance (~10% of an 8px-font advance)
+            // and reads as phantom inter-glyph spacing. 1/8 pixel halves it to
+            // <=0.125px. Truncation is kept (rounding wraps at frac→1, which the
+            // integer floor(penX) origin below cannot express).
+            //
+            // EXCEPTION: deformed text (any transform scale, e.g. liquid-glass
+            // drag) uses a single phase (0). A moving deform changes penX every
+            // frame, so per-phase variants would flood the atlas -> GrowAtlas churn
+            // -> cached runs invalidated by the generation guard -> glyphs blink
+            // in/out (the thin 'l' flickering). Sub-pixel phase is invisible under
+            // deformation anyway, so one phase bounds the atlas to one entry/glyph.
+            uint8_t subpixelQuant = deformed
+                ? (uint8_t)0
+                : (uint8_t)std::min((int)(subpixelF * 8.0f), 7);
 
             GlyphKey key;
             key.fontFace = run.fontFace.Get();
             key.glyphIndex = run.glyphIndices[i];
             key.fontSize = fontSize;
             key.subpixelX = subpixelQuant;
+            key.scaleXQ = scaleXQ;   // per-axis deformation -> RasterizeGlyph DWRITE_MATRIX
+            key.scaleYQ = scaleYQ;
             // The effective AA + hinting modes are baked into the key so the
             // same glyph rasterized in ClearType for one element doesn't get
             // re-emitted for a different element that asked for Grayscale or
@@ -1608,17 +1685,29 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
 
             auto& entry = it->second.entry;
             if (entry.valid && entry.w > 0 && entry.h > 0) {
-                // Position the glyph quad at the integer-pixel base + bearing.
-                // bearingX (= bounds.left from ClearType analysis) includes the
-                // sub-pixel offset baked in during rasterization.
-                float glyphX = std::floor(penXPhysical) * invDpi + entry.bearingX * invDpi;
-                float glyphY = run.baselineY - offsetY - entry.bearingY * invDpi;
+                // Position the glyph quad at the integer-pixel pen + bearing.
+                // The pen term is base-DIP (penX was shaped at run.fontSize);
+                // entry.* are the DEFORMED bitmap's physical px (rasterized via the
+                // per-axis DWRITE_MATRIX sxR/syR), so divide X by sxR and Y by syR
+                // to land the quad in base-DIP. AddText then post-scales the quad
+                // by the ACTUAL transform, reproducing the on-screen deformed size
+                // 1:1 against the already-deformed crisp bitmap.
+                // 1:1 text snaps the pen to the integer pixel grid (the sub-pixel
+                // phase is baked into the bitmap via subpixelX) for crisp stable
+                // text. DEFORMED text keeps the pen CONTINUOUS (no floor): each
+                // glyph would otherwise cross integer boundaries at a different
+                // sub-pixel instant as the deform animates, so adjacent glyphs jump
+                // at different times (the "left s still, right s moved" jitter).
+                // The bilinear text PSO samples this continuous position smoothly.
+                float penXForPos = deformed ? penXPhysical : std::floor(penXPhysical);
+                float glyphX = penXForPos * invDpi + entry.bearingX * invDpi * invRasterX;
+                float glyphY = run.baselineY - offsetY - entry.bearingY * invDpi * invRasterY;
 
                 GlyphQuadInstance inst;
                 inst.posX = glyphX;
                 inst.posY = glyphY;
-                inst.sizeX = (float)entry.w * invDpi;
-                inst.sizeY = (float)entry.h * invDpi;
+                inst.sizeX = (float)entry.w * invDpi * invRasterX;
+                inst.sizeY = (float)entry.h * invDpi * invRasterY;
                 inst.uvMinX = entry.x * invW;
                 inst.uvMinY = entry.y * invH;
                 inst.uvMaxX = (entry.x + entry.w) * invW;
@@ -1664,7 +1753,8 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     if (layoutKey != 0) {
         built.gen = atlasGeneration_;
         const uint64_t ck = HashInstanceKey(layoutKey, dpiScale_,
-                                            effectiveAaMode, effectiveHintingMode);
+                                            effectiveAaMode, effectiveHintingMode,
+                                            sxR, syR);
         if (auto ex = instMap_.find(ck); ex != instMap_.end()) {
             instLru_.erase(ex->second);
             instMap_.erase(ex);

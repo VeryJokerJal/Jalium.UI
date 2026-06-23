@@ -23,27 +23,43 @@ internal static partial class IconHelper
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
     private static byte[]? ExtractProcessIconAsPngWindows(string exePath)
     {
-        nint hIconLarge = 0;
-        nint hIconSmall = 0;
+        nint hIcon = 0;
+        bool isSharedIcon = false;
         try
         {
-            var count = ExtractIconExW(exePath, 0, out hIconLarge, out hIconSmall, 1);
-            if (count == 0 || hIconLarge == 0)
+            // Prefer the highest-resolution frame. ExtractIconExW only ever returns the
+            // system "large" icon (SM_CXICON, typically 32x32); a finely-drawn round logo
+            // taken at 32px and shown in the title bar reads as a coarse low-poly shape —
+            // the reported "circle became a heptagon". PrivateExtractIconsW lets us request
+            // 256x256 explicitly, so Windows returns the icon's largest/closest frame, which
+            // stays smooth when scaled down to the title-bar size.
+            var extracted = PrivateExtractIconsW(exePath, 0, 256, 256, out hIcon, 0, 1, 0);
+            if (extracted == 0 || hIcon == 0)
             {
-                // Fall back to default application icon.
-                hIconLarge = LoadIconW(0, IDI_APPLICATION);
-                if (hIconLarge == 0)
+                // Fallback 1: the standard large icon (usually 32x32).
+                hIcon = 0;
+                var count = ExtractIconExW(exePath, 0, out var hIconLarge, out var hIconSmall, 1);
+                if (hIconSmall != 0) DestroyIcon(hIconSmall);
+                hIcon = count != 0 ? hIconLarge : 0;
+            }
+
+            if (hIcon == 0)
+            {
+                // Fallback 2: the shared system application icon. A shared icon must NOT be
+                // passed to DestroyIcon, so flag it so the finally block leaves it alone.
+                hIcon = LoadIconW(0, IDI_APPLICATION);
+                isSharedIcon = true;
+                if (hIcon == 0)
                 {
                     return null;
                 }
             }
 
-            return IconHandleToPng(hIconLarge);
+            return IconHandleToPng(hIcon);
         }
         finally
         {
-            if (hIconLarge != 0) DestroyIcon(hIconLarge);
-            if (hIconSmall != 0) DestroyIcon(hIconSmall);
+            if (hIcon != 0 && !isSharedIcon) DestroyIcon(hIcon);
         }
     }
 
@@ -256,6 +272,11 @@ internal static partial class IconHelper
 
     [LibraryImport("shell32.dll", EntryPoint = "ExtractIconExW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial uint ExtractIconExW(string lpszFile, int nIconIndex, out nint phiconLarge, out nint phiconSmall, uint nIcons);
+
+    // Extracts an icon at an explicit pixel size (we ask for 256x256) instead of the fixed
+    // system large-icon size ExtractIconExW returns. Returns the number of icons extracted.
+    [LibraryImport("user32.dll", EntryPoint = "PrivateExtractIconsW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial uint PrivateExtractIconsW(string szFileName, int nIconIndex, int cxIcon, int cyIcon, out nint phicon, nint piconId, uint nIcons, uint flags);
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

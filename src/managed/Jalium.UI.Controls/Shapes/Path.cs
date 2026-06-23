@@ -258,6 +258,23 @@ public class Path : Shape
         _renderedGeometry.Transform = null;
     }
 
+    /// <inheritdoc />
+    protected override Geometry? DefiningGeometry => _definingGeometry;
+
+    /// <inheritdoc />
+    public override Transform GeometryTransform =>
+        (_hasStretchMatrix && !_stretchMatrix.IsIdentity) ? new MatrixTransform(_stretchMatrix) : Transform.Identity;
+
+    /// <inheritdoc />
+    public override Geometry RenderedGeometry
+    {
+        get
+        {
+            EnsureRenderedGeometry();
+            return (Geometry?)_renderedGeometry ?? _definingGeometry ?? Geometry.Empty;
+        }
+    }
+
     #endregion
 
     #region Stretch Calculation (aligned with WPF Shape.GetStretchMetrics)

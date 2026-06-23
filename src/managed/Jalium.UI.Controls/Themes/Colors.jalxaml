@@ -418,7 +418,12 @@
             <SolidColorBrush x:Key="TextSecondary" Color="#C5FFFFFF" />
             <SolidColorBrush x:Key="TextTertiary" Color="#87FFFFFF" />
             <SolidColorBrush x:Key="TextDisabled" Color="#5DFFFFFF" />
-            <SolidColorBrush x:Key="TextOnAccent" Color="#000000" />
+            <!-- On-accent foreground. The accent is a fixed dark green
+                 (#207245 -> #1C8043) in BOTH themes, so on-accent text and
+                 glyphs (e.g. the CheckBox check mark / RadioButton dot) must be
+                 white here too — not the WinUI dark-theme black that assumes a
+                 light accent. Keep this in sync with the Light dictionary. -->
+            <SolidColorBrush x:Key="TextOnAccent" Color="#FFFFFF" />
             <SolidColorBrush x:Key="TextPlaceholder" Color="#87FFFFFF" />
 
             <LinearGradientBrush x:Key="AccentBrush" StartPoint="0,0" EndPoint="1,0">

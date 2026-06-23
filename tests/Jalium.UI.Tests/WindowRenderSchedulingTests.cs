@@ -4,6 +4,10 @@ using Jalium.UI.Interop;
 
 namespace Jalium.UI.Tests;
 
+// [Collection("Application")] is mandatory: these tests construct Window
+// instances; running in parallel with other Window-constructing test classes
+// races DependencyProperty metadata registration (random flaky failures).
+[Collection("Application")]
 public class WindowRenderSchedulingTests
 {
     private const int RenderFlag_Scheduled = 1 << 0;

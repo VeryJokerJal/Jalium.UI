@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Interop;
 
@@ -18,6 +19,36 @@ public static partial class Clipboard
     private const uint CF_DIBV5 = 17;
     private const uint CF_HDROP = 15;
 
+    // The Windows 11 clipboard-history / cloud-clipboard service routinely opens the
+    // clipboard for a few milliseconds immediately after any change, so a single
+    // OpenClipboard attempt frequently loses the race and fails with ERROR_ACCESS_DENIED.
+    // Retry briefly before giving up — the same contention mitigation WPF/WinForms use.
+    private const int ClipboardOpenRetryCount = 10;
+    private const int ClipboardOpenRetryDelayMs = 10;
+
+    /// <summary>
+    /// Opens the Win32 clipboard, retrying a few times on transient failure. On Windows 11
+    /// the clipboard-history / cloud-clipboard service grabs the clipboard right after any
+    /// change, so rapid back-to-back access loses the race: a lone <c>OpenClipboard</c>
+    /// returns false and the operation silently no-ops (an occasional copy/paste no-op for
+    /// the user). Polling for a short window lets the contending process release the
+    /// clipboard first. Callers must still pair a successful open with <c>CloseClipboard</c>.
+    /// </summary>
+    /// <returns>True if the clipboard was opened; false if every attempt failed.</returns>
+    private static bool OpenClipboardWithRetry()
+    {
+        for (int attempt = 0; attempt < ClipboardOpenRetryCount; attempt++)
+        {
+            if (OpenClipboard(nint.Zero))
+                return true;
+
+            if (attempt < ClipboardOpenRetryCount - 1)
+                Thread.Sleep(ClipboardOpenRetryDelayMs);
+        }
+
+        return false;
+    }
+
     /// <summary>
     /// Gets text from the clipboard.
     /// </summary>
@@ -27,7 +58,7 @@ public static partial class Clipboard
         if (!PlatformFactory.IsWindows)
             return GetTextCrossPlatform();
 
-        if (!OpenClipboard(nint.Zero))
+        if (!OpenClipboardWithRetry())
             return null;
 
         try
@@ -68,7 +99,7 @@ public static partial class Clipboard
         if (!PlatformFactory.IsWindows)
             return SetTextCrossPlatform(text);
 
-        if (!OpenClipboard(nint.Zero))
+        if (!OpenClipboardWithRetry())
             return false;
 
         try
@@ -136,7 +167,7 @@ public static partial class Clipboard
         if (!PlatformFactory.IsWindows)
             return SetTextCrossPlatform(""); // Clear by setting empty
 
-        if (!OpenClipboard(nint.Zero))
+        if (!OpenClipboardWithRetry())
             return false;
 
         try
@@ -181,7 +212,7 @@ public static partial class Clipboard
     {
         if (!PlatformFactory.IsWindows) return null;
 
-        if (!OpenClipboard(nint.Zero))
+        if (!OpenClipboardWithRetry())
             return null;
 
         try
@@ -256,7 +287,7 @@ public static partial class Clipboard
     public static string[]? GetFileDropList()
     {
         if (!PlatformFactory.IsWindows) return null;
-        if (!OpenClipboard(nint.Zero))
+        if (!OpenClipboardWithRetry())
             return null;
 
         try
@@ -298,7 +329,7 @@ public static partial class Clipboard
         if (files == null || files.Length == 0)
             return false;
 
-        if (!OpenClipboard(nint.Zero))
+        if (!OpenClipboardWithRetry())
             return false;
 
         try
@@ -400,15 +431,179 @@ public static partial class Clipboard
         }
         else if (data is ClipboardDataObject dataObj)
         {
-            if (dataObj.GetDataPresent(DataFormats.Text))
+            SetDataObjectCore(dataObj);
+        }
+    }
+
+    private static void SetDataObjectCore(ClipboardDataObject dataObj)
+    {
+        var text = dataObj.GetDataPresent(DataFormats.Text) ? dataObj.GetData(DataFormats.Text) as string : null;
+        var unicode = dataObj.GetDataPresent(DataFormats.UnicodeText) ? dataObj.GetData(DataFormats.UnicodeText) as string : null;
+        var rtf = dataObj.GetDataPresent(DataFormats.Rtf) ? dataObj.GetData(DataFormats.Rtf) as string : null;
+        var html = dataObj.GetDataPresent(DataFormats.Html) ? dataObj.GetData(DataFormats.Html) as string : null;
+        var plain = text ?? unicode;
+
+        if (!PlatformFactory.IsWindows)
+        {
+            // Other platforms only support plain text today; prefer the richest text we have.
+            if (plain != null)
             {
-                SetText(dataObj.GetData(DataFormats.Text) as string);
+                SetTextCrossPlatform(plain);
             }
             if (dataObj.GetDataPresent(DataFormats.FileDrop))
             {
-                SetFileDropList(dataObj.GetData(DataFormats.FileDrop) as string[] ?? Array.Empty<string>());
+                // FileDrop is Windows-only; nothing to do on other platforms.
+            }
+            return;
+        }
+
+        // On Windows, write every requested format in a single clipboard session so the
+        // formats coexist (calling SetText repeatedly would EmptyClipboard each time).
+        if (!OpenClipboardWithRetry())
+        {
+            return;
+        }
+
+        try
+        {
+            EmptyClipboard();
+
+            if (plain != null)
+            {
+                SetClipboardMemory(CF_UNICODETEXT, Encoding.Unicode.GetBytes(plain + '\0'));
+            }
+            if (!string.IsNullOrEmpty(rtf))
+            {
+                var rtfFormat = RegisterClipboardFormatW(DataFormats.Rtf);
+                if (rtfFormat != 0)
+                {
+                    SetClipboardMemory(rtfFormat, Encoding.ASCII.GetBytes(rtf + '\0'));
+                }
+            }
+            if (!string.IsNullOrEmpty(html))
+            {
+                var htmlFormat = RegisterClipboardFormatW(DataFormats.Html);
+                if (htmlFormat != 0)
+                {
+                    var bytes = Encoding.UTF8.GetBytes(BuildCfHtml(html!) + '\0');
+                    SetClipboardMemory(htmlFormat, bytes);
+                }
+            }
+
+            if (dataObj.GetDataPresent(DataFormats.FileDrop) &&
+                dataObj.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
+            {
+                SetFileDropListInSession(files);
             }
         }
+        finally
+        {
+            CloseClipboard();
+        }
+    }
+
+    /// <summary>
+    /// Copies <paramref name="data"/> into a global memory block and hands it to the clipboard
+    /// for <paramref name="format"/>. Must be called inside an open clipboard session.
+    /// </summary>
+    private static bool SetClipboardMemory(uint format, byte[] data)
+    {
+        var hGlobal = GlobalAlloc(GMEM_MOVEABLE, (nuint)data.Length);
+        if (hGlobal == nint.Zero)
+        {
+            return false;
+        }
+
+        var ptr = GlobalLock(hGlobal);
+        if (ptr == nint.Zero)
+        {
+            GlobalFree(hGlobal);
+            return false;
+        }
+
+        try
+        {
+            Marshal.Copy(data, 0, ptr, data.Length);
+        }
+        finally
+        {
+            GlobalUnlock(hGlobal);
+        }
+
+        if (SetClipboardData(format, hGlobal) == nint.Zero)
+        {
+            GlobalFree(hGlobal);
+            return false;
+        }
+
+        return true;
+    }
+
+    private static void SetFileDropListInSession(string[] files)
+    {
+        var totalLength = Marshal.SizeOf<DROPFILES>();
+        foreach (var file in files)
+        {
+            totalLength += (file.Length + 1) * sizeof(char);
+        }
+        totalLength += sizeof(char);
+
+        var hGlobal = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, (nuint)totalLength);
+        if (hGlobal == nint.Zero)
+        {
+            return;
+        }
+
+        var ptr = GlobalLock(hGlobal);
+        if (ptr == nint.Zero)
+        {
+            GlobalFree(hGlobal);
+            return;
+        }
+
+        try
+        {
+            var dropFiles = new DROPFILES { pFiles = (uint)Marshal.SizeOf<DROPFILES>(), fWide = true };
+            Marshal.StructureToPtr(dropFiles, ptr, false);
+
+            var offset = Marshal.SizeOf<DROPFILES>();
+            foreach (var file in files)
+            {
+                var chars = file.ToCharArray();
+                Marshal.Copy(chars, 0, ptr + offset, chars.Length);
+                offset += (file.Length + 1) * sizeof(char);
+            }
+        }
+        finally
+        {
+            GlobalUnlock(hGlobal);
+        }
+
+        if (SetClipboardData(CF_HDROP, hGlobal) == nint.Zero)
+        {
+            GlobalFree(hGlobal);
+        }
+    }
+
+    /// <summary>
+    /// Wraps an HTML fragment in the CF_HTML clipboard format expected by Windows
+    /// (Word, browsers, etc.), computing the required byte offsets.
+    /// </summary>
+    internal static string BuildCfHtml(string fragment)
+    {
+        const string headerTemplate =
+            "Version:0.9\r\nStartHTML:{0:D10}\r\nEndHTML:{1:D10}\r\nStartFragment:{2:D10}\r\nEndFragment:{3:D10}\r\n";
+        const string pre = "<html><body>\r\n<!--StartFragment-->";
+        const string post = "<!--EndFragment-->\r\n</body></html>";
+
+        // The header length is fixed because the offsets are zero-padded to 10 digits.
+        var headerLength = Encoding.UTF8.GetByteCount(string.Format(headerTemplate, 0, 0, 0, 0));
+        var startHtml = headerLength;
+        var startFragment = startHtml + Encoding.UTF8.GetByteCount(pre);
+        var endFragment = startFragment + Encoding.UTF8.GetByteCount(fragment);
+        var endHtml = endFragment + Encoding.UTF8.GetByteCount(post);
+
+        return string.Format(headerTemplate, startHtml, endHtml, startFragment, endFragment) + pre + fragment + post;
     }
 
     #region Native Methods
@@ -478,6 +673,9 @@ public static partial class Clipboard
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool IsClipboardFormatAvailable(uint format);
+
+    [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial uint RegisterClipboardFormatW(string lpszFormat);
 
     [LibraryImport("kernel32.dll", SetLastError = true)]
     private static partial nint GlobalAlloc(uint uFlags, nuint dwBytes);

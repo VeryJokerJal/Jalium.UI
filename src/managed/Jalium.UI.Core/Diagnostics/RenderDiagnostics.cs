@@ -588,20 +588,62 @@ public static class RenderDiagnostics
         entry.ticks += elapsedTicks;
     }
 
-    public static void PublishAndResetApiStats()
+    public static void PublishAndResetApiStats(long beginBlockingWaitNs = 0, long presentBlockNs = 0)
     {
         if (!ApiStatsEnabled || s_currentApiStats.Count == 0) return;
+
+        // The "BeginDraw" API entry is wall-clock of the whole native BeginDraw
+        // P/Invoke, which is dominated by blocking back-pressure — the swap-chain
+        // frame-latency-waitable wait, plus the BeginFrame fence wait when the GPU
+        // is behind — NOT CPU work. Folding that into "BeginDraw" makes the table
+        // read as if BeginDraw burned multiple ms of CPU (the exact misdiagnosis
+        // this split prevents). Peel the blocking portion into a separate
+        // "BeginDraw (wait)" row and leave "BeginDraw" as the genuine CPU sliver;
+        // the total wall-clock is preserved. beginBlockingWaitNs = this frame's
+        // FrameWaitableWaitNs + FrameGpuWaitNs (Window.CompleteEndDrawOrHandleFailure).
+        long waitTicks = beginBlockingWaitNs > 0
+            ? (long)(beginBlockingWaitNs * (double)Stopwatch.Frequency / 1_000_000_000.0)
+            : 0;
+        // Same treatment for "EndDraw": under a slow compositor (occlusion
+        // throttling, remote/virtual displays) a vsync-aligned Present blocks
+        // inside the EndDraw P/Invoke for the whole DWM buffer-retire interval
+        // (measured 130-460 ms) while the GPU itself is idle. Peel it into
+        // "EndDraw (present)" so the stall can't masquerade as CPU encode work.
+        // presentBlockNs = this frame's GpuResourceStats.PresentBlockNs.
+        long presentTicks = presentBlockNs > 0
+            ? (long)(presentBlockNs * (double)Stopwatch.Frequency / 1_000_000_000.0)
+            : 0;
+
         long totalTicks = 0;
-        var entries = new List<DrawApiEntry>(s_currentApiStats.Count);
+        var entries = new List<DrawApiEntry>(s_currentApiStats.Count + 2);
         foreach (var kv in s_currentApiStats)
         {
+            long ticks = kv.Value.ticks;
+            totalTicks += ticks;
+            if (waitTicks > 0 && kv.Key == "BeginDraw")
+            {
+                // Clamp: waitable wait (QPC, measured inside native) can never
+                // exceed BeginDraw's own wall-clock (Stopwatch, around the
+                // P/Invoke) — guard the cross-clock edge so CPU never goes < 0.
+                long wait = waitTicks < ticks ? waitTicks : ticks;
+                entries.Add(new DrawApiEntry { Name = "BeginDraw", Count = kv.Value.count, TotalTicks = ticks - wait });
+                entries.Add(new DrawApiEntry { Name = "BeginDraw (wait)", Count = kv.Value.count, TotalTicks = wait });
+                continue;
+            }
+            if (presentTicks > 0 && kv.Key == "EndDraw")
+            {
+                // Same cross-clock clamp as the BeginDraw split above.
+                long present = presentTicks < ticks ? presentTicks : ticks;
+                entries.Add(new DrawApiEntry { Name = "EndDraw", Count = kv.Value.count, TotalTicks = ticks - present });
+                entries.Add(new DrawApiEntry { Name = "EndDraw (present)", Count = kv.Value.count, TotalTicks = present });
+                continue;
+            }
             entries.Add(new DrawApiEntry
             {
                 Name = kv.Key,
                 Count = kv.Value.count,
-                TotalTicks = kv.Value.ticks,
+                TotalTicks = ticks,
             });
-            totalTicks += kv.Value.ticks;
         }
         // Sort hot-first so DevTools renders the worst offenders at the top.
         entries.Sort((a, b) => b.TotalTicks.CompareTo(a.TotalTicks));

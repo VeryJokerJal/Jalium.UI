@@ -78,12 +78,12 @@ public class BorderClipTests
     [Fact]
     public void Border_Child_VisualBounds_StaysConsistentWithFractionalBorderThickness()
     {
-        // Mid-transition BorderThickness values like 1.5 used to produce a
-        // 0.5 px disagreement between the child's _visualBounds and the rect
-        // OnRender paints the background/stroke into. Both sides snap each
-        // border edge the same way now, so the child rect computed from
-        // snapped edges must match what OnRender will draw at the snapped
-        // BorderThickness.
+        // Pixel snapping is disabled, so a fractional BorderThickness like 1.5
+        // passes straight through to the child's _visualBounds instead of being
+        // rounded onto the physical-pixel grid. The child rect and the rect
+        // OnRender paints the background/stroke into are computed from the same
+        // raw BorderThickness, so they still agree — just at the fractional
+        // position. The renderer handles sub-pixel placement / AA at draw time.
         var child = new FrameworkElement();
         var border = new Border
         {
@@ -94,8 +94,8 @@ public class BorderClipTests
         border.Measure(new Size(100, 100));
         border.Arrange(new Rect(0, 0, 100, 100));
 
-        // BT=1.5 snaps to 2 on each side via AwayFromZero rounding.
-        Assert.Equal(new Rect(2, 2, 96, 96), child.VisualBounds);
+        // BT=1.5 passes through unchanged (no rounding): inset 1.5 on every side.
+        Assert.Equal(new Rect(1.5, 1.5, 97, 97), child.VisualBounds);
     }
 
     private sealed class TestBorder : Border

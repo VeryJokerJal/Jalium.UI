@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="Jalium.UI.Interop" />
+    <InternalsVisibleTo Include="Jalium.UI.Tests" />
   </ItemGroup>
 
   <!-- 音频与视频统一走 jalium.native.media:WAV/FLAC/MP3/OGG 由 vendored 单头库

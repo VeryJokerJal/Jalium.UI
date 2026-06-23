@@ -276,6 +276,11 @@ public sealed class Stroke : INotifyPropertyChanged
                 _cachedDrawing.RenderTo(dc);
                 return;
             }
+
+            // No cached DrawingGroup and not a RenderTarget context: the native
+            // particle batch can't be represented. On the whole-frame capture
+            // path flag the frame for direct-render fallback (no-op otherwise).
+            Jalium.UI.Media.DrawingContext.MarkCurrentFrameUnrecordable();
         }
 
         // Fallback

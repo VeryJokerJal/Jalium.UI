@@ -96,6 +96,14 @@ const wchar_t* FontProviderFontconfig::GetDefaultFontFamily() const
     return L"sans-serif";
 }
 
+const wchar_t* FontProviderFontconfig::GetFallbackFontFamily() const
+{
+    // FindFont routes family names through FcFontMatch, so this resolves to
+    // whatever CJK Noto (or closest) is installed; if none is present fontconfig
+    // returns its default sans, which is no worse than dropping the glyph.
+    return L"Noto Sans CJK SC";
+}
+
 } // namespace jalium
 
 #endif // __linux__ && !__ANDROID__

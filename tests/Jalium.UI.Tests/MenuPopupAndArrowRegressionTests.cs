@@ -54,7 +54,7 @@ public class MenuPopupAndArrowRegressionTests
     }
 
     [Fact]
-    public void MenuFlyoutPresenterPopup_ShouldStayConstrainedToOwnerWindow()
+    public void MenuFlyoutPresenterPopup_ShouldPreferExternalWindow()
     {
         var flyout = new MenuFlyout();
         flyout.Items.Add(new MenuFlyoutItem { Text = "Open" });
@@ -63,7 +63,11 @@ public class MenuPopupAndArrowRegressionTests
         flyout.ShowAt(anchor);
 
         var popup = GetPrivateField<Popup>(typeof(FlyoutBase), flyout, "_popup");
-        Assert.True(popup.ShouldConstrainToRootBounds);
+        // MenuFlyout 按 Win32/WPF/WinUI 上下文菜单语义总是独立顶层窗口：不受父窗口根边界
+        // 约束（ShouldConstrainToRootBounds == false），并优先升级为独立外部窗口
+        // （PreferExternalWindow == true）。见 FlyoutBase.EnsurePopup。
+        Assert.False(popup.ShouldConstrainToRootBounds);
+        Assert.True(popup.PreferExternalWindow);
     }
 
     [Fact]
@@ -242,6 +246,39 @@ public class MenuPopupAndArrowRegressionTests
         Assert.Equal(93, bounds.Y);
         Assert.Equal(80, bounds.Width);
         Assert.Equal(24, bounds.Height);
+    }
+
+    [Fact]
+    public void NestedSubmenuPopup_ShouldResolveParentWindowThroughHostPopupWindow()
+    {
+        // A cascading submenu's PlacementTarget lives inside the parent menu's external PopupWindow.
+        // Walking up VisualParent reaches that PopupWindow (not a Window), so GetParentWindow must
+        // resolve it to the PopupWindow's OwnerWindow. Before the fix it fell through to
+        // Application.Current.MainWindow, which equals the correct window only when the menu is opened
+        // from the main window — opening it from a second window left the submenu offset by the delta
+        // between the two windows' client origins.
+        var ownerWindow = new Window();
+        var target = new MenuFlyoutSubItem();
+        target.SetVisualBounds(new Rect(20, 30, 80, 24));
+
+        var panel = new StackPanel();
+        panel.Children.Add(target);
+
+        var popupBorder = new Border { Child = panel };
+
+        var hostPopup = new Popup();
+        var popupRoot = new PopupRoot(hostPopup, popupBorder, isLightDismiss: true);
+
+        // Links popupRoot.VisualParent -> popupWindow, so the walk up from target reaches it.
+        _ = new PopupWindow(ownerWindow, popupRoot);
+
+        var nestedPopup = new Popup { PlacementTarget = target };
+        var method = typeof(Popup).GetMethod("GetParentWindow", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        var resolved = method!.Invoke(nestedPopup, Array.Empty<object>());
+
+        Assert.Same(ownerWindow, resolved);
     }
 
     private static Control CreateOverflowingMenuPopupHost(out Type hostType)

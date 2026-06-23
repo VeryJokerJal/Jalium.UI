@@ -32,6 +32,7 @@ internal enum DrawCommandKind : byte
     BeginEffectCapture,          // IEffectDrawingContext (element BlurEffect/DropShadow)
     EndEffectCapture,
     ApplyElementEffect,
+    SetShapeType,                // SuperEllipse shape-type state (V0=type, V1=exponent)
 }
 
 /// <summary>
@@ -196,6 +197,17 @@ internal readonly struct DrawCommand
     public static DrawCommand EndEffectCaptureCmd() =>
         new(DrawCommandKind.EndEffectCapture, null, null, null,
             0, 0, 0, 0, 0, 0, 0, 0);
+
+    /// <summary>
+    /// SuperEllipse shape-type state for the subsequent rounded-rectangle
+    /// draw(s). <c>V0</c> = type (0 = rounded rect, 1 = SuperEllipse),
+    /// <c>V1</c> = Lamé exponent. Replayed verbatim so a cached/whole-frame
+    /// Border reproduces its squircle in draw order instead of falling back to
+    /// an out-of-order geometry fill.
+    /// </summary>
+    public static DrawCommand SetShapeTypeCmd(int type, float exponent) =>
+        new(DrawCommandKind.SetShapeType, null, null, null,
+            type, exponent, 0, 0, 0, 0, 0, 0);
 
     /// <summary>
     /// <c>A</c> = the <see cref="IEffect"/>; V0-V7 carry x,y,w,h,captureOriginX,

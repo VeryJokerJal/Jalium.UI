@@ -250,6 +250,31 @@ public:
         return JALIUM_ERROR_NOT_SUPPORTED;
     }
 
+    /// Off-thread animation probe (Increment 1 hard gate). Creates a child
+    /// composition visual with solid-color content and an autonomous offset
+    /// animation that DWM drives at vblank with no app-side present. Only the
+    /// composition (DComp) D3D12 backend implements this; everything else falls
+    /// back here and the managed layer keeps the per-frame present path.
+    virtual JaliumResult CreateAnimProbe(
+        int32_t x, int32_t y, int32_t width, int32_t height,
+        float travelPx, float periodSec, uint32_t colorArgb, int32_t vertical,
+        void** visualOut)
+    {
+        (void)x; (void)y; (void)width; (void)height;
+        (void)travelPx; (void)periodSec; (void)colorArgb; (void)vertical;
+        if (visualOut) {
+            *visualOut = nullptr;
+        }
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+
+    /// Destroys a probe visual previously created by CreateAnimProbe.
+    virtual JaliumResult DestroyAnimProbe(void* visual)
+    {
+        (void)visual;
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+
     /// Resizes the render target.
     virtual JaliumResult Resize(int32_t width, int32_t height) = 0;
 
@@ -445,6 +470,15 @@ public:
     /// Sets whether VSync is enabled.
     /// When disabled, Present returns immediately for faster frame updates during resize.
     virtual void SetVSyncEnabled(bool enabled) = 0;
+
+    /// Hands ownership of present pacing to the caller ("external pacing").
+    /// When enabled, BeginDraw must not block on the swap-chain frame-latency
+    /// waitable (the caller consumes its signals — e.g. via a thread-pool wait
+    /// callback — and only schedules a frame once a present credit is
+    /// available), and Present must not block on vsync (sync interval 0); the
+    /// waitable alone provides the frame cadence. Backends without a
+    /// frame-latency waitable ignore this and keep their internal pacing.
+    virtual void SetExternalPresentPacing(bool /*enabled*/) {}
 
     /// Sets the path stencil-then-cover MSAA sample count (1/2/4/8). Applied at
     /// the next frame boundary. Backends without an MSAA path renderer ignore it.
@@ -839,6 +873,82 @@ public:
     /// Default implementation returns JALIUM_OK with no work done so backends that
     /// have nothing to reclaim do not need to override.
     virtual JaliumResult ReclaimIdleResources() { return JALIUM_OK; }
+
+    // ========================================================================
+    // TEST-ONLY device-removal injection (GPU-switch hardening verification)
+    // ========================================================================
+    // Appended at the END of the vtable on purpose: inserting virtuals in the
+    // middle shifts every later slot, so a backend DLL built against an older
+    // header would mis-dispatch across the C-ABI boundary. Keep new test hooks
+    // here, and rebuild ALL backends (d3d12/vulkan/software/metal) when adding
+    // any RenderTarget virtual.
+
+    /// Forcibly removes this target's GPU device using the backend's official
+    /// debug trigger (D3D12: ID3D12Device5::RemoveDevice), so the device-lost
+    /// hardening (mid-frame DEVICE_REMOVED latch, retained-layer cross-
+    /// generation guards, managed recovery chain) can be exercised by an
+    /// automated harness instead of a physical GPU switch. The C ABI gates this
+    /// behind the JALIUM_DEBUG_DEVICE_REMOVE environment variable; backends
+    /// without a debug removal mechanism return false.
+    virtual bool DebugRemoveDevice() { return false; }
+
+    /// Snapshots the process-wide retained-layer destroy counters — how many
+    /// layers were orphaned (creating device removed; fence graveyard bypassed)
+    /// vs. retired through a fence-gated graveyard. The branch choice is
+    /// otherwise unobservable from managed code. Returns false when the backend
+    /// does not track these counters.
+    virtual bool DebugGetRetainedDestroyCounts(uint64_t* orphaned, uint64_t* graveyard)
+    {
+        (void)orphaned; (void)graveyard;
+        return false;
+    }
+
+    /// The GPU device pointer backing this target, so a multi-window harness can
+    /// assert two windows really landed on DIFFERENT devices after a staggered
+    /// recovery (the precondition for the cross-device orphan-vs-graveyard
+    /// discrimination to mean anything). 0 when unavailable.
+    virtual uint64_t DebugDevicePointer() { return 0; }
+
+    /// True while an offscreen effect capture is open, so the capture harness can
+    /// confirm the device was removed INSIDE a live capture scope (the behavior
+    /// it claims to verify) rather than merely while an effect was on screen.
+    virtual bool DebugInOffscreenCapture() { return false; }
+
+    /// TEST-ONLY (#921 regression self-check). Stages the "same-thread leaked-open
+    /// command list" race and then resizes, so the same-thread branch of the
+    /// backend's resize guard — which must Close the leaked command list BEFORE
+    /// the back buffers it still references are freed — is exercised on a real
+    /// device. The backend opens its command list exactly as a normal frame does
+    /// but WITHOUT marking the target as drawing (the BeginFrame open-gap: the
+    /// command list is recording while the draw flag still reads false), then
+    /// performs a same-thread resize to (width,height). Writes 1 to *outListClosed
+    /// when the command list was Closed afterwards (the #921 fix held) and 0 when
+    /// it was left open (the OBJECT_DELETED_WHILE_STILL_IN_USE regression).
+    /// Returns the resize JaliumResult code (0 == JALIUM_OK) on success, or a
+    /// negative value when the scenario could not be staged. Backends without this
+    /// debug capability return -1.
+    virtual int32_t DebugForceLeakedCommandListResize(int32_t width, int32_t height, int32_t* outListClosed)
+    {
+        (void)width; (void)height;
+        if (outListClosed) *outListClosed = 0;
+        return -1;
+    }
+
+    /// TEST-ONLY (#921 Vello-output regression self-check). Drives the D3D12 Vello
+    /// 'JaliumVelloOutput' orphan sequence in-process: dispatches a Vello path into
+    /// an output texture, composites it into the bitmap keep-alive list, calls
+    /// ForceNewOutputTexture() to drop Vello's own reference, then runs the mid-frame
+    /// FlushGraphicsForCompute() that clears that keep-alive — all while the command
+    /// list is open. Writes 1 to *outAlive when the texture survived (the fix parked
+    /// it on the fence-gated retire list) and 0 when it was freed while still
+    /// referenced (the OBJECT_DELETED_WHILE_STILL_IN_USE regression). Returns 0
+    /// (JALIUM_OK) when staged, or a negative value when it could not be staged.
+    /// Backends without this debug capability return -1.
+    virtual int32_t DebugForceVelloOutputOrphan(int32_t* outAlive)
+    {
+        if (outAlive) *outAlive = 0;
+        return -1;
+    }
 
 protected:
     int32_t width_ = 0;

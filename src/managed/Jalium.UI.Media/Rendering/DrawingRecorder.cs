@@ -53,6 +53,7 @@ internal sealed class DrawingRecorder : DrawingContext,
     // Used by the render-thread path (record on UI thread, replay on render thread).
     private bool _wholeFrame;
     private Point _recordedOffset;
+    private (bool recording, bool unrecordable) _wholeFrameSavedScope;
 
     /// <summary>
     /// Prepares the recorder for a fresh recording scope. Clears any
@@ -84,6 +85,10 @@ internal sealed class DrawingRecorder : DrawingContext,
         _clipBoundsProxy = null;
         _wholeFrame = true;
         _recordedOffset = default;
+        // Enter the whole-frame recordability scope so call sites that hit
+        // un-representable content (via a failed `is RenderTargetDrawingContext`
+        // cast) can flag this frame for direct-render fallback.
+        _wholeFrameSavedScope = DrawingContext.BeginWholeFrameRecordingScope();
     }
 
     /// <summary>
@@ -93,13 +98,22 @@ internal sealed class DrawingRecorder : DrawingContext,
     /// </summary>
     public Drawing Commit()
     {
+        // Close the whole-frame recordability scope (no-op for per-visual mode)
+        // and learn whether any un-recordable content was seen this frame.
+        bool fullyRecordable = !(_wholeFrame
+            && DrawingContext.EndWholeFrameRecordingScope(_wholeFrameSavedScope));
+
         if (_commands.Count == 0)
         {
             _offsetProxy = null;
             _clipBoundsProxy = null;
             _bounds.Reset();
             _wholeFrame = false;
-            return Drawing.Empty;
+            // An empty-but-unrecordable capture must still force a fallback, so
+            // don't return the shared (fully-recordable) Empty in that case.
+            return fullyRecordable
+                ? Drawing.Empty
+                : new Drawing(System.Array.Empty<DrawCommand>(), 0, null, fullyRecordable: false);
         }
 
         var arr = _commands.ToArray();
@@ -114,7 +128,7 @@ internal sealed class DrawingRecorder : DrawingContext,
         _clipBoundsProxy = null;
         _wholeFrame = false;
 
-        return new Drawing(arr, arr.Length, drawingBounds);
+        return new Drawing(arr, arr.Length, drawingBounds, fullyRecordable);
     }
 
     /// <summary>
@@ -123,6 +137,8 @@ internal sealed class DrawingRecorder : DrawingContext,
     /// </summary>
     public void Reset()
     {
+        // Close the whole-frame scope if we were abandoned mid-capture.
+        if (_wholeFrame) DrawingContext.EndWholeFrameRecordingScope(_wholeFrameSavedScope);
         _commands.Clear();
         _bounds.Reset();
         _offsetProxy = null;
@@ -155,6 +171,18 @@ internal sealed class DrawingRecorder : DrawingContext,
     Rect? IClipBoundsDrawingContext.CurrentClipBounds =>
         _wholeFrame ? null : _clipBoundsProxy?.CurrentClipBounds;
 
+    // ── Whole-frame freeze-clone (increment 3) ──────────────────────────
+    // On the whole-frame (render-thread) path, mutable live payloads (gradient/
+    // image brushes, transforms, video bitmaps) are snapshotted at record time
+    // so a later UI-thread mutation can't corrupt an in-flight replay on the
+    // render thread. Immutable / pooled inputs (SolidColorBrush, simple Pen,
+    // FormattedText) are already value-snapshotted by DrawingObjectPool and pass
+    // through untouched. No-op on the default per-visual path (zero added cost).
+    private Brush? SnapBrush(Brush? b) => _wholeFrame ? DrawInputSnapshotter.SnapshotBrush(b) : b;
+    private Pen? SnapPen(Pen? p) => _wholeFrame ? DrawInputSnapshotter.SnapshotPen(p) : p;
+    private Transform SnapTransform(Transform t) => _wholeFrame ? DrawInputSnapshotter.SnapshotTransform(t) : t;
+    private ImageSource SnapImage(ImageSource i) => _wholeFrame ? DrawInputSnapshotter.SnapshotImage(i) : i;
+
     // ── Draw calls ──────────────────────────────────────────────────────
     //
     // Each Draw* method canonicalises its Brush / Pen / FormattedText
@@ -164,7 +192,7 @@ internal sealed class DrawingRecorder : DrawingContext,
 
     public override void DrawLine(Pen pen, Point point0, Point point1)
     {
-        var canonicalPen = DrawingObjectPool.CanonicalizePen(pen)!;
+        var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen)!)!;
         _commands.Add(DrawCommand.Line(canonicalPen, point0, point1));
 
         var minX = Math.Min(point0.X, point1.X);
@@ -178,16 +206,16 @@ internal sealed class DrawingRecorder : DrawingContext,
 
     public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle)
     {
-        var canonicalBrush = DrawingObjectPool.CanonicalizeBrush(brush);
-        var canonicalPen = DrawingObjectPool.CanonicalizePen(pen);
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush));
+        var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         _commands.Add(DrawCommand.Rectangle(canonicalBrush, canonicalPen, rectangle));
         _bounds.AccumulateRect(rectangle, StrokeSlop(canonicalPen));
     }
 
     public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, double radiusX, double radiusY)
     {
-        var canonicalBrush = DrawingObjectPool.CanonicalizeBrush(brush);
-        var canonicalPen = DrawingObjectPool.CanonicalizePen(pen);
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush));
+        var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         _commands.Add(DrawCommand.RoundedRectangle(canonicalBrush, canonicalPen, rectangle, radiusX, radiusY));
         _bounds.AccumulateRect(rectangle, StrokeSlop(canonicalPen));
     }
@@ -198,8 +226,8 @@ internal sealed class DrawingRecorder : DrawingContext,
         // DrawGeometry and loses the "this was originally a rounded rect
         // with a CornerRadius" intent. Record the high-level call verbatim
         // so replay re-dispatches to the target context's own fast paths.
-        var canonicalBrush = DrawingObjectPool.CanonicalizeBrush(brush);
-        var canonicalPen = DrawingObjectPool.CanonicalizePen(pen);
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush));
+        var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         _commands.Add(DrawCommand.RoundedRectangleCorner(canonicalBrush, canonicalPen, rectangle, cornerRadius));
         _bounds.AccumulateRect(rectangle, StrokeSlop(canonicalPen));
     }
@@ -207,16 +235,16 @@ internal sealed class DrawingRecorder : DrawingContext,
     public override void DrawContentBorder(Brush? fillBrush, Pen? strokePen, Rect rectangle,
         double bottomLeftRadius, double bottomRightRadius)
     {
-        var canonicalFill = DrawingObjectPool.CanonicalizeBrush(fillBrush);
-        var canonicalStroke = DrawingObjectPool.CanonicalizePen(strokePen);
+        var canonicalFill = SnapBrush(DrawingObjectPool.CanonicalizeBrush(fillBrush));
+        var canonicalStroke = SnapPen(DrawingObjectPool.CanonicalizePen(strokePen));
         _commands.Add(DrawCommand.ContentBorder(canonicalFill, canonicalStroke, rectangle, bottomLeftRadius, bottomRightRadius));
         _bounds.AccumulateRect(rectangle, StrokeSlop(canonicalStroke));
     }
 
     public override void DrawEllipse(Brush? brush, Pen? pen, Point center, double radiusX, double radiusY)
     {
-        var canonicalBrush = DrawingObjectPool.CanonicalizeBrush(brush);
-        var canonicalPen = DrawingObjectPool.CanonicalizePen(pen);
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush));
+        var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         _commands.Add(DrawCommand.Ellipse(canonicalBrush, canonicalPen, center, radiusX, radiusY));
         var rect = new Rect(center.X - radiusX, center.Y - radiusY, 2 * radiusX, 2 * radiusY);
         _bounds.AccumulateRect(rect, StrokeSlop(canonicalPen));
@@ -232,7 +260,7 @@ internal sealed class DrawingRecorder : DrawingContext,
         // Materialise the span so the command can live past the caller's
         // stack frame. Canonicalise the brush so replay hits the native
         // brush cache; the array is owned outright by the recorded command.
-        var canonicalBrush = DrawingObjectPool.CanonicalizeBrush(brush)!;
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush)!)!;
         var snapshot = centers.ToArray();
         _commands.Add(DrawCommand.Points(canonicalBrush, snapshot, radius));
 
@@ -255,7 +283,7 @@ internal sealed class DrawingRecorder : DrawingContext,
             return;
         }
 
-        var canonicalPen = DrawingObjectPool.CanonicalizePen(pen)!;
+        var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen)!)!;
         var snapshot = endpoints.ToArray();
         _commands.Add(DrawCommand.Lines(canonicalPen, snapshot));
 
@@ -279,6 +307,13 @@ internal sealed class DrawingRecorder : DrawingContext,
     public override void DrawText(FormattedText formattedText, Point origin)
     {
         var canonical = DrawingObjectPool.CanonicalizeFormattedText(formattedText);
+        // A gradient/image text foreground is shared by-reference (the pool only
+        // canonicalizes a solid foreground); on the whole-frame path a later UI
+        // mutation would race the render-thread replay. Rare enough (most text is
+        // solid-colored) to fall back to direct render rather than snapshot the
+        // whole FormattedText.
+        if (_wholeFrame && canonical.Foreground is not (null or SolidColorBrush))
+            DrawingContext.MarkCurrentFrameUnrecordable();
         _commands.Add(DrawCommand.Text(canonical, origin));
 
         // Text layout bounds aren't known until DirectWrite lays out the
@@ -302,27 +337,41 @@ internal sealed class DrawingRecorder : DrawingContext,
 
     public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
     {
-        var canonicalBrush = DrawingObjectPool.CanonicalizeBrush(brush);
-        var canonicalPen = DrawingObjectPool.CanonicalizePen(pen);
+        var canonicalBrush = SnapBrush(DrawingObjectPool.CanonicalizeBrush(brush));
+        var canonicalPen = SnapPen(DrawingObjectPool.CanonicalizePen(pen));
         _commands.Add(DrawCommand.GeometryCmd(canonicalBrush, canonicalPen, geometry));
         _bounds.AccumulateRect(geometry.Bounds, StrokeSlop(canonicalPen));
+    }
+
+    public override void SetShapeType(int type, float exponent)
+    {
+        // Record the shape-type state so a replay reproduces the SuperEllipse
+        // intent in draw order (Border sets it before its rounded-rect fill,
+        // then resets to 0). No bounds contribution — it draws nothing.
+        _commands.Add(DrawCommand.SetShapeTypeCmd(type, exponent));
     }
 
 
     public override void DrawImage(ImageSource imageSource, Rect rectangle)
     {
-        _commands.Add(DrawCommand.Image(imageSource, rectangle, BitmapScalingMode.Unspecified));
+        _commands.Add(DrawCommand.Image(SnapImage(imageSource), rectangle, BitmapScalingMode.Unspecified));
         _bounds.AccumulateRect(rectangle);
     }
 
     public override void DrawImage(ImageSource imageSource, Rect rectangle, BitmapScalingMode scalingMode)
     {
-        _commands.Add(DrawCommand.Image(imageSource, rectangle, scalingMode));
+        _commands.Add(DrawCommand.Image(SnapImage(imageSource), rectangle, scalingMode));
         _bounds.AccumulateRect(rectangle);
     }
 
     public override void DrawBackdropEffect(Rect rectangle, IBackdropEffect effect, CornerRadius cornerRadius)
     {
+        // KNOWN LIMITATION (render-thread path): IBackdropEffect / IEffect (here and in
+        // PushEffect/ApplyElementEffect) are recorded BY REFERENCE — they have no generic
+        // value-clone. A static effect replays correctly; an ANIMATED effect (e.g. a blur-
+        // radius tween) read on the render thread while the UI thread mutates it can show a
+        // 1-frame torn value. Not a crash/freeze. Per-effect-type snapshotting is a follow-up;
+        // until then animated effects are best used with JALIUM_RENDER_THREAD off.
         _commands.Add(DrawCommand.BackdropEffect(effect, rectangle, cornerRadius));
         _bounds.AccumulateRect(rectangle);
     }
@@ -365,7 +414,7 @@ internal sealed class DrawingRecorder : DrawingContext,
 
     public override void PushTransform(Transform transform)
     {
-        _commands.Add(DrawCommand.PushTransformCmd(transform));
+        _commands.Add(DrawCommand.PushTransformCmd(SnapTransform(transform)));
         _bounds.PushTransform(transform);
     }
 

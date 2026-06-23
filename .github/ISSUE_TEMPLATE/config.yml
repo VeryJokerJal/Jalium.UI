@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions & Discussions
+    url: https://github.com/VeryJokerJal/Jalium.UI/discussions
+    about: Ask how-to questions, share ideas, or get help building apps with Jalium.UI. Please keep general questions out of the issue tracker.
+  - name: 📖 Documentation (DeepWiki)
+    url: https://deepwiki.com/VeryJokerJal/Jalium.UI
+    about: Browse the architecture and API documentation before filing an issue.
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/VeryJokerJal/Jalium.UI/security/advisories/new
+    about: Disclose security issues privately through GitHub Security Advisories — never in a public issue.

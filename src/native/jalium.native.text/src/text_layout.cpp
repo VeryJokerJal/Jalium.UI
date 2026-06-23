@@ -95,6 +95,11 @@ FreeTypeTextFormat::~FreeTypeTextFormat()
         FT_Done_Face(face_);
         face_ = nullptr;
     }
+    if (fallbackFace_)
+    {
+        FT_Done_Face(fallbackFace_);
+        fallbackFace_ = nullptr;
+    }
 }
 
 void FreeTypeTextFormat::SetAlignment(int32_t alignment) { alignment_ = alignment; }
@@ -108,6 +113,140 @@ void FreeTypeTextFormat::SetLineSpacing(int32_t method, float spacing, float bas
     lineSpacingMethod_ = method;
     lineSpacing_ = spacing;
     lineSpacingBaseline_ = baseline;
+}
+
+// ============================================================================
+// Glyph-level font fallback (e.g. CJK)
+// ============================================================================
+
+// Decode the Unicode codepoint starting at wchar_t index i. wchar_t is 4 bytes
+// (UTF-32) on Android/Linux — the only platforms that build this FreeType path —
+// and 2 bytes (UTF-16 + surrogate pairs) on Windows. The shaper fed HarfBuzz via
+// the same sizeof(wchar_t) switch, so clusters index the same units this walks.
+// outUnits = wchar_t consumed (1, or 2 for a UTF-16 surrogate pair).
+static uint32_t DecodeCodepoint(
+    const wchar_t* text, uint32_t textLength, uint32_t i, uint32_t& outUnits)
+{
+    outUnits = 1;
+    if (!text || i >= textLength) return 0;
+    if constexpr (sizeof(wchar_t) == 4)
+    {
+        return static_cast<uint32_t>(text[i]);
+    }
+    else
+    {
+        uint16_t ch = static_cast<uint16_t>(text[i]);
+        if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < textLength)
+        {
+            uint16_t lo = static_cast<uint16_t>(text[i + 1]);
+            if (lo >= 0xDC00 && lo <= 0xDFFF)
+            {
+                outUnits = 2;
+                return 0x10000u + ((static_cast<uint32_t>(ch) - 0xD800u) << 10)
+                                + (static_cast<uint32_t>(lo) - 0xDC00u);
+            }
+        }
+        return ch;
+    }
+}
+
+void FreeTypeTextFormat::EnsureFallbackFace()
+{
+    if (fallbackAttempted_) return;
+    fallbackAttempted_ = true;
+
+    if (!engine_ || !engine_->GetFontProvider()) return;
+    const wchar_t* fb = engine_->GetFontProvider()->GetFallbackFontFamily();
+    if (!fb || fontFamily_ == fb) return; // no fallback, or primary already is it
+
+    fallbackFace_ = engine_->GetFontProvider()->CreateFace(
+        engine_->GetFTLibrary(), fb, fontWeight_, fontStyle_);
+    if (fallbackFace_)
+        fallbackFontId_ = ComputeFontId(fb, fontWeight_, fontStyle_);
+}
+
+FT_Face FreeTypeTextFormat::ChooseFaceForCodepoint(uint32_t cp, uint64_t& outFontId) const
+{
+    if (face_ && cp != 0 && FT_Get_Char_Index(face_, cp) != 0)
+    {
+        outFontId = fontId_;
+        return face_;
+    }
+    if (fallbackFace_ && cp != 0 && FT_Get_Char_Index(fallbackFace_, cp) != 0)
+    {
+        outFontId = fallbackFontId_;
+        return fallbackFace_;
+    }
+    outFontId = fontId_;
+    return face_; // renders .notdef; GenerateGlyphQuads skips glyph index 0
+}
+
+ShapedRun FreeTypeTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t textLength)
+{
+    if (!face_ || !text || textLength == 0)
+        return shaper_.Shape(face_, fontId_, text, textLength, fontSizePx_);
+
+    // Does the primary face cover every (non-control) codepoint? If so, shape
+    // the whole string in one pass — byte-for-byte the pre-fallback behaviour —
+    // and never load the (large) CJK fallback face for Latin-only text.
+    bool needsFallback = false;
+    for (uint32_t i = 0; i < textLength; )
+    {
+        uint32_t units = 0;
+        uint32_t cp = DecodeCodepoint(text, textLength, i, units);
+        i += (units ? units : 1);
+        if (cp >= 0x20 && FT_Get_Char_Index(face_, cp) == 0)
+        {
+            needsFallback = true;
+            break;
+        }
+    }
+
+    if (!needsFallback)
+        return shaper_.Shape(face_, fontId_, text, textLength, fontSizePx_);
+
+    EnsureFallbackFace();
+    if (!fallbackFace_) // platform has no fallback font installed
+        return shaper_.Shape(face_, fontId_, text, textLength, fontSizePx_);
+
+    // Split into maximal runs that share a face, shape each with its own face
+    // (so advances/metrics are correct), concatenate with absolute clusters.
+    ShapedRun combined{};
+    combined.face = face_;
+    combined.fontId = fontId_;
+    combined.fontSize = fontSizePx_;
+    combined.isRtl = false;
+
+    uint32_t i = 0;
+    while (i < textLength)
+    {
+        uint32_t units = 0;
+        uint32_t cp = DecodeCodepoint(text, textLength, i, units);
+        if (units == 0) units = 1;
+        uint64_t runFontId = fontId_;
+        FT_Face runFace = ChooseFaceForCodepoint(cp, runFontId);
+
+        uint32_t runStart = i;
+        i += units;
+        while (i < textLength)
+        {
+            uint32_t u2 = 0;
+            uint32_t cp2 = DecodeCodepoint(text, textLength, i, u2);
+            if (u2 == 0) u2 = 1;
+            uint64_t id2 = fontId_;
+            if (ChooseFaceForCodepoint(cp2, id2) != runFace) break;
+            i += u2;
+        }
+
+        ShapedRun part = shaper_.Shape(
+            runFace, runFontId, text + runStart, i - runStart, fontSizePx_);
+        for (auto& g : part.glyphs)
+        {
+            g.cluster += runStart; // run-relative -> absolute into full text
+            combined.glyphs.push_back(g);
+        }
+    }
+    return combined;
 }
 
 // ============================================================================
@@ -127,8 +266,9 @@ FreeTypeTextFormat::LayoutResult FreeTypeTextFormat::PerformLayout(
         return layout;
     }
 
-    // Shape the entire text
-    ShapedRun run = shaper_.Shape(face_, fontId_, text, textLength, fontSizePx_);
+    // Shape the entire text, splitting into per-face runs so codepoints the
+    // primary face lacks (e.g. CJK) are shaped + measured with a fallback face.
+    ShapedRun run = ShapeWithFallback(text, textLength);
 
     // Effective line height
     float effectiveLineHeight = lineHeight_;
@@ -641,16 +781,25 @@ void FreeTypeTextFormat::GenerateGlyphQuads(
                 continue;
             }
 
-            // Sub-pixel quantization
+            // Sub-pixel quantization to 1/8 pixel (8 buckets). At 1/4 pixel the
+            // size-invariant 0.25px residual is a visible fraction of a small-font
+            // advance and reads as phantom inter-glyph spacing; 1/8 pixel halves it.
             float fractionalX = penX - std::floor(penX);
-            uint8_t subpixelX = static_cast<uint8_t>(fractionalX * 4.0f);
-            if (subpixelX > 3) subpixelX = 3;
+            uint8_t subpixelX = static_cast<uint8_t>(fractionalX * 8.0f);
+            if (subpixelX > 7) subpixelX = 7;
 
-            // Get or rasterize glyph in atlas
+            // Get or rasterize glyph in atlas. The glyph carries the face/font
+            // it was shaped with (primary, or a CJK/Unicode fallback selected in
+            // ShapeWithFallback), so rasterize from THAT face — not always face_.
+            FT_Face  glyphFace   = glyph.face ? glyph.face : face_;
+            uint64_t glyphFontId = glyph.face ? glyph.fontId : fontId_;
             const auto& entry = atlas->GetOrInsert(
-                *rasterizer, face_, fontId_,
+                *rasterizer, glyphFace, glyphFontId,
                 static_cast<uint16_t>(glyph.glyphIndex),
-                static_cast<uint16_t>(fontSizePx_),
+                // Round (not truncate) the raster em: HarfBuzz advances are
+                // fractional, so a truncated raster size desyncs glyph ink width
+                // from the advance and skews spacing at fractional (high-DPI/scaled) sizes.
+                static_cast<uint16_t>(std::lround(fontSizePx_)),
                 subpixelX);
 
             if (entry.valid && entry.w > 0 && entry.h > 0)

@@ -896,6 +896,14 @@ public partial class WebView : FrameworkElement, IDisposable
     {
         base.OnRender(drawingContext);
 
+        // Whole-frame capture (JALIUM_RENDER_THREAD) reaches this OnRender with a
+        // recorder, not the live RenderTargetDrawingContext, so the windowless
+        // transparent punch below would be silently dropped — leaving the WebView
+        // opaque. Flag the frame as not-fully-recordable so the render loop
+        // discards the capture and direct-renders it. No-op on the default path.
+        if (_isWindowlessComposition && drawingContext is not Interop.RenderTargetDrawingContext)
+            DrawingContext.MarkCurrentFrameUnrecordable();
+
         if (_isWindowlessComposition && drawingContext is Interop.RenderTargetDrawingContext renderTargetDrawingContext)
         {
             var punchRect = new Rect(0, 0, ActualWidth, ActualHeight);

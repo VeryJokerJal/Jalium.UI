@@ -802,8 +802,12 @@ public:
     uint32_t GetOutputH() const { return viewportH_; }
 
     /// Force next Dispatch to create a new output texture (for z-group splitting).
-    /// The old texture stays alive via ComPtr in BitmapBatchTexture.
-    void ForceNewOutputTexture() { outputTexture_.Reset(); outputW_ = 0; outputH_ = 0; }
+    /// Parks the current texture on the fence-gated retirement list rather than
+    /// just leaning on the BitmapBatchTexture ComPtr: that keep-alive is dropped
+    /// by a later mid-frame FlushGraphicsForCompute (bitmapTextures_.clear())
+    /// BEFORE the commandList is Closed, which used to delete 'JaliumVelloOutput'
+    /// while the open list still referenced it → D3D12 #921. See RetireOutputTexture.
+    void ForceNewOutputTexture() { RetireOutputTexture(); }
 
     /// Returns true if any paths were encoded this frame.
     bool HasWork() const { return !pathInfos_.empty(); }
@@ -842,6 +846,22 @@ private:
     bool CreateRootSignature();
     bool EnsureBuffers();
     bool EnsureOutputTexture(uint32_t w, uint32_t h);
+
+    /// Park the current output texture on the fence-gated retirement list
+    /// (pendingRetiredResources_, drained by DrainRetired at the end of
+    /// FlushVelloPaths) and reset the size cache so the next EnsureOutputTexture
+    /// allocates fresh. EVERY replacement of outputTexture_ funnels through here
+    /// so no path can free the live texture while the open commandList still
+    /// references it via barrier / UAV / SRV (#921 OBJECT_DELETED_WHILE_STILL_IN_USE).
+    /// Mirrors the retire-on-grow contract EnsureBuffers uses for every other
+    /// Vello GPU resource. (pendingRetiredResources_ is declared later in this
+    /// class; an in-class member-function body may reference it — name lookup
+    /// happens after the complete class is seen.)
+    void RetireOutputTexture() {
+        if (outputTexture_) pendingRetiredResources_.push_back(std::move(outputTexture_));
+        outputW_ = 0;
+        outputH_ = 0;
+    }
 
     ID3D12Device* device_;
     bool initialized_ = false;

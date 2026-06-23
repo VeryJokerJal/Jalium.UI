@@ -1,6 +1,7 @@
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Shapes;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
@@ -150,6 +151,86 @@ public class ToggleThemeTests
 
             Assert.Same(disabledBackground, track.Background);
             Assert.Same(disabledBorder, track.BorderBrush);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ToggleButton_Default_ShouldRegisterImplicitStyleAndInstantiateTemplate()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            // The implicit style must exist — its absence is exactly the bug that made a
+            // bare ToggleButton render invisible (no ControlTemplate at all).
+            var style = Assert.IsType<Style>(app.Resources[typeof(ToggleButton)]);
+            var controlBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackground"]);
+
+            var toggleButton = new ToggleButton { Content = "Toggle (off)" };
+            toggleButton.Style = style;
+            var host = new StackPanel { Width = 320, Height = 80 };
+            host.Children.Add(toggleButton);
+
+            host.Measure(new Size(320, 80));
+            host.Arrange(new Rect(0, 0, 320, 80));
+            toggleButton.ApplyTemplate();
+
+            // The template actually instantiated a RootBorder + ContentPresenter, i.e. the
+            // control now produces visible chrome instead of rendering empty.
+            var rootBorder = FindNamedDescendant<Border>(toggleButton, "RootBorder");
+            var contentPresenter = FindDescendant<ContentPresenter>(toggleButton);
+            Assert.NotNull(rootBorder);
+            Assert.NotNull(contentPresenter);
+
+            // Unchecked uses the neutral control background (like a Button), flowed through
+            // to the template root via TemplateBinding.
+            Assert.Same(controlBackground, toggleButton.Background);
+            Assert.Same(controlBackground, rootBorder!.Background);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ToggleButton_Checked_ShouldUseAccentFillAndTextOnAccent()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var checkedBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleCheckedBackground"]);
+            var checkedBorder = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleCheckedBorder"]);
+            var accentText = Assert.IsAssignableFrom<Brush>(app.Resources["TextOnAccent"]);
+
+            var toggleButton = new ToggleButton { Content = "Toggle (on)", IsChecked = true };
+            toggleButton.Style = Assert.IsType<Style>(app.Resources[typeof(ToggleButton)]);
+            var host = new StackPanel { Width = 320, Height = 80 };
+            host.Children.Add(toggleButton);
+
+            host.Measure(new Size(320, 80));
+            host.Arrange(new Rect(0, 0, 320, 80));
+            toggleButton.ApplyTemplate();
+
+            var rootBorder = FindNamedDescendant<Border>(toggleButton, "RootBorder");
+            Assert.NotNull(rootBorder);
+
+            // The checked trigger paints the accent fill + accent border and switches the
+            // foreground to the on-accent text brush (segmented-toggle look).
+            Assert.Same(checkedBackground, toggleButton.Background);
+            Assert.Same(checkedBorder, toggleButton.BorderBrush);
+            Assert.Same(accentText, toggleButton.Foreground);
+            Assert.Same(checkedBackground, rootBorder!.Background);
+            Assert.Same(checkedBorder, rootBorder.BorderBrush);
         }
         finally
         {

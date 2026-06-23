@@ -32,7 +32,9 @@ D3D12RenderTarget::D3D12RenderTarget(D3D12Backend* backend, void* hwnd, int32_t 
 }
 
 D3D12RenderTarget::~D3D12RenderTarget() {
-    if (isDrawing_ && directRenderer_) {
+    // Abort on the real list state too: a frame whose list leaked open (e.g. an
+    // EndDraw that unwound via SEH) must still be closed at teardown.
+    if (directRenderer_ && (isDrawing_ || directRenderer_->IsCommandListRecording())) {
         directRenderer_->AbortFrame();
         isDrawing_ = false;
     }
@@ -169,6 +171,7 @@ JaliumResult D3D12RenderTarget::QueryGpuStats(JaliumGpuStats* out) const {
     if (directRenderer_) {
         out->frameGpuWaitNs            = static_cast<int64_t>(directRenderer_->GetLastFrameGpuWaitNs());
         out->lastFramePresentToReadyNs = static_cast<int64_t>(directRenderer_->GetLastFramePresentToReadyNs());
+        out->presentBlockNs            = static_cast<int64_t>(directRenderer_->GetLastFramePresentBlockNs());
     }
     out->frameWaitableWaitNs = static_cast<int64_t>(lastFrameWaitableWaitNs_);
 
@@ -301,7 +304,23 @@ bool D3D12RenderTarget::CreateSwapChain() {
         JaliumAdapterInfo ai = {};
         isIntegratedAdapter_ = backend_ && backend_->GetAdapterInfo(&ai) == JALIUM_OK
                              && ai.adapterType == JALIUM_GPU_ADAPTER_TYPE_INTEGRATED;
+        // 默认 1（最低排队深度）。【撤回记录 2026-06-10】曾改默认=bufferCount(3)
+        // 当"令牌桶深度"：合成探针实验 hover 158→95ms，但真实应用 idle 攒满
+        // credit 后突发连发多帧，FLIP_SEQUENTIAL 按序展示在慢合成(9fps)下让
+        // 交互帧排队尾 +300ms——比单名额更糟。深桶只该在确证 DWM 走 discard
+        // 式消费的场景由 JALIUM_MAX_FRAME_LATENCY 显式开启（钳到
+        // [1, swapBufferCount_]）。
         maxFrameLatency_ = 1u;
+        {
+            wchar_t* val = nullptr; size_t len = 0;
+            if (_wdupenv_s(&val, &len, L"JALIUM_MAX_FRAME_LATENCY") == 0 && val && *val) {
+                uint32_t n = (uint32_t)_wtoi(val);
+                if (n < 1) n = 1;
+                if (n > swapBufferCount_) n = swapBufferCount_;
+                maxFrameLatency_ = n;
+            }
+            if (val) free(val);
+        }
         (void)bufferCountFromEnv;
     }
 
@@ -420,7 +439,8 @@ bool D3D12RenderTarget::CreateSwapChain() {
         if (SUCCEEDED(swapChain_.As(&swapChain2)) && swapChain2) {
             // Cap frame latency first so the waitable's initial signal
             // reflects the new cap rather than the DXGI default of 3.
-            // 1 = 独显最低延迟; 2 = 核显(UMA) 一帧余量（见 CreateSwapChain 顶部说明）。
+            // 核显独显一律 1（最低延迟）——核显放宽到 2 的旧方案已实测撤回，
+            // 见 CreateSwapChain 顶部说明。
             swapChain2->SetMaximumFrameLatency(maxFrameLatency_);
             HANDLE waitable = swapChain2->GetFrameLatencyWaitableObject();
             if (waitable) {
@@ -431,30 +451,6 @@ bool D3D12RenderTarget::CreateSwapChain() {
         }
     }
 
-    // Init diagnostics — record the ACTUAL swap-chain config that survived
-    // creation (the driver may strip ALLOW_TEARING / the waitable flag, or the
-    // creation may have fallen back to Flags=0), plus the iGPU pacing knobs and
-    // the SetMaximumFrameLatency round-trip. A degraded present init shows here.
-    {
-        DXGI_SWAP_CHAIN_DESC1 actual = {};
-        swapChain_->GetDesc1(&actual);
-        UINT getMaxLatency = 0;
-        ComPtr<IDXGISwapChain2> sc2;
-        if (SUCCEEDED(swapChain_.As(&sc2)) && sc2) sc2->GetMaximumFrameLatency(&getMaxLatency);
-        char buf[896];
-        sprintf_s(buf,
-            "[D3D12 init] swapchain OK. comp=%d %ux%u bufs=%u swapEffect=%d flags=0x%X "
-            "(tearingFlag=%d waitableFlag=%d) waitableHandle=%d setMaxLatency=%u getMaxLatency=%u | "
-            "iGPU=%d maxFrameLatency_=%u swapBufferCount_=%u tearingSupported=%d vsyncEnabled=%d\n",
-            isComposition_ ? 1 : 0, actual.Width, actual.Height, actual.BufferCount,
-            (int)actual.SwapEffect, actual.Flags,
-            (actual.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) ? 1 : 0,
-            (actual.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) ? 1 : 0,
-            frameLatencyWaitable_ ? 1 : 0, maxFrameLatency_, getMaxLatency,
-            isIntegratedAdapter_ ? 1 : 0, maxFrameLatency_, swapBufferCount_,
-            tearingSupported_ ? 1 : 0, vsyncEnabled_ ? 1 : 0);
-        JaliumD3D12InitLog(buf);
-    }
     return true;
 }
 
@@ -488,7 +484,32 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     if (width <= 0 || height <= 0) return JALIUM_ERROR_INVALID_ARGUMENT;
     if (width == width_ && height == height_) return JALIUM_OK;
 
-    if (isDrawing_) {
+    // The command list's REAL open state (cmdListRecording_), not isDrawing_/
+    // inFrame_, decides resize safety: BeginFrame opens the list before isDrawing_/
+    // inFrame_ are set, and EndFrame clears them before Close, so a resize can land
+    // while the list is open yet those flags read false — the #921
+    // OBJECT_DELETED_WHILE_STILL_IN_USE root cause (freeing a back buffer the still-
+    // open list references).
+    const bool listOpen = directRenderer_ && directRenderer_->IsCommandListRecording();
+    if (listOpen && directRenderer_->CommandListOwnerThread() != GetCurrentThreadId()) {
+        // Cross-thread: the render thread owns an open list. Closing it or freeing
+        // the resources it references from this (UI) thread is a data race. Refuse;
+        // the managed layer re-stashes and retries after the render thread is parked
+        // / between frames. (RequestRenderThreadIdle normally drains the render
+        // thread before Resize, so this is a belt-and-suspenders backstop.)
+        char buf[256];
+        sprintf_s(buf, "[JALIUM-921] Resize deferred (BUSY): command list open on another thread curTid=%lu listOwnerTid=%lu\n",
+            GetCurrentThreadId(), directRenderer_->CommandListOwnerThread());
+        OutputDebugStringA(buf);
+        return JALIUM_ERROR_BUSY;
+    }
+
+    // Same thread (or no open list): abort the in-flight / leaked frame so the open
+    // list is Closed BEFORE we free the back buffers it references. Keyed on
+    // listOpen OR isDrawing_ so a list left open with isDrawing_=0 (the BeginFrame
+    // open-gap, or a prior EndDraw whose SEH unwound past the native isDrawing_
+    // reset) is still aborted.
+    if (listOpen || isDrawing_) {
         if (directRenderer_) directRenderer_->AbortFrame();
         isDrawing_ = false;
     }
@@ -587,7 +608,15 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
     // hypothetical background "pacer" thread that also waits on this
     // HANDLE would race us for each signal and the loser would stall until
     // the next vsync timeout — see project memory v5 retrospective.
-    if (frameLatencyWaitable_) {
+    //
+    // External pacing: when the managed scheduler owns the waitable (it
+    // consumes signals via a thread-pool wait callback and only schedules a
+    // frame once a present credit arrived), waiting here would deadlock —
+    // the signal was already consumed. Skip the wait entirely; the caller
+    // IS the sole consumer now. Present below uses sync interval 0 in this
+    // mode so a mis-scheduled extra frame degrades to DXGI's own queueing
+    // rather than a 16 ms timeout spin.
+    if (frameLatencyWaitable_ && !externalPresentPacing_) {
         LARGE_INTEGER waitStart;
         QueryPerformanceCounter(&waitStart);
         DWORD waitResult = WaitForSingleObjectEx(frameLatencyWaitable_, 16, FALSE);
@@ -666,6 +695,24 @@ JaliumResult D3D12RenderTarget::EndDraw() {
     if (!isDrawing_) return JALIUM_ERROR_INVALID_STATE;
     if (!directRenderer_) { isDrawing_ = false; return JALIUM_ERROR_INVALID_STATE; }
 
+    // Device gate mirroring BeginDraw: a GPU switch (graphics-settings change,
+    // driver restart, adapter detach) removes the device MID-FRAME, after
+    // BeginDraw's check passed. Flushing/recording below would push commands
+    // into a torn-down user-mode driver — NVIDIA's nvwgf2umx AVs (uncatchable
+    // in .NET) instead of failing cleanly. Abort the recorded frame and report
+    // DEVICE_LOST so the managed recovery chain rebuilds the context. Skipping
+    // Present means no waitable signal; managed already returns the consumed
+    // present credit on every non-OK EndDraw result, so pacing stays balanced.
+    if (backend_) {
+        JaliumResult deviceStatus = backend_->CheckDeviceStatus();
+        if (deviceStatus != JALIUM_OK) {
+            directRenderer_->AbortFrame();
+            dirtyRects_.clear();
+            isDrawing_ = false;
+            return deviceStatus;
+        }
+    }
+
     // Flush the active path engine — only one runs at a time
     if (IsImpellerActive()) {
         FlushImpellerBatches();
@@ -673,7 +720,21 @@ JaliumResult D3D12RenderTarget::EndDraw() {
         directRenderer_->FlushVelloPaths();
     }
 
-    UINT syncInterval = vsyncEnabled_ ? 1 : 0;
+    // External pacing forces sync interval 0: the frame-latency waitable is
+    // the cadence source (its signal rate IS the compositor's consumption
+    // rate), so a vsync-aligned Present would only add a second blocking
+    // point. Under a slow compositor (occlusion throttling, remote/virtual
+    // displays — measured 460 ms DWM buffer retire on this class of setup)
+    // Present(1) stalls the calling thread for the whole retire interval;
+    // Present(0) returns immediately and the waitable absorbs the pacing.
+    bool effectiveVsync = vsyncEnabled_ && !externalPresentPacing_;
+    UINT syncInterval = effectiveVsync ? 1 : 0;
+    // ALLOW_TEARING stays strictly opt-in via vsync-off. External pacing must
+    // NOT widen it to vsync-ON users: windowed DWM composition ignores the
+    // flag, but in direct-scanout scenarios (fullscreen MPO promotion) it
+    // produces real tearing they never opted into. A windowed flip-model
+    // Present(0) without the flag still never blocks the calling thread under
+    // credit scheduling — with MFL=1 the queue is provably empty at submit.
     UINT presentFlags = (!vsyncEnabled_ && tearingSupported_ && !isComposition_)
         ? DXGI_PRESENT_ALLOW_TEARING : 0;
 
@@ -695,7 +756,11 @@ JaliumResult D3D12RenderTarget::EndDraw() {
             d3dDirtyRects.push_back(r);
         }
     }
-    JaliumResult endResult = directRenderer_->EndFrame(useDirty, d3dDirtyRects, syncInterval, presentFlags);
+    // Under external pacing a transient Present failure must come back as
+    // PRESENT_FAILED (never OK): the managed scheduler consumed a credit for
+    // this frame and only its unified non-OK EndDraw path returns it.
+    JaliumResult endResult = directRenderer_->EndFrame(useDirty, d3dDirtyRects, syncInterval, presentFlags,
+                                                       /*reportTransientPresentFailure=*/externalPresentPacing_);
 
     if (endResult == JALIUM_OK && isComposition_ && dcompDevice_) {
         HRESULT hr = dcompDevice_->Commit();
@@ -707,37 +772,6 @@ JaliumResult D3D12RenderTarget::EndDraw() {
     frameIndex_ = swapChain_->GetCurrentBackBufferIndex();
     isDrawing_ = false;
 
-    // Frame-timing diagnostics → JALIUM_INIT_LOG. Every 120 frames, log the avg
-    // frame interval (fps) and where the per-frame wall-clock goes (present→ready
-    // / waitable / fence). Lets us measure the iGPU present cost across configs
-    // (vsync / buffers / etc.) from the log file without the DevTools UI.
-    {
-        static LARGE_INTEGER s_last = {};
-        static uint64_t s_n = 0, s_intervalNs = 0, s_p2rNs = 0, s_waitNs = 0, s_fenceNs = 0, s_maxIntervalNs = 0;
-        LARGE_INTEGER now; QueryPerformanceCounter(&now);
-        LARGE_INTEGER freq; QueryPerformanceFrequency(&freq);
-        if (s_last.QuadPart != 0 && freq.QuadPart > 0) {
-            uint64_t intervalNs = (uint64_t)(((now.QuadPart - s_last.QuadPart) * 1000000000LL) / freq.QuadPart);
-            s_intervalNs += intervalNs;
-            if (intervalNs > s_maxIntervalNs) s_maxIntervalNs = intervalNs;
-            s_p2rNs += directRenderer_ ? (uint64_t)directRenderer_->GetLastFramePresentToReadyNs() : 0;
-            s_waitNs += lastFrameWaitableWaitNs_;
-            s_fenceNs += directRenderer_ ? (uint64_t)directRenderer_->GetLastFrameGpuWaitNs() : 0;
-            if (++s_n >= 40) {
-                double avgMs = (s_intervalNs / (double)s_n) / 1e6;
-                char buf[320];
-                sprintf_s(buf,
-                    "[D3D12 frametime] %llu frames: avgFrame=%.1fms (%.0ffps) maxFrame=%.1fms | "
-                    "avg present->ready=%.1fms waitable=%.1fms fence=%.1fms | vsync=%d iGPU=%d MFL=%u bufs=%u\n",
-                    (unsigned long long)s_n, avgMs, avgMs > 0 ? 1000.0 / avgMs : 0.0, s_maxIntervalNs / 1e6,
-                    (s_p2rNs / (double)s_n) / 1e6, (s_waitNs / (double)s_n) / 1e6, (s_fenceNs / (double)s_n) / 1e6,
-                    vsyncEnabled_ ? 1 : 0, isIntegratedAdapter_ ? 1 : 0, maxFrameLatency_, swapBufferCount_);
-                JaliumD3D12InitLog(buf);
-                s_n = 0; s_intervalNs = 0; s_p2rNs = 0; s_waitNs = 0; s_fenceNs = 0; s_maxIntervalNs = 0;
-            }
-        }
-        s_last = now;
-    }
     return endResult;
 }
 
@@ -800,6 +834,113 @@ bool D3D12RenderTarget::ExtractBrushColor(Brush* brush, float& r, float& g, floa
     auto* sb = static_cast<D3D12SolidBrush*>(brush);
     r = sb->r_; g = sb->g_; b = sb->b_; a = sb->a_;
     return true;
+}
+
+bool D3D12RenderTarget::BrushToEngineBrush(Brush* brush, float opacity,
+                                           EngineBrushData& bd,
+                                           std::vector<EngineBrushData::GradientStop>& stopStore) {
+    if (!brush) return false;
+    auto type = brush->GetType();
+    if (type == JALIUM_BRUSH_SOLID) {
+        auto* sb = static_cast<D3D12SolidBrush*>(brush);
+        bd.type = 0;
+        bd.r = sb->r_; bd.g = sb->g_; bd.b = sb->b_;
+        bd.a = sb->a_ * opacity;            // matches the existing inline solid path
+        return true;
+    }
+    if (type == JALIUM_BRUSH_LINEAR_GRADIENT) {
+        auto* lb = static_cast<D3D12LinearGradientBrush*>(brush);
+        if (lb->stops_.empty()) return false;
+        bd.type = 1;
+        bd.startX = lb->startX_; bd.startY = lb->startY_;
+        bd.endX   = lb->endX_;   bd.endY   = lb->endY_;
+        bd.spreadMethod = lb->spreadMethod_;
+        stopStore.clear();
+        stopStore.reserve(lb->stops_.size());
+        for (const auto& s : lb->stops_) {
+            // Straight (non-premultiplied) stop colors; opacity folded into the
+            // stop alpha — the gradient sampler ignores bd.a and premultiplies by
+            // the sampled alpha itself (EncodeGradientFillPath).
+            stopStore.push_back({ s.position, s.color.r, s.color.g, s.color.b, s.color.a * opacity });
+        }
+        bd.stops = stopStore.data();
+        bd.stopCount = (uint32_t)stopStore.size();
+        // Flat fallback (first stop) for the engine routes with no gradient
+        // sampler — strokes (EncodeStrokePathPixelCached) and polygon fills
+        // (EncodeFillPolygonScanline) paint a solid of bd.r/g/b/a.
+        bd.r = stopStore[0].r; bd.g = stopStore[0].g; bd.b = stopStore[0].b; bd.a = stopStore[0].a;
+        return true;
+    }
+    if (type == JALIUM_BRUSH_RADIAL_GRADIENT) {
+        auto* rb = static_cast<D3D12RadialGradientBrush*>(brush);
+        if (rb->stops_.empty()) return false;
+        bd.type = 2;
+        bd.centerX = rb->centerX_; bd.centerY = rb->centerY_;
+        bd.radiusX = rb->radiusX_; bd.radiusY = rb->radiusY_;
+        bd.originX = rb->originX_; bd.originY = rb->originY_;
+        bd.spreadMethod = rb->spreadMethod_;
+        stopStore.clear();
+        stopStore.reserve(rb->stops_.size());
+        for (const auto& s : rb->stops_) {
+            stopStore.push_back({ s.position, s.color.r, s.color.g, s.color.b, s.color.a * opacity });
+        }
+        bd.stops = stopStore.data();
+        bd.stopCount = (uint32_t)stopStore.size();
+        bd.r = stopStore[0].r; bd.g = stopStore[0].g; bd.b = stopStore[0].b; bd.a = stopStore[0].a;
+        return true;
+    }
+    return false;   // image / unsupported → caller falls back
+}
+
+bool D3D12RenderTarget::ExtractStrokeColor(Brush* brush, float& r, float& g, float& b, float& a) {
+    if (ExtractBrushColor(brush, r, g, b, a)) return true;   // solid fast path
+    if (!brush) return false;
+    auto type = brush->GetType();
+    if (type == JALIUM_BRUSH_LINEAR_GRADIENT) {
+        auto* lb = static_cast<D3D12LinearGradientBrush*>(brush);
+        if (lb->stops_.empty()) return false;
+        const auto& c = lb->stops_[0].color;   // representative solid (first stop)
+        r = c.r; g = c.g; b = c.b; a = c.a;
+        return true;
+    }
+    if (type == JALIUM_BRUSH_RADIAL_GRADIENT) {
+        auto* rb = static_cast<D3D12RadialGradientBrush*>(brush);
+        if (rb->stops_.empty()) return false;
+        const auto& c = rb->stops_[0].color;
+        r = c.r; g = c.g; b = c.b; a = c.a;
+        return true;
+    }
+    return false;   // image / unsupported
+}
+
+bool D3D12RenderTarget::TryStrokeGradientPath(Brush* brush, float strokeWidth,
+                                              float startX, float startY,
+                                              const std::vector<float>& cmds, bool closed,
+                                              int32_t lineJoin, float miterLimit, int32_t lineCap) {
+    if (!IsImpellerActive() || !brush || cmds.empty() || strokeWidth <= 0.0f) return false;
+    auto type = brush->GetType();
+    if (type != JALIUM_BRUSH_LINEAR_GRADIENT && type != JALIUM_BRUSH_RADIAL_GRADIENT) return false;
+    if (!EnsureImpellerEngine()) return false;
+
+    // The engine emit reads transform / scissor / opacity directly off
+    // DirectRenderer, so materialize any deferred Push* first (same as
+    // StrokePath / FillPolygon).
+    CommitDeferredState();
+
+    auto t = directRenderer_->GetCurrentTransform();
+    float dpiScale = directRenderer_->GetDpiScale();
+    float opacity = directRenderer_->GetOpacity();
+    EngineBrushData bd;
+    std::vector<EngineBrushData::GradientStop> stopStore;
+    if (!BrushToEngineBrush(brush, opacity, bd, stopStore)) return false;
+
+    EngineTransform et;
+    et.m11 = t.m11 * dpiScale; et.m12 = t.m12 * dpiScale;
+    et.m21 = t.m21 * dpiScale; et.m22 = t.m22 * dpiScale;
+    et.dx = t.dx * dpiScale; et.dy = t.dy * dpiScale;
+
+    return impellerEngine_->EncodeStrokePath(startX, startY, cmds.data(), (uint32_t)cmds.size(),
+        bd, strokeWidth, closed, lineJoin, miterLimit, lineCap, nullptr, 0, 0.0f, et);
 }
 
 // ============================================================================
@@ -867,6 +1008,12 @@ void D3D12RenderTarget::FlushVelloIfNeeded() {
     //   - Each Dispatch retires its per-frame upload buffers + configUpload
     //     so the next CPU write doesn't race the prior Dispatch's queued
     //     CopyBufferRegion / CBV reads.
+    //   - ForceNewOutputTexture / EnsureOutputTexture retire the previous
+    //     outputTexture_ onto pendingRetiredResources_ (via RetireOutputTexture)
+    //     instead of Reset()/overwrite. The BitmapBatchTexture ComPtr keep-alive
+    //     alone is NOT enough: the very next mid-frame FlushGraphicsForCompute
+    //     clears bitmapTextures_ before this commandList is Closed, which would
+    //     otherwise free the composited 'JaliumVelloOutput' mid-list (#921).
     //   - DrainRetired moves all those ComPtrs onto FrameResources's
     //     retiredInstanceBuffers / retiredDescriptorHeaps, whose lifetime is
     //     gated by this slot's fence.
@@ -891,9 +1038,18 @@ void D3D12RenderTarget::FlushImpellerBatches() {
     for (auto& batch : impellerEngine_->GetBatches()) {
         if (batch.indices.empty() || batch.vertices.empty()) continue;
 
-        // Apply per-batch scissor: temporarily push to DirectRenderer's scissor stack
-        // so AddTrianglesPreTransformed captures the correct clip region.
-        bool pushedScissor = false;
+        // Apply the batch's SNAPSHOTTED scissor: temporarily push to the
+        // DirectRenderer's scissor stack so AddTrianglesPreTransformed
+        // (candidate.hasScissor = !scissorStack_.empty(); scissor = top()) captures
+        // the clip this batch was RECORDED under — not whatever clip is live now.
+        // Both branches push so the snapshot is authoritative (mirrors the rounded
+        // clip forced-override below). The lazy flush fires while a LATER, clipped
+        // element is mid-draw, so the live stack top is that element's clip; a
+        // no-clip batch (batch.hasScissor == false) must NOT inherit it or it gets
+        // wrongly clipped away. Concrete failure this fixes: a status-bar stroke
+        // icon (no clip of its own) inherited the adjacent label's scissor and
+        // vanished whenever the flush was lazy — i.e. every animation frame.
+        bool pushedScissor = true;
         if (batch.hasScissor) {
             // Push raw pixel-space scissor rect directly
             // (DirectRenderer stores pixel-space rects in its scissor stack)
@@ -903,7 +1059,14 @@ void D3D12RenderTarget::FlushImpellerBatches() {
             sr.right = (LONG)batch.scissorR;
             sr.bottom = (LONG)batch.scissorB;
             directRenderer_->PushScissorRaw(sr);
-            pushedScissor = true;
+        } else {
+            // No recorded clip → draw unclipped (full viewport), exactly like a
+            // no-scissor DIRECT batch (DrawBatches' else-branch uses the full
+            // content extent). This overrides the stale live stack top.
+            D3D12_RECT full = { 0, 0,
+                (LONG)directRenderer_->GetViewportWidth(),
+                (LONG)directRenderer_->GetViewportHeight() };
+            directRenderer_->PushScissorRaw(full);
         }
 
         // Feed the batch's snapshotted rounded clip back as a forced override so
@@ -949,11 +1112,6 @@ void D3D12RenderTarget::FlushImpellerBatches() {
 void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
     FlushVelloIfNeeded();
-    if (directRenderer_->IsInOffscreenCapture()) {
-        char buf[256];
-        sprintf_s(buf, "[FillRect] OFFSCREEN CALL x=%.1f y=%.1f w=%.1f h=%.1f\n", x, y, w, h);
-        OutputDebugStringA(buf);
-    }
     SdfRectInstance inst = {};
     if (FillBrushToInstance(brush, inst)) {
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
@@ -965,8 +1123,20 @@ void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush*
 void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
     FlushVelloIfNeeded();
+    // Gradient outline → TRUE per-pixel gradient stroke via the engine (the SDF
+    // border below paints a solid color). Solids fall straight through.
+    if (IsImpellerActive() &&
+        (brush->GetType() == JALIUM_BRUSH_LINEAR_GRADIENT || brush->GetType() == JALIUM_BRUSH_RADIAL_GRADIENT)) {
+        std::vector<float> cmds = {
+            0.0f, x + w, y,
+            0.0f, x + w, y + h,
+            0.0f, x,     y + h,
+            5.0f
+        };
+        if (TryStrokeGradientPath(brush, strokeWidth, x, y, cmds, true, 0, 4.0f, 0)) return;
+    }
     float r, g, b, a;
-    if (ExtractBrushColor(brush, r, g, b, a)) {
+    if (ExtractStrokeColor(brush, r, g, b, a)) {
         SdfRectInstance inst = {};
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
@@ -979,20 +1149,8 @@ void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush*
 void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
     FlushVelloIfNeeded();
-    if (directRenderer_->IsInOffscreenCapture()) {
-        char buf[256];
-        sprintf_s(buf, "[FillRoundedRect] OFFSCREEN x=%.1f y=%.1f w=%.1f h=%.1f brushType=%d\n",
-            x, y, w, h, (int)brush->GetType());
-        OutputDebugStringA(buf);
-    }
     SdfRectInstance inst = {};
     bool brushOk = FillBrushToInstance(brush, inst);
-    if (directRenderer_->IsInOffscreenCapture()) {
-        char buf[128];
-        sprintf_s(buf, "[FillRoundedRect] brushOk=%d fillR=%.2f fillA=%.2f\n",
-            (int)brushOk, inst.fillR, inst.fillA);
-        OutputDebugStringA(buf);
-    }
     if (brushOk) {
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
         inst.cornerTL = rx; inst.cornerTR = rx; inst.cornerBR = rx; inst.cornerBL = rx;
@@ -1005,8 +1163,29 @@ void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h,
     if (!isDrawing_ || !brush || !directRenderer_) return;
     FlushVelloIfNeeded();
 
+    // Gradient outline → TRUE per-pixel gradient stroke via the engine.
+    if (IsImpellerActive() &&
+        (brush->GetType() == JALIUM_BRUSH_LINEAR_GRADIENT || brush->GetType() == JALIUM_BRUSH_RADIAL_GRADIENT)) {
+        const float k = 0.5522847498f;
+        float crx = std::min(std::max(rx, 0.0f), w * 0.5f);
+        float cry = std::min(std::max(ry, 0.0f), h * 0.5f);
+        float kx = crx * k, ky = cry * k;
+        std::vector<float> cmds = {
+            0.0f, x + w - crx, y,
+            1.0f, x + w - crx + kx, y, x + w, y + cry - ky, x + w, y + cry,
+            0.0f, x + w, y + h - cry,
+            1.0f, x + w, y + h - cry + ky, x + w - crx + kx, y + h, x + w - crx, y + h,
+            0.0f, x + crx, y + h,
+            1.0f, x + crx - kx, y + h, x, y + h - cry + ky, x, y + h - cry,
+            0.0f, x, y + cry,
+            1.0f, x, y + cry - ky, x + crx - kx, y, x + crx, y,
+            5.0f
+        };
+        if (TryStrokeGradientPath(brush, strokeWidth, x + crx, y, cmds, true, 0, 4.0f, 0)) return;
+    }
+
     float r, g, b, a;
-    if (ExtractBrushColor(brush, r, g, b, a)) {
+    if (ExtractStrokeColor(brush, r, g, b, a)) {
         SdfRectInstance inst = {};
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
         inst.cornerTL = rx; inst.cornerTR = rx; inst.cornerBR = rx; inst.cornerBL = rx;
@@ -1036,8 +1215,31 @@ void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w,
     if (!isDrawing_ || !brush || !directRenderer_) return;
     FlushVelloIfNeeded();
 
+    // Gradient outline → TRUE per-pixel gradient stroke via the engine.
+    if (IsImpellerActive() &&
+        (brush->GetType() == JALIUM_BRUSH_LINEAR_GRADIENT || brush->GetType() == JALIUM_BRUSH_RADIAL_GRADIENT)) {
+        const float k = 0.5522847498f;
+        const float maxR = std::min(w, h) * 0.5f;
+        float ctl = std::min(std::max(tl, 0.0f), maxR);
+        float ctr = std::min(std::max(tr, 0.0f), maxR);
+        float cbr = std::min(std::max(br, 0.0f), maxR);
+        float cbl = std::min(std::max(bl, 0.0f), maxR);
+        std::vector<float> cmds = {
+            0.0f, x + w - ctr, y,
+            1.0f, x + w - ctr + ctr * k, y, x + w, y + ctr - ctr * k, x + w, y + ctr,
+            0.0f, x + w, y + h - cbr,
+            1.0f, x + w, y + h - cbr + cbr * k, x + w - cbr + cbr * k, y + h, x + w - cbr, y + h,
+            0.0f, x + cbl, y + h,
+            1.0f, x + cbl - cbl * k, y + h, x, y + h - cbl + cbl * k, x, y + h - cbl,
+            0.0f, x, y + ctl,
+            1.0f, x, y + ctl - ctl * k, x + ctl - ctl * k, y, x + ctl, y,
+            5.0f
+        };
+        if (TryStrokeGradientPath(brush, strokeWidth, x + ctl, y, cmds, true, 0, 4.0f, 0)) return;
+    }
+
     float r, g, b, a;
-    if (ExtractBrushColor(brush, r, g, b, a)) {
+    if (ExtractStrokeColor(brush, r, g, b, a)) {
         SdfRectInstance inst = {};
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
         inst.cornerTL = tl; inst.cornerTR = tr; inst.cornerBR = br; inst.cornerBL = bl;
@@ -1111,8 +1313,23 @@ void D3D12RenderTarget::FillEllipseBatch(const float* data, uint32_t count) {
 void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
     FlushVelloIfNeeded();
+    // Gradient ring → TRUE per-pixel gradient stroke via the engine (4 cubic
+    // beziers approximating the ellipse). Solids fall through to the SDF ring.
+    if (IsImpellerActive() && rx > 0.0f && ry > 0.0f &&
+        (brush->GetType() == JALIUM_BRUSH_LINEAR_GRADIENT || brush->GetType() == JALIUM_BRUSH_RADIAL_GRADIENT)) {
+        const float k = 0.5522847498f;
+        float kx = rx * k, ky = ry * k;
+        std::vector<float> cmds = {
+            1.0f, cx + rx, cy + ky, cx + kx, cy + ry, cx,      cy + ry,
+            1.0f, cx - kx, cy + ry, cx - rx, cy + ky, cx - rx, cy,
+            1.0f, cx - rx, cy - ky, cx - kx, cy - ry, cx,      cy - ry,
+            1.0f, cx + kx, cy - ry, cx + rx, cy - ky, cx + rx, cy,
+            5.0f
+        };
+        if (TryStrokeGradientPath(brush, strokeWidth, cx + rx, cy, cmds, true, 1, 4.0f, 0)) return;
+    }
     float r, g, b, a;
-    if (ExtractBrushColor(brush, r, g, b, a)) {
+    if (ExtractStrokeColor(brush, r, g, b, a)) {
         SdfRectInstance inst = {};
         inst.posX = cx - rx; inst.posY = cy - ry;
         inst.sizeX = rx * 2; inst.sizeY = ry * 2;
@@ -1133,8 +1350,16 @@ void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brus
 void D3D12RenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
     FlushVelloIfNeeded();
+    // Gradient line → TRUE per-pixel gradient stroke via the engine (the 3-strip
+    // AA path below is solid-only). Solids fall straight through; if the gradient
+    // encode fails, ExtractStrokeColor degrades it to a representative solid.
+    if (IsImpellerActive() &&
+        (brush->GetType() == JALIUM_BRUSH_LINEAR_GRADIENT || brush->GetType() == JALIUM_BRUSH_RADIAL_GRADIENT)) {
+        std::vector<float> cmds = { 0.0f, x2, y2 };
+        if (TryStrokeGradientPath(brush, strokeWidth, x1, y1, cmds, false, 0, 4.0f, 0)) return;
+    }
     float r, g, b, a;
-    if (!ExtractBrushColor(brush, r, g, b, a)) return;
+    if (!ExtractStrokeColor(brush, r, g, b, a)) return;
 
     float dx = x2 - x1, dy = y2 - y1;
     float len = std::sqrt(dx * dx + dy * dy);
@@ -1296,27 +1521,41 @@ void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
 
     // Impeller engine path
     if (IsImpellerActive() && EnsureImpellerEngine()) {
-        float r, g, b, a;
-        if (ExtractBrushColor(brush, r, g, b, a)) {
-            auto t = directRenderer_->GetCurrentTransform();
-            float dpiScale = directRenderer_->GetDpiScale();
-            float opacity = directRenderer_->GetOpacity();
+        auto t = directRenderer_->GetCurrentTransform();
+        float dpiScale = directRenderer_->GetDpiScale();
+        float opacity = directRenderer_->GetOpacity();
 
-            EngineBrushData bd;
-            bd.type = 0;
-            bd.r = r; bd.g = g; bd.b = b; bd.a = a * opacity;
-
+        EngineBrushData bd;
+        std::vector<EngineBrushData::GradientStop> stopStore;
+        if (BrushToEngineBrush(brush, opacity, bd, stopStore)) {
             EngineTransform et;
             et.m11 = t.m11 * dpiScale; et.m12 = t.m12 * dpiScale;
             et.m21 = t.m21 * dpiScale; et.m22 = t.m22 * dpiScale;
             et.dx = t.dx * dpiScale; et.dy = t.dy * dpiScale;
 
             FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
-            if (impellerEngine_->EncodeFillPolygon(points, pointCount, bd, fr, et)) {
-                // Lazy flush: the next non-path draw (or EndDraw) drains
-                // the engine into DirectRenderer, letting N consecutive
-                // path emits coalesce into one GPU batch.
-                return;
+            if (bd.type == 0) {
+                if (impellerEngine_->EncodeFillPolygon(points, pointCount, bd, fr, et)) {
+                    // Lazy flush: the next non-path draw (or EndDraw) drains
+                    // the engine into DirectRenderer, letting N consecutive
+                    // path emits coalesce into one GPU batch.
+                    return;
+                }
+            } else {
+                // Gradient: EncodeFillPolygon paints a flat color (no gradient
+                // sampler), so synthesize LineTo/ClosePath commands and route
+                // through EncodeFillPath, which samples the gradient per-vertex.
+                std::vector<float> cmds;
+                cmds.reserve(static_cast<size_t>(pointCount) * 3 + 1);
+                for (uint32_t i = 1; i < pointCount; i++) {
+                    cmds.push_back(0.0f);                 // LineTo
+                    cmds.push_back(points[i * 2]);
+                    cmds.push_back(points[i * 2 + 1]);
+                }
+                cmds.push_back(5.0f);                      // ClosePath
+                if (impellerEngine_->EncodeFillPath(points[0], points[1], cmds.data(), (uint32_t)cmds.size(), bd, fr, et, -1)) {
+                    return;
+                }
             }
         }
     }
@@ -1390,16 +1629,16 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
 
     // Impeller engine path: convert polygon to LineTo commands and stroke via Impeller
     if (IsImpellerActive() && EnsureImpellerEngine()) {
-        float r, g, b, a;
-        if (ExtractBrushColor(brush, r, g, b, a)) {
-            auto t = directRenderer_->GetCurrentTransform();
-            float dpiScale = directRenderer_->GetDpiScale();
-            float opacity = directRenderer_->GetOpacity();
+        auto t = directRenderer_->GetCurrentTransform();
+        float dpiScale = directRenderer_->GetDpiScale();
+        float opacity = directRenderer_->GetOpacity();
 
-            EngineBrushData bd;
-            bd.type = 0;
-            bd.r = r; bd.g = g; bd.b = b; bd.a = a * opacity;
-
+        // Solid or gradient. A linear/radial gradient polyline now renders as a
+        // TRUE per-vertex gradient via EncodeStrokePath (see StrokePath); only
+        // dashed/analytic gradients degrade to the flat first-stop solid.
+        EngineBrushData bd;
+        std::vector<EngineBrushData::GradientStop> stopStore;
+        if (BrushToEngineBrush(brush, opacity, bd, stopStore)) {
             EngineTransform et;
             et.m11 = t.m11 * dpiScale; et.m12 = t.m12 * dpiScale;
             et.m21 = t.m21 * dpiScale; et.m22 = t.m22 * dpiScale;
@@ -1548,16 +1787,15 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
     if (IsImpellerActive()) {
         // Impeller engine: CPU tessellation + D3D12 rasterization
         if (EnsureImpellerEngine()) {
-            float r, g, b, a;
-            if (ExtractBrushColor(brush, r, g, b, a)) {
-                auto t = directRenderer_->GetCurrentTransform();
-                float dpiScale = directRenderer_->GetDpiScale();
-                float opacity = directRenderer_->GetOpacity();
+            auto t = directRenderer_->GetCurrentTransform();
+            float dpiScale = directRenderer_->GetDpiScale();
+            float opacity = directRenderer_->GetOpacity();
 
-                EngineBrushData bd;
-                bd.type = 0; // solid
-                bd.r = r; bd.g = g; bd.b = b; bd.a = a * opacity;
-
+            // Solid OR gradient: EncodeFillPath samples linear/radial gradients
+            // per-vertex (EncodeGradientFillPath), so path fills get TRUE gradients.
+            EngineBrushData bd;
+            std::vector<EngineBrushData::GradientStop> stopStore;
+            if (BrushToEngineBrush(brush, opacity, bd, stopStore)) {
                 EngineTransform et;
                 et.m11 = t.m11 * dpiScale; et.m12 = t.m12 * dpiScale;
                 et.m21 = t.m21 * dpiScale; et.m22 = t.m22 * dpiScale;
@@ -1640,16 +1878,18 @@ void D3D12RenderTarget::StrokePath(float startX, float startY, const float* comm
     if (IsImpellerActive()) {
         // Impeller engine: CPU stroke expansion + D3D12 rasterization
         if (EnsureImpellerEngine()) {
-            float r, g, b, a;
-            if (ExtractBrushColor(brush, r, g, b, a)) {
-                auto t = directRenderer_->GetCurrentTransform();
-                float dpiScale = directRenderer_->GetDpiScale();
-                float opacity = directRenderer_->GetOpacity();
+            auto t = directRenderer_->GetCurrentTransform();
+            float dpiScale = directRenderer_->GetDpiScale();
+            float opacity = directRenderer_->GetOpacity();
 
-                EngineBrushData bd;
-                bd.type = 0;
-                bd.r = r; bd.g = g; bd.b = b; bd.a = a * opacity;
-
+            // Solid strokes encode their color directly; linear/radial gradient
+            // strokes now render as TRUE per-vertex gradients (EncodeStrokePath
+            // samples the gradient along the stroke mesh). Only dashed / explicit-
+            // analytic gradients degrade to the flat first-stop fallback in
+            // bd.r/g/b/a. Either way the stroke is visible, not dropped.
+            EngineBrushData bd;
+            std::vector<EngineBrushData::GradientStop> stopStore;
+            if (BrushToEngineBrush(brush, opacity, bd, stopStore)) {
                 EngineTransform et;
                 et.m11 = t.m11 * dpiScale; et.m12 = t.m12 * dpiScale;
                 et.m21 = t.m21 * dpiScale; et.m22 = t.m22 * dpiScale;
@@ -1709,7 +1949,7 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
     // Stroke: 3-sided U shape (left, bottom, right)
     if (strokeBrush && strokeWidth > 0) {
         float r, g, b, a;
-        if (ExtractBrushColor(strokeBrush, r, g, b, a)) {
+        if (ExtractStrokeColor(strokeBrush, r, g, b, a)) {
             SdfRectInstance inst = {};
             inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
             inst.cornerBL = blRadius; inst.cornerBR = brRadius;
@@ -1840,8 +2080,18 @@ void D3D12RenderTarget::DestroyRetainedLayer(void* layer)
         directRenderer_->DestroyRetainedLayer(reinterpret_cast<D3D12RetainedLayer*>(layer));
     } else {
         // Renderer already torn down — the layer's destructor still retires its
-        // texture through the backend graveyard it captured at creation.
-        delete reinterpret_cast<D3D12RetainedLayer*>(layer);
+        // texture through the backend graveyard it captured at creation. If the
+        // CREATING device was removed (GPU switch), that graveyard may itself be
+        // gone — orphan the COM refs first (nothing is in flight on a removed
+        // device), same rule as DirectRenderer::DestroyRetainedLayer.
+        auto* l = reinterpret_cast<D3D12RetainedLayer*>(layer);
+        if (l->CreatingDeviceRemoved()) {
+            l->OrphanGpuResources();
+            g_retainedLayerOrphanedCount.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            g_retainedLayerGraveyardCount.fetch_add(1, std::memory_order_relaxed);
+        }
+        delete l;
     }
 }
 
@@ -2038,8 +2288,173 @@ void D3D12RenderTarget::SetShapeType(int type, float n) {
 
 void D3D12RenderTarget::SetVSyncEnabled(bool enabled) { vsyncEnabled_ = enabled; }
 
+void D3D12RenderTarget::SetExternalPresentPacing(bool enabled) {
+    // Only meaningful when the swap chain actually has a frame-latency
+    // waitable for the caller to consume; without one BeginDraw never waited
+    // in the first place, so external pacing would silently remove the only
+    // back-pressure (DXGI's own Present blocking). Composition (DComp) swap
+    // chains ALSO carry a waitable, but their Present + dcomp Commit cadence
+    // must stay internally paced — reject them too. Callers check
+    // GetFrameLatencyWaitable() != 0 and non-composition before enabling;
+    // this is defence in depth for direct C-ABI hosts.
+    externalPresentPacing_ = enabled && frameLatencyWaitable_ != nullptr && !isComposition_;
+    if (externalPresentPacing_) {
+        // BeginDraw stops writing the waitable-wait stats in this mode; clear
+        // them so a stale value from before the switch (e.g. the render
+        // thread's last frame ahead of a schema-gap latch handover) isn't
+        // republished every frame by QueryGpuStats / the frametime log / the
+        // "BeginDraw (wait)" DevTools split.
+        lastFrameWaitableWaitNs_ = 0;
+        accumulatingWaitableWaitNs_ = 0;
+    }
+}
+
 void D3D12RenderTarget::SetPathMsaaSampleCount(uint32_t sampleCount) {
     if (directRenderer_) directRenderer_->SetPathMsaaSampleCount(sampleCount);
+}
+
+bool D3D12RenderTarget::DebugRemoveDevice() {
+    // Official debug trigger for DEVICE_REMOVED: the device immediately enters
+    // the removed state and GetDeviceRemovedReason reports
+    // DXGI_ERROR_DEVICE_REMOVED — exactly what a GPU switch / driver restart
+    // produces, but at a point the harness chooses (e.g. mid-frame between
+    // BeginDraw and EndDraw). Affects every render target sharing this
+    // backend's device, which mirrors the real event.
+    if (!backend_) return false;
+    ID3D12Device* device = backend_->GetDevice();
+    if (!device) return false;
+    Microsoft::WRL::ComPtr<ID3D12Device5> device5;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&device5)))) return false;
+    device5->RemoveDevice();
+    return true;
+}
+
+bool D3D12RenderTarget::DebugGetRetainedDestroyCounts(uint64_t* orphaned, uint64_t* graveyard) {
+    if (!orphaned || !graveyard) return false; // self-defending: the C-ABI wrapper null-checks, but this virtual is public
+    *orphaned  = g_retainedLayerOrphanedCount.load(std::memory_order_relaxed);
+    *graveyard = g_retainedLayerGraveyardCount.load(std::memory_order_relaxed);
+    return true;
+}
+
+uint64_t D3D12RenderTarget::DebugDevicePointer() {
+    return backend_ ? reinterpret_cast<uint64_t>(backend_->GetDevice()) : 0;
+}
+
+bool D3D12RenderTarget::DebugInOffscreenCapture() {
+    return directRenderer_ && directRenderer_->IsInOffscreenCapture();
+}
+
+// TEST-ONLY (#921 regression self-check). Reproduces the same-thread "leaked-open
+// command list" race and drives a resize through it, so the production guard in
+// Resize (the `listOpen || isDrawing_` branch that must AbortFrame the leaked
+// frame BEFORE the back buffers are freed) is verified end to end on a real GPU.
+//
+// The race staged here is the BeginFrame open-gap: BeginDraw opens the command
+// list via directRenderer_->BeginFrame() and only sets isDrawing_=true afterwards,
+// so there is a window where the command list is recording (and has already
+// recorded a barrier referencing the back buffer) while isDrawing_ still reads
+// false. We reproduce that window deterministically by opening the list the same
+// way and NOT setting isDrawing_, then calling Resize on the SAME thread.
+int32_t D3D12RenderTarget::DebugForceLeakedCommandListResize(int32_t newWidth, int32_t newHeight, int32_t* outListClosed) {
+    if (outListClosed) *outListClosed = 0;
+    if (!directRenderer_) return -1;            // no renderer to open a list on
+    if (isDrawing_) return -2;                  // must start from a clean (idle) target
+    // The resize has to actually change the size, or Resize short-circuits to
+    // JALIUM_OK without ever reaching the guard (leaving the list open).
+    if (newWidth == width_ && newHeight == height_) return -3;
+
+    // Open the command list exactly as BeginDraw does, but DO NOT set isDrawing_:
+    // this is the #921 open-gap (cmdListRecording_==true while isDrawing_==false).
+    const float clearAlpha = isComposition_ ? 0.0f : clearA_;
+    const bool opened = directRenderer_->BeginFrame(
+        frameIndex_,
+        static_cast<UINT>(width_), static_cast<UINT>(height_),
+        fullInvalidation_,
+        clearR_, clearG_, clearB_, clearAlpha);
+    if (!opened) return -4;                     // device/fence gate — could not stage
+
+    // Confirm we are genuinely in the leaked-open state on THIS thread before
+    // exercising the guard (a different owner thread would take the BUSY branch).
+    if (!directRenderer_->IsCommandListRecording()
+        || directRenderer_->CommandListOwnerThread() != GetCurrentThreadId()
+        || isDrawing_) {
+        directRenderer_->AbortFrame();          // never leave a frame open
+        return -5;
+    }
+
+    // The operation under test. On the same thread the guard must AbortFrame()
+    // (Close the leaked list) BEFORE ReleaseBackBufferReferences()/ResizeBuffers()
+    // free the back buffers it references. A regression that drops the AbortFrame
+    // leaves the list open here and (under the debug layer) trips D3D12 #921
+    // OBJECT_DELETED_WHILE_STILL_IN_USE.
+    const JaliumResult resizeResult = Resize(newWidth, newHeight);
+
+    // (b) The leaked command list must have been Closed by the guard.
+    const bool listClosed = !directRenderer_->IsCommandListRecording();
+    if (outListClosed) *outListClosed = listClosed ? 1 : 0;
+
+    // Belt-and-suspenders: if a regression left the list open, Close it now so the
+    // harness can tear the window down cleanly. The reported *outListClosed (0)
+    // already records the failure for the test to assert on.
+    if (directRenderer_->IsCommandListRecording()) {
+        directRenderer_->AbortFrame();
+    }
+
+    return static_cast<int32_t>(resizeResult);
+}
+
+// TEST-ONLY (#921 Vello-output regression self-check). Stages a genuinely-open
+// command list the same way DebugForceLeakedCommandListResize does (the BeginFrame
+// open-gap: cmdListRecording_==true while isDrawing_==false), forces the Vello path
+// on, then drives the 'JaliumVelloOutput' orphan sequence (see
+// D3D12DirectRenderer::DebugForceVelloOutputOrphan) and reports whether the output
+// texture survived the mid-frame bitmapTextures_.clear(). Pre-fix the texture's sole
+// keep-alive was that bitmap entry, so the clear freed it while the open list still
+// referenced it -> #921; post-fix RetireOutputTexture parks it on the fence-gated
+// retired list so it survives. *outAlive: 1 = survived (fix held), 0 = freed in use.
+int32_t D3D12RenderTarget::DebugForceVelloOutputOrphan(int32_t* outAlive) {
+    if (outAlive) *outAlive = 0;
+    if (!directRenderer_) return -1;            // no renderer to open a list on
+    if (isDrawing_) return -2;                  // must start from a clean (idle) target
+
+    // The D3D12 default engine is Impeller, so GetVelloRenderer() would be null. Force
+    // the directRenderer's Vello path on for the staged frame only; toggle
+    // SetVelloEnabled directly (NOT SetRenderingEngine) so the target's activeEngine_
+    // is left untouched, and restore it from activeEngine_ on every exit below.
+    directRenderer_->SetVelloEnabled(true);
+
+    // Open the command list exactly as BeginDraw does, but DO NOT set isDrawing_ —
+    // the same #921 open-gap so the orphan sequence records into a genuinely open list.
+    const float clearAlpha = isComposition_ ? 0.0f : clearA_;
+    const bool opened = directRenderer_->BeginFrame(
+        frameIndex_,
+        static_cast<UINT>(width_), static_cast<UINT>(height_),
+        fullInvalidation_,
+        clearR_, clearG_, clearB_, clearAlpha);
+    if (!opened) {
+        directRenderer_->SetVelloEnabled(!IsImpellerActive());
+        return -4;                              // device/fence gate — could not stage (harness retries)
+    }
+
+    if (!directRenderer_->IsCommandListRecording()
+        || directRenderer_->CommandListOwnerThread() != GetCurrentThreadId()
+        || isDrawing_) {
+        directRenderer_->AbortFrame();          // never leave a frame open
+        directRenderer_->SetVelloEnabled(!IsImpellerActive());
+        return -5;
+    }
+
+    // The operation under test: dispatch + composite + ForceNewOutputTexture + the
+    // mid-frame FlushGraphicsForCompute clear, with detection of survival.
+    const int32_t rc = directRenderer_->DebugForceVelloOutputOrphan(outAlive);
+
+    // Close the (still-open) list cleanly so the harness can keep rendering, and
+    // restore the engine flag to the target's real activeEngine_ (Impeller default).
+    if (directRenderer_->IsCommandListRecording()) {
+        directRenderer_->AbortFrame();
+    }
+    directRenderer_->SetVelloEnabled(!IsImpellerActive());
+    return rc;
 }
 
 void D3D12RenderTarget::SetDpi(float dpiX, float dpiY) {
@@ -2197,7 +2612,7 @@ void D3D12RenderTarget::DrawBackdropFilter(
 {
     if (!isDrawing_ || !directRenderer_) return;
     CommitDeferredState();
-    directRenderer_->FlushGraphicsForCompute();
+    if (!directRenderer_->FlushGraphicsForCompute()) return;  // device lost — frame will abort
     // Tag everything from here through DrawSnapshotBlurred as the Backdrop
     // GPU category. FlushGraphicsForCompute() above drained pending batches
     // (those already have their own per-batch category marks inside
@@ -2265,7 +2680,7 @@ void D3D12RenderTarget::DrawLiquidGlass(
 {
     if (!isDrawing_ || !directRenderer_) return;
     CommitDeferredState();
-    directRenderer_->FlushGraphicsForCompute();
+    if (!directRenderer_->FlushGraphicsForCompute()) return;  // device lost — frame will abort
     directRenderer_->MarkGpuTimingPoint(D3D12DirectRenderer::GpuTimingCategory::LiquidGlass);
     if (neighborCount > 0 && preGlassSnapshotCaptured_) {
         // Reuse existing pre-glass snapshot for fused panels
@@ -2347,14 +2762,13 @@ void D3D12RenderTarget::BeginEffectCapture(float x, float y, float w, float h) {
     // following capture) silently vanished. FlushGraphicsForCompute then paints
     // the now-materialised triangles to the current (back-buffer) target.
     FlushImpellerBatches();
-    directRenderer_->FlushGraphicsForCompute();
-    lastEffectCaptureOk_ = directRenderer_->BeginOffscreenCapture(0, x, y, w, h);
-    if (!lastEffectCaptureOk_) {
-        char buf[256];
-        sprintf_s(buf, "[BeginEffectCapture] FAILED: x=%.1f y=%.1f w=%.1f h=%.1f isDrawing=%d inOffscreen=%d\n",
-            x, y, w, h, (int)isDrawing_, (int)directRenderer_->IsInOffscreenCapture());
-        OutputDebugStringA(buf);
+    if (!directRenderer_->FlushGraphicsForCompute()) {
+        // Device lost — frame will abort; EndEffectCapture sees the flag and
+        // skips its EndOffscreenCapture.
+        lastEffectCaptureOk_ = false;
+        return;
     }
+    lastEffectCaptureOk_ = directRenderer_->BeginOffscreenCapture(0, x, y, w, h);
 }
 
 void D3D12RenderTarget::EndEffectCapture() {
@@ -2440,6 +2854,88 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
         uvOffsetX, uvOffsetY, 1.0f);
 }
 
+// Pixel shader for the alpha-based outer glow. Runtime-compiled + cached by source
+// hash via DrawShaderEffectFromSource. It multi-tap gaussian-blurs the captured
+// element's ALPHA (offscreen slot 0 holds the silhouette on a transparent {0,0,0,0}
+// background) and tints it, so the halo hugs glyph/shape contours instead of the old
+// rectangular SDF approximation.
+//
+// b0 constant buffer carries 10 floats (uploaded by DrawCustomShaderEffect):
+//   [0..3] tint.rgb + global glow alpha (opacity*intensity, clamped on CPU)
+//   [4..5] texel   = 1/offscreenW, 1/offscreenH   (one source pixel, UV units)
+//   [6..7] uvScale = capturePx/offscreen          (maps quad uv[0,1] -> capture sub-rect)
+//   [8]    radiusTaps   [9] sigma
+// The offscreen atlas is larger than the capture, so uv is scaled by uvScale and taps
+// are clamped to the cleared capture sub-rect to avoid sampling stale atlas texels.
+static const char kOuterGlowPS[] = R"HLSL(
+Texture2D<float4> srcTex : register(t1);
+SamplerState linearSampler : register(s0);
+
+struct GlowCB {
+    float4 tint;
+    float2 step;       // per-tap UV step = texel * (radiusPx / K)
+    float2 uvScale;
+    float  kTaps;      // taps each direction; the 2D grid is (2K+1)x(2K+1)
+    float  sigma;      // gaussian sigma in tap units
+};
+ConstantBuffer<GlowCB> gGlow : register(b0);
+
+struct PsInput { float4 clipPos : SV_Position; float2 uv : TEXCOORD0; };
+
+float4 main(PsInput input) : SV_Target
+{
+    int K = (int)gGlow.kTaps;
+    if (K < 1) K = 1;
+    if (K > 12) K = 12;                 // (2K+1)^2 grid — hard cap on the inner loops
+    float sigma = max(gGlow.sigma, 0.5);
+    float twoSigma2 = 2.0 * sigma * sigma;
+
+    // Map the quad's [0,1] uv onto the capture sub-rect of the shared offscreen atlas.
+    float2 baseUv = input.uv * gGlow.uvScale;
+    float2 lo = float2(0.0, 0.0);
+    float2 hi = gGlow.uvScale;   // never sample past the cleared capture region
+
+    // True 2D RADIAL gaussian over a (2K+1)x(2K+1) grid. Summing one horizontal 1D
+    // pass and one vertical 1D pass (the previous approach) is NOT a 2D gaussian — it
+    // is a PLUS-shaped kernel that shows up as horizontal/vertical streaks, not a round
+    // halo. A correct separable blur would need two convolution passes (H then V) with
+    // an intermediate texture; a single-pass 2D grid is the correct alternative. The
+    // per-tap step spans the glow radius in K steps, so the grid covers the whole halo.
+    float accumA = 0.0;
+    float accumW = 0.0;
+    [loop]
+    for (int dy = -K; dy <= K; ++dy)
+    {
+        [loop]
+        for (int dx = -K; dx <= K; ++dx)
+        {
+            float wgt = exp(-(float(dx * dx + dy * dy)) / twoSigma2);
+            float2 uv = clamp(baseUv + float2(float(dx), float(dy)) * gGlow.step, lo, hi);
+            accumA += srcTex.SampleLevel(linearSampler, uv, 0).a * wgt;
+            accumW += wgt;
+        }
+    }
+
+    // Knockout the element's own silhouette so the glow lives ONLY outside it.
+    // Without this the blurred alpha is ~1 under the glyph and bleeds through the
+    // glyph's antialiased (semi-transparent) edges when the crisp text is composited
+    // on top — fattening every stroke and filling the gaps between strokes with
+    // orange, which reads as a blurry / out-of-focus "double vision" text. Sampling
+    // the center alpha and suppressing glow where the element is opaque keeps the
+    // text razor-sharp with the halo strictly around the contour.
+    float centerA = srcTex.SampleLevel(linearSampler, clamp(baseUv, lo, hi), 0).a;
+    float glowAlpha = (accumW > 0.0) ? (accumA / accumW) : 0.0;
+    glowAlpha *= saturate(1.0 - centerA);
+    glowAlpha *= gGlow.tint.a;
+
+    // Premultiplied output for the SrcBlend=ONE / DestBlend=INV_SRC_ALPHA PSO.
+    float3 rgb = gGlow.tint.rgb * glowAlpha;
+    float4 outc = float4(rgb, glowAlpha);
+    if (outc.a < (1.0 / 255.0)) discard;
+    return outc;
+}
+)HLSL";
+
 void D3D12RenderTarget::DrawOuterGlowEffect(float x, float y, float w, float h,
     float glowSize, float r, float g, float b, float a, float intensity,
     float uvOffsetX, float uvOffsetY,
@@ -2448,42 +2944,81 @@ void D3D12RenderTarget::DrawOuterGlowEffect(float x, float y, float w, float h,
     if (!isDrawing_ || !directRenderer_) return;
     CommitDeferredState();
     if (!lastEffectCaptureOk_) return;
+    (void)cornerTL; (void)cornerTR; (void)cornerBR; (void)cornerBL;  // glow follows alpha, not rounded-rect corners
 
-    // Soft outer glow via layered SDF rounded-rects drawn DIRECTLY on the main RT.
-    // Mirrors the DrawDropShadowEffect refactor (2026-06-02): the previous offscreen
-    // slot-1 + compute-blur path produced hard halos when the blur was skipped and could
-    // leave pipeline state that dropped later draws (vanishing title bar / chrome). Here the
-    // glow is the element silhouette expanded by glowSize on every side, approximated by N
-    // concentric, expanding, equal-alpha rounded rects painted straight to the main RT —
-    // centered (no directional offset) and tinted by the glow color — then the captured
-    // element content is composited on top so it stays crisp.
+    // Alpha-based, silhouette-following outer glow.
+    //
+    // The element was captured into offscreen slot 0 with EffectPadding =
+    // GlowSize+EffectiveBlurRadius of transparent margin on every side
+    // (Visual.cs / OuterGlowEffect.EffectPadding), cleared to {0,0,0,0}. So slot 0
+    // holds the element's ALPHA silhouette on transparent, with room to bleed out by
+    // ~glowSize. kOuterGlowPS multi-tap gaussian-blurs that ALPHA and tints it,
+    // producing a halo that hugs glyph/shape edges instead of the old 7-layer
+    // rectangular SDF approximation (which lit the whole bounds rectangle).
+    //
+    // Routed through DrawShaderEffectFromSource -> DrawCustomShaderEffect, the
+    // already-proven path that (a) FlushGraphicsForCompute()s first, (b) barriers
+    // slot 0 -> PIXEL_SHADER_RESOURCE, (c) allocs a per-frame SRV, and (d) restores
+    // RTV+viewport+scissor at its tail. No compute, no blur-temp budget — so the
+    // prior compute-blur regression ("blur skipped -> hard halo / vanishing chrome")
+    // cannot recur. The element content is then composited on top to stay crisp.
     float ga = a * intensity;
     if (ga > 1.0f) ga = 1.0f;
     float baseOpacity = directRenderer_->GetOpacity();
+
     if (ga > 0.0f && glowSize > 0.0f && baseOpacity > 0.0f) {
-        const int LAYERS = 7;
-        float perLayerA = ga / static_cast<float>(LAYERS);
-        for (int i = LAYERS; i >= 1; --i) {
-            float spread = glowSize * (static_cast<float>(i) / static_cast<float>(LAYERS));
-            SdfRectInstance inst = {};
-            inst.posX = x - spread;
-            inst.posY = y - spread;
-            inst.sizeX = w + 2.0f * spread;
-            inst.sizeY = h + 2.0f * spread;
-            inst.cornerTL = cornerTL + spread; inst.cornerTR = cornerTR + spread;
-            inst.cornerBR = cornerBR + spread; inst.cornerBL = cornerBL + spread;
-            // Straight (non-premultiplied) color: the SdfRect PS does fill.rgb * coverage
-            // and the normal fill path passes straight color (inst.fillR = r). Premultiplying
-            // here by perLayerA dimmed the RGB an extra factor relative to the alpha, washing
-            // a colored glow/shadow (e.g. GlowEmerald #34D399) out to a neutral gray halo.
-            inst.fillR = r; inst.fillG = g;
-            inst.fillB = b; inst.fillA = perLayerA;
-            inst.opacity = baseOpacity;
-            directRenderer_->AddSdfRect(inst);
+        // Reconstruct the (symmetric) capture rect from the UV offset managed passed
+        // (uvOffset = element_origin - capture_origin, equal on all sides because
+        // EffectPadding is a symmetric Thickness).
+        float capX = x - uvOffsetX;
+        float capY = y - uvOffsetY;
+        float capW = w + 2.0f * uvOffsetX;
+        float capH = h + 2.0f * uvOffsetY;
+        if (uvOffsetX <= 0.0f || uvOffsetY <= 0.0f) {
+            // Capture wasn't padded — degrade to the element rect (glow won't extend
+            // past the edges, but no out-of-bounds sampling).
+            capX = x; capY = y; capW = w; capH = h;
         }
+
+        float dpi = directRenderer_->GetDpiScale();
+        float offW = static_cast<float>(directRenderer_->GetOffscreenWidth());
+        float offH = static_cast<float>(directRenderer_->GetOffscreenHeight());
+        // Source the capture extent from the recorded slot-0 value (sole UV
+        // authority, closes F1); offW/offH stay the divisor so uvScale/texel are
+        // numerically identical to the old capW*dpi form.
+        float capPxW = std::max(1.0f, (float)directRenderer_->GetOffscreenCaptureW(0));
+        float capPxH = std::max(1.0f, (float)directRenderer_->GetOffscreenCaptureH(0));
+        // Shared offscreen atlas is larger than the capture; map quad uv[0,1] onto the
+        // capture sub-rect (uvScale) and step taps by one source pixel (texel).
+        float texelU = (offW > 0.0f) ? (1.0f / offW) : (1.0f / capPxW);
+        float texelV = (offH > 0.0f) ? (1.0f / offH) : (1.0f / capPxH);
+        float uvScaleX = (offW > 0.0f) ? (capPxW / offW) : 1.0f;
+        float uvScaleY = (offH > 0.0f) ? (capPxH / offH) : 1.0f;
+
+        // 2D radial gaussian: K taps each direction; the per-tap step covers the glow
+        // radius in K steps so the (2K+1)^2 grid spans the whole halo. sigma is in tap
+        // units (K/3 => grid edge sits at ~3 sigma, a smooth radial falloff).
+        float radiusPx = glowSize * dpi;
+        float kf = std::ceil(radiusPx / 3.0f);     // ~one tap per 3 source px
+        if (kf < 4.0f) kf = 4.0f;
+        if (kf > 12.0f) kf = 12.0f;                 // cap (2K+1)^2 <= 625 taps
+        float stepPx = radiusPx / kf;
+        float stepU = texelU * stepPx;
+        float stepV = texelV * stepPx;
+        float sigma = std::max(0.5f, kf / 3.0f);
+
+        float constants[10] = {
+            r, g, b, ga,
+            stepU, stepV,
+            uvScaleX, uvScaleY,
+            kf, sigma
+        };
+
+        // Silhouette-following glow underneath, drawn straight to the back buffer.
+        DrawShaderEffectFromSource(capX, capY, capW, capH, kOuterGlowPS, constants, 10);
     }
 
-    // Composite original element content on top of the glow so it stays crisp.
+    // Composite the original element content on top of the glow so it stays crisp.
     directRenderer_->DrawOffscreenBitmapCropped(0, x, y, w, h,
         uvOffsetX, uvOffsetY, 1.0f);
 }
@@ -2638,6 +3173,159 @@ JaliumResult D3D12RenderTarget::SetWebViewVisualPlacement(
     containerVisual->SetClip(clipRect);
     targetVis->SetOffsetX(static_cast<float>(contentOffsetX));
     targetVis->SetOffsetY(static_cast<float>(contentOffsetY));
+    dcompDevice_->Commit();
+    return JALIUM_OK;
+}
+
+// ============================================================================
+// Off-thread animation probe (Increment 1 — architecture hard gate)
+// ============================================================================
+//
+// Proves that an IDCompositionAnimation bound to a child visual's offset is
+// driven autonomously by DWM at vblank with ZERO app-side Present/Commit — the
+// WPF independent-animation model. Content is a one-time-cleared mini composition
+// swap chain; only the visual's offset animates. Once Commit() returns, the app
+// can go fully idle and the block keeps sliding (verify with PresentMon: app
+// present rate ≈ 0). If the block does NOT keep moving while the app is idle on
+// the target iGPU, the whole off-thread direction is void — that is exactly what
+// this probe exists to measure cheaply.
+
+JaliumResult D3D12RenderTarget::CreateAnimProbe(
+    int32_t x, int32_t y, int32_t width, int32_t height,
+    float travelPx, float periodSec, uint32_t colorArgb, int32_t vertical,
+    void** visualOut)
+{
+    if (!isComposition_ || !dcompDevice_ || !visualOut) return JALIUM_ERROR_INVALID_STATE;
+    *visualOut = nullptr;
+    if (width <= 0 || height <= 0) return JALIUM_ERROR_INVALID_ARGUMENT;
+
+    auto* device = backend_->GetDevice();
+    auto* queue  = backend_->GetCommandQueue();
+    auto* factory = backend_->GetDXGIFactory();
+    if (!device || !queue || !factory) return JALIUM_ERROR_INVALID_STATE;
+
+    AnimProbeEntry entry;
+
+    // ── 1. Mini composition swap chain holding the static solid-color content ──
+    DXGI_SWAP_CHAIN_DESC1 desc = {};
+    desc.Width  = static_cast<UINT>(width);
+    desc.Height = static_cast<UINT>(height);
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = 2;                                  // FLIP_SEQUENTIAL requires >= 2
+    desc.SwapEffect  = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    desc.Scaling     = DXGI_SCALING_STRETCH;
+    desc.AlphaMode   = DXGI_ALPHA_MODE_PREMULTIPLIED;      // DComp composites premultiplied
+    desc.Flags       = 0;                                  // static content → no waitable
+
+    HRESULT hr = factory->CreateSwapChainForComposition(queue, &desc, nullptr, &entry.contentSwapChain);
+    if (FAILED(hr)) return JALIUM_ERROR_INVALID_STATE;
+
+    // ── 2. Clear backbuffer 0 to the (premultiplied) probe color, once ──
+    ComPtr<ID3D12Resource> backBuffer;
+    hr = entry.contentSwapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer));
+    if (FAILED(hr)) return JALIUM_ERROR_INVALID_STATE;
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.NumDescriptors = 1;
+    rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    ComPtr<ID3D12DescriptorHeap> rtvHeap;
+    if (FAILED(device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&rtvHeap))))
+        return JALIUM_ERROR_INVALID_STATE;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    device->CreateRenderTargetView(backBuffer.Get(), nullptr, rtv);
+
+    ComPtr<ID3D12CommandAllocator> alloc;
+    if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc))))
+        return JALIUM_ERROR_INVALID_STATE;
+    ComPtr<ID3D12GraphicsCommandList> cmd;
+    if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc.Get(), nullptr, IID_PPV_ARGS(&cmd))))
+        return JALIUM_ERROR_INVALID_STATE;
+
+    auto transition = [&](D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.pResource   = backBuffer.Get();
+        barrier.Transition.Subresource = 0;
+        barrier.Transition.StateBefore = before;
+        barrier.Transition.StateAfter  = after;
+        cmd->ResourceBarrier(1, &barrier);
+    };
+    transition(D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    const float a = ((colorArgb >> 24) & 0xFF) / 255.0f;
+    const float r = ((colorArgb >> 16) & 0xFF) / 255.0f;
+    const float g = ((colorArgb >>  8) & 0xFF) / 255.0f;
+    const float b = ((colorArgb >>  0) & 0xFF) / 255.0f;
+    const float clear[4] = { r * a, g * a, b * a, a };    // premultiply for PREMULTIPLIED alpha mode
+    cmd->ClearRenderTargetView(rtv, clear, 0, nullptr);
+
+    transition(D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+    cmd->Close();
+    ID3D12CommandList* lists[] = { cmd.Get() };
+    queue->ExecuteCommandLists(1, lists);
+
+    // Synchronous one-shot fence: this runs at setup time (not per frame), so a
+    // blocking wait here is fine and keeps the probe self-contained / decoupled
+    // from the render target's per-frame fence.
+    ComPtr<ID3D12Fence> fence;
+    if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
+        return JALIUM_ERROR_INVALID_STATE;
+    HANDLE ev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    queue->Signal(fence.Get(), 1);
+    if (fence->GetCompletedValue() < 1 && ev) {
+        fence->SetEventOnCompletion(1, ev);
+        WaitForSingleObject(ev, 2000);
+    }
+    if (ev) CloseHandle(ev);
+
+    entry.contentSwapChain->Present(0, 0);                // single present; content is static thereafter
+
+    // ── 3. Child visual hosting the content, inserted ABOVE the main swap chain ──
+    if (FAILED(dcompDevice_->CreateVisual(&entry.visual))) return JALIUM_ERROR_INVALID_STATE;
+    if (FAILED(entry.visual->SetContent(entry.contentSwapChain.Get()))) return JALIUM_ERROR_INVALID_STATE;
+
+    // ── 4. Autonomous offset animation. AddSinusoidal loops forever with no End/
+    //      Repeat bookkeeping, so it is robust even if the exact phase/frequency
+    //      units differ from expectation — the block still visibly oscillates,
+    //      which is all the gate needs to prove. Increment 3 will replace this with
+    //      a piecewise-linear curve matching the bar's exact motion. ──
+    if (FAILED(dcompDevice_->CreateAnimation(&entry.anim))) return JALIUM_ERROR_INVALID_STATE;
+    const float center    = (vertical ? static_cast<float>(y) : static_cast<float>(x)) + travelPx * 0.5f;
+    const float amplitude = travelPx * 0.5f;
+    const float frequency = (periodSec > 0.0f) ? static_cast<float>(1.0 / (2.0 * periodSec)) : 0.5f; // there-and-back per 2*period
+    entry.anim->AddSinusoidal(0.0, /*bias*/ center, /*amplitude*/ amplitude, /*frequency*/ frequency, /*phase*/ 0.0f);
+
+    if (vertical) {
+        entry.visual->SetOffsetX(static_cast<float>(x));
+        entry.visual->SetOffsetY(entry.anim.Get());
+    } else {
+        entry.visual->SetOffsetY(static_cast<float>(y));
+        entry.visual->SetOffsetX(entry.anim.Get());
+    }
+
+    if (FAILED(dcompVisual_->AddVisual(entry.visual.Get(), TRUE, dcompSwapChainVisual_.Get())))
+        return JALIUM_ERROR_INVALID_STATE;
+
+    // ── 5. Single Commit. DWM owns the animation from here; the app need never
+    //      present or commit again for the block to keep moving. ──
+    if (FAILED(dcompDevice_->Commit())) return JALIUM_ERROR_INVALID_STATE;
+
+    IDCompositionVisual* raw = entry.visual.Get();
+    animProbes_[raw] = std::move(entry);
+    *visualOut = raw;
+    return JALIUM_OK;
+}
+
+JaliumResult D3D12RenderTarget::DestroyAnimProbe(void* visual) {
+    if (!isComposition_ || !dcompDevice_ || !visual) return JALIUM_ERROR_INVALID_STATE;
+    auto* v = static_cast<IDCompositionVisual*>(visual);
+    auto it = animProbes_.find(v);
+    if (it == animProbes_.end()) return JALIUM_ERROR_INVALID_STATE;
+
+    dcompVisual_->RemoveVisual(v);
+    animProbes_.erase(it);                                 // ComPtr members release here
     dcompDevice_->Commit();
     return JALIUM_OK;
 }

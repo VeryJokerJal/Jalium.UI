@@ -34,7 +34,8 @@ public readonly record struct GpuResourceStats(
     long FrameGpuWaitNs,
     int SwapBufferCount,
     long LastFramePresentToReadyNs,
-    long FrameWaitableWaitNs);
+    long FrameWaitableWaitNs,
+    long PresentBlockNs);
 
 /// <summary>
 /// Per-frame GPU work breakdown by draw-call category, sourced from
@@ -73,7 +74,11 @@ public sealed class RenderTarget : IDisposable
     private readonly nint _hwnd;
     private nint _handle;
     private bool _disposed;
-    private bool _isDrawing;
+    // volatile: read/written by both the UI thread (resize/recovery defensive
+    // TryEndDraw) and the render thread (TryBeginDraw/TryEndDraw). Accesses are
+    // serialized by the render-thread idle drain, but the field still needs an
+    // acquire/release fence across that barrier (FIX #4).
+    private volatile bool _isDrawing;
     private int _ownerContextReleased;
     private float _dpiX = 96.0f;
     private float _dpiY = 96.0f;
@@ -118,7 +123,7 @@ public sealed class RenderTarget : IDisposable
     /// Gets the active rendering engine for this render target.
     /// </summary>
     public RenderingEngine RenderingEngine =>
-        _handle != nint.Zero ? NativeMethods.RenderTargetGetEngine(_handle) : RenderingEngine.Auto;
+        _handle != nint.Zero ? _native.GetEngine(_handle) : RenderingEngine.Auto;
 
     /// <summary>
     /// Queries the swap chain present configuration (SwapEffect / tearing / waitable /
@@ -223,16 +228,27 @@ public sealed class RenderTarget : IDisposable
     /// </summary>
     /// <param name="width">The new width.</param>
     /// <param name="height">The new height.</param>
-    public void Resize(int width, int height)
+    public JaliumResult Resize(int width, int height)
     {
         ThrowIfDisposed();
-        if (width <= 0 || height <= 0) return;
+        if (width <= 0 || height <= 0) return JaliumResult.Ok;
 
         int resultCode = _native.Resize(_handle, width, height);
+        var result = JaliumResultMapper.FromCode(resultCode);
+        // Busy = the native backend refused this resize because a command list is
+        // still open and references the back buffers it would free (cross-thread
+        // render in flight, or a frame left open). NOT a failure: do not throw and
+        // do not update Width/Height — the caller re-stashes and retries at the next
+        // safe point (see Window.ApplyRenderTargetResize). Avoids the #921
+        // OBJECT_DELETED_WHILE_STILL_IN_USE use-after-free.
+        if (result == JaliumResult.Busy)
+            return result;
+
         ThrowIfNativeFailure("Resize", resultCode);
 
         Width = width;
         Height = height;
+        return JaliumResult.Ok;
     }
 
     /// <summary>
@@ -354,7 +370,8 @@ public sealed class RenderTarget : IDisposable
             raw.PathEntries, raw.PathBytes,
             raw.TextureCount, raw.TextureBytes,
             raw.FrameGpuWaitNs, raw.SwapBufferCount,
-            raw.LastFramePresentToReadyNs, raw.FrameWaitableWaitNs);
+            raw.LastFramePresentToReadyNs, raw.FrameWaitableWaitNs,
+            raw.PresentBlockNs);
         return true;
     }
 
@@ -983,6 +1000,21 @@ public sealed class RenderTarget : IDisposable
     /// When disabled, Present returns immediately for faster frame updates during resize.
     /// </summary>
     /// <param name="enabled">True to enable VSync, false to disable.</param>
+    /// <summary>
+    /// Hands present pacing to the caller. While enabled, BeginDraw no longer
+    /// waits on the swap-chain frame-latency waitable — the caller must own
+    /// that HANDLE (see <see cref="GetFrameLatencyWaitable"/>), consume its
+    /// signals (e.g. via a thread-pool registered wait) and only begin a frame
+    /// once a signal arrived — and Present uses sync interval 0 so it never
+    /// blocks on the compositor. Restores internal pacing when disabled.
+    /// No-op on backends without a frame-latency waitable.
+    /// </summary>
+    public void SetExternalPresentPacing(bool enabled)
+    {
+        ThrowIfDisposed();
+        _native.SetExternalPresentPacing(_handle, enabled);
+    }
+
     public void SetVSyncEnabled(bool enabled)
     {
         ThrowIfDisposed();
@@ -1033,6 +1065,22 @@ public sealed class RenderTarget : IDisposable
     {
         ThrowIfDisposed();
         _native.SetFullInvalidation(_handle);
+    }
+
+    /// <summary>
+    /// Destroys a retained GPU layer previously realized for this target.
+    /// Routed through <see cref="IRenderTargetNative"/> (rather than a direct
+    /// P/Invoke) so the drain path stays on the injectable seam — a test double
+    /// can no-op it instead of dereferencing a non-owned native handle. No-op
+    /// when the target has been disposed or never had a native handle.
+    /// </summary>
+    internal void DestroyRetainedLayer(nint layer)
+    {
+        if (_disposed || _handle == nint.Zero || layer == nint.Zero)
+        {
+            return;
+        }
+        _native.DestroyRetainedLayer(_handle, layer);
     }
 
     /// <summary>
@@ -1092,6 +1140,45 @@ public sealed class RenderTarget : IDisposable
             contentOffset.X,
             contentOffset.Y);
         ThrowIfNativeFailure("SetWebViewVisualPlacement", resultCode);
+    }
+
+    /// <summary>
+    /// Off-thread animation probe (Increment 1 — architecture hard gate). Creates a
+    /// self-driving DirectComposition child visual (one-time solid-color content plus
+    /// an autonomous offset animation that DWM drives at vblank with no app-side
+    /// present). Coordinates and sizes are in physical pixels. Returns <c>true</c> and
+    /// the native visual handle on success; <c>false</c> when unsupported (non-composition
+    /// window, non-D3D12 backend) — the caller then keeps the per-frame present path.
+    /// </summary>
+    public bool TryCreateAnimProbe(int x, int y, int width, int height,
+        float travelPx, float periodSec, uint colorArgb, bool vertical, out nint visualTarget)
+    {
+        ThrowIfDisposed();
+        visualTarget = nint.Zero;
+
+        var resultCode = NativeMethods.RenderTargetCreateAnimProbe(
+            _handle, x, y, width, height, travelPx, periodSec, colorArgb, vertical ? 1 : 0, out var target);
+        if (resultCode == (int)JaliumResult.Ok && target != nint.Zero)
+        {
+            visualTarget = target;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Destroys a probe visual previously created by <see cref="TryCreateAnimProbe"/>.
+    /// </summary>
+    public void DestroyAnimProbe(nint visualTarget)
+    {
+        ThrowIfDisposed();
+        if (visualTarget == nint.Zero)
+        {
+            return;
+        }
+
+        NativeMethods.RenderTargetDestroyAnimProbe(_handle, visualTarget);
     }
 
     /// <summary>
@@ -1656,10 +1743,13 @@ internal interface IRenderTargetNative
     int Resize(nint renderTarget, int width, int height);
     int BeginDraw(nint renderTarget);
     int EndDraw(nint renderTarget);
+    RenderingEngine GetEngine(nint renderTarget);
     void SetVSyncEnabled(nint renderTarget, bool enabled);
+    void SetExternalPresentPacing(nint renderTarget, bool enabled);
     void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount);
     void SetFullInvalidation(nint renderTarget);
     bool SupportsPartialPresentation(nint renderTarget);
+    void DestroyRetainedLayer(nint renderTarget, nint layer);
     void Destroy(nint renderTarget);
 }
 
@@ -1689,8 +1779,14 @@ internal sealed class DefaultRenderTargetNative : IRenderTargetNative
     public int EndDraw(nint renderTarget)
         => NativeMethods.RenderTargetEndDraw(renderTarget);
 
+    public RenderingEngine GetEngine(nint renderTarget)
+        => NativeMethods.RenderTargetGetEngine(renderTarget);
+
     public void SetVSyncEnabled(nint renderTarget, bool enabled)
         => NativeMethods.RenderTargetSetVSync(renderTarget, enabled ? 1 : 0);
+
+    public void SetExternalPresentPacing(nint renderTarget, bool enabled)
+        => NativeMethods.RenderTargetSetExternalPresentPacing(renderTarget, enabled ? 1 : 0);
 
     public void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount)
         => NativeMethods.RenderTargetSetPathMsaa(renderTarget, sampleCount);
@@ -1700,6 +1796,9 @@ internal sealed class DefaultRenderTargetNative : IRenderTargetNative
 
     public bool SupportsPartialPresentation(nint renderTarget)
         => NativeMethods.RenderTargetSupportsPartialPresentation(renderTarget) != 0;
+
+    public void DestroyRetainedLayer(nint renderTarget, nint layer)
+        => NativeMethods.RenderTargetDestroyRetainedLayer(renderTarget, layer);
 
     public void Destroy(nint renderTarget)
         => NativeMethods.RenderTargetDestroy(renderTarget);

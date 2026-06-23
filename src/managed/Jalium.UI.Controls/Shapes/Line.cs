@@ -122,6 +122,7 @@ public class Line : Shape
         {
             StartLineCap = StrokeStartLineCap,
             EndLineCap = StrokeEndLineCap,
+            DashCap = StrokeDashCap,
             LineJoin = StrokeLineJoin,
             MiterLimit = StrokeMiterLimit
         };
@@ -133,6 +134,10 @@ public class Line : Shape
 
         dc.DrawLine(pen, new Point(X1, Y1), new Point(X2, Y2));
     }
+
+    /// <inheritdoc />
+    protected override Geometry? DefiningGeometry =>
+        new LineGeometry(new Point(X1, Y1), new Point(X2, Y2));
 
     private static void OnGeometryPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {

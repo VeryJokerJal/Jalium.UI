@@ -3,6 +3,106 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- ============================================== -->
+    <!-- ToggleButton Style (button-like, accent fill when checked) -->
+    <!-- ============================================== -->
+    <Style TargetType="ToggleButton">
+        <Setter Property="Background" Value="{ThemeResource ControlBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="12,6,12,6" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
+        <Setter Property="MinWidth" Value="60" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ToggleButton">
+                <Border Name="RootBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}">
+                    <ContentPresenter
+                        Margin="{TemplateBinding Padding}"
+                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
+                        <ContentPresenter.Resources>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                <Setter Property="TextWrapping" Value="NoWrap" />
+                            </Style>
+                            <Style TargetType="AccessText">
+                                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                <Setter Property="TextWrapping" Value="NoWrap" />
+                            </Style>
+                        </ContentPresenter.Resources>
+                    </ContentPresenter>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <!-- Unchecked + Hover -->
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsChecked" Value="False" />
+                    <Condition Property="IsMouseOver" Value="True" />
+                    <Condition Property="IsEnabled" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+            </MultiTrigger>
+
+            <!-- Unchecked + Pressed -->
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsChecked" Value="False" />
+                    <Condition Property="IsPressed" Value="True" />
+                    <Condition Property="IsEnabled" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{ThemeResource ButtonBackgroundPressed}" />
+            </MultiTrigger>
+
+            <!-- Checked (accent fill, like a segmented toggle) -->
+            <Trigger Property="IsChecked" Value="True">
+                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
+            </Trigger>
+
+            <!-- Checked + Hover -->
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsChecked" Value="True" />
+                    <Condition Property="IsMouseOver" Value="True" />
+                    <Condition Property="IsEnabled" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
+            </MultiTrigger>
+
+            <!-- Checked + Pressed (no dedicated pressed accent token; revert to base checked fill) -->
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsChecked" Value="True" />
+                    <Condition Property="IsPressed" Value="True" />
+                    <Condition Property="IsEnabled" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
+            </MultiTrigger>
+
+            <!-- Disabled (highest priority) -->
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
     <!-- CheckBox Style (Modern with ControlTemplate) -->
     <!-- ============================================== -->
     <Style TargetType="CheckBox">
@@ -24,13 +124,18 @@
                                     BorderThickness="{TemplateBinding BorderThickness}"
                                     CornerRadius="{TemplateBinding CornerRadius}">
                                 <Grid>
-                                    <!-- Check Mark Path -->
+                                    <!-- Check Mark glyph, rendered filled (Fill, not
+                                         Stroke). Filled is required so it paints on the
+                                         very first GPU frame when the CheckBox is
+                                         realized inside a startup overlay (e.g. the
+                                         gallery landing poster); a stroked open Path
+                                         stays blank there until a resize forces a full
+                                         redraw. -->
                                     <Path Name="CheckMark"
-                                          Data="M 0,5 L 3,8 L 8,2"
-                                          Stroke="{ThemeResource TextOnAccent}"
-                                          StrokeThickness="2"
-                                          Width="8"
-                                          Height="8"
+                                          Data="M512 123.2c0 15.1-6 29.7-16.7 40.4l-265.5 265.5c-22.3 22.3-58.5 22.3-80.8 0l-132.3-132.2c-21.7-22.9-20.8-59 2.1-80.7 22.1-21 56.7-20.9 78.7 0l91.9 91.9 225.1-225.2c22.3-22.3 58.5-22.3 80.8 0 10.7 10.7 16.7 25.2 16.7 40.3z"
+                                          Fill="{ThemeResource TextOnAccent}"
+                                          Width="11"
+                                          Height="11"
                                           Stretch="Uniform"
                                           HorizontalAlignment="Center"
                                           VerticalAlignment="Center"

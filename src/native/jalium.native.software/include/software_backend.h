@@ -421,6 +421,17 @@ private:
         TextFormat* format, float x, float y, float w, float h,
         SoftwareSolidBrush* brush);
 
+    // Sub-pixel + 4x4-supersampled coverage rasterizer shared by the shape
+    // primitives. The float device-space origin is fed through unchanged (no
+    // (int) truncation), so an animated/fractional transform origin renders at
+    // its true sub-pixel position instead of snapping to a whole pixel; the
+    // fractional coverage doubles as edge anti-aliasing. The predicate receives
+    // each sub-sample in shape-local coordinates (sample center minus origin).
+    template <typename InsidePred>
+    void RasterizeCoverageAA(float devOriginX, float devOriginY,
+        float localMinX, float localMinY, float localMaxX, float localMaxY,
+        Brush* brush, InsidePred inside);
+
     void FillScanlineRect(float x, float y, float w, float h, Brush* brush);
     void StrokeScanlineRect(float x, float y, float w, float h, Brush* brush, float strokeWidth);
     void DrawHLine(int32_t x0, int32_t x1, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a);

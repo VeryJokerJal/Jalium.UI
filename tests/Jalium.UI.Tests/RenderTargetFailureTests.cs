@@ -29,6 +29,32 @@ public class RenderTargetFailureTests
     }
 
     [Fact]
+    public void Resize_WhenNativeReportsBusy_DefersWithoutThrowingAndKeepsDimensions()
+    {
+        // #921 soft-reject / defer semantics: the native backend returns Busy
+        // (code 10) when it refuses the resize because a command list is still
+        // open and references the back buffers the resize would free. This is
+        // NOT a failure — unlike DeviceLost (above) it must not throw. Resize
+        // must instead surface JaliumResult.Busy and leave Width/Height
+        // untouched so the caller re-stashes the request and retries at the
+        // next safe point (guards the OBJECT_DELETED_WHILE_STILL_IN_USE UAF).
+        var native = new RenderTargetTestNative
+        {
+            ResizeResult = (int)JaliumResult.Busy
+        };
+
+        using var renderTarget = CreateRenderTarget(native, width: 640, height: 480);
+
+        // Calling Resize without Assert.Throws is itself the "does not throw"
+        // assertion — an exception here would fail the test.
+        var result = renderTarget.Resize(800, 600);
+
+        Assert.Equal(JaliumResult.Busy, result);
+        Assert.Equal(640, renderTarget.Width);
+        Assert.Equal(480, renderTarget.Height);
+    }
+
+    [Fact]
     public void BeginDraw_WhenNativeFails_ThrowsRenderPipelineExceptionAndKeepsDrawingFalse()
     {
         var native = new RenderTargetTestNative

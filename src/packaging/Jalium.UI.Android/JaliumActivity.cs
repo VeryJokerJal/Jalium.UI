@@ -65,7 +65,11 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
             nativeWindow = nint.Zero;
         }
 
-        AndroidActivityBridge.OnNativeWindowCreated(nativeWindow);
+        // Pass the surfaceChanged width/height straight through: they are the
+        // authoritative post-rotation surface dimensions. On a device rotation
+        // (configChanges keeps the Activity alive) this re-dispatches a RESIZE with
+        // the swapped dims so the UI re-lays-out for the new orientation.
+        AndroidActivityBridge.OnNativeWindowCreated(nativeWindow, width, height);
 
         if (!s_appStarted)
         {

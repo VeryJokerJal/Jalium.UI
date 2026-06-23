@@ -9,12 +9,14 @@ namespace Jalium.UI.Controls;
 internal readonly record struct MarkdownTextStyle(bool Bold, bool Italic, bool Code, Uri? LinkUri);
 internal sealed record MarkdownTextSpan(string Text, MarkdownTextStyle Style, bool IsLineBreak = false);
 
-internal sealed class MarkdownTextRenderer : FrameworkElement
+internal sealed class MarkdownTextRenderer : FrameworkElement, IMarkdownSelectable
 {
     private IReadOnlyList<MarkdownTextSpan> _spans = Array.Empty<MarkdownTextSpan>();
     private MarkdownTextLayout? _cachedLayout;
     private double _cachedWidth = double.NaN;
     private Pen? _cachedLinkUnderlinePen;
+    private int _selectionStart = -1;
+    private int _selectionEnd = -1;
 
     public MarkdownTextRenderer()
     {
@@ -42,6 +44,7 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
     public Brush? ForegroundBrush { get; set; }
     public Brush? LinkForegroundBrush { get; set; }
     public Brush? CodeBackgroundBrush { get; set; }
+    public Brush? SelectionBrush { get; set; }
     public bool Wrap { get; set; } = true;
     public bool PreserveWhitespace { get; set; }
     public double LineHeightMultiplier { get; set; } = 1.5;
@@ -84,6 +87,7 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
             : (Wrap && DesiredSize.Width > 0 ? DesiredSize.Width : double.PositiveInfinity);
         var layout = EnsureLayout(widthConstraint);
 
+        // Pass 1: inline-code backgrounds, drawn beneath the selection so selected code still highlights.
         foreach (var line in layout.Lines)
         {
             foreach (var placement in line.Placements)
@@ -92,7 +96,20 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
                 {
                     dc.DrawRoundedRectangle(CodeBackgroundBrush, null, placement.Bounds, 4, 4);
                 }
+            }
+        }
 
+        // Pass 2: one continuous selection highlight per line (no per-word gaps).
+        if (_selectionEnd > _selectionStart && _selectionStart >= 0 && SelectionBrush != null)
+        {
+            DrawSelectionHighlight(dc, layout);
+        }
+
+        // Pass 3: text and link underlines on top of everything.
+        foreach (var line in layout.Lines)
+        {
+            foreach (var placement in line.Placements)
+            {
                 var formattedText = CreateFormattedText(placement.Text, placement.Style);
                 var textX = placement.Bounds.X + placement.TextOffsetX;
                 var textY = placement.Bounds.Y + ((placement.Bounds.Height - placement.TextHeight) / 2);
@@ -111,7 +128,8 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
 
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        Cursor = TryGetLinkAt(e.GetPosition(this)) != null ? Jalium.UI.Cursors.Hand : Jalium.UI.Cursors.Arrow;
+        // A link shows the hand cursor; everywhere else the text is selectable, so use the I-beam.
+        Cursor = TryGetLinkAt(e.GetPosition(this)) != null ? Jalium.UI.Cursors.Hand : Jalium.UI.Cursors.IBeam;
     }
 
     private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
@@ -456,6 +474,273 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
         InvalidateMeasure();
         InvalidateVisual();
     }
+
+    #region Text selection (IMarkdownSelectable)
+
+    private double CurrentWidthConstraint()
+        => Wrap && RenderSize.Width > 0
+            ? RenderSize.Width
+            : (Wrap && DesiredSize.Width > 0 ? DesiredSize.Width : double.PositiveInfinity);
+
+    public int SelectableLength
+    {
+        get
+        {
+            if (Spans.Count == 0)
+            {
+                return 0;
+            }
+            return ComputeLength(EnsureLayout(CurrentWidthConstraint()));
+        }
+    }
+
+    public string GetSelectionText(int start, int end)
+    {
+        if (Spans.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var text = BuildVisualText(EnsureLayout(CurrentWidthConstraint()));
+        start = Math.Clamp(start, 0, text.Length);
+        end = Math.Clamp(end, 0, text.Length);
+        return end > start ? text.Substring(start, end - start) : string.Empty;
+    }
+
+    public void SetSelectionRange(int start, int end)
+    {
+        if (end < start)
+        {
+            (start, end) = (end, start);
+        }
+
+        if (_selectionStart == start && _selectionEnd == end)
+        {
+            return;
+        }
+
+        _selectionStart = start;
+        _selectionEnd = end;
+        InvalidateVisual();
+    }
+
+    public void ClearSelectionRange()
+    {
+        if (_selectionStart < 0 && _selectionEnd < 0)
+        {
+            return;
+        }
+
+        _selectionStart = -1;
+        _selectionEnd = -1;
+        InvalidateVisual();
+    }
+
+    public bool TryHitTestCharacter(Point localPoint, out int charIndex)
+    {
+        charIndex = 0;
+        if (Spans.Count == 0)
+        {
+            return false;
+        }
+
+        var layout = EnsureLayout(CurrentWidthConstraint());
+        if (layout.Lines.Count == 0)
+        {
+            return false;
+        }
+
+        var lineIndex = -1;
+        for (var i = 0; i < layout.Lines.Count; i++)
+        {
+            var placements = layout.Lines[i].Placements;
+            if (placements.Count == 0)
+            {
+                continue;
+            }
+
+            var bounds = placements[0].Bounds;
+            if (localPoint.Y < bounds.Y)
+            {
+                lineIndex = i;
+                break;
+            }
+            if (localPoint.Y <= bounds.Y + bounds.Height)
+            {
+                lineIndex = i;
+                break;
+            }
+        }
+
+        if (lineIndex < 0)
+        {
+            lineIndex = layout.Lines.Count - 1;
+        }
+
+        var lineStart = 0;
+        for (var i = 0; i < lineIndex; i++)
+        {
+            foreach (var placement in layout.Lines[i].Placements)
+            {
+                lineStart += placement.Text.Length;
+            }
+            lineStart += 1; // newline between lines
+        }
+
+        var line = layout.Lines[lineIndex];
+        var local = 0;
+        foreach (var placement in line.Placements)
+        {
+            var left = placement.Bounds.X;
+            var right = placement.Bounds.X + placement.Bounds.Width;
+            if (localPoint.X < left)
+            {
+                charIndex = lineStart + local;
+                return true;
+            }
+            if (localPoint.X <= right)
+            {
+                var textLeft = placement.Bounds.X + placement.TextOffsetX;
+                charIndex = lineStart + local + FindCharInText(placement.Text, placement.Style, localPoint.X - textLeft);
+                return true;
+            }
+            local += placement.Text.Length;
+        }
+
+        charIndex = lineStart + local;
+        return true;
+    }
+
+    private void DrawSelectionHighlight(DrawingContext dc, MarkdownTextLayout layout)
+    {
+        var running = 0;
+        for (var li = 0; li < layout.Lines.Count; li++)
+        {
+            var line = layout.Lines[li];
+            var hasSelection = false;
+            double left = 0, right = 0, top = 0, height = 0;
+
+            foreach (var placement in line.Placements)
+            {
+                var cs = running;
+                var ce = running + placement.Text.Length;
+                var a = Math.Max(_selectionStart, cs);
+                var b = Math.Min(_selectionEnd, ce);
+                if (a < b)
+                {
+                    // Use the placement's full box edges for whole-placement coverage (so the
+                    // inter-word advance and inline-code padding are included with no gaps), and
+                    // fall back to measured prefixes only for a partially-selected first/last token.
+                    var textLeft = placement.Bounds.X + placement.TextOffsetX;
+                    var startX = a == cs
+                        ? placement.Bounds.X
+                        : textLeft + MeasurePrefixWidth(placement.Text, a - cs, placement.Style);
+                    var endX = b == ce
+                        ? placement.Bounds.X + placement.Bounds.Width
+                        : textLeft + MeasurePrefixWidth(placement.Text, b - cs, placement.Style);
+
+                    if (!hasSelection)
+                    {
+                        hasSelection = true;
+                        left = startX;
+                        top = placement.Bounds.Y;
+                        height = placement.Bounds.Height;
+                    }
+                    else
+                    {
+                        left = Math.Min(left, startX);
+                        top = Math.Min(top, placement.Bounds.Y);
+                        height = Math.Max(height, placement.Bounds.Height);
+                    }
+                    right = Math.Max(right, endX);
+                }
+                running = ce;
+            }
+
+            if (hasSelection)
+            {
+                dc.DrawRectangle(SelectionBrush, null, new Rect(left, top, Math.Max(1, right - left), height));
+            }
+
+            if (li < layout.Lines.Count - 1)
+            {
+                running += 1;
+            }
+        }
+    }
+
+    private int FindCharInText(string text, MarkdownTextStyle style, double targetX)
+    {
+        if (text.Length == 0 || targetX <= 0)
+        {
+            return 0;
+        }
+
+        var previous = 0.0;
+        for (var i = 1; i <= text.Length; i++)
+        {
+            var width = MeasurePrefixWidth(text, i, style);
+            if (targetX < (previous + width) / 2.0)
+            {
+                return i - 1;
+            }
+            previous = width;
+        }
+
+        return text.Length;
+    }
+
+    private double MeasurePrefixWidth(string text, int count, MarkdownTextStyle style)
+    {
+        if (count <= 0)
+        {
+            return 0;
+        }
+        if (count > text.Length)
+        {
+            count = text.Length;
+        }
+
+        var formatted = CreateFormattedText(text.Substring(0, count), style);
+        TextMeasurement.MeasureText(formatted);
+        return formatted.Width;
+    }
+
+    private static int ComputeLength(MarkdownTextLayout layout)
+    {
+        var total = 0;
+        for (var i = 0; i < layout.Lines.Count; i++)
+        {
+            foreach (var placement in layout.Lines[i].Placements)
+            {
+                total += placement.Text.Length;
+            }
+            if (i < layout.Lines.Count - 1)
+            {
+                total += 1;
+            }
+        }
+        return total;
+    }
+
+    private static string BuildVisualText(MarkdownTextLayout layout)
+    {
+        var sb = new System.Text.StringBuilder();
+        for (var i = 0; i < layout.Lines.Count; i++)
+        {
+            foreach (var placement in layout.Lines[i].Placements)
+            {
+                sb.Append(placement.Text);
+            }
+            if (i < layout.Lines.Count - 1)
+            {
+                sb.Append('\n');
+            }
+        }
+        return sb.ToString();
+    }
+
+    #endregion
 
     private readonly record struct MarkdownToken(string Text, MarkdownTextStyle Style, bool IsWhitespace, bool IsLineBreak);
     private readonly record struct MarkdownTokenMeasurement(double TotalWidth, double TotalHeight, double TextWidth, double TextHeight, double TextOffsetX);

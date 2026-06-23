@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -107,7 +107,13 @@ public static class ArrowIcons
 
     #region Geometry Scaling
 
-    private static PathGeometry ScaleGeometry(PathGeometry source, double scale, double offsetX, double offsetY)
+    /// <summary>
+    /// Returns a copy of <paramref name="source"/> with a uniform scale and translation
+    /// baked into every point. <c>internal</c> (rather than private) so tests can verify
+    /// that every <see cref="PathSegment"/> kind the parser can emit — including
+    /// <see cref="ArcSegment"/> — survives the transform.
+    /// </summary>
+    internal static PathGeometry ScaleGeometry(PathGeometry source, double scale, double offsetX, double offsetY)
     {
         var result = new PathGeometry();
         result.FillRule = source.FillRule;
@@ -142,6 +148,18 @@ public static class ArrowIcons
                             ScalePoint(quad.Point1, scale, offsetX, offsetY),
                             ScalePoint(quad.Point2, scale, offsetX, offsetY)));
                         break;
+
+                    case ArcSegment arc:
+                        // The arrow transform is a uniform scale (same factor on both axes)
+                        // plus a translation, so the arc keeps its shape: scale the endpoint
+                        // and the radii by the same factor and leave rotation / large-arc /
+                        // sweep direction untouched. Without this case an 'A'/'a' command
+                        // would parse correctly but be silently dropped here when drawn.
+                        newFigure.Segments.Add(new ArcSegment(
+                            ScalePoint(arc.Point, scale, offsetX, offsetY),
+                            new Size(arc.Size.Width * scale, arc.Size.Height * scale),
+                            arc.RotationAngle, arc.IsLargeArc, arc.SweepDirection, arc.IsStroked));
+                        break;
                 }
             }
 
@@ -159,222 +177,22 @@ public static class ArrowIcons
     #region SVG Path Parser
 
     /// <summary>
-    /// Parses SVG path data string into a PathGeometry.
-    /// Supports: M/m, L/l, H/h, V/v, C/c, Z/z commands.
+    /// Parses SVG / XAML path mini-language data into a <see cref="PathGeometry"/>.
     /// </summary>
-    internal static PathGeometry ParseSvgPath(string data)
-    {
-        var geometry = new PathGeometry();
-        var tokens = Tokenize(data);
-        var i = 0;
-        var currentPoint = new Point(0, 0);
-        var startPoint = new Point(0, 0);
-        char lastCommand = 'M';
-        PathFigure? currentFigure = null;
-
-        while (i < tokens.Count)
-        {
-            var token = tokens[i];
-            char cmd;
-            bool isRelative;
-
-            if (token.Length == 1 && char.IsLetter(token[0]))
-            {
-                cmd = token[0];
-                isRelative = char.IsLower(cmd);
-                lastCommand = cmd;
-                i++;
-            }
-            else
-            {
-                cmd = lastCommand;
-                isRelative = char.IsLower(cmd);
-            }
-
-            switch (char.ToUpperInvariant(cmd))
-            {
-                case 'M':
-                    if (ReadDouble(tokens, ref i, out var mx) && ReadDouble(tokens, ref i, out var my))
-                    {
-                        if (isRelative) { mx += currentPoint.X; my += currentPoint.Y; }
-                        currentPoint = new Point(mx, my);
-                        startPoint = currentPoint;
-
-                        // Close previous figure if any
-                        if (currentFigure != null)
-                        {
-                            geometry.Figures.Add(currentFigure);
-                        }
-
-                        currentFigure = new PathFigure
-                        {
-                            StartPoint = currentPoint,
-                            IsFilled = true
-                        };
-
-                        // After M, implicit command is L/l
-                        lastCommand = isRelative ? 'l' : 'L';
-                    }
-                    break;
-
-                case 'L':
-                    if (ReadDouble(tokens, ref i, out var lx) && ReadDouble(tokens, ref i, out var ly))
-                    {
-                        if (isRelative) { lx += currentPoint.X; ly += currentPoint.Y; }
-                        var lp = new Point(lx, ly);
-                        currentFigure?.Segments.Add(new LineSegment(lp));
-                        currentPoint = lp;
-                    }
-                    break;
-
-                case 'H':
-                    if (ReadDouble(tokens, ref i, out var hx))
-                    {
-                        if (isRelative) hx += currentPoint.X;
-                        var hp = new Point(hx, currentPoint.Y);
-                        currentFigure?.Segments.Add(new LineSegment(hp));
-                        currentPoint = hp;
-                    }
-                    break;
-
-                case 'V':
-                    if (ReadDouble(tokens, ref i, out var vy))
-                    {
-                        if (isRelative) vy += currentPoint.Y;
-                        var vp = new Point(currentPoint.X, vy);
-                        currentFigure?.Segments.Add(new LineSegment(vp));
-                        currentPoint = vp;
-                    }
-                    break;
-
-                case 'C':
-                    if (ReadDouble(tokens, ref i, out var c1x) && ReadDouble(tokens, ref i, out var c1y) &&
-                        ReadDouble(tokens, ref i, out var c2x) && ReadDouble(tokens, ref i, out var c2y) &&
-                        ReadDouble(tokens, ref i, out var cex) && ReadDouble(tokens, ref i, out var cey))
-                    {
-                        if (isRelative)
-                        {
-                            c1x += currentPoint.X; c1y += currentPoint.Y;
-                            c2x += currentPoint.X; c2y += currentPoint.Y;
-                            cex += currentPoint.X; cey += currentPoint.Y;
-                        }
-                        var cp1 = new Point(c1x, c1y);
-                        var cp2 = new Point(c2x, c2y);
-                        var ep = new Point(cex, cey);
-                        currentFigure?.Segments.Add(new BezierSegment(cp1, cp2, ep));
-                        currentPoint = ep;
-                    }
-                    break;
-
-                case 'Z':
-                    if (currentFigure != null)
-                    {
-                        currentFigure.IsClosed = true;
-                        geometry.Figures.Add(currentFigure);
-                        currentFigure = null;
-                    }
-                    currentPoint = startPoint;
-                    break;
-
-                case 'F':
-                    if (ReadDouble(tokens, ref i, out var fillRule))
-                    {
-                        geometry.FillRule = (int)fillRule == 1 ? FillRule.Nonzero : FillRule.EvenOdd;
-                    }
-                    break;
-
-                default:
-                    i++; // Skip unknown
-                    break;
-            }
-        }
-
-        // Add last figure if not closed
-        if (currentFigure != null)
-        {
-            geometry.Figures.Add(currentFigure);
-        }
-
-        return geometry;
-    }
-
-    private static bool ReadDouble(List<string> tokens, ref int i, out double value)
-    {
-        if (i < tokens.Count && double.TryParse(tokens[i], System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out value))
-        {
-            i++;
-            return true;
-        }
-        value = 0;
-        return false;
-    }
-
-    /// <summary>
-    /// Tokenizes SVG path data into command letters and numeric values.
-    /// Handles adjacent numbers separated by minus signs, and commands adjacent to numbers.
-    /// </summary>
-    private static List<string> Tokenize(string data)
-    {
-        var tokens = new List<string>(data.Length);
-        var current = new System.Text.StringBuilder();
-
-        for (int i = 0; i < data.Length; i++)
-        {
-            char c = data[i];
-
-            if (char.IsLetter(c))
-            {
-                // Flush current number
-                if (current.Length > 0)
-                {
-                    tokens.Add(current.ToString());
-                    current.Clear();
-                }
-                tokens.Add(c.ToString());
-            }
-            else if (c == '-')
-            {
-                // Minus sign: starts a new number if we already have digits
-                if (current.Length > 0)
-                {
-                    tokens.Add(current.ToString());
-                    current.Clear();
-                }
-                current.Append(c);
-            }
-            else if (c == '.')
-            {
-                // Check if we already have a decimal point in current token
-                if (current.Length > 0 && current.ToString().Contains('.'))
-                {
-                    // New number starts at this decimal point
-                    tokens.Add(current.ToString());
-                    current.Clear();
-                }
-                current.Append(c);
-            }
-            else if (char.IsDigit(c))
-            {
-                current.Append(c);
-            }
-            else if (c == ' ' || c == ',' || c == '\t' || c == '\n' || c == '\r')
-            {
-                if (current.Length > 0)
-                {
-                    tokens.Add(current.ToString());
-                    current.Clear();
-                }
-            }
-        }
-
-        if (current.Length > 0)
-        {
-            tokens.Add(current.ToString());
-        }
-
-        return tokens;
-    }
+    /// <remarks>
+    /// Delegates to <see cref="PathMarkupParser"/>, the framework's canonical full-grammar
+    /// parser, so the complete command set is supported: move (<c>M</c>/<c>m</c>); line
+    /// (<c>L</c>/<c>l</c>, <c>H</c>/<c>h</c>, <c>V</c>/<c>v</c>); cubic Bézier (<c>C</c>/<c>c</c>)
+    /// and its smooth form (<c>S</c>/<c>s</c>); quadratic Bézier (<c>Q</c>/<c>q</c>) and its
+    /// smooth form (<c>T</c>/<c>t</c>); elliptical arc (<c>A</c>/<c>a</c>); close
+    /// (<c>Z</c>/<c>z</c>); and the fill-rule extension (<c>F</c>) — including implicit command
+    /// repetition, smooth-curve control-point reflection, packed numbers and exponent notation.
+    /// This replaces an earlier hand-rolled parser that only understood
+    /// <c>M/L/H/V/C/Z</c> and silently discarded the <c>S</c>, <c>Q</c>, <c>T</c> and <c>A</c>
+    /// commands.
+    /// </remarks>
+    /// <exception cref="FormatException">The string is not valid path markup.</exception>
+    internal static PathGeometry ParseSvgPath(string data) => PathMarkupParser.Parse(data);
 
     #endregion
 }

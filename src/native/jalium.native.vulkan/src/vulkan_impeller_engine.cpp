@@ -380,6 +380,60 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
     int32_t edgeMode)
 {
     (void)edgeMode;  // Vulkan stroke already runs analytic AA via RasterizePathToRects.
+
+    // TRUE gradient strokes: build the stroke MESH in SOURCE space with a
+    // reference opaque color (so each vertex .a is the pure feather coverage),
+    // then recolor every vertex by sampling the gradient at its source position
+    // and transforming the position to pixels. Mirrors the D3D12 engine and the
+    // EncodeFillPath gradient branch. Dashed gradients fall through to the flat
+    // first-stop path below.
+    if ((brush.type == 1 || brush.type == 2 || brush.type == 3) &&
+        brush.stops && brush.stopCount > 0 &&
+        (!dashPattern || dashCount == 0) &&
+        commands && commandLength > 0 && strokeWidth > 0.0f) {
+        float gMaxScale = MaxScale(transform);
+        float gTol = (gMaxScale > 0.001f) ? flattenTolerance_ / gMaxScale : flattenTolerance_;
+        float featherSrc = (gMaxScale > 1e-4f) ? (1.0f / gMaxScale) : 1.0f;
+        std::vector<Contour> srcContours =
+            FlattenPathToContours(startX, startY, commands, commandLength, gTol);
+        if (!srcContours.empty()) {
+            auto gJoin = static_cast<ImpellerJoin>(lineJoin);
+            auto gCap  = static_cast<ImpellerCap>(lineCap);
+            std::vector<VkImpellerVertex> meshVerts;
+            std::vector<uint32_t>         meshIndices;
+            for (auto& c : srcContours) {
+                if (c.VertexCount() < 2) continue;
+                jalium::ExpandStrokePath<VkImpellerVertex>(
+                    meshVerts, meshIndices,
+                    c.points.data(), c.VertexCount(),
+                    strokeWidth, gJoin, miterLimit, gCap, closed,
+                    1.0f, 1.0f, 1.0f, 1.0f,   // reference color — recolored per vertex below
+                    /*collectContours*/ nullptr, featherSrc);
+            }
+            if (!meshVerts.empty() && !meshIndices.empty()) {
+                std::vector<float> stopData;
+                FlattenGradientStops(brush, stopData);
+                VkImpellerDrawBatch batch;
+                batch.vertices.resize(meshVerts.size());
+                batch.indices = meshIndices;
+                for (size_t i = 0; i < meshVerts.size(); ++i) {
+                    float lx = meshVerts[i].x, ly = meshVerts[i].y;   // source space
+                    float cov = meshVerts[i].a;                        // feather coverage
+                    GradientColor gc = SampleBrushGradient(brush, stopData.data(), lx, ly);
+                    float vx = lx, vy = ly;
+                    TransformPoint(vx, vy, transform);
+                    float a = gc.a * cov;                              // premultiplied
+                    batch.vertices[i] = VkImpellerVertex{ vx, vy, gc.r * a, gc.g * a, gc.b * a, a };
+                }
+                batch.pipelineType = 0;
+                PushBatch(std::move(batch));
+                encodedPathCount_++;
+                return true;
+            }
+        }
+        // Gradient stroke encode failed → fall through to the flat first-stop path.
+    }
+
     float maxScale = MaxScale(transform);
     float pxStrokeWidth = strokeWidth * maxScale;
     float pxDashOffset  = dashOffset  * maxScale;
@@ -525,6 +579,39 @@ bool ImpellerVulkanEngine::EncodeFillPolygon(
     const EngineTransform& transform)
 {
     if (pointCount < 3) return false;
+
+    // Gradient fill: triangulate the polygon and bake a true per-vertex gradient,
+    // exactly like EncodeFillPath's gradient branch. The solid path below only
+    // reads brush.r/g/b/a, which BuildEngineBrush leaves unset for gradient
+    // brushes — so a gradient MUST take this branch or it renders garbage.
+    if (brush.type == 1 || brush.type == 2 || brush.type == 3) {
+        if (!brush.stops || brush.stopCount == 0) return false;
+
+        std::vector<uint32_t> gradIndices;
+        if (!TriangulatePolygon(points, pointCount, gradIndices) || gradIndices.size() < 3) {
+            return false;
+        }
+
+        std::vector<float> stopData;
+        FlattenGradientStops(brush, stopData);
+
+        VkImpellerDrawBatch batch;
+        batch.vertices.reserve(gradIndices.size());
+        batch.indices.reserve(gradIndices.size());
+        for (uint32_t idx = 0; idx < (uint32_t)gradIndices.size(); ++idx) {
+            uint32_t vi = gradIndices[idx];
+            float px = points[vi * 2], py = points[vi * 2 + 1];
+            GradientColor gc = SampleBrushGradient(brush, stopData.data(), px, py);
+            float vx = px, vy = py;
+            TransformPoint(vx, vy, transform);
+            batch.vertices.push_back({ vx, vy, gc.r * gc.a, gc.g * gc.a, gc.b * gc.a, gc.a });
+            batch.indices.push_back(idx);
+        }
+        batch.pipelineType = 0;
+        PushBatch(std::move(batch));
+        encodedPathCount_++;
+        return true;
+    }
 
     float r = brush.r * brush.a;
     float g = brush.g * brush.a;

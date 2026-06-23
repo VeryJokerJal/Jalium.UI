@@ -219,6 +219,7 @@ bool D3D12DirectRenderer::Initialize(IDXGISwapChain3* swapChain, UINT frameCount
     for (UINT i = 0; i < frameCount_; i++) {
         HRESULT hr = swapChain_->GetBuffer(i, IID_PPV_ARGS(&renderTargets_[i]));
         if (FAILED(hr)) return false;
+        wchar_t dbgNm[40]; swprintf_s(dbgNm, L"JaliumBackBuffer%u", i); renderTargets_[i]->SetName(dbgNm);  // [JALIUM-921 diag] name so #921 points at the culprit
     }
 
     // RTV heap
@@ -270,6 +271,7 @@ bool D3D12DirectRenderer::Initialize(IDXGISwapChain3* swapChain, UINT frameCount
                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                 IID_PPV_ARGS(&frameConstantsBuffer_))))
             return false;
+        frameConstantsBuffer_->SetName(L"JaliumFrameConstants");  // [JALIUM-921 diag]
         frameConstantsBuffer_->Map(0, nullptr, &frameConstantsMapped_);
     }
 
@@ -324,6 +326,7 @@ bool D3D12DirectRenderer::Initialize(IDXGISwapChain3* swapChain, UINT frameCount
                         allReadbackOk = false;
                         break;
                     }
+                    timing_[i].readback->SetName(L"JaliumTimingReadback");  // [JALIUM-921 diag]
                     timing_[i].spanCategories.reserve(kMaxTimingSlotsPerFrame);
                 }
                 timingSupported_ = allReadbackOk;
@@ -406,6 +409,17 @@ void D3D12DirectRenderer::Shutdown()
 
 void D3D12DirectRenderer::ReleaseBackBufferReferences()
 {
+    // [JALIUM-921 diagnostic] If the list is open here, releasing the back-buffer
+    // references it still holds is part of the #921 setup.
+    if (cmdListRecording_.load(std::memory_order_acquire)) {
+        char buf[256];
+        sprintf_s(buf, "[JALIUM-921] *** ReleaseBackBufferReferences while commandList OPEN! curTid=%lu listOwnerTid=%lu inFrame_=%d ***\n",
+            GetCurrentThreadId(),
+            cmdListOwnerThread_.load(std::memory_order_acquire),
+            inFrame_ ? 1 : 0);
+        OutputDebugStringA(buf);
+    }
+
     // Wait for GPU idle before releasing
     if (fence_ && fenceEvent_) {
         auto queue = backend_->GetCommandQueue();
@@ -431,6 +445,18 @@ bool D3D12DirectRenderer::OnResize(UINT newWidth, UINT newHeight)
     if (!initialized_ || !device_ || !swapChain_)
         return false;
 
+    // [JALIUM-921 diagnostic] SMOKING GUN: we are about to Reset the back buffers /
+    // effect textures the open command list may still reference. If the list is open
+    // here, the next Close() will fire #921 OBJECT_DELETED_WHILE_STILL_IN_USE.
+    if (cmdListRecording_.load(std::memory_order_acquire)) {
+        char buf[256];
+        sprintf_s(buf, "[JALIUM-921] *** OnResize Reset while commandList OPEN! curTid=%lu listOwnerTid=%lu inFrame_=%d newSize=%ux%u ***\n",
+            GetCurrentThreadId(),
+            cmdListOwnerThread_.load(std::memory_order_acquire),
+            inFrame_ ? 1 : 0, newWidth, newHeight);
+        OutputDebugStringA(buf);
+    }
+
     // Back buffer references should already be released via ReleaseBackBufferReferences().
     // Defensive: release again in case caller didn't call it.
     for (UINT i = 0; i < frameCount_; i++) {
@@ -441,6 +467,7 @@ bool D3D12DirectRenderer::OnResize(UINT newWidth, UINT newHeight)
     for (UINT i = 0; i < frameCount_; i++) {
         HRESULT hr = swapChain_->GetBuffer(i, IID_PPV_ARGS(&renderTargets_[i]));
         if (FAILED(hr)) return false;
+        wchar_t dbgNm[40]; swprintf_s(dbgNm, L"JaliumBackBuffer%u", i); renderTargets_[i]->SetName(dbgNm);  // [JALIUM-921 diag]
     }
 
     // Recreate RTVs for the new back buffers
@@ -527,6 +554,7 @@ bool D3D12DirectRenderer::CreateFrameResources()
                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                 IID_PPV_ARGS(&fr.constantsBuffer))))
             return false;
+        fr.constantsBuffer->SetName(L"JaliumFrameConstantsRing");  // [JALIUM-921 diag]
         fr.constantsBuffer->Map(0, nullptr, &fr.constantsMappedPtr);
     }
 
@@ -541,6 +569,7 @@ bool D3D12DirectRenderer::CreateFrameResources()
             frames_[0].commandAllocator.Get(), nullptr,
             IID_PPV_ARGS(&commandList_))))
         return false;
+    commandList_->SetName(L"JaliumMainCmdList");  // [JALIUM-921 diag]
     commandList_->Close();
 
     return true;
@@ -548,7 +577,7 @@ bool D3D12DirectRenderer::CreateFrameResources()
 
 bool D3D12DirectRenderer::EnsureFrameInstanceCapacity(FrameResources& fr, size_t requiredBytes)
 {
-    if (fr.instanceUploadBuffer && fr.instanceCapacity >= requiredBytes) {
+    if (fr.instanceUploadBuffer && fr.instanceMappedPtr && fr.instanceCapacity >= requiredBytes) {
         return true;
     }
 
@@ -585,7 +614,15 @@ bool D3D12DirectRenderer::EnsureFrameInstanceCapacity(FrameResources& fr, size_t
         fr.instanceCapacity = 0;
         return false;
     }
+    fr.instanceUploadBuffer->SetName(L"JaliumInstanceUpload");  // [JALIUM-921 diag]
     fr.instanceUploadBuffer->Map(0, nullptr, &fr.instanceMappedPtr);
+    if (!fr.instanceMappedPtr) {
+        // Map fails on a removed device; a null mapped pointer would turn the
+        // memcpys in UploadInstances into an AV. Treat as growth failure.
+        fr.instanceUploadBuffer.Reset();
+        fr.instanceCapacity = 0;
+        return false;
+    }
     fr.instanceCapacity = newCap;
     return true;
 }
@@ -711,6 +748,7 @@ bool D3D12DirectRenderer::CreatePSOs()
     if (!wrapBytecode(ksdf_rect_ps, ksdf_rect_psSize, &sdfRectPS_)) return false;
     if (!wrapBytecode(kbitmap_text_vs, kbitmap_text_vsSize, &textVS_)) return false;
     if (!wrapBytecode(kbitmap_text_ps, kbitmap_text_psSize, &textPS_)) return false;
+    if (!wrapBytecode(kbitmap_text_smooth_ps, kbitmap_text_smooth_psSize, &textSmoothPS_)) return false;
     if (!wrapBytecode(kbitmap_quad_vs, kbitmap_quad_vsSize, &bitmapVS_)) return false;
     if (!wrapBytecode(kbitmap_quad_ps, kbitmap_quad_psSize, &bitmapPS_)) return false;
     if (!wrapBytecode(kcustom_effect_vs, kcustom_effect_vsSize, &customEffectVS_)) return false;
@@ -762,6 +800,13 @@ bool D3D12DirectRenderer::CreatePSOs()
     psoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
     psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     if (FAILED(device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&textPSO_))))
+        return false;
+
+    // Deformed-text PSO — identical dual-source ClearType blend, but the bilinear
+    // text PS (smooth sub-pixel sampling) so transform-scaled / animated text moves
+    // without per-glyph integer-snap jitter and thin strokes don't shimmer.
+    psoDesc.PS = { textSmoothPS_->GetBufferPointer(), textSmoothPS_->GetBufferSize() };
+    if (FAILED(device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&textSmoothPSO_))))
         return false;
 
     // Restore standard premultiplied alpha blend for subsequent PSOs
@@ -838,6 +883,14 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     if (!initialized_ || inFrame_) return false;
     if (frameIndex >= frameCount_) return false;
 
+    // Device gate: never open a frame on a removed device (GPU switch, driver
+    // restart, TDR). The fence below would read UINT64_MAX and wave the wait
+    // through, and the allocator/list Reset would silently fail — recording
+    // into a non-recording list inside a torn-down driver. BeginDraw re-checks
+    // the backend on a false return and surfaces DEVICE_LOST to managed.
+    if (device_ && FAILED(device_->GetDeviceRemovedReason())) return false;
+    frameDeviceLost_ = false;
+
     currentFrame_ = frameIndex;
     viewportWidth_ = width;
     viewportHeight_ = height;
@@ -882,6 +935,26 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
         }
     }
 
+    // The path stencil/MSAA scratch set is renderer-wide, not per-frame. The
+    // regular wait above protects only this swap-chain slot; without this
+    // additional dependency frame N+1 can clear and resolve the same scratch
+    // textures while frame N is still executing on the GPU. During continuous
+    // animation that presents as one stale/partially blended Path result per
+    // in-flight back buffer (typically three flashes on a triple-buffer chain).
+    if (pathScratchFenceValue_ > 0 &&
+        fence_->GetCompletedValue() < pathScratchFenceValue_) {
+        ResetEvent(fenceEvent_);
+        fence_->SetEventOnCompletion(pathScratchFenceValue_, fenceEvent_);
+        LARGE_INTEGER waitStart = QpcNow();
+        WaitForSingleObject(fenceEvent_, 50);
+        LARGE_INTEGER waitEnd = QpcNow();
+        accumulatingFrameWaitNs_ += QpcDiffNs(waitStart, waitEnd);
+        if (fence_->GetCompletedValue() < pathScratchFenceValue_) {
+            lastFrameGpuWaitNs_ = accumulatingFrameWaitNs_;
+            return false;
+        }
+    }
+
     // BeginFrame proceeded past the wait: flush the accumulator and stamp
     // the present-to-ready wall clock for the previously presented frame.
     lastFrameGpuWaitNs_ = accumulatingFrameWaitNs_;
@@ -914,9 +987,24 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
         backend_->ReclaimRetiredGpuResources(fence_->GetCompletedValue());
     }
 
-    // Reset allocator + command list
-    fr.commandAllocator->Reset();
-    commandList_->Reset(fr.commandAllocator.Get(), nullptr);
+    // Reset allocator + command list. Both fail on a removed device (and the
+    // gate above can race a removal happening right now); recording into a
+    // list that never re-opened is driver UB, so bail and let BeginDraw's
+    // device re-check classify the failure.
+    HRESULT resetHr = fr.commandAllocator->Reset();
+    if (SUCCEEDED(resetHr)) {
+        resetHr = commandList_->Reset(fr.commandAllocator.Get(), nullptr);
+    }
+    if (FAILED(resetHr)) {
+        return false;
+    }
+
+    // [JALIUM-921 diagnostic] The command list is now OPEN; the lines below record
+    // a barrier referencing renderTargets_[currentFrame_]. Mark recording HERE — not
+    // at inFrame_=true (end of this function) — so the open window is observable to a
+    // resize racing on another thread.
+    cmdListRecording_.store(true, std::memory_order_release);
+    cmdListOwnerThread_.store(GetCurrentThreadId(), std::memory_order_release);
 
     // ── 4× MSAA color target setup ─────────────────────────────────────
     // We render into a 4-sample MSAA texture and resolve to the swap-chain
@@ -1023,7 +1111,9 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     offscreenCaptureValid_[1] = false;
     offscreenResourcesUsedThisFrame_ = false;
     blurTempsUsedThisFrame_ = false;
+    pathMsaaUsedThisFrame_ = false;
     inOffscreenCapture_ = false;
+    inRetainedCapture_ = false;  // 防御：与 inOffscreenCapture_ 对称复位，兜底 retained-capture 标志在 resize/abort 时泄漏成 true（详见 EndRetainedLayerCapture），否则 effect capture 永久失败
     fr.constantsRingOffset = 0;  // reset ring buffer for this frame
 
     // Reset transform stack with identity
@@ -1058,17 +1148,50 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     return true;
 }
 
+bool D3D12DirectRenderer::CloseCommandListIfOpen(HRESULT* outCloseHr)
+{
+    if (outCloseHr) *outCloseHr = S_OK;
+    // Atomically claim the close: only the caller that flips recording true→false
+    // performs the Close, so the shared commandList_ is never Closed twice (an
+    // invalid op the D3D12 debug layer flags as an error).
+    if (!cmdListRecording_.exchange(false, std::memory_order_acq_rel)) {
+        return false;
+    }
+    cmdListOwnerThread_.store(0, std::memory_order_release);
+    if (commandList_) {
+        if (CheckFrameDeviceAlive()) {
+            HRESULT hr = commandList_->Close();
+            if (outCloseHr) *outCloseHr = hr;
+        } else if (outCloseHr) {
+            // Removed device: intentionally skip the physical Close (recording API
+            // into a torn-down driver is exactly what the abort avoids); leaving
+            // the list open is safe — the next BeginFrame is stopped at its own
+            // device gate before reusing it. Surface the removal in outCloseHr so
+            // EndFrame's FAILED(closeHr) branch returns DEVICE_LOST and skips
+            // ExecuteCommandLists/Present of the never-closed list — matching the
+            // pre-fix behavior where Close() itself failed on a removed device.
+            // (AbortFrame callers pass nullptr and are unaffected.)
+            HRESULT removed = device_ ? device_->GetDeviceRemovedReason() : DXGI_ERROR_DEVICE_REMOVED;
+            *outCloseHr = FAILED(removed) ? removed : DXGI_ERROR_DEVICE_REMOVED;
+        }
+    }
+    return true;
+}
+
 void D3D12DirectRenderer::AbortFrame()
 {
-    if (!inFrame_) return;
+    // Key on the REAL list state (cmdListRecording_), not inFrame_. The list is
+    // open from BeginFrame's commandList_->Reset (which precedes inFrame_=true)
+    // through EndFrame's Close (which follows inFrame_=false), so gating the abort
+    // on inFrame_ made it a no-op in those two windows — and a resize landing
+    // there freed the back buffer the still-open list referenced (#921). Closing
+    // is keyed on cmdListRecording_, which is true across both windows.
+    if (!cmdListRecording_.load(std::memory_order_acquire) && !inFrame_) return;
     inFrame_ = false;
 
-    // Close the command list without executing — discard all recorded commands.
-    // The GPU will never see this frame's work. No barrier transitions needed
-    // because the command list is never submitted to the queue.
-    if (commandList_) {
-        commandList_->Close();
-    }
+    // Discard the recorded commands without executing — the GPU never sees this
+    // frame. Idempotent (atomic claim) and device-removed-safe (skips the Close).
+    CloseCommandListIfOpen();
 
     // Clear instance collections so they don't leak into the next frame
     rectInstances_.clear();
@@ -1086,14 +1209,36 @@ void D3D12DirectRenderer::AbortFrame()
     offscreenCaptureValid_[1] = false;
     offscreenResourcesUsedThisFrame_ = false;
     blurTempsUsedThisFrame_ = false;
+    pathMsaaUsedThisFrame_ = false;
     inOffscreenCapture_ = false;
+    inRetainedCapture_ = false;  // 防御：与 inOffscreenCapture_ 对称复位，兜底 retained-capture 标志在 resize/abort 时泄漏成 true（详见 EndRetainedLayerCapture），否则 effect capture 永久失败
+}
+
+bool D3D12DirectRenderer::CheckFrameDeviceAlive()
+{
+    if (frameDeviceLost_) return false;
+    if (device_ && FAILED(device_->GetDeviceRemovedReason())) {
+        frameDeviceLost_ = true;
+        return false;
+    }
+    return true;
 }
 
 JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector<D3D12_RECT>& dirtyRects,
-                                    UINT syncInterval, UINT presentFlags)
+                                    UINT syncInterval, UINT presentFlags, bool reportTransientPresentFailure)
 {
     if (!inFrame_) return JALIUM_ERROR_INVALID_STATE;
-    inFrame_ = false;
+
+    // Mid-frame device removal (GPU switch, driver restart, TDR): every call
+    // below — SRV creation in RecordDrawCommands, Close, ExecuteCommandLists —
+    // reaches a user-mode driver whose internals are already torn down.
+    // NVIDIA's nvwgf2umx is known to AV (uncatchable in .NET) on that path
+    // rather than fail. Abandon the recorded frame and surface DEVICE_LOST so
+    // the managed recovery chain (dispose + rebuild context) takes over.
+    if (!CheckFrameDeviceAlive()) {
+        AbortFrame();
+        return JALIUM_ERROR_DEVICE_LOST;
+    }
 
     // Flush Vello paths before recording graphics commands
     FlushVelloPaths();
@@ -1101,6 +1246,17 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
     // Upload instance data + record draw commands
     UploadInstances();
     RecordDrawCommands();
+
+    // Re-check: the calls above can latch device loss themselves (Vello flush
+    // gate, mid-frame buffer growth failure). Abort before recording the
+    // barrier / GPU-timing / Close calls below into the dead driver. inFrame_
+    // intentionally stays true until this point so AbortFrame's guard passes;
+    // none of the three calls above read it.
+    if (frameDeviceLost_) {
+        AbortFrame();
+        return JALIUM_ERROR_DEVICE_LOST;
+    }
+    inFrame_ = false;
 
     // Transition back buffer RENDER_TARGET → PRESENT (matching the original
     // pre-MSAA flow now that we render directly into the swap chain).
@@ -1132,18 +1288,40 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
         }
     }
 
-    // Close and execute
-    HRESULT closeHr = commandList_->Close();
+    // Close and execute. Route through CloseCommandListIfOpen so the close is
+    // claimed atomically (no double Close vs a same-thread resize-initiated abort)
+    // and cmdListRecording_/cmdListOwnerThread_ clear in lockstep. If the list was
+    // already closed under us (a resize abort claimed it), this frame is abandoned:
+    // do NOT Execute/Present a torn-down list — clear residual state and bail,
+    // mirroring the device-lost abort branches above.
+    HRESULT closeHr = S_OK;
+    if (!CloseCommandListIfOpen(&closeHr)) {
+        AbortFrame();
+        return JALIUM_ERROR_INVALID_STATE;
+    }
     if (FAILED(closeHr)) {
         // Command list recording had errors — submitting it would cause device removal.
         // Log the failure and skip this frame.
         LogDeviceRemovedReason("CommandList::Close", device_, closeHr);
+        // Distinguish "recording error" from "device died under us": reporting
+        // DEVICE_LOST here lets the managed recovery rebuild the context on its
+        // FIRST attempt (forceNewContext) instead of burning a retry round on
+        // INVALID_STATE before the next BeginDraw re-classifies it.
+        if (device_ && FAILED(device_->GetDeviceRemovedReason())) {
+            return JALIUM_ERROR_DEVICE_LOST;
+        }
         return JALIUM_ERROR_INVALID_STATE;
     }
     ID3D12CommandList* lists[] = { commandList_.Get() };
     backend_->GetCommandQueue()->ExecuteCommandLists(1, lists);
 
-    // Present
+    // Present — timed separately (presentStartQpc → presentBlockNs) because
+    // under a slow compositor (occlusion throttling, remote/virtual displays)
+    // a vsync-aligned Present blocks the calling thread for the whole DWM
+    // buffer-retire interval (measured 130-460 ms). DevTools peels this out
+    // of the "EndDraw" API row so the stall can't masquerade as CPU encode
+    // work — same treatment the BeginDraw waitable wait already gets.
+    LARGE_INTEGER presentStartQpc = QpcNow();
     HRESULT hr;
     if (useDirtyRects && !dirtyRects.empty()) {
         LONG bbW = (LONG)viewportWidth_;
@@ -1185,9 +1363,14 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
         }
     }
 
+    lastFramePresentBlockNs_ = QpcDiffNs(presentStartQpc, QpcNow());
+
     // Signal fence for this frame
     frames_[currentFrame_].fenceValue = nextFenceValue_++;
     backend_->GetCommandQueue()->Signal(fence_.Get(), frames_[currentFrame_].fenceValue);
+    if (pathMsaaUsedThisFrame_) {
+        pathScratchFenceValue_ = frames_[currentFrame_].fenceValue;
+    }
 
     // Frame-pacing: stamp the QPC tick at the moment Signal is issued. The
     // next BeginFrame's "wait completed" tick minus this gives ≈ GPU work
@@ -1212,7 +1395,24 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
     }
 
     // Transient Present failure (e.g. DXGI_ERROR_INVALID_CALL during resize,
-    // mode change, etc.).  Treat as a dropped frame — the next frame will retry.
+    // mode change, etc.) on a healthy device — the frame's GPU work was
+    // submitted, only the present was dropped.
+    //
+    // Under external present pacing this MUST surface to managed code: the
+    // scheduler consumed a present credit at BeginDraw, and a FAILED Present
+    // never signals the frame-latency waitable. Swallowing the error here
+    // (returning OK) strands that credit — the event-driven scheduler then
+    // starves until the 500 ms heartbeat. Credit-conservation iron rule: a
+    // credit returns to the pool ONLY via a successful present's waitable
+    // signal or an explicit managed-side return; native must never eat a
+    // failed present. PRESENT_FAILED (not INVALID_STATE) keeps the managed
+    // handler on the repaint path instead of a needless RT rebuild.
+    if (reportTransientPresentFailure) {
+        return JALIUM_ERROR_PRESENT_FAILED;
+    }
+
+    // Legacy contract (no external pacing): treat as a dropped frame — the
+    // next frame will retry.
     return JALIUM_OK;
 }
 
@@ -1317,6 +1517,7 @@ void D3D12DirectRenderer::SetDpiScale(float dpiScale)
 static inline bool BatchStateCompatibleForMerge(const DrawBatch& prev, const DrawBatch& cand)
 {
     if (prev.type != cand.type) return false;
+    if (prev.smoothText != cand.smoothText) return false;  // different text PSO (point vs bilinear)
     if (prev.hasScissor != cand.hasScissor) return false;
     if (cand.hasScissor) {
         if (prev.scissor.left   != cand.scissor.left  ||
@@ -1339,7 +1540,7 @@ void D3D12DirectRenderer::AddSdfRect(const SdfRectInstance& inst)
     if (rectInstances_.size() >= kMaxInstancesPerFrame) {
         // Auto-flush: upload and record the current batch, then continue
         // instead of dropping the draw call.
-        FlushGraphicsForCompute();
+        if (!FlushGraphicsForCompute()) return;  // device lost — frame will abort
     }
 
     // Build the fully-resolved instance first.  Transform/opacity/shape are
@@ -1355,23 +1556,17 @@ void D3D12DirectRenderer::AddSdfRect(const SdfRectInstance& inst)
 
     adjusted.opacity *= currentOpacity_;
 
+    // Carry the full current transform into the instance; the vertex shader
+    // applies it to the quad corners (oriented-quad path). Position, size, corner
+    // radii, border width and gradient geometry stay in the caller's pre-transform
+    // space, so rotation / negative-diagonal (180 deg) / skew are no longer
+    // collapsed into a mispositioned axis-aligned quad by a sign-stripped sqrt()
+    // scale. For an un-rotated element this matrix is identity and the emitted
+    // quad + SDF inputs are bit-identical to the legacy CPU-pre-transform path.
     const auto& t = transformStack_.top();
-    float newX = adjusted.posX * t.m11 + adjusted.posY * t.m21 + t.dx;
-    float newY = adjusted.posX * t.m12 + adjusted.posY * t.m22 + t.dy;
-    adjusted.posX = newX;
-    adjusted.posY = newY;
-
-    float scaleX = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
-    float scaleY = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
-    adjusted.sizeX *= scaleX;
-    adjusted.sizeY *= scaleY;
-
-    float avgScale = (scaleX + scaleY) * 0.5f;
-    adjusted.cornerTL *= avgScale;
-    adjusted.cornerTR *= avgScale;
-    adjusted.cornerBR *= avgScale;
-    adjusted.cornerBL *= avgScale;
-    adjusted.borderWidth *= avgScale;
+    adjusted.xfM11 = t.m11; adjusted.xfM12 = t.m12;
+    adjusted.xfM21 = t.m21; adjusted.xfM22 = t.m22;
+    adjusted.xfDx  = t.dx;  adjusted.xfDy  = t.dy;
 
     if (adjusted.shapeType <= 0.0f) {
         adjusted.shapeType = currentShapeType_;
@@ -1415,7 +1610,7 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     if (!glyphAtlas_ || !layout) return;
 
     if (textInstances_.size() >= kMaxInstancesPerFrame) {
-        FlushGraphicsForCompute();
+        if (!FlushGraphicsForCompute()) return;  // device lost — frame will abort
     }
 
     uint32_t startIdx = (uint32_t)textInstances_.size();
@@ -1428,21 +1623,32 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     // Apply current opacity
     float effectiveA = a * currentOpacity_;
 
+    // Per-axis transform scale this text will undergo on screen. We hand these to
+    // GenerateGlyphs so each glyph is rasterized ALREADY-deformed (scaleX wide,
+    // scaleY tall) via a DWRITE_MATRIX — so a liquid-glass squeeze stays crisp
+    // (thin stems survive: no d->c / r->l) instead of point-minifying an isotropic
+    // atlas. GenerateGlyphs quantizes these internally for the cache; the quads
+    // come back BASE-DIP and the post-transform scaling below restores on-screen
+    // size 1:1 against the deformed bitmap.
+    float scaleX = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
+    float scaleY = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
+
     // Collect glyph instances and text decorations
     std::vector<D3D12GlyphAtlas::TextDecorationRect> decorations;
     uint32_t count = glyphAtlas_->GenerateGlyphs(layout, tx, ty, r, g, b, effectiveA,
                                                   textInstances_, &decorations,
                                                   layoutKey,
-                                                  aaMode, hintingMode);
+                                                  aaMode, hintingMode,
+                                                  scaleX, scaleY);
 
     // Apply transform scaling to each glyph instance.
-    // GenerateGlyphs places glyphs at absolute screen positions using the
-    // transformed origin (tx,ty), but the glyph offsets within the layout
-    // and glyph sizes are not scaled.  When a non-identity transform is
-    // active (e.g. liquid glass ScaleTransform), scale each glyph's
-    // position (relative to origin) and size so text visually deforms.
-    float scaleX = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
-    float scaleY = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
+    // GenerateGlyphs emits BASE-DIP quads (any rasterScale magnification was
+    // divided back out) positioned relative to the transformed origin (tx,ty).
+    // Scaling position + size by the transform's axis scales here magnifies the
+    // base-DIP quad to its on-screen size; because the atlas bitmap was already
+    // rasterized at rasterScale, the magnified quad stays crisp instead of
+    // mosaicking (rasterScale rounds the magnitude up, so the bitmap is never
+    // upscaled past 1:1 — at most a slightly hi-res atlas is minified).
     if (count > 0 && (std::abs(scaleX - 1.0f) > 0.001f || std::abs(scaleY - 1.0f) > 0.001f)) {
         for (uint32_t i = startIdx; i < startIdx + count; i++) {
             auto& g = textInstances_[i];
@@ -1458,6 +1664,11 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     if (count > 0) {
         DrawBatch candidate;
         candidate.type = DrawBatchType::Text;
+        // Deformed text (any transform scale) draws with the bilinear text PSO so
+        // it animates smoothly (no per-glyph integer-snap jitter / thin-stroke
+        // shimmer); 1:1 text stays on the crisp point PSO.
+        candidate.smoothText = (std::abs(scaleX - 1.0f) > 0.001f ||
+                                std::abs(scaleY - 1.0f) > 0.001f);
         candidate.instanceOffset = startIdx;
         candidate.instanceCount = count;
         candidate.hasScissor = !scissorStack_.empty();
@@ -1508,7 +1719,7 @@ void D3D12DirectRenderer::AddBitmap(float x, float y, float w, float h, float op
     if (!textureResource) return;
     if (bitmapInstances_.size() >= kMaxInstancesPerFrame) {
         // Auto-flush: upload and record the current batch, then continue
-        FlushGraphicsForCompute();
+        if (!FlushGraphicsForCompute()) return;  // device lost — frame will abort
     }
 
     // Map JaliumBitmapScalingMode → shader sampler slot (s0=linear, s1=point, s2=aniso).
@@ -1533,16 +1744,15 @@ void D3D12DirectRenderer::AddBitmap(float x, float y, float w, float h, float op
     inst.opacity = opacity * currentOpacity_;
     inst.samplerIdx = samplerIdx;
 
-    // Apply current transform (CPU-side)
+    // Carry the full current transform into the instance; the vertex shader
+    // applies it to the quad corners so rotated / 180-deg-flipped / skewed
+    // bitmaps (incl. retained-layer composites and offscreen blits) render
+    // correctly instead of being mispositioned by the old sign-stripped scale.
+    // pos/size stay in pre-transform space. Identity => bit-identical output.
     const auto& t = transformStack_.top();
-    float newX = inst.posX * t.m11 + inst.posY * t.m21 + t.dx;
-    float newY = inst.posX * t.m12 + inst.posY * t.m22 + t.dy;
-    inst.posX = newX;
-    inst.posY = newY;
-    float scaleX = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
-    float scaleY = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
-    inst.sizeX *= scaleX;
-    inst.sizeY *= scaleY;
+    inst.xfM11 = t.m11; inst.xfM12 = t.m12;
+    inst.xfM21 = t.m21; inst.xfM22 = t.m22;
+    inst.xfDx  = t.dx;  inst.xfDy  = t.dy;
 
     DrawBatch candidate;
     candidate.type = DrawBatchType::Bitmap;
@@ -1599,7 +1809,7 @@ void D3D12DirectRenderer::AddTriangles(const TriangleVertex* vertices, uint32_t 
 
     if (triangleVertices_.size() + vertexCount > kMaxInstancesPerFrame * 16) {
         // Auto-flush to avoid buffer overflow
-        FlushGraphicsForCompute();
+        if (!FlushGraphicsForCompute()) return;  // device lost — frame will abort
     }
 
     // Apply current transform and opacity to all vertices
@@ -1651,7 +1861,7 @@ void D3D12DirectRenderer::AddTrianglesPreTransformed(const TriangleVertex* verti
     if (!inFrame_ || !vertices || vertexCount < 3) return;
 
     if (triangleVertices_.size() + vertexCount > kMaxInstancesPerFrame * 16) {
-        FlushGraphicsForCompute();
+        if (!FlushGraphicsForCompute()) return;  // device lost — frame will abort
     }
 
     // Vertices are already in pixel-space with opacity applied — add directly
@@ -1927,7 +2137,7 @@ void D3D12DirectRenderer::FlushVelloPaths()
 {
     if (!velloRenderer_ || !velloRenderer_->HasWork() || !inFrame_) return;
 
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) return;  // device lost — frame will abort
 
     // Pass current scissor to Vello for tile culling
     if (!scissorStack_.empty()) {
@@ -1976,6 +2186,60 @@ void D3D12DirectRenderer::FlushVelloPaths()
     velloRenderer_->DrainRetiredHeaps(fr.retiredDescriptorHeaps);
 }
 
+// TEST-ONLY (#921 Vello-output regression self-check). Must be called with the
+// command list already open (D3D12RenderTarget::DebugForceVelloOutputOrphan stages
+// that the same way BeginDraw does). Reproduces the exact 'JaliumVelloOutput' orphan
+// the fix addresses, then reports — without needing the D3D12 debug layer — whether
+// the output texture survived. Steps mirror FlushVelloPaths' core (above):
+//   A. encode a Vello path so Dispatch produces an output texture;
+//   B. Dispatch -> capture the live output pointer -> AddBitmap composites it into
+//      the bitmap keep-alive list -> ForceNewOutputTexture() drops Vello's own ref
+//      (post-fix: parks it on pendingRetiredResources_ -> DrainRetired moves it onto
+//      frames_[currentFrame_].retiredInstanceBuffers; pre-fix: bare Reset, so the
+//      bitmap entry is the SOLE owner);
+//   C. the mid-frame FlushGraphicsForCompute() clears the bitmap keep-alive while the
+//      command list still references the texture (the #921 drop site).
+// Detection: the captured pointer is still present on retiredInstanceBuffers iff the
+// fix parked it. The pointer is only COMPARED, never dereferenced, so the scan is
+// safe even when a regression has already freed the texture.
+int32_t D3D12DirectRenderer::DebugForceVelloOutputOrphan(int32_t* outAlive) {
+    if (outAlive) *outAlive = 0;
+    if (!IsCommandListRecording()) return -4;        // caller must have opened the list
+    if (!velloEnabled_ || !EnsureVelloRenderer() || !velloRenderer_) return -5;
+
+    // Step A — give Vello real path work (a small triangle), encoded directly on the
+    // renderer to bypass FillPath's solid-color stencil fast-path. Tags: 0=LineTo,
+    // 5=ClosePath (jalium_triangulate.h); startX/startY is the implicit MoveTo.
+    const float cmds[] = { 0.0f, 120.0f, 40.0f, 0.0f, 80.0f, 110.0f, 5.0f };
+    velloRenderer_->EncodeFillPath(40.0f, 40.0f, cmds, 7u,
+                                   1.0f, 0.0f, 0.0f, 1.0f, /*fillRule NonZero*/ 1u);
+    if (!velloRenderer_->HasWork()) return -6;        // path rejected — cannot stage
+
+    // Step B — dispatch (creates outputTexture_), capture it, composite + retire.
+    if (!velloRenderer_->Dispatch(commandList_.Get(), currentFrame_)) return -7;
+    ID3D12Resource* parked = velloRenderer_->GetOutputTexture();
+    if (!parked) return -8;
+    const float w = (float)viewportWidth_ / dpiScale_;
+    const float h = (float)viewportHeight_ / dpiScale_;
+    AddBitmap(0.0f, 0.0f, w, h, 1.0f, parked, DXGI_FORMAT_R8G8B8A8_UNORM, 1.0f, 1.0f);
+    velloRenderer_->ForceNewOutputTexture();          // fix parks `parked`; regression bare-Resets it
+    velloRenderer_->BeginFrame(viewportWidth_, viewportHeight_);
+    auto& fr = frames_[currentFrame_];
+    velloRenderer_->DrainRetired(fr.retiredInstanceBuffers);
+    velloRenderer_->DrainRetiredHeaps(fr.retiredDescriptorHeaps);
+
+    // Step C — the mid-frame clear that used to free the sole keep-alive while the
+    // open command list still referenced the texture.
+    if (!FlushGraphicsForCompute()) return -9;        // device lost mid-stage
+
+    // Detection (deterministic, debug-layer-independent): is `parked` still pinned on
+    // the fence-gated retired list?
+    for (const auto& r : fr.retiredInstanceBuffers) {
+        if (r.Get() == parked) { if (outAlive) *outAlive = 1; break; }
+    }
+    return 0;
+}
+
 // ============================================================================
 // Upload + Record
 // ============================================================================
@@ -2019,7 +2283,23 @@ void D3D12DirectRenderer::UploadInstances()
         }
         const size_t requiredBytes = probe + kMidFrameReserveBytes;
         if (!EnsureFrameInstanceCapacity(fr, requiredBytes)) {
-            OutputDebugStringA("[D3D12DirectRenderer] FATAL: failed to grow instance upload buffer\n");
+            // Growth failure is either OOM or — far more likely mid-frame — a
+            // removed device: CreateCommittedResource fails AFTER the old
+            // buffer was parked, leaving fr.instanceUploadBuffer null. Latch
+            // device loss so EndFrame aborts instead of recording, and drop
+            // this flush's batches so RecordDrawCommands (batches_ empty) can
+            // never bind a null instance buffer.
+            OutputDebugStringA("[D3D12DirectRenderer] FATAL: failed to grow instance upload buffer — dropping frame content\n");
+            if (device_ && FAILED(device_->GetDeviceRemovedReason())) {
+                frameDeviceLost_ = true;
+            }
+            rectInstances_.clear();
+            textInstances_.clear();
+            bitmapInstances_.clear();
+            triangleVertices_.clear();
+            bitmapTextures_.clear();
+            stencilPathDraws_.clear();
+            batches_.clear();
             return;
         }
     }
@@ -2230,6 +2510,14 @@ void D3D12DirectRenderer::UploadInstances()
 void D3D12DirectRenderer::RecordDrawCommands()
 {
     if (batches_.empty()) return;
+    // Latched device loss (an earlier flush this frame detected removal):
+    // recording SRVs/draws below would reach the torn-down UMD.
+    if (frameDeviceLost_) return;
+    // Defense-in-depth: a flush whose instance buffer died (removed device
+    // during mid-frame growth) drops its batches above, so this cannot trip —
+    // but binding a null instance buffer is the exact signature of the
+    // GPU-switch AV inside the UMD, so refuse outright.
+    if (!frames_[currentFrame_].instanceUploadBuffer) return;
 
     // Set root signature + descriptor heap
     commandList_->SetGraphicsRootSignature(rootSignature_.Get());
@@ -2258,10 +2546,6 @@ void D3D12DirectRenderer::RecordDrawCommands()
 
     // Set topology
     commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-    // Default scissor
-    D3D12_RECT fullScissor = { 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ };
-    D3D12_RECT currentScissor = fullScissor;
 
     // Build lookup: batchIndex → bitmapTextures_ index for bitmap batches
     size_t nextBitmapTexIdx = 0;
@@ -2302,9 +2586,43 @@ void D3D12DirectRenderer::RecordDrawCommands()
         return slot;
     };
 
+    // Path render extent — the viewport the stencil-path arm rasterizes and the
+    // resolve blits through, and the divisor the path VS turns positions into NDC
+    // with. Inside an element-effect capture the path must register with the rest
+    // of the captured subtree, which Begin*Capture draws at the pw×ph capture
+    // viewport — so the path uses the capture extent, NOT the window viewport.
+    // This is what makes an OVERSIZED capture (pw > viewportWidth_ or
+    // ph > viewportHeight_ — a maximized/full-window element plus effect padding,
+    // or a retained-animation container larger than the window) render the path
+    // UNTRUNCATED and aligned with its non-path siblings instead of clipping it at
+    // the window edge. The MSAA scratch + resolve grow to cover this extent
+    // (grow-only; EnsureStencilDepthBuffer) and the blit samples only the used
+    // sub-region via a uv-scale, so the common window-sized case never churns
+    // resources and renders bit-identically (uv-scale 1.0). This extent is ALSO
+    // the default (no-clip) scissor for every batch in this flush — see the two
+    // RSSetScissorRects else-branches below. Begin*Capture clears the scissor
+    // stack, so an un-clipped batch inside a capture (path OR non-path) carries
+    // hasScissor=false and falls into that default; it must be allowed to fill the
+    // whole pw×ph capture target, not just the window, or OVERSIZED non-path
+    // content would truncate at the window edge and de-register from the
+    // now-untruncated path. In non-capture rendering this is exactly the window
+    // viewport, so those scissors are byte-identical to before. The capture state
+    // is constant for this whole flush, so compute the extent once. The >0 guard
+    // falls back to the window viewport if a capture is somehow active with a
+    // degenerate zero extent.
+    const bool pathInCapture = (inOffscreenCapture_ || inRetainedCapture_);
+    const UINT pathContentW =
+        (pathInCapture && captureViewportW_ > 0) ? captureViewportW_ : viewportWidth_;
+    const UINT pathContentH =
+        (pathInCapture && captureViewportH_ > 0) ? captureViewportH_ : viewportHeight_;
+
     auto enterPathMode = [&]() {
         if (pathActiveOnMsaa) return;
-        if (!EnsureStencilDepthBuffer(viewportWidth_, viewportHeight_)) return;
+        if (!EnsureStencilDepthBuffer(pathContentW, pathContentH)) return;
+        // [#921] The pathMsaa* scratch is about to be bound into the open command
+        // list; block any further mid-frame regrow of it (see
+        // EnsureStencilDepthBuffer's pathMsaaUsedThisFrame_ guard).
+        pathMsaaUsedThisFrame_ = true;
 
         // Stencil-then-cover paths run in their own MSAA scratch RT and don't
         // go through the PSO-switch arm below, so tag the timing category
@@ -2322,6 +2640,21 @@ void D3D12DirectRenderer::RecordDrawCommands()
         auto rtvHandle = pathMsaaRtvHeap_->GetCPUDescriptorHandleForHeapStart();
         auto dsvHandle = stencilDsvHeap_->GetCPUDescriptorHandleForHeapStart();
         commandList_->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
+
+        // The stencil-path VS computes NDC from the path-content root constants
+        // (rootConsts[12..15] = pathContentW/pathContentH, below) and rasterizes
+        // through a viewport of the same extent, so a path vertex at content-local
+        // pixel (px,py) lands at scratch texel (px,py). The ambient viewport here
+        // is whatever the last batch left bound (the pw×ph capture rect during a
+        // capture); force the path-content viewport so the path always lands at
+        // content-local pixels [0,W)×[0,H) — the texels the resolve blit copies
+        // into the target. In normal rendering pathContentW/H is the window
+        // viewport (this is a no-op then); inside an element-effect capture it is
+        // the capture extent, so an OVERSIZED capture rasterizes untruncated — the
+        // scratch was grown to cover it (EnsureStencilDepthBuffer above) and the
+        // resolve later samples just this [0,W)×[0,H) sub-region.
+        D3D12_VIEWPORT pathViewport = { 0, 0, (float)pathContentW, (float)pathContentH, 0, 1 };
+        commandList_->RSSetViewports(1, &pathViewport);
 
         // On the first path batch of the frame, clear MSAA color to
         // transparent and stencil to 0 so old contents don't leak.
@@ -2366,65 +2699,118 @@ void D3D12DirectRenderer::RecordDrawCommands()
         pathMsaaColorState_  = D3D12_RESOURCE_STATE_RENDER_TARGET;
         pathResolveTexState_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
+        // Capture-aware blit destination. During an element-effect offscreen
+        // capture (or a retained-layer realize), the active render target is the
+        // capture texture, NOT the swap-chain back buffer — its RTV and capture
+        // viewport were stashed by Begin*Capture. Resolving the path scratch to
+        // the back buffer here would both (a) drop the path from the captured
+        // content and (b) leave a displaced stray copy on the main window. Pick
+        // the capture RTV whenever a capture is in flight so the path composites
+        // into the same texture as the rest of the captured subtree. (Guarding
+        // here — inside exitPathMode rather than in End*Capture — makes the path
+        // RESOLVE follow the capture no matter which FlushGraphicsForCompute caller
+        // triggers it mid-capture. Note: nested compute effects (BlurRegion /
+        // LiquidGlass / snapshot) that themselves rebind the back buffer mid-capture
+        // are a separate, pre-existing gap not addressed here.)
+        const bool inCapture = (inOffscreenCapture_ || inRetainedCapture_);
+        const D3D12_CPU_DESCRIPTOR_HANDLE blitRtv =
+            inCapture ? captureRtv_ : GetSwapChainRtvHandle();
+
         // Allocate one SRV slot for the resolve texture and write the SRV.
         UINT srvSlot = allocResolveSrvSlot();
-        if (srvSlot == UINT_MAX) {
-            // No SRV budget left — skip the blit but still keep state
-            // consistent so the next batch doesn't crash. The path output
-            // is dropped; non-path content remains correct.
-            pathScratchClearedThisFrame = false;
-            pathActiveOnMsaa = false;
-            currentPSO = DrawBatchType::SdfRect;
-            commandList_->SetPipelineState(sdfRectPSO_.Get());
-            return;
+        if (srvSlot != UINT_MAX) {
+            auto srvCpu = srvHeap_->GetCPUDescriptorHandleForHeapStart();
+            srvCpu.ptr += srvSlot * srvDescriptorSize_;
+            D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            srvDesc.Texture2D.MipLevels = 1;
+            device_->CreateShaderResourceView(pathResolveTexture_.Get(), &srvDesc, srvCpu);
+            auto srvGpu = srvHeap_->GetGPUDescriptorHandleForHeapStart();
+            srvGpu.ptr += srvSlot * srvDescriptorSize_;
+
+            // Bind the blit target (no DSV) and run the fullscreen-triangle blit
+            // at the path-content viewport. enterPathMode rasterized the path
+            // through that same extent, so it sits at content-local texels
+            // [0,W)×[0,H) of the resolve texture; a content-sized blit lands it at
+            // the matching [0,W)×[0,H) texels of the target. The resolve texture is
+            // grow-only and may be LARGER than the content (an earlier oversized
+            // capture grew it), so the uv-scale below samples only its used corner
+            // — without it a bigger-than-content texture would squish across the
+            // viewport. In capture mode W×H is the pw×ph capture viewport, so the
+            // blit fills the offscreen RT / retained layer exactly (no longer
+            // relying on RT-bounds clipping); outside capture it is the window.
+            commandList_->OMSetRenderTargets(1, &blitRtv, FALSE, nullptr);
+            D3D12_VIEWPORT blitViewport = { 0, 0, (float)pathContentW, (float)pathContentH, 0, 1 };
+            D3D12_RECT blitScissor = { 0, 0, (LONG)pathContentW, (LONG)pathContentH };
+            commandList_->RSSetViewports(1, &blitViewport);
+            commandList_->RSSetScissorRects(1, &blitScissor);
+
+            commandList_->SetGraphicsRootSignature(pathResolveRootSig_.Get());
+            ID3D12DescriptorHeap* heaps[] = { srvHeap_.Get() };
+            commandList_->SetDescriptorHeaps(1, heaps);
+            commandList_->SetGraphicsRootDescriptorTable(0, srvGpu);
+            // uv-scale = content / allocated texture: samples only the used
+            // top-left sub-region of the grow-only resolve texture. Exactly (1,1)
+            // when the texture is content-sized (the common, never-grown case),
+            // reproducing the original 1:1 blit. pathMsaaWidth_/Height_ are the
+            // allocated texels (≥ content) set by EnsureStencilDepthBuffer.
+            const float resolveUvScale[4] = {
+                (pathMsaaWidth_  > 0) ? (float)pathContentW / (float)pathMsaaWidth_  : 1.0f,
+                (pathMsaaHeight_ > 0) ? (float)pathContentH / (float)pathMsaaHeight_ : 1.0f,
+                0.0f, 0.0f,
+            };
+            commandList_->SetGraphicsRoot32BitConstants(1, 4, resolveUvScale, 0);
+            commandList_->SetPipelineState(psoPathResolve_.Get());
+            commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            commandList_->IASetVertexBuffers(0, 0, nullptr);
+            commandList_->DrawInstanced(3, 1, 0, 0);
         }
-        auto srvCpu = srvHeap_->GetCPUDescriptorHandleForHeapStart();
-        srvCpu.ptr += srvSlot * srvDescriptorSize_;
-        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
-        srvDesc.Texture2D.MipLevels = 1;
-        device_->CreateShaderResourceView(pathResolveTexture_.Get(), &srvDesc, srvCpu);
-        auto srvGpu = srvHeap_->GetGPUDescriptorHandleForHeapStart();
-        srvGpu.ptr += srvSlot * srvDescriptorSize_;
+        // else: no SRV budget — drop this path run's blit, but STILL fall through
+        // to the restore tail below. Returning early here is the old latent bug:
+        // it left the stencil-path root signature + 8× MSAA scratch RT (with DSV)
+        // bound under the 1× sdfRect PSO, a root-sig/PSO/sample-count mismatch that
+        // corrupts or device-removes the next batch.
 
-        // Rebind swap-chain RT (no DSV) and run the fullscreen-triangle blit.
-        auto rtvHandle = GetSwapChainRtvHandle();
-        commandList_->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
-        D3D12_RECT fullScissor = { 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ };
-        commandList_->RSSetScissorRects(1, &fullScissor);
-
-        commandList_->SetGraphicsRootSignature(pathResolveRootSig_.Get());
-        ID3D12DescriptorHeap* heaps[] = { srvHeap_.Get() };
-        commandList_->SetDescriptorHeaps(1, heaps);
-        commandList_->SetGraphicsRootDescriptorTable(0, srvGpu);
-        commandList_->SetPipelineState(psoPathResolve_.Get());
-        commandList_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        commandList_->IASetVertexBuffers(0, 0, nullptr);
-        commandList_->DrawInstanced(3, 1, 0, 0);
-
-        // Restore main root signature + descriptor heap so the next
-        // non-path batch picks up where it left off. Root constants and
-        // descriptor table bindings on root sigs are independent — we
-        // must re-emit them.
+        // ── Restore tail (runs whether or not the blit happened) ──
+        // Re-emit the main root signature + this flush's CBV + instance descriptor
+        // table; root constants and descriptor-table bindings don't survive a root
+        // signature switch, so the next non-path batch needs them re-bound. These
+        // are correct in capture mode too: cbOffset/srvGpuBase reference the capture
+        // flush's own sub-region constants and instances.
         commandList_->SetGraphicsRootSignature(rootSignature_.Get());
         commandList_->SetGraphicsRootConstantBufferView(0,
             fr.constantsBuffer->GetGPUVirtualAddress() + cbOffset);
         commandList_->SetGraphicsRootDescriptorTable(1, srvGpuBase);
 
-        // Reset state-machine knobs so the next path batch in this frame
-        // re-binds MSAA, but does NOT re-clear (paths from earlier still
-        // live in the resolved texture, already blitted to the back buffer;
-        // subsequent paths get rendered on a fresh MSAA scratch).
-        //
-        // We DO clear MSAA color again before the next run — otherwise the
-        // previously-blitted paths would re-resolve and blit a second time,
-        // overshooting alpha. Tracking that via pathScratchClearedThisFrame
-        // forces the path-mode re-entry path to clear.
+        // Re-bind the render target + viewport for the subsequent non-path batches.
+        // The batch loop re-sets scissor per batch but inherits RT + viewport, so
+        // both must be correct here. In capture mode: the capture RT at the pw×ph
+        // capture viewport. Otherwise: the back buffer at the window viewport.
+        // When the blit ran it already left exactly this RT + content viewport
+        // bound (pathContentW/H == captureViewportW_/H_ in capture, == the window
+        // viewport otherwise), so this is a redundant re-bind there — but it is
+        // REQUIRED for the dropped-blit branch above, which falls through with the
+        // MSAA scratch RT + DSV and the path viewport still bound.
+        if (inCapture) {
+            commandList_->OMSetRenderTargets(1, &captureRtv_, FALSE, nullptr);
+            D3D12_VIEWPORT capViewport = { 0, 0, (float)captureViewportW_, (float)captureViewportH_, 0, 1 };
+            commandList_->RSSetViewports(1, &capViewport);
+        } else {
+            auto bbRtv = GetSwapChainRtvHandle();
+            commandList_->OMSetRenderTargets(1, &bbRtv, FALSE, nullptr);
+            D3D12_VIEWPORT fullViewport = { 0, 0, (float)viewportWidth_, (float)viewportHeight_, 0, 1 };
+            commandList_->RSSetViewports(1, &fullViewport);
+        }
+
+        // Reset state-machine knobs so the next path batch in this frame re-binds
+        // MSAA and re-clears the scratch (otherwise earlier paths, already resolved
+        // and blitted, would re-resolve and over-blend their alpha), and force a PSO
+        // re-select so the next non-path batch re-emits its own PSO + table.
         pathScratchClearedThisFrame = false;
         pathActiveOnMsaa = false;
-        currentPSO = DrawBatchType::SdfRect;  // force PSO re-select on next batch
+        currentPSO = DrawBatchType::SdfRect;
         commandList_->SetPipelineState(sdfRectPSO_.Get());
     };
 
@@ -2436,14 +2822,19 @@ void D3D12DirectRenderer::RecordDrawCommands()
             enterPathMode();
             if (!pathActiveOnMsaa) continue;  // EnsureStencilDepthBuffer failed
 
-            // Apply scissor for this path.
+            // Apply scissor for this path. The default (no per-batch clip) must
+            // span the path-content extent, NOT the window — otherwise an oversized
+            // capture's path is re-truncated at the window edge by the scissor test
+            // even though the viewport (line above) and MSAA scratch cover the full
+            // pathContentW×pathContentH. In non-capture rendering pathContentW/H IS
+            // the window viewport, so this is unchanged there.
             if (batch.hasScissor) {
                 if (batch.scissor.left >= batch.scissor.right ||
                     batch.scissor.top >= batch.scissor.bottom)
                     continue;
                 commandList_->RSSetScissorRects(1, &batch.scissor);
             } else {
-                D3D12_RECT fullScissor = { 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ };
+                D3D12_RECT fullScissor = { 0, 0, (LONG)pathContentW, (LONG)pathContentH };
                 commandList_->RSSetScissorRects(1, &fullScissor);
             }
 
@@ -2461,10 +2852,10 @@ void D3D12DirectRenderer::RecordDrawCommands()
             rootConsts[9]  = draw.g;
             rootConsts[10] = draw.b;
             rootConsts[11] = draw.a;
-            rootConsts[12] = (float)viewportWidth_;
-            rootConsts[13] = (float)viewportHeight_;
-            rootConsts[14] = (viewportWidth_  > 0) ? 1.0f / (float)viewportWidth_  : 0.0f;
-            rootConsts[15] = (viewportHeight_ > 0) ? 1.0f / (float)viewportHeight_ : 0.0f;
+            rootConsts[12] = (float)pathContentW;
+            rootConsts[13] = (float)pathContentH;
+            rootConsts[14] = (pathContentW > 0) ? 1.0f / (float)pathContentW : 0.0f;
+            rootConsts[15] = (pathContentH > 0) ? 1.0f / (float)pathContentH : 0.0f;
             commandList_->SetGraphicsRoot32BitConstants(0, 16, rootConsts, 0);
 
             // Pass 1 — stencil fill.
@@ -2533,7 +2924,11 @@ void D3D12DirectRenderer::RecordDrawCommands()
                 commandList_->SetGraphicsRootDescriptorTable(1, srvGpuBase);
                 break;
             case DrawBatchType::Text:
-                commandList_->SetPipelineState(textPSO_.Get());
+                // Deformed (transform-scaled) text uses the bilinear text PSO for
+                // smooth animated sub-pixel positioning; 1:1 text uses the crisp
+                // point PSO. (Batches with different smoothText never coalesce.)
+                commandList_->SetPipelineState(
+                    batch.smoothText ? textSmoothPSO_.Get() : textPSO_.Get());
                 {
                     auto textSrvGpu = srvGpuBase;
                     textSrvGpu.ptr += 4 * srvDescriptorSize_;
@@ -2623,14 +3018,19 @@ void D3D12DirectRenderer::RecordDrawCommands()
             commandList_->SetGraphicsRootDescriptorTable(1, bmpSrvGpuB);
         }
 
-        // Apply per-batch scissor rect for clipping
+        // Apply per-batch scissor rect for clipping. The default (no per-batch
+        // clip) spans the content extent, not the window: inside an oversized
+        // capture non-path content must reach the full pw×ph capture target so it
+        // registers with the (now-untruncated) path content; clipping it at the
+        // window edge would leave path-vs-non-path mismatched in [viewport, pw).
+        // pathContentW/H == the window viewport outside a capture (unchanged there).
         if (batch.hasScissor) {
             // Skip batches with empty scissor rects (fully clipped elements)
             if (batch.scissor.left >= batch.scissor.right || batch.scissor.top >= batch.scissor.bottom)
                 continue;
             commandList_->RSSetScissorRects(1, &batch.scissor);
         } else {
-            D3D12_RECT fullScissor = { 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ };
+            D3D12_RECT fullScissor = { 0, 0, (LONG)pathContentW, (LONG)pathContentH };
             commandList_->RSSetScissorRects(1, &fullScissor);
         }
 
@@ -2838,6 +3238,7 @@ bool D3D12DirectRenderer::EnsureMsaaColorBuffer(uint32_t width, uint32_t height)
         D3D12_RESOURCE_STATE_COMMON, nullptr,
         IID_PPV_ARGS(&msaaColorBuffer_));
     if (FAILED(hr)) return false;
+    msaaColorBuffer_->SetName(L"JaliumMsaaColor");  // [JALIUM-921 diag]
 
     msaaWidth_ = width;
     msaaHeight_ = height;
@@ -2911,6 +3312,7 @@ bool D3D12DirectRenderer::EnsureSnapshotTexture()
         snapshotState_ = D3D12_RESOURCE_STATE_COMMON;
         return false;
     }
+    snapshotTexture_->SetName(L"JaliumSnapshotTexture");  // [JALIUM-921 diag]
 
     snapshotW_ = viewportWidth_;
     snapshotH_ = viewportHeight_;
@@ -2977,6 +3379,8 @@ bool D3D12DirectRenderer::EnsureBlurTemps(UINT requiredWidth, UINT requiredHeigh
         blurTempBState_ = D3D12_RESOURCE_STATE_COMMON;
         return false;
     }
+    blurTempA_->SetName(L"JaliumBlurTempA");  // [JALIUM-921 diag]
+    blurTempB_->SetName(L"JaliumBlurTempB");
 
     blurTempW_ = allocW;
     blurTempH_ = allocH;
@@ -3037,6 +3441,7 @@ bool D3D12DirectRenderer::EnsureOffscreenTargets(UINT requiredWidth, UINT requir
             offscreenCaptureValid_[1] = false;
             return false;
         }
+        wchar_t onm[40]; swprintf_s(onm, L"JaliumOffscreenRT%d", i); offscreenRT_[i]->SetName(onm);  // [JALIUM-921 diag]
     }
 
     offscreenW_ = allocW;
@@ -3052,8 +3457,25 @@ bool D3D12DirectRenderer::EnsureOffscreenTargets(UINT requiredWidth, UINT requir
 // FlushGraphicsForCompute
 // ============================================================================
 
-void D3D12DirectRenderer::FlushGraphicsForCompute()
+bool D3D12DirectRenderer::FlushGraphicsForCompute()
 {
+    // Device gate for mid-frame flushes (effect captures, retained-layer
+    // realize and offscreen blits trigger several per frame): once the device
+    // is removed, recording through the UMD can AV rather than fail. Drop the
+    // pending batches; frameDeviceLost_ is now latched so EndFrame aborts.
+    // Returns false so callers skip their own GPU recording that would follow
+    // this flush (barriers, dispatches, SRV creation — same AV class).
+    if (!CheckFrameDeviceAlive()) {
+        rectInstances_.clear();
+        textInstances_.clear();
+        bitmapInstances_.clear();
+        triangleVertices_.clear();
+        bitmapTextures_.clear();
+        stencilPathDraws_.clear();
+        batches_.clear();
+        return false;
+    }
+
     // Record any pending graphics draw commands before switching to compute.
     UploadInstances();
     RecordDrawCommands();
@@ -3066,6 +3488,10 @@ void D3D12DirectRenderer::FlushGraphicsForCompute()
     bitmapTextures_.clear();
     stencilPathDraws_.clear();
     batches_.clear();
+
+    // UploadInstances can latch device loss itself (mid-frame growth failure
+    // on a removed device) — report it so callers stop recording too.
+    return !frameDeviceLost_;
 }
 
 // ============================================================================
@@ -3111,7 +3537,7 @@ void D3D12DirectRenderer::BlurRegion(float x, float y, float w, float h, float r
     if (regionW == 0 || regionH == 0) return;
 
     // Flush pending graphics work so render target contents are up to date
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) return;  // device lost — frame will abort
 
     // --- Ensure temp textures are large enough ---
     DXGI_FORMAT fmt = swapChainFormat_;
@@ -3367,7 +3793,7 @@ void D3D12DirectRenderer::PunchTransparentRect(float x, float y, float w, float 
     float sh = h * scaleY;
 
     // Flush pending draws — they must be recorded before ClearRTV.
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) return;  // device lost — frame will abort
 
     // Use ClearRenderTargetView with a scissor rect to punch a transparent hole.
     // This directly writes (0,0,0,0) to the region without going through the SDF shader
@@ -3424,7 +3850,7 @@ bool D3D12DirectRenderer::CaptureSnapshot()
     }
 
     // Flush pending draws so the back buffer is up to date
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) return false;  // device lost — frame will abort
 
     auto* cl = commandList_.Get();
     auto* backBuffer = renderTargets_[currentFrame_].Get();
@@ -3584,6 +4010,7 @@ void D3D12DirectRenderer::CaptureDesktopArea(int32_t screenX, int32_t screenY, i
         if (FAILED(device_->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc,
                 D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&desktopTexture_))))
             return;
+        desktopTexture_->SetName(L"JaliumDesktopCapture");  // [JALIUM-921 diag]
 
         // Upload buffer
         UINT64 rowPitch = ((UINT64)w * 4 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) & ~(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1);
@@ -3593,6 +4020,7 @@ void D3D12DirectRenderer::CaptureDesktopArea(int32_t screenX, int32_t screenY, i
         if (FAILED(device_->CreateCommittedResource(&uploadHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&desktopUploadBuffer_))))
             return;
+        desktopUploadBuffer_->SetName(L"JaliumDesktopUpload");  // [JALIUM-921 diag]
 
         desktopCaptureW_ = w;
         desktopCaptureH_ = h;
@@ -4015,7 +4443,11 @@ bool D3D12DirectRenderer::BeginOffscreenCapture(int slot, float x, float y, floa
     if (ph == 0) ph = 1;
 
     // Flush pending draws
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) {
+        // Device lost — frame will abort; never open the capture.
+        offscreenCaptureValid_[slot] = false;
+        return false;
+    }
 
     bool eotOk = EnsureOffscreenTargets(pw, ph);
     if (!eotOk) {
@@ -4025,6 +4457,8 @@ bool D3D12DirectRenderer::BeginOffscreenCapture(int slot, float x, float y, floa
 
     offscreenCaptureX_[slot] = x;
     offscreenCaptureY_[slot] = y;
+    offscreenCaptureW_[slot] = (float)pw;
+    offscreenCaptureH_[slot] = (float)ph;
     offscreenCaptureValid_[slot] = false;
     offscreenResourcesUsedThisFrame_ = true;
 
@@ -4071,6 +4505,12 @@ bool D3D12DirectRenderer::BeginOffscreenCapture(int slot, float x, float y, floa
     currentFrameConstants_.invScreenWidth = 1.0f / w;
     currentFrameConstants_.invScreenHeight = 1.0f / h;
 
+    // Stash the active capture target for the stencil-path arm (exitPathMode):
+    // path content must resolve into this offscreen RT, not the back buffer.
+    captureRtv_ = offRtv;
+    captureViewportW_ = pw;
+    captureViewportH_ = ph;
+
     inOffscreenCapture_ = true;
     return true;
 }
@@ -4083,7 +4523,26 @@ void D3D12DirectRenderer::EndOffscreenCapture(int slot)
     PopTransform();
 
     // Flush pending draws to the offscreen RT
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) {
+        // Device lost mid-capture: skip every GPU restore call below (they
+        // record into a dead driver) but COMPLETE the CPU state restore — a
+        // stuck inOffscreenCapture_ would permanently fail every later effect
+        // capture (same trap EndRetainedLayerCapture documents for resize).
+        inOffscreenCapture_ = false;
+        captureRtv_ = {};
+        captureViewportW_ = 0;
+        captureViewportH_ = 0;
+        scissorStack_ = std::move(savedScissorStack_);
+        savedScissorStack_ = {};
+        float dipWl = (float)viewportWidth_ / dpiScale_;
+        float dipHl = (float)viewportHeight_ / dpiScale_;
+        currentFrameConstants_.screenWidth = dipWl;
+        currentFrameConstants_.screenHeight = dipHl;
+        currentFrameConstants_.invScreenWidth = 1.0f / dipWl;
+        currentFrameConstants_.invScreenHeight = 1.0f / dipHl;
+        offscreenCaptureValid_[slot] = false;
+        return;
+    }
 
     auto* cl = commandList_.Get();
 
@@ -4112,6 +4571,9 @@ void D3D12DirectRenderer::EndOffscreenCapture(int slot)
     currentFrameConstants_.invScreenHeight = 1.0f / dipH;
 
     inOffscreenCapture_ = false;
+    captureRtv_ = {};
+    captureViewportW_ = 0;
+    captureViewportH_ = 0;
 
     // Restore the scissor stack saved during BeginOffscreenCapture
     scissorStack_ = std::move(savedScissorStack_);
@@ -4139,6 +4601,17 @@ D3D12RetainedLayer* D3D12DirectRenderer::BeginRetainedLayerCapture(
     if (pw == 0) pw = 1;
     if (ph == 0) ph = 1;
 
+    // Stale-generation guard (device-lost recovery): a layer created on a
+    // previous, now-removed device must never reach EnsureSize. A same-size
+    // hit would feed the dead device's texture into THIS device's command
+    // list (ResourceBarrier / OMSetRenderTargets on a foreign resource → UMD
+    // AV, the GPU-switch crash signature), and a resize would Release()
+    // through a backend pointer that may already be destroyed. Refuse; the
+    // caller falls back to direct rendering and managed recovery re-realizes.
+    if (layer && layer->Device() != device_) {
+        return nullptr;
+    }
+
     const bool created = (layer == nullptr);
     if (created) {
         layer = new (std::nothrow) D3D12RetainedLayer(device_, backend_);
@@ -4149,7 +4622,13 @@ D3D12RetainedLayer* D3D12DirectRenderer::BeginRetainedLayerCapture(
         return nullptr;
     }
 
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) {
+        // Device lost — frame will abort; never open the capture. A layer we
+        // just allocated dies with the device; retire it through the (still
+        // live) graveyard rather than leaking the wrapper.
+        if (created) delete layer;
+        return nullptr;
+    }
     auto* cl = commandList_.Get();
 
     // Transition the layer texture to RENDER_TARGET.
@@ -4184,6 +4663,12 @@ D3D12RetainedLayer* D3D12DirectRenderer::BeginRetainedLayerCapture(
     currentFrameConstants_.invScreenWidth = 1.0f / w;
     currentFrameConstants_.invScreenHeight = 1.0f / h;
 
+    // Stash the active capture target for the stencil-path arm (exitPathMode):
+    // path content must resolve into this layer texture, not the back buffer.
+    captureRtv_ = rtv;
+    captureViewportW_ = pw;
+    captureViewportH_ = ph;
+
     inRetainedCapture_ = true;
     activeRealizeLayer_ = layer;
     return layer;
@@ -4191,13 +4676,41 @@ D3D12RetainedLayer* D3D12DirectRenderer::BeginRetainedLayerCapture(
 
 void D3D12DirectRenderer::EndRetainedLayerCapture(D3D12RetainedLayer* layer)
 {
-    if (!inFrame_ || !inRetainedCapture_) return;
+    if (!inRetainedCapture_) return;
+    // 根因修复：frame 已结束/abort（典型：retained-layer capture 期间发生 resize，
+    // ResizeBuffers/AbortFrame 把 inFrame_ 置回 false 并抽走 back buffer）——此时绝不能再做
+    // GPU 操作（RT 切换 / barrier / 提交命令列表），但**必须**复位 inRetainedCapture_，否则它
+    // 卡死 true，之后每帧所有 effect 的 BeginOffscreenCapture(:4019 `if(inOffscreenCapture_||
+    // inRetainedCapture_) return false`) 全部失败 → glow/阴影等 effect 永久失效
+    // （[BeginEffectCapture] FAILED）。原代码 `if(!inFrame_||!inRetainedCapture_) return` 在
+    // !inFrame_ 时直接退出、漏掉了下面 :4242 的复位，这就是 bug。
+    if (!inFrame_) { inRetainedCapture_ = false; activeRealizeLayer_ = nullptr; return; }
 
     // Pop the layer-local offset transform.
     PopTransform();
 
     // Flush pending draws into the layer.
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) {
+        // Device lost mid-realize: skip the GPU restore below but COMPLETE the
+        // CPU state restore (a stuck inRetainedCapture_ kills all later effect
+        // captures — same trap the !inFrame_ branch above documents). The layer
+        // stays in RENDER_TARGET state, so CompositeRetainedLayer refuses to
+        // sample the unrealized texture.
+        inRetainedCapture_ = false;
+        activeRealizeLayer_ = nullptr;
+        captureRtv_ = {};
+        captureViewportW_ = 0;
+        captureViewportH_ = 0;
+        scissorStack_ = std::move(savedScissorStack_);
+        savedScissorStack_ = {};
+        float dipWl = (float)viewportWidth_ / dpiScale_;
+        float dipHl = (float)viewportHeight_ / dpiScale_;
+        currentFrameConstants_.screenWidth = dipWl;
+        currentFrameConstants_.screenHeight = dipHl;
+        currentFrameConstants_.invScreenWidth = 1.0f / dipWl;
+        currentFrameConstants_.invScreenHeight = 1.0f / dipHl;
+        return;
+    }
 
     auto* cl = commandList_.Get();
 
@@ -4227,6 +4740,9 @@ void D3D12DirectRenderer::EndRetainedLayerCapture(D3D12RetainedLayer* layer)
 
     inRetainedCapture_ = false;
     activeRealizeLayer_ = nullptr;
+    captureRtv_ = {};
+    captureViewportW_ = 0;
+    captureViewportH_ = 0;
 
     // Restore the scissor stack saved during BeginRetainedLayerCapture.
     scissorStack_ = std::move(savedScissorStack_);
@@ -4237,6 +4753,12 @@ void D3D12DirectRenderer::CompositeRetainedLayer(
     D3D12RetainedLayer* layer, float x, float y, float w, float h, float opacity)
 {
     if (!inFrame_ || !layer || !layer->Texture() || w <= 0 || h <= 0) return;
+    // Stale-generation guard: never sample a texture created on a previous
+    // (removed) device — AddBitmap would hand it to this device's
+    // CreateShaderResourceView, reproducing the GPU-switch AV one frame after
+    // recovery. Skipping leaves the element blank for one frame; managed
+    // recovery already marked the layer dirty so it re-realizes.
+    if (layer->Device() != device_) return;
     // Only composite a realized (sampleable) layer.
     if (layer->State() != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) return;
 
@@ -4257,6 +4779,23 @@ void D3D12DirectRenderer::CompositeRetainedLayer(
 void D3D12DirectRenderer::DestroyRetainedLayer(D3D12RetainedLayer* layer)
 {
     if (!layer) return;
+    if (layer->Device() != device_ && layer->CreatingDeviceRemoved()) {
+        // Created on a previous device that is actually REMOVED: its backend
+        // graveyard may already be destroyed, so Release()'s RetireGpuResource
+        // would be a use-after-free; and nothing can be in flight on a removed
+        // device, so dropping the COM references directly is safe.
+        //
+        // A different-but-HEALTHY creating device (staggered multi-window
+        // recovery, Create-stage context swap: the handle crossed contexts via
+        // the process-wide pending-destroy queue) falls through to the normal
+        // delete — its own backend_ is alive (a healthy context survives while
+        // any window still holds its RT) and the fence-gated graveyard must
+        // keep protecting frames that may still sample the texture.
+        layer->OrphanGpuResources();
+        g_retainedLayerOrphanedCount.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        g_retainedLayerGraveyardCount.fetch_add(1, std::memory_order_relaxed);
+    }
     // Texture retire is fence-gated inside Release(); deleting the object is then
     // safe even if a composite quad referencing the texture is still in flight.
     delete layer;
@@ -4274,19 +4813,20 @@ void D3D12DirectRenderer::DrawOffscreenBitmap(int slot, float x, float y, float 
     // transparent areas with black).
 
     // The offscreen texture may be larger than the captured region.
-    // Compute UV range so we only sample the valid portion.
-    UINT pw = (UINT)std::ceil(w * dpiScale_);
-    UINT ph = (UINT)std::ceil(h * dpiScale_);
-    if (pw == 0) pw = 1;
-    if (ph == 0) ph = 1;
-    float uvMaxX = (offscreenW_ > 0) ? (float)pw / (float)offscreenW_ : 1.0f;
-    float uvMaxY = (offscreenH_ > 0) ? (float)ph / (float)offscreenH_ : 1.0f;
+    // Compute UV range so we only sample the valid portion. The divisor is the
+    // recorded per-slot capture extent (physical px), the sole UV authority —
+    // numerically identical to ceil(w*dpiScale_) on every path (closes F1).
+    float capW = offscreenCaptureW_[slot];
+    float capH = offscreenCaptureH_[slot];
+    float uvMaxX = (offscreenW_ > 0 && capW > 0) ? capW / (float)offscreenW_ : 1.0f;
+    float uvMaxY = (offscreenH_ > 0 && capH > 0) ? capH / (float)offscreenH_ : 1.0f;
 
     AddBitmap(x, y, w, h, opacity, offscreenRT_[slot].Get(), swapChainFormat_, uvMaxX, uvMaxY);
 
     // Flush immediately so the offscreen texture is sampled now, before a
     // subsequent BeginOffscreenCapture can clear and reuse the same slot.
-    FlushGraphicsForCompute();
+    // Device-lost result needs no handling: nothing follows, EndFrame aborts.
+    (void)FlushGraphicsForCompute();
 }
 
 void D3D12DirectRenderer::DrawOffscreenBitmapCropped(int slot,
@@ -4296,16 +4836,16 @@ void D3D12DirectRenderer::DrawOffscreenBitmapCropped(int slot,
     if (!inFrame_ || slot < 0 || slot > 1 || !offscreenRT_[slot] || !offscreenCaptureValid_[slot]) return;
     if (w <= 0 || h <= 0) return;
 
-    // Compute UV sub-region within the offscreen texture.
-    // uvOffset is in DIP from the capture origin; convert to pixels then to UV.
-    float uvMinXPx = uvOffsetX * dpiScale_;
-    float uvMinYPx = uvOffsetY * dpiScale_;
-    float uvMaxXPx = uvMinXPx + std::ceil(w * dpiScale_);
-    float uvMaxYPx = uvMinYPx + std::ceil(h * dpiScale_);
-    float uvMinXf = (offscreenW_ > 0) ? uvMinXPx / (float)offscreenW_ : 0.0f;
-    float uvMinYf = (offscreenH_ > 0) ? uvMinYPx / (float)offscreenH_ : 0.0f;
-    float uvMaxXf = (offscreenW_ > 0) ? uvMaxXPx / (float)offscreenW_ : 1.0f;
-    float uvMaxYf = (offscreenH_ > 0) ? uvMaxYPx / (float)offscreenH_ : 1.0f;
+    // Compute UV sub-region for the ELEMENT (the captured content), which occupies
+    // offscreen [uvOff, uvOff+size]; the capture has extra padding beyond that for the
+    // glow halo. uvMin = uvOff (asymmetry-correct); uvMax = uvOff + ELEMENT size.
+    // NOT the full capture extent capW=(size+2*uvOff)*dpi — using capW oversamples by
+    // uvOff, compressing/shifting the composited element up-left while the glow stays at
+    // the true position, so the glow's exposed lower edge reads as a downward ghost copy.
+    float uvMinXf = (offscreenW_ > 0) ? (uvOffsetX * dpiScale_) / (float)offscreenW_ : 0.0f;
+    float uvMinYf = (offscreenH_ > 0) ? (uvOffsetY * dpiScale_) / (float)offscreenH_ : 0.0f;
+    float uvMaxXf = (offscreenW_ > 0) ? ((uvOffsetX + w) * dpiScale_) / (float)offscreenW_ : 1.0f;
+    float uvMaxYf = (offscreenH_ > 0) ? ((uvOffsetY + h) * dpiScale_) / (float)offscreenH_ : 1.0f;
 
     BitmapQuadInstance inst = {};
     inst.posX = x; inst.posY = y;
@@ -4314,16 +4854,13 @@ void D3D12DirectRenderer::DrawOffscreenBitmapCropped(int slot,
     inst.uvMaxX = uvMaxXf; inst.uvMaxY = uvMaxYf;
     inst.opacity = opacity * currentOpacity_;
 
-    // Apply current transform (same as AddBitmap)
+    // Carry the full current transform into the instance (same contract as
+    // AddBitmap — the VS applies it to the quad corners). pos/size stay in
+    // pre-transform space; identity => bit-identical to the old inline path.
     const auto& t = transformStack_.top();
-    float newX = inst.posX * t.m11 + inst.posY * t.m21 + t.dx;
-    float newY = inst.posX * t.m12 + inst.posY * t.m22 + t.dy;
-    inst.posX = newX;
-    inst.posY = newY;
-    float scaleX = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
-    float scaleY = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
-    inst.sizeX *= scaleX;
-    inst.sizeY *= scaleY;
+    inst.xfM11 = t.m11; inst.xfM12 = t.m12;
+    inst.xfM21 = t.m21; inst.xfM22 = t.m22;
+    inst.xfDx  = t.dx;  inst.xfDy  = t.dy;
 
     DrawBatch batch;
     batch.type = DrawBatchType::Bitmap;
@@ -4343,7 +4880,8 @@ void D3D12DirectRenderer::DrawOffscreenBitmapCropped(int slot,
     batches_.push_back(batch);
     bitmapInstances_.push_back(inst);
 
-    FlushGraphicsForCompute();
+    // Device-lost result needs no handling: nothing follows, EndFrame aborts.
+    (void)FlushGraphicsForCompute();
 }
 
 // ============================================================================
@@ -4427,7 +4965,7 @@ void D3D12DirectRenderer::DrawCustomShaderEffect(int slot,
         return;
     }
 
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) return;  // device lost — frame will abort
 
     auto* cl = commandList_.Get();
     if (offscreenRTState_[slot] != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
@@ -4536,7 +5074,7 @@ bool D3D12DirectRenderer::BlurOffscreenSlot(int slot, float radius)
     blurTempsUsedThisFrame_ = true;
 
     // Flush pending graphics before compute operations
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) return false;  // device lost — frame will abort
 
     auto* cl = commandList_.Get();
 
@@ -5044,6 +5582,7 @@ bool D3D12DirectRenderer::CreateLiquidGlassResources()
         if (FAILED(device_->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&lgConstantsBuffer_))))
             return false;
+        lgConstantsBuffer_->SetName(L"JaliumLiquidGlassConstants");  // [JALIUM-921 diag]
         lgConstantsBuffer_->Map(0, nullptr, &lgConstantsMapped_);
     }
 
@@ -5072,7 +5611,7 @@ void D3D12DirectRenderer::DrawLiquidGlass(
     }
 
     // Flush pending batched draws before compute blur + liquid glass pipeline
-    FlushGraphicsForCompute();
+    if (!FlushGraphicsForCompute()) return;  // device lost — frame will abort
 
     // Reserve per-call constant buffer space before mutating blur temp states.
     auto& fr = frames_[currentFrame_];
@@ -5169,8 +5708,24 @@ void D3D12DirectRenderer::DrawLiquidGlass(
     auto rtvHandle = GetSwapChainRtvHandle();
     cl->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
-    // Bind frame constants (b0)
-    cl->SetGraphicsRootConstantBufferView(0, fr.constantsBuffer->GetGPUVirtualAddress());
+    // Bind frame constants (b0) — re-assert FULL VIEWPORT size first.
+    // A mid-frame offscreen/retained capture (DrawOuterGlowEffect etc.) overwrites
+    // currentFrameConstants_ with a sub-region size, and the old code bound the bare
+    // ring-buffer base (offset 0) — undefined content (stale capture size or a previous
+    // frame's residue). The glass VS reads invScreenSize from b0 to map DIP→NDC, so a
+    // wrong screen size placed the quad off-panel (a green block over the sidebar,
+    // during AND after resize). Restore viewport size, commit to a FRESH ring slot,
+    // and bind that slot — never offset 0.
+    currentFrameConstants_.screenWidth = (float)viewportWidth_ / dpiScale_;
+    currentFrameConstants_.screenHeight = (float)viewportHeight_ / dpiScale_;
+    currentFrameConstants_.invScreenWidth = dpiScale_ / (float)viewportWidth_;
+    currentFrameConstants_.invScreenHeight = dpiScale_ / (float)viewportHeight_;
+    UINT lgFcOffset = fr.constantsRingOffset;
+    if (lgFcOffset + 256 > kConstantsRingSize) lgFcOffset = 0;
+    memcpy((uint8_t*)fr.constantsMappedPtr + lgFcOffset, &currentFrameConstants_, sizeof(DirectFrameConstants));
+    fr.constantsRingOffset = lgFcOffset + 256;
+    D3D12_GPU_VIRTUAL_ADDRESS lgFcAddr = fr.constantsBuffer->GetGPUVirtualAddress() + lgFcOffset;
+    cl->SetGraphicsRootConstantBufferView(0, lgFcAddr);
 
     // Bind liquid glass params (b1) — unique per call
     cl->SetGraphicsRootConstantBufferView(1, cbGpuAddr);
@@ -5226,7 +5781,7 @@ void D3D12DirectRenderer::DrawLiquidGlass(
     // --- Restore previous pipeline state ---
     cl->SetGraphicsRootSignature(rootSignature_.Get());
     cl->SetDescriptorHeaps(1, heaps);
-    cl->SetGraphicsRootConstantBufferView(0, fr.constantsBuffer->GetGPUVirtualAddress());
+    cl->SetGraphicsRootConstantBufferView(0, lgFcAddr);
     cl->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
     cl->RSSetViewports(1, &vp);
     cl->RSSetScissorRects(1, &scissor);

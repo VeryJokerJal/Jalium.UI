@@ -151,7 +151,7 @@ public sealed class StreamGeometry : Geometry
     /// <summary>
     /// Returns true if this geometry is empty.
     /// </summary>
-    public bool IsEmpty()
+    public override bool IsEmpty()
     {
         return _pathGeometry == null || _pathGeometry.Figures.Count == 0;
     }
@@ -159,7 +159,7 @@ public sealed class StreamGeometry : Geometry
     /// <summary>
     /// Returns true if this geometry may have curved segments.
     /// </summary>
-    public bool MayHaveCurves()
+    public override bool MayHaveCurves()
     {
         if (_pathGeometry == null) return false;
 
@@ -185,6 +185,10 @@ public sealed class StreamGeometry : Geometry
     /// Gets the underlying PathGeometry.
     /// </summary>
     public PathGeometry? GetPathGeometry() => _pathGeometry;
+
+    /// <inheritdoc />
+    public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
+        => _pathGeometry?.GetFlattenedPathGeometry(tolerance, toleranceType) ?? new PathGeometry();
 
     /// <inheritdoc />
     public override Geometry Clone()

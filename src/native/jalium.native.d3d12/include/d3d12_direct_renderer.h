@@ -6,6 +6,7 @@
 #include <vector>
 #include <stack>
 #include <memory>
+#include <atomic>
 
 namespace jalium {
 
@@ -78,8 +79,19 @@ struct SdfRectInstance {
     float shapeType;            // 0 = RoundedRect (default), 1 = SuperEllipse
     float shapeN;               // SuperEllipse exponent (e.g. 4.0 for squircle)
     float _pad2, _pad3;
+
+    // --- render transform (32 bytes, two 16-byte-aligned float4s) ---
+    // Full 2x3 affine applied to the quad corners IN THE VERTEX SHADER. This
+    // replaces the old CPU "transform the top-left + sign-stripped sqrt() scale"
+    // bake, which collapsed rotation / negative-diagonal (180 deg) / skew into a
+    // mispositioned axis-aligned quad. posX/posY/sizeX/sizeY/corner radii/border
+    // width/gradient geometry are kept in the caller's pre-transform space; the
+    // VS builds the local quad then applies this matrix. For an un-rotated element
+    // this is identity and the output is bit-identical to the old path.
+    float xfM11, xfM12, xfM21, xfM22;   // linear part   (offset 192)
+    float xfDx, xfDy, _xfPad0, _xfPad1; // translation   (offset 208)
 };
-static_assert(sizeof(SdfRectInstance) == 192, "SdfRectInstance must be 192 bytes");
+static_assert(sizeof(SdfRectInstance) == 224, "SdfRectInstance must be 224 bytes");
 
 // ============================================================================
 // Instance data layout for bitmap quad shader (48 bytes, 16-byte aligned)
@@ -93,8 +105,18 @@ struct BitmapQuadInstance {
     float opacity;              // overall opacity [0,1]           offset 32
     float samplerIdx;           // 0=linear,1=point,2=anisotropic  offset 36
     float _pad1, _pad2;         //                                offset 40 (pad to 48)
+
+    // --- render transform (32 bytes, two 16-byte-aligned float4s) ---
+    // Full 2x3 affine applied to the quad corners IN THE VERTEX SHADER (see the
+    // matching note on SdfRectInstance). Lets rotated / 180-deg-flipped / skewed
+    // bitmaps, images, retained-layer composites and offscreen blits render
+    // correctly instead of being mispositioned by the old sign-stripped scale.
+    // The corner-indexed UV naturally produces the correct content flip under a
+    // 180-deg negative-diagonal transform. Identity => bit-identical to before.
+    float xfM11, xfM12, xfM21, xfM22;   // linear part   (offset 48)
+    float xfDx, xfDy, _xfPad0, _xfPad1; // translation   (offset 64)
 };
-static_assert(sizeof(BitmapQuadInstance) == 48, "BitmapQuadInstance must be 48 bytes");
+static_assert(sizeof(BitmapQuadInstance) == 80, "BitmapQuadInstance must be 80 bytes");
 
 // ============================================================================
 // Frame constants CBV (16 bytes)
@@ -149,6 +171,12 @@ struct DrawBatch {
     float roundedClipRect[4]        = { 0, 0, 0, 0 }; // left, top, right, bottom
     float roundedClipCornerRadii[4] = { 0, 0, 0, 0 }; // TL, TR, BR, BL (in physical pixels)
     bool  roundedClipInverse = false;                 // true → keep outside, mask the interior
+
+    // Text-only: this batch is deformed (transform-scaled) text and must be drawn
+    // with the bilinear text PSO (smooth sub-pixel positioning under animation, no
+    // per-glyph integer snapping / jitter). Normal text keeps the point PSO (crisp
+    // at 1:1). Batches with different smoothText must not coalesce (different PSO).
+    bool  smoothText = false;
 };
 
 // ============================================================================
@@ -199,12 +227,37 @@ public:
 
     // --- Per-frame lifecycle ---
     bool BeginFrame(UINT frameIndex, UINT width, UINT height, bool clear, float clearR, float clearG, float clearB, float clearA);
-    JaliumResult EndFrame(bool useDirtyRects, const std::vector<D3D12_RECT>& dirtyRects, UINT syncInterval, UINT presentFlags);
+    /// `reportTransientPresentFailure` selects how a transient (non
+    /// device-loss) Present failure is reported. Callers running under
+    /// external present pacing MUST pass true: a failed Present never signals
+    /// the frame-latency waitable, so swallowing the error (returning OK)
+    /// would strand the present credit the managed scheduler consumed at
+    /// BeginDraw and starve its event-driven loop. With true, the failure
+    /// surfaces as JALIUM_ERROR_PRESENT_FAILED; with false the legacy
+    /// dropped-frame contract holds (return OK, next frame retries).
+    JaliumResult EndFrame(bool useDirtyRects, const std::vector<D3D12_RECT>& dirtyRects, UINT syncInterval, UINT presentFlags, bool reportTransientPresentFailure);
 
     /// Aborts the current frame without submitting GPU work.
     /// Closes the command list and resets internal state so BeginFrame can be called again.
     /// Used when the frame must be discarded (e.g. during window resize).
     void AbortFrame();
+
+    /// Closes commandList_ exactly once iff it is currently recording, keyed on
+    /// the atomic cmdListRecording_ (the single source of truth for the list's
+    /// real open/closed state — inFrame_ lags both BeginFrame's open and
+    /// EndFrame's close). Returns true iff this call performed the Close.
+    /// optional outCloseHr receives the Close() HRESULT (S_OK if nothing was
+    /// open or the device is gone) so EndFrame can keep its device-lost
+    /// classification. Idempotent: a second caller sees recording==false and
+    /// no-ops, preventing an invalid double Close on the shared list.
+    bool CloseCommandListIfOpen(HRESULT* outCloseHr = nullptr);
+
+    /// Returns false when the device was removed mid-frame (GPU switch, driver
+    /// restart, TDR), latching frameDeviceLost_ so EndFrame aborts instead of
+    /// recording. Recording through a torn-down user-mode driver does not fail
+    /// cleanly — NVIDIA's UMD is known to AV — so every mid-frame flush gates
+    /// on this before touching UploadInstances/RecordDrawCommands.
+    bool CheckFrameDeviceAlive();
 
     // --- Draw commands (called between BeginFrame/EndFrame) ---
     void AddSdfRect(const SdfRectInstance& inst);
@@ -371,6 +424,8 @@ public:
     void PopScissor();
     bool HasScissor() const { return !scissorStack_.empty(); }
     D3D12_RECT GetCurrentScissor() const { return scissorStack_.empty() ? D3D12_RECT{0,0,0,0} : scissorStack_.top(); }
+    UINT GetViewportWidth() const { return viewportWidth_; }
+    UINT GetViewportHeight() const { return viewportHeight_; }
 
     // Rounded-rect clip — pushed on top of the regular scissor.  All batches
     // recorded while a rounded clip is active receive the SDF clip data and
@@ -434,6 +489,14 @@ public:
     void SetDpiScale(float dpiScale);
     float GetDpiScale() const { return dpiScale_; }
 
+    // Shared offscreen-capture atlas dimensions (physical px). The capture occupies
+    // only the top-left (0,0)-(capturePx) sub-rect; callers that sample it must scale
+    // UVs by capturePx/offscreen (see DrawOuterGlowEffect). 0 until first capture.
+    UINT GetOffscreenWidth() const { return offscreenW_; }
+    UINT GetOffscreenHeight() const { return offscreenH_; }
+    UINT GetOffscreenCaptureW(int slot) const { return (slot >= 0 && slot <= 1) ? (UINT)offscreenCaptureW_[slot] : 0; }
+    UINT GetOffscreenCaptureH(int slot) const { return (slot >= 0 && slot <= 1) ? (UINT)offscreenCaptureH_[slot] : 0; }
+
     // --- Path MSAA quality (1/2/4/8) ---
     // Takes effect at the next BeginFrame. Values are clamped to {1,2,4,8}.
     void SetPathMsaaSampleCount(uint32_t sampleCount);
@@ -446,6 +509,10 @@ public:
     bool IsInitialized() const { return initialized_; }
     ID3D12Device* GetDevice() const { return device_; }
     ID3D12GraphicsCommandList* GetCommandList() const { return commandList_.Get(); }
+    // [JALIUM-921 diagnostic] Real open/closed state of commandList_ (see members).
+    bool IsCommandListRecording() const { return cmdListRecording_.load(std::memory_order_acquire); }
+    unsigned long CommandListOwnerThread() const { return cmdListOwnerThread_.load(std::memory_order_acquire); }
+    bool IsInFrame() const { return inFrame_; }
     D3D12_CPU_DESCRIPTOR_HANDLE GetRtvHandle() const {
         // Phase 2 MSAA was rolled back — render directly into the swap-chain
         // back buffer. MSAA infrastructure remains behind GetMsaaRtvHandle /
@@ -466,7 +533,12 @@ public:
     // Flush pending graphics draws so compute or external code can safely read
     // the current render target contents.  Called by D3D12RenderTarget before
     // effect capture / blur that need rasterised content on the back buffer.
-    void FlushGraphicsForCompute();
+    // Returns false when the device was removed (frameDeviceLost_ latched):
+    // callers MUST then skip every GPU call that would otherwise follow the
+    // flush (barriers, copies, dispatches, SRV creation) — recording through
+    // a torn-down UMD AVs instead of failing — while still performing their
+    // CPU-side state restore (capture flags, scissor/constants restore).
+    [[nodiscard]] bool FlushGraphicsForCompute();
 
     // --- Vello GPU path renderer ---
     D3D12VelloRenderer* GetVelloRenderer() const { return velloEnabled_ ? velloRenderer_.get() : nullptr; }
@@ -474,6 +546,13 @@ public:
     void FlushVelloPaths();
     void ApplyScissorToVello();
     void SetVelloEnabled(bool enabled) { velloEnabled_ = enabled; }
+
+    // TEST-ONLY (#921 Vello-output regression self-check). Must be called with the
+    // command list already open. Reproduces the 'JaliumVelloOutput' orphan and reports
+    // via *outAlive whether the output texture survived the mid-frame
+    // bitmapTextures_.clear() (1 = parked on the fence-gated retired list by the fix,
+    // 0 = freed while still referenced). Returns 0 when staged, negative otherwise.
+    int32_t DebugForceVelloOutputOrphan(int32_t* outAlive);
 
     // 懒创建 Vello 子系统(root sig + 计算 PSO + 描述符堆 + 缓冲 + 驱动 compute
     // 上下文)。仅当 velloEnabled_(active engine==Vello)且尚未创建时真正构造。
@@ -587,6 +666,11 @@ private:
     ComPtr<ID3D12Fence> fence_;
     HANDLE fenceEvent_ = nullptr;
     uint64_t nextFenceValue_ = 1;
+    // The path MSAA color/depth/resolve textures are shared across swap-chain
+    // frames rather than stored in FrameResources. Track the last submission
+    // that touched them so another in-flight frame cannot clear/resolve the
+    // same textures before the GPU has finished reading the prior contents.
+    uint64_t pathScratchFenceValue_ = 0;
 
     // ── Frame-pacing instrumentation (DevTools Perf tab) ────────────────
     // The native side surfaces this through QueryGpuStats so DevTools can
@@ -607,6 +691,12 @@ private:
     // GPU breakdown is the canonical "what did the GPU actually do" number.
     uint64_t lastPresentSignalQpc_ = 0;
     uint64_t lastFramePresentToReadyNs_ = 0;
+    // Wall time EndFrame spent blocked inside the Present/Present1 call for
+    // the most recent frame. Under a slow compositor (occlusion throttling,
+    // remote/virtual displays) a vsync-aligned Present stalls until the DWM
+    // retires the previous buffer — this isolates that stall from genuine
+    // CPU encode work in the EndDraw timing row.
+    uint64_t lastFramePresentBlockNs_ = 0;
 
     // ── GPU work breakdown via hardware timestamp queries ────────────────
     // Categories track GPU time per work-class so DevTools Perf can answer
@@ -649,6 +739,7 @@ public:
     // are last-completed-frame snapshots — point-in-time, not accumulators.
     uint64_t GetLastFrameGpuWaitNs() const { return lastFrameGpuWaitNs_; }
     uint64_t GetLastFramePresentToReadyNs() const { return lastFramePresentToReadyNs_; }
+    uint64_t GetLastFramePresentBlockNs() const { return lastFramePresentBlockNs_; }
 private:
     // Decode the previous frame's resolved timestamps and update
     // lastGpuTimingSnapshot_. Called from BeginFrame after fence wait
@@ -711,6 +802,7 @@ private:
     ComPtr<ID3D12RootSignature> rootSignature_;
     ComPtr<ID3D12PipelineState> sdfRectPSO_;
     ComPtr<ID3D12PipelineState> textPSO_;
+    ComPtr<ID3D12PipelineState> textSmoothPSO_;   // deformed text: bilinear atlas sampling
     ComPtr<ID3D12PipelineState> bitmapPSO_;
     ComPtr<ID3D12PipelineState> copyBlendPSO_;  // SDF rect with copy blend (no alpha blending)
     ComPtr<ID3D12PipelineState> trianglePSO_;  // flat-shaded triangle fill
@@ -720,6 +812,7 @@ private:
     ComPtr<ID3DBlob> sdfRectPS_;
     ComPtr<ID3DBlob> textVS_;
     ComPtr<ID3DBlob> textPS_;
+    ComPtr<ID3DBlob> textSmoothPS_;   // bilinear variant of the text PS (deformed text)
     ComPtr<ID3DBlob> bitmapVS_;
     ComPtr<ID3DBlob> bitmapPS_;
     ComPtr<ID3DBlob> triangleVS_;
@@ -763,7 +856,10 @@ private:
     ComPtr<ID3DBlob>            pathResolvePS_;
 
     // 8× MSAA scratch resources (color + stencil) and 1× resolve target.
-    // Sized to viewport on first use and on resize.
+    // Grow-only: sized to the high-water-mark of every content extent requested
+    // (normally the window viewport; larger when a path is rendered inside an
+    // oversized element-effect capture). pathMsaaWidth_/Height_ are the allocated
+    // texels; the resolve blit samples just the used sub-region via a uv-scale.
     ComPtr<ID3D12Resource>       pathMsaaColor_;
     ComPtr<ID3D12Resource>       pathMsaaDepth_;
     ComPtr<ID3D12Resource>       pathResolveTexture_;
@@ -874,6 +970,20 @@ private:
     UINT viewportWidth_ = 0;
     UINT viewportHeight_ = 0;
     bool inFrame_ = false;
+    // [JALIUM-921 diagnostic] True while commandList_ is actually open (recording),
+    // tracked independently of inFrame_. inFrame_ is set late in BeginFrame (after
+    // the list is already open and has recorded back-buffer barriers) and cleared
+    // early in EndFrame (before Close), so it does NOT reflect the real open/closed
+    // window of the list. cmdListOwnerThread_ records which thread opened the list,
+    // so a resize on the UI thread Resetting resources the render thread's still-open
+    // list references (the #921 OBJECT_DELETED_WHILE_STILL_IN_USE setup) is caught.
+    std::atomic<bool> cmdListRecording_{false};
+    std::atomic<unsigned long> cmdListOwnerThread_{0};
+    // Latched by CheckFrameDeviceAlive / UploadInstances when the device is
+    // removed mid-frame; EndFrame then aborts the frame and reports
+    // DEVICE_LOST instead of recording into the dead driver. Reset on the
+    // next successful BeginFrame.
+    bool frameDeviceLost_ = false;
 
     // Current frame constants — cached so RecordDrawCommands can embed them
     // via SetGraphicsRoot32BitConstants (avoiding the CBV race condition).
@@ -959,6 +1069,8 @@ private:
     UINT offscreenW_ = 0, offscreenH_ = 0;
     float offscreenCaptureX_[2] = {};
     float offscreenCaptureY_[2] = {};
+    float offscreenCaptureW_[2] = {};   // recorded capture extent, physical px (pw) — sole UV divisor authority (closes F1)
+    float offscreenCaptureH_[2] = {};
     bool offscreenCaptureValid_[2] = {};
     // Saved state during offscreen capture
     UINT savedFrameIndex_ = 0;
@@ -970,6 +1082,19 @@ private:
     //     exclusive with offscreen capture to avoid nested RT redirects) ---
     bool inRetainedCapture_ = false;
     class D3D12RetainedLayer* activeRealizeLayer_ = nullptr;
+
+    // --- Active capture target (offscreen OR retained) ---
+    // Stashed by BeginOffscreenCapture / BeginRetainedLayerCapture and consumed
+    // by the stencil-path arm (exitPathMode in RecordDrawCommands) so the path
+    // resolve/blit composites into the capture texture instead of leaking onto
+    // the swap-chain back buffer. captureViewportW_/H_ are the capture rect in
+    // physical px (pw/ph) — the viewport restored for in-capture batches that
+    // follow a path run. Only read while inOffscreenCapture_ || inRetainedCapture_
+    // is true (both reset by BeginFrame/AbortFrame), so a stale handle after an
+    // aborted capture is never dereferenced. Cleared by End*Capture for hygiene.
+    D3D12_CPU_DESCRIPTOR_HANDLE captureRtv_ = {};
+    UINT captureViewportW_ = 0;
+    UINT captureViewportH_ = 0;
 
     // --- Gaussian blur compute resources ---
     ComPtr<ID3D12RootSignature> blurRootSignature_;
@@ -988,6 +1113,12 @@ private:
     D3D12_RESOURCE_STATES blurTempBState_ = D3D12_RESOURCE_STATE_COMMON;
     bool blurResourcesReady_ = false;
     bool blurTempsUsedThisFrame_ = false;
+    // [#921] Set once the path-stencil MSAA scratch (pathMsaaColor_/Depth_/
+    // pathResolveTexture_) has been bound into the open command list this frame;
+    // blocks EnsureStencilDepthBuffer from regrowing (Reset+recreate) the scratch
+    // mid-frame, which would free a resource the still-open list references →
+    // #921 OBJECT_DELETED_WHILE_STILL_IN_USE at Close. Reset each BeginFrame.
+    bool pathMsaaUsedThisFrame_ = false;
 
     // Blur constants layout (must match cbuffer in shader)
     struct BlurConstants {

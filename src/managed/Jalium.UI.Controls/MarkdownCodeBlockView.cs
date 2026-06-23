@@ -8,7 +8,7 @@ namespace Jalium.UI.Controls;
 
 internal sealed record MarkdownHighlightedCodeLine(int LineNumber, string Text, SyntaxToken[] Tokens);
 
-internal sealed class MarkdownCodeBlockView : FrameworkElement
+internal sealed class MarkdownCodeBlockView : FrameworkElement, IMarkdownSelectable
 {
     private const double Padding = 12;
     private const double GutterInnerPadding = 6;
@@ -19,6 +19,11 @@ internal sealed class MarkdownCodeBlockView : FrameworkElement
     private IReadOnlyList<MarkdownHighlightedCodeLine> _lines = Array.Empty<MarkdownHighlightedCodeLine>();
     private double _lineHeight = 20;
     private double _gutterWidth = 24;
+
+    private string _visualText = string.Empty;
+    private int[] _lineStartIndex = Array.Empty<int>();
+    private int _selectionStart = -1;
+    private int _selectionEnd = -1;
 
     // Cached pen/brush
     private Pen? _separatorPen;
@@ -50,12 +55,14 @@ internal sealed class MarkdownCodeBlockView : FrameworkElement
     public Brush? ForegroundBrush { get; set; }
     public Brush? LineNumberForegroundBrush { get; set; }
     public Brush? GutterBackgroundBrush { get; set; }
+    public Brush? SelectionBrush { get; set; }
 
     internal IReadOnlyList<MarkdownHighlightedCodeLine> DebugLines => _lines;
     internal double DebugGutterWidth => _gutterWidth;
 
     public MarkdownCodeBlockView()
     {
+        Cursor = Jalium.UI.Cursors.IBeam;
         RebuildHighlighting();
     }
 
@@ -108,6 +115,12 @@ internal sealed class MarkdownCodeBlockView : FrameworkElement
         }
 
         var contentX = separatorX + GutterGap;
+
+        if (_selectionEnd > _selectionStart && _selectionStart >= 0 && SelectionBrush != null)
+        {
+            DrawSelectionHighlight(dc, contentX);
+        }
+
         for (var index = 0; index < _lines.Count; index++)
         {
             var line = _lines[index];
@@ -167,6 +180,22 @@ internal sealed class MarkdownCodeBlockView : FrameworkElement
         }
 
         _lines = lines;
+
+        // Build a flat selectable-text projection (lines joined by newlines) and remember each
+        // line's starting character index so selection maps cleanly back to screen positions.
+        _lineStartIndex = new int[lines.Count];
+        var builder = new StringBuilder();
+        for (var index = 0; index < lines.Count; index++)
+        {
+            _lineStartIndex[index] = builder.Length;
+            builder.Append(lines[index].Text);
+            if (index < lines.Count - 1)
+            {
+                builder.Append('\n');
+            }
+        }
+        _visualText = builder.ToString();
+
         InvalidateMeasure();
         InvalidateVisual();
     }
@@ -209,6 +238,122 @@ internal sealed class MarkdownCodeBlockView : FrameworkElement
 
         return width;
     }
+
+    #region Text selection (IMarkdownSelectable)
+
+    public int SelectableLength => _visualText.Length;
+
+    public string GetSelectionText(int start, int end)
+    {
+        start = Math.Clamp(start, 0, _visualText.Length);
+        end = Math.Clamp(end, 0, _visualText.Length);
+        return end > start ? _visualText.Substring(start, end - start) : string.Empty;
+    }
+
+    public void SetSelectionRange(int start, int end)
+    {
+        if (end < start)
+        {
+            (start, end) = (end, start);
+        }
+        if (_selectionStart == start && _selectionEnd == end)
+        {
+            return;
+        }
+        _selectionStart = start;
+        _selectionEnd = end;
+        InvalidateVisual();
+    }
+
+    public void ClearSelectionRange()
+    {
+        if (_selectionStart < 0 && _selectionEnd < 0)
+        {
+            return;
+        }
+        _selectionStart = -1;
+        _selectionEnd = -1;
+        InvalidateVisual();
+    }
+
+    public bool TryHitTestCharacter(Point localPoint, out int charIndex)
+    {
+        charIndex = 0;
+        if (_lines.Count == 0)
+        {
+            return false;
+        }
+
+        EnsureMetrics();
+        var contentX = Padding + _gutterWidth + GutterGap;
+        var line = (int)Math.Floor((localPoint.Y - Padding) / _lineHeight);
+        line = Math.Clamp(line, 0, _lines.Count - 1);
+        var text = _lines[line].Text;
+        var col = FindColumn(text, localPoint.X - contentX);
+        charIndex = _lineStartIndex[line] + col;
+        return true;
+    }
+
+    private void DrawSelectionHighlight(DrawingContext dc, double contentX)
+    {
+        for (var li = 0; li < _lines.Count; li++)
+        {
+            var text = _lines[li].Text;
+            var lineStart = _lineStartIndex[li];
+            var len = text.Length;
+            var a = Math.Clamp(_selectionStart - lineStart, 0, len);
+            var b = Math.Clamp(_selectionEnd - lineStart, 0, len);
+            if (a >= b)
+            {
+                continue;
+            }
+            var x0 = contentX + MeasureWidth(text, a);
+            var x1 = contentX + MeasureWidth(text, b);
+            var y = Padding + (li * _lineHeight);
+            dc.DrawRectangle(SelectionBrush, null, new Rect(x0, y, Math.Max(1, x1 - x0), _lineHeight));
+        }
+    }
+
+    private int FindColumn(string text, double targetX)
+    {
+        if (text.Length == 0 || targetX <= 0)
+        {
+            return 0;
+        }
+
+        var previous = 0.0;
+        for (var i = 1; i <= text.Length; i++)
+        {
+            var width = MeasureWidth(text, i);
+            if (targetX < (previous + width) / 2.0)
+            {
+                return i - 1;
+            }
+            previous = width;
+        }
+        return text.Length;
+    }
+
+    private double MeasureWidth(string text, int count)
+    {
+        if (count <= 0)
+        {
+            return 0;
+        }
+        if (count > text.Length)
+        {
+            count = text.Length;
+        }
+
+        var ft = new FormattedText(text.Substring(0, count), CodeFontFamily, CodeFontSize)
+        {
+            Foreground = ForegroundBrush ?? new SolidColorBrush(Color.White)
+        };
+        TextMeasurement.MeasureText(ft);
+        return ft.Width;
+    }
+
+    #endregion
 
     private Brush ResolveSyntaxBrush(TokenClassification classification)
     {

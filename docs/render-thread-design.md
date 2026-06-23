@@ -54,10 +54,22 @@ anti-pattern). No lock ever held across a native call.
 Render thread exclusively owns: the `RenderTarget` + `RenderTargetDrawingContext`, all P/Invoke
 draw calls, TryBeginDraw/TryEndDraw/Resize/Dispose, the frame-latency waitable (single consumer),
 command list/allocators/fence, glyph atlas, lazy bitmap GPU upload. UI thread must STOP touching
-`_drawingContext`/`RenderTarget` once it publishes; `SimplifyGpuEffects` moves into `FrameCapture`.
-Unsafe live refs that must be frozen at record time: `Geometry`, gradient/image `Brush`,
-`WriteableBitmap` (freeze-clone). Immutable pooled `SolidColorBrush`/`Pen`/`FormattedText` are
-safe to share read-only. Bitmap graveyard `RetireGpuResource` is already mutex-guarded.
+`_drawingContext`/`RenderTarget` once it publishes — the render thread now creates + maintains
+(`SimplifyGpuEffects`, `DrainPendingRetainedLayers`) and trims (`TrimCacheIfNeeded`) `_drawingContext`
+inside `PresentCaptureOnRenderThread`; the UI thread creates it only on the inline path, AFTER the
+publish gate. `_isDrawing` is `volatile` (read/written across the drain barrier). Bitmap graveyard
+`RetireGpuResource` is already mutex-guarded.
+
+CORRECTION (verified against the code): `Brush`/`Pen`/`Transform` are NOT `Freezable` in this
+codebase — only `Geometry` has a (shallow) `Freeze()`/`Clone()`. So unsafe live refs are
+SNAPSHOTTED BY VALUE at record time (`DrawInputSnapshotter`, whole-frame path only), not frozen:
+gradient `Brush` → memoised deep copy keyed by `GradientBrush.ComputeContentHash` (keeps the native
+brush identity cache hitting across unchanged frames); `Transform` → `new MatrixTransform(t.Value)`;
+gradient-brush `Pen` → value copy; `WriteableBitmap`/video image → trip a direct-render fallback
+(per-frame-mutating, can't be value-copied cheaply). `SolidColorBrush`/simple `Pen`/`FormattedText`
+are already value-copied by `DrawingObjectPool`, so they pass through untouched. Unfrozen `Geometry`
+is left as-is (per-OnRender temporaries don't escape the walk; long-lived animated geometry should
+be `Freeze()`d, the WPF convention).
 
 ## Lifecycle (drain/pause protocol)
 `RequestRenderThreadIdle()`: set `_renderThreadPause`, signal `_frameAvailable`, wait
@@ -70,13 +82,34 @@ WM_PAINT hazard), shutdown. Shutdown order = stop flag → signal → Join → T
 the render thread under the gate. Re-acquire the NEW waitable after any RT recreate.
 
 ## Increments (each build + verify before next)
-1. `FrameRecorder`/`FrameCapture` + record-whole-tree-then-SYNCHRONOUS-replay on the SAME UI
-   thread (no render thread). Verify pixel-identical to direct render (screenshot-diff Gallery +
-   render/layout tests). Handle schema gaps (fall back to direct render when not fully recordable).
-2. Move BeginDraw+Replay+EndDraw+fence to the render thread; UI publishes FrameCapture. Lifecycle
-   drains land here. Verify input latency, GetMessage never blocked >1 frame, resize/DComp/device-
-   lost/shutdown.
-3. Freeze-clone unsafe managed objects; make `MediaRenderCacheHost` recorder pool thread-aware.
+1. [DONE] `FrameCapture` (inline holder in Window.cs) + `DrawingRecorder.BindWholeFrame` record-
+   whole-tree-then-replay on the SAME UI thread. Pixel-identity mechanized: `WholeFrameRecorderTests`
+   asserts the replayed DrawCommand stream equals a direct Render walk (value-token + push/pop
+   balance + SetOffset round-trip), plus a reflection inventory test that fails if a new
+   `RenderTargetDrawingContext` override of a `DrawingContext` virtual ships without a recordable
+   command.
+1a. [DONE] Schema-gap guard. The recorder never sees RTDC-only methods reached via
+   `is RenderTargetDrawingContext` casts (WebView windowless punch, video, ink-layer blit,
+   transitions, …). Call sites flip a thread-static via `DrawingContext.MarkCurrentFrameUnrecordable`;
+   `Drawing.FullyRecordable` carries it; `RenderTreeOrCapture` falls back to direct render for that
+   frame; the render-thread path latches `_rtActive=false` (`StopRenderThread` + reschedule inline).
+2. [DONE] Render thread (`Jalium.Render`) does TryBeginDraw+Replay+TryEndDraw; UI records + publishes
+   (latest-frame-wins mailbox + `_rtBusy` back-pressure). Thread-safety fixes landed: the render
+   thread exclusively owns `_drawingContext` (was a CRASH-level UI/render race — `TrimCacheIfNeeded`
+   destroying native brushes vs `Replay` reading them); drain (`RequestRenderThreadIdle` now returns
+   success) wraps resize / composition swap / device-lost recovery; pacer ⇄ render-thread are
+   mutually exclusive on the waitable; `_isDrawing` is volatile. RUNTIME verification (deadlock-free,
+   pixel A/B, input latency) still requires a real GPU — not mechanizable headlessly.
+3. [DONE] Freeze-clone via `DrawInputSnapshotter` (snapshot-by-value — see Thread-safety correction).
+   Pool stays single-producer (UI thread does CreateFrameRecorder/FinishRecord; render thread only
+   Replays, read-only), so the existing single lock suffices; no per-thread pool needed.
+
+STATUS (2026-06): increments 1 / 1a / 2 / 3 are code-complete + headless-tested; `JALIUM_RENDER_THREAD`
+stays DEFAULT-OFF (opt-in) until the runtime gates are demonstrated on the target GPU. Default-on
+gating criteria: (1) equality tests green; (2) schema-gap fallback proven; (3) freeze-clone
+mutation-isolation green; (4) pool single-producer confirmed; (5) real-GPU deadlock-free through
+publish/drain/resize/device-loss/shutdown; (6) pixel A/B vs default-OFF; (7) measured input latency
+improved with FPS unchanged. Criteria 1–4 are mechanized (green); 5–7 need the target hardware.
 
 ## Adversarial risks → mitigations
 - N+1 recorded into objects replayed for N → FrameCapture owns its DrawCommand[] copy + freeze-clone

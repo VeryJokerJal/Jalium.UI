@@ -200,7 +200,9 @@ static bool CreateBuffer(ID3D12Device* dev, UINT64 size, D3D12_HEAP_TYPE heap,
     auto hp = MakeHeap(heap);
     auto desc = MakeBufDesc(size);
     desc.Flags = flags;
-    return SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS(&out)));
+    bool ok = SUCCEEDED(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS(&out)));
+    if (ok && out) out->SetName(L"JaliumVelloBuffer");  // [JALIUM-921 diag]
+    return ok;
 }
 
 // ============================================================================
@@ -495,12 +497,22 @@ bool D3D12VelloRenderer::EnsureOutputTexture(uint32_t w, uint32_t h)
 {
     if (outputTexture_ && outputW_ == w && outputH_ == h) return true;
 
+    // Retire the previous texture before overwriting the ComPtr. A viewport
+    // resize rebuilds at the next Dispatch while the open commandList may still
+    // reference the old texture (barrier / UAV / SRV) — dropping it here without
+    // retiring would delete it mid-list → D3D12 #921 on Close. The retired ComPtr
+    // is drained to the per-frame fence-gated list by DrainRetired (FlushVelloPaths),
+    // which is reached on every Dispatch/DispatchGPU path that calls us. No-op when
+    // outputTexture_ is null (first allocation). Mirrors EnsureBuffers' retire-on-grow.
+    RetireOutputTexture();
+
     auto hp = MakeHeap(D3D12_HEAP_TYPE_DEFAULT);
     auto desc = MakeTex2D(DXGI_FORMAT_R8G8B8A8_UNORM, w, h, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
 
     if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&outputTexture_))))
         return false;
+    outputTexture_->SetName(L"JaliumVelloOutput");  // [JALIUM-921 diag] name so #921 points at the culprit
 
     outputW_ = w;
     outputH_ = h;
@@ -2768,6 +2780,12 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
         uint32_t neededGrads = std::max(gradientCount_, 1u);
         if (neededGrads > gradientRampCapacity_) {
             gradientRampCapacity_ = neededGrads * 2;
+            // Retire-on-grow (mirrors EnsureBuffers / RetireOutputTexture): a later
+            // same-frame Dispatch can regrow this past an earlier Dispatch's size
+            // while the open commandList still has the old buffer's CopyBufferRegion
+            // / SRV queued — overwriting the ComPtr here without retiring would free
+            // it mid-list → D3D12 #921. Drained by DrainRetired at FlushVelloPaths.
+            if (gradientRampBuffer_) pendingRetiredResources_.push_back(std::move(gradientRampBuffer_));
             auto flags = D3D12_RESOURCE_FLAG_NONE;  // SRV only
             CreateBuffer(device_, gradientRampCapacity_ * kGradientRampWidth * sizeof(uint32_t),
                          D3D12_HEAP_TYPE_DEFAULT, flags, D3D12_RESOURCE_STATE_COMMON, gradientRampBuffer_);
@@ -2961,11 +2979,16 @@ bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t f
             // Ensure GPU buffers exist
             if (!ptclBuffer_ || ptclBytes > ptclCapacity_ * sizeof(uint32_t)) {
                 ptclCapacity_ = (uint32_t)cpuPtcl_.size() * 2;
+                // Retire-on-grow: a mid-frame regrow must not free a buffer the open
+                // commandList still references (CopyBufferRegion/SRV below) → #921.
+                if (ptclBuffer_) pendingRetiredResources_.push_back(std::move(ptclBuffer_));
                 CreateBuffer(device_, ptclCapacity_ * sizeof(uint32_t), D3D12_HEAP_TYPE_DEFAULT,
                              D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON, ptclBuffer_);
             }
             if (!pathTileBuffer_ || offsetsBytes > ptclOffsetsCapacity_ * sizeof(uint32_t)) {
                 ptclOffsetsCapacity_ = (uint32_t)cpuPtclOffsets_.size() * 2;
+                // Retire-on-grow (same #921 rationale as ptclBuffer_ above).
+                if (pathTileBuffer_) pendingRetiredResources_.push_back(std::move(pathTileBuffer_));
                 CreateBuffer(device_, ptclOffsetsCapacity_ * sizeof(uint32_t), D3D12_HEAP_TYPE_DEFAULT,
                              D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON, pathTileBuffer_);
             }
@@ -3216,12 +3239,19 @@ bool D3D12VelloRenderer::ApplyGaussianBlur(
 
     // Ensure temp texture
     if (!blurTempTexture_ || blurTempW_ != outputW_ || blurTempH_ != outputH_) {
+        // #921 retire-on-grow (mirrors RetireOutputTexture / EnsureBuffers): a viewport
+        // resize rebuilds this while a prior same-frame filter primitive may still have
+        // barriers / UAV / CopyResource for the old instance queued in the open
+        // commandList_. Park it before overwriting; DrainRetired (FlushVelloPaths) frees
+        // it under the slot fence. No-op on first allocation.
+        if (blurTempTexture_) pendingRetiredResources_.push_back(std::move(blurTempTexture_));
         auto hp = MakeHeap(D3D12_HEAP_TYPE_DEFAULT);
         auto desc = MakeTex2D(DXGI_FORMAT_R8G8B8A8_UNORM, outputW_, outputH_,
                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
                 D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&blurTempTexture_))))
             return false;
+        blurTempTexture_->SetName(L"JaliumVelloBlurTemp");  // [JALIUM-921 diag]
         blurTempW_ = outputW_;
         blurTempH_ = outputH_;
     }
@@ -3233,12 +3263,17 @@ bool D3D12VelloRenderer::ApplyGaussianBlur(
             w = (w + 1) / 2;
             h = (h + 1) / 2;
             if (!decimTextures_[d] || decimW_[d] != w || decimH_[d] != h) {
+                // #921 retire-on-grow per slot (see blurTempTexture_ above): the old
+                // slot texture may still be referenced by queued downsample / upsample
+                // commands in commandList_; park before overwrite, drained by DrainRetired.
+                if (decimTextures_[d]) pendingRetiredResources_.push_back(std::move(decimTextures_[d]));
                 auto hp = MakeHeap(D3D12_HEAP_TYPE_DEFAULT);
                 auto desc = MakeTex2D(DXGI_FORMAT_R8G8B8A8_UNORM, w, h,
                                       D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
                 if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
                         D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&decimTextures_[d]))))
                     return false;
+                decimTextures_[d]->SetName(L"JaliumVelloDecim");  // [JALIUM-921 diag]
                 decimW_[d] = w;
                 decimH_[d] = h;
             }
@@ -3335,6 +3370,13 @@ bool D3D12VelloRenderer::ApplyGaussianBlur(
         resetB[rc++] = MakeBarrier(srcTex, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         resetB[rc++] = MakeBarrier(dstTex, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
         cmdList->ResourceBarrier(rc, resetB);
+
+        // #921: this shader-visible heap is bound into commandList_ (SetDescriptorHeaps /
+        // SetComputeRootDescriptorTable); the GPU walks its entries only at
+        // ExecuteCommandLists, long after this lambda returns. Park it (kept alive, not
+        // freed) — mirrors the live Dispatch path (~pendingRetiredHeaps_ push). Drained by
+        // DrainRetiredHeaps in FlushVelloPaths.
+        if (heap) pendingRetiredHeaps_.push_back(std::move(heap));
     };
 
     // Step 1: Downsample chain (output → decim[0] → decim[1] → ...)
@@ -3363,6 +3405,7 @@ bool D3D12VelloRenderer::ApplyGaussianBlur(
                                   D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
             device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
                 D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&hBlurTemp));
+            if (hBlurTemp) hBlurTemp->SetName(L"JaliumVelloBlurTempLocal");  // [JALIUM-921 diag]
         }
 
         if (hBlurTemp) {
@@ -3378,6 +3421,13 @@ bool D3D12VelloRenderer::ApplyGaussianBlur(
                          blurVertPSO_.Get(),
                          curW, curH, kernelSize, 0, kernel);
         }
+
+        // #921: when hBlurTemp was freshly allocated (else-branch above) it is referenced
+        // by the two dispatchPass calls just queued into commandList_ but would be freed at
+        // this scope exit. Park it. Skip when it merely aliases the persistent
+        // blurTempTexture_ (that member is kept alive for reuse and retired on its own grow).
+        if (hBlurTemp && hBlurTemp.Get() != blurTempTexture_.Get())
+            pendingRetiredResources_.push_back(std::move(hBlurTemp));
     }
 
     // Step 3: Upsample chain (decim[n-1] → ... → decim[0] → output)
@@ -3396,6 +3446,18 @@ bool D3D12VelloRenderer::ApplyGaussianBlur(
                      upsamplePSO_.Get(),
                      dstW, dstH, decimW_[d], decimH_[d], nullptr);
     }
+
+    // #921: blurCBUpload's GPU VA was bound via SetComputeRootConstantBufferView into
+    // every dispatchPass above; the GPU reads it only at ExecuteCommandLists, after this
+    // returns. Park it (mirrors the live path's RetireFrameUploadBuffers). Drained by
+    // DrainRetired in FlushVelloPaths.
+    //
+    // NOTE (filter-graph, SEPARATE correctness bug — not a lifetime issue): blurCBUpload is
+    // a SINGLE buffer Map/memcpy'd then re-bound on every dispatchPass, so once the list
+    // executes every queued Dispatch reads only the LAST pass's constants (CB aliasing).
+    // Wiring this path live needs per-pass / per-Dispatch upload buffers like the live
+    // Dispatch path; this retire fixes only the lifetime, not the aliasing.
+    if (blurCBUpload) pendingRetiredResources_.push_back(std::move(blurCBUpload));
 
     return true;
 }
@@ -3484,11 +3546,17 @@ bool D3D12VelloRenderer::ApplyColorMatrix(
     if (!CreateFilterPipelines()) return false;
 
     if (!blurTempTexture_ || blurTempW_ != outputW_ || blurTempH_ != outputH_) {
+        // #921 retire-on-grow (see ApplyGaussianBlur): in an ExecuteFilterGraph chain an
+        // earlier primitive may already have queued barriers / UAV / CopyResource on the
+        // old blurTempTexture_ in commandList_ when this size-mismatch rebuild fires.
+        // Park before overwrite; drained by DrainRetired in FlushVelloPaths.
+        if (blurTempTexture_) pendingRetiredResources_.push_back(std::move(blurTempTexture_));
         auto hp = MakeHeap(D3D12_HEAP_TYPE_DEFAULT);
         auto desc = MakeTex2D(DXGI_FORMAT_R8G8B8A8_UNORM, outputW_, outputH_,
                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&blurTempTexture_));
+        if (blurTempTexture_) blurTempTexture_->SetName(L"JaliumVelloBlurTemp");  // [JALIUM-921 diag]
         blurTempW_ = outputW_; blurTempH_ = outputH_;
     }
 
@@ -3545,6 +3613,13 @@ bool D3D12VelloRenderer::ApplyColorMatrix(
     b[0] = MakeBarrier(outputTexture_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
     b[1] = MakeBarrier(blurTempTexture_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
     cmdList->ResourceBarrier(2, b);
+
+    // #921: retire this invocation's transient descriptor heap + upload CB — both are bound
+    // into commandList_ (SetDescriptorHeaps / SetComputeRootConstantBufferView) and read by
+    // the GPU only at ExecuteCommandLists, after this returns. Drained by DrainRetiredHeaps
+    // / DrainRetired in FlushVelloPaths.
+    if (heap) pendingRetiredHeaps_.push_back(std::move(heap));
+    if (cbUpload) pendingRetiredResources_.push_back(std::move(cbUpload));
 
     return true;
 }
@@ -3631,11 +3706,17 @@ bool D3D12VelloRenderer::ApplyOffset(
     if (std::abs(dx) < 0.5f && std::abs(dy) < 0.5f) return true;  // no-op
 
     if (!blurTempTexture_ || blurTempW_ != outputW_ || blurTempH_ != outputH_) {
+        // #921 retire-on-grow (see ApplyGaussianBlur): in an ExecuteFilterGraph chain an
+        // earlier primitive may already have queued barriers / UAV / CopyResource on the
+        // old blurTempTexture_ in commandList_ when this size-mismatch rebuild fires.
+        // Park before overwrite; drained by DrainRetired in FlushVelloPaths.
+        if (blurTempTexture_) pendingRetiredResources_.push_back(std::move(blurTempTexture_));
         auto hp = MakeHeap(D3D12_HEAP_TYPE_DEFAULT);
         auto desc = MakeTex2D(DXGI_FORMAT_R8G8B8A8_UNORM, outputW_, outputH_,
                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&blurTempTexture_));
+        if (blurTempTexture_) blurTempTexture_->SetName(L"JaliumVelloBlurTemp");  // [JALIUM-921 diag]
         blurTempW_ = outputW_; blurTempH_ = outputH_;
     }
 
@@ -3691,6 +3772,12 @@ bool D3D12VelloRenderer::ApplyOffset(
     b[1] = MakeBarrier(blurTempTexture_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
     cmdList->ResourceBarrier(2, b);
 
+    // #921: retire this invocation's transient descriptor heap + upload CB (bound into
+    // commandList_, read by the GPU only at ExecuteCommandLists). Drained by
+    // DrainRetiredHeaps / DrainRetired in FlushVelloPaths.
+    if (heap) pendingRetiredHeaps_.push_back(std::move(heap));
+    if (cbUp) pendingRetiredResources_.push_back(std::move(cbUp));
+
     return true;
 }
 
@@ -3708,11 +3795,17 @@ bool D3D12VelloRenderer::ApplyMorphology(
     if (rx <= 0 && ry <= 0) return true;
 
     if (!blurTempTexture_ || blurTempW_ != outputW_ || blurTempH_ != outputH_) {
+        // #921 retire-on-grow (see ApplyGaussianBlur): in an ExecuteFilterGraph chain an
+        // earlier primitive may already have queued barriers / UAV / CopyResource on the
+        // old blurTempTexture_ in commandList_ when this size-mismatch rebuild fires.
+        // Park before overwrite; drained by DrainRetired in FlushVelloPaths.
+        if (blurTempTexture_) pendingRetiredResources_.push_back(std::move(blurTempTexture_));
         auto hp = MakeHeap(D3D12_HEAP_TYPE_DEFAULT);
         auto desc = MakeTex2D(DXGI_FORMAT_R8G8B8A8_UNORM, outputW_, outputH_,
                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
         device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&blurTempTexture_));
+        if (blurTempTexture_) blurTempTexture_->SetName(L"JaliumVelloBlurTemp");  // [JALIUM-921 diag]
         blurTempW_ = outputW_; blurTempH_ = outputH_;
     }
 
@@ -3768,6 +3861,12 @@ bool D3D12VelloRenderer::ApplyMorphology(
     b[0] = MakeBarrier(outputTexture_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COMMON);
     b[1] = MakeBarrier(blurTempTexture_.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COMMON);
     cmdList->ResourceBarrier(2, b);
+
+    // #921: retire this invocation's transient descriptor heap + upload CB (bound into
+    // commandList_, read by the GPU only at ExecuteCommandLists). Drained by
+    // DrainRetiredHeaps / DrainRetired in FlushVelloPaths.
+    if (heap) pendingRetiredHeaps_.push_back(std::move(heap));
+    if (cbUp) pendingRetiredResources_.push_back(std::move(cbUp));
 
     return true;
 }
@@ -3845,7 +3944,28 @@ bool D3D12VelloRenderer::ExecuteFilterGraph(
 // ============================================================================
 // RenderGraph Execution — process nodes in dependency order
 // ============================================================================
-
+//
+// LIFETIME / #921 CONTRACT — read before wiring this subtree up:
+// This path (ExecuteRenderGraph -> ExecuteFilterGraph -> Apply*) is currently DEAD CODE:
+// nothing calls ExecuteRenderGraph and nothing builds a VelloRenderGraph. The Apply*
+// functions record compute work into the `cmdList` they are handed but never Close it —
+// that list is D3D12DirectRenderer::commandList_, Closed/Executed much later in EndFrame.
+// So every transient they touch (member blurTempTexture_ / decimTextures_, the local
+// hBlurTemp, the per-pass descriptor heaps, the upload constant buffers) is parked on
+// pendingRetiredResources_ / pendingRetiredHeaps_ instead of dropped inline — dropping it
+// would free it mid-list -> #921 OBJECT_DELETED_WHILE_STILL_IN_USE.
+//
+// Those retire lists are drained ONLY by DrainRetired / DrainRetiredHeaps inside
+// FlushVelloPaths (d3d12_direct_renderer.cpp:2144-2145). Therefore, when this path is
+// finally wired in, it MUST be invoked from within FlushVelloPaths, between the Dispatch
+// that produces outputTexture_ (~line 2111) and the AddBitmap composite (~line 2123): that
+// is the only window where outputTexture_ holds content on the same commandList_, and it
+// guarantees the filter retirements are drained that same frame under the slot fence.
+// Invoking it from any other context would grow pendingRetired* unboundedly — the renderer
+// holds no D3D12Backend handle, so it cannot fall back to the global RetireGpuResource
+// graveyard without new plumbing. (See also the separate CB-aliasing TODO in
+// ApplyGaussianBlur: lifetimes are fixed here, per-pass constant correctness is not.)
+//
 bool D3D12VelloRenderer::ExecuteRenderGraph(
     ID3D12GraphicsCommandList* cmdList, const VelloRenderGraph& graph, uint32_t frameIndex)
 {

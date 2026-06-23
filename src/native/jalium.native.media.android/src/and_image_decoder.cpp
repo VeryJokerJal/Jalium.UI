@@ -57,6 +57,20 @@ jalium_media_status_t DecodeWithDecoder(
         return TranslateDecoderResult(rc);
     }
 
+    // Request STRAIGHT (non-premultiplied) alpha. AImageDecoder defaults to
+    // PREMULTIPLIED output, but every consumer of these pixels treats them as
+    // straight BGRA and multiplies by alpha exactly once: the Vulkan generic
+    // bitmap pipeline (VK_BLEND_FACTOR_SRC_ALPHA), the CPU SrcOver fallback, and
+    // average-colour sampling. Feeding premultiplied pixels through that straight
+    // blend multiplies by alpha a second time, darkening translucent images and
+    // crushing their anti-aliased edges. This matches the WIC/stb decoders, which
+    // already emit straight alpha. (setUnpremultipliedRequired is API 30+, the same
+    // level that already gates this whole AImageDecoder path.)
+    rc = AImageDecoder_setUnpremultipliedRequired(decoder, true);
+    if (rc != ANDROID_IMAGE_DECODER_SUCCESS) {
+        return TranslateDecoderResult(rc);
+    }
+
     const AImageDecoderHeaderInfo* header = AImageDecoder_getHeaderInfo(decoder);
     int32_t width  = AImageDecoderHeaderInfo_getWidth(header);
     int32_t height = AImageDecoderHeaderInfo_getHeight(header);

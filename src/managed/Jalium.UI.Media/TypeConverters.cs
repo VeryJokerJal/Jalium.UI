@@ -252,6 +252,43 @@ public abstract class ValueSerializer
     {
         throw new NotSupportedException($"Conversion from string is not supported.");
     }
+
+    private static readonly ImageSourceValueSerializer s_imageSourceSerializer = new();
+    private static readonly FontFamilyValueSerializer s_fontFamilySerializer = new();
+    private static readonly BrushValueSerializer s_brushSerializer = new();
+    private static readonly TransformValueSerializer s_transformSerializer = new();
+
+    /// <summary>
+    /// Returns the built-in <see cref="ValueSerializer"/> that can round-trip the supplied type
+    /// through a string, or <see langword="null"/> when no reliable string serializer is available.
+    /// </summary>
+    /// <param name="type">The type to obtain a serializer for.</param>
+    public static ValueSerializer? GetSerializerFor(Type? type)
+    {
+        if (type == null)
+        {
+            return null;
+        }
+
+        if (typeof(ImageSource).IsAssignableFrom(type))
+        {
+            return s_imageSourceSerializer;
+        }
+        if (typeof(FontFamily).IsAssignableFrom(type))
+        {
+            return s_fontFamilySerializer;
+        }
+        if (typeof(Brush).IsAssignableFrom(type))
+        {
+            return s_brushSerializer;
+        }
+        if (typeof(Transform).IsAssignableFrom(type))
+        {
+            return s_transformSerializer;
+        }
+
+        return null;
+    }
 }
 
 /// <summary>

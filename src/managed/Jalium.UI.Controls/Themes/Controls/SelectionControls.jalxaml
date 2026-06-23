@@ -51,7 +51,7 @@
                                          Background="Transparent"
                                          BorderThickness="0"
                                          MinHeight="0"
-                                         Padding="0,1,0,1"
+                                         Padding="0"
                                          Visibility="Collapsed"
                                          HorizontalAlignment="Stretch"
                                          VerticalAlignment="Stretch" />
@@ -72,6 +72,7 @@
                                               BorderThickness="0"
                                               Padding="0"
                                               MinWidth="27"
+                                              MinHeight="0"
                                               HorizontalAlignment="Stretch"
                                               VerticalAlignment="Stretch"
                                               IsChecked="{TemplateBinding IsDropDownOpen}">

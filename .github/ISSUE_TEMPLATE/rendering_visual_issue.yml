@@ -1,0 +1,131 @@
+name: 🎨 Rendering & Visual Issue
+description: Report a visual artifact — flicker, garbled output, wrong colors, broken effects, misalignment, GPU/device-lost glitches.
+title: "[Rendering]: "
+labels: ["bug", "rendering", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Jalium.UI renders on the GPU (DirectX 12 / Vulkan / Metal) with a software fallback. Visual bugs are often **backend-, GPU- or DPI-specific**, so the details below matter a lot.
+
+        📸 **Please attach a screenshot or short screen recording** — you can drag & drop images directly into the text areas. For artifacts that only appear *during* an interaction (resize, animation, GPU switch), a recording is far more useful than a still image.
+  - type: checkboxes
+    id: prechecks
+    attributes:
+      label: Pre-submission checklist
+      options:
+        - label: I have searched [existing issues](https://github.com/VeryJokerJal/Jalium.UI/issues?q=is%3Aissue) and this has not been reported yet.
+          required: true
+        - label: I have attached a screenshot or screen recording below (or explained why I cannot).
+          required: false
+  - type: input
+    id: version
+    attributes:
+      label: Jalium.UI version
+      placeholder: e.g. 26.10.6-preview / commit 6d63e6f6
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Rendering backend
+      description: Set via `JALIUM_RENDER_BACKEND`, or the platform default.
+      options:
+        - DirectX 12
+        - Vulkan
+        - Metal
+        - Software
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: engine
+    attributes:
+      label: Rendering engine
+      description: Vello / Impeller selection (set via `JALIUM_RENDERING_ENGINE`, default Auto).
+      options:
+        - Auto (default)
+        - Vello
+        - Impeller
+        - Not sure
+    validations:
+      required: false
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU model
+      description: Vendor + model. Found in Task Manager → Performance, or via `dxdiag` on Windows.
+      placeholder: e.g. NVIDIA RTX 4070 / Intel Iris Xe / AMD Radeon 780M / Apple M3
+    validations:
+      required: true
+  - type: dropdown
+    id: gpu-type
+    attributes:
+      label: GPU configuration
+      options:
+        - Discrete GPU only
+        - Integrated GPU only (iGPU)
+        - Laptop with switchable / hybrid GPU (iGPU + dGPU)
+        - Multiple discrete GPUs
+        - Not sure
+    validations:
+      required: false
+  - type: input
+    id: display
+    attributes:
+      label: Display / DPI setup
+      description: Resolution, DPI scaling, refresh rate, multi-monitor, HDR — anything non-standard.
+      placeholder: e.g. 3840×2160 @ 150% scaling, 144 Hz, dual monitor mixed-DPI
+    validations:
+      required: false
+  - type: dropdown
+    id: trigger
+    attributes:
+      label: When does the artifact appear?
+      multiple: true
+      options:
+        - Always / on first render
+        - During window resize
+        - During animation / transition
+        - When a visual effect is active (blur / acrylic / mica / liquid glass)
+        - While scrolling
+        - When switching GPU / undocking / display change
+        - After the app has been running for a while
+        - Only on a specific control
+        - Other (describe below)
+    validations:
+      required: false
+  - type: textarea
+    id: description
+    attributes:
+      label: Describe the visual issue
+      description: What does it look like vs. what should it look like?
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshots / screen recording
+      description: Drag & drop images or a short video here.
+    validations:
+      required: true
+  - type: textarea
+    id: repro-steps
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: repro-code
+    attributes:
+      label: Minimal reproduction (JALXAML / C#)
+      render: xml
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Does it also reproduce on another backend (e.g. Software)? Include GPU driver version, env vars, or any workaround you found.
+    validations:
+      required: false

@@ -8,6 +8,7 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#include "jalium_text_stats.h"
 #endif
 
 #include <algorithm>
@@ -125,66 +126,27 @@ bool VulkanBitmap::UpdatePackedPixels(const uint8_t* pixels, uint32_t width, uin
 
 #ifdef _WIN32
 
-namespace {
-
-// Helper: create a GDI font matching the text format properties.
-// Quality defaults to ANTIALIASED_QUALITY (= grayscale AA), matching the
-// framework-wide default after the 2026-05-24 Auto→Grayscale switch in
-// jalium::text_options::ResolveMode. Using CLEARTYPE_QUALITY here used to
-// cause measure-vs-render mismatch (CT-tuned glyph widths reported by GDI's
-// measurement APIs differ ~0.5–1px from grayscale-rendered widths), which
-// produced layout jitter when GetTextExtentPoint32 results fed back into
-// caret / selection geometry computed off the actually rendered bitmap.
-// Pass CLEARTYPE_QUALITY explicitly when measuring text that the caller
-// has already opted into ClearType rendering for.
-HFONT CreateGdiFont(const std::wstring& fontFamily,
-                    float fontSize,
-                    int32_t fontWeight,
-                    int32_t fontStyle,
-                    uint8_t quality = ANTIALIASED_QUALITY)
+// Process-shared DirectWrite factory. Thread-safe function-local-static Meyers
+// singleton: DWriteCreateFactory(SHARED) then QueryInterface to IDWriteFactory5.
+// Mirrors the single-factory funnel the D3D12 backend uses. Returns a raw
+// IDWriteFactory5* owned by the static ComPtr — never destroyed before exit.
+// May be nullptr if creation or the QI fails; callers must null-check.
+IDWriteFactory5* GetSharedDWriteFactory()
 {
-    const int fontHeight = -static_cast<int>(std::round(fontSize));
-    return CreateFontW(
-        fontHeight, 0, 0, 0,
-        fontWeight,
-        (fontStyle == 1 || fontStyle == 2) ? TRUE : FALSE,
-        FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS, quality, DEFAULT_PITCH | FF_DONTCARE,
-        fontFamily.c_str());
+    static Microsoft::WRL::ComPtr<IDWriteFactory5> factory5 = [] {
+        Microsoft::WRL::ComPtr<IDWriteFactory> factory;
+        HRESULT hr = DWriteCreateFactory(
+            DWRITE_FACTORY_TYPE_SHARED,
+            __uuidof(IDWriteFactory),
+            reinterpret_cast<IUnknown**>(factory.GetAddressOf()));
+        Microsoft::WRL::ComPtr<IDWriteFactory5> result;
+        if (SUCCEEDED(hr) && factory) {
+            factory.As(&result);  // QueryInterface to IDWriteFactory5 (null on failure)
+        }
+        return result;
+    }();
+    return factory5.Get();
 }
-
-// Helper: clamp a float dimension to a safe LONG range for GDI RECT.
-// UI frameworks frequently pass FLT_MAX / infinity for "unconstrained";
-// static_cast<LONG> on those is undefined behavior on MSVC.
-LONG SafeLong(float v)
-{
-    if (v <= 0 || !(v == v)) return 0;  // negative, zero, or NaN
-    if (v > 100000.0f) return 100000;
-    return static_cast<LONG>(v);
-}
-
-// Helper: build DrawTextW flags from text format properties.
-UINT BuildDrawTextFlags(int32_t alignment, int32_t wordWrapping, int32_t trimming)
-{
-    UINT flags = DT_NOPREFIX | DT_TOP;
-    switch (alignment) {
-        case JALIUM_TEXT_ALIGN_CENTER:   flags |= DT_CENTER; break;
-        case JALIUM_TEXT_ALIGN_TRAILING: flags |= DT_RIGHT;  break;
-        default:                         flags |= DT_LEFT;   break;
-    }
-    if (wordWrapping == 1) {
-        flags |= DT_SINGLELINE;
-    } else {
-        flags |= DT_WORDBREAK;
-    }
-    switch (trimming) {
-        case JALIUM_TEXT_TRIMMING_CHARACTER_ELLIPSIS: flags |= DT_END_ELLIPSIS;  break;
-        case JALIUM_TEXT_TRIMMING_WORD_ELLIPSIS:      flags |= DT_WORD_ELLIPSIS; break;
-    }
-    return flags;
-}
-
-} // namespace
 
 VulkanTextFormat::VulkanTextFormat(
     const wchar_t* fontFamily,
@@ -196,6 +158,27 @@ VulkanTextFormat::VulkanTextFormat(
     , fontWeight_(fontWeight)
     , fontStyle_(fontStyle)
 {
+    // Create the DirectWrite format object (mirrors D3D12TextFormat ctor).
+    // Font weight maps directly (JaliumFontWeight values are the DWRITE_FONT_WEIGHT
+    // numeric values); font style maps directly (0=normal/1=italic/2=oblique are
+    // the DWRITE_FONT_STYLE values). Same empty locale as D3D12. If the shared
+    // factory or CreateTextFormat fails, dwFormat_ stays null and the
+    // measurement methods fall back to approximate metrics.
+    IDWriteFactory5* factory = GetSharedDWriteFactory();
+    if (factory) {
+        DWRITE_FONT_WEIGHT weight = static_cast<DWRITE_FONT_WEIGHT>(fontWeight);
+        DWRITE_FONT_STYLE style = static_cast<DWRITE_FONT_STYLE>(fontStyle);
+
+        factory->CreateTextFormat(
+            fontFamily_.c_str(),
+            nullptr,  // Font collection (nullptr = system collection)
+            weight,
+            style,
+            DWRITE_FONT_STRETCH_NORMAL,
+            fontSize,
+            L"",  // Locale
+            &dwFormat_);
+    }
 }
 #else
 VulkanTextFormat::VulkanTextFormat(
@@ -225,7 +208,30 @@ VulkanTextFormat::~VulkanTextFormat() = default;
 void VulkanTextFormat::SetAlignment(int32_t alignment)
 {
     alignment_ = alignment;
-#ifndef _WIN32
+#ifdef _WIN32
+    if (dwFormat_) {
+        DWRITE_TEXT_ALIGNMENT textAlignment;
+        switch (alignment) {
+            case JALIUM_TEXT_ALIGN_LEADING:
+                textAlignment = DWRITE_TEXT_ALIGNMENT_LEADING;
+                break;
+            case JALIUM_TEXT_ALIGN_TRAILING:
+                textAlignment = DWRITE_TEXT_ALIGNMENT_TRAILING;
+                break;
+            case JALIUM_TEXT_ALIGN_CENTER:
+                textAlignment = DWRITE_TEXT_ALIGNMENT_CENTER;
+                break;
+            case JALIUM_TEXT_ALIGN_JUSTIFIED:
+                textAlignment = DWRITE_TEXT_ALIGNMENT_JUSTIFIED;
+                break;
+            default:
+                textAlignment = DWRITE_TEXT_ALIGNMENT_LEADING;
+                break;
+        }
+        dwFormat_->SetTextAlignment(textAlignment);
+        InvalidateLayoutCache();
+    }
+#else
     if (ftTextFormat_) ftTextFormat_->SetAlignment(alignment);
 #endif
 }
@@ -233,7 +239,27 @@ void VulkanTextFormat::SetAlignment(int32_t alignment)
 void VulkanTextFormat::SetParagraphAlignment(int32_t alignment)
 {
     paragraphAlignment_ = alignment;
-#ifndef _WIN32
+#ifdef _WIN32
+    if (dwFormat_) {
+        DWRITE_PARAGRAPH_ALIGNMENT paragraphAlignment;
+        switch (alignment) {
+            case JALIUM_PARAGRAPH_ALIGN_NEAR:
+                paragraphAlignment = DWRITE_PARAGRAPH_ALIGNMENT_NEAR;
+                break;
+            case JALIUM_PARAGRAPH_ALIGN_FAR:
+                paragraphAlignment = DWRITE_PARAGRAPH_ALIGNMENT_FAR;
+                break;
+            case JALIUM_PARAGRAPH_ALIGN_CENTER:
+                paragraphAlignment = DWRITE_PARAGRAPH_ALIGNMENT_CENTER;
+                break;
+            default:
+                paragraphAlignment = DWRITE_PARAGRAPH_ALIGNMENT_NEAR;
+                break;
+        }
+        dwFormat_->SetParagraphAlignment(paragraphAlignment);
+        InvalidateLayoutCache();
+    }
+#else
     if (ftTextFormat_) ftTextFormat_->SetParagraphAlignment(alignment);
 #endif
 }
@@ -241,7 +267,33 @@ void VulkanTextFormat::SetParagraphAlignment(int32_t alignment)
 void VulkanTextFormat::SetTrimming(int32_t trimming)
 {
     trimming_ = trimming;
-#ifndef _WIN32
+#ifdef _WIN32
+    IDWriteFactory5* factory = GetSharedDWriteFactory();
+    if (dwFormat_ && factory) {
+        DWRITE_TRIMMING trimmingOptions = {};
+        Microsoft::WRL::ComPtr<IDWriteInlineObject> ellipsis;
+
+        switch (trimming) {
+            case JALIUM_TEXT_TRIMMING_NONE:
+                trimmingOptions.granularity = DWRITE_TRIMMING_GRANULARITY_NONE;
+                break;
+            case JALIUM_TEXT_TRIMMING_CHARACTER_ELLIPSIS:
+                trimmingOptions.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+                factory->CreateEllipsisTrimmingSign(dwFormat_.Get(), &ellipsis);
+                break;
+            case JALIUM_TEXT_TRIMMING_WORD_ELLIPSIS:
+                trimmingOptions.granularity = DWRITE_TRIMMING_GRANULARITY_WORD;
+                factory->CreateEllipsisTrimmingSign(dwFormat_.Get(), &ellipsis);
+                break;
+            default:
+                trimmingOptions.granularity = DWRITE_TRIMMING_GRANULARITY_NONE;
+                break;
+        }
+
+        dwFormat_->SetTrimming(&trimmingOptions, ellipsis.Get());
+        InvalidateLayoutCache();
+    }
+#else
     if (ftTextFormat_) ftTextFormat_->SetTrimming(trimming);
 #endif
 }
@@ -249,7 +301,30 @@ void VulkanTextFormat::SetTrimming(int32_t trimming)
 void VulkanTextFormat::SetWordWrapping(int32_t wrapping)
 {
     wordWrapping_ = wrapping;
-#ifndef _WIN32
+#ifdef _WIN32
+    if (dwFormat_) {
+        DWRITE_WORD_WRAPPING wordWrapping;
+        switch (wrapping) {
+            case JALIUM_WORD_WRAP:
+                wordWrapping = DWRITE_WORD_WRAPPING_WRAP;
+                break;
+            case JALIUM_WORD_WRAP_NONE:
+                wordWrapping = DWRITE_WORD_WRAPPING_NO_WRAP;
+                break;
+            case JALIUM_WORD_WRAP_CHARACTER:
+                wordWrapping = DWRITE_WORD_WRAPPING_CHARACTER;
+                break;
+            case JALIUM_WORD_WRAP_EMERGENCY:
+                wordWrapping = DWRITE_WORD_WRAPPING_EMERGENCY_BREAK;
+                break;
+            default:
+                wordWrapping = DWRITE_WORD_WRAPPING_WRAP;
+                break;
+        }
+        dwFormat_->SetWordWrapping(wordWrapping);
+        InvalidateLayoutCache();
+    }
+#else
     if (ftTextFormat_) ftTextFormat_->SetWordWrapping(wrapping);
 #endif
 }
@@ -259,65 +334,199 @@ void VulkanTextFormat::SetLineSpacing(int32_t method, float spacing, float basel
     lineSpacingMethod_ = method;
     lineSpacingMultiplier_ = spacing;
     lineSpacingBaseline_ = baseline;
-#ifndef _WIN32
+#ifdef _WIN32
+    if (dwFormat_) {
+        DWRITE_LINE_SPACING_METHOD dwMethod;
+        switch (method) {
+            case 0: dwMethod = DWRITE_LINE_SPACING_METHOD_DEFAULT; break;
+            case 1: dwMethod = DWRITE_LINE_SPACING_METHOD_UNIFORM; break;
+            case 2: dwMethod = DWRITE_LINE_SPACING_METHOD_PROPORTIONAL; break;
+            default: dwMethod = DWRITE_LINE_SPACING_METHOD_DEFAULT; break;
+        }
+        dwFormat_->SetLineSpacing(dwMethod, spacing, baseline);
+        InvalidateLayoutCache();
+    }
+#else
     if (ftTextFormat_) ftTextFormat_->SetLineSpacing(method, spacing, baseline);
 #endif
 }
 
 void VulkanTextFormat::SetMaxLines(uint32_t maxLines) {
+#ifdef _WIN32
+    if (maxLines_ == maxLines) return;
     maxLines_ = maxLines;
-#ifndef _WIN32
+    InvalidateLayoutCache();
+#else
+    maxLines_ = maxLines;
     if (ftTextFormat_) ftTextFormat_->SetMaxLines(maxLines);
 #endif
 }
 
+#ifdef _WIN32
+uint64_t VulkanTextFormat::HashLayoutKey(
+    const wchar_t* text, uint32_t textLength) const noexcept
+{
+    uint64_t h = 0xCBF29CE484222325ull;  // FNV-1a 64-bit
+    auto mix = [&h](const void* p, size_t n) {
+        const uint8_t* b = static_cast<const uint8_t*>(p);
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 0x100000001B3ull; }
+    };
+    mix(&textLength, sizeof(textLength));
+    if (text && textLength)
+        mix(text, static_cast<size_t>(textLength) * sizeof(wchar_t));
+    mix(&maxLines_, sizeof(maxLines_));
+    return h;
+}
+
+void VulkanTextFormat::InvalidateLayoutCache() noexcept
+{
+    layoutMap_.clear();
+    layoutLru_.clear();
+}
+
+void VulkanTextFormat::ApplyMaxLinesClamp(IDWriteTextLayout* layout) const noexcept
+{
+    if (!layout || maxLines_ == 0) return;
+    // DirectWrite doesn't have a SetMaxLines API. Approximate by constraining
+    // max height to lineHeight * maxLines, so the layout clips at that boundary.
+    DWRITE_TEXT_METRICS tm = {};
+    if (SUCCEEDED(layout->GetMetrics(&tm)) && tm.lineCount > maxLines_) {
+        std::vector<DWRITE_LINE_METRICS> lineMetrics(tm.lineCount);
+        uint32_t actualLines = 0;
+        if (SUCCEEDED(layout->GetLineMetrics(lineMetrics.data(), tm.lineCount, &actualLines))) {
+            float totalH = 0;
+            for (uint32_t i = 0; i < maxLines_ && i < actualLines; ++i) {
+                totalH += lineMetrics[i].height;
+            }
+            // Clamp the height in place rather than recreating the layout —
+            // SetMaxHeight only re-runs layout pass 2 (line breaking),
+            // skipping the heavy text-analysis / shaping work.
+            layout->SetMaxHeight(totalH);
+        }
+    }
+}
+
+HRESULT VulkanTextFormat::CreateLayout(
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight,
+    IDWriteTextLayout** layout,
+    uint64_t* outKey)
+{
+    if (outKey) *outKey = 0;  // 0 = uncacheable; set on every success path below
+    if (!layout) return E_POINTER;
+    *layout = nullptr;
+    IDWriteFactory5* factory = GetSharedDWriteFactory();
+    if (!factory || !dwFormat_) return E_FAIL;
+
+    // Two-tier key design (mirrors D3D12TextFormat::CreateLayout):
+    //   - `key` (text + maxLines only) drives the physical layoutMap_ cache.
+    //     SetMaxWidth/SetMaxHeight replay the cached shaped layout against new
+    //     dimensions without re-running DirectWrite's heavy text analysis +
+    //     glyph shaping, so width/height fluctuations don't thrash the cache.
+    //   - `outKey` (text + maxLines + width + height + format identity) drives
+    //     the glyph-INSTANCE cache one tier above, where positioned glyph
+    //     quads do depend on the layout dimensions — a different maxWidth can
+    //     produce different wrap points, so that cache MUST miss on width
+    //     changes even though the layout cache hit.
+    const uint64_t key = HashLayoutKey(text, textLength);
+    if (outKey) {
+        uint64_t gk = key;
+        gk ^= (uint64_t)reinterpret_cast<uintptr_t>(this)
+              + 0x9E3779B97F4A7C15ull + (gk << 6) + (gk >> 2);
+        auto mixGk = [&gk](const void* p, size_t n) {
+            const uint8_t* b = static_cast<const uint8_t*>(p);
+            for (size_t i = 0; i < n; ++i) { gk ^= b[i]; gk *= 0x100000001B3ull; }
+        };
+        mixGk(&maxWidth,  sizeof(maxWidth));
+        mixGk(&maxHeight, sizeof(maxHeight));
+        *outKey = gk;
+    }
+    if (auto it = layoutMap_.find(key); it != layoutMap_.end()) {
+        // Hit. Promote to MRU and re-apply the caller's dimensions to the
+        // cached layout (cheap: just invalidates the layout's internal layout
+        // calc — the heavy text-analysis / shaping work is preserved).
+        layoutLru_.splice(layoutLru_.begin(), layoutLru_, it->second);
+        IDWriteTextLayout* cached = it->second->layout.Get();
+        if (cached) {
+            cached->SetMaxWidth(maxWidth);
+            cached->SetMaxHeight(maxHeight);
+            // Re-apply the maxLines clamp: SetMaxHeight(maxHeight) above just
+            // overwrote any clamp baked in on a prior call, and the cache key
+            // excludes maxWidth so a width change still lands here as a hit.
+            ApplyMaxLinesClamp(cached);
+            cached->AddRef();
+            *layout = cached;
+            jalium::text_stats::AddLayoutHit();
+            return S_OK;
+        }
+        // Defensive: empty slot — drop and fall through to recreate.
+        layoutMap_.erase(it);
+    }
+
+    jalium::text_stats::AddLayoutMiss();
+
+    HRESULT hr = factory->CreateTextLayout(
+        text, textLength, dwFormat_.Get(), maxWidth, maxHeight, layout);
+
+    if (SUCCEEDED(hr) && *layout) {
+        ApplyMaxLinesClamp(*layout);
+    }
+
+    if (SUCCEEDED(hr) && *layout) {
+        // Insert final (post-maxLines) layout. ComPtr's raw-pointer ctor
+        // AddRefs, so the cache owns its own ref while *layout keeps the
+        // caller's +1 from CreateTextLayout. Evict LRU tail at capacity.
+        if (layoutLru_.size() >= kLayoutCacheCap) {
+            layoutMap_.erase(layoutLru_.back().key);
+            layoutLru_.pop_back();
+            jalium::text_stats::AddLayoutEviction(1);
+        }
+        layoutLru_.push_front({ key, Microsoft::WRL::ComPtr<IDWriteTextLayout>(*layout) });
+        layoutMap_[key] = layoutLru_.begin();
+    }
+
+    return hr;
+}
+#endif  // _WIN32
+
 JaliumResult VulkanTextFormat::HitTestPoint(
     const wchar_t* text, uint32_t textLength,
-    float maxWidth, float /*maxHeight*/,
+    float maxWidth, float maxHeight,
     float pointX, float pointY,
     JaliumTextHitTestResult* result)
 {
     if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
     memset(result, 0, sizeof(*result));
 #ifdef _WIN32
-    if (!text || textLength == 0) return JALIUM_OK;
+    // DirectWrite path (mirrors D3D12TextFormat::HitTestPoint). Falls through to
+    // the zeroed JALIUM_OK result below if the shared factory / format is null.
+    if (dwFormat_ && text) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+        HRESULT hr = CreateLayout(text, textLength, maxWidth, maxHeight, &layout);
+        if (FAILED(hr) || !layout) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
 
-    HDC hdc = CreateCompatibleDC(nullptr);
-    if (!hdc) return JALIUM_OK;
+        BOOL isTrailingHit = FALSE;
+        BOOL isInside = FALSE;
+        DWRITE_HIT_TEST_METRICS hitMetrics = {};
 
-    HFONT hFont = CreateGdiFont(fontFamily_, fontSize_, fontWeight_, fontStyle_);
-    HGDIOBJ oldFont = SelectObject(hdc, hFont);
+        hr = layout->HitTestPoint(pointX, pointY, &isTrailingHit, &isInside, &hitMetrics);
+        if (FAILED(hr)) return JALIUM_ERROR_UNKNOWN;
 
-    TEXTMETRICW tm {};
-    GetTextMetricsW(hdc, &tm);
-    float lineH = static_cast<float>(tm.tmHeight);
+        result->textPosition = hitMetrics.textPosition;
+        result->isTrailingHit = isTrailingHit ? 1 : 0;
+        result->isInside = isInside ? 1 : 0;
 
-    int fitCount = 0;
-    SIZE totalSize {};
-    std::vector<INT> widths(textLength);
-    GetTextExtentExPointW(hdc, text, static_cast<int>(textLength),
-        SafeLong(maxWidth), &fitCount, widths.data(), &totalSize);
-
-    uint32_t pos = 0;
-    float prevWidth = 0;
-    for (uint32_t i = 0; i < static_cast<uint32_t>(fitCount) && i < textLength; ++i) {
-        float charRight = static_cast<float>(widths[i]);
-        float charMid = (prevWidth + charRight) / 2.0f;
-        if (pointX <= charMid) { pos = i; break; }
-        pos = i + 1;
-        prevWidth = charRight;
+        // Get caret position for this text position
+        float caretX = 0, caretY = 0;
+        DWRITE_HIT_TEST_METRICS caretMetrics = {};
+        hr = layout->HitTestTextPosition(hitMetrics.textPosition, isTrailingHit, &caretX, &caretY, &caretMetrics);
+        if (SUCCEEDED(hr)) {
+            result->caretX = caretX;
+            result->caretY = caretY;
+            result->caretHeight = caretMetrics.height;
+        }
+        return JALIUM_OK;
     }
-
-    result->textPosition = pos;
-    result->isTrailingHit = 0;
-    result->isInside = (pointX >= 0 && pointX <= totalSize.cx && pointY >= 0 && pointY <= totalSize.cy) ? 1 : 0;
-    result->caretX = (pos > 0 && pos <= textLength) ? static_cast<float>(widths[pos - 1]) : 0;
-    result->caretY = 0;
-    result->caretHeight = lineH;
-
-    SelectObject(hdc, oldFont);
-    DeleteObject(hFont);
-    DeleteDC(hdc);
 #else
     if (ftTextFormat_)
         return ftTextFormat_->HitTestPoint(text, textLength, maxWidth, 0, pointX, pointY, result);
@@ -327,49 +536,35 @@ JaliumResult VulkanTextFormat::HitTestPoint(
 
 JaliumResult VulkanTextFormat::HitTestTextPosition(
     const wchar_t* text, uint32_t textLength,
-    float maxWidth, float /*maxHeight*/,
+    float maxWidth, float maxHeight,
     uint32_t textPosition, int32_t isTrailingHit,
     JaliumTextHitTestResult* result)
 {
     if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
     memset(result, 0, sizeof(*result));
 #ifdef _WIN32
-    if (!text || textLength == 0) return JALIUM_OK;
+    // DirectWrite path (mirrors D3D12TextFormat::HitTestTextPosition). Falls
+    // through to the zeroed JALIUM_OK result below if factory / format is null.
+    if (dwFormat_ && text) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+        HRESULT hr = CreateLayout(text, textLength, maxWidth, maxHeight, &layout);
+        if (FAILED(hr) || !layout) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
 
-    HDC hdc = CreateCompatibleDC(nullptr);
-    if (!hdc) return JALIUM_OK;
+        float caretX = 0, caretY = 0;
+        DWRITE_HIT_TEST_METRICS hitMetrics = {};
 
-    HFONT hFont = CreateGdiFont(fontFamily_, fontSize_, fontWeight_, fontStyle_);
-    HGDIOBJ oldFont = SelectObject(hdc, hFont);
+        hr = layout->HitTestTextPosition(textPosition, isTrailingHit ? TRUE : FALSE,
+                                          &caretX, &caretY, &hitMetrics);
+        if (FAILED(hr)) return JALIUM_ERROR_UNKNOWN;
 
-    TEXTMETRICW tm {};
-    GetTextMetricsW(hdc, &tm);
-    float lineH = static_cast<float>(tm.tmHeight);
-
-    int fitCount = 0;
-    SIZE totalSize {};
-    std::vector<INT> widths(textLength);
-    GetTextExtentExPointW(hdc, text, static_cast<int>(textLength),
-        SafeLong(maxWidth), &fitCount, widths.data(), &totalSize);
-
-    float cx = 0;
-    if (textPosition > 0 && textPosition <= textLength) {
-        cx = static_cast<float>(widths[textPosition - 1]);
+        result->textPosition = textPosition;
+        result->isTrailingHit = isTrailingHit;
+        result->isInside = 1;
+        result->caretX = caretX;
+        result->caretY = caretY;
+        result->caretHeight = hitMetrics.height;
+        return JALIUM_OK;
     }
-    if (isTrailingHit && textPosition < textLength) {
-        cx = static_cast<float>(widths[textPosition]);
-    }
-
-    result->textPosition = textPosition;
-    result->isTrailingHit = isTrailingHit;
-    result->isInside = 1;
-    result->caretX = cx;
-    result->caretY = 0;
-    result->caretHeight = lineH;
-
-    SelectObject(hdc, oldFont);
-    DeleteObject(hFont);
-    DeleteDC(hdc);
 #else
     if (ftTextFormat_)
         return ftTextFormat_->HitTestTextPosition(text, textLength, maxWidth, 0, textPosition, isTrailingHit, result);
@@ -391,33 +586,85 @@ JaliumResult VulkanTextFormat::MeasureText(
     std::memset(metrics, 0, sizeof(JaliumTextMetrics));
 
 #ifdef _WIN32
-    HDC hdc = CreateCompatibleDC(nullptr);
-    if (hdc) {
-        HFONT hFont = CreateGdiFont(fontFamily_, fontSize_, fontWeight_, fontStyle_);
-        HGDIOBJ oldFont = SelectObject(hdc, hFont);
+    // DirectWrite path (mirrors D3D12TextFormat::MeasureText). When the shared
+    // factory / format failed to create, dwFormat_ is null and we fall through
+    // to the approximate-metrics fallback below.
+    if (dwFormat_) {
+        Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+        HRESULT hr = CreateLayout(text, textLength, maxWidth, maxHeight, &layout);
+        if (FAILED(hr) || !layout) {
+            return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+        }
 
-        RECT rc = { 0, 0, SafeLong(maxWidth), SafeLong(maxHeight) };
-        UINT dtFlags = BuildDrawTextFlags(alignment_, wordWrapping_, JALIUM_TEXT_TRIMMING_NONE) | DT_CALCRECT;
-        DrawTextW(hdc, text, static_cast<int>(textLength), &rc, dtFlags);
+        DWRITE_TEXT_METRICS textMetrics;
+        hr = layout->GetMetrics(&textMetrics);
+        if (FAILED(hr)) {
+            return JALIUM_ERROR_UNKNOWN;
+        }
 
-        TEXTMETRICW tm {};
-        GetTextMetricsW(hdc, &tm);
+        // Use widthIncludingTrailingWhitespace so trailing spaces count toward
+        // measurement (caret positioning / selection highlighting of spaces).
+        metrics->width = textMetrics.widthIncludingTrailingWhitespace;
+        metrics->height = textMetrics.height;
+        metrics->lineCount = textMetrics.lineCount;
 
-        metrics->width = static_cast<float>(rc.right - rc.left);
-        metrics->height = static_cast<float>(rc.bottom - rc.top);
-        metrics->lineHeight = static_cast<float>(tm.tmHeight);
-        metrics->baseline = static_cast<float>(tm.tmAscent);
-        metrics->ascent = static_cast<float>(tm.tmAscent);
-        metrics->descent = static_cast<float>(tm.tmDescent);
-        metrics->lineGap = static_cast<float>(tm.tmExternalLeading);
-        metrics->lineCount = (tm.tmHeight > 0)
-            ? static_cast<uint32_t>(metrics->height / static_cast<float>(tm.tmHeight))
-            : 1;
-        if (metrics->lineCount == 0) metrics->lineCount = 1;
+        // First-line metrics give baseline / line height / ascent / descent.
+        DWRITE_LINE_METRICS lineMetrics;
+        uint32_t actualLineCount = 0;
+        hr = layout->GetLineMetrics(&lineMetrics, 1, &actualLineCount);
+        if (SUCCEEDED(hr) && actualLineCount > 0) {
+            metrics->baseline = lineMetrics.baseline;
+            metrics->lineHeight = lineMetrics.height;
+            // DirectWrite: baseline = ascent; height = ascent + descent + lineGap.
+            metrics->ascent = lineMetrics.baseline;
+            metrics->descent = lineMetrics.height - lineMetrics.baseline;
 
-        SelectObject(hdc, oldFont);
-        DeleteObject(hFont);
-        DeleteDC(hdc);
+            // Refine ascent/descent/lineGap/lineHeight from the resolved font
+            // face (mirrors D3D12's EnsureFontFaceMetrics path). On failure the
+            // line-metric values just computed are left in place — exactly as
+            // D3D12's font-not-resolved fallback leaves them.
+            Microsoft::WRL::ComPtr<IDWriteFontCollection> fontCollection;
+            dwFormat_->GetFontCollection(&fontCollection);
+            if (fontCollection) {
+                UINT32 familyNameLen = dwFormat_->GetFontFamilyNameLength() + 1;
+                std::vector<WCHAR> familyNameBuf(familyNameLen);
+                dwFormat_->GetFontFamilyName(familyNameBuf.data(), familyNameLen);
+
+                uint32_t familyIndex = 0;
+                BOOL exists = FALSE;
+                fontCollection->FindFamilyName(familyNameBuf.data(), &familyIndex, &exists);
+                if (exists) {
+                    Microsoft::WRL::ComPtr<IDWriteFontFamily> fontFamily;
+                    fontCollection->GetFontFamily(familyIndex, &fontFamily);
+                    if (fontFamily) {
+                        Microsoft::WRL::ComPtr<IDWriteFont> font;
+                        fontFamily->GetFirstMatchingFont(
+                            dwFormat_->GetFontWeight(),
+                            dwFormat_->GetFontStretch(),
+                            dwFormat_->GetFontStyle(),
+                            &font);
+                        if (font) {
+                            DWRITE_FONT_METRICS fontMetrics;
+                            font->GetMetrics(&fontMetrics);
+                            const float scale = fontSize_ / static_cast<float>(fontMetrics.designUnitsPerEm);
+                            metrics->ascent = fontMetrics.ascent * scale;
+                            metrics->descent = fontMetrics.descent * scale;
+                            metrics->lineGap = fontMetrics.lineGap * scale;
+                            // WPF-style natural line height: ascent + descent + lineGap.
+                            metrics->lineHeight = metrics->ascent + metrics->descent + metrics->lineGap;
+                        }
+                    }
+                }
+            }
+        } else {
+            // Fallback: use approximate values (mirrors D3D12).
+            metrics->lineHeight = fontSize_ * 1.2f;
+            metrics->baseline = fontSize_;
+            metrics->ascent = fontSize_;
+            metrics->descent = fontSize_ * 0.2f;
+            metrics->lineGap = 0.0f;
+        }
+
         return JALIUM_OK;
     }
 #else
@@ -455,23 +702,66 @@ JaliumResult VulkanTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     std::memset(metrics, 0, sizeof(JaliumTextMetrics));
 
 #ifdef _WIN32
-    HDC hdc = CreateCompatibleDC(nullptr);
-    if (hdc) {
-        HFONT hFont = CreateGdiFont(fontFamily_, fontSize_, fontWeight_, fontStyle_);
-        HGDIOBJ oldFont = SelectObject(hdc, hFont);
+    // DirectWrite path (mirrors D3D12TextFormat::GetFontMetrics). dwFormat_ is
+    // null only when the shared factory / CreateTextFormat failed; in that case
+    // we fall through to the approximate fallback below.
+    if (dwFormat_) {
+        Microsoft::WRL::ComPtr<IDWriteFontCollection> fontCollection;
+        dwFormat_->GetFontCollection(&fontCollection);
+        if (!fontCollection) {
+            // Use fallback values (mirrors D3D12).
+            metrics->ascent = fontSize_;
+            metrics->descent = fontSize_ * 0.2f;
+            metrics->lineGap = 0.0f;
+            metrics->lineHeight = fontSize_ * 1.2f;
+            metrics->baseline = fontSize_;
+            return JALIUM_OK;
+        }
 
-        TEXTMETRICW tm {};
-        GetTextMetricsW(hdc, &tm);
+        UINT32 familyNameLen = dwFormat_->GetFontFamilyNameLength() + 1;
+        std::vector<WCHAR> familyNameBuf(familyNameLen);
+        dwFormat_->GetFontFamilyName(familyNameBuf.data(), familyNameLen);
 
-        metrics->ascent = static_cast<float>(tm.tmAscent);
-        metrics->descent = static_cast<float>(tm.tmDescent);
-        metrics->lineGap = static_cast<float>(tm.tmExternalLeading);
-        metrics->lineHeight = static_cast<float>(tm.tmHeight);
-        metrics->baseline = static_cast<float>(tm.tmAscent);
+        uint32_t familyIndex = 0;
+        BOOL exists = FALSE;
+        fontCollection->FindFamilyName(familyNameBuf.data(), &familyIndex, &exists);
+        if (!exists) {
+            // Font not found, use fallback (mirrors D3D12).
+            metrics->ascent = fontSize_;
+            metrics->descent = fontSize_ * 0.2f;
+            metrics->lineGap = 0.0f;
+            metrics->lineHeight = fontSize_ * 1.2f;
+            metrics->baseline = fontSize_;
+            return JALIUM_OK;
+        }
 
-        SelectObject(hdc, oldFont);
-        DeleteObject(hFont);
-        DeleteDC(hdc);
+        Microsoft::WRL::ComPtr<IDWriteFontFamily> fontFamily;
+        fontCollection->GetFontFamily(familyIndex, &fontFamily);
+        if (!fontFamily) {
+            return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+        }
+
+        Microsoft::WRL::ComPtr<IDWriteFont> font;
+        fontFamily->GetFirstMatchingFont(
+            dwFormat_->GetFontWeight(),
+            dwFormat_->GetFontStretch(),
+            dwFormat_->GetFontStyle(),
+            &font);
+        if (!font) {
+            return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+        }
+
+        DWRITE_FONT_METRICS fontMetrics;
+        font->GetMetrics(&fontMetrics);
+
+        // Convert design units to DIPs (scale = fontSize / designUnitsPerEm).
+        float scale = fontSize_ / static_cast<float>(fontMetrics.designUnitsPerEm);
+        metrics->ascent = fontMetrics.ascent * scale;
+        metrics->descent = fontMetrics.descent * scale;
+        metrics->lineGap = fontMetrics.lineGap * scale;
+        // WPF-style natural line height: ascent + descent + lineGap.
+        metrics->lineHeight = metrics->ascent + metrics->descent + metrics->lineGap;
+        metrics->baseline = metrics->ascent;
         return JALIUM_OK;
     }
 #else

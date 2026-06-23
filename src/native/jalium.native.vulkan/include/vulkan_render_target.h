@@ -10,6 +10,7 @@
 
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace jalium {
@@ -81,6 +82,18 @@ public:
     // image is resident on the same device, so this samples it directly (no
     // per-frame upload) via the bitmap pipeline — matching D3D12 BlitInkLayer.
     void BlitInkLayer(void* inkLayerBitmap, float dstX, float dstY, float opacity) override;
+    // Vulkan has no retained-layer implementation yet (SupportsRetainedLayers()
+    // stays false), so a non-null handle reaching this target is necessarily
+    // FOREIGN — created by another backend's render target (e.g. a D3D12 layer
+    // drained through the replacement target after a device-lost backend
+    // fallback). Deleting through an unknown concrete type would be undefined
+    // behavior, so this override keeps the base class's no-op semantics but
+    // makes the bounded leak explicit and observable in debug output instead
+    // of silently inheriting it. When Vulkan grows retained layers, give them
+    // a VulkanDeviceGeneration keep-alive (vulkan_ink_layer.h) and mirror the
+    // D3D12 destroy rule: orphan only when the creating generation is actually
+    // lost — pointer inequality alone means "different", not "removed".
+    void DestroyRetainedLayer(void* layer) override;
     void DrawBackdropFilter(float x, float y, float w, float h, const char* backdropFilter, const char* material, const char* materialTint, float tintOpacity, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL) override;
     void DrawGlowingBorderHighlight(float x, float y, float w, float h, float animationPhase, float glowColorR, float glowColorG, float glowColorB, float strokeWidth, float trailLength, float dimOpacity, float screenWidth, float screenHeight) override;
     void DrawGlowingBorderTransition(float fromX, float fromY, float fromW, float fromH, float toX, float toY, float toW, float toH, float headProgress, float tailProgress, float animationPhase, float glowColorR, float glowColorG, float glowColorB, float strokeWidth, float trailLength, float dimOpacity, float screenWidth, float screenHeight) override;
@@ -112,6 +125,14 @@ public:
     // through the same GPU pixel-buffer + CPU BlendBuffer path the other
     // effect-capture effects use.
     void DrawColorMatrixEffect(float x, float y, float w, float h, const float* matrix) override;
+    // Inner shadow: a soft dark frame hugging the INNER edge of the element
+    // (the inverse of OuterGlow), drawn on top of the content and clipped to the
+    // element bounds. GPU-path implementation via concentric clipped rounded-rect
+    // strokes (no offscreen capture). Note: D3D12 currently no-ops this effect.
+    void DrawInnerShadowEffect(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) override;
     void DrawEmbossEffect(float x, float y, float w, float h,
         float amount, float lightDirX, float lightDirY, float relief) override;
     void DrawShaderEffect(float x, float y, float w, float h,
@@ -402,6 +423,19 @@ private:
         float    opacity  = 1.0f;
     };
 
+    // A shaped text run rendered through the dedicated text-glyph pipeline.
+    // Holds the per-glyph instances as raw floats — 12 per glyph, matching the
+    // 48-byte VkGlyphInstance layout (posX,posY, sizeX,sizeY, uvMinX,uvMinY,
+    // uvMaxX,uvMaxY, colorR,colorG,colorB,colorA; colour PREMULTIPLIED, colorR<0
+    // = colour-emoji sentinel). Stored as raw floats (not VkGlyphInstance) so this
+    // header stays free of the Windows-only DirectWrite/atlas types, matching the
+    // GpuVcTrianglesCommand convention. DrawReplayFrame uploads them into the glyph
+    // SSBO and issues vkCmdDraw(6, glyphCount, ...) sampling the text atlas.
+    struct GpuTextRunCommand {
+        std::vector<float> glyphs;     // 12 floats per glyph instance
+        uint32_t glyphCount = 0;
+    };
+
     enum class GpuReplayCommandKind {
         SolidRect,
         ClearRect,
@@ -415,6 +449,7 @@ private:
         VcTriangles,    // per-vertex-coloured triangle list (DrawLine 3-strip AA, etc.)
         InkLayer,       // composite a resident ink-layer image (InkCanvas)
         CustomShader,   // runtime-compiled custom pixel-shader effect
+        TextRun,        // shaped text run via the dedicated text-glyph pipeline (Windows DirectWrite)
     };
 
     struct GpuReplayCommand {
@@ -464,6 +499,7 @@ private:
         GpuVcTrianglesCommand vcTriangles {};
         GpuInkLayerCommand inkLayer {};
         GpuCustomShaderCommand customShader {};
+        GpuTextRunCommand textRun {};
     };
 
     struct EffectCaptureState {
@@ -506,6 +542,14 @@ private:
     // backgrounds (such as Gallery). A proper gradient shader would record a
     // dedicated gradient-rect command instead.
     bool TryGetApproximateBrushColor(Brush* brush, uint8_t& b, uint8_t& g, uint8_t& r, uint8_t& a) const;
+
+    // Brush → EngineBrushData (solid + linear/radial gradient) so a gradient
+    // stroke can be routed through the Impeller engine as a TRUE per-vertex
+    // gradient. Stop storage is owned by the caller-supplied vector; bd.stops
+    // aliases it, so it must outlive the EncodeXxx call. Opacity is folded into
+    // the (straight-alpha) stops. Returns false for image/unsupported brushes.
+    bool BuildEngineBrush(Brush* brush, float opacity, EngineBrushData& bd,
+                          std::vector<EngineBrushData::GradientStop>& stopStore) const;
     std::vector<uint8_t> BlurPixels(const std::vector<uint8_t>& source, int sourceWidth, int sourceHeight, int radius, float x, float y, float w, float h) const;
     void BlendBuffer(const std::vector<uint8_t>& source, int sourceWidth, int sourceHeight, float x, float y, float w, float h, float opacity);
     void PushTemporaryClip(float x, float y, float w, float h, float rx = 0.0f, float ry = 0.0f);
@@ -528,7 +572,13 @@ private:
     // buffer must remain immutable for the lifetime of any in-flight
     // command that holds the shared_ptr (UpdatePackedPixels achieves this
     // via copy-on-write — it allocates a new buffer instead of mutating).
-    bool TryRecordGpuPixelBufferCommandShared(std::shared_ptr<const std::vector<uint8_t>> pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity);
+    // opacityAlreadyBaked: when true the caller has ALREADY multiplied the
+    // opacity stack into the source pixels' alpha (e.g. the FreeType glyph
+    // bitmap in RenderText, mirroring RasterizePolygonToGpuBitmap). The
+    // recorder then stores the per-bitmap opacity verbatim instead of
+    // multiplying by GetCurrentOpacity() a second time — otherwise text and
+    // other pre-baked bitmaps fade as opacity² during animations.
+    bool TryRecordGpuPixelBufferCommandShared(std::shared_ptr<const std::vector<uint8_t>> pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity, bool opacityAlreadyBaked = false);
     bool TryRecordGpuBlurCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float radius, float opacity, bool alphaOnlyTint = false, float tintR = 0.0f, float tintG = 0.0f, float tintB = 0.0f, float tintA = 1.0f);
     bool TryRecordGpuBackdropCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL, float tintR, float tintG, float tintB, float tintOpacity, float saturation = 1.0f, float noiseIntensity = 0.0f);
     bool TryRecordGpuGlowCommand(float x, float y, float w, float h, float cornerRadius, float strokeWidth, float glowR, float glowG, float glowB, float glowA, float dimOpacity, float intensity);
@@ -592,11 +642,32 @@ private:
     bool TryRecordGpuLineAACommand(float x1, float y1, float x2, float y2, float strokeWidth, Brush* brush);
     bool TryRecordGpuPolylineCommand(const std::vector<float>& points, bool closed, float strokeWidth, Brush* brush);
     bool TryRecordGpuRectangleStrokeCommand(float x, float y, float w, float h, float strokeWidth, Brush* brush);
-    bool TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, float y, float w, float h, float opacity);
+    bool TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, float y, float w, float h, float opacity, bool opacityAlreadyBaked = false);
+    // Shared implementation behind both public DrawBitmap overrides. When
+    // opacityAlreadyBaked is true the bitmap's alpha already carries the
+    // opacity stack, so the GPU recorder must NOT re-apply GetCurrentOpacity()
+    // (the CPU blit path likewise stays correct because the baked alpha is
+    // intrinsic to the pixels). RenderText's FreeType path is the one caller
+    // that passes true; image draws pass false and keep opacity*GetCurrentOpacity().
+    void DrawBitmapInternal(Bitmap* bitmap, float x, float y, float w, float h, float opacity, int scalingMode, bool opacityAlreadyBaked);
     // Records an InkLayer replay command sampling a resident VulkanInkLayerBitmap
     // image. Returns false (caller falls back to CPU readback-and-blend) when GPU
     // replay isn't active or the layer/extent is degenerate.
     bool TryRecordGpuInkLayerCommand(void* inkLayer, float x, float y, float opacity);
+    // Readback cache for the foreign-but-healthy ink blit fallback: a layer
+    // living on another window's VkDevice can't be GPU-sampled here, so its
+    // pixels travel through host memory. Keyed by the layer's ContentVersion
+    // so an unchanged layer costs zero readbacks per frame — the synchronous
+    // GPU round trip happens once per stroke/clear/resize, not once per
+    // frame. Entries are evicted wholesale past a small cap (a window blits
+    // at most committed + preview = 2 foreign layers in practice).
+    struct ForeignInkSnapshot {
+        uint64_t version = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        std::shared_ptr<const std::vector<uint8_t>> bgra;
+    };
+    std::unordered_map<const void*, ForeignInkSnapshot> foreignInkSnapshots_;
     // Records a CustomShader command (cropped captured content + source hash +
     // constants). Returns false when GPU replay isn't active or the captured
     // content is empty — caller then composites the captured content unmodified.
@@ -638,6 +709,75 @@ private:
     std::vector<GpuReplayCommand> gpuReplayCommands_;
     mutable bool cpuRasterNeeded_ = false;
     bool cpuRasterNeededLastFrame_ = false;
+
+    // SuperEllipse shape state (SetShapeType). 0 = RoundedRect (default),
+    // 1 = SuperEllipse. The exponent (Border.SuperEllipseN, default 4 = iOS
+    // squircle) drives the Lamé-curve boundary. Consumed by FillRoundedRectangle
+    // / DrawRoundedRectangle; the managed Border resets it to 0 after drawing and
+    // BeginDraw clears it per frame as a safety net.
+    int currentShapeType_ = 0;
+    float currentShapeExponent_ = 4.0f;
+
+    // Tessellates the SuperEllipse boundary for (x,y,w,h) at currentShapeExponent_
+    // into a closed CCW polygon (x,y interleaved) approximating D3D12's
+    // sdSuperEllipseRect, so it can be filled / stroked through the Impeller path.
+    // Tessellates an iOS-style squircle: STRAIGHT edges joined by continuous-
+    // curvature (Lamé, exponent currentShapeExponent_) CORNERS of the given
+    // per-corner radii — NOT a full-rect superellipse (which collapses a wide /
+    // short element into a flattened oval). Radii clamp to min(w,h)/2.
+    void BuildSuperEllipsePolygon(float x, float y, float w, float h,
+                                  float tl, float tr, float br, float bl,
+                                  std::vector<float>& outPts) const;
+
+    // Records a SuperEllipse fill as an IN-ORDER FilledPolygon replay command
+    // (transformed to world space) instead of routing through FillPolygon, whose
+    // preferred Impeller/Vello engine batch is drained AFTER every in-order
+    // replay command — that late draw paints a SuperEllipse card's background
+    // over its own text/bitmap content, leaving cards blank. Returns false when
+    // an in-order record isn't possible (caller falls back to FillPolygon).
+    bool TryFillSuperEllipseInOrder(float x, float y, float w, float h,
+                                    float tl, float tr, float br, float bl, Brush* brush);
+
+    // Records a gradient fill over an arbitrary convex local-space perimeter as an
+    // IN-ORDER vertex-colour triangle fan (VcTriangles): each vertex bakes the
+    // sampled gradient colour, so the gradient renders truly AND in draw order
+    // (FillPolygon's gradient goes through the late-draining Impeller batch, which
+    // would paint a card background over its own content). Returns false when the
+    // brush isn't a gradient, or the fan can't be recorded (caller falls back to a
+    // solid fill). cxLocal/cyLocal = fan centre in the same local space as perimeter.
+    bool TryRecordGradientFanInOrder(const std::vector<float>& perimeterLocal,
+                                     float cxLocal, float cyLocal, Brush* brush);
+
+    // Tessellates a (per-corner) rounded rectangle outline into a closed local-space
+    // polygon (x,y interleaved) for gradient-fan fills.
+    void BuildRoundedRectPolygon(float x, float y, float w, float h,
+                                 float tl, float tr, float br, float bl,
+                                 std::vector<float>& outPts) const;
+
+    // ── GPU-path effect glow/shadow (no offscreen capture) ───────────────────
+    // On the GPU replay path the effect capture can't snapshot the element, so
+    // OuterGlow / DropShadow approximate the halo with concentric rounded-rects.
+    // The managed call order is BeginEffectCapture → element content →
+    // EndEffectCapture → effect, so the content is already recorded by the time
+    // the effect runs. BeginEffectCapture (GPU path) records where the content
+    // began; EndEffectCapture stamps [pendingGlowStart_, pendingGlowEnd_); the
+    // effect splices the glow BEHIND that content range (extract → glow → re-add).
+    std::vector<int> effectContentStartStack_;
+    int pendingGlowStart_ = -1;
+    int pendingGlowEnd_ = -1;
+
+    // Records the soft halo as a stack of concentric rounded-rects (outer faint →
+    // inner stronger) expanding from (x,y,w,h) by `spread`, optionally offset
+    // (drop shadow). Appends SolidRect replay commands at the current tail.
+    void DrawGlowLayers(float x, float y, float w, float h, float spread,
+                        float r, float g, float b, float a, float offX, float offY,
+                        float cTL, float cTR, float cBR, float cBL);
+    // Splices a glow drawn by DrawGlowLayers behind the just-recorded content
+    // range. Returns true if it consumed the pending capture (effect should
+    // return); false if there was no GPU-path capture (fall back to CPU path).
+    bool SpliceGlowBehindContent(float x, float y, float w, float h, float spread,
+                                 float r, float g, float b, float a, float offX, float offY,
+                                 float cTL, float cTR, float cBR, float cBL);
 
     // Rasterized-text cache. Windows RenderText used to call CreateDIBSection +
     // CreateFontW + DrawTextW on every frame, which dominated the Vulkan
@@ -686,8 +826,15 @@ private:
     // TryRecordGpuPixelBufferCommand deep-copy. Owns a shared reference to
     // the text cache entry's pixel buffer so subsequent DrawReplayFrame reads
     // see the same bytes.
+    // destScale maps the high-resolution source bitmap (width x height pixels)
+    // down to its base-DIP footprint: the local quad is sized (width*destScale,
+    // height*destScale) while the texture keeps its full pixel resolution. When
+    // text is rasterized at a magnified em (so a scaled draw stays crisp), pass
+    // destScale = 1/rasterScale so the current transform re-magnifies the
+    // base-DIP quad to the correct on-screen size. Default 1.0 = 1:1 (no scale).
     void RecordCachedTextBitmap(std::shared_ptr<const std::vector<uint8_t>> pixels,
-                                int width, int height, float x, float y);
+                                int width, int height, float x, float y,
+                                float destScale = 1.0f);
 
     // Fallback used when a FillPath / FillPolygon / StrokePath / DrawPolygon
     // cannot be expressed as a GPU replay FilledPolygon command (for example:

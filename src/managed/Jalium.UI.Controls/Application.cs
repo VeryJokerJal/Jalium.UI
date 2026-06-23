@@ -19,7 +19,7 @@ public partial class Application
 {
     private static Application? _current;
     private readonly WorkingSetTrimController? _workingSetTrimController;
-
+    
     /// <summary>
     /// Framework-internal startup object loader registered by Jalium.UI.Xaml.
     /// </summary>
@@ -168,36 +168,8 @@ public partial class Application
     /// <summary>
     /// Initializes a new instance of the <see cref="Application"/> class.
     /// </summary>
-    /// <summary>
-    /// Stopwatch timestamp captured at the very first instruction of the
-    /// Application constructor.  Used by Window.Show's startup trace to
-    /// compute the "user Main + AppBuilder + builder.Build" interval.
-    /// </summary>
-    internal static long ApplicationCtorEnterTimestamp;
-
-    /// <summary>
-    /// Stopwatch timestamp captured at the last instruction of the Application
-    /// constructor.  The gap between this and Window.Show's entry timestamp
-    /// is the user-app cost of constructing the main window — typically the
-    /// new MainWindow() call plus DI service instantiation, ViewModel construction,
-    /// and the user-supplied ConfigureApplication callback.
-    /// </summary>
-    internal static long ApplicationCtorExitTimestamp;
-
     public Application()
     {
-        // Capture ctor entry timestamp BEFORE any user-observable work so the
-        // startup trace can attribute the gap between Jalium.UI.Controls's
-        // module load and this point to the user's Main / AppBuilder pipeline.
-        if (ApplicationCtorEnterTimestamp == 0)
-            ApplicationCtorEnterTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
-
-        // Startup tracing 默认开启:几次 Stopwatch.GetTimestamp + 一次 Trace.WriteLine
-        // 总开销 < 1ms,production 无感;启动诊断值更大。JALIUM_STARTUP_TRACE=0 显式关闭。
-        bool trace = Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") != "0";
-        long t0 = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-        long tDpi = 0, tDispatcher = 0, tKeyboard = 0, tTheme = 0, tToolTip = 0, tInitComponent = 0;
-
         if (_current != null)
         {
             throw new InvalidOperationException("Only one Application instance can be created.");
@@ -215,7 +187,6 @@ public partial class Application
             // Initialize the cross-platform native platform library
             PlatformFactory.InitializePlatform();
         }
-        if (trace) tDpi = System.Diagnostics.Stopwatch.GetTimestamp();
 
         // Note: render-context (D3D12/Vulkan device) creation is kicked off on a
         // background thread by GpuPrewarmInitializer's [ModuleInitializer] when
@@ -233,11 +204,9 @@ public partial class Application
         SynchronizationContext.SetSynchronizationContext(
             new Jalium.UI.Threading.DispatcherSynchronizationContext(
                 Dispatcher.MainDispatcher ?? Dispatcher.GetForCurrentThread()));
-        if (trace) tDispatcher = System.Diagnostics.Stopwatch.GetTimestamp();
 
         // Initialize keyboard/focus system
         Keyboard.Initialize();
-        if (trace) tKeyboard = System.Diagnostics.Stopwatch.GetTimestamp();
 
         // Subscribe to Android lifecycle events
         if (PlatformFactory.IsAndroid)
@@ -254,14 +223,12 @@ public partial class Application
 
         // Initialize default theme (loads default styles for all controls)
         ThemeManager.Initialize(this);
-        if (trace) tTheme = System.Diagnostics.Stopwatch.GetTimestamp();
 
         // Initialize validation adorner integration
         ValidationAdornerIntegration.Initialize();
 
         // Force ToolTip static constructor to register show/hide delegates early
         System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(ToolTip).TypeHandle);
-        if (trace) tToolTip = System.Diagnostics.Stopwatch.GetTimestamp();
 
         // Optional ultra-low visible memory mode (off by default).
         _workingSetTrimController = WorkingSetTrimController.TryCreateFromEnvironment();
@@ -281,23 +248,6 @@ public partial class Application
         // This mirrors WPF behavior where Application subclass resources are loaded automatically.
         // The source generator emits InitializeComponent() as a private method, so use reflection.
         CallInitializeComponent();
-        if (trace) tInitComponent = System.Diagnostics.Stopwatch.GetTimestamp();
-
-        // Capture ctor-exit timestamp so Window.Show can attribute the gap
-        // between here and Show() entry to user-app MainWindow construction
-        // (host.Run → ConfigureApplication callback → new MainWindow + DI).
-        ApplicationCtorExitTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
-
-        if (trace)
-        {
-            static long Ms(long start, long end) =>
-                (long)System.Diagnostics.Stopwatch.GetElapsedTime(start, end).TotalMilliseconds;
-            XamlLoadStartupTrace.Emit(
-                $"[Jalium.UI startup] Application ctor: total {Ms(t0, tInitComponent)}ms " +
-                $"(dpi {Ms(t0, tDpi)}ms, dispatcher {Ms(tDpi, tDispatcher)}ms, " +
-                $"keyboard {Ms(tDispatcher, tKeyboard)}ms, theme {Ms(tKeyboard, tTheme)}ms, " +
-                $"tooltip+uia {Ms(tTheme, tToolTip)}ms, init-component {Ms(tToolTip, tInitComponent)}ms)");
-        }
     }
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:RequiresUnreferencedCode",

@@ -191,6 +191,16 @@ public class Grid : Panel
         var rowStarValues = new double[rowCount];
         var columnStarValues = new double[columnCount];
 
+        // Content (max child desired) per track. A star track FILLS its proportional allocation
+        // when arranged, but at measure time it must report only the size its content needs — same
+        // as the infinite-constraint "treat star as Auto" path below. Reporting the full allocation
+        // as the grid's DesiredSize makes the grid demand all available space, which balloons it
+        // inside content-sizing parents (WrapPanel / horizontal StackPanel / auto-sized
+        // Border|Button). These arrays capture the content size so the final return can use it for
+        // star tracks measured under a finite constraint; ArrangeOverride still fills from finalSize.
+        var rowContent = new double[rowCount];
+        var columnContent = new double[columnCount];
+
         // Get definitions (use default if not defined)
         var rowDefs = GetEffectiveRowDefinitions(rowCount);
         var columnDefs = GetEffectiveColumnDefinitions(columnCount);
@@ -401,6 +411,14 @@ public class Grid : Panel
 
             fe.Measure(new Size(cellWidth, cellHeight));
 
+            // Capture content size for single-span children so star tracks can report a
+            // content-based DesiredSize (see the rowContent/columnContent declaration). Spanned
+            // children are skipped, consistent with the auto-track reconciliation below.
+            if (rowSpan == 1)
+                rowContent[row] = Math.Max(rowContent[row], fe.DesiredSize.Height);
+            if (columnSpan == 1)
+                columnContent[column] = Math.Max(columnContent[column], fe.DesiredSize.Width);
+
             // Reconcile auto (and star-as-auto) definitions with final constrained measure.
             // This is important for wrapped text: final column width can increase required row height.
             if (rowSpan == 1)
@@ -438,8 +456,32 @@ public class Grid : Panel
                 columnDefs[i].ActualWidth = columnWidths[i];
         }
 
-        // Return the total size (spacing contributes to the grid's outer bounds)
-        return new Size(columnWidths.Sum() + totalColumnSpacing, rowHeights.Sum() + totalRowSpacing);
+        // Return the grid's DESIRED size. Absolute/Auto tracks (and star tracks treated as Auto
+        // under an infinite constraint) already hold their fixed/content size in row/columnWidths.
+        // A star track measured under a FINITE constraint, however, holds its full proportional
+        // ALLOCATION — returning that would make the grid demand all available space and balloon
+        // inside content-sizing parents. For those tracks report the content size instead; the
+        // allocation is still applied at arrange (ArrangeOverride), so stretch-to-fill is unaffected.
+        // (Spacing contributes to the grid's outer bounds regardless.)
+        double desiredWidth = totalColumnSpacing;
+        for (int i = 0; i < columnCount; i++)
+        {
+            var def = columnDefs[i];
+            desiredWidth += (def.Width.IsStar && !treatStarColumnsAsAuto)
+                ? Math.Clamp(columnContent[i], def.MinWidth, def.MaxWidth)
+                : columnWidths[i];
+        }
+
+        double desiredHeight = totalRowSpacing;
+        for (int i = 0; i < rowCount; i++)
+        {
+            var def = rowDefs[i];
+            desiredHeight += (def.Height.IsStar && !treatStarRowsAsAuto)
+                ? Math.Clamp(rowContent[i], def.MinHeight, def.MaxHeight)
+                : rowHeights[i];
+        }
+
+        return new Size(desiredWidth, desiredHeight);
     }
 
     /// <inheritdoc />

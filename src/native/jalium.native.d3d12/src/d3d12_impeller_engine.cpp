@@ -2505,8 +2505,12 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
     const bool analytic = (em == 2);          // explicit Antialiased (static)
 
     // Anything outside the cacheable common case keeps the proven legacy path.
+    // Gradient brushes (type 1/2) now take the cached local-space path too: the
+    // emit loop samples the gradient per vertex in source space, producing a TRUE
+    // per-pixel gradient stroke that keeps the solid path's feather AA. Only
+    // dashed / explicit-analytic gradients fall back to the (flat) pixel-cached
+    // path.
     if (analytic || dashCount > 0 || dashPattern ||
-        brush.type == 1 || brush.type == 2 ||
         !commands || commandLength == 0 || strokeWidth <= 0.0f) {
         return EncodeStrokePathPixelCached(
             startX, startY, commands, commandLength, brush,
@@ -2534,6 +2538,14 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
     const float bg = brush.g * brush.a;
     const float bb = brush.b * brush.a;
     const float ba = brush.a;
+
+    // Gradient strokes sample the gradient per vertex (in source/path space) at
+    // emit time. The cached mesh stores only positions + feather coverage, so it
+    // is brush-agnostic; the color is applied fresh here, giving a TRUE per-pixel
+    // gradient stroke that keeps the solid path's feather AA.
+    const bool isGradientStroke = (brush.type == 1 || brush.type == 2);
+    std::vector<float> gradStopData;
+    if (isGradientStroke) FlattenGradientStops(brush, gradStopData);
 
     // Emit a cached local-space mesh: transform every vertex by the current
     // transform (O(N)) and reapply the per-vertex feather coverage. This is
@@ -2570,8 +2582,17 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
             float y = tm12 * lx + tm22 * ly + tdy;
             float cov = (float)cp[i] * kInv255;
             vp[i].x = x; vp[i].y = y;
-            vp[i].r = br * cov; vp[i].g = bg * cov;
-            vp[i].b = bb * cov; vp[i].a = ba * cov;
+            if (isGradientStroke) {
+                // Sample in source space (the brush gradient geometry is authored
+                // in path space, same as the cached mesh positions).
+                GradientColor gc = SampleBrushGradient(brush, gradStopData.data(), lx, ly);
+                float a = gc.a * cov;                 // premultiplied vertex color
+                vp[i].r = gc.r * a; vp[i].g = gc.g * a;
+                vp[i].b = gc.b * a; vp[i].a = a;
+            } else {
+                vp[i].r = br * cov; vp[i].g = bg * cov;
+                vp[i].b = bb * cov; vp[i].a = ba * cov;
+            }
             if (x < minX) minX = x;
             if (y < minY) minY = y;
             if (x > maxX) maxX = x;
@@ -2624,7 +2645,14 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
             meshVerts, meshIndices,
             c.points.data(), c.VertexCount(),
             strokeWidth, join, miterLimit, cap, closed,
-            brush.r, brush.g, brush.b, brush.a,
+            // Build the cached mesh with an OPAQUE reference color so the stored
+            // coverage is the pure feather geometry, independent of brush alpha.
+            // The real color (solid or per-vertex gradient) is applied at emit.
+            // Without this, a transparent-first-stop gradient (or a stroke drawn
+            // under opacity 0) would bake alpha 0 into the mesh and — because the
+            // stroke cache key excludes the brush — poison the geometry-keyed
+            // entry, making every later stroke of the same shape vanish too.
+            1.0f, 1.0f, 1.0f, 1.0f,
             /*collectContours*/ nullptr,
             featherSrcUnit);
     }
@@ -2640,7 +2668,7 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
     float minY =  std::numeric_limits<float>::infinity();
     float maxX = -std::numeric_limits<float>::infinity();
     float maxY = -std::numeric_limits<float>::infinity();
-    const float invBrushA = (brush.a > 0.0f) ? (1.0f / brush.a) : 0.0f;
+    const float invBrushA = 1.0f;   // mesh built with reference alpha 1 → coverage is the raw feather
     for (size_t i = 0; i < meshVerts.size(); ++i) {
         const auto& v = meshVerts[i];
         entry->positions[i * 2]     = v.x;

@@ -159,7 +159,7 @@ internal static class SvgParser
                 ParsePath(element, parentGroup, defs);
                 break;
             case "text":
-                // Basic text support - render as path if possible
+                ParseText(element, parentGroup, defs);
                 break;
             case "image":
                 ParseImage(element, parentGroup, defs);
@@ -315,6 +315,105 @@ internal static class SvgParser
             // Invalid path data - skip silently
         }
     }
+
+    /// <summary>
+    /// Parses an SVG &lt;text&gt; element (with nested &lt;tspan&gt; content) into a
+    /// <see cref="GlyphRunDrawing"/> carrying a <see cref="FormattedText"/>. Handles the
+    /// common attributes: x/y (baseline anchor), font-size, font-family, font-weight,
+    /// font-style, fill, and text-anchor.
+    ///
+    /// <para>
+    /// Note: the pure-CPU SVG rasterizer (<c>SoftwareVectorRasterizer</c>) cannot render
+    /// glyphs (it has no font-outline source), so on the primary SVG path the text is parsed
+    /// but not painted; it becomes visible when the Drawing tree is replayed through the GPU
+    /// <c>DrawText</c> fallback. Pixel-perfect text on the software path needs a native
+    /// glyph-outline ABI (→ PathGeometry), tracked as a follow-up. Because measurement isn't
+    /// available at parse time, text-anchor middle/end uses an approximate run width.
+    /// </para>
+    /// </summary>
+    private static void ParseText(XElement element, DrawingGroup group, Dictionary<string, XElement> defs)
+    {
+        var sb = new System.Text.StringBuilder();
+        CollectTextContent(element, sb);
+        var text = sb.ToString();
+        if (string.IsNullOrWhiteSpace(text)) return;
+
+        var x = ParseDoubleAttribute(element, "x", 0);
+        var y = ParseDoubleAttribute(element, "y", 0);
+        var fontSize = ParseDoubleAttribute(element, "font-size", 16);
+        if (fontSize <= 0) fontSize = 16;
+
+        var fontFamily = GetResolvedAttribute(element, "font-family") ?? "Segoe UI";
+        var comma = fontFamily.IndexOf(',');
+        if (comma >= 0) fontFamily = fontFamily.Substring(0, comma);
+        fontFamily = fontFamily.Trim().Trim('\'', '"');
+        if (string.IsNullOrEmpty(fontFamily)) fontFamily = "Segoe UI";
+
+        // fill="none" means "don't paint the text" (distinct from an absent fill, which
+        // defaults to black per SVG). ResolveFillBrush returns null for both, so check the
+        // raw attribute to avoid rendering none-filled text as black.
+        if (GetResolvedAttribute(element, "fill") == "none") return;
+        var fill = ResolveFillBrush(element, defs) ?? new SolidColorBrush(Color.FromRgb(0, 0, 0));
+
+        var ft = new FormattedText(text, fontFamily, fontSize)
+        {
+            Foreground = fill,
+            FontWeight = ParseSvgFontWeight(GetResolvedAttribute(element, "font-weight")),
+            FontStyle = ParseSvgFontStyle(GetResolvedAttribute(element, "font-style")),
+        };
+
+        // SVG (x,y) is the text baseline anchor; FormattedText's origin is top-left, so lift
+        // it by an approximate ascent. text-anchor shifts X by the (approximate) run width.
+        var anchor = GetResolvedAttribute(element, "text-anchor");
+        var approxWidth = text.Length * fontSize * 0.55;
+        var originX = anchor switch
+        {
+            "middle" => x - approxWidth / 2,
+            "end" => x - approxWidth,
+            _ => x,
+        };
+        var originY = y - fontSize * 0.8;
+
+        var drawing = new GlyphRunDrawing(ft, new Point(originX, originY)) { ForegroundBrush = fill };
+        AddDrawing(element, drawing, group);
+    }
+
+    /// <summary>Recursively concatenates the text content of a &lt;text&gt;/&lt;tspan&gt; element.</summary>
+    private static void CollectTextContent(XElement element, System.Text.StringBuilder sb)
+    {
+        foreach (var node in element.Nodes())
+        {
+            if (node is XText t)
+            {
+                sb.Append(t.Value);
+            }
+            else if (node is XElement child &&
+                     (child.Name.LocalName == "tspan" || child.Name.LocalName == "text"))
+            {
+                CollectTextContent(child, sb);
+            }
+        }
+    }
+
+    private static int ParseSvgFontWeight(string? weight)
+    {
+        if (string.IsNullOrEmpty(weight)) return 400;
+        if (int.TryParse(weight, System.Globalization.NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
+            return Math.Clamp(n, 1, 999);
+        return weight switch
+        {
+            "bold" or "bolder" => 700,
+            "lighter" => 300,
+            _ => 400,
+        };
+    }
+
+    private static int ParseSvgFontStyle(string? style) => style switch
+    {
+        "italic" => 1,
+        "oblique" => 2,
+        _ => 0,
+    };
 
     private static void ParseUse(XElement element, DrawingGroup group, Dictionary<string, XElement> defs)
     {
@@ -892,7 +991,12 @@ internal static class SvgParser
     {
         var d = e.Attribute("d")?.Value;
         if (string.IsNullOrWhiteSpace(d)) return null;
-        try { return PathMarkupParser.Parse(d); }
+        try
+        {
+            var geo = PathMarkupParser.Parse(d);
+            geo.FillRule = FillRule.Nonzero; // SVG clip-rule defaults to nonzero
+            return geo;
+        }
         catch { return null; }
     }
 
@@ -905,7 +1009,7 @@ internal static class SvgParser
         var figure = new PathFigure { StartPoint = new Point(numbers[0], numbers[1]), IsClosed = true };
         for (int i = 2; i + 1 < numbers.Count; i += 2)
             figure.Segments.Add(new LineSegment { Point = new Point(numbers[i], numbers[i + 1]) });
-        var geo = new PathGeometry();
+        var geo = new PathGeometry { FillRule = FillRule.Nonzero }; // SVG clip-rule default
         geo.Figures.Add(figure);
         return geo;
     }

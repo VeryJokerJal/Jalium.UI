@@ -34,6 +34,10 @@
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
+    <!-- Build-order only: DeviceRemovalInjectionTests launches this WinExe as a
+         child process (uncatchable AV/CSE isolation + per-process env vars). -->
+    <ProjectReference Include="..\Jalium.UI.DeviceLostHarness\Jalium.UI.DeviceLostHarness.csproj"
+                      ReferenceOutputAssembly="false" Private="false" />
   </ItemGroup>
 
   <ItemGroup>

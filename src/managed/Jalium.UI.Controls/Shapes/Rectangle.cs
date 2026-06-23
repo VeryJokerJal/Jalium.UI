@@ -109,6 +109,7 @@ public class Rectangle : Shape
             {
                 StartLineCap = StrokeStartLineCap,
                 EndLineCap = StrokeEndLineCap,
+                DashCap = StrokeDashCap,
                 LineJoin = StrokeLineJoin,
                 MiterLimit = StrokeMiterLimit
             };
@@ -126,6 +127,25 @@ public class Rectangle : Shape
         else
         {
             dc.DrawRectangle(Fill, pen, rect);
+        }
+    }
+
+    /// <inheritdoc />
+    protected override Geometry? DefiningGeometry
+    {
+        get
+        {
+            var width = RenderSize.Width;
+            var height = RenderSize.Height;
+            if (width <= 0 || height <= 0) return null;
+            var strokeThickness = StrokeThickness;
+            var halfStroke = strokeThickness / 2;
+            var rect = new Rect(halfStroke, halfStroke,
+                Math.Max(0, width - strokeThickness),
+                Math.Max(0, height - strokeThickness));
+            return (RadiusX > 0 || RadiusY > 0)
+                ? new RectangleGeometry(rect, RadiusX, RadiusY)
+                : new RectangleGeometry(rect);
         }
     }
 

@@ -3,6 +3,7 @@
 #include "vulkan_minimal.h"      // <vulkan/vulkan.h> + platform defines
 #include "vulkan_shader_compiler.h"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -71,6 +72,72 @@ struct VulkanDeviceContext {
     bool                        valid               = false;
 };
 
+// Shared-ownership wrapper around one render target's VkDevice — the Vulkan
+// analogue of the ComPtr keep-alive the D3D12 retained layers use
+// (d3d12_retained_layer.h). Vulkan handles are not reference-counted: once
+// vkDestroyDevice runs, every child handle (images, buffers, fences, …) is
+// garbage, and even *destroying* such a child afterwards is use-after-free
+// inside the driver. Cross-frame resources that outlive their creating render
+// target (ink layer bitmaps / brush shaders today; retained layers when Vulkan
+// grows them) therefore hold a shared_ptr to this generation object, which
+// owns the device + instance teardown:
+//
+//   * The creating Impl drops its reference in Impl::Destroy *after* tearing
+//     down all RT-owned children. If ink objects still hold references, the
+//     VkDevice/VkInstance stay alive until the last of them is destroyed, so
+//     their destructors always talk to a live (possibly lost, never freed)
+//     device. The last reference runs ~VulkanDeviceGeneration, which destroys
+//     the device and then the instance — exactly what Impl::Destroy used to
+//     do inline.
+//
+//   * `lost` is the "removed" discriminator (the analogue of D3D12's
+//     GetDeviceRemovedReason, which Vulkan does not have): it is latched by
+//     whichever call first observes VK_ERROR_DEVICE_LOST /
+//     VK_ERROR_SURFACE_LOST_KHR. Consumers must fail fast on a lost
+//     generation (skip dispatches/blits, skip vkDeviceWaitIdle — it would
+//     just return VK_ERROR_DEVICE_LOST) but still destroy their child
+//     handles: destruction on a lost-but-not-freed device is legal and is
+//     the only way to release the driver-side bookkeeping.
+//
+// Pointer inequality between generations means "different device" — it does
+// NOT imply the other generation is lost (a second window registers a second,
+// perfectly healthy generation). Mirror the D3D12 Destroy rule: only the
+// `lost` flag justifies skipping waits; a healthy foreign generation is used
+// normally through its own handles.
+struct VulkanDeviceGeneration {
+    VulkanDeviceContext   ctx{};
+    std::atomic<bool>     lost{false};
+    PFN_vkDeviceWaitIdle  deviceWaitIdle  = nullptr;
+    PFN_vkDestroyDevice   destroyDevice   = nullptr;
+    PFN_vkDestroyInstance destroyInstance = nullptr;
+
+    VulkanDeviceGeneration() = default;
+    VulkanDeviceGeneration(const VulkanDeviceGeneration&)            = delete;
+    VulkanDeviceGeneration& operator=(const VulkanDeviceGeneration&) = delete;
+
+    void MarkLost()      { lost.store(true, std::memory_order_release); }
+    bool IsLost()  const { return lost.load(std::memory_order_acquire); }
+
+    ~VulkanDeviceGeneration()
+    {
+        if (ctx.device != VK_NULL_HANDLE && destroyDevice) {
+            // Ink work is always fence-waited before its objects die, and the
+            // creating Impl::Destroy already drained the RT's own work, so the
+            // queue is idle here in practice; the extra wait is a cheap belt
+            // for exotic interleavings. On a lost device the wait would only
+            // poke the dead driver, so skip it — vkDestroyDevice on a lost
+            // device is legal and required.
+            if (!IsLost() && deviceWaitIdle) {
+                deviceWaitIdle(ctx.device);
+            }
+            destroyDevice(ctx.device, nullptr);
+        }
+        if (ctx.instance != VK_NULL_HANDLE && destroyInstance) {
+            destroyInstance(ctx.instance, nullptr);
+        }
+    }
+};
+
 // Device entry points the ink-layer subsystem needs. Loaded once per device via
 // VkInkFunctions::Load so the subsystem is self-contained and never reaches into
 // the render target's private dispatch table.
@@ -78,11 +145,16 @@ struct VkInkFunctions;
 
 class VulkanBrushShader;
 
-// Shared brush pipeline (one per device). Owns the runtime shader compiler, the
-// fullscreen VS, the descriptor-set + pipeline layouts, and the ink render pass.
-class VulkanBrushPipeline {
+// Shared brush pipeline (one per device generation). Owns the runtime shader
+// compiler, the fullscreen VS, the descriptor-set + pipeline layouts, and the
+// ink render pass. Always owned by shared_ptr (the backend holds one
+// reference, every live ink bitmap / brush shader holds another), so a device
+// swap in VulkanBackend::RegisterDeviceContext only drops the backend's
+// reference — surviving ink objects keep both the pipeline and (through gen_)
+// the VkDevice alive until they are destroyed themselves.
+class VulkanBrushPipeline : public std::enable_shared_from_this<VulkanBrushPipeline> {
 public:
-    explicit VulkanBrushPipeline(const VulkanDeviceContext& ctx);
+    explicit VulkanBrushPipeline(std::shared_ptr<VulkanDeviceGeneration> generation);
     ~VulkanBrushPipeline();
 
     VulkanBrushPipeline(const VulkanBrushPipeline&)            = delete;
@@ -106,7 +178,16 @@ public:
     VkDescriptorSetLayout      DescriptorLayout()  const { return descriptorSetLayout_; }
     VkPipelineLayout           PipelineLayout()    const { return pipelineLayout_; }
 
+    const std::shared_ptr<VulkanDeviceGeneration>& Generation() const { return gen_; }
+    // "Removed" discriminator: true once the creating device generation
+    // observed VK_ERROR_DEVICE_LOST. GPU work must fail fast; handle
+    // destruction stays legal (the generation keeps the device alive).
+    bool DeviceLost() const { return gen_ && gen_->IsLost(); }
+
 private:
+    // gen_ must precede ctx_: the constructor initializes ctx_ from gen_->ctx
+    // and member init runs in declaration order.
+    std::shared_ptr<VulkanDeviceGeneration> gen_;
     VulkanDeviceContext             ctx_;
     std::unique_ptr<VkInkFunctions> fns_;
     VulkanShaderCompiler            compiler_;
@@ -119,11 +200,13 @@ private:
     bool                            attempted_           = false;
 };
 
-// One compiled brush. Non-owning back-pointer to the shared pipeline for the VS
-// / layout; owns the fragment module + VkPipeline.
+// One compiled brush. Holds a shared reference to the pipeline (and through it
+// the device generation) so the managed BrushShaderHandle can outlive the
+// creating render target without its destructor dereferencing a freed pipeline
+// or a destroyed VkDevice; owns the fragment module + VkPipeline.
 class VulkanBrushShader {
 public:
-    VulkanBrushShader(VulkanBrushPipeline* owner,
+    VulkanBrushShader(std::shared_ptr<VulkanBrushPipeline> owner,
                       VkShaderModule fragmentModule,
                       VkPipeline pipeline,
                       VulkanBrushBlendMode blendMode,
@@ -136,9 +219,14 @@ public:
     VkPipeline           Pipeline()  const { return pipeline_; }
     VulkanBrushBlendMode BlendMode() const { return blendMode_; }
     const std::string&   Key()       const { return shaderKey_; }
+    // Identity of the pipeline (and so the device generation) this shader was
+    // baked against. DispatchBrush refuses a shader whose owner differs from
+    // the bitmap's pipeline — binding a VkPipeline from one VkDevice into a
+    // command buffer of another is cross-device UB.
+    const VulkanBrushPipeline* OwnerPipeline() const { return owner_.get(); }
 
 private:
-    VulkanBrushPipeline* owner_;
+    std::shared_ptr<VulkanBrushPipeline> owner_;
     VkShaderModule       fragmentModule_ = VK_NULL_HANDLE;
     VkPipeline           pipeline_       = VK_NULL_HANDLE;
     VulkanBrushBlendMode blendMode_;
@@ -146,10 +234,15 @@ private:
 };
 
 // Persistent RGBA8 ink layer. Owns its image / view / framebuffer plus the
-// scratch needed to dispatch a brush synchronously.
+// scratch needed to dispatch a brush synchronously. Holds a shared reference
+// to the pipeline (and through it the device generation): the managed
+// InkLayerBitmap handle routinely outlives the render target that published
+// the device (window close, device-lost recovery), and without the keep-alive
+// its destructor would feed handles of an already-vkDestroyDevice'd device
+// into the driver.
 class VulkanInkLayerBitmap {
 public:
-    explicit VulkanInkLayerBitmap(VulkanBrushPipeline* pipeline);
+    explicit VulkanInkLayerBitmap(std::shared_ptr<VulkanBrushPipeline> pipeline);
     ~VulkanInkLayerBitmap();
 
     VulkanInkLayerBitmap(const VulkanInkLayerBitmap&)            = delete;
@@ -179,6 +272,20 @@ public:
     VkImageView   ImageView()   const { return imageView_; }
     VkImageLayout ImageLayout() const { return imageLayout_; }
 
+    // Generation discrimination for consumers (BlitInkLayer): the device this
+    // bitmap's image lives on, and whether that device generation is lost.
+    // A render target may only GPU-sample the image when DeviceHandle()
+    // matches its own VkDevice — Vulkan device-level handles never cross
+    // devices — and must skip a lost generation entirely.
+    VkDevice DeviceHandle() const { return pipeline_ ? pipeline_->Context().device : VK_NULL_HANDLE; }
+    bool     DeviceLost()   const { return pipeline_ && pipeline_->DeviceLost(); }
+
+    // Monotonic content revision, bumped after every successful mutation
+    // (Clear / DispatchBrush / Resize). The foreign-device blit fallback keys
+    // its readback cache on it so an unchanged layer costs zero GPU round
+    // trips per frame instead of a synchronous readback every frame.
+    uint64_t ContentVersion() const { return contentVersion_.load(std::memory_order_acquire); }
+
     // Copies the layer to a host BGRA8 buffer (width_*height_*4). Only used by
     // the render target's CPU-rasterization fallback (the rare frame where the
     // whole replay path is on CPU) so the committed ink still composites. The
@@ -196,9 +303,15 @@ private:
     void BarrierToLayout(VkImageLayout newLayout,
                          VkPipelineStageFlags srcStage, VkAccessFlags srcAccess,
                          VkPipelineStageFlags dstStage, VkAccessFlags dstAccess);
+    // Latches the generation's lost flag when a submit/wait reports
+    // VK_ERROR_DEVICE_LOST, so every later ink op on this generation fails
+    // fast instead of poking the dead driver again.
+    void NoteResult(VkResult result);
 
-    VulkanBrushPipeline* pipeline_;     // shared (non-owning)
-    const VkInkFunctions* fns_ = nullptr;
+    std::shared_ptr<VulkanBrushPipeline> pipeline_;  // shared keep-alive (pipeline + device generation)
+    const VkInkFunctions* fns_ = nullptr;            // borrowed from pipeline_; valid while pipeline_ held
+    std::atomic<uint64_t> contentVersion_{1};        // see ContentVersion()
+    void BumpContentVersion() { contentVersion_.fetch_add(1, std::memory_order_acq_rel); }
 
     VkImage         image_       = VK_NULL_HANDLE;
     VkDeviceMemory  imageMemory_ = VK_NULL_HANDLE;

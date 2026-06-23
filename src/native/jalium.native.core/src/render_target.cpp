@@ -1,5 +1,6 @@
 #include "jalium_internal.h"
 #include "jalium_string_util.h"
+#include <cstdlib>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -148,10 +149,130 @@ JALIUM_API void jalium_render_target_set_vsync(JaliumRenderTarget* rt, int32_t e
     }
 }
 
+JALIUM_API void jalium_render_target_set_external_present_pacing(JaliumRenderTarget* rt, int32_t enabled) {
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->SetExternalPresentPacing(enabled != 0);
+    }
+}
+
 JALIUM_API void jalium_render_target_set_path_msaa(JaliumRenderTarget* rt, uint32_t sampleCount) {
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->SetPathMsaaSampleCount(sampleCount);
     }
+}
+
+// TEST-ONLY device-removal injection. Inert (returns 0) unless the process
+// opted in via JALIUM_DEBUG_DEVICE_REMOVE=1: the GPU-switch crash hardening
+// can only be exercised at runtime by actually removing the device mid-frame,
+// and a physical GPU switch cannot run inside an automated harness.
+JALIUM_API int32_t jalium_render_target_debug_remove_device(JaliumRenderTarget* rt) {
+    // static const so the one-time env read is covered by the standard's
+    // thread-safe static-initialization guard. (The bare "static int = -1; if
+    // (<0) fill" idiom only guards the constant initializer, leaving the fill a
+    // data race on first concurrent use — harmless here since every racer
+    // computes the same value, but the lambda form is strictly correct.)
+    static const int enabled = []() -> int {
+#ifdef _WIN32
+        char* val = nullptr;
+        size_t len = 0;
+        int e = (_dupenv_s(&val, &len, "JALIUM_DEBUG_DEVICE_REMOVE") == 0 && val && val[0] == '1') ? 1 : 0;
+        free(val);
+        return e;
+#else
+        const char* val = std::getenv("JALIUM_DEBUG_DEVICE_REMOVE");
+        return (val && val[0] == '1') ? 1 : 0;
+#endif
+    }();
+    if (!enabled || !rt) {
+        return 0;
+    }
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->DebugRemoveDevice() ? 1 : 0;
+}
+
+// TEST-ONLY companion to the injection above: exposes which destroy path
+// retained layers took (orphan vs. fence-gated graveyard) so a harness can
+// assert the CreatingDeviceRemoved discrimination. Read-only, not gated.
+JALIUM_API int32_t jalium_render_target_debug_retained_destroy_counts(
+    JaliumRenderTarget* rt, uint64_t* orphaned, uint64_t* graveyard) {
+    if (!rt || !orphaned || !graveyard) {
+        return 0;
+    }
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->DebugGetRetainedDestroyCounts(orphaned, graveyard) ? 1 : 0;
+}
+
+// TEST-ONLY: the device pointer behind this target. Read-only, not gated.
+JALIUM_API uint64_t jalium_render_target_debug_device_pointer(JaliumRenderTarget* rt) {
+    if (!rt) return 0;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->DebugDevicePointer();
+}
+
+// TEST-ONLY: whether this target is mid offscreen-capture right now, so the
+// capture harness can prove the device was removed INSIDE an open effect
+// capture scope rather than merely while an effect element was on screen.
+// Read-only, not gated.
+JALIUM_API int32_t jalium_render_target_debug_in_offscreen_capture(JaliumRenderTarget* rt) {
+    if (!rt) return 0;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->DebugInOffscreenCapture() ? 1 : 0;
+}
+
+// TEST-ONLY (#921 regression self-check): stages the same-thread "leaked-open
+// command list" race and resizes through it, so the same-thread branch of the
+// native resize guard — which must Close the leaked command list BEFORE the back
+// buffers it references are freed — is exercised on a real device. Side-effecting
+// (opens a frame + resizes the swap chain), so it is gated behind
+// JALIUM_DEBUG_DEVICE_REMOVE like the device-removal injection above. Writes 1 to
+// *out_list_closed when the list was Closed afterwards (the fix held) and 0 when
+// it was left open (the regression). Returns the resize result code (0 == OK) or
+// a negative value when the scenario could not be staged / the ABI is inert.
+JALIUM_API int32_t jalium_render_target_debug_force_leaked_command_list_resize(
+    JaliumRenderTarget* rt, int32_t width, int32_t height, int32_t* out_list_closed) {
+    static const int enabled = []() -> int {
+#ifdef _WIN32
+        char* val = nullptr;
+        size_t len = 0;
+        int e = (_dupenv_s(&val, &len, "JALIUM_DEBUG_DEVICE_REMOVE") == 0 && val && val[0] == '1') ? 1 : 0;
+        free(val);
+        return e;
+#else
+        const char* val = std::getenv("JALIUM_DEBUG_DEVICE_REMOVE");
+        return (val && val[0] == '1') ? 1 : 0;
+#endif
+    }();
+    if (out_list_closed) *out_list_closed = 0;
+    if (!enabled || !rt) {
+        return -1;
+    }
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->DebugForceLeakedCommandListResize(width, height, out_list_closed);
+}
+
+// TEST-ONLY (#921 Vello-output regression self-check): drives the D3D12 Vello
+// 'JaliumVelloOutput' orphan sequence (composite into the bitmap keep-alive list ->
+// ForceNewOutputTexture -> mid-frame FlushGraphicsForCompute clear, all with the
+// command list open) and reports whether the output texture survived. Side-effecting
+// (opens a frame), so gated behind JALIUM_DEBUG_DEVICE_REMOVE like the leaked-resize
+// hook above. Writes 1 to *out_alive when the texture was parked on the fence-gated
+// retired list (the fix held) and 0 when it was freed while still referenced (the
+// regression). Returns 0 when staged, or a negative value when it could not be staged
+// / the ABI is inert.
+JALIUM_API int32_t jalium_render_target_debug_force_vello_output_orphan(
+    JaliumRenderTarget* rt, int32_t* out_alive) {
+    static const int enabled = []() -> int {
+#ifdef _WIN32
+        char* val = nullptr;
+        size_t len = 0;
+        int e = (_dupenv_s(&val, &len, "JALIUM_DEBUG_DEVICE_REMOVE") == 0 && val && val[0] == '1') ? 1 : 0;
+        free(val);
+        return e;
+#else
+        const char* val = std::getenv("JALIUM_DEBUG_DEVICE_REMOVE");
+        return (val && val[0] == '1') ? 1 : 0;
+#endif
+    }();
+    if (out_alive) *out_alive = 0;
+    if (!enabled || !rt) {
+        return -1;
+    }
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->DebugForceVelloOutputOrphan(out_alive);
 }
 
 JALIUM_API void jalium_render_target_set_dpi(JaliumRenderTarget* rt, float dpiX, float dpiY) {
@@ -225,6 +346,38 @@ JALIUM_API JaliumResult jalium_render_target_set_webview_visual_placement(
         height,
         content_offset_x,
         content_offset_y);
+}
+
+JALIUM_API JaliumResult jalium_render_target_create_anim_probe(
+    JaliumRenderTarget* rt,
+    int32_t x,
+    int32_t y,
+    int32_t width,
+    int32_t height,
+    float travel_px,
+    float period_sec,
+    uint32_t color_argb,
+    int32_t vertical,
+    void** visual_out)
+{
+    if (!rt || !visual_out || width <= 0 || height <= 0) {
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+
+    *visual_out = nullptr;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->CreateAnimProbe(
+        x, y, width, height, travel_px, period_sec, color_argb, vertical, visual_out);
+}
+
+JALIUM_API JaliumResult jalium_render_target_destroy_anim_probe(
+    JaliumRenderTarget* rt,
+    void* visual)
+{
+    if (!rt || !visual) {
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->DestroyAnimProbe(visual);
 }
 
 JALIUM_API void jalium_draw_fill_rectangle(

@@ -94,6 +94,11 @@ public class ContentPresenter : FrameworkElement
     private FrameworkElement? _contentElement;
     private bool _templateBindingsApplied;
 
+    // The DataTemplate (if any) that produced the current _contentElement. When a recycled
+    // container is rebound to a new item under the SAME template, the existing subtree is
+    // reused (DataContext swap) instead of rebuilt — see OnContentChanged.
+    private DataTemplate? _generatedFromTemplate;
+
     #endregion
 
     #region Constructor
@@ -123,11 +128,36 @@ public class ContentPresenter : FrameworkElement
         if (!forceRecreate && ReferenceEquals(oldContent, newContent) && _contentElement != null)
             return;
 
+        // Recycling fast path: when the current content element was materialized from an
+        // explicit ContentTemplate (a data item shown via DataContext binding) and that same
+        // template is still in effect, reuse the existing visual subtree and only re-point its
+        // DataContext to the new item — instead of tearing the tree down and rebuilding it via
+        // DataTemplate.LoadContent(). This is what makes VirtualizationMode.Recycling actually
+        // pay off: a recycled ItemsControl container keeps its realized row visuals and just
+        // rebinds, avoiding a full per-row template instantiation (Border/Grid/TextBlocks/
+        // Bindings) plus the cold text re-measure that otherwise dominate the layout pass while
+        // scrolling a large virtualized list. Scoped to the explicit-ContentTemplate case (no
+        // selector) so a per-item template selector is never blindly rebound to the wrong tree.
+        if (!forceRecreate
+            && _contentElement != null
+            && _generatedFromTemplate != null
+            && ContentTemplateSelector == null
+            && ReferenceEquals(_generatedFromTemplate, ContentTemplate)
+            && newContent != null
+            && newContent is not FrameworkElement)
+        {
+            _contentElement.DataContext = newContent;
+            // New data → desired size may differ → the reused subtree must re-measure.
+            InvalidateMeasure();
+            return;
+        }
+
         // Remove old content element
         if (_contentElement != null)
         {
             RemoveVisualChild(_contentElement);
             _contentElement = null;
+            _generatedFromTemplate = null;
         }
 
         // Add new content
@@ -163,6 +193,12 @@ public class ContentPresenter : FrameworkElement
 
     private FrameworkElement? CreateContentElement(object content)
     {
+        // Track which DataTemplate (if any) produced the element, so OnContentChanged can later
+        // reuse the subtree by rebinding DataContext when that same template still applies.
+        // Only the explicit-ContentTemplate path sets this; every other path leaves it null so
+        // the reuse fast path stays off for selector/implicit/string content.
+        _generatedFromTemplate = null;
+
         // If content is already a UIElement, use it directly.
         // With shared properties (TextElement.ForegroundProperty via AddOwner),
         // TextBlock inherits Foreground from ancestor Controls natively.
@@ -178,6 +214,7 @@ public class ContentPresenter : FrameworkElement
             if (templateContent != null)
             {
                 templateContent.DataContext = content;
+                _generatedFromTemplate = ContentTemplate;
                 return templateContent;
             }
         }

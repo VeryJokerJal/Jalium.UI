@@ -312,7 +312,7 @@ public sealed class StaticResourceExtension : MarkupExtension
                 return resolvedAppValue;
         }
 
-        // Resource not found — log and return null. The streaming parser used to throw in
+        // Resource not found — return null. The streaming parser used to throw in
         // DEBUG so missing resources surfaced loudly during development, but the SG-emitted
         // codegen path now invokes the markup-extension runtime inside template
         // <c>SetVisualTree</c> lambdas. At that moment the lambda's element has not been
@@ -324,11 +324,6 @@ public sealed class StaticResourceExtension : MarkupExtension
         // here breaks the whole template rather than letting the binding fall through.
         // Match the Release behaviour (silent null) so DEBUG runs do not differ from
         // Release in failure mode for the SG path.
-        var msg = $"[StaticResource FAIL] Cannot find resource named '{ResourceKey}' (type: {ResourceKey?.GetType().Name}). " +
-                  $"targetElement: {(targetElement != null ? targetElement.GetType().Name : "null")}, " +
-                  $"ambientProvider: {(ambientProvider != null ? "available" : "null")}, " +
-                  $"appResources: {(Jalium.UI.Application.Current?.Resources != null ? $"{Jalium.UI.Application.Current.Resources.Count} entries" : "null")}";
-        System.Diagnostics.Debug.WriteLine(msg);
         return null;
     }
 

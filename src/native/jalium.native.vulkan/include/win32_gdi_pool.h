@@ -3,6 +3,7 @@
 #ifdef _WIN32
 
 #include <cstdint>
+#include <string>
 
 // Forward-declare GDI handle types so callers don't have to drag <windows.h>
 // into every header that touches the pool. Definitions match the typedefs
@@ -56,6 +57,23 @@ public:
                              int weight,
                              bool italic,
                              uint8_t quality = 5);
+
+    // Resolves a (possibly CSS-style comma-separated) font-family string to a
+    // single GDI face name CreateFontW can realize. The D3D12 backend hands the
+    // family straight to DirectWrite, which parses fallback lists like
+    // "Cascadia Code, Cascadia Mono, Consolas, monospace" and applies system
+    // fallback. GDI's lfFaceName names ONE face (truncated at LF_FACESIZE) and
+    // otherwise drops through its mapper to a serif/monospace default — the root
+    // cause of the Vulkan backend rendering text in the wrong font. This mirrors
+    // DirectWrite closely enough for installed faces: split on commas, map the
+    // CSS generic keywords (serif / sans-serif / monospace / system-ui / …), and
+    // return the FIRST candidate actually installed (probed via
+    // EnumFontFamiliesExW), or "Segoe UI" if none match — matching DirectWrite's
+    // sans-serif fallback rather than GDI's serif one. Results are cached per
+    // input string (thread-local). Both the render path (AcquireFont) and the
+    // measurement path (vulkan_resources.cpp CreateGdiFont) call this so the two
+    // never disagree on the realized face.
+    static std::wstring ResolveGdiFaceName(const wchar_t* fontFamily);
 
     // Returns the thread-local memory DC. Creates it on first use.
     static HDC AcquireMemoryDc();

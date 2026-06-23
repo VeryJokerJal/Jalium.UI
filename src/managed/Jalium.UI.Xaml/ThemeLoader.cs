@@ -65,17 +65,8 @@ public static class ThemeLoader
             // for this resource we skip the embedded-resource read entirely; the framework
             // theme dictionaries are the hot path here (Generic.jalxaml + 27 control
             // dictionaries).
-            //
-            // Diagnostic: log every entry into this loader plus the prebuilt-registry size
-            // so a startup trace shows whether the SG actually populated the registry. A
-            // zero count usually means the consuming project did not reference the SG as
-            // an analyzer or its [ModuleInitializer] did not run.
-            Jalium.UI.Controls.XamlLoadStartupTrace.Emit(
-                $"[Jalium.UI startup]     LoadResourceDictionaryFromStream '{resourceName}' (registry: {XamlPrebuiltDictionaryRegistry.Count} prebuilt entries)");
-
             if (TryBuildFromPrebuiltRegistryByResourceName(resourceName, sourceAssembly, out var prebuilt))
             {
-                Jalium.UI.Controls.XamlLoadStartupTrace.Emit($"[Jalium.UI startup]       prebuilt HIT '{resourceName}'");
                 return prebuilt;
             }
 
@@ -85,11 +76,9 @@ public static class ThemeLoader
             // degrade.
             if (stream.CanSeek && stream.Length == 0)
             {
-                Jalium.UI.Controls.XamlLoadStartupTrace.Emit($"[Jalium.UI startup]       prebuilt MISS + empty stream '{resourceName}' — theming degraded");
                 return null;
             }
 
-            Jalium.UI.Controls.XamlLoadStartupTrace.Emit($"[Jalium.UI startup]       prebuilt MISS, falling back to embedded stream '{resourceName}'");
             using var payloadStream = new MemoryStream();
             stream.CopyTo(payloadStream);
             return LoadResourceDictionaryFromPayload(payloadStream.ToArray(), resourceName, sourceAssembly, null);
@@ -181,12 +170,6 @@ public static class ThemeLoader
         ArgumentNullException.ThrowIfNull(owner);
         ArgumentNullException.ThrowIfNull(sourceUri);
 
-        // 给每个嵌套 ResourceDictionary 加载计时 — Generic.jalxaml 的 27 个 MergedDictionary
-        // 都走这里递归。trace 默认开,通过 JALIUM_STARTUP_TRACE=0 关闭。耗时显著(>10ms)
-        // 才输出,避免极小字典刷屏。
-        bool trace = Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") != "0";
-        long tStart = trace ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
-
         try
         {
             var sourceUriText = sourceUri.ToString();
@@ -245,15 +228,6 @@ public static class ThemeLoader
             var prebuilt = TryBuildFromPrebuiltRegistry(owner, sourceUri, assembly, pathCandidates);
             if (prebuilt != null)
             {
-                if (trace)
-                {
-                    long ms = (long)System.Diagnostics.Stopwatch.GetElapsedTime(tStart, System.Diagnostics.Stopwatch.GetTimestamp()).TotalMilliseconds;
-                    if (ms >= 1)
-                    {
-                        Jalium.UI.Controls.XamlLoadStartupTrace.Emit(
-                            $"[Jalium.UI startup]     ResourceDict prebuilt {ms,4}ms  {sourceUri.OriginalString}");
-                    }
-                }
                 return prebuilt;
             }
 
@@ -269,15 +243,6 @@ public static class ThemeLoader
             using var payloadStream = new MemoryStream();
             stream.CopyTo(payloadStream);
             var result = LoadResourceDictionaryFromPayload(payloadStream.ToArray(), resolvedResourceName, assembly, sourceUri);
-            if (trace)
-            {
-                long ms = (long)System.Diagnostics.Stopwatch.GetElapsedTime(tStart, System.Diagnostics.Stopwatch.GetTimestamp()).TotalMilliseconds;
-                if (ms >= 5) // 只输出 ≥5ms 的字典,避免噪音
-                {
-                    Jalium.UI.Controls.XamlLoadStartupTrace.Emit(
-                        $"[Jalium.UI startup]     ResourceDict load {ms,4}ms  {sourceUri.OriginalString}");
-                }
-            }
             return result;
         }
         catch (Exception ex)

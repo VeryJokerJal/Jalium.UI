@@ -394,7 +394,12 @@ public partial class DevToolsWindow
         {
             var last = buffer[count - 1];
             double apiMs = RenderDiagnostics.LatestDrawApiStats?.TotalMs ?? 0;
-            double gap = last.RenderMs - apiMs;
+            // apiMs spans the whole frame's draw-API calls, including EndDraw
+            // (which runs in the P segment after MarkRender) and the overlay's
+            // own draws — so the managed-overhead gap must be measured against
+            // R+P, not R alone. The old `RenderMs - apiMs` read -130 ms under a
+            // slow compositor because EndDraw's Present stall lives in P.
+            double gap = (last.RenderMs + last.PresentMs) - apiMs;
             GpuSection(p, "LAST FRAME");
             p.Children.Add(DevToolsUi.StackedBar(new (double Value, Brush Color)[]
             {
