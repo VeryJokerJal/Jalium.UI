@@ -224,6 +224,34 @@ public class TrackTests
     }
 
     [Fact]
+    public void ScrollBar_ExtremeContentRatio_ThumbCollapsesToRoundDot()
+    {
+        // ~ one million 42px rows in a 760px viewport: the proportional thumb would be
+        // sub-pixel, so it must bottom out as a round dot — length (height) approximately
+        // equal to its cross-axis thickness (width) — rather than a long thin sliver.
+        var scrollBar = new ScrollBar
+        {
+            Orientation = Orientation.Vertical,
+            Minimum = 0,
+            Maximum = 42_000_000,
+            ViewportSize = 760,
+            Value = 1000
+        };
+
+        scrollBar.Measure(new Size(16, 760));
+        scrollBar.Arrange(new Rect(0, 0, 16, 760));
+
+        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
+        var thumb = Assert.IsType<Thumb>(track.Thumb);
+
+        Assert.True(thumb.RenderSize.Width > 0 && thumb.RenderSize.Height > 0,
+            $"thumb not arranged: {thumb.RenderSize}");
+
+        var aspect = thumb.RenderSize.Height / thumb.RenderSize.Width;
+        Assert.InRange(aspect, 0.85, 1.30);
+    }
+
+    [Fact]
     public void ScrollBar_IsThumbSlim_ShouldReduceThumbCrossAxisWidth()
     {
         var scrollBar = new ScrollBar

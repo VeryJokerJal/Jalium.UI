@@ -44,7 +44,6 @@ internal sealed class DrawingRecorder : DrawingContext,
     private readonly BoundsAccumulator _bounds = new();
 
     private IOffsetDrawingContext? _offsetProxy;
-    private IClipBoundsDrawingContext? _clipBoundsProxy;
 
     // Whole-frame mode (BindWholeFrame): capture the ENTIRE visual tree as a
     // self-contained command list with NO live target — Offset sets are RECORDED
@@ -66,7 +65,6 @@ internal sealed class DrawingRecorder : DrawingContext,
         _commands.Clear();
         _bounds.Reset();
         _offsetProxy = target as IOffsetDrawingContext;
-        _clipBoundsProxy = target as IClipBoundsDrawingContext;
         _wholeFrame = false;
     }
 
@@ -82,7 +80,6 @@ internal sealed class DrawingRecorder : DrawingContext,
         _commands.Clear();
         _bounds.Reset();
         _offsetProxy = null;
-        _clipBoundsProxy = null;
         _wholeFrame = true;
         _recordedOffset = default;
         // Enter the whole-frame recordability scope so call sites that hit
@@ -106,7 +103,6 @@ internal sealed class DrawingRecorder : DrawingContext,
         if (_commands.Count == 0)
         {
             _offsetProxy = null;
-            _clipBoundsProxy = null;
             _bounds.Reset();
             _wholeFrame = false;
             // An empty-but-unrecordable capture must still force a fallback, so
@@ -125,7 +121,6 @@ internal sealed class DrawingRecorder : DrawingContext,
         _commands.Clear();
         _bounds.Reset();
         _offsetProxy = null;
-        _clipBoundsProxy = null;
         _wholeFrame = false;
 
         return new Drawing(arr, arr.Length, drawingBounds, fullyRecordable);
@@ -142,7 +137,6 @@ internal sealed class DrawingRecorder : DrawingContext,
         _commands.Clear();
         _bounds.Reset();
         _offsetProxy = null;
-        _clipBoundsProxy = null;
         _wholeFrame = false;
     }
 
@@ -166,10 +160,19 @@ internal sealed class DrawingRecorder : DrawingContext,
         }
     }
 
-    // Whole-frame mode has no live clip to read; returning null disables OnRender
-    // clip-cull reads (slight over-record, always correct).
-    Rect? IClipBoundsDrawingContext.CurrentClipBounds =>
-        _wholeFrame ? null : _clipBoundsProxy?.CurrentClipBounds;
+    // A recorded Drawing is replayed at ANY position/clip later — a per-visual cache
+    // replays as its element scrolls; the whole-frame cache replays the whole tree — so
+    // OnRender must NOT observe the live viewport clip and cull content OUT of the
+    // recording. Baking the record-time clip stranded clipped-at-record-time content
+    // (TextBlock's per-line cull, etc.): a NavigationView label recorded while below the
+    // fold cached an EMPTY line set and then replayed BLANK after being scrolled into
+    // view — content-clean, so OnRender never re-ran — until a click marked it
+    // render-dirty and forced a re-record (the "scrolled-in nav item blank until clicked"
+    // bug). Returning null for BOTH modes makes the cache position/clip-independent;
+    // viewport culling happens correctly at REPLAY time via the DrawingReplayer AABB
+    // short-circuit + the native GPU scissor. Slight over-record, always correct — the
+    // whole-frame path already relied on this; the per-visual path needs it too.
+    Rect? IClipBoundsDrawingContext.CurrentClipBounds => null;
 
     // ── Whole-frame freeze-clone (increment 3) ──────────────────────────
     // On the whole-frame (render-thread) path, mutable live payloads (gradient/
