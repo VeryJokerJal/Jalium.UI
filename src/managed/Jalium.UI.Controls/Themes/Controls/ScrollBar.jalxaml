@@ -79,7 +79,10 @@
         <Setter Property="Background" Value="{ThemeResource ScrollBarThumb}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="CornerRadius" Value="4" />
+        <!-- Fully rounded: the renderer clamps the radius to half the thumb's short side, so a
+             long thumb reads as a capsule/pill and a minimum-size thumb (huge content) reads as
+             a round dot. -->
+        <Setter Property="CornerRadius" Value="999" />
         <Setter Property="ShowGrip" Value="False" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Thumb">

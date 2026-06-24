@@ -161,6 +161,10 @@ public class ScrollBar : RangeBase
     private const string ArrowBrushKey = "ScrollBarArrow";
     private const double SlimThumbThickness = 2.0;
     private const double ExpandedThumbInset = 4.0;
+    // Smallest diameter the thumb is allowed to collapse to when content is huge and it bottoms
+    // out as a round dot. Keeps the dot visible/grabbable on very thin scroll bars where the
+    // expanded cross-axis thickness would otherwise drop below this.
+    private const double MinThumbDotDiameter = 8.0;
     private const double AutoHideVisualTransitionDurationMs = 160.0;
 
     #endregion
@@ -341,14 +345,19 @@ public class ScrollBar : RangeBase
 
             if (_track.Thumb != null)
             {
+                // The minimum thumb length on the scroll axis is the thumb's expanded cross-axis
+                // thickness, so at extreme content ratios (e.g. a million rows) the thumb bottoms
+                // out as a round dot (length == thickness, fully rounded) instead of a long thin
+                // sliver. For normal ratios the proportional length wins and it reads as a pill.
+                var dotDiameter = ComputeThumbDotDiameter();
                 if (Orientation == Orientation.Vertical)
                 {
-                    _track.Thumb.MinHeight = MinThumbLength;
+                    _track.Thumb.MinHeight = dotDiameter;
                     _track.Thumb.MinWidth = 0;
                 }
                 else
                 {
-                    _track.Thumb.MinWidth = MinThumbLength;
+                    _track.Thumb.MinWidth = dotDiameter;
                     _track.Thumb.MinHeight = 0;
                 }
             }
@@ -1017,6 +1026,20 @@ public class ScrollBar : RangeBase
         }
 
         return Math.Max(SlimThumbThickness, crossAxisSize - ExpandedThumbInset);
+    }
+
+    // Diameter of the round dot the thumb collapses to at extreme content ratios. It matches the
+    // expanded cross-axis thickness so the dot is a true circle (length == thickness, fully
+    // rounded by the thumb corner radius), with a small floor so it stays visible on thin bars.
+    private double ComputeThumbDotDiameter()
+    {
+        var diameter = ComputeExpandedThumbCrossAxisThickness(null);
+        if (!double.IsFinite(diameter) || diameter <= 0)
+        {
+            diameter = DefaultThickness - ExpandedThumbInset;
+        }
+
+        return Math.Max(MinThumbDotDiameter, diameter);
     }
 
     private static double SmoothStep(double t)
