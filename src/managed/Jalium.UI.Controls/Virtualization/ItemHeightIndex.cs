@@ -9,9 +9,20 @@ internal sealed class ItemHeightIndex
     private const float MinHeight = 1f;
     private const float MaxHeight = 4096f;
 
+    // Per-item heights stay float: individual values are small (&lt;= MaxHeight) so float has
+    // ample precision, and keeping 1,000,000 entries at 4 bytes (vs 8) halves the allocation.
     private float[] _measuredHeights = [];
-    private float[] _blockSums = [];
-    private float[] _blockPrefixes = [0f];
+
+    // Cumulative arrays MUST be double. On a million-row list the running offsets reach tens of
+    // millions of pixels, where float (24-bit mantissa) only resolves integers to ~16.7M and
+    // quantizes values near 40M to multiples of 4px. Sub-pixel — and even few-pixel — per-item
+    // corrections then get rounded away while propagating through the prefix sums, and the loss
+    // accumulates across a 128-item block into a several-hundred-pixel block-boundary gap
+    // (rows appear with a large blank band between them, or blank space below the last row).
+    // double keeps these sums exact across the full 10,000,000-row range.
+    private double[] _blockSums = [];
+    private double[] _blockPrefixes = [0d];
+
     // Per-block count of still-unmeasured items. Lets an estimate change be applied to the
     // unmeasured items incrementally across blocks (O(blocks)) instead of rebuilding the whole
     // index (O(itemCount)). Maintained alongside _blockSums (rebuilt together, decremented when
@@ -220,13 +231,13 @@ internal sealed class ItemHeightIndex
         // total are recomputed once (O(blocks)).
         if (_measuredCount >= 8 && Math.Abs(candidate - _estimatedHeight) > 0.5f)
         {
-            var itemDelta = newHeight - oldResolved;
-            if (itemDelta != 0f)
+            double itemDelta = newHeight - oldResolved;
+            if (itemDelta != 0d)
             {
                 _blockSums[block] += itemDelta;
             }
 
-            var estimateDelta = candidate - _estimatedHeight;
+            double estimateDelta = candidate - _estimatedHeight;
             _estimatedHeight = candidate;
             for (int b = 0; b < _blockSums.Length; b++)
             {
@@ -237,7 +248,7 @@ internal sealed class ItemHeightIndex
                 }
             }
 
-            float running = 0f;
+            double running = 0d;
             double total = 0d;
             for (int b = 0; b < _blockSums.Length; b++)
             {
@@ -252,7 +263,7 @@ internal sealed class ItemHeightIndex
         }
 
         // No estimate change — propagate just this item's height delta.
-        var delta = newHeight - oldResolved;
+        double delta = newHeight - oldResolved;
         if (Math.Abs(delta) <= double.Epsilon)
         {
             return;
@@ -376,7 +387,7 @@ internal sealed class ItemHeightIndex
         if (_count == 0)
         {
             _blockSums = [];
-            _blockPrefixes = [0f];
+            _blockPrefixes = [0d];
             _blockUnmeasured = [];
             _measuredCount = 0;
             _measuredTotal = 0;
@@ -385,8 +396,8 @@ internal sealed class ItemHeightIndex
         }
 
         var blockCount = (_count + BlockSize - 1) / BlockSize;
-        _blockSums = new float[blockCount];
-        _blockPrefixes = new float[blockCount + 1];
+        _blockSums = new double[blockCount];
+        _blockPrefixes = new double[blockCount + 1];
         _blockUnmeasured = new int[blockCount];
 
         _measuredCount = 0;
@@ -418,4 +429,3 @@ internal sealed class ItemHeightIndex
         }
     }
 }
-
