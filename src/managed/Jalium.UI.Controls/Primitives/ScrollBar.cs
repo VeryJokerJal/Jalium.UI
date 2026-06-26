@@ -145,6 +145,12 @@ public class ScrollBar : RangeBase
     private double _thumbDragStartValue;
     private double _thumbDragAccumulatedHorizontal;
     private double _thumbDragAccumulatedVertical;
+    // Track-press paging ("click-and-hold in the trough"): while a page RepeatButton is held,
+    // each auto-repeat page step is clamped so the thumb stops once it reaches the pointer
+    // instead of running all the way to Minimum/Maximum. The target value is seeded on the
+    // press and kept live on every mouse move so the thumb follows the cursor while held.
+    private bool _hasTrackPagingTarget;
+    private double _trackPagingTargetValue;
     private bool _hasCustomLineButtonStyle;
     private DispatcherTimer? _autoHideVisualTimer;
     private long _autoHideVisualAnimStartTick;
@@ -252,6 +258,10 @@ public class ScrollBar : RangeBase
         _track.DecreaseRepeatButton = new RepeatButton
         {
             Style = s_internalRepeatButtonStyle,
+            // Page on press (not release) so the first trough step fires the instant the button
+            // goes down, without waiting out the RepeatButton's initial Delay. Auto-repeat still
+            // kicks in after Delay via the RepeatButton timer.
+            ClickMode = ClickMode.Press,
             Focusable = false,
             TransitionProperty = "None",
             Opacity = 0,
@@ -265,10 +275,15 @@ public class ScrollBar : RangeBase
         };
         _track.DecreaseRepeatButton.Cursor = Jalium.UI.Cursors.Arrow;
         _track.DecreaseRepeatButton.Click += OnPageUpClick;
+        WirePageButtonTrackPaging(_track.DecreaseRepeatButton);
 
         _track.IncreaseRepeatButton = new RepeatButton
         {
             Style = s_internalRepeatButtonStyle,
+            // Page on press (not release) so the first trough step fires the instant the button
+            // goes down, without waiting out the RepeatButton's initial Delay. Auto-repeat still
+            // kicks in after Delay via the RepeatButton timer.
+            ClickMode = ClickMode.Press,
             Focusable = false,
             TransitionProperty = "None",
             Opacity = 0,
@@ -282,6 +297,7 @@ public class ScrollBar : RangeBase
         };
         _track.IncreaseRepeatButton.Cursor = Jalium.UI.Cursors.Arrow;
         _track.IncreaseRepeatButton.Click += OnPageDownClick;
+        WirePageButtonTrackPaging(_track.IncreaseRepeatButton);
 
         AddVisualChild(_track);
 
@@ -753,6 +769,19 @@ public class ScrollBar : RangeBase
     private void OnPageUpClick(object sender, RoutedEventArgs e)
     {
         var newValue = Math.Max(Minimum, Value - LargeChange);
+
+        // Track-press paging: when the upper trough is held down, page toward the pointer
+        // and stop the moment the thumb reaches it instead of running on to Minimum.
+        if (_hasTrackPagingTarget)
+        {
+            if (Value <= _trackPagingTargetValue + double.Epsilon)
+            {
+                return; // Thumb already reached the pointer — hold position.
+            }
+
+            newValue = Math.Max(newValue, _trackPagingTargetValue);
+        }
+
         if (Math.Abs(newValue - Value) > double.Epsilon)
         {
             Value = newValue;
@@ -763,11 +792,141 @@ public class ScrollBar : RangeBase
     private void OnPageDownClick(object sender, RoutedEventArgs e)
     {
         var newValue = Math.Min(Maximum, Value + LargeChange);
+
+        // Track-press paging: when the lower trough is held down, page toward the pointer
+        // and stop the moment the thumb reaches it instead of running on to Maximum.
+        if (_hasTrackPagingTarget)
+        {
+            if (Value >= _trackPagingTargetValue - double.Epsilon)
+            {
+                return; // Thumb already reached the pointer — hold position.
+            }
+
+            newValue = Math.Min(newValue, _trackPagingTargetValue);
+        }
+
         if (Math.Abs(newValue - Value) > double.Epsilon)
         {
             Value = newValue;
             RaiseScrollEvent(ScrollEventType.LargeIncrement);
         }
+    }
+
+    // ── Track-press paging (click-and-hold in the trough) ──────────────
+    // The page RepeatButtons (ClickMode.Press) page immediately on mouse-down. The target is
+    // seeded on the *tunnelling* PreviewMouseDown so it is armed before ButtonBase's bubbling
+    // MouseDown fires that first page step — making even the instant first step clamp to the
+    // pointer. MouseMove is not handled by ButtonBase and — because the button holds capture —
+    // is routed to it on every physical move (WindowInputDispatcher.HandleMouseMove targets the
+    // captured element), keeping the target live so the thumb follows the cursor while held.
+    private void WirePageButtonTrackPaging(RepeatButton button)
+    {
+        button.AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnPageButtonPreviewMouseDown), handledEventsToo: true);
+        button.AddHandler(MouseMoveEvent, new MouseEventHandler(OnPageButtonMouseMove));
+        button.AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnPageButtonMouseUp), handledEventsToo: true);
+        button.AddHandler(LostMouseCaptureEvent, new RoutedEventHandler(OnPageButtonLostMouseCapture));
+    }
+
+    private void OnPageButtonPreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left)
+        {
+            return;
+        }
+
+        // Arm paging and seed the target from the press location so the first (immediate) page
+        // step — and every auto-repeat after it — stops once the thumb's edge reaches the pointer.
+        _hasTrackPagingTarget = TryComputeTrackPagingTarget(e, IsIncreasePageButton(sender), out _trackPagingTargetValue);
+    }
+
+    private void OnPageButtonMouseMove(object sender, MouseEventArgs e)
+    {
+        // Only retarget while an active page hold is in progress; ignore plain hover moves.
+        if (!_hasTrackPagingTarget)
+        {
+            return;
+        }
+
+        if (TryComputeTrackPagingTarget(e, IsIncreasePageButton(sender), out var value))
+        {
+            _trackPagingTargetValue = value;
+        }
+    }
+
+    // True when the event came from the increase (page-down / page-right) RepeatButton, i.e. the
+    // pointer is on the far side of the thumb and paging moves Value toward Maximum.
+    private bool IsIncreasePageButton(object sender)
+        => _track != null && ReferenceEquals(sender, _track.IncreaseRepeatButton);
+
+    private void OnPageButtonMouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left)
+        {
+            _hasTrackPagingTarget = false;
+        }
+    }
+
+    private void OnPageButtonLostMouseCapture(object sender, RoutedEventArgs e)
+    {
+        _hasTrackPagingTarget = false;
+    }
+
+    // Maps a page-button mouse event to the Value at which the thumb's leading edge meets the
+    // pointer (bottom/right edge for a page-down, top/left edge for a page-up). Returns false
+    // (paging falls back to unclamped LargeChange steps) when the track has no usable geometry/range.
+    private bool TryComputeTrackPagingTarget(MouseEventArgs e, bool pageDown, out double value)
+    {
+        value = Value;
+
+        if (_track == null)
+        {
+            return false;
+        }
+
+        var isVertical = Orientation == Orientation.Vertical;
+        var trackLength = isVertical ? _track.RenderSize.Height : _track.RenderSize.Width;
+        if (!double.IsFinite(trackLength) || trackLength <= 0)
+        {
+            return false;
+        }
+
+        var range = Maximum - Minimum;
+        if (!double.IsFinite(range) || range <= 0)
+        {
+            return false;
+        }
+
+        var thumbSize = 0.0;
+        if (_track.Thumb != null)
+        {
+            thumbSize = isVertical ? _track.Thumb.RenderSize.Height : _track.Thumb.RenderSize.Width;
+            if (!double.IsFinite(thumbSize) || thumbSize < 0)
+            {
+                thumbSize = 0;
+            }
+        }
+
+        var availableLength = Math.Max(0.0, trackLength - thumbSize);
+        if (availableLength <= 0)
+        {
+            return false;
+        }
+
+        var local = e.GetPosition(_track);
+        var position = isVertical ? local.Y : local.X;
+
+        // Microsoft trough design: the thumb stops with the edge facing the pointer landing on it,
+        // not its center — the far edge (bottom / right) when paging toward the end, the near edge
+        // (top / left) when paging toward the start. Pick that edge, then back out the thumb start
+        // offset and convert it to a value along the track.
+        var alignFarEdge = pageDown != _track.IsDirectionReversed;
+        var desiredThumbStart = alignFarEdge ? (position - thumbSize) : position;
+
+        var rawRatio = desiredThumbStart / availableLength;
+        var ratio = Math.Clamp(_track.IsDirectionReversed ? (1.0 - rawRatio) : rawRatio, 0.0, 1.0);
+
+        value = Minimum + (ratio * range);
+        return true;
     }
 
     private void OnThumbDragStarted(object sender, DragStartedEventArgs e)
@@ -1056,6 +1215,7 @@ public class ScrollBar : RangeBase
     private void BeginThumbDrag()
     {
         _isDragging = true;
+        _hasTrackPagingTarget = false;
         _thumbDragStartValue = Value;
         _thumbDragAccumulatedHorizontal = 0;
         _thumbDragAccumulatedVertical = 0;
