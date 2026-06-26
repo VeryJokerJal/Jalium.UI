@@ -23,17 +23,14 @@ namespace Jalium.UI.Controls.DevTools;
 public partial class DevToolsWindow : Window
 {
     private const int SearchRefreshDelayMilliseconds = 150;
-    private const int TreeBuildNodeBatchSize = 8;
-    private const int TreeBuildChildBatchSize = 48;
 
     private readonly Window _targetWindow;
     private readonly Grid _mainGrid;
-    private readonly TreeView _visualTreeView;
+    private readonly InspectorTreeList _visualTreeView;
     private readonly StackPanel _propertiesPanel;
     private readonly UIElement _propertiesScrollViewer;
     private readonly TextBox _searchTextBox;
     private readonly DispatcherTimer _searchRefreshTimer;
-    private readonly DispatcherTimer _treeBuildTimer;
     private Visual? _selectedVisual;
     private DevToolsOverlay? _overlay;
     private int _rowIndex;
@@ -96,9 +93,11 @@ public partial class DevToolsWindow : Window
     private bool _isPickerActive;
     private DevToolsUi.DevToolsButton? _pickerButton;
 
-    // All tree items for search/expand/collapse
-    private readonly List<DevToolsTreeViewItem> _allTreeItems = new();
-    private readonly Queue<PendingTreeBuildNode> _pendingTreeBuild = new();
+    // ── Inspector flat virtualized list state ──
+    private readonly BulkObservableCollection<InspectorRow> _rows = new();
+    private readonly Dictionary<Visual, InspectorRow> _rowByVisual = new();
+    private readonly HashSet<Visual> _expandedVisuals = new();
+    private string? _activeFilter;
 
     // ── Palette (re-exported from DevToolsTheme for legacy call sites in this file) ──
     private static readonly SolidColorBrush BrushString       = DevToolsTheme.TokenString;
@@ -233,13 +232,17 @@ public partial class DevToolsWindow : Window
         Grid.SetRow(searchRowHost, 0);
         leftGrid.Children.Add(searchRowHost);
 
-        var treeView = new TreeView
+        var treeView = new InspectorTreeList
         {
             Background = DevToolsTheme.SurfaceAlt,
             BorderBrush = DevToolsTheme.BorderSubtle,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
             Margin = new Thickness(0),
         };
-        treeView.SelectedItemChanged += OnVisualTreeSelectionChanged;
+        treeView.ToggleExpand = ToggleExpand;
+        treeView.ItemsSource = _rows;
+        treeView.SelectionChanged += OnInspectorSelectionChanged;
         // PreviewMouseRightButtonUp is declared in UIElement but never actually
         // raised by the framework. Subscribe to the generic PreviewMouseUp and
         // filter on ChangedButton==Right instead.
@@ -298,19 +301,12 @@ public partial class DevToolsWindow : Window
         };
         _searchRefreshTimer.Tick += OnSearchRefreshTimerTick;
 
-        _treeBuildTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromMilliseconds(16)
-        };
-        _treeBuildTimer.Tick += OnTreeBuildTimerTick;
-
         RefreshVisualTree();
 
         _overlay = new DevToolsOverlay(_targetWindow);
         _targetWindow.DevToolsOverlay = _overlay;
 
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
-        Loaded += OnDevToolsLoaded;
         Closing += OnDevToolsClosing;
     }
 
@@ -456,279 +452,92 @@ public partial class DevToolsWindow : Window
     {
         if (target == null) return;
 
-        // ── Normalize state so locate is deterministic ─────────────────
-        // 1. Switch to the Inspector tab. Tab Content assignment is synchronous;
-        //    the tree is already built in this same window, so no rebuild fires.
+        // Switch to the Inspector tab.
         if (_rootTabs != null && _inspectorTab != null && _rootTabs.SelectedItem != _inspectorTab)
             _rootTabs.SelectedItem = _inspectorTab;
 
-        // 2. Any active filter hides non-matching ancestors — expansion would
-        //    stop at the first missing node. Clear it before locating.
-        bool needsRebuild = false;
-        if (!string.IsNullOrEmpty(_searchTextBox.Text))
-        {
-            _searchTextBox.Text = "";
-            needsRebuild = true;
-        }
+        // Normalize: clear any active filter + force Visual mode so every visual is
+        // locatable, then rebuild the flat row list before locating the target.
+        _searchTextBox.Text = "";
+        _inspectorViewMode = InspectorViewMode.Visual;
+        _inspectorViewToggle?.SetSelectedSilent((int)InspectorViewMode.Visual);
+        RefreshVisualTree();
 
-        // 3. Only Visual mode guarantees every UIElement has a tree item.
-        //    Logical filters template decorations and Flat flattens hierarchy —
-        //    either can make a valid visual un-locatable. Force Visual mode.
-        if (_inspectorViewMode != InspectorViewMode.Visual)
-        {
-            _inspectorViewMode = InspectorViewMode.Visual;
-            _inspectorViewToggle?.SetSelectedSilent((int)InspectorViewMode.Visual);
-            needsRebuild = true;
-        }
-
-        if (needsRebuild) RefreshVisualTree();
-
-        // Locate + highlight. Keep this synchronous: RefreshVisualTree has already
-        // re-seeded the root + pending queue synchronously, and SelectVisualInTree
-        // walks the ancestor chain forcing EnsureChildrenBuilt level by level.
-        // Only claim selection if the tree actually found a matching item —
-        // otherwise we'd show stale properties for an element that isn't in the
-        // target window (e.g. a DevTools UI element that leaked past the scope
-        // exclusion).
-        if (!SelectVisualInTree(target)) return;
-
-        _selectedVisual = target;
-        UpdatePropertiesPanel(target);
-        _overlay?.HighlightElement(target as UIElement);
+        // SelectVisualInTree expands the ancestor chain, rebuilds rows, selects the
+        // target row (driving the properties panel + overlay via SelectionChanged) and
+        // scrolls it into view. Selection is only claimed if the target resolves.
+        SelectVisualInTree(target);
     }
 
     /// <summary>
-    /// Selects the tree item corresponding to <paramref name="visual"/>, lazily
-    /// building the ancestor chain if needed. Returns true when a matching tree
-    /// item was found + selected, false otherwise. Call
-    /// <see cref="RevealInInspector"/> instead if you don't already know the
-    /// Inspector is in Visual mode — this method trusts the caller to have
-    /// normalized state first.
+    /// Locates the row for <paramref name="visual"/>, expanding its ancestor chain so the
+    /// row becomes visible, selects it (which drives the properties panel + overlay via
+    /// <see cref="OnInspectorSelectionChanged"/>) and scrolls it into view. Returns true when
+    /// the visual resolves to a row under the target window. Assumes the caller has normalized
+    /// state (Visual mode, no filter) — use <see cref="RevealInInspector"/> otherwise.
     /// </summary>
     private bool SelectVisualInTree(Visual visual)
     {
         if (visual == null) return false;
 
-        // Fast path: the item is already materialized.
-        foreach (var item in _allTreeItems)
-        {
-            if (item.Visual == visual)
-            {
-                ExpandAncestors(item);
-                item.IsSelected = true;
-                ScrollTreeItemIntoView(item);
-                return true;
-            }
-        }
+        var chain = BuildAncestorChain(visual);
+        if (chain == null) return false;
 
-        // Deep path: build ancestor chain via VisualParent, falling back to the
-        // logical parent so that popups / tooltips / detached-but-tracked visuals
-        // still resolve (their VisualParent can be a popup root, not the target
-        // window).
-        var ancestorChain = new List<Visual>();
-        var visited = new HashSet<Visual>();
-        Visual? v = visual;
-        while (v != null && visited.Add(v))
-        {
-            ancestorChain.Add(v);
-            if (v == _targetWindow) break;
-            Visual? parent = v.VisualParent;
-            if (parent == null && v is FrameworkElement fe)
-            {
-                // Fall back to the templated parent when the visual parent is gone
-                // (e.g. a template part whose host recycled). TemplatedParent is
-                // the only "logical"-ish link this framework currently exposes.
-                parent = fe.TemplatedParent as Visual;
-            }
-            v = parent;
-        }
-        if (ancestorChain.Count == 0 || ancestorChain[^1] != _targetWindow) return false;
-        ancestorChain.Reverse(); // [_targetWindow, …, visual]
+        // Expand every ancestor (not the target itself) so the target's row is emitted.
+        bool changed = false;
+        for (int i = 0; i < chain.Count - 1; i++)
+            changed |= _expandedVisuals.Add(chain[i]);
 
-        // Find root tree item. If it doesn't exist (tree cleared), rebuild and retry.
-        DevToolsTreeViewItem? current = null;
-        foreach (var item in _allTreeItems)
-        {
-            if (item.Visual == _targetWindow) { current = item; break; }
-        }
-        if (current == null)
-        {
-            RefreshVisualTree();
-            foreach (var item in _allTreeItems)
-            {
-                if (item.Visual == _targetWindow) { current = item; break; }
-            }
-            if (current == null) return false;
-        }
+        if (changed || !_rowByVisual.ContainsKey(visual))
+            RebuildVisibleRows();
 
-        var ancestorSet = new HashSet<Visual>(ancestorChain);
+        if (!_rowByVisual.TryGetValue(visual, out var row))
+            return false;
 
-        // Walk from root to target, force-expanding + force-building children.
-        // If any level is missing in the current view mode (e.g. a filtered
-        // decoration), we fall back to fuzzy step: pick whichever child is an
-        // ancestor of the target via VisualParent, even if it's not in the
-        // chain hash.
-        int guard = 0;
-        while (current.Visual != visual && guard++ < 4096)
-        {
-            current.IsExpanded = true;
-            EnsureChildrenBuilt(current);
-
-            DevToolsTreeViewItem? next = null;
-
-            // Preferred: exact chain hit.
-            foreach (var child in current.Items)
-            {
-                if (child is DevToolsTreeViewItem dti && ancestorSet.Contains(dti.Visual))
-                {
-                    next = dti;
-                    break;
-                }
-            }
-
-            // Fallback: no exact chain hit (view mode filtered some nodes).
-            // Walk each child's subtree and pick the one whose visual descendants
-            // contain the target.
-            if (next == null)
-            {
-                foreach (var child in current.Items)
-                {
-                    if (child is not DevToolsTreeViewItem dti) continue;
-                    if (IsVisualDescendant(visual, dti.Visual))
-                    {
-                        next = dti;
-                        break;
-                    }
-                }
-            }
-
-            if (next == null) return false;
-            current = next;
-        }
-
-        ExpandAncestors(current);
-        current.IsSelected = true;
-        ScrollTreeItemIntoView(current);
+        _visualTreeView.SelectedItem = row; // → OnInspectorSelectionChanged updates panel + overlay
+        ScrollRowIntoView(row);
         return true;
     }
 
     /// <summary>
-    /// True when <paramref name="candidate"/> is reachable from
-    /// <paramref name="ancestor"/> via VisualParent (or logical Parent fallback).
-    /// Bounded walk — depth cap prevents runaway scans.
+    /// Builds the chain [_targetWindow, …, visual] via VisualParent, falling back to
+    /// TemplatedParent when the visual parent is gone (popups / recycled template parts).
+    /// Returns null when <paramref name="visual"/> is not under the target window.
     /// </summary>
-    private static bool IsVisualDescendant(Visual candidate, Visual ancestor)
+    private List<Visual>? BuildAncestorChain(Visual visual)
     {
-        const int MaxDepth = 256;
-        Visual? v = candidate;
-        int depth = 0;
-        while (v != null && depth++ < MaxDepth)
+        var chain = new List<Visual>();
+        var visited = new HashSet<Visual>();
+        Visual? v = visual;
+        while (v != null && visited.Add(v))
         {
-            if (ReferenceEquals(v, ancestor)) return true;
+            chain.Add(v);
+            if (v == _targetWindow) break;
             Visual? parent = v.VisualParent;
             if (parent == null && v is FrameworkElement fe)
                 parent = fe.TemplatedParent as Visual;
             v = parent;
         }
-        return false;
+
+        if (chain.Count == 0 || chain[^1] != _targetWindow) return null;
+        chain.Reverse(); // [_targetWindow, …, visual]
+        return chain;
     }
 
     /// <summary>
-    /// Scrolls the given tree item into the TreeView's viewport.
-    /// A deep Pick can touch a long ancestor chain of TreeViewItems that are
-    /// still being realized by the VSP pipeline — their VisualParent stays
-    /// null until the VSP Measure for that level has run. We poll across
-    /// dispatcher turns (each turn gives the layout manager a chance to
-    /// complete another level) until the item is attached, then BringIntoView.
+    /// Scrolls the row at the given index into view. Virtualization-aware (the target row's
+    /// container may not be realized yet), so it routes through the panel's index-based bring-
+    /// into-view rather than waiting for the container to materialize. Deferred one dispatcher
+    /// turn so the row-list reset + measure settle first.
     /// </summary>
-    private void ScrollTreeItemIntoView(DevToolsTreeViewItem item)
+    private void ScrollRowIntoView(InspectorRow row)
     {
-        ScrollTreeItemIntoViewWithRetries(item, remainingRetries: 16);
+        int index = _rows.IndexOf(row);
+        if (index < 0) return;
+        Dispatcher.BeginInvoke(() => _visualTreeView.BringRowIntoView(index));
     }
 
-    private void ScrollTreeItemIntoViewWithRetries(DevToolsTreeViewItem item, int remainingRetries)
-    {
-        Dispatcher.BeginInvoke(() =>
-        {
-            if (item.VisualParent == null)
-            {
-                if (remainingRetries <= 0) return;
-                // Nudge the tree to keep processing layout, then try again next turn.
-                _visualTreeView.InvalidateMeasure();
-                ScrollTreeItemIntoViewWithRetries(item, remainingRetries - 1);
-                return;
-            }
-
-            try { item.BringIntoView(); }
-            catch
-            {
-                // BringIntoView walks ancestor ScrollViewers — any framework
-                // hiccup there should not blow up the inspector selection.
-            }
-        });
-    }
-
-    /// <summary>
-    /// Forces immediate creation of child tree items for a node that may still be in the pending build queue.
-    /// </summary>
-    private void EnsureChildrenBuilt(DevToolsTreeViewItem parentItem)
-    {
-        // Synchronous forced-build path used by SelectVisualInTree / RevealInInspector.
-        // Entered from non-tree-build-timer callbacks, so we need our own scope
-        // to keep freshly-created items flagged.
-        using var __devToolsCreationScope = Jalium.UI.Diagnostics.DiagnosticsScope.BeginIgnoredCreation();
-
-        var remaining = _pendingTreeBuild.Count;
-        var requeue = new List<PendingTreeBuildNode>(remaining);
-        bool found = false;
-
-        for (int i = 0; i < remaining; i++)
-        {
-            var node = _pendingTreeBuild.Dequeue();
-            if (node.Item == parentItem && !found)
-            {
-                found = true;
-                var visibleChildren = EnumerateChildrenForCurrentMode(node.Visual).ToList();
-                int childCount = visibleChildren.Count;
-                var childItems = new List<TreeViewItem>(childCount - node.NextChildIndex);
-                while (node.NextChildIndex < childCount)
-                {
-                    var child = visibleChildren[node.NextChildIndex];
-                    node.NextChildIndex++;
-
-                    var childItem = new DevToolsTreeViewItem(child);
-                    PrepareTreeItem(childItem, node.Level + 1);
-                    childItems.Add(childItem);
-                    _allTreeItems.Add(childItem);
-                    _pendingTreeBuild.Enqueue(new PendingTreeBuildNode(childItem, child, node.Level + 1));
-                }
-                parentItem.AddChildItems(childItems);
-            }
-            else
-            {
-                requeue.Add(node);
-            }
-        }
-
-        foreach (var node in requeue)
-            _pendingTreeBuild.Enqueue(node);
-    }
-
-    private static void ExpandAncestors(TreeViewItem item)
-    {
-        // Walk the logical TreeViewItem parent chain (set by AddChildItems /
-        // PrepareContainerForItem). Relying on VisualParent breaks when the
-        // item is not yet realized by the VSP — it's null in that case and
-        // we'd silently skip the whole ancestor chain.
-        var parent = item.ParentItem;
-        while (parent != null)
-        {
-            parent.IsExpanded = true;
-            parent = parent.ParentItem;
-        }
-    }
-
-    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+    //鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Search / Filter
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
@@ -736,49 +545,9 @@ public partial class DevToolsWindow : Window
     {
         var filter = _searchTextBox.Text?.Trim() ?? "";
         if (string.IsNullOrEmpty(filter))
-        {
-            RefreshVisualTree();
-        }
+            RefreshVisualTree();         // clear filter + rebuild immediately
         else
-        {
-            _treeBuildTimer.Stop();
-            _pendingTreeBuild.Clear();
-            RestartSearchRefreshTimer();
-        }
-    }
-
-    private DevToolsTreeViewItem? CreateFilteredTreeViewItem(Visual visual, string filter)
-    {
-        bool selfMatches = MatchesSearch(visual, filter);
-
-        var item = new DevToolsTreeViewItem(visual);
-        _allTreeItems.Add(item);
-
-        bool hasMatchingChild = false;
-        int childCount = visual.VisualChildrenCount;
-        for (int i = 0; i < childCount; i++)
-        {
-            var child = visual.GetVisualChild(i);
-            if (child != null)
-            {
-                var childItem = CreateFilteredTreeViewItem(child, filter);
-                if (childItem != null)
-                {
-                    item.Items.Add(childItem);
-                    hasMatchingChild = true;
-                }
-            }
-        }
-
-        if (selfMatches || hasMatchingChild)
-        {
-            if (hasMatchingChild)
-                item.IsExpanded = true;
-            return item;
-        }
-
-        _allTreeItems.Remove(item);
-        return null;
+            RestartSearchRefreshTimer(); // debounced → OnSearchRefreshTimerTick → RefreshVisualTree
     }
 
     private static bool MatchesSearch(Visual visual, string filter)
@@ -798,20 +567,75 @@ public partial class DevToolsWindow : Window
         return false;
     }
 
+    /// <summary>
+    /// Builds the inspector row label for a visual: "TypeName [#Name | "text" | "title"] [WxH] [(childCount)]".
+    /// </summary>
+    internal static string GetVisualDisplayName(Visual visual)
+    {
+        var typeName = visual.GetType().Name;
+        var suffix = "";
+
+        // Append dimensions for FrameworkElements
+        if (visual is FrameworkElement fe && fe.ActualWidth > 0 && fe.ActualHeight > 0)
+        {
+            suffix = $" {fe.ActualWidth:F0}×{fe.ActualHeight:F0}";
+        }
+
+        // Append child count for containers
+        int childCount = visual.VisualChildrenCount;
+        if (childCount > 0)
+        {
+            suffix += $" ({childCount})";
+        }
+
+        if (visual is Window window)
+        {
+            return $"{typeName} \"{window.Title}\"{suffix}";
+        }
+        if (visual is TextBlock textBlock && !string.IsNullOrEmpty(textBlock.Text))
+        {
+            var text = textBlock.Text.Length > 20 ? textBlock.Text[..20] + "..." : textBlock.Text;
+            return $"{typeName} \"{text}\"{suffix}";
+        }
+        if (visual is ContentControl { Content: string contentString })
+        {
+            var text = contentString.Length > 20 ? contentString[..20] + "..." : contentString;
+            return $"{typeName} \"{text}\"{suffix}";
+        }
+        if (visual is FrameworkElement namedFe && !string.IsNullOrEmpty(namedFe.Name))
+        {
+            return $"{typeName} #{namedFe.Name}{suffix}";
+        }
+
+        return $"{typeName}{suffix}";
+    }
+
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Expand / Collapse All
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void ExpandAll()
     {
-        foreach (var item in _allTreeItems)
-            item.IsExpanded = true;
+        if (_activeFilter != null) return; // filtered view is already fully expanded
+        _expandedVisuals.Clear();
+        AddExpandableRecursive(_targetWindow);
+        RebuildVisibleRows();
+    }
+
+    private void AddExpandableRecursive(Visual visual)
+    {
+        var children = EnumerateChildrenForCurrentMode(visual).ToList();
+        if (children.Count == 0) return;
+        _expandedVisuals.Add(visual);
+        foreach (var child in children)
+            AddExpandableRecursive(child);
     }
 
     private void CollapseAll()
     {
-        foreach (var item in _allTreeItems)
-            item.IsExpanded = false;
+        _expandedVisuals.Clear();
+        _expandedVisuals.Add(_targetWindow);
+        RebuildVisibleRows();
     }
 
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
@@ -858,8 +682,6 @@ public partial class DevToolsWindow : Window
     private void OnDevToolsClosing(object? sender, EventArgs e)
     {
         _searchRefreshTimer.Stop();
-        _treeBuildTimer.Stop();
-        _pendingTreeBuild.Clear();
 
         if (_isPickerActive)
             DeactivatePicker();
@@ -938,47 +760,132 @@ public partial class DevToolsWindow : Window
 
     private void RefreshVisualTree()
     {
-        // Any new DevToolsTreeViewItem constructed in this call gets IsDiagnosticsIgnored
-        // in its field initializer — constructor-time InvalidateMeasure then
-        // short-circuits and never pollutes Layout stats.
-        using var __devToolsCreationScope = Jalium.UI.Diagnostics.DiagnosticsScope.BeginIgnoredCreation();
-
         _searchRefreshTimer.Stop();
-        _treeBuildTimer.Stop();
-        _pendingTreeBuild.Clear();
-        _visualTreeView.Items.Clear();
-        _allTreeItems.Clear();
 
         var filter = _searchTextBox.Text?.Trim() ?? "";
-        if (!string.IsNullOrEmpty(filter))
-        {
-            var rootItem = CreateFilteredTreeViewItem(_targetWindow, filter);
-            if (rootItem != null)
-            {
-                AttachTreeItemToView(rootItem, 0);
-                _visualTreeView.Items.Add(rootItem);
-                rootItem.IsExpanded = true;
-            }
+        _activeFilter = string.IsNullOrEmpty(filter) ? null : filter;
 
-            return;
-        }
+        // Reset expansion to "root only" — a refresh collapses everything back to the root,
+        // matching the previous rebuild semantics.
+        _expandedVisuals.Clear();
+        _expandedVisuals.Add(_targetWindow);
 
-        var root = new DevToolsTreeViewItem(_targetWindow);
-        PrepareTreeItem(root, 0);
-        _allTreeItems.Add(root);
-        _visualTreeView.Items.Add(root);
-        root.IsExpanded = true;
-        _pendingTreeBuild.Enqueue(new PendingTreeBuildNode(root, _targetWindow, 0));
-        ScheduleTreeBuild();
+        RebuildVisibleRows();
     }
 
-    private void OnVisualTreeSelectionChanged(object? sender, RoutedPropertyChangedEventArgs<object?> e)
+    /// <summary>
+    /// Recomputes the flat list of currently-visible rows and pushes it to the ListBox in a
+    /// single Reset. Only row DATA is built here (cheap, O(visible)); the ListBox's
+    /// VirtualizingStackPanel realizes containers for the viewport only — so neither the build
+    /// nor a later per-row state change touches the whole tree.
+    /// </summary>
+    private void RebuildVisibleRows()
     {
-        if (e.NewValue is DevToolsTreeViewItem treeItem)
+        var rows = new List<InspectorRow>();
+        if (_activeFilter is { } filter)
+            AppendFilteredRows(_targetWindow, 0, filter, rows);
+        else if (_inspectorViewMode == InspectorViewMode.Flat)
+            AppendFlatRows(_targetWindow, rows);
+        else
+            AppendHierarchicalRows(_targetWindow, 0, rows);
+
+        _rowByVisual.Clear();
+        foreach (var r in rows)
+            _rowByVisual[r.Visual] = r;
+
+        _rows.Reset(rows);
+
+        // Row objects are all new — restore the selection highlight for the inspected visual.
+        // OnInspectorSelectionChanged short-circuits on the same Visual, so this won't churn
+        // the properties panel.
+        if (_selectedVisual != null && _rowByVisual.TryGetValue(_selectedVisual, out var sel))
+            _visualTreeView.SelectedItem = sel;
+        else
+            _visualTreeView.SelectedItem = null;
+
+        // Replacing the collection only invalidates the panel; the inner ScrollViewer keeps its
+        // previous extent/offset until it re-measures. Force that so a shrunk list (e.g. Collapse
+        // All) refreshes immediately instead of leaving a stale offset only a resize would clear.
+        _visualTreeView.SyncScrollAfterReset();
+    }
+
+    private void AppendHierarchicalRows(Visual visual, int depth, List<InspectorRow> rows)
+    {
+        var children = EnumerateChildrenForCurrentMode(visual).ToList();
+        bool expanded = _expandedVisuals.Contains(visual);
+        rows.Add(new InspectorRow(visual, depth) { HasChildren = children.Count > 0, IsExpanded = expanded });
+        if (expanded)
+            foreach (var child in children)
+                AppendHierarchicalRows(child, depth + 1, rows);
+    }
+
+    // Flat view: root at depth 0, every descendant flattened to depth 1, no expanders
+    // (mirrors the previous BuildFlatBatch; walk depth capped to guard pathological trees).
+    private void AppendFlatRows(Visual root, List<InspectorRow> rows)
+    {
+        rows.Add(new InspectorRow(root, 0));
+        AppendFlatDescendants(root, 0, rows);
+    }
+
+    private void AppendFlatDescendants(Visual visual, int walkDepth, List<InspectorRow> rows)
+    {
+        if (walkDepth >= 24) return;
+        int count = visual.VisualChildrenCount;
+        for (int i = 0; i < count; i++)
         {
-            _selectedVisual = treeItem.Visual;
-            UpdatePropertiesPanel(_selectedVisual);
-            _overlay?.HighlightElement(_selectedVisual as UIElement);
+            var child = visual.GetVisualChild(i);
+            if (child == null) continue;
+            rows.Add(new InspectorRow(child, 1));
+            AppendFlatDescendants(child, walkDepth + 1, rows);
+        }
+    }
+
+    // Filtered view: keep a node when it (or any descendant) matches; matching paths are
+    // auto-expanded. Mirrors the previous CreateFilteredTreeViewItem (raw visual children).
+    private bool AppendFilteredRows(Visual visual, int depth, string filter, List<InspectorRow> rows)
+    {
+        int start = rows.Count;
+        var row = new InspectorRow(visual, depth) { IsExpanded = true };
+        rows.Add(row);
+
+        bool anyChildKept = false;
+        int count = visual.VisualChildrenCount;
+        for (int i = 0; i < count; i++)
+        {
+            var child = visual.GetVisualChild(i);
+            if (child == null) continue;
+            anyChildKept |= AppendFilteredRows(child, depth + 1, filter, rows);
+        }
+
+        if (MatchesSearch(visual, filter) || anyChildKept)
+        {
+            row.HasChildren = anyChildKept;
+            return true;
+        }
+
+        rows.RemoveRange(start, rows.Count - start); // drop self + tentatively-added descendants
+        return false;
+    }
+
+    private void ToggleExpand(InspectorRow row)
+    {
+        if (_activeFilter != null) return;  // filtered view stays fully expanded
+        if (!row.HasChildren) return;
+        if (!_expandedVisuals.Add(row.Visual))
+            _expandedVisuals.Remove(row.Visual);
+        RebuildVisibleRows();
+    }
+
+    private void OnInspectorSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_visualTreeView.SelectedItem is InspectorRow row)
+        {
+            // Selection restored after a row-list rebuild points at the same Visual — skip the
+            // expensive properties-panel rebuild + overlay update in that case.
+            if (ReferenceEquals(row.Visual, _selectedVisual)) return;
+            _selectedVisual = row.Visual;
+            UpdatePropertiesPanel(row.Visual);
+            _overlay?.HighlightElement(row.Visual as UIElement);
         }
     }
 
@@ -987,46 +894,20 @@ public partial class DevToolsWindow : Window
         if (me.ChangedButton != Input.MouseButton.Right) return;
         if (me.OriginalSource is not Visual hit) return;
 
-        // Walk up from the clicked visual to find the hosting DevToolsTreeViewItem —
-        // the Header and any decorations fire from inner elements, not the item itself.
-        DevToolsTreeViewItem? item = null;
+        // Walk up from the clicked visual to find the hosting row view.
+        InspectorRow? row = null;
         for (var cur = hit; cur != null; cur = cur.VisualParent)
         {
-            if (cur is DevToolsTreeViewItem dti) { item = dti; break; }
+            if (cur is InspectorRowView view && view.Row != null) { row = view.Row; break; }
         }
-        if (item == null) return;
+        if (row == null) return;
 
-        // Select the item so the rest of the UI (overlay, properties panel) agrees
-        // with the target of the menu.
-        item.IsSelected = true;
-        _selectedVisual = item.Visual;
-        UpdatePropertiesPanel(item.Visual);
-        _overlay?.HighlightElement(item.Visual as UIElement);
+        // Select the row so the rest of the UI (overlay, properties panel) agrees with the
+        // menu target (drives OnInspectorSelectionChanged).
+        _visualTreeView.SelectedItem = row;
 
-        OpenElementContextMenu(item.Visual, _visualTreeView);
+        OpenElementContextMenu(row.Visual, _visualTreeView);
         me.Handled = true;
-    }
-
-    /// <summary>
-    /// Ensures TreeViewItem ownership metadata is wired when items are added as direct containers.
-    /// </summary>
-    private void AttachTreeItemToView(TreeViewItem item, int level)
-    {
-        PrepareTreeItem(item, level);
-
-        foreach (var child in item.Items)
-        {
-            if (child is TreeViewItem childItem)
-            {
-                AttachTreeItemToView(childItem, level + 1);
-            }
-        }
-    }
-
-    private void PrepareTreeItem(TreeViewItem item, int level)
-    {
-        item.ParentTreeView = _visualTreeView;
-        item.Level = level;
     }
 
     private void RestartSearchRefreshTimer()
@@ -1041,139 +922,6 @@ public partial class DevToolsWindow : Window
         RefreshVisualTree();
     }
 
-    private void OnDevToolsLoaded(object? sender, EventArgs e)
-    {
-        ScheduleTreeBuild(deferToDispatcher: true);
-    }
-
-    private void ScheduleTreeBuild(bool deferToDispatcher = false)
-    {
-        if (_isClosing || _pendingTreeBuild.Count == 0 || Handle == nint.Zero)
-        {
-            return;
-        }
-
-        void StartTimer()
-        {
-            if (!_isClosing && _pendingTreeBuild.Count > 0 && !_treeBuildTimer.IsEnabled)
-            {
-                _treeBuildTimer.Start();
-            }
-        }
-
-        if (deferToDispatcher)
-        {
-            Dispatcher.BeginInvoke(StartTimer);
-        }
-        else
-        {
-            StartTimer();
-        }
-    }
-
-    private void OnTreeBuildTimerTick(object? sender, EventArgs e)
-    {
-        // Tree builds run on the DevTools dispatcher and create new tree-view
-        // items. Mark them as diagnostics-ignored the moment they're new'd up.
-        using var __devToolsCreationScope = Jalium.UI.Diagnostics.DiagnosticsScope.BeginIgnoredCreation();
-
-        _treeBuildTimer.Stop();
-
-        if (_isClosing)
-        {
-            _pendingTreeBuild.Clear();
-            return;
-        }
-
-        // Flat mode: materialize all Visual descendants under the root as
-        // sibling nodes under the root container (no hierarchy). We use the
-        // existing pending queue as a plain BFS walker.
-        if (_inspectorViewMode == InspectorViewMode.Flat)
-        {
-            BuildFlatBatch();
-            if (_pendingTreeBuild.Count > 0) ScheduleTreeBuild();
-            return;
-        }
-
-        int processedNodes = 0;
-        int processedChildren = 0;
-        while (processedNodes < TreeBuildNodeBatchSize &&
-               processedChildren < TreeBuildChildBatchSize &&
-               _pendingTreeBuild.Count > 0)
-        {
-            var pendingNode = _pendingTreeBuild.Dequeue();
-            // Snapshot all candidate children once (mode-aware filter).
-            var visibleChildren = EnumerateChildrenForCurrentMode(pendingNode.Visual).ToList();
-            int childCount = visibleChildren.Count;
-            if (pendingNode.NextChildIndex >= childCount)
-            {
-                processedNodes++;
-                continue;
-            }
-
-            var childItems = new List<TreeViewItem>(Math.Min(childCount - pendingNode.NextChildIndex, TreeBuildChildBatchSize));
-            while (pendingNode.NextChildIndex < childCount &&
-                   processedChildren < TreeBuildChildBatchSize)
-            {
-                var child = visibleChildren[pendingNode.NextChildIndex];
-                pendingNode.NextChildIndex++;
-
-                var childItem = new DevToolsTreeViewItem(child);
-                PrepareTreeItem(childItem, pendingNode.Level + 1);
-                childItems.Add(childItem);
-                _allTreeItems.Add(childItem);
-                _pendingTreeBuild.Enqueue(new PendingTreeBuildNode(childItem, child, pendingNode.Level + 1));
-                processedChildren++;
-            }
-
-            pendingNode.Item.AddChildItems(childItems);
-            if (pendingNode.NextChildIndex < childCount)
-            {
-                _pendingTreeBuild.Enqueue(pendingNode);
-            }
-
-            processedNodes++;
-        }
-
-        if (_pendingTreeBuild.Count > 0)
-        {
-            ScheduleTreeBuild();
-        }
-    }
-
-    /// <summary>
-    /// Flat view: pop one pending node, realise its visual children as direct
-    /// siblings of the tree's root, and enqueue them so their descendants also
-    /// get flattened. Depth cap guards against pathological trees.
-    /// </summary>
-    private void BuildFlatBatch()
-    {
-        const int FlatDepthCap = 24;
-        if (_visualTreeView.Items.Count == 0) return;
-        if (_visualTreeView.Items[0] is not DevToolsTreeViewItem rootItem) return;
-
-        int processed = 0;
-        while (processed < TreeBuildChildBatchSize && _pendingTreeBuild.Count > 0)
-        {
-            var pendingNode = _pendingTreeBuild.Dequeue();
-            if (pendingNode.Level >= FlatDepthCap) continue;
-
-            int count = pendingNode.Visual.VisualChildrenCount;
-            for (int i = 0; i < count; i++)
-            {
-                var child = pendingNode.Visual.GetVisualChild(i);
-                if (child == null) continue;
-
-                var childItem = new DevToolsTreeViewItem(child);
-                PrepareTreeItem(childItem, 1);
-                _allTreeItems.Add(childItem);
-                rootItem.AddChildItems(new[] { (TreeViewItem)childItem });
-                _pendingTreeBuild.Enqueue(new PendingTreeBuildNode(childItem, child, pendingNode.Level + 1));
-                processed++;
-                if (processed >= TreeBuildChildBatchSize) break;
-            }
-        }
-    }
 
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Properties Panel 鈥?syntax-highlighted, editable, color swatches
@@ -3408,76 +3156,3 @@ public partial class DevToolsWindow : Window
     }
 }
 
-/// <summary>
-/// Custom TreeViewItem for displaying visual tree nodes with enhanced display.
-/// Shows child count and dimensions for container elements.
-/// </summary>
-internal sealed class DevToolsTreeViewItem : TreeViewItem
-{
-    public Visual Visual { get; }
-
-    public DevToolsTreeViewItem(Visual visual)
-    {
-        Visual = visual;
-        Header = GetVisualDisplayName(visual);
-        Foreground = new SolidColorBrush(DevToolsTheme.TextPrimaryColor);
-    }
-
-    private static string GetVisualDisplayName(Visual visual)
-    {
-        var typeName = visual.GetType().Name;
-        var suffix = "";
-
-        // Append dimensions for FrameworkElements
-        if (visual is FrameworkElement fe && fe.ActualWidth > 0 && fe.ActualHeight > 0)
-        {
-            suffix = $" {fe.ActualWidth:F0}\u00d7{fe.ActualHeight:F0}";
-        }
-
-        // Append child count for containers
-        int childCount = visual.VisualChildrenCount;
-        if (childCount > 0)
-        {
-            suffix += $" ({childCount})";
-        }
-
-        if (visual is Window window)
-        {
-            return $"{typeName} \"{window.Title}\"{suffix}";
-        }
-        if (visual is TextBlock textBlock && !string.IsNullOrEmpty(textBlock.Text))
-        {
-            var text = textBlock.Text.Length > 20 ? textBlock.Text[..20] + "..." : textBlock.Text;
-            return $"{typeName} \"{text}\"{suffix}";
-        }
-        if (visual is ContentControl { Content: string contentString })
-        {
-            var text = contentString.Length > 20 ? contentString[..20] + "..." : contentString;
-            return $"{typeName} \"{text}\"{suffix}";
-        }
-        if (visual is FrameworkElement namedFe && !string.IsNullOrEmpty(namedFe.Name))
-        {
-            return $"{typeName} #{namedFe.Name}{suffix}";
-        }
-
-        return $"{typeName}{suffix}";
-    }
-}
-
-internal sealed class PendingTreeBuildNode
-{
-    public PendingTreeBuildNode(DevToolsTreeViewItem item, Visual visual, int level)
-    {
-        Item = item;
-        Visual = visual;
-        Level = level;
-    }
-
-    public DevToolsTreeViewItem Item { get; }
-
-    public Visual Visual { get; }
-
-    public int Level { get; }
-
-    public int NextChildIndex { get; set; }
-}

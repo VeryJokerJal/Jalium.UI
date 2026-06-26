@@ -82,17 +82,20 @@ public:
     // image is resident on the same device, so this samples it directly (no
     // per-frame upload) via the bitmap pipeline — matching D3D12 BlitInkLayer.
     void BlitInkLayer(void* inkLayerBitmap, float dstX, float dstY, float opacity) override;
-    // Vulkan has no retained-layer implementation yet (SupportsRetainedLayers()
-    // stays false), so a non-null handle reaching this target is necessarily
-    // FOREIGN — created by another backend's render target (e.g. a D3D12 layer
-    // drained through the replacement target after a device-lost backend
-    // fallback). Deleting through an unknown concrete type would be undefined
-    // behavior, so this override keeps the base class's no-op semantics but
-    // makes the bounded leak explicit and observable in debug output instead
-    // of silently inheriting it. When Vulkan grows retained layers, give them
-    // a VulkanDeviceGeneration keep-alive (vulkan_ink_layer.h) and mirror the
-    // D3D12 destroy rule: orphan only when the creating generation is actually
-    // lost — pointer inequality alone means "different", not "removed".
+    // Retained layers (damage-driven composited-animation fast path). Implemented
+    // via the CPU-pixel capture model (mirrors transition capture): the subtree
+    // rasterizes once into a sub-region pixel snapshot, then composites as a
+    // transformed/opacity bitmap quad on subsequent frames. Env-gated default OFF
+    // (JALIUM_VK_RETAINED_LAYERS) — opt-in until runtime-validated, exactly like
+    // the GPU stencil path. When OFF, SupportsRetainedLayers() returns false and
+    // the managed side falls back to full re-emission (correct, just no fast path).
+    bool  SupportsRetainedLayers() const override;
+    void* RealizeLayerBegin(void* existingLayer, float x, float y, float w, float h) override;
+    void  RealizeLayerEnd(void* layer) override;
+    void  CompositeLayer(void* layer, float x, float y, float w, float h, float opacity) override;
+    // DestroyRetainedLayer frees OUR layers; a handle we don't own is FOREIGN
+    // (another backend's layer drained here after a device-lost fallback) and is
+    // left as a bounded, logged leak rather than freed through an unknown type.
     void DestroyRetainedLayer(void* layer) override;
     void DrawBackdropFilter(float x, float y, float w, float h, const char* backdropFilter, const char* material, const char* materialTint, float tintOpacity, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL) override;
     void DrawGlowingBorderHighlight(float x, float y, float w, float h, float animationPhase, float glowColorR, float glowColorG, float glowColorB, float strokeWidth, float trailLength, float dimOpacity, float screenWidth, float screenHeight) override;
@@ -304,6 +307,13 @@ private:
         float tintG = 0.0f;
         float tintB = 0.0f;
         float tintA = 1.0f;
+        // When true (element BlurEffect on the GPU replay path), `pixels` is empty
+        // and the blur source is the LIVE composited frame: the replay blits the
+        // element's just-rendered screen region (x,y,w,h, physical px) into the
+        // shared upload image and the existing blur pipeline samples it. This is the
+        // GPU compositor path — no per-element offscreen render target. Mirrors how
+        // Backdrop/LiquidGlass already source from the live scene.
+        bool captureLiveScene = false;
     };
 
     struct GpuLiquidGlassCommand {
@@ -434,6 +444,7 @@ private:
     struct GpuTextRunCommand {
         std::vector<float> glyphs;     // 12 floats per glyph instance
         uint32_t glyphCount = 0;
+        bool clearType = false;        // select dual-source ClearType pipeline at replay
     };
 
     enum class GpuReplayCommandKind {
@@ -450,6 +461,10 @@ private:
         InkLayer,       // composite a resident ink-layer image (InkCanvas)
         CustomShader,   // runtime-compiled custom pixel-shader effect
         TextRun,        // shaped text run via the dedicated text-glyph pipeline (Windows DirectWrite)
+        OffscreenBegin, // env JALIUM_VK_EFFECT_GPU_RT: open the offscreen effect RT; subsequent replay
+                        // commands render into it (isolated) until OffscreenEnd. Carries the element
+                        // rect in solidRect.x/y/w/h for the sampling uvScale.
+        OffscreenEnd,   // close the offscreen effect RT; its view becomes the effect sampling source.
     };
 
     struct GpuReplayCommand {
@@ -479,6 +494,33 @@ private:
         // commands must leave these all zero (which is the default).
         float perCornerRadiusX[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         float perCornerRadiusY[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        // Per-corner radii for the INNER rounded clip (a per-corner border
+        // stroke's inside edge), same (TL, TR, BR, BL) order. Non-zero entries
+        // make the SolidRect shader use CoveragePerCornerRoundRect for the
+        // inner subtraction so each corner's inner arc matches its outer arc;
+        // uniform-radius / fill commands leave these zero (default) and keep
+        // the uniform inner path.
+        float innerPerCornerRadiusX[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        float innerPerCornerRadiusY[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        // Rotated / skewed rounded rect & fill. When set, the SolidRect replay
+        // drives the shader's LOCAL-space rounded-coverage path (geometryFlags.y)
+        // instead of the screen-space CoverageRoundRect clip. The transformed,
+        // AA-expanded oriented quad rides in hasCustomQuad + quadPoint0..3; the
+        // LOCAL (pre-transform, px) geometry below is forwarded into the FREE
+        // inner rounded-clip push-constant slots so the push-constant block does
+        // NOT grow. hasRoundedClip / hasInnerRoundedClip stay false on this path
+        // (their screen-space clip writes would conflict). All radii are CIRCULAR
+        // (one value per corner), in (TL, TR, BR, BL) order, matching the D3D12
+        // sdRoundedBox SDF this path mirrors.
+        bool hasLocalRoundedCoverage = false;
+        float localOuterW = 0.0f;   // pre-transform OUTER rect width  (px)
+        float localOuterH = 0.0f;   // pre-transform OUTER rect height (px)
+        float localInnerW = 0.0f;   // pre-transform INNER rect width  (0 = fill, no inner subtraction)
+        float localInnerH = 0.0f;   // pre-transform INNER rect height (0 = fill)
+        float localExpandX = 0.0f;  // per-axis AA pad (px) applied to the quad in local-X
+        float localExpandY = 0.0f;  // per-axis AA pad (px) applied to the quad in local-Y
+        float localOuterPerCornerRadius[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; // TL,TR,BR,BL OUTER
+        float localInnerPerCornerRadius[4] = { 0.0f, 0.0f, 0.0f, 0.0f }; // TL,TR,BR,BL INNER
         bool hasCustomQuad = false;
         float quadPoint0X = 0.0f;
         float quadPoint0Y = 0.0f;
@@ -564,6 +606,17 @@ private:
     void EnsureCpuRasterization();
     void ReplayCommandToCpu(const GpuReplayCommand& command);
     bool TryPopulateReplayClip(GpuReplayCommand& command) const;
+    // Mirror the current clipStack_ AABB scissor into the active vector engine
+    // (Impeller / Vello) so each engine batch snapshots the clip it was recorded
+    // under — the Vulkan analogue of D3D12RenderTarget::SyncScissorToImpeller.
+    // The consumer (Impl::RenderEngineBatches) already turns batch.hasScissor
+    // into cmdSetScissor; this is the missing producer that feeds it. Reuses
+    // TryPopulateReplayClip so the engine scissor is byte-identical to the
+    // SolidRect GPU-replay path's scissor. MUST be called immediately before
+    // every engine Encode* call: PushBatch snapshots hasScissor_ synchronously
+    // inside Encode*, so a stale scissor from a previous primitive would
+    // otherwise leak into the new batch.
+    void SyncClipToEngine(IRenderingEngine* engine) const;
     bool TryRecordGpuClearRectCommand(float x, float y, float w, float h);
     bool TryRecordGpuPixelBufferCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity);
     // shared_ptr overload — used by VulkanBitmap-backed DrawBitmap so the
@@ -580,6 +633,13 @@ private:
     // other pre-baked bitmaps fade as opacity² during animations.
     bool TryRecordGpuPixelBufferCommandShared(std::shared_ptr<const std::vector<uint8_t>> pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity, bool opacityAlreadyBaked = false);
     bool TryRecordGpuBlurCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float radius, float opacity, bool alphaOnlyTint = false, float tintR = 0.0f, float tintG = 0.0f, float tintB = 0.0f, float tintA = 1.0f);
+    // GPU compositor path for element BlurEffect: records a Blur command that
+    // sources its pixels from the LIVE composited frame (the element's own screen
+    // region, blitted 1:1 into the shared upload image at replay time) instead of
+    // an uploaded CPU buffer. No CPU pixels and no per-element offscreen target.
+    // Used on the GPU replay path, where BeginEffectCapture is a pass-through so
+    // the element already rendered into the frame.
+    bool TryRecordGpuLiveBlurCommand(float x, float y, float w, float h, float radius, float opacity, bool alphaOnlyTint = false, float tintR = 0.0f, float tintG = 0.0f, float tintB = 0.0f, float tintA = 1.0f);
     bool TryRecordGpuBackdropCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL, float tintR, float tintG, float tintB, float tintOpacity, float saturation = 1.0f, float noiseIntensity = 0.0f);
     bool TryRecordGpuGlowCommand(float x, float y, float w, float h, float cornerRadius, float strokeWidth, float glowR, float glowG, float glowB, float glowA, float dimOpacity, float intensity);
     bool TryRecordGpuLiquidGlassCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost);
@@ -620,6 +680,19 @@ private:
     bool TryRecordGpuSolidRectCommand(float x, float y, float w, float h, Brush* brush);
     bool TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush);
     bool TryRecordGpuRoundedRectStrokeCommand(float x, float y, float w, float h, float rx, float ry, float strokeWidth, Brush* brush);
+    // Rotated / skewed rounded-rect STROKE (strokeWidth > 0) or FILL
+    // (strokeWidth <= 0), recorded as an AA-expanded oriented quad whose
+    // fragment shader evaluates a per-corner rounded-box SDF in LOCAL space
+    // (geometryFlags.y). This is the m12/m21 != 0 branch that the axis-only
+    // CoverageRoundRect path cannot serve. Radii are CIRCULAR per corner
+    // (TL, TR, BR, BL), in PRE-transform px; the centred model (outer =
+    // corner+halfStroke, inner = corner-halfStroke) makes a rotated border land
+    // at the same visible place as the unrotated one. Returns true on success
+    // (command pushed or a benign no-op) and false to fall back to CPU.
+    bool TryRecordGpuRotatedLocalRoundedRectCommand(const CpuTransform& transform,
+        float x, float y, float w, float h,
+        float tl, float tr, float br, float bl,
+        float strokeWidth, Brush* brush);
     // Per-corner variants — same wire format as the uniform-radius helpers
     // but also write the 4 (rx, ry) pairs into the GpuReplayCommand so the
     // SolidRect shader picks each corner's radius separately at fragment
@@ -704,6 +777,25 @@ private:
     std::vector<float> opacityStack_;
     std::vector<ClipState> clipStack_;
     std::vector<EffectCaptureState> effectCaptureStack_;
+    // Retained layers (env-gated JALIUM_VK_RETAINED_LAYERS). VulkanRetainedLayer
+    // holds a BGRA8 sub-region snapshot; retainedCaptureStack_ saves frame state
+    // across the realize sub-frame (mirrors transition capture, but a stack so
+    // nested realizes are safe).
+    struct VulkanRetainedLayer {
+        std::vector<uint8_t> pixels;  // BGRA8, w x h sub-region snapshot
+        int32_t w = 0;
+        int32_t h = 0;
+    };
+    struct RetainedCaptureState {
+        std::vector<uint8_t> savedPixels;
+        std::vector<GpuReplayCommand> savedReplayCommands;
+        bool savedReplaySupported = false;
+        bool savedReplayHasClear = false;
+        VulkanRetainedLayer* layer = nullptr;
+        int32_t physX = 0, physY = 0, physW = 0, physH = 0;
+    };
+    std::vector<std::unique_ptr<VulkanRetainedLayer>> retainedLayers_;
+    std::vector<RetainedCaptureState> retainedCaptureStack_;
     bool gpuReplaySupported_ = false;
     bool gpuReplayHasClear_ = false;
     std::vector<GpuReplayCommand> gpuReplayCommands_;

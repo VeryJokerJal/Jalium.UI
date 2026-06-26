@@ -188,6 +188,21 @@ public class Image : Control, IReclaimableResource
         {
             _imageHost = new ImageHost { Owner = this };
             _container.Child = _imageHost;
+
+            // Source may have been assigned BEFORE this template applied — e.g. via
+            // a TemplateBinding from a parent control's template, or an object
+            // initializer / code-behind that ran before the first layout pass. In
+            // that case OnSourceChanged already fired, but its
+            // `_imageHost?.InvalidateVisual()` was a no-op because the host did not
+            // exist yet, and a synchronously-loaded BitmapImage never raises a later
+            // OnImageLoaded to re-trigger a render. On a static page with no further
+            // invalidation the image would then stay blank forever. Force the
+            // freshly-created host to measure + render the already-present Source.
+            if (Source != null)
+            {
+                _imageHost.InvalidateMeasure();
+                _imageHost.InvalidateVisual();
+            }
         }
     }
 

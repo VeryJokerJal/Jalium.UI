@@ -1137,8 +1137,19 @@ void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush*
     }
     float r, g, b, a;
     if (ExtractStrokeColor(brush, r, g, b, a)) {
+        // CENTERED stroke (match Vulkan: DrawRectangle stroke routes through
+        // TryRecordGpuRectangleStrokeCommand -> TryRecordGpuRoundedRectStrokeCommand
+        // with rx=ry=0, which centres a band whose outer corners pick up a radius of
+        // halfStroke and whose inner edge stays square). Grow the rect by halfStroke
+        // each side and the corners 0 -> halfStroke so the band straddles the passed
+        // box edge instead of sitting wholly inside it. The outer corners therefore
+        // round by halfStroke exactly like the Vulkan backend (see open_risks).
+        const float halfStroke = strokeWidth * 0.5f;
         SdfRectInstance inst = {};
-        inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
+        inst.posX = x - halfStroke; inst.posY = y - halfStroke;
+        inst.sizeX = w + strokeWidth; inst.sizeY = h + strokeWidth;
+        inst.cornerTL = halfStroke; inst.cornerTR = halfStroke;
+        inst.cornerBR = halfStroke; inst.cornerBL = halfStroke;
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
         inst.borderWidth = strokeWidth;
         inst.opacity = directRenderer_->GetOpacity();
@@ -1186,9 +1197,21 @@ void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h,
 
     float r, g, b, a;
     if (ExtractStrokeColor(brush, r, g, b, a)) {
+        // CENTERED stroke (match Vulkan TryRecordGpuRoundedRectStrokeCommand + WPF):
+        // the managed Border passes the centre-line rect (box inset by halfBorder)
+        // and centre-line radius (corner - halfBorder) with pen.Thickness = full
+        // border. The single-SDF band paints fillAlpha(dist<=0) at the rect's outer
+        // edge minus fillMask(dist<=-borderWidth) inset by the full borderWidth, i.e.
+        // entirely INSIDE the passed rect. Growing the rect + every corner radius by
+        // halfStroke moves the outer edge out to (corner+halfStroke) and leaves the
+        // inner edge at (grown - strokeWidth) = (corner-halfStroke): outer/inner now
+        // straddle the passed centre-line exactly like Vulkan's two-SDF band.
+        const float halfStroke = strokeWidth * 0.5f;
         SdfRectInstance inst = {};
-        inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
-        inst.cornerTL = rx; inst.cornerTR = rx; inst.cornerBR = rx; inst.cornerBL = rx;
+        inst.posX = x - halfStroke; inst.posY = y - halfStroke;
+        inst.sizeX = w + strokeWidth; inst.sizeY = h + strokeWidth;
+        inst.cornerTL = rx + halfStroke; inst.cornerTR = rx + halfStroke;
+        inst.cornerBR = rx + halfStroke; inst.cornerBL = rx + halfStroke;
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
         inst.borderWidth = strokeWidth;
         inst.opacity = directRenderer_->GetOpacity();
@@ -1240,9 +1263,23 @@ void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w,
 
     float r, g, b, a;
     if (ExtractStrokeColor(brush, r, g, b, a)) {
+        // CENTERED per-corner stroke (match Vulkan
+        // TryRecordGpuPerCornerRoundedRectStrokeCommand, which expands each outer
+        // corner radius by halfStroke and knocks the inner hole out at
+        // (corner-halfStroke)). Grow rect + every corner by halfStroke; the
+        // single-SDF band's outer edge lands at (corner+halfStroke) and the
+        // -borderWidth inner edge at (corner-halfStroke), centred on the passed
+        // centre-line box. Note: the single rounded-box SDF carries ONE radius per
+        // diagonal so the inner edge is a uniform offset of the outer corners —
+        // identical to the uniform DrawRoundedRectangle case and matching Vulkan's
+        // per-corner outer / per-corner inner pair for the symmetric Border that
+        // the managed layer actually emits here.
+        const float halfStroke = strokeWidth * 0.5f;
         SdfRectInstance inst = {};
-        inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
-        inst.cornerTL = tl; inst.cornerTR = tr; inst.cornerBR = br; inst.cornerBL = bl;
+        inst.posX = x - halfStroke; inst.posY = y - halfStroke;
+        inst.sizeX = w + strokeWidth; inst.sizeY = h + strokeWidth;
+        inst.cornerTL = tl + halfStroke; inst.cornerTR = tr + halfStroke;
+        inst.cornerBR = br + halfStroke; inst.cornerBL = bl + halfStroke;
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
         inst.borderWidth = strokeWidth;
         inst.opacity = directRenderer_->GetOpacity();
@@ -1330,10 +1367,22 @@ void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brus
     }
     float r, g, b, a;
     if (ExtractStrokeColor(brush, r, g, b, a)) {
+        // CENTERED ring (match Vulkan: DrawEllipse stroke ->
+        // TryRecordGpuEllipseStrokeCommand -> TryRecordGpuRoundedRectStrokeCommand(
+        // cx-rx, cy-ry, rx*2, ry*2, rx, ry) which centres the band on the radius).
+        // The shader uses shapeType=1 (SuperEllipse, n=2 -> real ellipse), so its
+        // outer iso-surface (dist<=0) follows |x/a|^2+|y/b|^2=1 with the grown
+        // half-axes; growing posX/posY/sizeX/sizeY and the (informational, for the
+        // rounded-box clamp) corner radii by halfStroke pushes a=rx+halfStroke,
+        // b=ry+halfStroke, while the -borderWidth fillMask gives the inner iso-
+        // surface near (rx-halfStroke). The ring is then centred on the rx/ry edge
+        // exactly like Vulkan instead of biting halfStroke inside it.
+        const float halfStroke = strokeWidth * 0.5f;
         SdfRectInstance inst = {};
-        inst.posX = cx - rx; inst.posY = cy - ry;
-        inst.sizeX = rx * 2; inst.sizeY = ry * 2;
-        inst.cornerTL = rx; inst.cornerTR = rx; inst.cornerBR = rx; inst.cornerBL = rx;
+        inst.posX = cx - rx - halfStroke; inst.posY = cy - ry - halfStroke;
+        inst.sizeX = rx * 2 + strokeWidth; inst.sizeY = ry * 2 + strokeWidth;
+        inst.cornerTL = rx + halfStroke; inst.cornerTR = rx + halfStroke;
+        inst.cornerBR = rx + halfStroke; inst.cornerBL = rx + halfStroke;
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
         inst.borderWidth = strokeWidth;
         inst.opacity = directRenderer_->GetOpacity();
@@ -2779,6 +2828,22 @@ void D3D12RenderTarget::EndEffectCapture() {
     }
 }
 
+// Debug trace controlled by the JALIUM_BLUR_TRACE environment variable — logs
+// when an element BlurEffect's in-place blur could not run and the composite was
+// therefore suppressed (so a "missing blurred element" can be told apart from an
+// unrelated rendering gap, and a post-fix run can be confirmed to produce ZERO
+// skips). One env lookup per process; cheap no-op when off. Mirrors the
+// JALIUM_EMOJI_TRACE pattern in d3d12_glyph_atlas.cpp.
+static bool BlurTraceEnabled() {
+    static int state = -1;
+    if (state < 0) {
+        char buf[8];
+        DWORD n = GetEnvironmentVariableA("JALIUM_BLUR_TRACE", buf, sizeof(buf));
+        state = (n > 0 && buf[0] != '0') ? 1 : 0;
+    }
+    return state == 1;
+}
+
 void D3D12RenderTarget::DrawBlurEffect(float x, float y, float w, float h, float radius,
     float uvOffsetX, float uvOffsetY)
 {
@@ -2788,8 +2853,34 @@ void D3D12RenderTarget::DrawBlurEffect(float x, float y, float w, float h, float
 
     // (x,y,w,h) = element's actual screen bounds (stable position).
     // (uvOffsetX, uvOffsetY) = element position within the offscreen texture.
-    if (radius > 0) {
-        (void)directRenderer_->BlurOffscreenSlot(0, radius);
+    //
+    // The captured element content currently sits SHARP in offscreen slot 0;
+    // BlurOffscreenSlot blurs it IN PLACE. If the blur cannot run (compute
+    // resources not ready, device lost, region empty, or the per-frame blur-temp
+    // grow-guard tripped for a later/larger blurred element this frame) it
+    // returns false and slot 0 still holds the SHARP capture. Compositing that
+    // sharp capture is the "ghost rectangle" artifact the 2026-06-02 DropShadow
+    // rewrite (see DrawDropShadowEffect above) was created to eliminate — the
+    // same bug class, here on the BlurEffect path. So on a genuine-failure false
+    // we SKIP the composite entirely: a BlurEffect element is "blurred or
+    // absent", never a hard-edged sharp copy. The miss is transient — BeginFrame
+    // pre-sizes the blur temps to the (ratcheted) offscreen size, so the next
+    // frame's blur succeeds (see D3D12DirectRenderer::BeginFrame).
+    //
+    // The `radius > 0 &&` short-circuit is load-bearing: BlurOffscreenSlot
+    // returns true for radius <= 0, but more importantly the radius == 0
+    // ShaderEffect pass-through path (DrawingContext) MUST still composite the
+    // sharp capture unmodified — so BlurOffscreenSlot is only called, and its
+    // result only gates the composite, when a blur was actually requested.
+    if (radius > 0 && !directRenderer_->BlurOffscreenSlot(0, radius)) {
+        if (BlurTraceEnabled()) {
+            char buf[192];
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                "[JALIUM_BLUR_TRACE] DrawBlurEffect: blur skipped (slot 0, radius=%.1f) "
+                "-> composite suppressed to avoid sharp ghost\n", radius);
+            OutputDebugStringA(buf);
+        }
+        return;
     }
 
     directRenderer_->DrawOffscreenBitmapCropped(0, x, y, w, h,
@@ -2825,27 +2916,68 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
     // so callers still tune the shadow purely from DropShadowEffect.Opacity — no native rebuild.
     float baseOpacity = directRenderer_->GetOpacity();
     if (a > 0.0f && baseOpacity > 0.0f) {
-        const int LAYERS = 7;
-        float perLayerA = a / static_cast<float>(LAYERS);
-        float maxSpread = (blurRadius > 0.0f) ? blurRadius : 0.0f;
-        // Outermost (largest) first so closer-to-element layers paint last on top.
-        for (int i = LAYERS; i >= 1; --i) {
-            float spread = maxSpread * (static_cast<float>(i) / static_cast<float>(LAYERS));
+        // Analytic Gaussian shadow (plan C): a SINGLE expanded rounded-rect whose
+        // coverage is an erf falloff evaluated in the PS, replacing the old 7-layer
+        // equal-alpha concentric-rect approximation. The old layers were discrete
+        // alpha steps (a/7 each); at large BlurRadius / saturated colors (e.g.
+        // GlowEmerald #34D399) the steps cross the perception threshold -> visible
+        // concentric banding. The analytic path is one draw, one over-blend:
+        // continuous, no banding, and 7 instances -> 1.
+        //   - sigma = BlurRadius/3 so 3*sigma ~= BlurRadius (outer reach matches the
+        //     old outermost ring);
+        //   - the 3*sigma+1px quad expansion is done in the VERTEX SHADER, so keep
+        //     posX/posY/sizeX/sizeY at the element's own size here and DO NOT add
+        //     spread (otherwise it double-expands);
+        //   - _xfPad0=shadowMode, _xfPad1=sigma reuse SdfRectInstance's spare slots
+        //     (= HLSL xform1.zw); AddSdfRect passes them through untouched and they
+        //     never feed shape/transform;
+        //   - color uses the normal fill path (straight color in, AddSdfRect
+        //     premultiplies fillA, the VS multiplies opacity); the PS shadow branch
+        //     only swaps geometric coverage for erf, so the hue is preserved.
+        // JALIUM_SHADOW_FORCE_LAYERED=1 keeps the old 7-layer path for A/B capture.
+        static int forceLayered = -1;
+        if (forceLayered < 0) {
+            char* val = nullptr; size_t len = 0;
+            forceLayered = (_dupenv_s(&val, &len, "JALIUM_SHADOW_FORCE_LAYERED") == 0 && val && val[0] == '1') ? 1 : 0;
+            free(val);
+        }
+
+        if (!forceLayered) {
+            float sigma = (blurRadius > 0.0f) ? (blurRadius / 3.0f) : 0.5f;
             SdfRectInstance inst = {};
-            inst.posX = x + offsetX - spread;
-            inst.posY = y + offsetY - spread;
-            inst.sizeX = w + 2.0f * spread;
-            inst.sizeY = h + 2.0f * spread;
-            inst.cornerTL = cornerTL + spread; inst.cornerTR = cornerTR + spread;
-            inst.cornerBR = cornerBR + spread; inst.cornerBL = cornerBL + spread;
-            // Straight (non-premultiplied) color: the SdfRect PS does fill.rgb * coverage
-            // and the normal fill path passes straight color (inst.fillR = r). Premultiplying
-            // here by perLayerA dimmed the RGB an extra factor relative to the alpha, washing
-            // a colored glow/shadow (e.g. GlowEmerald #34D399) out to a neutral gray halo.
+            inst.posX = x + offsetX;
+            inst.posY = y + offsetY;
+            inst.sizeX = w;
+            inst.sizeY = h;
+            inst.cornerTL = cornerTL; inst.cornerTR = cornerTR;
+            inst.cornerBR = cornerBR; inst.cornerBL = cornerBL;
             inst.fillR = r; inst.fillG = g;
-            inst.fillB = b; inst.fillA = perLayerA;
+            inst.fillB = b; inst.fillA = a;
             inst.opacity = baseOpacity;
+            inst._xfPad0 = 1.0f;     // shadowMode = 1 -> PS takes the erf Gaussian branch
+            inst._xfPad1 = sigma;    // gaussian sigma (screen px)
             directRenderer_->AddSdfRect(inst);
+        } else {
+            // Fallback: legacy 7-layer equal-alpha SDF approximation (has the visible
+            // banding; kept only for A/B capture via JALIUM_SHADOW_FORCE_LAYERED).
+            const int LAYERS = 7;
+            float perLayerA = a / static_cast<float>(LAYERS);
+            float maxSpread = (blurRadius > 0.0f) ? blurRadius : 0.0f;
+            // Outermost (largest) first so closer-to-element layers paint last on top.
+            for (int i = LAYERS; i >= 1; --i) {
+                float spread = maxSpread * (static_cast<float>(i) / static_cast<float>(LAYERS));
+                SdfRectInstance inst = {};
+                inst.posX = x + offsetX - spread;
+                inst.posY = y + offsetY - spread;
+                inst.sizeX = w + 2.0f * spread;
+                inst.sizeY = h + 2.0f * spread;
+                inst.cornerTL = cornerTL + spread; inst.cornerTR = cornerTR + spread;
+                inst.cornerBR = cornerBR + spread; inst.cornerBL = cornerBL + spread;
+                inst.fillR = r; inst.fillG = g;
+                inst.fillB = b; inst.fillA = perLayerA;
+                inst.opacity = baseOpacity;
+                directRenderer_->AddSdfRect(inst);
+            }
         }
     }
 

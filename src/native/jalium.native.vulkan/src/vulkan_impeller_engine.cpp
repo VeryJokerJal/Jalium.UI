@@ -2,6 +2,7 @@
 #include "jalium_scanline_rasterizer.h"   // PixelRect / RasterizePathToRects
 #include "jalium_triangulate.h"           // TriangulateCompoundPath / FlattenPathToContours
 #include "jalium_path_stats.h"            // unified path telemetry
+#include "jalium_flatten.h"               // ScaleBucketFromMaxScale
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -11,6 +12,15 @@
 #endif
 
 namespace jalium {
+
+// HashPathInput lives in jalium_path_cache.h, but that header also defines the
+// JALIUM_API PathGeometryCache class whose std::list/unordered_map members emit
+// a (benign) C4251 across the DLL boundary. We only need the transform-
+// independent path hash for the stroke cache key, so forward-declare it rather
+// than pull the whole header into this TU (signature mirrors jalium_path_cache.h:113).
+JALIUM_API uint64_t HashPathInput(float startX, float startY,
+                                  const float* commands, uint32_t commandLength,
+                                  int32_t fillRule, uint32_t scaleBucket) noexcept;
 
 // ============================================================================
 // ImpellerVulkanEngine — CPU tessellation + scanline AA + cross-backend
@@ -104,6 +114,17 @@ bool ImpellerVulkanEngine::ExpandStroke(
 // ============================================================================
 
 namespace {
+
+// FNV-1a 64-bit mix (file-local; mirrors the D3D12 engine TU — its FnvMix64 is
+// anonymous-namespace and not exported). Folds the stroke-shape params into the
+// transform-independent HashPathInput geometry hash for the stroke mesh cache.
+inline void FnvMix64(uint64_t& h, const void* data, size_t size) noexcept {
+    auto* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < size; i++) {
+        h ^= p[i];
+        h *= 0x100000001B3ull;
+    }
+}
 
 inline float MaxScale(const EngineTransform& t) {
     return std::max(
@@ -320,6 +341,17 @@ bool ImpellerVulkanEngine::EncodeFillPath(
     float b = brush.b * brush.a;
     float a = brush.a;
 
+    // GPU stencil-then-cover: hand the pixel-space contours to the consumer as a
+    // stencil batch instead of CPU-scanline-rasterizing them into pixel quads.
+    if (VkStencilPathEnabled()) {
+        VkImpellerDrawBatch batch;
+        if (!BuildVkStencilBatch(std::move(contours), fillRule, r, g, b, a, batch))
+            return false;
+        PushBatch(std::move(batch));
+        encodedPathCount_++;
+        return true;
+    }
+
     std::vector<PixelRect> rects;
     rects.reserve(64);
     RasterizePathToRects(contours, fillRule, rects);
@@ -365,6 +397,38 @@ bool ImpellerVulkanEngine::EncodeFillPath(
 }
 
 // ============================================================================
+// Transform-independent stroke mesh cache (LRU) — mirrors ImpellerD3D12Engine.
+// ============================================================================
+
+std::shared_ptr<const ImpellerVulkanEngine::CachedStrokeRects>
+ImpellerVulkanEngine::StrokeCacheFind(uint64_t key)
+{
+    auto it = strokeCacheMap_.find(key);
+    if (it == strokeCacheMap_.end()) return nullptr;
+    // Promote to head (most-recently-used).
+    strokeCacheList_.splice(strokeCacheList_.begin(), strokeCacheList_, it->second);
+    return it->second->entry;
+}
+
+void ImpellerVulkanEngine::StrokeCacheInsert(
+    uint64_t key, std::shared_ptr<const CachedStrokeRects> entry)
+{
+    auto existing = strokeCacheMap_.find(key);
+    if (existing != strokeCacheMap_.end()) {
+        existing->second->entry = std::move(entry);
+        strokeCacheList_.splice(strokeCacheList_.begin(), strokeCacheList_, existing->second);
+        return;
+    }
+    if (strokeCacheList_.size() >= kStrokeCacheCapacity) {
+        auto& lru = strokeCacheList_.back();
+        strokeCacheMap_.erase(lru.key);
+        strokeCacheList_.pop_back();
+    }
+    strokeCacheList_.push_front({key, std::move(entry)});
+    strokeCacheMap_[key] = strokeCacheList_.begin();
+}
+
+// ============================================================================
 // EncodeStrokePath
 // ============================================================================
 
@@ -379,7 +443,172 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
     const EngineTransform& transform,
     int32_t edgeMode)
 {
-    (void)edgeMode;  // Vulkan stroke already runs analytic AA via RasterizePathToRects.
+    // Resolve edge mode (D3D12 parity): em<0 → 1 (binary feather mesh, the
+    // default + cacheable); em==2 → explicit Antialiased (keeps the legacy
+    // analytic scanline/stencil body below). Today the rest of the Vulkan body
+    // ignores edgeMode (it runs analytic AA unconditionally) — only the new
+    // cached fast-path honors it, exactly like the D3D12 gate at
+    // d3d12_impeller_engine.cpp:2513.
+    int em = edgeMode;
+    if (em < 0) em = 1;
+    const bool analytic = (em == 2);
+
+    // ── Transform-independent local-space stroke MESH cache (fast path) ───────
+    // The legacy body below re-flattens + re-expands + (scanline | stencil-fan-
+    // triangulates) EVERY frame because nothing here was memoized; for the
+    // ~35 strokes/frame in DevTools that is the dominant CPU cost (StrokePath
+    // 16.3ms). Here — mirroring ImpellerD3D12Engine::EncodeStrokePath — we
+    // flatten + ExpandStrokePath ONCE in SOURCE space (stroke width in source
+    // units → thickness scales with the transform, WPF Pen semantics), cache
+    // the feathered triangle mesh keyed on geometry + stroke params +
+    // scaleBucket (transform EXCLUDED), then each frame only transform the
+    // cached vertices (O(N)) and recolor. Emits pipelineType=0 — bypassing BOTH
+    // the CPU scanline AND the GPU stencil-then-cover, exactly like the gradient
+    // branch below already does, just memoized. Solid AND linear/radial/sweep
+    // gradient strokes take this path; dashed / explicit-analytic / no-command /
+    // zero-width defer to the proven legacy body.
+    const bool gradientStroke =
+        (brush.type == 1 || brush.type == 2 || brush.type == 3) &&
+        brush.stops && brush.stopCount > 0;
+    if (StrokeCacheEnabled() && !analytic &&
+        (!dashPattern || dashCount == 0) &&
+        commands && commandLength > 0 && strokeWidth > 0.0f) {
+
+        const float maxScale = MaxScale(transform);
+        const uint32_t scaleBkt = ScaleBucketFromMaxScale(maxScale);
+
+        // Key: geometry + scaleBucket (HashPathInput, transform-INDEPENDENT)
+        // then the stroke-shape params. Brush is NOT in the key — the cached
+        // mesh stores opaque coverage and is recolored at emit, so a solid and a
+        // gradient stroke of the same shape share one entry.
+        uint64_t key = HashPathInput(startX, startY, commands, commandLength,
+                                     /*fillRule*/ 0, scaleBkt);
+        FnvMix64(key, &strokeWidth, sizeof(strokeWidth));
+        uint8_t closedByte = closed ? 1 : 0;
+        FnvMix64(key, &closedByte, sizeof(closedByte));
+        FnvMix64(key, &lineJoin, sizeof(lineJoin));
+        FnvMix64(key, &miterLimit, sizeof(miterLimit));
+        FnvMix64(key, &lineCap, sizeof(lineCap));
+
+        // Gradient stops resolved once per call; sampled per cached vertex at
+        // emit (in source space, where the cached positions live).
+        std::vector<float> gradStopData;
+        if (gradientStroke) FlattenGradientStops(brush, gradStopData);
+
+        const float br = brush.r * brush.a;   // premultiplied solid color
+        const float bg = brush.g * brush.a;
+        const float bb = brush.b * brush.a;
+        const float ba = brush.a;
+
+        // Emit a cached source-space mesh: transform each vertex by the current
+        // transform and reapply per-vertex feather coverage + brush/gradient
+        // color. This is the ONLY per-frame CPU cost for a cache hit.
+        auto emitLocalMesh = [&](const CachedStrokeRects& m) {
+            const size_t vc = m.positions.size() / 2;
+            if (vc == 0 || m.indices.empty()) return;
+            VkImpellerDrawBatch batch;
+            batch.vertices.resize(vc);
+            batch.indices = m.indices;
+            const float kInv255 = 1.0f / 255.0f;
+            for (size_t i = 0; i < vc; ++i) {
+                float lx = m.positions[i * 2], ly = m.positions[i * 2 + 1];
+                float cov = (float)m.coverage[i] * kInv255;
+                float vx = lx, vy = ly;                  // source space
+                TransformPoint(vx, vy, transform);        // → pixel space
+                if (gradientStroke) {
+                    GradientColor gc = SampleBrushGradient(brush, gradStopData.data(), lx, ly);
+                    float a = gc.a * cov;                 // premultiplied
+                    batch.vertices[i] = VkImpellerVertex{ vx, vy, gc.r * a, gc.g * a, gc.b * a, a };
+                } else {
+                    batch.vertices[i] = VkImpellerVertex{ vx, vy, br * cov, bg * cov, bb * cov, ba * cov };
+                }
+            }
+            batch.pipelineType = 0;
+            PushBatch(std::move(batch));
+            encodedPathCount_++;
+        };
+
+        if (auto cached = StrokeCacheFind(key)) {
+            path_stats::AddStrokeHit(cached->positions.size() / 2);
+            if (cached->positions.empty()) return false;   // negative cache hit
+            emitLocalMesh(*cached);
+            return true;
+        }
+        path_stats::AddStrokeMiss();
+
+        // Miss: flatten in SOURCE space (tolerance scaled by 1/maxScale so the
+        // on-screen smoothness matches this scale bucket) and expand the stroke
+        // at source-unit width into a feathered binary mesh.
+        const float srcTol = (maxScale > 0.001f)
+            ? flattenTolerance_ / maxScale : flattenTolerance_;
+        std::vector<Contour> srcContours;
+        {
+            path_stats::ScopedFlattenTimer flattenTimer(commandLength);
+            srcContours = FlattenPathToContours(startX, startY, commands,
+                                                commandLength, srcTol);
+            uint64_t ov = 0;
+            for (const auto& c : srcContours) ov += c.VertexCount();
+            flattenTimer.RecordOutputVerts(ov);
+        }
+
+        auto join = static_cast<ImpellerJoin>(lineJoin);
+        auto cap  = static_cast<ImpellerCap>(lineCap);
+        std::vector<VkImpellerVertex> meshVerts;
+        std::vector<uint32_t>         meshIndices;
+        meshVerts.reserve(srcContours.size() * 64);
+        meshIndices.reserve(srcContours.size() * 96);
+        // Mesh built in SOURCE space → feather skirt sized 1/maxScale source
+        // units so it stays 1 screen-pixel after the emit transform (without
+        // this a stroke cached at 2× would render a 2px feather, ~2× too thick).
+        const float featherSrcUnit = (maxScale > 1e-4f) ? (1.0f / maxScale) : 1.0f;
+        for (auto& c : srcContours) {
+            if (c.VertexCount() < 2) continue;
+            jalium::ExpandStrokePath<VkImpellerVertex>(
+                meshVerts, meshIndices,
+                c.points.data(), c.VertexCount(),
+                strokeWidth, join, miterLimit, cap, closed,
+                // OPAQUE reference color → stored vertex .a is the pure feather
+                // coverage, independent of the brush (applied fresh at emit).
+                // Baking brush alpha would poison the geometry-keyed entry and
+                // make a transparent/opacity-0 stroke vanish for all later
+                // same-shape strokes (see d3d12_impeller_engine.cpp:2648).
+                1.0f, 1.0f, 1.0f, 1.0f,
+                /*collectContours*/ nullptr,
+                featherSrcUnit);
+        }
+
+        auto entry = std::make_shared<CachedStrokeRects>();
+        if (meshVerts.empty() || meshIndices.empty()) {
+            StrokeCacheInsert(key, entry);   // negative cache: empty result
+            return false;
+        }
+        entry->positions.resize(meshVerts.size() * 2);
+        entry->coverage.resize(meshVerts.size());
+        float minX =  std::numeric_limits<float>::infinity();
+        float minY =  std::numeric_limits<float>::infinity();
+        float maxX = -std::numeric_limits<float>::infinity();
+        float maxY = -std::numeric_limits<float>::infinity();
+        for (size_t i = 0; i < meshVerts.size(); ++i) {
+            const auto& v = meshVerts[i];
+            entry->positions[i * 2]     = v.x;
+            entry->positions[i * 2 + 1] = v.y;
+            float cov = v.a;                       // ref alpha 1 → .a is pure coverage
+            if (cov < 0.0f) cov = 0.0f; else if (cov > 1.0f) cov = 1.0f;
+            entry->coverage[i] = (uint8_t)std::lround(cov * 255.0f);
+            if (v.x < minX) minX = v.x;
+            if (v.y < minY) minY = v.y;
+            if (v.x > maxX) maxX = v.x;
+            if (v.y > maxY) maxY = v.y;
+        }
+        entry->indices = std::move(meshIndices);
+        entry->bboxL = minX; entry->bboxT = minY;
+        entry->bboxR = maxX; entry->bboxB = maxY;
+        StrokeCacheInsert(key, entry);
+        emitLocalMesh(*entry);
+        return true;
+    }
+
+    // ── Legacy fallback (analytic / dashed / no-command / zero-width) ─────────
 
     // TRUE gradient strokes: build the stroke MESH in SOURCE space with a
     // reference opaque color (so each vertex .a is the pure feather coverage),
@@ -549,6 +778,20 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
 
     if (strokeContours.empty()) return false;
 
+    // GPU stencil-then-cover: a stroke renders as a filled outline (the expanded
+    // stroke contours). Always NonZero — ExpandStroke emits overlapping CCW
+    // triangle soup, which EvenOdd would punch holes in.
+    if (VkStencilPathEnabled()) {
+        VkImpellerDrawBatch batch;
+        if (!BuildVkStencilBatch(std::move(strokeContours), FillRule::NonZero,
+                                 brush.r * brush.a, brush.g * brush.a,
+                                 brush.b * brush.a, brush.a, batch))
+            return false;
+        PushBatch(std::move(batch));
+        encodedPathCount_++;
+        return true;
+    }
+
     std::vector<PixelRect> rects;
     rects.reserve(strokeContours.size() * 2);
     RasterizePathToRects(strokeContours, FillRule::NonZero, rects);
@@ -626,6 +869,17 @@ bool ImpellerVulkanEngine::EncodeFillPolygon(
         TransformPoint(x, y, transform);
         c.points.push_back(x);
         c.points.push_back(y);
+    }
+
+    // GPU stencil-then-cover: emit the (transformed, pixel-space) polygon as a
+    // stencil batch instead of CPU-scanline-rasterizing it into pixel quads.
+    if (VkStencilPathEnabled()) {
+        VkImpellerDrawBatch batch;
+        if (!BuildVkStencilBatch(std::move(contours), fillRule, r, g, b, a, batch))
+            return false;
+        PushBatch(std::move(batch));
+        encodedPathCount_++;
+        return true;
     }
 
     std::vector<PixelRect> rects;

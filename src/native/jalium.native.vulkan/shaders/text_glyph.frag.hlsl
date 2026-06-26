@@ -1,20 +1,26 @@
-// Dedicated text-glyph pipeline — fragment shader (grayscale single-source).
+// Dedicated text-glyph pipeline — fragment shader.
 //
-// Samples the glyph atlas coverage and emits PREMULTIPLIED colour * coverage.
-// The atlas stores R=G=B=coverage for grayscale / AA text (DirectWrite
-// IDWriteGlyphRunAnalysis ALIASED_1x1 / grayscale path), so the single R channel
-// is the coverage. The colour arriving from the vertex stage is already
-// premultiplied (VulkanGlyphAtlas::GenerateGlyphs' emitRun premultiplies), so the
-// pipeline blend must use srcColorBlendFactor = ONE (NOT SRC_ALPHA).
+// One source, two variants selected by the gClearType specialization constant:
+//   gClearType == 0  → GRAYSCALE single-source (the shipping default). The atlas
+//                      stores R=G=B=coverage; emit PREMULTIPLIED colour * coverage.
+//                      The grayscale pipeline has a single colour attachment + blend
+//                      src=ONE / dst=ONE_MINUS_SRC_ALPHA, so SV_Target1 is ignored.
+//   gClearType == 1  → CLEARTYPE dual-source (opt-in, requires dualSrcBlend). The
+//                      atlas stores per-channel R/G/B sub-pixel coverage; emit
+//                      SV_Target0 = premult colour weighted per-channel and
+//                      SV_Target1 = per-channel coverage for the
+//                      src=ONE / dst=ONE_MINUS_SRC1_COLOR blend. Mirrors the proven
+//                      D3D12 bitmap_text.ps.hlsl dual-source contract.
 //
-// A later batch upgrades this to dual-source ClearType: keep per-channel RGB
-// coverage and emit a second output (SV_Target1) for VK_BLEND_FACTOR_SRC1_COLOR.
+// The colour arriving from the vertex stage is already premultiplied
+// (VulkanGlyphAtlas::GenerateGlyphs' emitRun premultiplies).
 //
 // Colour-emoji glyphs are flagged with a negative-R sentinel on the instance
 // colour; their authored premultiplied RGBA is baked into the atlas, so they
-// sample the atlas directly instead of being tinted by the text foreground.
-// (RasterizeColorGlyph is stubbed today, so this branch is currently inert but
-// wired for forward-compatibility.)
+// sample the atlas directly. Equal SV_Target1 channels make the dual-source
+// blend degenerate into a plain SrcOver alpha blend for them.
+
+[[vk::constant_id(0)]] const uint gClearType = 0;
 
 [[vk::binding(0)]] Texture2D atlasTexture;
 [[vk::binding(1)]] SamplerState atlasSampler;
@@ -39,6 +45,14 @@ struct PsInput
     float4 position : SV_Position;
     float2 uv : TEXCOORD0;
     float4 color : TEXCOORD1;
+};
+
+// Dual-source output. The grayscale pipeline (single colour attachment) ignores
+// SV_Target1; the ClearType pipeline consumes it as the per-channel SRC1 factor.
+struct PsOutput
+{
+    float4 color : SV_Target0;
+    float4 coverage : SV_Target1;
 };
 
 bool IsInsideRoundRect(float2 pixel, float4 rect, float2 radius)
@@ -77,8 +91,9 @@ bool IsInsideRoundRect(float2 pixel, float4 rect, float2 radius)
     return true;
 }
 
-float4 main(PsInput input) : SV_Target
+PsOutput main(PsInput input)
 {
+    PsOutput o;
     if (gPushConstants.clipFlags.x > 0.5f && !IsInsideRoundRect(input.position.xy, gPushConstants.roundedClipRect, gPushConstants.roundedClipRadius)) {
         discard;
     }
@@ -87,14 +102,33 @@ float4 main(PsInput input) : SV_Target
     }
 
     // Colour-emoji: the atlas holds authored premultiplied RGBA; modulate by the
-    // instance opacity carried in colour.a.
+    // instance opacity carried in colour.a. Equal SV_Target1 channels => SrcOver.
     if (input.color.r < 0.0f) {
-        float4 emoji = atlasTexture.Sample(atlasSampler, input.uv);
-        return emoji * input.color.a;
+        float4 emoji = atlasTexture.Sample(atlasSampler, input.uv) * input.color.a;
+        o.color = emoji;
+        o.coverage = float4(emoji.a, emoji.a, emoji.a, emoji.a);
+        return o;
     }
 
-    // Grayscale / AA text: atlas R channel is coverage; colour is premultiplied.
-    // Emit premultiplied colour * coverage (pipeline blend: src=ONE).
-    float coverage = atlasTexture.Sample(atlasSampler, input.uv).r;
-    return input.color * coverage;
+    if (gClearType == 0) {
+        // Grayscale / AA text: atlas R channel is coverage; colour is premultiplied.
+        float coverage = atlasTexture.Sample(atlasSampler, input.uv).r;
+        float4 c = input.color * coverage;
+        o.color = c;
+        o.coverage = float4(c.a, c.a, c.a, c.a);  // ignored by single-attachment pipeline
+        return o;
+    }
+
+    // ClearType: atlas RGB is per-channel sub-pixel coverage (mirror D3D12).
+    float3 coverage = atlasTexture.Sample(atlasSampler, input.uv).rgb;
+    // Per-channel contrast enhancement for ClearType sharpness (D3D12 parity).
+    float3 contrast = saturate(coverage * 1.2f - 0.1f);
+    coverage = lerp(coverage, contrast, 0.3f);
+    float maxCoverage = max(coverage.r, max(coverage.g, coverage.b));
+    // input.color premultiplied (rgb = textColor*alpha, a = alpha). Scale each
+    // channel by its sub-pixel coverage; SV_Target1 = coverage*alpha for the
+    // ONE_MINUS_SRC1_COLOR destination factor.
+    o.color = float4(input.color.rgb * coverage, input.color.a * maxCoverage);
+    o.coverage = float4(coverage * input.color.a, maxCoverage * input.color.a);
+    return o;
 }

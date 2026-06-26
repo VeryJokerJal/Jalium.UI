@@ -11,6 +11,9 @@
 #include <vector>
 #include <cstdint>
 #include <limits>
+#include <list>
+#include <unordered_map>
+#include <memory>
 
 namespace jalium {
 
@@ -120,6 +123,15 @@ public:
     void FinalizeScene() { sceneEncoder_.Finalize(); }
     const VelloScene& GetScene() const { return sceneEncoder_.scene(); }
 
+    /// Push a batch and snapshot scissor + coverage, then COALESCE it into the
+    /// previous batch when both are solid-fill (pipelineType==0, no stencil
+    /// contours) under the same scissor — identical to
+    /// ImpellerVulkanEngine::PushBatch (folds the consecutive-batch merge of
+    /// ImpellerD3D12Engine::PushBatchWithCoverage in). Gated by
+    /// JALIUM_VK_BATCH_MERGE (default ON). NEVER merges stencil-then-cover
+    /// (pipelineType==1) or differing-scissor batches; draw order preserved, so
+    /// output is byte-identical to the unmerged sequence. Only the
+    /// CPU-tessellation batch path uses this (computeMode_ feeds sceneEncoder_).
     void PushBatch(VkVelloDrawBatch&& batch) {
         batch.hasScissor = hasScissor_;
         if (hasScissor_) {
@@ -129,6 +141,49 @@ public:
             batch.scissorB = scissorBottom_;
         }
         ComputeBatchCoverage(batch);
+
+        if (VkBatchMergeEnabled()
+            && batch.pipelineType == 0 && batch.stencilContours.empty()
+            && !batches_.empty())
+        {
+            auto& last = batches_.back();
+            const bool scissorEq = (last.hasScissor == batch.hasScissor) &&
+                (!batch.hasScissor ||
+                 (last.scissorL == batch.scissorL &&
+                  last.scissorT == batch.scissorT &&
+                  last.scissorR == batch.scissorR &&
+                  last.scissorB == batch.scissorB));
+            if (last.pipelineType == 0 && last.stencilContours.empty() && scissorEq) {
+                const uint32_t baseVertex = (uint32_t)last.vertices.size();
+                const size_t oldIndexCount = last.indices.size();
+
+                last.vertices.insert(last.vertices.end(),
+                    batch.vertices.begin(), batch.vertices.end());
+
+                last.indices.resize(oldIndexCount + batch.indices.size());
+                uint32_t* dst = last.indices.data() + oldIndexCount;
+                const uint32_t* src = batch.indices.data();
+                const size_t n = batch.indices.size();
+                for (size_t i = 0; i < n; ++i) dst[i] = src[i] + baseVertex;
+
+                if (batch.hasCoverage) {
+                    if (last.hasCoverage) {
+                        if (batch.coverageL < last.coverageL) last.coverageL = batch.coverageL;
+                        if (batch.coverageT < last.coverageT) last.coverageT = batch.coverageT;
+                        if (batch.coverageR > last.coverageR) last.coverageR = batch.coverageR;
+                        if (batch.coverageB > last.coverageB) last.coverageB = batch.coverageB;
+                    } else {
+                        last.coverageL = batch.coverageL;
+                        last.coverageT = batch.coverageT;
+                        last.coverageR = batch.coverageR;
+                        last.coverageB = batch.coverageB;
+                        last.hasCoverage = true;
+                    }
+                }
+                return;
+            }
+        }
+
         batches_.push_back(std::move(batch));
     }
 
@@ -145,6 +200,23 @@ public:
             if (v.x > maxX) maxX = v.x;
             if (v.y > maxY) maxY = v.y;
             any = true;
+        }
+        // Stencil batches carry their geometry in stencilContours (vertices is
+        // empty until the consumer fan-triangulates), so fold those in too —
+        // mirrors ImpellerVulkanEngine::ComputeBatchCoverage.
+        if (batch.pipelineType == 1) {
+            for (const auto& c : batch.stencilContours) {
+                uint32_t n = c.VertexCount();
+                for (uint32_t i = 0; i < n; ++i) {
+                    float px = c.X(i);
+                    float py = c.Y(i);
+                    if (px < minX) minX = px;
+                    if (py < minY) minY = py;
+                    if (px > maxX) maxX = px;
+                    if (py > maxY) maxY = py;
+                    any = true;
+                }
+            }
         }
         if (!any || !(maxX >= minX) || !(maxY >= minY)) {
             batch.hasCoverage = false;
@@ -186,6 +258,29 @@ private:
 
     std::vector<VkVelloDrawBatch> batches_;
     uint32_t encodedPathCount_ = 0;
+
+    // ── Transform-independent local-space stroke MESH cache ──────────────────
+    // Mirrors ImpellerVulkanEngine's stroke cache (solid-only here — the Vello
+    // batch path has no gradient stroke branch). Source-space mesh keyed on
+    // geometry + stroke params + scaleBucket (transform EXCLUDED); per frame
+    // EncodeStrokePath only transforms + recolors the cached vertices. Active
+    // only on the CPU-tessellation fallback (NOT computeMode_). CPU-only data,
+    // safe to persist across frames / device-lost. LRU-bounded.
+    struct CachedStrokeRects {
+        std::vector<float>    positions;   // 2 floats/vertex, source space
+        std::vector<uint8_t>  coverage;    // 0..255 per-vertex feather coverage
+        std::vector<uint32_t> indices;
+        float bboxL = 0, bboxT = 0, bboxR = 0, bboxB = 0;
+    };
+    struct StrokeRectsNode {
+        uint64_t key;
+        std::shared_ptr<const CachedStrokeRects> entry;
+    };
+    std::list<StrokeRectsNode> strokeCacheList_;
+    std::unordered_map<uint64_t, std::list<StrokeRectsNode>::iterator> strokeCacheMap_;
+    static constexpr size_t kStrokeCacheCapacity = 512;
+    std::shared_ptr<const CachedStrokeRects> StrokeCacheFind(uint64_t key);
+    void StrokeCacheInsert(uint64_t key, std::shared_ptr<const CachedStrokeRects> entry);
 
     float flattenTolerance_ = 0.25f;
 

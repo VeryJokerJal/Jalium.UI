@@ -50,7 +50,8 @@ struct VsOutput
     nointerpolation float4 stop12BA    : TEXCOORD9;
     nointerpolation float4 stop23GB    : TEXCOORD10;
     nointerpolation float4 stop3Color  : TEXCOORD11;
-    nointerpolation float2 shapeParams : TEXCOORD12; // x = shapeType, y = shapeN
+    nointerpolation float3 shapeParams : TEXCOORD12; // x = shapeType, y = shapeN, z = shadowMode
+    nointerpolation float  shadowSigma : TEXCOORD13; // gaussian sigma (screen px)
 };
 
 VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
@@ -78,7 +79,13 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     // sx=sy=1 => expand=(1,1) => the legacy 1px screen expand exactly.
     float sx = length(float2(m11, m12));
     float sy = length(float2(m21, m22));
-    float2 expand = float2(1.0 / max(sx, 1e-4), 1.0 / max(sy, 1e-4));
+    // Soft shadow (shadowMode>0.5) needs the quad grown by 3*sigma+1px so the Gaussian
+    // tail isn't clipped by the rect edge; non-shadow keeps a constant 1px, so expand
+    // is bit-identical to the legacy path (sigma carried PRE-transform / local px).
+    float shadowMode  = inst.xform1.z;
+    float shadowSigma = inst.xform1.w;
+    float pad = (shadowMode > 0.5) ? (3.0 * shadowSigma + 1.0) : 1.0;
+    float2 expand = float2(pad / max(sx, 1e-4), pad / max(sy, 1e-4));
 
     float2 localPos = corner * (inst.size + expand * 2.0) - expand;
     float2 localPt  = inst.position + localPos;
@@ -114,7 +121,8 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     o.stop12BA    = float4(inst.stop12BA.xy * op,    inst.stop12BA.z,            inst.stop12BA.w * op);
     o.stop23GB    = float4(inst.stop23GB.xy * op,    inst.stop23GB.z * op,       inst.stop23GB.w);
     o.stop3Color  = inst.stop3Color * op;
-    o.shapeParams = inst._pad.xy; // shapeType, shapeN
+    o.shapeParams = float3(inst._pad.xy, shadowMode); // shapeType, shapeN, shadowMode
+    o.shadowSigma = shadowSigma;                      // gaussian sigma (screen px)
 
     return o;
 }
