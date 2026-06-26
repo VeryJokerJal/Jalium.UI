@@ -19,9 +19,15 @@ struct PushConstants
     float4 innerRoundedClipRect;
     float2 innerRoundedClipRadius;
     float2 padding2;
-    // The fields below are vertex-shader-only (custom-quad geometry).
-    // Declared here purely so the push-constant block layout matches
-    // across stages; the fragment shader never reads them.
+    // quadPoint01/23 are vertex-shader-only (custom-quad geometry); declared
+    // here purely so the push-constant block layout matches across stages.
+    // geometryFlags:
+    //   .x > 0.5 → custom oriented quad (vertex shader only).
+    //   .y > 0.5 → rotated / skewed LOCAL-space rounded coverage (fragment
+    //              shader path at the top of main()). On that path the LOCAL
+    //              geometry is carried in the inner rounded-clip slots
+    //              (innerRoundedClipRect / innerPerCornerRadiusX / ...Y), which
+    //              are otherwise unused there, so the block does not grow.
     float4 quadPoint01;
     float4 quadPoint23;
     float2 geometryFlags;
@@ -29,6 +35,16 @@ struct PushConstants
     // Per-corner radii for clipFlags.z mode. Order: (TL, TR, BR, BL).
     float4 perCornerRadiusX;
     float4 perCornerRadiusY;
+    // Per-corner radii for the INNER rounded clip (a border stroke's inside
+    // edge). Order: (TL, TR, BR, BL). When the sum of these is > 0 the inner
+    // clip branch switches from the uniform CoverageRoundRect to per-corner so
+    // a Border with non-uniform CornerRadius gets an inner edge whose corners
+    // match its outer edge. Without it the inner hole is uniformly rounded from
+    // the largest corner and eats the stroke band at the square corners.
+    // Declared float4 (NOT float[4]) so the 16-byte stride matches the C++
+    // tightly-packed float[4] — the same trick perCornerRadiusX/Y rely on.
+    float4 innerPerCornerRadiusX;
+    float4 innerPerCornerRadiusY;
 };
 
 [[vk::push_constant]]
@@ -38,7 +54,27 @@ struct PsInput
 {
     float4 position : SV_Position;
     float4 color : COLOR0;
+    // Pre-transform (LOCAL) position from the vertex shader, measured from the
+    // rotated rounded-rect's OUTER top-left corner. Read ONLY when
+    // geometryFlags.y > 0.5 (the rotated / skewed local-space rounded path).
+    float2 localPos : TEXCOORD0;
 };
+
+// Signed distance to a rounded box with independent per-corner radii, evaluated
+// in LOCAL (pre-transform) space. Ported byte-for-byte from D3D12
+// sdf_rect.ps.hlsl:31-37 so a rotated Jalium border matches the D3D12 backend.
+//   p  : point relative to the box CENTRE.
+//   b  : box half-size.
+//   r  : per-corner radii pre-repacked to (BR, TR, TL, BL) — see the call site,
+//        which applies the same float4(cr.z, cr.y, cr.x, cr.w) shuffle D3D12 uses
+//        (cr in TL,TR,BR,BL order). +y is DOWN, matching screen space.
+float sdRoundedBoxLocal(float2 p, float2 b, float4 r)
+{
+    r.xy = (p.x > 0.0f) ? r.xy : r.wz;
+    r.x  = (p.y > 0.0f) ? r.x  : r.y;
+    float2 q = abs(p) - b + r.x;
+    return min(max(q.x, q.y), 0.0f) + length(max(q, 0.0f)) - r.x;
+}
 
 // Coverage of a pixel against a rounded rectangle, on [0, 1].
 //   ≥ 1.0 → fully inside (a clip "yes")
@@ -130,12 +166,87 @@ float CoveragePerCornerRoundRect(float2 pixel, float4 rect, float4 rxs, float4 r
         if (pixel.x >= midX) { rx = rxs.z; ry = rys.z; }      // BR
         else                  { rx = rxs.w; ry = rys.w; }     // BL
     }
+    // Clamp each corner to half its OWN axis (rx ≤ halfW, ry ≤ halfH) — the
+    // per-axis generalisation appropriate to this elliptical-corner SDF, which
+    // supports independent rx/ry. Conceptually analogous to D3D12 sdRoundedBox's
+    // scalar r = min(r, maxR=min(halfW,halfH)) but NOT byte-identical: D3D12
+    // forces a circular corner, here a corner may stay elliptical on a
+    // non-square rect. The uniform CoverageRoundRect self-clamps via its anchor
+    // logic, but the per-corner path feeds rx/ry straight through, so a
+    // pill-shaped Border (corner ≈ min(w,h)/2, plus the outer pass's
+    // +halfStroke) could otherwise over-round and cross the opposite corner's
+    // anchor. A no-op for every real caller (managed pre-clamps each corner to
+    // min(w,h)/2); this only fires defensively on out-of-contract input.
+    const float halfW = max((rect.z - rect.x) * 0.5f, 0.0f);
+    const float halfH = max((rect.w - rect.y) * 0.5f, 0.0f);
+    rx = min(rx, halfW);
+    ry = min(ry, halfH);
     return CoverageRoundRect(pixel, rect, float2(rx, ry));
 }
 
 float4 main(PsInput input) : SV_Target
 {
     float coverage = 1.0f;
+
+    // ---------------------------------------------------------------------
+    // Rotated / skewed rounded rect & fill (geometryFlags.y > 0.5).
+    //
+    // The axis-aligned paths below evaluate their SDF against the SCREEN-space
+    // SV_Position; that is wrong once the quad is rotated/skewed, because the
+    // rect is no longer axis-aligned in screen space. Instead, evaluate the
+    // rounded-rect SDF in LOCAL (pre-transform) space using the interpolated
+    // input.localPos, exactly like D3D12 sdf_rect.ps.hlsl. fwidth() on the LOCAL
+    // SDF still measures the on-screen pixel footprint, so AA stays a ~1px ramp
+    // on screen — do NOT pre-transform localPos here.
+    //
+    // The local geometry is carried in the (otherwise-free on this path) inner
+    // rounded-clip slots, so the push-constant block does not grow:
+    //   innerRoundedClipRect = (localOuterW, localOuterH, localInnerW, localInnerH)
+    //   innerPerCornerRadiusX = LOCAL OUTER per-corner radii (TL, TR, BR, BL)
+    //   innerPerCornerRadiusY = LOCAL INNER per-corner radii (TL, TR, BR, BL)
+    // A FILL leaves localInnerW/H == 0 (no inner subtraction); a STROKE supplies
+    // the inner band so the outer-minus-inner difference is the ring.
+    if (gPushConstants.geometryFlags.y > 0.5f) {
+        const float2 halfOuter = gPushConstants.innerRoundedClipRect.xy * 0.5f;
+        const float2 p = input.localPos - halfOuter;
+
+        // Repack TL,TR,BR,BL -> (BR,TR,TL,BL) for sdRoundedBoxLocal, then clamp
+        // each corner to the box half-extent — identical to D3D12 sdf_rect
+        // (r = min(r, min(halfSize.x, halfSize.y))).
+        const float maxROuter = min(halfOuter.x, halfOuter.y);
+        float4 rOuter = float4(gPushConstants.innerPerCornerRadiusX.z,
+                               gPushConstants.innerPerCornerRadiusX.y,
+                               gPushConstants.innerPerCornerRadiusX.x,
+                               gPushConstants.innerPerCornerRadiusX.w);
+        rOuter = min(rOuter, maxROuter);
+
+        const float distOuter = sdRoundedBoxLocal(p, halfOuter, rOuter);
+        const float aaOuter = max(fwidth(distOuter), 0.0001f);
+        float cov = 1.0f - smoothstep(-aaOuter * 0.5f, aaOuter * 0.5f, distOuter);
+
+        // Inner subtraction (stroke band). Only when an inner rect was supplied;
+        // a fill leaves localInnerW/H == 0 and keeps the full outer coverage.
+        const float2 innerExtent = gPushConstants.innerRoundedClipRect.zw;
+        if (innerExtent.x > 0.0f && innerExtent.y > 0.0f) {
+            const float2 halfInner = innerExtent * 0.5f;
+            const float maxRInner = min(halfInner.x, halfInner.y);
+            float4 rInner = float4(gPushConstants.innerPerCornerRadiusY.z,
+                                   gPushConstants.innerPerCornerRadiusY.y,
+                                   gPushConstants.innerPerCornerRadiusY.x,
+                                   gPushConstants.innerPerCornerRadiusY.w);
+            rInner = min(rInner, maxRInner);
+            // Inner rect shares the OUTER centre (centred model), so reuse p.
+            const float distInner = sdRoundedBoxLocal(p, halfInner, rInner);
+            const float aaInner = max(fwidth(distInner), 0.0001f);
+            const float covInner = 1.0f - smoothstep(-aaInner * 0.5f, aaInner * 0.5f, distInner);
+            cov = saturate(cov - covInner);
+        }
+
+        if (cov <= 0.0f) discard;
+        // Non-premultiplied blend (SRC_ALPHA / ONE_MINUS_SRC_ALPHA): scale only
+        // alpha by coverage, matching the axis path's tail return.
+        return float4(input.color.rgb, input.color.a * cov);
+    }
 
     // Outer rounded clip — typical for rounded rects & ellipses going
     // through this pipeline. Skip the test entirely when not enabled
@@ -165,9 +276,29 @@ float4 main(PsInput input) : SV_Target
     // its inner and outer edges. Without the inner half, thick borders
     // would have a hard inner-edge staircase even after this change.
     if (gPushConstants.clipFlags.y > 0.5f) {
-        const float innerCov = CoverageRoundRect(input.position.xy,
-                                                 gPushConstants.innerRoundedClipRect,
-                                                 gPushConstants.innerRoundedClipRadius);
+        // Per-corner inner edge is implicit, mirroring the outer per-corner
+        // gate above: any non-zero inner per-corner radius switches the inner
+        // subtraction to CoveragePerCornerRoundRect so each corner's inner arc
+        // matches that corner's outer arc. Gate on the INNER sum specifically —
+        // a per-corner stroke whose every corner ≤ halfStroke clamps all inner
+        // radii to 0 (inner sum 0) and must fall back to the uniform
+        // innerRoundedClipRadius (itself 0 in that case → an all-sharp inner
+        // hole). Uniform strokes leave the inner per-corner fields zero and so
+        // keep the uniform path unchanged.
+        const float innerPerCornerSum =
+              dot(gPushConstants.innerPerCornerRadiusX, float4(1.0f, 1.0f, 1.0f, 1.0f))
+            + dot(gPushConstants.innerPerCornerRadiusY, float4(1.0f, 1.0f, 1.0f, 1.0f));
+        float innerCov;
+        if (innerPerCornerSum > 0.001f) {
+            innerCov = CoveragePerCornerRoundRect(input.position.xy,
+                                                  gPushConstants.innerRoundedClipRect,
+                                                  gPushConstants.innerPerCornerRadiusX,
+                                                  gPushConstants.innerPerCornerRadiusY);
+        } else {
+            innerCov = CoverageRoundRect(input.position.xy,
+                                         gPushConstants.innerRoundedClipRect,
+                                         gPushConstants.innerRoundedClipRadius);
+        }
         coverage = saturate(coverage - innerCov);
         if (coverage <= 0.0f) discard;
     }

@@ -1116,6 +1116,36 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     inRetainedCapture_ = false;  // 防御：与 inOffscreenCapture_ 对称复位，兜底 retained-capture 标志在 resize/abort 时泄漏成 true（详见 EndRetainedLayerCapture），否则 effect capture 永久失败
     fr.constantsRingOffset = 0;  // reset ring buffer for this frame
 
+    // Keep the in-place blur temps sized to the (monotonically ratcheted)
+    // offscreen-capture size at the FRAME BOUNDARY — the only point where growing
+    // them cannot orphan an in-flight command-list reference: the command list
+    // was just Reset above, blurTempsUsedThisFrame_ was just cleared (a few lines
+    // up), and no blur op has recorded against blurTempA_/B_ yet this frame. This
+    // is the same frame-boundary discipline glyph-atlas growth (ApplyPendingGrowth
+    // OrReset) and the path-MSAA sample-count change above already rely on.
+    //
+    // Why this is the real fix for the BlurEffect "ghost rectangle":
+    // EnsureOffscreenTargets ratchets offscreenW_/H_ = max(required, offscreenW_,
+    // viewportWidth_) (self-including, so monotonic) and BlurOffscreenSlot feeds
+    // regionW = offscreenW_ to EnsureBlurTemps, whose own max OMITS blurTempW_.
+    // So once offscreenW_ has grown past a from-scratch blurTempW_, an element
+    // blur that is NOT the frame's first blur-temp consumer (e.g. a liquid-glass
+    // or backdrop blur ran first that frame and armed blurTempsUsedThisFrame_)
+    // would force a mid-frame temp grow, which the grow-guard refuses ->
+    // BlurOffscreenSlot returns false -> the element is skipped (post-fix) every
+    // such frame = a persistent miss. Pre-sizing the temps to offscreenW_/H_ here,
+    // before any blur consumer runs, makes BlurOffscreenSlot's
+    // EnsureBlurTemps(offscreenW_, offscreenH_) hit its already-big-enough
+    // early-return every frame, so the blur always runs.
+    //
+    // Costs nothing until an offscreen-capturing effect has appeared (offscreenW_
+    // stays 0 otherwise -> skipped) and at most one realloc per swap-chain
+    // generation afterwards (EnsureBlurTemps early-returns when temps already fit;
+    // it only WaitForGpuIdle+reallocs on the frame offscreenW_ first ratchets up).
+    if (offscreenW_ > 0 && offscreenH_ > 0) {
+        (void)EnsureBlurTemps(offscreenW_, offscreenH_);
+    }
+
     // Reset transform stack with identity
     while (!transformStack_.empty()) transformStack_.pop();
     transformStack_.push(Transform2D::Identity());

@@ -17,7 +17,8 @@ struct PsInput
     nointerpolation float4 stop12BA    : TEXCOORD9;
     nointerpolation float4 stop23GB    : TEXCOORD10;
     nointerpolation float4 stop3Color  : TEXCOORD11;
-    nointerpolation float2 shapeParams : TEXCOORD12;
+    nointerpolation float3 shapeParams : TEXCOORD12; // x=shapeType, y=shapeN, z=shadowMode
+    nointerpolation float  shadowSigma : TEXCOORD13; // gaussian sigma (screen px), used when shadowMode>0.5
 };
 
 float sdSuperEllipseRect(float2 p, float2 halfSize, float n)
@@ -33,6 +34,19 @@ float sdRoundedBox(float2 p, float2 b, float4 r)
     r.x  = (p.y > 0.0) ? r.x  : r.y;
     float2 q = abs(p) - b + r.x;
     return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r.x;
+}
+
+// erf approximation (Abramowitz & Stegun 7.1.26); max abs error ~1.5e-7 on [-6,6] << 1/255.
+// Drives the analytic Gaussian falloff for soft drop-shadow / outer-glow, replacing both
+// the fragile offscreen compute-blur round-trip and the N-layer concentric-rect banding.
+float erf_approx(float x)
+{
+    float s  = sign(x);
+    float ax = abs(x);
+    float t  = 1.0 / (1.0 + 0.3275911 * ax);
+    float poly = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429))));
+    float y  = 1.0 - poly * exp(-ax * ax);
+    return s * y;
 }
 
 float4 SampleGradient(PsInput input, float t)
@@ -88,10 +102,28 @@ float4 main(PsInput input) : SV_Target
     r = min(r, maxR);
 
     float dist;
-    if (input.shapeParams.x > 0.5)
+    if (input.shapeParams.z > 0.5)
+        dist = sdRoundedBox(p, halfSize, r);            // shadow forced to rounded-box SDF (orthogonal to SuperEllipse)
+    else if (input.shapeParams.x > 0.5)
         dist = sdSuperEllipseRect(p, halfSize, input.shapeParams.y);
     else
         dist = sdRoundedBox(p, halfSize, r);
+
+    // Soft drop-shadow / outer-glow: analytic Gaussian falloff from the rounded-rect SDF.
+    // coverage = 0.5*(1 - erf(dist/(sqrt(2)*sigma))) -> single draw, single over-blend,
+    // continuous with NO concentric-ring banding (vs. the old N-layer equal-alpha stack).
+    // Reuses the normal fill path's fillColor (already *opacity in VS, premultiplied in
+    // AddSdfRect); only the coverage term differs, so a colored glow stays its own hue.
+    if (input.shapeParams.z > 0.5)
+    {
+        float sigma = max(input.shadowSigma, 0.5);
+        float cov   = 0.5 + 0.5 * erf_approx(-dist / (1.4142135 * sigma));
+        float4 outc = input.fillColor * cov;
+        outc *= clipCoverage;
+        if (outc.a < 1.0 / 255.0) discard;
+        return outc;
+    }
+
     float aa = max(fwidth(dist), 0.0001);
     float fillAlpha = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, dist);
 
