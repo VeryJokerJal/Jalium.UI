@@ -22,7 +22,7 @@ public class DevToolsWindowTests
     }
 
     [Fact]
-    public void DevToolsWindow_ShouldBuildVisualTreeIncrementally()
+    public void DevToolsWindow_ShouldBuildFlatVisibleRowListSynchronously()
     {
         ResetApplicationState();
         var app = new Application();
@@ -48,14 +48,14 @@ public class DevToolsWindowTests
             var devTools = new DevToolsWindow(host);
             try
             {
-                var treeView = GetPrivateField<TreeView>(devTools, "_visualTreeView");
-                var rootItem = Assert.IsAssignableFrom<TreeViewItem>(Assert.Single(treeView.Items));
-
-                Assert.Empty(rootItem.Items);
-
-                InvokePrivate(devTools, "OnTreeBuildTimerTick", null, EventArgs.Empty);
-
-                Assert.NotEmpty(rootItem.Items);
+                // The inspector now builds a flat list of visible rows synchronously in the
+                // ctor (no incremental TreeView build). The first row is the host window and
+                // is expanded, so its children are emitted; deeper collapsed nodes are not.
+                var rows = GetRows(devTools);
+                Assert.NotEmpty(rows);
+                Assert.Same(host, RowVisual(rows[0]!));
+                Assert.True(RowExpanded(rows[0]!));
+                Assert.True(rows.Count > 1, "the expanded root's children should be emitted");
             }
             finally
             {
@@ -69,7 +69,7 @@ public class DevToolsWindowTests
     }
 
     [Fact]
-    public void DevToolsWindow_ShouldChunkLargeVisualNodesAcrossTicks()
+    public void DevToolsWindow_FlatRowList_IsLazyAndExpandable()
     {
         ResetApplicationState();
         var app = new Application();
@@ -94,25 +94,30 @@ public class DevToolsWindowTests
             var devTools = new DevToolsWindow(host);
             try
             {
-                var treeView = GetPrivateField<TreeView>(devTools, "_visualTreeView");
-                var rootItem = Assert.IsAssignableFrom<TreeViewItem>(Assert.Single(treeView.Items));
+                int totalVisuals = CountVisuals(host);
+                Assert.True(totalVisuals > 300, $"expected a large visual tree, got {totalVisuals}");
 
-                InvokePrivate(devTools, "OnTreeBuildTimerTick", null, EventArgs.Empty);
-                InvokePrivate(devTools, "OnTreeBuildTimerTick", null, EventArgs.Empty);
+                // Only visible rows are materialized — collapsed descendants are NOT emitted,
+                // so the row count is bounded by what is expanded (root + its children), not by
+                // the total visual count. This is the data-model half of virtualization.
+                var rows = GetRows(devTools);
+                Assert.True(rows.Count < 50, $"expected a small visible-row set, got {rows.Count}");
 
-                var panelItem = rootItem.Items
-                    .OfType<TreeViewItem>()
-                    .FirstOrDefault(item => item.Header?.ToString()?.Contains("StackPanel", StringComparison.Ordinal) == true);
+                // Expanding a collapsed row with children splices its children into the list…
+                object? collapsible = null;
+                foreach (var row in rows)
+                {
+                    if (RowHasChildren(row!) && !RowExpanded(row!)) { collapsible = row; break; }
+                }
+                Assert.NotNull(collapsible);
 
-                Assert.NotNull(panelItem);
-                Assert.True(panelItem!.Items.Count > 0);
-                Assert.True(panelItem.Items.Count < largePanel.Children.Count);
+                int before = rows.Count;
+                InvokePrivate(devTools, "ToggleExpand", collapsible);
+                Assert.True(rows.Count > before, "expanding a node should add its children to the visible-row list");
 
-                var pendingTreeBuild = GetPrivateFieldObject(devTools, "_pendingTreeBuild");
-                var countProperty = pendingTreeBuild.GetType().GetProperty("Count", BindingFlags.Instance | BindingFlags.Public);
-                Assert.NotNull(countProperty);
-                var pendingCount = Assert.IsType<int>(countProperty!.GetValue(pendingTreeBuild));
-                Assert.True(pendingCount > 0);
+                // …and collapsing it again removes them.
+                InvokePrivate(devTools, "ToggleExpand", collapsible);
+                Assert.Equal(before, rows.Count);
             }
             finally
             {
@@ -282,6 +287,34 @@ public class DevToolsWindowTests
         var value = field!.GetValue(instance);
         Assert.NotNull(value);
         return value!;
+    }
+
+    // ── Flat-list inspector helpers (InspectorRow is internal, so reflect on it) ──
+    private static System.Collections.IList GetRows(object devTools)
+    {
+        var field = devTools.GetType().GetField("_rows", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return (System.Collections.IList)field!.GetValue(devTools)!;
+    }
+
+    private static Visual RowVisual(object row)
+        => (Visual)row.GetType().GetProperty("Visual")!.GetValue(row)!;
+
+    private static bool RowExpanded(object row)
+        => (bool)row.GetType().GetProperty("IsExpanded")!.GetValue(row)!;
+
+    private static bool RowHasChildren(object row)
+        => (bool)row.GetType().GetProperty("HasChildren")!.GetValue(row)!;
+
+    private static int CountVisuals(Visual visual)
+    {
+        int count = 1;
+        for (int i = 0; i < visual.VisualChildrenCount; i++)
+        {
+            var child = visual.GetVisualChild(i);
+            if (child != null) count += CountVisuals(child);
+        }
+        return count;
     }
 
     private static object? GetPrivateFieldOrNull(object instance, string fieldName)
