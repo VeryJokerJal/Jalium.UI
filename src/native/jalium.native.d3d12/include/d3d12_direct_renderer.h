@@ -89,7 +89,9 @@ struct SdfRectInstance {
     // VS builds the local quad then applies this matrix. For an un-rotated element
     // this is identity and the output is bit-identical to the old path.
     float xfM11, xfM12, xfM21, xfM22;   // linear part   (offset 192)
-    float xfDx, xfDy, _xfPad0, _xfPad1; // translation   (offset 208)
+    float xfDx, xfDy, _xfPad0, _xfPad1; // translation (offset 208); _xfPad0/_xfPad1 are
+                                        // reused as shadowMode/sigma on the DropShadow path
+                                        // (= HLSL xform1.zw) — don't repurpose/clear blindly
 };
 static_assert(sizeof(SdfRectInstance) == 224, "SdfRectInstance must be 224 bytes");
 

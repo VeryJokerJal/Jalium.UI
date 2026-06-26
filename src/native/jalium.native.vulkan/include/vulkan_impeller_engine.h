@@ -8,7 +8,12 @@
 #include "vulkan_minimal.h"
 #include <vector>
 #include <cstdint>
+#include <cstdlib>
+#include <algorithm>
 #include <limits>
+#include <list>
+#include <unordered_map>
+#include <memory>
 
 namespace jalium {
 
@@ -55,6 +60,148 @@ struct VkImpellerDrawBatch {
     FillRule stencilFillRule = FillRule::EvenOdd;
     float stencilR = 0, stencilG = 0, stencilB = 0, stencilA = 0;
 };
+
+// ── GPU stencil-then-cover gate ─────────────────────────────────────────────
+// JALIUM_VK_STENCIL_PATH selects the GPU stencil-then-cover path for solid
+// fills/strokes (pipelineType=1, MSAA, consumed by RenderEngineBatches) over
+// the legacy CPU scanline path (RasterizePathToRects → pixel-rect quads,
+// pipelineType=0). Gated + read once so the new GPU path can land incrementally
+// and be A/B compared against the CPU path. Default ON (validated): mirrors
+// D3D12, whose non-solid FillPath/FillPolygon default to GPU stencil-then-cover
+// (8x MSAA). Set JALIUM_VK_STENCIL_PATH=0 to opt back into the legacy CPU
+// scanline path.
+// Both Vulkan engines (Impeller + Vello) consult this — it lives here because
+// vulkan_vello_engine.h includes this header and aliases the batch type.
+inline bool VkStencilPathEnabled()
+{
+    static const bool enabled = []() {
+#if defined(_WIN32)
+        // /sdl (SDLCheck=true in the .vcxproj) escalates C4996 on std::getenv to
+        // a hard error, and this inline lives in a header compiled into TUs that
+        // don't define _CRT_SECURE_NO_WARNINGS. Use the bounds-checked _dupenv_s,
+        // matching vulkan_runtime.cpp's established env-read pattern.
+        char* e = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&e, &len, "JALIUM_VK_STENCIL_PATH") != 0 || e == nullptr) {
+            if (e) free(e);
+            return true;  // default ON (validated): GPU stencil-then-cover, 8x MSAA
+        }
+        // Explicit opt-out only: leading 0/f/F/n/N disables; anything else enables.
+        const bool off = (e[0] == '0' || e[0] == 'f' || e[0] == 'F' ||
+                          e[0] == 'n' || e[0] == 'N');
+        free(e);
+        return !off;
+#else
+        const char* e = std::getenv("JALIUM_VK_STENCIL_PATH");
+        if (!e || e[0] == '\0') return true;  // default ON (validated) — parity with D3D12
+        return !(e[0] == '0' || e[0] == 'f' || e[0] == 'F' || e[0] == 'n' || e[0] == 'N');
+#endif
+    }();
+    return enabled;
+}
+
+// ── Transform-independent stroke MESH cache gate ─────────────────────────────
+// JALIUM_VK_STROKE_CACHE gates the local-space stroke mesh cache used by both
+// Vulkan engines' EncodeStrokePath (Impeller + Vello, which aliases this
+// header). Default ON: the cacheable common case (solid / linear-radial-sweep
+// gradient, non-dashed, non-analytic, positive width) flattens + ExpandStroke
+// ONCE in source space, caches the feathered triangle mesh keyed on
+// geometry + stroke params + scaleBucket (transform EXCLUDED), and per frame
+// only transforms the cached vertices (O(N)) + recolors — mirroring
+// ImpellerD3D12Engine::EncodeStrokePath. This bypasses BOTH the per-frame CPU
+// scanline (RasterizePathToRects) AND the GPU stencil-then-cover for that case,
+// emitting a pipelineType=0 mesh exactly like the gradient branch already does.
+// Set JALIUM_VK_STROKE_CACHE=0 to fall back to the legacy per-frame
+// flatten → ExpandStroke → (scanline | stencil) path for A/B comparison.
+inline bool StrokeCacheEnabled()
+{
+    static const bool enabled = []() {
+#if defined(_WIN32)
+        // /sdl escalates C4996 on std::getenv → use _dupenv_s (see VkStencilPathEnabled).
+        char* e = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&e, &len, "JALIUM_VK_STROKE_CACHE") != 0 || e == nullptr) {
+            if (e) free(e);
+            return true;  // default ON: transform-independent stroke mesh cache
+        }
+        const bool off = (e[0] == '0' || e[0] == 'f' || e[0] == 'F' ||
+                          e[0] == 'n' || e[0] == 'N');
+        free(e);
+        return !off;
+#else
+        const char* e = std::getenv("JALIUM_VK_STROKE_CACHE");
+        if (!e || e[0] == '\0') return true;  // default ON
+        return !(e[0] == '0' || e[0] == 'f' || e[0] == 'F' || e[0] == 'n' || e[0] == 'N');
+#endif
+    }();
+    return enabled;
+}
+
+// ── Consecutive solid-fill batch coalescing gate ────────────────────────────
+// JALIUM_VK_BATCH_MERGE gates the in-place merge of consecutive, state-
+// compatible pipelineType==0 batches (solid fill, cached stroke mesh, gradient
+// mesh, FillPath/FillPolygon) inside PushBatch — collapsing N back-to-back
+// vkCmdDrawIndexed calls (icon rows, ScrollBar arrows, Checkbox glyphs, the
+// ~35 cached strokes DevTools shows) into ONE. Mirrors
+// ImpellerD3D12Engine::PushBatchWithCoverage. The result is byte-identical to
+// the unmerged sequence: draw order is preserved (a batch is only appended to
+// the immediately-preceding batch), every pipelineType==0 batch shares one PSO
+// + MVP in the consumer (RenderEngineBatches), and per-vertex premultiplied
+// color carries solid/gradient shading so a merged buffer shades correctly.
+// Stencil-then-cover (pipelineType==1) batches are NEVER merged (they need
+// their own stencil/cover pass) and batches under a different scissor are NEVER
+// merged (would clip wrong). Default ON; set JALIUM_VK_BATCH_MERGE=0 to emit
+// one batch per primitive for A/B comparison / debugging.
+// Both Vulkan engines (Impeller + Vello) consult this — it lives here because
+// vulkan_vello_engine.h includes this header and aliases the batch type.
+inline bool VkBatchMergeEnabled()
+{
+    static const bool enabled = []() {
+#if defined(_WIN32)
+        // /sdl escalates C4996 on std::getenv → use _dupenv_s (see VkStencilPathEnabled).
+        char* e = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&e, &len, "JALIUM_VK_BATCH_MERGE") != 0 || e == nullptr) {
+            if (e) free(e);
+            return true;  // default ON: coalesce consecutive solid-fill batches
+        }
+        const bool off = (e[0] == '0' || e[0] == 'f' || e[0] == 'F' ||
+                          e[0] == 'n' || e[0] == 'N');
+        free(e);
+        return !off;
+#else
+        const char* e = std::getenv("JALIUM_VK_BATCH_MERGE");
+        if (!e || e[0] == '\0') return true;  // default ON
+        return !(e[0] == '0' || e[0] == 'f' || e[0] == 'F' || e[0] == 'n' || e[0] == 'N');
+#endif
+    }();
+    return enabled;
+}
+
+// Build a stencil-then-cover batch (pipelineType=1) from pixel-space contours
+// (premultiplied color). Drops degenerate (<3 vertex) contours; returns false
+// if nothing renderable remains. The consumer (RenderEngineBatches) fan-
+// triangulates these contours for the stencil pass and emits a tight bounding-
+// box cover quad — geometry stays in pixel space (same fixed ortho MVP as the
+// solid-quad path), mirroring ImpellerD3D12Engine::StencilThenCoverFill.
+inline bool BuildVkStencilBatch(std::vector<Contour>&& contours, FillRule rule,
+                                float r, float g, float b, float a,
+                                VkImpellerDrawBatch& batch)
+{
+    contours.erase(
+        std::remove_if(contours.begin(), contours.end(),
+            [](const Contour& c) { return c.VertexCount() < 3; }),
+        contours.end());
+    if (contours.empty()) return false;
+    batch.stencilContours = std::move(contours);
+    batch.stencilFillRule = rule;
+    batch.stencilR = r;
+    batch.stencilG = g;
+    batch.stencilB = b;
+    batch.stencilA = a;
+    batch.pipelineType = 1;
+    return true;
+}
 
 class ImpellerVulkanEngine : public IRenderingEngine {
 public:
@@ -110,8 +257,16 @@ public:
     const std::vector<VkImpellerDrawBatch>& GetBatches() const { return batches_; }
     void ClearBatches() { batches_.clear(); }
 
-    /// Push a batch and snapshot the current scissor + computed coverage AABB
-    /// (mirrors ImpellerD3D12Engine::PushBatch).
+    /// Push a batch and snapshot the current scissor + computed coverage AABB.
+    /// Then try to COALESCE it into the previous batch when both are solid-fill
+    /// (pipelineType==0, no stencil contours) under the same scissor — folding
+    /// the consecutive-batch merge of ImpellerD3D12Engine::PushBatchWithCoverage
+    /// into PushBatch (Vulkan's PushBatch already computes coverage, so there is
+    /// no separate WithCoverage fast path). Gated by JALIUM_VK_BATCH_MERGE
+    /// (default ON). NEVER merges stencil-then-cover (pipelineType==1) batches
+    /// or batches under a different scissor; draw order is preserved (only the
+    /// immediately-preceding batch is appended to), so blended output is
+    /// byte-identical to the unmerged sequence.
     void PushBatch(VkImpellerDrawBatch&& batch) {
         batch.hasScissor = hasScissor_;
         if (hasScissor_) {
@@ -121,6 +276,49 @@ public:
             batch.scissorB = scissorBottom_;
         }
         ComputeBatchCoverage(batch);
+
+        if (VkBatchMergeEnabled()
+            && batch.pipelineType == 0 && batch.stencilContours.empty()
+            && !batches_.empty())
+        {
+            auto& last = batches_.back();
+            const bool scissorEq = (last.hasScissor == batch.hasScissor) &&
+                (!batch.hasScissor ||
+                 (last.scissorL == batch.scissorL &&
+                  last.scissorT == batch.scissorT &&
+                  last.scissorR == batch.scissorR &&
+                  last.scissorB == batch.scissorB));
+            if (last.pipelineType == 0 && last.stencilContours.empty() && scissorEq) {
+                const uint32_t baseVertex = (uint32_t)last.vertices.size();
+                const size_t oldIndexCount = last.indices.size();
+
+                last.vertices.insert(last.vertices.end(),
+                    batch.vertices.begin(), batch.vertices.end());
+
+                last.indices.resize(oldIndexCount + batch.indices.size());
+                uint32_t* dst = last.indices.data() + oldIndexCount;
+                const uint32_t* src = batch.indices.data();
+                const size_t n = batch.indices.size();
+                for (size_t i = 0; i < n; ++i) dst[i] = src[i] + baseVertex;
+
+                if (batch.hasCoverage) {
+                    if (last.hasCoverage) {
+                        if (batch.coverageL < last.coverageL) last.coverageL = batch.coverageL;
+                        if (batch.coverageT < last.coverageT) last.coverageT = batch.coverageT;
+                        if (batch.coverageR > last.coverageR) last.coverageR = batch.coverageR;
+                        if (batch.coverageB > last.coverageB) last.coverageB = batch.coverageB;
+                    } else {
+                        last.coverageL = batch.coverageL;
+                        last.coverageT = batch.coverageT;
+                        last.coverageR = batch.coverageR;
+                        last.coverageB = batch.coverageB;
+                        last.hasCoverage = true;
+                    }
+                }
+                return;
+            }
+        }
+
         batches_.push_back(std::move(batch));
     }
 
@@ -193,6 +391,30 @@ private:
 
     std::vector<VkImpellerDrawBatch> batches_;
     uint32_t encodedPathCount_ = 0;
+
+    // ── Transform-independent local-space stroke MESH cache ──────────────────
+    // Mirrors ImpellerD3D12Engine's StrokeCache (d3d12_impeller_engine.h:521).
+    // The cached feather mesh is stored in SOURCE space and keyed on
+    // geometry + stroke params + scaleBucket (transform EXCLUDED); each frame
+    // EncodeStrokePath only transforms the cached vertices + recolors them, so
+    // repeated / animated / scrolled strokes skip flatten + ExpandStroke
+    // entirely. Holds only CPU geometry (no GPU handles), so it is safe to
+    // persist across frames and device-lost. LRU-bounded at kStrokeCacheCapacity.
+    struct CachedStrokeRects {
+        std::vector<float>    positions;   // 2 floats/vertex, source space
+        std::vector<uint8_t>  coverage;    // 0..255 per-vertex feather coverage
+        std::vector<uint32_t> indices;
+        float bboxL = 0, bboxT = 0, bboxR = 0, bboxB = 0;
+    };
+    struct StrokeRectsNode {
+        uint64_t key;
+        std::shared_ptr<const CachedStrokeRects> entry;
+    };
+    std::list<StrokeRectsNode> strokeCacheList_;
+    std::unordered_map<uint64_t, std::list<StrokeRectsNode>::iterator> strokeCacheMap_;
+    static constexpr size_t kStrokeCacheCapacity = 512;
+    std::shared_ptr<const CachedStrokeRects> StrokeCacheFind(uint64_t key);
+    void StrokeCacheInsert(uint64_t key, std::shared_ptr<const CachedStrokeRects> entry);
 
     float flattenTolerance_ = 0.25f;
 

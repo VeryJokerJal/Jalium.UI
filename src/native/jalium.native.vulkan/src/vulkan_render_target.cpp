@@ -285,7 +285,20 @@ struct SolidRectPushConstants {
     // Uniform-radius callers MUST leave these as all zero.
     float perCornerRadiusX[4];
     float perCornerRadiusY[4];
+    // Per-corner radii for the INNER rounded clip (border stroke's inside
+    // edge), same (TL, TR, BR, BL) order. Non-zero entries switch the inner
+    // subtraction to per-corner so a non-uniform Border's inner edge tracks
+    // its outer edge. Maps to the HLSL `float4 innerPerCornerRadiusX/Y`
+    // (offsets 192 / 208; total struct 224 bytes — verified via spirv-cross).
+    float innerPerCornerRadiusX[4];
+    float innerPerCornerRadiusY[4];
 };
+// Must match the HLSL push_constant block in solid_rect.{vert,frag}.hlsl byte
+// for byte. 56 floats = 224 bytes; the inner per-corner fields sit at offsets
+// 192 / 208 (confirmed via spirv-cross reflection). Push-constant range size is
+// sizeof(SolidRectPushConstants) (see solidRectPipelineLayout), so any drift
+// here silently corrupts the shader's view — keep this assert green.
+static_assert(sizeof(SolidRectPushConstants) == 224, "SolidRectPushConstants must stay in lockstep with the HLSL push_constant block (224 bytes)");
 
 struct BitmapQuadPushConstants {
     float rect[4];
@@ -717,6 +730,7 @@ public:
     // Windows-only: the glyph atlas (DirectWrite) and embedded SPIR-V are too.
     VkPipelineLayout textPipelineLayout = VK_NULL_HANDLE;
     VkPipeline textPipeline = VK_NULL_HANDLE;
+    VkPipeline textClearTypePipeline = VK_NULL_HANDLE;  // ClearType dual-source variant (opt-in; null => grayscale fallback)
     VkDescriptorSetLayout textDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool textDescriptorPool = VK_NULL_HANDLE;
     VkDescriptorSet textDescriptorSet = VK_NULL_HANDLE;
@@ -747,6 +761,60 @@ public:
     // constant; fragment shader is passthrough (premultiplied alpha).
     VkPipelineLayout engineBatchPipelineLayout = VK_NULL_HANDLE;
     VkPipeline engineBatchPipeline = VK_NULL_HANDLE;
+    // ── GPU stencil-then-cover scratch (JALIUM_VK_STENCIL_PATH) ─────────────
+    // Solid <Path>/polygon/stroke fills emitted as pipelineType==1 batches are
+    // rendered with a two-pass stencil-then-cover into an offscreen N× MSAA
+    // color + depth/stencil target, auto-resolved to a 1× image, then
+    // composited onto the swap chain (premult SrcOver) — the Vulkan analogue of
+    // ImpellerD3D12Engine::StencilThenCoverFill + the D3D12 path MSAA scratch.
+    // Single shared instance (written + consumed within one frame's cmd buf),
+    // sized to the swap-chain extent; built lazily by EnsureStencilCoverResources
+    // and torn down by DestroyStencilCoverResources (called from
+    // DestroyGraphicsResources, so resize + teardown both rebuild it). The 3
+    // pipelines reuse engineBatchPipelineLayout (64B MVP push) + the solid-fill
+    // VS/FS — no new shader, no per-draw transform (geometry is pixel-space).
+    VkImage         stencilMsaaColorImage = VK_NULL_HANDLE;
+    VkDeviceMemory  stencilMsaaColorMemory = VK_NULL_HANDLE;
+    VkImageView     stencilMsaaColorView = VK_NULL_HANDLE;
+    VkImage         stencilMsaaDsImage = VK_NULL_HANDLE;
+    VkDeviceMemory  stencilMsaaDsMemory = VK_NULL_HANDLE;
+    VkImageView     stencilMsaaDsView = VK_NULL_HANDLE;
+    VkImage         stencilResolveImage = VK_NULL_HANDLE;
+    VkDeviceMemory  stencilResolveMemory = VK_NULL_HANDLE;
+    VkImageView     stencilResolveView = VK_NULL_HANDLE;
+    VkSampler       stencilResolveSampler = VK_NULL_HANDLE;
+    VkRenderPass    stencilCoverRenderPass = VK_NULL_HANDLE;
+    VkFramebuffer   stencilCoverFramebuffer = VK_NULL_HANDLE;
+    VkPipeline      psoStencilFillEvenOdd = VK_NULL_HANDLE;
+    VkPipeline      psoStencilFillNonZero = VK_NULL_HANDLE;
+    VkPipeline      psoStencilCover = VK_NULL_HANDLE;
+    // MSAA variant of engineBatchPipeline: draws the indexed type0 (gradient /
+    // ellipse / CPU-tessellated) batches into the same MSAA scratch as the
+    // stencil paths so painter order is preserved with a single resolve+composite
+    // (and gradients/ellipses pick up MSAA too). Stencil test disabled.
+    VkPipeline      psoStencilQuad = VK_NULL_HANDLE;
+    uint32_t        stencilCoverW = 0, stencilCoverH = 0;
+    VkSampleCountFlagBits stencilSampleCount = VK_SAMPLE_COUNT_1_BIT;
+    VkFormat        stencilDsFormat = VK_FORMAT_UNDEFINED;
+    // -- env-gated GPU offscreen effect RT (JALIUM_VK_EFFECT_GPU_RT) ----------
+    // Single screen-sized COLOR_ATTACHMENT|SAMPLED image reused every frame (like
+    // the stencil scratch). Effected element subtrees render here (isolated,
+    // transparent-cleared) so content effects sample the TRUE element instead of
+    // the GPU-path halo approximation. Default OFF => none of this is created or
+    // referenced (bit-identical).
+    bool            effectOffscreenEnabled_ = false;   // set once in Initialize from env
+    VkImage         effectOffscreenImage = VK_NULL_HANDLE;
+    VkDeviceMemory  effectOffscreenMemory = VK_NULL_HANDLE;
+    VkImageView     effectOffscreenView = VK_NULL_HANDLE;
+    VkSampler       effectOffscreenSampler = VK_NULL_HANDLE;
+    VkRenderPass    effectOffscreenRenderPassClear = VK_NULL_HANDLE; // loadOp=CLEAR (first draw)
+    VkRenderPass    effectOffscreenRenderPassLoad  = VK_NULL_HANDLE; // loadOp=LOAD  (subsequent)
+    VkFramebuffer   effectOffscreenFramebufferClear = VK_NULL_HANDLE;
+    VkFramebuffer   effectOffscreenFramebufferLoad  = VK_NULL_HANDLE;
+    VkImageLayout   effectOffscreenLayout = VK_IMAGE_LAYOUT_UNDEFINED; // tracked across frames
+    uint32_t        effectOffscreenW = 0, effectOffscreenH = 0;
+    VkDescriptorPool effectOffscreenDescPool = VK_NULL_HANDLE;       // 1-set pool for the composite/effect descriptor
+    VkDescriptorSet  effectOffscreenDescriptorSet = VK_NULL_HANDLE;  // set0 (SAMPLED_IMAGE@0 + SAMPLER@1) bound to effectOffscreenView
     // Real Vello GPU compute pipeline (lazy; only when scalarBlockLayoutSupported)
     // plus the fullscreen-triangle pipeline that composites its RGBA32F output
     // image onto the swap chain with premultiplied SrcOver blend.
@@ -995,10 +1063,19 @@ public:
     // COLOR_ATTACHMENT_OPTIMAL (ready for the next beginLoadRenderPass). Must be
     // called OUTSIDE a render pass. Returns false (caller keeps the CPU-pixel
     // upload) when capture is unavailable.
+    //
+    // The optional srcX/srcY/srcW/srcH select a SUB-RECT of the rendered colour
+    // image to blit (physical px); srcW<=0 || srcH<=0 means "whole frame" (the
+    // backdrop/liquid-glass callers, which sample via screen coords). Element
+    // BlurEffect passes the element's screen rect so the blur shader — which maps
+    // the element quad onto uploadImage[0,dst] — samples exactly the element's
+    // composited content.
     bool CaptureLiveSceneToUpload(uint32_t imageIndex,
                                   const VkImageSubresourceRange& range,
                                   VkExtent2D srcExtent,
-                                  uint32_t dstWidth, uint32_t dstHeight);
+                                  uint32_t dstWidth, uint32_t dstHeight,
+                                  int32_t srcX = 0, int32_t srcY = 0,
+                                  int32_t srcW = 0, int32_t srcH = 0);
     bool EnsureTransitionImagesCapacity(uint32_t width, uint32_t height);
     bool EnsureGraphicsResources();
     bool DrawFrame(const uint8_t* pixels, uint32_t width, uint32_t height);
@@ -1028,6 +1105,21 @@ public:
                              uint32_t frameIdx,
                              VkRenderPass renderPass,
                              VkFramebuffer framebuffer);
+    /// Lazy-create the offscreen MSAA color + depth/stencil scratch, 1× resolve
+    /// image, render pass, framebuffer and the 3 stencil-then-cover pipelines
+    /// (fill EvenOdd / fill NonZero / cover), sized to `extent`. Reuses
+    /// engineBatchPipelineLayout + the solid-fill VS/FS. Returns false on
+    /// failure (caller falls back to skipping the GPU stencil path).
+    bool EnsureStencilCoverResources(VkExtent2D extent);
+    /// Destroy all stencil-then-cover scratch resources (images/views/memory,
+    /// render pass, framebuffer, sampler, pipelines). Safe to call repeatedly.
+    void DestroyStencilCoverResources();
+    /// Lazy-create the screen-sized COLOR|SAMPLED offscreen effect RT + CLEAR/LOAD
+    /// render passes + framebuffers + sampler, sized to `extent`. No-op returning
+    /// false when effectOffscreenEnabled_ is false. Mirrors EnsureStencilCoverResources.
+    bool EnsureEffectOffscreenResources(VkExtent2D extent);
+    /// Destroy all offscreen effect RT resources. Safe to call repeatedly / when off.
+    void DestroyEffectOffscreenResources();
     uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const;
     bool UpdateFrameDescriptorSet();
     bool UpdateTransitionDescriptorSet();
@@ -1632,9 +1724,28 @@ void VulkanRenderTarget::Clear(float r, float g, float b, float a)
     }
 }
 
+// env helper for the GPU offscreen effect RT (JALIUM_VK_EFFECT_GPU_RT). Defined
+// before Initialize so it is visible to every use site (Initialize / replay).
+static bool VulkanEffectGpuRtEnabled()
+{
+    static const bool enabled = []() {
+#if defined(_WIN32)
+        char* e = nullptr; size_t len = 0;
+        if (_dupenv_s(&e, &len, "JALIUM_VK_EFFECT_GPU_RT") != 0 || e == nullptr) { if (e) free(e); return false; }
+        const bool on = (e[0] != '\0' && e[0] != '0' && e[0] != 'f' && e[0] != 'F' && e[0] != 'n' && e[0] != 'N');
+        free(e); return on;
+#else
+        const char* e = std::getenv("JALIUM_VK_EFFECT_GPU_RT");
+        return e && e[0] != '\0' && e[0] != '0' && e[0] != 'f' && e[0] != 'F' && e[0] != 'n' && e[0] != 'N';
+#endif
+    }();
+    return enabled;
+}
+
 bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surfaceDescriptor, int32_t width, int32_t height, bool vsync,
                                           VulkanBackend* ownerBackend)
 {
+    effectOffscreenEnabled_ = VulkanEffectGpuRtEnabled();
     // Stash the backend pointer so we can publish the chosen physical device
     // to it once selection succeeds (see the RegisterAdapterInfo call below).
     VulkanBackend* backend = ownerBackend;
@@ -2290,13 +2401,48 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
         return false;
     }
 
-    VkPresentModeKHR selectedPresentMode = VK_PRESENT_MODE_FIFO_KHR;
-    if (!vsync) {
-        for (auto candidate : presentModes) {
-            if (candidate == VK_PRESENT_MODE_IMMEDIATE_KHR) {
-                selectedPresentMode = candidate;
-                break;
-            }
+    // ── Present mode: do NOT hard-lock the frame rate to the display refresh ──
+    // FIFO (the only guaranteed-present mode) makes acquire/present block the
+    // calling thread until vblank, which both caps the frame rate AND stalls the
+    // UI thread on every frame — exactly the "slow composition → 2 fps, whole
+    // window hitches" failure the D3D12 backend escapes by presenting with
+    // SyncInterval 0 under external present pacing. Vulkan has no frame-latency
+    // waitable, so the managed credit scheduler never engages here
+    // (GetFrameLatencyWaitable() == 0 → Window.StartExternalPresentPacingIfSupported
+    // bails at "skip: no waitable"); the Vulkan-appropriate equivalent of "don't
+    // block the render loop on vblank" is simply to avoid FIFO.
+    //
+    // The managed CompositionTarget render loop intentionally re-arms at a 1 ms
+    // interval ("throttle to achievable rate, like a game engine render loop")
+    // and leans on the present mode for pacing, so a non-blocking present mode
+    // lets it run uncapped — matching the D3D12 path's Present(0) submit. The
+    // per-frame vkWaitForFences (MAX_FRAMES_IN_FLIGHT) still backpressures the CPU
+    // to the GPU's real throughput, so this is uncapped-to-achievable, not a busy
+    // spin.
+    //
+    //   vsync == true  (default): MAILBOX → FIFO. MAILBOX is unlocked AND
+    //                  tear-free — the compositor still flips at vblank and the
+    //                  latest queued image wins — so it never tears for vsync-on
+    //                  users (the analogue of D3D12's Present(0) WITHOUT
+    //                  ALLOW_TEARING). FIFO only as the last resort when the
+    //                  surface lacks MAILBOX (e.g. some Android surfaces).
+    //   vsync == false (JALIUM_DISABLE_VSYNC benchmark/animation opt-out):
+    //                  IMMEDIATE → MAILBOX → FIFO. Lowest latency, tearing
+    //                  accepted (the analogue of D3D12's Present(0) +
+    //                  DXGI_PRESENT_ALLOW_TEARING).
+    auto surfaceHasPresentMode = [&](VkPresentModeKHR mode) {
+        return std::find(presentModes.begin(), presentModes.end(), mode) != presentModes.end();
+    };
+    VkPresentModeKHR selectedPresentMode = VK_PRESENT_MODE_FIFO_KHR;  // guaranteed-supported fallback
+    if (vsync) {
+        if (surfaceHasPresentMode(VK_PRESENT_MODE_MAILBOX_KHR)) {
+            selectedPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+    } else {
+        if (surfaceHasPresentMode(VK_PRESENT_MODE_IMMEDIATE_KHR)) {
+            selectedPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+        } else if (surfaceHasPresentMode(VK_PRESENT_MODE_MAILBOX_KHR)) {
+            selectedPresentMode = VK_PRESENT_MODE_MAILBOX_KHR;
         }
     }
 
@@ -2336,6 +2482,14 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
         identitySupported ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : curTransform;
 
     uint32_t imageCount = capabilities.minImageCount + 1;
+    // MAILBOX only stays non-blocking with at least 3 images (one on screen, one
+    // queued in the mailbox, one being rendered); with 2 the acquire degenerates
+    // into a FIFO-like vblank stall and the "don't lock the frame rate" intent is
+    // lost. Request a third when MAILBOX was selected. FIFO / IMMEDIATE keep
+    // minImageCount + 1 (typically 2-3). The maxImageCount clamp below still wins.
+    if (selectedPresentMode == VK_PRESENT_MODE_MAILBOX_KHR && imageCount < 3) {
+        imageCount = 3;
+    }
     if (capabilities.maxImageCount > 0 && imageCount > capabilities.maxImageCount) {
         imageCount = capabilities.maxImageCount;
     }
@@ -2549,7 +2703,9 @@ bool VulkanRenderTarget::Impl::EnsureUploadImageCapacity(uint32_t width, uint32_
 bool VulkanRenderTarget::Impl::CaptureLiveSceneToUpload(uint32_t imageIndex,
                                                         const VkImageSubresourceRange& range,
                                                         VkExtent2D srcExtent,
-                                                        uint32_t dstWidth, uint32_t dstHeight)
+                                                        uint32_t dstWidth, uint32_t dstHeight,
+                                                        int32_t srcX, int32_t srcY,
+                                                        int32_t srcW, int32_t srcH)
 {
     if (!sceneCaptureSupported || cmdBlitImage == nullptr || cmdPipelineBarrier == nullptr ||
         uploadImage == VK_NULL_HANDLE || imageIndex >= images.size() ||
@@ -2598,12 +2754,23 @@ bool VulkanRenderTarget::Impl::CaptureLiveSceneToUpload(uint32_t imageIndex,
 
     // Blit the rendered colour image into the [0,dst] region of uploadImage —
     // the same region the CPU-pixel cmdCopyBufferToImage targets, so the effect
-    // shader's UV math (1/pixelWidth, 1/pixelHeight) is unchanged.
+    // shader's UV math (1/pixelWidth, 1/pixelHeight) is unchanged. The source is
+    // the whole frame by default (backdrop/glass), or the [srcX,srcY,srcW,srcH]
+    // sub-rect when requested (element BlurEffect captures only its own region).
+    const int32_t fullW = static_cast<int32_t>(srcExtent.width);
+    const int32_t fullH = static_cast<int32_t>(srcExtent.height);
+    int32_t sx0 = (srcW > 0 && srcH > 0) ? srcX : 0;
+    int32_t sy0 = (srcW > 0 && srcH > 0) ? srcY : 0;
+    int32_t sx1 = (srcW > 0 && srcH > 0) ? srcX + srcW : fullW;
+    int32_t sy1 = (srcW > 0 && srcH > 0) ? srcY + srcH : fullH;
+    sx0 = std::clamp(sx0, 0, fullW); sy0 = std::clamp(sy0, 0, fullH);
+    sx1 = std::clamp(sx1, 0, fullW); sy1 = std::clamp(sy1, 0, fullH);
+    if (sx1 <= sx0 || sy1 <= sy0) { sx0 = 0; sy0 = 0; sx1 = fullW; sy1 = fullH; }
     VkImageBlit blit {};
     blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.srcSubresource.layerCount = 1;
-    blit.srcOffsets[0] = { 0, 0, 0 };
-    blit.srcOffsets[1] = { static_cast<int32_t>(srcExtent.width), static_cast<int32_t>(srcExtent.height), 1 };
+    blit.srcOffsets[0] = { sx0, sy0, 0 };
+    blit.srcOffsets[1] = { sx1, sy1, 1 };
     blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.dstSubresource.layerCount = 1;
     blit.dstOffsets[0] = { 0, 0, 0 };
@@ -3589,6 +3756,42 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         pipelineInfo.renderPass = frameRenderPass;
         pipelineInfo.subpass = 0;
         const VkResult pipelineResult = createGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &textPipeline);
+
+        // ClearType dual-source variant (opt-in, requires dualSrcBlend). Reuses the
+        // same VS/FS module + layout; the gClearType=1 specialization selects the
+        // ClearType branch and the blend consumes the FS SV_Target1 per-channel
+        // coverage (src=ONE / dst=ONE_MINUS_SRC1_COLOR). Best-effort: on failure
+        // leave it null and fall back to grayscale at draw time.
+        if (pipelineResult == VK_SUCCESS && textPipeline != VK_NULL_HANDLE && dualSrcBlendSupported) {
+            const uint32_t clearTypeSpecValue = 1u;
+            VkSpecializationMapEntry ctSpecEntry {};
+            ctSpecEntry.constantID = 0;
+            ctSpecEntry.offset = 0;
+            ctSpecEntry.size = sizeof(uint32_t);
+            VkSpecializationInfo ctSpecInfo {};
+            ctSpecInfo.mapEntryCount = 1;
+            ctSpecInfo.pMapEntries = &ctSpecEntry;
+            ctSpecInfo.dataSize = sizeof(uint32_t);
+            ctSpecInfo.pData = &clearTypeSpecValue;
+            VkPipelineShaderStageCreateInfo ctStages[2] = { shaderStages[0], shaderStages[1] };
+            ctStages[1].pSpecializationInfo = &ctSpecInfo;
+
+            VkPipelineColorBlendAttachmentState ctBlendAttachment = colorBlendAttachment;
+            ctBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            ctBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR;
+            ctBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            ctBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC1_ALPHA;
+            VkPipelineColorBlendStateCreateInfo ctBlendInfo = colorBlendInfo;
+            ctBlendInfo.pAttachments = &ctBlendAttachment;
+
+            VkGraphicsPipelineCreateInfo ctPipelineInfo = pipelineInfo;
+            ctPipelineInfo.pStages = ctStages;
+            ctPipelineInfo.pColorBlendState = &ctBlendInfo;
+            if (createGraphicsPipelines(device, VK_NULL_HANDLE, 1, &ctPipelineInfo, nullptr, &textClearTypePipeline) != VK_SUCCESS) {
+                textClearTypePipeline = VK_NULL_HANDLE;
+            }
+        }
+
         destroyShaderModule(device, fragmentShader, nullptr);
         destroyShaderModule(device, vertexShader, nullptr);
         if (pipelineResult != VK_SUCCESS || textPipeline == VK_NULL_HANDLE) {
@@ -5048,6 +5251,13 @@ void VulkanRenderTarget::Impl::DestroyTransitionImages()
 
 void VulkanRenderTarget::Impl::DestroyGraphicsResources()
 {
+    // Stencil-then-cover scratch is swap-chain-extent-sized + bound to its own
+    // render pass, so it must be rebuilt on resize/teardown like the rest.
+    // (Self-guards on device == VK_NULL_HANDLE: just nulls handles when the
+    // device is already gone.)
+    DestroyStencilCoverResources();
+    DestroyEffectOffscreenResources();  // env-gated offscreen effect RT (no-op when off)
+
     if (device == VK_NULL_HANDLE) {
         imageViews.clear();
         framebuffers.clear();
@@ -5059,6 +5269,7 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
         bitmapPipelineLayout = VK_NULL_HANDLE;
 #ifdef _WIN32
         textPipeline = VK_NULL_HANDLE;
+        textClearTypePipeline = VK_NULL_HANDLE;
         textPipelineLayout = VK_NULL_HANDLE;
         textDescriptorSet = VK_NULL_HANDLE;
         textDescriptorPool = VK_NULL_HANDLE;
@@ -5123,6 +5334,9 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
 #ifdef _WIN32
     if (destroyPipeline && textPipeline != VK_NULL_HANDLE) {
         destroyPipeline(device, textPipeline, nullptr);
+    }
+    if (destroyPipeline && textClearTypePipeline != VK_NULL_HANDLE) {
+        destroyPipeline(device, textClearTypePipeline, nullptr);
     }
 #endif
     if (destroyPipeline && blurPipeline != VK_NULL_HANDLE) {
@@ -5286,6 +5500,7 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     bitmapPipelineLayout = VK_NULL_HANDLE;
 #ifdef _WIN32
     textPipeline = VK_NULL_HANDLE;
+    textClearTypePipeline = VK_NULL_HANDLE;
     textPipelineLayout = VK_NULL_HANDLE;
     textDescriptorSet = VK_NULL_HANDLE;
     textDescriptorPool = VK_NULL_HANDLE;
@@ -6153,6 +6368,686 @@ bool VulkanRenderTarget::Impl::EnsureEngineBatchBuffer(uint32_t frameIdx, VkDevi
     return true;
 }
 
+void VulkanRenderTarget::Impl::DestroyStencilCoverResources()
+{
+    if (device != VK_NULL_HANDLE) {
+        auto destroyPipeline    = LoadDeviceProc<PFN_vkDestroyPipeline>(getDeviceProcAddr, device, "vkDestroyPipeline");
+        auto destroyRenderPass  = LoadDeviceProc<PFN_vkDestroyRenderPass>(getDeviceProcAddr, device, "vkDestroyRenderPass");
+        auto destroyFramebuffer = LoadDeviceProc<PFN_vkDestroyFramebuffer>(getDeviceProcAddr, device, "vkDestroyFramebuffer");
+        auto destroyImageView   = LoadDeviceProc<PFN_vkDestroyImageView>(getDeviceProcAddr, device, "vkDestroyImageView");
+        auto destroyImage       = LoadDeviceProc<PFN_vkDestroyImage>(getDeviceProcAddr, device, "vkDestroyImage");
+        auto freeMemory         = LoadDeviceProc<PFN_vkFreeMemory>(getDeviceProcAddr, device, "vkFreeMemory");
+        auto destroySampler     = LoadDeviceProc<PFN_vkDestroySampler>(getDeviceProcAddr, device, "vkDestroySampler");
+        if (destroyPipeline) {
+            if (psoStencilFillEvenOdd) destroyPipeline(device, psoStencilFillEvenOdd, nullptr);
+            if (psoStencilFillNonZero) destroyPipeline(device, psoStencilFillNonZero, nullptr);
+            if (psoStencilCover)       destroyPipeline(device, psoStencilCover, nullptr);
+            if (psoStencilQuad)        destroyPipeline(device, psoStencilQuad, nullptr);
+        }
+        if (destroyFramebuffer && stencilCoverFramebuffer) destroyFramebuffer(device, stencilCoverFramebuffer, nullptr);
+        if (destroyRenderPass && stencilCoverRenderPass)   destroyRenderPass(device, stencilCoverRenderPass, nullptr);
+        if (destroySampler && stencilResolveSampler)       destroySampler(device, stencilResolveSampler, nullptr);
+        if (destroyImageView) {
+            if (stencilMsaaColorView) destroyImageView(device, stencilMsaaColorView, nullptr);
+            if (stencilMsaaDsView)    destroyImageView(device, stencilMsaaDsView, nullptr);
+            if (stencilResolveView)   destroyImageView(device, stencilResolveView, nullptr);
+        }
+        if (destroyImage) {
+            if (stencilMsaaColorImage) destroyImage(device, stencilMsaaColorImage, nullptr);
+            if (stencilMsaaDsImage)    destroyImage(device, stencilMsaaDsImage, nullptr);
+            if (stencilResolveImage)   destroyImage(device, stencilResolveImage, nullptr);
+        }
+        if (freeMemory) {
+            if (stencilMsaaColorMemory) freeMemory(device, stencilMsaaColorMemory, nullptr);
+            if (stencilMsaaDsMemory)    freeMemory(device, stencilMsaaDsMemory, nullptr);
+            if (stencilResolveMemory)   freeMemory(device, stencilResolveMemory, nullptr);
+        }
+    }
+    psoStencilFillEvenOdd = VK_NULL_HANDLE;
+    psoStencilFillNonZero = VK_NULL_HANDLE;
+    psoStencilCover = VK_NULL_HANDLE;
+    psoStencilQuad = VK_NULL_HANDLE;
+    stencilCoverFramebuffer = VK_NULL_HANDLE;
+    stencilCoverRenderPass = VK_NULL_HANDLE;
+    stencilResolveSampler = VK_NULL_HANDLE;
+    stencilMsaaColorView = VK_NULL_HANDLE;
+    stencilMsaaDsView = VK_NULL_HANDLE;
+    stencilResolveView = VK_NULL_HANDLE;
+    stencilMsaaColorImage = VK_NULL_HANDLE;
+    stencilMsaaDsImage = VK_NULL_HANDLE;
+    stencilResolveImage = VK_NULL_HANDLE;
+    stencilMsaaColorMemory = VK_NULL_HANDLE;
+    stencilMsaaDsMemory = VK_NULL_HANDLE;
+    stencilResolveMemory = VK_NULL_HANDLE;
+    stencilCoverW = 0;
+    stencilCoverH = 0;
+}
+
+bool VulkanRenderTarget::Impl::EnsureEffectOffscreenResources(VkExtent2D extent)
+{
+    if (!effectOffscreenEnabled_) return false;
+    if (extent.width == 0 || extent.height == 0) return false;
+    if (effectOffscreenFramebufferClear != VK_NULL_HANDLE
+        && effectOffscreenW == extent.width && effectOffscreenH == extent.height) {
+        return true;  // already built at this size
+    }
+    DestroyEffectOffscreenResources();
+    if (device == VK_NULL_HANDLE) return false;
+
+    auto createImage         = LoadDeviceProc<PFN_vkCreateImage>(getDeviceProcAddr, device, "vkCreateImage");
+    auto getImageMemReqs     = LoadDeviceProc<PFN_vkGetImageMemoryRequirements>(getDeviceProcAddr, device, "vkGetImageMemoryRequirements");
+    auto allocateMemory      = LoadDeviceProc<PFN_vkAllocateMemory>(getDeviceProcAddr, device, "vkAllocateMemory");
+    auto bindImageMemory     = LoadDeviceProc<PFN_vkBindImageMemory>(getDeviceProcAddr, device, "vkBindImageMemory");
+    auto createImageView     = LoadDeviceProc<PFN_vkCreateImageView>(getDeviceProcAddr, device, "vkCreateImageView");
+    auto createRenderPass    = LoadDeviceProc<PFN_vkCreateRenderPass>(getDeviceProcAddr, device, "vkCreateRenderPass");
+    auto createFramebuffer   = LoadDeviceProc<PFN_vkCreateFramebuffer>(getDeviceProcAddr, device, "vkCreateFramebuffer");
+    auto createSampler       = LoadDeviceProc<PFN_vkCreateSampler>(getDeviceProcAddr, device, "vkCreateSampler");
+    if (!createImage || !getImageMemReqs || !allocateMemory || !bindImageMemory || !createImageView
+        || !createRenderPass || !createFramebuffer || !createSampler) {
+        return false;
+    }
+
+    // image+memory+view (single color, no MSAA, COLOR_ATTACHMENT|SAMPLED|TRANSFER_SRC,
+    // format == swap-chain format). TRANSFER_SRC kept so a later stage may blit the
+    // isolated subtree into uploadImage if a sample-direct path proves awkward.
+    {
+        VkImageCreateInfo ici {};
+        ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = format;                       // B8G8R8A8_UNORM
+        ici.extent.width = extent.width;
+        ici.extent.height = extent.height;
+        ici.extent.depth = 1;
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (createImage(device, &ici, nullptr, &effectOffscreenImage) != VK_SUCCESS) { DestroyEffectOffscreenResources(); return false; }
+        VkMemoryRequirements mr {};
+        getImageMemReqs(device, effectOffscreenImage, &mr);
+        const uint32_t ti = FindMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (ti == UINT32_MAX) { DestroyEffectOffscreenResources(); return false; }
+        VkMemoryAllocateInfo mai {};
+        mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mai.allocationSize = mr.size;
+        mai.memoryTypeIndex = ti;
+        if (allocateMemory(device, &mai, nullptr, &effectOffscreenMemory) != VK_SUCCESS) { DestroyEffectOffscreenResources(); return false; }
+        if (bindImageMemory(device, effectOffscreenImage, effectOffscreenMemory, 0) != VK_SUCCESS) { DestroyEffectOffscreenResources(); return false; }
+        VkImageViewCreateInfo vci {};
+        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image = effectOffscreenImage;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = format;
+        vci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        vci.subresourceRange.levelCount = 1;
+        vci.subresourceRange.layerCount = 1;
+        if (createImageView(device, &vci, nullptr, &effectOffscreenView) != VK_SUCCESS) { DestroyEffectOffscreenResources(); return false; }
+    }
+
+    // sampler (NEAREST/CLAMP)
+    {
+        VkSamplerCreateInfo si {};
+        si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter = VK_FILTER_NEAREST;
+        si.minFilter = VK_FILTER_NEAREST;
+        si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.maxLod = 0.0f;
+        if (createSampler(device, &si, nullptr, &effectOffscreenSampler) != VK_SUCCESS) { DestroyEffectOffscreenResources(); return false; }
+    }
+
+    // Two single-attachment render passes differing ONLY in loadOp + initialLayout.
+    // Both finalLayout=SHADER_READ_ONLY_OPTIMAL so the image is sample-ready at
+    // OffscreenEnd with no manual barrier. format==`format`, samples==1, single
+    // subpass color ref@0 => RENDER-PASS COMPATIBLE with every existing pipeline
+    // built against frameRenderPass (so no PSO rebuild needed to draw here).
+    auto makeRenderPass = [&](VkAttachmentLoadOp loadOp, VkImageLayout initialLayout,
+                              VkRenderPass& outRp) -> bool {
+        VkAttachmentDescription att {};
+        att.format = format;
+        att.samples = VK_SAMPLE_COUNT_1_BIT;
+        att.loadOp = loadOp;
+        att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        att.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        att.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        att.initialLayout = initialLayout;
+        att.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkAttachmentReference colorRef { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+        VkSubpassDescription sub {};
+        sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub.colorAttachmentCount = 1;
+        sub.pColorAttachments = &colorRef;
+        // dep0/dep1 cover the PREVIOUS frame's color WRITE + composite shader READ
+        // to kill cross-frame WAW/RAW on the single-instance scratch.
+        VkSubpassDependency deps[2] {};
+        deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        deps[0].dstSubpass = 0;
+        deps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+        deps[1].srcSubpass = 0;
+        deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        VkRenderPassCreateInfo rpi {};
+        rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpi.attachmentCount = 1;
+        rpi.pAttachments = &att;
+        rpi.subpassCount = 1;
+        rpi.pSubpasses = &sub;
+        rpi.dependencyCount = 2;
+        rpi.pDependencies = deps;
+        return createRenderPass(device, &rpi, nullptr, &outRp) == VK_SUCCESS;
+    };
+    if (!makeRenderPass(VK_ATTACHMENT_LOAD_OP_CLEAR, VK_IMAGE_LAYOUT_UNDEFINED, effectOffscreenRenderPassClear)) { DestroyEffectOffscreenResources(); return false; }
+    if (!makeRenderPass(VK_ATTACHMENT_LOAD_OP_LOAD,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, effectOffscreenRenderPassLoad)) { DestroyEffectOffscreenResources(); return false; }
+
+    auto makeFramebuffer = [&](VkRenderPass rp, VkFramebuffer& outFb) -> bool {
+        VkFramebufferCreateInfo fci {};
+        fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fci.renderPass = rp;
+        fci.attachmentCount = 1;
+        fci.pAttachments = &effectOffscreenView;
+        fci.width = extent.width;
+        fci.height = extent.height;
+        fci.layers = 1;
+        return createFramebuffer(device, &fci, nullptr, &outFb) == VK_SUCCESS;
+    };
+    if (!makeFramebuffer(effectOffscreenRenderPassClear, effectOffscreenFramebufferClear)) { DestroyEffectOffscreenResources(); return false; }
+    if (!makeFramebuffer(effectOffscreenRenderPassLoad,  effectOffscreenFramebufferLoad))  { DestroyEffectOffscreenResources(); return false; }
+
+    // Dedicated 1-set descriptor (set0: SAMPLED_IMAGE@0 + SAMPLER@1, same layout as
+    // frameDescriptorSetLayout / bitmapPipelineLayout) bound permanently to the offscreen
+    // view. Consumed by the OffscreenEnd composite-back (bitmapPipeline) and by content
+    // effects sampling the isolated element (Stage 4). Created WITH the resources -- the
+    // view is stable until resize/teardown, so there is no per-frame allocation and no
+    // update-after-free hazard on the descriptor's image view.
+    if (frameDescriptorSetLayout == VK_NULL_HANDLE || !createDescriptorPool
+        || !allocateDescriptorSets || !updateDescriptorSets) { DestroyEffectOffscreenResources(); return false; }
+    {
+        VkDescriptorPoolSize ps[2] {};
+        ps[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; ps[0].descriptorCount = 1;
+        ps[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;       ps[1].descriptorCount = 1;
+        VkDescriptorPoolCreateInfo pci {};
+        pci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pci.maxSets = 1; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
+        if (createDescriptorPool(device, &pci, nullptr, &effectOffscreenDescPool) != VK_SUCCESS) { DestroyEffectOffscreenResources(); return false; }
+        VkDescriptorSetAllocateInfo dai {};
+        dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        dai.descriptorPool = effectOffscreenDescPool;
+        dai.descriptorSetCount = 1;
+        dai.pSetLayouts = &frameDescriptorSetLayout;
+        if (allocateDescriptorSets(device, &dai, &effectOffscreenDescriptorSet) != VK_SUCCESS) { DestroyEffectOffscreenResources(); return false; }
+        VkDescriptorImageInfo viewInfo {};
+        viewInfo.imageView = effectOffscreenView;
+        viewInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkDescriptorImageInfo sampInfo {};
+        sampInfo.sampler = effectOffscreenSampler;
+        sampInfo.imageView = effectOffscreenView;   // NVIDIA derefs imageView even for SAMPLER (see frame set)
+        sampInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w[2] {};
+        w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[0].dstSet = effectOffscreenDescriptorSet; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+        w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; w[0].pImageInfo = &viewInfo;
+        w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[1].dstSet = effectOffscreenDescriptorSet; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+        w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; w[1].pImageInfo = &sampInfo;
+        updateDescriptorSets(device, 2, w, 0, nullptr);
+    }
+
+    effectOffscreenLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    effectOffscreenW = extent.width;
+    effectOffscreenH = extent.height;
+    return true;
+}
+
+void VulkanRenderTarget::Impl::DestroyEffectOffscreenResources()
+{
+    if (device != VK_NULL_HANDLE) {
+        auto destroyRenderPass  = LoadDeviceProc<PFN_vkDestroyRenderPass>(getDeviceProcAddr, device, "vkDestroyRenderPass");
+        auto destroyFramebuffer = LoadDeviceProc<PFN_vkDestroyFramebuffer>(getDeviceProcAddr, device, "vkDestroyFramebuffer");
+        auto destroyImageView   = LoadDeviceProc<PFN_vkDestroyImageView>(getDeviceProcAddr, device, "vkDestroyImageView");
+        auto destroyImage       = LoadDeviceProc<PFN_vkDestroyImage>(getDeviceProcAddr, device, "vkDestroyImage");
+        auto freeMemory         = LoadDeviceProc<PFN_vkFreeMemory>(getDeviceProcAddr, device, "vkFreeMemory");
+        auto destroySampler     = LoadDeviceProc<PFN_vkDestroySampler>(getDeviceProcAddr, device, "vkDestroySampler");
+        auto destroyDescPool    = LoadDeviceProc<PFN_vkDestroyDescriptorPool>(getDeviceProcAddr, device, "vkDestroyDescriptorPool");
+        if (destroyDescPool && effectOffscreenDescPool) destroyDescPool(device, effectOffscreenDescPool, nullptr); // frees the set too
+        if (destroyFramebuffer) {
+            if (effectOffscreenFramebufferClear) destroyFramebuffer(device, effectOffscreenFramebufferClear, nullptr);
+            if (effectOffscreenFramebufferLoad)  destroyFramebuffer(device, effectOffscreenFramebufferLoad, nullptr);
+        }
+        if (destroyRenderPass) {
+            if (effectOffscreenRenderPassClear) destroyRenderPass(device, effectOffscreenRenderPassClear, nullptr);
+            if (effectOffscreenRenderPassLoad)  destroyRenderPass(device, effectOffscreenRenderPassLoad, nullptr);
+        }
+        if (destroySampler && effectOffscreenSampler) destroySampler(device, effectOffscreenSampler, nullptr);
+        if (destroyImageView && effectOffscreenView)  destroyImageView(device, effectOffscreenView, nullptr);
+        if (destroyImage && effectOffscreenImage)     destroyImage(device, effectOffscreenImage, nullptr);
+        if (freeMemory && effectOffscreenMemory)      freeMemory(device, effectOffscreenMemory, nullptr);
+    }
+    effectOffscreenFramebufferClear = VK_NULL_HANDLE;
+    effectOffscreenFramebufferLoad = VK_NULL_HANDLE;
+    effectOffscreenRenderPassClear = VK_NULL_HANDLE;
+    effectOffscreenRenderPassLoad = VK_NULL_HANDLE;
+    effectOffscreenSampler = VK_NULL_HANDLE;
+    effectOffscreenView = VK_NULL_HANDLE;
+    effectOffscreenImage = VK_NULL_HANDLE;
+    effectOffscreenMemory = VK_NULL_HANDLE;
+    effectOffscreenDescPool = VK_NULL_HANDLE;
+    effectOffscreenDescriptorSet = VK_NULL_HANDLE;
+    effectOffscreenLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    effectOffscreenW = 0; effectOffscreenH = 0;
+}
+
+bool VulkanRenderTarget::Impl::EnsureStencilCoverResources(VkExtent2D extent)
+{
+    if (extent.width == 0 || extent.height == 0) return false;
+    if (stencilCoverFramebuffer != VK_NULL_HANDLE && psoStencilCover != VK_NULL_HANDLE
+        && stencilCoverW == extent.width && stencilCoverH == extent.height) {
+        return true;  // already built at this size
+    }
+    DestroyStencilCoverResources();
+    if (device == VK_NULL_HANDLE || frameRenderPass == VK_NULL_HANDLE) return false;
+    // EnsureEngineBatchPipeline owns the shared 64B-MVP pipeline layout we reuse.
+    if (!EnsureEngineBatchPipeline() || engineBatchPipelineLayout == VK_NULL_HANDLE) return false;
+
+    auto createImage         = LoadDeviceProc<PFN_vkCreateImage>(getDeviceProcAddr, device, "vkCreateImage");
+    auto getImageMemReqs     = LoadDeviceProc<PFN_vkGetImageMemoryRequirements>(getDeviceProcAddr, device, "vkGetImageMemoryRequirements");
+    auto allocateMemory      = LoadDeviceProc<PFN_vkAllocateMemory>(getDeviceProcAddr, device, "vkAllocateMemory");
+    auto bindImageMemory     = LoadDeviceProc<PFN_vkBindImageMemory>(getDeviceProcAddr, device, "vkBindImageMemory");
+    auto createImageView     = LoadDeviceProc<PFN_vkCreateImageView>(getDeviceProcAddr, device, "vkCreateImageView");
+    auto createRenderPass    = LoadDeviceProc<PFN_vkCreateRenderPass>(getDeviceProcAddr, device, "vkCreateRenderPass");
+    auto createFramebuffer   = LoadDeviceProc<PFN_vkCreateFramebuffer>(getDeviceProcAddr, device, "vkCreateFramebuffer");
+    auto createSampler       = LoadDeviceProc<PFN_vkCreateSampler>(getDeviceProcAddr, device, "vkCreateSampler");
+    auto createShaderModule  = LoadDeviceProc<PFN_vkCreateShaderModule>(getDeviceProcAddr, device, "vkCreateShaderModule");
+    auto destroyShaderModule = LoadDeviceProc<PFN_vkDestroyShaderModule>(getDeviceProcAddr, device, "vkDestroyShaderModule");
+    auto createGraphicsPipelines = LoadDeviceProc<PFN_vkCreateGraphicsPipelines>(getDeviceProcAddr, device, "vkCreateGraphicsPipelines");
+    if (!createImage || !getImageMemReqs || !allocateMemory || !bindImageMemory || !createImageView
+        || !createRenderPass || !createFramebuffer || !createSampler
+        || !createShaderModule || !destroyShaderModule || !createGraphicsPipelines) {
+        return false;
+    }
+
+    // Sample count: highest of 8/4/2 the device supports as a framebuffer
+    // color+depth+stencil attachment (mirrors the D3D12 path's 8x default,
+    // clamped to support). Falls to 1x if MSAA is unavailable.
+    VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
+    {
+        auto getProps = LoadInstanceProc<PFN_vkGetPhysicalDeviceProperties>(getInstanceProcAddr, instance, "vkGetPhysicalDeviceProperties");
+        VkSampleCountFlags caps = VK_SAMPLE_COUNT_1_BIT;
+        if (getProps) {
+            VkPhysicalDeviceProperties props {};
+            getProps(physicalDevice, &props);
+            caps = props.limits.framebufferColorSampleCounts
+                 & props.limits.framebufferDepthSampleCounts
+                 & props.limits.framebufferStencilSampleCounts;
+        }
+        const VkSampleCountFlagBits desired[] = {
+            VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_2_BIT
+        };
+        for (VkSampleCountFlagBits s : desired) { if (caps & s) { samples = s; break; } }
+    }
+
+    // Depth/stencil format: D24S8 preferred, D32S8 fallback.
+    VkFormat dsFormat = VK_FORMAT_D24_UNORM_S8_UINT;
+    {
+        auto getImgFmtProps = LoadInstanceProc<PFN_vkGetPhysicalDeviceImageFormatProperties>(getInstanceProcAddr, instance, "vkGetPhysicalDeviceImageFormatProperties");
+        if (getImgFmtProps) {
+            VkImageFormatProperties ifp {};
+            if (getImgFmtProps(physicalDevice, VK_FORMAT_D24_UNORM_S8_UINT, VK_IMAGE_TYPE_2D,
+                    VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &ifp) != VK_SUCCESS) {
+                dsFormat = VK_FORMAT_D32_SFLOAT_S8_UINT;
+            }
+        }
+    }
+
+    auto makeImage = [&](VkFormat fmt, VkSampleCountFlagBits s, VkImageUsageFlags usage,
+                         VkImageAspectFlags aspect,
+                         VkImage& img, VkDeviceMemory& mem, VkImageView& view) -> bool {
+        VkImageCreateInfo ici {};
+        ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = fmt;
+        ici.extent.width = extent.width;
+        ici.extent.height = extent.height;
+        ici.extent.depth = 1;
+        ici.mipLevels = 1;
+        ici.arrayLayers = 1;
+        ici.samples = s;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = usage;
+        ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        if (createImage(device, &ici, nullptr, &img) != VK_SUCCESS) return false;
+        VkMemoryRequirements mr {};
+        getImageMemReqs(device, img, &mr);
+        const uint32_t ti = FindMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (ti == UINT32_MAX) return false;
+        VkMemoryAllocateInfo mai {};
+        mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        mai.allocationSize = mr.size;
+        mai.memoryTypeIndex = ti;
+        if (allocateMemory(device, &mai, nullptr, &mem) != VK_SUCCESS) return false;
+        if (bindImageMemory(device, img, mem, 0) != VK_SUCCESS) return false;
+        VkImageViewCreateInfo vci {};
+        vci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vci.image = img;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vci.format = fmt;
+        vci.subresourceRange.aspectMask = aspect;
+        vci.subresourceRange.levelCount = 1;
+        vci.subresourceRange.layerCount = 1;
+        if (createImageView(device, &vci, nullptr, &view) != VK_SUCCESS) return false;
+        return true;
+    };
+
+    bool ok = makeImage(format, samples, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT,
+                        stencilMsaaColorImage, stencilMsaaColorMemory, stencilMsaaColorView);
+    ok = ok && makeImage(dsFormat, samples, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                        VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                        stencilMsaaDsImage, stencilMsaaDsMemory, stencilMsaaDsView);
+    ok = ok && makeImage(format, VK_SAMPLE_COUNT_1_BIT,
+                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT,
+                        stencilResolveImage, stencilResolveMemory, stencilResolveView);
+    if (!ok) { DestroyStencilCoverResources(); return false; }
+
+    {
+        VkSamplerCreateInfo si {};
+        si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        si.magFilter = VK_FILTER_NEAREST;   // resolve image is 1:1 with the screen
+        si.minFilter = VK_FILTER_NEAREST;
+        si.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        si.maxLod = 0.0f;
+        if (createSampler(device, &si, nullptr, &stencilResolveSampler) != VK_SUCCESS) {
+            DestroyStencilCoverResources();
+            return false;
+        }
+    }
+
+    {
+        VkAttachmentDescription atts[3] {};
+        atts[0].format = format;                                  // MSAA color
+        atts[0].samples = samples;
+        atts[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;             // transparent
+        atts[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;       // only the resolve is kept
+        atts[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        atts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        atts[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        atts[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        atts[1].format = dsFormat;                                // MSAA depth/stencil
+        atts[1].samples = samples;
+        atts[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        atts[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        atts[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;      // stencil -> 0 at pass begin
+        atts[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        atts[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        atts[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        atts[2].format = format;                                  // 1x resolve target
+        atts[2].samples = VK_SAMPLE_COUNT_1_BIT;
+        atts[2].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        atts[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        atts[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        atts[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        atts[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        atts[2].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference colorRef { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+        VkAttachmentReference dsRef { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+        VkAttachmentReference resolveRef { 2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+
+        VkSubpassDescription sub {};
+        sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        sub.colorAttachmentCount = 1;
+        sub.pColorAttachments = &colorRef;
+        sub.pResolveAttachments = &resolveRef;
+        sub.pDepthStencilAttachment = &dsRef;
+
+        // dep0: the scratch (MSAA color/DS + resolve) is a single shared instance
+        //       reused every frame, so this pass must wait for the PREVIOUS frame's
+        //       use of it — both the composite's shader READ of the resolve image
+        //       AND the prior color/depth-stencil WRITES (resolve + stencil). A
+        //       subpass-EXTERNAL dependency's first scope spans earlier submissions
+        //       on the queue, so covering those accesses here synchronizes across
+        //       frames without per-frame duplicate scratch. (srcAccess must list
+        //       the WRITEs, not just SHADER_READ, or WAW/RAW hazards slip through.)
+        // dep1: this pass's resolve write becomes visible to the composite sampler.
+        VkSubpassDependency deps[2] {};
+        deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        deps[0].dstSubpass = 0;
+        deps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                             | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                             | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                             | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        deps[0].srcAccessMask = VK_ACCESS_SHADER_READ_BIT
+                              | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                              | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                             | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                             | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        deps[1].srcSubpass = 0;
+        deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+        VkRenderPassCreateInfo rpi {};
+        rpi.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        rpi.attachmentCount = 3;
+        rpi.pAttachments = atts;
+        rpi.subpassCount = 1;
+        rpi.pSubpasses = &sub;
+        rpi.dependencyCount = 2;
+        rpi.pDependencies = deps;
+        if (createRenderPass(device, &rpi, nullptr, &stencilCoverRenderPass) != VK_SUCCESS) {
+            DestroyStencilCoverResources();
+            return false;
+        }
+    }
+
+    {
+        VkImageView fbViews[3] = { stencilMsaaColorView, stencilMsaaDsView, stencilResolveView };
+        VkFramebufferCreateInfo fci {};
+        fci.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fci.renderPass = stencilCoverRenderPass;
+        fci.attachmentCount = 3;
+        fci.pAttachments = fbViews;
+        fci.width = extent.width;
+        fci.height = extent.height;
+        fci.layers = 1;
+        if (createFramebuffer(device, &fci, nullptr, &stencilCoverFramebuffer) != VK_SUCCESS) {
+            DestroyStencilCoverResources();
+            return false;
+        }
+    }
+
+    // 3 pipelines: stencil-fill (EvenOdd INVERT / NonZero INCR-DECR, no color)
+    // + cover (NOT_EQUAL ref 0 -> write premult color, PassOp ZERO self-clears
+    // the stencil so paths within one pass need no per-path clear). All reuse
+    // the solid-fill VS/FS + engineBatchPipelineLayout (pixel-space MVP push).
+    {
+        VkShaderModule vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
+        VkShaderModuleCreateInfo vmi {};
+        vmi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        vmi.codeSize = kImpellerSolidFillVertShaderSpvSize;
+        vmi.pCode = kImpellerSolidFillVertShaderSpv;
+        if (createShaderModule(device, &vmi, nullptr, &vs) != VK_SUCCESS) {
+            DestroyStencilCoverResources();
+            return false;
+        }
+        VkShaderModuleCreateInfo fmi {};
+        fmi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        fmi.codeSize = kImpellerSolidFillFragShaderSpvSize;
+        fmi.pCode = kImpellerSolidFillFragShaderSpv;
+        if (createShaderModule(device, &fmi, nullptr, &fs) != VK_SUCCESS) {
+            destroyShaderModule(device, vs, nullptr);
+            DestroyStencilCoverResources();
+            return false;
+        }
+
+        VkPipelineShaderStageCreateInfo stages[2] {};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = vs;
+        stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = fs;
+        stages[1].pName = "main";
+
+        VkVertexInputBindingDescription bind {};
+        bind.binding = 0;
+        bind.stride = sizeof(VkImpellerVertex);
+        bind.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+        VkVertexInputAttributeDescription attrs[2] {};
+        attrs[0].location = 0; attrs[0].binding = 0; attrs[0].format = VK_FORMAT_R32G32_SFLOAT;       attrs[0].offset = 0;
+        attrs[1].location = 1; attrs[1].binding = 0; attrs[1].format = VK_FORMAT_R32G32B32A32_SFLOAT; attrs[1].offset = sizeof(float) * 2;
+        VkPipelineVertexInputStateCreateInfo vin {};
+        vin.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vin.vertexBindingDescriptionCount = 1;
+        vin.pVertexBindingDescriptions = &bind;
+        vin.vertexAttributeDescriptionCount = 2;
+        vin.pVertexAttributeDescriptions = attrs;
+
+        VkPipelineInputAssemblyStateCreateInfo ia {};
+        ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo vps {};
+        vps.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        vps.viewportCount = 1;
+        vps.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo rs {};
+        rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rs.polygonMode = VK_POLYGON_MODE_FILL;
+        rs.cullMode = VK_CULL_MODE_NONE;   // NonZero relies on front+back rasterizing
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rs.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo ms {};
+        ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        ms.rasterizationSamples = samples;
+
+        VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dyns {};
+        dyns.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dyns.dynamicStateCount = static_cast<uint32_t>(std::size(dynStates));
+        dyns.pDynamicStates = dynStates;
+
+        VkPipelineDepthStencilStateCreateInfo dsFillEO {};
+        dsFillEO.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        dsFillEO.stencilTestEnable = VK_TRUE;
+        dsFillEO.front.failOp = VK_STENCIL_OP_KEEP;
+        dsFillEO.front.passOp = VK_STENCIL_OP_INVERT;       // even-odd toggle
+        dsFillEO.front.depthFailOp = VK_STENCIL_OP_KEEP;
+        dsFillEO.front.compareOp = VK_COMPARE_OP_ALWAYS;
+        dsFillEO.front.compareMask = 0xFF;
+        dsFillEO.front.writeMask = 0xFF;
+        dsFillEO.front.reference = 0;
+        dsFillEO.back = dsFillEO.front;
+
+        VkPipelineDepthStencilStateCreateInfo dsFillNZ = dsFillEO;
+        dsFillNZ.front.passOp = VK_STENCIL_OP_INCREMENT_AND_CLAMP;  // winding +
+        dsFillNZ.back = dsFillNZ.front;
+        dsFillNZ.back.passOp = VK_STENCIL_OP_DECREMENT_AND_CLAMP;   // winding -
+
+        VkPipelineDepthStencilStateCreateInfo dsCover {};
+        dsCover.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+        dsCover.stencilTestEnable = VK_TRUE;
+        dsCover.front.failOp = VK_STENCIL_OP_KEEP;
+        dsCover.front.passOp = VK_STENCIL_OP_ZERO;          // self-clear inside the shape
+        dsCover.front.depthFailOp = VK_STENCIL_OP_KEEP;
+        dsCover.front.compareOp = VK_COMPARE_OP_NOT_EQUAL;  // stencil != 0 -> inside
+        dsCover.front.compareMask = 0xFF;
+        dsCover.front.writeMask = 0xFF;
+        dsCover.front.reference = 0;
+        dsCover.back = dsCover.front;
+
+        // Quad (type0) variant: no stencil, no depth — just MSAA color.
+        VkPipelineDepthStencilStateCreateInfo dsDisabled {};
+        dsDisabled.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+
+        VkPipelineColorBlendAttachmentState cbFill {};
+        cbFill.blendEnable = VK_FALSE;
+        cbFill.colorWriteMask = 0;  // stencil pass writes no color
+        VkPipelineColorBlendStateCreateInfo cbFillInfo {};
+        cbFillInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        cbFillInfo.attachmentCount = 1;
+        cbFillInfo.pAttachments = &cbFill;
+
+        VkPipelineColorBlendAttachmentState cbCover {};
+        cbCover.blendEnable = VK_TRUE;
+        cbCover.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cbCover.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cbCover.colorBlendOp = VK_BLEND_OP_ADD;
+        cbCover.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cbCover.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cbCover.alphaBlendOp = VK_BLEND_OP_ADD;
+        cbCover.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT
+                               | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cbCoverInfo {};
+        cbCoverInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        cbCoverInfo.attachmentCount = 1;
+        cbCoverInfo.pAttachments = &cbCover;
+
+        VkGraphicsPipelineCreateInfo base {};
+        base.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        base.stageCount = 2;
+        base.pStages = stages;
+        base.pVertexInputState = &vin;
+        base.pInputAssemblyState = &ia;
+        base.pViewportState = &vps;
+        base.pRasterizationState = &rs;
+        base.pMultisampleState = &ms;
+        base.pDynamicState = &dyns;
+        base.layout = engineBatchPipelineLayout;
+        base.renderPass = stencilCoverRenderPass;
+        base.subpass = 0;
+
+        // [0]=quad (type0, no stencil, premult SrcOver), [1]=fill EvenOdd,
+        // [2]=fill NonZero, [3]=cover.
+        VkGraphicsPipelineCreateInfo infos[4] = { base, base, base, base };
+        infos[0].pDepthStencilState = &dsDisabled; infos[0].pColorBlendState = &cbCoverInfo;
+        infos[1].pDepthStencilState = &dsFillEO;   infos[1].pColorBlendState = &cbFillInfo;
+        infos[2].pDepthStencilState = &dsFillNZ;   infos[2].pColorBlendState = &cbFillInfo;
+        infos[3].pDepthStencilState = &dsCover;    infos[3].pColorBlendState = &cbCoverInfo;
+
+        VkPipeline pipes[4] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+        const VkResult pr = createGraphicsPipelines(device, VK_NULL_HANDLE, 4, infos, nullptr, pipes);
+        destroyShaderModule(device, fs, nullptr);
+        destroyShaderModule(device, vs, nullptr);
+        if (pr != VK_SUCCESS) {
+            DestroyStencilCoverResources();
+            return false;
+        }
+        psoStencilQuad        = pipes[0];
+        psoStencilFillEvenOdd = pipes[1];
+        psoStencilFillNonZero = pipes[2];
+        psoStencilCover       = pipes[3];
+    }
+
+    stencilCoverW = extent.width;
+    stencilCoverH = extent.height;
+    stencilSampleCount = samples;
+    stencilDsFormat = dsFormat;
+    return true;
+}
+
 void VulkanRenderTarget::Impl::RenderEngineBatches(
     VkCommandBuffer cmd,
     const std::vector<VkImpellerDrawBatch>& batches,
@@ -6163,6 +7058,207 @@ void VulkanRenderTarget::Impl::RenderEngineBatches(
 {
     if (batches.empty() || cmd == VK_NULL_HANDLE) return;
     if (!EnsureEngineBatchPipeline()) return;
+
+    // ── GPU stencil-then-cover path (JALIUM_VK_STENCIL_PATH) ────────────────
+    // When any solid fill/stroke arrived as a stencil batch (pipelineType==1),
+    // render the WHOLE engine-batch list (type0 indexed quads + type1 stencil
+    // paths, in painter order) into an offscreen N× MSAA color+stencil target,
+    // then resolve 1× and composite onto the swap chain (premult SrcOver) in a
+    // single pass. Routing type0 through the same MSAA target keeps painter
+    // order with ONE composite — CompositeVelloOutput resets its descriptor pool
+    // per call, so it must run exactly once — and gives gradients/ellipses MSAA
+    // too. With no stencil batch (gate off, or gradient-only frame) we fall
+    // through to the original direct-to-swap-chain path below, byte-unchanged.
+    bool hasStencil = false;
+    if (VkStencilPathEnabled()) {
+        for (const auto& b : batches) {
+            if (b.pipelineType == 1 && !b.stencilContours.empty()) { hasStencil = true; break; }
+        }
+    }
+    if (hasStencil && EnsureStencilCoverResources(extent)) {
+        struct DrawRec {
+            int type = 0;                       // 0=quad (indexed), 1=stencil path
+            const VkImpellerDrawBatch* src = nullptr;
+            VkDeviceSize vtxOffset = 0, idxOffset = 0;
+            uint32_t idxCount = 0;
+            std::vector<VkImpellerVertex> fill; // type1 fan triangle list
+            VkImpellerVertex cover[6] {};       // type1 bbox cover quad
+            VkDeviceSize fillOffset = 0, coverOffset = 0;
+            uint32_t fillCount = 0;
+            FillRule fillRule = FillRule::EvenOdd;
+        };
+        std::vector<DrawRec> recs;
+        recs.reserve(batches.size());
+        VkDeviceSize totalBytes = 0;
+        for (const auto& b : batches) {
+            if (b.pipelineType == 1) {
+                if (b.stencilContours.empty()) continue;
+                DrawRec rec;
+                rec.type = 1;
+                rec.src = &b;
+                rec.fillRule = b.stencilFillRule;
+                float minX = 1e30f, minY = 1e30f, maxX = -1e30f, maxY = -1e30f;
+                for (const auto& c : b.stencilContours) {
+                    const uint32_t pc = c.VertexCount();
+                    if (pc < 3) continue;
+                    for (uint32_t k = 1; k + 1 < pc; ++k) {   // fan hub = vertex 0
+                        rec.fill.push_back({ c.X(0),     c.Y(0),     0, 0, 0, 0 });
+                        rec.fill.push_back({ c.X(k),     c.Y(k),     0, 0, 0, 0 });
+                        rec.fill.push_back({ c.X(k + 1), c.Y(k + 1), 0, 0, 0, 0 });
+                    }
+                    for (uint32_t k = 0; k < pc; ++k) {
+                        const float px = c.X(k), py = c.Y(k);
+                        if (px < minX) minX = px;
+                        if (py < minY) minY = py;
+                        if (px > maxX) maxX = px;
+                        if (py > maxY) maxY = py;
+                    }
+                }
+                if (rec.fill.empty() || !(maxX > minX) || !(maxY > minY)) continue;
+                const float r = b.stencilR, g = b.stencilG, bl = b.stencilB, a = b.stencilA;
+                rec.cover[0] = { minX, minY, r, g, bl, a };
+                rec.cover[1] = { maxX, minY, r, g, bl, a };
+                rec.cover[2] = { maxX, maxY, r, g, bl, a };
+                rec.cover[3] = { minX, minY, r, g, bl, a };
+                rec.cover[4] = { maxX, maxY, r, g, bl, a };
+                rec.cover[5] = { minX, maxY, r, g, bl, a };
+                rec.fillCount = static_cast<uint32_t>(rec.fill.size());
+                totalBytes += static_cast<VkDeviceSize>(rec.fill.size()) * sizeof(VkImpellerVertex)
+                            + sizeof(rec.cover);
+                recs.push_back(std::move(rec));
+            } else {
+                if (b.indices.empty()) continue;
+                DrawRec rec;
+                rec.type = 0;
+                rec.src = &b;
+                rec.idxCount = static_cast<uint32_t>(b.indices.size());
+                totalBytes += static_cast<VkDeviceSize>(b.vertices.size()) * sizeof(VkImpellerVertex)
+                            + static_cast<VkDeviceSize>(b.indices.size()) * sizeof(uint32_t);
+                recs.push_back(std::move(rec));
+            }
+        }
+        if (recs.empty() || totalBytes == 0) return;
+        if (!EnsureEngineBatchBuffer(frameIdx, totalBytes)) return;
+
+        PerFrameState& frame = perFrameStates_[frameIdx];
+        uint8_t* mapped = static_cast<uint8_t*>(frame.engineBatchMapped);
+        VkDeviceSize cursor = 0;
+        for (auto& rec : recs) {
+            if (rec.type == 0) {
+                const auto& b = *rec.src;
+                const VkDeviceSize vB = b.vertices.size() * sizeof(VkImpellerVertex);
+                const VkDeviceSize iB = b.indices.size() * sizeof(uint32_t);
+                std::memcpy(mapped + cursor, b.vertices.data(), vB);
+                rec.vtxOffset = cursor;
+                cursor += vB;
+                std::memcpy(mapped + cursor, b.indices.data(), iB);
+                rec.idxOffset = cursor;
+                cursor += iB;
+            } else {
+                const VkDeviceSize fB = rec.fill.size() * sizeof(VkImpellerVertex);
+                std::memcpy(mapped + cursor, rec.fill.data(), fB);
+                rec.fillOffset = cursor;
+                cursor += fB;
+                std::memcpy(mapped + cursor, rec.cover, sizeof(rec.cover));
+                rec.coverOffset = cursor;
+                cursor += sizeof(rec.cover);
+            }
+        }
+
+        auto cmdBeginRenderPass   = LoadDeviceProc<PFN_vkCmdBeginRenderPass>(getDeviceProcAddr, device, "vkCmdBeginRenderPass");
+        auto cmdEndRenderPass     = LoadDeviceProc<PFN_vkCmdEndRenderPass>(getDeviceProcAddr, device, "vkCmdEndRenderPass");
+        auto cmdBindPipeline      = LoadDeviceProc<PFN_vkCmdBindPipeline>(getDeviceProcAddr, device, "vkCmdBindPipeline");
+        auto cmdSetViewport       = LoadDeviceProc<PFN_vkCmdSetViewport>(getDeviceProcAddr, device, "vkCmdSetViewport");
+        auto cmdSetScissor        = LoadDeviceProc<PFN_vkCmdSetScissor>(getDeviceProcAddr, device, "vkCmdSetScissor");
+        auto cmdPushConstants     = LoadDeviceProc<PFN_vkCmdPushConstants>(getDeviceProcAddr, device, "vkCmdPushConstants");
+        auto cmdBindVertexBuffers = LoadDeviceProc<PFN_vkCmdBindVertexBuffers>(getDeviceProcAddr, device, "vkCmdBindVertexBuffers");
+        auto cmdBindIndexBuffer   = LoadDeviceProc<PFN_vkCmdBindIndexBuffer>(getDeviceProcAddr, device, "vkCmdBindIndexBuffer");
+        auto cmdDrawIndexed       = LoadDeviceProc<PFN_vkCmdDrawIndexed>(getDeviceProcAddr, device, "vkCmdDrawIndexed");
+        auto cmdDraw              = LoadDeviceProc<PFN_vkCmdDraw>(getDeviceProcAddr, device, "vkCmdDraw");
+        if (!cmdBeginRenderPass || !cmdEndRenderPass || !cmdBindPipeline || !cmdSetViewport
+            || !cmdSetScissor || !cmdPushConstants || !cmdBindVertexBuffers
+            || !cmdBindIndexBuffer || !cmdDrawIndexed || !cmdDraw) {
+            return;
+        }
+
+        // Pixel→clip MVP + negative-height viewport — identical to the direct
+        // path, so the offscreen MSAA image is screen-oriented and the 1:1
+        // composite needs no Y flip.
+        const float w = std::max(1.0f, static_cast<float>(extent.width));
+        const float h = std::max(1.0f, static_cast<float>(extent.height));
+        float mvp[16] = {
+            2.0f / w, 0,         0, 0,
+            0,        -2.0f / h, 0, 0,
+            0,        0,         1, 0,
+            -1.0f,    1.0f,      0, 1
+        };
+        VkViewport viewport {};
+        viewport.width = static_cast<float>(extent.width);
+        viewport.y = static_cast<float>(extent.height);
+        viewport.height = -static_cast<float>(extent.height);
+        viewport.maxDepth = 1.0f;
+
+        auto scissorOf = [&](const VkImpellerDrawBatch& src) -> VkRect2D {
+            VkRect2D s {};
+            if (src.hasScissor) {
+                const int32_t l = static_cast<int32_t>(std::max(0.0f, src.scissorL));
+                const int32_t t = static_cast<int32_t>(std::max(0.0f, src.scissorT));
+                const int32_t r = static_cast<int32_t>(std::max(0.0f, src.scissorR));
+                const int32_t b = static_cast<int32_t>(std::max(0.0f, src.scissorB));
+                s.offset.x = l;
+                s.offset.y = t;
+                s.extent.width = static_cast<uint32_t>(std::max(0, r - l));
+                s.extent.height = static_cast<uint32_t>(std::max(0, b - t));
+            } else {
+                s.extent = extent;
+            }
+            return s;
+        };
+
+        VkClearValue clears[3] {};
+        clears[0].color = { { 0.0f, 0.0f, 0.0f, 0.0f } };
+        clears[1].depthStencil = { 1.0f, 0 };
+        VkRenderPassBeginInfo rp {};
+        rp.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        rp.renderPass = stencilCoverRenderPass;
+        rp.framebuffer = stencilCoverFramebuffer;
+        rp.renderArea.extent = extent;
+        rp.clearValueCount = 3;
+        rp.pClearValues = clears;
+        cmdBeginRenderPass(cmd, &rp, VK_SUBPASS_CONTENTS_INLINE);
+        cmdSetViewport(cmd, 0, 1, &viewport);
+        cmdBindIndexBuffer(cmd, frame.engineBatchBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+        for (const auto& rec : recs) {
+            const VkRect2D scissor = scissorOf(*rec.src);
+            cmdSetScissor(cmd, 0, 1, &scissor);
+            cmdPushConstants(cmd, engineBatchPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp), mvp);
+            if (rec.type == 0) {
+                cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, psoStencilQuad);
+                cmdBindVertexBuffers(cmd, 0, 1, &frame.engineBatchBuffer, &rec.vtxOffset);
+                cmdDrawIndexed(cmd, rec.idxCount, 1,
+                               static_cast<uint32_t>(rec.idxOffset / sizeof(uint32_t)), 0, 0);
+            } else {
+                // Pass 1: write stencil only (no color).
+                cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                rec.fillRule == FillRule::NonZero ? psoStencilFillNonZero
+                                                                  : psoStencilFillEvenOdd);
+                cmdBindVertexBuffers(cmd, 0, 1, &frame.engineBatchBuffer, &rec.fillOffset);
+                cmdDraw(cmd, rec.fillCount, 1, 0, 0);
+                // Pass 2: cover — stencil!=0 ⇒ write premult color + self-clear.
+                cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, psoStencilCover);
+                cmdBindVertexBuffers(cmd, 0, 1, &frame.engineBatchBuffer, &rec.coverOffset);
+                cmdDraw(cmd, 6, 1, 0, 0);
+            }
+        }
+        cmdEndRenderPass(cmd);
+
+        // Resolve image is now SHADER_READ_ONLY (render-pass final layout);
+        // composite it onto the swap chain (premult SrcOver, fullscreen, 1:1).
+        CompositeVelloOutput(cmd, stencilResolveView, stencilResolveSampler,
+                             extent, frameIdx, renderPass, framebuffer);
+        return;
+    }
 
     // Pack all batches into a single host-visible buffer: vertices first
     // (sequential per batch), then indices. Per-batch offsets recorded so
@@ -6863,6 +7959,21 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
 
         if (command.kind == GpuReplayCommandKind::Blur) {
+            if (command.blur.captureLiveScene) {
+                // GPU compositor path: no CPU pixels to stage — the blur source is
+                // blitted from the rendered frame's [x,y,w,h] sub-rect at replay
+                // time (see the Blur branch below). We still need valid dest dims so
+                // the shared upload image is sized to hold the captured region.
+                if (command.blur.pixelWidth == 0 || command.blur.pixelHeight == 0) {
+                    EndFrame();
+                    return false;
+                }
+                maxBlurWidth = std::max(maxBlurWidth, command.blur.pixelWidth);
+                maxBlurHeight = std::max(maxBlurHeight, command.blur.pixelHeight);
+                hasBlurCommands = true;
+                continue;
+            }
+
             const size_t expectedSize = static_cast<size_t>(command.blur.pixelWidth) * static_cast<size_t>(command.blur.pixelHeight) * 4u;
             if (command.blur.pixelWidth == 0 || command.blur.pixelHeight == 0 || command.blur.pixels.size() != expectedSize) {
                 EndFrame();
@@ -7042,8 +8153,14 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             const size_t pixelBytes = static_cast<size_t>(command.liquidGlass.pixelWidth) * static_cast<size_t>(command.liquidGlass.pixelHeight) * 4u;
             std::memcpy(stagingBytes + totalBitmapBytes + totalBackdropBytes + liquidGlassOffsets[index], command.liquidGlass.pixels.data(), pixelBytes);
         } else if (command.kind == GpuReplayCommandKind::Blur) {
-            const size_t pixelBytes = static_cast<size_t>(command.blur.pixelWidth) * static_cast<size_t>(command.blur.pixelHeight) * 4u;
-            std::memcpy(stagingBytes + totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes + blurOffsets[index], command.blur.pixels.data(), pixelBytes);
+            // captureLiveScene blur carries NO CPU pixels (its source is blitted
+            // from the live frame at replay time), so it allocated 0 staging bytes
+            // in the sizing loop — must NOT memcpy here (pixels is empty while
+            // pixelWidth/Height are non-zero, which would read out of bounds).
+            if (!command.blur.captureLiveScene) {
+                const size_t pixelBytes = static_cast<size_t>(command.blur.pixelWidth) * static_cast<size_t>(command.blur.pixelHeight) * 4u;
+                std::memcpy(stagingBytes + totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes + blurOffsets[index], command.blur.pixels.data(), pixelBytes);
+            }
         } else if (command.kind == GpuReplayCommandKind::FilledPolygon) {
             const auto& verts = command.filledPolygon.GetTriangleVertices();
             const size_t vertexBytes = verts.size() * sizeof(float);
@@ -7291,12 +8408,31 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     VkRect2D scissor {};
     scissor.extent = extent;
 
+    // env-gated GPU offscreen effect RT (JALIUM_VK_EFFECT_GPU_RT). Inside an
+    // OffscreenBegin..OffscreenEnd region beginLoadRenderPass() redirects to the offscreen
+    // framebuffer (CLEAR transparent on the region's first draw, LOAD after); OffscreenEnd
+    // composites the isolated element back into the main frame. lastOffscreenView is the
+    // isolated image the matching effect samples (Stage 4). All inert when off: no marker is
+    // ever emitted and offscreenReady short-circuits (EnsureEffectOffscreenResources not called).
+    bool offscreenActive = false;
+    bool offscreenFirstDraw = false;
+    bool offscreenReady = effectOffscreenEnabled_ && EnsureEffectOffscreenResources(extent);
+    VkImageView lastOffscreenView = VK_NULL_HANDLE;
+    (void)lastOffscreenView;  // consumed in Stage 4
+
     const VkClearValue renderPassClearValue = { { 0.0f, 0.0f, 0.0f, 0.0f } };
     auto beginLoadRenderPass = [&]() {
         VkRenderPassBeginInfo renderPassInfo {};
         renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        renderPassInfo.renderPass = frameRenderPass;
-        renderPassInfo.framebuffer = framebuffers[imageIndex];
+        if (offscreenActive && offscreenReady) {
+            // First draw of the region clears transparent; later draws preserve prior content.
+            renderPassInfo.renderPass  = offscreenFirstDraw ? effectOffscreenRenderPassClear  : effectOffscreenRenderPassLoad;
+            renderPassInfo.framebuffer = offscreenFirstDraw ? effectOffscreenFramebufferClear : effectOffscreenFramebufferLoad;
+            offscreenFirstDraw = false;
+        } else {
+            renderPassInfo.renderPass = frameRenderPass;
+            renderPassInfo.framebuffer = framebuffers[imageIndex];
+        }
         renderPassInfo.renderArea.extent = extent;
         renderPassInfo.clearValueCount = 1;
         renderPassInfo.pClearValues = &renderPassClearValue;
@@ -7389,6 +8525,50 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             }
         }
 
+        if (command.kind == GpuReplayCommandKind::OffscreenBegin) {
+            if (!offscreenReady) {
+                // Offscreen RT unavailable: degrade to the legacy behaviour -- leave
+                // offscreenActive false so the child draws keep rendering into the main frame.
+                continue;
+            }
+            // No image barrier needed: the CLEAR-variant render pass uses initialLayout=UNDEFINED
+            // (discards any prior layout) and the EXTERNAL dep0 (FRAGMENT_SHADER|COLOR_OUTPUT ->
+            // COLOR_OUTPUT) orders the previous frame's sample / write before this frame's writes.
+            offscreenActive = true;
+            offscreenFirstDraw = true;
+            continue;
+        }
+        if (command.kind == GpuReplayCommandKind::OffscreenEnd) {
+            offscreenActive = false;
+            if (offscreenReady) {
+                // The element subtree is now isolated in the offscreen image, which every
+                // per-pass finalLayout=SHADER_READ_ONLY_OPTIMAL already left sample-ready.
+                // Composite it 1:1 back into the main frame so the element stays visible (it
+                // was redirected out of the main framebuffer); the image also remains the
+                // effect sampling source (lastOffscreenView, Stage 4). The offscreen is
+                // transparent except where the element drew, so a full-screen alpha composite
+                // only touches the element's pixels and preserves z-order at this command point.
+                lastOffscreenView = effectOffscreenView;
+                beginLoadRenderPass();  // offscreenActive==false -> main frame
+                cmdSetScissor(commandBuffer, 0, 1, &scissor);
+                BitmapQuadPushConstants pushConstants {};
+                pushConstants.rect[0] = 0.0f;
+                pushConstants.rect[1] = 0.0f;
+                pushConstants.rect[2] = static_cast<float>(extent.width);
+                pushConstants.rect[3] = static_cast<float>(extent.height);
+                pushConstants.uvOpacity[0] = 1.0f;
+                pushConstants.uvOpacity[1] = 1.0f;
+                pushConstants.uvOpacity[2] = 1.0f;
+                pushConstants.screenSize[0] = static_cast<float>(extent.width);
+                pushConstants.screenSize[1] = static_cast<float>(extent.height);
+                cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipeline);
+                cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipelineLayout, 0, 1, &effectOffscreenDescriptorSet, 0, nullptr);
+                cmdPushConstants(commandBuffer, bitmapPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
+                cmdDraw(commandBuffer, 6, 1, 0, 0);
+                cmdEndRenderPass(commandBuffer);
+            }
+            continue;
+        }
         if (command.kind == GpuReplayCommandKind::SolidRect) {
             beginLoadRenderPass();
             cmdSetScissor(commandBuffer, 0, 1, &commandScissor);
@@ -7426,6 +8606,33 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 pushConstants.innerRoundedClipRadius[0] = command.innerRoundedClipRadiusX;
                 pushConstants.innerRoundedClipRadius[1] = command.innerRoundedClipRadiusY;
                 pushConstants.clipFlags[1] = 1.0f;
+                // Per-corner inner radii. Default-initialised to zero, so this
+                // only matters for the PerCornerRoundedRectangle STROKE path
+                // that sets non-zero values; otherwise the shader's inner
+                // per-corner sum stays 0 and the uniform inner path runs.
+                std::memcpy(pushConstants.innerPerCornerRadiusX, command.innerPerCornerRadiusX, sizeof(pushConstants.innerPerCornerRadiusX));
+                std::memcpy(pushConstants.innerPerCornerRadiusY, command.innerPerCornerRadiusY, sizeof(pushConstants.innerPerCornerRadiusY));
+            }
+            // Rotated / skewed rounded rect & fill: forward the LOCAL geometry
+            // into the (free on this path) inner rounded-clip slots and arm
+            // geometryFlags.y so the shader takes its local-space SDF branch.
+            // hasRoundedClip / hasInnerRoundedClip are false here, so the
+            // screen-space clip writes above did NOT touch clipFlags — exactly
+            // what the local path needs (clipFlags stays 0). No push-constant
+            // growth: every field written here already exists in the 224-byte
+            // block.
+            if (command.hasLocalRoundedCoverage) {
+                pushConstants.innerRoundedClipRect[0] = command.localOuterW;
+                pushConstants.innerRoundedClipRect[1] = command.localOuterH;
+                pushConstants.innerRoundedClipRect[2] = command.localInnerW;
+                pushConstants.innerRoundedClipRect[3] = command.localInnerH;
+                // Per-axis AA pad consumed by the vertex shader to rebuild the
+                // expanded local corner positions for the localPos varying.
+                pushConstants.roundedClipRadius[0] = command.localExpandX;
+                pushConstants.roundedClipRadius[1] = command.localExpandY;
+                std::memcpy(pushConstants.innerPerCornerRadiusX, command.localOuterPerCornerRadius, sizeof(pushConstants.innerPerCornerRadiusX));
+                std::memcpy(pushConstants.innerPerCornerRadiusY, command.localInnerPerCornerRadius, sizeof(pushConstants.innerPerCornerRadiusY));
+                pushConstants.geometryFlags[1] = 1.0f;
             }
             if (command.hasCustomQuad) {
                 pushConstants.quadPoint01[0] = command.quadPoint0X;
@@ -7556,6 +8763,26 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
 
         if (command.kind == GpuReplayCommandKind::Blur) {
+            if (command.blur.captureLiveScene) {
+                // GPU compositor path: blur the LIVE composited frame at the
+                // element's screen rect (the element was just rendered there by the
+                // replay; BeginEffectCapture is a GPU-path pass-through). No CPU
+                // upload and no per-element offscreen render target — we blit the
+                // element's own [x,y,w,h] sub-rect of the rendered colour image into
+                // the shared upload image and the existing blur pipeline samples it.
+                // Must run OUTSIDE a render pass; none is open between commands.
+                if (!CaptureLiveSceneToUpload(imageIndex, subresourceRange, extent,
+                        command.blur.pixelWidth, command.blur.pixelHeight,
+                        static_cast<int32_t>(std::lround(command.blur.x)),
+                        static_cast<int32_t>(std::lround(command.blur.y)),
+                        static_cast<int32_t>(std::lround(command.blur.w)),
+                        static_cast<int32_t>(std::lround(command.blur.h)))) {
+                    // No TRANSFER_SRC capture and no CPU-pixel fallback for the
+                    // compositor path — skip the composite (element stays sharp this
+                    // frame) rather than sampling an uninitialised upload image.
+                    continue;
+                }
+            } else {
             VkImageMemoryBarrier uploadToTransfer {};
             uploadToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             uploadToTransfer.oldLayout = uploadImageLayout;
@@ -7592,6 +8819,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             uploadToShaderRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &uploadToShaderRead);
             uploadImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
 
             beginLoadRenderPass();
             cmdSetScissor(commandBuffer, 0, 1, &commandScissor);
@@ -7994,7 +9222,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 pc.innerRoundedClipRadius[1] = command.innerRoundedClipRadiusY;
                 pc.clipFlags[1] = 1.0f;
             }
-            cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipeline);
+            cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                (command.textRun.clearType && textClearTypePipeline != VK_NULL_HANDLE) ? textClearTypePipeline : textPipeline);
             cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipelineLayout, 0, 1, &textDescriptorSet, 0, nullptr);
             cmdPushConstants(commandBuffer, textPipelineLayout,
                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -8633,6 +9862,7 @@ void VulkanRenderTarget::Impl::Destroy()
 #ifdef _WIN32
     textPipelineLayout = VK_NULL_HANDLE;
     textPipeline = VK_NULL_HANDLE;
+    textClearTypePipeline = VK_NULL_HANDLE;
     textDescriptorSetLayout = VK_NULL_HANDLE;
     textDescriptorPool = VK_NULL_HANDLE;
     textDescriptorSet = VK_NULL_HANDLE;
@@ -8723,6 +9953,39 @@ void VulkanRenderTarget::ApplyTransform(const CpuTransform& transform, float x, 
     outY = x * transform.m12 + y * transform.m22 + transform.dy;
 }
 
+void VulkanRenderTarget::SyncClipToEngine(IRenderingEngine* engine) const
+{
+    if (!engine) return;
+
+    // Empty clip stack means no scissor. Clear unconditionally first so a
+    // scissor left set by a previous primitive can never bleed into this batch
+    // (the engine's hasScissor_ is sticky — SetScissorRect latches it until
+    // cleared).
+    if (clipStack_.empty()) {
+        engine->ClearScissorRect();
+        return;
+    }
+
+    // Reuse the exact same AABB resolution the SolidRect GPU-replay path uses,
+    // so engine geometry is clipped to byte-identical pixel bounds. TryPopulate-
+    // ReplayClip bails (returns false) on rotation / skew / non-invertible
+    // transform / more-than-one rounded clip — in every such case we fall back
+    // to an unclipped batch, matching the pre-existing behaviour. (It also fills
+    // the rounded-clip fields, but the engine batch shader has no rounded-clip
+    // channel yet — AABB scissor only for now.)
+    GpuReplayCommand probe;
+    probe.kind = GpuReplayCommandKind::SolidRect;
+    if (TryPopulateReplayClip(probe) && probe.hasScissor) {
+        engine->SetScissorRect(
+            static_cast<float>(probe.scissorLeft),
+            static_cast<float>(probe.scissorTop),
+            static_cast<float>(probe.scissorRight),
+            static_cast<float>(probe.scissorBottom));
+    } else {
+        engine->ClearScissorRect();
+    }
+}
+
 bool VulkanRenderTarget::TryPopulateReplayClip(GpuReplayCommand& command) const
 {
     command.hasScissor = false;
@@ -8773,7 +10036,23 @@ bool VulkanRenderTarget::TryPopulateReplayClip(GpuReplayCommand& command) const
         if (clip.rounded) {
             ++roundedClipCount;
             if (roundedClipCount > 1) {
-                return false;
+                // The GPU push-constant path (bitmap / SolidRect fragment shaders)
+                // carries only ONE rounded clip. Previously a second rounded clip
+                // made this return false, and every caller treats false as "drop
+                // this primitive". So any content under TWO nested rounded clips
+                // -- e.g. an Image inside a rounded card whose header Border is
+                // also rounded (rounded RootBorder + rounded HeaderBorder) --
+                // vanished entirely (the Jalium.One welcome-page template card
+                // thumbnails were blank for exactly this reason).
+                //
+                // Degrade gracefully instead of dropping: the rectangular AABB
+                // intersection is already accumulated above for EVERY clip
+                // (including this one), so the content stays correctly clipped to
+                // the rectangle; we simply keep the first rounded clip's corner
+                // rounding and let any further rounded clips contribute their AABB
+                // only. Visible result: content shows, bounded by the true
+                // rectangle, with one level of corner rounding -- vs disappearing.
+                continue;
             }
 
             command.hasRoundedClip = true;
@@ -9255,6 +10534,12 @@ void VulkanRenderTarget::ReplayCommandToCpu(const GpuReplayCommand& command)
             // replay path does not rasterize glyphs — text falls back to the
             // GDI/FreeType bitmap path when cpuRasterNeeded_ is set. Nothing to
             // replay here; the case keeps the switch exhaustive (no -Wswitch).
+            break;
+        case GpuReplayCommandKind::OffscreenBegin:
+        case GpuReplayCommandKind::OffscreenEnd:
+            // env-gated GPU offscreen effect RT markers. No CPU-replay meaning
+            // (the CPU fallback rasterizes into pixelBuffer_ directly); keep the
+            // switch exhaustive (no -Wswitch).
             break;
     }
 }
@@ -10485,6 +11770,69 @@ bool VulkanRenderTarget::TryRecordGpuBlurCommand(const std::vector<uint8_t>& pix
     return true;
 }
 
+bool VulkanRenderTarget::TryRecordGpuLiveBlurCommand(float x, float y, float w, float h, float radius, float opacity, bool alphaOnlyTint, float tintR, float tintG, float tintB, float tintA)
+{
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || w == 0.0f || h == 0.0f) {
+        return false;
+    }
+    // The element already rendered into the frame on the GPU replay path, so we
+    // sample its OWN screen region from the live frame at replay time — recording
+    // during an active element capture would sample content not yet drawn, so the
+    // effectCaptureStack_ / transition guards still apply.
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return false;
+    }
+
+    const auto transform = GetCurrentTransform();
+    constexpr float kEpsilon = 0.0001f;
+    float p0x = 0.0f, p0y = 0.0f, p1x = 0.0f, p1y = 0.0f, p2x = 0.0f, p2y = 0.0f, p3x = 0.0f, p3y = 0.0f;
+    ApplyTransform(transform, x, y, p0x, p0y);
+    ApplyTransform(transform, x + w, y, p1x, p1y);
+    ApplyTransform(transform, x + w, y + h, p2x, p2y);
+    ApplyTransform(transform, x, y + h, p3x, p3y);
+
+    GpuReplayCommand replayCommand {};
+    replayCommand.kind = GpuReplayCommandKind::Blur;
+    replayCommand.blur.captureLiveScene = true;  // source from the live frame, not CPU pixels
+    replayCommand.blur.x = std::min(std::min(p0x, p1x), std::min(p2x, p3x));
+    replayCommand.blur.y = std::min(std::min(p0y, p1y), std::min(p2y, p3y));
+    replayCommand.blur.w = std::max(std::max(p0x, p1x), std::max(p2x, p3x)) - replayCommand.blur.x;
+    replayCommand.blur.h = std::max(std::max(p0y, p1y), std::max(p2y, p3y)) - replayCommand.blur.y;
+    // The replay blits this screen rect 1:1 into uploadImage[0,pixelWidth]x[0,pixelHeight];
+    // the blur shader's UV (corners * pixelWidth/uploadWidth) then samples exactly it.
+    replayCommand.blur.pixelWidth = static_cast<uint32_t>(std::lround(replayCommand.blur.w));
+    replayCommand.blur.pixelHeight = static_cast<uint32_t>(std::lround(replayCommand.blur.h));
+    replayCommand.blur.radius = std::clamp(radius, 0.0f, 12.0f);
+    replayCommand.blur.opacity = std::clamp(opacity * GetCurrentOpacity(), 0.0f, 1.0f);
+    replayCommand.blur.alphaOnlyTint = alphaOnlyTint;
+    replayCommand.blur.tintR = std::clamp(tintR, 0.0f, 1.0f);
+    replayCommand.blur.tintG = std::clamp(tintG, 0.0f, 1.0f);
+    replayCommand.blur.tintB = std::clamp(tintB, 0.0f, 1.0f);
+    replayCommand.blur.tintA = std::clamp(tintA, 0.0f, 1.0f);
+    if (replayCommand.blur.w <= kEpsilon || replayCommand.blur.h <= kEpsilon ||
+        replayCommand.blur.pixelWidth == 0 || replayCommand.blur.pixelHeight == 0 ||
+        replayCommand.blur.opacity <= 0.0f) {
+        return false;
+    }
+
+    if (!TryPopulateReplayClip(replayCommand)) {
+        return false;
+    }
+    if (replayCommand.scissorRight <= replayCommand.scissorLeft || replayCommand.scissorBottom <= replayCommand.scissorTop) {
+        return true;
+    }
+    if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
+        replayCommand.hasCustomQuad = true;
+        replayCommand.quadPoint0X = p0x; replayCommand.quadPoint0Y = p0y;
+        replayCommand.quadPoint1X = p1x; replayCommand.quadPoint1Y = p1y;
+        replayCommand.quadPoint2X = p2x; replayCommand.quadPoint2Y = p2y;
+        replayCommand.quadPoint3X = p3x; replayCommand.quadPoint3Y = p3y;
+    }
+
+    gpuReplayCommands_.push_back(std::move(replayCommand));
+    return true;
+}
+
 bool VulkanRenderTarget::TryRecordGpuLiquidGlassCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost)
 {
     if (!gpuReplaySupported_ || !gpuReplayHasClear_ || pixels.empty() || pixelWidth == 0 || pixelHeight == 0 || w == 0.0f || h == 0.0f) {
@@ -10691,6 +12039,147 @@ bool VulkanRenderTarget::TryRecordGpuDimOutsideRectCommand(float x, float y, flo
     return false;
 }
 
+bool VulkanRenderTarget::TryRecordGpuRotatedLocalRoundedRectCommand(const CpuTransform& transform,
+    float x, float y, float w, float h,
+    float tl, float tr, float br, float bl,
+    float strokeWidth, Brush* brush)
+{
+    // strokeWidth > 0 → border ring (outer minus inner); otherwise a solid fill.
+    const bool isStroke = strokeWidth > 0.0f;
+
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
+        return false;
+    }
+    if (w == 0.0f || h == 0.0f) {
+        return true;
+    }
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return false;
+    }
+
+    uint8_t b = 0, g = 0, r = 0, a = 0;
+    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
+        return false;
+    }
+
+    constexpr float kEpsilon = 0.0001f;
+
+    GpuReplayCommand replayCommand {};
+    replayCommand.kind = GpuReplayCommandKind::SolidRect;
+    if (!TryPopulateReplayClip(replayCommand)) {
+        return false;
+    }
+    // An ancestor rounded clip would need its own screen-space subtraction that
+    // this LOCAL-space path does not model — drop to CPU, mirroring the axis
+    // rounded fill/stroke guard. (Also what frees the inner clip push-constant
+    // slots for the local geometry: with hasRoundedClip impossible here, the
+    // shader's clipFlags.x/.y branches never run.)
+    if (replayCommand.hasRoundedClip || replayCommand.hasInnerRoundedClip) {
+        return false;
+    }
+    if (replayCommand.scissorRight <= replayCommand.scissorLeft ||
+        replayCommand.scissorBottom <= replayCommand.scissorTop) {
+        return true;
+    }
+
+    const float halfStroke = isStroke ? (strokeWidth * 0.5f) : 0.0f;
+
+    // LOCAL (pre-transform) OUTER rect: the centred model grows the element rect
+    // by halfStroke on every side (fill → halfStroke 0 → just the element rect).
+    // The localPos frame origin is this OUTER rect's top-left, in element space.
+    const float originX = x - halfStroke;
+    const float originY = y - halfStroke;
+    const float localOuterW = w + 2.0f * halfStroke;
+    const float localOuterH = h + 2.0f * halfStroke;
+
+    // Circular OUTER per-corner radii = corner + halfStroke (clamped >= 0). The
+    // FS additionally clamps to min(halfOuter) — D3D12-identical.
+    const float outerTL = std::max(0.0f, tl + halfStroke);
+    const float outerTR = std::max(0.0f, tr + halfStroke);
+    const float outerBR = std::max(0.0f, br + halfStroke);
+    const float outerBL = std::max(0.0f, bl + halfStroke);
+
+    // Per-axis on-screen scale of each LOCAL axis = length of the affine column.
+    // AA pad = 1px / scale, grown in LOCAL space so the smoothstep band still
+    // spans ~1px on screen after the affine (mirrors D3D12 sdf_rect.vs.hlsl).
+    const float sx = std::sqrt(transform.m11 * transform.m11 + transform.m12 * transform.m12);
+    const float sy = std::sqrt(transform.m21 * transform.m21 + transform.m22 * transform.m22);
+    const float expandX = 1.0f / std::max(sx, 1e-4f);
+    const float expandY = 1.0f / std::max(sy, 1e-4f);
+
+    // AA-EXPANDED local OUTER corners (relative to the OUTER top-left), pushed
+    // through the affine. Winding 0=TL,1=TR,2=BR,3=BL matches the vertex shader's
+    // indices[] = {0,1,2,0,2,3} AND the localPos corner table it rebuilds.
+    float p0x, p0y, p1x, p1y, p2x, p2y, p3x, p3y;
+    ApplyTransform(transform, originX - expandX,               originY - expandY,               p0x, p0y); // TL
+    ApplyTransform(transform, originX + localOuterW + expandX, originY - expandY,               p1x, p1y); // TR
+    ApplyTransform(transform, originX + localOuterW + expandX, originY + localOuterH + expandY, p2x, p2y); // BR
+    ApplyTransform(transform, originX - expandX,               originY + localOuterH + expandY, p3x, p3y); // BL
+
+    replayCommand.hasCustomQuad = true;
+    replayCommand.quadPoint0X = p0x; replayCommand.quadPoint0Y = p0y;
+    replayCommand.quadPoint1X = p1x; replayCommand.quadPoint1Y = p1y;
+    replayCommand.quadPoint2X = p2x; replayCommand.quadPoint2Y = p2y;
+    replayCommand.quadPoint3X = p3x; replayCommand.quadPoint3Y = p3y;
+
+    // Screen-space AABB of the UNEXPANDED transformed outer quad — not used for
+    // rendering (the VS draws the custom quad; the FS works in local space), only
+    // for any AABB/telemetry consumer of solidRect.x/y/w/h.
+    float q0x, q0y, q1x, q1y, q2x, q2y, q3x, q3y;
+    ApplyTransform(transform, originX,               originY,               q0x, q0y);
+    ApplyTransform(transform, originX + localOuterW, originY,               q1x, q1y);
+    ApplyTransform(transform, originX + localOuterW, originY + localOuterH, q2x, q2y);
+    ApplyTransform(transform, originX,               originY + localOuterH, q3x, q3y);
+    replayCommand.solidRect.x = std::min(std::min(q0x, q1x), std::min(q2x, q3x));
+    replayCommand.solidRect.y = std::min(std::min(q0y, q1y), std::min(q2y, q3y));
+    replayCommand.solidRect.w = std::max(std::max(q0x, q1x), std::max(q2x, q3x)) - replayCommand.solidRect.x;
+    replayCommand.solidRect.h = std::max(std::max(q0y, q1y), std::max(q2y, q3y)) - replayCommand.solidRect.y;
+    replayCommand.solidRect.r = static_cast<float>(r) / 255.0f;
+    replayCommand.solidRect.g = static_cast<float>(g) / 255.0f;
+    replayCommand.solidRect.b = static_cast<float>(b) / 255.0f;
+    replayCommand.solidRect.a = (static_cast<float>(a) / 255.0f) * std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
+    if (replayCommand.solidRect.a <= 0.0f) {
+        return true;
+    }
+
+    // LOCAL geometry forwarded into the FREE inner rounded-clip push-constant
+    // slots (see the SolidRect write site). No push-constant growth.
+    replayCommand.hasLocalRoundedCoverage = true;
+    replayCommand.localOuterW = localOuterW;
+    replayCommand.localOuterH = localOuterH;
+    replayCommand.localExpandX = expandX;
+    replayCommand.localExpandY = expandY;
+    replayCommand.localOuterPerCornerRadius[0] = outerTL;
+    replayCommand.localOuterPerCornerRadius[1] = outerTR;
+    replayCommand.localOuterPerCornerRadius[2] = outerBR;
+    replayCommand.localOuterPerCornerRadius[3] = outerBL;
+
+    if (isStroke) {
+        const float localInnerW = w - 2.0f * halfStroke;
+        const float localInnerH = h - 2.0f * halfStroke;
+        if (localInnerW > kEpsilon && localInnerH > kEpsilon) {
+            // INNER rect shares the OUTER centre (centred model), so the FS reuses
+            // the same p = localPos - halfOuter. Circular inner radii =
+            // max(0, corner - halfStroke), clamped to half the inner extent
+            // (defensive; FS re-clamps to min(halfInner)).
+            const float innerHalfW = localInnerW * 0.5f;
+            const float innerHalfH = localInnerH * 0.5f;
+            replayCommand.localInnerW = localInnerW;
+            replayCommand.localInnerH = localInnerH;
+            replayCommand.localInnerPerCornerRadius[0] = std::max(0.0f, std::min(tl - halfStroke, std::min(innerHalfW, innerHalfH)));
+            replayCommand.localInnerPerCornerRadius[1] = std::max(0.0f, std::min(tr - halfStroke, std::min(innerHalfW, innerHalfH)));
+            replayCommand.localInnerPerCornerRadius[2] = std::max(0.0f, std::min(br - halfStroke, std::min(innerHalfW, innerHalfH)));
+            replayCommand.localInnerPerCornerRadius[3] = std::max(0.0f, std::min(bl - halfStroke, std::min(innerHalfW, innerHalfH)));
+        }
+        // localInnerW/H stay 0 when the band is thicker than the rect → the FS
+        // skips the inner subtraction and the whole outer disc is the stroke.
+    }
+    // Fill: localInnerW/H stay 0 → no inner subtraction (full outer coverage).
+
+    gpuReplayCommands_.push_back(replayCommand);
+    return true;
+}
+
 bool VulkanRenderTarget::TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush)
 {
     if (rx <= 0.0f && ry <= 0.0f) {
@@ -10716,7 +12205,20 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectFillCommand(float x, float y, fl
     const auto transform = GetCurrentTransform();
     constexpr float kEpsilon = 0.0001f;
     if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
-        return false;
+        // Rotated / skewed: serve it on the GPU via the LOCAL-space rounded SDF,
+        // which models ONE circular radius per corner. An elliptical request
+        // (rx != ry — e.g. a rotated non-circular ellipse routed here via
+        // TryRecordGpuEllipseFillCommand, or an elliptical-corner rounded rect)
+        // would render as a rounded-rect silhouette rather than the true ellipse,
+        // so keep those on the CPU exact path (the pre-GPU behaviour). Only the
+        // circular case (rx == ry — the scalar-CornerRadius border/fill majority)
+        // takes the GPU path.
+        if (std::fabs(rx - ry) > kEpsilon) {
+            return false;
+        }
+        const float circ = rx;
+        return TryRecordGpuRotatedLocalRoundedRectCommand(transform, x, y, w, h,
+            circ, circ, circ, circ, -1.0f /* fill */, brush);
     }
 
     GpuReplayCommand replayCommand {};
@@ -10789,7 +12291,19 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectStrokeCommand(float x, float y, 
     const auto transform = GetCurrentTransform();
     constexpr float kEpsilon = 0.0001f;
     if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
-        return false;
+        // Rotated / skewed: serve the border on the GPU via the LOCAL-space
+        // rounded SDF (one circular radius per corner). The helper applies the
+        // centred model (outer = r+halfStroke, inner = r-halfStroke) so a rotated
+        // border lands where the unrotated one does. An elliptical request
+        // (rx != ry — e.g. a rotated non-circular ellipse stroke) would collapse
+        // to a rounded-rect silhouette, so keep those on the CPU exact path; only
+        // the circular case (rx == ry) goes GPU.
+        if (std::fabs(rx - ry) > kEpsilon) {
+            return false;
+        }
+        const float circ = rx;
+        return TryRecordGpuRotatedLocalRoundedRectCommand(transform, x, y, w, h,
+            circ, circ, circ, circ, strokeWidth, brush);
     }
 
     GpuReplayCommand replayCommand {};
@@ -10863,6 +12377,20 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectStrokeCommand(float x, float y, 
 bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectFillCommand(float x, float y, float w, float h,
     float tl, float tr, float br, float bl, Brush* brush)
 {
+    // Rotated / skewed: the per-corner screen-space CoverageRoundRect overwrite
+    // below cannot serve a non-axis-aligned quad, so route straight to the
+    // LOCAL-space rounded SDF with each corner's own (circular) radius. Must run
+    // BEFORE the uniform record, otherwise that record itself takes the rotated
+    // branch with a single max-radius and loses the per-corner shape.
+    {
+        const auto transform = GetCurrentTransform();
+        constexpr float kEpsilon = 0.0001f;
+        if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
+            return TryRecordGpuRotatedLocalRoundedRectCommand(transform, x, y, w, h,
+                tl, tr, br, bl, -1.0f /* fill */, brush);
+        }
+    }
+
     // First do the uniform-radius record using the largest corner — that
     // populates every common field (scissor, brush, rect transform, outer
     // rounded clip rect) for us. We then overwrite the per-corner radii so
@@ -10898,6 +12426,19 @@ bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectFillCommand(float x, fl
 bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectStrokeCommand(float x, float y, float w, float h,
     float tl, float tr, float br, float bl, float strokeWidth, Brush* brush)
 {
+    // Rotated / skewed: route to the LOCAL-space rounded SDF with each corner's
+    // own (circular) radius (centred outer/inner band). Must run BEFORE the
+    // uniform record so that record doesn't take the rotated branch with a
+    // single max-radius and lose the per-corner shape.
+    if (strokeWidth > 0.0f) {
+        const auto transform = GetCurrentTransform();
+        constexpr float kEpsilon = 0.0001f;
+        if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
+            return TryRecordGpuRotatedLocalRoundedRectCommand(transform, x, y, w, h,
+                tl, tr, br, bl, strokeWidth, brush);
+        }
+    }
+
     const float maxRadius = std::max({ tl, tr, br, bl, 0.0f });
     if (!TryRecordGpuRoundedRectStrokeCommand(x, y, w, h, maxRadius, maxRadius, strokeWidth, brush)) {
         return false;
@@ -10922,12 +12463,27 @@ bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectStrokeCommand(float x, 
     cmd.perCornerRadiusY[1] = std::max((tr + halfStroke) * sy, 0.0f);
     cmd.perCornerRadiusY[2] = std::max((br + halfStroke) * sy, 0.0f);
     cmd.perCornerRadiusY[3] = std::max((bl + halfStroke) * sy, 0.0f);
-    // Inner rounded clip (the stroke's inside edge) inherits the uniform
-    // average that TryRecordGpuRoundedRectStrokeCommand already set. A
-    // truly per-corner inner radius would need a second perCorner slot
-    // in the push constant — deferred; current stroke is one-sided
-    // (outer per-corner, inner uniform), which is visually identical at
-    // most stroke widths.
+    // Inner rounded clip (the stroke's inside edge): give each corner its own
+    // radius = max(0, corner - halfStroke), the per-corner generalisation of
+    // the uniform inner (rx - halfStroke) that TryRecordGpuRoundedRectStrokeCommand
+    // set above. Outer = corner + halfStroke, inner = corner - halfStroke share
+    // the same anchor, so the band stays constant-width per corner and the AA is
+    // clean on BOTH edges. This replaces the old "outer per-corner, inner
+    // uniform" shortcut, which seeded the inner hole from max(corner) and so
+    // carved a rounded notch through the square corners of a non-uniform Border.
+    // Clamp to half the inner extent per axis (mirrors the uniform inner clamp;
+    // a no-op under the managed min(w,h)/2 pre-clamp, defensive otherwise). The
+    // shader only reads these when hasInnerRoundedClip armed the inner clip.
+    const float innerHalfW = (w - strokeWidth) * 0.5f;
+    const float innerHalfH = (h - strokeWidth) * 0.5f;
+    cmd.innerPerCornerRadiusX[0] = sx * std::max(0.0f, std::min(tl - halfStroke, innerHalfW));
+    cmd.innerPerCornerRadiusX[1] = sx * std::max(0.0f, std::min(tr - halfStroke, innerHalfW));
+    cmd.innerPerCornerRadiusX[2] = sx * std::max(0.0f, std::min(br - halfStroke, innerHalfW));
+    cmd.innerPerCornerRadiusX[3] = sx * std::max(0.0f, std::min(bl - halfStroke, innerHalfW));
+    cmd.innerPerCornerRadiusY[0] = sy * std::max(0.0f, std::min(tl - halfStroke, innerHalfH));
+    cmd.innerPerCornerRadiusY[1] = sy * std::max(0.0f, std::min(tr - halfStroke, innerHalfH));
+    cmd.innerPerCornerRadiusY[2] = sy * std::max(0.0f, std::min(br - halfStroke, innerHalfH));
+    cmd.innerPerCornerRadiusY[3] = sy * std::max(0.0f, std::min(bl - halfStroke, innerHalfH));
     return true;
 }
 
@@ -11408,16 +12964,170 @@ void VulkanRenderTarget::BlitInkLayer(void* inkLayerBitmap, float dstX, float ds
                 std::clamp(opacity * GetCurrentOpacity(), 0.0f, 1.0f));
 }
 
+// Retained layers: env-gated (JALIUM_VK_RETAINED_LAYERS) opt-in until validated,
+// mirroring the GPU stencil path's gate. Default OFF. Uses _dupenv_s because /sdl
+// escalates std::getenv C4996 to a hard error (see VkStencilPathEnabled).
+static bool VulkanRetainedLayersEnabled()
+{
+    static const bool enabled = []() {
+#if defined(_WIN32)
+        char* e = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&e, &len, "JALIUM_VK_RETAINED_LAYERS") != 0 || e == nullptr) {
+            if (e) free(e);
+            return false;
+        }
+        const bool on = (e[0] != '\0' && e[0] != '0' && e[0] != 'f' && e[0] != 'F' && e[0] != 'n' && e[0] != 'N');
+        free(e);
+        return on;
+#else
+        const char* e = std::getenv("JALIUM_VK_RETAINED_LAYERS");
+        return e && e[0] != '\0' && e[0] != '0' && e[0] != 'f' && e[0] != 'F' && e[0] != 'n' && e[0] != 'N';
+#endif
+    }();
+    return enabled;
+}
+
+bool VulkanRenderTarget::SupportsRetainedLayers() const
+{
+    return VulkanRetainedLayersEnabled();
+}
+
+void* VulkanRenderTarget::RealizeLayerBegin(void* existingLayer, float x, float y, float w, float h)
+{
+    // Safety valve: return nullptr for anything we don't handle so the managed side
+    // falls back to full re-emission (correct rendering, just no fast path).
+    if (!VulkanRetainedLayersEnabled() || !isDrawing_ || w <= 0.0f || h <= 0.0f) {
+        return nullptr;
+    }
+    // Axis-aligned sub-region only: a rotated/skewed transform can't be snapshotted
+    // as a rectangular pixel sub-region.
+    const auto t = GetCurrentTransform();
+    constexpr float kEpsilon = 0.0001f;
+    if (std::fabs(t.m12) > kEpsilon || std::fabs(t.m21) > kEpsilon) {
+        return nullptr;
+    }
+    float px0 = 0.0f, py0 = 0.0f, px1 = 0.0f, py1 = 0.0f;
+    ApplyTransform(t, x, y, px0, py0);
+    ApplyTransform(t, x + w, y + h, px1, py1);
+    int32_t physX = static_cast<int32_t>(std::floor(std::min(px0, px1)));
+    int32_t physY = static_cast<int32_t>(std::floor(std::min(py0, py1)));
+    int32_t physX1 = static_cast<int32_t>(std::ceil(std::max(px0, px1)));
+    int32_t physY1 = static_cast<int32_t>(std::ceil(std::max(py0, py1)));
+    physX = std::clamp(physX, 0, width_);
+    physY = std::clamp(physY, 0, height_);
+    physX1 = std::clamp(physX1, 0, width_);
+    physY1 = std::clamp(physY1, 0, height_);
+    if (physX1 <= physX || physY1 <= physY) {
+        return nullptr;
+    }
+    // Force CPU rasterization so the subtree's draws land in pixelBuffer_ where they
+    // can be snapshotted (Vulkan has no GPU offscreen render target for this yet).
+    EnsureCpuRasterization();
+    if (!cpuRasterNeeded_) {
+        return nullptr;  // couldn't promote (e.g. no pixel buffer this frame) — fall back
+    }
+    // Save the current frame state and start a fresh sub-frame (mirror
+    // BeginTransitionCapture). A stack keeps nested realizes safe.
+    RetainedCaptureState st;
+    st.savedPixels = pixelBuffer_;
+    st.savedReplayCommands = gpuReplayCommands_;
+    st.savedReplaySupported = gpuReplaySupported_;
+    st.savedReplayHasClear = gpuReplayHasClear_;
+    st.physX = physX;
+    st.physY = physY;
+    st.physW = physX1 - physX;
+    st.physH = physY1 - physY;
+    VulkanRetainedLayer* layer = nullptr;
+    for (auto& up : retainedLayers_) {
+        if (up.get() == existingLayer) { layer = up.get(); break; }
+    }
+    if (!layer) {
+        retainedLayers_.push_back(std::make_unique<VulkanRetainedLayer>());
+        layer = retainedLayers_.back().get();
+    }
+    st.layer = layer;
+    retainedCaptureStack_.push_back(std::move(st));
+    ResizeCpuCanvas();
+    ClearCpuCanvas(0, 0, 0, 0);
+    ResetGpuReplay();
+    gpuReplayHasClear_ = true;
+    return layer;
+}
+
+void VulkanRenderTarget::RealizeLayerEnd(void* layer)
+{
+    (void)layer;
+    if (retainedCaptureStack_.empty()) {
+        return;
+    }
+    RetainedCaptureState st = std::move(retainedCaptureStack_.back());
+    retainedCaptureStack_.pop_back();
+    VulkanRetainedLayer* lyr = st.layer;
+    // Extract the captured physical sub-region from pixelBuffer_ into the layer.
+    if (lyr && st.physW > 0 && st.physH > 0 && !pixelBuffer_.empty()) {
+        const int32_t stride = width_ * 4;
+        lyr->pixels.assign(static_cast<size_t>(st.physW) * static_cast<size_t>(st.physH) * 4u, 0);
+        lyr->w = st.physW;
+        lyr->h = st.physH;
+        for (int32_t row = 0; row < st.physH; ++row) {
+            const int32_t srcY = st.physY + row;
+            if (srcY < 0 || srcY >= height_) {
+                continue;
+            }
+            const uint8_t* src = pixelBuffer_.data() + static_cast<size_t>(srcY) * static_cast<size_t>(stride) + static_cast<size_t>(st.physX) * 4u;
+            uint8_t* dst = lyr->pixels.data() + static_cast<size_t>(row) * static_cast<size_t>(st.physW) * 4u;
+            std::memcpy(dst, src, static_cast<size_t>(st.physW) * 4u);
+        }
+    }
+    // Restore the saved frame state.
+    pixelBuffer_ = std::move(st.savedPixels);
+    gpuReplayCommands_ = std::move(st.savedReplayCommands);
+    gpuReplaySupported_ = st.savedReplaySupported;
+    gpuReplayHasClear_ = st.savedReplayHasClear;
+}
+
+void VulkanRenderTarget::CompositeLayer(void* layer, float x, float y, float w, float h, float opacity)
+{
+    // Only composite layers we own (guards against foreign handles).
+    VulkanRetainedLayer* lyr = nullptr;
+    for (auto& up : retainedLayers_) {
+        if (up.get() == layer) { lyr = up.get(); break; }
+    }
+    if (!lyr || lyr->pixels.empty() || lyr->w <= 0 || lyr->h <= 0 ||
+        w <= 0.0f || h <= 0.0f || opacity <= 0.0f) {
+        return;
+    }
+    // GPU replay path: composite the snapshot as a transformed+clipped bitmap quad
+    // (TryRecordGpuPixelBufferCommand applies the live transform / clip / opacity).
+    if (!cpuRasterNeeded_) {
+        if (!TryRecordGpuPixelBufferCommand(lyr->pixels, static_cast<uint32_t>(lyr->w),
+                                            static_cast<uint32_t>(lyr->h), x, y, w, h, opacity)) {
+            /* drop: skip but keep replay path */ (void)__FUNCTION__;
+        }
+        return;
+    }
+    // CPU path: blend the snapshot into the pixel buffer.
+    BlendBuffer(lyr->pixels, lyr->w, lyr->h, x, y, w, h, opacity);
+}
+
 void VulkanRenderTarget::DestroyRetainedLayer(void* layer)
 {
     if (!layer) {
         return;
     }
-    // See the declaration comment: Vulkan creates no retained layers, so this
-    // handle belongs to another backend and cannot be freed here. Intentional
-    // no-op beyond the diagnostic (bounded leak, surfaced instead of silent).
+    // Free OUR layer if we own it.
+    for (auto it = retainedLayers_.begin(); it != retainedLayers_.end(); ++it) {
+        if (it->get() == layer) {
+            retainedLayers_.erase(it);
+            return;
+        }
+    }
+    // Otherwise the handle is FOREIGN (another backend's layer drained here after a
+    // device-lost fallback) and cannot be freed through an unknown concrete type —
+    // a bounded, logged leak rather than a silent one or undefined behavior.
     VK_LOG("[Vulkan] DestroyRetainedLayer: ignoring foreign retained-layer handle %p "
-           "(no Vulkan retained layers exist; cross-backend handles cannot be freed here)",
+           "(not created by this Vulkan target; cross-backend handles cannot be freed here)",
            layer);
 }
 
@@ -11581,6 +13291,24 @@ void VulkanRenderTarget::DrawRectangle(float x, float y, float w, float h, Brush
     TouchFrame();
     if (!brush) {
         return;
+    }
+    // Gradient stroke: true per-vertex gradient via StrokePath (see DrawPolygon),
+    // instead of the representative-solid TryGetApproximateBrushColor path below.
+    // Solid/image brushes fall through unchanged.
+    {
+        EngineBrushData gbd {};
+        std::vector<EngineBrushData::GradientStop> gstops;
+        if (BuildEngineBrush(brush, GetCurrentOpacity(), gbd, gstops) && gbd.type != 0) {
+            std::vector<float> gcmds = {
+                0.0f, x + w, y,        // LineTo top-right
+                0.0f, x + w, y + h,    // LineTo bottom-right
+                0.0f, x,     y + h,    // LineTo bottom-left (close edge added by closed=true)
+            };
+            StrokePath(x, y, gcmds.data(), static_cast<uint32_t>(gcmds.size()),
+                       brush, strokeWidth, /*closed*/ true, /*lineJoin*/ 0, /*miterLimit*/ 10.0f,
+                       /*lineCap*/ 0, nullptr, 0, 0.0f, /*edgeMode*/ -1);
+            return;
+        }
     }
     if (!TryRecordGpuRectangleStrokeCommand(x, y, w, h, strokeWidth, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
@@ -11773,6 +13501,18 @@ void VulkanRenderTarget::FillRoundedRectangle(float x, float y, float w, float h
         }
     }
 
+    // Gradient brush: in-order vertex-colour fan (same path as per-corner /
+    // SuperEllipse gradient) so the gradient renders truly and in draw order
+    // instead of vanishing at TryGetSolidBrushColor below. Solid/image brushes
+    // fall through (TryRecordGradientFanInOrder bails for non-gradient).
+    if (brush && w > 0.0f && h > 0.0f) {
+        std::vector<float> gradPerimeter;
+        BuildRoundedRectPolygon(x, y, w, h, rx, rx, rx, rx, gradPerimeter);
+        if (TryRecordGradientFanInOrder(gradPerimeter, x + w * 0.5f, y + h * 0.5f, brush)) {
+            return;
+        }
+    }
+
     if (!TryRecordGpuRoundedRectFillCommand(x, y, w, h, rx, ry, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -11922,6 +13662,31 @@ void VulkanRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h
         }
     }
 
+    // Gradient border: true per-vertex gradient via StrokePath over the rounded-rect
+    // outline (same BuildRoundedRectPolygon the gradient FILL path uses). Solid/image
+    // brushes fall through to the GPU stroke record below.
+    if (brush && w > 0.0f && h > 0.0f) {
+        EngineBrushData gbd {};
+        std::vector<EngineBrushData::GradientStop> gstops;
+        if (BuildEngineBrush(brush, GetCurrentOpacity(), gbd, gstops) && gbd.type != 0) {
+            std::vector<float> goutline;
+            BuildRoundedRectPolygon(x, y, w, h, rx, rx, rx, rx, goutline);
+            const size_t gn = goutline.size() / 2;
+            if (gn >= 3) {
+                std::vector<float> gcmds;
+                gcmds.reserve(gn * 3u);
+                for (size_t gi = 1; gi < gn; ++gi) {
+                    gcmds.push_back(0.0f);
+                    gcmds.push_back(goutline[gi * 2]);
+                    gcmds.push_back(goutline[gi * 2 + 1]);
+                }
+                StrokePath(goutline[0], goutline[1], gcmds.data(), static_cast<uint32_t>(gcmds.size()),
+                           brush, strokeWidth, /*closed*/ true, /*lineJoin*/ 2, /*miterLimit*/ 10.0f,
+                           /*lineCap*/ 0, nullptr, 0, 0.0f, /*edgeMode*/ -1);
+                return;
+            }
+        }
+    }
     if (!TryRecordGpuRoundedRectStrokeCommand(x, y, w, h, rx, ry, strokeWidth, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -11969,6 +13734,28 @@ static inline int VulkanEllipseSegmentCount(float rx, float ry, float scaleX, fl
 void VulkanRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush)
 {
     TouchFrame();
+    // Gradient ellipse: in-order vertex-colour fan over a LOCAL-space ellipse
+    // perimeter (TryRecordGradientFanInOrder applies the transform internally),
+    // so the gradient renders truly instead of vanishing at TryGetSolidBrushColor
+    // below. Solid/image brushes fall through (the fan bails for non-gradient).
+    if (brush && rx > 0.0f && ry > 0.0f) {
+        const auto gradXf = GetCurrentTransform();
+        const float gradSx = std::sqrt(gradXf.m11 * gradXf.m11 + gradXf.m21 * gradXf.m21);
+        const float gradSy = std::sqrt(gradXf.m12 * gradXf.m12 + gradXf.m22 * gradXf.m22);
+        const int gradSeg = VulkanEllipseSegmentCount(rx, ry, gradSx, gradSy);
+        std::vector<float> gradPerimeter;
+        gradPerimeter.reserve(static_cast<size_t>(gradSeg) * 2u);
+        const float gradInv = 1.0f / static_cast<float>(gradSeg);
+        for (int gradI = 0; gradI < gradSeg; ++gradI) {
+            const float gradA = static_cast<float>(gradI) * gradInv * 6.28318530718f;
+            gradPerimeter.push_back(cx + std::cos(gradA) * rx);
+            gradPerimeter.push_back(cy + std::sin(gradA) * ry);
+        }
+        if (TryRecordGradientFanInOrder(gradPerimeter, cx, cy, brush)) {
+            return;
+        }
+    }
+
     if (!TryRecordGpuEllipseFillCommand(cx, cy, rx, ry, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -12002,6 +13789,32 @@ void VulkanRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Bru
 void VulkanRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth)
 {
     TouchFrame();
+    // Gradient ring: true per-vertex gradient via StrokePath over a tessellated
+    // local-space ellipse outline (same tessellation the solid path uses). Solid/
+    // image brushes fall through to the GPU stroke record below.
+    if (brush && rx > 0.0f && ry > 0.0f) {
+        EngineBrushData gbd {};
+        std::vector<EngineBrushData::GradientStop> gstops;
+        if (BuildEngineBrush(brush, GetCurrentOpacity(), gbd, gstops) && gbd.type != 0) {
+            const auto gt = GetCurrentTransform();
+            const float gsx = std::sqrt(gt.m11 * gt.m11 + gt.m21 * gt.m21);
+            const float gsy = std::sqrt(gt.m12 * gt.m12 + gt.m22 * gt.m22);
+            const int gseg = VulkanEllipseSegmentCount(rx, ry, gsx, gsy);
+            std::vector<float> gcmds;
+            gcmds.reserve(static_cast<size_t>(gseg) * 3u);
+            const float ginv = 1.0f / static_cast<float>(gseg);
+            for (int gi = 1; gi < gseg; ++gi) {
+                const float ga = static_cast<float>(gi) * ginv * 6.28318530718f;
+                gcmds.push_back(0.0f);
+                gcmds.push_back(cx + std::cos(ga) * rx);
+                gcmds.push_back(cy + std::sin(ga) * ry);
+            }
+            StrokePath(cx + rx, cy, gcmds.data(), static_cast<uint32_t>(gcmds.size()),
+                       brush, strokeWidth, /*closed*/ true, /*lineJoin*/ 2, /*miterLimit*/ 10.0f,
+                       /*lineCap*/ 0, nullptr, 0, 0.0f, /*edgeMode*/ -1);
+            return;
+        }
+    }
     if (!TryRecordGpuEllipseStrokeCommand(cx, cy, rx, ry, strokeWidth, brush)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
@@ -12126,6 +13939,10 @@ void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, B
                 et.dx = t.dx; et.dy = t.dy;
 
                 FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+                // Producer-side clip sync: snapshot the live clipStack_ AABB
+                // scissor into the engine so the batch PushBatch is about to
+                // emit gets clipped (ScrollViewer / rounded Border / card).
+                SyncClipToEngine(engine);
                 if (engine->EncodeFillPolygon(points, pointCount, bd, fr, et))
                     return;
             }
@@ -12183,6 +14000,27 @@ void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, B
 void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit)
 {
     TouchFrame();
+    // Gradient stroke: route through StrokePath so the Impeller/Vello engine bakes
+    // a TRUE per-vertex gradient stroke (same engine path StrokePath/DrawContentBorder
+    // use), instead of collapsing to a representative solid via TryGetApproximateBrushColor
+    // below. Solid/image brushes fall through to the existing fast path unchanged.
+    if (brush && points && pointCount >= 2) {
+        EngineBrushData gbd {};
+        std::vector<EngineBrushData::GradientStop> gstops;
+        if (BuildEngineBrush(brush, GetCurrentOpacity(), gbd, gstops) && gbd.type != 0) {
+            std::vector<float> gcmds;
+            gcmds.reserve(static_cast<size_t>(pointCount - 1) * 3u);
+            for (uint32_t i = 1; i < pointCount; ++i) {
+                gcmds.push_back(0.0f);                 // tag 0 = LineTo
+                gcmds.push_back(points[i * 2]);
+                gcmds.push_back(points[i * 2 + 1]);
+            }
+            StrokePath(points[0], points[1], gcmds.data(), static_cast<uint32_t>(gcmds.size()),
+                       brush, strokeWidth, closed, lineJoin, miterLimit, /*lineCap*/ 0,
+                       nullptr, 0, 0.0f, /*edgeMode*/ -1);
+            return;
+        }
+    }
     if (points && pointCount >= 2) {
         std::vector<float> localPoints;
         localPoints.reserve(pointCount * 2);
@@ -12258,6 +14096,9 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
                 et.dx = t.dx; et.dy = t.dy;
 
                 FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+                // Producer-side clip sync (see FillPolygon): clip glyph-outline /
+                // SVG Path fills to the active clip before the batch is emitted.
+                SyncClipToEngine(engine);
                 if (engine->EncodeFillPath(startX, startY, commands, commandLength, bd, fr, et, edgeMode))
                     return;
             }
@@ -12434,6 +14275,10 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
                 et.m21 = t.m21; et.m22 = t.m22;
                 et.dx = t.dx; et.dy = t.dy;
 
+                // Producer-side clip sync (see FillPolygon): clip stroked Path /
+                // vector-text-stroke / stroked icons to the active clip before
+                // the batch is emitted.
+                SyncClipToEngine(engine);
                 if (engine->EncodeStrokePath(startX, startY, commands, commandLength,
                         bd, strokeWidth, closed, lineJoin, miterLimit, lineCap,
                         dashPattern, dashCount, dashOffset, et, edgeMode))
@@ -13232,20 +15077,38 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // into the GlyphKey so sub-epsilon scale jitter never thrashes the cache.
     // Isotropic DPI is the common case; max() picks the higher-res axis for the
     // rare anisotropic transform.
-    impl_->glyphAtlas_->SetDpiScale(std::max(txScaleX, txScaleY));
+    // Anisotropic transforms (e.g. liquid-glass squeeze scaleX~0.63, scaleY~2.17)
+    // must rasterize the glyph at the FINAL deformed pixel aspect via the atlas's
+    // per-axis DWRITE_MATRIX path (GenerateGlyphs scaleX/scaleY) - otherwise an
+    // isotropic high-res bitmap is point-minified in one axis and thin stems
+    // vanish (the d->c / r->l mosaic). Isotropic DPI keeps the crisp 1:1 path.
+    const bool anisoText = std::abs(txScaleX - txScaleY) > 0.01f * std::max(txScaleX, txScaleY);
+    float glyphRasterScaleX = 1.0f;
+    float glyphRasterScaleY = 1.0f;
+    if (anisoText) {
+        impl_->glyphAtlas_->SetDpiScale(1.0f);  // size carried by the per-axis deformation matrix
+        glyphRasterScaleX = txScaleX;
+        glyphRasterScaleY = txScaleY;
+    } else {
+        impl_->glyphAtlas_->SetDpiScale(std::max(txScaleX, txScaleY));
+    }
 
     // Grayscale single-source for this batch (the text pipeline was created with
     // a grayscale .r-coverage shader + blend src=ONE). hintingMode 0 = Auto.
     std::vector<jalium::VkGlyphInstance> instances;
     std::vector<jalium::VulkanGlyphAtlas::TextDecorationRect> decorations;
     const uint32_t startIdx = 0;  // instances is local + fresh, so the run is [0, count)
+    // ClearType is opt-in: only when the resolved AA mode is ClearType AND the
+    // dual-source pipeline exists (else grayscale, the shipping default).
+    const bool runClearType = (format->ResolveEffectiveTextRenderingMode() == JALIUM_TEXT_AA_CLEARTYPE)
+                              && (impl_->textClearTypePipeline != VK_NULL_HANDLE);
     const uint32_t count = impl_->glyphAtlas_->GenerateGlyphs(
         layout.Get(), tx, ty, colR, colG, colB, effectiveA,
         instances, &decorations,
         layoutKey,
-        /*aaMode=*/JALIUM_TEXT_AA_GRAYSCALE,
-        /*hintingMode=*/0,
-        /*scaleX=*/1.0f, /*scaleY=*/1.0f);
+        /*aaMode=*/(runClearType ? JALIUM_TEXT_AA_CLEARTYPE : JALIUM_TEXT_AA_GRAYSCALE),
+        /*hintingMode=*/format->GetTextHintingMode(),  // honor TextOptions.TextHintingMode (was hardcoded 0); parity with D3D12
+        /*scaleX=*/glyphRasterScaleX, /*scaleY=*/glyphRasterScaleY);
     if (count == 0 || instances.empty()) {
         return;
     }
@@ -13295,6 +15158,7 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     cmd.kind = GpuReplayCommandKind::TextRun;
     cmd.textRun.glyphs = std::move(glyphFloats);
     cmd.textRun.glyphCount = glyphCount;
+    cmd.textRun.clearType = runClearType;
     if (!TryPopulateReplayClip(cmd)) {
         return;
     }
@@ -13303,11 +15167,44 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     }
     gpuReplayCommands_.push_back(std::move(cmd));
 
-    // Text decorations (underline / strikethrough) are DEFERRED in this batch:
-    // GenerateGlyphs still receives &decorations (so its internal cache stays
-    // consistent) but the returned rects are intentionally not emitted here. A
-    // follow-up batch routes them through the SDF-rect path (same as D3D12).
-    (void)decorations;
+    // Text decorations (underline / strikethrough): emit each as a solid rect in
+    // the SAME physical/screen space as the glyph quads. GenerateGlyphs returns
+    // them at (origin + base-DIP offset) with PREMULTIPLIED colour; re-magnify the
+    // position by the per-axis transform scale around (tx,ty) exactly like the
+    // glyph quads above, and un-premultiply the colour for the straight-colour
+    // solid_rect pipeline. Mirrors D3D12, which emits decorations as SdfRects.
+    for (const auto& dec : decorations) {
+        if (dec.colorA <= 0.0f) {
+            continue;
+        }
+        const float decPhysX = tx + (dec.x - tx) * txScaleX;
+        const float decPhysY = ty + (dec.y - ty) * txScaleY;
+        const float decPhysW = dec.width * txScaleX;
+        const float decPhysH = dec.thickness * txScaleY;
+        if (decPhysW <= 0.0f || decPhysH <= 0.0f) {
+            continue;
+        }
+        GpuReplayCommand decCmd {};
+        decCmd.kind = GpuReplayCommandKind::SolidRect;
+        if (!TryPopulateReplayClip(decCmd)) {
+            continue;
+        }
+        if (decCmd.scissorRight <= decCmd.scissorLeft || decCmd.scissorBottom <= decCmd.scissorTop) {
+            continue;
+        }
+        GpuSolidRectCommand decRect {};
+        decRect.x = decPhysX;
+        decRect.y = decPhysY;
+        decRect.w = decPhysW;
+        decRect.h = decPhysH;
+        const float decInvA = 1.0f / dec.colorA;  // colour is premultiplied; solid_rect wants straight
+        decRect.r = dec.colorR * decInvA;
+        decRect.g = dec.colorG * decInvA;
+        decRect.b = dec.colorB * decInvA;
+        decRect.a = dec.colorA;
+        decCmd.solidRect = decRect;
+        gpuReplayCommands_.push_back(decCmd);
+    }
 #else
     // FreeType + HarfBuzz glyph atlas text rendering (Android / Linux)
     // Render glyphs into a temporary BGRA bitmap in local (DIP) space,
@@ -13817,9 +15714,43 @@ void VulkanRenderTarget::DrawCapturedTransition(int slot, float x, float y, floa
     }
     BlendBuffer(transitionSlots_[slot].pixels, width_, height_, x, y, w, h, opacity);
 }
+// Opt-in true effect capture (env JALIUM_VK_EFFECT_CPU_CAPTURE, default OFF).
+// Forces the CPU raster path so blur / drop-shadow / outer-glow / colour-matrix /
+// emboss / custom-shader effects capture the element's TRUE rasterized content
+// (matching D3D12's accuracy) instead of the GPU-path halo-splice approximation.
+// Default OFF because it forces effected frames onto the (slower) CPU path; a true
+// GPU offscreen render target would remove that cost but is a larger change.
+static bool VulkanEffectCpuCaptureEnabled()
+{
+    static const bool enabled = []() {
+#if defined(_WIN32)
+        char* e = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&e, &len, "JALIUM_VK_EFFECT_CPU_CAPTURE") != 0 || e == nullptr) {
+            if (e) free(e);
+            return false;
+        }
+        const bool on = (e[0] != '\0' && e[0] != '0' && e[0] != 'f' && e[0] != 'F' && e[0] != 'n' && e[0] != 'N');
+        free(e);
+        return on;
+#else
+        const char* e = std::getenv("JALIUM_VK_EFFECT_CPU_CAPTURE");
+        return e && e[0] != '\0' && e[0] != '0' && e[0] != 'f' && e[0] != 'F' && e[0] != 'n' && e[0] != 'N';
+#endif
+    }();
+    return enabled;
+}
+
 void VulkanRenderTarget::BeginEffectCapture(float x, float y, float w, float h)
 {
     TouchFrame();
+
+    // Opt-in: promote to the CPU canvas up front so the capture below is a TRUE
+    // capture on every frame (not just frames already on the CPU path). Default
+    // OFF keeps the fast GPU-path pass-through + halo-splice (see below).
+    if (VulkanEffectCpuCaptureEnabled()) {
+        EnsureCpuRasterization();
+    }
 
     // GPU replay path: a real offscreen capture isn't implemented yet, so the
     // capture sub-frame would (a) suppress the element's own GPU draws (the
@@ -13836,6 +15767,17 @@ void VulkanRenderTarget::BeginEffectCapture(float x, float y, float w, float h)
     // the managed call order) can splice a soft halo behind it.
     if (!cpuRasterNeeded_) {
         effectContentStartStack_.push_back(static_cast<int>(gpuReplayCommands_.size()));
+        if (VulkanEffectGpuRtEnabled()) {
+            // Open an isolated offscreen capture region. The child element draws
+            // still record into gpuReplayCommands_ (effectCaptureStack_ stays empty,
+            // so the TryRecordGpu* guards do NOT suppress them); at replay they are
+            // redirected into the offscreen framebuffer, and the matching effect then
+            // samples that isolated image instead of the live frame.
+            GpuReplayCommand mark {};
+            mark.kind = GpuReplayCommandKind::OffscreenBegin;
+            mark.solidRect.x = x; mark.solidRect.y = y; mark.solidRect.w = w; mark.solidRect.h = h;
+            gpuReplayCommands_.push_back(mark);
+        }
         return;
     }
 
@@ -13876,6 +15818,11 @@ void VulkanRenderTarget::EndEffectCapture()
             pendingGlowEnd_ = static_cast<int>(gpuReplayCommands_.size());
             effectContentStartStack_.pop_back();
         }
+        if (VulkanEffectGpuRtEnabled()) {
+            GpuReplayCommand mark {};
+            mark.kind = GpuReplayCommandKind::OffscreenEnd;
+            gpuReplayCommands_.push_back(mark);
+        }
         lastCapturedPixels_.clear();
         return;
     }
@@ -13913,6 +15860,15 @@ void VulkanRenderTarget::DrawBlurEffect(float x, float y, float w, float h, floa
     TouchFrame();
 
     if (lastCapturedPixels_.empty()) {
+        // GPU replay path: no CPU capture exists (BeginEffectCapture is a
+        // pass-through there, so the element already rendered SHARP into the
+        // frame). Apply the blur as a GPU compositor pass that samples the
+        // element's OWN live screen region and composites the blurred result
+        // back — no per-element offscreen render target. radius<=0 means no blur
+        // was requested, so the element is already correct on screen: nothing to do.
+        if (radius > 0.0f) {
+            TryRecordGpuLiveBlurCommand(x, y, w, h, radius, 1.0f);
+        }
         return;
     }
 
