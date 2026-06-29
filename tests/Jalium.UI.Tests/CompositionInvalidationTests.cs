@@ -82,6 +82,21 @@ public class CompositionInvalidationTests
             "RenderTransform is a composition-only property — changing it must not invalidate the cache.");
     }
 
+    [Theory]
+    [InlineData(1.0, 1.0, false)]
+    [InlineData(0.5, 0.75, false)]
+    [InlineData(-1.0, 1.0, false)]
+    [InlineData(2.1666666667, 2.1666666667, true)]
+    [InlineData(1.0, 1.01, true)]
+    [InlineData(-2.0, 1.0, true)]
+    public void RetainedLayerEligibility_RejectsTextureUpscaling(
+        double scaleX, double scaleY, bool expected)
+    {
+        var transform = new ScaleTransform(scaleX, scaleY);
+
+        Assert.Equal(expected, Visual.TransformWouldUpscaleRetainedLayer(transform));
+    }
+
     [Fact]
     public void RenderTransformOriginChange_DoesNotFlipRenderDirty()
     {
