@@ -682,6 +682,7 @@ public partial class DevToolsWindow : Window
     private void OnDevToolsClosing(object? sender, EventArgs e)
     {
         _searchRefreshTimer.Stop();
+        CancelExpandAnimation();
 
         if (_isPickerActive)
             DeactivatePicker();
@@ -761,6 +762,7 @@ public partial class DevToolsWindow : Window
     private void RefreshVisualTree()
     {
         _searchRefreshTimer.Stop();
+        CancelExpandAnimation();
 
         var filter = _searchTextBox.Text?.Trim() ?? "";
         _activeFilter = string.IsNullOrEmpty(filter) ? null : filter;
@@ -790,8 +792,12 @@ public partial class DevToolsWindow : Window
             AppendHierarchicalRows(_targetWindow, 0, rows);
 
         _rowByVisual.Clear();
-        foreach (var r in rows)
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var r = rows[i];
+            r.Index = i;                 // used by the reveal animation's stagger
             _rowByVisual[r.Visual] = r;
+        }
 
         _rows.Reset(rows);
 
@@ -813,7 +819,7 @@ public partial class DevToolsWindow : Window
     {
         var children = EnumerateChildrenForCurrentMode(visual).ToList();
         bool expanded = _expandedVisuals.Contains(visual);
-        rows.Add(new InspectorRow(visual, depth) { HasChildren = children.Count > 0, IsExpanded = expanded });
+        rows.Add(new InspectorRow(visual, depth) { HasChildren = children.Count > 0, IsExpanded = expanded, ChevronAngle = expanded ? 0 : -90 });
         if (expanded)
             foreach (var child in children)
                 AppendHierarchicalRows(child, depth + 1, rows);
@@ -845,7 +851,7 @@ public partial class DevToolsWindow : Window
     private bool AppendFilteredRows(Visual visual, int depth, string filter, List<InspectorRow> rows)
     {
         int start = rows.Count;
-        var row = new InspectorRow(visual, depth) { IsExpanded = true };
+        var row = new InspectorRow(visual, depth) { IsExpanded = true, ChevronAngle = 0 };
         rows.Add(row);
 
         bool anyChildKept = false;
@@ -871,10 +877,178 @@ public partial class DevToolsWindow : Window
     {
         if (_activeFilter != null) return;  // filtered view stays fully expanded
         if (!row.HasChildren) return;
-        if (!_expandedVisuals.Add(row.Visual))
-            _expandedVisuals.Remove(row.Visual);
-        RebuildVisibleRows();
+
+        bool willExpand = !_expandedVisuals.Contains(row.Visual);
+
+        // No realized rows (not shown yet / headless) → just toggle + rebuild instantly.
+        if (_visualTreeView.GetRealizedContainers().Count == 0)
+        {
+            if (willExpand) _expandedVisuals.Add(row.Visual);
+            else _expandedVisuals.Remove(row.Visual);
+            RebuildVisibleRows();
+            return;
+        }
+
+        CompleteExpandAnimation(); // finish any in-flight animation first
+
+        if (willExpand)
+        {
+            _expandedVisuals.Add(row.Visual);
+            RebuildVisibleRows();                              // descendants now present, animate them in
+            BeginExpandCollapseAnimation(row.Visual, expanding: true);
+        }
+        else
+        {
+            // Collapse: animate the still-present descendants out, then remove them on completion.
+            BeginExpandCollapseAnimation(row.Visual, expanding: false);
+        }
     }
+
+    // ── Expand/collapse reveal animation (render-only clipped slide + chevron rotation) ────
+    // TRUE virtualization: rows always keep their full layout height, so the VSP only ever realizes
+    // the viewport. The reveal is applied PER-FRAME to the realized containers only (O(viewport)),
+    // via a clipped content slide (ClipToBounds + translate) — never via layout/height and never via
+    // opacity (per-row alpha layers black out / thrash the render target on a large expand). So it
+    // never stacks rows at one offset, never realizes the whole subtree, and needs no cap.
+    private const double ExpandAnimMs = 260;
+    private const double CollapseAnimMs = 180;
+    private const double AnimStaggerStep = 0.06;
+    private const double AnimStaggerMax = 0.5;
+
+    private DispatcherTimer? _expandAnimTimer;
+    private int _animStart = -1;   // first revealed/removed row index (inclusive)
+    private int _animEnd = -1;     // exclusive
+    private InspectorRow? _animChevronRow;
+    private double _animChevronFrom;
+    private double _animChevronTo;
+    private bool _animExpanding;
+    private long _animStartTick;
+    private double _animDurationMs;
+    private Visual? _pendingCollapseVisual;
+
+    private void BeginExpandCollapseAnimation(Visual toggledVisual, bool expanding)
+    {
+        if (!_rowByVisual.TryGetValue(toggledVisual, out var parentRow))
+            return;
+
+        int parentIndex = parentRow.Index;
+        if (parentIndex < 0 || parentIndex >= _rows.Count || !ReferenceEquals(_rows[parentIndex], parentRow))
+            parentIndex = _rows.IndexOf(parentRow);
+        if (parentIndex < 0)
+            return;
+
+        // Reveal range = the contiguous descendant block (Depth > parent's Depth). One-time index
+        // scan only (no realization). The per-frame loop below touches realized containers whose
+        // Index falls in this range, so it stays O(viewport) regardless of subtree size.
+        int end = parentIndex + 1;
+        while (end < _rows.Count && _rows[end].Depth > parentRow.Depth)
+            end++;
+
+        _animStart = parentIndex + 1;
+        _animEnd = end;
+
+        _animChevronRow = parentRow;
+        // Fixed endpoints by direction. On expand the rebuilt row is already IsExpanded, so its
+        // ChevronAngle is the final 0 — capturing it as "from" would animate 0→0 (no rotation).
+        _animChevronFrom = expanding ? -90 : 0;
+        _animChevronTo = expanding ? 0 : -90;
+
+        _animExpanding = expanding;
+        _animDurationMs = expanding ? ExpandAnimMs : CollapseAnimMs;
+        _animStartTick = Environment.TickCount64;
+        _pendingCollapseVisual = expanding ? null : toggledVisual;
+
+        if (_expandAnimTimer == null)
+        {
+            _expandAnimTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
+            _expandAnimTimer.Tick += OnExpandAnimTick;
+        }
+        _expandAnimTimer.Start();
+        OnExpandAnimTick(null, EventArgs.Empty); // apply frame 0 immediately so rows start hidden
+    }
+
+    private void OnExpandAnimTick(object? sender, EventArgs e)
+    {
+        long now = Environment.TickCount64;
+        double progress = _animDurationMs <= 0
+            ? 1.0
+            : Math.Clamp((now - _animStartTick) / _animDurationMs, 0.0, 1.0);
+
+        if (_animChevronRow != null)
+        {
+            double chevronEased = EaseOutCubic(progress);
+            _animChevronRow.ChevronAngle = _animChevronFrom + (_animChevronTo - _animChevronFrom) * chevronEased;
+        }
+
+        foreach (var container in _visualTreeView.GetRealizedContainers())
+        {
+            var r = container.Row;
+            if (r == null) continue;
+
+            if (r.Index >= _animStart && r.Index < _animEnd)
+            {
+                double stagger = Math.Min(AnimStaggerMax, (r.Index - _animStart) * AnimStaggerStep);
+                double t = Math.Clamp((progress - stagger) / Math.Max(0.0001, 1.0 - stagger), 0.0, 1.0);
+                double eased = EaseOutCubic(t);
+                container.SetRevealProgress(_animExpanding ? eased : 1.0 - eased);
+            }
+
+            if (ReferenceEquals(r, _animChevronRow))
+                container.ApplyChevron();
+        }
+
+        // Force the window to actually present this frame — render-only invalidation on nested
+        // children does not reliably trigger a present here.
+        _visualTreeView.InvalidateItemsHostMeasure();
+
+        if (progress >= 1.0)
+            CompleteExpandAnimation();
+    }
+
+    private void CompleteExpandAnimation()
+    {
+        if (_expandAnimTimer is not { IsEnabled: true })
+            return;
+
+        _expandAnimTimer.Stop();
+
+        var collapseVisual = _pendingCollapseVisual;
+        _pendingCollapseVisual = null;
+
+        if (_animChevronRow != null)
+        {
+            _animChevronRow.ChevronAngle = _animChevronTo;
+            _animChevronRow = null;
+        }
+
+        _animStart = _animEnd = -1;
+
+        // Normalize realized rows to their resting state (fully revealed, final chevron).
+        foreach (var container in _visualTreeView.GetRealizedContainers())
+        {
+            container.SetRevealProgress(1.0);
+            container.ApplyChevron();
+        }
+
+        if (collapseVisual != null)
+        {
+            _expandedVisuals.Remove(collapseVisual); // now actually drop the collapsed descendants
+            RebuildVisibleRows();
+        }
+    }
+
+    private void CancelExpandAnimation()
+    {
+        if (_expandAnimTimer is { IsEnabled: true })
+            _expandAnimTimer.Stop();
+        _pendingCollapseVisual = null;
+        _animChevronRow = null;
+        _animStart = _animEnd = -1;
+        foreach (var container in _visualTreeView.GetRealizedContainers())
+            container.SetRevealProgress(1.0);
+    }
+
+    private static double EaseOutCubic(double t) => 1.0 - Math.Pow(1.0 - t, 3.0);
 
     private void OnInspectorSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
@@ -894,11 +1068,11 @@ public partial class DevToolsWindow : Window
         if (me.ChangedButton != Input.MouseButton.Right) return;
         if (me.OriginalSource is not Visual hit) return;
 
-        // Walk up from the clicked visual to find the hosting row view.
+        // Walk up from the clicked visual to find the hosting row container.
         InspectorRow? row = null;
         for (var cur = hit; cur != null; cur = cur.VisualParent)
         {
-            if (cur is InspectorRowView view && view.Row != null) { row = view.Row; break; }
+            if (cur is InspectorRowContainer container && container.Row != null) { row = container.Row; break; }
         }
         if (row == null) return;
 
