@@ -1035,6 +1035,24 @@ void D3D12RenderTarget::FlushImpellerBatches() {
     // first non-path draw of a path-heavy frame.
     thread_local std::vector<TriangleVertex> s_flushExpand;
 
+    // In a retained / offscreen capture the layer render target is layer-local
+    // (origin 0,0) and the Impeller vertices were baked into layer-local space by
+    // the capture's (-x,-y) transform — but each batch's SNAPSHOTTED scissor is
+    // still in WINDOW space (managed pre-added the child world offset to the clip
+    // rect, and unlike the vertices the rect never goes through the capture
+    // transform). Replaying that window-space rect against the small layer RT
+    // clips every triangle away — the bug where filled / stroked straight-line
+    // geometry vanished inside a Viewbox (only stencil-FillPath and SDF survived).
+    // Shift the scissor by the same capture offset so it lands in layer-local space
+    // and matches the vertices. Outside any capture this is a no-op (offset 0).
+    LONG capSox = 0, capSoy = 0;
+    if (directRenderer_->IsInRetainedCapture() || directRenderer_->IsInOffscreenCapture()) {
+        auto capT = directRenderer_->GetCurrentTransform();
+        float dpiS = directRenderer_->GetDpiScale();
+        capSox = (LONG)(capT.dx * dpiS);
+        capSoy = (LONG)(capT.dy * dpiS);
+    }
+
     for (auto& batch : impellerEngine_->GetBatches()) {
         if (batch.indices.empty() || batch.vertices.empty()) continue;
 
@@ -1054,10 +1072,10 @@ void D3D12RenderTarget::FlushImpellerBatches() {
             // Push raw pixel-space scissor rect directly
             // (DirectRenderer stores pixel-space rects in its scissor stack)
             D3D12_RECT sr;
-            sr.left = (LONG)batch.scissorL;
-            sr.top = (LONG)batch.scissorT;
-            sr.right = (LONG)batch.scissorR;
-            sr.bottom = (LONG)batch.scissorB;
+            sr.left = (LONG)batch.scissorL + capSox;
+            sr.top = (LONG)batch.scissorT + capSoy;
+            sr.right = (LONG)batch.scissorR + capSox;
+            sr.bottom = (LONG)batch.scissorB + capSoy;
             directRenderer_->PushScissorRaw(sr);
         } else {
             // No recorded clip → draw unclipped (full viewport), exactly like a

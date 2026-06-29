@@ -390,6 +390,7 @@ public:
     void DrawOffscreenBitmapCropped(int slot, float x, float y, float w, float h,
         float uvOffsetX, float uvOffsetY, float opacity);
     bool IsInOffscreenCapture() const { return inOffscreenCapture_; }
+    bool IsInRetainedCapture() const { return inRetainedCapture_; }
 
     // --- Retained GPU layers (damage-driven composited-animation fast path) ---
     // Realize a content-clean subtree into a PERSISTENT texture once, then
