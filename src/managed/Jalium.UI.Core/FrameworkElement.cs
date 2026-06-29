@@ -1107,6 +1107,12 @@ public partial class FrameworkElement : UIElement
             switch (HorizontalAlignment)
             {
                 case HorizontalAlignment.Center:
+                // WPF treats Stretch as Center when an explicit Width or a
+                // size constraint prevents the element from consuming its
+                // full arrange slot. Without this, a fixed-width Viewbox in a
+                // wider vertical StackPanel hugs the left edge of the longest
+                // sibling instead of staying centered.
+                case HorizontalAlignment.Stretch when arrangeSize.Width < availableWidth:
                     x += extraWidth / 2;
                     break;
                 case HorizontalAlignment.Right:
@@ -1122,6 +1128,8 @@ public partial class FrameworkElement : UIElement
             switch (VerticalAlignment)
             {
                 case VerticalAlignment.Center:
+                // Same effective-alignment rule as the horizontal axis.
+                case VerticalAlignment.Stretch when arrangeSize.Height < availableHeight:
                     y += extraHeight / 2;
                     break;
                 case VerticalAlignment.Bottom:

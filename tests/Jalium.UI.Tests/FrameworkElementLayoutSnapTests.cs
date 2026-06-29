@@ -5,6 +5,30 @@ namespace Jalium.UI.Tests;
 public class FrameworkElementLayoutSnapTests
 {
     [Fact]
+    public void ArrangeCore_ShouldCenterExplicitSize_WhenAlignmentIsStretch()
+    {
+        var host = new Border
+        {
+            Width = 100,
+            Height = 80
+        };
+        var child = new Border
+        {
+            Width = 52,
+            Height = 24
+        };
+        host.Child = child;
+
+        host.Measure(new Size(100, 80));
+        host.Arrange(new Rect(0, 0, 100, 80));
+
+        Assert.Equal(24, child.VisualBounds.X);
+        Assert.Equal(28, child.VisualBounds.Y);
+        Assert.Equal(52, child.RenderSize.Width);
+        Assert.Equal(24, child.RenderSize.Height);
+    }
+
+    [Fact]
     public void ArrangeCore_ShouldKeepCenteredChildOriginAsFloat_NotSnapped()
     {
         // Centered alignment may legitimately produce a fractional origin (e.g.
