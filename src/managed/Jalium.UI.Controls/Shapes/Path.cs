@@ -8,6 +8,18 @@ namespace Jalium.UI.Controls.Shapes;
 /// </summary>
 public class Path : Shape
 {
+    static Path()
+    {
+        // WPF's Path default is Stretch.None.  Keeping Shape's historical
+        // Stretch.Fill default here made every Path in a shared design-space
+        // container independently normalize its own geometry bounds.  Icon
+        // layers such as a 24x24 base outline plus an inner detail therefore
+        // acquired unrelated scales and translations before the containing
+        // Viewbox was applied.
+        StretchProperty.OverrideMetadata(typeof(Path),
+            new PropertyMetadata(Stretch.None, OnStretchChanged));
+    }
+
     #region Dependency Properties
 
     /// <summary>
@@ -469,6 +481,15 @@ public class Path : Shape
     #endregion
 
     #region Property Changed
+
+    private static void OnStretchChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not Path path) return;
+
+        path._renderedGeometry = null;
+        path.InvalidateMeasure();
+        path.InvalidateVisual();
+    }
 
     private static void OnDataChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
