@@ -9,6 +9,27 @@ namespace Jalium.UI.Tests;
 public class PathShapeTests
 {
     [Fact]
+    public void Path_DefaultStretch_ShouldPreserveSharedDesignCoordinates()
+    {
+        var path = new TestPath
+        {
+            Data = "M 7,3 H 17 V 21 H 7 Z",
+            Width = 24,
+            Height = 24
+        };
+
+        path.Measure(new Size(24, 24));
+        path.Arrange(new Rect(0, 0, 24, 24));
+
+        var drawingContext = new RecordingDrawingContext();
+        path.Render(drawingContext);
+
+        Assert.Equal(ShapeStretch.None, path.Stretch);
+        var geometry = Assert.IsType<PathGeometry>(drawingContext.LastGeometry);
+        Assert.Equal(new Rect(7, 3, 10, 18), geometry.Bounds);
+    }
+
+    [Fact]
     public void Path_Data_ShouldUseSharedPathMarkupParser_ForArcCommands()
     {
         var path = CreatePath("M 0,4 A 4,4 0 0 1 8,0", 8, 8, ShapeStretch.None);

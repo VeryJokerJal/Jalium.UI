@@ -801,6 +801,26 @@ public abstract class Visual : DependencyObject
         return Math.Abs(m.M12) > 1e-6 || Math.Abs(m.M21) > 1e-6;
     }
 
+    /// <summary>
+    /// Returns true when compositing a retained layer would enlarge its source
+    /// texels. Retained layers are realized at the element's untransformed
+    /// <see cref="UIElement.RenderSize"/>; upscaling that texture turns vector
+    /// paths and text into a blurry bitmap. Such subtrees must be rendered
+    /// through the live transform so vector geometry is rasterized directly at
+    /// the final surface resolution.
+    /// </summary>
+    internal static bool TransformWouldUpscaleRetainedLayer(Transform? transform)
+    {
+        if (transform == null)
+            return false;
+
+        var m = transform.Value;
+        var scaleX = Math.Sqrt(m.M11 * m.M11 + m.M12 * m.M12);
+        var scaleY = Math.Sqrt(m.M21 * m.M21 + m.M22 * m.M22);
+        const double epsilon = 1e-6;
+        return scaleX > 1.0 + epsilon || scaleY > 1.0 + epsilon;
+    }
+
     /// <summary>Queues this visual's retained layer (if any) for fence-gated
     /// destruction and marks it for re-realization.</summary>
     private static void ReleaseLayerIfAny(Visual v)
@@ -873,8 +893,9 @@ public abstract class Visual : DependencyObject
         // (the quad path bakes only scale+translate) and trivial / leaf subtrees.
         bool hasComposite = transform != null || opacity < 1.0;
         bool rotation = transform != null && TransformHasRotationOrSkew(transform);
+        bool upscalesLayer = TransformWouldUpscaleRetainedLayer(transform);
         var size = child.RenderSize;
-        bool eligible = hasComposite && !rotation
+        bool eligible = hasComposite && !rotation && !upscalesLayer
             && size.Width >= 1.0 && size.Height >= 1.0
             && child.VisualChildrenCount > 0;
 

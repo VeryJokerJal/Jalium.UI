@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
+using System.Linq;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -22,6 +23,12 @@ internal sealed class InspectorRow
     public string DisplayName { get; }
     public bool HasChildren { get; set; }
     public bool IsExpanded { get; set; }
+
+    /// <summary>Current expander chevron rotation in degrees (0 = expanded/down, -90 = collapsed/right).</summary>
+    public double ChevronAngle;
+    /// <summary>This row's position in the visible-row list (set during rebuild). Used to compute the
+    /// expand/collapse reveal stagger without an O(n) IndexOf per realized container.</summary>
+    public int Index = -1;
 
     public InspectorRow(Visual visual, int depth)
     {
@@ -53,36 +60,41 @@ internal sealed class BulkObservableCollection<T> : ObservableCollection<T>
 }
 
 /// <summary>
-/// Visual for a single inspector row: indent spacer + expander chevron + label.
-/// Driven entirely by its <see cref="FrameworkElement.DataContext"/> (an <see cref="InspectorRow"/>),
-/// so the ContentPresenter recycling fast-path can reuse one instance and just re-point DataContext.
+/// Row container for the inspector list. Builds the row visual (indent + chevron + label) directly,
+/// so realized containers are enumerable for the expand/collapse reveal animation. Rows always keep
+/// their full layout height (the VSP virtualizes normally); the reveal is render-only — a clipped
+/// content slide via <see cref="SetRevealProgress"/> (no opacity) — so it never affects layout,
+/// never stacks rows, never allocates per-row alpha layers, and stays O(viewport).
 /// </summary>
-internal sealed class InspectorRowView : Grid
+internal sealed class InspectorRowContainer : ListBoxItem
 {
     private const double IndentSize = 14;
 
+    private readonly Grid _content;
     private readonly Border _indent;
     private readonly Border _expanderHit;
     private readonly ShapePath _arrow;
     private readonly TextBlock _label;
-    private readonly Action<InspectorRow> _onToggle;
+    private Action<InspectorRow>? _onToggle;
 
     public InspectorRow? Row { get; private set; }
 
-    public InspectorRowView(Action<InspectorRow> onToggle)
+    public InspectorRowContainer()
     {
-        _onToggle = onToggle;
         SetCurrentValue(TransitionPropertyProperty, "None");
+        MinHeight = 0;
+        Padding = new Thickness(0);
+        ClipToBounds = true; // clips the reveal slide (content translated up) to the row's slot
 
-        ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        var grid = new Grid();
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
 
         _indent = new Border();
-        SetColumn(_indent, 0);
+        Grid.SetColumn(_indent, 0);
 
         // Rounded down-triangle chevron — same geometry as the legacy TreeViewItem expander.
-        // Natural orientation points down = expanded; collapsed rotates -90° to point right.
         _arrow = new ShapePath
         {
             Data = "M 733.87,841.90 L 1160.54,273.07 A 170.67,170.67,0,0,0,1024.00,0 H 170.67 A 170.67,170.67,0,0,0,34.14,273.07 L 460.80,841.90 A 170.67,170.67,0,0,0,733.87,841.90 Z",
@@ -99,7 +111,7 @@ internal sealed class InspectorRowView : Grid
             Background = new SolidColorBrush(Color.FromArgb(0, 0, 0, 0)), // transparent yet hit-testable
             Child = _arrow,
         };
-        SetColumn(_expanderHit, 1);
+        Grid.SetColumn(_expanderHit, 1);
         _expanderHit.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnExpanderMouseDown), handledEventsToo: true);
 
         _label = new TextBlock
@@ -109,60 +121,83 @@ internal sealed class InspectorRowView : Grid
             FontSize = DevToolsTheme.FontBase,
             Foreground = new SolidColorBrush(DevToolsTheme.TextPrimaryColor),
         };
-        SetColumn(_label, 2);
+        Grid.SetColumn(_label, 2);
 
-        Children.Add(_indent);
-        Children.Add(_expanderHit);
-        Children.Add(_label);
+        grid.Children.Add(_indent);
+        grid.Children.Add(_expanderHit);
+        grid.Children.Add(_label);
 
-        DataContextChanged += OnRowDataContextChanged;
+        _content = grid;
+        Content = grid;
     }
 
-    private void OnRowDataContextChanged(object? sender, DependencyPropertyChangedEventArgs e)
+    public void Bind(InspectorRow row, Action<InspectorRow> onToggle)
     {
-        Row = DataContext as InspectorRow;
-        if (Row == null)
-        {
-            return;
-        }
+        Row = row;
+        _onToggle = onToggle;
+        _indent.Width = row.Depth * IndentSize;
+        _label.Text = row.DisplayName;
+        _arrow.Visibility = row.HasChildren ? Visibility.Visible : Visibility.Hidden;
+        SetChevronAngle(row.ChevronAngle);
+        SetRevealProgress(1.0); // recycled containers may carry a stale reveal transform
+    }
 
-        _indent.Width = Row.Depth * IndentSize;
-        _label.Text = Row.DisplayName;
-
-        if (Row.HasChildren)
+    /// <summary>
+    /// Render-only reveal: slides the row content down into its full-height, clipped slot.
+    /// <paramref name="revealed"/> 0 = fully hidden (content translated up out of the clip), 1 =
+    /// fully shown. Uses a translate (cheap matrix) + ClipToBounds (scissor), and deliberately NO
+    /// opacity — animating per-row opacity forces offscreen alpha layers that on a large expand
+    /// exhaust the render target (content goes black) and thrash (flicker). Never touches layout,
+    /// so virtualization is unaffected.
+    /// </summary>
+    internal void SetRevealProgress(double revealed)
+    {
+        if (revealed >= 1.0)
         {
-            _arrow.Visibility = Visibility.Visible;
-            SetArrowAngle(Row.IsExpanded ? 0 : -90);
+            if (_content.RenderTransform != null)
+                _content.RenderTransform = null;
         }
         else
         {
-            _arrow.Visibility = Visibility.Hidden;
+            // Fall back to an estimate before the row's first arrange (ActualHeight==0 then), so the
+            // reveal isn't a silent no-op on frame 0.
+            double h = ActualHeight > 0 ? ActualHeight : (DesiredSize.Height > 0 ? DesiredSize.Height : 28.0);
+            _content.RenderTransform = new TranslateTransform { X = 0, Y = -(1.0 - revealed) * h };
         }
+        InvalidateVisual();
+    }
+
+    /// <summary>Re-applies the bound row's chevron angle (animated for the toggled row).</summary>
+    internal void ApplyChevron()
+    {
+        if (Row != null) SetChevronAngle(Row.ChevronAngle);
     }
 
     private void OnExpanderMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (Row is { HasChildren: true } row)
         {
-            _onToggle(row);
-            e.Handled = true; // clicking the chevron toggles expansion without also selecting the row
+            _onToggle?.Invoke(row);
+            e.Handled = true; // toggle expansion without also selecting the row
         }
     }
 
-    private void SetArrowAngle(double angle)
+    private void SetChevronAngle(double angle)
     {
         var rotate = _arrow.RenderTransform as RotateTransform ?? new RotateTransform();
         rotate.CenterX = 4;
         rotate.CenterY = 4;
         rotate.Angle = angle;
         _arrow.RenderTransform = rotate;
+        _arrow.InvalidateVisual();
     }
 }
 
 /// <summary>
 /// The Inspector's flat virtualized list. A standard <see cref="ListBox"/> (so virtualization,
-/// selection, keyboard nav and selection highlight come for free) wired with a row template and
-/// an index-based scroll helper. Replaces the old nested, non-virtualized TreeView.
+/// selection, keyboard nav and selection highlight come for free) using a custom row container so
+/// the expand/collapse reveal can enumerate the realized rows. Replaces the old nested,
+/// non-virtualized TreeView.
 /// </summary>
 internal sealed class InspectorTreeList : ListBox
 {
@@ -172,23 +207,35 @@ internal sealed class InspectorTreeList : ListBox
     public InspectorTreeList()
     {
         SetCurrentValue(TransitionPropertyProperty, "None");
-
-        var template = new DataTemplate();
-        template.SetVisualTree(() =>
-        {
-            using var __scope = Jalium.UI.Diagnostics.DiagnosticsScope.BeginIgnoredCreation();
-            return new InspectorRowView(row => ToggleExpand?.Invoke(row));
-        });
-        ItemTemplate = template;
     }
 
     /// <inheritdoc />
     protected override FrameworkElement GetContainerForItem(object item)
     {
-        // Containers are realized lazily during layout (outside the window's ctor scope);
-        // wrap creation so constructor-time InvalidateMeasure does not pollute diagnostics.
+        // Containers are realized lazily during layout (outside the window ctor scope); wrap so
+        // constructor-time InvalidateMeasure does not pollute diagnostics.
         using var __scope = Jalium.UI.Diagnostics.DiagnosticsScope.BeginIgnoredCreation();
-        return base.GetContainerForItem(item);
+        return new InspectorRowContainer();
+    }
+
+    /// <inheritdoc />
+    protected override bool IsItemItsOwnContainer(object item) => item is InspectorRowContainer;
+
+    /// <inheritdoc />
+    protected override void PrepareContainerForItem(FrameworkElement element, object item)
+    {
+        // Do NOT call base for our row container: the base would set Content = the InspectorRow
+        // data item (clobbering the container's own row visual). Replicate only the bits ListBox
+        // needs — owner back-reference + selection state — and bind our visual.
+        if (element is InspectorRowContainer container && item is InspectorRow row)
+        {
+            container.ParentListBox = this;
+            container.IsSelected = ReferenceEquals(item, SelectedItem);
+            container.Bind(row, r => ToggleExpand?.Invoke(r));
+            return;
+        }
+
+        base.PrepareContainerForItem(element, item);
     }
 
     /// <summary>Brings the row at <paramref name="index"/> into view — virtualization-aware
@@ -204,9 +251,9 @@ internal sealed class InspectorTreeList : ListBox
     }
 
     /// <summary>
-    /// After the bound row collection is replaced, the inner ScrollViewer still holds the
-    /// previous extent and scroll offset — the VSP invalidates only itself and this framework has
-    /// no IScrollInfo change notification. Re-measuring the ScrollViewer makes it re-read the new
+    /// After the bound row collection is replaced, the inner ScrollViewer still holds the previous
+    /// extent and scroll offset — the VSP invalidates only itself and this framework has no
+    /// IScrollInfo change notification. Re-measuring the ScrollViewer makes it re-read the new
     /// extent (SyncExtentFromScrollInfo) and clamp an out-of-range offset, so a shrunk list (e.g.
     /// Collapse All while scrolled down) refreshes immediately instead of only on a window resize.
     /// </summary>
@@ -221,5 +268,28 @@ internal sealed class InspectorTreeList : ListBox
         {
             InvalidateMeasure();
         }
+    }
+
+    /// <summary>Currently-realized row containers (viewport + cache). Empty when the list has not
+    /// been laid out yet (e.g. headless), which the animation driver uses to fall back to instant
+    /// expand/collapse.</summary>
+    internal IReadOnlyList<InspectorRowContainer> GetRealizedContainers()
+    {
+        if (ItemsHost is { } panel)
+        {
+            return panel.Children.OfType<InspectorRowContainer>().ToList();
+        }
+
+        return Array.Empty<InspectorRowContainer>();
+    }
+
+    /// <summary>Forces the realizing panel to re-measure/arrange so per-frame reveal updates are
+    /// actually presented. A plain InvalidateVisual on a deeply-nested child does not reliably
+    /// trigger a window present here; the measure/arrange path does (it is what the legacy tree
+    /// animation used). Cheap — rows keep full height, so it is a stable viewport-sized layout pass.</summary>
+    internal void InvalidateItemsHostMeasure()
+    {
+        ItemsHost?.InvalidateMeasure();
+        ItemsHost?.InvalidateArrange();
     }
 }

@@ -811,7 +811,13 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 
     private double CoerceOffset(double offset)
     {
-        var maxOffset = Math.Max(0, GetAxisSize(_extent) - GetViewportAxisSize());
+        // Use the LIVE extent (GetSpacedExtent, derived from the already-updated height index),
+        // not the _extent field — _extent is only refreshed by UpdateExtent at the END of
+        // MeasureOverride, i.e. AFTER this coercion runs (line ~376). When the item collection
+        // shrinks (e.g. tree Collapse All), clamping against the stale (larger) _extent leaves the
+        // offset past the new content, stranding the view until a second pass (a window resize)
+        // re-clamps it. GetSpacedExtent reflects the new count immediately.
+        var maxOffset = Math.Max(0, GetSpacedExtent() - GetViewportAxisSize());
         if (double.IsNaN(offset) || double.IsInfinity(offset))
         {
             return 0;
