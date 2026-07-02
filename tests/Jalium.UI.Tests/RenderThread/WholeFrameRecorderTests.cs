@@ -121,6 +121,43 @@ public sealed class WholeFrameRecorderTests : System.IDisposable
     }
 
     [Fact]
+    public void WholeFrameCapture_SuperEllipseShapeType_RoundTripsInDrawOrder()
+    {
+        // A SuperEllipse Border brackets its rounded-rect fill with
+        // SetShapeType(1, n) … SetShapeType(0, 4) (Border.OnRender). The
+        // whole-frame recorder must capture and replay that state op in draw
+        // order, or the render-thread path would silently degrade the squircle
+        // to an ordinary rounded rectangle.
+        var root = new Border
+        {
+            Width = 100,
+            Height = 100,
+            Background = new SolidColorBrush { Color = Color.FromArgb(255, 30, 60, 90) },
+            CornerRadius = new CornerRadius(20),
+            Shape = BorderShape.SuperEllipse,
+        };
+        root.Measure(new Size(200, 200));
+        root.Arrange(new Rect(0, 0, 200, 200));
+
+        var direct = new RecordingRenderSink();
+        root.Render(direct);
+
+        var host = new MediaRenderCacheHost();
+        var recorder = host.CreateFrameRecorder()!;
+        root.Render(recorder);
+        var drawing = (Drawing)host.FinishRecord(recorder);
+
+        Assert.True(drawing.IsFullyRecordable);
+
+        var replay = new RecordingRenderSink();
+        host.Replay(drawing, replay);
+
+        Assert.Equal(direct.Events, replay.Events);
+        Assert.Contains(replay.Events, e => e.StartsWith("SetShapeType 1"));
+        Assert.Contains(replay.Events, e => e.StartsWith("SetShapeType 0"));
+    }
+
+    [Fact]
     public void WholeFrameCapture_PushPopBalanced_AndOffsetsRoundTrip()
     {
         var root = BuildTree();
@@ -223,6 +260,7 @@ public sealed class WholeFrameRecorderTests : System.IDisposable
             nameof(DrawingContext.Pop),
             nameof(DrawingContext.PushEffect),
             nameof(DrawingContext.PopEffect),
+            nameof(DrawingContext.SetShapeType),
             nameof(DrawingContext.Close),
         };
 

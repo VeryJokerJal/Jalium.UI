@@ -120,6 +120,9 @@ internal sealed class RecordingRenderSink : DrawingContext,
     public override void DrawLiquidGlass(LiquidGlassParameters parameters) =>
         Events.Add($"DrawLiquidGlass {R(parameters.Rectangle)}");
 
+    public override void SetShapeType(int type, float exponent) =>
+        Events.Add($"SetShapeType {type} n={F(exponent)}");
+
     public override void PushTransform(Transform transform) =>
         Events.Add($"PushTransform {M(transform)}");
 
