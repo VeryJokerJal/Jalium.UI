@@ -531,6 +531,57 @@ public class VirtualizationPipelineTests
     }
 
     [Fact]
+    public void ReentrantHeadInsertDuringMeasure_RetryRealizesInsertedItem_NotStaleContainer()
+    {
+        // A reentrant structural mutation DURING the realize loop (the binding-side-effect scenario the
+        // OnItemsChanged _measureInProgress branch exists for): PrepareContainerForItem inserts a new
+        // item at the head while measure is in flight. The deferred retry must re-realize from the
+        // post-mutation generator. Before the reset-before-retry fix, the retry reused the pre-mutation
+        // _realizedContainers map (RealizeContainer returns a cached container without consulting the
+        // generator), so index 0 kept showing the stale "Item 0".
+        var items = new ObservableCollection<string>();
+        for (var i = 0; i < 50; i++)
+            items.Add($"Item {i}");
+
+        var listBox = new ReentrantHeadInsertListBox(items) { Width = 320, Height = 240, ItemsSource = items };
+        listBox.Measure(new Size(320, 240));
+        listBox.Arrange(new Rect(0, 0, 320, 240));
+
+        Assert.Equal(51, items.Count); // exactly one reentrant insert fired during measure
+        var gen = listBox.ItemContainerGenerator;
+
+        var slot0 = gen.ContainerFromIndex(0);
+        Assert.NotNull(slot0);
+        Assert.Equal("INSERTED", gen.ItemFromContainer(slot0!));
+
+        // The item formerly at index 0 shifted to index 1 — not overwritten or dropped.
+        var slot1 = gen.ContainerFromIndex(1);
+        Assert.NotNull(slot1);
+        Assert.Equal("Item 0", gen.ItemFromContainer(slot1!));
+    }
+
+    private sealed class ReentrantHeadInsertListBox : ListBox
+    {
+        private readonly ObservableCollection<string> _items;
+        private bool _mutated;
+
+        public ReentrantHeadInsertListBox(ObservableCollection<string> items) => _items = items;
+
+        protected override void PrepareContainerForItem(FrameworkElement element, object item)
+        {
+            base.PrepareContainerForItem(element, item);
+
+            // Fire exactly once, from inside the in-flight realize loop, so OnItemsChanged sees
+            // _measureInProgress and defers to MeasureOverride's bounded retry.
+            if (!_mutated)
+            {
+                _mutated = true;
+                _items.Insert(0, "INSERTED");
+            }
+        }
+    }
+
+    [Fact]
     public void TwoOffset_SetVerticalOffset_CommitsSynchronously()
     {
         var listBox = new TestListBox { Width = 320, Height = 240 };

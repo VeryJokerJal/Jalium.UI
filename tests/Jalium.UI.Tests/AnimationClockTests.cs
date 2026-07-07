@@ -379,4 +379,32 @@ public class StoryboardLifecycleTests
         AnimationManager.ProcessFrame(t0 + Ticks(5.0));
         Assert.Equal(0, completedCount);
     }
+
+    [Fact]
+    public void Completed_ElementDrivenHoldEnd_ObservesFinalValueNotStalePreCompletionValue()
+    {
+        // The storyboard subscribes to the clock's Completed before the element's own handler,
+        // and an element-driven clock raises Completed from INSIDE AnimationClock.Tick — which
+        // UIElement.OnAnimationFrame runs before it writes the frame's final animated value.
+        // Raising Storyboard.Completed synchronously there let a handler observe the pre-completion
+        // value; it is now deferred to the end of the frame, after the final value lands.
+        var element = new ProbeElement();
+        var storyboard = CreateOpacityStoryboard(element, from: 0.0, to: 1.0, durationSeconds: 1.0, FillBehavior.HoldEnd);
+
+        double observedInHandler = double.NaN;
+        storyboard.Completed += (_, _) => observedInHandler = (double)element.GetValue(UIElement.OpacityProperty)!;
+
+        long t0 = Stopwatch.GetTimestamp();
+        AnimationEngineTests.RunInsideFrame(t0, _ => storyboard.Begin());
+
+        // Advance partway so a non-final animated value (0.5) is actually written first: without
+        // the deferral the completion handler would observe THIS value instead of the final 1.0.
+        AnimationManager.ProcessFrame(t0 + Ticks(0.5));
+        Assert.Equal(0.5, (double)element.GetValue(UIElement.OpacityProperty)!, 3);
+
+        AnimationManager.ProcessFrame(t0 + Ticks(2.0)); // completes naturally (HoldEnd → holds 1.0)
+
+        Assert.Equal(1.0, observedInHandler, 3);
+        Assert.Equal(1.0, (double)element.GetValue(UIElement.OpacityProperty)!, 3);
+    }
 }

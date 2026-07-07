@@ -489,7 +489,15 @@ public sealed class Storyboard : Timeline, IStoryboard, IFrameAnimatable, IStory
         {
             // WPF semantics: Completed fires only when every clock finished
             // naturally — never after a Stop/termination.
-            OnCompleted();
+            //
+            // Deferred to the end of the frame: an element-driven clock settles from
+            // inside AnimationClock.Tick, which the element runs BEFORE it writes this
+            // frame's final/FillBehavior value (UIElement.OnAnimationFrame ticks, then
+            // writes). Raising Completed synchronously here would let a handler read the
+            // pre-final value or start a follow-up animation off a stale reading. Queued
+            // post-frame it runs after every value write has landed; outside a frame it
+            // runs immediately (preserving the synchronous semantics the tests assert).
+            AnimationManager.QueuePostFrame(OnCompleted);
         }
     }
 

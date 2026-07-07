@@ -258,4 +258,79 @@ public class UiaComWrappersTests
         // A miss returns null rather than throwing across the COM boundary.
         Assert.Null(doc.FindText("zz", backward: 0, ignoreCase: 0));
     }
+
+    [Theory]
+    [InlineData(30031, PatternInterface.Invoke)]
+    [InlineData(30037, PatternInterface.Selection)]
+    [InlineData(30043, PatternInterface.Value)]
+    [InlineData(30033, PatternInterface.RangeValue)]
+    [InlineData(30034, PatternInterface.Scroll)]
+    [InlineData(30035, PatternInterface.ScrollItem)]
+    [InlineData(30028, PatternInterface.ExpandCollapse)]
+    [InlineData(30041, PatternInterface.Toggle)]
+    [InlineData(30036, PatternInterface.SelectionItem)]
+    [InlineData(30040, PatternInterface.Text)]
+    public void MapAvailabilityProperty_KeysOnCanonicalSdkPropertyIds(int sdkPropertyId, PatternInterface expected)
+    {
+        // The IsXxxPatternAvailable ids are the Windows SDK values (UIAutomationClient.h). Passing the
+        // LITERAL SDK id here locks both the numeric constant and its pattern mapping in one shot: a
+        // swapped constant (e.g. Selection 30037 <-> SelectionItem 30036, or Scroll 30034 <-> ScrollItem
+        // 30035) makes the wrong PatternInterface come back and fails this test.
+        Assert.Equal(expected, UiaConstants.MapAvailabilityPropertyToPatternInterface(sdkPropertyId));
+    }
+
+    [Fact]
+    public void MapAvailabilityProperty_NonAvailabilityOrUnwrappableId_ReturnsNull()
+    {
+        // Not a pattern-availability property at all.
+        Assert.Null(UiaConstants.MapAvailabilityPropertyToPatternInterface(UiaConstants.UIA_NamePropertyId));
+
+        // Availability ids for patterns the provider cannot wrap (Dock=30027, MultipleView=30032,
+        // Table=30038, Transform=30042) must fall through to null -> VT_EMPTY, never map to some other
+        // pattern. This is the guard against the mislabeled-constant class of bug.
+        Assert.Null(UiaConstants.MapAvailabilityPropertyToPatternInterface(30027));
+        Assert.Null(UiaConstants.MapAvailabilityPropertyToPatternInterface(30032));
+        Assert.Null(UiaConstants.MapAvailabilityPropertyToPatternInterface(30038));
+        Assert.Null(UiaConstants.MapAvailabilityPropertyToPatternInterface(30042));
+    }
+
+    [Fact]
+    public void Ccw_GetPropertyValue_ReportsPatternAvailabilityAsVtBool()
+    {
+        // UIA clients gate on IsXxxPatternAvailable before calling GetPatternProvider, so these must
+        // answer VT_BOOL true/false through the real vtable slot — not VT_EMPTY. This is the end-to-end
+        // wiring the Codex suggestion asked for (Text pattern reported as available).
+        var textProvider = UiaAccessibilityBridge.GetOrCreateProvider(
+            new TextBox { Text = "hi" }.GetAutomationPeer()!, nint.Zero);
+        var buttonProvider = UiaAccessibilityBridge.GetOrCreateProvider(
+            new Button { Content = "hi" }.GetAutomationPeer()!, nint.Zero);
+
+        nint pText = UiaComInterop.ProviderToPointer(textProvider);
+        nint pButton = UiaComInterop.ProviderToPointer(buttonProvider);
+        try
+        {
+            var getText = Slot<GetPropertyValueFn>(pText, Slot_GetPropertyValue);
+            var getButton = Slot<GetPropertyValueFn>(pButton, Slot_GetPropertyValue);
+
+            // TextBox exposes the Text pattern -> IsTextPatternAvailable == VT_BOOL TRUE.
+            Assert.Equal(0, getText(pText, UiaConstants.UIA_IsTextPatternAvailablePropertyId, out UiaVariant vTextAvail));
+            Assert.Equal(UiaVariant.VT_BOOL, vTextAvail.vt);
+            Assert.Equal((short)-1, vTextAvail.boolVal);
+
+            // Button has no Text pattern -> IsTextPatternAvailable == VT_BOOL FALSE (definitive, not VT_EMPTY).
+            Assert.Equal(0, getButton(pButton, UiaConstants.UIA_IsTextPatternAvailablePropertyId, out UiaVariant vButtonText));
+            Assert.Equal(UiaVariant.VT_BOOL, vButtonText.vt);
+            Assert.Equal((short)0, vButtonText.boolVal);
+
+            // Button exposes the Invoke pattern -> IsInvokePatternAvailable == VT_BOOL TRUE.
+            Assert.Equal(0, getButton(pButton, UiaConstants.UIA_IsInvokePatternAvailablePropertyId, out UiaVariant vInvoke));
+            Assert.Equal(UiaVariant.VT_BOOL, vInvoke.vt);
+            Assert.Equal((short)-1, vInvoke.boolVal);
+        }
+        finally
+        {
+            UiaComInterop.FreeProviderPointer(pText);
+            UiaComInterop.FreeProviderPointer(pButton);
+        }
+    }
 }

@@ -89,8 +89,17 @@ internal static class AnimationManager
     private static List<WeakReference<UIElement>> _detachCheckScratch = new(16);
 
     private static bool _ticking;
+    private static bool _draining;
     private static bool _subscribedToRendering;
     private static long _frameTimestamp;
+
+    // End-of-frame callbacks (storyboard Completed events). A storyboard clock that completes
+    // naturally raises Completed from inside AnimationClock.Tick — i.e. before the element that
+    // owns the clock writes this frame's final/FillBehavior value (OnAnimationFrame ticks, THEN
+    // writes). Deferring the Completed raise to the end of the frame lets a handler observe the
+    // settled value and start follow-up animations off it, matching WPF (Completed fires after the
+    // timing tick computes the frame). Drained in ProcessFrame's finally.
+    private static readonly Queue<Action> _postFrameCallbacks = new();
 
     /// <summary>
     /// The unified timestamp (Stopwatch ticks) of the frame currently being
@@ -117,6 +126,20 @@ internal static class AnimationManager
     /// Test observability.
     /// </summary>
     internal static bool IsSubscribedToRendering => _subscribedToRendering;
+
+    /// <summary>
+    /// Queues <paramref name="callback"/> to run at the end of the current animation frame, after
+    /// every subscriber's value writes for the frame have landed. Outside a frame it runs
+    /// immediately. Used by Storyboard so its Completed event is raised only once the final
+    /// animated values are in place, rather than mid-tick before the owning element wrote them.
+    /// </summary>
+    internal static void QueuePostFrame(Action callback)
+    {
+        if (_ticking)
+            _postFrameCallbacks.Enqueue(callback);
+        else
+            callback();
+    }
 
     internal static void Register(AnimationTickSubscription subscription)
     {
@@ -187,10 +210,11 @@ internal static class AnimationManager
     /// </summary>
     internal static void ProcessFrame(long frameTimestamp)
     {
-        // A nested frame (a subscriber pumping the dispatcher) would corrupt the
-        // in-place iteration and compaction; skip it — the outer frame is
-        // authoritative and the nested work runs next frame.
-        if (_ticking)
+        // A nested frame (a subscriber pumping the dispatcher, or a deferred Completed handler
+        // that pumps during the end-of-frame drain) would corrupt the in-place iteration and
+        // compaction; skip it — the outer frame is authoritative and the nested work runs next
+        // frame.
+        if (_ticking || _draining)
             return;
 
         _frameTimestamp = frameTimestamp;
@@ -229,9 +253,47 @@ internal static class AnimationManager
         finally
         {
             _ticking = false;
-            _frameTimestamp = 0;
+
+            // Drain end-of-frame callbacks (storyboard Completed) while _frameTimestamp still holds
+            // this frame's value, so a follow-up animation a deferred handler starts shares the same
+            // t0 as the rest of the frame instead of sampling real-now (CurrentFrameTimestampOrNow).
+            // _draining stands in for _ticking here: a handler that pumps the dispatcher during the
+            // drain must not run a nested frame (the guard at the top of ProcessFrame honors it).
+            _draining = true;
+            try
+            {
+                DrainPostFrameCallbacks();
+            }
+            finally
+            {
+                _draining = false;
+                _frameTimestamp = 0;
+            }
+
             Compact();
             TeardownIfEmpty();
+        }
+    }
+
+    /// <summary>
+    /// Runs the callbacks queued via <see cref="QueuePostFrame"/> during the frame that just
+    /// finished ticking. <c>_ticking</c> is already false, so any completion a callback triggers
+    /// synchronously runs immediately instead of re-queuing. A throwing callback (a user Completed
+    /// handler) is isolated exactly like a throwing per-frame subscriber so it cannot skip the rest
+    /// of the queue or the frame teardown that follows.
+    /// </summary>
+    private static void DrainPostFrameCallbacks()
+    {
+        while (_postFrameCallbacks.Count > 0)
+        {
+            var callback = _postFrameCallbacks.Dequeue();
+            try
+            {
+                callback();
+            }
+            catch
+            {
+            }
         }
     }
 

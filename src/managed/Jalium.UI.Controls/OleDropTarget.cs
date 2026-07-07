@@ -176,12 +176,9 @@ internal static unsafe class OleDropTarget
 
             if (s.CurrentTarget != null)
             {
-                var args = new DragEventArgs(DragDrop.DragEnterEvent, s.CurrentData, keys, allowed, pos)
-                {
-                    DropDescriptionSetter = MakeDropDescriptionSetter(s),
-                };
-                s.CurrentTarget.RaiseEvent(args);
-                *pdwEffect = MapEffectsBack(args.Effects);
+                *pdwEffect = MapEffectsBack(RaiseDragEvent(
+                    s, s.CurrentTarget, DragDrop.PreviewDragEnterEvent, DragDrop.DragEnterEvent,
+                    s.CurrentData, keys, allowed, pos));
             }
             else
             {
@@ -214,31 +211,22 @@ internal static unsafe class OleDropTarget
             {
                 if (s.CurrentTarget != null)
                 {
-                    var leave = new DragEventArgs(DragDrop.DragLeaveEvent, s.CurrentData, keys, allowed, pos)
-                    {
-                        DropDescriptionSetter = MakeDropDescriptionSetter(s),
-                    };
-                    s.CurrentTarget.RaiseEvent(leave);
+                    RaiseDragEvent(s, s.CurrentTarget, DragDrop.PreviewDragLeaveEvent, DragDrop.DragLeaveEvent,
+                        s.CurrentData, keys, allowed, pos);
                 }
                 s.CurrentTarget = newTarget;
                 if (s.CurrentTarget != null)
                 {
-                    var enter = new DragEventArgs(DragDrop.DragEnterEvent, s.CurrentData, keys, allowed, pos)
-                    {
-                        DropDescriptionSetter = MakeDropDescriptionSetter(s),
-                    };
-                    s.CurrentTarget.RaiseEvent(enter);
+                    RaiseDragEvent(s, s.CurrentTarget, DragDrop.PreviewDragEnterEvent, DragDrop.DragEnterEvent,
+                        s.CurrentData, keys, allowed, pos);
                 }
             }
 
             if (s.CurrentTarget != null)
             {
-                var args = new DragEventArgs(DragDrop.DragOverEvent, s.CurrentData, keys, allowed, pos)
-                {
-                    DropDescriptionSetter = MakeDropDescriptionSetter(s),
-                };
-                s.CurrentTarget.RaiseEvent(args);
-                *pdwEffect = MapEffectsBack(args.Effects);
+                *pdwEffect = MapEffectsBack(RaiseDragEvent(
+                    s, s.CurrentTarget, DragDrop.PreviewDragOverEvent, DragDrop.DragOverEvent,
+                    s.CurrentData, keys, allowed, pos));
             }
             else
             {
@@ -260,8 +248,8 @@ internal static unsafe class OleDropTarget
             var s = GetState(pThis);
             if (s.CurrentTarget != null && s.CurrentData != null)
             {
-                var args = new DragEventArgs(DragDrop.DragLeaveEvent, s.CurrentData, DragDropKeyStates.None, DragDropEffects.None, default);
-                s.CurrentTarget.RaiseEvent(args);
+                RaiseDragEvent(s, s.CurrentTarget, DragDrop.PreviewDragLeaveEvent, DragDrop.DragLeaveEvent,
+                    s.CurrentData, DragDropKeyStates.None, DragDropEffects.None, default);
             }
 
             ShellHelperDragLeave();
@@ -291,12 +279,9 @@ internal static unsafe class OleDropTarget
 
             if (target != null)
             {
-                var args = new DragEventArgs(DragDrop.DropEvent, data, keys, allowed, pos)
-                {
-                    DropDescriptionSetter = MakeDropDescriptionSetter(s),
-                };
-                target.RaiseEvent(args);
-                *pdwEffect = MapEffectsBack(args.Effects);
+                *pdwEffect = MapEffectsBack(RaiseDragEvent(
+                    s, target, DragDrop.PreviewDropEvent, DragDrop.DropEvent,
+                    data, keys, allowed, pos));
             }
             else
             {
@@ -312,6 +297,36 @@ internal static unsafe class OleDropTarget
         }
         catch { *pdwEffect = 0; }
         return 0;
+    }
+
+    /// <summary>
+    /// Raises an external/OLE drag notification through the same preview-then-bubble
+    /// sequence the in-app managed drag path (<see cref="DragDropPlatform"/>) uses: the
+    /// tunneling <c>Preview*</c> event first, and — only if no handler marked it
+    /// <see cref="RoutedEventArgs.Handled"/> — the bubbling event afterwards. The resolved
+    /// <see cref="DragEventArgs.Effects"/> is taken from whichever leg ran last, so a preview
+    /// handler that sets an effect and marks the event handled is honored instead of being
+    /// overridden by an (unreached) bubble leg. Both legs carry the Shell drop-description
+    /// setter so a preview handler can annotate the drag too.
+    /// </summary>
+    private static DragDropEffects RaiseDragEvent(
+        DropTargetState s, UIElement target, RoutedEvent previewEvent, RoutedEvent bubbleEvent,
+        DataObject data, DragDropKeyStates keys, DragDropEffects allowed, Point pos)
+    {
+        var preview = new DragEventArgs(previewEvent, data, keys, allowed, pos)
+        {
+            DropDescriptionSetter = MakeDropDescriptionSetter(s),
+        };
+        target.RaiseEvent(preview);
+        if (preview.Handled)
+            return preview.Effects;
+
+        var bubble = new DragEventArgs(bubbleEvent, data, keys, allowed, pos)
+        {
+            DropDescriptionSetter = MakeDropDescriptionSetter(s),
+        };
+        target.RaiseEvent(bubble);
+        return bubble.Effects;
     }
 
     #endregion

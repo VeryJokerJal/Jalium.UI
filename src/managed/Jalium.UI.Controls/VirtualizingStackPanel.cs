@@ -389,6 +389,16 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
             if (_itemsChangedDuringMeasure)
             {
                 _itemsChangedDuringMeasure = false;
+
+                // The deferred change left the realized map + height index keyed by PRE-mutation
+                // indices (OnItemsChanged returned early without touching them). RealizeContainer
+                // hands back a cached container for an already-present index WITHOUT consulting the
+                // generator, and EnsureHeightIndex only grows the tail — so a retry over that stale
+                // state would keep inserted/removed/moved items in their old slots until a later full
+                // reset. Reset to a clean baseline first so the retry re-realizes every index from the
+                // post-mutation generator. (Reentrant structural mutation is rare, so the full
+                // re-realize on this path is an acceptable cost for correctness.)
+                ResetVirtualizationState(GetItemCount());
                 result = MeasureVirtualizedPass(availableSize);
             }
 

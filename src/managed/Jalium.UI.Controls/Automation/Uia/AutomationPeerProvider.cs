@@ -96,8 +96,25 @@ internal sealed partial class AutomationPeerProvider : IRawElementProviderFragme
         UiaConstants.UIA_FrameworkIdPropertyId => "Jalium",
         UiaConstants.UIA_NativeWindowHandlePropertyId => _isRoot ? _hwnd.ToInt32() : 0,
         UiaConstants.UIA_ProviderDescriptionPropertyId => "Jalium.UI UIA Provider",
-        _ => null,
+        _ => GetPatternAvailability(propertyId),
     };
+
+    /// <summary>
+    /// Answers the boolean <c>IsXxxPatternAvailable</c> properties by asking the peer whether it
+    /// exposes the corresponding pattern. Returns <see langword="null"/> (VT_EMPTY) for property ids
+    /// that are not pattern-availability queries, so unrelated properties fall through unchanged.
+    /// Without this, a provider that returns a Text/Value/Toggle/... pattern from
+    /// <see cref="GetPatternProvider"/> still reported VT_EMPTY here, and UIA clients (Narrator, text
+    /// clients) that check availability first would treat the supported pattern as absent.
+    /// </summary>
+    private object? GetPatternAvailability(int propertyId)
+    {
+        var patternInterface = UiaConstants.MapAvailabilityPropertyToPatternInterface(propertyId);
+        if (patternInterface == null)
+            return null;
+
+        return _peer.GetPattern(patternInterface.Value) != null;
+    }
 
     public IRawElementProviderSimple? get_HostRawElementProvider()
     {
