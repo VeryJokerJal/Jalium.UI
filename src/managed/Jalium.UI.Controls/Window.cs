@@ -5,6 +5,7 @@ using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Interop;
+using Jalium.UI.Interop.Win32;
 using Jalium.UI.Media;
 using Jalium.UI.Rendering;
 using Jalium.UI.Threading;
@@ -20,6 +21,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 {
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
     private static readonly bool DebugRender = IsEnvironmentSwitchEnabled("JALIUM_DEBUG_RENDER");
+
+    // RC2 逃生门：JALIUM_DIRTY_PROMOTE_LEGACY=1 恢复重写前的 promote 管线——
+    // fold 后面积做判定 + ring 在 fold 时（present 前）推进 + promote 成功前
+    // SeedDirtyHistoryFullWindow 全 ring 重播。刻意不加 readonly：环境变量在测试
+    // 进程内不可变，测试需要就地开关（bool 写入原子，运行期只有测试改它）。
+    internal static bool LegacyPromoteBehavior = IsEnvironmentSwitchEnabled("JALIUM_DIRTY_PROMOTE_LEGACY");
 
     // VSync 默认是否禁用（env 缓存，运行期不变）。EnsureRenderTarget 与 WM_EXITSIZEMOVE
     // 共用这唯一来源，避免魔法字符串重复，也保证 resize 结束后不会无视用户的 opt-out。
@@ -72,6 +79,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private const int RenderFlag_Rendering       = 1 << 1; // Inside RenderFrame execution
     private const int RenderFlag_Requested       = 1 << 2; // InvalidateWindow called during rendering
     private const int RenderFlag_DirtyBetween    = 1 << 3; // InvalidateWindow blocked between frames
+
+    // The refresh-rate render cap was removed: rendering now rides the self-driven
+    // CompositionTarget frame loop (InvalidateWindow -> RequestFrame), which is
+    // already refresh-rate paced, so a hover burst coalesces to one render per tick
+    // without a separate cap timer.
 
     /// <summary>Atomically sets a flag if it was not already set. Returns true if this call set it.</summary>
     private bool TrySetRenderFlag(int flag)
@@ -174,11 +186,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         public void SetWindowSize(int w, int h) { _windowWidth = w; _windowHeight = h; }
         public void SetDpiScale(float s) => _dpiScale = s;
         public void SetDirtyInfo(int elementCount, Rect region) { _dirtyElementCount = elementCount; _dirtyRegion = region; }
+        // 口径注意（排障时勿混读，两值取自不同阶段）：rectCount = fold(dirty-history)
+        // 之后实际提交给本次 present 的 rect 数；coverageRatio = promote 判定所用面积
+        // 比——默认为本帧 raw（fold 前）真实覆盖面积/窗口面积，JALIUM_DIRTY_PROMOTE_LEGACY=1
+        // 或 flush 帧时为 fold/ring 重建后的口径。动画期间 Promote%（可由
+        // PartialRenderSnapshot 的 promoted/(full+partial+promoted) 推导）应趋近 0。
         public void SetDirtyRegionStats(int rectCount, double coverageRatio)
         {
             _dirtyRectCount = rectCount;
             _dirtyCoverageRatio = coverageRatio;
         }
+
+        /// <summary>
+        /// 区间累计计数的直读版本（非 1s 快照）——测试钩子（HUD 关闭时累计器不会被
+        /// FlushInterval 复位，单调可断言）。
+        /// </summary>
+        public (int full, int partial, int promoted, int skipped) CurrentCounters =>
+            (_fullFrames, _partialFrames, _promotedFrames, _skippedFrames);
 
         public readonly Jalium.UI.Diagnostics.FrameHistory FrameHistory = new();
 
@@ -336,12 +360,35 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         public Rect PreLayoutBounds;
         public List<Rect>? PreciseLocalRects;
+        // RC4-a：本帧无法 present 该条目（bounds 为空且 layout 仍无效）时保留重试的
+        // 次数；上限 3 防恒无效元素自旋（见 RetainOrDropFrameDirty）。
+        public byte RetryCount;
+        // RC4-c：注册时元素上一次真实被 present 覆盖的屏幕 AABB（UIElement.LastDirtyBounds
+        // 快照）。与 PreLayoutBounds 一起提交，封住"先改值后失效 + 长空闲后不连续跳变"
+        // 留下的残影（连续动画的上一帧位置本由 dirty-history fold 覆盖）。
+        public Rect PrevPaintedBounds;
     }
-    private readonly Dictionary<UIElement, DirtyElementEntry> _dirtyElements = new();
+    // 活动脏集（非 readonly：RenderFrame 以引用互换方式把它换成捕获集，见
+    // SwapDirtyForFrame）。后台线程只经 AddDirtyElement/AddDirtyRect 在 _dirtyLock
+    // 下触碰当前活动实例。
+    private Dictionary<UIElement, DirtyElementEntry> _dirtyElements = new();
     // Free-floating dirty rects in window (screen) coordinates. Populated by
     // AddDirtyRect — used when an animation / compositor system knows a region
     // changed but doesn't own a single UIElement.
-    private readonly List<Rect> _dirtyFreeRects = new();
+    private List<Rect> _dirtyFreeRects = new();
+    // ── RC4-a 事务化消费：帧捕获容器 ──
+    // RenderFrame 开帧时（锁内）与活动容器引用互换；此后到帧收尾为止由 UI 线程独占
+    // （读不加锁），帧内新到的 AddDirtyElement 落入换上来的空活动集，不再被"计算后
+    // Clear"竞窗吞掉。收尾三选一：present 成功 → DiscardFrameDirty；空 aggregator
+    // 早退 → RetainOrDropFrameDirty；其余一切未 present 的退出（BeginDraw 重试、
+    // EndDraw 失败、异常）→ finally 兜底 MergeBackFrameDirty。帧间不变量：两个捕获
+    // 容器恒为空。
+    private Dictionary<UIElement, DirtyElementEntry> _frameDirtyElements = new();
+    private List<Rect> _frameDirtyFreeRects = new();
+    // 每次 full-invalidation 请求自增；帧在 swap 时快照，DiscardFrameDirty 仅当序列
+    // 未变才清 _fullInvalidation——帧中到达的 RequestFullInvalidation 不会被成功
+    // present 的提交顺手吞掉。受 _dirtyLock 保护。
+    private long _fullInvalidationSeq;
     private readonly object _dirtyLock = new(); // Protects _dirtyElements from cross-thread access
     private int _appliedDwmTopMarginPhysical = -1;
     private bool _attemptedAutoWindowIcon;
@@ -466,7 +513,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ResizeModeProperty =
         DependencyProperty.Register(nameof(ResizeMode), typeof(ResizeMode), typeof(Window),
-            new PropertyMetadata(ResizeMode.CanResize));
+            new PropertyMetadata(ResizeMode.CanResize, OnResizeModeChanged));
 
     /// <summary>
     /// Identifies the WindowStyle dependency property.
@@ -1339,8 +1386,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         TitleBar.FontSize = TitleBarFontSize;
         TitleBar.Title = Title;
         TitleBar.IsMaximized = WindowState == WindowState.Maximized;
-        TitleBar.ShowMinimizeButton = IsShowMinimizeButton;
-        TitleBar.ShowMaximizeButton = IsShowMaximizeButton;
+        // Derive the caption buttons from ResizeMode as well (WPF parity):
+        // NoResize hides both minimize and maximize; CanMinimize hides maximize
+        // (WPF grays it — this framework's TitleBar has no disabled state, so it is
+        // collapsed instead). CanResize/CanResizeWithGrip show both.
+        TitleBar.ShowMinimizeButton = IsShowMinimizeButton && ResizeMode != ResizeMode.NoResize;
+        TitleBar.ShowMaximizeButton = IsShowMaximizeButton && CanUserResize;
         TitleBar.ShowCloseButton = IsShowCloseButton;
         TitleBar.LeftWindowCommands = LeftWindowCommands;
         TitleBar.RightWindowCommands = RightWindowCommands;
@@ -1399,6 +1450,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
+    /// <summary>
+    /// True when <see cref="ResizeMode"/> permits the user to resize the window
+    /// (and therefore to maximize it) — i.e. <see cref="ResizeMode.CanResize"/> or
+    /// <see cref="ResizeMode.CanResizeWithGrip"/>. Mirrors WPF, where NoResize and
+    /// CanMinimize forbid both edge resize and maximize.
+    /// </summary>
+    private bool CanUserResize =>
+        ResizeMode == ResizeMode.CanResize || ResizeMode == ResizeMode.CanResizeWithGrip;
+
     private void OnTitleBarMinimizeClicked(object? sender, EventArgs e)
     {
         if (Handle != nint.Zero)
@@ -1420,6 +1480,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         else
         {
+            // ResizeMode governs the user-facing maximize affordance (WPF parity):
+            // a NoResize / CanMinimize window cannot be maximized from the title bar
+            // (button click or caption double-click). Programmatic WindowState changes
+            // are unaffected — this only gates the interactive path.
+            if (!CanUserResize)
+            {
+                return;
+            }
             WindowState = WindowState.Maximized;
         }
     }
@@ -2414,10 +2482,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        // Maximized fills the work area (excludes taskbar); FullScreen covers the
-        // entire monitor.  Mirrors the post-ShowWindow rcWork / rcMonitor split
+        // FullScreen always covers the entire monitor.  A borderless
+        // (WindowStyle.None) Maximized window now also covers the entire monitor to
+        // match WPF (enforced via the WM_GETMINMAXINFO handler); a bordered
+        // Maximized window fills the work area (excludes taskbar).  Pre-sizing to
+        // the same rect the maximized HWND will end up at avoids a second full
+        // render after ShowWindow's WM_SIZE.  Mirrors the rcWork / rcMonitor split
         // used by EnterFullScreen.
-        var rc = desiredState == WindowState.FullScreen ? mi.rcMonitor : mi.rcWork;
+        bool coversFullMonitor = desiredState == WindowState.FullScreen
+            || (desiredState == WindowState.Maximized && WindowStyle == WindowStyle.None);
+        var rc = coversFullMonitor ? mi.rcMonitor : mi.rcWork;
         int targetPhysicalWidth = rc.right - rc.left;
         int targetPhysicalHeight = rc.bottom - rc.top;
         if (targetPhysicalWidth <= 0 || targetPhysicalHeight <= 0)
@@ -2682,24 +2756,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _isModal = true;
         try
         {
-            while (_isModal && Handle != nint.Zero)
-            {
-                if (GetMessage(out MSG msg, nint.Zero, 0, 0) > 0)
-                {
-                    _ = TranslateMessage(ref msg);
-                    _ = DispatchMessage(ref msg);
-                }
-                else
-                {
-                    break;
-                }
-
-                if (Handle == nint.Zero)
-                {
-                    _isModal = false;
-                    break;
-                }
-            }
+            // Input-first nested modal pump (see Dispatcher.RunModalLoop): same
+            // "run while modal and the window lives" condition as the old bare
+            // GetMessage loop, but a posted dispatcher wake no longer outranks
+            // hardware input, and WM_QUIT is re-posted so the app's main loop exits.
+            var dispatcher = _dispatcher ?? Dispatcher.MainDispatcher ?? Dispatcher.GetForCurrentThread();
+            dispatcher.RunModalLoop(() => _isModal && Handle != nint.Zero);
         }
         finally
         {
@@ -2991,9 +3053,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // For custom title bar we keep standard caption style bits and remove the
         // visible caption via NCCALCSIZE; for WindowStyle=None we use WS_POPUP so
         // the window has no native frame or caption at all.
-        uint dwStyle = WindowStyle == WindowStyle.None
-            ? ComputeWin32WindowStyle(WindowStyle.None, ResizeMode)
-            : WS_OVERLAPPEDWINDOW;
+        uint dwStyle;
+        if (WindowStyle == WindowStyle.None)
+        {
+            dwStyle = ComputeWin32WindowStyle(WindowStyle.None, ResizeMode);
+        }
+        else
+        {
+            // Standard overlapped frame. Strip the resize/max/min bits that the
+            // current ResizeMode forbids so NoResize / CanMinimize are honored at
+            // creation (WPF parity). A bare WS_OVERLAPPEDWINDOW would always leave
+            // the window edge-resizable with an enabled maximize box regardless of
+            // ResizeMode, because UpdateWindowStyle() does not run on the create path.
+            dwStyle = WS_OVERLAPPEDWINDOW;
+            if (!CanUserResize)
+            {
+                dwStyle &= ~(WS_THICKFRAME | WS_MAXIMIZEBOX);
+            }
+            if (ResizeMode == ResizeMode.NoResize)
+            {
+                dwStyle &= ~WS_MINIMIZEBOX;
+            }
+        }
 
         uint dwExStyle = TitleBarStyle == WindowTitleBarStyle.Custom
             ? WS_EX_APPWINDOW
@@ -4015,12 +4096,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             style |= WS_CAPTION | WS_SYSMENU;
             if (ResizeMode != ResizeMode.NoResize)
             {
-                style |= WS_THICKFRAME;
                 style |= WS_MINIMIZEBOX;
-                if (ResizeMode != ResizeMode.CanMinimize)
-                    style |= WS_MAXIMIZEBOX;
             }
-            exStyle |= WS_EX_APPWINDOW;
+            if (CanUserResize)
+            {
+                // Only a resizable window gets the sizing border + maximize box.
+                // CanMinimize keeps just WS_MINIMIZEBOX (the OS grays the max box);
+                // it must NOT get WS_THICKFRAME or WS_MAXIMIZEBOX.
+                style |= WS_THICKFRAME | WS_MAXIMIZEBOX;
+            }
+            // Respect ShowInTaskbar here too: unconditionally forcing WS_EX_APPWINDOW
+            // would drag a no-taskbar window back into the taskbar whenever this runs
+            // (e.g. on a live ResizeMode / WindowStyle change).
+            if (ShowInTaskbar)
+            {
+                exStyle |= WS_EX_APPWINDOW;
+                exStyle &= ~(long)WS_EX_TOOLWINDOW;
+            }
+            else
+            {
+                exStyle |= WS_EX_TOOLWINDOW;
+                exStyle &= ~(long)WS_EX_APPWINDOW;
+            }
             EnableRoundedCorners();
         }
         else
@@ -4028,10 +4125,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             style |= WS_CAPTION | WS_SYSMENU;
             if (ResizeMode != ResizeMode.NoResize)
             {
-                style |= WS_THICKFRAME;
                 style |= WS_MINIMIZEBOX;
-                if (ResizeMode != ResizeMode.CanMinimize)
-                    style |= WS_MAXIMIZEBOX;
+            }
+            if (CanUserResize)
+            {
+                style |= WS_THICKFRAME | WS_MAXIMIZEBOX;
             }
         }
 
@@ -4289,6 +4387,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         float dpi = (float)(_dpiScale * 96.0);
         RenderTarget?.SetDpi(dpi, dpi);
 
+        // Apply the app-selected path anti-aliasing quality (app.UsePathAntiAliasing).
+        // Here so it covers both initial creation and device-lost recovery (both flow
+        // through EnsureRenderTarget). The native side clamps to a supported sample
+        // count. Filled paths (stencil-then-cover MSAA) dominate the per-present GPU
+        // cost on weak GPUs, so this is the biggest single quality/perf lever.
+        RenderTarget?.SetPathMsaaSampleCount(Jalium.UI.Hosting.RenderQualityOptions.Current.ResolvePathMsaaSampleCount());
+
         // VSync default: ON. With FRAME_LATENCY_WAITABLE_OBJECT +
         // SetMaximumFrameLatency(1) the swap chain already aligns CPU pacing
         // to vsync, and Present(1) lets the BeginDraw waitable wait collapse
@@ -4339,8 +4444,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Fast path: already supports composition child visuals.
         if (RenderTarget.TryCreateWebViewCompositionVisual(out var existingVisual) && existingVisual != nint.Zero)
         {
-            RenderTarget.DestroyWebViewCompositionVisual(existingVisual);
-            return true;
+            try
+            {
+                RenderTarget.DestroyWebViewCompositionVisual(existingVisual);
+                return true;
+            }
+            catch (RenderPipelineException)
+            {
+                // Device lost between probe-create and probe-destroy (e.g. GPU
+                // switch). Fall through to the full rebuild path below, which
+                // recreates the composition target on the recovered device. The
+                // leaked probe visual is reclaimed when the old RenderTarget is
+                // disposed there.
+            }
         }
 
         try
@@ -4429,7 +4545,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // stuck with stale content from before the render target swap.
             lock (_dirtyLock)
             {
-                _fullInvalidation = true;
+                MarkFullInvalidationLocked();
             }
             if (RenderTarget != null && RenderTarget.IsValid)
             {
@@ -4538,6 +4654,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             window.ApplyTitleBarPresentation();
             window.InvalidateMeasure();
         }
+    }
+
+    private static void OnResizeModeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not Window window)
+        {
+            return;
+        }
+
+        // ResizeMode is a live dependency property (WPF parity): a change after the
+        // window exists must re-apply the Win32 frame bits (WS_THICKFRAME /
+        // WS_MINIMIZEBOX / WS_MAXIMIZEBOX) and re-derive the custom title-bar buttons.
+        // UpdateWindowStyle() self-guards the pre-handle, cross-platform
+        // (_platformWindow) and fullscreen cases, so this is safe to call
+        // unconditionally; ApplyTitleBarPresentation() no-ops when there is no TitleBar.
+        window.UpdateWindowStyle();
+        window.ApplyTitleBarPresentation();
     }
 
     private static void OnTitleBarStyleChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -5037,6 +5170,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         return IsTitleBarVisible() &&
                IsShowMaximizeButton &&
+               CanUserResize &&
                OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000);
     }
 
@@ -5128,6 +5262,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
         }
 
+        if (Jalium.UI.Diagnostics.HoverTrace.Enabled)
+        {
+            switch (msg)
+            {
+                case WM_NCMOUSEMOVE: Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.NCMM); break;
+                case WM_NCHITTEST: Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.NCHT); break;
+                case WM_SETCURSOR: Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.SETCUR); break;
+                case WM_MOUSEMOVE: Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.MM); break;
+                case WM_NCMOUSEHOVER: Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.NCHOVER); break;
+                case WM_PAINT: Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.PAINT); break;
+            }
+        }
+
         if (window != null)
         {
             switch (msg)
@@ -5135,6 +5282,31 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 case WM_GETMINMAXINFO:
                 {
                     var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
+
+                    // A borderless (WindowStyle.None / WS_POPUP) window would, when
+                    // maximized, otherwise follow the system default that leaves the
+                    // taskbar uncovered.  To match WPF — where Maximized +
+                    // WindowStyle.None fills the entire monitor — override the
+                    // maximized size/position to the full monitor rect (rcMonitor).
+                    // It is computed for the monitor the window is on so multi-monitor
+                    // setups maximize onto the correct display; ptMaxPosition is
+                    // expressed relative to that monitor's origin, so (0,0) is its
+                    // top-left corner.  Bordered windows are left untouched here, so
+                    // their maximize keeps respecting the taskbar (work area).
+                    if (window.WindowStyle == WindowStyle.None)
+                    {
+                        var maximizeMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+                        MONITORINFO maximizeMonitorInfo = new() { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+                        if (maximizeMonitor != nint.Zero && GetMonitorInfo(maximizeMonitor, ref maximizeMonitorInfo))
+                        {
+                            var rcMonitor = maximizeMonitorInfo.rcMonitor;
+                            mmi.ptMaxPosition.X = 0;
+                            mmi.ptMaxPosition.Y = 0;
+                            mmi.ptMaxSize.X = rcMonitor.right - rcMonitor.left;
+                            mmi.ptMaxSize.Y = rcMonitor.bottom - rcMonitor.top;
+                        }
+                    }
+
                     double dpi = window._dpiScale;
                     double minW = window.MinWidth;
                     double minH = window.MinHeight;
@@ -5156,23 +5328,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 {
                     if ((int)lParam == -25 /* UiaRootObjectId */)
                     {
-                        // First WM_GETOBJECT means a real UIA client (Narrator,
-                        // Inspect, an automation test harness, etc.) is asking
-                        // for the root provider. Wire the event sink now so
-                        // subsequent RaiseAutomationEvent/PropertyChanged calls
-                        // forward into UIAutomationCore — but not a tick earlier,
-                        // because doing so during Application ctor would force
-                        // UIAutomationCore.dll to load on every process startup
-                        // even when no UIA client is ever attached.
-                        Jalium.UI.Automation.AutomationPeer.EventSink ??=
-                            new Automation.Uia.UiaAutomationEventSink();
-
+                        // A real UIA client (Narrator, Inspect, an automation test
+                        // harness, or a translation/OCR tool that scans window text such
+                        // as Qwen/Tongyi) is asking for the root provider. Hand it off to
+                        // the bridge, which marshals the provider defensively: under
+                        // NativeAOT (no built-in COM interop, no registered ComWrappers)
+                        // the marshal cannot succeed, and the bridge latches that state
+                        // and returns 0 rather than letting NotSupportedException escape.
+                        // It also arms the event sink ONLY after a marshal actually
+                        // succeeds — never a tick earlier — so a failed marshal here can
+                        // no longer leave a live sink that crashes a later layout pass,
+                        // and UIAutomationCore.dll is still not forced to load on startup.
                         var peer = window.GetAutomationPeer();
                         if (peer != null)
                         {
-                            var provider = Automation.Uia.UiaAccessibilityBridge.GetOrCreateProvider(peer, hWnd);
-                            var result = Automation.Uia.UiaNativeMethods.UiaReturnRawElementProvider(
-                                hWnd, wParam, lParam, provider);
+                            var result = Automation.Uia.UiaAccessibilityBridge.TryGetRootProvider(
+                                peer, hWnd, wParam, lParam);
                             if (result > 0)
                                 return result;
                         }
@@ -6150,7 +6321,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 _dirtyElements.Clear();
                 _dirtyFreeRects.Clear();
-                _fullInvalidation = true;
+                MarkFullInvalidationLocked();
             }
 
             InvalidateMeasure();
@@ -6238,7 +6409,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 _dirtyElements.Clear();
                 _dirtyFreeRects.Clear();
-                _fullInvalidation = true;
+                MarkFullInvalidationLocked();
             }
 
             InvalidateMeasure();
@@ -6317,7 +6488,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // partially-rendered dirty set.
         lock (_dirtyLock)
         {
-            _fullInvalidation = true;
+            MarkFullInvalidationLocked();
         }
 
         MarkRecoverableRenderFailure();
@@ -6542,6 +6713,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // same ApiStatsEnabled flag the path/bitmap/retained queries use.
             // Backends without timestamp support return NOT_SUPPORTED here and
             // DevTools renders a "—" placeholder.
+            // Diagnostic: a hover trace turns the stats path on so the GPU timing is
+            // collected exactly like the DevTools Perf tab (proven safe). REMOVE with
+            // the rest of the HoverTrace scaffolding after the investigation.
+            if (Jalium.UI.Diagnostics.HoverTrace.Enabled)
+                Jalium.UI.Diagnostics.RenderDiagnostics.ApiStatsEnabled = true;
             if (Jalium.UI.Diagnostics.RenderDiagnostics.ApiStatsEnabled &&
                 renderTarget.TryQueryGpuTiming(out var gpuTiming))
             {
@@ -6551,6 +6727,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     gpuTiming.SdfRectNs, gpuTiming.TextNs, gpuTiming.BitmapNs, gpuTiming.PathNs,
                     gpuTiming.BackdropNs, gpuTiming.LiquidGlassNs, gpuTiming.OtherNs,
                     gpuTiming.BatchCount);
+                if (Jalium.UI.Diagnostics.HoverTrace.Enabled && gpuTiming.TimingValid)
+                {
+                    Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_GPU_TOTAL_US, gpuTiming.TotalGpuNs / 1000);
+                    Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_GPU_OTHER_US, gpuTiming.OtherNs / 1000);
+                    Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_GPU_PATH_US, gpuTiming.PathNs / 1000);
+                    Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_GPU_SDF_US, gpuTiming.SdfRectNs / 1000);
+                    Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_GPU_TEXT_US, gpuTiming.TextNs / 1000);
+                    Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_GPU_BITMAP_US, gpuTiming.BitmapNs / 1000);
+                }
             }
             // Per-frame draw-API call counters → DevTools Perf tab. Only
             // publishes when ApiStatsEnabled (set by the Perf tab while it's
@@ -6566,6 +6751,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 PublishRetainedCacheStatsFromManaged();
             }
             if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] PRESENTED rt={renderTarget.Width}x{renderTarget.Height} win={Width:F0}x{Height:F0}");
+            Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.PRESENT);
             _lastRenderTicks = Environment.TickCount64;
             ResetRenderRecoveryBackoff();
             // Pre-arm the swap wait right after a successful present: the DWM
@@ -6597,7 +6783,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // would turn a one-frame hiccup into a visible stall.
             lock (_dirtyLock)
             {
-                _fullInvalidation = true;
+                MarkFullInvalidationLocked();
             }
 
             ScheduleRenderRecoveryRetry(escalateBackoff: false);
@@ -6608,7 +6794,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             lock (_dirtyLock)
             {
-                _fullInvalidation = true;
+                MarkFullInvalidationLocked();
             }
 
             MarkRecoverableRenderFailure();
@@ -6734,6 +6920,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void ProcessRender()
     { _debugHud.OnProcessRender();
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.PR);
         ClearRenderFlag(RenderFlag_Scheduled);
         if (Handle == nint.Zero) return;
 
@@ -6759,11 +6946,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        if (!TrySetRenderFlag(RenderFlag_Scheduled))
-        {
-            return;
-        }
-
         // Timer-based retry — the proven path. Letting the UI thread return
         // to the dispatcher between BeginDraw attempts is the reason input
         // and animation stay responsive while waiting on a busy GPU. An
@@ -6774,9 +6956,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // dispersed wait to a synchronous one — same wall clock, much
         // worse perceived responsiveness. The pacer code below is kept
         // behind an env-var gate for future experimentation.
+        //
+        // RenderFlag_Scheduled is claimed when the timer FIRES, not here: this
+        // System.Threading.Timer runs at the ~15.6 ms OS resolution (the process
+        // holds no timeBeginPeriod), so claiming the flag at arm time would block
+        // every animation tick's InvalidateWindow for a random 0–15.6 ms slice
+        // after each present — the direct cause of the visible present-cadence
+        // stutter in continuous partial-present animations (DevTools tree
+        // reveal). Claiming at fire time keeps real invalidations scheduling
+        // immediately; if the fire loses the race (flag already set), a real
+        // frame is already queued and this retry's purpose is served.
         var deferredTimer = new Timer(_ =>
         {
-            _dispatcher?.BeginInvokeCritical(ProcessRender);
+            if (TrySetRenderFlag(RenderFlag_Scheduled))
+            {
+                _dispatcher?.BeginInvokeCritical(ProcessRender);
+            }
         }, null, Math.Max(1, delayMs), Timeout.Infinite);
 
         var previousTimer = Interlocked.Exchange(ref _renderThrottleTimer, deferredTimer);
@@ -7312,7 +7507,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // credit 播 0：swap chain 创建时 DXGI 已预置 MaxFrameLatency 个信号，
             // 由首次 miss 挂上的回调立即转换成 credit（信号 pending 时注册即刻满足）。
             // 播种非零会与预置信号叠加，让稳态管线静默加深。桶深 = native 的
-            // 真实 MaxFrameLatency（默认 3，JALIUM_MAX_FRAME_LATENCY 可覆盖）——
+            // 真实 MaxFrameLatency（默认 1，JALIUM_MAX_FRAME_LATENCY 可覆盖）——
             // 唯一真源是 native，经 GetPresentInfo 回读，绝不双轨配置。
             int cap = 1;
             var presentInfo = rt.GetPresentInfo();
@@ -7471,6 +7666,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             _pacingTraceCount++;
             Console.Error.WriteLine($"[pacing-trace] TryBegin: active={_swapPacingActive} sizing={_isSizing} credit={Volatile.Read(ref _swapCredit)} cap={_swapCreditCap} pending={_renderPendingOnSwap}");
         }
+        Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_CREDIT, Volatile.Read(ref _swapCredit));
+        Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_PENDING, _renderPendingOnSwap ? 1 : 0);
+        Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_WAITREG, Volatile.Read(ref _swapWaitRegistered));
         if (_swapPacingActive)
         {
             // 拖拽 resize（modal sizing loop）期间旁路 credit 门：每个 WM_SIZE
@@ -7483,6 +7681,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 if (RenderTarget?.TryBeginDraw() == true) return true;
                 if (ResizeTraceEnabled) Console.Error.WriteLine("[resize-trace] BEGIN-FAIL (sizing bypass)");
                 _debugHud.OnBeginFail();
+            Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.BEGIN_FAIL);
                 ScheduleDeferredRender(GpuBusyRetryDelayMs);
                 return false;
             }
@@ -7497,6 +7696,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // DWM 周期（慢合成下 460ms+），这里补救性再取一次。
                 if (!TryTakeSwapCredit())
                 {
+                    Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.CREDIT_MISS);
                     // Not a "begin fail" for the HUD: a credit miss is the
                     // event-driven scheduler's normal deferral, not a GPU stall.
                     if (DebugRender) System.Diagnostics.Debug.WriteLine("[TryBeginDraw] SKIP: no present credit (event-driven wait armed)");
@@ -7518,6 +7718,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // 本帧没花掉 present 名额 → 归还 credit，沿用 timer 重试兜底。
             ReturnSwapCreditAfterFailedPresent();
             _debugHud.OnBeginFail();
+            Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.BEGIN_FAIL);
             if (DebugRender) System.Diagnostics.Debug.WriteLine("[TryBeginDraw] FAIL: fence/device busy (credit returned)");
             ScheduleDeferredRender(GpuBusyRetryDelayMs);
             return false;
@@ -7605,6 +7806,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void RenderFrame()
     { _debugHud.OnRenderFrame();
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.RF);
         if (HasRenderFlag(RenderFlag_Rendering)) return;
         // A swap-chain resize is mid-flight (native ResizeBuffers can pump a
         // reentrant WM_PAINT through the kernel callback). Beginning a frame now
@@ -7620,6 +7822,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (WindowState == WindowState.Minimized) return;
         SetRenderFlag(RenderFlag_Rendering);
         ClearRenderFlag(RenderFlag_Requested);
+
+        // RC4-a 帧事务状态：swapped=true 表示本帧已把活动脏集捕获为帧独占集且尚未
+        // 收尾（Discard/RetainOrDrop 会把它翻回 false）；finally 兜底对仍未收尾的
+        // 捕获集 MergeBack——单一出口审计，任何 return/throw 都不可能弄丢失效。
+        bool frameDirtySwapped = false;
+        long frameFullSeq = 0;
 
         try
         {
@@ -7657,11 +7865,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Check dirty AFTER UpdateLayout so layout-triggered invalidations are included.
             bool fullInvalidation;
             bool isFlushFrame = false;
+            bool explicitFullInvalidation = false;
             DirtyRegionAggregator? aggregator = null;
             // D3D12 now uses retained-mode dirty rects by default.
             // If a specific driver shows stale-buffer artifacts, the old behavior can be
             // restored with JALIUM_D3D12_FORCE_FULL_REPLAY=1.
             bool requiresFullReplay = RenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12;
+            // _rtActive 只在 UI 线程翻转（Start/StopRenderThread），帧首读入局部对本帧
+            // 稳定；swap 条件与后面的分支必须用同一个值，防止中途翻转把捕获集晾在
+            // render-thread 路径上。
+            bool rtActive = _rtActive;
+            int dirtyCountForHud = 0;
             lock (_dirtyLock)
             {
                 // Idle frame skip: if nothing is dirty and no explicit full invalidation,
@@ -7680,6 +7894,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     if (_partialPresentsToFlush <= 0)
                     {
                         _debugHud.OnSkipped();
+                        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.SKIP_NODIRTY);
                         if (DebugRender) System.Diagnostics.Debug.WriteLine("[RenderFrame] SKIP: no dirty, no fullInvalidation");
                         return;
                     }
@@ -7695,28 +7910,46 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 else
                 {
+                    explicitFullInvalidation = _fullInvalidation;
                     fullInvalidation = _fullInvalidation || requiresFullReplay;
-                    if (DebugRender)
+                    dirtyCountForHud = _dirtyElements.Count;
+                    if (!rtActive)
                     {
-                        var reason = _fullInvalidation ? "_fullInvalidation" : requiresFullReplay ? "forceFullReplay" : "dirty";
-                        System.Diagnostics.Debug.WriteLine($"[RenderFrame] path={( fullInvalidation ? "FULL" : "PARTIAL")} reason={reason} dirtyCount={_dirtyElements.Count} fullInv={_fullInvalidation}");
-                        if (_dirtyElements.Count > 0 && _dirtyElements.Count <= 10)
-                        {
-                            foreach (var (el, entry) in _dirtyElements)
-                                System.Diagnostics.Debug.WriteLine($"  dirty: {el.GetType().Name} bounds={entry.PreLayoutBounds}");
-                        }
+                        // RC4-a 事务化消费：把累计脏状态换进帧捕获容器。此后帧内新到的
+                        // AddDirtyElement（渲染回调、后台 timer）落入换上来的空活动集，
+                        // 不再被旧代码"BeginDraw 成功即 Clear"吞掉；捕获集在 present
+                        // 成功时 Discard、空 aggregator 时 RetainOrDrop、其余未 present
+                        // 的退出经 finally MergeBack 归还。
+                        SwapDirtyForFrame();
+                        frameDirtySwapped = true;
+                        frameFullSeq = _fullInvalidationSeq;
                     }
+                    // render-thread 路径不 swap：PublishFrameToRenderThread 是全帧捕获，
+                    // 自己在发布成功后清活动集（语义保持现状）。
+                }
+            }
 
-                    if (!fullInvalidation)
+            if (!isFlushFrame)
+            {
+                if (fullInvalidation) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.FULL_FRAME);
+                if (DebugRender)
+                {
+                    var reason = explicitFullInvalidation ? "_fullInvalidation" : requiresFullReplay ? "forceFullReplay" : "dirty";
+                    System.Diagnostics.Debug.WriteLine($"[RenderFrame] path={( fullInvalidation ? "FULL" : "PARTIAL")} reason={reason} dirtyCount={dirtyCountForHud} fullInv={explicitFullInvalidation}");
+                    if (frameDirtySwapped && _frameDirtyElements.Count > 0 && _frameDirtyElements.Count <= 10)
                     {
-                        aggregator = ComputeDirtyRegions();
+                        foreach (var (el, entry) in _frameDirtyElements)
+                            System.Diagnostics.Debug.WriteLine($"  dirty: {el.GetType().Name} bounds={entry.PreLayoutBounds}");
                     }
-                    _debugHud.SetDirtyInfo(_dirtyElements.Count, aggregator?.GetBoundingBox() ?? Rect.Empty);
                 }
 
-                // NOTE: do NOT clear _dirtyElements here.  BeginDraw may fail
-                // (GPU still busy with the previous frame) and we need to preserve
-                // dirty state so the next attempt can render them.
+                if (!fullInvalidation && frameDirtySwapped)
+                {
+                    // 捕获集自 swap 起由 UI 线程独占——无锁读。render-thread 路径
+                    // （未 swap）根本不需要 aggregator（全帧发布），直接跳过计算。
+                    aggregator = ComputeDirtyRegions(_frameDirtyElements, _frameDirtyFreeRects);
+                }
+                _debugHud.SetDirtyInfo(dirtyCountForHud, aggregator?.GetBoundingBox() ?? Rect.Empty);
             }
 
             _debugHud.SetBackend(RenderTarget.Backend.ToString());
@@ -7744,7 +7977,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // render thread was mid-Replay into the same context → native brush
             // use-after-free + Dictionary corruption. So publish and return BEFORE
             // creating _drawingContext below.
-            if (_rtActive)
+            if (rtActive)
             {
                 // The render-thread path is full-present-every-frame (it calls
                 // SetFullInvalidation before each BeginDraw), so it has no partial
@@ -7781,25 +8014,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             if (fullInvalidation)
             {
-                // ── Full render path (first frame, resize, theme change) ──
+                // ── Full render path (structural: first frame, resize, theme change,
+                //    device recovery, explicit RequestFullInvalidation, force-replay) ──
                 // Full render refreshes the CURRENT buffer only. The other N-1
                 // swap chain buffers still have stale content. Seed the dirty
                 // history with the full window rect so the next N-1 partial frames
-                // repaint everything on those buffers.
+                // repaint everything on those buffers. 结构性帧是唯一的 seed 点
+                // （全槽 + 重置写指针）：这类帧之后其余 back buffer 内容不可信
+                // （ResizeBuffers 后 undefined）。present 前 seed 属过量声明、安全——
+                // 失败时脏集经 finally 归还且 _fullInvalidation 未被 Discard 清掉，
+                // 重试帧仍走 full。
                 SeedDirtyHistoryFullWindow(windowBounds);
                 RenderTarget.SetFullInvalidation();
 
                 // TryBeginDraw: non-blocking.  If the GPU hasn't finished the
                 // previous frame for this swap chain buffer, skip this frame
                 // and let the UI thread process input messages instead.
-                // Dirty elements are preserved and will be rendered next time.
+                // Dirty state stays in the frame capture and is merged back by the
+                // finally net, so the next attempt renders it.
                 if (!TryBeginDrawOrScheduleRetry())
                 {
                     return;
                 }
-
-                // GPU is ready — commit dirty state now.
-                lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
 
                 try
                 {
@@ -7810,7 +8046,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     _debugHud.MarkRender();
                     DevToolsOverlay?.DrawOverlay(_drawingContext);
                     OnRender(RenderTarget);
+                    // EndDraw/present 失败不再丢脏：直接 return，捕获集由 finally 归还。
                     if (!CompleteEndDrawOrHandleFailure()) { return; }
+                    // Present 成功——捕获的脏状态已经上屏，此刻才真正消费掉。
+                    // RC4-c：结构性 full 跳过了 ComputeDirtyRegions（LastDirtyBounds 的
+                    // 唯一常规写点），Discard 前必须补回写，否则首帧后缓存恒为陈旧值，
+                    // 一次性 RenderTransform/RenderOffset 跳变的旧位置永无通道提交。
+                    if (frameDirtySwapped)
+                    {
+                        UpdateLastDirtyBoundsAfterFullPresent();
+                        DiscardFrameDirty(frameFullSeq);
+                        frameDirtySwapped = false;
+                    }
                     // A full present refreshes only the CURRENT back buffer; arm the
                     // follow-up flush so the alternate FLIP buffer(s) converge before the
                     // idle-skip stops further frames. (isFlushFrame is always false on the
@@ -7840,7 +8087,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 // Dirty elements exist but their visible bounds are outside the window
                 // (e.g., ProgressBar animating off-screen). Nothing to render — GPU idle.
-                lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
+                // RC4-a：不再整锅倒掉——layout 仍无效且仍挂本窗口的条目（新实化子树的
+                // 首次失效常在 bounds 就绪前注册；MaxLayoutIterations 截断同型）保留到
+                // 下帧限次重试，其余（layout 有效但真越界/零尺寸/脱树）照旧丢弃。
+                if (frameDirtySwapped) { RetainOrDropFrameDirty(); frameDirtySwapped = false; }
                 // This real frame presented nothing, but an earlier present may have armed a
                 // follow-up flush whose alternate buffer still needs converging — keep it alive.
                 RescheduleFlushIfArmed();
@@ -7849,13 +8099,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             else
             {
                 // ── Retained mode partial render ──
+                Rect[]? rawSnapshot = null;
+                double rawArea = 0;
                 if (!isFlushFrame)
                 {
                     // Capture this frame's raw rects BEFORE folding in history — we
                     // store the raw snapshot (what actually changed this frame) in
                     // the ring buffer; history folding is applied to the working
                     // aggregator only, so we don't compound history indefinitely.
-                    var rawSnapshot = aggregator.Rects.ToArray();
+                    rawSnapshot = aggregator.Rects.ToArray();
+                    // RC2：promote 判定面积在 fold 之前取（本帧真实变更量）。旧代码在
+                    // fold 之后测量——首帧 full 把 ring 种成 [W,W] 后，任何脏帧 fold
+                    // 进全窗矩形 → 面积恒 >50% → promote → 再 seed 全 ring：吸收态
+                    // 回路，partial 路径事实不可达，动画期间每帧整窗重绘。
+                    rawArea = aggregator.ComputeRealArea();
 
                     // Fold in dirty regions from the last N-1 frames so that every
                     // FLIP_SEQUENTIAL buffer has its stale pixels repainted. Because
@@ -7867,8 +8124,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         if (history == null) continue;
                         foreach (var r in history) aggregator.Add(r);
                     }
-                    _dirtyHistory[_dirtyHistoryIndex] = rawSnapshot;
-                    _dirtyHistoryIndex = (_dirtyHistoryIndex + 1) % DirtyHistoryCount;
+                    if (LegacyPromoteBehavior)
+                    {
+                        // 逃生门：旧管线在 fold 时（present 前）推进 ring。BeginDraw 连败
+                        // 两次会把仍被 N=3 收敛需要的 raw(K-1) 驱逐——正是新管线把提交挪
+                        // 到 present 成功后（CommitDirtyHistory）要修的缺陷。
+                        _dirtyHistory[_dirtyHistoryIndex] = rawSnapshot;
+                        _dirtyHistoryIndex = (_dirtyHistoryIndex + 1) % DirtyHistoryCount;
+                    }
 
                     // DPI-aware margin. Anti-aliased edges on high-density displays
                     // can exceed 2 device pixels; scale the DIP margin accordingly
@@ -7878,7 +8141,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
                     if (aggregator.IsEmpty)
                     {
-                        lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
+                        // RC4-a：同上方空 aggregator 分支——选择性保留而非清空。
+                        if (frameDirtySwapped) { RetainOrDropFrameDirty(); frameDirtySwapped = false; }
                         RescheduleFlushIfArmed();
                         return;
                     }
@@ -7886,30 +8150,45 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // NOTE: a flush frame arrives with an already-built, already-inflated
                 // aggregator from BuildFlushAggregator and must NOT touch the history ring.
 
-                // ── 50 % area check, now measured against the TRUE covered
-                //    pixel area rather than the bounding box. A caret at (10,10)
-                //    + a progress bar at (600,400) used to balloon the bounding
-                //    box to the whole window; with union-area it measures only
-                //    the two small regions. Promotion fires only when partial
-                //    redraw would actually touch > half the pixels of a full frame.
+                // ── 50 % area check, measured against the TRUE covered pixel area
+                //    of THIS FRAME's raw dirty set (pre-fold, see rawArea above), not
+                //    the bounding box. A caret at (10,10) + a progress bar at (600,400)
+                //    used to balloon the bounding box to the whole window; with
+                //    union-area it measures only the two small regions. Promotion
+                //    fires only when this frame's changes alone would touch > half
+                //    the pixels of a full frame.
                 double windowArea = ActualWidth * ActualHeight;
-                double realArea = aggregator.ComputeRealArea();
+                // flush 帧不判 promote，其面积仅进 HUD（保持旧读数口径）；legacy 门
+                // 恢复 fold 后判定。
+                double judgedArea = (isFlushFrame || LegacyPromoteBehavior)
+                    ? aggregator.ComputeRealArea()
+                    : rawArea;
                 // A flush frame must never promote to full: it is a targeted re-present
                 // of already-known history regions and must not call
                 // SeedDirtyHistoryFullWindow (which would reseed the ring mid-drain).
-                bool promoteToFull = !isFlushFrame && windowArea > 0 && realArea > windowArea * 0.5;
+                bool promoteToFull = !isFlushFrame && windowArea > 0 && judgedArea > windowArea * 0.5;
+                // 口径见 SetDirtyRegionStats 注释：rect 数 = fold 后、面积比 = 判定口径。
                 _debugHud.SetDirtyRegionStats(
                     aggregator.Count,
-                    windowArea > 0 ? realArea / windowArea : 0);
+                    windowArea > 0 ? judgedArea / windowArea : 0);
 
                 if (promoteToFull)
                 {
-                    // Promoted to full render. Seed history with full window
-                    // (same rationale as the main full invalidation path).
-                    SeedDirtyHistoryFullWindow(windowBounds);
+                    if (DebugRender)
+                        System.Diagnostics.Debug.WriteLine(
+                            $"[RenderFrame] PROMOTE raw={judgedArea:F0}px² win={windowArea:F0}px² ratio={judgedArea / windowArea:P0} rawRects={rawSnapshot!.Length}");
+                    if (LegacyPromoteBehavior)
+                    {
+                        // 逃生门：旧管线 promote 前整 ring 重播为全窗（并重置写指针）——
+                        // 第 K-1 帧刚写入的 raw 随即被覆盖，回路的第二半。
+                        SeedDirtyHistoryFullWindow(windowBounds);
+                    }
+                    // RC2：新管线 promote 不再 seed ring（判定已不看 fold 后面积，ring
+                    // 也不再被整体污染）；present 成功后 CommitDirtyHistory 提交单槽全窗
+                    // 条目，在 DirtyHistoryCount 帧内让每个备用 FLIP buffer 各收到一次
+                    // 全量重涂后自然老化。
                     RenderTarget.SetFullInvalidation();
                     if (!TryBeginDrawOrScheduleRetry()) { return; }
-                    lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
                     try
                     {
                         _debugHud.OnPromoted();
@@ -7921,6 +8200,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         _debugHud.UpdateOverlay(_debugHudOverlay);
                         OnRender(RenderTarget);
                         if (!CompleteEndDrawOrHandleFailure()) { return; }
+                        if (!LegacyPromoteBehavior)
+                        {
+                            // painted(=全窗) ⊇ changed：以上界入 ring，不依赖"全树重放
+                            // 逐像素确定"的假设（backdrop/LiquidGlass 采样实况屏幕）。
+                            CommitDirtyHistory(new[] { windowBounds });
+                        }
+                        if (frameDirtySwapped) { DiscardFrameDirty(frameFullSeq); frameDirtySwapped = false; }
                         // Promoted full present refreshes only the current buffer; arm the
                         // follow-up flush (isFlushFrame is always false — flush never promotes).
                         HandlePresentedFrameFlush(isFlushFrame);
@@ -7959,7 +8245,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     var clipRegion = aggregator.GetBoundingBox().Intersect(windowBounds);
                     if (clipRegion.IsEmpty)
                     {
-                        lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
+                        // RC4-a：同空 aggregator 分支——选择性保留（flush 帧未 swap，此处为 no-op）。
+                        if (frameDirtySwapped) { RetainOrDropFrameDirty(); frameDirtySwapped = false; }
                         // Don't strand an armed follow-up flush on a degenerate clip — keep the
                         // FLIP convergence chain alive so the alternate buffer still converges.
                         RescheduleFlushIfArmed();
@@ -7967,7 +8254,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
 
                     if (!TryBeginDrawOrScheduleRetry()) { return; }
-                    lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
                     try
                     {
                         _debugHud.OnPartial();
@@ -7982,7 +8268,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         DevToolsOverlay?.DrawOverlay(_drawingContext);
                         _debugHud.UpdateOverlay(_debugHudOverlay);
                         OnRender(RenderTarget);
+                        // EndDraw/present 失败不再丢脏（旧代码 BeginDraw 后即清，EndDraw
+                        // 失败只能靠 recovery 的整窗兜底）——return 交 finally 归还。
                         if (!CompleteEndDrawOrHandleFailure()) { return; }
+                        if (!isFlushFrame && !LegacyPromoteBehavior)
+                        {
+                            // RC2：ring 语义 = "最近 DirtyHistoryCount 个已成功 present 帧
+                            // 的变更集上界"。提交移到 present 成功之后，BeginDraw/EndDraw
+                            // 失败不再推进 ring——修掉连续两次 BeginDraw 失败驱逐仍被
+                            // FLIP 收敛需要的 raw(K-1) 的现存漏洞。flush 帧只读 ring。
+                            CommitDirtyHistory(rawSnapshot!);
+                        }
+                        if (frameDirtySwapped) { DiscardFrameDirty(frameFullSeq); frameDirtySwapped = false; }
                         // Real partial present painted only the current FLIP buffer → arm
                         // the follow-up flush. On a flush frame this instead drains one and
                         // chains the next (never re-arms → terminates).
@@ -8036,9 +8333,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Restore full invalidation so dirty elements aren't permanently lost.
             // Without this, the stale error frame stays on screen because the dirty
             // tracking was already cleared before rendering began.
+            // （捕获集本身由下方 finally 归还——这里只需保证下一帧走 full。）
             lock (_dirtyLock)
             {
-                _fullInvalidation = true;
+                MarkFullInvalidationLocked();
             }
             ScheduleRenderAfterRecovery();
             LogRenderFailure(ex, "RenderFrame");
@@ -8046,6 +8344,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         finally
         {
+            // RC4-a 单一出口兜底：任何未走到"present 成功 → Discard"或"空 aggregator
+            // → RetainOrDrop"的退出（BeginDraw credit/fence 失败、EndDraw/present 失败、
+            // 可恢复异常、rethrow）都在这里把帧捕获的脏状态并回活动集——失效不可能
+            // 因失败而丢失，帧间"捕获容器恒空"不变量恒成立。
+            if (frameDirtySwapped) MergeBackFrameDirty();
             ClearRenderFlag(RenderFlag_Rendering);
         }
 
@@ -8069,17 +8372,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// Builds a <see cref="DirtyRegionAggregator"/> containing every dirty region for
     /// this frame. Combines per-element pre-layout and post-layout bounds (so
     /// elements that moved during UpdateLayout repaint both old and new positions),
+    /// the element's last actually-presented bounds (RC4-c erasure channel),
     /// precise sub-rects from <see cref="AddDirtyElement(UIElement, Rect)"/>,
     /// and free-floating rects from <see cref="AddDirtyRect"/>. Clamped to the
     /// window client area.
-    /// Must be called under <see cref="_dirtyLock"/>.
+    /// 读的是 RC4-a 的帧捕获集——自 SwapDirtyForFrame 起到帧收尾为止由 UI 线程
+    /// 独占，无需持 <see cref="_dirtyLock"/>。
     /// </summary>
-    private DirtyRegionAggregator ComputeDirtyRegions()
+    private DirtyRegionAggregator ComputeDirtyRegions(
+        Dictionary<UIElement, DirtyElementEntry> elements, List<Rect> freeRects)
     {
         var agg = new DirtyRegionAggregator(capacity: 32);
         var windowBounds = new Rect(0, 0, ActualWidth, ActualHeight);
 
-        foreach (var (element, entry) in _dirtyElements)
+        foreach (var (element, entry) in elements)
         {
             if (entry.PreciseLocalRects is { Count: > 0 } preciseLocal)
             {
@@ -8095,13 +8401,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     var screenRect = element.MapLocalRectToScreen(local).Intersect(windowBounds);
                     if (!screenRect.IsEmpty) agg.Add(screenRect);
                 }
+                // 内容级失效不动 bounds——LastDirtyBounds 缓存保持上次全框（恒为
+                // 超集，过擦除无害），不在 precise 分支更新。
             }
             else
             {
-                // Post-layout bounds: where the element IS now — transform-aware so the dirty
-                // region follows an animating RenderTransform instead of the static layout box.
-                var postLayoutBounds = element.GetRenderBounds().Intersect(windowBounds);
+                // Post-layout bounds: where the element IS now — transform- AND effect-aware
+                // (RC4-c) so the dirty region follows an animating RenderTransform and covers
+                // DropShadow/OuterGlow ink outside RenderSize instead of the static layout box.
+                var newBounds = element.GetDirtyRenderBounds();
+                var postLayoutBounds = newBounds.Intersect(windowBounds);
                 if (!postLayoutBounds.IsEmpty) agg.Add(postLayoutBounds);
+                // RC4-c：回写未 clip 的新 AABB 作"上次被计入 present 的位置"。present
+                // 失败时 merge-back 保留条目侧 PrevPaintedBounds 快照，重试帧仍会提交
+                // 旧位置——链条闭合，缓存的一帧偏差自愈。
+                element.LastDirtyBounds = newBounds;
             }
 
             // Pre-layout bounds: where the element WAS before UpdateLayout.
@@ -8112,9 +8426,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var clipped = entry.PreLayoutBounds.Intersect(windowBounds);
                 if (!clipped.IsEmpty) agg.Add(clipped);
             }
+
+            // RC4-c：上次真实 present 覆盖过的位置。关闭"先改 RenderTransform/
+            // RenderOffset 再失效 + 长空闲后不连续跳变 + 新 AABB 不含旧 AABB"的
+            // 残影缺口（连续动画的上一帧位置本由 dirty-history fold 覆盖，此通道
+            // 只兜不连续跳变）。
+            if (!entry.PrevPaintedBounds.IsEmpty)
+            {
+                var clipped = entry.PrevPaintedBounds.Intersect(windowBounds);
+                if (!clipped.IsEmpty) agg.Add(clipped);
+            }
         }
 
-        foreach (var free in _dirtyFreeRects)
+        foreach (var free in freeRects)
         {
             var clipped = free.Intersect(windowBounds);
             if (!clipped.IsEmpty) agg.Add(clipped);
@@ -8124,25 +8448,176 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     /// <summary>
-    /// Legacy accessor returning the bounding box of every dirty region.
-    /// Still used by code paths that only need the outer extent (e.g. HUD display).
-    /// Must be called under <see cref="_dirtyLock"/>.
-    /// </summary>
-    private Rect ComputeDirtyRegion()
-    {
-        return ComputeDirtyRegions().GetBoundingBox();
-    }
-
-    /// <summary>
     /// Seeds every dirty-history slot with the full window rect, then resets
-    /// the write index. Used after a full-render path so that the next N-1
-    /// FLIP_SEQUENTIAL buffers get their stale content repainted.
+    /// the write index. RC2 之后只保留给结构性全量帧（首帧/resize/theme/设备恢复/
+    /// 显式 RequestFullInvalidation/强制全重放）——这类帧之后其余 back buffer 内容
+    /// 不可信，必须让接下来 N-1 个 FLIP_SEQUENTIAL buffer 全量重涂。promote 帧不再
+    /// 调用（改为 present 成功后 CommitDirtyHistory 单槽全窗条目）。
     /// </summary>
     private void SeedDirtyHistoryFullWindow(Rect windowBounds)
     {
         var seed = new[] { windowBounds };
         for (int h = 0; h < DirtyHistoryCount; h++) _dirtyHistory[h] = seed;
         _dirtyHistoryIndex = 0;
+    }
+
+    /// <summary>
+    /// RC2：向 dirty-history ring 提交一帧"已成功 present 的变更集上界"并推进写
+    /// 指针。只在 present 成功之后调用（partial 帧提交 fold 前的 raw 快照；promote
+    /// 帧提交单槽全窗条目），失败帧绝不推进——ring 语义由"最近种下的东西"修正为
+    /// "最近 DirtyHistoryCount 个已成功 present 帧各自的变更集上界"。UI 线程独占。
+    /// </summary>
+    private void CommitDirtyHistory(Rect[] snapshot)
+    {
+        _dirtyHistory[_dirtyHistoryIndex] = snapshot;
+        _dirtyHistoryIndex = (_dirtyHistoryIndex + 1) % DirtyHistoryCount;
+    }
+
+    /// <summary>
+    /// RC4-a：把活动脏容器与帧捕获容器引用互换（O(1)，无拷贝）。必须在
+    /// <see cref="_dirtyLock"/> 内调用；调用前捕获容器必须为空（帧间不变量，
+    /// 由 Discard/RetainOrDrop/MergeBack 三个收尾路径共同维护）。
+    /// </summary>
+    private void SwapDirtyForFrame()
+    {
+        System.Diagnostics.Debug.Assert(
+            _frameDirtyElements.Count == 0 && _frameDirtyFreeRects.Count == 0,
+            "Frame-captured dirty state leaked from a previous frame — a RenderFrame exit path missed its resolve step.");
+        (_dirtyElements, _frameDirtyElements) = (_frameDirtyElements, _dirtyElements);
+        (_dirtyFreeRects, _frameDirtyFreeRects) = (_frameDirtyFreeRects, _dirtyFreeRects);
+    }
+
+    /// <summary>
+    /// RC4-c：结构性 full present 不经过 ComputeDirtyRegions（那里是 LastDirtyBounds
+    /// 的唯一常规写点），但捕获集里的元素同样被这次全帧 present 画上了屏。不回写会让
+    /// "上次真实上屏位置"停留在陈旧值——首帧（必 full、全树入捕获集）后恒为 Empty，
+    /// 此后对从未再动过的元素做一次性 RenderTransform/RenderOffset 跳变时，旧位置矩形
+    /// 没有任何通道提交（ring 中的全窗条目两个 partial 后即老化），残影永不自愈。
+    /// 与 ComputeDirtyRegions 的写点语义一致：precise 条目刻意不写（缓存保持上次全框
+    /// 超集）；promote 路径已经跑过 ComputeDirtyRegions，无需调用本方法。
+    /// </summary>
+    private void UpdateLastDirtyBoundsAfterFullPresent()
+    {
+        foreach (var (element, entry) in _frameDirtyElements)
+        {
+            if (entry.PreciseLocalRects == null)
+                element.LastDirtyBounds = element.GetDirtyRenderBounds();
+        }
+    }
+
+    /// <summary>
+    /// RC4-a：present 成功后的事务提交——清空捕获容器（保容量，稳态零分配），并在
+    /// 帧中没有新的 full-invalidation 请求（序列号未变）时才清 _fullInvalidation。
+    /// </summary>
+    private void DiscardFrameDirty(long capturedFullSeq)
+    {
+        lock (_dirtyLock)
+        {
+            _frameDirtyElements.Clear();
+            _frameDirtyFreeRects.Clear();
+            if (_fullInvalidationSeq == capturedFullSeq)
+                _fullInvalidation = false;
+        }
+    }
+
+    /// <summary>
+    /// RC4-a：未成功 present 的事务回滚——把捕获集并回活动集，与帧中新到的注册合并
+    /// 后等下一次尝试。_fullInvalidation 不动（swap 不曾清它；失败路径若需要整窗兜底
+    /// 由各自的 MarkFullInvalidationLocked 处理）。
+    /// </summary>
+    private void MergeBackFrameDirty()
+    {
+        lock (_dirtyLock)
+        {
+            if (_frameDirtyElements.Count > 0)
+            {
+                foreach (var (element, captured) in _frameDirtyElements)
+                    MergeFrameEntryIntoActiveLocked(element, captured);
+                _frameDirtyElements.Clear();
+            }
+            if (_frameDirtyFreeRects.Count > 0)
+            {
+                _dirtyFreeRects.AddRange(_frameDirtyFreeRects);
+                _frameDirtyFreeRects.Clear();
+            }
+        }
+    }
+
+    /// <summary>
+    /// 把一个帧捕获条目并回活动集。键冲突（帧中同一元素又注册了一次）时：
+    /// PreLayoutBounds/PrevPaintedBounds 保留捕获侧——它更旧，是上次真实绘制的位置，
+    /// 丢了会留残影；PreciseLocalRects 任一侧为 null（全元素脏）则 null，否则合并；
+    /// RetryCount 取 max。必须在 <see cref="_dirtyLock"/> 内调用。
+    /// </summary>
+    private void MergeFrameEntryIntoActiveLocked(UIElement element, DirtyElementEntry captured)
+    {
+        if (_dirtyElements.TryGetValue(element, out var live))
+        {
+            live.PreLayoutBounds = captured.PreLayoutBounds;
+            live.PrevPaintedBounds = captured.PrevPaintedBounds;
+            if (live.PreciseLocalRects == null || captured.PreciseLocalRects == null)
+                live.PreciseLocalRects = null;
+            else
+                live.PreciseLocalRects.AddRange(captured.PreciseLocalRects);
+            if (captured.RetryCount > live.RetryCount)
+                live.RetryCount = captured.RetryCount;
+        }
+        else
+        {
+            _dirtyElements[element] = captured;
+        }
+    }
+
+    // RC4-a：空 bounds 保留重试的上限。保留只发生在 layout-invalid（LayoutManager
+    // 队列必含其祖先链，下帧 UpdateLayout 有实质推进），RetryCount 单调递增、
+    // 超限即弃——不可能死循环。
+    private const int DirtyRetryLimit = 3;
+
+    /// <summary>
+    /// RC4-a：替代旧"aggregator 为空即整锅清脏"的三个吞失效点。谓词 = 元素 layout
+    /// 仍无效 且 仍挂在本窗口 且 重试次数未超限 → 并回活动集并调度一次延迟渲染
+    /// （幂等，RenderFlag_Scheduled 门）；其余条目（layout 有效但真越界/零尺寸/
+    /// collapsed、已脱树、超限）直接丢弃——脱屏动画元素每帧注册-丢弃与旧行为一致，
+    /// 不产生自发帧（perf 评审指名排除）。free rects 无 layout 状态可等，照旧丢弃。
+    /// </summary>
+    private void RetainOrDropFrameDirty()
+    {
+        bool retainedAny = false;
+        lock (_dirtyLock)
+        {
+            if (_frameDirtyElements.Count > 0)
+            {
+                foreach (var (element, entry) in _frameDirtyElements)
+                {
+                    bool keep = (!element.IsMeasureValid || !element.IsArrangeValid)
+                        && ReferenceEquals(element.GetWindowHostOrNull(), this)
+                        && ++entry.RetryCount <= DirtyRetryLimit;
+                    if (keep)
+                    {
+                        MergeFrameEntryIntoActiveLocked(element, entry);
+                        retainedAny = true;
+                    }
+                    else if (DebugRender && entry.RetryCount > DirtyRetryLimit)
+                    {
+                        System.Diagnostics.Debug.WriteLine(
+                            $"[RenderFrame] dirty element dropped after {DirtyRetryLimit} empty-bounds retries: {element.GetType().Name}");
+                    }
+                }
+                _frameDirtyElements.Clear();
+            }
+            _frameDirtyFreeRects.Clear();
+        }
+        if (retainedAny) ScheduleDeferredRender(1);
+    }
+
+    // ── 测试访问器（DirtyPromotePipelineTests / DirtyRetentionTests /
+    //    ArrangeDirtyRegistrationTests 的 headless 断言钩子）──
+    internal Rect[]?[] DirtyHistoryForTests => _dirtyHistory;
+    internal int DirtyHistoryIndexForTests => _dirtyHistoryIndex;
+    internal (int full, int partial, int promoted, int skipped) RenderPathCountersForTests => _debugHud.CurrentCounters;
+    internal Rect[] DirtyFreeRectsForTests
+    {
+        get { lock (_dirtyLock) { return _dirtyFreeRects.ToArray(); } }
     }
 
     /// <summary>
@@ -8501,24 +8976,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        // 注：不再因 CompositionTarget.IsActive 跳过 schedule。
-        // 之前的逻辑是：动画 timer active 期间 InvalidateWindow 仅设 RenderFlag_DirtyBetween
-        // 标志，依赖下一次动画 frame 消费。但 IsActive 仅检查 "有任意 subscriber"
-        // 不代表"下一帧一定会到"——只要有任何长寿命订阅者（状态栏时钟、未结束的滚动
-        // 惯性等），IsActive 就一直为 true。结果 hover / IsSelected / Background 等
-        // 静态状态变化产生的 invalidate 永远不立即重绘，要等到某个无关动画 tick 才
-        // "顺带" 刷新——表现为"hover 不变色 / 只在动画时才看到更新"。
+        // Self-driven render loop (rewrite): bank the dirty for the next frame and ask
+        // the central CompositionTarget loop to run. That loop ticks at the display
+        // refresh rate whether or not the mouse moves; OnFrameStarting turns
+        // RenderFlag_DirtyBetween into a RenderFrame on each tick, and the loop parks
+        // (~0 CPU) once everything is clean and no animation remains.
         //
-        // TrySetRenderFlag(RenderFlag_Scheduled) 本身是幂等的——一帧内多次 invalidate
-        // 只会 schedule 一次 ProcessRender，不会引入重复渲染开销。
-        if (TrySetRenderFlag(RenderFlag_Scheduled))
-        {
-            // Use stored UI thread Dispatcher — NOT Dispatcher.CurrentDispatcher,
-            // which returns null on thread-pool threads (System.Threading.Timer callbacks,
-            // Storyboard ticks, etc.) and would silently drop the render request.
-            _dispatcher?.BeginInvokeCritical(ProcessRender);
-        }
+        // This replaces the old input-coupled path — a refresh-rate cap timer plus
+        // BeginInvokeCritical(ProcessRender) — under which a static state change
+        // (hover Background / IsSelected, a popup fade sample, a property update) with
+        // no active animation sat unpainted until the next mouse move happened to pump
+        // the dispatcher ("UI only renders while the mouse moves"). The refresh-rate
+        // cap is now implicit: RenderFrame runs at most once per self-clocked tick, so
+        // a 125 Hz hover burst still coalesces to one render per refresh interval.
+        SetRenderFlag(RenderFlag_DirtyBetween);
+        Jalium.UI.CompositionTarget.RequestFrame();
     }
+
 
     /// <summary>
     /// Adds a dirty element for partial rendering via native dirty rects.
@@ -8541,11 +9015,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
             _dirtyElements[element] = new DirtyElementEntry
             {
-                // Transform-aware: capture where the element actually rasterizes (incl. any
-                // RenderTransform in effect) so a moved/scaled/rotated element leaves no stale
-                // pixels. No-transform chains fall back to GetScreenBounds (identical).
-                PreLayoutBounds = element.GetRenderBounds(),
+                // Transform- AND effect-aware (RC4-c): capture where the element's ink
+                // actually rasterizes — incl. any RenderTransform in effect plus the
+                // Effect (DropShadow/Glow) padding overflow — so a moved/scaled/rotated
+                // element leaves no stale pixels or shadow tails. No-transform,
+                // no-effect chains fall back to GetScreenBounds (identical).
+                PreLayoutBounds = element.GetDirtyRenderBounds(),
                 PreciseLocalRects = null,
+                // RC4-c：上一次真实被 present 覆盖的 AABB（不连续跳变擦除通道）。
+                PrevPaintedBounds = element.LastDirtyBounds,
             };
         }
     }
@@ -8570,9 +9048,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 entry = new DirtyElementEntry
                 {
-                    // Transform-aware (see AddDirtyElement(element) overload).
-                    PreLayoutBounds = element.GetRenderBounds(),
+                    // Transform- and effect-aware (see AddDirtyElement(element) overload).
+                    PreLayoutBounds = element.GetDirtyRenderBounds(),
                     PreciseLocalRects = new List<Rect>(2),
+                    PrevPaintedBounds = element.LastDirtyBounds,
                 };
                 _dirtyElements[element] = entry;
             }
@@ -8601,7 +9080,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void RequestFullInvalidation()
     {
+        // 与帧事务串行化：序列号自增让帧中到达的请求在 DiscardFrameDirty 的
+        // 成功提交里存活（提交只在快照序列未变时清标志）。公开行为不变。
+        lock (_dirtyLock)
+        {
+            MarkFullInvalidationLocked();
+        }
+    }
+
+    /// <summary>
+    /// 置 full-invalidation 标志并自增序列号。必须在 <see cref="_dirtyLock"/> 内
+    /// 调用——所有直接置位点统一走这里，防止帧中置位被本帧 present 成功后的
+    /// DiscardFrameDirty 顺手清掉（见 _fullInvalidationSeq）。
+    /// </summary>
+    private void MarkFullInvalidationLocked()
+    {
         _fullInvalidation = true;
+        _fullInvalidationSeq++;
     }
 
     /// <summary>
@@ -10632,42 +11127,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private const uint WM_DISPLAYCHANGE = 0x007E;
     private const int ENUM_CURRENT_SETTINGS = -1;
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WNDCLASSEX
-    {
-        public uint cbSize;
-        public uint style;
-        public nint lpfnWndProc;
-        public int cbClsExtra;
-        public int cbWndExtra;
-        public nint hInstance;
-        public nint hIcon;
-        public nint hCursor;
-        public nint hbrBackground;
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string? lpszMenuName;
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string lpszClassName;
-        public nint hIconSm;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PAINTSTRUCT
-    {
-        public nint hdc;
-        public bool fErase;
-        public RECT rcPaint;
-        public bool fRestore;
-        public bool fIncUpdate;
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
-        public byte[]? rgbReserved;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int left, top, right, bottom;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MINMAXINFO
@@ -10722,9 +11181,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     [LibraryImport("user32.dll")]
     private static partial nint SetCursor(nint hCursor);
 
-    [LibraryImport("user32.dll")]
+    // [DllImport] (not [LibraryImport]): POINT is now the shared cross-assembly type in
+    // Jalium.UI.Core; the LibraryImport source generator can't prove a struct from another
+    // assembly is blittable without [assembly:DisableRuntimeMarshalling] there (SYSLIB1051),
+    // so these blittable-struct P/Invokes stay on classic marshalling (AOT-safe). Issue #151.
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetCursorPos(out POINT lpPoint);
+    private static extern bool GetCursorPos(out POINT lpPoint);
 
     [DllImport("user32.dll")]
     private static extern nint BeginPaint(nint hWnd, out PAINTSTRUCT lpPaint);
@@ -10751,13 +11214,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
     private static partial nint SendMessage(nint hWnd, uint msg, nint wParam, nint lParam);
 
-    [LibraryImport("user32.dll")]
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool ScreenToClient(nint hWnd, ref POINT lpPoint);
+    private static extern bool ScreenToClient(nint hWnd, ref POINT lpPoint);
 
-    [LibraryImport("user32.dll")]
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool ClientToScreen(nint hWnd, ref POINT lpPoint);
+    private static extern bool ClientToScreen(nint hWnd, ref POINT lpPoint);
 
     [LibraryImport("user32.dll", EntryPoint = "GetWindowLongW")]
     private static partial long GetWindowLong(nint hWnd, int nIndex);
@@ -10772,8 +11235,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     [LibraryImport("dwmapi.dll")]
     private static partial int DwmSetWindowAttribute(nint hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
 
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmGetWindowAttribute(nint hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(nint hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
 
     [LibraryImport("dwmapi.dll")]
     private static partial int DwmExtendFrameIntoClientArea(nint hwnd, ref MARGINS pMarInset);
@@ -10788,9 +11251,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool IsZoomed(nint hWnd);
 
-    [LibraryImport("user32.dll")]
+    [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetWindowRect(nint hWnd, out RECT lpRect);
+    private static extern bool GetWindowRect(nint hWnd, out RECT lpRect);
 
     [LibraryImport("user32.dll")]
     private static partial nint MonitorFromWindow(nint hwnd, uint dwFlags);
@@ -10836,14 +11299,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetLayeredWindowAttributes(nint hWnd, uint crKey, byte bAlpha, uint dwFlags);
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct TRACKMOUSEEVENT
-    {
-        public uint cbSize;
-        public uint dwFlags;
-        public nint hwndTrack;
-        public uint dwHoverTime;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MARGINS
@@ -10854,21 +11309,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         public int Bottom;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int X;
-        public int Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MONITORINFO
-    {
-        public uint cbSize;
-        public RECT rcMonitor;
-        public RECT rcWork;
-        public uint dwFlags;
-    }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct MONITORINFOEX
@@ -10926,27 +11366,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         public RECT rgrc2;
         public nint lppos;
     }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MSG
-    {
-        public nint hwnd;
-        public uint message;
-        public nint wParam;
-        public nint lParam;
-        public uint time;
-        public POINT pt;
-    }
-
-    [DllImport("user32.dll", EntryPoint = "GetMessageW")]
-    private static extern int GetMessage(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool TranslateMessage(ref MSG lpMsg);
-
-    [DllImport("user32.dll", EntryPoint = "DispatchMessageW")]
-    private static extern nint DispatchMessage(ref MSG lpMsg);
 
     [DllImport("user32.dll")]
     private static extern nint GetSystemMenu(nint hWnd, [MarshalAs(UnmanagedType.Bool)] bool bRevert);

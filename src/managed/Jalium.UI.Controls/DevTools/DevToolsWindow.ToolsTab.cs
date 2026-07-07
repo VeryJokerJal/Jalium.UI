@@ -2,7 +2,9 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using Jalium.UI.Diagnostics;
+using Jalium.UI.Interop.Win32;
 using Jalium.UI.Media;
+using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls.DevTools;
 
@@ -835,13 +837,7 @@ public partial class DevToolsWindow
     // ── Win32 P/Invoke (screenshot + color picker) ────────────────────────
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct POINT { public int X; public int Y; }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool ClientToScreen(nint hWnd, ref POINT point);
 
     [DllImport("user32.dll")]
     private static extern nint GetDC(nint hWnd);

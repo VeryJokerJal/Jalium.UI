@@ -14,6 +14,11 @@ struct PushConstants
     float4 quadPoint23;
     float2 geometryFlags;
     float2 padding3;
+    // Per-corner OUTER-clip radii (TL, TR, BR, BL). Fragment-shader-only;
+    // declared here solely so the push-constant block layout matches the
+    // 192-byte C++ BitmapQuadPushConstants across stages.
+    float4 perCornerRadiusX;
+    float4 perCornerRadiusY;
 };
 
 [[vk::push_constant]]

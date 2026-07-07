@@ -3,9 +3,7 @@
 #include "font_provider.h"
 #include "glyph_rasterizer.h"
 #include "glyph_atlas.h"
-
-#include <ft2build.h>
-#include FT_FREETYPE_H
+#include "font_face.h"
 
 #include <cstring>
 #include <cwchar>
@@ -38,10 +36,10 @@ static uint64_t ComputeFontId(const wchar_t* family, int32_t weight, int32_t sty
 }
 
 // ============================================================================
-// FreeTypeTextFormat
+// JaliumTextFormat
 // ============================================================================
 
-FreeTypeTextFormat::FreeTypeTextFormat(
+JaliumTextFormat::JaliumTextFormat(
     TextEngine* engine,
     const wchar_t* fontFamily,
     float fontSize,
@@ -55,26 +53,23 @@ FreeTypeTextFormat::FreeTypeTextFormat(
 {
     fontId_ = ComputeFontId(fontFamily, fontWeight, fontStyle);
 
-    // Create FreeType face
+    // Create the self-hosted font face (owns the font-file bytes via RAII).
     if (engine_ && engine_->GetFontProvider())
     {
         face_ = engine_->GetFontProvider()->CreateFace(
-            engine_->GetFTLibrary(), fontFamily, fontWeight, fontStyle);
+            fontFamily, fontWeight, fontStyle);
     }
 
-    // Cache font metrics
+    // Cache font metrics. FontFace exposes FreeType-parity ascender/descender/
+    // height in design units, so this arithmetic is byte-identical to before.
     if (face_)
     {
-        FT_Set_Char_Size(face_, 0,
-            static_cast<FT_F26Dot6>(fontSizePx_ * 64.0f), 72, 72);
-
-        // Get metrics from the face
-        float unitsPerEm = static_cast<float>(face_->units_per_EM);
+        float unitsPerEm = static_cast<float>(face_->UnitsPerEm());
         float scale = fontSizePx_ / unitsPerEm;
 
-        ascent_ = std::abs(static_cast<float>(face_->ascender)) * scale;
-        descent_ = std::abs(static_cast<float>(face_->descender)) * scale;
-        lineGap_ = static_cast<float>(face_->height) * scale - ascent_ - descent_;
+        ascent_ = std::abs(static_cast<float>(face_->Ascender())) * scale;
+        descent_ = std::abs(static_cast<float>(face_->Descender())) * scale;
+        lineGap_ = static_cast<float>(face_->Height()) * scale - ascent_ - descent_;
         if (lineGap_ < 0) lineGap_ = 0;
         lineHeight_ = ascent_ + descent_ + lineGap_;
     }
@@ -88,27 +83,15 @@ FreeTypeTextFormat::FreeTypeTextFormat(
     }
 }
 
-FreeTypeTextFormat::~FreeTypeTextFormat()
-{
-    if (face_)
-    {
-        FT_Done_Face(face_);
-        face_ = nullptr;
-    }
-    if (fallbackFace_)
-    {
-        FT_Done_Face(fallbackFace_);
-        fallbackFace_ = nullptr;
-    }
-}
+JaliumTextFormat::~JaliumTextFormat() = default;   // unique_ptr<FontFace> owns the faces
 
-void FreeTypeTextFormat::SetAlignment(int32_t alignment) { alignment_ = alignment; }
-void FreeTypeTextFormat::SetParagraphAlignment(int32_t alignment) { paragraphAlignment_ = alignment; }
-void FreeTypeTextFormat::SetTrimming(int32_t trimming) { trimming_ = trimming; }
-void FreeTypeTextFormat::SetWordWrapping(int32_t wrapping) { wrapping_ = wrapping; }
-void FreeTypeTextFormat::SetMaxLines(uint32_t maxLines) { maxLines_ = maxLines; }
+void JaliumTextFormat::SetAlignment(int32_t alignment) { alignment_ = alignment; }
+void JaliumTextFormat::SetParagraphAlignment(int32_t alignment) { paragraphAlignment_ = alignment; }
+void JaliumTextFormat::SetTrimming(int32_t trimming) { trimming_ = trimming; }
+void JaliumTextFormat::SetWordWrapping(int32_t wrapping) { wrapping_ = wrapping; }
+void JaliumTextFormat::SetMaxLines(uint32_t maxLines) { maxLines_ = maxLines; }
 
-void FreeTypeTextFormat::SetLineSpacing(int32_t method, float spacing, float baseline)
+void JaliumTextFormat::SetLineSpacing(int32_t method, float spacing, float baseline)
 {
     lineSpacingMethod_ = method;
     lineSpacing_ = spacing;
@@ -150,7 +133,7 @@ static uint32_t DecodeCodepoint(
     }
 }
 
-void FreeTypeTextFormat::EnsureFallbackFace()
+void JaliumTextFormat::EnsureFallbackFace()
 {
     if (fallbackAttempted_) return;
     fallbackAttempted_ = true;
@@ -160,31 +143,31 @@ void FreeTypeTextFormat::EnsureFallbackFace()
     if (!fb || fontFamily_ == fb) return; // no fallback, or primary already is it
 
     fallbackFace_ = engine_->GetFontProvider()->CreateFace(
-        engine_->GetFTLibrary(), fb, fontWeight_, fontStyle_);
+        fb, fontWeight_, fontStyle_);
     if (fallbackFace_)
         fallbackFontId_ = ComputeFontId(fb, fontWeight_, fontStyle_);
 }
 
-FT_Face FreeTypeTextFormat::ChooseFaceForCodepoint(uint32_t cp, uint64_t& outFontId) const
+FontFace* JaliumTextFormat::ChooseFaceForCodepoint(uint32_t cp, uint64_t& outFontId) const
 {
-    if (face_ && cp != 0 && FT_Get_Char_Index(face_, cp) != 0)
+    if (face_ && cp != 0 && face_->GetGlyphIndex(cp) != 0)
     {
         outFontId = fontId_;
-        return face_;
+        return face_.get();
     }
-    if (fallbackFace_ && cp != 0 && FT_Get_Char_Index(fallbackFace_, cp) != 0)
+    if (fallbackFace_ && cp != 0 && fallbackFace_->GetGlyphIndex(cp) != 0)
     {
         outFontId = fallbackFontId_;
-        return fallbackFace_;
+        return fallbackFace_.get();
     }
     outFontId = fontId_;
-    return face_; // renders .notdef; GenerateGlyphQuads skips glyph index 0
+    return face_.get(); // renders .notdef; GenerateGlyphQuads skips glyph index 0
 }
 
-ShapedRun FreeTypeTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t textLength)
+ShapedRun JaliumTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t textLength)
 {
     if (!face_ || !text || textLength == 0)
-        return shaper_.Shape(face_, fontId_, text, textLength, fontSizePx_);
+        return shaper_.Shape(face_.get(), fontId_, text, textLength, fontSizePx_);
 
     // Does the primary face cover every (non-control) codepoint? If so, shape
     // the whole string in one pass — byte-for-byte the pre-fallback behaviour —
@@ -195,7 +178,7 @@ ShapedRun FreeTypeTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t te
         uint32_t units = 0;
         uint32_t cp = DecodeCodepoint(text, textLength, i, units);
         i += (units ? units : 1);
-        if (cp >= 0x20 && FT_Get_Char_Index(face_, cp) == 0)
+        if (cp >= 0x20 && face_->GetGlyphIndex(cp) == 0)
         {
             needsFallback = true;
             break;
@@ -203,16 +186,16 @@ ShapedRun FreeTypeTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t te
     }
 
     if (!needsFallback)
-        return shaper_.Shape(face_, fontId_, text, textLength, fontSizePx_);
+        return shaper_.Shape(face_.get(), fontId_, text, textLength, fontSizePx_);
 
     EnsureFallbackFace();
     if (!fallbackFace_) // platform has no fallback font installed
-        return shaper_.Shape(face_, fontId_, text, textLength, fontSizePx_);
+        return shaper_.Shape(face_.get(), fontId_, text, textLength, fontSizePx_);
 
     // Split into maximal runs that share a face, shape each with its own face
     // (so advances/metrics are correct), concatenate with absolute clusters.
     ShapedRun combined{};
-    combined.face = face_;
+    combined.face = face_.get();
     combined.fontId = fontId_;
     combined.fontSize = fontSizePx_;
     combined.isRtl = false;
@@ -224,7 +207,7 @@ ShapedRun FreeTypeTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t te
         uint32_t cp = DecodeCodepoint(text, textLength, i, units);
         if (units == 0) units = 1;
         uint64_t runFontId = fontId_;
-        FT_Face runFace = ChooseFaceForCodepoint(cp, runFontId);
+        FontFace* runFace = ChooseFaceForCodepoint(cp, runFontId);
 
         uint32_t runStart = i;
         i += units;
@@ -253,7 +236,7 @@ ShapedRun FreeTypeTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t te
 // Layout Engine
 // ============================================================================
 
-FreeTypeTextFormat::LayoutResult FreeTypeTextFormat::PerformLayout(
+JaliumTextFormat::LayoutResult JaliumTextFormat::PerformLayout(
     const wchar_t* text, uint32_t textLength,
     float maxWidth, float maxHeight)
 {
@@ -448,7 +431,7 @@ FreeTypeTextFormat::LayoutResult FreeTypeTextFormat::PerformLayout(
     return layout;
 }
 
-void FreeTypeTextFormat::ApplyAlignment(LayoutResult& layout, float maxWidth, float maxHeight)
+void JaliumTextFormat::ApplyAlignment(LayoutResult& layout, float maxWidth, float maxHeight)
 {
     // Horizontal alignment
     for (auto& line : layout.lines)
@@ -494,7 +477,7 @@ void FreeTypeTextFormat::ApplyAlignment(LayoutResult& layout, float maxWidth, fl
 // TextFormat Interface Implementation
 // ============================================================================
 
-JaliumResult FreeTypeTextFormat::MeasureText(
+JaliumResult JaliumTextFormat::MeasureText(
     const wchar_t* text, uint32_t textLength,
     float maxWidth, float maxHeight,
     JaliumTextMetrics* metrics)
@@ -515,7 +498,7 @@ JaliumResult FreeTypeTextFormat::MeasureText(
     return JALIUM_OK;
 }
 
-JaliumResult FreeTypeTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
+JaliumResult JaliumTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
 {
     if (!metrics) return JALIUM_ERROR_INVALID_ARGUMENT;
 
@@ -531,7 +514,7 @@ JaliumResult FreeTypeTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     return JALIUM_OK;
 }
 
-JaliumResult FreeTypeTextFormat::HitTestPoint(
+JaliumResult JaliumTextFormat::HitTestPoint(
     const wchar_t* text, uint32_t textLength,
     float maxWidth, float maxHeight,
     float pointX, float pointY,
@@ -627,7 +610,7 @@ JaliumResult FreeTypeTextFormat::HitTestPoint(
     return JALIUM_OK;
 }
 
-JaliumResult FreeTypeTextFormat::HitTestTextPosition(
+JaliumResult JaliumTextFormat::HitTestTextPosition(
     const wchar_t* text, uint32_t textLength,
     float maxWidth, float maxHeight,
     uint32_t textPosition, int32_t isTrailingHit,
@@ -708,7 +691,7 @@ JaliumResult FreeTypeTextFormat::HitTestTextPosition(
 // Glyph Quad Generation (for GPU text rendering)
 // ============================================================================
 
-void FreeTypeTextFormat::GenerateGlyphQuads(
+void JaliumTextFormat::GenerateGlyphQuads(
     const wchar_t* text, uint32_t textLength,
     float maxWidth, float maxHeight,
     float colorR, float colorG, float colorB, float colorA,
@@ -791,8 +774,8 @@ void FreeTypeTextFormat::GenerateGlyphQuads(
             // Get or rasterize glyph in atlas. The glyph carries the face/font
             // it was shaped with (primary, or a CJK/Unicode fallback selected in
             // ShapeWithFallback), so rasterize from THAT face — not always face_.
-            FT_Face  glyphFace   = glyph.face ? glyph.face : face_;
-            uint64_t glyphFontId = glyph.face ? glyph.fontId : fontId_;
+            FontFace* glyphFace   = glyph.face ? glyph.face : face_.get();
+            uint64_t  glyphFontId = glyph.face ? glyph.fontId : fontId_;
             const auto& entry = atlas->GetOrInsert(
                 *rasterizer, glyphFace, glyphFontId,
                 static_cast<uint16_t>(glyph.glyphIndex),

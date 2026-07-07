@@ -1,4 +1,6 @@
 #include "vulkan_ink_layer.h"
+#include "jalium_bitmap_stats.h"
+#include "jalium_types.h"  // JaliumInkDispatchResult — unified dispatch result codes
 
 #include <cstdio>
 #include <cstring>
@@ -831,11 +833,26 @@ bool VulkanInkLayerBitmap::CreateResources(uint32_t width, uint32_t height) {
     fbInfo.layers = 1;
     if (fns_->createFramebuffer(device, &fbInfo, nullptr, &framebuffer_) != VK_SUCCESS) return false;
 
+    // DevTools bitmap telemetry: the resident ink-layer image is part of the
+    // Vulkan approximation of "GPU-resident bitmap bytes" (upload image +
+    // glyph atlas image + ink layer images — Vulkan has no per-bitmap
+    // resident textures, see the EnsureUploadImage accounting note).
+    gpuResidentBytesAccounted_ = static_cast<int64_t>(width) * height * 4;
+    bitmap_stats::AddGpuResidentBytes(gpuResidentBytesAccounted_);
+
     return true;
 }
 
 void VulkanInkLayerBitmap::ReleaseResources() {
     if (!fns_) return;
+    // Balance the AddGpuResidentBytes made when CreateResources succeeded.
+    // Runs even when the device handle is gone below — a destroyed / lost
+    // device released the memory with it, so the global counter must drop
+    // either way.
+    if (gpuResidentBytesAccounted_ != 0) {
+        bitmap_stats::AddGpuResidentBytes(-gpuResidentBytesAccounted_);
+        gpuResidentBytesAccounted_ = 0;
+    }
     VkDevice device = pipeline_->Context().device;
     if (device == VK_NULL_HANDLE) return;
     if (framebuffer_ != VK_NULL_HANDLE) { fns_->destroyFramebuffer(device, framebuffer_, nullptr); framebuffer_ = VK_NULL_HANDLE; }
@@ -975,19 +992,22 @@ int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
                                         const void* strokePoints, uint32_t pointCount,
                                         const void* managedConstants,
                                         const void* extraParams, uint32_t extraParamsSize) {
-    if (!fns_ || !shader || !strokePoints || !managedConstants || pointCount < 2) return -1;
-    if (image_ == VK_NULL_HANDLE || framebuffer_ == VK_NULL_HANDLE) return -2;
-    // Lost generation → refuse before touching buffers/descriptors. (The
-    // managed caller ignores the code and skips the GPU layer for this
-    // stroke; committed ink on a lost device is rebuilt by the canvas's own
-    // layer-recreation path.)
-    if (DeviceLost()) return -6;
+    if (!fns_ || !shader || !strokePoints || !managedConstants || pointCount < 2)
+        return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
+    if (image_ == VK_NULL_HANDLE || framebuffer_ == VK_NULL_HANDLE)
+        return JALIUM_INK_DISPATCH_ERROR_INVALID_STATE;
+    // Lost generation → refuse before touching buffers/descriptors. Retrying
+    // the same handles can never succeed: the managed caller must rebuild the
+    // whole ink resource chain on the current device generation.
+    if (DeviceLost()) return JALIUM_INK_DISPATCH_ERROR_STALE_CONTEXT;
     // Generation pairing: the shader's VkPipeline and this bitmap's command
     // buffer/render pass must come from the SAME pipeline (device). Mixing
     // generations — bitmap created before a device swap, shader compiled
     // after it (or vice versa) — would bind one device's pipeline into
-    // another device's command buffer: cross-device UB.
-    if (shader->OwnerPipeline() != pipeline_.get()) return -7;
+    // another device's command buffer: cross-device UB. Deterministic and
+    // permanent for these handles → STALE_CONTEXT (rebuild re-pairs them).
+    if (shader->OwnerPipeline() != pipeline_.get())
+        return JALIUM_INK_DISPATCH_ERROR_STALE_CONTEXT;
     VkDevice device = pipeline_->Context().device;
 
     constexpr VkDeviceSize kBrushConstantsBytes = 96; // 80 managed + 16 framework
@@ -995,12 +1015,14 @@ int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
     const VkDeviceSize strokeBytes = static_cast<VkDeviceSize>(pointCount) * 16;
     const VkDeviceSize userBytes = (extraParams && extraParamsSize > 0) ? extraParamsSize : 16;
 
+    // Buffer allocation failures are momentary (OOM-class): the layer and
+    // shader handles stay healthy, so the caller retries next frame.
     if (!EnsureBuffer(cbBuffer_, cbMemory_, cbMapped_, cbCapacity_, kBrushConstantsBytes,
-                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)) return -3;
+                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
     if (!EnsureBuffer(userBuffer_, userMemory_, userMapped_, userCapacity_, userBytes,
-                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)) return -3;
+                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
     if (!EnsureBuffer(strokeBuffer_, strokeMemory_, strokeMapped_, strokeCapacity_, strokeBytes,
-                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return -3;
+                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
 
     // BrushConstants: copy 80 managed bytes, then fill ViewportSize (offset 64)
     // and zero the trailing 8-byte pad to reach the 96-byte cbuffer.
@@ -1064,7 +1086,7 @@ int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
         }
     }
 
-    if (!BeginCommands()) return -4;
+    if (!BeginCommands()) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
 
     BarrierToLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1103,9 +1125,16 @@ int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
                     VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 
-    if (!SubmitAndWait()) return -5;
+    if (!SubmitAndWait()) {
+        // SubmitAndWait latches the generation on VK_ERROR_DEVICE_LOST
+        // (NoteResult → MarkLost). Classify AFTER the call: a submit that
+        // died with the device is a generation failure (rebuild), anything
+        // else (end/reset/submit hiccup) is transient (retry same handles).
+        return DeviceLost() ? JALIUM_INK_DISPATCH_ERROR_STALE_CONTEXT
+                            : JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+    }
     BumpContentVersion();
-    return 0;
+    return JALIUM_INK_DISPATCH_OK;
 }
 
 bool VulkanInkLayerBitmap::ReadbackBgra(std::vector<uint8_t>& outBgra) {

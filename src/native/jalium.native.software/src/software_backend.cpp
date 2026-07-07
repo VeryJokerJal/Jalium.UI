@@ -1962,7 +1962,7 @@ void SoftwareRenderTarget::RenderText(
 
 #ifdef JALIUM_HAS_TEXT_ENGINE
     // Path 1: FreeType glyph atlas rendering (preferred on all platforms)
-    auto* ftFormat = dynamic_cast<FreeTypeTextFormat*>(format);
+    auto* ftFormat = dynamic_cast<JaliumTextFormat*>(format);
     if (ftFormat && backend_ && backend_->GetTextEngine()) {
         RenderTextWithGlyphAtlas(text, textLength, ftFormat, x, y, w, h, solid);
         return;
@@ -1989,7 +1989,7 @@ void SoftwareRenderTarget::RenderText(
 #ifdef JALIUM_HAS_TEXT_ENGINE
 void SoftwareRenderTarget::RenderTextWithGlyphAtlas(
     const wchar_t* text, uint32_t textLength,
-    FreeTypeTextFormat* ftFormat,
+    JaliumTextFormat* ftFormat,
     float x, float y, float w, float h,
     SoftwareSolidBrush* brush)
 {

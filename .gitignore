@@ -396,3 +396,14 @@ samples/
 src/native/build-*/
 src/native/build_*/
 src/native/out/
+
+# Rendering-parity harness output (run_parity.ps1)
+/out/
+
+# Local debug screenshots & shader-dump scratch (never commit)
+/_dbg_*.png
+/fsd.spv
+/fsd.txt
+/vsd.spv
+/vsd.txt
+/1

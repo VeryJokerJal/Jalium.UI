@@ -33,14 +33,9 @@ public sealed class RenderContextBackendSwitchTests : IDisposable
     /// the backend even though the prewarm already installed the platform default.
     /// Pre-fix this returned the cached non-Vulkan context unchanged (a no-op).
     /// </summary>
-    [Fact]
+    [RequiresBackendFact(RenderBackend.Vulkan)]
     public void ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable()
     {
-        if (NativeMethods.IsBackendAvailable(RenderBackend.Vulkan) == 0)
-        {
-            return; // Vulkan not present on this host — nothing to verify.
-        }
-
         // Install a non-Vulkan current context (platform default, or Software on
         // a GPU-less host — either way not Vulkan).
         var initial = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12, forceReplace: true);
@@ -80,14 +75,9 @@ public sealed class RenderContextBackendSwitchTests : IDisposable
     /// the availability guard this returns a brand-new (Software) context, so the
     /// <see cref="Assert.Same(object, object)"/> below is the regression bite.
     /// </summary>
-    [Fact]
+    [RequiresBackendAbsentFact(RenderBackend.Metal)]
     public void ExplicitUnavailableBackend_PreservesCurrentContext_NoSoftwareDowngrade()
     {
-        if (NativeMethods.IsBackendAvailable(RenderBackend.Metal) != 0)
-        {
-            return; // Probe backend is somehow available here — not a valid host.
-        }
-
         var working = RenderContext.GetOrCreateCurrent();
         var workingBackend = working.Backend;
 

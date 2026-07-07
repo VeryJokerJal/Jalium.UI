@@ -15,6 +15,17 @@ struct ColorF { float r, g, b, a; };
 /// Gradient stop with position and color (no D2D dependency).
 struct GradStop { float position; ColorF color; };
 
+/// Premultiplies straight-alpha BGRA8 pixels in place (RGB *= A / 255).
+///
+/// The raw-pixel bitmap ABI (jalium_bitmap_create_from_pixels /
+/// jalium_bitmap_update_pixels) always receives STRAIGHT alpha; D3D12's bitmap
+/// PSO blends premultiplied (SrcBlend=ONE) and bitmap_quad.ps does not
+/// premultiply in the shader, so straight pixels must be premultiplied once on
+/// the way in (matching the encoded WIC 32bppPBGRA path). Opaque pixels
+/// (A==255) are left byte-for-byte unchanged. Defined in d3d12_bitmap.cpp and
+/// shared with CreateBitmapFromPixels in d3d12_backend.cpp.
+void PremultiplyBgraInPlace(uint8_t* pixels, size_t pixelCount);
+
 class D3D12SolidBrush : public Brush {
 public:
     D3D12SolidBrush(float r, float g, float b, float a);

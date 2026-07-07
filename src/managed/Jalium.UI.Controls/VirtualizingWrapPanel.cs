@@ -71,7 +71,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
     /// <summary>Virtualization mode (Standard / Recycling).</summary>
     public VirtualizationMode VirtualizationMode
     {
-        get => GetVirtualizationMode(this);
+        get => GetVirtualizationMode(GetOwner());
         set => SetVirtualizationMode(this, value);
     }
 
@@ -201,8 +201,9 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         var rowSize = Orientation == Orientation.Horizontal ? _itemHeight : _itemWidth;
 
         var viewportAxisSize = GetViewportAxisSize();
-        var cache = GetCacheLength(this);
-        var cacheUnit = GetCacheLengthUnit(this);
+        var owner = GetOwner();
+        var cache = GetCacheLength(owner);
+        var cacheUnit = GetCacheLengthUnit(owner);
         var cacheBefore = ToCachePixels(cache.CacheBeforeViewport, cacheUnit, viewportAxisSize, rowSize);
         var cacheAfter = ToCachePixels(cache.CacheAfterViewport, cacheUnit, viewportAxisSize, rowSize);
 
@@ -368,7 +369,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
 
     private bool ShouldVirtualize()
     {
-        return GetIsVirtualizing(this) && ItemContainerGenerator != null;
+        return GetIsVirtualizing(GetOwner()) && ItemContainerGenerator != null;
     }
 
     private int GetItemCount() => ItemContainerGenerator?.ItemCount ?? Children.Count;

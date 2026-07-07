@@ -4,7 +4,7 @@
 
 #ifndef _WIN32
 // Forward declarations for cross-platform text engine
-namespace jalium { class TextEngine; class FreeTypeTextFormat; }
+namespace jalium { class TextEngine; class JaliumTextFormat; }
 #endif
 
 #include <string>
@@ -50,7 +50,8 @@ class VulkanLinearGradientBrush : public Brush {
 public:
     VulkanLinearGradientBrush(
         float startX, float startY, float endX, float endY,
-        const JaliumGradientStop* stops, uint32_t stopCount);
+        const JaliumGradientStop* stops, uint32_t stopCount,
+        uint32_t spreadMethod = 0);
 
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_LINEAR_GRADIENT; }
 
@@ -59,6 +60,7 @@ public:
     float endX_ = 0.0f;
     float endY_ = 0.0f;
     std::vector<JaliumGradientStop> stops_;
+    uint32_t spreadMethod_ = 0;  // 0=Pad, 1=Repeat, 2=Reflect (mirrors D3D12LinearGradientBrush)
 };
 
 class VulkanRadialGradientBrush : public Brush {
@@ -66,7 +68,8 @@ public:
     VulkanRadialGradientBrush(
         float centerX, float centerY, float radiusX, float radiusY,
         float originX, float originY,
-        const JaliumGradientStop* stops, uint32_t stopCount);
+        const JaliumGradientStop* stops, uint32_t stopCount,
+        uint32_t spreadMethod = 0);
 
     JaliumBrushType GetType() const override { return JALIUM_BRUSH_RADIAL_GRADIENT; }
 
@@ -77,6 +80,7 @@ public:
     float originX_ = 0.0f;
     float originY_ = 0.0f;
     std::vector<JaliumGradientStop> stops_;
+    uint32_t spreadMethod_ = 0;  // 0=Pad, 1=Repeat, 2=Reflect (mirrors D3D12RadialGradientBrush)
 };
 
 class VulkanBitmap : public Bitmap {
@@ -209,7 +213,7 @@ public:
     uint32_t GetMaxLines() const { return maxLines_; }
 
 #ifndef _WIN32
-    FreeTypeTextFormat* GetFreeTypeFormat() const { return ftTextFormat_.get(); }
+    JaliumTextFormat* GetTextFormat() const { return ftTextFormat_.get(); }
 #endif
 
 private:
@@ -249,6 +253,35 @@ private:
     // fall back to the approximate-metrics path.
     Microsoft::WRL::ComPtr<IDWriteTextFormat> dwFormat_;
 
+    // Per-format font-face metrics (ascent / descent / lineGap and the derived
+    // WPF-style lineHeight) depend ONLY on this format's immutable font identity
+    // (family / size / weight / style), all fixed at construction — none of the
+    // public setters touch them. Resolving them costs a GetFontCollection ->
+    // FindFamilyName -> GetFirstMatchingFont -> GetMetrics chain, which the old
+    // MeasureText / GetFontMetrics re-ran on EVERY call (even on a layout-cache
+    // hit) purely to fill ascent/descent/lineGap — on the D3D12 backend that
+    // chain dominated the managed measure pass while scrolling recycled rows,
+    // and this DWrite path had inherited the same shape. Resolve once and
+    // reuse (structure mirrors D3D12TextFormat::FontFaceMetrics /
+    // EnsureFontFaceMetrics). `resolved` records whether a matching font face
+    // was found so the no-face fallback paths are reproduced exactly;
+    // `hardFailure` additionally distinguishes GetFontMetrics' error-return
+    // steps (family lookup succeeded but the family / font object came back
+    // null → RESOURCE_CREATION_FAILED) from its silent-fallback steps (no
+    // collection, or family name not found → approximate metrics + OK),
+    // preserving the pre-cache return values.
+    struct FontFaceMetrics {
+        bool  attempted   = false;  // have we tried to resolve yet?
+        bool  resolved    = false;  // was a matching font face found?
+        bool  hardFailure = false;  // GetFontFamily / GetFirstMatchingFont returned null
+        float ascent      = 0.0f;
+        float descent     = 0.0f;
+        float lineGap     = 0.0f;
+        float lineHeight  = 0.0f;
+    };
+    const FontFaceMetrics& EnsureFontFaceMetrics();
+    FontFaceMetrics fontFaceMetrics_;
+
     // Bounded LRU of shaped layouts (same structure + cap as D3D12). Cap covers
     // a data-heavy frame's full visible text set so it reuses across frames
     // instead of thrashing. Layouts are small (a few KB of DWrite buffers).
@@ -259,8 +292,8 @@ private:
 #endif
 
 #ifndef _WIN32
-    // FreeType + HarfBuzz text engine (non-Windows)
-    std::unique_ptr<FreeTypeTextFormat> ftTextFormat_;
+    // Self-hosted text engine (non-Windows)
+    std::unique_ptr<JaliumTextFormat> ftTextFormat_;
 #endif
 };
 

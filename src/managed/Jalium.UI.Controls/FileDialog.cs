@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 
 namespace Jalium.UI.Controls;
 
@@ -219,100 +219,105 @@ public sealed class OpenFileDialog : FileDialog
         return ShowFallbackDialog();
     }
 
-    private bool? ShowWindowsDialog(IntPtr owner)
+    private bool? ShowWindowsDialog(nint owner)
     {
-        IFileOpenDialog? dialog = null;
-        IShellItem? initialDirectoryItem = null;
-        var customPlaceItems = new List<IShellItem>();
+        // NativeAOT has no built-in COM interop, so the dialog is driven entirely through
+        // CoCreateInstance + raw vtable dispatch (see ShellComInterop) instead of a classic
+        // [ComImport] runtime-callable wrapper. Every COM object is held as a raw nint and
+        // released exactly once in the finally.
+        nint dialog = 0;
+        nint initialDirectoryItem = 0;
+        var customPlaceItems = new List<nint>();
+        nint filterBlock = 0;
+        int filterCount = 0;
 
         try
         {
-            dialog = (IFileOpenDialog)new FileOpenDialogCom();
+            dialog = ShellComInterop.CreateOpenDialog();
 
             if (!string.IsNullOrWhiteSpace(Title))
             {
-                CheckHResult(dialog.SetTitle(Title));
+                ShellComInterop.SetTitle(dialog, Title);
             }
 
             if (!string.IsNullOrWhiteSpace(DefaultExt))
             {
-                CheckHResult(dialog.SetDefaultExtension(DefaultExt));
+                ShellComInterop.SetDefaultExtension(dialog, DefaultExt);
             }
 
             var filters = BuildFilterSpecs();
-            if (filters.Length > 0)
+            filterBlock = ShellComInterop.AllocFilterSpecs(filters, out filterCount);
+            if (filterCount > 0)
             {
-                CheckHResult(dialog.SetFileTypes((uint)filters.Length, filters));
-                CheckHResult(dialog.SetFileTypeIndex((uint)Math.Max(FilterIndex, 1)));
+                ShellComInterop.SetFileTypes(dialog, (uint)filterCount, filterBlock);
+                ShellComInterop.SetFileTypeIndex(dialog, (uint)Math.Max(FilterIndex, 1));
             }
 
-            var dialogOptions = BuildDialogOptions();
-            CheckHResult(dialog.SetOptions(dialogOptions));
+            ShellComInterop.SetOptions(dialog, BuildDialogOptions());
 
             var initialPath = GetInitialDialogPath();
             if (!string.IsNullOrWhiteSpace(initialPath))
             {
-                initialDirectoryItem = CreateShellItemFromPath(initialPath);
-                CheckHResult(dialog.SetFolder(initialDirectoryItem));
-                CheckHResult(dialog.SetDefaultFolder(initialDirectoryItem));
+                initialDirectoryItem = ShellComInterop.CreateShellItem(initialPath);
+                ShellComInterop.SetFolder(dialog, initialDirectoryItem);
+                ShellComInterop.SetDefaultFolder(dialog, initialDirectoryItem);
             }
 
             foreach (var customPlace in CustomPlaces)
             {
-                var customPlaceItem = TryCreateCustomPlaceShellItem(customPlace);
-                if (customPlaceItem == null)
+                var customPlaceItem = ShellComInterop.TryCreateCustomPlaceItem(customPlace);
+                if (customPlaceItem == 0)
                 {
                     continue;
                 }
 
                 customPlaceItems.Add(customPlaceItem);
-                CheckHResult(dialog.AddPlace(customPlaceItem, FileDialogAddPlace.Bottom));
+                ShellComInterop.AddPlace(dialog, customPlaceItem, ShellComInterop.FDAP_BOTTOM);
             }
 
             if (!string.IsNullOrWhiteSpace(FileName))
             {
-                CheckHResult(dialog.SetFileName(FileName));
+                ShellComInterop.SetFileName(dialog, FileName);
             }
 
-            var showResult = dialog.Show(owner);
-            if (showResult == HResultErrorCancelled)
+            var showResult = ShellComInterop.Show(dialog, owner);
+            if (showResult == ShellComInterop.HResultErrorCancelled)
             {
                 return false;
             }
 
-            CheckHResult(showResult);
+            ShellComInterop.CheckHResult(showResult);
 
             if (Multiselect)
             {
-                CheckHResult(dialog.GetResults(out var results));
+                var results = ShellComInterop.GetResults(dialog);
                 try
                 {
-                    FileNames = GetShellItemArrayPaths(results);
+                    FileNames = ShellComInterop.GetItemArrayPaths(results);
                     FileName = FileNames.FirstOrDefault();
                 }
                 finally
                 {
-                    ReleaseComObject(results);
+                    ShellComInterop.Release(results);
                 }
             }
             else
             {
-                CheckHResult(dialog.GetResult(out var result));
+                var result = ShellComInterop.GetResult(dialog);
                 try
                 {
-                    FileName = GetShellItemPath(result);
+                    FileName = ShellComInterop.GetItemPath(result);
                     FileNames = string.IsNullOrWhiteSpace(FileName) ? Array.Empty<string>() : [FileName];
                 }
                 finally
                 {
-                    ReleaseComObject(result);
+                    ShellComInterop.Release(result);
                 }
             }
 
-            if (filters.Length > 0)
+            if (filterCount > 0)
             {
-                CheckHResult(dialog.GetFileTypeIndex(out var selectedFilterIndex));
-                FilterIndex = (int)selectedFilterIndex;
+                FilterIndex = (int)ShellComInterop.GetFileTypeIndex(dialog);
             }
 
             OnFileOk();
@@ -320,13 +325,14 @@ public sealed class OpenFileDialog : FileDialog
         }
         finally
         {
+            ShellComInterop.FreeFilterSpecs(filterBlock, filterCount);
             foreach (var customPlaceItem in customPlaceItems)
             {
-                ReleaseComObject(customPlaceItem);
+                ShellComInterop.Release(customPlaceItem);
             }
 
-            ReleaseComObject(initialDirectoryItem);
-            ReleaseComObject(dialog);
+            ShellComInterop.Release(initialDirectoryItem);
+            ShellComInterop.Release(dialog);
         }
     }
 
@@ -381,9 +387,8 @@ public sealed class OpenFileDialog : FileDialog
         return false;
     }
 
-    #region Native Methods
+    #region Dialog options
 
-    private const int HResultErrorCancelled = unchecked((int)0x800704C7);
     private const uint FOS_OVERWRITEPROMPT = 0x00000002;
     private const uint FOS_STRICTFILETYPES = 0x00000004;
     private const uint FOS_NOCHANGEDIR = 0x00000008;
@@ -410,249 +415,16 @@ public sealed class OpenFileDialog : FileDialog
         return options;
     }
 
-    private COMDLG_FILTERSPEC[] BuildFilterSpecs()
+    private (string Name, string Pattern)[] BuildFilterSpecs()
     {
         var parsedFilters = ParseFilter();
         if (parsedFilters.Length == 0 || IsFolderPicker)
         {
-            return Array.Empty<COMDLG_FILTERSPEC>();
+            return Array.Empty<(string, string)>();
         }
 
-        return parsedFilters
-            .Select(filter => new COMDLG_FILTERSPEC
-            {
-                pszName = filter.Name,
-                pszSpec = filter.Pattern
-            })
-            .ToArray();
+        return parsedFilters;
     }
-
-    private static string[] GetShellItemArrayPaths(IShellItemArray shellItemArray)
-    {
-        CheckHResult(shellItemArray.GetCount(out var count));
-        var paths = new string[(int)count];
-        for (uint i = 0; i < count; i++)
-        {
-            CheckHResult(shellItemArray.GetItemAt(i, out var shellItem));
-            try
-            {
-                paths[i] = GetShellItemPath(shellItem);
-            }
-            finally
-            {
-                ReleaseComObject(shellItem);
-            }
-        }
-
-        return paths.Where(static path => !string.IsNullOrWhiteSpace(path)).ToArray();
-    }
-
-    private static string GetShellItemPath(IShellItem shellItem)
-    {
-        CheckHResult(shellItem.GetDisplayName(ShellItemDisplayName.FileSystemPath, out var displayNamePointer));
-        try
-        {
-            return Marshal.PtrToStringUni(displayNamePointer) ?? string.Empty;
-        }
-        finally
-        {
-            Marshal.FreeCoTaskMem(displayNamePointer);
-        }
-    }
-
-    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfComInteropCannotBeGuaranteed",
-        Justification = "SHCreateItemFromParsingName marshals an out parameter as UnmanagedType.Interface into IShellItem. The IShellItem COM interface is preserved by its [ComImport] declaration on the nested IShellItem type, and its vtable members (GetDisplayName, etc.) are exercised through the IFileOpenDialog calls in ShowWindowsDialog, so the trimmer cannot remove them. This native Shell interop is required to bridge a path string to the shell-item the IFileDialog APIs consume.")]
-    private static IShellItem CreateShellItemFromPath(string path)
-    {
-        SHCreateItemFromParsingName(path, IntPtr.Zero, typeof(IShellItem).GUID, out var shellItemObject);
-        return (IShellItem)shellItemObject;
-    }
-
-    private static IShellItem? TryCreateCustomPlaceShellItem(FileDialogCustomPlace customPlace)
-    {
-        if (!string.IsNullOrWhiteSpace(customPlace.Path))
-        {
-            return CreateShellItemFromPath(customPlace.Path);
-        }
-
-        if (customPlace.KnownFolderGuid != Guid.Empty &&
-            SHGetKnownFolderPath(customPlace.KnownFolderGuid, 0, IntPtr.Zero, out var knownFolderPathPointer) == 0 &&
-            knownFolderPathPointer != IntPtr.Zero)
-        {
-            try
-            {
-                var knownFolderPath = Marshal.PtrToStringUni(knownFolderPathPointer);
-                return string.IsNullOrWhiteSpace(knownFolderPath) ? null : CreateShellItemFromPath(knownFolderPath);
-            }
-            finally
-            {
-                Marshal.FreeCoTaskMem(knownFolderPathPointer);
-            }
-        }
-
-        return null;
-    }
-
-    private static void CheckHResult(int hr)
-    {
-        if (hr < 0)
-        {
-            Marshal.ThrowExceptionForHR(hr);
-        }
-    }
-
-    private static void ReleaseComObject(object? comObject)
-    {
-        // Marshal.ReleaseComObject is [SupportedOSPlatform("windows")]. The dialog COM
-        // path only runs under the OperatingSystem.IsWindows() guard at the ShowDialog
-        // entry, but the platform-compatibility analyzer recognizes OperatingSystem.IsWindows()
-        // (not RuntimeInformation.IsOSPlatform) — restate it here so the guard is honored.
-        if (OperatingSystem.IsWindows() && comObject != null && Marshal.IsComObject(comObject))
-        {
-            Marshal.ReleaseComObject(comObject);
-        }
-    }
-
-    [ComImport]
-    [Guid("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7")]
-    private class FileOpenDialogCom
-    {
-    }
-
-    [ComImport]
-    [Guid("42F85136-DB7E-439C-85F1-E4075D135FC8")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IFileDialog
-    {
-        [PreserveSig] int Show(IntPtr parent);
-        [PreserveSig] int SetFileTypes(uint cFileTypes, [MarshalAs(UnmanagedType.LPArray)] COMDLG_FILTERSPEC[] rgFilterSpec);
-        [PreserveSig] int SetFileTypeIndex(uint iFileType);
-        [PreserveSig] int GetFileTypeIndex(out uint piFileType);
-        [PreserveSig] int Advise(IntPtr pfde, out uint pdwCookie);
-        [PreserveSig] int Unadvise(uint dwCookie);
-        [PreserveSig] int SetOptions(uint fos);
-        [PreserveSig] int GetOptions(out uint pfos);
-        [PreserveSig] int SetDefaultFolder(IShellItem psi);
-        [PreserveSig] int SetFolder(IShellItem psi);
-        [PreserveSig] int GetFolder(out IShellItem ppsi);
-        [PreserveSig] int GetCurrentSelection(out IShellItem ppsi);
-        [PreserveSig] int SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
-        [PreserveSig] int GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
-        [PreserveSig] int SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
-        [PreserveSig] int SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
-        [PreserveSig] int SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
-        [PreserveSig] int GetResult(out IShellItem ppsi);
-        [PreserveSig] int AddPlace(IShellItem psi, FileDialogAddPlace fdap);
-        [PreserveSig] int SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
-        [PreserveSig] int Close(int hr);
-        [PreserveSig] int SetClientGuid(in Guid guid);
-        [PreserveSig] int ClearClientData();
-        [PreserveSig] int SetFilter(IntPtr pFilter);
-    }
-
-    [ComImport]
-    [Guid("D57C7288-D4AD-4768-BE02-9D969532D960")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IFileOpenDialog : IFileDialog
-    {
-        [PreserveSig] new int Show(IntPtr parent);
-        [PreserveSig] new int SetFileTypes(uint cFileTypes, [MarshalAs(UnmanagedType.LPArray)] COMDLG_FILTERSPEC[] rgFilterSpec);
-        [PreserveSig] new int SetFileTypeIndex(uint iFileType);
-        [PreserveSig] new int GetFileTypeIndex(out uint piFileType);
-        [PreserveSig] new int Advise(IntPtr pfde, out uint pdwCookie);
-        [PreserveSig] new int Unadvise(uint dwCookie);
-        [PreserveSig] new int SetOptions(uint fos);
-        [PreserveSig] new int GetOptions(out uint pfos);
-        [PreserveSig] new int SetDefaultFolder(IShellItem psi);
-        [PreserveSig] new int SetFolder(IShellItem psi);
-        [PreserveSig] new int GetFolder(out IShellItem ppsi);
-        [PreserveSig] new int GetCurrentSelection(out IShellItem ppsi);
-        [PreserveSig] new int SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
-        [PreserveSig] new int GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
-        [PreserveSig] new int SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
-        [PreserveSig] new int SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
-        [PreserveSig] new int SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
-        [PreserveSig] new int GetResult(out IShellItem ppsi);
-        [PreserveSig] new int AddPlace(IShellItem psi, FileDialogAddPlace fdap);
-        [PreserveSig] new int SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
-        [PreserveSig] new int Close(int hr);
-        [PreserveSig] new int SetClientGuid(in Guid guid);
-        [PreserveSig] new int ClearClientData();
-        [PreserveSig] new int SetFilter(IntPtr pFilter);
-        [PreserveSig] int GetResults(out IShellItemArray ppenum);
-        [PreserveSig] int GetSelectedItems(out IShellItemArray ppsai);
-    }
-
-    [ComImport]
-    [Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IShellItem
-    {
-        [PreserveSig] int BindToHandler(IntPtr pbc, in Guid bhid, in Guid riid, out IntPtr ppv);
-        [PreserveSig] int GetParent(out IShellItem ppsi);
-        [PreserveSig] int GetDisplayName(ShellItemDisplayName sigdnName, out IntPtr ppszName);
-        [PreserveSig] int GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
-        [PreserveSig] int Compare(IShellItem psi, uint hint, out int piOrder);
-    }
-
-    [ComImport]
-    [Guid("B63EA76D-1F85-456F-A19C-48159EFA858B")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IShellItemArray
-    {
-        [PreserveSig] int BindToHandler(IntPtr pbc, in Guid bhid, in Guid riid, out IntPtr ppvOut);
-        [PreserveSig] int GetPropertyStore(int flags, in Guid riid, out IntPtr ppv);
-        [PreserveSig] int GetPropertyDescriptionList(IntPtr keyType, in Guid riid, out IntPtr ppv);
-        [PreserveSig] int GetAttributes(ShellItemArrayGetAttributesFlags dwAttribFlags, uint sfgaoMask, out uint psfgaoAttribs);
-        [PreserveSig] int GetCount(out uint pdwNumItems);
-        [PreserveSig] int GetItemAt(uint dwIndex, out IShellItem ppsi);
-        [PreserveSig] int EnumItems(out IntPtr ppenumShellItems);
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct COMDLG_FILTERSPEC
-    {
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string pszName;
-
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string pszSpec;
-    }
-
-    private enum FileDialogAddPlace
-    {
-        Bottom = 0,
-        Top = 1
-    }
-
-    private enum ShellItemDisplayName : uint
-    {
-        FileSystemPath = 0x80058000
-    }
-
-    [Flags]
-    private enum ShellItemArrayGetAttributesFlags : uint
-    {
-        And = 0x00000001,
-        Or = 0x00000002,
-        AppCompat = 0x00000003,
-        Mask = 0x00000003,
-        AllItems = 0x00004000
-    }
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
-    private static extern void SHCreateItemFromParsingName(
-        [MarshalAs(UnmanagedType.LPWStr)] string pszPath,
-        IntPtr pbc,
-        in Guid riid,
-        [MarshalAs(UnmanagedType.Interface)] out object ppv);
-
-    [DllImport("shell32.dll")]
-    private static extern int SHGetKnownFolderPath(
-        in Guid rfid,
-        uint dwFlags,
-        IntPtr hToken,
-        out IntPtr ppszPath);
 
     #endregion
 }
@@ -700,82 +472,89 @@ public sealed class SaveFileDialog : FileDialog
         return ShowFallbackDialog();
     }
 
-    private bool? ShowWindowsDialog(IntPtr owner)
+    private bool? ShowWindowsDialog(nint owner)
     {
-        IFileSaveDialog? dialog = null;
-        IShellItem? initialDirectoryItem = null;
-        var customPlaceItems = new List<IShellItem>();
+        // See OpenFileDialog.ShowWindowsDialog: raw-nint COM dispatch via ShellComInterop so
+        // the save dialog works under NativeAOT (no built-in COM interop). The save dialog only
+        // ever calls GetResult (a single item) — never GetResults, which is an IFileOpenDialog
+        // member occupying the vtable slot that IFileSaveDialog reuses for SetSaveAsItem.
+        nint dialog = 0;
+        nint initialDirectoryItem = 0;
+        var customPlaceItems = new List<nint>();
+        nint filterBlock = 0;
+        int filterCount = 0;
 
         try
         {
-            dialog = (IFileSaveDialog)new FileSaveDialogCom();
+            dialog = ShellComInterop.CreateSaveDialog();
 
             if (!string.IsNullOrWhiteSpace(Title))
             {
-                CheckHResult(dialog.SetTitle(Title));
+                ShellComInterop.SetTitle(dialog, Title);
             }
 
             if (!string.IsNullOrWhiteSpace(DefaultExt))
             {
-                CheckHResult(dialog.SetDefaultExtension(DefaultExt));
+                ShellComInterop.SetDefaultExtension(dialog, DefaultExt);
             }
 
             var filters = BuildFilterSpecs();
-            if (filters.Length > 0)
+            filterBlock = ShellComInterop.AllocFilterSpecs(filters, out filterCount);
+            if (filterCount > 0)
             {
-                CheckHResult(dialog.SetFileTypes((uint)filters.Length, filters));
-                CheckHResult(dialog.SetFileTypeIndex((uint)Math.Max(FilterIndex, 1)));
+                ShellComInterop.SetFileTypes(dialog, (uint)filterCount, filterBlock);
+                ShellComInterop.SetFileTypeIndex(dialog, (uint)Math.Max(FilterIndex, 1));
             }
 
-            CheckHResult(dialog.SetOptions(BuildDialogOptions()));
+            ShellComInterop.SetOptions(dialog, BuildDialogOptions());
 
             var initialPath = GetInitialDialogPath();
             if (!string.IsNullOrWhiteSpace(initialPath))
             {
-                initialDirectoryItem = CreateShellItemFromPath(initialPath);
-                CheckHResult(dialog.SetFolder(initialDirectoryItem));
-                CheckHResult(dialog.SetDefaultFolder(initialDirectoryItem));
+                initialDirectoryItem = ShellComInterop.CreateShellItem(initialPath);
+                ShellComInterop.SetFolder(dialog, initialDirectoryItem);
+                ShellComInterop.SetDefaultFolder(dialog, initialDirectoryItem);
             }
 
             foreach (var customPlace in CustomPlaces)
             {
-                var customPlaceItem = TryCreateCustomPlaceShellItem(customPlace);
-                if (customPlaceItem == null)
+                var customPlaceItem = ShellComInterop.TryCreateCustomPlaceItem(customPlace);
+                if (customPlaceItem == 0)
                 {
                     continue;
                 }
 
                 customPlaceItems.Add(customPlaceItem);
-                CheckHResult(dialog.AddPlace(customPlaceItem, FileDialogAddPlace.Bottom));
+                ShellComInterop.AddPlace(dialog, customPlaceItem, ShellComInterop.FDAP_BOTTOM);
             }
 
             if (!string.IsNullOrWhiteSpace(FileName))
             {
-                CheckHResult(dialog.SetFileName(FileName));
+                ShellComInterop.SetFileName(dialog, FileName);
             }
 
-            var showResult = dialog.Show(owner);
-            if (showResult == HResultErrorCancelled)
+            var showResult = ShellComInterop.Show(dialog, owner);
+            if (showResult == ShellComInterop.HResultErrorCancelled)
             {
                 return false;
             }
 
-            CheckHResult(showResult);
-            CheckHResult(dialog.GetResult(out var result));
+            ShellComInterop.CheckHResult(showResult);
+
+            var result = ShellComInterop.GetResult(dialog);
             try
             {
-                FileName = GetShellItemPath(result);
+                FileName = ShellComInterop.GetItemPath(result);
                 FileNames = string.IsNullOrWhiteSpace(FileName) ? Array.Empty<string>() : [FileName];
             }
             finally
             {
-                ReleaseComObject(result);
+                ShellComInterop.Release(result);
             }
 
-            if (filters.Length > 0)
+            if (filterCount > 0)
             {
-                CheckHResult(dialog.GetFileTypeIndex(out var selectedFilterIndex));
-                FilterIndex = (int)selectedFilterIndex;
+                FilterIndex = (int)ShellComInterop.GetFileTypeIndex(dialog);
             }
 
             OnFileOk();
@@ -783,13 +562,14 @@ public sealed class SaveFileDialog : FileDialog
         }
         finally
         {
+            ShellComInterop.FreeFilterSpecs(filterBlock, filterCount);
             foreach (var customPlaceItem in customPlaceItems)
             {
-                ReleaseComObject(customPlaceItem);
+                ShellComInterop.Release(customPlaceItem);
             }
 
-            ReleaseComObject(initialDirectoryItem);
-            ReleaseComObject(dialog);
+            ShellComInterop.Release(initialDirectoryItem);
+            ShellComInterop.Release(dialog);
         }
     }
 
@@ -839,9 +619,8 @@ public sealed class SaveFileDialog : FileDialog
         return false;
     }
 
-    #region Native Methods
+    #region Dialog options
 
-    private const int HResultErrorCancelled = unchecked((int)0x800704C7);
     private const uint FOS_OVERWRITEPROMPT = 0x00000002;
     private const uint FOS_STRICTFILETYPES = 0x00000004;
     private const uint FOS_NOCHANGEDIR = 0x00000008;
@@ -863,26 +642,197 @@ public sealed class SaveFileDialog : FileDialog
         return options;
     }
 
-    private COMDLG_FILTERSPEC[] BuildFilterSpecs()
+    private (string Name, string Pattern)[] BuildFilterSpecs()
     {
-        var parsedFilters = ParseFilter();
-        if (parsedFilters.Length == 0)
-        {
-            return Array.Empty<COMDLG_FILTERSPEC>();
-        }
-
-        return parsedFilters
-            .Select(filter => new COMDLG_FILTERSPEC
-            {
-                pszName = filter.Name,
-                pszSpec = filter.Pattern
-            })
-            .ToArray();
+        return ParseFilter();
     }
 
-    private static string GetShellItemPath(IShellItem shellItem)
+    #endregion
+}
+
+/// <summary>
+/// NativeAOT-safe Windows Shell interop for the common item dialogs (IFileOpenDialog /
+/// IFileSaveDialog / IShellItem / IShellItemArray).
+/// </summary>
+/// <remarks>
+/// <para>
+/// NativeAOT ships with no built-in COM interop: instantiating a classic <c>[ComImport]</c>
+/// coclass (e.g. <c>new FileOpenDialogCom()</c>) and dispatching through a runtime-synthesised
+/// RCW throws <see cref="NotSupportedException"/> ("Built-in COM has been disabled"). That is the
+/// same wall the UI Automation stack hit before it moved to source-generated COM. Rather than pull
+/// in <c>[GeneratedComInterface]</c> (whose marshaller has no support for the
+/// <c>COMDLG_FILTERSPEC*</c> array-of-struct-with-string-pointers that <c>SetFileTypes</c> takes),
+/// this consumer uses the pattern already shipping elsewhere in the framework — <see
+/// cref="OleDropTarget"/>, <c>OleDragSource</c>, and the Windows notification backend — namely
+/// <c>CoCreateInstance</c> to a raw <see langword="nint"/> followed by
+/// <c>delegate* unmanaged[Stdcall]</c> vtable-slot calls. Every method here is <c>PreserveSig</c>
+/// (returns the raw HRESULT) exactly as the underlying IDL, and every COM reference is released
+/// with <see cref="Marshal.Release(nint)"/> (never <see cref="Marshal.ReleaseComObject"/>, which is
+/// a silent no-op under AOT because <see cref="Marshal.IsComObject"/> is always false there).
+/// </para>
+/// <para>
+/// Vtable slots below are zero-based and count from IUnknown (QueryInterface=0, AddRef=1,
+/// Release=2). IModalWindow::Show occupies slot 3; IFileDialog then runs 4..26 in IDL order;
+/// IFileOpenDialog appends GetResults=27; IShellItem starts its own members at slot 3
+/// (GetDisplayName=5); IShellItemArray at slot 3 (GetCount=7, GetItemAt=8). The order matches the
+/// Windows SDK ShObjIdl_core.h vtables.
+/// </para>
+/// </remarks>
+internal static unsafe class ShellComInterop
+{
+    #region Constants
+
+    private const uint CLSCTX_INPROC_SERVER = 1;
+
+    /// <summary>HRESULT_FROM_WIN32(ERROR_CANCELLED) — returned by Show when the user cancels.</summary>
+    internal const int HResultErrorCancelled = unchecked((int)0x800704C7);
+
+    /// <summary>SIGDN_FILESYSPATH — request the full file-system path from IShellItem::GetDisplayName.</summary>
+    private const uint SIGDN_FILESYSPATH = 0x80058000;
+
+    /// <summary>FDAP_BOTTOM — add a custom place at the bottom of the places list.</summary>
+    internal const int FDAP_BOTTOM = 0;
+
+    private static readonly Guid CLSID_FileOpenDialog = new("DC1C5A9C-E88A-4DDE-A5A1-60F82A20AEF7");
+    private static readonly Guid CLSID_FileSaveDialog = new("C0B4E2F3-BA21-4773-8DBA-335EC946EB8B");
+    private static readonly Guid IID_IFileOpenDialog = new("D57C7288-D4AD-4768-BE02-9D969532D960");
+    private static readonly Guid IID_IFileSaveDialog = new("84BCCD23-5FDE-4CDB-AEA4-AF64B83D78AB");
+    private static readonly Guid IID_IShellItem = new("43826D1E-E718-42EE-BC55-A1E261C37BFE");
+
+    // IFileDialog / IFileOpenDialog vtable slots.
+    private const int VT_Show = 3;
+    private const int VT_SetFileTypes = 4;
+    private const int VT_SetFileTypeIndex = 5;
+    private const int VT_GetFileTypeIndex = 6;
+    private const int VT_SetOptions = 9;
+    private const int VT_SetDefaultFolder = 11;
+    private const int VT_SetFolder = 12;
+    private const int VT_SetFileName = 15;
+    private const int VT_SetTitle = 17;
+    private const int VT_GetResult = 20;
+    private const int VT_AddPlace = 21;
+    private const int VT_SetDefaultExtension = 22;
+    private const int VT_GetResults = 27; // IFileOpenDialog only.
+
+    // IShellItem vtable slots.
+    private const int VT_ShellItem_GetDisplayName = 5;
+
+    // IShellItemArray vtable slots.
+    private const int VT_ShellItemArray_GetCount = 7;
+    private const int VT_ShellItemArray_GetItemAt = 8;
+
+    #endregion
+
+    #region Activation
+
+    /// <summary>Creates an IFileOpenDialog; the returned pointer is owned and must be released.</summary>
+    internal static nint CreateOpenDialog()
     {
-        CheckHResult(shellItem.GetDisplayName(ShellItemDisplayName.FileSystemPath, out var displayNamePointer));
+        Guid clsid = CLSID_FileOpenDialog;
+        Guid iid = IID_IFileOpenDialog;
+        CheckHResult(CoCreateInstance(in clsid, 0, CLSCTX_INPROC_SERVER, in iid, out var dialog));
+        return dialog;
+    }
+
+    /// <summary>Creates an IFileSaveDialog; the returned pointer is owned and must be released.</summary>
+    internal static nint CreateSaveDialog()
+    {
+        Guid clsid = CLSID_FileSaveDialog;
+        Guid iid = IID_IFileSaveDialog;
+        CheckHResult(CoCreateInstance(in clsid, 0, CLSCTX_INPROC_SERVER, in iid, out var dialog));
+        return dialog;
+    }
+
+    /// <summary>Creates an IShellItem for a file-system path; the returned pointer is owned.</summary>
+    internal static nint CreateShellItem(string path)
+    {
+        Guid iid = IID_IShellItem;
+        CheckHResult(SHCreateItemFromParsingName(path, 0, in iid, out var item));
+        return item;
+    }
+
+    /// <summary>Resolves a custom place to an owned IShellItem, or 0 when it cannot be created.</summary>
+    internal static nint TryCreateCustomPlaceItem(FileDialogCustomPlace customPlace)
+    {
+        if (!string.IsNullOrWhiteSpace(customPlace.Path))
+        {
+            return CreateShellItem(customPlace.Path);
+        }
+
+        if (customPlace.KnownFolderGuid != Guid.Empty)
+        {
+            Guid knownFolder = customPlace.KnownFolderGuid;
+            if (SHGetKnownFolderPath(in knownFolder, 0, 0, out var knownFolderPathPointer) == 0 &&
+                knownFolderPathPointer != 0)
+            {
+                try
+                {
+                    var knownFolderPath = Marshal.PtrToStringUni(knownFolderPathPointer);
+                    return string.IsNullOrWhiteSpace(knownFolderPath) ? 0 : CreateShellItem(knownFolderPath);
+                }
+                finally
+                {
+                    Marshal.FreeCoTaskMem(knownFolderPathPointer);
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    #endregion
+
+    #region IFileDialog members
+
+    internal static void SetTitle(nint dialog, string? title) => CheckHResult(InvokeStr(dialog, VT_SetTitle, title));
+
+    internal static void SetDefaultExtension(nint dialog, string? ext) => CheckHResult(InvokeStr(dialog, VT_SetDefaultExtension, ext));
+
+    internal static void SetFileName(nint dialog, string? fileName) => CheckHResult(InvokeStr(dialog, VT_SetFileName, fileName));
+
+    internal static void SetFileTypes(nint dialog, uint count, nint filterSpecs) => CheckHResult(InvokeUIntNint(dialog, VT_SetFileTypes, count, filterSpecs));
+
+    internal static void SetFileTypeIndex(nint dialog, uint index) => CheckHResult(InvokeUInt(dialog, VT_SetFileTypeIndex, index));
+
+    internal static uint GetFileTypeIndex(nint dialog)
+    {
+        CheckHResult(InvokeOutUInt(dialog, VT_GetFileTypeIndex, out var index));
+        return index;
+    }
+
+    internal static void SetOptions(nint dialog, uint options) => CheckHResult(InvokeUInt(dialog, VT_SetOptions, options));
+
+    internal static void SetFolder(nint dialog, nint shellItem) => CheckHResult(InvokeNint(dialog, VT_SetFolder, shellItem));
+
+    internal static void SetDefaultFolder(nint dialog, nint shellItem) => CheckHResult(InvokeNint(dialog, VT_SetDefaultFolder, shellItem));
+
+    internal static void AddPlace(nint dialog, nint shellItem, int placement) => CheckHResult(InvokeNintInt(dialog, VT_AddPlace, shellItem, placement));
+
+    /// <summary>Shows the dialog. Returns the raw HRESULT (caller handles the cancel HRESULT).</summary>
+    internal static int Show(nint dialog, nint owner) => InvokeNint(dialog, VT_Show, owner);
+
+    /// <summary>IFileDialog::GetResult — returns an owned IShellItem for the single selection.</summary>
+    internal static nint GetResult(nint dialog)
+    {
+        CheckHResult(InvokeOutNint(dialog, VT_GetResult, out var item));
+        return item;
+    }
+
+    /// <summary>IFileOpenDialog::GetResults — returns an owned IShellItemArray of selections.</summary>
+    internal static nint GetResults(nint dialog)
+    {
+        CheckHResult(InvokeOutNint(dialog, VT_GetResults, out var array));
+        return array;
+    }
+
+    #endregion
+
+    #region IShellItem / IShellItemArray members
+
+    /// <summary>Reads the file-system path from an IShellItem.</summary>
+    internal static string GetItemPath(nint shellItem)
+    {
+        CheckHResult(InvokeUIntOutNint(shellItem, VT_ShellItem_GetDisplayName, SIGDN_FILESYSPATH, out var displayNamePointer));
         try
         {
             return Marshal.PtrToStringUni(displayNamePointer) ?? string.Empty;
@@ -893,40 +843,129 @@ public sealed class SaveFileDialog : FileDialog
         }
     }
 
-    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfComInteropCannotBeGuaranteed",
-        Justification = "SHCreateItemFromParsingName marshals an out parameter as UnmanagedType.Interface into IShellItem. The IShellItem COM interface is preserved by its [ComImport] declaration on the nested IShellItem type, and its vtable members (GetDisplayName, etc.) are exercised through the IFileSaveDialog calls in ShowWindowsDialog, so the trimmer cannot remove them. This native Shell interop is required to bridge a path string to the shell-item the IFileDialog APIs consume.")]
-    private static IShellItem CreateShellItemFromPath(string path)
+    /// <summary>Enumerates an IShellItemArray, returning the file-system path of each item.</summary>
+    internal static string[] GetItemArrayPaths(nint shellItemArray)
     {
-        SHCreateItemFromParsingName(path, IntPtr.Zero, typeof(IShellItem).GUID, out var shellItemObject);
-        return (IShellItem)shellItemObject;
-    }
-
-    private static IShellItem? TryCreateCustomPlaceShellItem(FileDialogCustomPlace customPlace)
-    {
-        if (!string.IsNullOrWhiteSpace(customPlace.Path))
+        CheckHResult(InvokeOutUInt(shellItemArray, VT_ShellItemArray_GetCount, out var count));
+        var paths = new List<string>((int)count);
+        for (uint i = 0; i < count; i++)
         {
-            return CreateShellItemFromPath(customPlace.Path);
-        }
-
-        if (customPlace.KnownFolderGuid != Guid.Empty &&
-            SHGetKnownFolderPath(customPlace.KnownFolderGuid, 0, IntPtr.Zero, out var knownFolderPathPointer) == 0 &&
-            knownFolderPathPointer != IntPtr.Zero)
-        {
+            CheckHResult(InvokeUIntOutNint(shellItemArray, VT_ShellItemArray_GetItemAt, i, out var shellItem));
             try
             {
-                var knownFolderPath = Marshal.PtrToStringUni(knownFolderPathPointer);
-                return string.IsNullOrWhiteSpace(knownFolderPath) ? null : CreateShellItemFromPath(knownFolderPath);
+                var path = GetItemPath(shellItem);
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    paths.Add(path);
+                }
             }
             finally
             {
-                Marshal.FreeCoTaskMem(knownFolderPathPointer);
+                Release(shellItem);
             }
         }
 
-        return null;
+        return paths.ToArray();
     }
 
-    private static void CheckHResult(int hr)
+    #endregion
+
+    #region Filter spec marshalling
+
+    // COMDLG_FILTERSPEC is { LPCWSTR pszName; LPCWSTR pszSpec; } — two pointers. Modelled with
+    // blittable nint fields so the array can be passed to SetFileTypes without runtime marshalling.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct COMDLG_FILTERSPEC
+    {
+        public nint pszName;
+        public nint pszSpec;
+    }
+
+    /// <summary>
+    /// Allocates a native COMDLG_FILTERSPEC array from the parsed filter list. The returned block
+    /// and every string it points at must be released with <see cref="FreeFilterSpecs"/>.
+    /// </summary>
+    internal static nint AllocFilterSpecs((string Name, string Pattern)[] filters, out int count)
+    {
+        count = filters.Length;
+        if (count == 0)
+        {
+            return 0;
+        }
+
+        var stride = sizeof(COMDLG_FILTERSPEC);
+        var block = Marshal.AllocCoTaskMem(count * stride);
+
+        // Zero every entry first so that if a string allocation below throws (OOM), FreeFilterSpecs
+        // walks only real-or-null pointers, never uninitialized memory.
+        for (var i = 0; i < count; i++)
+        {
+            var entry = (COMDLG_FILTERSPEC*)(block + i * stride);
+            entry->pszName = 0;
+            entry->pszSpec = 0;
+        }
+
+        try
+        {
+            for (var i = 0; i < count; i++)
+            {
+                var entry = (COMDLG_FILTERSPEC*)(block + i * stride);
+                entry->pszName = Marshal.StringToCoTaskMemUni(filters[i].Name ?? string.Empty);
+                entry->pszSpec = Marshal.StringToCoTaskMemUni(filters[i].Pattern ?? string.Empty);
+            }
+        }
+        catch
+        {
+            // On a mid-build throw the caller never receives the block pointer (its filterBlock
+            // stays 0), so its finally cannot free it — release the block and any strings written
+            // so far here before propagating.
+            FreeFilterSpecs(block, count);
+            throw;
+        }
+
+        return block;
+    }
+
+    /// <summary>Frees a COMDLG_FILTERSPEC array previously produced by <see cref="AllocFilterSpecs"/>.</summary>
+    internal static void FreeFilterSpecs(nint block, int count)
+    {
+        if (block == 0)
+        {
+            return;
+        }
+
+        var stride = sizeof(COMDLG_FILTERSPEC);
+        for (var i = 0; i < count; i++)
+        {
+            var entry = (COMDLG_FILTERSPEC*)(block + i * stride);
+            if (entry->pszName != 0)
+            {
+                Marshal.FreeCoTaskMem(entry->pszName);
+            }
+
+            if (entry->pszSpec != 0)
+            {
+                Marshal.FreeCoTaskMem(entry->pszSpec);
+            }
+        }
+
+        Marshal.FreeCoTaskMem(block);
+    }
+
+    #endregion
+
+    #region Vtable dispatch primitives
+
+    /// <summary>Releases a COM interface pointer via IUnknown::Release (slot 2).</summary>
+    internal static void Release(nint pUnk)
+    {
+        if (pUnk != 0)
+        {
+            ((delegate* unmanaged[Stdcall]<nint, uint>)Slot(pUnk, 2))(pUnk);
+        }
+    }
+
+    internal static void CheckHResult(int hr)
     {
         if (hr < 0)
         {
@@ -934,137 +973,77 @@ public sealed class SaveFileDialog : FileDialog
         }
     }
 
-    private static void ReleaseComObject(object? comObject)
+    private static nint Slot(nint pThis, int index) => ((nint*)*(nint*)pThis)[index];
+
+    private static int InvokeNint(nint pThis, int slot, nint arg)
+        => ((delegate* unmanaged[Stdcall]<nint, nint, int>)Slot(pThis, slot))(pThis, arg);
+
+    private static int InvokeUInt(nint pThis, int slot, uint arg)
+        => ((delegate* unmanaged[Stdcall]<nint, uint, int>)Slot(pThis, slot))(pThis, arg);
+
+    private static int InvokeUIntNint(nint pThis, int slot, uint arg0, nint arg1)
+        => ((delegate* unmanaged[Stdcall]<nint, uint, nint, int>)Slot(pThis, slot))(pThis, arg0, arg1);
+
+    private static int InvokeNintInt(nint pThis, int slot, nint arg0, int arg1)
+        => ((delegate* unmanaged[Stdcall]<nint, nint, int, int>)Slot(pThis, slot))(pThis, arg0, arg1);
+
+    private static int InvokeOutUInt(nint pThis, int slot, out uint result)
     {
-        // Marshal.ReleaseComObject is [SupportedOSPlatform("windows")]. The dialog COM
-        // path only runs under the OperatingSystem.IsWindows() guard at the ShowDialog
-        // entry, but the platform-compatibility analyzer recognizes OperatingSystem.IsWindows()
-        // (not RuntimeInformation.IsOSPlatform) — restate it here so the guard is honored.
-        if (OperatingSystem.IsWindows() && comObject != null && Marshal.IsComObject(comObject))
+        uint local = 0;
+        var hr = ((delegate* unmanaged[Stdcall]<nint, uint*, int>)Slot(pThis, slot))(pThis, &local);
+        result = local;
+        return hr;
+    }
+
+    private static int InvokeOutNint(nint pThis, int slot, out nint result)
+    {
+        nint local = 0;
+        var hr = ((delegate* unmanaged[Stdcall]<nint, nint*, int>)Slot(pThis, slot))(pThis, &local);
+        result = local;
+        return hr;
+    }
+
+    private static int InvokeUIntOutNint(nint pThis, int slot, uint arg0, out nint result)
+    {
+        nint local = 0;
+        var hr = ((delegate* unmanaged[Stdcall]<nint, uint, nint*, int>)Slot(pThis, slot))(pThis, arg0, &local);
+        result = local;
+        return hr;
+    }
+
+    private static int InvokeStr(nint pThis, int slot, string? value)
+    {
+        var pStr = Marshal.StringToCoTaskMemUni(value ?? string.Empty);
+        try
         {
-            Marshal.ReleaseComObject(comObject);
+            return InvokeNint(pThis, slot, pStr);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(pStr);
         }
     }
 
-    [ComImport]
-    [Guid("C0B4E2F3-BA21-4773-8DBA-335EC946EB8B")]
-    private class FileSaveDialogCom
-    {
-    }
+    #endregion
 
-    [ComImport]
-    [Guid("42F85136-DB7E-439C-85F1-E4075D135FC8")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IFileDialog
-    {
-        [PreserveSig] int Show(IntPtr parent);
-        [PreserveSig] int SetFileTypes(uint cFileTypes, [MarshalAs(UnmanagedType.LPArray)] COMDLG_FILTERSPEC[] rgFilterSpec);
-        [PreserveSig] int SetFileTypeIndex(uint iFileType);
-        [PreserveSig] int GetFileTypeIndex(out uint piFileType);
-        [PreserveSig] int Advise(IntPtr pfde, out uint pdwCookie);
-        [PreserveSig] int Unadvise(uint dwCookie);
-        [PreserveSig] int SetOptions(uint fos);
-        [PreserveSig] int GetOptions(out uint pfos);
-        [PreserveSig] int SetDefaultFolder(IShellItem psi);
-        [PreserveSig] int SetFolder(IShellItem psi);
-        [PreserveSig] int GetFolder(out IShellItem ppsi);
-        [PreserveSig] int GetCurrentSelection(out IShellItem ppsi);
-        [PreserveSig] int SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
-        [PreserveSig] int GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
-        [PreserveSig] int SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
-        [PreserveSig] int SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
-        [PreserveSig] int SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
-        [PreserveSig] int GetResult(out IShellItem ppsi);
-        [PreserveSig] int AddPlace(IShellItem psi, FileDialogAddPlace fdap);
-        [PreserveSig] int SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
-        [PreserveSig] int Close(int hr);
-        [PreserveSig] int SetClientGuid(in Guid guid);
-        [PreserveSig] int ClearClientData();
-        [PreserveSig] int SetFilter(IntPtr pFilter);
-    }
+    #region Native methods
 
-    [ComImport]
-    [Guid("84BCCD23-5FDE-4CDB-AEA4-AF64B83D78AB")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IFileSaveDialog : IFileDialog
-    {
-        [PreserveSig] new int Show(IntPtr parent);
-        [PreserveSig] new int SetFileTypes(uint cFileTypes, [MarshalAs(UnmanagedType.LPArray)] COMDLG_FILTERSPEC[] rgFilterSpec);
-        [PreserveSig] new int SetFileTypeIndex(uint iFileType);
-        [PreserveSig] new int GetFileTypeIndex(out uint piFileType);
-        [PreserveSig] new int Advise(IntPtr pfde, out uint pdwCookie);
-        [PreserveSig] new int Unadvise(uint dwCookie);
-        [PreserveSig] new int SetOptions(uint fos);
-        [PreserveSig] new int GetOptions(out uint pfos);
-        [PreserveSig] new int SetDefaultFolder(IShellItem psi);
-        [PreserveSig] new int SetFolder(IShellItem psi);
-        [PreserveSig] new int GetFolder(out IShellItem ppsi);
-        [PreserveSig] new int GetCurrentSelection(out IShellItem ppsi);
-        [PreserveSig] new int SetFileName([MarshalAs(UnmanagedType.LPWStr)] string pszName);
-        [PreserveSig] new int GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string pszName);
-        [PreserveSig] new int SetTitle([MarshalAs(UnmanagedType.LPWStr)] string pszTitle);
-        [PreserveSig] new int SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string pszText);
-        [PreserveSig] new int SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string pszLabel);
-        [PreserveSig] new int GetResult(out IShellItem ppsi);
-        [PreserveSig] new int AddPlace(IShellItem psi, FileDialogAddPlace fdap);
-        [PreserveSig] new int SetDefaultExtension([MarshalAs(UnmanagedType.LPWStr)] string pszDefaultExtension);
-        [PreserveSig] new int Close(int hr);
-        [PreserveSig] new int SetClientGuid(in Guid guid);
-        [PreserveSig] new int ClearClientData();
-        [PreserveSig] new int SetFilter(IntPtr pFilter);
-        [PreserveSig] int SetSaveAsItem(IShellItem psi);
-        [PreserveSig] int SetProperties(IntPtr pStore);
-        [PreserveSig] int SetCollectedProperties(IntPtr pList, [MarshalAs(UnmanagedType.Bool)] bool fAppendDefault);
-        [PreserveSig] int GetProperties(out IntPtr ppStore);
-        [PreserveSig] int ApplyProperties(IShellItem psi, IntPtr pStore, IntPtr hwnd, IntPtr pSink);
-    }
+    [DllImport("ole32.dll")]
+    private static extern int CoCreateInstance(in Guid rclsid, nint pUnkOuter, uint dwClsContext, in Guid riid, out nint ppv);
 
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct COMDLG_FILTERSPEC
-    {
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string pszName;
-
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string pszSpec;
-    }
-
-    private enum FileDialogAddPlace
-    {
-        Bottom = 0,
-        Top = 1
-    }
-
-    private enum ShellItemDisplayName : uint
-    {
-        FileSystemPath = 0x80058000
-    }
-
-    [ComImport]
-    [Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE")]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IShellItem
-    {
-        [PreserveSig] int BindToHandler(IntPtr pbc, in Guid bhid, in Guid riid, out IntPtr ppv);
-        [PreserveSig] int GetParent(out IShellItem ppsi);
-        [PreserveSig] int GetDisplayName(ShellItemDisplayName sigdnName, out IntPtr ppszName);
-        [PreserveSig] int GetAttributes(uint sfgaoMask, out uint psfgaoAttribs);
-        [PreserveSig] int Compare(IShellItem psi, uint hint, out int piOrder);
-    }
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
-    private static extern void SHCreateItemFromParsingName(
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+    private static extern int SHCreateItemFromParsingName(
         [MarshalAs(UnmanagedType.LPWStr)] string pszPath,
-        IntPtr pbc,
+        nint pbc,
         in Guid riid,
-        [MarshalAs(UnmanagedType.Interface)] out object ppv);
+        out nint ppv);
 
     [DllImport("shell32.dll")]
     private static extern int SHGetKnownFolderPath(
         in Guid rfid,
         uint dwFlags,
-        IntPtr hToken,
-        out IntPtr ppszPath);
+        nint hToken,
+        out nint ppszPath);
 
     #endregion
 }
@@ -1143,8 +1122,8 @@ public sealed class FolderBrowserDialog
 
     private bool? ShowWindowsDialog(IntPtr owner)
     {
-        // Use modern IFileDialog interface for Windows Vista+
-        // For simplicity, using shell browse for folder
+        // SHBrowseForFolder is a plain (non-COM) shell export, so this path is already
+        // NativeAOT-safe: blittable BROWSEINFO + PIDL handling, no [ComImport] activation.
         var bi = new BROWSEINFO();
         bi.hwndOwner = owner;
         bi.lpszTitle = Description ?? Title;

@@ -9,7 +9,7 @@ namespace Jalium.UI;
 /// <summary>
 /// Base class for UI elements that participate in layout, input, and rendering.
 /// </summary>
-public abstract partial class UIElement : Visual, IInputElement
+public abstract partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatable
 {
     #region Static Constructor — Class Handler Registration
 
@@ -1035,6 +1035,24 @@ public abstract partial class UIElement : Visual, IInputElement
     // every Arrange — see InvalidateScreenOffsetCache for the full rationale.
     private long _screenOffsetEpoch = -1;
     private static long s_screenOffsetEpoch;
+    // ── RC4-b/RC4-c 脏区管线字段 ──
+    // Arrange 至少完成过一次（位移钩子的前置短路必须放过首次 arrange）。
+    private bool _hasArrangedOnce;
+    // 上一次 Arrange 结束时的 DesiredSize。与 _previousFinalRect 一起证明 alignment
+    // 的全部输入未变（槽、期望尺寸都没变 ⇒ 槽内位置也不变；alignment 属性变化自身
+    // 走 AffectsArrange 失效注册），让位移钩子跳过静止元素的 O(depth) 走链。
+    private Size _previousDesiredSize;
+    // Effect DP 的普通字段镜像，供 GetDirtyRenderBounds 使用：该方法会被后台线程
+    // （窗口 AddDirtyElement 注册路径）调用，直接读 DependencyProperty 会与 UI 线程
+    // 的值存储 Dictionary 写入竞争；字段读的撕裂等级与这些调用方本就在读的其他
+    // 布局字段相同（良性）。由静态 OnEffectChanged 回调维护。
+    private IEffect? _effectForDirtyBounds;
+    // 最近一次脏区计算为本元素提交的未 clip 屏幕 AABB（Window.ComputeDirtyRegions
+    // 在 present 前写，AddDirtyElement 注册时读作 PrevPaintedBounds）。用于擦除
+    // "先改值后失效 + 长空闲后不连续跳变 + 新 AABB 不含旧 AABB"场景下上次画过的
+    // 像素。UI 线程写；后台注册线程可能读到撕裂值——影响限于一帧的过/欠擦除矩形，
+    // 与既有跨线程 bounds 读取同级。
+    internal Rect LastDirtyBounds;
 
     /// <summary>
     /// Gets the desired size computed during the measure pass.
@@ -1204,7 +1222,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </remarks>
     private void InvalidateLayoutVisual()
     {
-        var windowHost = GetWindowHost();
+        var windowHost = GetWindowHostOrNull();
         if (windowHost == null) return;
 
         SetRenderDirty();
@@ -1220,7 +1238,7 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         SetRenderDirty();
 
-        var windowHost = GetWindowHost();
+        var windowHost = GetWindowHostOrNull();
         if (windowHost != null)
         {
             windowHost.AddDirtyElement(this);
@@ -1253,7 +1271,7 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         MarkSubtreeDirtyForComposition();
 
-        var windowHost = GetWindowHost();
+        var windowHost = GetWindowHostOrNull();
         if (windowHost != null)
         {
             windowHost.AddDirtyElement(this);
@@ -1286,7 +1304,7 @@ public abstract partial class UIElement : Visual, IInputElement
 
         SetRenderDirty();
 
-        var windowHost = GetWindowHost();
+        var windowHost = GetWindowHostOrNull();
         if (windowHost != null)
         {
             windowHost.AddDirtyElement(this, localDirtyRect);
@@ -1298,9 +1316,10 @@ public abstract partial class UIElement : Visual, IInputElement
     }
 
     /// <summary>
-    /// Gets the cached IWindowHost by walking up the tree (lazy, cached).
+    /// Gets the cached IWindowHost by walking up the tree (lazy, cached), or
+    /// null when the element is not hosted by a window.
     /// </summary>
-    private IWindowHost? GetWindowHost()
+    internal IWindowHost? GetWindowHostOrNull()
     {
         if (_cachedWindowHost != null)
             return _cachedWindowHost;
@@ -1458,6 +1477,52 @@ public abstract partial class UIElement : Visual, IInputElement
     }
 
     /// <summary>
+    /// Screen-space AABB of everything this element can ink this frame:
+    /// <see cref="GetRenderBounds"/> expanded by the element <see cref="Effect"/>'s
+    /// <see cref="IEffect.EffectPadding"/> when one is active. The dirty-region pipeline
+    /// must track THIS rect — DropShadow/OuterGlow/Blur paint outside <see cref="RenderSize"/>,
+    /// and erasing/redrawing only the layout box leaves effect tails behind a moving element.
+    /// </summary>
+    /// <remarks>
+    /// 扩边公式与渲染路径的裁剪判定（Visual.ShouldRenderChild）逐字一致，保证
+    /// "会画到哪"与"标脏到哪"同一口径。经 <c>_effectForDirtyBounds</c> 字段镜像读取
+    /// Effect（而非 DependencyProperty），后台注册线程（AddDirtyElement）调用安全——
+    /// 与 <see cref="GetRenderBounds"/> 的既有跨线程读取同级。
+    /// </remarks>
+    internal Rect GetDirtyRenderBounds()
+    {
+        double extra = GetExtraDirtyPadding();
+        if (_effectForDirtyBounds is { HasEffect: true } effect)
+        {
+            var padding = effect.EffectPadding;
+            var size = _renderSize;
+            return MapLocalRectToScreen(new Rect(
+                -padding.Left - extra,
+                -padding.Top - extra,
+                size.Width + padding.Left + padding.Right + extra * 2,
+                size.Height + padding.Top + padding.Bottom + extra * 2));
+        }
+        if (extra > 0)
+        {
+            var size = _renderSize;
+            return MapLocalRectToScreen(new Rect(
+                -extra, -extra, size.Width + extra * 2, size.Height + extra * 2));
+        }
+        return GetRenderBounds();
+    }
+
+    /// <summary>
+    /// Extra symmetric dirty padding (DIPs) this element inks beyond
+    /// <see cref="RenderSize"/> through channels other than <see cref="Effect"/> —
+    /// e.g. Border.LiquidGlass draws a 32 px outer-shadow ring in its native quad.
+    /// The dirty pipeline must track everything the element can ink, or a moving
+    /// element leaves that ring behind. Overrides must be thread-safe reads
+    /// (mirror fields, not DP getters): callers include background-thread dirty
+    /// registration, same contract as <c>_effectForDirtyBounds</c>.
+    /// </summary>
+    internal virtual double GetExtraDirtyPadding() => 0.0;
+
+    /// <summary>
     /// Maps a rect expressed in THIS element's local content space into screen space through
     /// the full local→screen render matrix (ancestor + own <see cref="RenderTransform"/>).
     /// When no transform is on the chain this reduces to a pure translation by the element's
@@ -1539,6 +1604,64 @@ public abstract partial class UIElement : Visual, IInputElement
     }
 
     /// <summary>
+    /// Builds the affine matrix mapping THIS element's local space into the local space of
+    /// <paramref name="ancestor"/> (or, when <paramref name="ancestor"/> is <c>null</c>, the window
+    /// root), composing every level's <see cref="RenderTransform"/> about its scaled
+    /// <c>RenderTransformOrigin</c> in the SAME row-vector, self-first order as
+    /// <see cref="GetRenderMatrix"/>.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="GetRenderMatrix"/> this walks only up to (and excluding)
+    /// <paramref name="ancestor"/> — falling back to the <see cref="IWindowHost"/> boundary if that
+    /// ancestor is never reached — and it composes <see cref="VisualBounds"/> translation WITHOUT
+    /// <c>RenderOffset</c>. TransformToAncestor is a layout-position query (WPF semantics), and
+    /// excluding the animation-only <c>RenderOffset</c> keeps every non-transform chain
+    /// byte-identical to the historical VisualBounds-sum behavior, so existing callers
+    /// (DockTabPanel reorder, MiniMap scroll mapping) do not shift, while a scale/rotate on the
+    /// chain (e.g. a <c>Viewbox</c>) is now composed correctly.
+    /// </remarks>
+    internal Matrix GetRenderMatrixTo(Visual? ancestor)
+    {
+        var acc = Matrix.Identity;
+        Visual? current = this;
+        while (current != null && current != ancestor && current is not IWindowHost)
+        {
+            if (current is UIElement ui)
+            {
+                var vb = ui.VisualBounds;
+                double offX = vb.X;
+                double offY = vb.Y;
+
+                Matrix level;
+                var rt = ui.RenderTransform;
+                if (rt != null)
+                {
+                    var size = ui._renderSize;
+                    var origin = ui.RenderTransformOrigin;
+                    double ox = origin.X * size.Width;
+                    double oy = origin.Y * size.Height;
+
+                    var r = rt.Value;
+                    var pre = new Matrix(1, 0, 0, 1, -ox, -oy);
+                    var post = new Matrix(1, 0, 0, 1, ox, oy);
+                    var aboutOrigin = Matrix.Multiply(Matrix.Multiply(pre, r), post);
+                    level = Matrix.Multiply(aboutOrigin, new Matrix(1, 0, 0, 1, offX, offY));
+                }
+                else
+                {
+                    level = new Matrix(1, 0, 0, 1, offX, offY);
+                }
+
+                acc = Matrix.Multiply(acc, level);
+            }
+
+            current = current.VisualParent;
+        }
+
+        return acc;
+    }
+
+    /// <summary>
     /// True if this element or any ancestor up to the window carries a non-null
     /// <see cref="RenderTransform"/>. Cheap pre-check that lets <see cref="GetRenderBounds"/>
     /// and <see cref="MapLocalRectToScreen"/> short-circuit to the transform-free fast path.
@@ -1553,6 +1676,75 @@ public abstract partial class UIElement : Visual, IInputElement
             current = current.VisualParent;
         }
         return false;
+    }
+
+    /// <summary>
+    /// Walks the visual-parent chain from this element's parent up to (but excluding) the
+    /// <see cref="IWindowHost"/>, intersecting each ancestor's <see cref="GetLayoutClip"/>
+    /// projected into screen space. Returns <c>false</c> — meaning the caller must NOT cull —
+    /// whenever the chain cannot be reasoned about geometrically:
+    /// <list type="bullet">
+    /// <item>no clipping ancestor exists (the overwhelmingly common non-scrolling case), or</item>
+    /// <item>any ancestor carries a <see cref="RenderTransform"/> or a non-zero
+    /// <see cref="RenderOffset"/>: its clip's screen rect cannot be located through the
+    /// transform-unaware <see cref="GetScreenBounds"/> origin, so we conservatively bail on the
+    /// <b>entire</b> chain rather than "skip and continue" (continuing would place later clips
+    /// with a wrong origin and risk under-erasing).</item>
+    /// </list>
+    /// A degenerate zero-area ancestor clip also returns <c>false</c> so we never rely on the
+    /// <c>Empty.Intersect</c> coincidence to cull an element whose ancestor happens to have a
+    /// zero-size axis this frame.
+    /// </summary>
+    /// <remarks>
+    /// CONTRACT (relied on by the RC4-b displacement hook, do not break): the caller intersects
+    /// the returned clip — computed at the <i>new-frame</i> ancestor positions — against BOTH the
+    /// old and the new element AABB. This is sound only because when a clipping ancestor's own
+    /// screen position/size changes it necessarily re-arranges and hits its OWN RC4-b path, whose
+    /// old AABB (captured before its epoch bump = its old clip region) is submitted via
+    /// <c>AddDirtyRect</c> and repaints the stale pixels of any descendant this method wrongly
+    /// culled. Do NOT cache the result across frames: <see cref="Clip"/>/<see cref="ClipToBounds"/>
+    /// changes only <c>InvalidateVisual</c> and never bump <c>s_screenOffsetEpoch</c>, so a cached
+    /// intersection would go stale and under-erase.
+    /// </remarks>
+    private bool TryGetAncestorClipScreenBounds(out Rect clipBounds)
+    {
+        clipBounds = default;
+        bool found = false;
+        // Start at the parent: an element's own layout clip never clips its own bounds.
+        Visual? current = VisualParent;
+        while (current != null && current is not IWindowHost)
+        {
+            if (current is UIElement ui)
+            {
+                // A transform/offset ancestor breaks the transform-unaware GetScreenBounds origin
+                // used below to place its clip — bail on the whole chain (see summary). Because we
+                // bail on the FIRST such ancestor, any successful (found=true) result guarantees
+                // the entire self→ancestor chain is offset/transform-free, so every GetScreenBounds
+                // below is a pure layout origin and the intersection is exact.
+                if (ui.RenderTransform != null || ui.RenderOffset.X != 0 || ui.RenderOffset.Y != 0)
+                    return false;
+
+                var clip = ui.GetLayoutClip();
+                if (clip != null)
+                {
+                    // clip.Bounds is the ancestor-local AABB. Rounded/inset shapes collapse to their
+                    // outer box here: larger-and-safe for round corners; identical to the render clip
+                    // for Border's inset since RenderDirect pushes the same GetLayoutClip geometry.
+                    var b = clip.Bounds;
+                    var o = ui.GetScreenBounds(); // ancestor screen origin (chain proven clean above)
+                    var screenClip = new Rect(o.X + b.X, o.Y + b.Y, b.Width, b.Height);
+                    clipBounds = found ? clipBounds.Intersect(screenClip) : screenClip;
+                    found = true;
+                }
+            }
+            current = current.VisualParent;
+        }
+
+        // Degenerate zero-area ancestor clip: refuse to cull rather than lean on Empty.Intersect.
+        if (found && clipBounds.IsEmpty)
+            return false;
+
+        return found; // false ⇒ caller does not cull
     }
 
     /// <summary>
@@ -1630,6 +1822,22 @@ public abstract partial class UIElement : Visual, IInputElement
         if (_isArrangeValid && _previousFinalRect == finalRect)
             return;
 
+        // RC4-b 位移钩子前置短路：槽与期望尺寸都没变 ⇒ ArrangeCore 的 alignment 输入
+        // 全部相同 ⇒ 槽内位置也不变，无位移可注册（alignment/margin 等属性变化自身走
+        // AffectsArrange 失效 → InvalidateArrange 已注册，不依赖本钩子）。这让稳态布局
+        // 与滚动中未动的行完全跳过下面两次 O(depth) 屏幕 bounds 走链。
+        bool trackDisplacement =
+            !_hasArrangedOnce || finalRect != _previousFinalRect || _desiredSize != _previousDesiredSize;
+        // 旧 bounds 必须在 InvalidateScreenOffsetCache 抬升全局 epoch 之前捕获（缓存
+        // 命中时 O(1)）。此刻整条祖先链 _visualBounds 均为旧值——FrameworkElement.
+        // ArrangeCore 先递归 ArrangeOverride、最后才写自身 _visualBounds——所以最顶层
+        // 移动元素读到的是真实旧屏幕位置；嵌套移动的后代读到混合坐标幻影矩形，仅构成
+        // 无害过失效（真实旧/新位置由该顶层元素的 old∪new 覆盖）。首次 arrange 没有
+        // 旧位置可擦，恒用 Empty——带 Effect 的元素在 _renderSize=(0,0) 时
+        // GetDirtyRenderBounds 会返回非空的 padding 矩形，且此刻祖先链未布局、位置
+        // 错位，注册它只会多擦一块无关区域。
+        Rect oldDirtyBounds = trackDisplacement && _hasArrangedOnce ? GetDirtyRenderBounds() : Rect.Empty;
+
         var oldRenderSize = _renderSize;
         _previousFinalRect = finalRect;
         InvalidateScreenOffsetCache();
@@ -1642,6 +1850,70 @@ public abstract partial class UIElement : Visual, IInputElement
         {
             double us = (Stopwatch.GetTimestamp() - startTicks) * 1_000_000.0 / Stopwatch.Frequency;
             LayoutDiagnostics.NotifyArrange(this, us);
+        }
+
+        _hasArrangedOnce = true;
+        _previousDesiredSize = _desiredSize;
+
+        if (trackDisplacement)
+        {
+            // RC4-b：父级驱动的位移（reflow 推动的兄弟、Canvas 偏移、邻居尺寸变化引发
+            // 的 alignment 平移）只会走到这里——元素自身没有任何失效调用，窗口脏集里
+            // 没有它：旧像素永不擦除、新位置永不 present（此前被"每帧 promote 全绘"
+            // 回路掩盖）。此处注册旧 AABB + 元素自身。纯位移刻意不 SetRenderDirty：
+            // 父级 child-render 循环每帧活读子偏移，retained 录制仍然有效（虚拟化滚动
+            // 每帧行位移若强制重录，正是 retained 缓存要避免的形态）。也刻意不
+            // InvalidateWindow：帧内 UpdateLayout 的注册被同帧 ComputeDirtyRegions
+            // 消费（脏集 swap 在 UpdateLayout 之后）；帧外 layout 必然由某次
+            // InvalidateMeasure/InvalidateArrange 触发，调度已由 InvalidateLayoutVisual
+            // 完成。
+            // 祖先 clip 剔除（收敛虚拟化滚动脏区）：旧、新 AABB 若都完全落在祖先裁剪链
+            // （ScrollViewer 视口）之外，本元素这帧会被 Visual.ShouldRenderChild 剔除、画不
+            // 出，其旧像素上帧也在 clip 外无需擦除 ⇒ 完全跳过全部四条脏区通道。目标：让脏区
+            // bounding box 从 ≈3×视口（视口 + 上下各一 cache band）收敛到 ≈视口 + O(边缘行
+            // 高)，消除"中窗列表被 promote 50% 阈值误判转全窗重绘"。
+            //   · 三态契约：唯一 cull 条件是旧且新都严格在 clip 外；跨界行（滚入/滚出视口边
+            //     缘，旧或新与 clip 有交）仍走 full 注册，其溢出 clip ≤1 行高的部分进 aggregator
+            //     （不足以触发 promote、渲染时被剔除），刻意接受。
+            //   · 保守退化：祖先带 RenderTransform/RenderOffset → TryGetAncestorClipScreenBounds
+            //     放弃整链返回 false → 回退现状 full 注册，永不欠擦除。
+            //   · 隐式耦合契约：clip 用 new 时刻走链、拿去交【旧】AABB，仅当 clip 祖先本帧不动
+            //     才严格同帧同坐标系。clip 祖先若移动/resize，必经自身 InvalidateArrange→本
+            //     RC4-b 分支，其旧 AABB（自身 epoch bump 前捕获=旧 clip 区）经 AddDirtyRect 提交，
+            //     覆盖任何被误 cull 后代的旧像素——由回归测试 SvTranslateAndRowDisplace 锁死。
+            //   · 刻意不做：不裁跨界行的新位置通道（post-layout/PreLayoutBounds 在消费侧现算，
+            //     要裁需改 ComputeDirtyRegions、牵动所有 dirty 元素口径与祖先 RenderOffset 补偿）；
+            //     不缓存 clip 交集（Clip/ClipToBounds 变化不 bump 屏幕偏移 epoch，缓存必陈旧）。
+            var newDirtyBounds = GetDirtyRenderBounds();
+            if (newDirtyBounds != oldDirtyBounds)
+            {
+                var windowHost = GetWindowHostOrNull();
+                if (windowHost != null)
+                {
+                    // new 先于 old：视口内行（多数）new∩clip≠∅ 即在第一个 Intersect 短路，
+                    // 省掉一次注定被推翻的 old 交集。TryGetAncestorClipScreenBounds 返回 false
+                    // （无 clip 祖先 / 已退化）时 && 首项即假，走原样 full 注册。
+                    bool cull = TryGetAncestorClipScreenBounds(out var clip)
+                                && newDirtyBounds.Intersect(clip).IsEmpty
+                                && oldDirtyBounds.Intersect(clip).IsEmpty;
+                    if (!cull)
+                    {
+                        if (!oldDirtyBounds.IsEmpty)
+                            windowHost.AddDirtyRect(oldDirtyBounds);
+                        windowHost.AddDirtyElement(this);
+                    }
+                }
+            }
+        }
+        else if (_renderSize != oldRenderSize)
+        {
+            // 前置短路跳过了捕获（槽、期望尺寸未变）但 ArrangeOverride 仍返回了不同
+            // 尺寸（内容驱动、DesiredSize 被 clamp 的面板形态）。旧 AABB 没捕到——
+            // 注册元素本身即可：条目的 PrevPaintedBounds（LastDirtyBounds 通道）会把
+            // 上次真实画过的位置一并提交擦除。
+            // （对称性说明：此分支是内容驱动 resize、非滚动 band 来源——滚动中静止行既
+            // 不改 finalRect 也不 resize——故刻意不参与上面的祖先 clip 剔除。）
+            GetWindowHostOrNull()?.AddDirtyElement(this);
         }
 
         // If render size changed, mark this element as needing re-render
@@ -1906,6 +2178,9 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         if (d is UIElement element)
         {
+            // 先同步字段镜像再进虚方法：override 不调 base 也不能让
+            // GetDirtyRenderBounds 的扩边判断落后于真实 Effect。
+            element._effectForDirtyBounds = e.NewValue as IEffect;
             element.OnEffectChanged(e.OldValue, e.NewValue);
         }
     }
@@ -2059,7 +2334,7 @@ public abstract partial class UIElement : Visual, IInputElement
         _mouseCaptured = this;
 
         // Tell Win32 to keep sending mouse messages even when cursor is outside the window
-        GetWindowHost()?.SetNativeCapture();
+        GetWindowHostOrNull()?.SetNativeCapture();
 
         // Notify the previously captured element
         if (previousCaptured != null && previousCaptured != this)
@@ -2079,7 +2354,7 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         if (_mouseCaptured == this)
         {
-            var windowHost = GetWindowHost();
+            var windowHost = GetWindowHostOrNull();
             _mouseCaptured = null;
             windowHost?.ReleaseNativeCapture();
             RaiseMouseCaptureChanged(false);
@@ -2094,7 +2369,7 @@ public abstract partial class UIElement : Visual, IInputElement
         var captured = _mouseCaptured;
         if (captured != null)
         {
-            var windowHost = captured.GetWindowHost();
+            var windowHost = captured.GetWindowHostOrNull();
             _mouseCaptured = null;
             windowHost?.ReleaseNativeCapture();
             captured.RaiseMouseCaptureChanged(false);
@@ -3757,12 +4032,20 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Tracks active animations on this element.
     /// </summary>
     private Dictionary<DependencyProperty, ElementAnimation>? _activeAnimations;
-    private bool _subscribedToRendering;
+
+    /// <summary>
+    /// Reusable registration handle with the central <see cref="Animation.AnimationManager"/>.
+    /// Created once on first animation and reused across register/unregister
+    /// cycles. Weak so the manager never becomes the GC root that keeps a
+    /// forgotten element's Forever animation alive.
+    /// </summary>
+    private Animation.AnimationTickSubscription? _animationTickSubscription;
 
     private enum ElementAnimationKind
     {
         Explicit,
-        AutomaticTransition
+        AutomaticTransition,
+        Storyboard
     }
 
     private sealed class ElementAnimation
@@ -3773,18 +4056,41 @@ public abstract partial class UIElement : Visual, IInputElement
         public ElementAnimationKind Kind { get; }
         public bool StartPending { get; private set; }
 
+        /// <summary>
+        /// Snapshot of the property's effective value taken at the instant this
+        /// animation replaced a previous one (HandoffBehavior.SnapshotAndReplace):
+        /// used as the origin value so a To-only animation takes over smoothly
+        /// from the current visual value instead of jumping back to base.
+        /// </summary>
+        public object? HandoffSnapshot { get; }
+        public bool HasHandoffSnapshot { get; }
+
+        /// <summary>
+        /// For Storyboard-kind entries: the storyboard that must be told when
+        /// this clock is terminated from the element side and will therefore
+        /// never complete naturally (settlement bookkeeping, prevents the
+        /// storyboard from waiting forever in its static active set).
+        /// </summary>
+        public IStoryboardClockOwner? StoryboardOwner { get; }
+
         public ElementAnimation(
             IAnimationTimeline animation,
             IAnimationClock clock,
             object? baseValue,
             ElementAnimationKind kind,
-            bool startPending)
+            bool startPending,
+            object? handoffSnapshot = null,
+            bool hasHandoffSnapshot = false,
+            IStoryboardClockOwner? storyboardOwner = null)
         {
             Animation = animation;
             Clock = clock;
             BaseValue = baseValue;
             Kind = kind;
             StartPending = startPending;
+            HandoffSnapshot = handoffSnapshot;
+            HasHandoffSnapshot = hasHandoffSnapshot;
+            StoryboardOwner = storyboardOwner;
         }
 
         public bool ConsumePendingStart()
@@ -3812,7 +4118,10 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     /// <param name="dp">The dependency property to animate.</param>
     /// <param name="animation">The animation timeline, or null to stop any existing animation.</param>
-    /// <param name="handoffBehavior">How to handle existing animations (currently only Replace is supported).</param>
+    /// <param name="handoffBehavior">How to handle existing animations. With
+    /// <see cref="HandoffBehavior.SnapshotAndReplace"/> the currently displayed value is
+    /// captured at the replacement instant and used as the new animation's origin;
+    /// <see cref="HandoffBehavior.Compose"/> currently degrades to the same behavior.</param>
     public void BeginAnimation(DependencyProperty dp, IAnimationTimeline? animation, HandoffBehavior handoffBehavior)
     {
         ArgumentNullException.ThrowIfNull(dp);
@@ -3834,18 +4143,40 @@ public abstract partial class UIElement : Visual, IInputElement
         bool allowAutomaticToReplaceExplicit,
         object? initialAnimatedValue = null,
         bool useInitialAnimatedValue = false,
-        bool deferClockBeginUntilRendering = false)
+        bool deferClockBeginUntilRendering = false,
+        IAnimationClock? existingClock = null,
+        IStoryboardClockOwner? storyboardOwner = null)
     {
         _activeAnimations ??= new Dictionary<DependencyProperty, ElementAnimation>();
+
+        object? handoffSnapshot = null;
+        var hasHandoffSnapshot = false;
 
         // Stop any existing animation on this property
         if (_activeAnimations.TryGetValue(dp, out var existing))
         {
-            if (existing.Kind == ElementAnimationKind.Explicit &&
+            // An automatic transition may never replace an explicit or
+            // storyboard-driven animation: those own the property until they
+            // finish or are explicitly stopped.
+            if (existing.Kind != ElementAnimationKind.AutomaticTransition &&
                 kind == ElementAnimationKind.AutomaticTransition &&
                 !allowAutomaticToReplaceExplicit)
             {
                 return false;
+            }
+
+            // Compose degrades to SnapshotAndReplace (documented on BeginAnimation):
+            // both take the snapshot, otherwise a Compose caller would restart the
+            // new animation from the base value — a visible jump when the old
+            // animation was mid-flight with FillBehavior.Stop.
+            if (animation != null &&
+                (handoffBehavior == HandoffBehavior.SnapshotAndReplace ||
+                 handoffBehavior == HandoffBehavior.Compose))
+            {
+                // Capture the currently displayed value BEFORE the old animation
+                // is removed — the animated layer is still in effect here.
+                handoffSnapshot = GetValue(dp);
+                hasHandoffSnapshot = true;
             }
 
             RemoveAnimationCore(dp, existing, clearAnimatedValueOnReplace);
@@ -3853,15 +4184,23 @@ public abstract partial class UIElement : Visual, IInputElement
 
         if (animation == null)
         {
-            UnsubscribeFromRenderingIfNeeded();
+            UnregisterFromAnimationManagerIfIdle();
             return true;
         }
 
         // Store base value and create clock
         var baseValue = GetAnimationBaseValue(dp);
-        var clock = animation.CreateClock();
+        var clock = existingClock ?? animation.CreateClock();
 
-        _activeAnimations[dp] = new ElementAnimation(animation, clock, baseValue, kind, deferClockBeginUntilRendering);
+        _activeAnimations[dp] = new ElementAnimation(
+            animation,
+            clock,
+            baseValue,
+            kind,
+            deferClockBeginUntilRendering,
+            handoffSnapshot,
+            hasHandoffSnapshot,
+            storyboardOwner);
 
         // Subscribe to completion
         clock.Completed += OnAnimationClockCompleted;
@@ -3872,8 +4211,8 @@ public abstract partial class UIElement : Visual, IInputElement
             clock.Begin();
         }
 
-        // Start the animation timer
-        SubscribeToRenderingIfNeeded();
+        // Start receiving animation frames
+        RegisterWithAnimationManager();
 
         // Set initial animated value
         if (useInitialAnimatedValue)
@@ -3886,6 +4225,59 @@ public abstract partial class UIElement : Visual, IInputElement
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Begins a storyboard-driven animation on this element with a clock created
+    /// and owned by the storyboard. Tick, value writes and FillBehavior cleanup
+    /// run through the element's unified animation path; the storyboard is
+    /// notified via <see cref="IStoryboardClockOwner.NotifyClockTerminated"/>
+    /// when the entry is terminated from the element side.
+    /// </summary>
+    internal bool BeginStoryboardAnimation(
+        DependencyProperty dp,
+        IAnimationTimeline animation,
+        IAnimationClock clock,
+        IStoryboardClockOwner owner)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        ArgumentNullException.ThrowIfNull(animation);
+        ArgumentNullException.ThrowIfNull(clock);
+
+        // Two children of the SAME storyboard targeting one (target, property):
+        // the replacement below would settle the first clock as "terminated" and
+        // permanently suppress the storyboard's Completed event. Pre-settle it as
+        // superseded (counts like natural completion); the terminated notification
+        // fired by RemoveAnimationCore is then an idempotent no-op.
+        if (TryGetActiveAnimation(dp, out var existing) &&
+            ReferenceEquals(existing.StoryboardOwner, owner))
+        {
+            owner.NotifyClockSuperseded(existing.Clock);
+        }
+
+        return BeginAnimationCore(
+            dp,
+            animation,
+            HandoffBehavior.SnapshotAndReplace,
+            ElementAnimationKind.Storyboard,
+            clearAnimatedValueOnReplace: true,
+            allowAutomaticToReplaceExplicit: true,
+            existingClock: clock,
+            storyboardOwner: owner);
+    }
+
+    /// <summary>
+    /// Stops a storyboard-driven animation, but only while the property is still
+    /// owned by that exact clock — an animation that has since replaced it is
+    /// left alone (the replacement already settled the old clock).
+    /// </summary>
+    internal void StopStoryboardAnimation(DependencyProperty dp, IAnimationClock clock)
+    {
+        if (!TryGetActiveAnimation(dp, out var existing) || !ReferenceEquals(existing.Clock, clock))
+            return;
+
+        RemoveAnimationCore(dp, existing, clearAnimatedValue: true);
+        UnregisterFromAnimationManagerIfIdle();
     }
 
     /// <summary>
@@ -3916,7 +4308,7 @@ public abstract partial class UIElement : Visual, IInputElement
             return;
 
         RemoveAnimationCore(dp, existing, clearAnimatedValue);
-        UnsubscribeFromRenderingIfNeeded();
+        UnregisterFromAnimationManagerIfIdle();
     }
 
     private void RemoveAnimationCore(DependencyProperty dp, ElementAnimation animation, bool clearAnimatedValue)
@@ -3929,6 +4321,13 @@ public abstract partial class UIElement : Visual, IInputElement
         {
             ClearAnimatedValue(dp);
         }
+
+        // A storyboard-driven clock stopped from the element side never fires
+        // Completed: settle its bookkeeping so the storyboard can finish and
+        // release its static root. Idempotent for a clock that already settled
+        // naturally. Notified last so the storyboard observes the element's
+        // final state.
+        animation.StoryboardOwner?.NotifyClockTerminated(animation.Clock);
     }
 
     private void OnAnimationClockCompleted(object? sender, EventArgs e)
@@ -3967,73 +4366,125 @@ public abstract partial class UIElement : Visual, IInputElement
         // For HoldEnd, keep the animation record but mark as completed
         // The final value remains via the animated value layer
 
-        UnsubscribeFromRenderingIfNeeded();
+        UnregisterFromAnimationManagerIfIdle();
         InvalidateVisual();
     }
 
-    private void SubscribeToRenderingIfNeeded()
+    private void RegisterWithAnimationManager()
     {
-        if (!_subscribedToRendering && _activeAnimations?.Count > 0)
-        {
-            _subscribedToRendering = true;
-            CompositionTarget.Rendering += OnRenderingTick;
-            CompositionTarget.Subscribe();
-        }
-    }
-
-    private void UnsubscribeFromRenderingIfNeeded()
-    {
-        if (_subscribedToRendering &&
-            (_activeAnimations == null || _activeAnimations.Count == 0 ||
-             !_activeAnimations.Values.Any(a => a.Clock.IsRunning)))
-        {
-            _subscribedToRendering = false;
-            CompositionTarget.Rendering -= OnRenderingTick;
-            CompositionTarget.Unsubscribe();
-        }
+        _animationTickSubscription ??= new Animation.AnimationTickSubscription(this, weak: true);
+        Animation.AnimationManager.Register(_animationTickSubscription);
     }
 
     /// <summary>
-    /// Called by CompositionTarget.Rendering on the UI thread, once per frame.
-    /// Processes all active animations for this element.
+    /// Re-registers this element with the animation manager after one of its
+    /// clocks was revived externally (Storyboard.Resume/Seek): an all-paused or
+    /// all-completed element returns false from OnAnimationFrame and drops off
+    /// the manager, so a revival needs an explicit new frame source.
     /// </summary>
-    private void OnRenderingTick(object? sender, EventArgs e)
+    internal void EnsureAnimationFrameSource()
     {
         if (_activeAnimations == null || _activeAnimations.Count == 0)
             return;
+
+        RegisterWithAnimationManager();
+    }
+
+    /// <summary>
+    /// Unregisters from the animation manager when no entry can still make
+    /// progress (paused entries do not count: an all-paused element drops off
+    /// the manager and is re-registered on Resume/Seek).
+    /// </summary>
+    private void UnregisterFromAnimationManagerIfIdle()
+    {
+        if (_animationTickSubscription == null)
+            return;
+
+        if (_activeAnimations != null && _activeAnimations.Count > 0)
+        {
+            foreach (var anim in _activeAnimations.Values)
+            {
+                if (anim.StartPending || (!anim.Clock.IsCompleted && !anim.Clock.IsPaused))
+                    return;
+            }
+        }
+
+        Animation.AnimationManager.Unregister(_animationTickSubscription);
+    }
+
+    /// <summary>
+    /// Called by the central AnimationManager on the UI thread, once per frame.
+    /// Processes all active animations for this element. Returns false when no
+    /// entry can still make progress, which unregisters this element from the
+    /// manager (new/revived animations re-register).
+    /// </summary>
+    bool Animation.IFrameAnimatable.OnAnimationFrame(long frameTimestamp)
+    {
+        if (_activeAnimations == null || _activeAnimations.Count == 0)
+            return false;
+
+        // Per-call snapshot rented from the pool — never a shared/static buffer:
+        // Completed handlers and OnPropertyChanged run user code that may
+        // re-enter animation teardown (detach → recycle stop) while this frame
+        // is still iterating.
+        var pool = System.Buffers.ArrayPool<KeyValuePair<DependencyProperty, ElementAnimation>>.Shared;
+        var scratch = pool.Rent(_activeAnimations.Count);
+        var count = 0;
+        foreach (var pair in _activeAnimations)
+            scratch[count++] = pair;
 
         var hasRunningAnimation = false;
         var anyVisibleChange = false;
         var anyNonCompositionChange = false;
 
-        foreach (var (dp, anim) in _activeAnimations.ToArray())
+        try
         {
-            if (anim.ConsumePendingStart())
+            for (int i = 0; i < count; i++)
             {
-                anim.Clock.Begin();
+                var dp = scratch[i].Key;
+                var anim = scratch[i].Value;
+
+                // The entry may have been removed/replaced by an earlier
+                // iteration's callback: only tick entries that still own their
+                // property.
+                if (!_activeAnimations.TryGetValue(dp, out var current) || !ReferenceEquals(current, anim))
+                    continue;
+
+                if (anim.ConsumePendingStart())
+                {
+                    anim.Clock.BeginAt(frameTimestamp);
+                    hasRunningAnimation = true;
+                    // The first animated value is written on the next tick; nothing
+                    // changed this frame, so do not force an invalidation here.
+                    continue;
+                }
+
+                if (anim.Clock.IsCompleted)
+                    continue;
+
+                if (anim.Clock.IsPaused)
+                    continue;
+
                 hasRunningAnimation = true;
-                // The first animated value is written on the next tick; nothing
-                // changed this frame, so do not force an invalidation here.
-                continue;
+
+                // Update clock progress
+                anim.Clock.Tick(frameTimestamp);
+
+                // Update animated value (routes through SetAnimatedValue → metadata
+                // callback → InvalidateVisual / InvalidateComposition). Crucially this
+                // now reports whether the value actually MOVED this frame: a live clock
+                // that produced a pixel-identical value contributes no invalidation.
+                if (UpdateAnimatedValue(dp))
+                {
+                    anyVisibleChange = true;
+                    if (!IsCompositionOnlyDp(dp)) anyNonCompositionChange = true;
+                }
             }
-
-            if (!anim.Clock.IsRunning)
-                continue;
-
-            hasRunningAnimation = true;
-
-            // Update clock progress
-            anim.Clock.Tick();
-
-            // Update animated value (routes through SetAnimatedValue → metadata
-            // callback → InvalidateVisual / InvalidateComposition). Crucially this
-            // now reports whether the value actually MOVED this frame: a live clock
-            // that produced a pixel-identical value contributes no invalidation.
-            if (UpdateAnimatedValue(dp))
-            {
-                anyVisibleChange = true;
-                if (!IsCompositionOnlyDp(dp)) anyNonCompositionChange = true;
-            }
+        }
+        finally
+        {
+            Array.Clear(scratch, 0, count);
+            pool.Return(scratch);
         }
 
         // Change-gated consolidated invalidation. SetAnimatedValue already routes a
@@ -4051,10 +4502,7 @@ public abstract partial class UIElement : Visual, IInputElement
                 InvalidateComposition();
         }
 
-        if (!hasRunningAnimation)
-        {
-            UnsubscribeFromRenderingIfNeeded();
-        }
+        return hasRunningAnimation;
     }
 
     private bool IsCompositionOnlyDp(DependencyProperty dp)
@@ -4076,7 +4524,11 @@ public abstract partial class UIElement : Visual, IInputElement
         try
         {
             var baseValue = anim.BaseValue ?? dp.DefaultMetadata.DefaultValue ?? GetDefaultAnimationValue(dp);
-            var currentValue = anim.Animation.GetCurrentValue(baseValue, baseValue, anim.Clock);
+            // SnapshotAndReplace: the value displayed at the replacement instant
+            // is the origin, so a To-only animation continues from the visual
+            // value it took over instead of jumping back to the base value.
+            var originValue = anim.HasHandoffSnapshot ? (anim.HandoffSnapshot ?? baseValue) : baseValue;
+            var currentValue = anim.Animation.GetCurrentValue(originValue, baseValue, anim.Clock);
 
             var holdEnd = anim.Animation.AnimationFillBehavior == AnimationFillBehavior.HoldEnd;
             return SetAnimatedValue(dp, currentValue, holdEnd);
@@ -4102,6 +4554,81 @@ public abstract partial class UIElement : Visual, IInputElement
             return 0;
 
         return type.IsValueType ? Activator.CreateInstance(type)! : null!;
+    }
+
+    /// <summary>
+    /// Stops every animation in this element's subtree and hard-discards the
+    /// animated value layer (no HoldEnd promotion), leaving the subtree
+    /// "clean and tick-free". Called by container recycling before pooling and
+    /// by <see cref="Jalium.UI.Animation.AnimationManager.NotifyDetached"/>'s
+    /// deferred detach check.
+    /// </summary>
+    internal void StopAnimationsForRecycleRecursive()
+    {
+        StopAnimationsForRecycleLocal();
+
+        for (int i = 0; i < VisualChildrenCount; i++)
+        {
+            if (GetVisualChild(i) is UIElement child)
+            {
+                child.StopAnimationsForRecycleRecursive();
+            }
+        }
+    }
+
+    private void StopAnimationsForRecycleLocal()
+    {
+        // The animations are being stopped deterministically right now: any
+        // deferred detach re-check queued for this element is redundant.
+        Animation.AnimationManager.CancelPendingDetach(this);
+
+        if (_activeAnimations != null && _activeAnimations.Count > 0)
+        {
+            // Per-call snapshot rented from the pool (never a shared buffer):
+            // storyboard bookkeeping and OnPropertyChanged run user code that
+            // may re-enter animation teardown while this loop is running.
+            var pool = System.Buffers.ArrayPool<KeyValuePair<DependencyProperty, ElementAnimation>>.Shared;
+            var scratch = pool.Rent(_activeAnimations.Count);
+            var count = 0;
+            foreach (var pair in _activeAnimations)
+                scratch[count++] = pair;
+
+            try
+            {
+                for (int i = 0; i < count; i++)
+                {
+                    var dp = scratch[i].Key;
+                    var anim = scratch[i].Value;
+
+                    // The entry may have been removed by an earlier iteration's
+                    // callback re-entering teardown.
+                    if (!_activeAnimations.TryGetValue(dp, out var current) || !ReferenceEquals(current, anim))
+                        continue;
+
+                    // clearAnimatedValue:false — no HoldEnd promotion; the whole
+                    // animated layer is hard-discarded below. Storyboard-kind
+                    // entries settle their clock via the termination callback
+                    // inside RemoveAnimationCore.
+                    RemoveAnimationCore(dp, anim, clearAnimatedValue: false);
+                }
+            }
+            finally
+            {
+                Array.Clear(scratch, 0, count);
+                pool.Return(scratch);
+            }
+        }
+
+        // Hard-discard every animated value (no HoldEnd promotion): a pooled
+        // element must not carry an animation's final value as a ghost.
+        DiscardAllAnimatedValues();
+
+        // Idle-checked, not unconditional: the discards above run user code
+        // (OnPropertyChanged → triggers/transitions) that may legitimately start
+        // a NEW animation on this element — an unconditional Unregister would
+        // freeze it at its first frame with no frame source. Same pattern as
+        // StopStoryboardAnimation / StopAnimationCore.
+        UnregisterFromAnimationManagerIfIdle();
     }
 
     #endregion

@@ -249,14 +249,19 @@ int D3D12InkLayerBitmap::DispatchBrush(
     const void*        extraParams,
     uint32_t           extraParamsSize)
 {
-    if (!shader || !shader->Pso())           return -1;
-    if (!texture_ || !cmdList_)              return -2;
-    if (pointCount < 2)                      return -3;
+    if (!shader || !shader->Pso())           return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
+    if (!texture_ || !cmdList_)              return JALIUM_INK_DISPATCH_ERROR_INVALID_STATE;
+    if (pointCount < 2)                      return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
     if (managedConstantsSize == 0 || managedConstantsSize > 80)
-        return -4;
+        return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
 
+    // The shared pipeline is built lazily per device and NOT cached on
+    // failure — the next dispatch retries construction, so a failed build
+    // (driver hiccup, momentary OOM) is transient, not a generation loss.
+    // A genuinely removed device is handled out-of-band by the window's
+    // device-lost recovery, which replaces the whole RenderContext.
     auto* pipeline = SharedPipeline(device_);
-    if (!pipeline) return -5;
+    if (!pipeline) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
 
     // Grow stroke-points upload buffer if needed
     const uint32_t requiredSb = pointCount * 16u;
@@ -282,7 +287,11 @@ int D3D12InkLayerBitmap::DispatchBrush(
             &upProps, D3D12_HEAP_FLAG_NONE,
             &sbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(sbUpload_.GetAddressOf()));
-        if (FAILED(hr)) return -6;
+        // Momentary upload-buffer allocation failure: the layer and shader
+        // handles are still healthy — the caller retries the same handles
+        // next frame. Never a generation loss on D3D12 (device removal is
+        // recovered out-of-band via full context replacement).
+        if (FAILED(hr)) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
         sbUploadCapacity_ = cap;
     }
 
@@ -331,7 +340,7 @@ int D3D12InkLayerBitmap::DispatchBrush(
     if (scissor.right <= scissor.left || scissor.bottom <= scissor.top)
     {
         // Empty bbox — nothing to draw, nothing recorded, state unchanged.
-        return 0;
+        return JALIUM_INK_DISPATCH_OK;
     }
 
     // Upload optional user params (b1). CBV size must be 256-byte aligned;
@@ -359,7 +368,8 @@ int D3D12InkLayerBitmap::DispatchBrush(
                 &upProps, D3D12_HEAP_FLAG_NONE,
                 &ucbDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
                 IID_PPV_ARGS(userCbUpload_.GetAddressOf()));
-            if (FAILED(hr)) return -7;
+            // Same classification as the stroke-buffer allocation above.
+            if (FAILED(hr)) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
             userCbUploadCapacity_ = alignedSize;
         }
         void* mapped = nullptr;
@@ -424,7 +434,7 @@ int D3D12InkLayerBitmap::DispatchBrush(
     textureState_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
     ExecuteAndWait(cmdList_.Get());
-    return 0;
+    return JALIUM_INK_DISPATCH_OK;
 }
 
 // ─── D3D12Backend glue ─────────────────────────────────────────────────
@@ -484,7 +494,7 @@ int32_t D3D12Backend::DispatchBrush(void* bitmap, void* shader,
                                      const void* extraParams, uint32_t extraParamsSize)
 {
     if (!bitmap || !shader || !strokePoints || !constants || pointCount < 2)
-        return -1;
+        return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
     return reinterpret_cast<D3D12InkLayerBitmap*>(bitmap)->DispatchBrush(
         reinterpret_cast<D3D12BrushShader*>(shader),
         strokePoints, pointCount, constants, 80,

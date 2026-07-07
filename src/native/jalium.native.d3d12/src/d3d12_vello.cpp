@@ -3,6 +3,9 @@
 #include "d3d12_vello_bytecode.h"
 #include "d3d12_triangulate.h"  // for path command tags
 #include "d3d12_resources.h"    // for D3D12SolidBrush, D3D12LinearGradientBrush, etc.
+#include "jalium_rendering_engine.h"  // EngineBrushData for the EngineBrush encode entries
+#include <cstdlib>               // _dupenv_s / free (JALIUM_VELLO_SCISSOR_CLIP)
+#include <array>                 // clip-bbox stack replay entries
 #include <d3dcompiler.h>
 #include <cstring>
 #include <cstdio>
@@ -533,6 +536,7 @@ void D3D12VelloRenderer::BeginFrame(uint32_t viewportWidth, uint32_t viewportHei
     gradientCount_ = 0;
     clipStack_.clear();
     clipDepth_ = 0;
+    scissorClipActive_ = false;  // encoded scene (incl. any open scissor clip) is gone
     clipEvents_.clear();
     drawTags_.clear();
     imageEntries_.clear();
@@ -1297,45 +1301,48 @@ void D3D12VelloRenderer::BuildPtcl()
     };
 
     // Helper: emit brush command for a path draw.
-    // Each command's payload size must exactly match what the fine shader reads
-    // (see kVelloFineCS in d3d12_shader_source.h).
+    // Each command's word count must exactly match what the fine shader
+    // consumes (vello_fine.cs.hlsl — the same kFine bytecode drives both the
+    // GPU pipeline and this CPU-assisted pipeline's fine dispatch).
+    // Gradient commands follow the coarse shader's write_grad contract
+    // (vello_coarse.cs.hlsl): EXACTLY 8 words — opcode + gradIndex + gp0..gp5.
+    // The fine shader advances cmd_ix by 8 total per gradient; emitting a
+    // 9th/10th word here desyncs every later command in the tile's PTCL.
     auto emitBrush = [&](const PathDraw& draw) {
         if (draw.brushType == kBrushLinearGradient) {
-            // Shader reads: gradIndex, p0x, p0y, p1x, p1y, extF, opacity, dummy (8 u32)
+            // Fine reads 7 payload words: gradIndex, p0x(gp0), p0y(gp1),
+            // p1x(gp2), p1y(gp3), extend(gp4, asfloat), then skips gp5.
             cpuPtcl_.push_back(kPtclLinGrad);
             cpuPtcl_.push_back(draw.gradientIndex);
-            pushFloatBits(draw.gradParam0);  // p0x
-            pushFloatBits(draw.gradParam1);  // p0y
-            pushFloatBits(draw.gradParam2);  // p1x
-            pushFloatBits(draw.gradParam3);  // p1y
-            cpuPtcl_.push_back((uint32_t)draw.gradParam4);  // extendMode
-            pushFloatBits(draw.colorA);  // opacity
-            cpuPtcl_.push_back(0);  // pad
+            pushFloatBits(draw.gradParam0);  // p0x (gp0)
+            pushFloatBits(draw.gradParam1);  // p0y (gp1)
+            pushFloatBits(draw.gradParam2);  // p1x (gp2)
+            pushFloatBits(draw.gradParam3);  // p1y (gp3)
+            pushFloatBits(draw.gradParam4);  // extend mode (gp4; fine reads asfloat)
+            cpuPtcl_.push_back(0);           // gp5 pad (fine skips exactly one word)
         } else if (draw.brushType == kBrushRadialGradient) {
-            // Shader reads: gradIndex, cx, cy, rx, ry, ox, oy, extF, opacity (9 u32)
+            // Fine reads 7 payload words: gradIndex, cx(gp0), cy(gp1),
+            // rx(gp2), ry(gp3), ox(gp4), oy(gp5). No extend/opacity words —
+            // do NOT emit them (the old 10-word layout desynced the PTCL).
             cpuPtcl_.push_back(kPtclRadGrad);
             cpuPtcl_.push_back(draw.gradientIndex);
-            pushFloatBits(draw.gradParam0);  // cx
-            pushFloatBits(draw.gradParam1);  // cy
-            pushFloatBits(draw.gradParam2);  // rx
-            pushFloatBits(draw.gradParam3);  // ry
-            pushFloatBits(draw.gradParam4);  // ox
-            pushFloatBits(draw.gradParam5);  // oy
-            // Extract extend mode from colorR (float-encoded uint32)
-            uint32_t radExtMode; memcpy(&radExtMode, &draw.colorR, sizeof(uint32_t));
-            cpuPtcl_.push_back(radExtMode);
-            pushFloatBits(draw.colorA);  // opacity
+            pushFloatBits(draw.gradParam0);  // cx (gp0)
+            pushFloatBits(draw.gradParam1);  // cy (gp1)
+            pushFloatBits(draw.gradParam2);  // rx (gp2)
+            pushFloatBits(draw.gradParam3);  // ry (gp3)
+            pushFloatBits(draw.gradParam4);  // ox (gp4)
+            pushFloatBits(draw.gradParam5);  // oy (gp5)
         } else if (draw.brushType == kBrushSweepGradient) {
-            // Shader reads: gradIndex, scx, scy, st0, st1, extF, opacity, dummy (8 u32)
+            // Fine reads 7 payload words: gradIndex, cx(gp0), cy(gp1),
+            // t0(gp2), t1(gp3), extend(gp4, asfloat), then skips gp5.
             cpuPtcl_.push_back(kPtclSweepGrad);
             cpuPtcl_.push_back(draw.gradientIndex);
-            pushFloatBits(draw.gradParam0);  // center.x
-            pushFloatBits(draw.gradParam1);  // center.y
-            pushFloatBits(draw.gradParam2);  // t0 (start angle)
-            pushFloatBits(draw.gradParam3);  // t1 (end angle)
-            cpuPtcl_.push_back(kExtendPad);  // extendMode
-            pushFloatBits(draw.colorA);  // opacity
-            cpuPtcl_.push_back(0);  // pad
+            pushFloatBits(draw.gradParam0);  // center.x (gp0)
+            pushFloatBits(draw.gradParam1);  // center.y (gp1)
+            pushFloatBits(draw.gradParam2);  // t0 / start angle (gp2)
+            pushFloatBits(draw.gradParam3);  // t1 / end angle (gp3)
+            pushFloatBits((float)kExtendPad); // extend mode (gp4; fine reads asfloat)
+            cpuPtcl_.push_back(0);            // gp5 pad (fine skips exactly one word)
         } else if (draw.brushType == kBrushImage) {
             // Shader reads: atlasIdx, u0, v0, u1, v1, opacity (6 u32)
             cpuPtcl_.push_back(kPtclImage);
@@ -1581,6 +1588,8 @@ bool D3D12VelloRenderer::EncodeFillPathCached(
 {
     if (!cached.valid || cached.lineSegs.empty()) return false;
 
+    EnsureScissorClip();
+
     uint32_t pathIdx = (uint32_t)pathInfos_.size();
     uint32_t lineSegStart = (uint32_t)cpuLineSegs_.size();
 
@@ -1644,6 +1653,8 @@ bool D3D12VelloRenderer::EncodeFillPath(
     uint32_t fillRule,
     float m11, float m12, float m21, float m22, float tdx, float tdy)
 {
+    EnsureScissorClip();
+
     uint32_t pathIdx;
     if (!EncodePathGeometry(startX, startY, commands, commandLength,
                             fillRule, m11, m12, m21, m22, tdx, tdy, pathIdx))
@@ -1678,6 +1689,8 @@ bool D3D12VelloRenderer::EncodeFillPathBrush(
     float m11, float m12, float m21, float m22, float tdx, float tdy)
 {
     if (!brush) return false;
+
+    EnsureScissorClip();
 
     uint32_t pathIdx;
     if (!EncodePathGeometry(startX, startY, commands, commandLength,
@@ -1743,7 +1756,11 @@ bool D3D12VelloRenderer::EncodeFillPathBrush(
         draw.colorR = extFloat;
         draw.colorG = draw.colorB = 0;
     } else {
-        // Unsupported brush type — roll back geometry
+        // Unsupported brush type (image brushes route via EncodeFillPathImage)
+        // — roll back geometry. Note: sweep gradients cannot appear here at
+        // all — the ABI JaliumBrushType enum has no sweep value; they enter
+        // through EncodeFillPathEngineBrush (EngineBrushData.type == 3),
+        // which packs them exactly like the core encoder's PackBrush.
         pathInfos_.pop_back();
         return false;
     }
@@ -1840,6 +1857,8 @@ bool D3D12VelloRenderer::EncodeStrokePath(
     const float* dashPattern, uint32_t dashCount, float dashOffset,
     float m11, float m12, float m21, float m22, float tdx, float tdy)
 {
+    EnsureScissorClip();
+
     // Flatten path to polyline
     std::vector<float> pts = FlattenPathCommands(startX, startY, commands, commandLength, 0.25f);
 
@@ -2357,6 +2376,174 @@ bool D3D12VelloRenderer::EncodeStrokePathBrush(
 }
 
 // ============================================================================
+// EngineBrushData encode entries (D5a) — structural counterpart of the core
+// encoder's EncodeFillPath/PackBrush (jalium_vello_encode.h:300-330/880-974).
+// This is where SWEEP gradients (EngineBrushData.type == 3) enter the D3D12
+// Vello scene: the ABI JaliumBrushType enum has no sweep value, so the Brush*
+// entries above can never carry one. The PTCL writer (emitBrush) and the GPU
+// coarse/fine shaders already handle kBrushSweepGradient end-to-end; this
+// packing was the only missing link.
+// ============================================================================
+
+void D3D12VelloRenderer::PackEngineBrush(const EngineBrushData& brush, float opacity,
+                                         float m11, float m12, float m21, float m22,
+                                         float tdx, float tdy, PathDraw& draw)
+{
+    // Convert engine gradient stops to the renderer's GradStop layout.
+    // (Same 5-float content — position + straight RGBA — different struct.)
+    auto rampFromEngineStops = [&]() -> uint32_t {
+        std::vector<GradStop> stops(brush.stopCount);
+        for (uint32_t i = 0; i < brush.stopCount; i++) {
+            stops[i].position = brush.stops[i].position;
+            stops[i].color = { brush.stops[i].r, brush.stops[i].g,
+                               brush.stops[i].b, brush.stops[i].a };
+        }
+        return AddGradientRamp(stops.data(), brush.stopCount);
+    };
+
+    if (brush.type == kBrushLinearGradient && brush.stops && brush.stopCount > 0) {
+        // Field-for-field with core PackBrush linear (jalium_vello_encode.h:898-914)
+        // and the Brush* path above.
+        uint32_t gradIdx = rampFromEngineStops();
+        draw.brushType = kBrushLinearGradient;
+        draw.gradientIndex = gradIdx;
+        float gp0x = brush.startX * m11 + brush.startY * m21 + tdx;
+        float gp0y = brush.startX * m12 + brush.startY * m22 + tdy;
+        float gp1x = brush.endX   * m11 + brush.endY   * m21 + tdx;
+        float gp1y = brush.endX   * m12 + brush.endY   * m22 + tdy;
+        draw.gradParam0 = gp0x;
+        draw.gradParam1 = gp0y;
+        draw.gradParam2 = gp1x;
+        draw.gradParam3 = gp1y;
+        draw.gradParam4 = (float)kExtendPad;  // extend mode (plain float)
+        draw.colorA = opacity;                 // fine modulates the ramp by colorA
+        draw.colorR = draw.colorG = draw.colorB = 0;
+        return;
+    }
+
+    if (brush.type == kBrushRadialGradient && brush.stops && brush.stopCount > 0) {
+        // Field-for-field with core PackBrush radial (jalium_vello_encode.h:917-940).
+        uint32_t gradIdx = rampFromEngineStops();
+        draw.brushType = kBrushRadialGradient;
+        draw.gradientIndex = gradIdx;
+        float cx = brush.centerX * m11 + brush.centerY * m21 + tdx;
+        float cy = brush.centerX * m12 + brush.centerY * m22 + tdy;
+        float ox = brush.originX * m11 + brush.originY * m21 + tdx;
+        float oy = brush.originX * m12 + brush.originY * m22 + tdy;
+        float scaleX = std::sqrt(m11 * m11 + m12 * m12);
+        float scaleY = std::sqrt(m21 * m21 + m22 * m22);
+        draw.gradParam0 = cx;
+        draw.gradParam1 = cy;
+        draw.gradParam2 = brush.radiusX * scaleX;
+        draw.gradParam3 = brush.radiusY * scaleY;
+        draw.gradParam4 = ox;
+        draw.gradParam5 = oy;
+        draw.colorA = opacity;
+        // Extend mode bit-cast into colorR (unused for gradients) — matches
+        // the Brush* radial path and core exactly.
+        float extFloat; uint32_t extU = kExtendPad;
+        memcpy(&extFloat, &extU, sizeof(float));
+        draw.colorR = extFloat;
+        draw.colorG = draw.colorB = 0;
+        return;
+    }
+
+    if (brush.type == kBrushSweepGradient && brush.stops && brush.stopCount > 0) {
+        // SWEEP — field-for-field port of core PackBrush sweep
+        // (jalium_vello_encode.h:943-961): p0 = transformed center,
+        // gradParam2/3 = t0/t1 normalized start/end angle carried in
+        // startX/endX, gradParam4 = extend (Pad). The PTCL layout emitted by
+        // emitBrush / GPU write_grad is CMD_SWEEP_GRAD: gradIndex, cx, cy,
+        // t0, t1, extend(asfloat), skip-gp5 (8 words incl. opcode).
+        uint32_t gradIdx = rampFromEngineStops();
+        draw.brushType = kBrushSweepGradient;
+        draw.gradientIndex = gradIdx;
+        float cx = brush.centerX * m11 + brush.centerY * m21 + tdx;
+        float cy = brush.centerX * m12 + brush.centerY * m22 + tdy;
+        draw.gradParam0 = cx;
+        draw.gradParam1 = cy;
+        // startX/endX carry the normalized start/end angle (t0/t1) for sweep.
+        draw.gradParam2 = brush.startX;  // t0
+        draw.gradParam3 = brush.endX;    // t1
+        draw.gradParam4 = (float)kExtendPad;
+        draw.colorA = opacity;
+        draw.colorR = draw.colorG = draw.colorB = 0;
+        return;
+    }
+
+    // Solid (default / fallback for unsupported engine brush types incl.
+    // image and zero-stop gradients) — core PackBrush 964-973.
+    float a = brush.a * opacity;
+    draw.colorR = brush.r * a;   // premultiply
+    draw.colorG = brush.g * a;
+    draw.colorB = brush.b * a;
+    draw.colorA = a;
+    draw.brushType = kBrushSolid;
+    draw.gradientIndex = 0;
+    draw.gradParam0 = draw.gradParam1 = draw.gradParam2 = draw.gradParam3 = 0;
+    draw.gradParam4 = draw.gradParam5 = 0;
+}
+
+bool D3D12VelloRenderer::EncodeFillPathEngineBrush(
+    float startX, float startY,
+    const float* commands, uint32_t commandLength,
+    const EngineBrushData& brush, uint32_t fillRule, float opacity,
+    float m11, float m12, float m21, float m22, float tdx, float tdy)
+{
+    EnsureScissorClip();
+
+    uint32_t pathIdx;
+    if (!EncodePathGeometry(startX, startY, commands, commandLength,
+                            fillRule, m11, m12, m21, m22, tdx, tdy, pathIdx))
+        return false;
+
+    PathDraw draw = {};
+    draw.bboxMinX = currentBboxMinX_;
+    draw.bboxMinY = currentBboxMinY_;
+    draw.bboxMaxX = currentBboxMaxX_;
+    draw.bboxMaxY = currentBboxMaxY_;
+    PackEngineBrush(brush, opacity, m11, m12, m21, m22, tdx, tdy, draw);
+
+    pathDraws_.push_back(draw);
+    clipEvents_.push_back({ClipEvent::kDraw, pathIdx, 0, 0});
+    drawTags_.push_back({kDrawTagFill, pathIdx, 0, 0});
+    return true;
+}
+
+bool D3D12VelloRenderer::EncodeStrokePathEngineBrush(
+    float startX, float startY,
+    const float* commands, uint32_t commandLength,
+    const EngineBrushData& brush,
+    float strokeWidth, bool closed,
+    int32_t lineJoin, float miterLimit, float opacity,
+    int32_t lineCap,
+    const float* dashPattern, uint32_t dashCount, float dashOffset,
+    float m11, float m12, float m21, float m22, float tdx, float tdy)
+{
+    // Geometry pass with the brush's flat base color (gradient brushes carry
+    // their representative color in r/g/b/a — same convention as
+    // BrushToEngineBrush), then patch the emitted PathDraw with the gradient
+    // packing — isomorphic with EncodeStrokePathBrush's patch model.
+    size_t drawCountBefore = pathDraws_.size();
+
+    if (!EncodeStrokePath(startX, startY, commands, commandLength,
+                          brush.r, brush.g, brush.b, brush.a * opacity,
+                          strokeWidth, closed, lineJoin, miterLimit,
+                          lineCap, dashPattern, dashCount, dashOffset,
+                          m11, m12, m21, m22, tdx, tdy))
+        return false;
+
+    if (brush.type != kBrushSolid && pathDraws_.size() > drawCountBefore) {
+        // PackEngineBrush leaves the bbox fields untouched, so patching the
+        // stroke's PathDraw in place is safe (gradient branches overwrite
+        // brushType/gradientIndex/gradParams/colorA only).
+        PackEngineBrush(brush, opacity, m11, m12, m21, m22, tdx, tdy,
+                        pathDraws_.back());
+    }
+    return true;
+}
+
+// ============================================================================
 // Blur Rounded Rect Primitive
 // ============================================================================
 
@@ -2366,6 +2553,8 @@ void D3D12VelloRenderer::EncodeBlurRect(
     float r, float g, float b, float a,
     float m11, float m12, float m21, float m22, float tdx, float tdy)
 {
+    EnsureScissorClip();
+
     // Transform rect corners to screen space
     float x0 = x * m11 + y * m21 + tdx;
     float y0 = x * m12 + y * m22 + tdy;
@@ -2443,6 +2632,8 @@ bool D3D12VelloRenderer::EncodeFillPathImage(
     float m11, float m12, float m21, float m22, float tdx, float tdy)
 {
     if (imageIndex >= imageEntries_.size()) return false;
+
+    EnsureScissorClip();
 
     uint32_t pathIdx;
     if (!EncodePathGeometry(startX, startY, commands, commandLength,
@@ -2550,6 +2741,78 @@ void D3D12VelloRenderer::EncodeEndClip(uint32_t blendMode, float alpha)
     drawTags_.push_back({kDrawTagEndClip, 0, blendMode, alpha});
 }
 
+// ============================================================================
+// Scissor-as-clip (D5b) — ports core EnsureScissorClip / CloseScissorClip
+// (jalium_vello_encode.h:1057-1136). The scissor set via SetScissorRect is
+// realized as a rectangular BeginClip emitted lazily before the first draw
+// under that scissor, and closed by an EndClip on scissor change /
+// ClearScissorRect / Dispatch. Combined with the existing tile-bbox clamp in
+// EncodePathGeometry (kept for culling), this masks pixels EXACTLY to the
+// scissor instead of leaking partially-overlapping geometry past its edge.
+// ============================================================================
+
+namespace {
+// Kill switch (default ON). JALIUM_VELLO_SCISSOR_CLIP=0 restores the legacy
+// bbox-clamp-only scissor (whole-path culling, no pixel-exact masking).
+bool ScissorClipEnabled() {
+    static const bool enabled = []() {
+        char* e = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&e, &len, "JALIUM_VELLO_SCISSOR_CLIP") != 0 || !e) {
+            if (e) free(e);
+            return true;
+        }
+        const bool off = (e[0] == '0' || e[0] == 'f' || e[0] == 'F' ||
+                          e[0] == 'n' || e[0] == 'N');
+        free(e);
+        return !off;
+    }();
+    return enabled;
+}
+} // namespace
+
+void D3D12VelloRenderer::EnsureScissorClip()
+{
+    if (!hasScissor_ || scissorClipActive_) return;
+    // Degenerate scissor (nothing visible): the bbox clamp already rejects
+    // every path, so a clip would only add an empty Begin/End pair.
+    if (scissorRight_ <= scissorLeft_ || scissorBottom_ <= scissorTop_) return;
+    if (!ScissorClipEnabled()) return;
+
+    // Rectangular BeginClip in device space (identity transform) — mirrors
+    // core EncodeBeginClipRect (jalium_vello_encode.h:1087-1128). The MoveTo
+    // is implicit via startX/startY; 3 LineTo + ClosePath close the rect.
+    const float x = scissorLeft_, y = scissorTop_;
+    const float w = scissorRight_ - scissorLeft_;
+    const float h = scissorBottom_ - scissorTop_;
+    float commands[16];
+    uint32_t ci = 0;
+    commands[ci++] = (float)kTagLineTo; commands[ci++] = x + w; commands[ci++] = y;
+    commands[ci++] = (float)kTagLineTo; commands[ci++] = x + w; commands[ci++] = y + h;
+    commands[ci++] = (float)kTagLineTo; commands[ci++] = x;     commands[ci++] = y + h;
+    commands[ci++] = (float)kTagClosePath;
+
+    // Do NOT clamp the clip path's own bbox to the scissor it defines (same
+    // saved-hasScissor guard as the core implementation).
+    const bool savedHasScissor = hasScissor_;
+    hasScissor_ = false;
+    const bool ok = EncodeBeginClip(x, y, commands, ci, kFillRuleNonZero,
+                                    1, 0, 0, 1, 0, 0);
+    hasScissor_ = savedHasScissor;
+
+    // Mark active only when the Begin actually landed (clip-depth cap or a
+    // degenerate/oversized rect can reject it) so Begin/End stay balanced.
+    if (ok) scissorClipActive_ = true;
+}
+
+void D3D12VelloRenderer::CloseScissorClip()
+{
+    if (!scissorClipActive_) return;
+    // blendMode = SrcOver, alpha = 1.0 — identical to core EncodeEndClip.
+    EncodeEndClip(kBlendSrcOver, 1.0f);
+    scissorClipActive_ = false;
+}
+
 uint32_t D3D12VelloRenderer::RegisterMask(ID3D12Resource* texture, uint32_t width, uint32_t height, bool isLuminance)
 {
     if (!texture || maskEntries_.size() >= kMaxMasks) return 0;
@@ -2608,6 +2871,12 @@ void D3D12VelloRenderer::EncodeBeginClipMask(uint32_t maskIndex, float x, float 
 
 bool D3D12VelloRenderer::Dispatch(ID3D12GraphicsCommandList* cmdList, uint32_t frameIndex)
 {
+    // Close any open scissor-clip FIRST so the encoded scene's BeginClip /
+    // EndClip pairs are balanced (core parity: the encoder closes at
+    // Finalize). The next subscene reopens it lazily on its first draw
+    // (FlushVelloPaths -> BeginFrame -> ApplyScissorToVello -> Encode*).
+    CloseScissorClip();
+
     if (!initialized_ || !cmdList || pathInfos_.empty() || segments_.empty()) return false;
 
     // Route to GPU pipeline if enabled
@@ -4403,19 +4672,50 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
     //                          EndClip  → ix = -(draw_obj_index) - 1 (negative).
     // path_ix points to the path that defines the clip shape.
     std::vector<VelloClipInp> clipInpData;
+    // CPU stack replay of the FULL Vello clip_bbox semantics, uploaded
+    // straight into clipBboxBuffer_ (binning's t2). This replaces the
+    // clip_reduce/clip_leaf GPU stages, whose simplified EndClip branch
+    // computed `self ∩ parent` instead of "revert to the PARENT context":
+    // draw objects encoded after a closed clip pair index that pair's End
+    // entry via clip_ix-1, so the wrong value permanently clipped everything
+    // after the first pair to the first pair's rect (verified on WARP: with
+    // two scissor rects the second group vanished entirely).
+    //   BeginClip entry: running-intersection ∩ own path bbox (nested clips
+    //                    tighten — this also fixes the old Begin branch which
+    //                    ignored ancestors);
+    //   EndClip entry:   the restored parent context (top level = infinite).
+    // The CPU-side bbox comes from PathDraw (EncodePathGeometry's exact float
+    // bbox — same source the coarse/fine pipeline draws with).
+    std::vector<float> clipBboxData;
     if (totalClipOps > 0) {
         clipInpData.resize(totalClipOps);
+        clipBboxData.resize((size_t)totalClipOps * 4);
         uint32_t clipIdx = 0;
         // Also fix up DrawMonoids: EndClip must share path_ix with its matching BeginClip
         std::vector<uint32_t> clipBeginStack; // stack of draw object indices for BeginClip
+        std::vector<std::array<float, 4>> clipBboxStack;  // saved parent contexts
+        float curClip[4] = { -1e9f, -1e9f, 1e9f, 1e9f };  // running intersection
         for (uint32_t i = 0; i < numDrawObjs; i++) {
             auto& dt = drawTags_[i];
             if (dt.tag == kDrawTagBeginClip) {
                 VelloClipInp ci;
                 ci.ix = (int32_t)i;               // positive → BeginClip
                 ci.path_ix = (int32_t)drawMonoids[i].path_ix;
-                clipInpData[clipIdx++] = ci;
                 clipBeginStack.push_back(i);
+
+                clipBboxStack.push_back({ curClip[0], curClip[1], curClip[2], curClip[3] });
+                uint32_t pathIx = drawMonoids[i].path_ix;
+                if (pathIx < pathDraws_.size()) {
+                    const PathDraw& pd = pathDraws_[pathIx];
+                    curClip[0] = std::max(curClip[0], pd.bboxMinX);
+                    curClip[1] = std::max(curClip[1], pd.bboxMinY);
+                    curClip[2] = std::min(curClip[2], pd.bboxMaxX);
+                    curClip[3] = std::min(curClip[3], pd.bboxMaxY);
+                }
+                float* cb = &clipBboxData[(size_t)clipIdx * 4];
+                cb[0] = curClip[0]; cb[1] = curClip[1];
+                cb[2] = curClip[2]; cb[3] = curClip[3];
+                clipInpData[clipIdx++] = ci;
             } else if (dt.tag == kDrawTagEndClip) {
                 VelloClipInp ci;
                 ci.ix = -(int32_t)i - 1;          // negative → EndClip
@@ -4430,6 +4730,18 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
                 } else {
                     ci.path_ix = 0;
                 }
+                if (!clipBboxStack.empty()) {
+                    const auto& parent = clipBboxStack.back();
+                    curClip[0] = parent[0]; curClip[1] = parent[1];
+                    curClip[2] = parent[2]; curClip[3] = parent[3];
+                    clipBboxStack.pop_back();
+                } else {
+                    curClip[0] = -1e9f; curClip[1] = -1e9f;
+                    curClip[2] = 1e9f;  curClip[3] = 1e9f;
+                }
+                float* cb = &clipBboxData[(size_t)clipIdx * 4];
+                cb[0] = curClip[0]; cb[1] = curClip[1];
+                cb[2] = curClip[2]; cb[3] = curClip[3];
                 clipInpData[clipIdx++] = ci;
             }
         }
@@ -4467,7 +4779,43 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
         cmdList->CopyBufferRegion(clipInpBuffer_.Get(), 0, fu.clipInpUpload.Get(), 0, ciBytes);
     }
 
-    // Gradient ramps
+    // Upload the CPU-replayed clip bboxes into clipBboxBuffer_ (binning t2).
+    if (totalClipOps > 0 && clipBboxBuffer_ && !clipBboxData.empty()) {
+        uint32_t cbBytes = totalClipOps * 16;
+        if (!fu.clipBboxUpload || totalClipOps > fu.clipBboxUploadCapacity) {
+            fu.clipBboxUploadCapacity = totalClipOps * 2;
+            CreateBuffer(device_, std::max(fu.clipBboxUploadCapacity * 16u, 256u),
+                         D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE,
+                         D3D12_RESOURCE_STATE_GENERIC_READ, fu.clipBboxUpload);
+        }
+        if (fu.clipBboxUpload) {
+            void* mapped = nullptr;
+            fu.clipBboxUpload->Map(0, nullptr, &mapped);
+            memcpy(mapped, clipBboxData.data(), cbBytes);
+            fu.clipBboxUpload->Unmap(0, nullptr);
+            cmdList->CopyBufferRegion(clipBboxBuffer_.Get(), 0, fu.clipBboxUpload.Get(), 0, cbBytes);
+        }
+    }
+
+    // Gradient ramps.
+    //
+    // The GPU pipeline must create the ramp buffer ITSELF: previously only the
+    // CPU-assisted Dispatch did (see its twin block near the t2 SRV setup), so
+    // under the production GPU pipeline gradientRampBuffer_ stayed null, this
+    // upload never ran, fine bound the dummy t2 SRV, and every gradient PTCL
+    // command (linear / radial / sweep) sampled zeros — Vello path gradients
+    // composited as transparent. Found while runtime-verifying the D5a sweep
+    // encode on a WARP device; fixing it here lights up linear/radial too.
+    if (gradientCount_ > 0 &&
+        (gradientCount_ > gradientRampCapacity_ || !gradientRampBuffer_)) {
+        gradientRampCapacity_ = gradientCount_ * 2;
+        // Retire-on-grow (mirrors the CPU pipeline block): an earlier
+        // same-frame Dispatch may still have queued reads on the old buffer.
+        if (gradientRampBuffer_) pendingRetiredResources_.push_back(std::move(gradientRampBuffer_));
+        CreateBuffer(device_, (UINT64)gradientRampCapacity_ * kGradientRampWidth * sizeof(uint32_t),
+                     D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_NONE,
+                     D3D12_RESOURCE_STATE_COMMON, gradientRampBuffer_);
+    }
     if (gradientCount_ > 0 && gradientRampBuffer_) {
         uint32_t gradBytes = gradientCount_ * kGradientRampWidth * sizeof(uint32_t);
         if (gradBytes > fu.gradientRampUploadCapacity * kGradientRampWidth * sizeof(uint32_t) || !fu.gradientRampUpload) {
@@ -4482,6 +4830,13 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
             memcpy(mapped, gradientRamps_.data(), gradBytes);
             fu.gradientRampUpload->Unmap(0, nullptr);
             cmdList->CopyBufferRegion(gradientRampBuffer_.Get(), 0, fu.gradientRampUpload.Get(), 0, gradBytes);
+            // COPY_DEST (implicit promotion from COMMON) → SRV for the fine
+            // stage; the tail reset barrier (NON_PIXEL_SHADER_RESOURCE →
+            // COMMON) below already matches this state.
+            auto gb = MakeBarrier(gradientRampBuffer_.Get(),
+                                  D3D12_RESOURCE_STATE_COPY_DEST,
+                                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            cmdList->ResourceBarrier(1, &gb);
         }
     }
 
@@ -4501,7 +4856,7 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
 
     // ── Resource barriers: copy dest → appropriate states ──
     {
-        D3D12_RESOURCE_BARRIER b[10];
+        D3D12_RESOURCE_BARRIER b[12];
         int bc = 0;
         b[bc++] = MakeBarrier(segmentBuffer_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         b[bc++] = MakeBarrier(pathInfoBuffer_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -4512,6 +4867,8 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
         b[bc++] = MakeBarrier(outputTexture_.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         if (totalClipOps > 0 && clipInpBuffer_)
             b[bc++] = MakeBarrier(clipInpBuffer_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if (totalClipOps > 0 && clipBboxBuffer_)
+            b[bc++] = MakeBarrier(clipBboxBuffer_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         cmdList->ResourceBarrier(bc, b);
     }
 
@@ -4675,48 +5032,19 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
     uavBarrier();
 
     // ================================================================
-    // Stage 3a: clip_reduce — hierarchical BIC reduction of clip begin/end pairs
-    // SRV t0: ClipInp[]  t1: PathBbox (raw)
-    // UAV u0: Bic[]  u1: ClipEl[]
-    // Always dispatched when there are clips (performs within-workgroup matching)
+    // Stage 3 (clip bboxes): computed on the CPU and uploaded above.
+    //
+    // The former clip_reduce / clip_leaf dispatches are intentionally NOT
+    // issued: their simplified EndClip branch wrote `self ∩ parent` instead
+    // of Vello's "revert to parent context", which clipped every draw object
+    // after the first closed clip pair to that pair's rect (with the scissor
+    // realized as a clip, that meant the second scissor group of a frame
+    // vanished — reproduced and then fixed-verified on a WARP device). The
+    // CPU stack replay above writes the exact Vello semantics for both entry
+    // kinds and needs no GPU matching. The PSOs / Bic / ClipEl buffers are
+    // retained (harmless) in case a future n_clip>workgroup implementation
+    // brings the GPU path back.
     // ================================================================
-    if (totalClipOps > 0 && clipInpBuffer_ && clipBicBuffer_ && clipElBuffer_) {
-        uint32_t clipReduceWgs = (totalClipOps + 255) / 256;
-        makeSrv(clipInpBuffer_.Get(), totalClipOps, sizeof(VelloClipInp), 0);
-        makeRawSrv(pathBboxBuffer_.Get(), numPaths * 6, 1);
-        makeUav(clipBicBuffer_.Get(), clipReduceWgs, sizeof(VelloClipBic), 8); // u0
-        makeUav(clipElBuffer_.Get(), totalClipOps, sizeof(VelloClipEl), 9);     // u1
-        bindPipeline(clipReducePSO_.Get());
-        cmdList->Dispatch(clipReduceWgs, 1, 1);
-        uavBarrier();
-    }
-
-    // ================================================================
-    // Stage 3b: clip_leaf — compute final clip bboxes
-    // SRV t0: ClipInp[]  t1: PathBbox (raw)  t2: Bic[]  t3: ClipEl[]
-    // UAV u0: DrawMonoid[]  u1: clip_bbox[] (float4)
-    // ================================================================
-    if (totalClipOps > 0 && clipInpBuffer_ && clipBboxBuffer_) {
-        uint32_t clipLeafWgs = (totalClipOps + 255) / 256;
-        makeSrv(clipInpBuffer_.Get(), totalClipOps, sizeof(VelloClipInp), 0);
-        makeRawSrv(pathBboxBuffer_.Get(), numPaths * 6, 1);
-        if (clipBicBuffer_) {
-            uint32_t bicCount = std::max((totalClipOps + 255) / 256, 1u);
-            makeSrv(clipBicBuffer_.Get(), bicCount, sizeof(VelloClipBic), 2);
-        } else {
-            makeSrv(drawMonoidBuffer_.Get(), 1, sizeof(VelloDrawMonoid), 2); // dummy
-        }
-        if (clipElBuffer_) {
-            makeSrv(clipElBuffer_.Get(), totalClipOps, sizeof(VelloClipEl), 3);
-        } else {
-            makeSrv(drawMonoidBuffer_.Get(), 1, sizeof(VelloDrawMonoid), 3); // dummy
-        }
-        makeUav(drawMonoidBuffer_.Get(), numDrawObjs, sizeof(VelloDrawMonoid), 8); // u0
-        makeUav(clipBboxBuffer_.Get(), totalClipOps, 16, 9);                        // u1
-        bindPipeline(clipLeafPSO_.Get());
-        cmdList->Dispatch(clipLeafWgs, 1, 1);
-        uavBarrier();
-    }
 
     // ================================================================
     // Stage 4: binning — draw objects → bin_data[] + bin_header[]
@@ -4742,11 +5070,14 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
 
     // ================================================================
     // Stage 4: tile_alloc — allocate tiles per draw object
-    // SRV t0: intersected_bbox (float4)  t1: DrawTag[]
+    // SRV t0: intersected_bbox (float4)  t1: DrawTag[]  t2: DrawMonoid[]
     // UAV u0: BumpAllocators  u1: VelloPath[]  u2: VelloTile[]
+    // (t2 added so paths[] is written in PATH index space — the same space
+    //  path_count / coarse read it in. See vello_tile_alloc.cs.hlsl.)
     // ================================================================
     makeSrv(intersectedBboxBuffer_.Get(), numDrawObjs, 16, 0);
     makeSrv(drawTagBuffer_.Get(), numDrawObjs, sizeof(DrawTag), 1);
+    makeSrv(drawMonoidBuffer_.Get(), numDrawObjs, sizeof(VelloDrawMonoid), 2);
     makeRawUav(bumpBuffer_.Get(), 8, 8);   // u0
     makeUav(velloPathBuffer_.Get(), numDrawObjs, sizeof(VelloPath), 9); // u1
     makeUav(velloTileBuffer_.Get(), velloTileCapacity_, sizeof(VelloTile), 10); // u2
@@ -4906,6 +5237,8 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
         b[bc++] = MakeBarrier(bumpBuffer_.Get(),        D3D12_RESOURCE_STATE_UNORDERED_ACCESS,         D3D12_RESOURCE_STATE_COMMON);
         if (totalClipOps > 0 && clipInpBuffer_)
             b[bc++] = MakeBarrier(clipInpBuffer_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        if (totalClipOps > 0 && clipBboxBuffer_)
+            b[bc++] = MakeBarrier(clipBboxBuffer_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         if (gradientCount_ > 0 && gradientRampBuffer_)
             b[bc++] = MakeBarrier(gradientRampBuffer_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         cmdList->ResourceBarrier(bc, b);

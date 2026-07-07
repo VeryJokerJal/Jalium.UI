@@ -4,13 +4,11 @@
 #include <string>
 #include <vector>
 
-typedef struct FT_FaceRec_* FT_Face;
-
-// Forward declare HarfBuzz types to avoid header dependency
-typedef struct hb_font_t hb_font_t;
-typedef struct hb_buffer_t hb_buffer_t;
+#include "ot_shaper.h"
 
 namespace jalium {
+
+class FontFace;
 
 // ============================================================================
 // TextShaper: HarfBuzz text shaping wrapper
@@ -31,14 +29,14 @@ struct ShapedGlyph {
     // primary face, but for codepoints the primary lacks (e.g. CJK rendered
     // through a Noto Sans CJK fallback) these point at the fallback face so the
     // atlas lookup uses the correct face + a collision-free fontId.
-    FT_Face  face = nullptr;
-    uint64_t fontId = 0;
+    FontFace* face = nullptr;
+    uint64_t  fontId = 0;
 };
 
 /// A run of shaped glyphs with a single font and direction.
 struct ShapedRun {
     std::vector<ShapedGlyph> glyphs;
-    FT_Face                  face;      ///< Font face used (not owned)
+    FontFace*                face;      ///< Font face used (not owned)
     uint64_t                 fontId;    ///< Font identifier for atlas lookup
     float                    fontSize;  ///< Font size in pixels
     bool                     isRtl;     ///< Right-to-left run
@@ -50,7 +48,7 @@ public:
     ~TextShaper();
 
     /// Shapes a run of text with the given font face.
-    /// @param face FreeType face to use for shaping.
+    /// @param face Font face to use for shaping.
     /// @param fontId Unique identifier for the font.
     /// @param text UTF-16 text to shape.
     /// @param textLength Number of wchar_t characters.
@@ -58,7 +56,7 @@ public:
     /// @param isRtl True for right-to-left text.
     /// @return Shaped glyph run.
     ShapedRun Shape(
-        FT_Face face,
+        FontFace* face,
         uint64_t fontId,
         const wchar_t* text,
         uint32_t textLength,
@@ -66,7 +64,7 @@ public:
         bool isRtl = false);
 
 private:
-    hb_buffer_t* hbBuffer_ = nullptr;
+    font::OtShaper otShaper_;
 };
 
 } // namespace jalium

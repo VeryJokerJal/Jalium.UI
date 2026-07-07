@@ -11,6 +11,7 @@
 
 #include <memory>
 #include <mutex>
+#include <vector>
 
 namespace jalium {
 
@@ -26,23 +27,31 @@ public:
     JaliumBackend GetType() const override { return JALIUM_BACKEND_VULKAN; }
     const wchar_t* GetName() const override { return L"Vulkan"; }
 
-    /// Override: reports the registered device generation's lost state.
-    /// Vulkan has no GetDeviceRemovedReason-style query — the only signal is a
-    /// VK_ERROR_DEVICE_LOST from an actual call — so the render targets latch
-    /// the loss into their VulkanDeviceGeneration and this override surfaces
-    /// it (the base default would report a permanently healthy device,
-    /// leaving jalium_context_check_device_status blind on Vulkan). With no
-    /// generation registered yet there is nothing to be lost → OK, matching
-    /// the pre-first-window state.
+    /// Override: aggregates the latched lost state across ALL registered
+    /// device generations. Vulkan has no GetDeviceRemovedReason-style query —
+    /// the only signal is a VK_ERROR_DEVICE_LOST from an actual call — so the
+    /// render targets latch the loss into their VulkanDeviceGeneration and
+    /// this override surfaces it (the base default would report a permanently
+    /// healthy device, leaving jalium_context_check_device_status blind on
+    /// Vulkan). With no generation registered yet there is nothing to be lost
+    /// → OK, matching the pre-first-window state.
     ///
-    /// Semantics caveat (differs from D3D12's single global device): Vulkan
-    /// creates one VkDevice per render target, and this reports only the MOST
-    /// RECENTLY REGISTERED generation — with multiple windows it can miss an
-    /// older window's loss or report a loss the other windows don't share.
-    /// The recovery chain does not consume it (each RT's BeginDraw/EndDraw
-    /// gate reports its own precise state); this exists for ABI completeness
-    /// and diagnostics. It is also passively latched, not an active probe: a
-    /// dead-but-unobserved device still reports OK until some call fails.
+    /// Multi-window semantics (differs from D3D12's single global device):
+    /// Vulkan creates one VkDevice per render target, so there can be several
+    /// devices to report on. Every live render target's generation is tracked
+    /// weakly in registeredGenerations_, and ANY latched loss among them
+    /// returns DEVICE_LOST — an older window's loss is no longer masked by
+    /// the most recently created one. A destroyed render target unregisters
+    /// its generation, so a recovered/closed window's stale loss cannot
+    /// permanently poison the aggregate. The recovery chain does not consume
+    /// this (each RT's BeginDraw/EndDraw gate reports its own precise state);
+    /// it exists for ABI completeness and diagnostics.
+    ///
+    /// Platform difference (documented, not a defect): the state is passively
+    /// latched, not actively probed. D3D12 can ask the device for its removed
+    /// reason at any moment; Vulkan has no equivalent API, so a dead-but-
+    /// unobserved device still reports OK until some Vulkan call actually
+    /// fails and latches its generation.
     JaliumResult CheckDeviceStatus() override;
 
     /// Override: returns the GPU adapter that the first render target picked
@@ -119,15 +128,22 @@ public:
 
     /// Called by every VulkanRenderTarget::Impl once it has a live device, so
     /// backend-owned resources (ink layers / brush shaders) can be created on
-    /// the same device the window composites with. Most-recent registration
-    /// wins. A registration with the same device is a no-op; a different
+    /// the same device the window composites with. Every registration is also
+    /// tracked weakly in registeredGenerations_ so CheckDeviceStatus can
+    /// aggregate device loss across all windows. For the ink pipeline,
+    /// most-recent registration wins. A registration with the same device is
+    /// an ink no-op (but is still tracked for loss aggregation); a different
     /// device drops only the backend's reference to the previous brush
     /// pipeline — ink objects still alive on the old generation keep it (and
     /// its VkDevice) alive through their own shared_ptr references, so they
     /// stay destructible and CPU-readable instead of dangling.
     void RegisterDeviceContext(std::shared_ptr<VulkanDeviceGeneration> generation);
 
-    /// Called by VulkanRenderTarget::Impl::Destroy. If the dying render
+    /// Called by VulkanRenderTarget::Impl::Destroy. Always removes the
+    /// generation from the CheckDeviceStatus aggregation list — after Destroy
+    /// nobody can act on that window's loss anymore, and a stale latched loss
+    /// must not permanently poison the aggregate for the surviving windows.
+    /// Additionally, if the dying render
     /// target's generation is the one currently registered, the backend drops
     /// its references (generation + brush pipeline) so (a) a closed window's
     /// VkDevice/VkInstance don't stay resident behind the backend's pin, and
@@ -175,6 +191,21 @@ private:
     std::shared_ptr<VulkanDeviceGeneration> deviceGeneration_;
     std::shared_ptr<VulkanBrushPipeline> brushPipeline_;
     bool brushPipelineAttempted_ = false;
+
+    // ── Device-loss aggregation for CheckDeviceStatus ───────────────────────
+    // One entry per live render target's generation (deviceGeneration_ above
+    // tracks only the most recent registration, for the ink pipeline).
+    // weak_ptr on purpose: the backend must never extend a closed window's
+    // VkDevice lifetime just to keep reporting on it — render targets remove
+    // themselves in UnregisterDeviceContext, and any entry that expires
+    // without unregistering is pruned opportunistically on every walk.
+    // Guarded by inkMutex_ like the rest of the registration state (all three
+    // touch points — Register/Unregister/CheckDeviceStatus — take that lock;
+    // IsLost() itself is a lock-free atomic load, so no nested locking).
+    // Invariant: entries are appended in RegisterDeviceContext BEFORE its
+    // same-device short-circuit, so a non-null deviceGeneration_ is always
+    // present in this list too.
+    std::vector<std::weak_ptr<VulkanDeviceGeneration>> registeredGenerations_;
 };
 
 IRenderBackend* CreateVulkanBackend();

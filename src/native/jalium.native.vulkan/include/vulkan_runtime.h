@@ -4,7 +4,6 @@
 
 namespace jalium {
 
-bool IsExperimentalVulkanEnabled();
 bool IsVulkanRuntimeAvailable();
 PFN_vkGetInstanceProcAddr GetVulkanGetInstanceProcAddr();
 PFN_vkGetDeviceProcAddr GetVulkanGetDeviceProcAddr();

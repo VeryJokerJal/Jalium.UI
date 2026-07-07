@@ -265,3 +265,67 @@ public interface IScrollItemProvider
     /// </summary>
     void ScrollIntoView();
 }
+
+/// <summary>
+/// Specifies the kind of text selection a control supports for the UI Automation Text pattern.
+/// </summary>
+public enum SupportedTextSelection
+{
+    /// <summary>The control does not support text selection.</summary>
+    None = 0,
+
+    /// <summary>The control supports a single, contiguous text selection.</summary>
+    Single = 1,
+
+    /// <summary>The control supports multiple, disjoint text selections.</summary>
+    Multiple = 2,
+}
+
+/// <summary>
+/// Exposes a control's text content and its current selection to UI Automation's Text pattern,
+/// so external clients (screen readers such as Narrator, dictation, and translation/OCR "look-up"
+/// tools) can detect which text is currently selected via <c>TextPattern.GetSelection()</c> and
+/// read it with <c>ITextRangeProvider.GetText()</c>.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Implemented by an <see cref="AutomationPeer"/>; the Windows UI Automation bridge adapts it to
+/// the native <c>ITextProvider</c> / <c>ITextRangeProvider</c> COM interfaces. The model is a plain
+/// character-offset one: the document is <see cref="Text"/> and every range is a half-open interval
+/// <c>[start, start + length)</c> of UTF-16 code units into it — the same model UIA's own sample
+/// providers use for plain edit controls.
+/// </para>
+/// </remarks>
+public interface ITextProvider
+{
+    /// <summary>Gets the full text of the document.</summary>
+    string Text { get; }
+
+    /// <summary>Gets the start offset (in characters) of the current selection or caret.</summary>
+    int SelectionStart { get; }
+
+    /// <summary>Gets the length (in characters) of the current selection; zero when only a caret is present.</summary>
+    int SelectionLength { get; }
+
+    /// <summary>Gets a value indicating whether the text is read-only.</summary>
+    bool IsReadOnly { get; }
+
+    /// <summary>Gets the kind of text selection the control supports.</summary>
+    SupportedTextSelection SupportedTextSelection { get; }
+
+    /// <summary>
+    /// Selects the character range <c>[start, start + length)</c>. Invoked when a UI Automation
+    /// client requests a selection through the Text pattern.
+    /// </summary>
+    void Select(int start, int length);
+
+    /// <summary>
+    /// Returns the bounding rectangles, in the owner element's local coordinate space, that cover
+    /// the character range <c>[start, start + length)</c>. Return an empty list when precise glyph
+    /// geometry is unavailable; the bridge then reports no rectangles rather than a misleading one.
+    /// </summary>
+    IReadOnlyList<Rect> GetBoundingRectangles(int start, int length);
+
+    /// <summary>Best-effort scroll so the character range becomes visible. May be a no-op.</summary>
+    void ScrollIntoView(int start, int length);
+}

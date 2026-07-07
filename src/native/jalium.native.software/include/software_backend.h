@@ -409,7 +409,7 @@ private:
     // Text rendering sub-methods (dispatched from RenderText)
 #ifdef JALIUM_HAS_TEXT_ENGINE
     void RenderTextWithGlyphAtlas(const wchar_t* text, uint32_t textLength,
-        FreeTypeTextFormat* ftFormat, float x, float y, float w, float h,
+        JaliumTextFormat* ftFormat, float x, float y, float w, float h,
         SoftwareSolidBrush* brush);
 #endif
 #ifdef _WIN32

@@ -49,6 +49,8 @@ void VelloVulkanEngine::BeginFrame(uint32_t viewportWidth, uint32_t viewportHeig
     batches_.clear();
     encodedPathCount_ = 0;
     flatPoints_.clear();
+    // Rounded-clip mirror is sticky like the scissor — reset per frame.
+    hasRoundedClip_ = false;
     sceneEncoder_.BeginFrame(viewportWidth, viewportHeight);
 }
 
@@ -304,7 +306,8 @@ bool VelloVulkanEngine::EncodeFillPath(
 
     // GPU stencil-then-cover: hand the pixel-space contours to the consumer as a
     // stencil batch instead of CPU-scanline-rasterizing them into pixel quads.
-    if (VkStencilPathEnabled()) {
+    // (E4: analytic-only mode routes to the scanline path below instead.)
+    if (UseStencilPath()) {
         VkVelloDrawBatch batch;
         if (!BuildVkStencilBatch(std::move(contours), fillRule, r, g, b, a, batch))
             return false;
@@ -621,7 +624,8 @@ bool VelloVulkanEngine::EncodeStrokePath(
     // GPU stencil-then-cover: a stroke renders as a filled outline (the expanded
     // stroke contours). Always NonZero — ExpandStroke emits overlapping CCW
     // triangle soup, which EvenOdd would punch holes in.
-    if (VkStencilPathEnabled()) {
+    // (E4: analytic-only mode falls through to the scanline path below.)
+    if (UseStencilPath()) {
         VkVelloDrawBatch batch;
         if (!BuildVkStencilBatch(std::move(strokeContours), FillRule::NonZero,
                                  brush.r * brush.a, brush.g * brush.a,
@@ -679,7 +683,8 @@ bool VelloVulkanEngine::EncodeFillPolygon(
 
     // GPU stencil-then-cover: emit the (transformed, pixel-space) polygon as a
     // stencil batch instead of CPU-scanline-rasterizing it into pixel quads.
-    if (VkStencilPathEnabled()) {
+    // (E4: analytic-only mode routes to the scanline path below instead.)
+    if (UseStencilPath()) {
         VkVelloDrawBatch batch;
         if (!BuildVkStencilBatch(std::move(contours), fillRule, r, g, b, a, batch))
             return false;

@@ -53,6 +53,19 @@ struct VkImpellerDrawBatch {
     bool hasScissor = false;
     float scissorL = 0, scissorT = 0, scissorR = 0, scissorB = 0;
 
+    // --- Per-batch rounded clip (snapshot at encode time, ALREADY-RESOLVED
+    //     physical-pixel space). The engine has no transform/dpi context, so
+    //     the render target resolves the live clipStack_'s innermost rounded
+    //     clip to physical px and mirrors it in via SetRoundedClip (the Vulkan
+    //     analogue of ImpellerD3D12Engine::SetRoundedClip — field set matches
+    //     d3d12 ImpellerDrawBatch). Consumed by RenderEngineBatches, which
+    //     forwards it into the engine-batch pipeline's push constants so Path/
+    //     Polygon/stroke content no longer leaks through a rounded Border's
+    //     corners (previously only the AABB scissor applied). ---
+    bool hasRoundedClip = false;
+    float roundedClipRect[4] = { 0, 0, 0, 0 };        // L, T, R, B (physical px)
+    float roundedClipCornerRadii[4] = { 0, 0, 0, 0 }; // TL, TR, BR, BL (physical px)
+
     bool hasCoverage = false;
     float coverageL = 0, coverageT = 0, coverageR = 0, coverageB = 0;
 
@@ -130,6 +143,74 @@ inline bool StrokeCacheEnabled()
         return !off;
 #else
         const char* e = std::getenv("JALIUM_VK_STROKE_CACHE");
+        if (!e || e[0] == '\0') return true;  // default ON
+        return !(e[0] == '0' || e[0] == 'f' || e[0] == 'F' || e[0] == 'n' || e[0] == 'N');
+#endif
+    }();
+    return enabled;
+}
+
+// ── Cross-frame fill CONTOUR cache gate ─────────────────────────────────────
+// JALIUM_VK_FILL_CACHE gates EncodeFillPath's cross-frame contour cache on the
+// default solid → stencil-then-cover route. Parity: D3D12's default fill route
+// memoizes its flatten product in the core StencilPathCache
+// (jalium_stencil_path.h; key = path bytes + scaleBucket; capacity 256) so a
+// static icon costs only constant re-record CPU per frame — the Vulkan route
+// used to rerun TransformCommandsToPixelSpace + FlattenPathToContours every
+// frame for every path. Default ON. Set JALIUM_VK_FILL_CACHE=0 to fall back to
+// the per-frame flatten for A/B comparison.
+inline bool VkFillPathCacheEnabled()
+{
+    static const bool enabled = []() {
+#if defined(_WIN32)
+        // /sdl escalates C4996 on std::getenv → use _dupenv_s (see VkStencilPathEnabled).
+        char* e = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&e, &len, "JALIUM_VK_FILL_CACHE") != 0 || e == nullptr) {
+            if (e) free(e);
+            return true;  // default ON: cross-frame fill contour cache
+        }
+        const bool off = (e[0] == '0' || e[0] == 'f' || e[0] == 'F' ||
+                          e[0] == 'n' || e[0] == 'N');
+        free(e);
+        return !off;
+#else
+        const char* e = std::getenv("JALIUM_VK_FILL_CACHE");
+        if (!e || e[0] == '\0') return true;  // default ON
+        return !(e[0] == '0' || e[0] == 'f' || e[0] == 'F' || e[0] == 'n' || e[0] == 'N');
+#endif
+    }();
+    return enabled;
+}
+
+// ── Pixel-space stroke CONTOUR cache gate (dash / explicit-Antialiased) ─────
+// JALIUM_VK_STROKE_PXCACHE gates the transform-keyed pixel-space stroke
+// contour cache in EncodeStrokePath's legacy body — the Vulkan analogue of
+// ImpellerD3D12Engine::EncodeStrokePathPixelCached. The inputs the local-space
+// mesh cache above declines (dash patterns, explicit Antialiased) used to
+// re-run flatten + dash-walk + ExpandStrokePath every frame with zero caching;
+// with this ON that pipeline runs once per distinct (path bytes, stroke
+// params, dash params, transform with 1/8-px-quantized dx/dy) key and later
+// frames only translate the cached contours by the integer pixel offset.
+// Default ON. Set JALIUM_VK_STROKE_PXCACHE=0 for the legacy per-frame pipeline
+// (byte-identical output) for A/B comparison.
+inline bool VkStrokePixelCacheEnabled()
+{
+    static const bool enabled = []() {
+#if defined(_WIN32)
+        // /sdl escalates C4996 on std::getenv → use _dupenv_s (see VkStencilPathEnabled).
+        char* e = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&e, &len, "JALIUM_VK_STROKE_PXCACHE") != 0 || e == nullptr) {
+            if (e) free(e);
+            return true;  // default ON: pixel-space stroke contour cache
+        }
+        const bool off = (e[0] == '0' || e[0] == 'f' || e[0] == 'F' ||
+                          e[0] == 'n' || e[0] == 'N');
+        free(e);
+        return !off;
+#else
+        const char* e = std::getenv("JALIUM_VK_STROKE_PXCACHE");
         if (!e || e[0] == '\0') return true;  // default ON
         return !(e[0] == '0' || e[0] == 'f' || e[0] == 'F' || e[0] == 'n' || e[0] == 'N');
 #endif
@@ -215,6 +296,30 @@ public:
     void SetScissorRect(float left, float top, float right, float bottom) override;
     void ClearScissorRect() override;
 
+    // Per-batch rounded-clip mirror (parallel to scissor; mirrors
+    // ImpellerD3D12Engine::SetRoundedClip). The render target feeds
+    // ALREADY-RESOLVED physical-pixel clip values here right before each
+    // Encode* call so every emitted batch snapshots its draw-time clip.
+    // Not part of IRenderingEngine — vulkan_render_target.cpp downcasts by
+    // GetType() (the same way D3D12 calls its concrete engine directly).
+    void SetRoundedClip(const float rect[4], const float radii[4]) {
+        hasRoundedClip_ = true;
+        for (int i = 0; i < 4; ++i) {
+            roundedClipRect_[i] = rect[i];
+            roundedClipRadii_[i] = radii[i];
+        }
+    }
+    void ClearRoundedClip() { hasRoundedClip_ = false; }
+
+    // E4: path-MSAA "analytic-only" mode, the Vulkan analogue of D3D12's
+    // pathAnalyticOnly_ (set by SetPathMsaaSampleCount(0)). When on, solid
+    // fill/stroke paths bypass the GPU stencil-then-cover route and take the
+    // analytic-AA scanline rasterizer (RasterizePathToRects) instead — much
+    // cheaper than N× stencil MSAA on weak GPUs, and Vulkan's scanline path is
+    // already true analytic coverage AA. The render target downcasts and calls
+    // this (mirroring SetRoundedClip); not part of IRenderingEngine.
+    void SetPathAnalyticOnly(bool analyticOnly) { pathAnalyticOnly_ = analyticOnly; }
+
     bool EncodeFillPath(
         float startX, float startY,
         const float* commands, uint32_t commandLength,
@@ -275,6 +380,13 @@ public:
             batch.scissorR = scissorRight_;
             batch.scissorB = scissorBottom_;
         }
+        batch.hasRoundedClip = hasRoundedClip_;
+        if (hasRoundedClip_) {
+            for (int i = 0; i < 4; ++i) {
+                batch.roundedClipRect[i] = roundedClipRect_[i];
+                batch.roundedClipCornerRadii[i] = roundedClipRadii_[i];
+            }
+        }
         ComputeBatchCoverage(batch);
 
         if (VkBatchMergeEnabled()
@@ -288,7 +400,21 @@ public:
                   last.scissorT == batch.scissorT &&
                   last.scissorR == batch.scissorR &&
                   last.scissorB == batch.scissorB));
-            if (last.pipelineType == 0 && last.stencilContours.empty() && scissorEq) {
+            // Batches under a DIFFERENT rounded clip must never merge — the
+            // clip rides in per-draw push constants, so a merged buffer could
+            // only carry one of them (mirrors the D3D12 rule that batching
+            // "only splits when the clip actually differs").
+            const bool roundedClipEq = (last.hasRoundedClip == batch.hasRoundedClip) &&
+                (!batch.hasRoundedClip ||
+                 (last.roundedClipRect[0] == batch.roundedClipRect[0] &&
+                  last.roundedClipRect[1] == batch.roundedClipRect[1] &&
+                  last.roundedClipRect[2] == batch.roundedClipRect[2] &&
+                  last.roundedClipRect[3] == batch.roundedClipRect[3] &&
+                  last.roundedClipCornerRadii[0] == batch.roundedClipCornerRadii[0] &&
+                  last.roundedClipCornerRadii[1] == batch.roundedClipCornerRadii[1] &&
+                  last.roundedClipCornerRadii[2] == batch.roundedClipCornerRadii[2] &&
+                  last.roundedClipCornerRadii[3] == batch.roundedClipCornerRadii[3]));
+            if (last.pipelineType == 0 && last.stencilContours.empty() && scissorEq && roundedClipEq) {
                 const uint32_t baseVertex = (uint32_t)last.vertices.size();
                 const size_t oldIndexCount = last.indices.size();
 
@@ -386,6 +512,12 @@ private:
     float scissorLeft_ = 0, scissorTop_ = 0, scissorRight_ = 0, scissorBottom_ = 0;
     bool hasScissor_ = false;
 
+    // Live rounded-clip mirror (SetRoundedClip / ClearRoundedClip), snapshotted
+    // into each batch by PushBatch — parallel to the scissor fields above.
+    bool hasRoundedClip_ = false;
+    float roundedClipRect_[4] = { 0, 0, 0, 0 };
+    float roundedClipRadii_[4] = { 0, 0, 0, 0 };
+
     // Scratch buffer for pixel-space flat polylines used by EncodeStrokePath.
     std::vector<float> flatPoints_;
 
@@ -416,7 +548,70 @@ private:
     std::shared_ptr<const CachedStrokeRects> StrokeCacheFind(uint64_t key);
     void StrokeCacheInsert(uint64_t key, std::shared_ptr<const CachedStrokeRects> entry);
 
+    // ── Cross-frame fill CONTOUR cache ────────────────────────────────────────
+    // Parity target: D3D12's default fill route caches its flatten product in
+    // the core StencilPathCache (jalium_stencil_path.h; LRU 256; key =
+    // HashStencilPathInput over path bytes + scaleBucket, translation/rotation
+    // independent) and a hit costs only constant re-record CPU. The Vulkan
+    // batch consumer (vulkan_render_target.cpp) requires PIXEL-space contours
+    // in VkImpellerDrawBatch::stencilContours and has no per-draw transform,
+    // so core's local-space StencilPathGeometry (pre-fanned triangles) cannot
+    // be consumed directly; instead the engine caches the SOURCE-space flatten
+    // product under the SAME key construction and a hit pays one O(N)
+    // TransformPoint pass into the batch copy — flatten (the dominant per-path
+    // CPU cost) is skipped, the consumer's per-frame fan + memcpy is
+    // unchanged. dpi is captured via scaleBucket because the engine receives
+    // the final device transform. Empty entries are negative caches. CPU-only
+    // data → safe across frames and device-lost. Gated by JALIUM_VK_FILL_CACHE.
+    struct CachedFillContours {
+        std::vector<Contour> contours;   // source space; <3-vertex contours removed
+    };
+    struct FillContoursNode {
+        uint64_t key;
+        std::shared_ptr<const CachedFillContours> entry;
+    };
+    std::list<FillContoursNode> fillContourCacheList_;
+    std::unordered_map<uint64_t, std::list<FillContoursNode>::iterator> fillContourCacheMap_;
+    static constexpr size_t kFillContourCacheCapacity = 256;   // = D3D12 kStencilPathCacheCapacity
+    std::shared_ptr<const CachedFillContours> FillContourCacheFind(uint64_t key);
+    void FillContourCacheInsert(uint64_t key, std::shared_ptr<const CachedFillContours> entry);
+
+    // ── Pixel-space transform-keyed stroke CONTOUR cache ─────────────────────
+    // Vulkan analogue of ImpellerD3D12Engine::EncodeStrokePathPixelCached's
+    // LRUs (d3d12_impeller_engine.h:521-558; capacity 512 each): the legacy
+    // stroke body (dash / explicit-Antialiased — everything the local-space
+    // mesh cache above declines) is memoized keyed on path bytes + stroke
+    // params + dash params + the QUANTIZED transform (m11/m12/m21/m22 exact;
+    // dx/dy reduced to their 1/8-px fractional bucket, integer pixels
+    // re-applied at emit — port of the D3D12 dx/dy strip at
+    // d3d12_impeller_engine.cpp:2824). Value is the expanded stroke outline in
+    // origin-relative pixel space — the common input of BOTH the
+    // stencil-then-cover branch and the scanline fallback, so neither consumer
+    // changes shape. Gated by JALIUM_VK_STROKE_PXCACHE.
+    struct CachedStrokePixelContours {
+        std::vector<Contour> contours;   // origin-relative pixel space
+    };
+    struct StrokePixelContoursNode {
+        uint64_t key;
+        std::shared_ptr<const CachedStrokePixelContours> entry;
+    };
+    std::list<StrokePixelContoursNode> strokePxCacheList_;
+    std::unordered_map<uint64_t, std::list<StrokePixelContoursNode>::iterator> strokePxCacheMap_;
+    static constexpr size_t kStrokePixelCacheCapacity = 512;   // = D3D12 kStrokeCacheCapacity
+    std::shared_ptr<const CachedStrokePixelContours> StrokePixelCacheFind(uint64_t key);
+    void StrokePixelCacheInsert(uint64_t key, std::shared_ptr<const CachedStrokePixelContours> entry);
+
     float flattenTolerance_ = 0.25f;
+
+    // E4: when true, SetPathMsaaSampleCount(0) selected analytic-only rendering
+    // for solid paths; UseStencilPath() then reports false so every fill/stroke
+    // takes the scanline (analytic-AA) route rather than GPU stencil-then-cover.
+    bool pathAnalyticOnly_ = false;
+    // Effective "use GPU stencil-then-cover" predicate for this engine: the
+    // process-wide gate AND the not-analytic-only per-target override. Every
+    // fill/stroke stencil-vs-scanline branch consults this instead of the bare
+    // VkStencilPathEnabled() so the E4 knob's 0=analytic-only case is honoured.
+    bool UseStencilPath() const { return VkStencilPathEnabled() && !pathAnalyticOnly_; }
 
     TrigCache trigCache_;
 };

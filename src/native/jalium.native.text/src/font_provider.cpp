@@ -1,19 +1,22 @@
 #include "font_provider.h"
-
-#include <ft2build.h>
-#include FT_FREETYPE_H
+#include "font_face.h"
 
 #include <cstring>
 #include <cwchar>
+#include <fstream>
+#include <iterator>
+#include <vector>
 
 namespace jalium {
 
 // ============================================================================
 // FontProvider base class default implementation
+//
+// Discovery (FindFont) is platform-specific; face creation is shared: read the
+// resolved font file's bytes and hand them to the self-hosted FontFace parser.
 // ============================================================================
 
-FT_Face FontProvider::CreateFace(
-    FT_Library ftLib,
+std::unique_ptr<FontFace> FontProvider::CreateFace(
     const wchar_t* familyName,
     int32_t weight,
     int32_t style)
@@ -23,9 +26,9 @@ FT_Face FontProvider::CreateFace(
 
     if (!FindFont(familyName, weight, style, path, faceIndex))
     {
-        // Try default font family as fallback
+        // Try the platform default family as a fallback.
         const wchar_t* defaultFamily = GetDefaultFontFamily();
-        if (defaultFamily && wcscmp(defaultFamily, familyName) != 0)
+        if (defaultFamily && (!familyName || wcscmp(defaultFamily, familyName) != 0))
         {
             if (!FindFont(defaultFamily, weight, style, path, faceIndex))
                 return nullptr;
@@ -36,12 +39,14 @@ FT_Face FontProvider::CreateFace(
         }
     }
 
-    FT_Face face = nullptr;
-    FT_Error err = FT_New_Face(ftLib, path.c_str(), faceIndex, &face);
-    if (err != 0)
-        return nullptr;
+    std::ifstream file(path, std::ios::binary);
+    if (!file) return nullptr;
+    std::vector<uint8_t> bytes(
+        (std::istreambuf_iterator<char>(file)),
+         std::istreambuf_iterator<char>());
+    if (bytes.empty()) return nullptr;
 
-    return face;
+    return FontFace::Parse(std::move(bytes), faceIndex);
 }
 
 } // namespace jalium

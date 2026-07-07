@@ -9,6 +9,11 @@ using AnimationDuration = Jalium.UI.Media.Animation.Duration;
 
 namespace Jalium.UI.Tests;
 
+// Drives the process-global AnimationManager (TickAnimations → ProcessFrame), so
+// it must serialize with the other animation tests: a parallel collection's
+// ProcessFrame with a synthetic future timestamp would fast-forward this class's
+// live transition clocks mid-assert.
+[Collection("Application")]
 public class TransitionTests
 {
     [Fact]
@@ -514,12 +519,11 @@ public class TransitionTests
 
     private static void TickAnimations(UIElement element)
     {
-        var tickMethod = typeof(UIElement).GetMethod(
-            "OnRenderingTick",
-            BindingFlags.Instance | BindingFlags.NonPublic);
-
-        Assert.NotNull(tickMethod);
-        tickMethod!.Invoke(element, new object?[] { null, EventArgs.Empty });
+        // The per-element Rendering handler was replaced by the central
+        // AnimationManager; ProcessFrame is its headless direct-drive entry
+        // point and ticks every registered element (including this test's).
+        _ = element;
+        Jalium.UI.Animation.AnimationManager.ProcessFrame(System.Diagnostics.Stopwatch.GetTimestamp());
     }
 
     private static MouseButtonEventArgs CreateMouseDown(Point position)

@@ -6,6 +6,17 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+
+// Hybrid-graphics dGPU request (parity with the D3D12 backend, see
+// d3d12_backend.cpp): these well-known exported symbols ask the NVIDIA
+// Optimus / AMD PowerXpress driver shims to run this process on the
+// high-performance GPU, so Vulkan renders on the adapter that scans out the
+// display instead of paying a per-frame cross-adapter copy. The Vulkan ICDs
+// honor the same exports as the D3D runtimes.
+extern "C" {
+    __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
 #endif
 
 
@@ -22,9 +33,9 @@ static int32_t IsVulkanBackendAvailable()
 {
     // When Vulkan is explicitly requested (managed passes RenderBackend.Vulkan
     // or JALIUM_RENDER_BACKEND=vulkan), the availability check gates whether
-    // the factory can be used. Only require the Vulkan runtime — do not gate
-    // on the JALIUM_EXPERIMENTAL_VULKAN env var, because the caller already
-    // made an explicit choice.
+    // the factory can be used. Only require the Vulkan runtime — the caller
+    // already made an explicit choice. (The legacy JALIUM_EXPERIMENTAL_VULKAN
+    // opt-in gate was removed after its last consumer disappeared.)
     return IsVulkanRuntimeAvailable() ? 1 : 0;
 }
 

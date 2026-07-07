@@ -3,17 +3,18 @@
 #include <cstdint>
 #include <vector>
 
-typedef struct FT_LibraryRec_* FT_Library;
-typedef struct FT_FaceRec_*    FT_Face;
-
 namespace jalium {
 
+class FontFace;
+
 // ============================================================================
-// GlyphRasterizer: FreeType-based glyph rasterization
+// GlyphRasterizer: self-hosted glyph rasterization
 //
-// Rasterizes individual glyphs into RGBA bitmaps using FreeType.
-// - Desktop (Linux): FT_RENDER_MODE_LCD for sub-pixel (ClearType-equivalent)
-// - Mobile (Android): FT_RENDER_MODE_NORMAL for grayscale anti-aliasing
+// Rasterizes individual glyphs into RGBA bitmaps from a FontFace's font-unit
+// outlines (glyf or CFF), scaling + y-flipping them and filling via the shared
+// analytic-AA scanline rasterizer (RasterizePathToRects, NonZero). Produces
+// premultiplied grayscale coverage (R=G=B=A). Optional LCD sub-pixel path is
+// deferred; the default mode is grayscale on every platform.
 // ============================================================================
 
 /// Rasterized glyph bitmap data.
@@ -36,7 +37,7 @@ enum class SubpixelMode {
 
 class GlyphRasterizer {
 public:
-    explicit GlyphRasterizer(FT_Library ftLib);
+    GlyphRasterizer();
     ~GlyphRasterizer();
 
     /// Sets the sub-pixel rendering mode.
@@ -44,19 +45,18 @@ public:
     void SetSubpixelMode(SubpixelMode mode) { subpixelMode_ = mode; }
 
     /// Rasterizes a single glyph at the given size and sub-pixel offset.
-    /// @param face FreeType font face (caller retains ownership).
-    /// @param glyphIndex Glyph index from HarfBuzz shaping.
+    /// @param face Self-hosted font face (caller retains ownership).
+    /// @param glyphIndex Glyph index from shaping.
     /// @param fontSizePx Font size in pixels.
     /// @param subpixelX Sub-pixel X offset quantized to 1/8 pixel (0..7).
     /// @return Rasterized glyph data, or empty on failure.
     RasterizedGlyph Rasterize(
-        FT_Face face,
+        FontFace* face,
         uint32_t glyphIndex,
         float fontSizePx,
         uint8_t subpixelX = 0);
 
 private:
-    FT_Library   ftLibrary_;
     SubpixelMode subpixelMode_;
 };
 

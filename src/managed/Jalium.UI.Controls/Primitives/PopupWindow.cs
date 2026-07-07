@@ -4,7 +4,10 @@ using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Interop;
+using Jalium.UI.Interop.Win32;
 using Jalium.UI.Threading;
+using static Jalium.UI.Interop.Win32.Win32Constants;
+using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -211,6 +214,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                 if ((prev & RenderFlag_Scheduled) != 0) return;
                 next = prev | RenderFlag_Scheduled;
             } while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
+            Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_INVAL);
             _dispatcher.BeginInvokeCritical(ProcessRender);
         }
     }
@@ -266,6 +270,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void ProcessRender()
     {
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_PR);
         { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Scheduled; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
         if (_hwnd == nint.Zero || _disposed) return;
         RenderFrame();
@@ -275,6 +280,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         if ((Volatile.Read(ref _renderState) & RenderFlag_Rendering) != 0) return;
         { int p, n; do { p = Volatile.Read(ref _renderState); n = (p | RenderFlag_Rendering) & ~RenderFlag_Requested; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_RF);
 
         try
         {
@@ -315,6 +321,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             // 触发 0xC000041D（用户回调期间未处理异常）进程级崩溃。
             if (!_renderTarget.TryBeginDraw())
             {
+                Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_BEGINFAIL);
                 ScheduleRenderAfterRecovery();
                 return;
             }
@@ -335,6 +342,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
                 _renderTarget.EndDraw();
                 drawSessionActive = false;
+                Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_PRESENT);
                 _renderRecoveryAttempts = 0;
             }
             finally
@@ -2026,191 +2034,17 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private const string PopupWindowClassName = "JaliumPopupWindow";
 
-    // Window styles
-    private const uint WS_POPUP = 0x80000000;
-    private const uint WS_EX_TOOLWINDOW = 0x00000080;
-    private const uint WS_EX_NOACTIVATE = 0x08000000;
-    private const uint WS_EX_TOPMOST = 0x00000008;
-    private const uint WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
-
-    // ShowWindow commands
-    private const int SW_HIDE = 0;
-    private const int SW_SHOWNOACTIVATE = 4;
-
-    // SetWindowPos flags and constants
-    private static readonly nint HWND_TOPMOST = -1;
-    private const uint SWP_NOACTIVATE = 0x0010;
-    private const uint SWP_NOOWNERZORDER = 0x0200;
-
-    // Window messages
-    private const uint WM_DESTROY = 0x0002;
-    private const uint WM_PAINT = 0x000F;
-    private const uint WM_ERASEBKGND = 0x0014;
-    private const uint WM_SETCURSOR = 0x0020;
-    private const uint WM_MOUSEACTIVATE = 0x0021;
-    private const uint WM_NCHITTEST = 0x0084;
-    private const uint WM_MOUSEMOVE = 0x0200;
-    private const uint WM_LBUTTONDOWN = 0x0201;
-    private const uint WM_LBUTTONUP = 0x0202;
-    private const uint WM_RBUTTONDOWN = 0x0204;
-    private const uint WM_RBUTTONUP = 0x0205;
-    private const uint WM_MBUTTONDOWN = 0x0207;
-    private const uint WM_MBUTTONUP = 0x0208;
-    private const uint WM_MOUSEWHEEL = 0x020A;
-    private const uint WM_MOUSELEAVE = 0x02A3;
-    private const uint WM_CAPTURECHANGED = 0x0215;
-
-    // WM_MOUSEACTIVATE return values
-    private const nint MA_NOACTIVATE = 3;
-
-    // Hit test
-    private const int HTCLIENT = 1;
-
-    // Mouse button state flags
+    // Mouse button state flags — MK_LBUTTON/RBUTTON/MBUTTON are kept local: they disagree on
+    // type across the codebase (int here, uint in the drag/drop interop) and are unified in a
+    // later phase. All other WS_/SW_/SWP_/HWND_/WM_/MA_/HTCLIENT/MK_XBUTTON*/TME_/VK_/IDC_
+    // constants now come from Win32Constants (issue #151).
     private const int MK_LBUTTON = 0x0001;
     private const int MK_RBUTTON = 0x0002;
     private const int MK_MBUTTON = 0x0010;
-    private const int MK_XBUTTON1 = 0x0020;
-    private const int MK_XBUTTON2 = 0x0040;
 
-    // TrackMouseEvent
-    private const uint TME_LEAVE = 0x00000002;
-
-    // Virtual key codes
-    private const int VK_SHIFT = 0x10;
-    private const int VK_CONTROL = 0x11;
-    private const int VK_MENU = 0x12;
-
-    // Cursor IDs
-    private const nint IDC_ARROW = 32512;
-    private const nint IDC_IBEAM = 32513;
-    private const nint IDC_WAIT = 32514;
-    private const nint IDC_CROSS = 32515;
-    private const nint IDC_UPARROW = 32516;
-    private const nint IDC_SIZENWSE = 32642;
-    private const nint IDC_SIZENESW = 32643;
-    private const nint IDC_SIZEWE = 32644;
-    private const nint IDC_SIZENS = 32645;
-    private const nint IDC_SIZEALL = 32646;
-    private const nint IDC_NO = 32648;
-    private const nint IDC_HAND = 32649;
-    private const nint IDC_APPSTARTING = 32650;
-    private const nint IDC_HELP = 32651;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int X;
-        public int Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PAINTSTRUCT
-    {
-        public nint hdc;
-        public bool fErase;
-        public RECT rcPaint;
-        public bool fRestore;
-        public bool fIncUpdate;
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
-        public byte[]? rgbReserved;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int left, top, right, bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WNDCLASSEX
-    {
-        public uint cbSize;
-        public uint style;
-        public nint lpfnWndProc;
-        public int cbClsExtra;
-        public int cbWndExtra;
-        public nint hInstance;
-        public nint hIcon;
-        public nint hCursor;
-        public nint hbrBackground;
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string? lpszMenuName;
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string lpszClassName;
-        public nint hIconSm;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct TRACKMOUSEEVENT
-    {
-        public uint cbSize;
-        public uint dwFlags;
-        public nint hwndTrack;
-        public uint dwHoverTime;
-    }
-
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern ushort RegisterClassEx(ref WNDCLASSEX lpWndClass);
-
-    [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    private static partial nint CreateWindowEx(
-        uint dwExStyle, string lpClassName, string lpWindowName, uint dwStyle,
-        int x, int y, int nWidth, int nHeight,
-        nint hWndParent, nint hMenu, nint hInstance, nint lpParam);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool ShowWindow(nint hWnd, int nCmdShow);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DestroyWindow(nint hWnd);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-
-    [LibraryImport("user32.dll", EntryPoint = "DefWindowProcW")]
-    private static partial nint DefWindowProc(nint hWnd, uint msg, nint wParam, nint lParam);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial nint GetModuleHandle(string? lpModuleName);
-
-    [LibraryImport("user32.dll", EntryPoint = "LoadCursorW")]
-    private static partial nint LoadCursor(nint hInstance, nint lpCursorName);
-
-    [LibraryImport("user32.dll")]
-    private static partial nint SetCursor(nint hCursor);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetCursorPos(out POINT lpPoint);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool ScreenToClient(nint hWnd, ref POINT lpPoint);
-
+    // Kept local: GetKeyState is not part of the shared window P/Invoke set yet (issue #151).
     [LibraryImport("user32.dll")]
     private static partial short GetKeyState(int nVirtKey);
-
-    [DllImport("user32.dll")]
-    private static extern nint BeginPaint(nint hWnd, out PAINTSTRUCT lpPaint);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EndPaint(nint hWnd, ref PAINTSTRUCT lpPaint);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT lpEventTrack);
-
-    [DllImport("user32.dll")]
-    private static extern nint SetCapture(nint hWnd);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ReleaseCapture();
 
     #endregion
 }

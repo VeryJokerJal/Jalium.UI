@@ -33,6 +33,18 @@ public sealed class ItemsChangedEventArgs : EventArgs
     public int ItemUICount { get; }
 
     /// <summary>
+    /// Gets the absolute item index where the change occurred, or -1 when unknown (in which case a
+    /// consumer should fall back to a full reset). Carried so a virtualizing panel can apply an
+    /// incremental update without re-deriving the index from the realized-slot position.
+    /// </summary>
+    public int ItemIndex { get; } = -1;
+
+    /// <summary>
+    /// Gets the absolute item index before the change (for Move), or -1 when not applicable.
+    /// </summary>
+    public int OldItemIndex { get; } = -1;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="ItemsChangedEventArgs"/> class.
     /// </summary>
     /// <param name="action">The action that caused the event.</param>
@@ -63,6 +75,35 @@ public sealed class ItemsChangedEventArgs : EventArgs
         OldPosition = oldPosition;
         ItemCount = itemCount;
         ItemUICount = itemUICount;
+    }
+
+    /// <summary>
+    /// Initializes a new instance carrying the absolute <paramref name="itemIndex"/> of the change
+    /// (used by the generator so a virtualizing panel can update incrementally).
+    /// </summary>
+    public ItemsChangedEventArgs(NotifyCollectionChangedAction action, GeneratorPosition position, int itemCount, int itemUICount, int itemIndex)
+    {
+        Action = action;
+        Position = position;
+        OldPosition = new GeneratorPosition(-1, 0);
+        ItemCount = itemCount;
+        ItemUICount = itemUICount;
+        ItemIndex = itemIndex;
+    }
+
+    /// <summary>
+    /// Initializes a new instance for a Move, carrying both the new (<paramref name="itemIndex"/>)
+    /// and old (<paramref name="oldItemIndex"/>) absolute indices.
+    /// </summary>
+    public ItemsChangedEventArgs(NotifyCollectionChangedAction action, GeneratorPosition position, GeneratorPosition oldPosition, int itemCount, int itemUICount, int itemIndex, int oldItemIndex)
+    {
+        Action = action;
+        Position = position;
+        OldPosition = oldPosition;
+        ItemCount = itemCount;
+        ItemUICount = itemUICount;
+        ItemIndex = itemIndex;
+        OldItemIndex = oldItemIndex;
     }
 }
 

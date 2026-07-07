@@ -169,10 +169,25 @@ public:
     int32_t DebugForceLeakedCommandListResize(int32_t width, int32_t height, int32_t* outListClosed) override;
     int32_t DebugForceVelloOutputOrphan(int32_t* outAlive) override;
 
+    /// --- Two-phase back-buffer readback (parity verification; see base) ---
+    /// Forwards to D3D12DirectRenderer, which records the copy inside its
+    /// EndFrame right before the PRESENT transition and fence-tags it.
+    JaliumResult RequestReadback() override;
+    JaliumResult FetchReadback(uint8_t* buf, uint32_t bufStride,
+                               int32_t* outWidth, int32_t* outHeight) override;
+
     void DrawBackdropFilter(
         float x, float y, float w, float h,
         const char* backdropFilter, const char* material, const char* materialTint,
         float tintOpacity, float blurRadius,
+        float cornerRadiusTL, float cornerRadiusTR,
+        float cornerRadiusBR, float cornerRadiusBL) override;
+
+    void DrawBackdropFilterEx(
+        float x, float y, float w, float h,
+        const char* backdropFilter, const char* material, const char* materialTint,
+        float tintOpacity, float blurRadius,
+        float noiseIntensity, float saturation, float luminosity,
         float cornerRadiusTL, float cornerRadiusTR,
         float cornerRadiusBR, float cornerRadiusBL) override;
 
@@ -218,7 +233,8 @@ public:
 
     void BeginTransitionCapture(int slot, float x, float y, float w, float h) override;
     void EndTransitionCapture(int slot) override;
-    void DrawTransitionShader(float x, float y, float w, float h, float progress, int mode) override;
+    void DrawTransitionShader(float x, float y, float w, float h, float progress, int mode,
+        float cornerRadius) override;
     void DrawCapturedTransition(int slot, float x, float y, float w, float h, float opacity) override;
 
     void BeginEffectCapture(float x, float y, float w, float h) override;
@@ -232,6 +248,11 @@ public:
         float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0) override;
     void DrawOuterGlowEffect(float x, float y, float w, float h,
         float glowSize, float r, float g, float b, float a, float intensity,
+        float uvOffsetX, float uvOffsetY,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) override;
+    void DrawInnerShadowEffect(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
         float uvOffsetX, float uvOffsetY,
         float cornerTL, float cornerTR, float cornerBR, float cornerBL) override;
     void DrawColorMatrixEffect(float x, float y, float w, float h,
@@ -339,6 +360,15 @@ private:
     // per-pixel gradient support, so a gradient outline degrades to a solid
     // instead of being dropped.
     bool ExtractStrokeColor(Brush* brush, float& r, float& g, float& b, float& a);
+
+    // Representative solid for any colour-bearing brush: solid → exact colour,
+    // linear/radial gradient → EQUAL-WEIGHT AVERAGE of all stops (straight
+    // alpha, opacity NOT folded in). Field-for-field the same rule as
+    // VulkanRenderTarget::TryGetApproximateBrushColor so single-colour sinks
+    // (RenderText) resolve the SAME representative colour on both backends.
+    // Distinct from ExtractStrokeColor, which keeps its first-stop semantics
+    // for the SDF stroke primitives that bake it into their visual baseline.
+    bool TryGetApproximateBrushColor(Brush* brush, float& r, float& g, float& b, float& a);
 
     // Routes a gradient-brush outline (line/rect/rounded-rect/ellipse), supplied
     // as a path command buffer, through the Impeller stroke engine so it renders

@@ -580,7 +580,18 @@ struct VelloCachedPath {
     void Clear() { lineSegs.clear(); valid = false; }
 };
 
+// Engine-level brush payload (solid / linear / radial / sweep / image) — full
+// definition lives in jalium_rendering_engine.h; consumed by the EngineBrush
+// encode entry points below (mirrors core VelloSceneEncoder::EncodeFillPath).
+struct EngineBrushData;
+
 class D3D12VelloRenderer {
+#ifdef JALIUM_VELLO_WHITEBOX_TEST
+    // Test-only backdoor: lets the standalone WARP verification harness read
+    // internal GPU buffers (clip bboxes / paths / monoids) for pixel-level and
+    // stage-level checks. Never defined in production builds.
+    friend struct VelloWhitebox;
+#endif
 public:
     explicit D3D12VelloRenderer(ID3D12Device* device, ShaderBlobCache* shaderCache = nullptr);
     ~D3D12VelloRenderer();
@@ -592,13 +603,26 @@ public:
     /// Begin a new frame of path encoding.  Clears all buffers.
     void BeginFrame(uint32_t viewportWidth, uint32_t viewportHeight);
 
-    /// Set scissor rect to clamp Vello path tile bboxes. Paths outside scissor are culled.
+    /// Sets the scissor rect. Like the core encoder (jalium_vello_encode.h
+    /// SetScissor), this both (a) clamps subsequent path tile bboxes for
+    /// culling / whole-path rejection, AND (b) is realized as a rectangular
+    /// BeginClip (emitted lazily on the next encoded draw) so the GPU clip
+    /// pipeline masks pixels exactly to the scissor instead of leaking up to
+    /// a tile (16px) of geometry past the scissor edge. Changing the scissor
+    /// closes any previously open scissor-clip; an identical rect is a no-op
+    /// (keeps the currently open clip).
     void SetScissorRect(float left, float top, float right, float bottom) {
+        if (hasScissor_ && left == scissorLeft_ && top == scissorTop_ &&
+            right == scissorRight_ && bottom == scissorBottom_) {
+            return;  // unchanged — keep any open scissor clip
+        }
+        CloseScissorClip();
         scissorLeft_ = left; scissorTop_ = top;
         scissorRight_ = right; scissorBottom_ = bottom;
         hasScissor_ = true;
     }
-    void ClearScissorRect() { hasScissor_ = false; }
+    /// Clears the scissor and closes any open scissor-clip.
+    void ClearScissorRect() { CloseScissorClip(); hasScissor_ = false; }
 
     /// Encode a fill path with solid color.
     /// Returns false if path is too large for GPU (caller should fall back to CPU).
@@ -611,11 +635,26 @@ public:
 
     /// Encode a fill path with any brush type (solid, linear gradient, radial gradient).
     /// Returns false if path is too large for GPU or brush type is unsupported.
+    /// NOTE: the ABI JaliumBrushType enum has no sweep-gradient value, so this
+    /// Brush* entry can never receive a sweep brush; sweep gradients enter via
+    /// the EngineBrushData entry below (type 3), mirroring the core encoder.
     bool EncodeFillPathBrush(float startX, float startY,
                              const float* commands, uint32_t commandLength,
                              Brush* brush, uint32_t fillRule, float opacity,
                              float m11 = 1, float m12 = 0, float m21 = 0,
                              float m22 = 1, float dx = 0, float dy = 0);
+
+    /// Encode a fill path from an engine-level brush (solid / linear / radial /
+    /// SWEEP gradient). Structural counterpart of the core encoder's
+    /// EncodeFillPath + PackBrush (jalium_vello_encode.h:300/880-974): the
+    /// brush → PathDraw packing, including the sweep branch (center + t0/t1
+    /// normalized angles + extend), is field-for-field identical.
+    bool EncodeFillPathEngineBrush(float startX, float startY,
+                                   const float* commands, uint32_t commandLength,
+                                   const EngineBrushData& brush,
+                                   uint32_t fillRule, float opacity,
+                                   float m11 = 1, float m12 = 0, float m21 = 0,
+                                   float m22 = 1, float dx = 0, float dy = 0);
 
     /// Encode a stroke path (expanded to fill on CPU for now).
     /// Returns false if path is too large for GPU.
@@ -646,6 +685,22 @@ public:
                                float dashOffset = 0,
                                float m11 = 1, float m12 = 0, float m21 = 0,
                                float m22 = 1, float dx = 0, float dy = 0);
+
+    /// Stroke counterpart of EncodeFillPathEngineBrush: encodes the stroke
+    /// geometry (solid base color), then patches the emitted PathDraw with the
+    /// engine brush's gradient data — same packing as the fill entry, so sweep
+    /// strokes work too (isomorphic with EncodeStrokePathBrush's patch model).
+    bool EncodeStrokePathEngineBrush(float startX, float startY,
+                                     const float* commands, uint32_t commandLength,
+                                     const EngineBrushData& brush,
+                                     float strokeWidth, bool closed,
+                                     int32_t lineJoin, float miterLimit, float opacity,
+                                     int32_t lineCap = 2,
+                                     const float* dashPattern = nullptr,
+                                     uint32_t dashCount = 0,
+                                     float dashOffset = 0,
+                                     float m11 = 1, float m12 = 0, float m21 = 0,
+                                     float m22 = 1, float dx = 0, float dy = 0);
 
     // --- Clip operations ---
 
@@ -875,6 +930,24 @@ private:
     // Scissor rect (pixel coords, clamped to viewport)
     float scissorLeft_ = 0, scissorTop_ = 0, scissorRight_ = 0, scissorBottom_ = 0;
     bool hasScissor_ = false;
+    // True while the lazily-emitted rectangular BeginClip realizing the current
+    // scissor is open in the encoded scene (see EnsureScissorClip). Reset by
+    // BeginFrame (the scene it referred to is gone) and by CloseScissorClip.
+    bool scissorClipActive_ = false;
+
+    // --- Scissor-as-clip state machine (ports core EnsureScissorClip /
+    //     CloseScissorClip, jalium_vello_encode.h:1068-1081) ---
+    // Emits the BeginClip for the current scissor if one is requested but not
+    // yet open. Called at the top of every public Encode* draw entry.
+    void EnsureScissorClip();
+    // Closes the open scissor-clip, if any (scissor change / clear / Dispatch).
+    void CloseScissorClip();
+
+    // Packs an engine-level brush into a PathDraw — field-for-field port of
+    // core PackBrush (jalium_vello_encode.h:880-974), incl. the sweep branch.
+    void PackEngineBrush(const EngineBrushData& brush, float opacity,
+                         float m11, float m12, float m21, float m22,
+                         float tdx, float tdy, PathDraw& draw);
 
     // CPU-side staging buffers (populated by Encode*, uploaded in Dispatch)
     std::vector<PathSegment> segments_;
@@ -1092,6 +1165,10 @@ private:
         ComPtr<ID3D12Resource> bumpZeroUpload;
         ComPtr<ID3D12Resource> clipInpUpload;
         uint32_t clipInpUploadCapacity = 0;
+        // CPU-replayed clip bboxes (full Vello semantics) uploaded to
+        // clipBboxBuffer_ — replaces the clip_reduce/clip_leaf GPU stages.
+        ComPtr<ID3D12Resource> clipBboxUpload;
+        uint32_t clipBboxUploadCapacity = 0;
     };
     FrameUploadBuffers frameUploads_[kMaxFrames];
 

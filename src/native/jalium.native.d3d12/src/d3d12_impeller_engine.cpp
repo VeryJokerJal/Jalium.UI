@@ -1581,6 +1581,46 @@ inline void RasterizePathToRects(
 // Path Encoding Entry Points
 // ============================================================================
 
+namespace {
+// Self-intersection test for a closed contour. Ear-clip triangulation assumes a
+// SIMPLE polygon and ignores the fill rule; a self-crossing outline (a pentagram
+// or figure-eight authored as one figure) would fill wrong under EvenOdd/NonZero.
+// EncodeFillPath uses this to keep such contours off the triangulation fast path
+// and on the analytic scanline rasterizer instead. Only PROPER crossings count
+// (strict opposite-sides on both segments), so shared vertices of adjacent edges
+// never register — no false positives on simple polygons, hence no needless
+// slow-path routing for ordinary icons. O(n²), computed once per unique geometry
+// (the result is cached via CachedPathGeometry), on small icon-sized contours.
+inline float SelfXCross(float ax, float ay, float bx, float by, float cx, float cy) {
+    return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);  // (b-a) × (c-a)
+}
+inline bool SegmentsProperlyCross(float ax, float ay, float bx, float by,
+                                  float cx, float cy, float dx, float dy) {
+    float d1 = SelfXCross(ax, ay, bx, by, cx, cy);
+    float d2 = SelfXCross(ax, ay, bx, by, dx, dy);
+    float d3 = SelfXCross(cx, cy, dx, dy, ax, ay);
+    float d4 = SelfXCross(cx, cy, dx, dy, bx, by);
+    return ((d1 > 0.0f && d2 < 0.0f) || (d1 < 0.0f && d2 > 0.0f)) &&
+           ((d3 > 0.0f && d4 < 0.0f) || (d3 < 0.0f && d4 > 0.0f));
+}
+inline bool ContourSelfIntersects(const Contour& c) {
+    const uint32_t n = c.VertexCount();
+    if (n < 4) return false;  // a triangle cannot self-intersect
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint32_t i1 = (i + 1) % n;
+        const float ax = c.X(i), ay = c.Y(i), bx = c.X(i1), by = c.Y(i1);
+        for (uint32_t j = i + 2; j < n; ++j) {
+            if (i == 0 && j == n - 1) continue;  // edges e0 and e(n-1) share vertex v0
+            const uint32_t j1 = (j + 1) % n;
+            if (SegmentsProperlyCross(ax, ay, bx, by,
+                                      c.X(j), c.Y(j), c.X(j1), c.Y(j1)))
+                return true;
+        }
+    }
+    return false;
+}
+}  // namespace
+
 // ============================================================================
 // EncodeFillPath — transform-independent local-space geometry cache.
 //
@@ -1622,6 +1662,45 @@ bool ImpellerD3D12Engine::EncodeFillPath(
                                       brush, fillRule, transformIn, edgeMode);
     }
 
+    // ── Compound-path correctness gate ──────────────────────────────────
+    // A fill with more than one sub-path (any explicit MoveTo separator — the
+    // first sub-path uses startX/startY, so tag 2 appears only for the 2nd+
+    // contour) may describe a hole or nested contour. The transform-independent
+    // triangulation fast path below classifies holes by winding SIGN
+    // (jalium_triangulate.h::TriangulateCompoundPath): correct for NonZero
+    // (it re-verifies each triangle's winding number) but WRONG for EvenOdd,
+    // which has no such verification — two nested SAME-winding contours (a
+    // ring, a letter 'O', a gear) both classify as "outer" and the hole fills
+    // solid. EvenOdd is the default fill rule for XAML path markup /
+    // StreamGeometry / PathGeometry, so this is the "many icons render
+    // incorrectly under Analytic" bug.
+    //
+    // Route every compound fill to the analytic scanline rasterizer
+    // (EncodeFillPathScanline → RasterizePathToRects), which resolves arbitrary
+    // winding + fill rule + holes + self-intersection exactly and emits true
+    // per-pixel coverage AA — the WPF/Skia-style analytic AA this mode is
+    // documented to provide. A single sub-path continues below to the cached
+    // fast path IF it is simple: ear-clip is exact for a non-self-intersecting
+    // contour, where both fill rules yield its interior (a self-intersecting
+    // single figure is caught by the ContourSelfIntersects guard below and also
+    // routed to the scanline path). (The stencil-then-cover MSAA route is never
+    // reached here, so this gate governs precisely the PathAntiAliasing.Analytic
+    // solid-fill path.)
+    for (uint32_t ci = 0; ci < commandLength; ) {
+        int tag = (int)commands[ci];
+        if (tag == 2) {  // MoveTo → a second (or later) sub-path exists
+            return EncodeFillPathScanline(startX, startY, commands, commandLength,
+                                          brush, fillRule, transformIn, edgeMode);
+        }
+        switch (tag) {
+            case 0: ci += 3; break;  // LineTo  [tag, x, y]
+            case 1: ci += 7; break;  // CubicTo [tag, c1x, c1y, c2x, c2y, ex, ey]
+            case 3: ci += 5; break;  // QuadTo  [tag, cx, cy, ex, ey]
+            case 5: ci += 1; break;  // ClosePath [tag]
+            default: ci = commandLength; break;  // unknown tag → stop scanning
+        }
+    }
+
     const float maxScale     = MaxScaleFromTransform(transformIn);
     const uint32_t scaleBkt  = ScaleBucketFromMaxScale(maxScale);
     const uint64_t key = HashPathInput(startX, startY, commands, commandLength,
@@ -1652,7 +1731,23 @@ bool ImpellerD3D12Engine::EncodeFillPath(
             std::remove_if(fresh->contours.begin(), fresh->contours.end(),
                 [](const Contour& c) { return c.VertexCount() < 3; }),
             fresh->contours.end());
-        if (!fresh->contours.empty()) {
+        // The triangulation fast path is only correct for a single SIMPLE
+        // contour: TriangulateCompoundPath's single-contour branch ear-clips
+        // the raw polygon and ignores the fill rule, so a self-intersecting
+        // outline (a pentagram / figure-eight authored as ONE figure) would be
+        // filled wrong under EvenOdd (its inner region should be a hole). Leave
+        // triangulationSucceeded=false for a self-intersecting contour so the
+        // block below routes it to EncodeFillPathScanline → RasterizePathToRects,
+        // which resolves winding + fill rule exactly. (The MoveTo gate above
+        // already sent multi-sub-path/compound fills there; a post-flatten
+        // count>1 — only reachable via a mid-buffer ClosePath that managed does
+        // not emit — is handled the same way for safety.) This guard can only
+        // move geometry from the fast path to the correct scanline path, never
+        // the reverse, so it cannot regress; simple single contours (the
+        // overwhelming majority of icons) keep the transform-independent cache.
+        const bool fastPathSafe =
+            fresh->contours.size() == 1 && !ContourSelfIntersects(fresh->contours[0]);
+        if (fastPathSafe) {
             const int32_t fr = (fillRule == FillRule::NonZero) ? 1 : 0;
             std::vector<float> tri;
             {
@@ -3614,17 +3709,26 @@ bool ImpellerD3D12Engine::EnsureStencilResources(uint32_t w, uint32_t h) {
         psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
         psoDesc.RasterizerState.DepthClipEnable = FALSE;
 
-        // Stencil: always pass, increment on front, decrement on back
+        // Stencil: always pass, increment on front, decrement on back.
+        // NonZero winding accumulation MUST wrap (mod-256), never saturate:
+        // fan triangles regularly decrement FIRST (contour direction decides
+        // which faces rasterize back-facing). With _SAT a decrement at 0 sticks
+        // to 0 and the winding count is destroyed — star wedges over-fill,
+        // blobs grow straight-edge tails outside the hull (parity harness).
+        // INCR/DECR keep the count exact mod 256 (order- and sign-independent;
+        // cover tests stencil != 0), matching
+        // docs/reference/pure_d3d12_path_renderer.h and the Vulkan side
+        // ("_AND_WRAP keeps the count exact" in EnsureStencilCoverResources).
         psoDesc.DepthStencilState.DepthEnable = FALSE;
         psoDesc.DepthStencilState.StencilEnable = TRUE;
         psoDesc.DepthStencilState.StencilReadMask = 0xFF;
         psoDesc.DepthStencilState.StencilWriteMask = 0xFF;
         psoDesc.DepthStencilState.FrontFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-        psoDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_INCR_SAT;
+        psoDesc.DepthStencilState.FrontFace.StencilPassOp = D3D12_STENCIL_OP_INCR;
         psoDesc.DepthStencilState.FrontFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
         psoDesc.DepthStencilState.FrontFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
         psoDesc.DepthStencilState.BackFace.StencilFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-        psoDesc.DepthStencilState.BackFace.StencilPassOp = D3D12_STENCIL_OP_DECR_SAT;
+        psoDesc.DepthStencilState.BackFace.StencilPassOp = D3D12_STENCIL_OP_DECR;
         psoDesc.DepthStencilState.BackFace.StencilFailOp = D3D12_STENCIL_OP_KEEP;
         psoDesc.DepthStencilState.BackFace.StencilDepthFailOp = D3D12_STENCIL_OP_KEEP;
 

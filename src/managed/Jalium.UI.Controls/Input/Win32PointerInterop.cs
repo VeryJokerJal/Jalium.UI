@@ -1,5 +1,8 @@
 using System.Runtime.InteropServices;
 using Jalium.UI.Input;
+using Jalium.UI.Interop.Win32;
+using static Jalium.UI.Interop.Win32.Win32Constants;
+using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls;
 
@@ -60,9 +63,6 @@ internal static class Win32PointerInterop
     private const uint PEN_FLAG_BARREL = 0x00000001;
     private const uint PEN_FLAG_INVERTED = 0x00000002;
     private const uint PEN_FLAG_ERASER = 0x00000004;
-
-    private const int MK_SHIFT = 0x0004;
-    private const int MK_CONTROL = 0x0008;
 
     private const long MI_WP_SIGNATURE = 0xFF515700;
     private const long MI_WP_SIGNATURE_MASK = unchecked((int)0xFFFFFF00);
@@ -403,22 +403,6 @@ internal static class Win32PointerInterop
         public int tiltY;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int X;
-        public int Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int left;
-        public int top;
-        public int right;
-        public int bottom;
-    }
-
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetPointerType(uint pointerId, out uint pointerType);
@@ -442,10 +426,6 @@ internal static class Win32PointerInterop
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool GetPointerPenInfoHistory(uint pointerId, ref uint entriesCount, [Out] POINTER_PEN_INFO[] penInfo);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ScreenToClient(nint hWnd, ref POINT point);
 
     [DllImport("user32.dll")]
     private static extern nint GetMessageExtraInfo();

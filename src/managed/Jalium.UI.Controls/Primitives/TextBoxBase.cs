@@ -1355,6 +1355,15 @@ public abstract class TextBoxBase : Control
     /// </summary>
     protected virtual void OnSelectionChanged()
     {
+        // Notify UI Automation so external clients (screen readers, dictation, translation/look-up
+        // tools) can detect the new selection. Only do the work when a client has attached and the
+        // element's peer actually exposes the Text pattern — otherwise this is a cheap null check.
+        if (Jalium.UI.Automation.AutomationPeer.ListenerExists())
+        {
+            var peer = GetAutomationPeer();
+            if (peer?.GetPattern(Jalium.UI.Automation.PatternInterface.Text) != null)
+                peer.RaiseAutomationEvent(Jalium.UI.Automation.AutomationEvents.TextPatternOnTextSelectionChanged);
+        }
     }
 
     /// <summary>

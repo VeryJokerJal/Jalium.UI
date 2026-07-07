@@ -30,6 +30,11 @@ struct TextPushConstants
     float4 innerRoundedClipRect;
     float2 innerRoundedClipRadius;
     float2 padding2;
+    // Per-corner OUTER-clip radii (TL, TR, BR, BL). Fragment-shader-only;
+    // declared here solely so the push-constant block layout matches the
+    // 112-byte C++ TextPushConstants across stages.
+    float4 perCornerRadiusX;
+    float4 perCornerRadiusY;
 };
 
 [[vk::push_constant]]

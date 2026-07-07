@@ -50,6 +50,49 @@ typedef enum JaliumResult {
     JALIUM_ERROR_UNKNOWN = 99
 } JaliumResult;
 
+/// Result codes for ink-layer brush dispatch
+/// (jalium_ink_layer_bitmap_dispatch_brush and the
+/// IRenderBackend::DispatchBrush virtual behind it).
+///
+/// **Backend-agnostic contract**: the managed caller picks its recovery
+/// strategy from the code alone — it must never need to know which backend
+/// produced it. Every backend classifies its internal failure reasons into
+/// one of these categories before returning:
+///
+///   - `>= 0`  success (the stroke was baked into the layer, or there was
+///             provably nothing to draw).
+///   - INVALID_ARG   the call itself is malformed (null handle/pointer,
+///                   too few points, bad constants size). Retrying the same
+///                   call can never succeed; the caller skips the stroke.
+///   - INVALID_STATE the layer's backing resources are absent (construction
+///                   or resize failed earlier, or the handle was torn down).
+///                   Not retryable as-is; the caller's normal layer
+///                   (re)construction path is the recovery.
+///   - TRANSIENT     a momentary resource failure inside the dispatch
+///                   (upload-buffer allocation, command-buffer begin/submit
+///                   hiccup). The layer and shader handles are still healthy:
+///                   retrying the SAME handles next frame is expected to
+///                   succeed. Callers must NOT tear down / rebuild the ink
+///                   resource chain — that would amplify a one-frame hiccup
+///                   into a rebuild storm.
+///   - STALE_CONTEXT the device generation behind the handles is gone or
+///                   inconsistent (device-lost latch, or bitmap and shader
+///                   baked on different generations). Retrying the same
+///                   handles can NEVER succeed; the caller must rebuild the
+///                   whole ink resource chain (layer bitmaps + every shader
+///                   handle) so everything re-pairs on the current generation.
+///
+/// The TRANSIENT / STALE_CONTEXT values are deliberately placed far away
+/// from the legacy per-backend codes (-1..-7) so a stale comparison against
+/// a historical raw code can never misclassify one of these categories.
+typedef enum JaliumInkDispatchResult {
+    JALIUM_INK_DISPATCH_OK                  = 0,
+    JALIUM_INK_DISPATCH_ERROR_INVALID_ARG   = -1,
+    JALIUM_INK_DISPATCH_ERROR_INVALID_STATE = -2,
+    JALIUM_INK_DISPATCH_ERROR_TRANSIENT     = -100,
+    JALIUM_INK_DISPATCH_ERROR_STALE_CONTEXT = -101
+} JaliumInkDispatchResult;
+
 /// Rendering backend types.
 typedef enum JaliumBackend {
     JALIUM_BACKEND_AUTO = 0,        ///< Automatically select the best available backend

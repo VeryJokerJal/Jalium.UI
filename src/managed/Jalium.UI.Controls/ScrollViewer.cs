@@ -2442,6 +2442,32 @@ public partial class ScrollViewer : Control
         _extentHeight = Math.Max(0, _scrollInfo.ExtentHeight + margin.Height);
     }
 
+    /// <summary>
+    /// Re-pulls offset and extent from the <see cref="IScrollInfo"/> content after the content changed
+    /// them WITHOUT a setter call (e.g. a virtualizing panel re-coercing its committed offset at the
+    /// end of measure when the estimated extent shifted, or a +Infinity scroll-to-end resolving as
+    /// more rows realize). Raises ScrollChanged for any offset delta and refreshes the scroll bars.
+    /// </summary>
+    internal void InvalidateScrollInfo()
+    {
+        if (_scrollInfo == null)
+            return;
+
+        var oldHorizontal = _horizontalOffset;
+        var oldVertical = _verticalOffset;
+
+        _horizontalOffset = _scrollInfo.HorizontalOffset;
+        _verticalOffset = _scrollInfo.VerticalOffset;
+        SyncExtentFromScrollInfo();
+
+        if (oldHorizontal != _horizontalOffset || oldVertical != _verticalOffset)
+        {
+            RaiseScrollChanged(oldHorizontal, oldVertical);
+        }
+
+        UpdateScrollBarMetrics();
+    }
+
     private Size GetContentMargin()
     {
         if (_content is not FrameworkElement frameworkElement)

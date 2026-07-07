@@ -22,6 +22,15 @@ JALIUM_API uint64_t HashPathInput(float startX, float startY,
                                   const float* commands, uint32_t commandLength,
                                   int32_t fillRule, uint32_t scaleBucket) noexcept;
 
+// HashStencilPathInput lives in jalium_stencil_path.h — same story: that
+// header additionally exports the StencilPathCache class whose std::list /
+// unordered_map members emit the same benign C4251 across the DLL boundary,
+// and we only need the transform-independent hash for the fill contour cache
+// key (signature mirrors jalium_stencil_path.h:95).
+JALIUM_API uint64_t HashStencilPathInput(float startX, float startY,
+                                         const float* commands, uint32_t commandLength,
+                                         uint32_t scaleBucket) noexcept;
+
 // ============================================================================
 // ImpellerVulkanEngine — CPU tessellation + scanline AA + cross-backend
 // stroke / shape / gradient algorithms.
@@ -53,6 +62,9 @@ void ImpellerVulkanEngine::BeginFrame(uint32_t viewportWidth, uint32_t viewportH
     batches_.clear();
     encodedPathCount_ = 0;
     flatPoints_.clear();
+    // Rounded-clip mirror is sticky like the scissor — never let a clip set
+    // late in the previous frame bleed into this frame's first batch.
+    hasRoundedClip_ = false;
 }
 
 void ImpellerVulkanEngine::SetScissorRect(float left, float top, float right, float bottom) {
@@ -130,6 +142,53 @@ inline float MaxScale(const EngineTransform& t) {
     return std::max(
         std::sqrt(t.m11 * t.m11 + t.m12 * t.m12),
         std::sqrt(t.m21 * t.m21 + t.m22 * t.m22));
+}
+
+// Pixel-space stroke cache key — field-for-field port of
+// ImpellerD3D12Engine::HashStrokeInputs (d3d12_impeller_engine.cpp:2425):
+// FNV-1a over path bytes + stroke shape params + dash params + the QUANTIZED
+// transform (m11/m12/m21/m22 exact; dx/dy already reduced by the caller to
+// their 1/8-px fractional bucket so layout-snapped copies of the same stroke
+// share one entry at any DPI) + the resolved edgeMode byte (partitions
+// Antialiased vs default entries, mirroring the D3D12 key even though the
+// Vulkan legacy body currently produces the same geometry for both).
+inline uint64_t HashVkStrokePixelInputs(
+    float startX, float startY,
+    const float* commands, uint32_t commandLength,
+    float strokeWidth, bool closed,
+    int32_t lineJoin, float miterLimit, int32_t lineCap,
+    const float* dashPattern, uint32_t dashCount, float dashOffset,
+    const EngineTransform& transform,
+    int32_t edgeMode) noexcept
+{
+    uint64_t h = 0xCBF29CE484222325ull;  // FNV-1a 64-bit offset basis
+    FnvMix64(h, &startX, sizeof(startX));
+    FnvMix64(h, &startY, sizeof(startY));
+    FnvMix64(h, &commandLength, sizeof(commandLength));
+    if (commands && commandLength > 0)
+        FnvMix64(h, commands, commandLength * sizeof(float));
+    FnvMix64(h, &strokeWidth, sizeof(strokeWidth));
+    uint8_t closedByte = closed ? 1 : 0;
+    FnvMix64(h, &closedByte, sizeof(closedByte));
+    FnvMix64(h, &lineJoin, sizeof(lineJoin));
+    FnvMix64(h, &miterLimit, sizeof(miterLimit));
+    FnvMix64(h, &lineCap, sizeof(lineCap));
+    FnvMix64(h, &dashCount, sizeof(dashCount));
+    if (dashPattern && dashCount > 0)
+        FnvMix64(h, dashPattern, dashCount * sizeof(float));
+    FnvMix64(h, &dashOffset, sizeof(dashOffset));
+    // The (quantized) transform must be in the key — the entire legacy body
+    // (command pre-transform, flatten, dash-walk, ExpandStrokePath) runs in
+    // pixel space, so a different transform produces different contours.
+    FnvMix64(h, &transform.m11, sizeof(float));
+    FnvMix64(h, &transform.m12, sizeof(float));
+    FnvMix64(h, &transform.m21, sizeof(float));
+    FnvMix64(h, &transform.m22, sizeof(float));
+    FnvMix64(h, &transform.dx,  sizeof(float));
+    FnvMix64(h, &transform.dy,  sizeof(float));
+    uint8_t edgeByte = (uint8_t)(edgeMode & 0xFF);
+    FnvMix64(h, &edgeByte, sizeof(edgeByte));
+    return h;
 }
 
 // Build a pixel-space command stream by walking the source command tape and
@@ -312,6 +371,101 @@ bool ImpellerVulkanEngine::EncodeFillPath(
         return true;
     }
 
+    // ── Cross-frame fill CONTOUR cache (default stencil route fast path) ─────
+    // Parity: D3D12's default fill route memoizes its flatten product in the
+    // core StencilPathCache (jalium_stencil_path.h; LRU 256; key = path bytes
+    // + scaleBucket; consumed at d3d12_path_pipeline.cpp:653) so a hit frame
+    // pays only constant re-record CPU. This route used to rerun
+    // TransformCommandsToPixelSpace + FlattenPathToContours EVERY frame. The
+    // batch consumer (vulkan_render_target.cpp — untouched by this change)
+    // needs PIXEL-space contours and has no per-draw transform, so the cache
+    // keeps the SOURCE-space flatten product and a hit pays one O(N)
+    // TransformPoint pass into the batch copy; the consumer-side per-frame fan
+    // triangulation + memcpy is unchanged. A miss flattens ONCE in source
+    // space (tolerance scaled 1/maxScale — the same contract as the stroke
+    // mesh cache above and D3D12's stencil cache) and inserts the product,
+    // including empty results (negative cache), mirroring
+    // D3D12DirectRenderer::GetOrBuildStencilPathGeometry's unconditional
+    // Insert. Telemetry: AddFillHit / AddFillMiss — the DevTools fill row,
+    // previously constant 0 on Vulkan.
+    if (UseStencilPath() && VkFillPathCacheEnabled() &&
+        commands && commandLength > 0) {
+
+        const float maxScale = MaxScale(transform);
+        const uint32_t scaleBkt = ScaleBucketFromMaxScale(maxScale);
+        // Same key construction as the D3D12 stencil-path cache: path bytes +
+        // scaleBucket. dpi rides inside `transform` (the engine receives the
+        // final device transform), so the bucket captures it. fillRule stays
+        // OUT of the key — it does not affect the flatten product and is
+        // snapshotted per emit into the batch's stencilFillRule, exactly like
+        // the D3D12 cache whose HashStencilPathInput has no fillRule either.
+        const uint64_t key = HashStencilPathInput(
+            startX, startY, commands, commandLength, scaleBkt);
+
+        const float pr = brush.r * brush.a;
+        const float pg = brush.g * brush.a;
+        const float pb = brush.b * brush.a;
+        const float pa = brush.a;
+
+        // Emit a cached SOURCE-space contour set: transform every point by the
+        // live transform into a fresh pixel-space copy for the batch (the
+        // batch owns its contours by value; the cache entry stays immutable).
+        // This transform pass is the ONLY per-frame CPU cost for a hit.
+        auto emitFillContours = [&](const std::vector<Contour>& src) -> bool {
+            std::vector<Contour> px;
+            px.reserve(src.size());
+            for (const auto& c : src) {
+                Contour pc;
+                pc.points.resize(c.points.size());
+                const size_t n = c.points.size();
+                for (size_t i = 0; i + 1 < n; i += 2) {
+                    float x = c.points[i], y = c.points[i + 1];
+                    TransformPoint(x, y, transform);
+                    pc.points[i]     = x;
+                    pc.points[i + 1] = y;
+                }
+                px.push_back(std::move(pc));
+            }
+            VkImpellerDrawBatch batch;
+            if (!BuildVkStencilBatch(std::move(px), fillRule, pr, pg, pb, pa, batch))
+                return false;
+            PushBatch(std::move(batch));
+            encodedPathCount_++;
+            return true;
+        };
+
+        if (auto cached = FillContourCacheFind(key)) {
+            uint64_t verts = 0;
+            for (const auto& c : cached->contours) verts += c.VertexCount();
+            path_stats::AddFillHit(verts);
+            if (cached->contours.empty()) return false;   // negative cache hit
+            return emitFillContours(cached->contours);
+        }
+        path_stats::AddFillMiss();
+
+        // Miss: flatten ONCE in SOURCE space. Tolerance scaled by 1/maxScale
+        // keeps the on-screen chord error of this scale bucket at the same
+        // ~flattenTolerance_ pixels the legacy pixel-space flatten produced.
+        const float srcTol = (maxScale > 0.001f)
+            ? flattenTolerance_ / maxScale : flattenTolerance_;
+        auto entry = std::make_shared<CachedFillContours>();
+        {
+            path_stats::ScopedFlattenTimer flattenTimer(commandLength);
+            entry->contours = FlattenPathToContours(
+                startX, startY, commands, commandLength, srcTol);
+            uint64_t ov = 0;
+            for (const auto& c : entry->contours) ov += c.VertexCount();
+            flattenTimer.RecordOutputVerts(ov);
+        }
+        entry->contours.erase(
+            std::remove_if(entry->contours.begin(), entry->contours.end(),
+                [](const Contour& c) { return c.VertexCount() < 3; }),
+            entry->contours.end());
+        FillContourCacheInsert(key, entry);
+        if (entry->contours.empty()) return false;
+        return emitFillContours(entry->contours);
+    }
+
     // Solid fill: pixel-space flatten → analytic-AA scanline rasterize.
     float pxStartX = startX, pxStartY = startY;
     TransformPoint(pxStartX, pxStartY, transform);
@@ -343,7 +497,8 @@ bool ImpellerVulkanEngine::EncodeFillPath(
 
     // GPU stencil-then-cover: hand the pixel-space contours to the consumer as a
     // stencil batch instead of CPU-scanline-rasterizing them into pixel quads.
-    if (VkStencilPathEnabled()) {
+    // (E4: analytic-only mode routes here to the scanline path below instead.)
+    if (UseStencilPath()) {
         VkImpellerDrawBatch batch;
         if (!BuildVkStencilBatch(std::move(contours), fillRule, r, g, b, a, batch))
             return false;
@@ -426,6 +581,76 @@ void ImpellerVulkanEngine::StrokeCacheInsert(
     }
     strokeCacheList_.push_front({key, std::move(entry)});
     strokeCacheMap_[key] = strokeCacheList_.begin();
+}
+
+// ============================================================================
+// Cross-frame fill CONTOUR cache (LRU) — engine-side analogue of the core
+// StencilPathCache that D3D12's default fill route consumes. Same list+map
+// shape as the stroke mesh cache above. Evictions feed the shared path
+// telemetry the way core StencilPathCache::Insert does.
+// ============================================================================
+
+std::shared_ptr<const ImpellerVulkanEngine::CachedFillContours>
+ImpellerVulkanEngine::FillContourCacheFind(uint64_t key)
+{
+    auto it = fillContourCacheMap_.find(key);
+    if (it == fillContourCacheMap_.end()) return nullptr;
+    // Promote to head (most-recently-used).
+    fillContourCacheList_.splice(fillContourCacheList_.begin(), fillContourCacheList_, it->second);
+    return it->second->entry;
+}
+
+void ImpellerVulkanEngine::FillContourCacheInsert(
+    uint64_t key, std::shared_ptr<const CachedFillContours> entry)
+{
+    auto existing = fillContourCacheMap_.find(key);
+    if (existing != fillContourCacheMap_.end()) {
+        existing->second->entry = std::move(entry);
+        fillContourCacheList_.splice(fillContourCacheList_.begin(), fillContourCacheList_, existing->second);
+        return;
+    }
+    if (fillContourCacheList_.size() >= kFillContourCacheCapacity) {
+        auto& lru = fillContourCacheList_.back();
+        fillContourCacheMap_.erase(lru.key);
+        fillContourCacheList_.pop_back();
+        path_stats::AddCacheEviction(1);
+    }
+    fillContourCacheList_.push_front({key, std::move(entry)});
+    fillContourCacheMap_[key] = fillContourCacheList_.begin();
+}
+
+// ============================================================================
+// Pixel-space transform-keyed stroke CONTOUR cache (LRU) — Vulkan analogue of
+// the D3D12 EncodeStrokePathPixelCached caches (which do not report
+// evictions; kept identical).
+// ============================================================================
+
+std::shared_ptr<const ImpellerVulkanEngine::CachedStrokePixelContours>
+ImpellerVulkanEngine::StrokePixelCacheFind(uint64_t key)
+{
+    auto it = strokePxCacheMap_.find(key);
+    if (it == strokePxCacheMap_.end()) return nullptr;
+    // Promote to head (most-recently-used).
+    strokePxCacheList_.splice(strokePxCacheList_.begin(), strokePxCacheList_, it->second);
+    return it->second->entry;
+}
+
+void ImpellerVulkanEngine::StrokePixelCacheInsert(
+    uint64_t key, std::shared_ptr<const CachedStrokePixelContours> entry)
+{
+    auto existing = strokePxCacheMap_.find(key);
+    if (existing != strokePxCacheMap_.end()) {
+        existing->second->entry = std::move(entry);
+        strokePxCacheList_.splice(strokePxCacheList_.begin(), strokePxCacheList_, existing->second);
+        return;
+    }
+    if (strokePxCacheList_.size() >= kStrokePixelCacheCapacity) {
+        auto& lru = strokePxCacheList_.back();
+        strokePxCacheMap_.erase(lru.key);
+        strokePxCacheList_.pop_back();
+    }
+    strokePxCacheList_.push_front({key, std::move(entry)});
+    strokePxCacheMap_[key] = strokePxCacheList_.begin();
 }
 
 // ============================================================================
@@ -663,7 +888,120 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
         // Gradient stroke encode failed → fall through to the flat first-stop path.
     }
 
-    float maxScale = MaxScale(transform);
+    // ── Pixel-space transform-keyed stroke CONTOUR cache (legacy body) ───────
+    // Parity: D3D12 routes dash / explicit-Antialiased strokes through
+    // EncodeStrokePathPixelCached — a transform-keyed LRU whose dx/dy are
+    // quantized to 1/8-px buckets (fractional bucket in the key, integer
+    // pixels re-applied at emit) so the flatten + dash-walk + ExpandStrokePath
+    // pipeline runs once per distinct key instead of every frame
+    // (d3d12_impeller_engine.cpp:2787). Same fix here: the body below runs
+    // under a dx/dy-NORMALIZED transform so its expanded stroke contours are
+    // origin-relative; a hit translates a cached copy by the integer offset
+    // and feeds the existing (unchanged) stencil / scanline tail. The cached
+    // form is the contour set — the common input of BOTH tails — so the batch
+    // consumer keeps its exact shape. With the gate off the body runs under
+    // the ORIGINAL transform with a zero offset: byte-identical to the
+    // pre-cache code. Telemetry mirrors the D3D12 feed points:
+    // AddStrokeHit / AddStrokeMiss.
+    const bool pxCacheable = VkStrokePixelCacheEnabled() &&
+                             commands && commandLength > 0;
+
+    int intDx = 0, intDy = 0;
+    EngineTransform xform = transform;
+    uint64_t pxKey = 0;
+    if (pxCacheable) {
+        // Quantize transform.dx/dy to 1/8 pixel — port of the D3D12 strip at
+        // d3d12_impeller_engine.cpp:2824 (see the DPI=1.5 rationale there).
+        // Fractional bucket goes into the cache key via xform; the integer
+        // pixel part becomes the per-call emit offset.
+        constexpr float kFracQuant = 8.0f;
+        constexpr float kInvFracQuant = 1.0f / 8.0f;
+        int qDx = (int)std::lround(transform.dx * kFracQuant);
+        int qDy = (int)std::lround(transform.dy * kFracQuant);
+        // Floor-mod into [0, 7] so negative qDx is handled too.
+        int fracDxBucket = ((qDx % 8) + 8) % 8;
+        int fracDyBucket = ((qDy % 8) + 8) % 8;
+        intDx = (qDx - fracDxBucket) / 8;
+        intDy = (qDy - fracDyBucket) / 8;
+        xform.dx = fracDxBucket * kInvFracQuant;
+        xform.dy = fracDyBucket * kInvFracQuant;
+        pxKey = HashVkStrokePixelInputs(
+            startX, startY, commands, commandLength,
+            strokeWidth, closed, lineJoin, miterLimit, lineCap,
+            dashPattern, dashCount, dashOffset, xform, em);
+    }
+
+    // Shared tail: hand a pixel-space contour set to the existing consumers —
+    // GPU stencil-then-cover by default, scanline PixelRect quads on opt-out.
+    // Statement-for-statement the pre-cache tail, parameterized on the
+    // contour set so cached and freshly-built contours share one path.
+    auto emitStrokeContoursBatch = [&](std::vector<Contour>&& sc) -> bool {
+        // GPU stencil-then-cover: a stroke renders as a filled outline (the
+        // expanded stroke contours). Always NonZero — ExpandStroke emits
+        // overlapping CCW triangle soup, which EvenOdd would punch holes in.
+        // (E4: analytic-only mode falls through to the scanline path below.)
+        if (UseStencilPath()) {
+            VkImpellerDrawBatch batch;
+            if (!BuildVkStencilBatch(std::move(sc), FillRule::NonZero,
+                                     brush.r * brush.a, brush.g * brush.a,
+                                     brush.b * brush.a, brush.a, batch))
+                return false;
+            PushBatch(std::move(batch));
+            encodedPathCount_++;
+            return true;
+        }
+
+        std::vector<PixelRect> rects;
+        rects.reserve(sc.size() * 2);
+        RasterizePathToRects(sc, FillRule::NonZero, rects);
+
+        if (rects.empty()) return false;
+
+        float r = brush.r * brush.a;
+        float g = brush.g * brush.a;
+        float b = brush.b * brush.a;
+        float a = brush.a;
+
+        VkImpellerDrawBatch batch;
+        EmitRectsAsBatch(rects, r, g, b, a, batch);
+        batch.pipelineType = 0;
+        PushBatch(std::move(batch));
+        encodedPathCount_++;
+        return true;
+    };
+
+    // Translate a cached origin-relative contour set by the integer pixel
+    // offset into a fresh copy for the batch (the batch owns its contours by
+    // value; the cache entry must stay immutable).
+    auto shiftContours = [&](const std::vector<Contour>& src) {
+        std::vector<Contour> out;
+        out.reserve(src.size());
+        const float fdx = (float)intDx, fdy = (float)intDy;
+        for (const auto& c : src) {
+            Contour sc;
+            sc.points.resize(c.points.size());
+            const size_t n = c.points.size();
+            for (size_t i = 0; i + 1 < n; i += 2) {
+                sc.points[i]     = c.points[i]     + fdx;
+                sc.points[i + 1] = c.points[i + 1] + fdy;
+            }
+            out.push_back(std::move(sc));
+        }
+        return out;
+    };
+
+    if (pxCacheable) {
+        if (auto cached = StrokePixelCacheFind(pxKey)) {
+            uint64_t verts = 0;
+            for (const auto& c : cached->contours) verts += c.VertexCount();
+            path_stats::AddStrokeHit(verts);
+            if (cached->contours.empty()) return false;   // negative cache hit
+            return emitStrokeContoursBatch(shiftContours(cached->contours));
+        }
+        path_stats::AddStrokeMiss();
+    }
+
+    float maxScale = MaxScale(xform);
     float pxStrokeWidth = strokeWidth * maxScale;
     float pxDashOffset  = dashOffset  * maxScale;
     std::vector<float> pxDashPattern;
@@ -675,10 +1013,10 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
     }
 
     float pxStartX = startX, pxStartY = startY;
-    TransformPoint(pxStartX, pxStartY, transform);
+    TransformPoint(pxStartX, pxStartY, xform);
 
     std::vector<float> pxCommands;
-    TransformCommandsToPixelSpace(commands, commandLength, transform, pxCommands);
+    TransformCommandsToPixelSpace(commands, commandLength, xform, pxCommands);
 
     std::vector<Contour> contours;
     {
@@ -776,39 +1114,22 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
         }
     }
 
-    if (strokeContours.empty()) return false;
-
-    // GPU stencil-then-cover: a stroke renders as a filled outline (the expanded
-    // stroke contours). Always NonZero — ExpandStroke emits overlapping CCW
-    // triangle soup, which EvenOdd would punch holes in.
-    if (VkStencilPathEnabled()) {
-        VkImpellerDrawBatch batch;
-        if (!BuildVkStencilBatch(std::move(strokeContours), FillRule::NonZero,
-                                 brush.r * brush.a, brush.g * brush.a,
-                                 brush.b * brush.a, brush.a, batch))
-            return false;
-        PushBatch(std::move(batch));
-        encodedPathCount_++;
-        return true;
+    if (strokeContours.empty()) {
+        // Negative cache: an empty expansion is stable for this key — record
+        // it so later frames skip the whole pipeline (mirrors the empty-entry
+        // insert in D3D12's EncodeStrokePathPixelCached analytic branch).
+        if (pxCacheable)
+            StrokePixelCacheInsert(pxKey, std::make_shared<CachedStrokePixelContours>());
+        return false;
     }
 
-    std::vector<PixelRect> rects;
-    rects.reserve(strokeContours.size() * 2);
-    RasterizePathToRects(strokeContours, FillRule::NonZero, rects);
-
-    if (rects.empty()) return false;
-
-    float r = brush.r * brush.a;
-    float g = brush.g * brush.a;
-    float b = brush.b * brush.a;
-    float a = brush.a;
-
-    VkImpellerDrawBatch batch;
-    EmitRectsAsBatch(rects, r, g, b, a, batch);
-    batch.pipelineType = 0;
-    PushBatch(std::move(batch));
-    encodedPathCount_++;
-    return true;
+    if (pxCacheable) {
+        auto entry = std::make_shared<CachedStrokePixelContours>();
+        entry->contours = std::move(strokeContours);
+        StrokePixelCacheInsert(pxKey, entry);
+        return emitStrokeContoursBatch(shiftContours(entry->contours));
+    }
+    return emitStrokeContoursBatch(std::move(strokeContours));
 }
 
 // ============================================================================
@@ -873,7 +1194,8 @@ bool ImpellerVulkanEngine::EncodeFillPolygon(
 
     // GPU stencil-then-cover: emit the (transformed, pixel-space) polygon as a
     // stencil batch instead of CPU-scanline-rasterizing it into pixel quads.
-    if (VkStencilPathEnabled()) {
+    // (E4: analytic-only mode routes to the scanline path below instead.)
+    if (UseStencilPath()) {
         VkImpellerDrawBatch batch;
         if (!BuildVkStencilBatch(std::move(contours), fillRule, r, g, b, a, batch))
             return false;

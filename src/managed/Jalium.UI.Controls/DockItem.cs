@@ -1,7 +1,10 @@
 ﻿using System.Runtime.InteropServices;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Interop.Win32;
 using Jalium.UI.Media;
+using static Jalium.UI.Interop.Win32.Win32Constants;
+using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls;
 
@@ -1429,37 +1432,4 @@ public partial class DockItem : HeaderedContentControl
         }
     }
 
-    #region P/Invoke
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int X;
-        public int Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int left, top, right, bottom;
-    }
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetCursorPos(out POINT lpPoint);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetWindowRect(nint hWnd, out RECT lpRect);
-
-    private const uint SWP_NOZORDER = 0x0004;
-    private const uint SWP_NOACTIVATE = 0x0010;
-    private const uint SWP_NOSIZE = 0x0001;
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowPos(nint hWnd, nint hWndInsertAfter,
-        int X, int Y, int cx, int cy, uint uFlags);
-
-    #endregion
 }

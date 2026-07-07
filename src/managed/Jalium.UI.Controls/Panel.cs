@@ -38,6 +38,29 @@ public abstract class Panel : FrameworkElement
 
     #endregion
 
+    #region IsItemsHost Property
+
+    /// <summary>
+    /// Identifies the IsItemsHost dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsItemsHostProperty =
+        DependencyProperty.Register(nameof(IsItemsHost), typeof(bool), typeof(Panel),
+            new PropertyMetadata(false));
+
+    /// <summary>
+    /// Gets a value indicating whether this panel is the items host of an
+    /// <see cref="ItemsControl"/>. Set by the framework when the panel is installed as the items host;
+    /// enables <see cref="ItemsControl.GetItemsOwner"/> and
+    /// <see cref="ItemsControl.ItemsControlFromItemContainer"/>.
+    /// </summary>
+    public bool IsItemsHost
+    {
+        get => (bool)(GetValue(IsItemsHostProperty) ?? false);
+        internal set => SetValue(IsItemsHostProperty, value);
+    }
+
+    #endregion
+
     #region ZIndex Attached Property
 
     /// <summary>
@@ -381,6 +404,12 @@ public sealed class UIElementCollection : IList<UIElement>
             _parent.RemoveVisualChildInternal(item);
         }
         _items.Clear();
+        // WPF parity: once the children have been detached en masse, let a virtualizing panel
+        // drop its realized bookkeeping. External Children.Clear() callers (ItemsControl
+        // RefreshItems, fallback teardown, app code) would otherwise leave _realizedContainers
+        // pointing at detached zombie containers. Idempotent by contract: the panels' own
+        // ClearRealizedContainers also funnels through here after clearing their maps.
+        (_parent as VirtualizingPanel)?.OnClearChildren();
         if (!IsBatchUpdating) _parent.InvalidateMeasure();
     }
 

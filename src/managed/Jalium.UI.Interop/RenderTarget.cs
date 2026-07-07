@@ -413,6 +413,77 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Arms a one-shot back-buffer readback for the parity verification
+    /// harness: the NEXT <see cref="EndDraw"/> / <see cref="TryEndDraw"/>
+    /// copies the finished back buffer to a CPU-readable staging resource
+    /// right before Present (no extra pipeline stall at request time). Call
+    /// between BeginDraw and EndDraw (or just before BeginDraw), then call
+    /// <see cref="FetchReadback"/> AFTER that EndDraw returns.
+    /// Returns <see cref="JaliumResult.NotSupported"/> on backends without a
+    /// readback implementation — callers treat that as "no comparison data",
+    /// not a failure.
+    /// </summary>
+    public JaliumResult RequestReadback()
+    {
+        ThrowIfDisposed();
+        if (_handle == nint.Zero) return JaliumResult.InvalidState;
+        return JaliumResultMapper.FromCode(NativeMethods.RenderTargetRequestReadback(_handle));
+    }
+
+    /// <summary>
+    /// Retrieves the pixels captured by the EndDraw that consumed the last
+    /// <see cref="RequestReadback"/>. Blocks until the GPU copy completes,
+    /// then fills <paramref name="buffer"/> with tightly-packed BGRA8 rows
+    /// (byte order B,G,R,A; RAW backbuffer bytes converted to BGRA channel
+    /// order only — no alpha un-premultiply; opaque-window scenes carry
+    /// alpha ≈ 1), one row every <paramref name="stride"/> bytes, top-down.
+    /// MUST be called OUTSIDE a BeginDraw..EndDraw scope — the copy's fence
+    /// is only signaled by EndDraw's submit, so a mid-frame fetch waits on a
+    /// fence value that was never queued.
+    /// </summary>
+    /// <param name="buffer">Destination; at least height rows of width*4 bytes.</param>
+    /// <param name="stride">Bytes between destination rows (>= width*4).</param>
+    /// <param name="width">Receives the captured back-buffer width in pixels.</param>
+    /// <param name="height">Receives the captured back-buffer height in pixels.</param>
+    public JaliumResult FetchReadback(byte[] buffer, uint stride, out int width, out int height)
+    {
+        ThrowIfDisposed();
+        width = 0;
+        height = 0;
+        if (_handle == nint.Zero) return JaliumResult.InvalidState;
+        if (buffer == null || buffer.Length == 0 || stride == 0) return JaliumResult.InvalidArgument;
+        if (_isDrawing) return JaliumResult.InvalidState; // contract: outside BeginDraw..EndDraw only
+
+        int resultCode;
+        unsafe
+        {
+            // Two-step: null-buffer size query first, so the capture's real
+            // dimensions (which a resize between capture and fetch could have
+            // diverged from Width/Height) bound the copy BEFORE native writes
+            // a single row — the native side sizes rows purely by its captured
+            // dimensions and cannot see the managed buffer length.
+            resultCode = NativeMethods.RenderTargetFetchReadback(_handle, null, stride, out int capturedW, out int capturedH);
+            if (resultCode != (int)JaliumResult.Ok)
+            {
+                return JaliumResultMapper.FromCode(resultCode);
+            }
+            if (capturedW <= 0 || capturedH <= 0 ||
+                stride < (uint)capturedW * 4u ||
+                (long)stride * capturedH > buffer.Length)
+            {
+                return JaliumResult.InvalidArgument;
+            }
+
+            fixed (byte* p = buffer)
+            {
+                resultCode = NativeMethods.RenderTargetFetchReadback(_handle, p, stride, out width, out height);
+            }
+        }
+
+        return JaliumResultMapper.FromCode(resultCode);
+    }
+
+    /// <summary>
     /// Clears the render target with the specified color.
     /// </summary>
     /// <param name="r">Red component (0-1).</param>
@@ -1022,12 +1093,17 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
-    /// Sets the path stencil-then-cover MSAA sample count (clamped to 1/2/4/8).
-    /// Applied at the next frame boundary. Lower counts trade path edge
-    /// anti-aliasing quality for GPU time; 8 is the highest-quality default.
-    /// Backends without an MSAA path renderer ignore this.
+    /// Sets the path anti-aliasing mode for filled vector paths, applied at the
+    /// next frame boundary. Non-zero values are stencil-then-cover MSAA sample
+    /// counts (clamped to 1/2/4/8); lower counts trade path edge anti-aliasing
+    /// quality for GPU time; 8 is the highest-quality default. The value
+    /// <c>0</c> is a sentinel meaning <b>analytic</b>: no GPU MSAA — solid path
+    /// fills are routed to the engine's analytic coverage rasterizer
+    /// (WPF/Skia-style per-pixel coverage AA), the cheapest option on weak GPUs.
+    /// See <see cref="Jalium.UI.Hosting.PathAntiAliasing"/>. Backends without an
+    /// MSAA path renderer ignore the MSAA counts.
     /// </summary>
-    /// <param name="sampleCount">Desired MSAA sample count (1, 2, 4, or 8).</param>
+    /// <param name="sampleCount">MSAA sample count (1, 2, 4, or 8), or 0 for analytic coverage AA.</param>
     public void SetPathMsaaSampleCount(uint sampleCount)
     {
         ThrowIfDisposed();
@@ -1081,6 +1157,53 @@ public sealed class RenderTarget : IDisposable
             return;
         }
         _native.DestroyRetainedLayer(_handle, layer);
+    }
+
+    /// <summary>
+    /// Whether this native target supports the retained-layer (composited-animation)
+    /// fast path. Test/diagnostic seam — the normal render path goes through
+    /// <see cref="RenderTargetDrawingContext"/>. No-op false when disposed / handleless.
+    /// </summary>
+    internal bool SupportsRetainedLayers()
+        => !_disposed && _handle != nint.Zero
+           && NativeMethods.RenderTargetSupportsRetainedLayers(_handle) != 0;
+
+    /// <summary>
+    /// Begins capturing subsequent draws into a persistent retained layer covering
+    /// (x,y,w,h). Returns the opaque layer handle, or 0 if a layer could not be realized
+    /// (caller must fall back and must NOT call <see cref="RealizeLayerEnd"/>).
+    /// Test/diagnostic seam over the native C ABI.
+    /// </summary>
+    internal nint RealizeLayerBegin(nint existingLayer, float x, float y, float w, float h)
+    {
+        if (_disposed || _handle == nint.Zero)
+        {
+            return nint.Zero;
+        }
+        return NativeMethods.RenderTargetRealizeLayerBegin(_handle, existingLayer, x, y, w, h);
+    }
+
+    /// <summary>Closes a capture scope opened by <see cref="RealizeLayerBegin"/>.</summary>
+    internal void RealizeLayerEnd(nint layer)
+    {
+        if (_disposed || _handle == nint.Zero || layer == nint.Zero)
+        {
+            return;
+        }
+        NativeMethods.RenderTargetRealizeLayerEnd(_handle, layer);
+    }
+
+    /// <summary>
+    /// Composites a realized layer as a single quad at (x,y,w,h) in the current
+    /// (transform/clip) space with the given opacity. Test/diagnostic seam.
+    /// </summary>
+    internal void CompositeLayer(nint layer, float x, float y, float w, float h, float opacity)
+    {
+        if (_disposed || _handle == nint.Zero || layer == nint.Zero)
+        {
+            return;
+        }
+        NativeMethods.RenderTargetCompositeLayer(_handle, layer, x, y, w, h, opacity);
     }
 
     /// <summary>
@@ -1276,6 +1399,51 @@ public sealed class RenderTarget : IDisposable
             cornerRadiusBR,
             cornerRadiusBL);
         ApiEnd("DrawBackdropFilter", t0);
+    }
+
+    /// <summary>
+    /// Draws a backdrop filter effect with the extended material parameter set:
+    /// adds noise intensity (Acrylic film grain), saturation and luminosity
+    /// (Mica vibrancy/brightness) on top of <see cref="DrawBackdropFilter"/>.
+    /// Backends that have not implemented the extended path fall back to the
+    /// blur + tint behaviour, so this is safe to call on any backend.
+    /// </summary>
+    /// <param name="noiseIntensity">Film-grain noise strength (0 = none).</param>
+    /// <param name="saturation">Saturation multiplier on the blurred backdrop (1 = unchanged).</param>
+    /// <param name="luminosity">Brightness multiplier applied after tint/saturation (1 = unchanged).</param>
+    public void DrawBackdropFilterEx(
+        float x, float y, float width, float height,
+        string? backdropFilter,
+        string? material,
+        string? materialTint,
+        float materialTintOpacity,
+        float materialBlurRadius,
+        float noiseIntensity,
+        float saturation,
+        float luminosity,
+        float cornerRadiusTL,
+        float cornerRadiusTR,
+        float cornerRadiusBR,
+        float cornerRadiusBL)
+    {
+        ThrowIfDisposed();
+        long t0 = ApiStart();
+        NativeMethods.DrawBackdropFilterEx(
+            _handle,
+            x, y, width, height,
+            backdropFilter ?? string.Empty,
+            material ?? string.Empty,
+            materialTint ?? string.Empty,
+            materialTintOpacity,
+            materialBlurRadius,
+            noiseIntensity,
+            saturation,
+            luminosity,
+            cornerRadiusTL,
+            cornerRadiusTR,
+            cornerRadiusBR,
+            cornerRadiusBL);
+        ApiEnd("DrawBackdropFilterEx", t0);
     }
 
     /// <summary>

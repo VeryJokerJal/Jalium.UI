@@ -402,9 +402,19 @@ bool D3D12DirectRenderer::RebuildStencilCoverPSOs()
         if (FAILED(device_->CreateGraphicsPipelineState(&psoDesc,
                 IID_PPV_ARGS(&psoStencilFillEvenOdd_)))) return false;
 
-        dss.FrontFace.StencilPassOp = D3D12_STENCIL_OP_INCR_SAT;
+        // NonZero winding accumulation MUST wrap (mod-256), never saturate:
+        // fan triangles regularly decrement FIRST (contour direction decides
+        // which faces rasterize back-facing). With _SAT a decrement at 0 sticks
+        // to 0 and the winding count is destroyed — star wedges over-fill and
+        // painter-order waves collapse to diagonals (parity harness). INCR/DECR
+        // keep the count exact mod 256 (order- and sign-independent; the cover
+        // pass tests stencil != 0 with ref 0 / mask 0xFF, so wrapped negative
+        // counts still read "inside"), matching
+        // docs/reference/pure_d3d12_path_renderer.h:1426 and the Vulkan side
+        // ("_AND_WRAP keeps the count exact" in EnsureStencilCoverResources).
+        dss.FrontFace.StencilPassOp = D3D12_STENCIL_OP_INCR;
         dss.BackFace = dss.FrontFace;
-        dss.BackFace.StencilPassOp = D3D12_STENCIL_OP_DECR_SAT;
+        dss.BackFace.StencilPassOp = D3D12_STENCIL_OP_DECR;
         psoDesc.DepthStencilState = dss;
         if (FAILED(device_->CreateGraphicsPipelineState(&psoDesc,
                 IID_PPV_ARGS(&psoStencilFillNonZero_)))) return false;
@@ -472,6 +482,14 @@ void D3D12DirectRenderer::ApplyPendingPathMsaaSampleCount()
 
 void D3D12DirectRenderer::SetPathMsaaSampleCount(uint32_t sampleCount)
 {
+    // 0 = analytic-only: solid FillPath skips the MSAA stencil path entirely and
+    // uses the active engine's analytic-coverage rasterizer (WPF/Skia-style AA),
+    // which is much cheaper than 8× stencil-then-cover on weak GPUs. The MSAA
+    // sample count is left untouched (still used by any non-solid path that falls
+    // back to the stencil scratch), so toggling analytic off restores the old cost.
+    pathAnalyticOnly_ = (sampleCount == 0);
+    if (pathAnalyticOnly_) return;
+
     // Clamp to the MSAA counts D3D12 hardware universally supports for this use.
     uint32_t clamped = (sampleCount >= 8) ? 8u
                      : (sampleCount >= 4) ? 4u

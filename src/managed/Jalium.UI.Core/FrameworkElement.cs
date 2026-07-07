@@ -1146,7 +1146,23 @@ public partial class FrameworkElement : UIElement
         // don't actually drift when nothing is animating; this comment used to claim
         // otherwise but the real defect it was masking was elsewhere.
         // (WPF parity: layout rounding is opt-in via UseLayoutRounding, off by default.)
+        var previousVisualBounds = _visualBounds;
         _visualBounds = new Rect(x, y, renderSize.Width, renderSize.Height);
+
+        // A layout pass that changed this element's position OR size makes any
+        // retained-mode drawing cache (Visual._cachedDrawing) stale: OnRender was
+        // recorded against the OLD bounds (or was empty when the element had not
+        // been arranged yet — the classic "text is blank until you hover" bug,
+        // where the first OnRender ran pre-layout, produced an empty command list,
+        // and RenderDirect kept replaying it because nothing flipped _isRenderDirty).
+        // Invalidate render so the cache re-records against the new bounds on the
+        // next render pass. This does NOT snap layout to the pixel grid — bounds
+        // stay continuous float for smooth animation; we only mark the cache dirty.
+        // Stable layouts don't change bounds, so the cache still replays for them.
+        if (_visualBounds != previousVisualBounds)
+        {
+            SetRenderDirty();
+        }
 
         // Update _renderSize BEFORE firing SizeChanged so that handlers
         // reading ActualWidth/ActualHeight/RenderSize see the new values.
@@ -1327,27 +1343,17 @@ public partial class FrameworkElement : UIElement
     /// </summary>
     /// <param name="ancestor">The ancestor element. If null, calculates to the root.</param>
     /// <returns>The position offset relative to the ancestor.</returns>
+    /// <remarks>
+    /// Transform-aware: maps this element's local origin through the composed
+    /// <see cref="RenderTransform"/> + <see cref="VisualBounds"/> chain up to (excluding)
+    /// <paramref name="ancestor"/> via <see cref="GetRenderMatrixTo"/>. Under a scale/rotate
+    /// ancestor (e.g. a <c>Viewbox</c> or zoom subtree) the returned point follows that transform,
+    /// fixing IME/UI-Automation/dock-hit placement that previously ignored it. With no transform on
+    /// the chain this reduces to the historical sum of <see cref="VisualBounds"/> offsets.
+    /// </remarks>
     public Point TransformToAncestor(Visual? ancestor)
     {
-        double x = 0;
-        double y = 0;
-
-        Visual? current = this;
-        while (current != null && current != ancestor)
-        {
-            if (current is FrameworkElement fe)
-            {
-                x += fe._visualBounds.X;
-                y += fe._visualBounds.Y;
-            }
-
-            if (current.VisualParent == null)
-                break;
-
-            current = current.VisualParent;
-        }
-
-        return new Point(x, y);
+        return GetRenderMatrixTo(ancestor).Transform(Point.Zero);
     }
 
     #endregion

@@ -3,13 +3,18 @@
 // ============================================================================
 // VelloComputePipeline — the REAL Vello GPU compute pipeline on Vulkan.
 //
-// Mirrors the D3D12 D3D12VelloRenderer::DispatchGPU 11-stage prefix-sum tiling
-// graph (bbox_clear -> flatten -> [clip_reduce -> clip_leaf] -> binning ->
-// tile_alloc -> path_count_setup -> path_count(indirect) -> backdrop -> coarse
-// -> path_tiling_setup -> path_tiling(indirect) -> fine) using the 13 SPIR-V
-// modules embedded in vulkan_vello_shaders.h (regenerated from the canonical
-// D3D12 HLSL with -fvk-use-dx-layout so StructuredBuffer strides byte-match the
-// C++ structs; requires VK_EXT_scalar_block_layout at runtime).
+// Mirrors the D3D12 D3D12VelloRenderer::DispatchGPU prefix-sum tiling graph
+// (bbox_clear -> flatten -> binning -> tile_alloc -> path_count_setup ->
+// path_count(indirect) -> backdrop -> coarse -> path_tiling_setup ->
+// path_tiling(indirect) -> fine) using the 13 SPIR-V modules embedded in
+// vulkan_vello_shaders.h (regenerated from the canonical D3D12 HLSL with
+// -fvk-use-dx-layout so StructuredBuffer strides byte-match the C++ structs;
+// requires VK_EXT_scalar_block_layout at runtime).
+//
+// Clip bboxes are CPU stack-replayed and uploaded per frame (D3D12 parity);
+// the clip_reduce/clip_leaf PSOs are still created but never dispatched —
+// their simplified EndClip branch wrote `self ∩ parent` instead of Vello's
+// "revert to parent context" (see Record()).
 //
 // The CPU scene (PathSegment / PathInfo / PathDraw / DrawTag / DrawMonoid /
 // ClipInp / gradient ramps) is produced by VelloSceneEncoder (jalium_vello_encode.h)
@@ -179,14 +184,14 @@ private:
     VkDescriptorSet  stageSets_[kStageCount] = {};   // valid only during a Record
 
     // Single shared device-local scratch buffers (cross-frame access serialized
-    // by the leading barrier in Record).
+    // by the leading barrier in Record). clipBic_/clipEl_ only back the retained
+    // (never-dispatched) clip_reduce/clip_leaf descriptor sets.
     GpuBuffer bump_;
     GpuBuffer pathBbox_;
     GpuBuffer lineSoup_;
     GpuBuffer intersectedBbox_;
     GpuBuffer clipBic_;
     GpuBuffer clipEl_;
-    GpuBuffer clipBbox_;
     GpuBuffer binHeader_;
     GpuBuffer binData_;
     GpuBuffer velloPath_;
@@ -197,7 +202,9 @@ private:
     GpuBuffer indirect1_;
     GpuBuffer indirect2_;
 
-    // Per-frame host-visible CPU-input buffers (×2).
+    // Per-frame host-visible CPU-input buffers (×2). clipBbox_ carries the
+    // CPU stack-replayed clip bboxes (full Vello Begin/End semantics) read by
+    // binning — it replaces the former clip_reduce/clip_leaf GPU output.
     GpuBuffer config_[kFramesInFlight];
     GpuBuffer pathSegment_[kFramesInFlight];
     GpuBuffer pathInfo_[kFramesInFlight];
@@ -205,6 +212,7 @@ private:
     GpuBuffer drawTag_[kFramesInFlight];
     GpuBuffer drawMonoid_[kFramesInFlight];
     GpuBuffer clipInp_[kFramesInFlight];
+    GpuBuffer clipBbox_[kFramesInFlight];
     GpuBuffer gradientRamp_[kFramesInFlight];
 
     // Single output storage image (RGBA32F) + view, NEAREST sampler, dummy image.

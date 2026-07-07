@@ -369,14 +369,17 @@ private:
 
     // DirectWrite rasterization
     Microsoft::WRL::ComPtr<IDWriteFactory3> dwriteFactory3_;  // cached QI for CreateGlyphRunAnalysis
+    Microsoft::WRL::ComPtr<IDWriteFactory4> dwriteFactory4_;  // cached QI for TranslateColorGlyphRun (color emoji)
     Microsoft::WRL::ComPtr<IDWriteBitmapRenderTarget> bitmapRenderTarget_;  // GDI fallback rasterizer
     Microsoft::WRL::ComPtr<IDWriteRenderingParams> renderingParams_;
 
-    // Rasterizes a single colour-emoji glyph (COLR / CPAL font). STUBBED in B3
-    // to return false so colour glyphs fall through to the mono coverage path.
-    // TODO(B5a): port color-glyph (COLR/CPAL + WIC) — deferred. (D3D12's path
-    // pulls in WIC / d2d1 / IDWriteFactory4; keeping it out of B3 avoids those
-    // link/COM dependencies.)
+    // Rasterizes a single colour-emoji glyph (COLR / CPAL / bitmap-strike font)
+    // by walking IDWriteFactory4::TranslateColorGlyphRun layers and compositing
+    // them (palette-coloured vector masks + WIC-decoded PNG/JPEG/TIFF strikes)
+    // into a premultiplied-RGBA atlas slot flagged isColor. Returns false when
+    // this glyph has no decodable colour representation (DWRITE_E_NOCOLOR,
+    // factory-4-less OS, decode failure) — the caller then falls back. Ported
+    // from D3D12GlyphAtlas::RasterizeColorGlyph (B5a).
     bool RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entry);
 
     bool initialized_ = false;

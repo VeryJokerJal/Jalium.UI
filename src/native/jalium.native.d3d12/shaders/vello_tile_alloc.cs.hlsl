@@ -34,6 +34,15 @@ StructuredBuffer<float4> draw_bboxes : register(t0);
 // DrawTag from CPU encoding — to check tag type
 StructuredBuffer<DrawTag> drawTags : register(t1);
 
+// DrawMonoid: maps draw object index -> path index. The paths[] array is
+// indexed by PATH index everywhere it is READ (path_count.hlsl:88 and
+// coarse.hlsl load `paths[ln.path_ix]` / `paths[dm.path_ix]`), so the write
+// below must use the same index space. Writing paths[drawobj_ix] (the old
+// code) desynced the two spaces from the first EndClip onward: every path
+// after it got its tile data attached to the WRONG slot, silently breaking
+// clip Begin emission and segment ownership for all later paths.
+StructuredBuffer<DrawMonoid> draw_monoids : register(t2);
+
 // BumpAllocators
 RWByteAddressBuffer bump : register(u0);
 
@@ -118,13 +127,21 @@ void main(uint3 globalId : SV_DispatchThreadID, uint3 localId : SV_GroupThreadID
 
     uint tile_offset = sh_tile_offset;
 
-    // Write path structure
+    // Write path structure — indexed by PATH index (dm.path_ix), matching the
+    // readers in path_count/coarse. EndClip objects share their matching
+    // BeginClip's path_ix (CPU DrawMonoid fixup) and allocate no tiles, so
+    // they must NOT write here: doing so would clobber the BeginClip's slot
+    // (bbox 0, dangling tile offset) and erase the clip's tile data.
     if (valid) {
-        uint tile_subix = (localId.x > 0u) ? sh_tile_count[localId.x - 1u] : 0u;
-        VelloPath path;
-        path.bbox = uint4(ux0, uy0, ux1, uy1);
-        path.tiles = tile_offset + tile_subix;
-        paths[drawobj_ix] = path;
+        DrawTag dt2 = drawTags[drawobj_ix];
+        uint path_ix = draw_monoids[drawobj_ix].path_ix;
+        if (dt2.tag != 2u && path_ix < n_path) {
+            uint tile_subix = (localId.x > 0u) ? sh_tile_count[localId.x - 1u] : 0u;
+            VelloPath path;
+            path.bbox = uint4(ux0, uy0, ux1, uy1);
+            path.tiles = tile_offset + tile_subix;
+            paths[path_ix] = path;
+        }
     }
 
     // Zero allocated tiles (cooperative across workgroup)

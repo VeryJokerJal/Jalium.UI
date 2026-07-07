@@ -137,4 +137,75 @@ public static class JaliumAppExtensions
         TouchModeOptions.Current.MinHitTargetSize = Math.Max(0, minHitTargetSize);
         return app;
     }
+
+    /// <summary>
+    /// Selects the rendering strategy the framework uses to turn each frame's damage
+    /// into GPU work. See <see cref="RenderingMode"/> for the modes.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the first-class replacement for the <c>JALIUM_DAMAGE_SCOPED</c>
+    /// environment switch. Default is <see cref="RenderingMode.Adaptive"/> — the
+    /// framework picks per GPU adapter, so most apps never need to call this.
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><see cref="RenderingMode.Adaptive"/> — integrated / software GPUs get
+    ///   <see cref="RenderingMode.Performance"/> (once damage-scoped rendering is
+    ///   available), discrete GPUs get <see cref="RenderingMode.FullFrame"/>.</item>
+    ///   <item><see cref="RenderingMode.Performance"/> — lowest GPU / power; each
+    ///   present only redraws what changed. Best for weak integrated GPUs.</item>
+    ///   <item><see cref="RenderingMode.FullFrame"/> — smoothest / highest fidelity;
+    ///   every present rasterizes the whole window. Best for discrete GPUs.</item>
+    /// </list>
+    /// <example>
+    /// <code>
+    /// using var app = builder.Build();
+    /// app.UseRenderingMode(RenderingMode.Performance);   // force low-GPU path
+    /// app.Run();
+    /// </code>
+    /// </example>
+    /// </remarks>
+    /// <param name="app">The host application.</param>
+    /// <param name="mode">The rendering mode to select. Defaults to <see cref="RenderingMode.Adaptive"/>.</param>
+    public static JaliumApp UseRenderingMode(this JaliumApp app, RenderingMode mode = RenderingMode.Adaptive)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        RenderingModeOptions.Current.Mode = mode;
+        return app;
+    }
+
+    /// <summary>
+    /// Selects the anti-aliasing quality for filled vector paths. See
+    /// <see cref="PathAntiAliasing"/> for the tiers.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Path fills are the dominant per-present GPU cost on weak GPUs (8× stencil-
+    /// then-cover paths measured ~6–7 ms each on an iGPU). Default is
+    /// <see cref="PathAntiAliasing.Msaa8x"/> (unchanged historical behavior).
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><see cref="PathAntiAliasing.Analytic"/> — cheapest; analytic coverage
+    ///   AA (how WPF / Chromium anti-alias 2D vectors). Best for weak integrated GPUs.</item>
+    ///   <item><see cref="PathAntiAliasing.Msaa4x"/> — the common MSAA baseline; roughly
+    ///   halves the path cost vs 8× with near-identical quality.</item>
+    ///   <item><see cref="PathAntiAliasing.Msaa8x"/> — historical default.</item>
+    ///   <item><see cref="PathAntiAliasing.Msaa16x"/> — maximum smoothness (GPU permitting).</item>
+    /// </list>
+    /// <example>
+    /// <code>
+    /// using var app = builder.Build();
+    /// app.UsePathAntiAliasing(PathAntiAliasing.Msaa4x);   // halve path GPU cost
+    /// app.Run();
+    /// </code>
+    /// </example>
+    /// </remarks>
+    /// <param name="app">The host application.</param>
+    /// <param name="mode">The path anti-aliasing quality. Defaults to <see cref="PathAntiAliasing.Msaa8x"/>.</param>
+    public static JaliumApp UsePathAntiAliasing(this JaliumApp app, PathAntiAliasing mode = PathAntiAliasing.Msaa8x)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        RenderQualityOptions.Current.PathAntiAliasing = mode;
+        return app;
+    }
 }

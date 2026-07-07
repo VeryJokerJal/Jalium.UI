@@ -1,3 +1,5 @@
+using Jalium.UI.Media;
+
 namespace Jalium.UI;
 
 /// <summary>
@@ -158,4 +160,64 @@ public sealed class TranslateTransform2D : GeneralTransform
     /// Gets the inverse transform.
     /// </summary>
     public override GeneralTransform Inverse => new TranslateTransform2D(-X, -Y);
+}
+
+/// <summary>
+/// A <see cref="GeneralTransform"/> backed by a full affine <see cref="Matrix"/>, so it can carry
+/// scale/rotation/skew in addition to translation. This is what
+/// <see cref="Visual.TransformToVisual"/> (via <c>GetTransformToRoot</c>) returns so that mapping
+/// coordinates between visuals correctly follows a <c>RenderTransform</c> on the chain
+/// — e.g. inside a <c>Viewbox</c> or a zoom subtree — rather than accumulating translation only.
+/// The wrapped matrix uses the same row-vector (point * matrix), about-origin composition as
+/// <c>UIElement.GetRenderMatrix</c>.
+/// </summary>
+public sealed class MatrixGeneralTransform : GeneralTransform
+{
+    private readonly Matrix _matrix;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="MatrixGeneralTransform"/> class.
+    /// </summary>
+    /// <param name="matrix">The affine matrix that maps a point through this transform.</param>
+    public MatrixGeneralTransform(Matrix matrix)
+    {
+        _matrix = matrix;
+    }
+
+    /// <summary>
+    /// Gets the underlying affine matrix.
+    /// </summary>
+    public Matrix Matrix => _matrix;
+
+    /// <inheritdoc />
+    public override Point Transform(Point inPoint) => _matrix.Transform(inPoint);
+
+    /// <inheritdoc />
+    public override bool TryTransform(Point inPoint, out Point result)
+    {
+        result = _matrix.Transform(inPoint);
+        return true;
+    }
+
+    /// <inheritdoc />
+    public override Rect TransformBounds(Rect rect)
+    {
+        // Transform all four corners and return the smallest axis-aligned box that contains them,
+        // so a rotated/skewed transform still yields a correct (larger) AABB rather than a
+        // translate-only approximation.
+        var p1 = _matrix.Transform(new Point(rect.X, rect.Y));
+        var p2 = _matrix.Transform(new Point(rect.X + rect.Width, rect.Y));
+        var p3 = _matrix.Transform(new Point(rect.X, rect.Y + rect.Height));
+        var p4 = _matrix.Transform(new Point(rect.X + rect.Width, rect.Y + rect.Height));
+
+        double minX = Math.Min(Math.Min(p1.X, p2.X), Math.Min(p3.X, p4.X));
+        double minY = Math.Min(Math.Min(p1.Y, p2.Y), Math.Min(p3.Y, p4.Y));
+        double maxX = Math.Max(Math.Max(p1.X, p2.X), Math.Max(p3.X, p4.X));
+        double maxY = Math.Max(Math.Max(p1.Y, p2.Y), Math.Max(p3.Y, p4.Y));
+        return new Rect(minX, minY, maxX - minX, maxY - minY);
+    }
+
+    /// <inheritdoc />
+    public override GeneralTransform? Inverse =>
+        _matrix.TryInvert(out var inverse) ? new MatrixGeneralTransform(inverse) : null;
 }

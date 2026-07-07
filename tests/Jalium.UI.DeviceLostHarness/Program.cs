@@ -90,6 +90,13 @@ internal static class Program
     // the injection actually ran off it (an inline fallback would inject here).
     internal static int UiThreadId;
 
+    // The render backend this harness run drives (argv[1], default d3d12). All
+    // backend assertions and the WaitForFirstFrame gate check against it, and
+    // JALIUM_RENDER_BACKEND is set to its name at startup so recovery's
+    // GetOrCreateCurrent(Auto, forceReplace) rebuilds on the SAME backend.
+    internal static RenderBackend Backend = RenderBackend.D3D12;
+    internal static string BackendName = "d3d12";
+
     private static IEnumerator<object?> _script = null!;
     private static DispatcherTimer _pump = null!;
 
@@ -100,10 +107,38 @@ internal static class Program
         UiThreadId = Environment.CurrentManagedThreadId;
 
         string scenario = args.Length > 0 ? args[0].ToLowerInvariant() : "midframe";
+        // Optional 2nd positional: the backend to drive (default d3d12 keeps the
+        // original invocation working). Parsed here so JALIUM_RENDER_BACKEND is set
+        // BEFORE any RenderContext / Window construction — that env var is what makes
+        // both the initial context AND every forceReplace recovery resolve to the
+        // requested backend (Window recovery passes _renderBackendOverride==Auto,
+        // which normalizes through RenderBackendSelector.GetPreferredBackend()).
+        string backendArg = args.Length > 1 ? args[1].Trim().ToLowerInvariant() : "d3d12";
+        switch (backendArg)
+        {
+            case "vulkan": case "vk": Backend = RenderBackend.Vulkan; BackendName = "vulkan"; break;
+            case "d3d12": case "dx12": Backend = RenderBackend.D3D12; BackendName = "d3d12"; break;
+            default:
+                Console.WriteLine($"## RESULT FAIL unknown backend '{backendArg}' (expected d3d12 | vulkan)");
+                return ExitFail;
+        }
+        Environment.SetEnvironmentVariable("JALIUM_RENDER_BACKEND", BackendName);
         Console.WriteLine(
-            $"## HARNESS start scenario={scenario} pid={Environment.ProcessId} " +
+            $"## HARNESS start scenario={scenario} backend={BackendName} pid={Environment.ProcessId} " +
             $"renderThreadEnv={Environment.GetEnvironmentVariable("JALIUM_RENDER_THREAD") ?? "<null>"}");
         Console.Out.Flush();
+
+        // Backend-gated scenario support. The retained-layer discrimination and the
+        // #921 injections are D3D12-only machinery (Vulkan keeps retained layers OFF
+        // by default and has no leaked-open-list / Vello-output-orphan hazard shape),
+        // so on a non-D3D12 backend those scenarios SKIP. 'devicelost' is the
+        // backend-agnostic F8 core (inject -> recover -> device changed) both run.
+        if (!IsScenarioSupported(scenario, Backend))
+        {
+            Console.WriteLine($"## RESULT SKIP scenario '{scenario}' is not applicable to backend {BackendName}");
+            Console.Out.Flush();
+            return ExitSkip;
+        }
 
         if (Environment.GetEnvironmentVariable("JALIUM_DEBUG_DEVICE_REMOVE") != "1")
         {
@@ -127,11 +162,19 @@ internal static class Program
 
         try
         {
-            RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
+            var ctx = RenderContext.GetOrCreateCurrent(Backend);
+            // Explicit-backend GetOrCreateCurrent silently falls back to Software when
+            // the requested backend DLL is missing (e.g. no Vulkan runtime); a run
+            // against the wrong backend would be a false pass, so SKIP instead.
+            if (ctx.Backend != Backend)
+            {
+                Console.WriteLine($"## RESULT SKIP requested {BackendName} but got {ctx.Backend} — backend unavailable here");
+                return ExitSkip;
+            }
         }
         catch (Exception ex)
         {
-            Console.WriteLine("## RESULT SKIP cannot create a D3D12 render context: " + ex.Message);
+            Console.WriteLine($"## RESULT SKIP cannot create a {BackendName} render context: " + ex.Message);
             return ExitSkip;
         }
 
@@ -163,6 +206,7 @@ internal static class Program
             "capture" => CaptureScript(window, scene),
             "multiwindow" => MultiwindowScript(window, scene),
             "escapedhandle" => EscapedHandleScript(window, scene),
+            "devicelost" => DeviceLostScript(window, scene),
             "renderthread" => RenderThreadScript(window, scene),
             "leakedresize" => LeakedResizeScript(window, scene),
             "vellooutputorphan" => VelloOutputOrphanScript(window, scene),
@@ -237,7 +281,7 @@ internal static class Program
         Marker($"LAYER_REREALIZED old=0x{layer1:x} new=0x{layer2:x}");
 
         foreach (var x in WaitForBackoffReset(window)) yield return x;
-        AssertBackendStillD3D12(window);
+        AssertBackendStill(window);
         foreach (var x in StableFrames(window, scene, 20)) yield return x;
 
         // Second incident: ResetRenderRecoveryBackoff must have run, so this is
@@ -245,7 +289,7 @@ internal static class Program
         // (2) must NOT be reached and the window must stay on D3D12.
         foreach (var x in InjectAndRecover(window, scene, "round2")) yield return x;
         foreach (var x in WaitForBackoffReset(window)) yield return x;
-        AssertBackendStillD3D12(window);
+        AssertBackendStill(window);
         foreach (var x in StableFrames(window, scene, 10)) yield return x;
         Marker("SCENARIO midframe complete");
     }
@@ -328,7 +372,7 @@ internal static class Program
             window.ForceRenderFrame();
             yield return null;
         }
-        AssertBackendStillD3D12(window);
+        AssertBackendStill(window);
         Marker("SCENARIO leakedresize complete");
     }
 
@@ -387,7 +431,7 @@ internal static class Program
             window.ForceRenderFrame();
             yield return null;
         }
-        AssertBackendStillD3D12(window);
+        AssertBackendStill(window);
         Marker("SCENARIO vellooutputorphan complete");
     }
 
@@ -434,7 +478,7 @@ internal static class Program
             }
 
             foreach (var x in WaitForBackoffReset(window)) yield return x;
-            AssertBackendStillD3D12(window);
+            AssertBackendStill(window);
             // The probe firing again next round also proves the effect-capture
             // path is still being walked (a wedged inOffscreenCapture_ flag
             // would have been the old failure mode).
@@ -486,8 +530,8 @@ internal static class Program
 
         foreach (var x in WaitForBackoffReset(windowA)) yield return x;
         foreach (var x in WaitForBackoffReset(windowB)) yield return x;
-        AssertBackendStillD3D12(windowA);
-        AssertBackendStillD3D12(windowB);
+        AssertBackendStill(windowA);
+        AssertBackendStill(windowB);
 
         foreach (var x in RealizeLayer(windowA, sceneA, "A-postrecovery")) yield return x;
         foreach (var x in RealizeLayer(windowB, sceneB, "B-postrecovery")) yield return x;
@@ -557,8 +601,8 @@ internal static class Program
         Marker("A_RECOVERED_AGAIN");
 
         foreach (var x in WaitForBackoffReset(windowA)) yield return x;
-        AssertBackendStillD3D12(windowA);
-        AssertBackendStillD3D12(windowB);
+        AssertBackendStill(windowA);
+        AssertBackendStill(windowB);
         foreach (var x in StableFrames(windowA, sceneA, 10)) yield return x;
         foreach (var x in StableFrames(windowB, sceneB, 10)) yield return x;
         Marker("SCENARIO multiwindow complete");
@@ -592,36 +636,66 @@ internal static class Program
         AssertTrue(GetCachedLayer(scene.Animated) == escaped,
             "escaped layer survived the recovery sweep (still cached, points at the removed device)");
 
-        // Reattach. On a content-clean eligible frame the parent tries to realize
-        // through the cached handle; the native generation guard
-        // (BeginRetainedLayerCapture: layer->Device() != device_) refuses it
-        // FOREVER, and the managed escaped-handle path (Visual.cs:858-869) must
-        // release it rather than leak the wrapper / pin the dead device.
+        // Reattach. On a content-clean eligible frame the parent tries to
+        // realize through the cached handle; the native generation guard
+        // (BeginRetainedLayerCapture: layer->Device() != device_) refuses the
+        // stale-device handle, so the managed escaped-handle path
+        // (Visual.TryCompositeChildLayer — the realized==0 branch) releases it
+        // via ReleaseLayerIfAny instead of leaking the wrapper / pinning the
+        // dead device.
+        //
+        // Release is observed as the escaped handle LEAVING _cachedLayer, NOT as
+        // _cachedLayer==0. Once the guard refuses and ReleaseLayerIfAny zeroes
+        // _cachedLayer, the subtree is content-clean and still eligible (Opacity
+        // < 1), so the SAME layer path immediately re-realizes a FRESH layer on
+        // the NEW device — the handle bounces escaped -> 0 -> fresh-valid within
+        // a frame or two. Opacity is composition-dirty, so the window schedules
+        // its own present frames between script ticks, and those async frames can
+        // complete the whole bounce between two script polls. A poll that only
+        // looked for _cachedLayer==0 therefore missed the transient zero and then
+        // saw a stable, valid, non-zero handle forever — raising the frame budget
+        // could not help because the zero never returns (this was the ~50% flake).
+        // "cached != escaped" latches once and is race-free; the ORPHAN assertion
+        // below then proves the departed handle was actually destroyed through the
+        // removed-device orphan branch — i.e. released, not merely dropped/leaked.
         root.Children.Add(scene.Animated);
         bool released = false;
-        for (int i = 0; i < 90 && !released; i++)
+        for (int i = 0; i < 600 && !released; i++)
         {
             scene.Animated.Opacity = 0.95 - (i % 8) * 0.005;
             window.ForceRenderFrame();
-            if (GetCachedLayer(scene.Animated) == 0) released = true;
+            // 0 (caught the transient) OR a different, freshly re-realized new-
+            // device handle (the common case): either way the stale handle is
+            // gone from _cachedLayer. The orphan-count check below proves it was
+            // destroyed rather than left dangling.
+            if (GetCachedLayer(scene.Animated) != escaped) released = true;
             else yield return null;
         }
         AssertTrue(released,
             "escaped stale-device layer was RELEASED after the native guard refused it (not retained forever / leaked)");
         Marker("ESCAPED_HANDLE_RELEASED");
 
-        // The released handle was enqueued; the next frame-start drain destroys
-        // it through the NEW device's RT — foreign + removed creating device ->
-        // the orphan branch (the graveyard would be a use-after-free here).
-        window.ForceRenderFrame();
-        window.ForceRenderFrame();
-        ReadCounters(window, out ulong o1, out ulong g1);
+        // The released handle was enqueued; a subsequent frame-start drain
+        // destroys it through the NEW device's RT — foreign + removed creating
+        // device -> the orphan branch (the graveyard would be a use-after-free
+        // here). Poll for the drain instead of assuming a fixed frame count so a
+        // slow drain cannot re-introduce a flake; the counter is monotonic, so
+        // once it moves it stays moved.
+        ulong o1 = o0, g1 = g0;
+        bool orphaned = false;
+        for (int i = 0; i < 120 && !orphaned; i++)
+        {
+            window.ForceRenderFrame();
+            ReadCounters(window, out o1, out g1);
+            if (o1 != o0) orphaned = true;
+            else yield return null;
+        }
         AssertTrue(o1 == o0 + 1,
             $"escaped handle took the ORPHAN branch (foreign + removed creating device) (orphan {o0} -> {o1})");
         Marker($"ESCAPED_HANDLE_ORPHANED o={o1} g={g1}");
 
         foreach (var x in WaitForBackoffReset(window)) yield return x;
-        AssertBackendStillD3D12(window);
+        AssertBackendStill(window);
         foreach (var x in StableFrames(window, scene, 10)) yield return x;
         Marker("SCENARIO escapedhandle complete");
     }
@@ -710,11 +784,103 @@ internal static class Program
             Marker($"SINGLE_RECOVERY round={round} instances={seen.Count}");
 
             foreach (var x in WaitForBackoffReset(window)) yield return x;
-            AssertBackendStillD3D12(window);
+            AssertBackendStill(window);
             foreach (var x in StableFrames(window, scene, 20)) yield return x;
         }
 
         Marker("SCENARIO renderthread complete");
+    }
+
+    // Backend-agnostic F8 core: the device is removed mid-frame (inside
+    // OnRender, between BeginDraw and EndDraw), and the ONLY things asserted are
+    // the parts every backend shares — recovery replaced the render target, a
+    // fresh GPU device came up (device pointer changed on the first incident; see
+    // the address-reuse note below), the backend was preserved, frames stay
+    // stable, and a second incident does NOT downgrade. No retained layers, no
+    // orphan/graveyard discrimination, no #921 hooks — so this runs identically on
+    // D3D12 and Vulkan and is the scenario the Vulkan variant uses to prove its
+    // device-lost recovery chain under the harness.
+    private static IEnumerator<object?> DeviceLostScript(HarnessWindow window, Scene scene)
+    {
+        foreach (var x in WaitForFirstFrame(window)) yield return x;
+        foreach (var x in Warmup(window, 5)) yield return x;
+
+        for (int round = 1; round <= 2; round++)
+        {
+            var rtBefore = window.RenderTarget;
+            AssertTrue(rtBefore is not null, $"render target present before injection (round {round})");
+            ulong devBefore = DebugDevicePointer(rtBefore!.Handle);
+            AssertTrue(devBefore != 0, $"device pointer readable before injection (round {round})");
+            Marker($"DEVICELOST_BEFORE round={round} dev=0x{devBefore:x}");
+
+            // Arm the mid-frame removal and pump until OnRender fires it.
+            int firedBefore = Volatile.Read(ref window.InjectionsFired);
+            window.ArmInjection();
+            bool fired = false;
+            for (int i = 0; i < 400 && !fired; i++)
+            {
+                scene.Animated.Opacity = 0.93;
+                window.ForceRenderFrame();
+                fired = Volatile.Read(ref window.InjectionsFired) > firedBefore;
+                if (!fired) yield return null;
+            }
+            AssertTrue(fired, $"mid-frame device removal fired (round {round})");
+            AssertTrue(window.LastInjectionResult == 1,
+                $"debug_remove_device returned {window.LastInjectionResult} (round {round}) — the backend's injection hook ran");
+
+            // Recovery: the next classified BeginDraw/EndDraw fails DEVICE_LOST and
+            // the managed chain rebuilds the render target on a fresh context/device.
+            bool replaced = false;
+            for (int i = 0; i < 600 && !replaced; i++)
+            {
+                scene.Animated.Opacity = 0.9;
+                window.ForceRenderFrame();
+                var rt = window.RenderTarget;
+                replaced = rt is not null && !ReferenceEquals(rt, rtBefore);
+                if (!replaced) yield return null;
+            }
+            AssertTrue(replaced, $"render target replaced after device removal (round {round})");
+
+            var rtAfter = window.RenderTarget!;
+            ulong devAfter = DebugDevicePointer(rtAfter.Handle);
+            AssertTrue(devAfter != 0, $"device pointer readable after recovery (round {round})");
+            // The cross-backend proof that a FRESH GPU device came up: the recovered
+            // device pointer differs from the one that was live before the removal
+            // (D3D12: a new ID3D12Device; Vulkan: a new VkDevice). This is a reliable
+            // inequality on the FIRST incident only: recovery disposes the old render
+            // target, which retires its context and frees the old device, so a LATER
+            // recovery's brand-new device can legitimately be handed back the just-
+            // freed address (same reason the midframe scenario does NOT assert
+            // layer2 != layer1). So round 1 asserts the change; round 2 records the
+            // pointers for observability and leans on RT-replacement + no-downgrade
+            // (below) as its deterministic recovery proof.
+            if (round == 1)
+            {
+                AssertTrue(devAfter != devBefore,
+                    $"recovery swapped to a fresh GPU device (before=0x{devBefore:x} after=0x{devAfter:x}, round {round})");
+            }
+            Marker($"DEVICELOST_RECOVERED round={round} before=0x{devBefore:x} after=0x{devAfter:x} changed={(devAfter != devBefore ? 1 : 0)}");
+
+            foreach (var x in WaitForBackoffReset(window)) yield return x;
+            AssertBackendStill(window);
+            foreach (var x in StableFrames(window, scene, 20)) yield return x;
+        }
+
+        Marker($"SCENARIO devicelost complete backend={BackendName}");
+    }
+
+    // D3D12-only scenarios depend on retained-layer promotion (default OFF on
+    // Vulkan) or on #921 injection hooks with no Vulkan analogue. Everything runs
+    // on D3D12; only 'devicelost' (and nothing else, for now) runs on Vulkan.
+    private static bool IsScenarioSupported(string scenario, RenderBackend backend)
+    {
+        if (backend == RenderBackend.D3D12)
+        {
+            return scenario is "midframe" or "capture" or "multiwindow" or "escapedhandle"
+                or "renderthread" or "leakedresize" or "vellooutputorphan" or "devicelost";
+        }
+        // Vulkan (and any future non-D3D12 GPU backend): the portable core only.
+        return scenario == "devicelost";
     }
 
     private static IEnumerator<object?> FailScript(string reason)
@@ -734,9 +900,9 @@ internal static class Program
             var rt = window.RenderTarget;
             if (rt is not null)
             {
-                if (rt.Backend != RenderBackend.D3D12)
+                if (rt.Backend != Backend)
                 {
-                    Console.WriteLine($"## RESULT SKIP window came up on {rt.Backend}, not D3D12 — no real-GPU coverage here");
+                    Console.WriteLine($"## RESULT SKIP window came up on {rt.Backend}, not {BackendName} — no real-GPU coverage here");
                     Console.Out.Flush();
                     Environment.Exit(ExitSkip);
                 }
@@ -861,15 +1027,20 @@ internal static class Program
 
     // ── assertions / reflection / markers ───────────────────────────────────
 
-    private static void AssertBackendStillD3D12(Window window)
+    // Asserts the REQUESTED backend (Program.Backend) survived recovery and that
+    // no backend/software fallback was latched. _renderBackendOverride staying
+    // Auto is correct for BOTH backends: the harness selects the backend through
+    // JALIUM_RENDER_BACKEND (which drives GetPreferredBackend), never by pinning
+    // the window override, so a single incident must leave the override at Auto.
+    private static void AssertBackendStill(Window window)
     {
         var rt = window.RenderTarget;
-        AssertTrue(rt is not null && rt.Backend == RenderBackend.D3D12,
-            $"backend stayed D3D12 after recovery (actual: {rt?.Backend.ToString() ?? "<none>"})");
+        AssertTrue(rt is not null && rt.Backend == Backend,
+            $"backend stayed {BackendName} after recovery (actual: {rt?.Backend.ToString() ?? "<none>"})");
         string overrideBackend = GetField<object>(window, "_renderBackendOverride")?.ToString() ?? "?";
         AssertTrue(overrideBackend == "Auto",
             $"_renderBackendOverride stayed Auto (actual: {overrideBackend}) — a single incident must not trigger the software fallback");
-        Marker($"BACKEND_OK d3d12 override={overrideBackend}");
+        Marker($"BACKEND_OK {BackendName} override={overrideBackend}");
     }
 
     private static void ReadCounters(HarnessWindow window, out ulong orphaned, out ulong graveyard)

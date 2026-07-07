@@ -50,6 +50,26 @@ public sealed partial class Dispatcher : IDisposable
     private const string MessageWindowClassName = "JaliumDispatcherMessageWindow";
     private const uint WM_DISPATCHER_INVOKE = 0x0400 + 1; // WM_USER + 1
 
+    // Input message ranges drained by DrainPendingInputMessages (client-area input
+    // only; non-client messages stay with the regular pump).
+    private const uint WM_QUIT = 0x0012;
+    private const uint WM_KEYFIRST = 0x0100;   // WM_KEYDOWN
+    private const uint WM_KEYLAST = 0x0109;    // WM_UNICHAR
+    private const uint WM_MOUSEFIRST = 0x0200; // WM_MOUSEMOVE
+    private const uint WM_MOUSELAST = 0x020E;  // WM_MOUSEHWHEEL
+    private const uint WM_TOUCHFIRST = 0x0240; // WM_TOUCH
+    private const uint WM_POINTERLAST = 0x0253; // WM_POINTERROUTEDRELEASED
+    private const uint PM_REMOVE = 0x0001;
+
+    // MsgWaitForMultipleObjectsEx: the primary Windows pump (RunWindowsMessageLoop)
+    // blocks on the work-available kernel event OR any incoming input/message, so a
+    // posted dispatcher wake no longer outranks hardware input the way a bare
+    // GetMessage loop does (Win32 retrieval order is posted > input).
+    private const uint QS_ALLINPUT = 0x04FF;         // input | posted | timer | paint | hotkey | send
+    private const uint MWMO_INPUTAVAILABLE = 0x0004; // return even if a message is already queued
+    private const uint INFINITE = 0xFFFFFFFF;
+    private const uint WAIT_FAILED = 0xFFFFFFFF;
+
     private static readonly bool s_isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 
     private const int MinDispatchPriority = (int)DispatcherPriority.SystemIdle; // 1; Inactive(0)/Invalid(-1) never run
@@ -451,6 +471,7 @@ public sealed partial class Dispatcher : IDisposable
             wake = true;
         }
 
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.ENQ);
         _hooks?.RaiseOperationPosted(op, EventArgs.Empty);
         if (wake)
             NotifyDispatcherThread();
@@ -517,11 +538,32 @@ public sealed partial class Dispatcher : IDisposable
     public void ProcessQueue()
     {
         VerifyAccess();
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.PQ);
 
         if (Volatile.Read(ref _disableProcessingCount) > 0)
+        {
+            Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.PQ_DISABLED);
             return; // processing disabled; work stays queued until re-enabled re-posts a wake
+        }
 
-        while (true)
+        // Bounded batch: process only the operations that were already queued when
+        // this dispatch started. Draining until the queue is empty starves the
+        // Win32 message pump during continuous animation — every batch re-enqueues
+        // the next frame's work (RaiseRendering → ProcessRender → RearmTimer, flush
+        // and retry timers firing mid-render), so the queue never empties, GetMessage
+        // is never called, and input (mouse wheel, moves) queues up for the whole
+        // animation ("one scroll animation must finish before the next begins").
+        // No wake-up is lost by returning early: NotifyDispatcherThread posts one
+        // WM_DISPATCHER_INVOKE per enqueue, so the remaining operations always have
+        // at least as many wake messages still sitting in the OS queue — behind any
+        // input messages that arrived first, which is exactly the point.
+        int budget;
+        lock (_instanceLock)
+        {
+            budget = _queue.Count;
+        }
+
+        while (budget-- > 0)
         {
             if (Volatile.Read(ref _disableProcessingCount) > 0)
                 break;
@@ -530,13 +572,17 @@ public sealed partial class Dispatcher : IDisposable
             if (op == null)
                 break;
 
+            Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.OP);
             DispatchOperation(op);
         }
 
         lock (_instanceLock)
         {
+            Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_QDEPTH, _queue.Count);
             if (_queue.Count == 0)
                 _workAvailable.Reset();
+            // Non-empty: keep _workAvailable set so the non-Windows PushFrame loop
+            // (ProcessQueue(); Wait(...)) starts the next batch immediately.
         }
     }
 
@@ -620,29 +666,18 @@ public sealed partial class Dispatcher : IDisposable
         VerifyAccess();
         if (_isShutdown)
             throw new InvalidOperationException("Cannot perform this operation while dispatcher processing is suspended.");
+        if (Volatile.Read(ref _disableProcessingCount) > 0)
+            throw new InvalidOperationException(
+                "Cannot pump a dispatcher frame (PushFrame / DispatcherOperation.Wait) while processing is disabled " +
+                "via DisableProcessing: dispatcher work cannot run, so the frame would never complete. Close the " +
+                "DisableProcessing scope before pumping.");
 
         Interlocked.Increment(ref s_frameDepth);
         try
         {
             if (s_isWindows)
             {
-                // Classic Win32 modal pump. The dispatcher's message-only window delivers
-                // WM_DISPATCHER_INVOKE -> ProcessQueue, so queued work runs here too.
-                while (frame.Continue)
-                {
-                    int result = GetMessageW(out var msg, nint.Zero, 0, 0);
-                    if (result == 0) // WM_QUIT
-                    {
-                        // Re-post so the outermost loop also sees the quit, then exit this frame.
-                        PostQuitMessage((int)msg.wParam);
-                        break;
-                    }
-                    if (result == -1) // error
-                        break;
-
-                    TranslateMessageW(ref msg);
-                    DispatchMessageW(ref msg);
-                }
+                RunWindowsMessageLoop(frame);
             }
             else
             {
@@ -660,6 +695,183 @@ public sealed partial class Dispatcher : IDisposable
         {
             Interlocked.Decrement(ref s_frameDepth);
         }
+    }
+
+    /// <summary>
+    /// Primary Windows pump. Owns its wake (the work-available kernel event) and
+    /// orders the turn input-first, instead of letting <c>GetMessage</c> impose
+    /// Win32's fixed retrieval priority.
+    /// </summary>
+    /// <remarks>
+    /// A classic <c>while (GetMessage) DispatchMessage</c> loop retrieves messages
+    /// in the order sent &gt; <b>posted</b> &gt; input(hardware) &gt; WM_PAINT &gt;
+    /// WM_TIMER. The render/animation wake is a <b>posted</b> message
+    /// (<see cref="WM_DISPATCHER_INVOKE"/>), so a continuously-rendering UI always
+    /// keeps a wake sitting ahead of pending mouse/keyboard input and starves it
+    /// for the whole animation ("the current scroll must finish before the next
+    /// notch lands"). The bounded <see cref="ProcessQueue"/> batch and
+    /// <see cref="DrainPendingInputMessages"/> only blunt this; the pump's own
+    /// <c>GetMessage</c> still picks the next posted wake ahead of input.
+    ///
+    /// This loop removes the inversion by not letting <c>GetMessage</c> choose the
+    /// order. Each turn: (1) drain pending hardware input FIRST; (2) run a bounded
+    /// dispatcher batch directly — this also <see cref="ManualResetEventSlim.Reset"/>s
+    /// the work-available event when the queue empties, so the primary pump does
+    /// not depend on the posted wake and cannot busy-spin at idle; (3) pump at most
+    /// one other OS message (WM_PAINT / non-client / the modal-loop fallback wake /
+    /// WM_QUIT) then loop back to re-drain input; (4) when genuinely idle, block on
+    /// the work-available event OR any incoming input via
+    /// <see cref="MsgWaitForMultipleObjectsEx"/>.
+    ///
+    /// <see cref="NotifyDispatcherThread"/> still posts <see cref="WM_DISPATCHER_INVOKE"/>
+    /// (idempotent through the wake latch) purely as a fallback so OS-driven nested
+    /// modal loops we do NOT own — menu tracking, DefWindowProc move/size, MessageBox,
+    /// OLE drag — keep servicing dispatcher work. In this loop that posted wake is
+    /// just another message drained in step (3), always after input.
+    /// </remarks>
+    private void RunWindowsMessageLoop(DispatcherFrame frame)
+        => RunWindowsMessageLoopCore(frame, outermost: false);
+
+    /// <summary>
+    /// Runs the top-level Windows message loop with the same input-first ordering as
+    /// nested frames, returning the WM_QUIT exit code. Application.Run routes through
+    /// this so the PRIMARY pump — not only nested frames driven by PushFrame /
+    /// DispatcherOperation.Wait — stops a posted dispatcher wake from outranking
+    /// hardware input. Windows only; cross-platform hosts keep their own loop.
+    /// </summary>
+    public int RunMainMessageLoop()
+    {
+        VerifyAccess();
+        if (!s_isWindows)
+            throw new PlatformNotSupportedException(
+                "RunMainMessageLoop is the Windows pump; use PushFrame/Run on other platforms.");
+        return RunWindowsMessageLoopCore(new DispatcherFrame(), outermost: true);
+    }
+
+    /// <summary>
+    /// Runs a nested, input-first modal message loop that pumps while
+    /// <paramref name="keepRunning"/> returns true (re-checked each turn and before
+    /// each idle block). Window.ShowDialog uses this so a modal dialog gets the same
+    /// input-first ordering as the main pump, and a WM_QUIT is re-posted so the
+    /// application's main loop still exits. Windows only; a no-op elsewhere.
+    /// </summary>
+    public void RunModalLoop(Func<bool> keepRunning)
+    {
+        ArgumentNullException.ThrowIfNull(keepRunning);
+        VerifyAccess();
+        if (!s_isWindows)
+            return;
+        Interlocked.Increment(ref s_frameDepth);
+        try { RunWindowsMessageLoopCore(new DispatcherFrame(), outermost: false, keepRunning); }
+        finally { Interlocked.Decrement(ref s_frameDepth); }
+    }
+
+    private int RunWindowsMessageLoopCore(DispatcherFrame frame, bool outermost, Func<bool>? keepRunning = null)
+    {
+        int exitCode = 0;
+
+        // Materialize the kernel HANDLE backing the work-available event once and
+        // ref-count it for the loop's lifetime, so a concurrent Dispatcher.Dispose
+        // (which closes _workAvailable's SafeWaitHandle) cannot close the HANDLE out
+        // from under an in-flight MsgWaitForMultipleObjectsEx. ManualResetEventSlim
+        // lazily creates the underlying event on first WaitHandle access; Set()
+        // (NotifyDispatcherThread) and Reset() (ProcessQueue, when the queue drains
+        // empty) drive it.
+        WaitHandle waitHandle = _workAvailable.WaitHandle;
+        var safeWaitHandle = waitHandle.SafeWaitHandle;
+        bool handleRefAdded = false;
+        try
+        {
+            safeWaitHandle.DangerousAddRef(ref handleRefAdded);
+            nint wakeHandle = safeWaitHandle.DangerousGetHandle();
+
+            // keepRunning: nested modal pumps (Window.ShowDialog) stop when it
+            // returns false (re-checked each turn AND before the idle block so a
+            // dialog closed mid-turn does not block until the next message); the
+            // main / nested-frame pumps pass null and stop on frame.Continue.
+            while (frame.Continue && (keepRunning is null || keepRunning()))
+            {
+                // (1) Input first — cut hardware input ahead of any posted wake.
+                DrainPendingInputMessages();
+                if (!frame.Continue)
+                    break;
+
+                // (2) Dispatcher work directly. The bounded batch resets the wake
+                //     event when the queue empties, so idle in step (4) does not
+                //     busy-spin on a still-signaled event.
+                ProcessQueue();
+                if (!frame.Continue)
+                    break;
+
+                // (3) At most one non-input OS message per turn, then loop back to
+                //     re-drain input — keeps input strictly ahead under a message
+                //     burst (including a flood of posted dispatcher wakes).
+                if (PumpOnePendingMessage(outermost, out bool quit, out int code))
+                {
+                    if (quit)
+                    {
+                        exitCode = code;
+                        break;
+                    }
+                    continue;
+                }
+                if (!frame.Continue || (keepRunning is not null && !keepRunning()))
+                    break;
+
+                // (4) Idle: nothing queued, no message waiting. Block until woken.
+                //     Normally wait on the work-available event OR any incoming
+                //     input/message (MWMO_INPUTAVAILABLE returns immediately if a
+                //     message is already queued, closing the enqueue/wait race).
+                //     While processing is disabled the event can be stuck signaled
+                //     over work we are not allowed to drain (ProcessQueue early-
+                //     returns and never Resets it) — waiting on the event there would
+                //     busy-spin, so wait on messages ONLY (nCount 0, MSDN "waits only
+                //     for an input event"); EnableProcessing posts a wake message.
+                uint wakeCount = Volatile.Read(ref _disableProcessingCount) > 0 ? 0u : 1u;
+                uint r = MsgWaitForMultipleObjectsEx(
+                    wakeCount, ref wakeHandle, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+                if (r == WAIT_FAILED)
+                    break;
+            }
+        }
+        finally
+        {
+            if (handleRefAdded)
+                safeWaitHandle.DangerousRelease();
+        }
+
+        return exitCode;
+    }
+
+    /// <summary>
+    /// Retrieves and dispatches at most one pending message of any class.
+    /// Returns <see langword="true"/> if a message was handled (the caller loops
+    /// back to re-drain input first); sets <paramref name="quit"/> when WM_QUIT was
+    /// seen (re-posted for outer pumps, caller stops). Returns <see langword="false"/>
+    /// when the queue holds no message.
+    /// </summary>
+    private bool PumpOnePendingMessage(bool outermost, out bool quit, out int exitCode)
+    {
+        quit = false;
+        exitCode = 0;
+        if (!PeekMessageW(out var msg, nint.Zero, 0, 0, PM_REMOVE))
+            return false;
+
+        if (msg.message == WM_QUIT)
+        {
+            exitCode = unchecked((int)msg.wParam);
+            quit = true;
+            // Nested frame: re-post so the OUTER pump also observes the quit.
+            // Outermost (Application.Run): consume it and return the exit code —
+            // there is no pump above us to see a re-posted WM_QUIT.
+            if (!outermost)
+                PostQuitMessage(exitCode);
+            return true;
+        }
+
+        TranslateMessageW(ref msg);
+        DispatchMessageW(ref msg);
+        return true;
     }
 
     /// <summary>
@@ -774,12 +986,135 @@ public sealed partial class Dispatcher : IDisposable
     {
         if (msg == WM_DISPATCHER_INVOKE)
         {
+            Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.WAKE);
+            // Release the wake latch BEFORE the batch: operations enqueued while
+            // the batch runs must be able to post the next wake themselves.
+            Interlocked.Exchange(ref _wakeInFlight, 0);
             ProcessQueue();
+            // Input fairness: Win32 GetMessage retrieval priority is sent > posted >
+            // input (hardware). During continuous animation every frame re-enqueues
+            // dispatcher work, and every enqueue posts one WM_DISPATCHER_INVOKE, so
+            // the posted queue is effectively never empty at the moment GetMessage
+            // runs — hardware input (mouse wheel, keys) is starved for the whole
+            // animation and then flushes as one OS-coalesced lump when the frame
+            // chain finally idles ("scrolling queues up: the current scroll animation
+            // must finish before the next notch lands"). The bounded ProcessQueue
+            // batch alone cannot fix this: it returns to the pump, but the pump's
+            // GetMessage still picks the next posted wake ahead of any input.
+            // Remedy: after each dispatcher batch, explicitly pull pending INPUT
+            // messages out of the queue (range-filtered PeekMessage ignores posted
+            // wakes) and dispatch them, so input cuts ahead of the wake flood.
+            DrainPendingInputMessages();
+            // Wake coalescing invariant: "queue non-empty ⇒ at least one wake in
+            // flight". Work left by the bounded batch (or enqueued during it whose
+            // Notify lost the latch race against a wake that is being consumed
+            // right now) gets its follow-up wake here; NotifyDispatcherThread is
+            // idempotent through the latch, so this never stacks duplicates.
+            // Skipped while processing is disabled — re-notifying there would spin
+            // the pump (ProcessQueue returns without draining); EnableProcessing
+            // re-posts the wake that resumes the queue.
+            if (Volatile.Read(ref _disableProcessingCount) == 0)
+            {
+                bool hasWork;
+                lock (_instanceLock)
+                {
+                    hasWork = _queue.Count > 0;
+                }
+                if (hasWork)
+                {
+                    NotifyDispatcherThread();
+                }
+            }
             return nint.Zero;
         }
 
         return DefWindowProcW(hwnd, msg, wParam, lParam);
     }
+
+    // True while DrainPendingInputMessages is dispatching input on this dispatcher's
+    // thread. An input handler may run a nested pump (modal dialog, drag loop, menu);
+    // wake messages dispatched there re-enter MessageWindowProc — the flag keeps the
+    // nested level from starting a second drain on top of the first (bounding stack
+    // growth to what nested frames already introduce by design).
+    private bool _drainingInput;
+
+    // Upper bound of input messages dispatched per drain call. Keeps an input storm
+    // (e.g. autorepeat, high-rate wheel) from reverse-starving dispatcher operations:
+    // at most this many input dispatches run between two dispatcher batches.
+    private const int MaxInputMessagesPerDrain = 16;
+
+    /// <summary>
+    /// Dispatches pending hardware/input messages (mouse, keyboard, touch/pointer)
+    /// for this thread so they are not starved behind posted dispatcher wake
+    /// messages. Windows only; called at the tail of each WM_DISPATCHER_INVOKE batch.
+    /// </summary>
+    private void DrainPendingInputMessages()
+    {
+        // Respect the same fences as ProcessQueue: no re-entrant drains, nothing
+        // after shutdown, and nothing inside a DisableProcessing critical region
+        // (dispatching input there could re-enter arbitrary user code).
+        if (_drainingInput || _isShutdown || Volatile.Read(ref _disableProcessingCount) > 0)
+            return;
+
+        _drainingInput = true;
+        try
+        {
+            int budget = MaxInputMessagesPerDrain;
+            bool retrievedAny = true;
+            while (retrievedAny && budget > 0)
+            {
+                retrievedAny = false;
+                // One message per class per pass: PeekMessage range filters preserve
+                // FIFO order within each class, and the round-robin interleaves the
+                // classes instead of draining all of one before the others.
+                if (!TryDispatchOneInputMessage(WM_MOUSEFIRST, WM_MOUSELAST, ref budget, ref retrievedAny))
+                    return;
+                if (!TryDispatchOneInputMessage(WM_KEYFIRST, WM_KEYLAST, ref budget, ref retrievedAny))
+                    return;
+                if (!TryDispatchOneInputMessage(WM_TOUCHFIRST, WM_POINTERLAST, ref budget, ref retrievedAny))
+                    return;
+            }
+        }
+        finally
+        {
+            _drainingInput = false;
+        }
+    }
+
+    // Retrieves and dispatches at most one pending message in [first, last].
+    // Returns false when the drain must stop immediately (a WM_QUIT was synthesized —
+    // PeekMessage returns WM_QUIT regardless of the range filter once PostQuitMessage
+    // has been called and the queue runs dry; re-post it for the outer pump and bail).
+    private bool TryDispatchOneInputMessage(uint first, uint last, ref int budget, ref bool retrievedAny)
+    {
+        if (budget <= 0)
+            return true;
+
+        if (!PeekMessageW(out var msg, nint.Zero, first, last, PM_REMOVE))
+            return true;
+
+        if (msg.message == WM_QUIT)
+        {
+            PostQuitMessage((int)msg.wParam);
+            return false;
+        }
+
+        budget--;
+        retrievedAny = true;
+        TranslateMessageW(ref msg);
+        DispatchMessageW(ref msg);
+        return true;
+    }
+
+    // Wake coalescing latch: 1 while a WM_DISPATCHER_INVOKE is posted but not yet
+    // consumed. One-wake-per-enqueue used to flood the thread's posted queue during
+    // continuous animation (each frame enqueues ~4 ops, each pump pass consumes ONE
+    // wake but batches N ops → the surplus grew unbounded) and hit the Win32
+    // per-thread limit of 10,000 posted messages after ~2 minutes — from then on
+    // EVERY PostMessage on the thread (including TrackMouseEvent's leave messages
+    // and our own wakes) failed randomly and silently. With the latch there is at
+    // most one wake in flight, so the quota can never fill from here.
+    private int _wakeInFlight;
 
     private void NotifyDispatcherThread()
     {
@@ -787,10 +1122,21 @@ public sealed partial class Dispatcher : IDisposable
 
         if (s_isWindows)
         {
-            // Post message to wake up the Win32 message loop
-            if (_messageWindow != nint.Zero)
+            // Post ONE wake per idle→pending transition (see _wakeInFlight). The
+            // consumer releases the latch before running its batch, so an enqueue
+            // racing the batch posts the next wake; MessageWindowProc re-notifies
+            // after the batch when work remains ("queue non-empty ⇒ wake in flight").
+            if (_messageWindow != nint.Zero &&
+                Interlocked.CompareExchange(ref _wakeInFlight, 1, 0) == 0)
             {
-                PostMessageW(_messageWindow, WM_DISPATCHER_INVOKE, nint.Zero, nint.Zero);
+                if (!PostMessageW(_messageWindow, WM_DISPATCHER_INVOKE, nint.Zero, nint.Zero))
+                {
+                    // Roll the latch back so a later enqueue retries. A failure here
+                    // means some OTHER code filled the thread quota — count it, don't
+                    // hide it (19k silent failures once cost a day of diagnosis).
+                    Interlocked.Exchange(ref _wakeInFlight, 0);
+                    Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POST_FAIL);
+                }
             }
         }
         else
@@ -897,6 +1243,10 @@ public sealed partial class Dispatcher : IDisposable
     [LibraryImport("user32.dll", EntryPoint = "GetMessageW")]
     private static partial int GetMessageW(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
 
+    [LibraryImport("user32.dll", EntryPoint = "PeekMessageW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool PeekMessageW(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+
     [LibraryImport("user32.dll", EntryPoint = "TranslateMessage")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool TranslateMessageW(ref MSG lpMsg);
@@ -906,6 +1256,12 @@ public sealed partial class Dispatcher : IDisposable
 
     [LibraryImport("user32.dll")]
     private static partial void PostQuitMessage(int nExitCode);
+
+    // Single-handle overload: pHandles marshals as a pointer to the one HANDLE
+    // (nCount == 1). Returns WAIT_OBJECT_0 for the handle, WAIT_OBJECT_0+1 for a
+    // waiting message, WAIT_FAILED on error.
+    [LibraryImport("user32.dll", EntryPoint = "MsgWaitForMultipleObjectsEx")]
+    private static partial uint MsgWaitForMultipleObjectsEx(uint nCount, ref nint pHandles, uint dwMilliseconds, uint dwWakeMask, uint dwFlags);
 
     #endregion
 }

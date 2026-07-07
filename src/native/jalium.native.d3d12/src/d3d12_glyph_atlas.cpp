@@ -1382,7 +1382,8 @@ uint64_t D3D12GlyphAtlas::HashInstanceKey(uint64_t layoutKey,
                                           float dpiScale,
                                           int32_t aaMode,
                                           int32_t hintingMode,
-                                          float scaleX, float scaleY) noexcept
+                                          float scaleX, float scaleY,
+                                          bool crispAxisAligned) noexcept
 {
     uint64_t h = 0xCBF29CE484222325ull;  // FNV-1a 64-bit
     auto mix = [&h](const void* p, size_t n) {
@@ -1391,6 +1392,13 @@ uint64_t D3D12GlyphAtlas::HashInstanceKey(uint64_t layoutKey,
     };
     mix(&layoutKey, sizeof(layoutKey));
     mix(&dpiScale, sizeof(dpiScale));
+    // The crisp path floors the pen (integer phase) while the rotated/skewed
+    // path keeps it continuous, so the SAME layout at the SAME scale bucket
+    // produces different cached quad X positions depending on this flag — it
+    // must key the memo or a rotated run could be served crisp-floored (or vice
+    // versa) and land glyphs a fraction of a pixel off.
+    uint8_t crispByte = crispAxisAligned ? 1 : 0;
+    mix(&crispByte, sizeof(crispByte));
     // Per-axis transform scale changes the rasterized (deformed) bitmap + atlas
     // slots/UVs for the SAME layout, so it must key the memo: a run cached at one
     // deformation must not be served at another (it would be the wrong stretch).
@@ -1421,7 +1429,8 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     int32_t aaMode,
     int32_t hintingMode,
     float scaleX,
-    float scaleY)
+    float scaleY,
+    bool crispAxisAligned)
 {
     if (!layout || !initialized_) return 0;
 
@@ -1559,7 +1568,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     if (layoutKey != 0) {
         const uint64_t ck = HashInstanceKey(layoutKey, dpiScale_,
                                             effectiveAaMode, effectiveHintingMode,
-                                            sxR, syR);
+                                            sxR, syR, crispAxisAligned);
         auto mit = instMap_.find(ck);
         if (mit != instMap_.end()) {
             if (mit->second->run.gen == atlasGeneration_) {
@@ -1694,12 +1703,19 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
                 // 1:1 against the already-deformed crisp bitmap.
                 // 1:1 text snaps the pen to the integer pixel grid (the sub-pixel
                 // phase is baked into the bitmap via subpixelX) for crisp stable
-                // text. DEFORMED text keeps the pen CONTINUOUS (no floor): each
-                // glyph would otherwise cross integer boundaries at a different
-                // sub-pixel instant as the deform animates, so adjacent glyphs jump
-                // at different times (the "left s still, right s moved" jitter).
-                // The bilinear text PSO samples this continuous position smoothly.
-                float penXForPos = deformed ? penXPhysical : std::floor(penXPhysical);
+                // text. AXIS-ALIGNED scaled text (crispAxisAligned) does the SAME
+                // floor: the bitmap is rasterized at the exact per-axis scale, so
+                // once AddText integer-snaps the post-scaled physical quad the
+                // POINT PSO samples it pixel-exact (this is what removes the soft
+                // grey fringe on scaled/animated labels). ROTATED/SKEWED deform
+                // keeps the pen CONTINUOUS (no floor): each glyph would otherwise
+                // cross integer boundaries at a different sub-pixel instant as the
+                // deform animates, so adjacent glyphs jump at different times (the
+                // "left s still, right s moved" jitter); the bilinear PSO samples
+                // that continuous position smoothly.
+                float penXForPos = (deformed && !crispAxisAligned)
+                    ? penXPhysical
+                    : std::floor(penXPhysical);
                 float glyphX = penXForPos * invDpi + entry.bearingX * invDpi * invRasterX;
                 float glyphY = run.baselineY - offsetY - entry.bearingY * invDpi * invRasterY;
 
@@ -1754,7 +1770,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
         built.gen = atlasGeneration_;
         const uint64_t ck = HashInstanceKey(layoutKey, dpiScale_,
                                             effectiveAaMode, effectiveHintingMode,
-                                            sxR, syR);
+                                            sxR, syR, crispAxisAligned);
         if (auto ex = instMap_.find(ck); ex != instMap_.end()) {
             instLru_.erase(ex->second);
             instMap_.erase(ex);

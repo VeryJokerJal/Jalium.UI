@@ -3,7 +3,9 @@ struct PushConstants
     float4 rect;
     float4 color;
     float2 screenSize;
-    float2 padding;
+    // (shadowMode, shadowSigma) for the analytic erf drop shadow. shadowMode == 0
+    // is a byte-identical no-op for every other primitive.
+    float2 shadowParams;
     float4 roundedClipRect;
     float2 roundedClipRadius;
     float2 clipFlags;
@@ -57,6 +59,16 @@ VsOutput main(uint vertexId : SV_VertexID)
     const uint indices[6] = { 0, 1, 2, 0, 2, 3 };
 
     float2 pixelPosition = gPushConstants.rect.xy + corners[vertexId] * gPushConstants.rect.zw;
+    // Analytic erf drop shadow: grow the quad OUTWARD by 3*sigma+1px on every
+    // side so the gaussian tail is not clipped by the rect edge (the fragment
+    // shader evaluates the erf against the un-grown shadow rect in roundedClipRect,
+    // so growing the quad only extends the shaded region, matching D3D12
+    // sdf_rect's shadow VS). No effect on any other primitive (shadowMode == 0).
+    if (gPushConstants.shadowParams.x > 0.5f) {
+        const float pad = 3.0f * gPushConstants.shadowParams.y + 1.0f;
+        pixelPosition = (gPushConstants.rect.xy - pad)
+                      + corners[vertexId] * (gPushConstants.rect.zw + pad * 2.0f);
+    }
     // Default LOCAL position: the corner inside the axis-aligned rect. Unused by
     // the fragment shader except on the rotated rounded path below, so its exact
     // value is immaterial for every other primitive.

@@ -167,6 +167,51 @@ JALIUM_API JaliumResult jalium_render_target_reclaim_idle_resources(
     JaliumRenderTarget* rt);
 
 // ============================================================================
+// Back-Buffer Readback (backend parity verification)
+// ============================================================================
+
+/// Arms a one-shot back-buffer readback: the render target's NEXT end_draw
+/// copies the finished back buffer to a CPU-readable staging resource right
+/// before Present (riding the frame's own command stream, so requesting a
+/// readback never stalls the pipeline). Pair with
+/// jalium_render_target_fetch_readback after that end_draw returns.
+/// @param rt The render target.
+/// @return JALIUM_OK when latched; JALIUM_ERROR_NOT_SUPPORTED when the
+/// backend has no readback implementation (e.g. Vulkan until its capture
+/// path lands) — callers treat that as "no comparison data available".
+JALIUM_API JaliumResult jalium_render_target_request_readback(
+    JaliumRenderTarget* rt);
+
+/// Fetches the pixels captured by the end_draw that consumed the last
+/// request_readback. Blocks on the frame's fence until the GPU copy is
+/// complete, then writes tightly-packed **BGRA8** rows (byte order B,G,R,A,
+/// 4 bytes/pixel, top-down, one row per `buffer_stride` bytes) into
+/// `buffer`. Returns the RAW backbuffer bytes converted to BGRA channel
+/// order only — no un-premultiply / color conversion (alpha semantics follow
+/// the backend's swap-chain mode; opaque-window scenes carry alpha ≈ 1).
+/// MUST be called after the capturing end_draw returned — never between
+/// begin_draw and end_draw (the copy's fence is signaled by end_draw's
+/// submit).
+/// Size query: passing buffer == NULL writes only out_width/out_height (the
+/// pending capture's dimensions; no fence wait, no copy) and returns
+/// JALIUM_OK, so callers can size the buffer race-free before fetching.
+/// @param rt The render target.
+/// @param buffer Destination pixel buffer (>= out_height rows of out_width*4
+/// bytes), or NULL to query the capture dimensions only.
+/// @param buffer_stride Bytes between two destination rows (>= out_width*4).
+/// @param out_width Receives the captured width in pixels.
+/// @param out_height Receives the captured height in pixels.
+/// @return JALIUM_OK on success; JALIUM_ERROR_INVALID_STATE when no
+/// completed readback exists; JALIUM_ERROR_INVALID_ARGUMENT for a short
+/// stride; JALIUM_ERROR_NOT_SUPPORTED when unimplemented by the backend.
+JALIUM_API JaliumResult jalium_render_target_fetch_readback(
+    JaliumRenderTarget* rt,
+    uint8_t* buffer,
+    uint32_t buffer_stride,
+    int32_t* out_width,
+    int32_t* out_height);
+
+// ============================================================================
 // Render Target Management
 // ============================================================================
 
@@ -574,6 +619,19 @@ JALIUM_API void jalium_push_clip_aliased(JaliumRenderTarget* rt, float x, float 
 /// @param ry The y radius of the corners.
 JALIUM_API void jalium_push_rounded_rect_clip(JaliumRenderTarget* rt, float x, float y, float width, float height, float rx, float ry);
 
+/// Pushes an INVERSE (exclude) rounded rectangle clip onto the stack:
+/// subsequent drawing keeps only the area OUTSIDE the rounded rect (the
+/// interior is masked away). Backends without inverse-clip support push a
+/// balanced no-op clip and draw unmasked. Pop with jalium_pop_clip.
+/// @param rt The render target.
+/// @param x The x coordinate.
+/// @param y The y coordinate.
+/// @param width The width.
+/// @param height The height.
+/// @param rx The x radius of the corners.
+/// @param ry The y radius of the corners.
+JALIUM_API void jalium_push_rounded_rect_clip_exclude(JaliumRenderTarget* rt, float x, float y, float width, float height, float rx, float ry);
+
 /// Pops the top clip from the stack.
 /// @param rt The render target.
 JALIUM_API void jalium_pop_clip(JaliumRenderTarget* rt);
@@ -779,6 +837,19 @@ JALIUM_API JaliumResult jalium_text_format_get_font_metrics(
 // ============================================================================
 // Bitmap Management
 // ============================================================================
+//
+// ALPHA CONTRACT — the raw-pixel entry points below
+// (jalium_bitmap_create_from_pixels / jalium_bitmap_update_pixels) always take
+// STRAIGHT (non-premultiplied) BGRA8. Callers never premultiply and never need
+// to know which backend is active. Each backend converts internally to whatever
+// its bitmap blend requires:
+//   • D3D12 blends premultiplied (SrcBlend=ONE) → it premultiplies the pixels on
+//     upload (see D3D12Backend::CreateBitmapFromPixels / D3D12Bitmap::
+//     UpdatePackedPixels). The encoded path decodes to WIC 32bppPBGRA, which is
+//     already premultiplied, so it is left untouched.
+//   • Vulkan premultiplies while packing its replay staging buffer.
+//   • The software rasterizer blends straight and uses the pixels verbatim.
+// This keeps the alpha semantics uniform across backends and off the caller.
 
 /// Creates a bitmap from encoded image data (PNG, JPEG, etc.).
 /// @param ctx The rendering context.
@@ -792,8 +863,10 @@ JALIUM_API JaliumImage* jalium_bitmap_create_from_memory(
 );
 
 /// Creates a bitmap from raw BGRA8 pixel data.
+/// Pixels are STRAIGHT (non-premultiplied) alpha; the backend premultiplies
+/// internally if its blend needs it (see the ALPHA CONTRACT note above).
 /// @param ctx The rendering context.
-/// @param pixels Raw BGRA8 pixel buffer.
+/// @param pixels Raw straight-alpha BGRA8 pixel buffer.
 /// @param width The bitmap width in pixels.
 /// @param height The bitmap height in pixels.
 /// @param stride The number of bytes between two adjacent rows.
@@ -819,8 +892,10 @@ JALIUM_API uint32_t jalium_bitmap_get_height(JaliumImage* bitmap);
 /// Updates an existing bitmap's pixels in place. Avoids the per-frame
 /// CreateCommittedResource / VkImage churn that destroys swap-chain stability
 /// when a video / WriteableBitmap streams BGRA8 frames at 30+fps.
+/// Pixels are STRAIGHT (non-premultiplied) alpha; the backend premultiplies
+/// internally if its blend needs it (see the ALPHA CONTRACT note above).
 /// @param bitmap The bitmap to update. Must have the same dimensions as the new pixels.
-/// @param pixels The new BGRA8 pixel buffer.
+/// @param pixels The new straight-alpha BGRA8 pixel buffer.
 /// @param width Must match the bitmap's current width; otherwise the call fails.
 /// @param height Must match the bitmap's current height.
 /// @param stride Source row stride in bytes (must be >= width * 4).
@@ -973,8 +1048,9 @@ JALIUM_API void jalium_transition_end_capture(JaliumRenderTarget* rt, int32_t sl
 /// @param h Height of the transition area (in DIPs).
 /// @param progress Transition progress (0.0 - 1.0).
 /// @param mode Shader mode index (0-9).
+/// @param cornerRadius Uniform corner radius (in DIPs) clipping the transition area (0 = square).
 JALIUM_API void jalium_draw_transition_shader(JaliumRenderTarget* rt,
-    float x, float y, float w, float h, float progress, int32_t mode);
+    float x, float y, float w, float h, float progress, int32_t mode, float cornerRadius);
 
 /// Draws a previously captured transition bitmap to the current render target.
 /// @param rt Render target handle.
@@ -1070,6 +1146,7 @@ JALIUM_API void jalium_draw_inner_shadow_effect(JaliumRenderTarget* rt,
     float x, float y, float w, float h,
     float blurRadius, float offsetX, float offsetY,
     float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
     float cornerTL, float cornerTR, float cornerBR, float cornerBL);
 
 JALIUM_API void jalium_draw_color_matrix_effect(JaliumRenderTarget* rt,

@@ -72,44 +72,46 @@ public class InkCanvas : FrameworkElement
     private RenderContext? _inkLayerContext;
 
     // ── GPU ink-layer brush-dispatch failure recovery ──────────────────
-    // A native brush dispatch can refuse a stroke with a non-zero return code.
-    // The ONLY self-healing class is a Vulkan device-generation mismatch:
-    //   -6  the bitmap's generation is device-lost-latched, or
-    //   -7  the shader's pipeline was baked on a different generation than the
-    //       bitmap (a second window on a different VkDevice swapped the
-    //       process-global brush pipeline, so a lazily-compiled shader landed
-    //       on the new generation while this canvas's layer is still on the
-    //       old one — and _shaderHandles caches by ShaderKey with no knowledge
-    //       of the native pipeline swap, so the mismatch is permanent).
+    // A native brush dispatch can refuse a stroke with a non-zero
+    // InkDispatchResult code. The codes are backend-agnostic by contract
+    // (every backend classifies its internal failures before returning), so
+    // recovery here dispatches on the CODE ALONE — never on which backend
+    // produced it. The ONLY self-healing class is
+    // InkDispatchResult.StaleContext: the device generation behind the
+    // handles is gone or inconsistent (device-lost latch, or the shader's
+    // pipeline was baked on a different generation than the bitmap — e.g. a
+    // second window on a different device swapped the process-global brush
+    // pipeline, so a lazily-compiled shader landed on the new generation
+    // while this canvas's layer is still on the old one; _shaderHandles
+    // caches by ShaderKey with no knowledge of the native pipeline swap, so
+    // the mismatch is permanent for these handles).
     // Rebuilding _inkLayer + _previewInkLayer + every _shaderHandle together
     // re-pairs them on the currently-registered pipeline (the native backend
     // hands the rebuilt bitmap and the rebuilt shaders the SAME cached brush
     // pipeline), so the next dispatch succeeds and committed ink is restored by
     // replaying Strokes. We deliberately do NOT rebuild for any other code:
-    // all D3D12 codes (where -6/-7 instead mean a *transient* upload-buffer OOM,
-    // indistinguishable from a device-removed symptom that the window's own
-    // device-lost recovery already handles out-of-band) and Vulkan's transient
-    // -3/-4/-5 must be left to recover on their own — a full teardown+replay
-    // there would amplify a one-frame hiccup into a storm. _inkRebuildPending
-    // defers the rebuild to the next EnsureInkLayer so we never tear resources
-    // down mid-OnRender / mid-replay; if that rebuild still hits a generational
-    // failure during its own replay we latch _inkRebuildSuppressed and fall back
-    // to the CPU ink path until the context instance itself is replaced (real
+    // InkDispatchResult.Transient (momentary upload/command failure — the
+    // handles are still healthy and the next dispatch usually succeeds) and
+    // the InvalidArg/InvalidState classes must be left to recover on their
+    // own — a full teardown+replay there would amplify a one-frame hiccup
+    // into a storm. _inkRebuildPending defers the rebuild to the next
+    // EnsureInkLayer so we never tear resources down mid-OnRender /
+    // mid-replay; if that rebuild still hits a stale-context failure during
+    // its own replay we latch _inkRebuildSuppressed and fall back to the CPU
+    // ink path until the context instance itself is replaced (real
     // device-lost recovery), which clears the latch.
     private bool _inkRebuildPending;
     private bool _inkRebuildSuppressed;
     private int _lastLoggedInkDispatchRc;
 
-    // ── Test seam (production: both null) ──────────────────────────────────
+    // ── Test seam (production: null) ────────────────────────────────────────
     // Lets the GPU-ink failure-recovery state machine be unit-tested without a
-    // real Vulkan device — the only backend whose dispatch -6/-7 are
-    // deterministic generational failures. _inkNativeOpsOverride substitutes the
-    // native ink/brush ops (so DispatchBrush can return a scripted rc and layer/
-    // shader construction succeeds headlessly); _inkBackendOverride makes
-    // HandleInkDispatchFailure classify failures as if the context were that
-    // backend. Both null in production → the real native path is used unchanged.
+    // real GPU device (stale-context failures cannot be coerced on demand and
+    // CI has no ICD to produce them at all). _inkNativeOpsOverride substitutes
+    // the native ink/brush ops (so DispatchBrush can return a scripted rc and
+    // layer/shader construction succeeds headlessly). Null in production → the
+    // real native path is used unchanged.
     internal Jalium.UI.Interop.IInkNativeOps? _inkNativeOpsOverride;
-    internal RenderBackend? _inkBackendOverride;
 
     // Scratch buffer rented from the array pool to marshal stroke points
     // into BrushStrokePoint[] before P/Invoke. Grows on demand; never
@@ -1201,13 +1203,14 @@ public class InkCanvas : FrameworkElement
         if (_inkRebuildSuppressed)
             return;
 
-        // A brush dispatch reported a Vulkan device-generation mismatch (-6/-7)
-        // on an earlier frame. Drop the stale-generation layer + shader handles
-        // now — on the render-pass thread, between frames, never mid-dispatch —
-        // so the rebuild below re-pairs the bitmap and every shader on the
-        // currently-registered pipeline. attemptingGenerationRebuild lets the
-        // post-replay self-check below tell whether the rebuild actually healed
-        // the mismatch.
+        // A brush dispatch reported a stale device generation
+        // (InkDispatchResult.StaleContext) on an earlier frame. Drop the
+        // stale-generation layer + shader handles now — on the render-pass
+        // thread, between frames, never mid-dispatch — so the rebuild below
+        // re-pairs the bitmap and every shader on the currently-registered
+        // pipeline. attemptingGenerationRebuild lets the post-replay
+        // self-check below tell whether the rebuild actually healed the
+        // mismatch.
         bool attemptingGenerationRebuild = false;
         if (_inkRebuildPending)
         {
@@ -1218,10 +1221,12 @@ public class InkCanvas : FrameworkElement
 
         if (_inkLayer == null || !_inkLayer.IsValid)
         {
-            // Backends that don't implement the brush-shader pipeline
-            // (currently Vulkan) return 0 from the native allocation call;
-            // surface that as a quiet InkLayerBitmap construction failure
-            // and fall back to the legacy CPU raster path in OnRender.
+            // Both backends (D3D12 and Vulkan) implement the full GPU
+            // brush-shader ink pipeline; the native allocation only returns 0
+            // on exceptional failure (device lost, DXC shader compiler
+            // unavailable, extreme OOM). Surface that as a quiet
+            // InkLayerBitmap construction failure and fall back to the legacy
+            // CPU raster path in OnRender.
             try
             {
                 _inkLayer        = CreateInkLayerBitmap(context, width, height);
@@ -1295,8 +1300,8 @@ public class InkCanvas : FrameworkElement
             foreach (var s in Strokes)
                 DispatchStrokeToInkLayer(s);
 
-            // If a dispatch during this resize-replay tripped a Vulkan
-            // generational failure (HandleInkDispatchFailure set
+            // If a dispatch during this resize-replay tripped a stale-context
+            // failure (HandleInkDispatchFailure set
             // _inkRebuildPending), the layer was just Cleared but is still
             // valid — so the committed layer would blit it EMPTY for this one
             // frame before the pending rebuild runs next frame. Drop the layers
@@ -1516,25 +1521,25 @@ public class InkCanvas : FrameworkElement
 
     /// <summary>
     /// Reacts to a non-zero return code from a native brush dispatch
-    /// (<see cref="InkLayerBitmap.DispatchBrush"/>). Only Vulkan's deterministic
-    /// device-generation failures — <c>-6</c> (the bitmap's generation is
-    /// device-lost-latched) and <c>-7</c> (the shader's pipeline was baked on a
-    /// different generation than the bitmap) — are self-healing, and they heal
-    /// by rebuilding the whole GPU ink-resource set so the bitmap and all shader
-    /// handles re-pair on the currently-registered pipeline. The rebuild is
-    /// deferred to the next <see cref="EnsureInkLayer"/> so resources are never
-    /// torn down mid-dispatch / mid-replay. Every other outcome (all D3D12 codes
-    /// — where <c>-6/-7</c> are transient upload-buffer OOM, not a generation
-    /// mismatch — and Vulkan's transient <c>-3/-4/-5</c>) is logged once per
-    /// distinct code and left to recover on its own; forcing a teardown there
-    /// would amplify a momentary failure into a full rebuild storm.
+    /// (<see cref="InkLayerBitmap.DispatchBrush"/>). The codes are
+    /// backend-agnostic (<see cref="InkDispatchResult"/>), so recovery is
+    /// picked from the code alone. Only
+    /// <see cref="InkDispatchResult.StaleContext"/> — the device generation
+    /// behind the handles is lost, or the bitmap and shader were baked on
+    /// mismatched generations — is self-healing, and it heals by rebuilding
+    /// the whole GPU ink-resource set so the bitmap and all shader handles
+    /// re-pair on the currently-registered pipeline. The rebuild is deferred
+    /// to the next <see cref="EnsureInkLayer"/> so resources are never torn
+    /// down mid-dispatch / mid-replay. Every other outcome
+    /// (<see cref="InkDispatchResult.Transient"/> and the invalid-arg/state
+    /// classes) is logged once per distinct code and left to recover on its
+    /// own — the handles are still healthy and the next dispatch usually
+    /// succeeds; forcing a teardown there would amplify a momentary failure
+    /// into a full rebuild storm.
     /// </summary>
     private void HandleInkDispatchFailure(int rc)
     {
-        var backend = _inkBackendOverride ?? _inkLayerContext?.Backend;
-        bool generational = backend == RenderBackend.Vulkan && (rc == -6 || rc == -7);
-
-        if (generational)
+        if (rc == InkDispatchResult.StaleContext)
         {
             // Already scheduled a rebuild, or already gave up — nothing to add
             // (also collapses a whole frame's worth of failed strokes into one
@@ -1544,7 +1549,7 @@ public class InkCanvas : FrameworkElement
 
             _inkRebuildPending = true;
             System.Diagnostics.Debug.WriteLine(
-                $"[InkCanvas] Vulkan ink brush dispatch failed rc={rc}; scheduling GPU ink-layer rebuild on the current device generation.");
+                $"[InkCanvas] ink brush dispatch reported a stale device generation (rc={rc}); scheduling GPU ink-layer rebuild on the current device generation.");
             // Schedule a frame so EnsureInkLayer runs and performs the rebuild.
             InvalidateVisual();
         }

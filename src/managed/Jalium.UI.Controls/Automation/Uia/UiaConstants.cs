@@ -46,6 +46,13 @@ internal static class UiaConstants
     internal const int UIA_IsTogglePatternAvailablePropertyId = 30041;
     internal const int UIA_IsSelectionItemPatternAvailablePropertyId = 30037;
     internal const int UIA_IsScrollItemPatternAvailablePropertyId = 30038;
+    internal const int UIA_IsTextPatternAvailablePropertyId = 30040;
+
+    // ========================================================================
+    // UIA Text Attribute IDs (subset surfaced by ITextRangeProvider.GetAttributeValue)
+    // ========================================================================
+
+    internal const int UIA_IsReadOnlyAttributeId = 40015;
 
     // ========================================================================
     // UIA Control Type IDs

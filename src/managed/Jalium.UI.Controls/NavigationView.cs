@@ -31,6 +31,17 @@ public class NavigationView : ContentControl
     private Grid? _rootGrid;
     private ScrollViewer? _paneScrollViewer;
 
+    // Phase-A diagnostic gate (see project_render_arch_damage_driven_bsrc): opt the
+    // content region into compositor-boundary caching. Hovering a nav item only
+    // dirties the pane; without a boundary the content area's cached drawings are
+    // still replayed into the GPU command stream every present (measured: ~10
+    // DrawText + ~10 DrawGeometry per present, scaling with window area). With the
+    // boundary the whole content region composites from one cached texture quad.
+    // Env-gated for clean A/B attribution; the shipping version needs a churn
+    // guardrail for interactive/animated pages (Phase 2).
+    private static readonly bool s_contentBoundaryEnabled =
+        Environment.GetEnvironmentVariable("JALIUM_CONTENT_BOUNDARY") is "1" or "true" or "True";
+
     #endregion
 
     #region Dependency Properties
@@ -371,6 +382,16 @@ public class NavigationView : ContentControl
     /// <param name="content">The content to display.</param>
     public void SetContent(UIElement? content)
     {
+        // Phase-A diagnostic (see project_render_arch_damage_driven_bsrc): flag the
+        // actual page-content element as a compositor boundary so hovering a nav
+        // item composites the whole content region from one cached texture instead
+        // of replaying its text/geometry every present. This is the element that
+        // holds the page (NavigationView uses direct content management, so Content
+        // renders as a child and reaches TryCompositeChildLayer). PART_ContentContainer
+        // is only the background Border and does NOT wrap this, so flagging it there
+        // had no effect. Env-gated; needs a churn guardrail for live pages (Phase 2).
+        if (s_contentBoundaryEnabled && content != null)
+            content.IsLayerBoundary = true;
         Content = content;
     }
 

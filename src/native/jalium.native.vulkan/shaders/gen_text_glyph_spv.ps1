@@ -18,9 +18,10 @@ if ($env:VULKAN_SDK -and (Test-Path (Join-Path $env:VULKAN_SDK 'Bin\dxc.exe'))) 
 }
 if (-not $dxc) { throw "dxc.exe not found (set VULKAN_SDK or put dxc on PATH)" }
 
-function Compile-Spv([string]$src, [string]$profile) {
+function Compile-Spv([string]$src, [string]$profile, [string[]]$defines = @()) {
     $tmp = [System.IO.Path]::GetTempFileName() + '.spv'
-    & $dxc -spirv -T $profile -E main -O3 $src -Fo $tmp | Out-Null
+    $defineArgs = @($defines | ForEach-Object { "-D$_" })
+    & $dxc -spirv -T $profile -E main -O3 @defineArgs $src -Fo $tmp | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "dxc failed for $src" }
     $bytes = [System.IO.File]::ReadAllBytes($tmp)
     Remove-Item $tmp -Force
@@ -45,7 +46,13 @@ function Emit-Array([System.Text.StringBuilder]$sb, [string]$sym, [byte[]]$bytes
 }
 
 $vs = Compile-Spv (Join-Path $ShaderSrcDir 'text_glyph.vert.hlsl') 'vs_6_0'
+# Grayscale FS (default): single SV_Target0 output for the one-attachment text
+# pipeline. ClearType FS (JALIUM_CLEARTYPE): dual-source output with SV_Target0 /
+# SV_Target1 pinned to Location 0, Index 0/1 — the layout Vulkan's *_SRC1_*
+# blend factors read; a bare SV_Target1 would land at Location 1 and never
+# feed the dual-source blend.
 $fs = Compile-Spv (Join-Path $ShaderSrcDir 'text_glyph.frag.hlsl') 'ps_6_0'
+$fsClearType = Compile-Spv (Join-Path $ShaderSrcDir 'text_glyph.frag.hlsl') 'ps_6_0' @('JALIUM_CLEARTYPE=1')
 
 $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine('#pragma once')
@@ -59,6 +66,7 @@ $sb = [System.Text.StringBuilder]::new()
 [void]$sb.AppendLine('namespace jalium {')
 Emit-Array $sb 'kTextGlyphVertSpv' $vs
 Emit-Array $sb 'kTextGlyphFragSpv' $fs
+Emit-Array $sb 'kTextGlyphFragClearTypeSpv' $fsClearType
 [void]$sb.AppendLine('')
 [void]$sb.AppendLine('} // namespace jalium')
 

@@ -53,6 +53,67 @@ void DownsampleBoxBgra(const uint8_t* src, uint32_t srcW, uint32_t srcH,
 
 } // namespace
 
+// Premultiply straight (non-premultiplied) BGRA8 in place: RGB *= A / 255.
+//
+// Alpha contract (see jalium_api.h): the raw-pixel bitmap ABI
+// (jalium_bitmap_create_from_pixels / jalium_bitmap_update_pixels) always
+// receives STRAIGHT alpha. D3D12's bitmap PSO blends premultiplied
+// (SrcBlend=ONE) and bitmap_quad.ps does NOT premultiply in the shader, so raw
+// straight pixels would let anti-aliased / cross-alpha edges bleed bright RGB
+// (the historical white-fringe bug). We premultiply here — once, at the two
+// straight entry points — so the texture the shader samples is premultiplied,
+// matching what the encoded path already gets for free (WIC decodes to
+// 32bppPBGRA in CreateBitmapFromMemory). This is deliberately NOT done in the
+// shared GetOrCreateD3D12Texture upload: that path is also fed by the WIC
+// (already-premultiplied) decode and by the video surface's direct pixelData_
+// writes, either of which would be double-premultiplied. Rows with A==255 copy
+// through untouched, so opaque content is byte-stable.
+void PremultiplyBgraInPlace(uint8_t* pixels, size_t pixelCount) {
+    for (size_t p = 0; p < pixelCount; ++p) {
+        uint8_t* px = pixels + p * 4;
+        const uint8_t a = px[3];
+        if (a == 255) {
+            continue;                    // opaque → premultiply is identity
+        }
+        if (a == 0) {
+            px[0] = px[1] = px[2] = 0;   // fully transparent → RGB carries no colour
+            continue;
+        }
+        px[0] = static_cast<uint8_t>((px[0] * a + 127) / 255);
+        px[1] = static_cast<uint8_t>((px[1] * a + 127) / 255);
+        px[2] = static_cast<uint8_t>((px[2] * a + 127) / 255);
+    }
+}
+
+// True when a run of STRAIGHT-alpha source pixels, once premultiplied, equals
+// the already-premultiplied destination bytes. Used by the UpdatePackedPixels
+// fast-skip: pixelData_ is stored premultiplied, but callers hand us straight
+// pixels every frame, so a raw memcmp would spuriously miss on any
+// semi-transparent content. Premultiplying each source pixel on the fly and
+// comparing keeps the skip correct with zero extra allocation, and
+// short-circuits on the first differing byte just like memcmp did.
+bool PremultipliedRowEquals(const uint8_t* dstPremul, const uint8_t* srcStraight, size_t pixelCount) {
+    for (size_t p = 0; p < pixelCount; ++p) {
+        const uint8_t* d = dstPremul + p * 4;
+        const uint8_t* s = srcStraight + p * 4;
+        const uint8_t a = s[3];
+        uint8_t b, g, r;
+        if (a == 255) {
+            b = s[0]; g = s[1]; r = s[2];
+        } else if (a == 0) {
+            b = g = r = 0;
+        } else {
+            b = static_cast<uint8_t>((s[0] * a + 127) / 255);
+            g = static_cast<uint8_t>((s[1] * a + 127) / 255);
+            r = static_cast<uint8_t>((s[2] * a + 127) / 255);
+        }
+        if (d[0] != b || d[1] != g || d[2] != r || d[3] != a) {
+            return false;
+        }
+    }
+    return true;
+}
+
 D3D12Bitmap::D3D12Bitmap(D3D12Backend* backend, uint32_t width, uint32_t height)
     : width_(width)
     , height_(height)
@@ -94,32 +155,29 @@ bool D3D12Bitmap::UpdatePackedPixels(const uint8_t* pixels, uint32_t width, uint
     // DevTools / live-thumbnail style code often reuses a single
     // WriteableBitmap and calls UpdatePackedPixels every frame even when
     // the content didn't actually change — this turns into a 5–10 ms/frame
-    // GPU upload per bitmap on the user's profile. memcmp short-circuits at
-    // the first differing byte, so genuinely-changed bitmaps pay only the
-    // cost of the diverging prefix; identical bitmaps short-circuit fast
-    // and we skip the entire upload pipeline (preserving the
-    // d3d12TextureValid_ flag the cached upload path checks).
+    // GPU upload per bitmap on the user's profile. The compare short-circuits
+    // at the first differing pixel, so genuinely-changed bitmaps pay only the
+    // cost of the diverging prefix; identical bitmaps short-circuit fast and we
+    // skip the entire upload pipeline (preserving the d3d12TextureValid_ flag
+    // the cached upload path checks). pixelData_ is stored PREMULTIPLIED while
+    // the incoming pixels are straight, so we compare against the premultiplied
+    // form of each source pixel rather than raw bytes (opaque a==255 rows still
+    // compare byte-for-byte).
     if (pixelData_.size() == requiredSize && d3d12TextureValid_ && d3d12Texture_) {
-        if (stride == rowBytes) {
-            if (std::memcmp(pixelData_.data(), pixels, requiredSize) == 0) {
-                bitmap_stats::AddMemcmpShortCircuit();
-                return true;  // No-op: caller's pixels match what we already uploaded.
+        const uint32_t widthPixels = width;
+        bool same = true;
+        for (uint32_t row = 0; row < height; ++row) {
+            if (!PremultipliedRowEquals(pixelData_.data() + row * rowBytes,
+                                        pixels + static_cast<size_t>(row) * stride,
+                                        widthPixels))
+            {
+                same = false;
+                break;
             }
-        } else {
-            bool same = true;
-            for (uint32_t row = 0; row < height; ++row) {
-                if (std::memcmp(pixelData_.data() + row * rowBytes,
-                                pixels + static_cast<size_t>(row) * stride,
-                                rowBytes) != 0)
-                {
-                    same = false;
-                    break;
-                }
-            }
-            if (same) {
-                bitmap_stats::AddMemcmpShortCircuit();
-                return true;
-            }
+        }
+        if (same) {
+            bitmap_stats::AddMemcmpShortCircuit();
+            return true;  // No-op: caller's pixels match what we already uploaded.
         }
     }
 
@@ -136,6 +194,13 @@ bool D3D12Bitmap::UpdatePackedPixels(const uint8_t* pixels, uint32_t width, uint
                         rowBytes);
         }
     }
+
+    // ABI contract: incoming pixels are STRAIGHT alpha. Premultiply the packed
+    // copy so the premultiplied-blend bitmap PSO renders WriteableBitmap /
+    // streamed frames correctly. pixelData_ is never read back as straight by
+    // any consumer (video surface writes raw opaque frames and bypasses this
+    // path entirely), so premultiplying it in place is safe.
+    PremultiplyBgraInPlace(pixelData_.data(), static_cast<size_t>(width) * height);
 
     isDynamic_ = true;          // From now on, prefer in-place upload over recreate.
     d3d12TextureValid_ = false; // Re-upload pixels on next render; main texture stays.

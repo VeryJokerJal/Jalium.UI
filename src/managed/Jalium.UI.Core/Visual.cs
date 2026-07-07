@@ -44,6 +44,32 @@ public abstract class Visual : DependencyObject
     // or a descendant changed CONTENT) and must be re-realized before compositing.
     private bool _layerContentDirty = true;
 
+    // Phase 1 damage-driven compositor: when true this visual is a "layer boundary"
+    // — its subtree rasterizes once into a cached GPU layer (_cachedLayer) and the
+    // parent composites that texture as a quad instead of re-emitting the subtree,
+    // even when the subtree is STATIC (unlike the animation-only fast path above).
+    // A descendant CONTENT change re-realizes ONLY this boundary's layer and stops
+    // propagating subtree-dirty above it (see MarkSubtreeDirtyUp), so a sibling
+    // boundary composites its unchanged texture instead of re-rasterizing every
+    // frame — collapsing a hover from "re-raster all siblings" to "re-raster one".
+    // Set via the Compositor.IsLayerRoot attached property. Opt-in only, non-nested.
+    internal bool _isCompositorBoundary;
+
+    /// <summary>
+    /// Phase 1 damage-driven compositor opt-in: marks this visual as a layer
+    /// boundary so its (possibly static) subtree caches into a GPU layer and
+    /// siblings re-composite instead of re-rasterizing on an unrelated change.
+    /// Set by controls (e.g. NavigationViewItem) opting a content-stable container
+    /// in. MUST be non-nested (no boundary ancestor) — a nested boundary loses the
+    /// win and can stale-composite an outer texture. See MarkSubtreeDirtyUp /
+    /// TryCompositeChildLayer.
+    /// </summary>
+    protected internal bool IsLayerBoundary
+    {
+        get => _isCompositorBoundary;
+        set => _isCompositorBoundary = value;
+    }
+
     // Layers whose owning visual was evicted / detached / GC'd WITHOUT a live
     // render context (no render target handle to call destroy on). Drained and
     // destroyed (fence-gated, native side) once per frame by the drawing context.
@@ -416,9 +442,28 @@ public abstract class Visual : DependencyObject
         var current = this;
         while (current != null)
         {
+            // Damage-driven compositor boundary: a descendant CONTENT change makes
+            // this boundary re-realize its own cached layer.
+            if (current._isCompositorBoundary)
+            {
+                current._isRenderDirty = true;
+            }
+            // Propagate subtree-dirty ALL THE WAY UP — do NOT stop at the boundary.
+            // TryCompositeChildLayer bakes an ELIGIBLE ancestor's whole subtree into a
+            // single cached texture and composites it WITHOUT descending (its gate is
+            // !_isRenderDirty && !_isSubtreeDirty). If a descendant change stopped at
+            // the inner boundary, such an ancestor stays "content-clean" and composites
+            // its STALE texture — the changed element (a hover Background highlight,
+            // IsSelected, any content update) is never re-realized and never repaints
+            // until a full invalidation, i.e. "only repaints when the mouse moves".
+            // Marking _isSubtreeDirty up forces every caching ancestor to re-descend
+            // and re-realize the dirty element. Sibling subtrees are unaffected — a
+            // content-clean sibling still composites its own cached texture — and
+            // non-caching ancestors already descend unconditionally, so this only ever
+            // changes the behaviour of an ancestor that would otherwise composite stale.
             if (current._isSubtreeDirty)
             {
-                break; // Already marked, ancestors also marked
+                break; // already propagated to the root by an earlier mark this frame
             }
             current._isSubtreeDirty = true;
             current = current._parent;
@@ -829,7 +874,19 @@ public abstract class Visual : DependencyObject
         {
             s_pendingLayerDestroy.Enqueue(v._cachedLayer);
             v._cachedLayer = 0;
-            v._layerContentDirty = true;
+            // The just-released layer was being composited at this element's screen slot
+            // (typically WITH a live sub-1 opacity / transform while an animation ran).
+            // Now the element drops back to inline rendering — e.g. an Opacity fade that
+            // animated 0→1 loses layer eligibility (hasComposite == false) at exactly 1.0.
+            // Only flagging _layerContentDirty is not enough: the element's own recorded
+            // drawing is NOT re-recorded (that gate keys off _isRenderDirty) and, crucially,
+            // no ancestor is told to re-descend, so a caching ancestor keeps compositing the
+            // released layer's STALE mid-animation (translucent) result — the element never
+            // settles to its final appearance until a mouse-driven full repaint. This is the
+            // generic "opacity-fade popup stays half-transparent" animation bug. SetRenderDirty
+            // flips _isRenderDirty + _layerContentDirty AND propagates subtree-dirty to the
+            // root so every caching ancestor re-realizes this element at its final opacity.
+            v.SetRenderDirty();
         }
     }
 
@@ -864,6 +921,7 @@ public abstract class Visual : DependencyObject
     /// </summary>
     private bool TryCompositeChildLayer(DrawingContext drawingContext, UIElement child, Point childOffset)
     {
+        if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.LAYER_SEEN);
         if (drawingContext is not ILayerCompositingDrawingContext layerCtx || !layerCtx.SupportsRetainedLayers)
             return false;
         if (drawingContext is not IOffsetDrawingContext offsetContext)
@@ -873,6 +931,7 @@ public abstract class Visual : DependencyObject
         // non-cacheable visuals opt out of retained-mode entirely.
         if (!child.ParticipatesInRenderCache || (child.Effect is IEffect ce && ce.HasEffect))
         {
+            if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.CB_NOCACHE);
             ReleaseLayerIfAny(child);
             return false;
         }
@@ -881,6 +940,7 @@ public abstract class Visual : DependencyObject
         // frame; keep the layer but mark it for re-realization once clean.
         if (child._isRenderDirty || child._isSubtreeDirty)
         {
+            if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.LAYER_DIRTY);
             child._layerContentDirty = true;
             return false;
         }
@@ -888,19 +948,25 @@ public abstract class Visual : DependencyObject
         var transform = child.RenderTransform;
         double opacity = child.Opacity;
 
-        // Only worth a layer when there is a composited animation to apply cheaply
-        // (a live transform or sub-1 opacity). First cut excludes rotation/skew
-        // (the quad path bakes only scale+translate) and trivial / leaf subtrees.
+        // Worth a layer when EITHER (a) there is a composited animation to apply
+        // cheaply (a live transform or sub-1 opacity — the original fast path), OR
+        // (b) this is an opted-in damage-driven compositor boundary
+        // (Compositor.IsLayerRoot), even a STATIC one, so a content-clean sibling
+        // composites its cached texture instead of re-rasterizing every hover frame.
+        // Adding (b) is strictly additive — (a) behaves exactly as before. Rotation/
+        // skew, upscaling, and trivial/leaf subtrees remain excluded (the quad path
+        // bakes only scale+translate).
         bool hasComposite = transform != null || opacity < 1.0;
         bool rotation = transform != null && TransformHasRotationOrSkew(transform);
         bool upscalesLayer = TransformWouldUpscaleRetainedLayer(transform);
         var size = child.RenderSize;
-        bool eligible = hasComposite && !rotation && !upscalesLayer
+        bool eligible = (child._isCompositorBoundary || hasComposite) && !rotation && !upscalesLayer
             && size.Width >= 1.0 && size.Height >= 1.0
             && child.VisualChildrenCount > 0;
 
         if (!eligible)
         {
+            if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.LAYER_INELIG);
             ReleaseLayerIfAny(child);
             return false;
         }
@@ -913,6 +979,7 @@ public abstract class Visual : DependencyObject
         // resize 把带动画的容器翻上 layer 路径正是触发点（独显才有 retained-layer 优化）。
         if (SubtreeHasEffect(child))
         {
+            if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.CB_EFFECT);
             ReleaseLayerIfAny(child);
             return false;
         }
@@ -925,6 +992,7 @@ public abstract class Visual : DependencyObject
             nint realized = layerCtx.BeginLayerCapture(layer, worldBounds);
             if (realized == 0)
             {
+                if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.CB_REFUSED);
                 // A refused handle must not stay cached. After device-lost
                 // recovery, a stale-device layer that escaped the recovery
                 // sweep (subtree detached at recovery time, reattached later)
@@ -969,6 +1037,7 @@ public abstract class Visual : DependencyObject
         // frame would look "idle" and get its layer/cache evicted mid-animation.
         child._lastRenderedTickMs = Environment.TickCount64;
         VisualRenderedObserver?.Invoke(child);
+        if (child._isCompositorBoundary) Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.LAYER_OK);
         return true;
     }
 
@@ -1159,22 +1228,24 @@ public abstract class Visual : DependencyObject
     /// <summary>
     /// Gets the transform from this visual to the root of the visual tree.
     /// </summary>
+    /// <remarks>
+    /// Transform-aware: composes the full local→root affine matrix (each level's
+    /// <see cref="VisualBounds"/> + <c>RenderOffset</c> + <c>RenderTransform</c> about its scaled
+    /// <c>RenderTransformOrigin</c>), reusing the authoritative <see cref="UIElement.GetRenderMatrix"/>
+    /// — the SAME row-vector composition and stop-at-<see cref="IWindowHost"/> boundary pinned by
+    /// <c>RenderBoundsTransformTests</c>. The previous implementation summed <see cref="VisualBounds"/>
+    /// translation only, so <see cref="TransformToVisual"/> silently ignored any scale/rotate on the
+    /// chain (e.g. inside a <c>Viewbox</c>). When no <c>RenderTransform</c> is present anywhere on the
+    /// chain the resulting matrix is a pure translation, numerically identical to the old behavior.
+    /// </remarks>
     private GeneralTransform? GetTransformToRoot()
     {
-        var offset = Point.Zero;
-        Visual? current = this;
+        // Only UIElements contribute layout offset / render transforms; other visuals are
+        // pass-through (identity). GetRenderMatrix already walks the whole chain up to the window.
+        if (this is UIElement uiElement)
+            return new MatrixGeneralTransform(uiElement.GetRenderMatrix());
 
-        while (current != null)
-        {
-            if (current is UIElement uiElement)
-            {
-                var bounds = uiElement.VisualBounds;
-                offset = new Point(offset.X + bounds.X, offset.Y + bounds.Y);
-            }
-            current = current.VisualParent;
-        }
-
-        return new TranslateTransform2D(offset.X, offset.Y);
+        return new MatrixGeneralTransform(Matrix.Identity);
     }
 }
 

@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Jalium.UI.Input;
+using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls;
 
@@ -99,7 +100,4 @@ public static class SystemCommands
 
     [DllImport("user32.dll")]
     private static extern int TrackPopupMenuEx(IntPtr hmenu, uint fuFlags, int x, int y, IntPtr hwnd, IntPtr lptpm);
-
-    [DllImport("user32.dll")]
-    private static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
 }

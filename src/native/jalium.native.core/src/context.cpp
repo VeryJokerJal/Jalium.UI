@@ -340,4 +340,28 @@ JALIUM_API JaliumResult jalium_render_target_reclaim_idle_resources(
     return reinterpret_cast<jalium::RenderTarget*>(rt)->ReclaimIdleResources();
 }
 
+// Two-phase back-buffer readback (backend parity verification). Request only
+// latches a pending flag consumed by the next EndDraw; Fetch blocks on the
+// capture's fence and copies BGRA8 rows out. See jalium_api.h for the full
+// alpha/ordering contract. Backends without an implementation inherit the
+// base-class JALIUM_ERROR_NOT_SUPPORTED.
+JALIUM_API JaliumResult jalium_render_target_request_readback(
+    JaliumRenderTarget* rt)
+{
+    if (!rt) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->RequestReadback();
+}
+
+JALIUM_API JaliumResult jalium_render_target_fetch_readback(
+    JaliumRenderTarget* rt,
+    uint8_t* buffer,
+    uint32_t buffer_stride,
+    int32_t* out_width,
+    int32_t* out_height)
+{
+    if (!rt) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->FetchReadback(
+        buffer, buffer_stride, out_width, out_height);
+}
+
 } // extern "C"

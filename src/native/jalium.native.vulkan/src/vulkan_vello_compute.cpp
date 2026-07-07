@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstring>
 #include <algorithm>
+#include <array>      // clip-bbox stack replay entries
 
 namespace jalium {
 
@@ -93,6 +94,7 @@ const StageBinding kBinning[] = {
 };
 const StageBinding kTileAlloc[] = {
     {0, UBO, Res::Config}, {16, SSB, Res::IntersectedBbox}, {17, SSB, Res::DrawTag},
+    {18, SSB, Res::DrawMonoid},   // t2: paths[] written in PATH index space (see vello_tile_alloc.cs.hlsl)
     {48, SSB, Res::Bump}, {49, SSB, Res::VelloPath}, {50, SSB, Res::VelloTile},
 };
 const StageBinding kPathCountSetup[] = {
@@ -490,9 +492,12 @@ bool VelloComputePipeline::EnsureScratch(const VelloScene& scene) {
     ok &= EnsureBuffer(pathBbox_,        (VkDeviceSize)numPaths * kPathBboxStride,         storageDst, devLocal);
     ok &= EnsureBuffer(lineSoup_,        (VkDeviceSize)numSegs * 64 * kLineSoupStride,     storageDst, devLocal);
     ok &= EnsureBuffer(intersectedBbox_, (VkDeviceSize)numDrawObjs * kFloat4Stride,        storageDst, devLocal);
+    // clipBic_/clipEl_ back the retained (never-dispatched) clip_reduce /
+    // clip_leaf descriptor sets — kept so the PSOs stay bindable, mirroring
+    // D3D12 which retains its clip PSOs + Bic/ClipEl buffers. The clip bboxes
+    // themselves are CPU-replayed and uploaded per frame (see UploadInputs).
     ok &= EnsureBuffer(clipBic_,         (VkDeviceSize)clipWgs * kClipBicStride,           storageDst, devLocal);
     ok &= EnsureBuffer(clipEl_,          (VkDeviceSize)numClipOps * kClipElStride,         storageDst, devLocal);
-    ok &= EnsureBuffer(clipBbox_,        (VkDeviceSize)numClipOps * kFloat4Stride,         storageDst, devLocal);
     ok &= EnsureBuffer(binHeader_,       (VkDeviceSize)numBins * 256 * kBinHeaderStride,   storageDst, devLocal);
     ok &= EnsureBuffer(velloPath_,       (VkDeviceSize)numDrawObjs * kVelloPathStride,     storageDst, devLocal);
     return ok;
@@ -535,6 +540,64 @@ bool VelloComputePipeline::UploadInputs(const VelloScene& scene, uint32_t frameI
     cfg.ptcl_size       = kPtclCap;
     cfg.num_segments    = numSegs;
 
+    // ── CPU stack replay of the FULL Vello clip_bbox semantics (D3D12 parity) ──
+    // Replaces the clip_reduce/clip_leaf GPU stages, whose simplified EndClip
+    // branch wrote `self ∩ parent` instead of "revert to the PARENT context":
+    // draw objects encoded after a closed clip pair index that pair's End entry
+    // via clip_ix-1 in binning, so the wrong value permanently clipped
+    // everything after the first pair to the first pair's rect (with the
+    // scissor realized as a clip, the second scissor group of a frame vanished
+    // — reproduced + fix-verified on a D3D12 WARP device; the Vulkan production
+    // path hits the same encoder-emitted scissor Begin/EndClip pairs).
+    //   BeginClip entry: running-intersection ∩ own path bbox (nested clips
+    //                    tighten — also fixes the old Begin branch which
+    //                    ignored ancestors);
+    //   EndClip entry:   the restored parent context (top level = infinite).
+    // Bboxes come from PathDraw (the encoder's exact float bbox — the same
+    // source the coarse/fine pipeline draws with). scene.drawMonoids already
+    // carries the EndClip path_ix fixup (VelloSceneEncoder::Finalize).
+    std::vector<float> clipBboxData;
+    if (scene.numClipOps > 0) {
+        clipBboxData.resize((size_t)scene.numClipOps * 4);
+        uint32_t clipIdx = 0;
+        std::vector<std::array<float, 4>> clipBboxStack;   // saved parent contexts
+        float curClip[4] = { -1e9f, -1e9f, 1e9f, 1e9f };   // running intersection
+        const uint32_t n = (uint32_t)scene.drawTags.size();
+        for (uint32_t i = 0; i < n && clipIdx < scene.numClipOps; ++i) {
+            const uint32_t tag = scene.drawTags[i].tag;
+            if (tag == kDrawTagBeginClip) {
+                clipBboxStack.push_back({ curClip[0], curClip[1], curClip[2], curClip[3] });
+                const uint32_t pathIx = (i < scene.drawMonoids.size())
+                    ? scene.drawMonoids[i].path_ix : 0u;
+                if (pathIx < scene.pathDraws.size()) {
+                    const PathDraw& pd = scene.pathDraws[pathIx];
+                    curClip[0] = std::max(curClip[0], pd.bboxMinX);
+                    curClip[1] = std::max(curClip[1], pd.bboxMinY);
+                    curClip[2] = std::min(curClip[2], pd.bboxMaxX);
+                    curClip[3] = std::min(curClip[3], pd.bboxMaxY);
+                }
+                float* cb = &clipBboxData[(size_t)clipIdx * 4];
+                cb[0] = curClip[0]; cb[1] = curClip[1];
+                cb[2] = curClip[2]; cb[3] = curClip[3];
+                ++clipIdx;
+            } else if (tag == kDrawTagEndClip) {
+                if (!clipBboxStack.empty()) {
+                    const auto& parent = clipBboxStack.back();
+                    curClip[0] = parent[0]; curClip[1] = parent[1];
+                    curClip[2] = parent[2]; curClip[3] = parent[3];
+                    clipBboxStack.pop_back();
+                } else {
+                    curClip[0] = -1e9f; curClip[1] = -1e9f;
+                    curClip[2] = 1e9f;  curClip[3] = 1e9f;
+                }
+                float* cb = &clipBboxData[(size_t)clipIdx * 4];
+                cb[0] = curClip[0]; cb[1] = curClip[1];
+                cb[2] = curClip[2]; cb[3] = curClip[3];
+                ++clipIdx;
+            }
+        }
+    }
+
     bool ok = true;
     ok &= upload(config_[frameIdx],      &cfg, sizeof(cfg), hostUbo);
     ok &= upload(pathSegment_[frameIdx], scene.segments.data(),  scene.segments.size()  * sizeof(PathSegment),     hostStorage);
@@ -543,6 +606,7 @@ bool VelloComputePipeline::UploadInputs(const VelloScene& scene, uint32_t frameI
     ok &= upload(drawTag_[frameIdx],     scene.drawTags.data(),  scene.drawTags.size()  * sizeof(DrawTag),         hostStorage);
     ok &= upload(drawMonoid_[frameIdx],  scene.drawMonoids.data(), scene.drawMonoids.size() * sizeof(VelloDrawMonoid), hostStorage);
     ok &= upload(clipInp_[frameIdx],     scene.clipInps.data(),  scene.clipInps.size()  * sizeof(VelloClipInp),    hostStorage);
+    ok &= upload(clipBbox_[frameIdx],    clipBboxData.data(),    clipBboxData.size()    * sizeof(float),           hostStorage);
     ok &= upload(gradientRamp_[frameIdx],scene.gradientRamps.data(), scene.gradientRamps.size() * sizeof(uint32_t),hostStorage);
     return ok;
 }
@@ -556,6 +620,7 @@ VkBuffer VelloComputePipeline::BufferForRes(Res res, uint32_t f) const {
         case Res::DrawTag:         return drawTag_[f].buffer;
         case Res::DrawMonoid:      return drawMonoid_[f].buffer;
         case Res::ClipInp:         return clipInp_[f].buffer;
+        case Res::ClipBbox:        return clipBbox_[f].buffer;   // CPU-replayed, uploaded per frame
         case Res::GradientRamp:    return gradientRamp_[f].buffer;
         case Res::Bump:            return bump_.buffer;
         case Res::PathBbox:        return pathBbox_.buffer;
@@ -563,7 +628,6 @@ VkBuffer VelloComputePipeline::BufferForRes(Res res, uint32_t f) const {
         case Res::IntersectedBbox: return intersectedBbox_.buffer;
         case Res::ClipBic:         return clipBic_.buffer;
         case Res::ClipEl:          return clipEl_.buffer;
-        case Res::ClipBbox:        return clipBbox_.buffer;
         case Res::BinHeader:       return binHeader_.buffer;
         case Res::BinData:         return binData_.buffer;
         case Res::VelloPath:       return velloPath_.buffer;
@@ -625,7 +689,7 @@ bool VelloComputePipeline::BuildDescriptorSets(uint32_t frameIdx, const VelloSce
             } else {
                 Res res = b.res;
                 // Mirror D3D12: when there are no clips, binning reads a dummy
-                // for clip_bbox (clip_leaf never wrote it).
+                // for clip_bbox (the CPU replay uploaded nothing this frame).
                 if (res == Res::ClipBbox && !hasClips) res = Res::IntersectedBbox;
                 VkDescriptorBufferInfo bi{};
                 bi.buffer = BufferForRes(res, frameIdx);
@@ -653,7 +717,6 @@ bool VelloComputePipeline::Record(VkCommandBuffer cmd, const VelloScene& scene, 
     const uint32_t numPaths    = scene.numPaths;
     const uint32_t numSegs     = (uint32_t)scene.segments.size();
     const uint32_t numDrawObjs = scene.numDrawObjs;
-    const uint32_t numClipOps  = scene.numClipOps;
     const uint32_t tilesX = DivCeil(scene.viewportW, kTileSize);
     const uint32_t tilesY = DivCeil(scene.viewportH, kTileSize);
     const uint32_t widthInBins  = DivCeil(tilesX, 16);
@@ -746,13 +809,16 @@ bool VelloComputePipeline::Record(VkCommandBuffer cmd, const VelloScene& scene, 
     // ── Stage 2: flatten ──
     dispatch(S_Flatten, Wg256(numSegs), 1, 1);
     barrier();
-    // ── Stage 3a/3b: clip_reduce -> clip_leaf (only when there are clips) ──
-    if (numClipOps > 0) {
-        dispatch(S_ClipReduce, Wg256(numClipOps), 1, 1);
-        barrier();
-        dispatch(S_ClipLeaf, Wg256(numClipOps), 1, 1);
-        barrier();
-    }
+    // ── Stage 3 (clip bboxes): CPU stack replay, uploaded in UploadInputs. ──
+    // The former clip_reduce -> clip_leaf dispatches are intentionally NOT
+    // issued (D3D12 parity): their simplified EndClip branch wrote
+    // `self ∩ parent` instead of Vello's "revert to parent context", which
+    // clipped every draw object after the first closed clip pair to that
+    // pair's rect — with the scissor realized as a clip, the second scissor
+    // group of a frame vanished. The CPU replay writes the exact Vello
+    // semantics for both entry kinds and needs no GPU matching. The PSOs /
+    // Bic / ClipEl buffers are retained (harmless) in case a future
+    // n_clip>workgroup implementation brings the GPU path back.
     // ── Stage 4: binning ──
     dispatch(S_Binning, Wg256(numDrawObjs), 1, 1);
     barrier();
@@ -821,11 +887,11 @@ void VelloComputePipeline::Destroy() {
         descriptorPools_[f] = VK_NULL_HANDLE;
         DestroyBuffer(config_[f]); DestroyBuffer(pathSegment_[f]); DestroyBuffer(pathInfo_[f]);
         DestroyBuffer(pathDraw_[f]); DestroyBuffer(drawTag_[f]); DestroyBuffer(drawMonoid_[f]);
-        DestroyBuffer(clipInp_[f]); DestroyBuffer(gradientRamp_[f]);
+        DestroyBuffer(clipInp_[f]); DestroyBuffer(clipBbox_[f]); DestroyBuffer(gradientRamp_[f]);
     }
     DestroyBuffer(bump_); DestroyBuffer(pathBbox_); DestroyBuffer(lineSoup_);
     DestroyBuffer(intersectedBbox_); DestroyBuffer(clipBic_); DestroyBuffer(clipEl_);
-    DestroyBuffer(clipBbox_); DestroyBuffer(binHeader_); DestroyBuffer(binData_);
+    DestroyBuffer(binHeader_); DestroyBuffer(binData_);
     DestroyBuffer(velloPath_); DestroyBuffer(velloTile_); DestroyBuffer(segCount_);
     DestroyBuffer(velloSegment_); DestroyBuffer(ptcl_); DestroyBuffer(indirect1_);
     DestroyBuffer(indirect2_);

@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Interop.Win32;
+using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls;
 
@@ -108,15 +110,15 @@ internal static partial class DockManager
     {
         if (window == null || window.Handle == nint.Zero) return null;
 
-        var clientOrigin = new POINT { x = 0, y = 0 };
+        var clientOrigin = new POINT { X = 0, Y = 0 };
         if (!ClientToScreen(window.Handle, ref clientOrigin))
             return null;
 
         var dpi = window.DpiScale;
         var localPos = element.TransformToAncestor(null);
 
-        var screenX = clientOrigin.x + localPos.X * dpi;
-        var screenY = clientOrigin.y + localPos.Y * dpi;
+        var screenX = clientOrigin.X + localPos.X * dpi;
+        var screenY = clientOrigin.Y + localPos.Y * dpi;
         var screenW = element.ActualWidth * dpi;
         var screenH = element.ActualHeight * dpi;
 
@@ -413,21 +415,6 @@ internal static partial class DockManager
         return position is DockPosition.EdgeLeft or DockPosition.EdgeRight
             or DockPosition.EdgeTop or DockPosition.EdgeBottom;
     }
-
-    #endregion
-
-    #region P/Invoke
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int x, y;
-    }
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool ClientToScreen(nint hWnd, ref POINT lpPoint);
-
 
     #endregion
 }

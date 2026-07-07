@@ -4,6 +4,56 @@ using System.Threading;
 namespace Jalium.UI.Interop;
 
 /// <summary>
+/// Result codes returned by <see cref="InkLayerBitmap.DispatchBrush"/> (the
+/// managed mirror of the native <c>JaliumInkDispatchResult</c> enum in
+/// <c>jalium_types.h</c> — keep the two in sync).
+/// </summary>
+/// <remarks>
+/// <para>
+/// The codes are <em>backend-agnostic by contract</em>: every native backend
+/// classifies its internal failure reasons into these categories before
+/// returning, so callers pick their recovery strategy from the code alone and
+/// never need to know which backend produced it.
+/// </para>
+/// <para>
+/// <see cref="Transient"/> means the layer and shader handles are still
+/// healthy and retrying the <em>same</em> handles next frame is expected to
+/// succeed — callers must not tear down / rebuild the ink resource chain for
+/// it. <see cref="StaleContext"/> means the device generation behind the
+/// handles is gone or inconsistent — retrying can never succeed and the whole
+/// ink resource chain (layer bitmaps + every shader handle) must be rebuilt so
+/// everything re-pairs on the current generation.
+/// </para>
+/// <para>
+/// <see cref="Transient"/> / <see cref="StaleContext"/> live far away from
+/// the legacy per-backend raw codes (-1..-7, retired) so a stale comparison
+/// against a historical code can never misclassify them.
+/// </para>
+/// </remarks>
+public static class InkDispatchResult
+{
+    /// <summary>Success — any value &gt;= 0.</summary>
+    public const int Ok = 0;
+
+    /// <summary>Malformed call (null handle/pointer, too few points, bad
+    /// constants size). Never retryable; skip the stroke.</summary>
+    public const int InvalidArg = -1;
+
+    /// <summary>The layer's backing resources are absent (construction or
+    /// resize failed earlier). Recovery is the normal layer (re)construction
+    /// path, not a retry.</summary>
+    public const int InvalidState = -2;
+
+    /// <summary>Momentary resource failure inside the dispatch; retry the
+    /// same handles next frame. Do NOT rebuild the ink resource chain.</summary>
+    public const int Transient = -100;
+
+    /// <summary>Device generation lost or handles baked on mismatched
+    /// generations; rebuild the whole ink resource chain.</summary>
+    public const int StaleContext = -101;
+}
+
+/// <summary>
 /// Native ink/brush operations behind a seam so unit tests can substitute the
 /// GPU calls whose real backends require a compute pipeline that is unavailable
 /// in headless / WARP CI. Production code always uses
@@ -208,8 +258,13 @@ public sealed class InkLayerBitmap : IDisposable
     /// bytes (ViewportSize + Pad) are overwritten by the backend with
     /// this bitmap's pixel dimensions — callers leave them at zero.
     /// </summary>
-    /// <returns>0 on success; non-zero on compile / dispatch failure
-    /// (caller should fall back to a CPU path).</returns>
+    /// <returns>An <see cref="InkDispatchResult"/> code:
+    /// <see cref="InkDispatchResult.Ok"/> on success;
+    /// <see cref="InkDispatchResult.Transient"/> for a momentary failure
+    /// (retry the same handles next frame);
+    /// <see cref="InkDispatchResult.StaleContext"/> when the device
+    /// generation behind the handles is gone (rebuild the ink resource
+    /// chain). Backend-agnostic — callers never branch on the backend.</returns>
     public int DispatchBrush(
         BrushShaderHandle shader,
         ReadOnlySpan<BrushStrokePoint> points,
@@ -217,8 +272,8 @@ public sealed class InkLayerBitmap : IDisposable
         ReadOnlySpan<byte> extraParams = default)
     {
         ThrowIfDisposed();
-        if (shader is null || !shader.IsValid) return -1;
-        if (points.Length < 2) return -2;
+        if (shader is null || !shader.IsValid) return InkDispatchResult.InvalidArg;
+        if (points.Length < 2) return InkDispatchResult.InvalidArg;
 
         return _native.DispatchBrush(_handle, shader.Handle, points, in constants, extraParams);
     }

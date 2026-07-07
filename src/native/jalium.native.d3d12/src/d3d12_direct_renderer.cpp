@@ -398,6 +398,16 @@ void D3D12DirectRenderer::Shutdown()
         fenceEvent_ = nullptr;
     }
 
+    if (readbackFenceEvent_) {
+        CloseHandle(readbackFenceEvent_);
+        readbackFenceEvent_ = nullptr;
+    }
+    // GPU idle was waited above — the readback buffer can release inline.
+    readbackBuffer_.Reset();
+    readbackBufferCapacity_ = 0;
+    readbackPending_ = false;
+    readbackReady_ = false;
+
     velloRenderer_.reset();
 
     initialized_ = false;
@@ -1242,6 +1252,13 @@ void D3D12DirectRenderer::AbortFrame()
     pathMsaaUsedThisFrame_ = false;
     inOffscreenCapture_ = false;
     inRetainedCapture_ = false;  // 防御：与 inOffscreenCapture_ 对称复位，兜底 retained-capture 标志在 resize/abort 时泄漏成 true（详见 EndRetainedLayerCapture），否则 effect capture 永久失败
+
+    // An armed / completed back-buffer readback dies with the aborted frame:
+    // its copy commands (if any were recorded) were discarded with the list,
+    // and stale "ready" data from an earlier frame must not satisfy a fetch
+    // that expected THIS frame's pixels.
+    readbackPending_ = false;
+    readbackReady_ = false;
 }
 
 bool D3D12DirectRenderer::CheckFrameDeviceAlive()
@@ -1287,6 +1304,15 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
         return JALIUM_ERROR_DEVICE_LOST;
     }
     inFrame_ = false;
+
+    // Parity-verification back-buffer readback: when armed, record the copy
+    // NOW — after every draw of this frame is recorded, while the back buffer
+    // is still in RENDER_TARGET state, and before the PRESENT transition +
+    // ExecuteCommandLists below — so the captured bytes are exactly this
+    // frame's final presented contents. The fence value is latched after this
+    // frame's queue Signal further down.
+    const bool readbackRecorded = readbackPending_ && RecordBackBufferReadbackCopy();
+    readbackPending_ = false;
 
     // Transition back buffer RENDER_TARGET → PRESENT (matching the original
     // pre-MSAA flow now that we render directly into the swap chain).
@@ -1402,6 +1428,16 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
         pathScratchFenceValue_ = frames_[currentFrame_].fenceValue;
     }
 
+    // Back-buffer readback armed this frame: the copy recorded above executes
+    // under this frame's fence value — FetchBackBufferReadback waits exactly
+    // this value before mapping the readback buffer. (A FAILED Present does
+    // not invalidate the capture: the GPU work including the copy was already
+    // submitted by ExecuteCommandLists.)
+    if (readbackRecorded) {
+        readbackFenceValue_ = frames_[currentFrame_].fenceValue;
+        readbackReady_ = true;
+    }
+
     // Frame-pacing: stamp the QPC tick at the moment Signal is issued. The
     // next BeginFrame's "wait completed" tick minus this gives ≈ GPU work
     // time for the frame we are presenting now.
@@ -1443,6 +1479,161 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
 
     // Legacy contract (no external pacing): treat as a dropped frame — the
     // next frame will retry.
+    return JALIUM_OK;
+}
+
+// ============================================================================
+// Two-phase back-buffer readback (backend parity verification)
+// ============================================================================
+
+// Records the back-buffer → readback-heap copy on the OPEN command list.
+// Called from EndFrame after RecordDrawCommands, while the back buffer is in
+// RENDER_TARGET state (BeginFrame transitioned it) and before the PRESENT
+// transition. Copy timeline:
+//   barrier RENDER_TARGET → COPY_SOURCE
+//   CopyTextureRegion(back buffer subresource 0 → readback buffer, 256-aligned
+//                     row pitch via GetCopyableFootprints)
+//   barrier COPY_SOURCE → RENDER_TARGET   (EndFrame's own RT→PRESENT follows)
+// The copy executes with the frame's ExecuteCommandLists and completes under
+// the frame's fence value. Returns false (capture skipped, no barriers
+// recorded) when the buffer could not be (re)created.
+bool D3D12DirectRenderer::RecordBackBufferReadbackCopy()
+{
+    if (!device_ || !commandList_ || !backend_) return false;
+    ID3D12Resource* backBuffer = renderTargets_[currentFrame_].Get();
+    if (!backBuffer) return false;
+
+    D3D12_RESOURCE_DESC bbDesc = backBuffer->GetDesc();
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+    UINT numRows = 0;
+    UINT64 rowSizeInBytes = 0;
+    UINT64 totalBytes = 0;
+    device_->GetCopyableFootprints(&bbDesc, 0, 1, 0, &footprint, &numRows, &rowSizeInBytes, &totalBytes);
+    if (totalBytes == 0 || totalBytes == UINT64_MAX) return false;
+
+    // Lazily (re)create the READBACK-heap buffer. Grow-only: a too-small
+    // predecessor goes through the backend's fence-gated graveyard because a
+    // previous capture's command list may still be in flight against it.
+    if (readbackBuffer_ && readbackBufferCapacity_ < totalBytes) {
+        backend_->RetireGpuResource(std::move(readbackBuffer_));
+        readbackBuffer_.Reset();
+        readbackBufferCapacity_ = 0;
+        readbackReady_ = false;
+    }
+    if (!readbackBuffer_) {
+        D3D12_HEAP_PROPERTIES heapProps = {};
+        heapProps.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC bufDesc = {};
+        bufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bufDesc.Width = totalBytes;
+        bufDesc.Height = 1;
+        bufDesc.DepthOrArraySize = 1;
+        bufDesc.MipLevels = 1;
+        bufDesc.Format = DXGI_FORMAT_UNKNOWN;
+        bufDesc.SampleDesc.Count = 1;
+        bufDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        HRESULT hr = device_->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&readbackBuffer_));
+        if (FAILED(hr)) {
+            readbackBuffer_.Reset();
+            return false;
+        }
+        readbackBufferCapacity_ = totalBytes;
+    }
+
+    readbackWidth_ = static_cast<uint32_t>(bbDesc.Width);
+    readbackHeight_ = static_cast<uint32_t>(bbDesc.Height);
+    readbackRowPitch_ = footprint.Footprint.RowPitch;
+
+    auto toCopySource = MakeTransitionBarrier(
+        backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    commandList_->ResourceBarrier(1, &toCopySource);
+
+    D3D12_TEXTURE_COPY_LOCATION dst = {};
+    dst.pResource = readbackBuffer_.Get();
+    dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst.PlacedFootprint = footprint;   // Offset 0 (GetCopyableFootprints base 0)
+    D3D12_TEXTURE_COPY_LOCATION src = {};
+    src.pResource = backBuffer;
+    src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src.SubresourceIndex = 0;
+    commandList_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+
+    auto toRenderTarget = MakeTransitionBarrier(
+        backBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    commandList_->ResourceBarrier(1, &toRenderTarget);
+    return true;
+}
+
+JaliumResult D3D12DirectRenderer::FetchBackBufferReadback(
+    uint8_t* buffer, uint32_t bufferStride, int32_t* outWidth, int32_t* outHeight)
+{
+    if (outWidth) *outWidth = 0;
+    if (outHeight) *outHeight = 0;
+    if (!readbackReady_ || !readbackBuffer_ || !fence_ ||
+        readbackWidth_ == 0 || readbackHeight_ == 0) {
+        return JALIUM_ERROR_INVALID_STATE;
+    }
+
+    // Size query (buffer == null): report the pending capture's dimensions so
+    // the caller can size its buffer race-free; no fence wait, no copy.
+    if (!buffer) {
+        if (outWidth) *outWidth = static_cast<int32_t>(readbackWidth_);
+        if (outHeight) *outHeight = static_cast<int32_t>(readbackHeight_);
+        return JALIUM_OK;
+    }
+    if (bufferStride < readbackWidth_ * 4u) return JALIUM_ERROR_INVALID_ARGUMENT;
+
+    // Block until the capturing frame's fence completes. Dedicated auto-reset
+    // event — never share fenceEvent_, whose auto-reset semantics make every
+    // extra waiter a signal thief (see the BeginFrame comment about the sole-
+    // consumer rule for the frame-latency waitable; the same applies here).
+    if (fence_->GetCompletedValue() < readbackFenceValue_) {
+        if (!readbackFenceEvent_) {
+            readbackFenceEvent_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            if (!readbackFenceEvent_) return JALIUM_ERROR_UNKNOWN;
+        }
+        if (FAILED(fence_->SetEventOnCompletion(readbackFenceValue_, readbackFenceEvent_))) {
+            return JALIUM_ERROR_UNKNOWN;
+        }
+        WaitForSingleObject(readbackFenceEvent_, 5000);
+        if (fence_->GetCompletedValue() < readbackFenceValue_) {
+            // GPU didn't reach the copy within the timeout (hang / device
+            // loss). Leave readbackReady_ set so a caller may retry the fetch.
+            return JALIUM_ERROR_BUSY;
+        }
+    }
+
+    void* mapped = nullptr;
+    D3D12_RANGE readRange = { 0, static_cast<SIZE_T>(readbackRowPitch_) * readbackHeight_ };
+    HRESULT hr = readbackBuffer_->Map(0, &readRange, &mapped);
+    if (FAILED(hr) || !mapped) return JALIUM_ERROR_UNKNOWN;
+
+    // The swap chain is DXGI_FORMAT_R8G8B8A8_UNORM (see CreateSwapChain in
+    // d3d12_render_target.cpp), i.e. bytes R,G,B,A. The readback ABI promises
+    // BGRA8 (matching 32bpp BMP / typical CPU imaging order), so swizzle
+    // R↔B per pixel while stripping the 256-aligned row-pitch padding.
+    const uint8_t* srcBase = static_cast<const uint8_t*>(mapped);
+    for (uint32_t y = 0; y < readbackHeight_; ++y) {
+        const uint8_t* srcRow = srcBase + static_cast<size_t>(y) * readbackRowPitch_;
+        uint8_t* dstRow = buffer + static_cast<size_t>(y) * bufferStride;
+        for (uint32_t x = 0; x < readbackWidth_; ++x) {
+            const uint8_t* sp = srcRow + static_cast<size_t>(x) * 4;
+            uint8_t* dp = dstRow + static_cast<size_t>(x) * 4;
+            dp[0] = sp[2];  // B ← src R-slot's blue channel counterpart
+            dp[1] = sp[1];  // G
+            dp[2] = sp[0];  // R
+            dp[3] = sp[3];  // A (raw; premultiplication follows swap-chain mode)
+        }
+    }
+
+    D3D12_RANGE writtenRange = { 0, 0 };   // CPU wrote nothing back
+    readbackBuffer_->Unmap(0, &writtenRange);
+
+    if (outWidth) *outWidth = static_cast<int32_t>(readbackWidth_);
+    if (outHeight) *outHeight = static_cast<int32_t>(readbackHeight_);
     return JALIUM_OK;
 }
 
@@ -1663,13 +1854,31 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     float scaleX = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
     float scaleY = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
 
+    // A transform with no rotation / shear (m12 == m21 == 0) is axis-aligned:
+    // its only effect on text is a per-axis scale (uniform zoom OR non-uniform
+    // liquid-glass squeeze) plus a translation. That class can stay on the CRISP
+    // point path — rasterize the glyph at the EXACT scale, integer-snap the
+    // on-screen quad, and point-sample it 1:1 — instead of the soft bilinear
+    // path. Only genuine rotation / skew (m12 or m21 significantly non-zero)
+    // needs bilinear so its continuously-moving sub-pixel edges don't shimmer.
+    // The scale magnitudes fold rotation into m11..m22, so test the raw
+    // off-diagonal against a scale-relative epsilon (a 1px error over a 100px
+    // glyph is ~0.01 rad — comfortably below visible rotation).
+    const float scaleRef = std::max({scaleX, scaleY, 1.0f});
+    const bool axisAligned = std::abs(t.m12) <= 1e-3f * scaleRef &&
+                             std::abs(t.m21) <= 1e-3f * scaleRef;
+    const bool scaled = (std::abs(scaleX - 1.0f) > 0.001f ||
+                         std::abs(scaleY - 1.0f) > 0.001f);
+    const bool crispAxisAligned = axisAligned && scaled;
+
     // Collect glyph instances and text decorations
     std::vector<D3D12GlyphAtlas::TextDecorationRect> decorations;
     uint32_t count = glyphAtlas_->GenerateGlyphs(layout, tx, ty, r, g, b, effectiveA,
                                                   textInstances_, &decorations,
                                                   layoutKey,
                                                   aaMode, hintingMode,
-                                                  scaleX, scaleY);
+                                                  scaleX, scaleY,
+                                                  crispAxisAligned);
 
     // Apply transform scaling to each glyph instance.
     // GenerateGlyphs emits BASE-DIP quads (any rasterScale magnification was
@@ -1679,7 +1888,9 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     // rasterized at rasterScale, the magnified quad stays crisp instead of
     // mosaicking (rasterScale rounds the magnitude up, so the bitmap is never
     // upscaled past 1:1 — at most a slightly hi-res atlas is minified).
-    if (count > 0 && (std::abs(scaleX - 1.0f) > 0.001f || std::abs(scaleY - 1.0f) > 0.001f)) {
+    if (count > 0 && scaled) {
+        const float dpi = dpiScale_ > 0.0f ? dpiScale_ : 1.0f;
+        const float invDpi = 1.0f / dpi;
         for (uint32_t i = startIdx; i < startIdx + count; i++) {
             auto& g = textInstances_[i];
             // Scale position relative to the transformed text origin
@@ -1688,17 +1899,33 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
             // Scale glyph quad size
             g.sizeX *= scaleX;
             g.sizeY *= scaleY;
+            // Axis-aligned scale: snap the quad's TOP-LEFT to the integer PHYSICAL
+            // pixel grid. posX/posY are DIP (the pipeline applies dpiScale_ when it
+            // maps to NDC via screenSize == viewport/dpi), so snap in physical
+            // space and divide back. The glyph bitmap was rasterized at the exact
+            // per-axis scale (kGlyphScaleQuant=16 makes clean scales like 1.25/1.5
+            // land on an exact bucket), so an integer-aligned quad maps the atlas
+            // texels 1:1 onto physical pixels and the point sampler reproduces the
+            // stems without the half-texel bilinear blur. Snapping each glyph
+            // independently costs <=0.5px of inter-glyph spacing (WPF Display-mode
+            // behaviour) — the accepted "slight integer stepping" during a scale
+            // animation, traded for static/scrolled crispness.
+            if (crispAxisAligned) {
+                g.posX = std::round(g.posX * dpi) * invDpi;
+                g.posY = std::round(g.posY * dpi) * invDpi;
+            }
         }
     }
 
     if (count > 0) {
         DrawBatch candidate;
         candidate.type = DrawBatchType::Text;
-        // Deformed text (any transform scale) draws with the bilinear text PSO so
-        // it animates smoothly (no per-glyph integer-snap jitter / thin-stroke
-        // shimmer); 1:1 text stays on the crisp point PSO.
-        candidate.smoothText = (std::abs(scaleX - 1.0f) > 0.001f ||
-                                std::abs(scaleY - 1.0f) > 0.001f);
+        // PSO selection: only genuine rotation / skew uses the bilinear text PSO
+        // (its continuously-moving sub-pixel edges would shimmer under point
+        // sampling). 1:1 text AND axis-aligned scaled text (rasterized at exact
+        // scale + integer-snapped above) stay on the crisp POINT PSO so their
+        // stems are pixel-exact instead of softened by a half-texel bilinear tap.
+        candidate.smoothText = scaled && !axisAligned;
         candidate.instanceOffset = startIdx;
         candidate.instanceCount = count;
         candidate.hasScissor = !scissorStack_.empty();
@@ -3562,6 +3789,41 @@ void D3D12DirectRenderer::BlurRegion(float x, float y, float w, float h, float r
     float rb = std::min(py + ph, (float)viewportHeight_);
     if (rr <= rx || rb <= ry) return;
 
+    // Write span = region ∩ current scissor. The copy/compute work below is NOT
+    // covered by the rasterizer scissor, so without this clamp a partial frame's
+    // backdrop blur rewrites pixels OUTSIDE the dirty region in place — pixels
+    // nobody repaints afterwards and no dirty bookkeeping knows about (the
+    // title-bar smear: every partial frame that grazes the element re-blurs the
+    // stale strip, the damage compounds on both FLIP buffers and never heals
+    // until a structural full present). The read span keeps a kernel-radius
+    // apron around the write span so edge pixels blur with their true
+    // neighborhood. With no scissor (full frames) both spans equal the region
+    // and this block leaves rx/ry/rr/rb untouched — byte-identical behavior.
+    UINT writeX = (UINT)rx;
+    UINT writeY = (UINT)ry;
+    UINT writeW = (UINT)(rr - rx);
+    UINT writeH = (UINT)(rb - ry);
+    if (!scissorStack_.empty()) {
+        const auto& sc = scissorStack_.top();
+        float wx = std::max(rx, (float)sc.left);
+        float wy = std::max(ry, (float)sc.top);
+        float wr = std::min(rr, (float)sc.right);
+        float wb = std::min(rb, (float)sc.bottom);
+        if (wr <= wx || wb <= wy) return; // fully clipped — must not touch any pixel
+        writeX = (UINT)wx;
+        writeY = (UINT)wy;
+        writeW = (UINT)(wr - wx);
+        writeH = (UINT)(wb - wy);
+        if (writeW == 0 || writeH == 0) return;
+        // radius feeds the compute shader in texel units; scale defensively in
+        // case the caller passed a DIP radius (over-padding is harmless).
+        float pad = std::ceil(radius * std::max(1.0f, dpiScale_));
+        rx = std::max(0.0f, wx - pad);
+        ry = std::max(0.0f, wy - pad);
+        rr = std::min((float)viewportWidth_, wr + pad);
+        rb = std::min((float)viewportHeight_, wb + pad);
+    }
+
     UINT regionW = (UINT)(rr - rx);
     UINT regionH = (UINT)(rb - ry);
     if (regionW == 0 || regionH == 0) return;
@@ -3749,6 +4011,8 @@ void D3D12DirectRenderer::BlurRegion(float x, float y, float w, float h, float r
     cl->Dispatch(groupsY, regionW, 1);
 
     // --- Step 4: Copy result back from TempA to back buffer ---
+    // Only the write span (region ∩ scissor) is copied back; the kernel apron
+    // that was read for correct edge sampling stays out of the back buffer.
     {
         D3D12_RESOURCE_BARRIER barriers[2];
         barriers[0] = MakeTransitionBarrier(blurTempA_.Get(), blurTempAState_, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -3768,15 +4032,19 @@ void D3D12DirectRenderer::BlurRegion(float x, float y, float w, float h, float r
         dstLoc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
         dstLoc.SubresourceIndex = 0;
 
+        // Write-span offset within the read span (floor-rounding can leave the
+        // read span up to a pixel short of offset+writeW — clamp defensively).
+        UINT offX = writeX - (UINT)rx;
+        UINT offY = writeY - (UINT)ry;
         D3D12_BOX srcBox = {};
-        srcBox.left = 0;
-        srcBox.top = 0;
-        srcBox.right = regionW;
-        srcBox.bottom = regionH;
+        srcBox.left = offX;
+        srcBox.top = offY;
+        srcBox.right = std::min(offX + writeW, regionW);
+        srcBox.bottom = std::min(offY + writeH, regionH);
         srcBox.front = 0;
         srcBox.back = 1;
 
-        cl->CopyTextureRegion(&dstLoc, (UINT)rx, (UINT)ry, 0, &srcLoc, &srcBox);
+        cl->CopyTextureRegion(&dstLoc, writeX, writeY, 0, &srcLoc, &srcBox);
     }
 
     // Transition back buffer back to RENDER_TARGET for subsequent draws
@@ -3836,6 +4104,21 @@ void D3D12DirectRenderer::PunchTransparentRect(float x, float y, float w, float 
     clearRect.top = (LONG)(newY * dpiScale_);
     clearRect.right = (LONG)((newX + sw) * dpiScale_);
     clearRect.bottom = (LONG)((newY + sh) * dpiScale_);
+
+    // ClearRenderTargetView rects bypass the rasterizer scissor — clamp to the
+    // current dirty scissor explicitly so a partial frame can never punch a
+    // transparent hole outside the region it is contracted to rewrite (the
+    // Window background caller passes rect == clip so this is a no-op there,
+    // but WebView hole-punching passes its own bounds).
+    if (!scissorStack_.empty()) {
+        const auto& sc = scissorStack_.top();
+        clearRect.left = std::max(clearRect.left, sc.left);
+        clearRect.top = std::max(clearRect.top, sc.top);
+        clearRect.right = std::min(clearRect.right, sc.right);
+        clearRect.bottom = std::min(clearRect.bottom, sc.bottom);
+        if (clearRect.right <= clearRect.left || clearRect.bottom <= clearRect.top)
+            return;
+    }
 
     auto rtvHandle = GetSwapChainRtvHandle();
 
@@ -3926,9 +4209,17 @@ bool D3D12DirectRenderer::CaptureSnapshot()
 void D3D12DirectRenderer::DrawSnapshotBlurred(float x, float y, float w, float h,
                                                float blurRadius,
                                                float tintR, float tintG, float tintB, float tintOpacity,
-                                               float cornerRadius)
+                                               float cornerTL,
+                                               float cornerTR, float cornerBR, float cornerBL)
 {
     if (!inFrame_ || w <= 0 || h <= 0) return;
+
+    // Negative trailing radii replicate cornerTL (legacy single-radius call
+    // shape, still used by the LiquidGlass fallbacks); DrawBackdropFilter now
+    // passes all four so the tint follows per-corner rounding like Vulkan (D4).
+    if (cornerTR < 0.0f) cornerTR = cornerTL;
+    if (cornerBR < 0.0f) cornerBR = cornerTL;
+    if (cornerBL < 0.0f) cornerBL = cornerTL;
 
     // Draw the snapshot region to the back buffer, optionally with blur
     if (snapshotValid_ && snapshotTexture_) {
@@ -3974,13 +4265,41 @@ void D3D12DirectRenderer::DrawSnapshotBlurred(float x, float y, float w, float h
         tint.fillG = tintG * tintOpacity;
         tint.fillB = tintB * tintOpacity;
         tint.fillA = tintOpacity;
-        tint.cornerTL = cornerRadius;
-        tint.cornerTR = cornerRadius;
-        tint.cornerBR = cornerRadius;
-        tint.cornerBL = cornerRadius;
+        tint.cornerTL = cornerTL;
+        tint.cornerTR = cornerTR;
+        tint.cornerBR = cornerBR;
+        tint.cornerBL = cornerBL;
         tint.opacity = 1.0f;
         AddSdfRect(tint);
     }
+}
+
+// ============================================================================
+// DrawSnapshotBackdrop — in-app backdrop filter (blur + tint + saturation +
+// noise + luminosity + per-corner rounding) sampling the framebuffer snapshot.
+// ============================================================================
+
+void D3D12DirectRenderer::DrawSnapshotBackdrop(float x, float y, float w, float h,
+                                               float blurRadius,
+                                               float tintR, float tintG, float tintB, float tintOpacity,
+                                               float noiseIntensity, float saturation, float luminosity,
+                                               float cornerTL, float cornerTR, float cornerBR, float cornerBL)
+{
+    if (!inFrame_ || w <= 0 || h <= 0) return;
+
+    // Single-pass Vulkan-parity route: honours noise/saturation/luminosity.
+    if (TryDrawSnapshotBackdropQuad(x, y, w, h, blurRadius,
+                                    tintR, tintG, tintB, tintOpacity,
+                                    noiseIntensity, saturation, luminosity,
+                                    cornerTL, cornerTR, cornerBR, cornerBL)) {
+        return;
+    }
+
+    // Fallback (backdrop PSO unavailable): the legacy blit + BlurRegion + tint
+    // sequence. noise/saturation/luminosity are not applied here, but the
+    // backdrop still shows blurred + tinted content instead of vanishing.
+    DrawSnapshotBlurred(x, y, w, h, blurRadius, tintR, tintG, tintB, tintOpacity,
+                        cornerTL, cornerTR, cornerBR, cornerBL);
 }
 
 // ============================================================================
@@ -4107,12 +4426,25 @@ void D3D12DirectRenderer::CaptureDesktopArea(int32_t screenX, int32_t screenY, i
 
 void D3D12DirectRenderer::DrawDesktopBackdrop(float x, float y, float w, float h,
                                                float blurRadius,
-                                               float tintR, float tintG, float tintB, float tintOpacity)
+                                               float tintR, float tintG, float tintB, float tintOpacity,
+                                               float noiseIntensity, float saturation)
 {
     if (!inFrame_ || !desktopCaptureValid_ || !desktopTexture_) return;
     if (w <= 0 || h <= 0) return;
 
-    // Draw the desktop texture as a bitmap
+    // Vulkan-parity path (D4): a single PS applies the reference backdrop
+    // math (backdrop_quad.frag.hlsl — <=8-tap box blur + tint lerp +
+    // saturation lerp on Rec.601 luma + screen-space hash noise) in one pass.
+    // This is the only route that can honor noiseIntensity/saturation, which
+    // the legacy blit + BlurRegion + tint sequence below silently dropped.
+    if (TryDrawDesktopBackdropQuad(x, y, w, h, blurRadius,
+                                   tintR, tintG, tintB, tintOpacity,
+                                   noiseIntensity, saturation)) {
+        return;
+    }
+
+    // Legacy fallback (backdrop PSO unavailable): desktop blit + compute
+    // gaussian blur + SrcOver tint. noise/saturation are not applied here.
     AddBitmap(x, y, w, h, 1.0f, desktopTexture_.Get(), DXGI_FORMAT_B8G8R8A8_UNORM);
 
     // Blur the region if requested
@@ -5056,8 +5388,18 @@ void D3D12DirectRenderer::DrawCustomShaderEffect(int slot,
     cl->SetPipelineState(pso);
     cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
+    // Immediate-mode quad straight into the back buffer: it must honor the
+    // current dirty scissor like every batched draw does (per-batch snapshot).
+    // A hardcoded full-viewport scissor on a partial frame writes the effect's
+    // capture-padding halo OUTSIDE the dirty region — pixels nothing clears or
+    // repaints afterwards, so the over-blend output compounds frame over frame
+    // into a bright capture-rect band that flickers between the FLIP buffers.
+    // Viewport stays full-window (the VS maps window DIPs to NDC); only the
+    // write span is clamped. Full frames (empty stack) are byte-identical.
     D3D12_VIEWPORT vp = { 0, 0, (float)viewportWidth_, (float)viewportHeight_, 0, 1 };
-    D3D12_RECT scissor = { 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ };
+    D3D12_RECT scissor = scissorStack_.empty()
+        ? D3D12_RECT{ 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ }
+        : scissorStack_.top();
     cl->RSSetViewports(1, &vp);
     cl->RSSetScissorRects(1, &scissor);
 
@@ -5079,6 +5421,401 @@ void D3D12DirectRenderer::DrawCustomShaderEffect(int slot,
     cl->SetGraphicsRootDescriptorTable(1, srvGpu);
 
     cl->DrawInstanced(6, 1, 0, 0);
+}
+
+// ============================================================================
+// DrawTransitionShaderQuad — 10-mode shader transition (D2 Vulkan parity)
+// ============================================================================
+//
+// Mirrors DrawCustomShaderEffect's immediate-mode quad flow, but binds BOTH
+// transition capture slots (0 = old content -> t0, 1 = new content -> t1) and
+// the precompiled transition PS. The constants layout must byte-match
+// TransitionConstants in shaders/transition_quad.ps.hlsl.
+
+bool D3D12DirectRenderer::DrawTransitionShaderQuad(float x, float y, float w, float h,
+    float progress, int mode, float cornerRadius)
+{
+    if (!inFrame_ || w <= 0 || h <= 0) {
+        return false;
+    }
+    if (!offscreenRT_[0] || !offscreenRT_[1] ||
+        !offscreenCaptureValid_[0] || !offscreenCaptureValid_[1]) {
+        // Vulkan parity: DrawTransitionShader draws nothing unless BOTH slots
+        // hold a capture. The caller's crossfade fallback self-guards on the
+        // same per-slot validity, so returning false stays "draw nothing".
+        return false;
+    }
+
+    auto* pso = GetOrCreateCustomShaderPSO(
+        shader_bytecode::ktransition_quad_ps, shader_bytecode::ktransition_quad_psSize);
+    if (!pso) {
+        return false;
+    }
+
+    if (!FlushGraphicsForCompute()) return true;  // device lost — frame will abort
+
+    auto* cl = commandList_.Get();
+    for (int slot = 0; slot < 2; ++slot) {
+        if (offscreenRTState_[slot] != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
+            auto barrier = MakeTransitionBarrier(offscreenRT_[slot].Get(),
+                offscreenRTState_[slot], D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            cl->ResourceBarrier(1, &barrier);
+            offscreenRTState_[slot] = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        }
+    }
+
+    // ---- b0 constants (must match TransitionConstants in the PS) ----
+    // The captures sit at the origin of the shared offscreen atlas, which is
+    // usually LARGER than the capture area; uvScale maps the quad's [0,1] uv
+    // onto the valid capture sub-rect (same convention as DrawOffscreenBitmap).
+    // resolution mirrors Vulkan's push-constant screenSize (the swapchain
+    // extent in physical pixels) so mode 1's pixel-block grid and mode 2's
+    // scanline frequency count in the same units on both backends.
+    const float offW = (float)offscreenW_;
+    const float offH = (float)offscreenH_;
+    const float uvScale0X = (offW > 0.0f && offscreenCaptureW_[0] > 0.0f) ? offscreenCaptureW_[0] / offW : 1.0f;
+    const float uvScale0Y = (offH > 0.0f && offscreenCaptureH_[0] > 0.0f) ? offscreenCaptureH_[0] / offH : 1.0f;
+    const float uvScale1X = (offW > 0.0f && offscreenCaptureW_[1] > 0.0f) ? offscreenCaptureW_[1] / offW : 1.0f;
+    const float uvScale1Y = (offH > 0.0f && offscreenCaptureH_[1] > 0.0f) ? offscreenCaptureH_[1] / offH : 1.0f;
+
+    float constants[12] = {
+        progress,                                  // saturated in the shader, like Vulkan
+        currentOpacity_,                           // Vulkan records GetCurrentOpacity()
+        (float)mode,
+        cornerRadius * dpiScale_,                  // DIP -> physical px
+        (float)viewportWidth_, (float)viewportHeight_,
+        w * dpiScale_, h * dpiScale_,              // rect size in physical px (corner clip space)
+        uvScale0X, uvScale0Y, uvScale1X, uvScale1Y,
+    };
+
+    auto& fr = frames_[currentFrame_];
+    const size_t constantBytes = sizeof(constants);
+    const size_t cbSize = ((std::max<size_t>(constantBytes, 16) + 255) / 256) * 256;
+    size_t cbOffset = ((uploadBufferOffset_ + 255) / 256) * 256;
+    if (cbOffset + cbSize > fr.instanceCapacity) {
+        if (!EnsureFrameInstanceCapacity(fr, cbOffset + cbSize)) {
+            return false;
+        }
+    }
+    auto* cbPtr = static_cast<uint8_t*>(fr.instanceMappedPtr) + cbOffset;
+    std::memset(cbPtr, 0, cbSize);
+    std::memcpy(cbPtr, constants, constantBytes);
+    uploadBufferOffset_ = cbOffset + cbSize;
+    D3D12_GPU_VIRTUAL_ADDRESS cbGpuAddr = fr.instanceUploadBuffer->GetGPUVirtualAddress() + cbOffset;
+
+    // ---- two per-frame SRVs: t0 = slot 0 (from), t1 = slot 1 (to) ----
+    UINT frameSrvBase = currentFrame_ * frameSrvRegionSize_;
+    UINT frameSrvEnd = frameSrvBase + frameSrvRegionSize_;
+    UINT srvOffset = srvAllocOffset_;
+    if (srvOffset < frameSrvBase || srvOffset + 2 > frameSrvEnd) {
+        srvOffset = frameSrvBase;
+    }
+    srvAllocOffset_ = srvOffset + 2;
+
+    auto srvCpu = srvHeap_->GetCPUDescriptorHandleForHeapStart();
+    srvCpu.ptr += srvOffset * srvDescriptorSize_;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = swapChainFormat_;
+    srvDesc.Texture2D.MipLevels = 1;
+    device_->CreateShaderResourceView(offscreenRT_[0].Get(), &srvDesc, srvCpu);
+
+    auto srvCpu2 = srvCpu;
+    srvCpu2.ptr += srvDescriptorSize_;
+    device_->CreateShaderResourceView(offscreenRT_[1].Get(), &srvDesc, srvCpu2);
+
+    cl->SetGraphicsRootSignature(rootSignature_.Get());
+    ID3D12DescriptorHeap* heaps[] = { srvHeap_.Get() };
+    cl->SetDescriptorHeaps(1, heaps);
+    cl->SetPipelineState(pso);
+    cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    // Same dirty-scissor discipline as DrawCustomShaderEffect (see the comment
+    // there): honor the current scissor on partial frames, full window otherwise.
+    D3D12_VIEWPORT vp = { 0, 0, (float)viewportWidth_, (float)viewportHeight_, 0, 1 };
+    D3D12_RECT scissor = scissorStack_.empty()
+        ? D3D12_RECT{ 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ }
+        : scissorStack_.top();
+    cl->RSSetViewports(1, &vp);
+    cl->RSSetScissorRects(1, &scissor);
+
+    auto rtvHandle = GetSwapChainRtvHandle();
+    cl->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    cl->SetGraphicsRootConstantBufferView(0, cbGpuAddr);
+
+    float geomConstants[8] = {
+        x, y, w, h,
+        (float)viewportWidth_ / dpiScale_,
+        (float)viewportHeight_ / dpiScale_,
+        0.0f, 0.0f
+    };
+    cl->SetGraphicsRoot32BitConstants(2, 8, geomConstants, 0);
+
+    auto srvGpu = srvHeap_->GetGPUDescriptorHandleForHeapStart();
+    srvGpu.ptr += srvOffset * srvDescriptorSize_;
+    cl->SetGraphicsRootDescriptorTable(1, srvGpu);
+
+    cl->DrawInstanced(6, 1, 0, 0);
+    return true;
+}
+
+// ============================================================================
+// TryDrawDesktopBackdropQuad — desktop backdrop via the Vulkan-parity PS (D4)
+// ============================================================================
+
+bool D3D12DirectRenderer::TryDrawDesktopBackdropQuad(float x, float y, float w, float h,
+    float blurRadius,
+    float tintR, float tintG, float tintB, float tintOpacity,
+    float noiseIntensity, float saturation)
+{
+    if (!inFrame_ || !desktopCaptureValid_ || !desktopTexture_ || w <= 0 || h <= 0) {
+        return false;
+    }
+
+    auto* pso = GetOrCreateCustomShaderPSO(
+        shader_bytecode::kdesktop_backdrop_ps, shader_bytecode::kdesktop_backdrop_psSize);
+    if (!pso) {
+        return false;
+    }
+
+    if (!FlushGraphicsForCompute()) return true;  // device lost — frame will abort
+
+    auto* cl = commandList_.Get();
+    if (desktopTextureState_ != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
+        auto barrier = MakeTransitionBarrier(desktopTexture_.Get(),
+            desktopTextureState_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        cl->ResourceBarrier(1, &barrier);
+        desktopTextureState_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+
+    // ---- b0 constants (must match BackdropConstants in the PS) ----
+    // texelStep = one source texel, exactly what the Vulkan replay pushes
+    // (backdropInfo1.zw = 1/pixelWidth, 1/pixelHeight); the shader clamps the
+    // tap count to <=8 exactly like backdrop_quad.frag.hlsl.
+    float constants[12] = {
+        blurRadius,
+        (desktopCaptureW_ > 0) ? 1.0f / (float)desktopCaptureW_ : 0.0f,
+        (desktopCaptureH_ > 0) ? 1.0f / (float)desktopCaptureH_ : 0.0f,
+        0.0f,
+        tintR, tintG, tintB, tintOpacity,
+        saturation, noiseIntensity, 0.0f, 0.0f,
+    };
+
+    auto& fr = frames_[currentFrame_];
+    const size_t constantBytes = sizeof(constants);
+    const size_t cbSize = ((std::max<size_t>(constantBytes, 16) + 255) / 256) * 256;
+    size_t cbOffset = ((uploadBufferOffset_ + 255) / 256) * 256;
+    if (cbOffset + cbSize > fr.instanceCapacity) {
+        if (!EnsureFrameInstanceCapacity(fr, cbOffset + cbSize)) {
+            return false;
+        }
+    }
+    auto* cbPtr = static_cast<uint8_t*>(fr.instanceMappedPtr) + cbOffset;
+    std::memset(cbPtr, 0, cbSize);
+    std::memcpy(cbPtr, constants, constantBytes);
+    uploadBufferOffset_ = cbOffset + cbSize;
+    D3D12_GPU_VIRTUAL_ADDRESS cbGpuAddr = fr.instanceUploadBuffer->GetGPUVirtualAddress() + cbOffset;
+
+    // ---- SRVs (t0 = desktop capture; t1 unused, points at the same texture) ----
+    UINT frameSrvBase = currentFrame_ * frameSrvRegionSize_;
+    UINT frameSrvEnd = frameSrvBase + frameSrvRegionSize_;
+    UINT srvOffset = srvAllocOffset_;
+    if (srvOffset < frameSrvBase || srvOffset + 2 > frameSrvEnd) {
+        srvOffset = frameSrvBase;
+    }
+    srvAllocOffset_ = srvOffset + 2;
+
+    auto srvCpu = srvHeap_->GetCPUDescriptorHandleForHeapStart();
+    srvCpu.ptr += srvOffset * srvDescriptorSize_;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    srvDesc.Texture2D.MipLevels = 1;
+    device_->CreateShaderResourceView(desktopTexture_.Get(), &srvDesc, srvCpu);
+
+    auto srvCpu2 = srvCpu;
+    srvCpu2.ptr += srvDescriptorSize_;
+    device_->CreateShaderResourceView(desktopTexture_.Get(), &srvDesc, srvCpu2);
+
+    cl->SetGraphicsRootSignature(rootSignature_.Get());
+    ID3D12DescriptorHeap* heaps[] = { srvHeap_.Get() };
+    cl->SetDescriptorHeaps(1, heaps);
+    cl->SetPipelineState(pso);
+    cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    D3D12_VIEWPORT vp = { 0, 0, (float)viewportWidth_, (float)viewportHeight_, 0, 1 };
+    D3D12_RECT scissor = scissorStack_.empty()
+        ? D3D12_RECT{ 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ }
+        : scissorStack_.top();
+    cl->RSSetViewports(1, &vp);
+    cl->RSSetScissorRects(1, &scissor);
+
+    auto rtvHandle = GetSwapChainRtvHandle();
+    cl->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    cl->SetGraphicsRootConstantBufferView(0, cbGpuAddr);
+
+    float geomConstants[8] = {
+        x, y, w, h,
+        (float)viewportWidth_ / dpiScale_,
+        (float)viewportHeight_ / dpiScale_,
+        0.0f, 0.0f
+    };
+    cl->SetGraphicsRoot32BitConstants(2, 8, geomConstants, 0);
+
+    auto srvGpu = srvHeap_->GetGPUDescriptorHandleForHeapStart();
+    srvGpu.ptr += srvOffset * srvDescriptorSize_;
+    cl->SetGraphicsRootDescriptorTable(1, srvGpu);
+
+    cl->DrawInstanced(6, 1, 0, 0);
+    return true;
+}
+
+// TryDrawSnapshotBackdropQuad — in-app backdrop via the snapshot-backdrop PS.
+// Structurally mirrors TryDrawDesktopBackdropQuad but samples the framebuffer
+// snapshot (full back buffer) and draws a sub-region of it back, so it uploads
+// a UV-remap (uvOffset + quadUv*uvScale) plus the per-corner rounded-rect and
+// the luminosity multiplier that the desktop path does not need.
+bool D3D12DirectRenderer::TryDrawSnapshotBackdropQuad(float x, float y, float w, float h,
+    float blurRadius,
+    float tintR, float tintG, float tintB, float tintOpacity,
+    float noiseIntensity, float saturation, float luminosity,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL)
+{
+    if (!inFrame_ || !snapshotValid_ || !snapshotTexture_ || w <= 0 || h <= 0 ||
+        snapshotW_ == 0 || snapshotH_ == 0) {
+        return false;
+    }
+
+    auto* pso = GetOrCreateCustomShaderPSO(
+        shader_bytecode::ksnapshot_backdrop_ps, shader_bytecode::ksnapshot_backdrop_psSize);
+    if (!pso) {
+        return false;
+    }
+
+    if (!FlushGraphicsForCompute()) return true;  // device lost — frame will abort
+
+    auto* cl = commandList_.Get();
+    // CaptureSnapshot leaves the snapshot in PIXEL_SHADER_RESOURCE; guard anyway.
+    if (snapshotState_ != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) {
+        auto barrier = MakeTransitionBarrier(snapshotTexture_.Get(),
+            snapshotState_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        cl->ResourceBarrier(1, &barrier);
+        snapshotState_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    }
+
+    // UV remap: quad-local uv [0,1] over the DIP rect (x,y,w,h) -> snapshot texel
+    // uv. The snapshot is captured at physical-pixel size, so scale DIPs by the
+    // DPI scale before dividing by the snapshot dimensions.
+    const float invSnapW = dpiScale_ / (float)snapshotW_;
+    const float invSnapH = dpiScale_ / (float)snapshotH_;
+    const float uvOffX = x * invSnapW;
+    const float uvOffY = y * invSnapH;
+    const float uvScaleX = w * invSnapW;
+    const float uvScaleY = h * invSnapH;
+
+    // Rounded-clip rect + radii in PHYSICAL pixels (SV_Position space).
+    const float clipL = x * dpiScale_;
+    const float clipT = y * dpiScale_;
+    const float clipR = (x + w) * dpiScale_;
+    const float clipB = (y + h) * dpiScale_;
+
+    // ---- b0 constants (must match SnapshotBackdropConstants in the PS) ----
+    float constants[24] = {
+        // blurInfo: radius (source texels), texelStepX, texelStepY, unused.
+        blurRadius, 1.0f / (float)snapshotW_, 1.0f / (float)snapshotH_, 0.0f,
+        // tintColor.
+        tintR, tintG, tintB, tintOpacity,
+        // extraInfo: saturation, noiseIntensity, luminosity, unused.
+        saturation, noiseIntensity, luminosity, 0.0f,
+        // uvRemap: offset.xy, scale.zw.
+        uvOffX, uvOffY, uvScaleX, uvScaleY,
+        // clipRect (physical px): left, top, right, bottom.
+        clipL, clipT, clipR, clipB,
+        // clipRadii (physical px): TL, TR, BR, BL.
+        cornerTL * dpiScale_, cornerTR * dpiScale_, cornerBR * dpiScale_, cornerBL * dpiScale_,
+    };
+
+    auto& fr = frames_[currentFrame_];
+    const size_t constantBytes = sizeof(constants);
+    const size_t cbSize = ((std::max<size_t>(constantBytes, 16) + 255) / 256) * 256;
+    size_t cbOffset = ((uploadBufferOffset_ + 255) / 256) * 256;
+    if (cbOffset + cbSize > fr.instanceCapacity) {
+        if (!EnsureFrameInstanceCapacity(fr, cbOffset + cbSize)) {
+            return false;
+        }
+    }
+    auto* cbPtr = static_cast<uint8_t*>(fr.instanceMappedPtr) + cbOffset;
+    std::memset(cbPtr, 0, cbSize);
+    std::memcpy(cbPtr, constants, constantBytes);
+    uploadBufferOffset_ = cbOffset + cbSize;
+    D3D12_GPU_VIRTUAL_ADDRESS cbGpuAddr = fr.instanceUploadBuffer->GetGPUVirtualAddress() + cbOffset;
+
+    // ---- SRVs (t0 = snapshot; t1 unused, points at the same texture) ----
+    UINT frameSrvBase = currentFrame_ * frameSrvRegionSize_;
+    UINT frameSrvEnd = frameSrvBase + frameSrvRegionSize_;
+    UINT srvOffset = srvAllocOffset_;
+    if (srvOffset < frameSrvBase || srvOffset + 2 > frameSrvEnd) {
+        srvOffset = frameSrvBase;
+    }
+    srvAllocOffset_ = srvOffset + 2;
+
+    auto srvCpu = srvHeap_->GetCPUDescriptorHandleForHeapStart();
+    srvCpu.ptr += srvOffset * srvDescriptorSize_;
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srvDesc.Format = swapChainFormat_;
+    srvDesc.Texture2D.MipLevels = 1;
+    device_->CreateShaderResourceView(snapshotTexture_.Get(), &srvDesc, srvCpu);
+
+    auto srvCpu2 = srvCpu;
+    srvCpu2.ptr += srvDescriptorSize_;
+    device_->CreateShaderResourceView(snapshotTexture_.Get(), &srvDesc, srvCpu2);
+
+    cl->SetGraphicsRootSignature(rootSignature_.Get());
+    ID3D12DescriptorHeap* heaps[] = { srvHeap_.Get() };
+    cl->SetDescriptorHeaps(1, heaps);
+    cl->SetPipelineState(pso);
+    cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    D3D12_VIEWPORT vp = { 0, 0, (float)viewportWidth_, (float)viewportHeight_, 0, 1 };
+    D3D12_RECT scissor = scissorStack_.empty()
+        ? D3D12_RECT{ 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ }
+        : scissorStack_.top();
+    cl->RSSetViewports(1, &vp);
+    cl->RSSetScissorRects(1, &scissor);
+
+    auto rtvHandle = GetSwapChainRtvHandle();
+    cl->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    cl->SetGraphicsRootConstantBufferView(0, cbGpuAddr);
+
+    float geomConstants[8] = {
+        x, y, w, h,
+        (float)viewportWidth_ / dpiScale_,
+        (float)viewportHeight_ / dpiScale_,
+        0.0f, 0.0f
+    };
+    cl->SetGraphicsRoot32BitConstants(2, 8, geomConstants, 0);
+
+    auto srvGpu = srvHeap_->GetGPUDescriptorHandleForHeapStart();
+    srvGpu.ptr += srvOffset * srvDescriptorSize_;
+    cl->SetGraphicsRootDescriptorTable(1, srvGpu);
+
+    cl->DrawInstanced(6, 1, 0, 0);
+
+    // The full-screen quad bypasses the batch renderer; the next batched draw
+    // re-binds its own PSO/scissor via RecordDrawCommands, but bump drawOrder_
+    // so a following CaptureSnapshot re-copies (this pass wrote the back buffer).
+    drawOrder_++;
+    return true;
 }
 
 bool D3D12DirectRenderer::BlurOffscreenSlot(int slot, float radius)
@@ -5730,8 +6467,19 @@ void D3D12DirectRenderer::DrawLiquidGlass(
     cl->SetPipelineState(lgPSO_.Get());
     cl->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
+    // Immediate-mode quad straight into the back buffer — must honor the dirty
+    // scissor like every batched draw. The glass VS expands the quad by 32 px
+    // for the outer shadow ring; with a hardcoded full-viewport scissor every
+    // partial frame that redraws the glass over-blends that ring OUTSIDE the
+    // dirty region (dst × (1-α) each time): nothing clears or repaints those
+    // pixels afterwards, so the shadow compounds frame over frame ("infinitely
+    // growing shadow"). Full frames (empty stack) are byte-identical. The same
+    // clamped rect is re-applied by the state restore at the end — the batch
+    // loop re-sets its own per-batch scissor anyway.
     D3D12_VIEWPORT vp = { 0, 0, (float)viewportWidth_, (float)viewportHeight_, 0, 1 };
-    D3D12_RECT scissor = { 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ };
+    D3D12_RECT scissor = scissorStack_.empty()
+        ? D3D12_RECT{ 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ }
+        : scissorStack_.top();
     cl->RSSetViewports(1, &vp);
     cl->RSSetScissorRects(1, &scissor);
 
