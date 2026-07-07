@@ -329,10 +329,37 @@ public:
 
     // Draws a blurred + tinted region from the snapshot.
     // Used by DrawBackdropFilter and simplified DrawLiquidGlass.
+    // The tint SDF rect supports one radius per corner; negative trailing
+    // radii replicate cornerTL so single-radius callers (the LiquidGlass
+    // fallbacks) keep their call shape.
     void DrawSnapshotBlurred(float x, float y, float w, float h,
                              float blurRadius,
                              float tintR, float tintG, float tintB, float tintOpacity,
-                             float cornerRadius);
+                             float cornerTL,
+                             float cornerTR = -1.0f, float cornerBR = -1.0f, float cornerBL = -1.0f);
+
+    // In-app backdrop filter (BlurEffect / AcrylicEffect / MicaEffect): samples
+    // the framebuffer snapshot and applies blur + tint + saturation + noise +
+    // luminosity + per-corner rounding in ONE pass through the snapshot-backdrop
+    // PS (shaders/snapshot_backdrop.ps.hlsl — Vulkan backdrop_quad.frag.hlsl
+    // semantics). This is the only route that can honour noiseIntensity /
+    // saturation / luminosity, which the blit + BlurRegion + tint sequence in
+    // DrawSnapshotBlurred silently dropped. Falls back to DrawSnapshotBlurred
+    // when the backdrop PSO is unavailable (older driver / PSO create failure),
+    // which reproduces the legacy blur+tint (no noise/sat/lum) rather than
+    // dropping the backdrop entirely.
+    void DrawSnapshotBackdrop(float x, float y, float w, float h,
+                              float blurRadius,
+                              float tintR, float tintG, float tintB, float tintOpacity,
+                              float noiseIntensity, float saturation, float luminosity,
+                              float cornerTL, float cornerTR, float cornerBR, float cornerBL);
+    // Full-screen snapshot-backdrop PS pass. Returns false when the PSO is
+    // unavailable so DrawSnapshotBackdrop can fall back to the legacy path.
+    bool TryDrawSnapshotBackdropQuad(float x, float y, float w, float h,
+                                     float blurRadius,
+                                     float tintR, float tintG, float tintB, float tintOpacity,
+                                     float noiseIntensity, float saturation, float luminosity,
+                                     float cornerTL, float cornerTR, float cornerBR, float cornerBL);
 
     // --- Full Liquid Glass rendering ---
     // Renders complete liquid glass with SDF refraction, chromatic aberration,
@@ -349,10 +376,12 @@ public:
     // --- Desktop backdrop ---
     // Captures desktop area via GDI and uploads to a D3D12 texture.
     void CaptureDesktopArea(int32_t screenX, int32_t screenY, int32_t width, int32_t height);
-    // Draws captured desktop with blur and tint.
+    // Draws captured desktop with blur, tint, saturation and noise
+    // (Vulkan backdrop_quad.frag.hlsl semantics; see desktop_backdrop.ps.hlsl).
     void DrawDesktopBackdrop(float x, float y, float w, float h,
                              float blurRadius,
-                             float tintR, float tintG, float tintB, float tintOpacity);
+                             float tintR, float tintG, float tintB, float tintOpacity,
+                             float noiseIntensity = 0.0f, float saturation = 1.0f);
 
     // --- Glow effects (approximated with SDF rects) ---
     void DrawGlowingBorderHighlight(
@@ -416,6 +445,26 @@ public:
         const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
         const float* constants, uint32_t constantFloatCount);
 
+    // Blends transition capture slot 0 (from -> t0) and slot 1 (to -> t1)
+    // through the precompiled 10-mode transition pixel shader
+    // (shaders/transition_quad.ps.hlsl, ported from the Vulkan reference
+    // transition_quad.frag.hlsl). Returns false when the draw could not run
+    // (no frame, either capture slot invalid, or the PSO could not be
+    // created) so the caller can fall back to a plain crossfade.
+    bool DrawTransitionShaderQuad(float x, float y, float w, float h,
+        float progress, int mode, float cornerRadius);
+
+    // Draws the desktop backdrop through the precompiled backdrop pixel
+    // shader (shaders/desktop_backdrop.ps.hlsl — Vulkan
+    // backdrop_quad.frag.hlsl semantics: <=8-tap box blur + tint lerp +
+    // saturation lerp + hash noise). Returns false when unavailable so
+    // DrawDesktopBackdrop can fall back to the legacy blit + compute-blur +
+    // tint path.
+    bool TryDrawDesktopBackdropQuad(float x, float y, float w, float h,
+        float blurRadius,
+        float tintR, float tintG, float tintB, float tintOpacity,
+        float noiseIntensity, float saturation);
+
     // Blurs the offscreen texture at the given slot in-place using two-pass Gaussian.
     // The offscreen must have been captured (EndOffscreenCapture called) before this.
     // Returns true on success, false if blur resources aren't ready or slot is invalid.
@@ -423,7 +472,26 @@ public:
 
     // --- State stacks ---
     void PushScissor(float x, float y, float w, float h);
-    void PushScissorRaw(const D3D12_RECT& rect) { scissorStack_.push(rect); }
+    void PushScissorRaw(const D3D12_RECT& rect) {
+        // Clamp every raw scissor to the current render-target viewport before it can
+        // reach RSSetScissorRects. A retained/offscreen-capture Impeller batch scissor
+        // is shifted by the capture offset (d3d12_render_target.cpp FlushImpellerBatches),
+        // which can produce a negative-left/top or past-the-edge D3D12_RECT; strict D3D12
+        // UMDs FAULT on such a rect (crash on SOME devices) while lenient ones silently
+        // mis-clip. The consumer guard only rejects left>=right/top>=bottom, not out-of-range
+        // values, so clamp here — the single chokepoint these shifted rects flow through.
+        // No-op for well-formed rects, so it cannot regress a correct frame.
+        D3D12_RECT r = rect;
+        const LONG vw = (LONG)viewportWidth_;
+        const LONG vh = (LONG)viewportHeight_;
+        if (r.left < 0) r.left = 0;
+        if (r.top < 0) r.top = 0;
+        if (vw > 0) { if (r.right > vw) r.right = vw; if (r.left > vw) r.left = vw; }
+        if (vh > 0) { if (r.bottom > vh) r.bottom = vh; if (r.top > vh) r.top = vh; }
+        if (r.right < r.left) r.right = r.left;     // collapse (never invert) an off-screen rect
+        if (r.bottom < r.top) r.bottom = r.top;     // -> empty, so the consumer's degenerate skip fires
+        scissorStack_.push(r);
+    }
     void PopScissor();
     bool HasScissor() const { return !scissorStack_.empty(); }
     D3D12_RECT GetCurrentScissor() const { return scissorStack_.empty() ? D3D12_RECT{0,0,0,0} : scissorStack_.top(); }
@@ -491,6 +559,7 @@ public:
     // --- DPI ---
     void SetDpiScale(float dpiScale);
     float GetDpiScale() const { return dpiScale_; }
+    bool  IsPathAnalyticOnly() const { return pathAnalyticOnly_; }
 
     // Shared offscreen-capture atlas dimensions (physical px). The capture occupies
     // only the top-left (0,0)-(capturePx) sub-rect; callers that sample it must scale
@@ -556,6 +625,17 @@ public:
     // bitmapTextures_.clear() (1 = parked on the fence-gated retired list by the fix,
     // 0 = freed while still referenced). Returns 0 when staged, negative otherwise.
     int32_t DebugForceVelloOutputOrphan(int32_t* outAlive);
+
+    // --- Two-phase back-buffer readback (backend parity verification) ---
+    // Arms a one-shot capture: the NEXT EndFrame records a back-buffer →
+    // readback-heap copy right before its RENDER_TARGET → PRESENT transition
+    // and tags it with that frame's fence value. Fetch then waits that fence
+    // and copies BGRA8 rows out (swap chain is R8G8B8A8_UNORM, so the fetch
+    // swizzles R↔B per pixel). See RenderTarget::RequestReadback /
+    // FetchReadback in jalium_backend.h for the caller-facing contract.
+    void RequestBackBufferReadback() { readbackPending_ = true; }
+    JaliumResult FetchBackBufferReadback(uint8_t* buffer, uint32_t bufferStride,
+                                         int32_t* outWidth, int32_t* outHeight);
 
     // 懒创建 Vello 子系统(root sig + 计算 PSO + 描述符堆 + 缓冲 + 驱动 compute
     // 上下文)。仅当 velloEnabled_(active engine==Vello)且尚未创建时真正构造。
@@ -669,6 +749,27 @@ private:
     ComPtr<ID3D12Fence> fence_;
     HANDLE fenceEvent_ = nullptr;
     uint64_t nextFenceValue_ = 1;
+
+    // ── Two-phase back-buffer readback (parity verification) ────────────
+    // readbackPending_ arms the capture; EndFrame consumes it by calling
+    // RecordBackBufferReadbackCopy (barrier RT→COPY_SOURCE, CopyTextureRegion
+    // into the lazily-created READBACK-heap buffer, barrier back) and, after
+    // its queue Signal, latches readbackFenceValue_/readbackReady_.
+    // The buffer is grow-only per capture size; a too-small predecessor is
+    // retired through the backend's fence-gated graveyard (never destroyed
+    // inline — the open command list of a previous capture may still
+    // reference it). readbackFenceEvent_ is a dedicated auto-reset event so
+    // FetchBackBufferReadback never races the frame path's fenceEvent_.
+    bool RecordBackBufferReadbackCopy();
+    bool readbackPending_ = false;
+    bool readbackReady_ = false;
+    ComPtr<ID3D12Resource> readbackBuffer_;
+    uint64_t readbackBufferCapacity_ = 0;   // bytes
+    uint32_t readbackWidth_ = 0;            // captured back-buffer pixels
+    uint32_t readbackHeight_ = 0;
+    uint32_t readbackRowPitch_ = 0;         // 256-aligned source row pitch
+    uint64_t readbackFenceValue_ = 0;
+    HANDLE readbackFenceEvent_ = nullptr;
     // The path MSAA color/depth/resolve textures are shared across swap-chain
     // frames rather than stored in FrameResources. Track the last submission
     // that touched them so another in-flight frame cannot clear/resolve the
@@ -878,6 +979,12 @@ private:
     // and forces the MSAA scratch RT + depth to be recreated at the new count.
     UINT  pathMsaaSampleCount_        = 8;
     UINT  pendingPathMsaaSampleCount_ = 8;
+    // Analytic-only path AA: when true, a solid FillPath skips the MSAA stencil-
+    // then-cover fast path and instead uses the active engine's analytic-coverage
+    // rasterizer (the same path gradient fills take) — WPF/Skia-style AA that is
+    // far cheaper than 8× stencil-then-cover on weak GPUs. Set via
+    // SetPathMsaaSampleCount(0) ⇐ app.UsePathAntiAliasing(PathAntiAliasing.Analytic).
+    bool  pathAnalyticOnly_ = false;
     D3D12_RESOURCE_STATES pathMsaaColorState_   = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES pathResolveTexState_  = D3D12_RESOURCE_STATE_COMMON;
     bool  stencilPathReady_   = false;

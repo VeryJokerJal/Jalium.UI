@@ -1,28 +1,15 @@
 #include "text_shaper.h"
+#include "font_face.h"
 
-#include <ft2build.h>
-#include FT_FREETYPE_H
-
-#include <hb.h>
-#include <hb-ft.h>
-
-#include <cstring>
+#include <vector>
 
 namespace jalium {
 
-TextShaper::TextShaper()
-{
-    hbBuffer_ = hb_buffer_create();
-}
-
-TextShaper::~TextShaper()
-{
-    if (hbBuffer_)
-        hb_buffer_destroy(hbBuffer_);
-}
+TextShaper::TextShaper() = default;
+TextShaper::~TextShaper() = default;
 
 ShapedRun TextShaper::Shape(
-    FT_Face face,
+    FontFace* face,
     uint64_t fontId,
     const wchar_t* text,
     uint32_t textLength,
@@ -38,64 +25,46 @@ ShapedRun TextShaper::Shape(
     if (!face || !text || textLength == 0)
         return run;
 
-    // Set FreeType face size
-    FT_Set_Char_Size(face, 0,
-        static_cast<FT_F26Dot6>(fontSizePx * 64.0f), 72, 72);
-
-    // Create HarfBuzz font from FreeType face
-    hb_font_t* hbFont = hb_ft_font_create_referenced(face);
-
-    // Reset buffer
-    hb_buffer_reset(hbBuffer_);
-    hb_buffer_set_direction(hbBuffer_, isRtl ? HB_DIRECTION_RTL : HB_DIRECTION_LTR);
-    hb_buffer_set_script(hbBuffer_, HB_SCRIPT_COMMON);
-
-    // Add text to buffer
-    // wchar_t is 4 bytes on Linux (UTF-32), 2 bytes on Windows (UTF-16)
-    if constexpr (sizeof(wchar_t) == 4)
-    {
-        hb_buffer_add_utf32(hbBuffer_,
-            reinterpret_cast<const uint32_t*>(text),
-            static_cast<int>(textLength), 0, static_cast<int>(textLength));
-    }
-    else
-    {
-        hb_buffer_add_utf16(hbBuffer_,
-            reinterpret_cast<const uint16_t*>(text),
-            static_cast<int>(textLength), 0, static_cast<int>(textLength));
+    // Decode wchar_t text into Unicode codepoints, tracking the original wchar_t
+    // index of each so cluster values stay in the caller's text coordinate space.
+    // wchar_t is 4 bytes (UTF-32) on Linux/Android; 2 bytes (UTF-16) elsewhere.
+    std::vector<uint32_t> cps;
+    std::vector<uint32_t> clusterMap;   // codepoint index -> wchar_t index
+    cps.reserve(textLength);
+    clusterMap.reserve(textLength);
+    if constexpr (sizeof(wchar_t) == 4) {
+        for (uint32_t i = 0; i < textLength; ++i) { cps.push_back(static_cast<uint32_t>(text[i])); clusterMap.push_back(i); }
+    } else {
+        for (uint32_t i = 0; i < textLength; ) {
+            uint16_t ch = static_cast<uint16_t>(text[i]);
+            if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < textLength) {
+                uint16_t lo = static_cast<uint16_t>(text[i + 1]);
+                if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                    cps.push_back(0x10000u + ((static_cast<uint32_t>(ch) - 0xD800u) << 10) + (static_cast<uint32_t>(lo) - 0xDC00u));
+                    clusterMap.push_back(i);
+                    i += 2; continue;
+                }
+            }
+            cps.push_back(ch); clusterMap.push_back(i); ++i;
+        }
     }
 
-    hb_buffer_guess_segment_properties(hbBuffer_);
+    std::vector<font::ShapedGlyphItem> items;
+    otShaper_.Shape(*face, cps.data(), static_cast<uint32_t>(cps.size()), fontSizePx, isRtl, items);
 
-    // Shape
-    hb_shape(hbFont, hbBuffer_, nullptr, 0);
-
-    // Extract glyph info
-    unsigned int glyphCount = 0;
-    hb_glyph_info_t* glyphInfo = hb_buffer_get_glyph_infos(hbBuffer_, &glyphCount);
-    hb_glyph_position_t* glyphPos = hb_buffer_get_glyph_positions(hbBuffer_, &glyphCount);
-
-    run.glyphs.reserve(glyphCount);
-
-    for (unsigned int i = 0; i < glyphCount; i++)
-    {
+    run.glyphs.reserve(items.size());
+    for (const auto& it : items) {
         ShapedGlyph sg{};
-        sg.glyphIndex = glyphInfo[i].codepoint;
-        sg.cluster = glyphInfo[i].cluster;
-        sg.advanceX = static_cast<float>(glyphPos[i].x_advance) / 64.0f;
-        sg.advanceY = static_cast<float>(glyphPos[i].y_advance) / 64.0f;
-        sg.offsetX = static_cast<float>(glyphPos[i].x_offset) / 64.0f;
-        sg.offsetY = static_cast<float>(glyphPos[i].y_offset) / 64.0f;
-        // Carry the face/font this run was shaped with so downstream
-        // rasterization (FreeTypeTextFormat::GenerateGlyphQuads) uses the
-        // correct face even when glyphs come from a fallback run.
+        sg.glyphIndex = it.glyphIndex;
+        sg.cluster = (it.cluster < clusterMap.size()) ? clusterMap[it.cluster] : it.cluster;
+        sg.advanceX = it.advanceX;
+        sg.advanceY = it.advanceY;
+        sg.offsetX = it.offsetX;
+        sg.offsetY = it.offsetY;
         sg.face = face;
         sg.fontId = fontId;
         run.glyphs.push_back(sg);
     }
-
-    hb_font_destroy(hbFont);
-
     return run;
 }
 

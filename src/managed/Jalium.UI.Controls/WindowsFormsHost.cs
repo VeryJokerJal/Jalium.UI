@@ -8,6 +8,8 @@ using System.Runtime.InteropServices;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using WinFormsControl = System.Windows.Forms.Control;
+using static Jalium.UI.Interop.Win32.Win32Constants;
+using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls;
 
@@ -37,31 +39,17 @@ public class WindowsFormsHost : HwndHost
 {
     #region Win32 interop
 
-    private const int GWL_STYLE = -16;
-
+    // Child-window styles unique to WinFormsHost; the shared GWL_STYLE/SWP_NOZORDER/
+    // SWP_NOACTIVATE/SW_HIDE/SW_SHOWNA now come from Win32Constants (issue #151).
     private const int WS_CHILD = unchecked((int)0x40000000);
     private const int WS_VISIBLE = unchecked((int)0x10000000);
     private const int WS_CLIPSIBLINGS = unchecked((int)0x04000000);
 
-    private const uint SWP_NOZORDER = 0x0004;
-    private const uint SWP_NOACTIVATE = 0x0010;
     private const uint SWP_SHOWWINDOW = 0x0040;
     private const uint SWP_HIDEWINDOW = 0x0080;
 
-    private const int SW_HIDE = 0;
-    private const int SW_SHOWNA = 8;
-
     [DllImport("user32.dll", SetLastError = true)]
     private static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowPos(
-        IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

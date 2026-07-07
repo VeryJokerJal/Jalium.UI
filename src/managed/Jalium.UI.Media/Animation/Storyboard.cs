@@ -1,20 +1,32 @@
 ﻿using System.Collections.ObjectModel;
 using Jalium.UI;
+using Jalium.UI.Animation;
 
 namespace Jalium.UI.Media.Animation;
 
 /// <summary>
 /// A container timeline that provides object and property targeting information for its child animations.
 /// </summary>
-public sealed class Storyboard : Timeline, IStoryboard
+public sealed class Storyboard : Timeline, IStoryboard, IFrameAnimatable, IStoryboardClockOwner
 {
     private static readonly HashSet<Storyboard> _activeStoryboards = new();
     private static readonly object _lock = new();
 
     private readonly List<AnimationClock> _clocks = new();
-    private readonly List<(AnimationClock Clock, DependencyObject Target, DependencyProperty Property, object? OriginalValue)> _activeAnimations = new();
+    private readonly List<(AnimationClock Clock, DependencyObject Target, DependencyProperty Property, object? OriginalValue, bool ElementDriven)> _activeAnimations = new();
+    // Per-clock settlement bookkeeping: a clock settles either by completing
+    // naturally (Completed event) or by being terminated from the element side
+    // (NotifyClockTerminated). Only when every clock has settled may the
+    // storyboard leave the static active set — and OnCompleted fires only when
+    // none of them settled by termination (WPF: Stop does not fire Completed).
+    private readonly HashSet<AnimationClock> _settledClocks = new();
+    private int _terminatedCount;
     private bool _isRunning;
-    private bool _subscribedToRendering;
+    // Strong-reference registration with the central AnimationManager, used only
+    // while at least one non-UIElement target needs per-frame SetValue fallback.
+    // Strong: a fire-and-forget Begin() must keep ticking after the local
+    // variable goes out of scope.
+    private AnimationTickSubscription? _tickSubscription;
 
     /// <summary>
     /// Stops all active storyboards. Called during application shutdown.
@@ -137,9 +149,6 @@ public sealed class Storyboard : Timeline, IStoryboard
     {
         Stop();
 
-        _clocks.Clear();
-        _activeAnimations.Clear();
-
         foreach (var child in Children)
         {
             if (child is AnimationTimeline animationTimeline)
@@ -155,9 +164,29 @@ public sealed class Storyboard : Timeline, IStoryboard
                         var clock = new AnimationClock(animationTimeline);
                         var originalValue = target.GetValue(property);
                         _clocks.Add(clock);
-                        _activeAnimations.Add((clock, target, property, originalValue));
+                        // Subscribed before the element's own Completed handler:
+                        // natural completion settles here first, then the element
+                        // applies FillBehavior (whose termination callback is a
+                        // no-op for an already-settled clock).
                         clock.Completed += OnClockCompleted;
-                        clock.Begin();
+
+                        var elementDriven = false;
+                        if (target is UIElement uiElement)
+                        {
+                            // Element-driven path: tick/value-write/FillBehavior
+                            // cleanup all run through the element's unified
+                            // animation entry; the clock is started by
+                            // BeginAnimationCore.
+                            elementDriven = uiElement.BeginStoryboardAnimation(
+                                property, animationTimeline, clock, this);
+                        }
+
+                        if (!elementDriven)
+                        {
+                            clock.Begin();
+                        }
+
+                        _activeAnimations.Add((clock, target, property, originalValue, elementDriven));
                     }
                 }
             }
@@ -167,14 +196,12 @@ public sealed class Storyboard : Timeline, IStoryboard
         {
             _isRunning = true;
 
-            // Subscribe to the centralized frame timer instead of creating
-            // a per-Storyboard System.Threading.Timer. This ensures all
-            // storyboards tick in the same Dispatcher batch → single render.
-            if (!_subscribedToRendering)
+            // Only non-UIElement targets need the storyboard itself as a frame
+            // driver (SetValue fallback); element-driven entries tick inside
+            // their element.
+            if (HasPendingNonElementWork())
             {
-                _subscribedToRendering = true;
-                CompositionTarget.Rendering += OnRenderingTick;
-                CompositionTarget.Subscribe();
+                RegisterTickSubscription();
             }
 
             lock (_lock)
@@ -190,29 +217,29 @@ public sealed class Storyboard : Timeline, IStoryboard
     public void Stop()
     {
         _isRunning = false;
-        UnsubscribeFromRendering();
+        UnregisterTickSubscription();
 
         lock (_lock)
         {
             _activeStoryboards.Remove(this);
         }
 
-        foreach (var clock in _clocks)
+        // Snapshot: StopStoryboardAnimation/SetValue raise property-changed
+        // callbacks that run user code, which may re-enter this storyboard
+        // (Begin/Stop) and mutate the live list mid-iteration.
+        var entries = _activeAnimations.ToArray();
+        foreach (var (clock, target, property, originalValue, elementDriven) in entries)
         {
-            clock.Stop();
-        }
-
-        // Clear animated values - ClearAnimatedValue handles FillBehavior internally
-        foreach (var (clock, target, property, originalValue) in _activeAnimations)
-        {
-            if (target is UIElement uiElement)
+            if (elementDriven && target is UIElement uiElement)
             {
-                // For explicit Stop(), always clear the animation
-                // The DependencyObject.ClearAnimatedValue will handle HoldEnd vs Stop behavior
-                uiElement.ClearAnimatedValue(property);
+                // Stops the element entry only while that exact clock still owns
+                // the property — an animation that has since replaced it is left
+                // alone. ClearAnimatedValue inside handles HoldEnd promotion.
+                uiElement.StopStoryboardAnimation(property, clock);
             }
             else
             {
+                clock.Stop();
                 // Fallback for non-UIElement targets: restore original value on Stop()
                 target.SetValue(property, originalValue ?? property.DefaultMetadata.DefaultValue);
             }
@@ -220,6 +247,8 @@ public sealed class Storyboard : Timeline, IStoryboard
 
         _clocks.Clear();
         _activeAnimations.Clear();
+        _settledClocks.Clear();
+        _terminatedCount = 0;
     }
 
     /// <summary>
@@ -242,74 +271,225 @@ public sealed class Storyboard : Timeline, IStoryboard
         {
             clock.Resume();
         }
+
+        EnsureFrameSourcesAfterClockRestart();
     }
 
     /// <summary>
-    /// Seeks to the specified position.
+    /// Seeks every clock to the specified position (measured from its begin time).
     /// </summary>
     public void Seek(TimeSpan offset)
     {
         foreach (var clock in _clocks)
         {
-            clock.Controller?.Seek(offset, TimeSeekOrigin.BeginTime);
+            clock.Seek(offset, TimeSeekOrigin.BeginTime);
+        }
+
+        EnsureFrameSourcesAfterClockRestart();
+    }
+
+    /// <summary>
+    /// Re-arms frame sources after clocks were revived (Resume/Seek): an
+    /// all-paused element or storyboard returns false from OnAnimationFrame and
+    /// drops off the manager, so revival needs an explicit re-register.
+    /// </summary>
+    private void EnsureFrameSourcesAfterClockRestart()
+    {
+        var nonElementPending = false;
+
+        foreach (var (clock, target, _, _, elementDriven) in _activeAnimations)
+        {
+            if (elementDriven)
+            {
+                if (target is UIElement uiElement)
+                {
+                    uiElement.EnsureAnimationFrameSource();
+                }
+            }
+            else if (!((IAnimationClock)clock).IsCompleted)
+            {
+                nonElementPending = true;
+            }
+        }
+
+        if (nonElementPending)
+        {
+            RegisterTickSubscription();
+        }
+    }
+
+    private bool HasPendingNonElementWork()
+    {
+        foreach (var (clock, _, _, _, elementDriven) in _activeAnimations)
+        {
+            if (!elementDriven && !((IAnimationClock)clock).IsCompleted)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void RegisterTickSubscription()
+    {
+        _tickSubscription ??= new AnimationTickSubscription(this, weak: false);
+        AnimationManager.Register(_tickSubscription);
+    }
+
+    private void UnregisterTickSubscription()
+    {
+        if (_tickSubscription != null)
+        {
+            AnimationManager.Unregister(_tickSubscription);
         }
     }
 
     /// <summary>
-    /// Called by CompositionTarget.Rendering on the UI thread, once per frame.
-    /// Already on UI thread — no marshaling needed.
+    /// Ticks the non-element-driven entries once per frame (element-driven
+    /// entries are ticked by their own element). Returns false when no such
+    /// entry can still make progress, unregistering from the manager.
     /// </summary>
-    private void OnRenderingTick(object? sender, EventArgs e)
+    bool IFrameAnimatable.OnAnimationFrame(long frameTimestamp)
     {
-        if (!_isRunning) return;
+        if (!_isRunning) return false;
 
-        foreach (var (clock, target, property, originalValue) in _activeAnimations)
+        var anyActive = false;
+
+        for (int i = 0; i < _activeAnimations.Count; i++)
         {
-            clock.Tick();
+            var (clock, target, property, originalValue, elementDriven) = _activeAnimations[i];
+            if (elementDriven)
+            {
+                continue;
+            }
+
+            IAnimationClock clockState = clock;
+            if (clockState.IsCompleted || clockState.IsPaused)
+            {
+                continue;
+            }
+
+            // May complete naturally here → OnClockCompleted settles it and
+            // applies FillBehavior, so a completed clock skips the value write.
+            clock.Tick(frameTimestamp);
+
+            if (clockState.IsCompleted)
+            {
+                continue;
+            }
 
             if (clock.Timeline is AnimationTimeline animationTimeline)
             {
-                var currentValue = animationTimeline.GetCurrentValue(
-                    originalValue ?? GetDefaultValue(property),
-                    originalValue ?? GetDefaultValue(property),
-                    clock);
-
-                // Use animation layer instead of direct SetValue for UIElement targets
-                if (target is UIElement uiElement)
-                {
-                    var holdEnd = animationTimeline.FillBehavior == FillBehavior.HoldEnd;
-                    uiElement.SetAnimatedValue(property, currentValue, holdEnd);
-                }
-                else
-                {
-                    // Fallback for non-UIElement targets (e.g., Brush, Geometry)
-                    target.SetValue(property, currentValue);
-                }
+                var origin = originalValue ?? GetDefaultValue(property);
+                target.SetValue(property, animationTimeline.GetCurrentValue(origin, origin, clock));
             }
+
+            anyActive = true;
         }
 
-        // Check completion AFTER all Tick() calls to avoid off-by-one-frame delay
-        if (_activeAnimations.All(a => !a.Clock.IsRunning))
-        {
-            _isRunning = false;
-            UnsubscribeFromRendering();
-            OnCompleted();
-        }
+        return anyActive && _isRunning;
     }
 
     private void OnClockCompleted(object? sender, EventArgs e)
     {
-        // Completion is handled by OnRenderingTick to avoid double-firing OnCompleted.
-        // This callback is intentionally left empty.
+        if (sender is not AnimationClock clock)
+        {
+            return;
+        }
+
+        // FillBehavior epilogue for non-element entries (element-driven entries
+        // are handled by the element's own Completed handler).
+        for (int i = 0; i < _activeAnimations.Count; i++)
+        {
+            var (entryClock, target, property, originalValue, elementDriven) = _activeAnimations[i];
+            if (!ReferenceEquals(entryClock, clock) || elementDriven)
+            {
+                continue;
+            }
+
+            if (clock.Timeline is AnimationTimeline animationTimeline)
+            {
+                var origin = originalValue ?? GetDefaultValue(property);
+                if (animationTimeline.FillBehavior == FillBehavior.Stop)
+                {
+                    target.SetValue(property, originalValue ?? property.DefaultMetadata.DefaultValue);
+                }
+                else
+                {
+                    // HoldEnd: write the final frame's value (the tick loop skips
+                    // completed clocks, so it would otherwise never land).
+                    target.SetValue(property, animationTimeline.GetCurrentValue(origin, origin, clock));
+                }
+            }
+
+            break;
+        }
+
+        SettleClock(clock, terminated: false);
     }
 
-    private void UnsubscribeFromRendering()
+    /// <summary>
+    /// Element-side termination bookkeeping (detach stop, container recycling,
+    /// handoff replacement, StopStoryboardAnimation): the clock will never fire
+    /// Completed, so it settles here instead.
+    /// </summary>
+    void IStoryboardClockOwner.NotifyClockTerminated(IAnimationClock clock)
     {
-        if (_subscribedToRendering)
+        if (clock is AnimationClock animationClock)
         {
-            _subscribedToRendering = false;
-            CompositionTarget.Rendering -= OnRenderingTick;
-            CompositionTarget.Unsubscribe();
+            SettleClock(animationClock, terminated: true);
+        }
+    }
+
+    /// <summary>
+    /// A sibling child animation of this storyboard took over the same
+    /// (target, property): the superseded clock settles like a natural
+    /// completion — last-writer-wins is the storyboard playing as authored,
+    /// so it must not suppress <see cref="Timeline.Completed"/>.
+    /// </summary>
+    void IStoryboardClockOwner.NotifyClockSuperseded(IAnimationClock clock)
+    {
+        if (clock is AnimationClock animationClock)
+        {
+            SettleClock(animationClock, terminated: false);
+        }
+    }
+
+    private void SettleClock(AnimationClock clock, bool terminated)
+    {
+        if (!_settledClocks.Add(clock))
+        {
+            return;
+        }
+
+        if (terminated)
+        {
+            _terminatedCount++;
+        }
+
+        if (_settledClocks.Count < _clocks.Count)
+        {
+            return;
+        }
+
+        // Every clock has settled: release the static root and the frame source.
+        // (During Stop() _isRunning is already false — the cleanup below is
+        // idempotent and OnCompleted correctly stays silent.)
+        var wasRunning = _isRunning;
+        _isRunning = false;
+        UnregisterTickSubscription();
+
+        lock (_lock)
+        {
+            _activeStoryboards.Remove(this);
+        }
+
+        if (wasRunning && _terminatedCount == 0)
+        {
+            // WPF semantics: Completed fires only when every clock finished
+            // naturally — never after a Stop/termination.
+            OnCompleted();
         }
     }
 

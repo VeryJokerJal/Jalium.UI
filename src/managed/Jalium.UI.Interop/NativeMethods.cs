@@ -343,6 +343,28 @@ internal static partial class NativeMethods
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_reclaim_idle_resources")]
     internal static partial int RenderTargetReclaimIdleResources(nint renderTarget);
 
+    /// <summary>
+    /// Arms a one-shot back-buffer readback: the render target's NEXT EndDraw
+    /// copies the finished back buffer to a CPU-readable staging resource right
+    /// before Present. Returns JALIUM_OK (0) when latched;
+    /// JALIUM_ERROR_NOT_SUPPORTED (3) on backends without a readback
+    /// implementation (parity harness reports those as SKIP).
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_request_readback")]
+    internal static partial int RenderTargetRequestReadback(nint renderTarget);
+
+    /// <summary>
+    /// Fetches the pixels captured by the EndDraw that consumed the last
+    /// RenderTargetRequestReadback. Blocks on the frame's fence, then writes
+    /// tightly-packed BGRA8 rows (byte order B,G,R,A; raw backbuffer bytes —
+    /// no un-premultiply) into <paramref name="buffer"/>, one row per
+    /// <paramref name="bufferStride"/> bytes, top-down. MUST be called after
+    /// the capturing EndDraw returned — never between BeginDraw and EndDraw.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_fetch_readback")]
+    internal static unsafe partial int RenderTargetFetchReadback(
+        nint renderTarget, byte* buffer, uint bufferStride, out int width, out int height);
+
     #endregion
 
     #region Render Target Management
@@ -788,9 +810,11 @@ internal static partial class NativeMethods
     //  into that bitmap; per-frame cost collapses to a single blit into
     //  the main render target.
     //
-    //  All five functions below are implemented on the active backend's
-    //  context (D3D12 today; Vulkan can no-op or return failure while it
-    //  catches up).
+    //  All five functions below are implemented with a full GPU brush-shader
+    //  pipeline on BOTH backends (D3D12 and Vulkan). A zero/negative return
+    //  only signals an exceptional failure — device lost, the runtime shader
+    //  compiler (DXC) unavailable, or extreme out-of-memory — not a missing
+    //  backend implementation.
 
     /// <summary>
     /// Allocates a persistent RGBA8 offscreen render target bitmap owned
@@ -848,6 +872,8 @@ internal static partial class NativeMethods
     /// <paramref name="extraParams"/> is an optional user-defined cbuffer
     /// (bound as <c>b1</c>) that custom brush shaders can read. Pass
     /// <c>null</c> / 0 when the shader uses only the standard b0 cbuffer.
+    /// Returns a backend-agnostic <see cref="InkDispatchResult"/> code
+    /// (native <c>JaliumInkDispatchResult</c>).
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_ink_layer_bitmap_dispatch_brush")]
     internal static unsafe partial int InkLayerBitmapDispatchBrush(
@@ -908,6 +934,28 @@ internal static partial class NativeMethods
         string materialTint,
         float materialTintOpacity,
         float materialBlurRadius,
+        float cornerRadiusTL,
+        float cornerRadiusTR,
+        float cornerRadiusBR,
+        float cornerRadiusBL);
+
+    /// <summary>
+    /// Draws a backdrop filter effect with the extended material parameter set
+    /// (adds noise intensity, saturation and luminosity for Acrylic/Mica).
+    /// Backends without the extended path fall back to blur + tint only.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_backdrop_filter_ex", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial void DrawBackdropFilterEx(
+        nint renderTarget,
+        float x, float y, float width, float height,
+        string backdropFilter,
+        string material,
+        string materialTint,
+        float materialTintOpacity,
+        float materialBlurRadius,
+        float noiseIntensity,
+        float saturation,
+        float luminosity,
         float cornerRadiusTL,
         float cornerRadiusTR,
         float cornerRadiusBR,
@@ -1124,6 +1172,15 @@ internal static partial class NativeMethods
         float tl, float tr, float br, float bl);
 
     /// <summary>
+    /// Pushes an INVERSE (exclude) rounded rectangle clip: subsequent drawing keeps
+    /// only the area OUTSIDE the rounded rect (its interior is masked away). Used by
+    /// glow/highlight overlays that hug an element's edge. Pop with PopClip. Backends
+    /// without inverse-clip support push a balanced no-op clip and draw unmasked.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_push_rounded_rect_clip_exclude")]
+    internal static partial void PushRoundedRectClipExclude(nint renderTarget, float x, float y, float width, float height, float rx, float ry);
+
+    /// <summary>
     /// Pops the current clip.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_pop_clip")]
@@ -1306,7 +1363,11 @@ internal static partial class NativeMethods
     internal static partial nint BitmapCreateFromMemory(nint context, [In] byte[] data, uint dataSize);
 
     /// <summary>
-    /// Creates a bitmap from raw BGRA8 pixel data.
+    /// Creates a bitmap from raw BGRA8 pixel data. Pixels are STRAIGHT
+    /// (non-premultiplied) alpha regardless of backend; the native backend
+    /// premultiplies internally where its blend requires it (D3D12 on upload,
+    /// Vulkan while packing replay staging, software blends straight). Callers
+    /// must not premultiply and stay backend-agnostic.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_bitmap_create_from_pixels")]
     internal static partial nint BitmapCreateFromPixels(nint context, [In] byte[] pixels, uint width, uint height, uint stride);
@@ -1326,7 +1387,9 @@ internal static partial class NativeMethods
     /// <summary>
     /// Updates an existing bitmap's pixels in place. Avoids the per-frame texture
     /// recreation that thrashes the swap chain when a video / WriteableBitmap streams
-    /// frames at 30+fps. Returns 1 on success, 0 on failure (size mismatch / unsupported backend).
+    /// frames at 30+fps. Pixels are STRAIGHT (non-premultiplied) alpha; the native
+    /// backend premultiplies internally where its blend requires it. Returns 1 on
+    /// success, 0 on failure (size mismatch / unsupported backend).
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_bitmap_update_pixels")]
     internal static partial int BitmapUpdatePixels(nint bitmap, [In] byte[] pixels, uint width, uint height, uint stride);

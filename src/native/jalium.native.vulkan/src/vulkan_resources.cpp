@@ -24,8 +24,10 @@ VulkanSolidBrush::VulkanSolidBrush(float r, float g, float b, float a)
 
 VulkanLinearGradientBrush::VulkanLinearGradientBrush(
     float startX, float startY, float endX, float endY,
-    const JaliumGradientStop* stops, uint32_t stopCount)
+    const JaliumGradientStop* stops, uint32_t stopCount,
+    uint32_t spreadMethod)
     : startX_(startX), startY_(startY), endX_(endX), endY_(endY)
+    , spreadMethod_(spreadMethod)
 {
     if (stops && stopCount > 0) {
         stops_.assign(stops, stops + stopCount);
@@ -35,13 +37,15 @@ VulkanLinearGradientBrush::VulkanLinearGradientBrush(
 VulkanRadialGradientBrush::VulkanRadialGradientBrush(
     float centerX, float centerY, float radiusX, float radiusY,
     float originX, float originY,
-    const JaliumGradientStop* stops, uint32_t stopCount)
+    const JaliumGradientStop* stops, uint32_t stopCount,
+    uint32_t spreadMethod)
     : centerX_(centerX)
     , centerY_(centerY)
     , radiusX_(radiusX)
     , radiusY_(radiusY)
     , originX_(originX)
     , originY_(originY)
+    , spreadMethod_(spreadMethod)
 {
     if (stops && stopCount > 0) {
         stops_.assign(stops, stops + stopCount);
@@ -121,6 +125,14 @@ bool VulkanBitmap::UpdatePackedPixels(const uint8_t* pixels, uint32_t width, uin
     pixelData_ = std::move(next);
 
     bitmap_stats::AddUpload(requiredSize);
+    // Telemetry parity with D3D12's dynamic-path AddDynamicReuse: a dynamic
+    // bitmap (video / WriteableBitmap) updated its pixels WITHOUT recreating
+    // any GPU resource. On Vulkan there is no per-bitmap texture at all — the
+    // pixels ride through the shared per-frame staging buffer + upload image
+    // at replay time — so every non-short-circuited in-place update is by
+    // construction a "dynamic reuse" (the D3D12 equivalent of overwriting the
+    // existing default-heap texture instead of CreateCommittedResource).
+    bitmap_stats::AddDynamicReuse();
     return true;
 }
 
@@ -192,11 +204,11 @@ VulkanTextFormat::VulkanTextFormat(
     , fontWeight_(fontWeight)
     , fontStyle_(fontStyle)
 {
-    // Create a FreeTypeTextFormat if text engine is available
+    // Create a JaliumTextFormat if text engine is available
     if (textEngine) {
         auto* ftFormat = textEngine->CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
         if (ftFormat) {
-            ftTextFormat_.reset(static_cast<FreeTypeTextFormat*>(ftFormat));
+            ftTextFormat_.reset(static_cast<JaliumTextFormat*>(ftFormat));
         }
     }
 }
@@ -487,6 +499,73 @@ HRESULT VulkanTextFormat::CreateLayout(
 
     return hr;
 }
+
+// Resolve-once font-face metrics (mirrors D3D12TextFormat::EnsureFontFaceMetrics
+// in d3d12_text.cpp). See the FontFaceMetrics declaration in vulkan_resources.h
+// for why this must not run per MeasureText call: the resolution chain below is
+// pure DWrite font-collection lookup whose inputs (family / size / weight /
+// style) are fixed at construction, yet the old inline copies re-ran it on
+// every MeasureText / GetFontMetrics — the virtualization scroll hot path.
+const VulkanTextFormat::FontFaceMetrics& VulkanTextFormat::EnsureFontFaceMetrics()
+{
+    if (fontFaceMetrics_.attempted) {
+        return fontFaceMetrics_;
+    }
+    fontFaceMetrics_.attempted = true;
+
+    if (!dwFormat_) {
+        return fontFaceMetrics_;  // resolved stays false → callers use their fallbacks
+    }
+
+    Microsoft::WRL::ComPtr<IDWriteFontCollection> fontCollection;
+    dwFormat_->GetFontCollection(&fontCollection);
+    if (!fontCollection) {
+        return fontFaceMetrics_;
+    }
+
+    UINT32 familyNameLen = dwFormat_->GetFontFamilyNameLength() + 1;
+    std::vector<WCHAR> familyNameBuf(familyNameLen);
+    dwFormat_->GetFontFamilyName(familyNameBuf.data(), familyNameLen);
+
+    uint32_t familyIndex = 0;
+    BOOL exists = FALSE;
+    fontCollection->FindFamilyName(familyNameBuf.data(), &familyIndex, &exists);
+    if (!exists) {
+        return fontFaceMetrics_;
+    }
+
+    Microsoft::WRL::ComPtr<IDWriteFontFamily> fontFamily;
+    fontCollection->GetFontFamily(familyIndex, &fontFamily);
+    if (!fontFamily) {
+        fontFaceMetrics_.hardFailure = true;
+        return fontFaceMetrics_;
+    }
+
+    Microsoft::WRL::ComPtr<IDWriteFont> font;
+    fontFamily->GetFirstMatchingFont(
+        dwFormat_->GetFontWeight(),
+        dwFormat_->GetFontStretch(),
+        dwFormat_->GetFontStyle(),
+        &font);
+    if (!font) {
+        fontFaceMetrics_.hardFailure = true;
+        return fontFaceMetrics_;
+    }
+
+    DWRITE_FONT_METRICS fontMetrics;
+    font->GetMetrics(&fontMetrics);
+
+    // Convert design units to DIPs (designUnitsPerEm is the scale factor).
+    const float scale = fontSize_ / static_cast<float>(fontMetrics.designUnitsPerEm);
+    fontFaceMetrics_.ascent  = fontMetrics.ascent * scale;
+    fontFaceMetrics_.descent = fontMetrics.descent * scale;
+    fontFaceMetrics_.lineGap = fontMetrics.lineGap * scale;
+    // WPF-style natural line height: ascent + descent + lineGap.
+    fontFaceMetrics_.lineHeight =
+        fontFaceMetrics_.ascent + fontFaceMetrics_.descent + fontFaceMetrics_.lineGap;
+    fontFaceMetrics_.resolved = true;
+    return fontFaceMetrics_;
+}
 #endif  // _WIN32
 
 JaliumResult VulkanTextFormat::HitTestPoint(
@@ -620,41 +699,21 @@ JaliumResult VulkanTextFormat::MeasureText(
             metrics->descent = lineMetrics.height - lineMetrics.baseline;
 
             // Refine ascent/descent/lineGap/lineHeight from the resolved font
-            // face (mirrors D3D12's EnsureFontFaceMetrics path). On failure the
+            // face. Resolved ONCE per format via EnsureFontFaceMetrics (mirrors
+            // D3D12) — the old inline chain re-ran the full GetFontCollection →
+            // FindFamilyName → GetFirstMatchingFont → GetMetrics lookup on
+            // EVERY MeasureText (even when the shaped layout was a cache hit),
+            // which dominated the managed measure pass while scrolling
+            // recycled virtualized rows. When the face does not resolve, the
             // line-metric values just computed are left in place — exactly as
-            // D3D12's font-not-resolved fallback leaves them.
-            Microsoft::WRL::ComPtr<IDWriteFontCollection> fontCollection;
-            dwFormat_->GetFontCollection(&fontCollection);
-            if (fontCollection) {
-                UINT32 familyNameLen = dwFormat_->GetFontFamilyNameLength() + 1;
-                std::vector<WCHAR> familyNameBuf(familyNameLen);
-                dwFormat_->GetFontFamilyName(familyNameBuf.data(), familyNameLen);
-
-                uint32_t familyIndex = 0;
-                BOOL exists = FALSE;
-                fontCollection->FindFamilyName(familyNameBuf.data(), &familyIndex, &exists);
-                if (exists) {
-                    Microsoft::WRL::ComPtr<IDWriteFontFamily> fontFamily;
-                    fontCollection->GetFontFamily(familyIndex, &fontFamily);
-                    if (fontFamily) {
-                        Microsoft::WRL::ComPtr<IDWriteFont> font;
-                        fontFamily->GetFirstMatchingFont(
-                            dwFormat_->GetFontWeight(),
-                            dwFormat_->GetFontStretch(),
-                            dwFormat_->GetFontStyle(),
-                            &font);
-                        if (font) {
-                            DWRITE_FONT_METRICS fontMetrics;
-                            font->GetMetrics(&fontMetrics);
-                            const float scale = fontSize_ / static_cast<float>(fontMetrics.designUnitsPerEm);
-                            metrics->ascent = fontMetrics.ascent * scale;
-                            metrics->descent = fontMetrics.descent * scale;
-                            metrics->lineGap = fontMetrics.lineGap * scale;
-                            // WPF-style natural line height: ascent + descent + lineGap.
-                            metrics->lineHeight = metrics->ascent + metrics->descent + metrics->lineGap;
-                        }
-                    }
-                }
+            // the old `if (font)`-guarded block's failure path left them.
+            const FontFaceMetrics& faceMetrics = EnsureFontFaceMetrics();
+            if (faceMetrics.resolved) {
+                metrics->ascent = faceMetrics.ascent;
+                metrics->descent = faceMetrics.descent;
+                metrics->lineGap = faceMetrics.lineGap;
+                // WPF-style natural line height: ascent + descent + lineGap.
+                metrics->lineHeight = faceMetrics.lineHeight;
             }
         } else {
             // Fallback: use approximate values (mirrors D3D12).
@@ -706,62 +765,35 @@ JaliumResult VulkanTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     // null only when the shared factory / CreateTextFormat failed; in that case
     // we fall through to the approximate fallback below.
     if (dwFormat_) {
-        Microsoft::WRL::ComPtr<IDWriteFontCollection> fontCollection;
-        dwFormat_->GetFontCollection(&fontCollection);
-        if (!fontCollection) {
-            // Use fallback values (mirrors D3D12).
-            metrics->ascent = fontSize_;
-            metrics->descent = fontSize_ * 0.2f;
-            metrics->lineGap = 0.0f;
-            metrics->lineHeight = fontSize_ * 1.2f;
-            metrics->baseline = fontSize_;
+        // Font-face metrics are resolved once per format and cached (see
+        // EnsureFontFaceMetrics) — this method used to re-run the full
+        // GetFontCollection → FindFamilyName → GetFirstMatchingFont →
+        // GetMetrics chain on every call. The three pre-cache outcomes are
+        // preserved exactly:
+        //   resolved    → face metrics (success path),
+        //   hardFailure → RESOURCE_CREATION_FAILED (family / font object
+        //                 came back null after the name lookup succeeded),
+        //   neither     → fontSize_-derived fallback + OK (no collection, or
+        //                 family name not found — mirrors D3D12).
+        const FontFaceMetrics& faceMetrics = EnsureFontFaceMetrics();
+        if (faceMetrics.resolved) {
+            metrics->ascent = faceMetrics.ascent;
+            metrics->descent = faceMetrics.descent;
+            metrics->lineGap = faceMetrics.lineGap;
+            // WPF-style natural line height: ascent + descent + lineGap.
+            metrics->lineHeight = faceMetrics.lineHeight;
+            metrics->baseline = faceMetrics.ascent;
             return JALIUM_OK;
         }
-
-        UINT32 familyNameLen = dwFormat_->GetFontFamilyNameLength() + 1;
-        std::vector<WCHAR> familyNameBuf(familyNameLen);
-        dwFormat_->GetFontFamilyName(familyNameBuf.data(), familyNameLen);
-
-        uint32_t familyIndex = 0;
-        BOOL exists = FALSE;
-        fontCollection->FindFamilyName(familyNameBuf.data(), &familyIndex, &exists);
-        if (!exists) {
-            // Font not found, use fallback (mirrors D3D12).
-            metrics->ascent = fontSize_;
-            metrics->descent = fontSize_ * 0.2f;
-            metrics->lineGap = 0.0f;
-            metrics->lineHeight = fontSize_ * 1.2f;
-            metrics->baseline = fontSize_;
-            return JALIUM_OK;
-        }
-
-        Microsoft::WRL::ComPtr<IDWriteFontFamily> fontFamily;
-        fontCollection->GetFontFamily(familyIndex, &fontFamily);
-        if (!fontFamily) {
+        if (faceMetrics.hardFailure) {
             return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
         }
-
-        Microsoft::WRL::ComPtr<IDWriteFont> font;
-        fontFamily->GetFirstMatchingFont(
-            dwFormat_->GetFontWeight(),
-            dwFormat_->GetFontStretch(),
-            dwFormat_->GetFontStyle(),
-            &font);
-        if (!font) {
-            return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
-        }
-
-        DWRITE_FONT_METRICS fontMetrics;
-        font->GetMetrics(&fontMetrics);
-
-        // Convert design units to DIPs (scale = fontSize / designUnitsPerEm).
-        float scale = fontSize_ / static_cast<float>(fontMetrics.designUnitsPerEm);
-        metrics->ascent = fontMetrics.ascent * scale;
-        metrics->descent = fontMetrics.descent * scale;
-        metrics->lineGap = fontMetrics.lineGap * scale;
-        // WPF-style natural line height: ascent + descent + lineGap.
-        metrics->lineHeight = metrics->ascent + metrics->descent + metrics->lineGap;
-        metrics->baseline = metrics->ascent;
+        // Use fallback values (mirrors D3D12).
+        metrics->ascent = fontSize_;
+        metrics->descent = fontSize_ * 0.2f;
+        metrics->lineGap = 0.0f;
+        metrics->lineHeight = fontSize_ * 1.2f;
+        metrics->baseline = fontSize_;
         return JALIUM_OK;
     }
 #else

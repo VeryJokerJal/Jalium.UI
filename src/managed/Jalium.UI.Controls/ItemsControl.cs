@@ -292,6 +292,16 @@ public class ItemsControl : Control
             _fallbackItemsHost = null;
         }
 
+        // Mark the host panel and stamp the owner UNCONDITIONALLY (regardless of pipeline /
+        // IsVirtualizing) so the panel reads virtualization attached properties off this control, so
+        // ShouldUseVirtualizingPipeline and the panel's ShouldVirtualize() agree on the same source of
+        // truth (this owner), and so GetItemsOwner/ItemsControlFromItemContainer resolve.
+        panel.IsItemsHost = true;
+        if (panel is VirtualizingPanel ownerStampPanel)
+        {
+            ownerStampPanel.ItemsOwner = this;
+        }
+
         if (ShouldUseVirtualizingPipeline(panel))
         {
             panel.Children.Clear();
@@ -348,9 +358,13 @@ public class ItemsControl : Control
 
     private bool ShouldUseVirtualizingPipeline(Panel panel)
     {
+        // Read IsVirtualizing off THIS control (the owner) — the same source of truth the panel's
+        // ShouldVirtualize() now uses (via GetOwner()). Reading it off the panel would split-brain:
+        // setting VirtualizingPanel.IsVirtualizing=false on the control would leave this gate true
+        // (panel default) while the panel measured non-virtualized against an empty Children.
         return !s_useLegacyItemsPipeline &&
-               panel is VirtualizingPanel virtualizingPanel &&
-               VirtualizingPanel.GetIsVirtualizing(virtualizingPanel);
+               panel is VirtualizingPanel &&
+               VirtualizingPanel.GetIsVirtualizing(this);
     }
 
     private void AttachGeneratorToPanel(Panel panel, ItemContainerGenerator generator)
@@ -686,6 +700,115 @@ public class ItemsControl : Control
     internal void PrepareContainerForItemInternal(FrameworkElement element, object item)
     {
         PrepareContainerForItem(element, item);
+    }
+
+    /// <summary>
+    /// When overridden in a derived class, undoes the effects of
+    /// <see cref="PrepareContainerForItem"/>: clears the generated container's content (and, in
+    /// derived selectors, its selection state) before it is recycled or discarded. It is NOT called
+    /// for items that are their own container.
+    /// </summary>
+    /// <remarks>
+    /// For the steady-state scroll-recycle path the content clear is redundant — the recycle-pop
+    /// always re-prepares the container, so <see cref="PrepareContainerForItem"/> overwrites these
+    /// values. It is correctness-bearing for the ORPHANED container case (an item removed, or a
+    /// full reset, where the pooled container is never re-popped) so it does not alias the dead
+    /// item.
+    /// <para>
+    /// Framework-level animation hygiene (stopping the container subtree's animations and hard-
+    /// discarding the animated value layer back to base values) is performed by the generator's
+    /// recycle choke point BEFORE this method runs, so overrides observe base values here. On top
+    /// of that, the base implementation resets the visual-state DPs animations commonly leave a
+    /// local value on (RenderTransform / Opacity / ClipToBounds / Visibility) via
+    /// <see cref="DependencyObject.ClearValue"/> only — never SetValue — so style/template values
+    /// keep working. These local values are the symmetric counterpart of what Prepare-time code
+    /// sets; a custom container that legitimately holds one of them as a constructor-set local
+    /// value must override this method and skip base (the Prepare/Clear symmetry contract:
+    /// controls that override <see cref="PrepareContainerForItem"/> and skip base must also
+    /// override this method to skip the corresponding base branch and undo their own Prepare-set
+    /// local state — see ListBox's IsSelected/ParentListBox handling).
+    /// </para>
+    /// </remarks>
+    protected virtual void ClearContainerForItem(FrameworkElement element, object item)
+    {
+        if (ReferenceEquals(element, item))
+        {
+            // Own-container item: we never set Content on it, so there is nothing to undo.
+            return;
+        }
+
+        switch (element)
+        {
+            case ContentPresenter contentPresenter:
+                contentPresenter.ClearValue(ContentPresenter.ContentProperty);
+                contentPresenter.ClearValue(ContentPresenter.ContentTemplateProperty);
+                break;
+            case ContentControl contentControl:
+                contentControl.ClearValue(ContentControl.ContentProperty);
+                contentControl.ClearValue(ContentControl.ContentTemplateProperty);
+                contentControl.ClearValue(ContentControl.ContentTemplateSelectorProperty);
+                break;
+        }
+
+        // Visual-state hygiene for pooled containers: a recycled container must not inherit the
+        // previous item's leftover transform/opacity/clip/visibility local values (typically left
+        // behind by per-container animation code). ClearValue only — back to base.
+        element.ClearValue(UIElement.RenderTransformProperty);
+        element.ClearValue(UIElement.OpacityProperty);
+        element.ClearValue(UIElement.ClipToBoundsProperty);
+        element.ClearValue(UIElement.VisibilityProperty);
+    }
+
+    /// <summary>
+    /// Internal wrapper for <see cref="ClearContainerForItem"/> used by ItemContainerGenerator
+    /// before a container is pushed into the recycle pool (or discarded). On the scroll-recycle
+    /// path the container has already been removed from the panel's visual tree, so the
+    /// content-clear's measure-invalidation walks up to no parent. On the collection-Reset path
+    /// (generator OnReset recycles realized entries before the panel detaches them) the container
+    /// is still attached, so the clear performs an O(realized) upward invalidation walk — bounded
+    /// by the viewport and short-circuited by already-dirty ancestors.
+    /// </summary>
+    internal void ClearContainerForItemInternal(FrameworkElement element, object item)
+    {
+        ClearContainerForItem(element, item);
+    }
+
+    /// <summary>
+    /// Returns the <see cref="ItemsControl"/> that owns the given items-host panel, or <c>null</c> if
+    /// the element is not an items host. (WPF parity.)
+    /// </summary>
+    public static ItemsControl? GetItemsOwner(DependencyObject element)
+    {
+        if (element is Panel { IsItemsHost: true } panel)
+        {
+            // Templated host: the panel is a child of the ItemsPresenter, which knows its owner.
+            if (panel.VisualParent is ItemsPresenter presenter && presenter.Owner != null)
+            {
+                return presenter.Owner;
+            }
+
+            // Fallback host: the panel is parented directly to the owning ItemsControl.
+            if (panel.VisualParent is ItemsControl owner)
+            {
+                return owner;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Returns the <see cref="ItemsControl"/> that owns the given container element (generated or
+    /// own-container), or <c>null</c>. (WPF parity.)
+    /// </summary>
+    public static ItemsControl? ItemsControlFromItemContainer(DependencyObject container)
+    {
+        if (container is UIElement { VisualParent: Panel panel })
+        {
+            return GetItemsOwner(panel);
+        }
+
+        return null;
     }
 
     private void InsertItemToPanel(object item, int index)

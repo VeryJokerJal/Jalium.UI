@@ -58,14 +58,13 @@ struct CachedPathGeometry {
     bool triangulationSucceeded = false;
 };
 
-// Bounded LRU cache: O(1) lookup + O(1) touch + per-insert single eviction.
-// Same shape as TextLruCache (text_cache.h) — they share the LRU pattern.
+// Bounded LRU cache: O(1) lookup + O(1) touch + per-insert single eviction
+// (hash map for lookup + doubly linked list for recency ordering).
 class JALIUM_API PathGeometryCache {
 public:
     struct LookupResult {
         // shared_ptr so cache evictions are safe even if a recorded GPU
-        // command (or transient std::vector copy) outlives this lookup. Same
-        // safety model as TextLruCache.
+        // command (or transient std::vector copy) outlives this lookup.
         std::shared_ptr<const CachedPathGeometry> entry;
     };
 

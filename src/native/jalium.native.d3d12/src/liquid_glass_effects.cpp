@@ -1,3 +1,12 @@
+// ============================================================================
+// DEAD CODE — D2D1 legacy, referenced nowhere in the build.
+// The LiquidGlass*Effect::Register / CreateEffect entry points have no callers
+// anywhere in the repository; the LIVE D3D12 liquid-glass implementation is
+// D3D12DirectRenderer::DrawLiquidGlass (src/d3d12_direct_renderer.cpp) driven
+// by D3D12RenderTarget::DrawLiquidGlass. The four LiquidGlass*.hlsl files in
+// shaders/ belong to this dead pipeline and are equally unreferenced. Kept
+// only until the next dead-code sweep; do not extend.
+// ============================================================================
 #include <initguid.h>
 #include "liquid_glass_effects.h"
 #include <cstring>

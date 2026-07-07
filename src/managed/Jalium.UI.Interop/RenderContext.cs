@@ -407,7 +407,10 @@ public sealed class RenderContext : IDisposable
     }
 
     /// <summary>
-    /// Creates a bitmap from raw BGRA8 pixel data.
+    /// Creates a bitmap from raw BGRA8 pixel data in STRAIGHT (non-premultiplied)
+    /// alpha. The caller stays backend-agnostic: each native backend premultiplies
+    /// internally where its blend requires it, so the same straight pixels are
+    /// correct on D3D12, Vulkan and the software rasterizer alike.
     /// </summary>
     public NativeBitmap CreateBitmapFromPixels(byte[] pixelData, int width, int height, int stride = 0)
     {

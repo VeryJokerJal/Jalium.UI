@@ -154,33 +154,55 @@ void VulkanBackend::RegisterAdapterInfo(VkPhysicalDevice physicalDevice,
         break;
     }
 
-    // VRAM 估算：DEVICE_LOCAL 总和 → dedicatedVideoMemory；
-    //            HOST_VISIBLE && !DEVICE_LOCAL 总和 → sharedSystemMemory。
-    // 这跟 DXGI_ADAPTER_DESC1 的语义并不完全对齐——DXGI 的 dedicated 是
-    // "GPU 独占且 CPU 不可见"的部分，UMA iGPU 那一栏会是 0，分享内存进
-    // sharedSystemMemory。Vulkan 的 DEVICE_LOCAL 在 UMA 上同样涵盖系统内存，
-    // 所以 iGPU 这里会把"看得到的系统内存"算进 dedicatedVideoMemory。
-    // DevTools 文案标注 "GPU memory (Vulkan: best-effort)" 已经给宿主对齐预期。
-    uint64_t deviceLocalBytes = 0;
-    uint64_t hostVisibleNonDeviceLocalBytes = 0;
+    // ── VRAM 口径：对齐 D3D12 端的 DXGI_ADAPTER_DESC1 语义 ──────────────────
+    // DXGI 的分栏（d3d12_backend.cpp::GetAdapterInfo 直接透传 DXGI 值）：
+    //   DedicatedVideoMemory = GPU 专用、CPU 不可见的显存。UMA iGPU 上只剩
+    //                          BIOS carve-out（0，或 512MB~2GB 的小值）。
+    //   SharedSystemMemory   = GPU 可用的共享系统内存。
+    // Vulkan 没有直接等价物，按"堆是否被 HOST_VISIBLE memory type 引用"重建
+    // 同一口径（旧逻辑把 DEVICE_LOCAL 堆总和一律报成 dedicated，Intel/AMD
+    // iGPU 会把 CPU 可见的系统内存冒充专用显存，DevTools 里两端读数打架）：
+    //   - DEVICE_LOCAL 且无任何 HOST_VISIBLE type 引用的堆
+    //       → CPU 不可见的真显存 / iGPU BIOS carve-out → dedicated。
+    //   - DEVICE_LOCAL 且被 HOST_VISIBLE type 引用的堆：
+    //       * 集成 / 软件设备（UMA）→ 这就是共享系统内存本体，DXGI 记在
+    //         SharedSystemMemory、dedicated 归 0（软件设备对照 WARP 同样是
+    //         dedicated=0 + shared=系统内存）→ 计入 shared。
+    //       * 独立 GPU → resizable-BAR 全显存 / 小 BAR 窗口：CPU 可见但仍是
+    //         板载显存，DXGI 一样算 DedicatedVideoMemory → 计入 dedicated。
+    //   - 非 DEVICE_LOCAL 堆（host 内存）：有 HOST_VISIBLE type 引用才计入
+    //     shared（与旧逻辑一致，排除理论上 CPU 不可访问的异形堆）。
+    // UMA 判定跟随上面 adapterType 的归类结果（INTEGRATED / SOFTWARE 直接来
+    // 自 VkPhysicalDeviceType；OTHER 的堆大小启发式归类也顺带生效），语义上
+    // 对应 D3D12 端用 D3D12_FEATURE_ARCHITECTURE1.UMA 的精确分类。
+    const bool umaLike = info.adapterType != JALIUM_GPU_ADAPTER_TYPE_DISCRETE;
+    uint64_t dedicatedBytes = 0;
+    uint64_t sharedBytes = 0;
     for (uint32_t i = 0; i < memProps.memoryHeapCount; ++i) {
         const auto& heap = memProps.memoryHeaps[i];
-        const bool deviceLocal = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
-        if (deviceLocal) {
-            deviceLocalBytes += heap.size;
-        } else {
-            // 找一条引用此 heap 的 host-visible memory type 才算共享系统内存。
-            for (uint32_t t = 0; t < memProps.memoryTypeCount; ++t) {
-                if (memProps.memoryTypes[t].heapIndex == i &&
-                    (memProps.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
-                    hostVisibleNonDeviceLocalBytes += heap.size;
-                    break;
-                }
+        // 堆的 CPU 可见性 = 存在引用此 heap 的 HOST_VISIBLE memory type
+        // （HEAP flag 只有 DEVICE_LOCAL；可见性挂在 memory type 上）。
+        bool hostVisible = false;
+        for (uint32_t t = 0; t < memProps.memoryTypeCount; ++t) {
+            if (memProps.memoryTypes[t].heapIndex == i &&
+                (memProps.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+                hostVisible = true;
+                break;
             }
         }
+        const bool deviceLocal = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+        if (deviceLocal) {
+            if (hostVisible && umaLike) {
+                sharedBytes += heap.size;
+            } else {
+                dedicatedBytes += heap.size;
+            }
+        } else if (hostVisible) {
+            sharedBytes += heap.size;
+        }
     }
-    info.dedicatedVideoMemory = deviceLocalBytes;
-    info.sharedSystemMemory   = hostVisibleNonDeviceLocalBytes;
+    info.dedicatedVideoMemory = dedicatedBytes;
+    info.sharedSystemMemory   = sharedBytes;
 
     info.vendorId = props.vendorID;
     info.deviceId = props.deviceID;
@@ -250,18 +272,18 @@ Brush* VulkanBackend::CreateSolidBrush(float r, float g, float b, float a)
 Brush* VulkanBackend::CreateLinearGradientBrush(
     float startX, float startY, float endX, float endY,
     const JaliumGradientStop* stops, uint32_t stopCount,
-    uint32_t /*spreadMethod*/)
+    uint32_t spreadMethod)
 {
-    return new VulkanLinearGradientBrush(startX, startY, endX, endY, stops, stopCount);
+    return new VulkanLinearGradientBrush(startX, startY, endX, endY, stops, stopCount, spreadMethod);
 }
 
 Brush* VulkanBackend::CreateRadialGradientBrush(
     float centerX, float centerY, float radiusX, float radiusY,
     float originX, float originY,
     const JaliumGradientStop* stops, uint32_t stopCount,
-    uint32_t /*spreadMethod*/)
+    uint32_t spreadMethod)
 {
-    return new VulkanRadialGradientBrush(centerX, centerY, radiusX, radiusY, originX, originY, stops, stopCount);
+    return new VulkanRadialGradientBrush(centerX, centerY, radiusX, radiusY, originX, originY, stops, stopCount, spreadMethod);
 }
 
 TextFormat* VulkanBackend::CreateTextFormat(
@@ -322,18 +344,60 @@ Bitmap* VulkanBackend::CreateBitmapFromPixels(const uint8_t* pixels, uint32_t wi
 JaliumResult VulkanBackend::CheckDeviceStatus()
 {
     std::lock_guard<std::mutex> lk(inkMutex_);
-    if (deviceGeneration_ && deviceGeneration_->IsLost()) {
-        return JALIUM_ERROR_DEVICE_LOST;
+    // Aggregate across every live render target's generation — Vulkan has one
+    // VkDevice per render target, so checking only the most recently
+    // registered generation (the old behavior) let a second window mask the
+    // first window's loss. ANY latched loss reports DEVICE_LOST; expired
+    // entries (render target already gone without unregistering) are pruned
+    // as we walk. deviceGeneration_ needs no separate check: it is always a
+    // member of this list (RegisterDeviceContext appends before its
+    // same-device short-circuit). Note this stays a PASSIVE latch — Vulkan
+    // has no GetDeviceRemovedReason-style probe, so a dead device that no
+    // call has touched yet still reports OK (documented platform difference,
+    // see the header).
+    bool anyLost = false;
+    for (auto it = registeredGenerations_.begin(); it != registeredGenerations_.end();) {
+        std::shared_ptr<VulkanDeviceGeneration> generation = it->lock();
+        if (!generation) {
+            it = registeredGenerations_.erase(it);
+            continue;
+        }
+        if (generation->IsLost()) {
+            anyLost = true;
+        }
+        ++it;
     }
-    return JALIUM_OK;
+    return anyLost ? JALIUM_ERROR_DEVICE_LOST : JALIUM_OK;
 }
 
 void VulkanBackend::RegisterDeviceContext(std::shared_ptr<VulkanDeviceGeneration> generation)
 {
     if (!generation || !generation->ctx.valid) return;
     std::lock_guard<std::mutex> lk(inkMutex_);
+
+    // Track (weakly) for CheckDeviceStatus loss aggregation — BEFORE the
+    // same-device short-circuit below, so every generation that reaches the
+    // backend stays observable even when the ink pipeline ignores the
+    // registration. Dedup by generation identity; prune expired entries in
+    // the same walk.
+    bool alreadyTracked = false;
+    for (auto it = registeredGenerations_.begin(); it != registeredGenerations_.end();) {
+        std::shared_ptr<VulkanDeviceGeneration> tracked = it->lock();
+        if (!tracked) {
+            it = registeredGenerations_.erase(it);
+            continue;
+        }
+        if (tracked == generation) {
+            alreadyTracked = true;
+        }
+        ++it;
+    }
+    if (!alreadyTracked) {
+        registeredGenerations_.push_back(generation);
+    }
+
     if (deviceGeneration_ && deviceGeneration_->ctx.device == generation->ctx.device) {
-        return;  // same device already registered
+        return;  // same device already registered (ink pipeline unchanged)
     }
     // A different device superseded the old one (second window, or a fresh
     // render target after device-lost recovery). Drop only the backend's
@@ -351,6 +415,20 @@ void VulkanBackend::UnregisterDeviceContext(const std::shared_ptr<VulkanDeviceGe
 {
     if (!generation) return;
     std::lock_guard<std::mutex> lk(inkMutex_);
+    // Drop the dying render target's generation from the CheckDeviceStatus
+    // aggregation: after Destroy nobody can act on its loss anymore, and a
+    // stale latched loss must not permanently poison the aggregate for the
+    // surviving windows (the recovery chain destroys the lost RT and
+    // registers its healthy replacement, flipping the aggregate back to OK).
+    // Expired entries are pruned in the same walk.
+    for (auto it = registeredGenerations_.begin(); it != registeredGenerations_.end();) {
+        std::shared_ptr<VulkanDeviceGeneration> tracked = it->lock();
+        if (!tracked || tracked == generation) {
+            it = registeredGenerations_.erase(it);
+            continue;
+        }
+        ++it;
+    }
     if (deviceGeneration_ == generation) {
         brushPipeline_.reset();
         brushPipelineAttempted_ = false;

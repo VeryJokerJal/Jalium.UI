@@ -8,6 +8,8 @@ $shaders = @(
     'bitmap_text.vs', 'bitmap_text.ps', 'bitmap_text_smooth.ps',
     'bitmap_quad.vs', 'bitmap_quad.ps',
     'custom_effect.vs',
+    'transition_quad.ps', 'desktop_backdrop.ps', 'snapshot_backdrop.ps',
+    'color_matrix.ps', 'emboss.ps',
     'triangle.vs', 'triangle.ps',
     'gaussian_blur.cs'
 )

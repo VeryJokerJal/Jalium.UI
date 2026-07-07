@@ -4,7 +4,6 @@
 #include "jalium_types.h"
 #include "jalium_rendering_engine.h"
 #include "jalium_path_cache.h"
-#include "text_cache.h"
 #include "vulkan_impeller_engine.h"
 #include "vulkan_vello_engine.h"
 
@@ -57,6 +56,12 @@ public:
     void PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry) override;
     void PushPerCornerRoundedRectClip(float x, float y, float w, float h,
         float tl, float tr, float br, float bl) override;
+    // TRUE inverse rounded clip (D3D12 PushRoundedClipExclude parity): keeps
+    // the area OUTSIDE the rounded rect. Pushes a clipStack_ entry flagged
+    // exclude — no scissor tightening — and the GPU replay path masks the
+    // interior via clipFlags.x == 2 in the inverse-capable fragment shaders.
+    void PushRoundedRectClipExclude(float x, float y, float w, float h,
+        float rx, float ry) override;
     void PopClip() override;
     void PunchTransparentRect(float x, float y, float w, float h) override;
     void PushOpacity(float opacity) override;
@@ -98,6 +103,7 @@ public:
     // left as a bounded, logged leak rather than freed through an unknown type.
     void DestroyRetainedLayer(void* layer) override;
     void DrawBackdropFilter(float x, float y, float w, float h, const char* backdropFilter, const char* material, const char* materialTint, float tintOpacity, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL) override;
+    void DrawBackdropFilterEx(float x, float y, float w, float h, const char* backdropFilter, const char* material, const char* materialTint, float tintOpacity, float blurRadius, float noiseIntensity, float saturation, float luminosity, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL) override;
     void DrawGlowingBorderHighlight(float x, float y, float w, float h, float animationPhase, float glowColorR, float glowColorG, float glowColorB, float strokeWidth, float trailLength, float dimOpacity, float screenWidth, float screenHeight) override;
     void DrawGlowingBorderTransition(float fromX, float fromY, float fromW, float fromH, float toX, float toY, float toW, float toH, float headProgress, float tailProgress, float animationPhase, float glowColorR, float glowColorG, float glowColorB, float strokeWidth, float trailLength, float dimOpacity, float screenWidth, float screenHeight) override;
     void DrawRippleEffect(float x, float y, float w, float h, float rippleProgress, float glowColorR, float glowColorG, float glowColorB, float strokeWidth, float dimOpacity, float screenWidth, float screenHeight) override;
@@ -194,6 +200,35 @@ public:
     /// and are recycled by the swapchain anyway.
     JaliumResult ReclaimIdleResources() override;
 
+    /// --- Two-phase back-buffer readback (parity verification; see base) ---
+    /// Arms a one-shot capture: the NEXT EndDraw records a swapchain-image →
+    /// host-visible-buffer copy (vkCmdCopyImageToBuffer) inside DrawFrame /
+    /// DrawReplayFrame, right before the PRESENT-transition barrier, and tags
+    /// it with that frame's slot fence. FetchReadback waits that fence and
+    /// copies tightly-packed BGRA8 rows out (B8G8R8A8 swapchains copy
+    /// through; R8G8B8A8 swizzles R↔B per pixel). Returns NOT_SUPPORTED when
+    /// the surface lacks TRANSFER_SRC usage on its swapchain images.
+    JaliumResult RequestReadback() override;
+    JaliumResult FetchReadback(uint8_t* buf, uint32_t bufStride,
+                               int32_t* outWidth, int32_t* outHeight) override;
+
+    /// --- F8: TEST-ONLY device-lost injection (see RenderTarget base) ---
+    /// Simulate VK_ERROR_DEVICE_LOST by tripping the sticky device-lost latch
+    /// so the next BeginDraw/EndDraw drives the managed recovery chain.
+    bool DebugRemoveDevice() override;
+    /// orphaned is always 0 (Vulkan has no cross-generation retained-layer
+    /// orphan path); graveyard is the cumulative fence-gated destroy count
+    /// across the retained-layer / upload-image / buffer graveyards.
+    bool DebugGetRetainedDestroyCounts(uint64_t* orphaned, uint64_t* graveyard) override;
+    /// The live VkDevice handle as an integer (0 when torn down).
+    uint64_t DebugDevicePointer() override;
+    /// True while any offscreen/transition capture region is open.
+    bool DebugInOffscreenCapture() override;
+    // DebugForceLeakedCommandListResize / DebugForceVelloOutputOrphan are
+    // D3D12-specific #921 injections with no Vulkan analogue (no open command
+    // list spans a resize; Vello output is fence-gated like every resource),
+    // so they are intentionally NOT overridden — the base returns -1.
+
     /// Returns true if the active engine is Impeller.
     bool IsImpellerActive() const { return activeEngine_ == JALIUM_ENGINE_IMPELLER; }
     /// Returns true if the active engine is Vello.
@@ -222,6 +257,12 @@ private:
 
     struct ClipState {
         bool rounded = false;
+        // Inverse clip (PushRoundedRectClipExclude): keep the area OUTSIDE the
+        // (rounded) rect and mask its interior. Exclude entries contribute NO
+        // axis-aligned scissor tightening (the excluded region's complement is
+        // unbounded) — mirrors D3D12's PushRoundedClipExclude, which pushes no
+        // scissor either.
+        bool exclude = false;
         float x = 0.0f;
         float y = 0.0f;
         float w = 0.0f;
@@ -267,6 +308,12 @@ private:
         float w = 0.0f;
         float h = 0.0f;
         float opacity = 1.0f;
+        // BitmapScalingMode.NearestNeighbor (3): sample through the point
+        // (VK_FILTER_NEAREST) sampler at replay so pixel art stays crisp.
+        // Every other mode keeps the shared linear/anisotropic frameSampler
+        // (Vulkan collapses D3D12's linear-vs-aniso split into that single
+        // high-quality sampler, so HighQuality semantics are unchanged).
+        bool useNearestSampler = false;
     };
 
     struct GpuFilledPolygonCommand {
@@ -314,6 +361,14 @@ private:
         // GPU compositor path — no per-element offscreen render target. Mirrors how
         // Backdrop/LiquidGlass already source from the live scene.
         bool captureLiveScene = false;
+        // env JALIUM_VK_EFFECT_GPU_RT: like captureLiveScene, but the source is
+        // the ISOLATED element content in the offscreen effect RT (the element's
+        // [x,y,w,h] region blitted into the upload image at replay time). The
+        // matching OffscreenEnd composite-back was suppressed, so the blurred
+        // output REPLACES the element. Falls back to captureLiveScene semantics
+        // when the offscreen degraded at replay (the element then rendered into
+        // the main frame directly).
+        bool captureOffscreen = false;
     };
 
     struct GpuLiquidGlassCommand {
@@ -335,6 +390,12 @@ private:
         float lightX = 0.0f;
         float lightY = 0.0f;
         float highlightBoost = 0.0f;
+        int shapeType = 0;          // 0 = rounded-rect, 1 = super-ellipse
+        float shapeExponent = 4.0f; // super-ellipse exponent
+        int neighborCount = 0;      // 0..4 fused neighbours
+        float fusionRadius = 0.0f;
+        // Up to 4 neighbours, 5 floats each (x, y, w, h, cornerRadius).
+        float neighborData[20] = {};
     };
 
     struct GpuBackdropCommand {
@@ -356,6 +417,22 @@ private:
         float tintOpacity = 0.0f;
         float saturation = 1.0f;
         float noiseIntensity = 0.0f;
+        // Brightness multiplier applied after tint/saturation (MicaEffect raises
+        // perceived brightness a few percent). 1 = unchanged. Field-for-field
+        // parity with the D3D12 snapshot-backdrop shader's luminosity.
+        float luminosity = 1.0f;
+        // Source-UV remap: quad-local uv [0,1] over the panel -> source-texel uv.
+        // The in-app path samples uploadImage, which holds the FULL captured frame
+        // (CaptureLiveSceneToUpload blits [0,0,pixelWidth,pixelHeight]), so the
+        // panel occupies only the sub-rect (x,y,w,h)/(pixelWidth,pixelHeight) of
+        // it. Without this remap the shader stretched the whole frame across the
+        // panel (only the frame-centred panel centre happened to align), which is
+        // why the in-app backdrop diverged from D3D12's uvRemap path. The desktop
+        // path passes identity (0,0,1,1) because its capture fills the quad 1:1.
+        float uvOffsetX = 0.0f;
+        float uvOffsetY = 0.0f;
+        float uvScaleX = 1.0f;
+        float uvScaleY = 1.0f;
     };
 
     struct GpuGlowCommand {
@@ -385,6 +462,24 @@ private:
         float progress = 0.0f;
         float opacity = 1.0f;
         int mode = 0;
+        // env JALIUM_VK_EFFECT_GPU_RT (C6): when true the from/to content was captured
+        // into transitionImages[0]/[1] via the GPU offscreen RT (no CPU pixels are carried
+        // and fromPixels/toPixels stay empty). The replay skips the CPU-pixel upload and
+        // samples the two persistent slot images directly. slotElemW/H are the element's
+        // physical-pixel size, used to build uvScale = elemPx / transitionImage size (the
+        // element sits at the top-left origin of each slot image, matching the D3D12
+        // offscreenRT / uvScale convention exactly).
+        bool useSlotImages = false;
+        float slotElemW = 0.0f;
+        float slotElemH = 0.0f;
+        // env JALIUM_VK_EFFECT_GPU_RT (C6): a single-slot GPU-RT composite (the
+        // DrawCapturedTransition particle path). progress is pre-set to fully select
+        // singleSlotIndex (0 -> from, 1 -> to) and mode is the default crossfade, so
+        // the shader collapses to that one slot's content. Only that slot needs to be
+        // captured this frame; the other slot image is still sampled (weight 0) so the
+        // capacity phase leaves both images SHADER_READ to keep the sample well-defined.
+        bool singleSlot = false;
+        int singleSlotIndex = 0;
     };
 
     // Custom pixel-shader effect (DrawShaderEffectFromSource). Holds the
@@ -402,6 +497,17 @@ private:
         float    h = 0.0f;
         uint64_t shaderHash = 0;
         std::vector<float> constants;
+        // env JALIUM_VK_EFFECT_GPU_RT: `pixels` is EMPTY and the shader input is
+        // the isolated element content in the offscreen effect RT (the [x,y,w,h]
+        // rect blitted into uploadImage[0,0,w,h] at replay time, i.e. the same
+        // destination the staging upload would fill). Used by user custom
+        // shaders and by the built-in ColorMatrix / Emboss shaders.
+        bool sampleOffscreen = false;
+        // Replay patches constants[4..7] with (1/uploadW, 1/uploadH, uvScaleX,
+        // uvScaleY) after the UBO memcpy: per-texel sampling info only the
+        // replay knows (the upload image capacity is a per-frame decision).
+        // The Emboss shader consumes it; requires constants.size() >= 8.
+        bool patchUvInfo = false;
     };
 
     // Per-vertex-coloured triangle batch — the GPU analogue of D3D12's
@@ -447,6 +553,18 @@ private:
         bool clearType = false;        // select dual-source ClearType pipeline at replay
     };
 
+    // Painter-order marker for the engine (Impeller / Vello CPU-tessellation)
+    // batches: renders the batch sub-range [firstBatch, firstBatch + batchCount)
+    // at this exact point of the replay stream, replacing the legacy frame-end
+    // drain that painted every engine path on top of the whole frame. Indices
+    // are stable: the engines' batch vectors only grow during a frame
+    // (ClearBatches runs in EndDraw after consumption), so a span emitted early
+    // keeps referring to the same batches at replay time.
+    struct GpuEngineBatchSpanCommand {
+        uint32_t firstBatch = 0;
+        uint32_t batchCount = 0;
+    };
+
     enum class GpuReplayCommandKind {
         SolidRect,
         ClearRect,
@@ -465,16 +583,77 @@ private:
                         // commands render into it (isolated) until OffscreenEnd. Carries the element
                         // rect in solidRect.x/y/w/h for the sampling uvScale.
         OffscreenEnd,   // close the offscreen effect RT; its view becomes the effect sampling source.
+        EngineBatchSpan, // drain the engine batches [firstBatch, firstBatch + batchCount) at THIS
+                         // point of the stream — painter-order interleaving (B1). Payload in
+                         // engineBatchSpan.
+        TransitionCaptureBegin, // env JALIUM_VK_EFFECT_GPU_RT (C6): open an offscreen region whose
+                                // isolated content becomes transition slot [transitionCaptureSlot].
+                                // Reuses the effect offscreen RT redirect (CLEAR first draw / LOAD
+                                // after); the child element draws stay engine/replay-encoded and are
+                                // redirected into effectOffscreenImage exactly like an effect capture.
+        TransitionCaptureEnd,   // close the region and blit effectOffscreenImage[element phys rect] to
+                                // transitionImages[transitionCaptureSlot] at the (0,0) origin, then
+                                // leave it SHADER_READ_ONLY. The element's phys rect rides in
+                                // solidRect.x/y/w/h. Makes the slot a valid transition sampling source.
+        RetainedLayerCaptureBegin, // C7 (env JALIUM_VK_RETAINED_LAYERS, default ON): open an offscreen
+                                   // region whose isolated content becomes the persistent per-layer image
+                                   // keyed by retainedLayerKey. Reuses the SAME effect-offscreen redirect
+                                   // (CLEAR first draw / LOAD after) as TransitionCaptureBegin; the child
+                                   // subtree's draws stay engine/replay-encoded and are redirected into
+                                   // effectOffscreenImage exactly like an effect / transition capture.
+        RetainedLayerCaptureEnd,   // close the region, ensure the element-sized per-layer image for
+                                   // retainedLayerKey exists (create/resize), and blit
+                                   // effectOffscreenImage[element phys rect] into it at the (0,0) origin,
+                                   // leaving it SHADER_READ_ONLY. The element's PHYSICAL-pixel rect rides
+                                   // in solidRect.x/y/w/h. Makes the layer a valid composite sampling
+                                   // source that PERSISTS across frames (composite-only frames sample it
+                                   // with no capture marker present).
     };
 
     struct GpuReplayCommand {
         GpuReplayCommandKind kind = GpuReplayCommandKind::SolidRect;
+        // OffscreenEnd markers only (env JALIUM_VK_EFFECT_GPU_RT): skip the
+        // automatic composite-back of the isolated element. Set retroactively by
+        // TrySuppressPendingOffscreenComposite() when the effect that follows
+        // REPLACES the element with its processed result (blur / color-matrix /
+        // emboss / custom shader); drop shadow / outer glow keep the composite.
+        bool offscreenSuppressComposite = false;
+        // env JALIUM_VK_EFFECT_GPU_RT (C6): for TransitionCaptureBegin / TransitionCaptureEnd
+        // markers, which transition slot (0 = old / 1 = new) this region targets. -1 for every
+        // other command. The element's PHYSICAL-pixel rect for the End blit rides in solidRect.
+        int transitionCaptureSlot = -1;
+        // C7 (env JALIUM_VK_RETAINED_LAYERS): the retained-layer handle this command targets.
+        // Non-null on RetainedLayerCaptureBegin / RetainedLayerCaptureEnd markers (whose element
+        // PHYSICAL-pixel rect rides in solidRect) AND on the Bitmap COMPOSITE command emitted by
+        // CompositeLayer — that Bitmap carries NO CPU pixels and instead samples the persistent
+        // per-layer image bound to this key at replay. nullptr for every other command (which keep
+        // the shared upload-image path). The key is the outer VulkanRetainedLayer* (stable for the
+        // layer's lifetime); the replay side owns the matching GPU image in retainedLayerGpuImages_.
+        const void* retainedLayerKey = nullptr;
         bool hasScissor = false;
         int32_t scissorLeft = 0;
         int32_t scissorTop = 0;
         int32_t scissorRight = 0;
         int32_t scissorBottom = 0;
+        // Soft drop-shadow (SolidRect only): render the rounded rect carried in
+        // roundedClip{Left..RadiusY} with an ANALYTIC gaussian (erf) falloff of
+        // the rect's own SDF instead of a hard rounded fill/clip — a single
+        // over-blend replacing the N-layer concentric-rect halo (D3D12
+        // DrawDropShadowEffect / sdf_rect shadowMode parity). The VS grows the
+        // quad by 3*sigma+1px so the tail isn't clipped; the FS takes the erf
+        // branch. shadowMode == 0 (default) is a byte-identical no-op for every
+        // other SolidRect caller.
+        float shadowMode = 0.0f;    // > 0.5 -> erf gaussian shadow branch
+        float shadowSigma = 0.0f;   // gaussian sigma (screen px) = blurRadius/3
         bool hasRoundedClip = false;
+        // Inverse rounded clip (an ancestor PushRoundedRectClipExclude): the
+        // shader keeps 1 - coverage, masking the rect's INTERIOR. Only the
+        // pipelines with an inverse-capable clip section consume it
+        // (solid_rect / bitmap_quad / text_glyph via clipFlags.x == 2);
+        // replay branches for the other pipelines skip the rounded clip
+        // entirely when this is set (drawing unmasked) instead of clipping
+        // in the wrong direction.
+        bool roundedClipInverse = false;
         float roundedClipLeft = 0.0f;
         float roundedClipTop = 0.0f;
         float roundedClipRight = 0.0f;
@@ -542,6 +721,7 @@ private:
         GpuInkLayerCommand inkLayer {};
         GpuCustomShaderCommand customShader {};
         GpuTextRunCommand textRun {};
+        GpuEngineBatchSpanCommand engineBatchSpan {};
     };
 
     struct EffectCaptureState {
@@ -600,6 +780,28 @@ private:
     void BlendOutsideRect(float x, float y, float w, float h, uint8_t b, uint8_t g, uint8_t r, uint8_t a);
     void StrokeRoundedRectApprox(float x, float y, float w, float h, float rx, float ry, float strokeWidth, uint8_t b, uint8_t g, uint8_t r, uint8_t a);
     void ResetGpuReplay();
+    // Single funnel for appending a recorded GPU replay command. Every
+    // primitive recorder pushes through here so the painter-order machinery
+    // has one choke point: before appending, MaybeEmitEngineSpan() folds any
+    // engine batches encoded since the last span into an EngineBatchSpan
+    // command, keeping Impeller/Vello path work interleaved with the replay
+    // stream in submission order (the Vulkan analogue of D3D12's
+    // FlushVelloIfNeeded lazy flush). Two overloads preserve the exact
+    // copy/move semantics of the raw push_back call sites they replaced.
+    // Intentionally NOT funneled: the OffscreenBegin/OffscreenEnd marker
+    // emits (paired markers whose position is managed by BeginEffectCapture /
+    // EndEffectCapture themselves) and SpliceGlowBehindContent's content
+    // re-insert (moves already-recorded commands).
+    void RecordReplayCommand(const GpuReplayCommand& command);
+    void RecordReplayCommand(GpuReplayCommand&& command);
+    // If the active engine (Impeller, or Vello in CPU-tessellation mode) has
+    // encoded batches beyond consumedEngineBatchCount_, emit an EngineBatchSpan
+    // command covering [consumed, size) and advance the cursor. Called before
+    // every RecordReplayCommand append, at EndDraw to fold the frame tail, and
+    // around the effect-capture content stamps so the glow splice moves engine
+    // work together with its element. Vello COMPUTE mode is exempt — its scene
+    // is still consumed at frame end (sub-scene splitting is B2).
+    void MaybeEmitEngineSpan();
     void InvalidateGpuReplay(const char* caller = nullptr);
     void ResetGpuSolidRectReplay() { ResetGpuReplay(); }
     void InvalidateGpuSolidRectReplay(const char* caller = nullptr) { InvalidateGpuReplay(caller); }
@@ -631,7 +833,10 @@ private:
     // recorder then stores the per-bitmap opacity verbatim instead of
     // multiplying by GetCurrentOpacity() a second time — otherwise text and
     // other pre-baked bitmaps fade as opacity² during animations.
-    bool TryRecordGpuPixelBufferCommandShared(std::shared_ptr<const std::vector<uint8_t>> pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity, bool opacityAlreadyBaked = false);
+    // scalingMode: JaliumBitmapScalingMode value (3 = NearestNeighbor selects
+    // the point sampler at replay; every other mode keeps the shared
+    // linear/anisotropic frameSampler — matches the D3D12 sampler mapping).
+    bool TryRecordGpuPixelBufferCommandShared(std::shared_ptr<const std::vector<uint8_t>> pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity, int scalingMode = 0, bool opacityAlreadyBaked = false);
     bool TryRecordGpuBlurCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float radius, float opacity, bool alphaOnlyTint = false, float tintR = 0.0f, float tintG = 0.0f, float tintB = 0.0f, float tintA = 1.0f);
     // GPU compositor path for element BlurEffect: records a Blur command that
     // sources its pixels from the LIVE composited frame (the element's own screen
@@ -639,10 +844,10 @@ private:
     // an uploaded CPU buffer. No CPU pixels and no per-element offscreen target.
     // Used on the GPU replay path, where BeginEffectCapture is a pass-through so
     // the element already rendered into the frame.
-    bool TryRecordGpuLiveBlurCommand(float x, float y, float w, float h, float radius, float opacity, bool alphaOnlyTint = false, float tintR = 0.0f, float tintG = 0.0f, float tintB = 0.0f, float tintA = 1.0f);
-    bool TryRecordGpuBackdropCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL, float tintR, float tintG, float tintB, float tintOpacity, float saturation = 1.0f, float noiseIntensity = 0.0f);
+    bool TryRecordGpuLiveBlurCommand(float x, float y, float w, float h, float radius, float opacity, bool alphaOnlyTint = false, float tintR = 0.0f, float tintG = 0.0f, float tintB = 0.0f, float tintA = 1.0f, bool sourceOffscreen = false);
+    bool TryRecordGpuBackdropCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL, float tintR, float tintG, float tintB, float tintOpacity, float saturation = 1.0f, float noiseIntensity = 0.0f, float luminosity = 1.0f, bool remapSourceUv = false);
     bool TryRecordGpuGlowCommand(float x, float y, float w, float h, float cornerRadius, float strokeWidth, float glowR, float glowG, float glowB, float glowA, float dimOpacity, float intensity);
-    bool TryRecordGpuLiquidGlassCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost);
+    bool TryRecordGpuLiquidGlassCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost, int shapeType, float shapeExponent, int neighborCount, float fusionRadius, const float* neighborData);
     bool TryRecordGpuDimOutsideRectCommand(float x, float y, float w, float h, uint8_t b, uint8_t g, uint8_t r, uint8_t a);
     bool TryRecordGpuFilledPolygonCommand(const std::vector<float>& points, int32_t fillRule, Brush* brush);
     // Pre-triangulated variant of TryRecordGpuFilledPolygonCommand. Skips
@@ -677,8 +882,19 @@ private:
                                            std::vector<float>& outLocalPoints,
                                            float scaleFactor = 1.0f);
     bool TryRecordGpuTransitionCommand(const std::vector<uint8_t>& fromPixels, const std::vector<uint8_t>& toPixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float progress, int mode);
+    // env JALIUM_VK_EFFECT_GPU_RT (C6): record a Transition command that samples the two
+    // persistent slot images (transitionImages[0]/[1]) captured via the GPU offscreen RT,
+    // instead of uploading CPU pixel tiles. Carries no CPU pixels.
+    bool TryRecordGpuTransitionSlotsCommand(float x, float y, float w, float h, float progress, int mode);
+    // env JALIUM_VK_EFFECT_GPU_RT (C6): single-slot GPU-RT composite for
+    // DrawCapturedTransition (the particle path). Samples one captured slot image.
+    bool TryRecordGpuTransitionSingleSlotCommand(int slot, float x, float y, float w, float h, float opacity);
     bool TryRecordGpuSolidRectCommand(float x, float y, float w, float h, Brush* brush);
     bool TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush);
+    // Analytic erf gaussian drop-shadow rounded rect (single over-blend; D3D12
+    // DrawDropShadowEffect parity). sigma = blurRadius/3; colour STRAIGHT.
+    bool TryRecordGpuShadowRectCommand(float x, float y, float w, float h,
+        float radius, float r, float g, float b, float a, float sigma);
     bool TryRecordGpuRoundedRectStrokeCommand(float x, float y, float w, float h, float rx, float ry, float strokeWidth, Brush* brush);
     // Rotated / skewed rounded-rect STROKE (strokeWidth > 0) or FILL
     // (strokeWidth <= 0), recorded as an AA-expanded oriented quad whose
@@ -715,7 +931,7 @@ private:
     bool TryRecordGpuLineAACommand(float x1, float y1, float x2, float y2, float strokeWidth, Brush* brush);
     bool TryRecordGpuPolylineCommand(const std::vector<float>& points, bool closed, float strokeWidth, Brush* brush);
     bool TryRecordGpuRectangleStrokeCommand(float x, float y, float w, float h, float strokeWidth, Brush* brush);
-    bool TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, float y, float w, float h, float opacity, bool opacityAlreadyBaked = false);
+    bool TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, float y, float w, float h, float opacity, int scalingMode, bool opacityAlreadyBaked = false);
     // Shared implementation behind both public DrawBitmap overrides. When
     // opacityAlreadyBaked is true the bitmap's alpha already carries the
     // opacity stack, so the GPU recorder must NOT re-apply GetCurrentOpacity()
@@ -745,7 +961,8 @@ private:
     // constants). Returns false when GPU replay isn't active or the captured
     // content is empty — caller then composites the captured content unmodified.
     bool TryRecordGpuCustomShaderCommand(float x, float y, float w, float h,
-        uint64_t shaderHash, const float* constants, uint32_t constantFloatCount);
+        uint64_t shaderHash, const float* constants, uint32_t constantFloatCount,
+        bool sampleOffscreen = false, bool patchUvInfo = false);
     void TouchFrame() const;
 
     VulkanBackend* backend_ = nullptr;
@@ -773,32 +990,78 @@ private:
     bool transitionSavedReplayHasClear_ = false;
     int activeTransitionSlot_ = -1;
     TransitionCaptureState transitionSlots_[2];
+    // env JALIUM_VK_EFFECT_GPU_RT (C6): GPU offscreen transition capture state. This path
+    // does NOT touch activeTransitionSlot_ (kept -1) so the ~20 TryRecordGpu* guards and the
+    // FillPolygon/DrawLine engine-bypass keep recording the captured subtree into
+    // gpuReplayCommands_ / the engine (redirected into the offscreen RT at replay), instead
+    // of forcing the whole capture onto the CPU raster path (which would lose FillPath engine
+    // primitives). transitionCaptureGpuRtSlot_ >= 0 only between a GPU-RT BeginTransitionCapture
+    // and its EndTransitionCapture. The per-slot physical-pixel element rect is stamped at Begin
+    // and consumed by the End marker's blit + the DrawTransitionShader uvScale.
+    int transitionCaptureGpuRtSlot_ = -1;
+    float transitionCapturePhysRect_[2][4] = { { 0.0f, 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f, 0.0f } };
+    bool transitionSlotGpuValid_[2] = { false, false };
     std::vector<CpuTransform> transformStack_;
     std::vector<float> opacityStack_;
     std::vector<ClipState> clipStack_;
     std::vector<EffectCaptureState> effectCaptureStack_;
-    // Retained layers (env-gated JALIUM_VK_RETAINED_LAYERS). VulkanRetainedLayer
-    // holds a BGRA8 sub-region snapshot; retainedCaptureStack_ saves frame state
-    // across the realize sub-frame (mirrors transition capture, but a stack so
-    // nested realizes are safe).
+    // Retained layers (env-gated JALIUM_VK_RETAINED_LAYERS, DEFAULT ON). C7 gives this
+    // the real GPU offscreen-texture model at parity with D3D12: on the GPU replay path
+    // RealizeLayerBegin/End emit RetainedLayerCaptureBegin/End markers that redirect the
+    // subtree into the shared effect-offscreen RT (reusing the C6 machinery) and blit the
+    // isolated element into a PERSISTENT per-layer image (owned by the Impl in
+    // retainedLayerGpuImages_, keyed by the VulkanRetainedLayer* handle, element-sized);
+    // CompositeLayer then samples that image as a transformed/opacity bitmap quad — no CPU
+    // pixels, no full re-emission. The VulkanRetainedLayer object itself is the stable
+    // cross-class key returned to managed as the opaque handle. Its `pixels` vector is kept
+    // ONLY for the CPU-fallback path (a frame that could not stay on the GPU replay path,
+    // e.g. an effect forced cpuRasterNeeded_); on the GPU path it stays empty and the GPU
+    // image is the source. retainedCaptureStack_ saves frame state for the CPU capture
+    // sub-frame (a stack so nested CPU realizes are safe).
     struct VulkanRetainedLayer {
-        std::vector<uint8_t> pixels;  // BGRA8, w x h sub-region snapshot
+        std::vector<uint8_t> pixels;  // BGRA8, w x h snapshot — CPU-fallback path ONLY (empty on GPU path)
         int32_t w = 0;
         int32_t h = 0;
+        // Element PHYSICAL-pixel size recorded at the last GPU capture (RealizeLayerEnd's GPU
+        // branch). CompositeLayer forwards it as the Bitmap command's pixelWidth/Height so the
+        // replay's uvScale = elemPx / perLayerImageSize is exact. Zero until first GPU capture.
+        int32_t physW = 0;
+        int32_t physH = 0;
     };
     struct RetainedCaptureState {
         std::vector<uint8_t> savedPixels;
         std::vector<GpuReplayCommand> savedReplayCommands;
         bool savedReplaySupported = false;
         bool savedReplayHasClear = false;
+        // True when this capture opened the GPU offscreen region (RealizeLayerBegin's
+        // GPU branch): RealizeLayerEnd then emits the RetainedLayerCaptureEnd marker and
+        // does NOT restore CPU pixel state. False = the CPU snapshot fallback.
+        bool gpuPath = false;
         VulkanRetainedLayer* layer = nullptr;
         int32_t physX = 0, physY = 0, physW = 0, physH = 0;
     };
     std::vector<std::unique_ptr<VulkanRetainedLayer>> retainedLayers_;
+    // C7: the active retained capture rides on retainedCaptureStack_ — each RealizeLayerBegin
+    // pushes a RetainedCaptureState (gpuPath=true on the GPU branch) carrying the layer + its
+    // physical rect, which RealizeLayerEnd pops and turns into the End marker. The managed side
+    // (RenderTargetDrawingContext.BeginLayerCapture) never nests a capture, and the GPU branch
+    // guards on retainedCaptureStack_.empty(), so the stack holds at most one entry in practice
+    // (it is a stack purely for symmetry with the transition/effect capture bookkeeping and to
+    // stay robust if a caller ever nested). The GPU branch does NOT touch activeTransitionSlot_
+    // / effectCaptureStack_ / cpuRasterNeeded_, so the subtree draws stay on the GPU replay path
+    // (the ~20 TryRecordGpu* guards + FillPolygon/DrawLine engine bypass keep recording into the
+    // shared offscreen RT).
     std::vector<RetainedCaptureState> retainedCaptureStack_;
     bool gpuReplaySupported_ = false;
     bool gpuReplayHasClear_ = false;
     std::vector<GpuReplayCommand> gpuReplayCommands_;
+    // Number of engine batches already covered by an emitted EngineBatchSpan.
+    // Monotonic within a frame (the engines' batch vectors only grow until
+    // EndDraw's ClearBatches); reset to 0 in BeginDraw. Batches whose span was
+    // dropped by a mid-frame command reset (Clear() / capture sub-frames)
+    // simply never render — the D3D12 analogue drops eagerly-flushed work on
+    // reset the same way.
+    size_t consumedEngineBatchCount_ = 0;
     mutable bool cpuRasterNeeded_ = false;
     bool cpuRasterNeededLastFrame_ = false;
 
@@ -857,6 +1120,23 @@ private:
     std::vector<int> effectContentStartStack_;
     int pendingGlowStart_ = -1;
     int pendingGlowEnd_ = -1;
+    // env JALIUM_VK_EFFECT_GPU_RT: index of the OffscreenEnd marker recorded by
+    // the outermost EndEffectCapture. The effect Draw* that follows (the managed
+    // call order guarantees nothing records in between) uses it to retroactively
+    // suppress the marker's composite-back when the processed result REPLACES
+    // the element. -1 = none pending. Reset by ResetGpuReplay, consumed by the
+    // suppress helper, and invalidated by the glow splice (indices shift).
+    int lastOffscreenEndIndex_ = -1;
+    // True while [lastOffscreenEndIndex_] is a valid OffscreenEnd marker still
+    // sitting at the stream tail (nothing recorded since EndEffectCapture).
+    // Non-mutating: the effect Draw* checks this BEFORE recording its own
+    // sampling command.
+    bool HasPendingOffscreenComposite() const;
+    // Flag the pending OffscreenEnd as suppress-composite and consume the
+    // pending index. requireTail=false is for callers that already recorded
+    // their effect command (the marker is no longer the tail but is still the
+    // correct target). Returns false (and consumes) when the marker is stale.
+    bool TrySuppressPendingOffscreenComposite(bool requireTail = true);
 
     // Records the soft halo as a stack of concentric rounded-rects (outer faint →
     // inner stronger) expanding from (x,y,w,h) by `spread`, optionally offset
@@ -870,23 +1150,12 @@ private:
     bool SpliceGlowBehindContent(float x, float y, float w, float h, float spread,
                                  float r, float g, float b, float a, float offX, float offY,
                                  float cTL, float cTR, float cBR, float cBL);
-
-    // Rasterized-text cache. Windows RenderText used to call CreateDIBSection +
-    // CreateFontW + DrawTextW on every frame, which dominated the Vulkan
-    // backend's frame time (~150ms/frame in Gallery) because every static label
-    // re-ran GDI. This cache stores the rasterized BGRA pixel payload keyed
-    // by (text, font family id, size, bitmap extents, premultiplied BGRA
-    // color, draw flags, weight, style) so the GDI dance only runs the first
-    // time a given string is drawn at a given size/color.
-    //
-    // Implementation: TextLruCache (text_cache.h) — std::unordered_map with
-    // C++20 transparent lookup, a doubly linked list for O(1) LRU touch,
-    // and per-insert eviction (no more "clear-the-world when full"). The
-    // hot path uses a wstring_view-based key view so a cache hit allocates
-    // nothing.
-    std::unique_ptr<TextLruCache> textCache_;
-    FontFamilyInterner            familyInterner_;
-    static constexpr size_t       kMaxTextCacheEntries = 512;
+    // Analytic erf gaussian drop shadow spliced behind content (D3D12
+    // DrawDropShadowEffect parity; replaces the DrawGlowLayers 8-layer halo).
+    bool SpliceErfShadowBehindContent(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float cTL, float cTR, float cBR, float cBL);
 
     // Path geometry cache. FillPath / StrokePath both decompose Bezier curves
     // into a dense local-space point list and (for FillPath) ear-clip into
@@ -898,35 +1167,26 @@ private:
     std::unique_ptr<PathGeometryCache> pathCache_;
     static constexpr size_t            kMaxPathCacheEntries = 512;
 
-    // Path-quality knob set by SetPathMsaaSampleCount (1/2/4/8). Folded into the
-    // tessellation scale so higher values yield denser curve subdivision (the
-    // Vulkan analogue of D3D12's path MSAA sample count). See
-    // PathTessellationQualityScale().
-    uint32_t pathMsaaSampleCount_ = 1;
-    float PathTessellationQualityScale() const {
-        switch (pathMsaaSampleCount_) {
-            case 2:  return 1.25f;
-            case 4:  return 1.5f;
-            case 8:  return 1.75f;
-            default: return 1.0f;
-        }
-    }
-
-    // Fast-path used by RenderText to emit a cached text bitmap straight into
-    // the GPU replay command list, skipping both the VulkanBitmap wrapper
-    // construction (which deep-copies the pixel vector) and the
-    // TryRecordGpuPixelBufferCommand deep-copy. Owns a shared reference to
-    // the text cache entry's pixel buffer so subsequent DrawReplayFrame reads
-    // see the same bytes.
-    // destScale maps the high-resolution source bitmap (width x height pixels)
-    // down to its base-DIP footprint: the local quad is sized (width*destScale,
-    // height*destScale) while the texture keeps its full pixel resolution. When
-    // text is rasterized at a magnified em (so a scaled draw stays crisp), pass
-    // destScale = 1/rasterScale so the current transform re-magnifies the
-    // base-DIP quad to the correct on-screen size. Default 1.0 = 1:1 (no scale).
-    void RecordCachedTextBitmap(std::shared_ptr<const std::vector<uint8_t>> pixels,
-                                int width, int height, float x, float y,
-                                float destScale = 1.0f);
+    // E4 — Path MSAA knob (SetPathMsaaSampleCount). Now carries D3D12's real
+    // semantics: 0 = analytic-only (route solid fills to the scanline analytic-AA
+    // rasterizer, see pathAnalyticOnly_); 1/2/4/8 = the desired stencil-then-cover
+    // MSAA sample count, intersected with device caps in EnsureStencilCover
+    // Resources (a changed value rebuilds the stencil FB/PSOs at the frame
+    // boundary via the size+sample key). Default 8 mirrors D3D12
+    // (d3d12_direct_renderer.h pathMsaaSampleCount_ = 8) and is re-seeded from the
+    // JALIUM_PATH_MSAA env at Initialize (also matching D3D12).
+    uint32_t pathMsaaSampleCount_ = 8;
+    // Analytic-only latch (SetPathMsaaSampleCount(0)); mirrors D3D12
+    // pathAnalyticOnly_. Propagated to the engines' SetPathAnalyticOnly so their
+    // fill/stroke encoders skip GPU stencil-then-cover for the scanline path.
+    bool pathAnalyticOnly_ = false;
+    // Curve-flattening scale is deliberately INDEPENDENT of the MSAA knob — D3D12
+    // uses a fixed flattenTolerance (0.25) regardless of SampleDesc.Count, and
+    // Vulkan at that fixed tessellation already matches D3D12 pixel-for-pixel
+    // (path-fill parity 0.000%). The MSAA knob controls ONLY the stencil sample
+    // count / analytic-only, never tessellation density. Kept as a hook (always
+    // 1.0) so the two CPU-bitmap fallback helpers that reference it stay valid.
+    float PathTessellationQualityScale() const { return 1.0f; }
 
     // Fallback used when a FillPath / FillPolygon / StrokePath / DrawPolygon
     // cannot be expressed as a GPU replay FilledPolygon command (for example:

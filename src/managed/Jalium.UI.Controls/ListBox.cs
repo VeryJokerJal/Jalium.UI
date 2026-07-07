@@ -134,6 +134,21 @@ public class ListBox : Selector
         }
     }
 
+    /// <inheritdoc />
+    protected override void ClearContainerForItem(FrameworkElement element, object item)
+    {
+        base.ClearContainerForItem(element, item);
+
+        // Reset per-container selection/owner state so a recycled-then-orphaned container does not
+        // alias the previous item's selection. The steady-state re-pop path re-derives these in
+        // PrepareContainerForItem, so this only changes observable behavior for orphaned containers.
+        if (!ReferenceEquals(element, item) && element is ListBoxItem listBoxItem)
+        {
+            listBoxItem.ClearValue(ListBoxItem.IsSelectedProperty);
+            listBoxItem.ParentListBox = null;
+        }
+    }
+
     #endregion
 
     #region Selection

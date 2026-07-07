@@ -385,6 +385,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed || layer == 0) return;
         if (_renderTarget == null || _renderTarget.Handle == nint.Zero) return;
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_COMPOSITE);
 
         // Apply the live RenderTransform exactly as the normal child path would
         // (the caller has already set Offset = childOffset). Opacity is passed to
@@ -658,6 +659,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle)
     {
         if (_closed) return;
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_RECT2);
 
         // Preserve intentional half-pixel alignment for odd-width strokes.
         var x = SnapCoordinate(rectangle.X + Offset.X);
@@ -944,6 +946,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     public override void DrawText(FormattedText formattedText, Point origin)
     {
         if (_closed || formattedText == null || string.IsNullOrEmpty(formattedText.Text)) return;
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_TEXT2);
 
         var brush = formattedText.Foreground != null ? GetNativeBrush(formattedText.Foreground) : null;
         if (brush == null) return;
@@ -1123,6 +1126,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
     {
         if (_closed || geometry == null) return;
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.DRAW_GEO);
 
         if (_svgDiagActive)
             _svgDrawGeometryCount++;
@@ -2110,42 +2114,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
     private const double FlatteningTolerance = 0.25;
 
-    /// <summary>
-    /// True when the active backend's bitmap pipeline blends premultiplied alpha
-    /// (SrcBlend=ONE) and therefore needs textures uploaded premultiplied. D3D12 does;
-    /// Vulkan and the software backend blend straight alpha, so they keep the original
-    /// straight pixels. (Metal mirrors D3D12's premultiplied model but is intentionally
-    /// excluded here until verified on a Metal device.)
-    /// </summary>
-    private static bool BackendExpectsPremultipliedBitmaps(RenderBackend backend)
-        => backend == RenderBackend.D3D12;
-
-    /// <summary>
-    /// Returns a premultiplied copy of straight BGRA8 pixels (RGB *= A). The source array is
-    /// never mutated, so other consumers that read it as straight alpha (software rasterizer,
-    /// downscale cache, average-colour sampling) are unaffected.
-    /// </summary>
-    private static byte[] PremultiplyBgraCopy(byte[] src, int width, int height, int stride)
-    {
-        if (stride <= 0) stride = width * 4;
-        var dst = (byte[])src.Clone();
-        for (int y = 0; y < height; y++)
-        {
-            int row = y * stride;
-            for (int x = 0; x < width; x++)
-            {
-                int o = row + x * 4;
-                if (o + 3 >= dst.Length) break;
-                byte a = dst[o + 3];
-                if (a == 255) continue;            // opaque → premultiply is identity
-                if (a == 0) { dst[o] = dst[o + 1] = dst[o + 2] = 0; continue; }
-                dst[o]     = (byte)((dst[o]     * a + 127) / 255);
-                dst[o + 1] = (byte)((dst[o + 1] * a + 127) / 255);
-                dst[o + 2] = (byte)((dst[o + 2] * a + 127) / 255);
-            }
-        }
-        return dst;
-    }
+    // Bitmap alpha contract: the framework hands STRAIGHT (non-premultiplied)
+    // BGRA8 to the native bitmap-upload ABI on every backend, and each backend
+    // premultiplies internally where its blend requires (D3D12 on upload, Vulkan
+    // while packing replay staging, software blends straight). There is
+    // deliberately no managed per-backend premultiply predicate here — that
+    // would make the upper layer aware of which backend is active, the exact
+    // coupling this contract removes.
 
     private List<Point> GetBezierPoints(Point p0, Point p1, Point p2, Point p3)
     {
@@ -2565,13 +2540,21 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             ? $"#{(tintColorArgb >> 16) & 0xFF:X2}{(tintColorArgb >> 8) & 0xFF:X2}{tintColorArgb & 0xFF:X2}"
             : string.Empty;
 
-        _renderTarget.DrawBackdropFilter(
+        // Pass the full material parameter set. The blur+tint+corners were
+        // always forwarded; noiseIntensity (Acrylic film grain), saturation and
+        // luminosity (Mica vibrancy/brightness) were previously built into the
+        // CSS `backdropFilter` string but never consumed by native — now they
+        // reach the snapshot-backdrop shader through DrawBackdropFilterEx.
+        _renderTarget.DrawBackdropFilterEx(
             x, y, width, height,
             backdropFilter,
             material,
             materialTint,
             effect.TintOpacity,
             effect.BlurRadius,
+            effect.NoiseIntensity,
+            effect.Saturation,
+            effect.Luminosity,
             (float)normalizedCornerRadius.TopLeft,
             (float)normalizedCornerRadius.TopRight,
             (float)normalizedCornerRadius.BottomRight,
@@ -4011,25 +3994,15 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                     bitmapImage.PixelHeight > 0)
                 {
                     // BitmapImage.RawPixelData is straight (non-premultiplied) alpha: WIC
-                    // decodes to 32bppBGRA and IconHelper's GetDIBits is straight too.
-                    // D3D12's bitmap pipeline blends premultiplied (SrcBlend=ONE) and its
-                    // pixel shader does NOT premultiply, so straight pixels make anti-aliased
-                    // edges bleed bright RGB → a white fringe (most visible on the round
-                    // auto window icon). Upload a premultiplied COPY on backends whose bitmap
-                    // blend expects premultiplied textures (D3D12). RawPixelData itself is
-                    // left untouched — the software rasterizer and the downscale cache read it
-                    // as straight; Vulkan/software blend straight and keep the original.
-                    var uploadPixels = bitmapImage.RawPixelData;
-                    if (BackendExpectsPremultipliedBitmaps(_context.Backend))
-                    {
-                        uploadPixels = PremultiplyBgraCopy(
-                            bitmapImage.RawPixelData,
-                            bitmapImage.PixelWidth,
-                            bitmapImage.PixelHeight,
-                            bitmapImage.PixelStride);
-                    }
+                    // decodes to 32bppBGRA and IconHelper's GetDIBits is straight too. The
+                    // bitmap-upload ABI takes straight alpha regardless of backend — each
+                    // native backend premultiplies internally as its blend requires (D3D12
+                    // premultiplies on upload in CreateBitmapFromPixels; Vulkan premultiplies
+                    // while packing its replay staging buffer; software blends straight).
+                    // The managed layer stays backend-agnostic and hands the raw pixels over
+                    // as-is.
                     nativeBitmap = _context.CreateBitmapFromPixels(
-                        uploadPixels,
+                        bitmapImage.RawPixelData,
                         bitmapImage.PixelWidth,
                         bitmapImage.PixelHeight,
                         bitmapImage.PixelStride);
@@ -4049,10 +4022,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         {
             // WriteableBitmap defaults to straight (non-premultiplied) Bgra32, and
             // neither SetPixel nor WritePixels premultiply, so its buffer is straight
-            // in the common case — correct for the straight-alpha Vulkan/software
-            // blend, uploaded verbatim. (Genuinely premultiplied Pbgra32 content and
-            // the D3D12 premultiply-on-upload path that the BitmapImage branch above
-            // applies are deliberately left to a separate WriteableBitmap alpha-mode fix.)
+            // in the common case — which is exactly what the bitmap-upload ABI expects.
+            // The straight pixels are uploaded verbatim on every backend; the native
+            // side premultiplies internally where its blend requires it (D3D12 in
+            // UpdatePackedPixels / CreateBitmapFromPixels, Vulkan while packing its
+            // replay staging, software blends straight). No managed per-backend
+            // compensation is needed. (Genuinely premultiplied Pbgra32 source content
+            // remains a separate WriteableBitmap alpha-mode concern.)
             try
             {
                 nativeBitmap = _context.CreateBitmapFromPixels(

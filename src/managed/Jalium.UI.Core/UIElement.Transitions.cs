@@ -99,6 +99,12 @@ public abstract partial class UIElement
         else if (oldParent != null)
         {
             DisarmAutomaticTransitionsRecursive(this);
+
+            // Deferred, cancellable stop: if the subtree is still detached at the
+            // next frame its animations are stopped for good; a re-attach in the
+            // meantime (Popup/ComboBox moving content between trees within one
+            // dispatcher batch) cancels the pending check and nothing stops.
+            Animation.AnimationManager.NotifyDetached(this);
         }
     }
 

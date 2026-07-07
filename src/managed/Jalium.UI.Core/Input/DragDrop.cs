@@ -42,6 +42,38 @@ public enum DragAction
 }
 
 /// <summary>
+/// Identifies the Windows Shell drop image and description style shown next to
+/// the drag image while the pointer is over a drop target. The values mirror the
+/// Win32 <c>DROPIMAGETYPE</c> constants consumed by <c>IDropTargetHelper</c>.
+/// </summary>
+public enum DropImageType
+{
+    /// <summary>No custom drop description; the Shell shows its default text.</summary>
+    Invalid = -1,
+
+    /// <summary>The drop would not be accepted (a "no-drop" badge).</summary>
+    None = 0,
+
+    /// <summary>The drop copies the data (matches <c>DROPEFFECT_COPY</c>).</summary>
+    Copy = 1,
+
+    /// <summary>The drop moves the data (matches <c>DROPEFFECT_MOVE</c>).</summary>
+    Move = 2,
+
+    /// <summary>The drop creates a link to the data (matches <c>DROPEFFECT_LINK</c>).</summary>
+    Link = 4,
+
+    /// <summary>A neutral label badge with no effect glyph.</summary>
+    Label = 6,
+
+    /// <summary>A warning badge.</summary>
+    Warning = 7,
+
+    /// <summary>Show the description text with no accompanying image glyph.</summary>
+    NoImage = 8,
+}
+
+/// <summary>
 /// Provides a format-independent mechanism for transferring data.
 /// </summary>
 public interface IDataObject
@@ -182,6 +214,42 @@ public class DragEventArgs : RoutedEventArgs
 
     public Point GetPosition(IInputElement? relativeTo) => _position;
 
+    /// <summary>
+    /// Platform hook that writes a Windows Shell drop description onto the native
+    /// data object that originated the drag. Installed by the Windows OLE drop
+    /// target; <see langword="null"/> for in-app drags (where it is a no-op).
+    /// </summary>
+    internal Action<DropImageType, string?, string?>? DropDescriptionSetter { get; set; }
+
+    /// <summary>
+    /// Sets the Windows Shell drop description that appears beside the drag image
+    /// while the pointer is over this target. Call it from a <c>DragEnter</c> or
+    /// <c>DragOver</c> handler to indicate what the drop will do (for example
+    /// <c>SetDropDescription(DropImageType.Copy, "复制到 %1", "文档")</c>, where the
+    /// Shell substitutes <c>%1</c> with <paramref name="insert"/>).
+    /// </summary>
+    /// <param name="type">The badge/glyph shown with the description.</param>
+    /// <param name="message">
+    /// The description text. May contain a single <c>%1</c> placeholder. When
+    /// <see langword="null"/> or empty, the Shell shows its default text for
+    /// <paramref name="type"/>.
+    /// </param>
+    /// <param name="insert">The text substituted for the <c>%1</c> placeholder.</param>
+    /// <remarks>
+    /// Only effective for drags that originate from an external OLE source such as
+    /// Windows Explorer (the platform can only annotate a native data object).
+    /// For a purely in-app drag this is a silent no-op.
+    /// </remarks>
+    public void SetDropDescription(DropImageType type, string? message = null, string? insert = null)
+        => DropDescriptionSetter?.Invoke(type, message, insert);
+
+    /// <summary>
+    /// Clears any drop description previously set with <see cref="SetDropDescription"/>,
+    /// restoring the Shell's default text for the current effect.
+    /// </summary>
+    public void ClearDropDescription()
+        => DropDescriptionSetter?.Invoke(DropImageType.Invalid, null, null);
+
     /// <inheritdoc />
     internal override void InvokeEventHandler(Delegate handler, object target)
     {
@@ -289,6 +357,43 @@ public static class DragDrop
     public static void SetShowDragVisual(DependencyObject element, bool value) =>
         element.SetValue(ShowDragVisualProperty, value);
 
+    /// <summary>
+    /// Identifies the DragImage attached property. When set on a drag source, the
+    /// value is rendered as the drag visual that follows the pointer instead of an
+    /// automatic clone of the source element. The value may be a
+    /// <see cref="Jalium.UI.Media.ImageSource"/> (rendered as a bitmap) or a
+    /// <see cref="FrameworkElement"/> that is not already in a visual tree.
+    /// </summary>
+    /// <remarks>
+    /// A per-call image supplied to
+    /// <see cref="DoDragDrop(DependencyObject, object, DragDropEffects, object)"/>
+    /// takes precedence over this attached value.
+    /// </remarks>
+    public static readonly DependencyProperty DragImageProperty =
+        DependencyProperty.RegisterAttached("DragImage", typeof(object), typeof(DragDrop),
+            new PropertyMetadata(null));
+
+    public static object? GetDragImage(DependencyObject element) =>
+        element.GetValue(DragImageProperty);
+
+    public static void SetDragImage(DependencyObject element, object? value) =>
+        element.SetValue(DragImageProperty, value);
+
+    /// <summary>
+    /// Identifies the DragImageOffset attached property — the point, in
+    /// device-independent pixels measured from the drag image's top-left corner,
+    /// that sits directly under the pointer during the drag.
+    /// </summary>
+    public static readonly DependencyProperty DragImageOffsetProperty =
+        DependencyProperty.RegisterAttached("DragImageOffset", typeof(Point), typeof(DragDrop),
+            new PropertyMetadata(default(Point)));
+
+    public static Point GetDragImageOffset(DependencyObject element) =>
+        (Point)(element.GetValue(DragImageOffsetProperty) ?? default(Point));
+
+    public static void SetDragImageOffset(DependencyObject element, Point value) =>
+        element.SetValue(DragImageOffsetProperty, value);
+
     #endregion
 
     #region Routed Events
@@ -365,6 +470,24 @@ public static class DragDrop
     internal static Func<DependencyObject, IDataObject, DragDropEffects, DragDropEffects>? DoDragDropOverride { get; set; }
 
     /// <summary>
+    /// Platform hook for a real OLE drag <em>source</em> (Windows), enabling
+    /// cross-process drag-out. Set by the hosting platform layer; null where absent.
+    /// </summary>
+    internal static Func<DependencyObject, IDataObject, DragDropEffects, DragDropEffects>? DoShellDragDropOverride { get; set; }
+
+    /// <summary>
+    /// The drag image supplied to the current <see cref="DoDragDrop(DependencyObject, object, DragDropEffects, object)"/>
+    /// call, consumed by the platform drag layer while a drag is in progress.
+    /// </summary>
+    internal static object? PendingDragImage { get; private set; }
+
+    /// <summary>The pointer hotspot for <see cref="PendingDragImage"/>, in DIPs.</summary>
+    internal static Point PendingDragImageOffset { get; private set; }
+
+    /// <summary>Whether <see cref="PendingDragImageOffset"/> was explicitly supplied.</summary>
+    internal static bool HasPendingDragImageOffset { get; private set; }
+
+    /// <summary>
     /// Initiates a drag-and-drop operation.
     /// </summary>
     public static DragDropEffects DoDragDrop(DependencyObject dragSource, object data, DragDropEffects allowedEffects)
@@ -385,6 +508,114 @@ public static class DragDrop
         finally
         {
             _isDragging = false;
+        }
+    }
+
+    /// <summary>
+    /// Initiates a drag-and-drop operation using a caller-supplied drag image.
+    /// </summary>
+    /// <param name="dragSource">The element that starts the drag.</param>
+    /// <param name="data">The data to transfer.</param>
+    /// <param name="allowedEffects">The effects the source permits.</param>
+    /// <param name="dragImage">
+    /// The drag visual to render under the pointer — a
+    /// <see cref="Jalium.UI.Media.ImageSource"/> or an unparented
+    /// <see cref="FrameworkElement"/>. The pointer sits at the image's top-left
+    /// corner; use the offset overload to change the hotspot.
+    /// </param>
+    public static DragDropEffects DoDragDrop(DependencyObject dragSource, object data, DragDropEffects allowedEffects, object dragImage)
+        => DoDragDropWithImage(dragSource, data, allowedEffects, dragImage, default, hasOffset: false);
+
+    /// <summary>
+    /// Initiates a drag-and-drop operation using a caller-supplied drag image and
+    /// an explicit pointer hotspot within that image.
+    /// </summary>
+    /// <param name="dragSource">The element that starts the drag.</param>
+    /// <param name="data">The data to transfer.</param>
+    /// <param name="allowedEffects">The effects the source permits.</param>
+    /// <param name="dragImage">
+    /// The drag visual to render under the pointer — a
+    /// <see cref="Jalium.UI.Media.ImageSource"/> or an unparented
+    /// <see cref="FrameworkElement"/>.
+    /// </param>
+    /// <param name="imageOffset">
+    /// The point within <paramref name="dragImage"/> (in DIPs, from its top-left
+    /// corner) that stays under the pointer.
+    /// </param>
+    public static DragDropEffects DoDragDrop(DependencyObject dragSource, object data, DragDropEffects allowedEffects, object dragImage, Point imageOffset)
+        => DoDragDropWithImage(dragSource, data, allowedEffects, dragImage, imageOffset, hasOffset: true);
+
+    private static DragDropEffects DoDragDropWithImage(DependencyObject dragSource, object data, DragDropEffects allowedEffects, object? dragImage, Point imageOffset, bool hasOffset)
+    {
+        PendingDragImage = dragImage;
+        PendingDragImageOffset = imageOffset;
+        HasPendingDragImageOffset = hasOffset;
+        try
+        {
+            return DoDragDrop(dragSource, data, allowedEffects);
+        }
+        finally
+        {
+            PendingDragImage = null;
+            PendingDragImageOffset = default;
+            HasPendingDragImageOffset = false;
+        }
+    }
+
+    /// <summary>
+    /// Initiates a real Windows Shell drag that can be dropped onto <em>other</em>
+    /// applications (e.g. copying files to Explorer), with the system drag image.
+    /// Unlike <see cref="DoDragDrop(DependencyObject, object, DragDropEffects)"/> — which
+    /// composites an in-app visual and never leaves the window — this hands the payload
+    /// to the OS drag loop via a real OLE <c>IDataObject</c>/<c>IDropSource</c>. Drops
+    /// back onto this app still raise the normal drag events through the window's OLE
+    /// drop target. Falls back to the in-app managed drag when no Shell source is
+    /// available (non-Windows).
+    /// </summary>
+    /// <param name="dragSource">The element that starts the drag.</param>
+    /// <param name="data">
+    /// The payload. Text and a file-path <see cref="string"/>[] (under
+    /// <see cref="DataFormats.FileDrop"/>) are marshaled to the Shell; a bare
+    /// <see cref="string"/> or <see cref="string"/>[] is wrapped automatically.
+    /// </param>
+    /// <param name="allowedEffects">The effects the source permits.</param>
+    /// <param name="dragImage">
+    /// Optional Shell drag image — a <see cref="Jalium.UI.Media.ImageSource"/> the Shell
+    /// renders under the pointer (its pixels are premultiplied and handed to
+    /// <c>IDragSourceHelper</c>).
+    /// </param>
+    /// <param name="imageOffset">
+    /// The pointer hotspot within <paramref name="dragImage"/>, in <em>pixels</em> from
+    /// its top-left corner.
+    /// </param>
+    public static DragDropEffects DoShellDragDrop(DependencyObject dragSource, object data, DragDropEffects allowedEffects, object? dragImage = null, Point imageOffset = default)
+    {
+        ArgumentNullException.ThrowIfNull(dragSource);
+        ArgumentNullException.ThrowIfNull(data);
+
+        if (_isDragging)
+            return DragDropEffects.None;
+
+        var dataObj = data as IDataObject ?? new DataObject(data);
+        PendingDragImage = dragImage;
+        PendingDragImageOffset = imageOffset;
+        HasPendingDragImageOffset = dragImage != null;
+        _isDragging = true;
+        try
+        {
+            var shell = DoShellDragDropOverride;
+            if (shell != null)
+                return shell(dragSource, dataObj, allowedEffects);
+
+            // No Shell source (e.g. non-Windows): fall back to the in-app managed drag.
+            return DoDragDropOverride?.Invoke(dragSource, dataObj, allowedEffects) ?? DragDropEffects.None;
+        }
+        finally
+        {
+            _isDragging = false;
+            PendingDragImage = null;
+            PendingDragImageOffset = default;
+            HasPendingDragImageOffset = false;
         }
     }
 

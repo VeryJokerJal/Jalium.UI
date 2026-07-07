@@ -23,6 +23,7 @@ internal static partial class DragDropPlatform
         _initialized = true;
         OleDropTarget.Initialize();
         DragDrop.DoDragDropOverride = DoDragDropManaged;
+        DragDrop.DoShellDragDropOverride = OleDragSource.DoDragDrop;
     }
 
     /// <summary>
@@ -69,10 +70,31 @@ internal static partial class DragDropPlatform
         {
             var sourceBounds = sourceElement.GetScreenBounds();
             var clickPos = GetClientMousePosition(hwnd, dpiScale);
-            dragOffsetX = clickPos.X - sourceBounds.X;
-            dragOffsetY = clickPos.Y - sourceBounds.Y;
 
-            dragVisual = CreateDragVisual(sourceFE);
+            // A caller-supplied drag image (from the DoDragDrop overload or the
+            // DragImage attached property) wins over the automatic element clone.
+            object? customImage = DragDrop.PendingDragImage ?? sourceElement.GetValue(DragDrop.DragImageProperty);
+            FrameworkElement? customVisual = CreateDragVisualFromImage(customImage);
+
+            if (customVisual != null)
+            {
+                dragVisual = customVisual;
+
+                // Hotspot: explicit offset if provided, otherwise the image's
+                // top-left corner tracks the pointer.
+                Point offset = DragDrop.HasPendingDragImageOffset
+                    ? DragDrop.PendingDragImageOffset
+                    : DragDrop.GetDragImageOffset(sourceElement);
+                dragOffsetX = offset.X;
+                dragOffsetY = offset.Y;
+            }
+            else
+            {
+                dragVisual = CreateDragVisual(sourceFE);
+                dragOffsetX = clickPos.X - sourceBounds.X;
+                dragOffsetY = clickPos.Y - sourceBounds.Y;
+            }
+
             Canvas.SetLeft(dragVisual, clickPos.X - dragOffsetX);
             Canvas.SetTop(dragVisual, clickPos.Y - dragOffsetY);
             window.OverlayLayer.Children.Add(dragVisual);
@@ -265,6 +287,41 @@ internal static partial class DragDropPlatform
     }
 
     #region Drag Visual
+
+    /// <summary>
+    /// Builds a drag visual from a caller-supplied drag image. Accepts an
+    /// <see cref="ImageSource"/> (wrapped in a lightweight <see cref="Image"/>) or
+    /// an unparented <see cref="FrameworkElement"/> used directly. Returns
+    /// <see langword="null"/> when no usable image was supplied so the caller can
+    /// fall back to cloning the source element.
+    /// </summary>
+    private static FrameworkElement? CreateDragVisualFromImage(object? image)
+    {
+        switch (image)
+        {
+            case ImageSource source:
+                double w = source.Width > 0 ? source.Width : 32;
+                double h = source.Height > 0 ? source.Height : 32;
+                return new Image
+                {
+                    Source = source,
+                    Width = w,
+                    Height = h,
+                    Stretch = Stretch.Fill,
+                    IsHitTestVisible = false,
+                    Opacity = 0.85,
+                };
+
+            // A live element the caller built for the drag. Only reuse it when it
+            // is not already parented, to avoid ripping it out of another tree.
+            case FrameworkElement element when element.VisualParent == null:
+                element.IsHitTestVisible = false;
+                return element;
+
+            default:
+                return null;
+        }
+    }
 
     /// <summary>
     /// Creates a semi-transparent clone of the source element to follow the cursor during drag.

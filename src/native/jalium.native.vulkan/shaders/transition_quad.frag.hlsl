@@ -7,7 +7,15 @@ struct PushConstants
     float4 rect;
     float4 progressOpacity;
     float2 screenSize;
-    float2 padding;
+    // xy = capture uv scale (capturePx / atlasPx). The transition offscreen
+    // images are sized to the frame's MAX capture tile, so a smaller capture
+    // occupies only the top-left sub-rect; the mode math fetches rect-local uv
+    // [0,1] and must remap onto that sub-rect (matching the D3D12
+    // transition_quad.ps.hlsl uvScale, which is authoritative). Both the from and
+    // to captures share this scale here (same pixelWidth/Height per command), so
+    // a single float2 replaces the old padding slot — keeping the push-constant
+    // block at 128 bytes (the Vulkan minimum maxPushConstantsSize guarantee).
+    float2 uvScale;
     float4 roundedClipRect;
     float2 roundedClipRadius;
     float2 clipFlags;
@@ -81,6 +89,23 @@ float NoiseTransition(float2 st)
     return lerp(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
 }
 
+// Fetch helpers: clamp the rect-local uv to the content edge, map onto the
+// capture sub-rect of the shared offscreen image (uvScale), and un-premultiply
+// so the mode math runs in straight alpha exactly like the D3D12 reference.
+float4 SampleFrom(float2 uv)
+{
+    float4 c = fromTexture.Sample(transitionSampler, clamp(uv, 0.0f, 1.0f) * gPushConstants.uvScale);
+    c.rgb = (c.a > 0.0001f) ? c.rgb / c.a : c.rgb;
+    return c;
+}
+
+float4 SampleTo(float2 uv)
+{
+    float4 c = toTexture.Sample(transitionSampler, clamp(uv, 0.0f, 1.0f) * gPushConstants.uvScale);
+    c.rgb = (c.a > 0.0001f) ? c.rgb / c.a : c.rgb;
+    return c;
+}
+
 float4 main(PsInput input) : SV_Target
 {
     if (gPushConstants.clipFlags.x > 0.5f && !IsInsideRoundRect(input.position.xy, gPushConstants.roundedClipRect, gPushConstants.roundedClipRadius)) {
@@ -91,8 +116,8 @@ float4 main(PsInput input) : SV_Target
     const int mode = (int)round(gPushConstants.progressOpacity.z);
     const float2 resolution = max(gPushConstants.screenSize, float2(1.0f, 1.0f));
 
-    float4 oldColor = fromTexture.Sample(transitionSampler, input.uv);
-    float4 newColor = toTexture.Sample(transitionSampler, input.uv);
+    float4 oldColor = SampleFrom(input.uv);
+    float4 newColor = SampleTo(input.uv);
     float4 color = 0.0f;
 
     if (mode == 0) {
@@ -109,8 +134,8 @@ float4 main(PsInput input) : SV_Target
         float blockSize = max(1.0, maxBlock * sin(progress * 3.14159));
         float2 blockUV = floor(input.uv * resolution / blockSize) * blockSize / resolution;
         color = progress < 0.5
-            ? fromTexture.Sample(transitionSampler, blockUV)
-            : toTexture.Sample(transitionSampler, blockUV);
+            ? SampleFrom(blockUV)
+            : SampleTo(blockUV);
     } else if (mode == 2) {
         float intensity = sin(progress * 3.14159) * 0.8 + 0.2;
         float lineNoise = HashTransition(float2(floor(input.uv.y * 30.0), floor(progress * 20.0)));
@@ -120,20 +145,20 @@ float4 main(PsInput input) : SV_Target
         float2 uvB = input.uv - float2(shift, 0);
         float blockSwitch = HashTransition(float2(floor(input.uv.x * 8.0), floor(input.uv.y * 12.0 + progress * 5.0)));
         bool useNew = blockSwitch < progress;
-        float r = useNew ? toTexture.Sample(transitionSampler, uvR).r : fromTexture.Sample(transitionSampler, uvR).r;
-        float g = useNew ? toTexture.Sample(transitionSampler, input.uv).g : fromTexture.Sample(transitionSampler, input.uv).g;
-        float b = useNew ? toTexture.Sample(transitionSampler, uvB).b : fromTexture.Sample(transitionSampler, uvB).b;
+        float r = useNew ? SampleTo(uvR).r : SampleFrom(uvR).r;
+        float g = useNew ? SampleTo(input.uv).g : SampleFrom(input.uv).g;
+        float b = useNew ? SampleTo(uvB).b : SampleFrom(uvB).b;
         float scanline = sin(input.uv.y * resolution.y * 2.0) * 0.03 * intensity;
         color = float4(r + scanline, g + scanline, b + scanline, 1.0);
     } else if (mode == 3) {
         float spread = (1.0 - progress) * 0.08;
-        float oldR = fromTexture.Sample(transitionSampler, input.uv + float2(spread, spread * 0.5)).r;
-        float oldG = fromTexture.Sample(transitionSampler, input.uv).g;
-        float oldB = fromTexture.Sample(transitionSampler, input.uv - float2(spread, spread * 0.5)).b;
+        float oldR = SampleFrom(input.uv + float2(spread, spread * 0.5)).r;
+        float oldG = SampleFrom(input.uv).g;
+        float oldB = SampleFrom(input.uv - float2(spread, spread * 0.5)).b;
         float newSpread = progress * 0.08;
-        float newR = toTexture.Sample(transitionSampler, input.uv + float2(newSpread, newSpread * 0.5)).r;
-        float newG = toTexture.Sample(transitionSampler, input.uv).g;
-        float newB = toTexture.Sample(transitionSampler, input.uv - float2(newSpread, newSpread * 0.5)).b;
+        float newR = SampleTo(input.uv + float2(newSpread, newSpread * 0.5)).r;
+        float newG = SampleTo(input.uv).g;
+        float newB = SampleTo(input.uv - float2(newSpread, newSpread * 0.5)).b;
         color = lerp(float4(oldR, oldG, oldB, 1.0), float4(newR, newG, newB, 1.0), progress);
     } else if (mode == 4) {
         float time = progress * 6.28318;
@@ -145,8 +170,8 @@ float4 main(PsInput input) : SV_Target
             sin(input.uv.y * 8.0 - time * 0.7) * strength * 0.5,
             cos(input.uv.x * 8.0 - time * 0.5) * strength * 0.5);
         color = lerp(
-            fromTexture.Sample(transitionSampler, input.uv + distortion),
-            toTexture.Sample(transitionSampler, input.uv - distortion * 0.5),
+            SampleFrom(input.uv + distortion),
+            SampleTo(input.uv - distortion * 0.5),
             smoothstep(0.2, 0.8, progress));
     } else if (mode == 5) {
         float amplitude = sin(progress * 3.14159) * 0.15;
@@ -154,8 +179,8 @@ float4 main(PsInput input) : SV_Target
         float speed = progress * 12.56636;
         float wave = sin(input.uv.y * frequency + speed) * amplitude;
         color = lerp(
-            fromTexture.Sample(transitionSampler, input.uv + float2(wave, wave * 0.3)),
-            toTexture.Sample(transitionSampler, input.uv - float2(wave * 0.5, wave * 0.2)),
+            SampleFrom(input.uv + float2(wave, wave * 0.3)),
+            SampleTo(input.uv - float2(wave * 0.5, wave * 0.2)),
             progress);
     } else if (mode == 6) {
         float columnNoise = HashTransition(float2(floor(input.uv.x * 30.0), 0));
@@ -166,7 +191,7 @@ float4 main(PsInput input) : SV_Target
         } else {
             float displ = max(0, threshold) * 0.5;
             float2 blownUV = clamp(input.uv + float2(displ * (1.0 + columnNoise), displ * 0.3 * sin(input.uv.y * 20.0)), 0.0, 1.0);
-            float4 blown = fromTexture.Sample(transitionSampler, blownUV);
+            float4 blown = SampleFrom(blownUV);
             blown.a *= 1.0 - displ * 2.0;
             color = lerp(newColor, blown, blown.a);
         }
@@ -182,7 +207,7 @@ float4 main(PsInput input) : SV_Target
                            * sin(rippleDist * 60.0) * 0.015
                            * (1.0 - progress);
         float2 waveOffset = normalize(input.uv - center + 0.001) * waveStrength;
-        color = lerp(fromTexture.Sample(transitionSampler, input.uv + waveOffset), newColor, mask);
+        color = lerp(SampleFrom(input.uv + waveOffset), newColor, mask);
     } else if (mode == 8) {
         float2 center = float2(0.5, 0.5);
         float2 dir = input.uv - center;
@@ -214,5 +239,6 @@ float4 main(PsInput input) : SV_Target
     }
 
     color.a *= saturate(gPushConstants.progressOpacity.y);
+    color.rgb *= color.a;   // re-premultiply for the ONE / INV_SRC_ALPHA effect blend
     return color;
 }

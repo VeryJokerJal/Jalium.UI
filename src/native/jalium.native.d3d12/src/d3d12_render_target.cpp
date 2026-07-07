@@ -3,6 +3,7 @@
 #include "d3d12_retained_layer.h"
 #include "d3d12_triangulate.h"
 #include "d3d12_vello.h"
+#include "d3d12_shader_bytecode.h"  // kcolor_matrix_ps / kemboss_ps (D6 effects)
 #include "jalium_text_stats.h"
 #include <d3dcompiler.h>   // D3DCompile — runtime HLSL→DXBC for DrawShaderEffectFromSource
 #pragma comment(lib, "d3dcompiler.lib")
@@ -413,6 +414,48 @@ bool D3D12RenderTarget::CreateSwapChain() {
         }
         if (FAILED(hr)) return false;
         factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
+
+        // Pathological-display-environment guard. The render adapter is app-selectable
+        // (we already skip WARP / 0-VRAM virtual adapters), but the PRESENT destination
+        // is not: DXGI must deliver every frame to whichever adapter drives the monitor
+        // this window sits on. If that adapter is a software / virtual one (display GPU
+        // disabled in Device Manager, or a streaming tool's Indirect-Display-Driver owns
+        // the desktop), every Present becomes a software cross-adapter copy — the app
+        // pins that adapter at ~100% and drops to single-digit fps NO MATTER which real
+        // GPU renders. The renderer cannot route around it, so detect it and warn loudly
+        // instead of letting it masquerade as an app performance bug.
+        [&]() {
+            HMONITOR mon = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+            if (!mon) return;
+            for (UINT ai = 0;; ++ai) {
+                ComPtr<IDXGIAdapter1> a;
+                if (FAILED(factory->EnumAdapters1(ai, &a))) break;
+                DXGI_ADAPTER_DESC1 d{};
+                if (FAILED(a->GetDesc1(&d))) continue;
+                for (UINT oi = 0;; ++oi) {
+                    ComPtr<IDXGIOutput> o;
+                    if (FAILED(a->EnumOutputs(oi, &o))) break;
+                    DXGI_OUTPUT_DESC od{};
+                    if (FAILED(o->GetDesc(&od)) || od.Monitor != mon) continue;
+                    // This is the adapter that drives the window's monitor.
+                    const bool softwareDisplay =
+                        (d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0 || d.DedicatedVideoMemory == 0;
+                    if (softwareDisplay) {
+                        fwprintf(stderr,
+                            L"[Jalium.D3D12] WARNING: this window's monitor is driven by the software/"
+                            L"virtual adapter '%ls' (0 VRAM). Every Present is a software cross-adapter "
+                            L"copy: expect single-digit fps and 100%% load on that adapter regardless of "
+                            L"the render GPU. Re-enable the display GPU in Device Manager and/or remove "
+                            L"virtual-display (IDD) drivers.\n",
+                            d.Description);
+                        OutputDebugStringW(
+                            L"[Jalium.D3D12] WARNING: monitor driven by software/virtual adapter — "
+                            L"Present is a software cross-adapter copy (environment problem, not the app).\n");
+                    }
+                    return;
+                }
+            }
+        }();
     }
 
     swapChainCreationFlags_ = desc.Flags;
@@ -913,6 +956,48 @@ bool D3D12RenderTarget::ExtractStrokeColor(Brush* brush, float& r, float& g, flo
     return false;   // image / unsupported
 }
 
+bool D3D12RenderTarget::TryGetApproximateBrushColor(Brush* brush, float& r, float& g, float& b, float& a) {
+    if (ExtractBrushColor(brush, r, g, b, a)) return true;   // solid fast path
+    if (!brush) return false;
+    auto type = brush->GetType();
+    if (type == JALIUM_BRUSH_LINEAR_GRADIENT) {
+        auto* lb = static_cast<D3D12LinearGradientBrush*>(brush);
+        if (lb->stops_.empty()) return false;
+        // Blend every stop with equal weight. This isn't a true gradient
+        // average (it ignores stop positions and perceptual curves), but for
+        // the common case of a ~2-stop near-solid gradient it lands within a
+        // few units of the visual midtone — and, crucially, it is field-for-
+        // field the SAME representative-colour rule as VulkanRenderTarget::
+        // TryGetApproximateBrushColor, so single-colour sinks (RenderText)
+        // pick the SAME colour on both backends (parity A5).
+        float rs = 0.0f, gs = 0.0f, bs = 0.0f, as = 0.0f;
+        for (const auto& s : lb->stops_) {
+            rs += s.color.r;
+            gs += s.color.g;
+            bs += s.color.b;
+            as += s.color.a;
+        }
+        const float invCount = 1.0f / static_cast<float>(lb->stops_.size());
+        r = rs * invCount; g = gs * invCount; b = bs * invCount; a = as * invCount;
+        return true;
+    }
+    if (type == JALIUM_BRUSH_RADIAL_GRADIENT) {
+        auto* rb = static_cast<D3D12RadialGradientBrush*>(brush);
+        if (rb->stops_.empty()) return false;
+        float rs = 0.0f, gs = 0.0f, bs = 0.0f, as = 0.0f;
+        for (const auto& s : rb->stops_) {
+            rs += s.color.r;
+            gs += s.color.g;
+            bs += s.color.b;
+            as += s.color.a;
+        }
+        const float invCount = 1.0f / static_cast<float>(rb->stops_.size());
+        r = rs * invCount; g = gs * invCount; b = bs * invCount; a = as * invCount;
+        return true;
+    }
+    return false;   // image / unsupported
+}
+
 bool D3D12RenderTarget::TryStrokeGradientPath(Brush* brush, float strokeWidth,
                                               float startX, float startY,
                                               const std::vector<float>& cmds, bool closed,
@@ -1133,7 +1218,11 @@ void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush*
     SdfRectInstance inst = {};
     if (FillBrushToInstance(brush, inst)) {
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
-        inst.opacity = directRenderer_->GetOpacity();
+        // AddSdfRect multiplies the ambient PushOpacity stack (currentOpacity_)
+        // exactly once; passing GetOpacity() here squared it (opacity-layers
+        // parity: 0.5 rendered as 0.25 while Vulkan/D2D render 0.5). Same fix
+        // across every AddSdfRect caller below.
+        inst.opacity = 1.0f;
         directRenderer_->AddSdfRect(inst);
     }
 }
@@ -1170,7 +1259,7 @@ void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush*
         inst.cornerBR = halfStroke; inst.cornerBL = halfStroke;
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
         inst.borderWidth = strokeWidth;
-        inst.opacity = directRenderer_->GetOpacity();
+        inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
         directRenderer_->AddSdfRect(inst);
     }
 }
@@ -1183,7 +1272,7 @@ void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h,
     if (brushOk) {
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
         inst.cornerTL = rx; inst.cornerTR = rx; inst.cornerBR = rx; inst.cornerBL = rx;
-        inst.opacity = directRenderer_->GetOpacity();
+        inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
         directRenderer_->AddSdfRect(inst);
     }
 }
@@ -1232,7 +1321,7 @@ void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h,
         inst.cornerBR = rx + halfStroke; inst.cornerBL = rx + halfStroke;
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
         inst.borderWidth = strokeWidth;
-        inst.opacity = directRenderer_->GetOpacity();
+        inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
         directRenderer_->AddSdfRect(inst);
     }
 }
@@ -1246,7 +1335,7 @@ void D3D12RenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w,
     if (FillBrushToInstance(brush, inst)) {
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
         inst.cornerTL = tl; inst.cornerTR = tr; inst.cornerBR = br; inst.cornerBL = bl;
-        inst.opacity = directRenderer_->GetOpacity();
+        inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
         directRenderer_->AddSdfRect(inst);
     }
 }
@@ -1300,7 +1389,7 @@ void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w,
         inst.cornerBR = br + halfStroke; inst.cornerBL = bl + halfStroke;
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
         inst.borderWidth = strokeWidth;
-        inst.opacity = directRenderer_->GetOpacity();
+        inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
         directRenderer_->AddSdfRect(inst);
     }
 }
@@ -1325,7 +1414,7 @@ void D3D12RenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brus
         inst.posX = cx - rx; inst.posY = cy - ry;
         inst.sizeX = rx * 2; inst.sizeY = ry * 2;
         inst.cornerTL = rx; inst.cornerTR = rx; inst.cornerBR = rx; inst.cornerBL = rx;
-        inst.opacity = directRenderer_->GetOpacity();
+        inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
         inst.shapeType = 1.0f; // SuperEllipse
         inst.shapeN = 2.0f;    // real ellipse
         directRenderer_->AddSdfRect(inst);
@@ -1358,7 +1447,7 @@ void D3D12RenderTarget::FillEllipseBatch(const float* data, uint32_t count) {
         inst.sizeX = rx * 2; inst.sizeY = ry * 2;
         inst.cornerTL = rx; inst.cornerTR = rx; inst.cornerBR = rx; inst.cornerBL = rx;
         inst.fillR = r; inst.fillG = g; inst.fillB = b; inst.fillA = a;
-        inst.opacity = directRenderer_->GetOpacity();
+        inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
         inst.shapeType = 1.0f;
         inst.shapeN = 2.0f;
         directRenderer_->AddSdfRect(inst);
@@ -1403,7 +1492,7 @@ void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brus
         inst.cornerBR = rx + halfStroke; inst.cornerBL = rx + halfStroke;
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
         inst.borderWidth = strokeWidth;
-        inst.opacity = directRenderer_->GetOpacity();
+        inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
         inst.shapeType = 1.0f;
         inst.shapeN = 2.0f;
         directRenderer_->AddSdfRect(inst);
@@ -1437,8 +1526,9 @@ void D3D12RenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* 
     float nx = -dy * invLen;
     float ny =  dx * invLen;
 
-    float opacity = directRenderer_->GetOpacity();
-    float baseA = a * opacity;
+    // AddTriangles scales the (premultiplied) vertex colors by currentOpacity_
+    // exactly once; baking GetOpacity() in here too squared PushOpacity groups.
+    float baseA = a;
     float pr = r * baseA, pg = g * baseA, pb = b * baseA;
 
     // Manual analytical AA: render the line as three side-by-side strips —
@@ -1658,8 +1748,9 @@ void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
-    float opacity = directRenderer_->GetOpacity();
-    float pr = r * a * opacity, pg = g * a * opacity, pb = b * a * opacity, pa = a * opacity;
+    // AddTriangles scales the (premultiplied) vertex colors by currentOpacity_
+    // exactly once; baking GetOpacity() in here too squared PushOpacity groups.
+    float pr = r * a, pg = g * a, pb = b * a, pa = a;
 
     // Always use full robust triangulation — no convex fan shortcut.
     // Fan triangulation can produce pixel gaps on small shapes (scrollbar arrows,
@@ -1736,8 +1827,9 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
-    float opacity = directRenderer_->GetOpacity();
-    float pr = r * a * opacity, pg = g * a * opacity, pb = b * a * opacity, pa = a * opacity;
+    // AddTriangles scales the (premultiplied) vertex colors by currentOpacity_
+    // exactly once; baking GetOpacity() in here too squared PushOpacity groups.
+    float pr = r * a, pg = g * a, pb = b * a, pa = a;
     float hw = strokeWidth * 0.5f;
 
     uint32_t segCount = closed ? pointCount : pointCount - 1;
@@ -1837,6 +1929,12 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
     // Gradient / image brushes don't fit the stencil model (gradient sampling
     // happens at fragment time and needs barycentric vertex colors), so they
     // fall through to the Impeller path below — which is unchanged.
+    //
+    // Analytic-only mode (app.UsePathAntiAliasing(Analytic)) skips this MSAA fast
+    // path so solid fills use the engine's analytic-coverage rasterizer below —
+    // the same path gradient fills already take — for WPF/Skia-style AA at a
+    // fraction of the 8× stencil-then-cover GPU cost.
+    if (!directRenderer_->IsPathAnalyticOnly())
     {
         float r, g, b, a;
         if (ExtractBrushColor(brush, r, g, b, a)) {
@@ -1901,8 +1999,9 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
-    float opacity = directRenderer_->GetOpacity();
-    float pr = r * a * opacity, pg = g * a * opacity, pb = b * a * opacity, pa = a * opacity;
+    // AddTriangles scales the (premultiplied) vertex colors by currentOpacity_
+    // exactly once; baking GetOpacity() in here too squared PushOpacity groups.
+    float pr = r * a, pg = g * a, pb = b * a, pa = a;
 
     // Use FlattenPathToContours for proper command parsing:
     // - Handles ClosePath (closes contour back to sub-path start)
@@ -2009,7 +2108,7 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
         if (FillBrushToInstance(fillBrush, inst)) {
             inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
             inst.cornerBL = blRadius; inst.cornerBR = brRadius;
-            inst.opacity = directRenderer_->GetOpacity();
+            inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
             directRenderer_->AddSdfRect(inst);
         }
     }
@@ -2022,7 +2121,7 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
             inst.cornerBL = blRadius; inst.cornerBR = brRadius;
             inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
             inst.borderWidth = strokeWidth;
-            inst.opacity = directRenderer_->GetOpacity();
+            inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
             directRenderer_->AddSdfRect(inst);
         }
     }
@@ -2044,7 +2143,14 @@ void D3D12RenderTarget::RenderText(
 
     auto* tf = static_cast<D3D12TextFormat*>(format);
     float r = 1, g = 1, b = 1, a = 1;
-    ExtractBrushColor(brush, r, g, b, a);
+    // Gradient foregrounds: the glyph pipeline is single-colour, so degrade a
+    // gradient brush to the equal-weight average of ALL its stops — the SAME
+    // representative colour the Vulkan backend renders (its RenderText calls
+    // TryGetApproximateBrushColor too), instead of the previous unchecked
+    // ExtractBrushColor call that silently left the white default in place and
+    // made gradient-foreground text come out pure white (parity gap A5).
+    // Null / image / unsupported brushes keep the historical white fallback.
+    TryGetApproximateBrushColor(brush, r, g, b, a);
 
     ComPtr<IDWriteTextLayout> layout;
     uint64_t layoutKey = 0;
@@ -2084,7 +2190,10 @@ void D3D12RenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, fl
     // ref hits zero while the just-recorded CopyTextureRegion is still
     // pending GPU execution — D3D12 ERROR #921.
     auto uploadBuffer = d3d12Bmp->GetCurrentUploadBuffer();
-    directRenderer_->AddBitmap(x, y, w, h, opacity * directRenderer_->GetOpacity(),
+    // AddBitmap multiplies currentOpacity_ once (inst.opacity = opacity *
+    // currentOpacity_); pre-multiplying GetOpacity() here squared PushOpacity
+    // groups for bitmaps — same lesion as the AddSdfRect callers above.
+    directRenderer_->AddBitmap(x, y, w, h, opacity,
                                 tex, texDesc.Format, 1.0f, 1.0f, scalingMode,
                                 uploadBuffer.Get());
 }
@@ -2102,7 +2211,7 @@ void D3D12RenderTarget::BlitInkLayer(D3D12InkLayerBitmap* inkBitmap,
         dstX, dstY,
         (float)inkBitmap->Width(),
         (float)inkBitmap->Height(),
-        opacity * directRenderer_->GetOpacity(),
+        opacity,   // AddBitmap multiplies currentOpacity_ once
         inkBitmap->Texture(),
         inkBitmap->Format(),
         1.0f, 1.0f, 0 /* unspecified scaling */);
@@ -2411,6 +2520,33 @@ bool D3D12RenderTarget::DebugInOffscreenCapture() {
     return directRenderer_ && directRenderer_->IsInOffscreenCapture();
 }
 
+// ============================================================================
+// Two-phase back-buffer readback (backend parity verification)
+// ============================================================================
+// Thin forwards: the copy recording and fence bookkeeping live inside
+// D3D12DirectRenderer (it owns the command list, back-buffer references and
+// the frame fence). Request may be called any time before the capturing
+// EndDraw; Fetch must run AFTER that EndDraw returned (managed wrapper calls
+// it outside BeginDraw..EndDraw) — the copy's fence is signaled by EndFrame's
+// submit, so a mid-frame fetch would wait on a fence value that hasn't been
+// queued yet.
+
+JaliumResult D3D12RenderTarget::RequestReadback() {
+    if (!directRenderer_) return JALIUM_ERROR_INVALID_STATE;
+    directRenderer_->RequestBackBufferReadback();
+    return JALIUM_OK;
+}
+
+JaliumResult D3D12RenderTarget::FetchReadback(uint8_t* buf, uint32_t bufStride,
+                                              int32_t* outWidth, int32_t* outHeight) {
+    if (!directRenderer_) {
+        if (outWidth) *outWidth = 0;
+        if (outHeight) *outHeight = 0;
+        return JALIUM_ERROR_INVALID_STATE;
+    }
+    return directRenderer_->FetchBackBufferReadback(buf, bufStride, outWidth, outHeight);
+}
+
 // TEST-ONLY (#921 regression self-check). Reproduces the same-thread "leaked-open
 // command list" race and drives a resize through it, so the production guard in
 // Resize (the `listOpen || isDrawing_` branch that must AbortFrame the leaked
@@ -2671,19 +2807,54 @@ void D3D12RenderTarget::SetFullInvalidation() {
 // Effects — Backdrop Filter, Liquid Glass, Glow, etc.
 // ============================================================================
 
+// Hex "#RRGGBB" material tint parser — a direct port of the Vulkan backend's
+// ParseTintColor (vulkan_render_target.cpp) so both backends resolve the same
+// managed TintColorArgb string to the same RGB. Fallback (empty / not
+// "#"-prefixed / too short) is white {1,1,1}, exactly the fallback Vulkan's
+// DrawBackdropFilter passes; sscanf semantics keep un-parsed channels at 0 on
+// malformed input, also matching Vulkan.
+static void ParseTintColorD3D12(const char* tint, float& outR, float& outG, float& outB) {
+    float r = 1.0f, g = 1.0f, b = 1.0f;
+    if (tint && tint[0] == '#' && std::strlen(tint) >= 7) {
+        int red = 0, green = 0, blue = 0;
+        ::sscanf_s(tint + 1, "%02x%02x%02x", &red, &green, &blue);
+        r = red / 255.0f;
+        g = green / 255.0f;
+        b = blue / 255.0f;
+    }
+    outR = std::clamp(r, 0.0f, 1.0f);
+    outG = std::clamp(g, 0.0f, 1.0f);
+    outB = std::clamp(b, 0.0f, 1.0f);
+}
+
 void D3D12RenderTarget::DrawBackdropFilter(
     float x, float y, float w, float h,
-    const char*, const char*, const char*,
+    const char* backdropFilter, const char* material, const char* materialTint,
     float tintOpacity, float blurRadius,
-    float cornerRadiusTL, float, float, float)
+    float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL)
+{
+    // The base (blur + tint only) entry point: forward to the extended path
+    // with identity material params (no noise, no saturation, no luminosity).
+    DrawBackdropFilterEx(x, y, w, h, backdropFilter, material, materialTint,
+                         tintOpacity, blurRadius,
+                         /*noiseIntensity*/ 0.0f, /*saturation*/ 1.0f, /*luminosity*/ 1.0f,
+                         cornerRadiusTL, cornerRadiusTR, cornerRadiusBR, cornerRadiusBL);
+}
+
+void D3D12RenderTarget::DrawBackdropFilterEx(
+    float x, float y, float w, float h,
+    const char*, const char*, const char* materialTint,
+    float tintOpacity, float blurRadius,
+    float noiseIntensity, float saturation, float luminosity,
+    float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL)
 {
     if (!isDrawing_ || !directRenderer_) return;
     CommitDeferredState();
     if (!directRenderer_->FlushGraphicsForCompute()) return;  // device lost — frame will abort
-    // Tag everything from here through DrawSnapshotBlurred as the Backdrop
-    // GPU category. FlushGraphicsForCompute() above drained pending batches
-    // (those already have their own per-batch category marks inside
-    // RecordDrawCommands), so the next span is genuinely backdrop work.
+    // Tag everything from here through the backdrop draw as the Backdrop GPU
+    // category. FlushGraphicsForCompute() above drained pending batches (those
+    // already have their own per-batch category marks inside RecordDrawCommands),
+    // so the next span is genuinely backdrop work.
     directRenderer_->MarkGpuTimingPoint(D3D12DirectRenderer::GpuTimingCategory::Backdrop);
     if (!directRenderer_->CaptureSnapshot()) {
         // Failure path: hand the span back to Other so we don't leave the
@@ -2691,8 +2862,17 @@ void D3D12RenderTarget::DrawBackdropFilter(
         directRenderer_->MarkGpuTimingPoint(D3D12DirectRenderer::GpuTimingCategory::Other);
         return;
     }
-    float avgRadius = cornerRadiusTL;
-    directRenderer_->DrawSnapshotBlurred(x, y, w, h, blurRadius, 0, 0, 0, tintOpacity, avgRadius);
+    // D4 parity with Vulkan's backdrop shader: the managed side passes the real
+    // material tint as "#RRGGBB", all four corner radii, and now the material
+    // grain (noiseIntensity), vibrancy (saturation) and brightness (luminosity)
+    // that AcrylicEffect / MicaEffect carry. DrawSnapshotBackdrop applies them
+    // in a single snapshot-backdrop PS pass; if that PSO is unavailable it falls
+    // back to the blur + tint blit (noise/sat/lum dropped, backdrop still shown).
+    float tintR = 1.0f, tintG = 1.0f, tintB = 1.0f;
+    ParseTintColorD3D12(materialTint, tintR, tintG, tintB);
+    directRenderer_->DrawSnapshotBackdrop(x, y, w, h, blurRadius, tintR, tintG, tintB, tintOpacity,
+        noiseIntensity, saturation, luminosity,
+        cornerRadiusTL, cornerRadiusTR, cornerRadiusBR, cornerRadiusBL);
     directRenderer_->MarkGpuTimingPoint(D3D12DirectRenderer::GpuTimingCategory::Other);
 }
 
@@ -2774,11 +2954,15 @@ void D3D12RenderTarget::CaptureDesktopArea(int32_t screenX, int32_t screenY, int
 void D3D12RenderTarget::DrawDesktopBackdrop(
     float x, float y, float w, float h,
     float blurRadius, float tintR, float tintG, float tintB, float tintOpacity,
-    float /*noiseIntensity*/, float /*saturation*/)
+    float noiseIntensity, float saturation)
 {
     if (!isDrawing_ || !directRenderer_) return;
     CommitDeferredState();
-    directRenderer_->DrawDesktopBackdrop(x, y, w, h, blurRadius, tintR, tintG, tintB, tintOpacity);
+    // D4 parity: noiseIntensity/saturation were previously discarded here; the
+    // DirectRenderer now applies them with the Vulkan backdrop_quad.frag.hlsl
+    // math (saturation lerp on Rec.601 luma + screen-space hash noise).
+    directRenderer_->DrawDesktopBackdrop(x, y, w, h, blurRadius, tintR, tintG, tintB, tintOpacity,
+        noiseIntensity, saturation);
 }
 
 // ============================================================================
@@ -2801,9 +2985,28 @@ void D3D12RenderTarget::EndTransitionCapture(int slot) {
     directRenderer_->EndOffscreenCapture(slot);
 }
 
-void D3D12RenderTarget::DrawTransitionShader(float x, float y, float w, float h, float progress, int mode) {
-    // TODO: implement transition shader effect in DirectRenderer
-    (void)x; (void)y; (void)w; (void)h; (void)progress; (void)mode;
+void D3D12RenderTarget::DrawTransitionShader(float x, float y, float w, float h, float progress, int mode,
+    float cornerRadius) {
+    if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
+    // Drain pending Impeller batches first so the transition quad (an
+    // immediate-mode draw) keeps z-order with content recorded before it
+    // (same rationale as BeginTransitionCapture above).
+    FlushImpellerBatches();
+    // GPU shader path (D2): the 10-mode transition PS fed by the two capture
+    // slots — transition_quad.ps.hlsl, a line-for-line port of the Vulkan
+    // reference shader (jalium.native.vulkan/shaders/transition_quad.frag.hlsl).
+    if (!directRenderer_->DrawTransitionShaderQuad(x, y, w, h, progress, mode, cornerRadius)) {
+        // Behavioural parity with the Vulkan fallback (VulkanRenderTarget::
+        // DrawTransitionShader's CPU path = plain lerp(from, to, t)): when the
+        // shader path is unavailable, composite the two captures as a
+        // crossfade. DrawOffscreenBitmap self-guards on per-slot capture
+        // validity, so "either slot invalid -> draw nothing" matches Vulkan's
+        // early-out too.
+        float t = std::min(std::max(progress, 0.0f), 1.0f);
+        directRenderer_->DrawOffscreenBitmap(0, x, y, w, h, 1.0f - t);
+        directRenderer_->DrawOffscreenBitmap(1, x, y, w, h, t);
+    }
 }
 
 void D3D12RenderTarget::DrawCapturedTransition(int slot, float x, float y, float w, float h, float opacity) {
@@ -2971,7 +3174,7 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
             inst.cornerBR = cornerBR; inst.cornerBL = cornerBL;
             inst.fillR = r; inst.fillG = g;
             inst.fillB = b; inst.fillA = a;
-            inst.opacity = baseOpacity;
+            inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
             inst._xfPad0 = 1.0f;     // shadowMode = 1 -> PS takes the erf Gaussian branch
             inst._xfPad1 = sigma;    // gaussian sigma (screen px)
             directRenderer_->AddSdfRect(inst);
@@ -2993,7 +3196,7 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
                 inst.cornerBR = cornerBR + spread; inst.cornerBL = cornerBL + spread;
                 inst.fillR = r; inst.fillG = g;
                 inst.fillB = b; inst.fillA = perLayerA;
-                inst.opacity = baseOpacity;
+                inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
                 directRenderer_->AddSdfRect(inst);
             }
         }
@@ -3002,6 +3205,88 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
     // Composite original element content on top of shadow
     directRenderer_->DrawOffscreenBitmapCropped(0, x, y, w, h,
         uvOffsetX, uvOffsetY, 1.0f);
+}
+
+void D3D12RenderTarget::DrawInnerShadowEffect(float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL)
+{
+    if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
+    if (!lastEffectCaptureOk_) return;
+
+    // 1) Composite the captured element content back onto the main RT. On
+    //    D3D12 BeginEffectCapture redirected the element's own rendering into
+    //    offscreen slot 0; without this composite the element vanished
+    //    entirely (content AND shadow) — the missing-override bug (D3) this
+    //    function fixes. The Vulkan GPU path needs no such step because its
+    //    BeginEffectCapture is a pass-through (content records straight into
+    //    the frame) and the inner shadow simply paints on top.
+    directRenderer_->DrawOffscreenBitmapCropped(0, x, y, w, h,
+        uvOffsetX, uvOffsetY, 1.0f);
+
+    // 2) Inner shadow ON TOP of the content, geometry-approximated exactly
+    //    like the Vulkan reference (VulkanRenderTarget::DrawInnerShadowEffect):
+    //    kLayers=5 concentric inward-inset rounded-rect strokes, alpha fading
+    //    inward, clipped to the element's rounded rect. All constants —
+    //    blur = max(1, radius), strokeW = max(1.5, blur*0.7),
+    //    inset_i = blur*(i/5 - 1/5), layerAlpha_i = a*(1 - i/5)*0.65,
+    //    baseRad = avg of the 4 corner radii, early-outs at a<=0.004 /
+    //    w,h<=1 / degenerate layers — are copied field-for-field so both
+    //    backends shade the same pixels.
+    if (a <= 0.004f || w <= 1.0f || h <= 1.0f) return;
+
+    float baseRad = (cornerTL + cornerTR + cornerBR + cornerBL) * 0.25f;
+    if (baseRad < 0.0f) baseRad = 0.0f;
+
+    // Vulkan clips with PushTemporaryClip(x, y, w, h, baseRad) so only the
+    // element-side part of each centred stroke survives. Mirror that with the
+    // scissor (hard rect cull) + the SDF rounded clip (per-batch coverage
+    // mask with the same uniform radius).
+    directRenderer_->PushScissor(x, y, w, h);
+    directRenderer_->PushRoundedClip(x, y, w, h, baseRad, baseRad);
+
+    constexpr int kLayers = 5;
+    const float blur = std::max(1.0f, blurRadius);
+    const float strokeW = std::max(1.5f, blur * 0.7f);
+    const float halfStroke = strokeW * 0.5f;
+    for (int i = 1; i <= kLayers; ++i) {
+        const float t = static_cast<float>(i) / static_cast<float>(kLayers);   // 0.2 .. 1
+        const float inset = blur * (t - 1.0f / static_cast<float>(kLayers));    // 0 .. 0.8*blur inward
+        const float la = a * (1.0f - t) * 0.65f;                                // edge strong -> fades inward
+        if (la <= 0.004f) continue;
+        const float sx = x + offsetX + inset;
+        const float sy = y + offsetY + inset;
+        const float sw = w - inset * 2.0f;
+        const float sh = h - inset * 2.0f;
+        if (sw <= 1.0f || sh <= 1.0f) break;
+        const float layerRad = std::max(0.0f, baseRad - inset);
+
+        // Vulkan's DrawRoundedRectangle stroke is CENTRED on the (inset)
+        // outline; the SdfRect border paints strictly INSIDE its rect. Expand
+        // the rect by strokeW/2 — growing the radius by the same amount keeps
+        // the identical SDF iso-contour — so the inside border band covers the
+        // same +/- strokeW/2 strip around the layer outline.
+        SdfRectInstance inst = {};
+        inst.posX = sx - halfStroke;
+        inst.posY = sy - halfStroke;
+        inst.sizeX = sw + strokeW;
+        inst.sizeY = sh + strokeW;
+        inst.cornerTL = layerRad + halfStroke;
+        inst.cornerTR = layerRad + halfStroke;
+        inst.cornerBR = layerRad + halfStroke;
+        inst.cornerBL = layerRad + halfStroke;
+        inst.borderR = r; inst.borderG = g;
+        inst.borderB = b; inst.borderA = la;
+        inst.borderWidth = strokeW;
+        inst.opacity = 1.0f;   // AddSdfRect multiplies the ambient opacity once
+        directRenderer_->AddSdfRect(inst);
+    }
+
+    directRenderer_->PopRoundedClip();
+    directRenderer_->PopScissor();
 }
 
 // Pixel shader for the alpha-based outer glow. Runtime-compiled + cached by source
@@ -3173,19 +3458,91 @@ void D3D12RenderTarget::DrawOuterGlowEffect(float x, float y, float w, float h,
         uvOffsetX, uvOffsetY, 1.0f);
 }
 
-void D3D12RenderTarget::DrawColorMatrixEffect(float x, float y, float w, float h, const float* /*matrix*/) {
+void D3D12RenderTarget::DrawColorMatrixEffect(float x, float y, float w, float h, const float* matrix) {
     if (!isDrawing_ || !directRenderer_) return;
     CommitDeferredState();
-    // Fallback: just draw the captured content without transformation
-    directRenderer_->DrawOffscreenBitmap(0, x, y, w, h, 1.0f);
+    if (!matrix || !lastEffectCaptureOk_) {
+        // No matrix / capture failed — legacy fallback: composite unmodified.
+        directRenderer_->DrawOffscreenBitmap(0, x, y, w, h, 1.0f);
+        return;
+    }
+
+    // Real 5x4 color-matrix transform (D6), semantics from the Vulkan CPU
+    // reference (VulkanRenderTarget::DrawColorMatrixEffect): row-major
+    // feColorMatrix convention on STRAIGHT RGBA — see color_matrix.ps.hlsl
+    // for the premultiply adaptation (D3D12 captures are premultiplied).
+    // uvScale maps the quad's [0,1] uv onto the capture sub-rect of the
+    // shared offscreen atlas (same plumbing as DrawTransitionShaderQuad).
+    const float offW = static_cast<float>(directRenderer_->GetOffscreenWidth());
+    const float offH = static_cast<float>(directRenderer_->GetOffscreenHeight());
+    const float capW = std::max(1.0f, static_cast<float>(directRenderer_->GetOffscreenCaptureW(0)));
+    const float capH = std::max(1.0f, static_cast<float>(directRenderer_->GetOffscreenCaptureH(0)));
+    const float uvScaleX = (offW > 0.0f) ? (capW / offW) : 1.0f;
+    const float uvScaleY = (offH > 0.0f) ? (capH / offH) : 1.0f;
+
+    // Must byte-match ColorMatrixConstants in color_matrix.ps.hlsl:
+    // rowR, rowG, rowB, rowA (the 4x dot-product weights), offsets, uvScale.
+    float constants[24] = {
+        matrix[0],  matrix[1],  matrix[2],  matrix[3],   // rowR
+        matrix[5],  matrix[6],  matrix[7],  matrix[8],   // rowG
+        matrix[10], matrix[11], matrix[12], matrix[13],  // rowB
+        matrix[15], matrix[16], matrix[17], matrix[18],  // rowA
+        matrix[4],  matrix[9],  matrix[14], matrix[19],  // offsets
+        uvScaleX, uvScaleY, 0.0f, 0.0f,                  // uvScale
+    };
+
+    // DrawCustomShaderEffect falls back to DrawOffscreenBitmap (unmodified
+    // composite) internally when the PSO can't be built, so the element never
+    // vanishes. Identity matrix => the PS reproduces the capture exactly.
+    directRenderer_->DrawCustomShaderEffect(0, x, y, w, h,
+        shader_bytecode::kcolor_matrix_ps, shader_bytecode::kcolor_matrix_psSize,
+        constants, 24);
 }
 
 void D3D12RenderTarget::DrawEmbossEffect(float x, float y, float w, float h,
-    float /*amount*/, float /*lightDirX*/, float /*lightDirY*/, float /*relief*/)
+    float amount, float lightDirX, float lightDirY, float relief)
 {
     if (!isDrawing_ || !directRenderer_) return;
     CommitDeferredState();
-    directRenderer_->DrawOffscreenBitmap(0, x, y, w, h, 1.0f);
+    if (!lastEffectCaptureOk_) {
+        directRenderer_->DrawOffscreenBitmap(0, x, y, w, h, 1.0f);
+        return;
+    }
+
+    // Real directional emboss (D6). Every constant below is a field-for-field
+    // port of the Vulkan CPU reference (VulkanRenderTarget::DrawEmbossEffect):
+    //   lx/ly       = normalize(lightDir), falling back to (1, 0);
+    //   sampleDist  = max(1, round(relief <= 0 ? 1 : relief))  [pixels];
+    //   dx/dy       = round(l * sampleDist)                    [pixels];
+    //   amt         = amount <= 0 ? 1 : amount   (zero strength is NOT a
+    //                 passthrough in the authoritative semantics);
+    // the per-pixel luma difference + mid-grey bias runs in emboss.ps.hlsl.
+    const float len = std::sqrt(lightDirX * lightDirX + lightDirY * lightDirY);
+    const float lx = (len > 1e-5f) ? (lightDirX / len) : 1.0f;
+    const float ly = (len > 1e-5f) ? (lightDirY / len) : 0.0f;
+    const int sampleDist = std::max(1, static_cast<int>(std::round(relief <= 0.0f ? 1.0f : relief)));
+    const int dx = static_cast<int>(std::round(lx * static_cast<float>(sampleDist)));
+    const int dy = static_cast<int>(std::round(ly * static_cast<float>(sampleDist)));
+    const float amt = (amount <= 0.0f) ? 1.0f : amount;
+
+    const float offW = static_cast<float>(directRenderer_->GetOffscreenWidth());
+    const float offH = static_cast<float>(directRenderer_->GetOffscreenHeight());
+    const float capW = std::max(1.0f, static_cast<float>(directRenderer_->GetOffscreenCaptureW(0)));
+    const float capH = std::max(1.0f, static_cast<float>(directRenderer_->GetOffscreenCaptureH(0)));
+    const float texelU = (offW > 0.0f) ? (1.0f / offW) : 0.0f;
+    const float texelV = (offH > 0.0f) ? (1.0f / offH) : 0.0f;
+    const float uvScaleX = (offW > 0.0f) ? (capW / offW) : 1.0f;
+    const float uvScaleY = (offH > 0.0f) ? (capH / offH) : 1.0f;
+
+    // Must byte-match EmbossConstants in emboss.ps.hlsl.
+    float constants[8] = {
+        static_cast<float>(dx), static_cast<float>(dy), amt, 0.0f,  // dirAmount
+        texelU, texelV, uvScaleX, uvScaleY,                          // texelScale
+    };
+
+    directRenderer_->DrawCustomShaderEffect(0, x, y, w, h,
+        shader_bytecode::kemboss_ps, shader_bytecode::kemboss_psSize,
+        constants, 8);
 }
 
 void D3D12RenderTarget::DrawShaderEffect(float x, float y, float w, float h,
@@ -3287,6 +3644,29 @@ JaliumResult D3D12RenderTarget::CreateWebViewVisual(void** visualOut) {
     return JALIUM_OK;
 }
 
+// A DirectComposition Commit() can fail when the GPU is switched or the driver
+// restarts: the internal D3D11 device DComp created in Initialize
+// (DCompositionCreateDevice(nullptr, ...)) is torn down and Commit returns
+// DXGI_ERROR_DEVICE_REMOVED/RESET. Classify that as DEVICE_LOST so the managed
+// recovery chain (authoritatively driven by EndDraw) treats it uniformly; any
+// other Commit failure is reported as a transient invalid state. This mirrors
+// the EndDraw main path (Commit fail -> DEVICE_LOST) and the DirectRenderer's
+// Present classification.
+//
+// NOTE: we classify on the HRESULT Commit itself returns — deliberately NOT on
+// device_->GetDeviceRemovedReason(). The object removed here is DComp's separate
+// internal D3D11 device, a different handle from our D3D12 device_; querying
+// device_ would inspect the wrong device.
+static JaliumResult ClassifyDcompCommitFailure(HRESULT hr) {
+    char buffer[160] = {};
+    sprintf_s(buffer, "[D3D12RenderTarget] DComp Commit failed hr=0x%08X\n",
+              static_cast<unsigned int>(hr));
+    OutputDebugStringA(buffer);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+        return JALIUM_ERROR_DEVICE_LOST;
+    return JALIUM_ERROR_INVALID_STATE;
+}
+
 JaliumResult D3D12RenderTarget::DestroyWebViewVisual(void* visual) {
     if (!isComposition_ || !dcompDevice_ || !visual) return JALIUM_ERROR_INVALID_STATE;
     auto* targetVis = static_cast<IDCompositionVisual*>(visual);
@@ -3294,7 +3674,8 @@ JaliumResult D3D12RenderTarget::DestroyWebViewVisual(void* visual) {
         if (it->second.targetVisual.Get() == targetVis) {
             dcompVisual_->RemoveVisual(it->second.containerVisual.Get());
             webViewVisuals_.erase(it);
-            dcompDevice_->Commit();
+            HRESULT hr = dcompDevice_->Commit();
+            if (FAILED(hr)) return ClassifyDcompCommitFailure(hr);
             return JALIUM_OK;
         }
     }
@@ -3323,7 +3704,8 @@ JaliumResult D3D12RenderTarget::SetWebViewVisualPlacement(
     containerVisual->SetClip(clipRect);
     targetVis->SetOffsetX(static_cast<float>(contentOffsetX));
     targetVis->SetOffsetY(static_cast<float>(contentOffsetY));
-    dcompDevice_->Commit();
+    HRESULT hr = dcompDevice_->Commit();
+    if (FAILED(hr)) return ClassifyDcompCommitFailure(hr);
     return JALIUM_OK;
 }
 
@@ -3476,7 +3858,8 @@ JaliumResult D3D12RenderTarget::DestroyAnimProbe(void* visual) {
 
     dcompVisual_->RemoveVisual(v);
     animProbes_.erase(it);                                 // ComPtr members release here
-    dcompDevice_->Commit();
+    HRESULT hr = dcompDevice_->Commit();
+    if (FAILED(hr)) return ClassifyDcompCommitFailure(hr);
     return JALIUM_OK;
 }
 

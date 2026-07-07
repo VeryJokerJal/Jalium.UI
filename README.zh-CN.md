@@ -10,8 +10,8 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 
 ## 项目状态
 
-- 积极开发中 —— v26.10.2-preview（小版本之间 API 仍可能演进）
-- 主要目标平台：Windows 10/11 x64
+- 积极开发中 —— v26.10.6（小版本之间 API 仍可能演进）
+- 主要目标平台：Windows 10/11（x64、ARM64）
 - 跨平台：Android（arm64-v8a、x86_64）、Linux（Vulkan）、macOS（Metal）
 - 运行时目标：.NET 10（`net10.0-windows`、`net10.0-android`、`net10.0`）
 - 渲染：DirectX 12（Windows）、Vulkan（Linux/Android）、Metal（macOS）、软件渲染回退
@@ -20,13 +20,16 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 
 - GPU 原生渲染管线，支持 ClearType 亚像素文本渲染
 - 熟悉的编程模型（`DependencyObject`、`UIElement`、面板、模板、资源）
-- 带 Razor 语法扩展的 JALXAML 标记语言（`@Path`、`@(expr)`、`@{ ... }`、`@if/@section/@RenderSection`）
-- 丰富的控件库：80+ 个控件，包括 Charts、Ribbon、Docking、InkCanvas、WebView、Terminal、WindowsFormsHost
+- 带 Razor 语法扩展的 JALXAML 标记语言（`@Path`、`@(expr)`、`@{ ... }`、`@if`/`@for`/`@foreach`、`@section`/`@RenderSection`）
+- 丰富的控件库：100+ 个控件，包括 Charts、Ribbon、Docking、InkCanvas、WebView、Terminal、MediaElement、MapView、PropertyGrid、WindowsFormsHost
+- 开发体验：JALXAML 热重载（实时可视化树修补），外加按需启用的内建 DevTools 检查器与调试 HUD
 - 通过 NuGet 提供构建期工具链（`Jalium.UI.Build`、`Jalium.UI.Xaml.SourceGenerator`）
+- 一流的 Generic Host 集成 —— `AppBuilder` 实现 `IHostApplicationBuilder`（`Microsoft.Extensions.Hosting`），支持 DI、配置、选项、日志与指标，另有 Jalium MVVM 视图/视图模型接线
 - 带自动化对等体（automation peer）的 UIA 无障碍支持
 - 视觉特效：液态玻璃、背景模糊、亚克力（acrylic）、云母（mica）、过渡着色器、动画位图（GIF / APNG / 动画 WebP）
+- 通过 `MediaElement` / `NativeVideoSurface` 提供原生 GPU 视频（D3D12 / Vulkan 表面，分阶段推进中）
+- 完整的多点触控输入 —— 带物理惯性的操控、手势识别、实时触控笔预览
 - 字素簇（grapheme-cluster）感知的文本编辑（UAX#29）—— emoji、ZWJ 序列、肤色修饰符、国旗永不会被拆分
-- 自包含的 `Jalium.Extensions.*` 技术栈（Hosting / DI / Configuration / Options / Logging / Metrics）—— 不依赖 `Microsoft.Extensions.Hosting`
 - 原生音频管线（miniaudio + dr_libs / minimp3），支持 WSOLA 保持音高的时间伸缩
 
 ## 框架组成
@@ -36,16 +39,18 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 | 包 | 职责 |
 | --- | --- |
 | `Jalium.UI.Core` | 依赖属性系统、可视化树、布局、路由事件、绑定、动画 |
-| `Jalium.UI.Media` | 画笔、几何图形、绘图图元、文本排版、图像处理、视觉特效 |
+| `Jalium.UI.Media` | 画笔、几何图形、绘图图元、文本排版、图像处理、视频、视觉特效 |
 | `Jalium.UI.Input` | 鼠标、键盘、触摸、触控笔输入抽象与路由 |
 | `Jalium.UI.Interop` | 托管/原生桥接、P/Invoke、运行时原生依赖打包 |
 | `Jalium.UI.Gpu` | GPU 资源管理、渲染图、材质、着色器、后端抽象 |
-| `Jalium.UI.Controls` | 控件、面板、模板、窗口化、主题、停靠、图表 |
-| `Jalium.UI.Xaml` | JALXAML 解析/加载管线、Razor 语法支持、标记服务 |
+| `Jalium.UI.Controls` | 控件、面板、模板、窗口化、主题、停靠、图表、宿主 |
+| `Jalium.UI.Xaml` | JALXAML 解析/加载管线、Razor 语法支持、热重载、标记服务 |
 | `Jalium.UI.Build` | 用于 JALXAML 编译工作流的 MSBuild 任务与构建资产 |
 | `Jalium.UI.Xaml.SourceGenerator` | 用于 XAML/代码隐藏集成的 Roslyn 源生成器 |
-| `Jalium.UI.Compiler` | 独立的 `jalxamlc.exe` 编译器工具 |
 | `Jalium.UI` | 引用整个框架技术栈的元包（metapackage） |
+
+> `Jalium.UI.Compiler` 用于构建独立的 `jalxamlc` 编译器可执行文件。它是一个
+> 从源码消费的构建工具，而非 NuGet 包（`dotnet add package` 不适用于它）。
 
 ### 原生模块
 
@@ -57,17 +62,18 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 | `jalium.native.metal` | macOS | Metal 渲染后端 |
 | `jalium.native.software` | 全部 | 基于 CPU 的软件渲染回退 |
 | `jalium.native.platform` | 全部 | 平台抽象（窗口、输入、事件） |
-| `jalium.native.text` | Linux、Android | 跨平台文本引擎（FreeType + HarfBuzz） |
+| `jalium.native.text` | Linux、Android、macOS | 跨平台文本引擎（FreeType + HarfBuzz） |
 | `jalium.native.browser` | Windows | WebView2 浏览器集成 |
 | `jalium.native.media.core` | 全部 | 跨平台媒体 C ABI + 共享音频（miniaudio / dr_libs / minimp3 / stb_vorbis） |
 | `jalium.native.media.windows` | Windows | Media Foundation 视频 / 摄像头 / AAC 解码器 + WIC 图像处理 |
+| `jalium.native.media.android` | Android | Android 图像 / 视频 / 摄像头解码器 + 通过 NDK 的 YUV SIMD（NEON） |
 | `jalium.native.aot` | 全部 | NativeAOT 聚合器（硬链接 media、text、各后端） |
 
 ### 平台包
 
 | 包 | 目标 |
 | --- | --- |
-| `Jalium.UI.Desktop` | `net10.0-windows` —— 携带原生 DLL 的桌面发行版 |
+| `Jalium.UI.Desktop` | `net10.0-windows` —— 携带按 RID 划分原生 DLL（win-x64 / win-arm64）的桌面发行版 |
 | `Jalium.UI.Android` | `net10.0-android` —— 携带原生 .so 库的 Android 发行版 |
 
 ## 能力概览
@@ -75,18 +81,22 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 ### 布局与可视化树
 
 - 核心面板：`Grid`、`StackPanel`、`Canvas`、`DockPanel`、`WrapPanel`、`UniformGrid`
-- 虚拟化：`VirtualizingStackPanel`、DataGrid 呈现器/面板
+- 虚拟化：`VirtualizingStackPanel`、`VirtualizingWrapPanel`、DataGrid 呈现器/面板
 - 停靠：`DockLayout`、`DockSplitPanel`、`DockTabPanel`、`Split`
 - 窗口级布局宿主、覆盖层、标题栏组合、chrome 集成
 
 ### 控件
 
-- **输入类**：`Button`、`TextBox`、`PasswordBox`、`NumberBox`、`AutoCompleteBox`、`ComboBox`、`Slider`、`CheckBox`、`RadioButton`
-- **数据类**：`TreeView`、`DataGrid`、`TreeDataGrid`、`ListBox`、`ListView`
-- **导航类**：`NavigationView`、`TabControl`、`Ribbon`、`CommandBar`、`MenuBar`
-- **文档类**：`FlowDocumentViewer`、`FlowDocumentReader`、`FlowDocumentScrollViewer`、`Markdown`
-- **图表类**：分类轴、日期时间轴、对数轴，并带图表图例
-- **富功能类**：`InkCanvas`、`WebView`/`WebBrowser`、`EditControl`、`QRCode`（自托管编码器）、`TitleBar`、`Terminal`
+- **输入类**：`Button`、`TextBox`、`PasswordBox`、`NumberBox`、`AutoCompleteBox`、`ComboBox`、`Slider`、`RangeSlider`、`CheckBox`、`RadioButton`、`ToggleSwitch`、`SplitButton`
+- **选取器**：`ColorPicker`、`DatePicker`、`TimePicker`、`Calendar`
+- **数据类**：`TreeView`、`DataGrid`、`TreeDataGrid`、`ListBox`、`ListView`、`PropertyGrid`、`JsonTreeViewer`
+- **导航与栏**：`NavigationView`、`TabControl`、`Ribbon`、`CommandBar`、`MenuBar`、`ToolBar`、`StatusBar`、`GroupBox`、`Expander`、`InfoBar`
+- **文档类**：`DocumentViewer`、`FlowDocumentReader`、`FlowDocumentScrollViewer`、`FlowDocumentPageViewer`、`Markdown`
+- **图表类**：`BarChart`、`LineChart`、`PieChart`、`ScatterPlot`、`CandlestickChart`、`GaugeChart`、`Heatmap`、`GanttChart`、`NetworkGraph`、`SankeyDiagram`、`TreeMap`、`Sparkline`，以及 `FlowchartDiagram` / `MermaidDiagram` —— 分类 / 日期时间 / 对数 / 数值轴，带图例与工具提示
+- **媒体类**：`MediaElement`、`CameraView`
+- **地图类**：`MapView`、`MiniMap`、`GeographicHeatmap`
+- **富功能类**：`InkCanvas`、`WebView`/`WebBrowser`、`EditControl`、`RichTextBox`、`QRCode`（自托管编码器）、`TitleBar`、`Terminal`、`SwipeControl`
+- **开发者工具类**：`DiffViewer`、`HexEditor`
 - **互操作类**：`WindowsFormsHost`（在 `net10.0-windows` 上托管 `System.Windows.Forms` 控件）
 - **打印类**：`PrintDialog`，由原生 Win32 平台层提供支持
 - **通知类**：Toast 风格的通知系统
@@ -123,7 +133,9 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 ### 输入管线
 
 - 带命中测试的指针与键盘路由
-- 带手势识别的触摸与触控笔通路
+- 完整的多点触控操控（平移 / 缩放 / 旋转），带物理惯性
+- `GestureRecognizer`（点按 / 滑动 / 缩放）在整个控件目录中原生接线
+- 实时触控笔（RTS）后台墨迹预览
 - 滚动与操控（manipulation）事件处理
 
 ### GPU 渲染与特效
@@ -133,21 +145,27 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 - 带折射、色散（chromatic aberration）的液态玻璃
 - 过渡着色器与元素特效（模糊、投影）
 - 动画位图：GIF、APNG、动画 WebP
+- 原生 GPU 视频表面（`NativeVideoSurface`）：CPU BGRA8 暂存，以及导入
+  外部 GPU 资源（D3D11 共享纹理 / Vulkan 外部 `VkImage` / Android
+  `AHardwareBuffer` / Apple `IOSurface`）—— API 表面已就位，各后端上传
+  路径正在逐步补齐。
 - 通过 HLSL 支持自定义着色器
 - 用于大型图片网格的位图降采样缓存 + 虚拟化 wrap 面板
 - 在 DevTools 性能选项卡中呈现的统一 path/bitmap 遥测 C ABI
 
 ### 宿主 / DI / 配置
 
-- 自包含的 `Jalium.Extensions.*` 技术栈位于 `Jalium.UI.Controls` 内部
-  （不依赖 `Microsoft.Extensions.Hosting` 包及其 18 个传递依赖中的任何一个）。
-- 涵盖 Hosting（`HostBuilder` / `Host` / `HostApplicationBuilder`）、
-  DependencyInjection（含键控服务 + `ActivatorUtilities`）、
-  Configuration（Json / Xml / Ini / Memory / CommandLine / UserSecrets）、
-  Options（带 `DataAnnotations` 校验）、Logging（含 `LoggerMessage`
-  源生成器）、Metrics、Caching、FileProviders、
-  FileSystemGlobbing、ObjectPool、Primitives。
-- Console 支持系有意未实现。
+- 基于标准的 `Microsoft.Extensions.Hosting` 技术栈（10.0.3）构建。`AppBuilder`
+  实现 `IHostApplicationBuilder`（封装 `HostApplicationBuilder`），因此在应用启动期间
+  可使用熟悉的 `IServiceCollection`、`IConfiguration`、`ILoggingBuilder`、
+  `IHostEnvironment` 与 `Meter` 等接口。
+- Jalium 专属的粘合代码位于 `Jalium.UI.Hosting`：MVVM 视图/视图模型
+  注册（`AddView<TView, TViewModel>`、`AddViewsAndViewModels`）、
+  将 `ConfigureJalium` 选项绑定到 `JaliumRuntimeOptions`、帧时间指标
+  （`UseJaliumMetrics` / `JaliumMeter`），以及按需启用的开发者工具
+  （`UseDevTools` / `UseDebugHud`）。
+- 通过 `EnableConfigurationBindingGenerator` 实现裁剪/AOT 安全的配置绑定；
+  基于反射的视图发现重载均标注了 `[RequiresUnreferencedCode]`。
 
 ### 音频管线
 
@@ -169,12 +187,27 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 - `Window.ResolveCursor` 会为禁用元素返回标准箭头，
   使悬停状态不会与已启用的控件混淆。
 
+### 开发者工具
+
+- 按需启用的 DevTools 窗口（`app.UseDevTools()`，F12 / Ctrl+Shift+C 元素拾取器）：
+  带虚拟化与内联属性编辑的可视化 / 逻辑 / 扁平树检查器，另有 Layout、Events、
+  Bindings、Resources、Perf、UIA、Tools
+  （标尺 / 取色器 / 过度绘制与脏区叠加层 / 截图导出）
+  以及实时 REPL 选项卡。
+- 屏上调试 HUD（`app.UseDebugHud()`，F3）：帧时间、脏区与
+  后端信息。
+- 两者默认均为关闭，因此除非显式启用，否则永远不会随发行版应用一起交付。
+
 ### 标记与工具
 
 - 运行时解析：`Jalium.UI.Markup.XamlReader`
 - 通过打包的 MSBuild 目标/任务进行构建集成
 - 用于编译期 JALXAML 代码隐藏的源生成器
 - 源生成器对 Razor 指令的编译期降级（lowering）—— 见下文。
+- JALXAML 热重载：`HotReloadRuntime` / `HotReloadAgent` 通过命名管道
+  在进程内修补实时可视化树（由 IDE 设置的 `JALIUM_HOTRELOAD_PIPE`
+  环境变量自动启动）；独立的文件监视器位于
+  `tools/Jalium.UI.HotReload.Watcher`。
 
 ## JALXAML 中的 Razor 语法
 
@@ -183,8 +216,11 @@ JALXAML 在现有 `{Binding ...}` 之上支持 Razor 风格语法作为附加语
 - `@Path`
 - `@(expr)`
 - `@{ ... }`
+- `@*...*@` 注释
 - 混合文本模板（用于字符串/对象目标）
 - `@if(expr){<Element />}` 块指令（带完整的 `else if` / `else` 链）
+- 语句 / 控制流指令：`@for`、`@foreach`、`@while`、`@switch`、
+  `@using`、`@lock`（在解析时展开）
 - 用于模板化内容的 `@section`/`@RenderSection`
 - 转义：`@@` 和 `\@`
 
@@ -281,7 +317,7 @@ using Jalium.UI.Markup;
 var app = new Application();
 
 var xaml = """
-<Window xmlns="https://jalium.dev/ui" Title="JALXAML Window" Width="800" Height="500">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="JALXAML Window" Width="800" Height="500">
   <Grid>
     <StackPanel Margin="20">
       <TextBlock Text="Hello from JALXAML" FontSize="24"/>
@@ -336,35 +372,47 @@ Jalium.UI/
   src/
     managed/
       Jalium.UI.Core/          # 依赖属性系统、可视化树、布局
-      Jalium.UI.Media/         # 画笔、几何图形、绘图、文本、图像处理
+      Jalium.UI.Media/         # 画笔、几何图形、绘图、文本、图像处理、视频
       Jalium.UI.Input/         # 输入抽象与路由
       Jalium.UI.Interop/       # 原生桥接与 P/Invoke
       Jalium.UI.Gpu/           # GPU 资源、渲染图、着色器
-      Jalium.UI.Controls/      # 控件、面板、主题、停靠、图表
-      Jalium.UI.Xaml/          # JALXAML 解析器与 Razor 支持
+      Jalium.UI.Controls/      # 控件、面板、主题、停靠、图表、宿主
+      Jalium.UI.Xaml/          # JALXAML 解析器、Razor 支持、热重载
       Jalium.UI.Build/         # 用于 JALXAML 编译的 MSBuild 任务
       Jalium.UI.Xaml.SourceGenerator/  # Roslyn 源生成器
-      Jalium.UI.Compiler/      # 独立的 JALXAML 编译器
+      Jalium.UI.Compiler/      # 独立的 jalxamlc 编译器（可执行文件）
     native/
-      jalium.native.core/      # 原生运行时核心
+      jalium.native.core/      # 原生运行时核心、后端注册表
       jalium.native.d3d12/     # DirectX 12 + Vello GPU 后端
       jalium.native.vulkan/    # Vulkan 后端
       jalium.native.metal/     # Metal 后端（macOS）
       jalium.native.software/  # CPU 软件渲染器
       jalium.native.platform/  # 平台抽象层
-      jalium.native.text/      # FreeType + HarfBuzz 文本引擎
+      jalium.native.text/      # FreeType + HarfBuzz 文本引擎（非 Windows）
       jalium.native.browser/   # WebView2 集成
+      jalium.native.media.core/     # 跨平台媒体 C ABI + 共享音频
+      jalium.native.media.windows/  # Media Foundation 视频 / 摄像头 + WIC
+      jalium.native.media.android/  # Android 媒体解码器 + YUV SIMD
+      jalium.native.aot/       # NativeAOT 聚合器（硬链接 media/text/各后端）
     packaging/
       Jalium.UI/               # 主元包
-      Jalium.UI.Desktop/       # Windows 桌面包
+      Jalium.UI.Desktop/       # Windows 桌面包（win-x64 / win-arm64）
       Jalium.UI.Android/       # Android 包
+  samples/                     # Gallery、DesktopDemo、AndroidDemo、HostingDemo、
+                               #   MillionScroll、AotWindowDemo、BorderlessDemo、
+                               #   TransparentBackdropDemo
+  tools/
+    Jalium.UI.HotReload.Watcher/  # 独立的 JALXAML 热重载文件监视器
   tests/
     Jalium.UI.Tests/           # xUnit 测试套件（70+ 个测试类）
     Jalium.UI.ShaderDemo/      # 着色器特效演示
-  docs/
-    razor-syntax.md            # Razor 语法参考
-    drawing-api.md             # 绘图 API 文档
-    manual-build-configuration.md  # 构建配置指南
+    Jalium.UI.ParityHarness/   # 后端一致性测试台
+    Jalium.UI.DeviceLostHarness/  # 设备丢失恢复测试台
+    Jalium.UI.NuGetTest.Desktop/  # 打包桌面版冒烟测试
+    Jalium.UI.NuGetTest.Android/  # 打包 Android 版冒烟测试
+  docs/                        # razor-syntax、drawing-api、manual-build-configuration、
+                               #   render-thread-design、present-pacing-design、
+                               #   shell-drag-drop（另有 design/ 与 reference/）
 ```
 
 ## 文档
@@ -374,6 +422,9 @@ Jalium.UI/
 | [`docs/razor-syntax.md`](docs/razor-syntax.md) | JALXAML 的 Razor 语法参考 |
 | [`docs/drawing-api.md`](docs/drawing-api.md) | 绘图 API（DrawingContext、GPU 特效、渲染） |
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | 手动构建配置指南 |
+| [`docs/render-thread-design.md`](docs/render-thread-design.md) | 渲染线程架构 |
+| [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | 呈现节奏 / 帧调度 |
+| [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | Shell 拖放集成 |
 
 ## Visual Studio 扩展说明
 

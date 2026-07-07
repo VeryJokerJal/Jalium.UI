@@ -6,11 +6,15 @@ struct PushConstants
     float4 rect;
     float4 color;
     float2 screenSize;
-    float2 padding;
+    // (shadowMode, shadowSigma): analytic erf drop shadow. shadowMode == 0 keeps
+    // every other SolidRect primitive byte-identical (the shadow branch is gated).
+    float2 shadowParams;
     float4 roundedClipRect;
     float2 roundedClipRadius;
     // clipFlags:
     //   .x > 0.5 → outer rounded clip enabled.
+    //   .x > 1.5 → outer clip is INVERSE (PushRoundedRectClipExclude):
+    //              keep 1 - coverage, masking the rect's INTERIOR.
     //   .y > 0.5 → inner rounded clip enabled (border path).
     // Per-corner mode is signalled implicitly by perCornerRadiusX/Y
     // being non-zero (sum > 0). Callers that want uniform radii leave
@@ -139,13 +143,18 @@ float CoverageRoundRect(float2 pixel, float4 rect, float2 radius)
     // Convert back to pixel units. The corner is an ellipse, but we treat
     // it as approximately circular for the gradient by scaling by the
     // smaller radius — slightly conservative for thin elliptical corners
-    // but invisible at typical UI radii.
+    // but invisible at typical UI radii. This matches D3D12's
+    // sdSuperEllipseRect exactly: d * min(halfSize).
     const float radiusScale = min(rx, ry);
     const float pixelDist = signedDist * radiusScale;
-    const float aa = max(fwidth(pixel.x), fwidth(pixel.y));
-    return 1.0f - smoothstep(-max(aa * 0.5f, 0.25f),
-                              max(aa * 0.5f, 0.25f),
-                              pixelDist);
+    // AA width from the DISTANCE FIELD's own screen-space derivative —
+    // exactly D3D12 sdf_rect's `aa = max(fwidth(dist), 0.0001)`. The previous
+    // constant max(fwidth(pixel), 0.5) ramp ignored the min-axis scaling of
+    // pixelDist, so elliptical edges anti-aliased with a direction-dependent
+    // mismatch against D3D12 (widest at the long-axis ends — the residual
+    // ellipse-scene diff after the geometry fixes was exactly this ring).
+    const float aa = max(fwidth(pixelDist), 0.0001f);
+    return 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, pixelDist);
 }
 
 // Per-corner variant — each of the four corners (TL, TR, BR, BL) can carry
@@ -184,8 +193,54 @@ float CoveragePerCornerRoundRect(float2 pixel, float4 rect, float4 rxs, float4 r
     return CoverageRoundRect(pixel, rect, float2(rx, ry));
 }
 
+// erf approximation (Abramowitz & Stegun 7.1.26); max abs error ~1.5e-7 on
+// [-6,6] << 1/255. Ported byte-for-byte from D3D12 sdf_rect.ps.hlsl so the
+// analytic drop-shadow gaussian falloff matches the D3D12 backend exactly.
+float erf_approx(float x)
+{
+    float s  = sign(x);
+    float ax = abs(x);
+    float t  = 1.0f / (1.0f + 0.3275911f * ax);
+    float poly = t * (0.254829592f + t * (-0.284496736f + t * (1.421413741f + t * (-1.453152027f + t * 1.061405429f))));
+    float y  = 1.0f - poly * exp(-ax * ax);
+    return s * y;
+}
+
+// Signed distance to an axis-aligned rounded box (uniform radius), CENTRE-relative.
+// +y is DOWN (screen space). Matches D3D12 sdRoundedBox for the uniform-corner
+// case the drop shadow uses (DrawGlowLayers passed a single averaged radius).
+float sdRoundBoxUniform(float2 p, float2 halfSize, float radius)
+{
+    float rr = min(radius, min(halfSize.x, halfSize.y));
+    float2 q = abs(p) - halfSize + rr;
+    return min(max(q.x, q.y), 0.0f) + length(max(q, 0.0f)) - rr;
+}
+
 float4 main(PsInput input) : SV_Target
 {
+    // Analytic erf drop shadow (shadowParams.x > 0.5): a single over-blend with a
+    // continuous gaussian falloff of the shadow rect's SDF, replacing the N-layer
+    // concentric-rect halo (D3D12 DrawDropShadowEffect parity). The shadow rect +
+    // radius ride in roundedClipRect / roundedClipRadius; the colour (already
+    // premultiplied fillA*opacity on the CPU) is in `color`. This blend pipeline
+    // is NON-premultiplied (SRC_ALPHA / ONE_MINUS_SRC_ALPHA), so scale only alpha
+    // by the erf coverage — the same convention the rest of this shader uses.
+    if (gPushConstants.shadowParams.x > 0.5f) {
+        const float2 rc0 = gPushConstants.roundedClipRect.xy;   // left, top
+        const float2 rc1 = gPushConstants.roundedClipRect.zw;   // right, bottom
+        const float2 halfSize = (rc1 - rc0) * 0.5f;
+        const float2 center   = (rc0 + rc1) * 0.5f;
+        const float2 p = input.position.xy - center;
+        const float radius = max(gPushConstants.roundedClipRadius.x, 0.0f);
+        const float dist = sdRoundBoxUniform(p, halfSize, radius);
+        const float sigma = max(gPushConstants.shadowParams.y, 0.5f);
+        // coverage = 0.5*(1 - erf(dist/(sqrt(2)*sigma)))  (byte-for-byte D3D12).
+        const float cov = 0.5f + 0.5f * erf_approx(-dist / (1.4142135f * sigma));
+        const float outA = input.color.a * cov;
+        if (outA < 1.0f / 255.0f) discard;
+        return float4(input.color.rgb, outA);
+    }
+
     float coverage = 1.0f;
 
     // ---------------------------------------------------------------------
@@ -266,6 +321,12 @@ float4 main(PsInput input) : SV_Target
             coverage = CoverageRoundRect(input.position.xy,
                                          gPushConstants.roundedClipRect,
                                          gPushConstants.roundedClipRadius);
+        }
+        // clipFlags.x == 2 → INVERSE outer clip (an ancestor
+        // PushRoundedRectClipExclude): keep the OUTSIDE of the rect, so the
+        // AA ramp flips with the mask (matches D3D12's inverse rounded clip).
+        if (gPushConstants.clipFlags.x > 1.5f) {
+            coverage = 1.0f - coverage;
         }
         if (coverage <= 0.0f) discard;
     }

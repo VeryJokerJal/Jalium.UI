@@ -36,7 +36,7 @@ if(WIN32)
     target_link_libraries(${PROJECT_NAME} PRIVATE gdi32)
 endif()
 
-# Link cross-platform text engine (FreeType + HarfBuzz)
+# Link cross-platform self-hosted text engine
 if(TARGET jalium.native.text)
     target_link_libraries(${PROJECT_NAME} PRIVATE jalium.native.text)
     target_include_directories(${PROJECT_NAME} PRIVATE

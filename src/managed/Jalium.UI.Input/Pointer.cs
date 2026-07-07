@@ -1,3 +1,5 @@
+using Jalium.UI.Media;
+
 namespace Jalium.UI.Input;
 
 /// <summary>
@@ -152,14 +154,25 @@ public sealed class PointerPoint
     /// <summary>
     /// Gets the position relative to the specified element.
     /// </summary>
+    /// <remarks>
+    /// <see cref="Position"/> is expressed in window/root space (the same space as
+    /// <c>MouseEventArgs.Position</c>). It is mapped into <paramref name="relativeTo"/>'s local space
+    /// by inverting that element's local→root render matrix — transform-aware (it follows a
+    /// <c>Viewbox</c>/zoom scale) and including <c>RenderOffset</c>, mirroring
+    /// <c>MouseEventArgs.GetPosition</c> and <c>TouchDevice.TransformPoint</c>. The earlier
+    /// <c>SourceElement.TransformToVisual(relativeTo).Transform(Position)</c> treated the root-space
+    /// <see cref="Position"/> as SourceElement-local, so it added SourceElement's screen offset
+    /// (and, inside a Viewbox, its scale) — wrong whenever SourceElement was not the root.
+    /// </remarks>
     public Point GetPosition(UIElement? relativeTo)
     {
-        if (relativeTo == null || SourceElement == null || ReferenceEquals(relativeTo, SourceElement))
+        if (relativeTo == null)
         {
             return Position;
         }
-        var transform = SourceElement.TransformToVisual(relativeTo);
-        return transform?.Transform(Position) ?? Position;
+
+        Matrix matrix = relativeTo.GetRenderMatrix();
+        return matrix.TryInvert(out Matrix inverse) ? inverse.Transform(Position) : Position;
     }
 }
 
@@ -336,20 +349,18 @@ public class PointerEventArgs : InputEventArgs
 
         var list = new List<PointerPoint>(StylusPoints.Count);
         UIElement? source = Pointer.SourceElement;
+
+        // StylusPoints are in window/root space (same as Position); build the root→relativeTo-local
+        // inverse ONCE and reuse it per packet — transform-aware, mirroring GetPosition. When
+        // relativeTo is null or its render matrix is singular, the raw points pass through unchanged.
+        Matrix inverse = Matrix.Identity;
+        bool hasInverse = relativeTo != null && relativeTo.GetRenderMatrix().TryInvert(out inverse);
+
         for (int i = 0; i < StylusPoints.Count; i++)
         {
             StylusPoint sp = StylusPoints[i];
             Point raw = new(sp.X, sp.Y);
-            Point position;
-            if (relativeTo == null || source == null || ReferenceEquals(relativeTo, source))
-            {
-                position = raw;
-            }
-            else
-            {
-                var transform = source.TransformToVisual(relativeTo);
-                position = transform?.Transform(raw) ?? raw;
-            }
+            Point position = hasInverse ? inverse.Transform(raw) : raw;
 
             PointerPointProperties props = sp.PressureFactor == Pointer.Properties.Pressure
                 ? Pointer.Properties

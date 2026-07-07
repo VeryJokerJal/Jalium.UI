@@ -188,7 +188,14 @@ public:
         int32_t aaMode = 0,
         int32_t hintingMode = 0,
         float scaleX = 1.0f,
-        float scaleY = 1.0f);
+        float scaleY = 1.0f,
+        // Axis-aligned scale (no rotation/skew) requests the CRISP path: the pen
+        // is floored to the integer pixel grid (baking the sub-pixel phase into
+        // the bitmap the same way identity text does) so the caller can integer-
+        // snap the post-scaled quad and sample it with the POINT PSO for pixel-
+        // exact stems. Rotated/skewed text leaves this false and keeps the
+        // continuous pen + bilinear PSO so it animates without per-glyph jitter.
+        bool crispAxisAligned = false);
 
     /// Uploads any pending glyph data to the GPU atlas texture.
     /// Must be called before rendering text in a frame.
@@ -318,7 +325,8 @@ private:
                                     float dpiScale,
                                     int32_t aaMode,
                                     int32_t hintingMode,
-                                    float scaleX, float scaleY) noexcept;
+                                    float scaleX, float scaleY,
+                                    bool crispAxisAligned) noexcept;
 
     // Simple row-based atlas packer
     uint16_t packX_ = 0;

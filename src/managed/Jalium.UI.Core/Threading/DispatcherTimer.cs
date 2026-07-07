@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Jalium.UI;
 
 namespace Jalium.UI.Threading;
@@ -10,6 +11,8 @@ namespace Jalium.UI.Threading;
 /// the timer piggybacks on <see cref="CompositionTarget.Rendering"/> instead
 /// of creating its own System.Threading.Timer. This eliminates timer
 /// proliferation — all frame-rate timers share a single backing timer.
+/// Piggybacked ticks are throttled to the nominal interval, so the uncapped
+/// (1ms) frame loop cannot amplify e.g. a 16ms timer to full render rate.
 /// </summary>
 public sealed class DispatcherTimer
 {
@@ -19,6 +22,7 @@ public sealed class DispatcherTimer
     private bool _isEnabled;
     private object? _tag;
     private bool _useCompositionTarget; // True when piggybacking on frame timer
+    private long _nextDueTimestamp;     // Stopwatch ticks; piggyback throttle deadline
 
     /// <summary>
     /// Occurs when the timer interval has elapsed.
@@ -196,7 +200,10 @@ public sealed class DispatcherTimer
         {
             // Piggyback on the centralized frame timer.
             // All frame-rate DispatcherTimers share a single System.Threading.Timer.
+            // First tick is due one interval from now, matching the dedicated
+            // timer's "first interval elapses before the first tick" semantics.
             _useCompositionTarget = true;
+            _nextDueTimestamp = Stopwatch.GetTimestamp() + IntervalToStopwatchTicks(_interval);
             CompositionTarget.Rendering += OnCompositionTargetRendering;
             CompositionTarget.Subscribe();
             return;
@@ -232,13 +239,39 @@ public sealed class DispatcherTimer
 
     /// <summary>
     /// Called by CompositionTarget.Rendering on the UI thread.
-    /// Already on UI thread — raise tick directly.
+    /// Already on UI thread — raise tick directly, throttled to the nominal
+    /// interval (the frame loop is uncapped and can run far above 60Hz).
     /// </summary>
     private void OnCompositionTargetRendering(object? sender, EventArgs e)
     {
         if (!_isEnabled) return;
+
+        long now = Stopwatch.GetTimestamp();
+        if (!ShouldFireOnFrame(now, IntervalToStopwatchTicks(_interval), ref _nextDueTimestamp)) return;
+
         RaiseTick();
     }
+
+    /// <summary>
+    /// Piggyback throttle: fires only once <paramref name="now"/> reaches the
+    /// due timestamp, then re-arms one interval from NOW rather than from the
+    /// previous due time, so a starved frame loop never builds up a backlog of
+    /// catch-up ticks. A zero/near-frame interval (≤ the ≥1ms frame period) is
+    /// due on every frame, leaving FrameInterval-based timers unaffected.
+    /// </summary>
+    internal static bool ShouldFireOnFrame(long now, long intervalTicks, ref long nextDueTimestamp)
+    {
+        if (now < nextDueTimestamp)
+        {
+            return false;
+        }
+
+        nextDueTimestamp = now + intervalTicks;
+        return true;
+    }
+
+    private static long IntervalToStopwatchTicks(TimeSpan interval)
+        => (long)(interval.TotalSeconds * Stopwatch.Frequency);
 
     private void OnTimerCallback(object? state)
     {

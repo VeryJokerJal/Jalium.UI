@@ -1,174 +1,118 @@
 #include "glyph_rasterizer.h"
+#include "font_face.h"
 
-#include <ft2build.h>
-#include FT_FREETYPE_H
-#include FT_GLYPH_H
-#include FT_BITMAP_H
-#include FT_LCD_FILTER_H
+#include "jalium_scanline_rasterizer.h"   // RasterizePathToRects, PixelRect, FillRule
 
-#include <cstring>
 #include <algorithm>
+#include <cmath>
 
 namespace jalium {
 
-GlyphRasterizer::GlyphRasterizer(FT_Library ftLib)
-    : ftLibrary_(ftLib)
-#if defined(__ANDROID__)
-    , subpixelMode_(SubpixelMode::None)
-#else
-    , subpixelMode_(SubpixelMode::Horizontal)
-#endif
+GlyphRasterizer::GlyphRasterizer()
+    : subpixelMode_(SubpixelMode::None)   // grayscale on every platform (LCD deferred)
 {
 }
 
 GlyphRasterizer::~GlyphRasterizer() = default;
 
 RasterizedGlyph GlyphRasterizer::Rasterize(
-    FT_Face face,
+    FontFace* face,
     uint32_t glyphIndex,
     float fontSizePx,
     uint8_t subpixelX)
 {
     RasterizedGlyph result{};
+    if (!face || glyphIndex == 0 || fontSizePx <= 0.0f) return result;
 
-    if (!face || glyphIndex == 0)
-        return result;
+    const float upem = static_cast<float>(face->UnitsPerEm());
+    if (upem <= 0.0f) return result;
+    const float scale = fontSizePx / upem;
 
-    // Set character size (FreeType uses 26.6 fixed point, 1/64th of a pixel)
-    FT_Error err = FT_Set_Char_Size(face, 0,
-        static_cast<FT_F26Dot6>(fontSizePx * 64.0f), 72, 72);
-    if (err) return result;
+    // Advance is informational here (layout consumes ShapedGlyph::advanceX); set
+    // it for completeness at the same unhinted linear scale.
+    result.advanceX = face->GetAdvance(static_cast<uint16_t>(glyphIndex)) * scale;
 
-    // Apply sub-pixel offset using FreeType's sub-pixel positioning.
-    // subpixelX is 0..7, representing 0, 0.125, 0.25 ... 0.875 pixel offsets.
-    FT_Vector subpixelOffset{};
-    subpixelOffset.x = static_cast<FT_Pos>(subpixelX * 8); // 26.6 format: 8 = 0.125 pixels
-    subpixelOffset.y = 0;
-    FT_Set_Transform(face, nullptr, &subpixelOffset);
+    // Flatten tolerance in font units so on-screen chord error stays ~0.25 px.
+    float tolFU = 0.25f / scale;
+    if (tolFU < 1.0f) tolFU = 1.0f;
 
-    // Load glyph
-    FT_Int32 loadFlags = FT_LOAD_DEFAULT;
-    if (subpixelMode_ == SubpixelMode::Horizontal)
-        loadFlags |= FT_LOAD_TARGET_LCD;
-    else if (subpixelMode_ == SubpixelMode::Vertical)
-        loadFlags |= FT_LOAD_TARGET_LCD_V;
-
-    err = FT_Load_Glyph(face, glyphIndex, loadFlags);
-    if (err) return result;
-
-    // Render glyph
-    FT_Render_Mode renderMode = FT_RENDER_MODE_NORMAL;
-    if (subpixelMode_ == SubpixelMode::Horizontal)
-        renderMode = FT_RENDER_MODE_LCD;
-    else if (subpixelMode_ == SubpixelMode::Vertical)
-        renderMode = FT_RENDER_MODE_LCD_V;
-
-    err = FT_Render_Glyph(face->glyph, renderMode);
-    if (err) return result;
-
-    FT_Bitmap& bitmap = face->glyph->bitmap;
-
-    // Fill result metrics
-    result.bearingX = face->glyph->bitmap_left;
-    result.bearingY = face->glyph->bitmap_top;
-    result.advanceX = static_cast<float>(face->glyph->advance.x) / 64.0f;
-
-    if (bitmap.width == 0 || bitmap.rows == 0)
-    {
-        // Space character or empty glyph
+    GlyphOutline gl;
+    if (!face->GetGlyphContours(static_cast<uint16_t>(glyphIndex), tolFU, gl) || gl.contours.empty()) {
+        // Whitespace / empty glyph: advance is set, but there is no bitmap.
         result.width = 0;
         result.height = 0;
         return result;
     }
 
-    // Convert FreeType bitmap to RGBA8
-    if (subpixelMode_ == SubpixelMode::Horizontal && bitmap.pixel_mode == FT_PIXEL_MODE_LCD)
-    {
-        // LCD mode: bitmap.width is 3x the actual pixel width (R,G,B sub-pixels)
-        int32_t pixelWidth = static_cast<int32_t>(bitmap.width / 3);
-        int32_t pixelHeight = static_cast<int32_t>(bitmap.rows);
+    // Transform font-unit, y-up contours into device pixels:
+    //   X = x*scale + subpixelX/8    (fractional pen placement)
+    //   Y = -y*scale                 (y-up font -> y-down bitmap; baseline at Y=0)
+    const float subX = static_cast<float>(subpixelX) * 0.125f;
+    float minX = 1e30f, minY = 1e30f, maxX = -1e30f, maxY = -1e30f;
+    for (auto& c : gl.contours) {
+        for (uint32_t i = 0; i < c.VertexCount(); ++i) {
+            float X = c.points[i * 2] * scale + subX;
+            float Y = -c.points[i * 2 + 1] * scale;
+            c.points[i * 2]     = X;
+            c.points[i * 2 + 1] = Y;
+            minX = std::min(minX, X); maxX = std::max(maxX, X);
+            minY = std::min(minY, Y); maxY = std::max(maxY, Y);
+        }
+    }
+    if (!(maxX > minX) || !(maxY > minY)) { result.width = 0; result.height = 0; return result; }
 
-        result.width = pixelWidth;
-        result.height = pixelHeight;
-        result.hasSubpixel = true;
-        result.pixels.resize(pixelWidth * pixelHeight * 4);
+    // Integer bitmap box with 1px padding so analytic-AA edge feathering (which
+    // can spill one pixel past the contour bbox) is never clipped.
+    constexpr int PAD = 1;
+    int x0 = static_cast<int>(std::floor(minX)) - PAD;
+    int y0 = static_cast<int>(std::floor(minY)) - PAD;
+    int x1 = static_cast<int>(std::ceil(maxX)) + PAD;
+    int y1 = static_cast<int>(std::ceil(maxY)) + PAD;
+    // Cap the device box to the atlas bound BEFORE deriving metrics, so bearings,
+    // W/H, the translated contours and the rasterized coverage all agree — an
+    // oversized glyph is clipped consistently, never misplaced (pixels vs UVs).
+    if (x1 - x0 > 4095) x1 = x0 + 4095;
+    if (y1 - y0 > 4095) y1 = y0 + 4095;
+    int W = x1 - x0, H = y1 - y0;
+    if (W <= 0 || H <= 0) { result.width = 0; result.height = 0; return result; }
 
-        for (int32_t y = 0; y < pixelHeight; y++)
-        {
-            const uint8_t* src = bitmap.buffer + y * bitmap.pitch;
-            uint8_t* dst = result.pixels.data() + y * pixelWidth * 4;
+    // FreeType bitmap_left / bitmap_top semantics (consumed by GenerateGlyphQuads:
+    // posX = floor(penX) + offsetX + bearingX; posY = baseline + offsetY - bearingY).
+    result.bearingX = x0;       // device X of bitmap column 0 (signed)
+    result.bearingY = -y0;      // pixels from baseline up to bitmap row 0 (positive up)
+    result.width  = W;
+    result.height = H;
+    result.hasSubpixel = false;
 
-            for (int32_t x = 0; x < pixelWidth; x++)
-            {
-                uint8_t r = src[x * 3 + 0];
-                uint8_t g = src[x * 3 + 1];
-                uint8_t b = src[x * 3 + 2];
-                uint8_t a = std::max({r, g, b}); // Alpha = max coverage
+    // Move contours into 0-based bitmap space.
+    for (auto& c : gl.contours)
+        for (uint32_t i = 0; i < c.VertexCount(); ++i) {
+            c.points[i * 2]     -= static_cast<float>(x0);
+            c.points[i * 2 + 1] -= static_cast<float>(y0);
+        }
 
-                dst[x * 4 + 0] = r;
-                dst[x * 4 + 1] = g;
-                dst[x * 4 + 2] = b;
-                dst[x * 4 + 3] = a;
+    std::vector<PixelRect> rects;
+    RasterizePathToRects(gl.contours, FillRule::NonZero, rects);
+
+    // Composite disjoint coverage rects as premultiplied grayscale (R=G=B=A).
+    result.pixels.assign(static_cast<size_t>(W) * H * 4, 0);
+    for (const auto& r : rects) {
+        int rx0 = r.x, ry0 = r.y, rx1 = r.x + r.w, ry1 = r.y + r.h;
+        if (rx0 < 0) rx0 = 0;
+        if (ry0 < 0) ry0 = 0;
+        if (rx1 > W) rx1 = W;
+        if (ry1 > H) ry1 = H;
+        float a = r.alpha < 0.f ? 0.f : (r.alpha > 1.f ? 1.f : r.alpha);
+        uint8_t v = static_cast<uint8_t>(std::lround(a * 255.0f));
+        if (v == 0) continue;
+        for (int yy = ry0; yy < ry1; ++yy) {
+            uint8_t* px = result.pixels.data() + (static_cast<size_t>(yy) * W + rx0) * 4;
+            for (int xx = rx0; xx < rx1; ++xx) {
+                px[0] = v; px[1] = v; px[2] = v; px[3] = v;
+                px += 4;
             }
         }
     }
-    else if (bitmap.pixel_mode == FT_PIXEL_MODE_GRAY)
-    {
-        // Grayscale mode: single-channel coverage
-        int32_t pixelWidth = static_cast<int32_t>(bitmap.width);
-        int32_t pixelHeight = static_cast<int32_t>(bitmap.rows);
-
-        result.width = pixelWidth;
-        result.height = pixelHeight;
-        result.hasSubpixel = false;
-        result.pixels.resize(pixelWidth * pixelHeight * 4);
-
-        for (int32_t y = 0; y < pixelHeight; y++)
-        {
-            const uint8_t* src = bitmap.buffer + y * bitmap.pitch;
-            uint8_t* dst = result.pixels.data() + y * pixelWidth * 4;
-
-            for (int32_t x = 0; x < pixelWidth; x++)
-            {
-                uint8_t coverage = src[x];
-                dst[x * 4 + 0] = coverage; // R
-                dst[x * 4 + 1] = coverage; // G
-                dst[x * 4 + 2] = coverage; // B
-                dst[x * 4 + 3] = coverage; // A
-            }
-        }
-    }
-    else if (bitmap.pixel_mode == FT_PIXEL_MODE_MONO)
-    {
-        // Monochrome bitmap
-        int32_t pixelWidth = static_cast<int32_t>(bitmap.width);
-        int32_t pixelHeight = static_cast<int32_t>(bitmap.rows);
-
-        result.width = pixelWidth;
-        result.height = pixelHeight;
-        result.hasSubpixel = false;
-        result.pixels.resize(pixelWidth * pixelHeight * 4);
-
-        for (int32_t y = 0; y < pixelHeight; y++)
-        {
-            const uint8_t* src = bitmap.buffer + y * bitmap.pitch;
-            uint8_t* dst = result.pixels.data() + y * pixelWidth * 4;
-
-            for (int32_t x = 0; x < pixelWidth; x++)
-            {
-                uint8_t bit = (src[x >> 3] >> (7 - (x & 7))) & 1;
-                uint8_t val = bit ? 255 : 0;
-                dst[x * 4 + 0] = val;
-                dst[x * 4 + 1] = val;
-                dst[x * 4 + 2] = val;
-                dst[x * 4 + 3] = val;
-            }
-        }
-    }
-
-    // Reset transform
-    FT_Set_Transform(face, nullptr, nullptr);
-
     return result;
 }
 

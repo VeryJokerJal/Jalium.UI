@@ -357,24 +357,13 @@ public partial class Application
         {
             if (PlatformFactory.IsWindows)
             {
-                // Win32 message loop
-                while (true)
-                {
-                    var messageResult = GetMessage(out var msg, nint.Zero, 0, 0);
-                    if (messageResult == 0)
-                    {
-                        exitCode = unchecked((int)msg.wParam);
-                        break;
-                    }
-
-                    if (messageResult < 0)
-                    {
-                        throw new InvalidOperationException("The application message loop failed while retrieving a window message.");
-                    }
-
-                    TranslateMessage(ref msg);
-                    DispatchMessage(ref msg);
-                }
+                // Input-first Win32 pump owned by the dispatcher (see
+                // Dispatcher.RunMainMessageLoop). Unlike the classic GetMessage loop
+                // this replaces, a posted dispatcher wake (WM_DISPATCHER_INVOKE) no
+                // longer outranks hardware input, so continuous rendering/animation
+                // cannot starve mouse/keyboard input. Returns the WM_QUIT exit code.
+                var dispatcher = Dispatcher.MainDispatcher ?? Dispatcher.GetForCurrentThread();
+                exitCode = dispatcher.RunMainMessageLoop();
             }
             else
             {
@@ -608,34 +597,6 @@ public partial class Application
         ProcessSystemDpiAware = 1,
         ProcessPerMonitorDpiAware = 2
     }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MSG
-    {
-        public nint hwnd;
-        public uint message;
-        public nint wParam;
-        public nint lParam;
-        public uint time;
-        public POINT pt;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct POINT
-    {
-        public int x;
-        public int y;
-    }
-
-    [LibraryImport("user32.dll", EntryPoint = "GetMessageW")]
-    private static partial int GetMessage(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool TranslateMessage(ref MSG lpMsg);
-
-    [LibraryImport("user32.dll", EntryPoint = "DispatchMessageW")]
-    private static partial nint DispatchMessage(ref MSG lpMsg);
 
     [LibraryImport("user32.dll")]
     private static partial void PostQuitMessage(int nExitCode);

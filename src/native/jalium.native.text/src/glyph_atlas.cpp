@@ -17,7 +17,7 @@ GlyphAtlas::~GlyphAtlas() = default;
 
 const AtlasGlyphEntry& GlyphAtlas::GetOrInsert(
     GlyphRasterizer& rasterizer,
-    FT_Face face,
+    FontFace* face,
     uint64_t fontId,
     uint16_t glyphIndex,
     uint16_t fontSizePx,

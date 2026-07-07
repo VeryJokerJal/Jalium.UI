@@ -1,19 +1,38 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 using Jalium.UI.Automation;
 
 namespace Jalium.UI.Controls.Automation.Uia;
 
 /// <summary>
-/// UIA provider wrapping an AutomationPeer. Follows WPF's ElementProxy pattern:
-/// implements IRawElementProviderFragmentRoot (which inherits Fragment and Simple).
-/// Inherits StandardOleMarshalObject so COM calls from UIA bypass the RPC channel
-/// and execute directly on the calling thread — this avoids RPC_E_CANTCALLOUT_ININPUTSYNCCALL
-/// during WM_GETOBJECT processing (an input-synchronous SendMessage).
+/// UIA provider wrapping an AutomationPeer, exposed to native UI Automation as a
+/// source-generated COM object (<see cref="GeneratedComClassAttribute"/>). Implements
+/// IRawElementProviderFragmentRoot (which inherits Fragment and Simple), so the
+/// StrategyBasedComWrappers CCW answers QueryInterface for all three IIDs.
 /// </summary>
-[ComVisible(true)]
-internal sealed class AutomationPeerProvider : StandardOleMarshalObject, IRawElementProviderFragmentRoot
+/// <remarks>
+/// <para>
+/// StandardOleMarshalObject is intentionally NOT a base class here: under ComWrappers the
+/// CCW is non-agile by default and exposes no IMarshal, and StandardOleMarshalObject would
+/// be inert. Thread affinity is enforced by <see cref="ProviderOptions.UseComThreading"/> +
+/// the UI thread being an STA (Jalium calls OleInitialize on it) — the same posture WinForms
+/// and WPF use for their AOT UIA providers. Do not add an IMarshal or a free-threaded
+/// marshaler: this provider reads UI-thread-only peer/layout state, so a free-threaded CCW
+/// would let UIA call it concurrently off-thread and race the layout tree.
+/// </para>
+/// <para>
+/// The members below are the COM vtable surface UIA invokes on this provider. They
+/// intentionally do not re-check <see cref="UiaAccessibilityBridge.IsComInteropUnavailable"/>
+/// nor guard their managed→COM returns: (1) they are reachable only after the root provider
+/// was already marshalled to UIA, which proves the runtime can build wrappers; and (2) a
+/// managed exception thrown while UIA calls into this CCW is converted to an HRESULT at the
+/// interop boundary, so it cannot crash the process. Only the outbound calls this framework
+/// initiates (in <see cref="UiaAccessibilityBridge"/>) need the latch + try/catch.
+/// </para>
+/// </remarks>
+[GeneratedComClass]
+internal sealed partial class AutomationPeerProvider : IRawElementProviderFragmentRoot
 {
     private readonly AutomationPeer _peer;
     private readonly nint _hwnd;
@@ -35,8 +54,16 @@ internal sealed class AutomationPeerProvider : StandardOleMarshalObject, IRawEle
     // IRawElementProviderSimple
     // ========================================================================
 
-    public ProviderOptions ProviderOptions =>
-        ProviderOptions.ServerSideProvider | ProviderOptions.UseComThreading;
+    // PreserveSig: return the HRESULT ourselves so a NULL pRetVal (some IME/TSF UIA clients pass
+    // one while the UI thread is in an input-synchronous message) yields E_POINTER instead of a
+    // first-chance NullReferenceException from the generated write-back. See IRawElementProviderSimple.
+    public unsafe int get_ProviderOptions(ProviderOptions* pRetVal)
+    {
+        if (pRetVal == null)
+            return unchecked((int)0x80004003); // E_POINTER
+        *pRetVal = ProviderOptions.ServerSideProvider | ProviderOptions.UseComThreading;
+        return 0; // S_OK
+    }
 
     public object? GetPatternProvider(int patternId)
     {
@@ -49,7 +76,7 @@ internal sealed class AutomationPeerProvider : StandardOleMarshalObject, IRawEle
         return WrapPattern(patternId, pattern);
     }
 
-    public object? GetPropertyValue(int propertyId) => GetPropertyValueCore(propertyId);
+    public UiaVariant GetPropertyValue(int propertyId) => UiaVariant.From(GetPropertyValueCore(propertyId));
 
     private object? GetPropertyValueCore(int propertyId) => propertyId switch
     {
@@ -72,19 +99,21 @@ internal sealed class AutomationPeerProvider : StandardOleMarshalObject, IRawEle
         _ => null,
     };
 
-    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfCOMInteropCannotBeGuaranteed",
-        Justification = "The COM interface IRawElementProviderSimple is required for native UIA interop and is preserved; its vtable members are exercised through this UiaHostProviderFromHwnd P/Invoke so the trimmer cannot remove them. Preservation is pinned by the type entry <type fullname=\"Jalium.UI.Controls.Automation.Uia.IRawElementProviderSimple\" preserve=\"all\" /> in Jalium.UI.Controls/ILLink.Descriptors.xml, as documented on UiaNativeMethods.")]
-    public IRawElementProviderSimple? HostRawElementProvider
+    public IRawElementProviderSimple? get_HostRawElementProvider()
     {
-        get
+        if (_isRoot && _hwnd != nint.Zero)
         {
-            if (_isRoot && _hwnd != nint.Zero)
+            // Ask UIA for the HWND's default host provider, then wrap it as an RCW with the
+            // same marshalling instance the generated stubs use and release our own ref.
+            int hr = UiaNativeMethods.UiaHostProviderFromHwnd(_hwnd, out nint pHost);
+            if (hr >= 0 && pHost != nint.Zero)
             {
-                UiaNativeMethods.UiaHostProviderFromHwnd(_hwnd, out var host);
+                var host = UiaComInterop.ProviderFromPointer(pHost);
+                Marshal.Release(pHost);
                 return host;
             }
-            return null;
         }
+        return null;
     }
 
     // ========================================================================
@@ -121,49 +150,59 @@ internal sealed class AutomationPeerProvider : StandardOleMarshalObject, IRawEle
 
     public int[] GetRuntimeId() => [UiaConstants.AppendRuntimeId, _runtimeId];
 
-    public UiaRect BoundingRectangle
+    public UiaRect get_BoundingRectangle()
     {
-        get
-        {
-            var bounds = _peer.GetBoundingRectangle();
-            if (bounds.IsEmpty) return default;
-
-            if (_peer.Owner is FrameworkElement fe)
-            {
-                var offset = fe.TransformToAncestor(null);
-                var window = FindOwnerWindow(fe);
-                if (window != null)
-                {
-                    double dpi = window.DpiScale;
-                    var pt = new UiaNativeMethods.POINT
-                    {
-                        X = (int)(offset.X * dpi),
-                        Y = (int)(offset.Y * dpi)
-                    };
-                    UiaNativeMethods.ClientToScreen(window.Handle, ref pt);
-                    return new UiaRect { Left = pt.X, Top = pt.Y, Width = bounds.Width * dpi, Height = bounds.Height * dpi };
-                }
-            }
-
-            return new UiaRect { Left = bounds.X, Top = bounds.Y, Width = bounds.Width, Height = bounds.Height };
-        }
+        var bounds = _peer.GetBoundingRectangle();
+        if (bounds.IsEmpty) return default;
+        // The element's own bounds sit at its local origin; map the (0,0,W,H) local rect to screen.
+        return LocalRectToScreen(new Rect(0, 0, bounds.Width, bounds.Height));
     }
 
+    /// <summary>
+    /// Maps a rectangle expressed in the owner element's local coordinate space to physical screen
+    /// pixels. Shared by <see cref="get_BoundingRectangle"/> and the Text pattern's range bounding
+    /// rectangles so both use the identical element→root→screen + DPI transform.
+    /// </summary>
+    internal UiaRect LocalRectToScreen(Rect localBounds)
+    {
+        if (_peer.Owner is FrameworkElement fe)
+        {
+            var offset = fe.TransformToAncestor(null);
+            var window = FindOwnerWindow(fe);
+            if (window != null)
+            {
+                double dpi = window.DpiScale;
+                var pt = new UiaNativeMethods.POINT
+                {
+                    X = (int)((offset.X + localBounds.X) * dpi),
+                    Y = (int)((offset.Y + localBounds.Y) * dpi)
+                };
+                UiaNativeMethods.ClientToScreen(window.Handle, ref pt);
+                return new UiaRect { Left = pt.X, Top = pt.Y, Width = localBounds.Width * dpi, Height = localBounds.Height * dpi };
+            }
+        }
+
+        return new UiaRect { Left = localBounds.X, Top = localBounds.Y, Width = localBounds.Width, Height = localBounds.Height };
+    }
+
+    // MUST stay null. On the wire GetEmbeddedFragmentRoots is SAFEARRAY(VARIANT) (each VARIANT
+    // holding VT_UNKNOWN), NOT the SAFEARRAY(VT_UNKNOWN) that SafeArrayProviderMarshaller builds
+    // (which is correct for ISelectionProvider.GetSelection). Returning a non-null array here
+    // would hand UIA a VT_UNKNOWN SAFEARRAY where it expects VT_VARIANT. Almost all providers
+    // return null (no embedded HWND roots); do not populate this without a SAFEARRAY(VARIANT)
+    // marshaller.
     public IRawElementProviderSimple[]? GetEmbeddedFragmentRoots() => null;
 
     public void SetFocus() => _peer.SetFocus();
 
-    public IRawElementProviderFragmentRoot FragmentRoot
+    public IRawElementProviderFragmentRoot? get_FragmentRoot()
     {
-        get
-        {
-            if (_isRoot) return this;
-            var current = _peer;
-            AutomationPeer? parent;
-            while ((parent = current.GetParent()) != null)
-                current = parent;
-            return UiaAccessibilityBridge.GetOrCreateProvider(current, _hwnd);
-        }
+        if (_isRoot) return this;
+        var current = _peer;
+        AutomationPeer? parent;
+        while ((parent = current.GetParent()) != null)
+            current = parent;
+        return UiaAccessibilityBridge.GetOrCreateProvider(current, _hwnd);
     }
 
     // ========================================================================
@@ -258,7 +297,7 @@ internal sealed class AutomationPeerProvider : StandardOleMarshalObject, IRawEle
         return null;
     }
 
-    private static object? WrapPattern(int patternId, object pattern) => patternId switch
+    private object? WrapPattern(int patternId, object pattern) => patternId switch
     {
         UiaConstants.UIA_InvokePatternId when pattern is IInvokeProvider p => new UiaInvokeProviderWrapper(p),
         UiaConstants.UIA_TogglePatternId when pattern is IToggleProvider p => new UiaToggleProviderWrapper(p),
@@ -269,6 +308,7 @@ internal sealed class AutomationPeerProvider : StandardOleMarshalObject, IRawEle
         UiaConstants.UIA_SelectionItemPatternId when pattern is ISelectionItemProvider p => new UiaSelectionItemProviderWrapper(p),
         UiaConstants.UIA_ScrollPatternId when pattern is IScrollProvider p => new UiaScrollProviderWrapper(p),
         UiaConstants.UIA_ScrollItemPatternId when pattern is IScrollItemProvider p => new UiaScrollItemProviderWrapper(p),
+        UiaConstants.UIA_TextPatternId when pattern is ITextProvider p => new UiaTextProviderWrapper(p, this),
         _ => null,
     };
 

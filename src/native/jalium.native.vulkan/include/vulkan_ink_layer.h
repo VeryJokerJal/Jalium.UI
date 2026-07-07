@@ -260,7 +260,15 @@ public:
     // pointCount × 16 bytes (x, y, pressure, pad). managedConstants is the
     // 80-byte managed BrushConstantsNative; this method fills the trailing
     // ViewportSize/pad to reach the 96-byte cbuffer the shader expects.
-    // extraParams (b1) is optional. Returns 0 on success, non-zero on failure.
+    // extraParams (b1) is optional.
+    //
+    // Returns a JaliumInkDispatchResult (jalium_types.h). Failure classes:
+    //   STALE_CONTEXT — device-lost latch, or the shader's pipeline and this
+    //                   bitmap come from different device generations; the
+    //                   caller must rebuild the whole ink resource chain.
+    //   TRANSIENT     — momentary buffer/command failure; retry the same
+    //                   handles next frame.
+    //   INVALID_ARG / INVALID_STATE — malformed call / missing resources.
     int DispatchBrush(VulkanBrushShader* shader,
                       const void* strokePoints, uint32_t pointCount,
                       const void* managedConstants,
@@ -320,6 +328,13 @@ private:
     VkImageLayout   imageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     uint32_t        width_       = 0;
     uint32_t        height_      = 0;
+    // Bytes reported to bitmap_stats::AddGpuResidentBytes for image_.
+    // Set exactly when CreateResources fully succeeds, subtracted (and
+    // zeroed) by ReleaseResources — pairing through this member keeps the
+    // global counter balanced even when CreateResources fails halfway
+    // (image created but view/framebuffer failed → never accounted →
+    // ReleaseResources subtracts 0).
+    int64_t         gpuResidentBytesAccounted_ = 0;
 
     // Synchronous dispatch scratch.
     VkCommandPool   cmdPool_   = VK_NULL_HANDLE;

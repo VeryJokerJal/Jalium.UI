@@ -12,6 +12,18 @@
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
 
+// Hybrid-graphics dGPU request. On systems where the monitor is driven by the discrete
+// GPU (e.g. desktop with the display plugged into an NVIDIA/AMD dGPU) but Windows
+// defaults apps to the integrated GPU, rendering on the iGPU forces a per-frame
+// cross-adapter copy to the display GPU — which pins the display GPU at ~100% during
+// any hover/animation. These well-known exported symbols ask the NVIDIA Optimus / AMD
+// PowerXpress drivers to run this process on the high-performance dGPU, so it renders on
+// the same adapter that scans out the display (no cross-adapter present).
+extern "C" {
+    __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
+    __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+
 namespace jalium {
 
 namespace {
@@ -336,7 +348,7 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
         return true;
     };
 
-    auto tryCreateDeviceForAdapter = [this](IDXGIAdapter1* adapter) -> bool {
+    auto tryCreateDeviceForAdapter = [this](IDXGIAdapter1* adapter, bool requireDedicatedVram) -> bool {
         if (!adapter) {
             return false;
         }
@@ -354,6 +366,21 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
             isSoftwareAdapter = true; // Microsoft Basic Render Driver without SOFTWARE flag
         }
         if (isSoftwareAdapter) {
+            return false;
+        }
+
+        // Skip virtual / Indirect-Display-Driver adapters (Oray "OrayIddDriver",
+        // GameViewer "Virtual Display Adapter", Parsec, sunshine, etc.). These are
+        // ROOT-enumerated capture/streaming displays with NO real GPU — they report
+        // DedicatedVideoMemory == 0 yet do NOT carry the SOFTWARE flag (their VendorId
+        // is not 0x1414), so the checks above miss them. Monitor-associated selection
+        // (Strategy 1) otherwise picks one whenever the app window sits on that virtual
+        // display, and rendering runs software-slow while the driver pins the GPU on
+        // video encode (observed: present stuck ~7 fps, 100% GPU on ANY adapter).
+        // A real discrete or integrated GPU reports DedicatedVideoMemory > 0. The
+        // requireDedicatedVram gate is relaxed only in a final fallback pass so a
+        // genuine 0-VRAM integrated GPU still works when it is the only real GPU.
+        if (requireDedicatedVram && desc.DedicatedVideoMemory == 0) {
             return false;
         }
 
@@ -396,6 +423,29 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
         OutputDebugStringA("[D3D12Backend] Using forced WARP adapter.\n");
     }
 
+    // Strategy 0.7: prefer a discrete / high-performance GPU. On hybrid systems the
+    // discrete GPU usually drives the primary display, so rendering there avoids a
+    // cross-adapter present — otherwise the app renders on the iGPU and every frame
+    // is copied to the display GPU, pinning THAT GPU at 100% during hover/interaction
+    // (observed here: render on AMD iGPU is cheap, but the display GPU 0x15276 sits at
+    // 100% the whole time you hover). EnumAdapterByGpuPreference(HIGH_PERFORMANCE) can
+    // surface a discrete GPU that plain EnumAdapters1 hides under hybrid graphics.
+    {
+        ComPtr<IDXGIFactory6> factoryHp;
+        if (!device_ && SUCCEEDED(dxgiFactory_.As(&factoryHp))) {
+            for (UINT adapterIndex = 0;; ++adapterIndex) {
+                ComPtr<IDXGIAdapter1> adapter;
+                if (FAILED(factoryHp->EnumAdapterByGpuPreference(
+                        adapterIndex, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter)))) {
+                    break;
+                }
+                if (tryCreateDeviceForAdapter(adapter.Get(), true)) {
+                    break;
+                }
+            }
+        }
+    }
+
     // Strategy 1: Monitor-associated adapter selection.
     // Only used when no explicit GPU preference is set.
     if (!device_ && !hasExplicitPreference) {
@@ -416,7 +466,7 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
                     continue;
                 }
 
-                if (tryCreateDeviceForAdapter(adapter.Get())) {
+                if (tryCreateDeviceForAdapter(adapter.Get(), true)) {
                     break;
                 }
             }
@@ -436,7 +486,7 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
                 break;
             }
 
-            if (tryCreateDeviceForAdapter(adapter.Get())) {
+            if (tryCreateDeviceForAdapter(adapter.Get(), true)) {
                 break;
             }
         }
@@ -451,7 +501,28 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
                 break;
             }
 
-            if (tryCreateDeviceForAdapter(adapter.Get())) {
+            if (tryCreateDeviceForAdapter(adapter.Get(), true)) {
+                break;
+            }
+        }
+    }
+
+    // Strategy 3b: no adapter with dedicated VRAM could be used — relax the
+    // requireDedicatedVram gate so a genuine zero-VRAM integrated GPU (rare, reports
+    // 0 DedicatedVideoMemory) still gets picked. Order by HIGH_PERFORMANCE so a real
+    // (i)GPU is enumerated before any leftover virtual/IDD adapter that also has 0 VRAM.
+    if (!device_ && factory6) {
+        for (UINT adapterIndex = 0;; ++adapterIndex) {
+            ComPtr<IDXGIAdapter1> adapter;
+            HRESULT hrEnum = factory6->EnumAdapterByGpuPreference(
+                adapterIndex,
+                DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                IID_PPV_ARGS(&adapter));
+            if (FAILED(hrEnum)) {
+                break;
+            }
+
+            if (tryCreateDeviceForAdapter(adapter.Get(), false)) {
                 break;
             }
         }
@@ -655,6 +726,13 @@ Bitmap* D3D12Backend::CreateBitmapFromPixels(const uint8_t* pixels, uint32_t wid
                         rowBytes);
         }
     }
+
+    // ABI contract: incoming pixels are STRAIGHT alpha. Premultiply the packed
+    // copy so the premultiplied-blend bitmap PSO renders anti-aliased /
+    // semi-transparent edges correctly (matching the encoded WIC 32bppPBGRA
+    // path in CreateBitmapFromMemory). Managed callers no longer premultiply —
+    // the whole framework now hands us straight pixels regardless of backend.
+    PremultiplyBgraInPlace(packed.data(), static_cast<size_t>(width) * height);
 
     auto bitmap = new D3D12Bitmap(this, width, height);
     bitmap->SetBitmapData(packed.data(), static_cast<uint32_t>(packed.size()));

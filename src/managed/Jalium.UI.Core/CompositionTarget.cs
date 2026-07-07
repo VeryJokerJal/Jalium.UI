@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Jalium.UI.Core.Platform;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI;
 
@@ -22,6 +23,26 @@ public static partial class CompositionTarget
     private static bool _timerRunning;
     private static readonly object _timerLock = new();
     private static volatile bool _inRaiseRendering;
+    // 0/1 latch: a RaiseRendering has been posted to the UI thread but has not
+    // finished yet. The frame timer self-clocks on its own thread (re-armed in
+    // OnFrameTick), so ticks keep coming at the refresh interval even while the
+    // UI thread is busy rendering/presenting; this latch coalesces those ticks
+    // to at most ONE in-flight RaiseRendering so a slow UI thread never piles up
+    // a backlog of catch-up frames.
+    private static int _framePosted;
+    // The frame loop keeps ticking until at least this Environment.TickCount64 even
+    // with NO animation subscriber, so a one-off dirty change (hover, IsSelected,
+    // a property update, a popup fade sample) still gets rendered at the refresh
+    // rate without needing an input event to pump anything. Extended by
+    // RequestFrame() and Subscribe(); once it lapses AND there are no subscribers
+    // the loop PARKS (blocks with ~0 CPU) instead of tearing its thread down.
+    private static long _keepAliveUntilTick;
+    // Grace window kept alive after the last frame request / subscriber leave. Long
+    // enough to bridge a subscriber that briefly drops to zero (the popup fade /
+    // spring "settle then re-arm" churn that used to stop+start the whole timer
+    // thread ~1x/second), short enough that a single hover repaint costs only a
+    // few idle ticks before the loop parks again.
+    private const int KeepAliveMs = 250;
     private static bool _highResolutionTimerRequested;
 
     // High-resolution waitable timer (Windows 10 1803+).
@@ -67,8 +88,8 @@ public static partial class CompositionTarget
 
     /// <summary>
     /// Gets whether we are currently inside the Rendering event invocation.
-    /// During this phase, animation handlers' InvalidateVisual calls are allowed
-    /// to schedule a render. Outside this phase (between frames), they are blocked.
+    /// Purely informational: the old behavior of blocking InvalidateWindow
+    /// between frames was removed, so scheduling no longer consults this flag.
     /// </summary>
     internal static bool IsInRenderingPhase => _inRaiseRendering;
 
@@ -84,12 +105,24 @@ public static partial class CompositionTarget
     public static int TargetFrameRate => _refreshRate;
 
     /// <summary>
-    /// Gets the frame interval in milliseconds for the animation frame loop.
-    /// Uncapped (1ms): the actual FPS is limited only by rendering speed and
-    /// message pump overhead. On fast dGPU: hundreds of FPS. On iGPU: natural
-    /// throttle to achievable rate. Like a game engine render loop.
+    /// Gets the frame interval in milliseconds for the animation frame loop, capped
+    /// to the display refresh rate.
+    /// <para>
+    /// This USED to be a hardcoded 1 ms ("uncapped, naturally throttled by rendering
+    /// speed, like a game engine render loop"). That self-throttling relied on
+    /// RenderFrame BLOCKING on vsync/present. Once external present pacing made
+    /// RenderFrame non-blocking (present offloaded to a thread-pool credit wait), the
+    /// 1 ms one-shot loop lost its only brake and free-spun at ~1000 Hz — even a single
+    /// active animation then fired RaiseRendering ~590×/s, flooding the dispatcher
+    /// (~2300 ProcessQueue/s) and starving input (measured: mouse-hover feedback delayed
+    /// ~1 s) while the display only presented a handful of frames per second.
+    /// </para>
+    /// <para>
+    /// Animating faster than the display can show is pure waste, so cap the loop to the
+    /// refresh interval (e.g. 60 Hz → 16 ms, 165 Hz → 6 ms; 60 Hz fallback when unknown).
+    /// </para>
     /// </summary>
-    public static int FrameIntervalMs => 1;
+    public static int FrameIntervalMs => _refreshRate > 0 ? Math.Max(1, 1000 / _refreshRate) : 16;
 
     /// <summary>
     /// Gets the frame interval as a TimeSpan.
@@ -107,6 +140,9 @@ public static partial class CompositionTarget
         {
             _subscriberCount++;
             UpdateTimerState();
+            // Un-park the loop so this subscriber's first tick lands immediately
+            // rather than after the parked wait's timeout.
+            WakeLoopLocked();
         }
     }
 
@@ -164,16 +200,75 @@ public static partial class CompositionTarget
     }
 
     /// <summary>
-    /// Decides whether the timer should be running and starts/stops it to
-    /// match. Caller must hold <see cref="_timerLock"/>.
+    /// Asks the central frame loop to run for at least the next keep-alive window,
+    /// waking it immediately if it was parked. This is the "render whenever content
+    /// is dirty, with NO input needed" entry point: <c>Window.InvalidateWindow</c>
+    /// calls it so a hover / property change / popup-fade sample repaints on the
+    /// self-driven vsync loop instead of waiting for a mouse event to pump the
+    /// dispatcher. Cheap and lock-free on the hot path (only pokes the loop on the
+    /// parked→active edge); safe to call from any thread.
+    /// </summary>
+    public static void RequestFrame()
+    {
+        long now = Environment.TickCount64;
+        long previousDeadline = Interlocked.Exchange(ref _keepAliveUntilTick, now + KeepAliveMs);
+        // Un-park the loop only on the idle→active edge (keep-alive had lapsed and no
+        // animation subscriber is already driving ticks). During a continuous hover the
+        // loop is already ticking (ShouldTick honours the keep-alive window), so we just
+        // extended the deadline lock-free.
+        if (now >= previousDeadline && Volatile.Read(ref _subscriberCount) == 0)
+        {
+            lock (_timerLock) { WakeLoopLocked(); }
+        }
+    }
+
+    /// <summary>
+    /// True when the frame loop should actively tick this instant: an animation
+    /// subscriber is registered, OR a frame was requested within the keep-alive
+    /// window. When false the loop parks (blocks with ~0 CPU) until woken.
+    /// </summary>
+    private static bool ShouldTick() =>
+        Volatile.Read(ref _subscriberCount) > 0 ||
+        Environment.TickCount64 < Interlocked.Read(ref _keepAliveUntilTick);
+
+    /// <summary>
+    /// Signals the timer object so a parked loop iteration returns at once and
+    /// re-evaluates <see cref="ShouldTick"/>. Caller must hold <see cref="_timerLock"/>
+    /// (so it cannot race the handle close in <see cref="StopTimer"/>).
+    /// </summary>
+    private static void WakeLoopLocked()
+    {
+        if (_hrtHandle != nint.Zero)
+        {
+            long immediate = -1;
+            SetWaitableTimerEx(_hrtHandle, in immediate, 0, nint.Zero, nint.Zero, nint.Zero, 0);
+        }
+        else
+        {
+            _nativeTimer?.Arm(1);
+        }
+        // The pre-1803 fallback System.Threading.Timer fires periodically on its own
+        // (OnFrameTick early-outs via ShouldTick when parked), so it needs no poke.
+    }
+
+    /// <summary>
+    /// Decides whether the timer THREAD should exist and starts/stops it to match.
+    /// The thread lives whenever a renderable window exists; whether it actively
+    /// ticks or parks is decided per-iteration by <see cref="ShouldTick"/>. Tying
+    /// the thread's lifetime to the window (not to the subscriber count) is what
+    /// stops the ~1x/second stop+start thrash when a sole animation subscriber
+    /// briefly drops to zero. Caller must hold <see cref="_timerLock"/>.
     /// </summary>
     private static void UpdateTimerState()
     {
-        bool shouldRun = _subscriberCount > 0 && _renderableWindowCount > 0;
+        bool shouldRun = _renderableWindowCount > 0;
         if (shouldRun == _timerRunning) return;
 
         if (shouldRun)
         {
+            // Clear any stale in-flight latch from a previous run so the first
+            // tick of this run is guaranteed to post a RaiseRendering.
+            Volatile.Write(ref _framePosted, 0);
             StartTimer();
             _timerRunning = true;
         }
@@ -246,7 +341,7 @@ public static partial class CompositionTarget
 
         // Fallback: timeBeginPeriod + System.Threading.Timer (pre-1803 or failure).
         RequestHighResolutionTimer();
-        _frameTimer = new Timer(OnFrameTick, null, FrameIntervalMs, Timeout.Infinite);
+        _frameTimer = new Timer(OnFrameTick, null, FrameIntervalMs, FrameIntervalMs); // periodic: self-clocks
     }
 
     private static void StartTimerNative()
@@ -269,7 +364,7 @@ public static partial class CompositionTarget
             // Fallback to System.Threading.Timer
             _nativeTimer?.Dispose();
             _nativeTimer = null;
-            _frameTimer = new Timer(OnFrameTick, null, FrameIntervalMs, Timeout.Infinite);
+            _frameTimer = new Timer(OnFrameTick, null, FrameIntervalMs, FrameIntervalMs); // periodic: self-clocks
         }
     }
 
@@ -280,9 +375,19 @@ public static partial class CompositionTarget
         {
             _nativeTimerRunning = false;
             _nativeTimer.Arm(1); // Arm with tiny value to unblock wait
-            _nativeTimerThread?.Join(500);
+            // The loop RE-ARMS this timer lock-free at the top of each iteration, so
+            // Dispose() must not run while the loop thread might still touch it. Only
+            // dispose once the thread has actually exited; on the (practically
+            // impossible) Join timeout, leak the native timer rather than free it
+            // under an active writer (use-after-free). _hrtRunning/_nativeTimerRunning
+            // are volatile and the wait has a 1 s backstop, so the thread exits
+            // promptly and the Join normally returns at once.
+            bool exited = _nativeTimerThread == null || _nativeTimerThread.Join(500);
             _nativeTimerThread = null;
-            _nativeTimer.Dispose();
+            if (exited)
+            {
+                _nativeTimer.Dispose();
+            }
             _nativeTimer = null;
         }
 
@@ -293,9 +398,15 @@ public static partial class CompositionTarget
             // Signal timer immediately to unblock the wait thread.
             long immediate = -1;
             SetWaitableTimerEx(_hrtHandle, in immediate, 0, nint.Zero, nint.Zero, nint.Zero, 0);
-            _hrtThread?.Join(500);
+            // Same rule as the native path: the loop re-arms _hrtHandle lock-free, so
+            // CloseHandle only after the thread has exited; leak the handle on the
+            // impossible timeout rather than close it under an active writer.
+            bool exited = _hrtThread == null || _hrtThread.Join(500);
             _hrtThread = null;
-            CloseHandle(_hrtHandle);
+            if (exited)
+            {
+                CloseHandle(_hrtHandle);
+            }
             _hrtHandle = nint.Zero;
         }
         else if (_frameTimer != null)
@@ -308,19 +419,38 @@ public static partial class CompositionTarget
 
     /// <summary>
     /// Background thread loop for the high-resolution waitable timer path (Windows).
-    /// Waits for the timer to fire (one-shot), then dispatches OnFrameTick.
-    /// The timer is re-armed by <see cref="RearmTimer"/> after rendering completes,
-    /// preserving the one-shot guarantee: at most one RaiseRendering in-flight.
+    /// Persistent: it lives for as long as a renderable window exists and PARKS (blocks)
+    /// while there is no work, instead of being torn down and recreated every time the
+    /// sole animation subscriber briefly drops to zero (which used to stop+start this
+    /// thread ~1x/second and starve the popup fade / hover repaint). When active it
+    /// self-clocks by re-arming the one-shot each iteration — decoupled from UI-thread /
+    /// present latency. This thread owns <c>_hrtHandle</c> for its whole lifetime and
+    /// <see cref="StopTimer"/> Join()s it BEFORE CloseHandle, so the handle is always
+    /// valid here and no lock is taken in the hot path (avoiding a deadlock against
+    /// StopTimer's Join under _timerLock).
     /// </summary>
     private static void HighResTimerLoop()
     {
         while (_hrtRunning)
         {
-            uint result = WaitForSingleObject(_hrtHandle, 1000);
-            if (!_hrtRunning) break;
-            if (result == 0) // WAIT_OBJECT_0
+            if (ShouldTick())
             {
+                // Active: re-arm the next one-shot (negative = relative, 100ns units)
+                // and wait for it to fire (~one refresh interval), then dispatch.
+                long dueTime = -10_000L * FrameIntervalMs;
+                SetWaitableTimerEx(_hrtHandle, in dueTime, 0, nint.Zero, nint.Zero, nint.Zero, 0);
+                WaitForSingleObject(_hrtHandle, 1000);
+                if (!_hrtRunning) break;
                 OnFrameTick(null);
+            }
+            else
+            {
+                // Parked: nothing to render. Block on the handle — woken at once by
+                // WakeLoopLocked's immediate SetWaitableTimerEx (Subscribe / RequestFrame),
+                // or re-check after 1 s. An idle window costs ~0 CPU and this thread is
+                // NOT destroyed, so a subscribe/dirty burst never pays thread teardown.
+                WaitForSingleObject(_hrtHandle, 1000);
+                if (!_hrtRunning) break;
             }
         }
     }
@@ -332,98 +462,143 @@ public static partial class CompositionTarget
     {
         while (_nativeTimerRunning)
         {
-            bool fired = _nativeTimer?.Wait(1000) ?? false;
-            if (!_nativeTimerRunning) break;
-            if (fired)
+            if (ShouldTick())
             {
-                OnFrameTick(null);
+                // Active: re-arm on THIS thread before waiting, decoupled from the
+                // UI-thread render round trip (see HighResTimerLoop for rationale).
+                _nativeTimer?.Arm(FrameIntervalMs * 1000L); // microseconds
+                bool fired = _nativeTimer?.Wait(1000) ?? false;
+                if (!_nativeTimerRunning) break;
+                if (fired)
+                {
+                    OnFrameTick(null);
+                }
+            }
+            else
+            {
+                // Parked: arm a long interval; woken early by WakeLoopLocked's Arm(1).
+                _nativeTimer?.Arm(1_000_000L); // ~1 s in microseconds
+                _nativeTimer?.Wait(2000);
+                if (!_nativeTimerRunning) break;
             }
         }
     }
 
     private static void OnFrameTick(object? state)
     {
-        // Skip rendering while suspended (e.g., Android app paused).
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.TICK);
+        Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_TIMER_RUNNING, _timerRunning ? 1 : 0);
+        Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_SUBS, _subscriberCount);
+
+        // Skip dispatching while suspended (e.g. Android app paused). The owning
+        // timer loop keeps clocking, so rendering resumes immediately when
+        // ResumeRendering clears the flag.
         if (_suspended)
         {
-            RearmTimer();
             return;
         }
 
-        // One-shot: this callback fires exactly once. No guard needed.
-        // Marshal to UI thread with one posted message per frame.
+        // Nothing to drive this frame (no subscriber and the keep-alive window has
+        // lapsed). Covers the pre-1803 periodic fallback Timer, which fires every
+        // interval regardless, and a keep-alive that expired during the wait.
+        if (!ShouldTick())
+        {
+            return;
+        }
+
+        // Marshal this frame to the UI thread. The frame clock self-runs on the
+        // owning timer loop (HighResTimerLoop / NativeTimerLoop / periodic Timer),
+        // decoupled from how long RaiseRendering / rendering / present take on the
+        // UI thread. The old code re-armed the NEXT frame only AFTER RaiseRendering
+        // had round-tripped through the UI dispatcher; once present pacing made
+        // RenderFrame non-blocking, that round trip stretched out and the whole
+        // animation frame loop collapsed to the 1000 ms WaitForSingleObject
+        // fallback (~1 tick/s) whenever the UI thread was busy or idle — so
+        // on-screen animations (popup fade-in, spring physics, etc.) crawled or
+        // froze until mouse input happened to pump the loop.
+        //
+        // Coalesce to at most ONE RaiseRendering in flight: if the UI thread has
+        // not finished the previous frame, drop this tick instead of stacking a
+        // backlog of catch-up frames.
+        if (Interlocked.CompareExchange(ref _framePosted, 1, 0) != 0)
+        {
+            return;
+        }
+
         var dispatcher = Dispatcher.MainDispatcher;
         if (dispatcher != null)
         {
             try
             {
-                dispatcher.BeginInvoke(RaiseRendering);
+                var op = dispatcher.BeginInvoke(RaiseRendering);
+                // If the op is aborted synchronously (dispatcher shutting down),
+                // its action never runs, so RaiseRendering's finally never clears
+                // the latch — release it here, otherwise the self-clocking loop
+                // would keep ticking but never post another frame.
+                if (op.Status == DispatcherOperationStatus.Aborted)
+                {
+                    Volatile.Write(ref _framePosted, 0);
+                }
                 return;
             }
             catch
             {
-                // Fall through to direct re-arm. We'll retry on the next tick.
+                // Dispatcher unavailable (shutdown race): release the latch so a
+                // later tick can retry.
+                Volatile.Write(ref _framePosted, 0);
+                return;
             }
         }
 
-        RearmTimer();
+        // No dispatcher yet: release the latch and try again next tick.
+        Volatile.Write(ref _framePosted, 0);
     }
 
     private static void RaiseRendering()
     {
-        // Fire FrameStarting BEFORE Rendering. Window uses this to schedule
-        // a render for dirty elements that accumulated between frames.
-        InvokeFrameStartingHandlers();
-
-        // Mark that we're inside Rendering event invocation.
-        // During this phase, InvalidateWindow() is allowed to schedule a render.
-        // Outside this phase (between frames), it's blocked when IsActive=true,
-        // preventing mouse/interaction from triggering extra renders on iGPU.
-        _inRaiseRendering = true;
+        Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.RAISE);
         try
         {
-            InvokeRenderingHandlers();
-        }
-        finally
-        {
-            _inRaiseRendering = false;
-        }
+            // Fire FrameStarting BEFORE Rendering. Window uses this to schedule
+            // a render for dirty elements that accumulated between frames.
+            InvokeFrameStartingHandlers();
 
-        // Safety net: if all Rendering subscribers have been removed but the
-        // subscriber count leaked (e.g. Subscribe without matching Unsubscribe),
-        // stop the timer to prevent an empty frame loop burning CPU/GPU.
-        var handlers = Rendering;
-        if (handlers == null || handlers.GetInvocationList().Length == 0)
-        {
-            lock (_timerLock)
+            // Mark that we're inside Rendering event invocation.
+            _inRaiseRendering = true;
+            try
             {
-                if (_subscriberCount > 0)
+                InvokeRenderingHandlers();
+            }
+            finally
+            {
+                _inRaiseRendering = false;
+            }
+
+            // Safety net: if all Rendering subscribers have been removed but the
+            // subscriber count leaked (e.g. Subscribe without matching Unsubscribe),
+            // stop the timer to prevent an empty frame loop burning CPU/GPU.
+            // UpdateTimerState -> StopTimer sets _hrtRunning / _nativeTimerRunning
+            // false, so the self-clocking loop exits on its next iteration.
+            var handlers = Rendering;
+            if (handlers == null || handlers.GetInvocationList().Length == 0)
+            {
+                lock (_timerLock)
                 {
-                    _subscriberCount = 0;
-                    UpdateTimerState();
-                    return; // Don't re-arm — timer is stopped.
+                    if (_subscriberCount > 0)
+                    {
+                        _subscriberCount = 0;
+                        UpdateTimerState();
+                    }
                 }
             }
         }
-
-        // Defer re-arm via BeginInvoke so it runs AFTER ProcessRender completes.
-        // ProcessQueue order: [RaiseRendering] -> [ProcessRender -> RenderFrame] -> [RearmTimer]
-        // This guarantees the next timer fires after rendering finishes.
-        var dispatcher = Dispatcher.MainDispatcher;
-        if (dispatcher != null)
+        finally
         {
-            try
-            {
-                dispatcher.BeginInvoke(RearmTimer);
-                return;
-            }
-            catch
-            {
-                // Fall through to direct re-arm.
-            }
+            // Release the in-flight latch so the next timer tick may post a fresh
+            // frame. Re-arm is NOT done here anymore — the timer self-clocks on its
+            // own thread (see OnFrameTick), decoupled from this UI-thread round trip.
+            Volatile.Write(ref _framePosted, 0);
         }
-
-        RearmTimer();
     }
 
     private static void InvokeFrameStartingHandlers()
@@ -464,32 +639,6 @@ public static partial class CompositionTarget
             catch
             {
                 // Keep the frame loop alive even if one subscriber fails.
-            }
-        }
-    }
-
-    private static void RearmTimer()
-    {
-        lock (_timerLock)
-        {
-            // Skip re-arm if the timer was paused (no subscribers, or no
-            // renderable window remains). Without this, a tick that was
-            // already in flight when we decided to stop would keep the
-            // hardware timer ticking after StopTimer() returned.
-            if (!_timerRunning) return;
-
-            if (_nativeTimer != null)
-            {
-                _nativeTimer.Arm(FrameIntervalMs * 1000L); // microseconds
-            }
-            else if (_hrtHandle != nint.Zero)
-            {
-                long dueTime = -10_000L * FrameIntervalMs;
-                SetWaitableTimerEx(_hrtHandle, in dueTime, 0, nint.Zero, nint.Zero, nint.Zero, 0);
-            }
-            else if (_frameTimer != null)
-            {
-                _frameTimer.Change(FrameIntervalMs, Timeout.Infinite);
             }
         }
     }

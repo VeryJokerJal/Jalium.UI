@@ -47,7 +47,10 @@ public:
     // the bytes are uploaded into cbuffer b1 (rounded up to the 256-byte
     // CBV alignment). Pass nullptr / 0 to leave b1 unbound.
     //
-    // Returns 0 on success, non-zero on upload / dispatch failure.
+    // Returns a JaliumInkDispatchResult (jalium_types.h). D3D12 never
+    // reports STALE_CONTEXT — upload/pipeline failures here are momentary
+    // (TRANSIENT: retry the same handles next frame) and true device
+    // removal is recovered out-of-band by full RenderContext replacement.
     int DispatchBrush(
         D3D12BrushShader*               shader,
         const void*                     strokePoints,

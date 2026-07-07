@@ -68,6 +68,26 @@ public:
     void SetScissorRect(float left, float top, float right, float bottom) override;
     void ClearScissorRect() override;
 
+    // Per-batch rounded-clip mirror — identical contract to
+    // ImpellerVulkanEngine::SetRoundedClip (already-resolved physical px;
+    // snapshotted into each batch by PushBatch). Only the CPU-tessellation
+    // batch path consumes it; compute mode feeds sceneEncoder_ instead.
+    void SetRoundedClip(const float rect[4], const float radii[4]) {
+        hasRoundedClip_ = true;
+        for (int i = 0; i < 4; ++i) {
+            roundedClipRect_[i] = rect[i];
+            roundedClipRadii_[i] = radii[i];
+        }
+    }
+    void ClearRoundedClip() { hasRoundedClip_ = false; }
+
+    // E4: path-MSAA analytic-only mode (Vulkan analogue of D3D12
+    // pathAnalyticOnly_). Parallels ImpellerVulkanEngine::SetPathAnalyticOnly —
+    // when on, the CPU-tessellation batch path routes solid fills/strokes to the
+    // scanline analytic-AA rasterizer instead of GPU stencil-then-cover. The
+    // render target downcasts and calls this; not part of IRenderingEngine.
+    void SetPathAnalyticOnly(bool analyticOnly) { pathAnalyticOnly_ = analyticOnly; }
+
     bool EncodeFillPath(
         float startX, float startY,
         const float* commands, uint32_t commandLength,
@@ -140,6 +160,13 @@ public:
             batch.scissorR = scissorRight_;
             batch.scissorB = scissorBottom_;
         }
+        batch.hasRoundedClip = hasRoundedClip_;
+        if (hasRoundedClip_) {
+            for (int i = 0; i < 4; ++i) {
+                batch.roundedClipRect[i] = roundedClipRect_[i];
+                batch.roundedClipCornerRadii[i] = roundedClipRadii_[i];
+            }
+        }
         ComputeBatchCoverage(batch);
 
         if (VkBatchMergeEnabled()
@@ -153,7 +180,19 @@ public:
                   last.scissorT == batch.scissorT &&
                   last.scissorR == batch.scissorR &&
                   last.scissorB == batch.scissorB));
-            if (last.pipelineType == 0 && last.stencilContours.empty() && scissorEq) {
+            // Never merge across differing rounded clips — the clip rides in
+            // per-draw push constants (see ImpellerVulkanEngine::PushBatch).
+            const bool roundedClipEq = (last.hasRoundedClip == batch.hasRoundedClip) &&
+                (!batch.hasRoundedClip ||
+                 (last.roundedClipRect[0] == batch.roundedClipRect[0] &&
+                  last.roundedClipRect[1] == batch.roundedClipRect[1] &&
+                  last.roundedClipRect[2] == batch.roundedClipRect[2] &&
+                  last.roundedClipRect[3] == batch.roundedClipRect[3] &&
+                  last.roundedClipCornerRadii[0] == batch.roundedClipCornerRadii[0] &&
+                  last.roundedClipCornerRadii[1] == batch.roundedClipCornerRadii[1] &&
+                  last.roundedClipCornerRadii[2] == batch.roundedClipCornerRadii[2] &&
+                  last.roundedClipCornerRadii[3] == batch.roundedClipCornerRadii[3]));
+            if (last.pipelineType == 0 && last.stencilContours.empty() && scissorEq && roundedClipEq) {
                 const uint32_t baseVertex = (uint32_t)last.vertices.size();
                 const size_t oldIndexCount = last.indices.size();
 
@@ -254,6 +293,12 @@ private:
     float scissorLeft_ = 0, scissorTop_ = 0, scissorRight_ = 0, scissorBottom_ = 0;
     bool hasScissor_ = false;
 
+    // Live rounded-clip mirror (SetRoundedClip / ClearRoundedClip), snapshotted
+    // into each batch by PushBatch — parallel to the scissor fields above.
+    bool hasRoundedClip_ = false;
+    float roundedClipRect_[4] = { 0, 0, 0, 0 };
+    float roundedClipRadii_[4] = { 0, 0, 0, 0 };
+
     std::vector<float> flatPoints_;
 
     std::vector<VkVelloDrawBatch> batches_;
@@ -283,6 +328,12 @@ private:
     void StrokeCacheInsert(uint64_t key, std::shared_ptr<const CachedStrokeRects> entry);
 
     float flattenTolerance_ = 0.25f;
+
+    // E4: analytic-only override (see SetPathAnalyticOnly). UseStencilPath()
+    // gates the CPU-tessellation stencil-vs-scanline branches on both the
+    // process-wide flag and this per-target override.
+    bool pathAnalyticOnly_ = false;
+    bool UseStencilPath() const { return VkStencilPathEnabled() && !pathAnalyticOnly_; }
 
     TrigCache trigCache_;
 

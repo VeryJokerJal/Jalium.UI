@@ -746,10 +746,22 @@ public partial class WebView : FrameworkElement, IDisposable
         if (_compositionVisualOwner == null || _compositionRootVisualHandle == nint.Zero)
             return;
 
-        _compositionVisualOwner.SetWebViewCompositionVisualPlacement(
-            _compositionRootVisualHandle,
-            hostRect,
-            new PixelPoint(controllerBounds.X, controllerBounds.Y));
+        try
+        {
+            _compositionVisualOwner.SetWebViewCompositionVisualPlacement(
+                _compositionRootVisualHandle,
+                hostRect,
+                new PixelPoint(controllerBounds.X, controllerBounds.Y));
+        }
+        catch (RenderPipelineException)
+        {
+            // A DComp Commit can fail transiently when the GPU is switched or the
+            // driver restarts (device lost). This placement update is best-effort
+            // and runs on every layout / scroll / size / timer tick, so it must not
+            // surface the failure into those callers. Swallow it and let the
+            // authoritative EndDraw-driven recovery rebuild the render target; the
+            // next UpdateHostWindowPosition then re-applies the placement.
+        }
     }
 
     private bool IsAttachedToParentWindow()

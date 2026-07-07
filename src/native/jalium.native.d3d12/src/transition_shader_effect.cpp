@@ -1,3 +1,15 @@
+// ============================================================================
+// DEAD CODE — D2D1 legacy, referenced nowhere in the build.
+// TransitionShaderEffect::Register / CreateEffect have no callers anywhere in
+// the repository. The LIVE D3D12 transition implementation is:
+//   * shaders/transition_quad.ps.hlsl                (10-mode PS, Vulkan-parity port)
+//   * D3D12DirectRenderer::DrawTransitionShaderQuad  (src/d3d12_direct_renderer.cpp)
+//   * D3D12RenderTarget::DrawTransitionShader        (src/d3d12_render_target.cpp)
+// The authoritative mode semantics live in the Vulkan reference shader
+// jalium.native.vulkan/shaders/transition_quad.frag.hlsl. This file is kept
+// only until the next dead-code sweep (deleting it touches the build
+// scripts); do not extend it.
+// ============================================================================
 #include <initguid.h>
 #include "transition_shader_effect.h"
 #include <algorithm>

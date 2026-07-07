@@ -201,32 +201,97 @@ internal sealed class DevToolsOverlay
     }
 
     /// <summary>
-    /// Calculates the element's bounds relative to the window.
+    /// Returns the highlighted element's true on-screen bounds in window (DIP)
+    /// coordinates — the axis-aligned box the user actually sees.
+    ///
+    /// The old implementation summed raw <see cref="FrameworkElement.VisualBounds"/>
+    /// offsets and returned the element's UNSCALED layout size
+    /// (<c>ActualWidth × ActualHeight</c>), ignoring every ancestor
+    /// <see cref="UIElement.RenderTransform"/>. That is wrong for any element inside a
+    /// scaled subtree — most visibly a <see cref="Viewbox"/>, whose inner wrapper
+    /// carries a ScaleTransform: the child keeps its natural size while rendering
+    /// larger on screen, so the highlight box was drawn too small / mis-placed and the
+    /// size label read e.g. "41 × 23" for text that is visibly bigger (the "text size
+    /// not computing the real size" symptom).
+    ///
+    /// We now delegate to <see cref="UIElement.GetRenderBounds"/>, the framework's
+    /// authoritative local→window mapping: it composes the full ancestor + own
+    /// RenderTransform chain (each about its origin) AND per-element RenderOffset —
+    /// the exact matrix the renderer and the dirty-region pipeline use (pinned by
+    /// RenderBoundsTransformTests) — so the box tracks scaled subtrees (Viewbox /
+    /// zoom) and render-time offsets (e.g. DataGrid frozen columns) alike. With no
+    /// transform on the chain it reduces to the element's window-space layout box,
+    /// identical to the previous behaviour.
     /// </summary>
     private Rect? GetElementBoundsInWindow(FrameworkElement element)
     {
-        double x = 0;
-        double y = 0;
-
+        // The picker / inspector tree can still reference an element that was detached
+        // from the inspected window's tree between selection and this paint. Only draw
+        // a highlight for elements still parented under _targetWindow (GetRenderBounds
+        // maps relative to the first window-host ancestor, which for a connected
+        // element is exactly _targetWindow).
         Visual? current = element;
         while (current != null && current != _targetWindow)
         {
-            if (current is UIElement uiElement)
-            {
-                var bounds = uiElement.VisualBounds;
-                x += bounds.X;
-                y += bounds.Y;
-            }
-
             current = current.VisualParent;
         }
 
-        if (current == _targetWindow)
+        if (current != _targetWindow)
         {
-            return new Rect(x, y, element.ActualWidth, element.ActualHeight);
+            return null;
         }
 
-        return null;
+        return element.GetRenderBounds();
+    }
+
+    /// <summary>
+    /// On-screen (window-space) rectangle of the element's margin band: its local box
+    /// grown outward by <see cref="FrameworkElement.Margin"/>, mapped through the same
+    /// element→window transform as the highlight box (via
+    /// <see cref="UIElement.MapLocalRectToScreen"/>) so the band stays aligned and
+    /// correctly scaled inside a Viewbox / zoomed subtree. Adding raw Thickness to the
+    /// already-scaled bounds would draw the wrong thickness. Returns null when there is
+    /// no margin.
+    /// </summary>
+    private static Rect? GetMarginBandBounds(FrameworkElement element)
+    {
+        if (!HasNonZeroMargin(element.Margin))
+        {
+            return null;
+        }
+
+        var m = element.Margin;
+        var w = element.ActualWidth;
+        var h = element.ActualHeight;
+        return element.MapLocalRectToScreen(new Rect(
+            -m.Left,
+            -m.Top,
+            w + m.Left + m.Right,
+            h + m.Top + m.Bottom));
+    }
+
+    /// <summary>
+    /// On-screen (window-space) rectangle of the control's padding band: its content
+    /// box inset by <see cref="Control.Padding"/>, mapped through the element→window
+    /// transform so it scales with a Viewbox / zoomed ancestor. Returns null when there
+    /// is no padding or the inset collapses to a non-positive size.
+    /// </summary>
+    private static Rect? GetPaddingBandBounds(Control control)
+    {
+        if (!HasNonZeroThickness(control.Padding))
+        {
+            return null;
+        }
+
+        var p = control.Padding;
+        var innerW = control.ActualWidth - p.Left - p.Right;
+        var innerH = control.ActualHeight - p.Top - p.Bottom;
+        if (innerW <= 0 || innerH <= 0)
+        {
+            return null;
+        }
+
+        return control.MapLocalRectToScreen(new Rect(p.Left, p.Top, innerW, innerH));
     }
 
     /// <summary>
@@ -314,30 +379,15 @@ internal sealed class DevToolsOverlay
             }
 
             // Draw margin area (if the element is a FrameworkElement with margin)
-            if (_highlightedElement is FrameworkElement fe && HasNonZeroMargin(fe.Margin))
+            if (_highlightedElement is FrameworkElement fe && GetMarginBandBounds(fe) is { } marginRect)
             {
-                var marginRect = new Rect(
-                    rect.X - fe.Margin.Left,
-                    rect.Y - fe.Margin.Top,
-                    rect.Width + fe.Margin.Left + fe.Margin.Right,
-                    rect.Height + fe.Margin.Top + fe.Margin.Bottom);
-
                 dc.DrawRectangle(_marginBrush, null, marginRect);
             }
 
             // Draw padding area (if the element is a Control with padding)
-            if (_highlightedElement is Control control && HasNonZeroThickness(control.Padding))
+            if (_highlightedElement is Control control && GetPaddingBandBounds(control) is { } paddingRect)
             {
-                var paddingRect = new Rect(
-                    rect.X + control.Padding.Left,
-                    rect.Y + control.Padding.Top,
-                    rect.Width - control.Padding.Left - control.Padding.Right,
-                    rect.Height - control.Padding.Top - control.Padding.Bottom);
-
-                if (paddingRect is { Width: > 0, Height: > 0 })
-                {
-                    dc.DrawRectangle(_paddingBrush, null, paddingRect);
-                }
+                dc.DrawRectangle(_paddingBrush, null, paddingRect);
             }
 
             // Draw size label
@@ -359,14 +409,8 @@ internal sealed class DevToolsOverlay
         var highlightBorderBrush = new SolidColorBrush(DevToolsTheme.AccentColor);
 
         // Draw margin area
-        if (_highlightedElement is FrameworkElement fe && HasNonZeroMargin(fe.Margin))
+        if (_highlightedElement is FrameworkElement fe && GetMarginBandBounds(fe) is { } marginRect)
         {
-            var marginRect = new Rect(
-                rect.X - fe.Margin.Left,
-                rect.Y - fe.Margin.Top,
-                rect.Width + fe.Margin.Left + fe.Margin.Right,
-                rect.Height + fe.Margin.Top + fe.Margin.Bottom);
-
             dc.DrawRectangle(_marginBrush, null, marginRect);
         }
 
@@ -374,18 +418,9 @@ internal sealed class DevToolsOverlay
         dc.DrawRectangle(highlightFillBrush, null, rect);
 
         // Draw padding area
-        if (_highlightedElement is Control control && HasNonZeroThickness(control.Padding))
+        if (_highlightedElement is Control control && GetPaddingBandBounds(control) is { } paddingRect)
         {
-            var paddingRect = new Rect(
-                rect.X + control.Padding.Left,
-                rect.Y + control.Padding.Top,
-                rect.Width - control.Padding.Left - control.Padding.Right,
-                rect.Height - control.Padding.Top - control.Padding.Bottom);
-
-            if (paddingRect is { Width: > 0, Height: > 0 })
-            {
-                dc.DrawRectangle(_paddingBrush, null, paddingRect);
-            }
+            dc.DrawRectangle(_paddingBrush, null, paddingRect);
         }
 
         // Draw border
@@ -410,7 +445,10 @@ internal sealed class DevToolsOverlay
         };
         TextMeasurement.MeasureText(typeText);
 
-        // Create formatted text for size (white)
+        // Create formatted text for size (white). elementBounds is the on-screen
+        // axis-aligned bounding box (GetRenderBounds), so this is the real size the
+        // user sees — it equals the element's layout ActualWidth/Height only when no
+        // ancestor scales/rotates it, and reports the AABB for a rotated element.
         var sizeText = new FormattedText($"{elementBounds.Width:F0} × {elementBounds.Height:F0}", "Cascadia Code", 10)
         {
             Foreground = new SolidColorBrush(DevToolsTheme.TextSecondaryColor)

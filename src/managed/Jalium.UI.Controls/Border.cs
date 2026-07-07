@@ -1197,12 +1197,31 @@ public class Border : FrameworkElement
 
     #region Property Changed Callbacks
 
+    // Thread-safe mirror of the LiquidGlass DP for GetExtraDirtyPadding (the dirty
+    // pipeline reads it from background registration threads, where DP getters are
+    // off-limits — same contract as UIElement._effectForDirtyBounds).
+    private volatile bool _liquidGlassForDirtyBounds;
+
+    // The native liquid-glass quad expands 32 DIPs past the element rect for the
+    // outer shadow + fusion-bridge bleed (kLiquidGlassVS padding). The dirty
+    // pipeline must track that ring or a moving/animating glass panel leaves the
+    // shadow behind (its ink is clamped to the tracked dirty region).
+    private const double LiquidGlassDirtyPadding = 32.0;
+
+    internal override double GetExtraDirtyPadding()
+        => _liquidGlassForDirtyBounds ? LiquidGlassDirtyPadding : 0.0;
+
     private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is Border border)
         {
             // Skip if value didn't actually change
             if (Equals(e.OldValue, e.NewValue)) return;
+
+            if (e.Property == LiquidGlassProperty)
+            {
+                border._liquidGlassForDirtyBounds = e.NewValue is true;
+            }
 
             // Invalidate pen cache if BorderBrush changed
             if (e.Property == BorderBrushProperty)

@@ -7,9 +7,9 @@
 #include <vector>
 #include <mutex>
 
-typedef struct FT_FaceRec_* FT_Face;
-
 namespace jalium {
+
+class FontFace;
 
 // ============================================================================
 // GlyphAtlas: CPU-side glyph atlas management
@@ -32,10 +32,10 @@ struct AtlasGlyphEntry {
     bool     valid = false;
 };
 
-/// Key for glyph cache lookup (FreeType-based, platform-neutral).
+/// Key for glyph cache lookup (platform-neutral).
 struct AtlasGlyphKey {
     uint64_t fontId;         ///< Hash of font family + weight + style
-    uint16_t glyphIndex;     ///< HarfBuzz output glyph index
+    uint16_t glyphIndex;     ///< Shaped glyph index
     uint16_t fontSize;       ///< Physical pixel size
     uint8_t  subpixelX;     ///< 1/8 pixel quantization (0..7)
 
@@ -83,15 +83,15 @@ public:
 
     /// Looks up or rasterizes a glyph, inserting it into the atlas.
     /// @param rasterizer The glyph rasterizer to use if not cached.
-    /// @param face FreeType face handle.
+    /// @param face Self-hosted font face.
     /// @param fontId Unique identifier for the font (family+weight+style hash).
-    /// @param glyphIndex Glyph index from HarfBuzz.
+    /// @param glyphIndex Glyph index from shaping.
     /// @param fontSizePx Font size in pixels.
     /// @param subpixelX Sub-pixel X quantization (0..7).
     /// @return Atlas entry, or invalid entry if atlas is full.
     const AtlasGlyphEntry& GetOrInsert(
         GlyphRasterizer& rasterizer,
-        FT_Face face,
+        FontFace* face,
         uint64_t fontId,
         uint16_t glyphIndex,
         uint16_t fontSizePx,

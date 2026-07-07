@@ -3,11 +3,11 @@
 #include <string>
 #include <vector>
 #include <cstdint>
-
-typedef struct FT_LibraryRec_* FT_Library;
-typedef struct FT_FaceRec_*    FT_Face;
+#include <memory>
 
 namespace jalium {
+
+class FontFace;
 
 // ============================================================================
 // FontProvider: Abstract interface for platform-specific font discovery
@@ -31,14 +31,12 @@ public:
         std::string& outPath,
         int& outFaceIndex) = 0;
 
-    /// Creates a FreeType face for the given font parameters.
-    /// @param ftLib FreeType library handle
+    /// Creates a self-hosted font face for the given font parameters.
     /// @param familyName Font family name
     /// @param weight Font weight
     /// @param style Font style
-    /// @return FT_Face handle, or nullptr if not found. Caller owns the face.
-    virtual FT_Face CreateFace(
-        FT_Library ftLib,
+    /// @return Owned FontFace, or nullptr if not found.
+    virtual std::unique_ptr<FontFace> CreateFace(
         const wchar_t* familyName,
         int32_t weight,
         int32_t style);

@@ -1,7 +1,9 @@
 using System.Collections.Concurrent;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
+using Jalium.UI.Animation;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Data;
 using Jalium.UI.Input;
@@ -617,6 +619,9 @@ public partial class DevToolsWindow : Window
     private void ExpandAll()
     {
         if (_activeFilter != null) return; // filtered view is already fully expanded
+        // A stale in-flight reveal range would wrongly hide rows of the rebuilt list (its
+        // [start,end) indices are meaningless after the rebuild) — cancel it first.
+        CancelExpandAnimation();
         _expandedVisuals.Clear();
         AddExpandableRecursive(_targetWindow);
         RebuildVisibleRows();
@@ -633,6 +638,7 @@ public partial class DevToolsWindow : Window
 
     private void CollapseAll()
     {
+        CancelExpandAnimation(); // see ExpandAll: stale reveal ranges must not outlive the rebuild
         _expandedVisuals.Clear();
         _expandedVisuals.Add(_targetWindow);
         RebuildVisibleRows();
@@ -915,16 +921,34 @@ public partial class DevToolsWindow : Window
     private const double AnimStaggerStep = 0.06;
     private const double AnimStaggerMax = 0.5;
 
-    private DispatcherTimer? _expandAnimTimer;
+    private AnimationTickSubscription? _revealSubscription;   // constructed once, reused across reveals
+    private bool _revealActive;
     private int _animStart = -1;   // first revealed/removed row index (inclusive)
     private int _animEnd = -1;     // exclusive
     private InspectorRow? _animChevronRow;
     private double _animChevronFrom;
     private double _animChevronTo;
     private bool _animExpanding;
-    private long _animStartTick;
+    private long _animStartTimestamp;   // Stopwatch ticks, taken from the unified frame timebase
     private double _animDurationMs;
+    private double _animProgress;       // latest global progress, read by the Bind-side reveal provider
+    private Func<int, double>? _revealProgressForIndex;   // cached provider delegate
     private Visual? _pendingCollapseVisual;
+
+    /// <summary>
+    /// Frame driver for the reveal animation. A separate object rather than the window
+    /// implementing <see cref="IFrameAnimatable"/> itself: <see cref="UIElement"/> already
+    /// implements that interface for element animations, and re-implementing it on this
+    /// subclass would shadow the base dispatch for the window's own animation subscription.
+    /// </summary>
+    private sealed class RevealDriver : IFrameAnimatable
+    {
+        private readonly DevToolsWindow _owner;
+
+        public RevealDriver(DevToolsWindow owner) => _owner = owner;
+
+        public bool OnAnimationFrame(long frameTimestamp) => _owner.OnRevealFrame(frameTimestamp);
+    }
 
     private void BeginExpandCollapseAnimation(Visual toggledVisual, bool expanding)
     {
@@ -952,27 +976,58 @@ public partial class DevToolsWindow : Window
         // ChevronAngle is the final 0 — capturing it as "from" would animate 0→0 (no rotation).
         _animChevronFrom = expanding ? -90 : 0;
         _animChevronTo = expanding ? 0 : -90;
+        // Write the from-angle into the model now: the toggled row's container binds before the
+        // first engine tick and must show the rotation start, not the rebuilt row's final angle.
+        parentRow.ChevronAngle = _animChevronFrom;
 
         _animExpanding = expanding;
         _animDurationMs = expanding ? ExpandAnimMs : CollapseAnimMs;
-        _animStartTick = Environment.TickCount64;
+        // t0 is pinned by the FIRST engine tick (sentinel 0), not here: this runs in a
+        // mouse-event handler, and the rebuild + Reset + first-frame realization that
+        // follow can take tens of ms — charging them to the animation clock makes the
+        // first visible frame start mid-curve (rows pop in at different progress).
+        _animStartTimestamp = 0;
+        _animProgress = 0;
         _pendingCollapseVisual = expanding ? null : toggledVisual;
 
-        if (_expandAnimTimer == null)
-        {
-            _expandAnimTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(16) };
-            _expandAnimTimer.Tick += OnExpandAnimTick;
-        }
-        _expandAnimTimer.Start();
-        OnExpandAnimTick(null, EventArgs.Empty); // apply frame 0 immediately so rows start hidden
+        // Publish the reveal range + progress function BEFORE the async layout realizes
+        // containers: rows bound during the animation (frame 0 after the Reset, or scrolled into
+        // view mid-reveal) take their current staggered progress at Bind time instead of flashing
+        // fully revealed for one frame.
+        _revealProgressForIndex ??= index => RowRevealAt(index, _animProgress, _animExpanding);
+        _visualTreeView.SetActiveReveal(_animStart, _animEnd, _revealProgressForIndex);
+
+        _revealActive = true;
+        _revealSubscription ??= new AnimationTickSubscription(new RevealDriver(this), weak: false);
+        AnimationManager.Register(_revealSubscription);
     }
 
-    private void OnExpandAnimTick(object? sender, EventArgs e)
+    /// <summary>Staggered eased reveal progress for one row. Shared by the per-frame loop and the
+    /// Bind-side provider so a row realized mid-animation lands exactly on the driven curve.</summary>
+    private double RowRevealAt(int index, double progress, bool expanding)
     {
-        long now = Environment.TickCount64;
+        double stagger = Math.Min(AnimStaggerMax, (index - _animStart) * AnimStaggerStep);
+        double t = Math.Clamp((progress - stagger) / Math.Max(0.0001, 1.0 - stagger), 0.0, 1.0);
+        double eased = EaseOutCubic(t);
+        return expanding ? eased : 1.0 - eased;
+    }
+
+    private bool OnRevealFrame(long frameTimestamp)
+    {
+        if (!_revealActive)
+            return false;
+
+        // First engine tick pins t0 (rows bound before this read _animProgress=0 via the
+        // provider, seamlessly matching the progress=0 this frame computes).
+        if (_animStartTimestamp == 0)
+            _animStartTimestamp = frameTimestamp;
+
         double progress = _animDurationMs <= 0
             ? 1.0
-            : Math.Clamp((now - _animStartTick) / _animDurationMs, 0.0, 1.0);
+            : Math.Clamp(
+                Stopwatch.GetElapsedTime(_animStartTimestamp, frameTimestamp).TotalMilliseconds / _animDurationMs,
+                0.0, 1.0);
+        _animProgress = progress;
 
         if (_animChevronRow != null)
         {
@@ -980,37 +1035,41 @@ public partial class DevToolsWindow : Window
             _animChevronRow.ChevronAngle = _animChevronFrom + (_animChevronTo - _animChevronFrom) * chevronEased;
         }
 
-        foreach (var container in _visualTreeView.GetRealizedContainers())
+        var containers = _visualTreeView.GetRealizedContainers();
+        for (int i = 0; i < containers.Count; i++)
         {
+            var container = containers[i];
             var r = container.Row;
             if (r == null) continue;
 
             if (r.Index >= _animStart && r.Index < _animEnd)
-            {
-                double stagger = Math.Min(AnimStaggerMax, (r.Index - _animStart) * AnimStaggerStep);
-                double t = Math.Clamp((progress - stagger) / Math.Max(0.0001, 1.0 - stagger), 0.0, 1.0);
-                double eased = EaseOutCubic(t);
-                container.SetRevealProgress(_animExpanding ? eased : 1.0 - eased);
-            }
+                container.SetRevealProgress(RowRevealAt(r.Index, progress, _animExpanding));
 
             if (ReferenceEquals(r, _animChevronRow))
                 container.ApplyChevron();
         }
 
-        // Force the window to actually present this frame — render-only invalidation on nested
-        // children does not reliably trigger a present here.
-        _visualTreeView.InvalidateItemsHostMeasure();
+        // No per-frame ItemsHost re-measure bump here: SetRevealProgress's composition-only
+        // invalidation reliably schedules a present now that the dirty-region contract fixes
+        // (promote-on-raw-area + no swallowed empty-bounds frames) are in place.
 
         if (progress >= 1.0)
+        {
             CompleteExpandAnimation();
+            return false;
+        }
+
+        return true;
     }
 
     private void CompleteExpandAnimation()
     {
-        if (_expandAnimTimer is not { IsEnabled: true })
+        if (!_revealActive)
             return;
 
-        _expandAnimTimer.Stop();
+        _revealActive = false;
+        AnimationManager.Unregister(_revealSubscription!);
+        _visualTreeView.ClearActiveReveal();
 
         var collapseVisual = _pendingCollapseVisual;
         _pendingCollapseVisual = null;
@@ -1024,10 +1083,11 @@ public partial class DevToolsWindow : Window
         _animStart = _animEnd = -1;
 
         // Normalize realized rows to their resting state (fully revealed, final chevron).
-        foreach (var container in _visualTreeView.GetRealizedContainers())
+        var containers = _visualTreeView.GetRealizedContainers();
+        for (int i = 0; i < containers.Count; i++)
         {
-            container.SetRevealProgress(1.0);
-            container.ApplyChevron();
+            containers[i].SetRevealProgress(1.0);
+            containers[i].ApplyChevron();
         }
 
         if (collapseVisual != null)
@@ -1039,13 +1099,19 @@ public partial class DevToolsWindow : Window
 
     private void CancelExpandAnimation()
     {
-        if (_expandAnimTimer is { IsEnabled: true })
-            _expandAnimTimer.Stop();
+        if (_revealActive)
+        {
+            _revealActive = false;
+            AnimationManager.Unregister(_revealSubscription!);
+        }
+
+        _visualTreeView.ClearActiveReveal();
         _pendingCollapseVisual = null;
         _animChevronRow = null;
         _animStart = _animEnd = -1;
-        foreach (var container in _visualTreeView.GetRealizedContainers())
-            container.SetRevealProgress(1.0);
+        var containers = _visualTreeView.GetRealizedContainers();
+        for (int i = 0; i < containers.Count; i++)
+            containers[i].SetRevealProgress(1.0);
     }
 
     private static double EaseOutCubic(double t) => 1.0 - Math.Pow(1.0 - t, 3.0);

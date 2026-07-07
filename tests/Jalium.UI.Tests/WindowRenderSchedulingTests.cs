@@ -63,9 +63,11 @@ public class WindowRenderSchedulingTests
         window.ForceRenderFrame();
 
         Assert.Equal(0L, GetPrivateField<long>(window, "_lastRenderTicks"));
-        Assert.True(
-            HasRenderFlag(window, RenderFlag_Scheduled) || HasRenderFlag(window, RenderFlag_DirtyBetween),
-            "Expected a scheduled retry or DirtyBetween flag after a GPU-busy BeginDraw.");
+        // The retry is an ARMED deferred timer; RenderFlag_Scheduled is claimed only
+        // when it fires. Claiming at arm time blocked every animation tick's
+        // InvalidateWindow for the timer's ~15.6 ms resolution window after each
+        // present — the present-cadence stutter fixed with the animation rewrite.
+        Assert.NotNull(GetPrivateField<Timer?>(window, "_renderThrottleTimer"));
 
         GetPrivateField<Timer?>(window, "_renderThrottleTimer")?.Dispose();
     }
@@ -129,7 +131,12 @@ public class WindowRenderSchedulingTests
         {
             window.ForceRenderFrame();
 
-            Assert.True(HasRenderFlag(window, RenderFlag_Scheduled));
+            // Deferred retry armed as a timer; the Scheduled flag must stay CLEAR
+            // until the timer fires so that real invalidations (animation ticks)
+            // arriving in the interim can schedule a render immediately instead
+            // of being blocked behind the ~15.6 ms coarse timer.
+            Assert.NotNull(GetPrivateField<Timer?>(window, "_renderThrottleTimer"));
+            Assert.False(HasRenderFlag(window, RenderFlag_Scheduled));
             Assert.False(HasRenderFlag(window, RenderFlag_DirtyBetween));
         }
         finally

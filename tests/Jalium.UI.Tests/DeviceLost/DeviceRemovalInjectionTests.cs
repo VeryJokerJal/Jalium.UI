@@ -22,8 +22,14 @@ namespace Jalium.UI.Tests.DeviceLost;
 /// itself does not apply — no Window is constructed in-proc).
 ///
 /// Needs a real GPU + desktop session; the harness reports exit code 2 when
-/// D3D12 is unavailable and the test is skipped (reported as passed with a
-/// note in the output).
+/// the requested backend is unavailable and the test is skipped (reported as
+/// passed with a note in the output).
+///
+/// Most scenarios drive D3D12 (retained-layer discrimination + #921 hooks are
+/// D3D12-only machinery). The backend-agnostic 'devicelost' core (inject →
+/// recover → fresh device → no downgrade) runs against BOTH D3D12 and Vulkan via
+/// the harness's optional backend argument, so the Vulkan device-lost recovery
+/// chain is regressible here instead of only via a physical GPU TDR.
 /// </summary>
 [Collection("Application")]
 public sealed class DeviceRemovalInjectionTests
@@ -111,6 +117,56 @@ public sealed class DeviceRemovalInjectionTests
             ]);
 
     /// <summary>
+    /// Backend-agnostic device-lost core on D3D12: mid-frame device removal, then
+    /// recovery replaced the render target, brought up a fresh device (pointer
+    /// changed on the first incident), stayed on D3D12, and a second incident did
+    /// not downgrade. This is the same scenario the Vulkan variant below runs — the
+    /// portable subset that does not touch retained layers or the #921 hooks.
+    /// </summary>
+    [Fact]
+    public void DeviceLost_D3D12_RecoversWithFreshDeviceNoDowngrade()
+        => RunScenario(
+            "devicelost",
+            renderThread: false,
+            backend: "d3d12",
+            requiredMarkers:
+            [
+                "FIRST_FRAME window=A backend=D3D12",
+                "INJECTED window=A ok=1 midframe=true",
+                "DEVICELOST_RECOVERED round=1 before=", // ... changed=1 asserted in-harness
+                "BACKEND_OK d3d12",
+                "DEVICELOST_RECOVERED round=2 before=",
+                "SCENARIO devicelost complete backend=d3d12",
+            ]);
+
+    /// <summary>
+    /// The F8 headline: the SAME device-lost recovery, now automated for Vulkan.
+    /// The device is removed mid-frame via the Vulkan debug injection hook
+    /// (DebugRemoveDevice trips the sticky deviceLost latch), the managed recovery
+    /// chain rebuilds the render target on a fresh VkDevice, the backend stays
+    /// Vulkan, and a second incident does not downgrade — proving the Vulkan
+    /// device-lost hardening (SURFACE_LOST vs DEVICE_LOST classification, generation
+    /// latch, managed recovery) is regressible under the harness exactly like D3D12,
+    /// instead of only via a physical GPU TDR. Skips (exit 2) when the Vulkan
+    /// backend is unavailable in this environment (no Vulkan runtime / DLL).
+    /// </summary>
+    [Fact]
+    public void DeviceLost_Vulkan_RecoversWithFreshDeviceNoDowngrade()
+        => RunScenario(
+            "devicelost",
+            renderThread: false,
+            backend: "vulkan",
+            requiredMarkers:
+            [
+                "FIRST_FRAME window=A backend=Vulkan",
+                "INJECTED window=A ok=1 midframe=true",
+                "DEVICELOST_RECOVERED round=1 before=",
+                "BACKEND_OK vulkan",
+                "DEVICELOST_RECOVERED round=2 before=",
+                "SCENARIO devicelost complete backend=vulkan",
+            ]);
+
+    /// <summary>
     /// #921 same-thread leaked-open command-list resize. The CROSS-thread half of
     /// #921 (native returns BUSY → managed defers, dimensions frozen) is covered by
     /// the managed seam test
@@ -173,10 +229,14 @@ public sealed class DeviceRemovalInjectionTests
                 "SCENARIO vellooutputorphan complete",
             ]);
 
-    private void RunScenario(string scenario, bool renderThread, string[] requiredMarkers)
+    private void RunScenario(string scenario, bool renderThread, string[] requiredMarkers, string backend = "d3d12")
     {
         string exe = LocateHarness();
-        var psi = new ProcessStartInfo(exe, scenario)
+        // The harness takes an optional 2nd positional backend token
+        // (harness <scenario> [d3d12|vulkan]); default d3d12 keeps the original
+        // single-argument invocations unchanged.
+        string args = backend == "d3d12" ? scenario : $"{scenario} {backend}";
+        var psi = new ProcessStartInfo(exe, args)
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,

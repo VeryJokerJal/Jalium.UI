@@ -1,45 +1,46 @@
-using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 
 namespace Jalium.UI.Controls.Automation.Uia;
 
 /// <summary>
 /// P/Invoke declarations for Windows UI Automation Core.
-/// Matches WPF's approach: pass IRawElementProviderSimple directly,
-/// let CLR handle COM marshaling automatically.
 /// </summary>
+/// <remarks>
+/// Provider arguments are passed as raw <see cref="nint"/> COM interface pointers rather
+/// than as an <c>IRawElementProviderSimple</c> parameter. The managed provider is turned
+/// into a COM-callable wrapper explicitly in <see cref="UiaAccessibilityBridge"/> via
+/// <see cref="UiaComInterop"/> (source-generated ComWrappers), which works under both JIT
+/// and NativeAOT — unlike the runtime's built-in interface marshalling, which NativeAOT
+/// removes. VARIANT arguments use <see cref="ComVariant"/> (the source-gen VARIANT type).
+/// </remarks>
 internal static partial class UiaNativeMethods
 {
-    // COM-marshalled UIA interfaces are preserved via ILLink.Descriptors.xml so the
-    // trimmer keeps the vtable members the runtime calls through. The UnconditionalSuppressMessage
-    // attributes below acknowledge that contract for the analyzer.
     [DllImport("uiautomationcore.dll", EntryPoint = "UiaReturnRawElementProvider", CharSet = CharSet.Unicode)]
     internal static extern nint UiaReturnRawElementProvider(
-        nint hwnd, nint wParam, nint lParam,
-        IRawElementProviderSimple el);
+        nint hwnd, nint wParam, nint lParam, nint el);
 
     [DllImport("uiautomationcore.dll", EntryPoint = "UiaHostProviderFromHwnd", CharSet = CharSet.Unicode)]
-    internal static extern int UiaHostProviderFromHwnd(
-        nint hwnd,
-        [MarshalAs(UnmanagedType.Interface)] out IRawElementProviderSimple? provider);
+    internal static extern int UiaHostProviderFromHwnd(nint hwnd, out nint provider);
 
     [DllImport("uiautomationcore.dll", EntryPoint = "UiaRaiseAutomationEvent", CharSet = CharSet.Unicode)]
-    internal static extern int UiaRaiseAutomationEvent(
-        IRawElementProviderSimple provider, int eventId);
+    internal static extern int UiaRaiseAutomationEvent(nint provider, int eventId);
 
     [DllImport("uiautomationcore.dll", EntryPoint = "UiaRaiseAutomationPropertyChangedEvent", CharSet = CharSet.Unicode)]
     internal static extern int UiaRaiseAutomationPropertyChangedEvent(
-        IRawElementProviderSimple provider,
-        int propertyId, object oldValue, object newValue);
+        nint provider, int propertyId, UiaVariant oldValue, UiaVariant newValue);
 
     [DllImport("uiautomationcore.dll", EntryPoint = "UiaRaiseStructureChangedEvent", CharSet = CharSet.Unicode)]
     internal static extern int UiaRaiseStructureChangedEvent(
-        IRawElementProviderSimple provider,
-        int structureChangeType, int[] runtimeId, int runtimeIdLen);
+        nint provider, int structureChangeType, int[] runtimeId, int runtimeIdLen);
 
     [DllImport("uiautomationcore.dll", ExactSpelling = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool UiaClientsAreListening();
+
+    // Retrieves UIA's process-wide reserved "not supported" sentinel. Returned as an owned
+    // IUnknown reference (COM out-param convention): transfer it to the caller — do not release.
+    [DllImport("uiautomationcore.dll", EntryPoint = "UiaGetReservedNotSupportedValue")]
+    internal static extern int UiaGetReservedNotSupportedValue(out nint punkNotSupportedValue);
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

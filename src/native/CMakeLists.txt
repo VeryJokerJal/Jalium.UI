@@ -127,7 +127,7 @@ set(JALIUM_AUDIO_PRIVATE_INCLUDES
     CACHE INTERNAL "Private include dirs needed by JALIUM_AUDIO_SOURCES"
 )
 
-# Cross-platform text engine (FreeType + HarfBuzz) — must be before backends that link it
+# Cross-platform self-hosted text engine — must be before backends that link it
 if(NOT WIN32)
     add_subdirectory(jalium.native.text)
 endif()

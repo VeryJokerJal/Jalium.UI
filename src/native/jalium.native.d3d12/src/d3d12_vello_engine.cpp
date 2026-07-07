@@ -41,11 +41,14 @@ bool VelloD3D12Engine::EncodeFillPath(
     (void)edgeMode;  // Vello path currently has analytic AA only; aliased fallback not implemented yet.
     uint32_t rule = (fillRule == FillRule::NonZero) ? kFillRuleNonZero : kFillRuleEvenOdd;
 
-    // Solid color path (most common)
-    return vello_.EncodeFillPath(
+    // Full brush packing (solid / linear / radial / SWEEP) — mirrors the core
+    // encoder's EncodeFillPath + PackBrush, which VelloVulkanEngine consumes.
+    // Previously this adapter flattened EVERY brush to the flat fallback color
+    // (brush.r/g/b/a), which is exactly where a sweep gradient degraded to a
+    // flat fill on D3D12 (D5a). opacity = 1.0 matches the core call site.
+    return vello_.EncodeFillPathEngineBrush(
         startX, startY, commands, commandLength,
-        brush.r, brush.g, brush.b, brush.a,
-        rule,
+        brush, rule, /*opacity*/ 1.0f,
         transform.m11, transform.m12,
         transform.m21, transform.m22,
         transform.dx, transform.dy);
@@ -63,11 +66,13 @@ bool VelloD3D12Engine::EncodeStrokePath(
     int32_t edgeMode)
 {
     (void)edgeMode;  // Vello path currently has analytic AA only.
-    return vello_.EncodeStrokePath(
+    // Gradient-capable stroke (incl. sweep): solid-color geometry pass, then
+    // the emitted PathDraw is patched with the engine brush packing.
+    return vello_.EncodeStrokePathEngineBrush(
         startX, startY, commands, commandLength,
-        brush.r, brush.g, brush.b, brush.a,
+        brush,
         strokeWidth, closed,
-        lineJoin, miterLimit, lineCap,
+        lineJoin, miterLimit, /*opacity*/ 1.0f, lineCap,
         dashPattern, dashCount, dashOffset,
         transform.m11, transform.m12,
         transform.m21, transform.m22,

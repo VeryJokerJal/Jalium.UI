@@ -1,52 +1,87 @@
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.Marshalling;
 
 namespace Jalium.UI.Controls.Automation.Uia;
 
 // ============================================================================
-// UIA Provider Interfaces
+// UIA Provider Interfaces — source-generated COM ([GeneratedComInterface]).
 //
-// Matches WPF's approach: [ComVisible(true)] + [InterfaceType(InterfaceIsIUnknown)]
-// WITHOUT [PreserveSig] — CLR auto-handles HRESULT conversion.
-// WITHOUT [ComImport] — these are interfaces we IMPLEMENT, not import.
+// Why source-gen instead of classic [ComVisible]/[InterfaceType]:
+// under NativeAOT there is no built-in COM interop, so a classic CCW cannot be
+// built for our managed providers and any UIA marshal throws NotSupportedException
+// (see UiaAccessibilityBridge). [GeneratedComInterface] + [GeneratedComClass] emit
+// the vtable/marshalling at compile time so a StrategyBasedComWrappers CCW works
+// under both JIT and AOT.
+//
+// ABI RULES honored here (see docs/uia-aot-design):
+//   * .NET 10's COM source generator does NOT support C# properties (that shipped in
+//     .NET 11), so every UIA property is modelled as an explicit HRESULT-returning
+//     get_* METHOD in exact native vtable order. A C# member returning a value T is
+//     lowered by the generator to native `HRESULT M(..., T* retVal)`; a `void` member
+//     to `HRESULT M(...)`. Do NOT reorder members — COM dispatch is by vtable slot.
+//   * Interfaces form a single-base generated-COM chain (Simple <- Fragment <-
+//     FragmentRoot); base members are NOT redeclared and must all live in this assembly.
+//   * VARIANT return  -> [MarshalUsing(typeof(ComVariantMarshaller))] object?
+//     IUnknown return -> [MarshalUsing(typeof(ComInterfaceMarshaller<object>))] object?
+//     BSTR return     -> [MarshalUsing(typeof(BStrStringMarshaller))] string
+//     SAFEARRAY return-> custom [MarshalUsing(typeof(SafeArray*Marshaller))] (source-gen
+//                        has no SAFEARRAY support; see UiaSafeArrayMarshallers).
+//     Win32 BOOL      -> `int` (0/1) to match UIA's 4-byte BOOL unambiguously.
 // ============================================================================
 
-[ComVisible(true)]
+// unsafe: get_ProviderOptions takes a raw ProviderOptions* (see below). The chain below
+// (Fragment/FragmentRoot) must be unsafe too — the COM source generator re-emits this
+// inherited pointer method into their generated partials, which need an unsafe context.
+[GeneratedComInterface]
 [Guid("d6dd68d1-86fd-4332-8666-9abedea2d24c")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IRawElementProviderSimple
+public unsafe partial interface IRawElementProviderSimple
 {
-    ProviderOptions ProviderOptions { get; }
+    // [PreserveSig] + raw out-pointer instead of the generator's auto-HRESULT lowering, so we
+    // can null-guard pRetVal OURSELVES. The CUAS/TSF text-input stack behind an IME (e.g. the
+    // Chinese Pinyin IME) attaches as a UIA client the moment a text field takes focus and
+    // probes the provider tree; get_ProviderOptions is its first and highest-frequency call.
+    // Under that path it can arrive with a NULL pRetVal while the UI thread is inside an
+    // input-synchronous message. The auto-lowered stub would blindly do `*pRetVal = value` and
+    // raise a first-chance NullReferenceException — caught at the ABI boundary and returned as
+    // E_POINTER, non-fatal, but noisy under a debugger and a needless throw/catch per keystroke.
+    // Owning the pointer lets us return E_POINTER cleanly with no managed throw. Native vtable
+    // slot signature is unchanged: HRESULT get_ProviderOptions(ProviderOptions* pRetVal).
+    [PreserveSig]
+    unsafe int get_ProviderOptions(ProviderOptions* pRetVal);
 
-    [return: MarshalAs(UnmanagedType.IUnknown)]
+    [return: MarshalUsing(typeof(ComInterfaceMarshaller<object>))]
     object? GetPatternProvider(int patternId);
 
-    object? GetPropertyValue(int propertyId);
+    // Returns a blittable VARIANT struct (ABI-identical to VARIANT*), built by the provider.
+    // The object<->VARIANT auto-marshaller requires assembly-wide [DisableRuntimeMarshalling]
+    // (SYSLIB1051), not viable here; a plain blittable struct needs no runtime marshalling.
+    UiaVariant GetPropertyValue(int propertyId);
 
-    IRawElementProviderSimple? HostRawElementProvider { get; }
+    IRawElementProviderSimple? get_HostRawElementProvider();
 }
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("f7063da8-8359-439c-9297-bbc5299a7d87")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IRawElementProviderFragment : IRawElementProviderSimple
+public unsafe partial interface IRawElementProviderFragment : IRawElementProviderSimple
 {
     IRawElementProviderFragment? Navigate(NavigateDirection direction);
 
-    int[] GetRuntimeId();
+    [return: MarshalUsing(typeof(SafeArrayInt32Marshaller))]
+    int[]? GetRuntimeId();
 
-    UiaRect BoundingRectangle { get; }
+    UiaRect get_BoundingRectangle();
 
+    [return: MarshalUsing(typeof(SafeArrayProviderMarshaller))]
     IRawElementProviderSimple[]? GetEmbeddedFragmentRoots();
 
     void SetFocus();
 
-    IRawElementProviderFragmentRoot FragmentRoot { get; }
+    IRawElementProviderFragmentRoot? get_FragmentRoot();
 }
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("620ce2a5-ab8f-40a9-86cb-de3c75599b58")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IRawElementProviderFragmentRoot : IRawElementProviderFragment
+public unsafe partial interface IRawElementProviderFragmentRoot : IRawElementProviderFragment
 {
     IRawElementProviderFragment? ElementProviderFromPoint(double x, double y);
 
@@ -54,103 +89,173 @@ public interface IRawElementProviderFragmentRoot : IRawElementProviderFragment
 }
 
 // ============================================================================
-// UIA Pattern Provider Interfaces
+// UIA Pattern Provider Interfaces (IIDs are the real UIA pattern interface IIDs;
+// UIA QIs the pattern-wrapper CCW for these). Member order == native vtable order.
 // ============================================================================
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("54fcb24b-e18e-47a2-b4d3-eccbe77599a2")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IUiaInvokeProvider
+public partial interface IUiaInvokeProvider
 {
     void Invoke();
 }
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("56d00bd0-c4f4-433c-a836-1a52a57e0892")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IUiaToggleProvider
+public partial interface IUiaToggleProvider
 {
     void Toggle();
-    int ToggleState { get; }
+    int get_ToggleState();
 }
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("c7935180-6fb3-4201-b174-7df73adbf64a")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IUiaValueProvider
+public partial interface IUiaValueProvider
 {
     void SetValue([MarshalAs(UnmanagedType.LPWStr)] string value);
-    string Value { get; }
-    bool IsReadOnly { get; }
+
+    [return: MarshalUsing(typeof(BStrStringMarshaller))]
+    string get_Value();
+
+    int get_IsReadOnly();
 }
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("36dc7aef-33e6-4691-afe1-2be7274b3d33")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IUiaRangeValueProvider
+public partial interface IUiaRangeValueProvider
 {
     void SetValue(double value);
-    double Value { get; }
-    bool IsReadOnly { get; }
-    double Maximum { get; }
-    double Minimum { get; }
-    double LargeChange { get; }
-    double SmallChange { get; }
+    double get_Value();
+    int get_IsReadOnly();
+    double get_Maximum();
+    double get_Minimum();
+    double get_LargeChange();
+    double get_SmallChange();
 }
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("d847d3a5-cab0-4a98-8c32-ecb45c59ad24")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IUiaExpandCollapseProvider
+public partial interface IUiaExpandCollapseProvider
 {
     void Expand();
     void Collapse();
-    int ExpandCollapseState { get; }
+    int get_ExpandCollapseState();
 }
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("fb8b03af-3bdf-48d4-bd36-1a65793be168")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IUiaSelectionProvider
+public partial interface IUiaSelectionProvider
 {
+    [return: MarshalUsing(typeof(SafeArrayProviderMarshaller))]
     IRawElementProviderSimple[]? GetSelection();
-    bool CanSelectMultiple { get; }
-    bool IsSelectionRequired { get; }
+
+    int get_CanSelectMultiple();
+    int get_IsSelectionRequired();
 }
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("2acad808-b2d4-452d-a407-91ff1ad167b2")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IUiaSelectionItemProvider
+public partial interface IUiaSelectionItemProvider
 {
     void Select();
     void AddToSelection();
     void RemoveFromSelection();
-    bool IsSelected { get; }
-    IRawElementProviderSimple? SelectionContainer { get; }
+    int get_IsSelected();
+    IRawElementProviderSimple? get_SelectionContainer();
 }
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("b38b8077-1fc3-42a5-8cae-d40c2215055a")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IUiaScrollProvider
+public partial interface IUiaScrollProvider
 {
     void Scroll(int horizontalAmount, int verticalAmount);
     void SetScrollPercent(double horizontalPercent, double verticalPercent);
-    double HorizontalScrollPercent { get; }
-    double VerticalScrollPercent { get; }
-    double HorizontalViewSize { get; }
-    double VerticalViewSize { get; }
-    bool HorizontallyScrollable { get; }
-    bool VerticallyScrollable { get; }
+    double get_HorizontalScrollPercent();
+    double get_VerticalScrollPercent();
+    double get_HorizontalViewSize();
+    double get_VerticalViewSize();
+    int get_HorizontallyScrollable();
+    int get_VerticallyScrollable();
 }
 
-[ComVisible(true)]
+[GeneratedComInterface]
 [Guid("2360c714-4bf1-4b26-ba65-9b21316127eb")]
-[InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-public interface IUiaScrollItemProvider
+public partial interface IUiaScrollItemProvider
 {
     void ScrollIntoView();
+}
+
+// ============================================================================
+// Text pattern. ITextProvider hands out ITextRangeProvider ranges; UIA clients call
+// GetSelection() to discover the currently selected text and GetText() to read it. Member order
+// is the native UIA vtable order (each value-returning member is lowered by the source generator
+// to HRESULT M(..., T* retVal), each void member to HRESULT M(...)). TextUnit and
+// TextPatternRangeEndpoint arguments travel as int (matching the native enums); SupportedTextSelection
+// is returned as int, mirroring how ToggleState/ExpandCollapseState are surfaced.
+// ============================================================================
+
+[GeneratedComInterface]
+[Guid("3589c92c-63f3-4367-99bb-ada653b77cf2")]
+public partial interface IUiaTextProvider
+{
+    [return: MarshalUsing(typeof(SafeArrayTextRangeMarshaller))]
+    IUiaTextRangeProvider[]? GetSelection();
+
+    [return: MarshalUsing(typeof(SafeArrayTextRangeMarshaller))]
+    IUiaTextRangeProvider[]? GetVisibleRanges();
+
+    IUiaTextRangeProvider? RangeFromChild(IRawElementProviderSimple childElement);
+
+    IUiaTextRangeProvider? RangeFromPoint(UiaPoint point);
+
+    IUiaTextRangeProvider? get_DocumentRange();
+
+    int get_SupportedTextSelection();
+}
+
+[GeneratedComInterface]
+[Guid("5347ad7b-c355-46f8-aff5-909033582f63")]
+public partial interface IUiaTextRangeProvider
+{
+    IUiaTextRangeProvider? Clone();
+
+    int Compare(IUiaTextRangeProvider range);
+
+    int CompareEndpoints(int endpoint, IUiaTextRangeProvider targetRange, int targetEndpoint);
+
+    void ExpandToEnclosingUnit(int unit);
+
+    IUiaTextRangeProvider? FindAttribute(int attributeId, UiaVariant val, int backward);
+
+    IUiaTextRangeProvider? FindText(
+        [MarshalUsing(typeof(BStrStringMarshaller))] string text, int backward, int ignoreCase);
+
+    UiaVariant GetAttributeValue(int attributeId);
+
+    [return: MarshalUsing(typeof(SafeArrayDoubleMarshaller))]
+    double[]? GetBoundingRectangles();
+
+    IRawElementProviderSimple? GetEnclosingElement();
+
+    [return: MarshalUsing(typeof(BStrStringMarshaller))]
+    string GetText(int maxLength);
+
+    int Move(int unit, int count);
+
+    int MoveEndpointByUnit(int endpoint, int unit, int count);
+
+    void MoveEndpointByRange(int endpoint, IUiaTextRangeProvider targetRange, int targetEndpoint);
+
+    void Select();
+
+    void AddToSelection();
+
+    void RemoveFromSelection();
+
+    void ScrollIntoView(int alignToTop);
+
+    [return: MarshalUsing(typeof(SafeArrayProviderMarshaller))]
+    IRawElementProviderSimple[]? GetChildren();
 }
 
 // ============================================================================
@@ -164,4 +269,12 @@ public struct UiaRect
     public double Top;
     public double Width;
     public double Height;
+}
+
+/// <summary>Blittable UiaPoint (a pair of doubles) passed by value to ITextProvider.RangeFromPoint.</summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct UiaPoint
+{
+    public double X;
+    public double Y;
 }

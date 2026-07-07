@@ -957,6 +957,12 @@ JALIUM_API void jalium_push_per_corner_rounded_rect_clip(JaliumRenderTarget* rt,
     }
 }
 
+JALIUM_API void jalium_push_rounded_rect_clip_exclude(JaliumRenderTarget* rt, float x, float y, float width, float height, float rx, float ry) {
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->PushRoundedRectClipExclude(x, y, width, height, rx, ry);
+    }
+}
+
 JALIUM_API void jalium_pop_clip(JaliumRenderTarget* rt) {
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->PopClip();
@@ -1033,6 +1039,40 @@ JALIUM_API void jalium_draw_backdrop_filter(
             materialTint ? materialTint : "",
             tintOpacity,
             blurRadius,
+            cornerRadiusTL, cornerRadiusTR,
+            cornerRadiusBR, cornerRadiusBL);
+    }
+}
+
+// Extended backdrop filter: forwards noiseIntensity / saturation / luminosity
+// (AcrylicEffect grain + MicaEffect vibrancy) that the base entry point drops.
+// Backends that have not implemented DrawBackdropFilterEx inherit the base
+// forwarding default (blur + tint only), so this is safe to call on any backend.
+JALIUM_API void jalium_draw_backdrop_filter_ex(
+    JaliumRenderTarget* rt,
+    float x, float y, float width, float height,
+    const char* backdropFilter,
+    const char* material,
+    const char* materialTint,
+    float tintOpacity,
+    float blurRadius,
+    float noiseIntensity,
+    float saturation,
+    float luminosity,
+    float cornerRadiusTL, float cornerRadiusTR,
+    float cornerRadiusBR, float cornerRadiusBL)
+{
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawBackdropFilterEx(
+            x, y, width, height,
+            backdropFilter ? backdropFilter : "",
+            material ? material : "",
+            materialTint ? materialTint : "",
+            tintOpacity,
+            blurRadius,
+            noiseIntensity,
+            saturation,
+            luminosity,
             cornerRadiusTL, cornerRadiusTR,
             cornerRadiusBR, cornerRadiusBL);
     }
@@ -1149,10 +1189,15 @@ JALIUM_API void jalium_transition_end_capture(JaliumRenderTarget* rt, int32_t sl
 JALIUM_API void jalium_draw_transition_shader(
     JaliumRenderTarget* rt,
     float x, float y, float w, float h,
-    float progress, int32_t mode)
+    float progress, int32_t mode, float cornerRadius)
 {
+    // cornerRadius has always been passed by the managed P/Invoke
+    // (NativeMethods.DrawTransitionShader) but the C ABI used to drop it on
+    // the floor; it is now forwarded so backends can clip the transition area
+    // to the element's rounded corners. Appending a trailing float is
+    // ABI-harmless for x64 callers built against the old declaration.
     if (rt && w > 0 && h > 0) {
-        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawTransitionShader(x, y, w, h, progress, mode);
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawTransitionShader(x, y, w, h, progress, mode, cornerRadius);
     }
 }
 
@@ -1232,11 +1277,18 @@ JALIUM_API void jalium_draw_inner_shadow_effect(
     float x, float y, float w, float h,
     float blurRadius, float offsetX, float offsetY,
     float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
     float cornerTL, float cornerTR, float cornerBR, float cornerBL)
 {
+    // The managed P/Invoke (NativeMethods.DrawInnerShadowEffect) has always
+    // passed uvOffsetX/uvOffsetY between the color and the corner radii; the
+    // old 15-parameter form positionally bound those two into
+    // cornerTL/cornerTR and shifted every radius by two slots. The signature
+    // now matches the caller, so the radii bind correctly again.
     if (rt && w > 0 && h > 0) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->DrawInnerShadowEffect(
             x, y, w, h, blurRadius, offsetX, offsetY, r, g, b, a,
+            uvOffsetX, uvOffsetY,
             cornerTL, cornerTR, cornerBR, cornerBL);
     }
 }

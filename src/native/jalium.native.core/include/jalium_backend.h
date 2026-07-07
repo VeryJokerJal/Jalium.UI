@@ -195,6 +195,12 @@ public:
     /// cbuffer the shader expects). extraParams / extraParamsSize is
     /// an optional user-defined cbuffer (b1) that custom brush shaders
     /// can read — pass nullptr / 0 when the shader only uses b0.
+    ///
+    /// Returns a JaliumInkDispatchResult. Implementations MUST classify
+    /// every failure into the backend-agnostic categories defined there
+    /// (TRANSIENT = retry the same handles, STALE_CONTEXT = the caller
+    /// rebuilds the ink resource chain) — the managed side dispatches its
+    /// recovery on the code alone and never branches on the backend type.
     virtual int32_t DispatchBrush(void* bitmap, void* shader,
                                    const void* strokePoints, uint32_t pointCount,
                                    const void* constants,
@@ -202,7 +208,8 @@ public:
     {
         (void)bitmap; (void)shader; (void)strokePoints; (void)pointCount;
         (void)constants; (void)extraParams; (void)extraParamsSize;
-        return -1;
+        // Backend has no brush pipeline — the call can never succeed.
+        return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
     }
 };
 
@@ -386,8 +393,11 @@ public:
     /// then composited as a transformed/opacity quad on subsequent frames so a
     /// composited (Opacity/RenderTransform) animation on a content-clean subtree
     /// does not re-emit the whole subtree every frame. Default: unsupported, so
-    /// callers fall back to full re-emission with no behavior change (backends
-    /// without offscreen-RT capture, e.g. Vulkan today).
+    /// callers fall back to full re-emission with no behavior change. Both the
+    /// D3D12 and Vulkan backends implement the real GPU offscreen-texture model
+    /// (Vulkan captures the subtree into its shared offscreen RT and blits it
+    /// into a persistent per-layer image sampled by the composite); a backend
+    /// with no offscreen-RT capture keeps the default and re-emits every frame.
     ///
     /// Whether this render target can realize/composite retained layers now.
     virtual bool SupportsRetainedLayers() const { return false; }
@@ -449,6 +459,24 @@ public:
     {
         float maxR = std::max(std::max(tl, tr), std::max(br, bl));
         PushRoundedRectClip(x, y, w, h, maxR, maxR);
+    }
+
+    /// Pushes an INVERSE (exclude) rounded-rect clip: subsequent drawing is
+    /// masked to the area OUTSIDE the given rounded rect (the interior is
+    /// excluded). Used by border-glow style effects that must paint a halo
+    /// hugging an element's edge without spilling into its interior — the
+    /// D3D12 renderer implements this internally via its inverse rounded-clip
+    /// SDF path; the Vulkan backend overrides with a true inverse clip.
+    /// Deliberately pushes NO tightening scissor: an exclude region must stay
+    /// free to paint right up to (and beyond) the excluded bounds.
+    /// Default: backends without inverse-clip support push a full-surface
+    /// no-op clip so the matching <see cref="PopClip"/> stays balanced;
+    /// content simply draws unmasked.
+    virtual void PushRoundedRectClipExclude(float x, float y, float w, float h,
+        float rx, float ry)
+    {
+        (void)x; (void)y; (void)w; (void)h; (void)rx; (void)ry;
+        PushClip(-1.0e9f, -1.0e9f, 2.0e9f, 2.0e9f);
     }
 
     /// Pops a clip.
@@ -549,6 +577,41 @@ public:
         float blurRadius,
         float cornerRadiusTL, float cornerRadiusTR,
         float cornerRadiusBR, float cornerRadiusBL) = 0;
+
+    /// Draws a backdrop filter effect with the full material parameter set —
+    /// adds noiseIntensity, saturation and luminosity to DrawBackdropFilter so
+    /// AcrylicEffect (noise) and MicaEffect (saturation/luminosity) render
+    /// their material grain and vibrancy instead of silently dropping them.
+    ///
+    /// Non-pure with a forwarding default: backends that have not implemented
+    /// the extended path inherit this default, which drops the three extra
+    /// parameters and calls DrawBackdropFilter — so an un-upgraded backend
+    /// behaves exactly as before (blur + tint only) and needs no code change.
+    /// @param noiseIntensity Film-grain noise strength (0 = none; AcrylicEffect ~0.02).
+    /// @param saturation Saturation multiplier applied to the blurred backdrop (1 = unchanged).
+    /// @param luminosity Brightness multiplier applied after tint/saturation (1 = unchanged).
+    virtual void DrawBackdropFilterEx(
+        float x, float y, float w, float h,
+        const char* backdropFilter,
+        const char* material,
+        const char* materialTint,
+        float tintOpacity,
+        float blurRadius,
+        float noiseIntensity,
+        float saturation,
+        float luminosity,
+        float cornerRadiusTL, float cornerRadiusTR,
+        float cornerRadiusBR, float cornerRadiusBL)
+    {
+        // Default: drop the extended material params and fall back to the
+        // blur + tint path every backend already implements.
+        (void)noiseIntensity;
+        (void)saturation;
+        (void)luminosity;
+        DrawBackdropFilter(x, y, w, h, backdropFilter, material, materialTint,
+                           tintOpacity, blurRadius,
+                           cornerRadiusTL, cornerRadiusTR, cornerRadiusBR, cornerRadiusBL);
+    }
 
     /// Draws a glowing border highlight effect for DevTools element inspection.
     /// Creates an animated glowing line that follows the element border with:
@@ -660,6 +723,21 @@ public:
     /// @param mode Shader mode index (0-9).
     virtual void DrawTransitionShader(float x, float y, float w, float h, float progress, int mode) {}
 
+    /// Extended transition-shader entry carrying the corner radius the managed
+    /// caller has always supplied (TransitioningContentControl passes its max
+    /// CornerRadius for SDF clipping; the old C ABI dropped the argument).
+    /// The base implementation forwards to the legacy 6-argument virtual so
+    /// backends that only override that slot (Vulkan gets its rounded clip
+    /// from the ambient replay clip; Software) keep their behaviour with no
+    /// signature change.
+    /// @param cornerRadius Uniform corner radius (in DIPs) clipping the
+    ///        transition area; 0 = no rounding.
+    virtual void DrawTransitionShader(float x, float y, float w, float h, float progress, int mode,
+                                      float cornerRadius) {
+        (void)cornerRadius;
+        DrawTransitionShader(x, y, w, h, progress, mode);
+    }
+
     /// Draws a previously captured transition bitmap to the current render target.
     /// @param slot Transition slot to draw from (0 or 1).
     /// @param x Destination X position (in DIPs).
@@ -725,6 +803,26 @@ public:
         float blurRadius, float offsetX, float offsetY,
         float r, float g, float b, float a,
         float cornerTL, float cornerTR, float cornerBR, float cornerBL) {}
+
+    /// Extended inner-shadow entry matching the managed P/Invoke signature,
+    /// which passes the effect-capture UV offset (element origin minus the
+    /// pixel-snapped capture origin) between the color and the corner radii.
+    /// The old 15-argument C ABI positionally mis-bound those two extra
+    /// managed arguments INTO cornerTL/cornerTR (x64 varargs-style shift), so
+    /// every backend received corner radii displaced by two slots. Routing the
+    /// full 17-argument form through here fixes the binding for all backends;
+    /// the base implementation forwards to the legacy virtual so backends that
+    /// only override that slot keep compiling and now simply receive the
+    /// CORRECT corner radii.
+    virtual void DrawInnerShadowEffect(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) {
+        (void)uvOffsetX; (void)uvOffsetY;
+        DrawInnerShadowEffect(x, y, w, h, blurRadius, offsetX, offsetY, r, g, b, a,
+                              cornerTL, cornerTR, cornerBR, cornerBL);
+    }
 
     /// Applies a 5x4 color matrix transformation to the element content.
     /// @param matrix 20 floats in row-major order (5x4 matrix).
@@ -948,6 +1046,64 @@ public:
     {
         if (outAlive) *outAlive = 0;
         return -1;
+    }
+
+    // ========================================================================
+    // Two-phase back-buffer readback (backend parity verification harness)
+    // ========================================================================
+    // Appended at the END of the vtable (after the test hooks) per the rule
+    // documented above: inserting virtuals mid-class shifts every later slot
+    // across the C-ABI boundary. Rebuild ALL backend DLLs (d3d12 / vulkan /
+    // software / metal) together with jalium.native.core when touching these.
+    //
+    // Split into request + fetch so the copy can ride the frame's own command
+    // stream (no cross-frame CPU/GPU stall at request time): RequestReadback
+    // only latches a pending flag; the NEXT EndDraw records a back-buffer →
+    // CPU-readable copy right before Present and tags it with that frame's
+    // fence value; FetchReadback then blocks until that fence completes and
+    // copies the rows out.
+
+    /// Arms a one-shot back-buffer readback for the next EndDraw. May be
+    /// called at any point before the EndDraw that should be captured
+    /// (typically between BeginDraw and EndDraw). Returns JALIUM_OK when the
+    /// request was latched; JALIUM_ERROR_NOT_SUPPORTED on backends without a
+    /// readback implementation (callers treat that as "no comparison data",
+    /// not an error).
+    virtual JaliumResult RequestReadback() { return JALIUM_ERROR_NOT_SUPPORTED; }
+
+    /// Retrieves the pixels captured by the EndDraw that consumed the last
+    /// RequestReadback. Blocks (fence wait) until the GPU copy completes,
+    /// then writes tightly-row-packed **BGRA8** pixels (byte order B,G,R,A;
+    /// 4 bytes/pixel) into <paramref name="buf"/> — one row every
+    /// <paramref name="bufStride"/> bytes, top-down. The bytes are the raw
+    /// backbuffer contents converted to BGRA channel order only; NO alpha
+    /// un-premultiply or color-space conversion is applied (whether the values
+    /// are premultiplied follows the backend's swap-chain alpha mode — for the
+    /// opaque-window parity scenes both backends render alpha ≈ 1, so diffs
+    /// compare RGB). outWidth/outHeight receive the captured back-buffer pixel
+    /// size; the caller's buffer must hold at least outHeight rows of
+    /// outWidth*4 bytes (bufStride >= width*4).
+    ///
+    /// Size query: buf == nullptr writes ONLY outWidth/outHeight (the pending
+    /// capture's dimensions, no fence wait, no pixel copy) and returns
+    /// JALIUM_OK — callers use this to size their buffer race-free before the
+    /// real fetch instead of guessing from the render-target dimensions
+    /// (which a resize between capture and fetch could invalidate).
+    ///
+    /// Contract: call AFTER the capturing EndDraw returned, never between
+    /// BeginDraw and EndDraw — the copy's fence is only signaled by EndDraw's
+    /// submit, so a mid-frame fetch would return stale/no data (or wait out
+    /// its timeout). Returns JALIUM_ERROR_INVALID_STATE when no completed
+    /// readback is pending, JALIUM_ERROR_INVALID_ARGUMENT for a short
+    /// buffer stride, JALIUM_ERROR_NOT_SUPPORTED on backends without an
+    /// implementation.
+    virtual JaliumResult FetchReadback(uint8_t* buf, uint32_t bufStride,
+                                       int32_t* outWidth, int32_t* outHeight)
+    {
+        (void)buf; (void)bufStride;
+        if (outWidth) *outWidth = 0;
+        if (outHeight) *outHeight = 0;
+        return JALIUM_ERROR_NOT_SUPPORTED;
     }
 
 protected:

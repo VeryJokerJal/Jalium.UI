@@ -4,7 +4,9 @@
 #include "jalium_backend.h"
 #include "text_shaper.h"
 #include "glyph_atlas.h"
+#include "font_face.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -14,23 +16,23 @@ class TextEngine;
 class GlyphRasterizer;
 
 // ============================================================================
-// FreeTypeTextFormat: Cross-platform TextFormat using FreeType + HarfBuzz
+// JaliumTextFormat: Cross-platform TextFormat on the self-hosted font stack
 //
 // Implements the jalium::TextFormat abstract interface using:
-// - HarfBuzz for text shaping
-// - FreeType for metrics and glyph rasterization
+// - OtShaper (self-hosted) for text shaping
+// - FontFace (self-hosted) for metrics and glyph rasterization
 // - Custom layout engine for line breaking, alignment, and hit testing
 // ============================================================================
 
-class FreeTypeTextFormat : public TextFormat {
+class JaliumTextFormat : public TextFormat {
 public:
-    FreeTypeTextFormat(
+    JaliumTextFormat(
         TextEngine* engine,
         const wchar_t* fontFamily,
         float fontSize,
         int32_t fontWeight,
         int32_t fontStyle);
-    ~FreeTypeTextFormat() override;
+    ~JaliumTextFormat() override;
 
     // TextFormat interface
     void SetAlignment(int32_t alignment) override;
@@ -76,8 +78,8 @@ public:
         std::vector<TextGlyphQuad>& outQuads,
         float renderScale = 1.0f);
 
-    /// Gets the FreeType face used by this format.
-    FT_Face GetFace() const { return face_; }
+    /// Gets the font face used by this format.
+    FontFace* GetFace() const { return face_.get(); }
 
     /// Gets the font ID for atlas lookup.
     uint64_t GetFontId() const { return fontId_; }
@@ -114,7 +116,7 @@ private:
 
     /// Picks the face that should render a codepoint: primary if it has the
     /// glyph, else the fallback face if it does, else primary (renders .notdef).
-    FT_Face ChooseFaceForCodepoint(uint32_t codepoint, uint64_t& outFontId) const;
+    FontFace* ChooseFaceForCodepoint(uint32_t codepoint, uint64_t& outFontId) const;
 
     /// Lazily loads fallbackFace_ from the provider's fallback family. No-op
     /// after the first attempt; safe when the platform has no fallback font.
@@ -122,7 +124,7 @@ private:
 
     // Font state
     TextEngine*     engine_;
-    FT_Face         face_ = nullptr;
+    std::unique_ptr<FontFace> face_;
     uint64_t        fontId_ = 0;
     float           fontSizePx_;
     std::wstring    fontFamily_;
@@ -132,7 +134,7 @@ private:
     // Unicode-coverage fallback face (e.g. Noto Sans CJK), loaded lazily the
     // first time the primary face lacks a glyph. A distinct fallbackFontId_
     // keeps its atlas entries from colliding with the primary face's.
-    FT_Face         fallbackFace_ = nullptr;
+    std::unique_ptr<FontFace> fallbackFace_;
     uint64_t        fallbackFontId_ = 0;
     bool            fallbackAttempted_ = false;
 
@@ -155,5 +157,9 @@ private:
     // Shaper
     TextShaper shaper_;
 };
+
+// Transitional alias so consumers (Vulkan/software backends) that still spell
+// the old name keep compiling.
+using FreeTypeTextFormat = JaliumTextFormat;
 
 } // namespace jalium

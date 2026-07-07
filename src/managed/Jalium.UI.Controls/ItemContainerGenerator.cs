@@ -226,6 +226,12 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Public full-teardown surface: drops the realized bookkeeping AND the recycle pool. This is
+    /// the path RefreshItems (ItemsSource / ItemTemplate rebinds) uses to guarantee brand-new
+    /// containers. A collection Reset no longer routes here — see <c>OnReset</c>, which recycles
+    /// realized containers into the pool instead.
+    /// </remarks>
     public void RemoveAll()
     {
         _realizedItems.Clear();
@@ -280,10 +286,11 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
             }
             isNewlyRealized = true;
         }
-        else if (_preferredContainerType != null && _recyclePool.TryPop(_preferredContainerType, out var recycled) && recycled != null)
+        else if (_preferredContainerType != null && TryPopDetachedContainer(out var recycled))
         {
             container = recycled;
-            // Recycled container still holds the previous item's Content/DataContext.
+
+            // The container was content-cleared (ClearContainerForItem) before it entered the pool.
             // Flag as newly realized so the caller (VirtualizingStackPanel) invokes
             // PrepareItemContainer and rebinds it to the new item.
             isNewlyRealized = true;
@@ -298,6 +305,31 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
         MapContainer(index, item, container, isOwnContainer);
         return container;
+    }
+
+    /// <summary>
+    /// Pops pool entries until one that is fully detached comes up. A container
+    /// recycled by a mid-measure Reset can still be attached to its panel — the
+    /// panel defers its own bookkeeping/Children update until after the current
+    /// measure pass, so popping such a container here would steal a live child
+    /// the panel still tracks under another key: force-detaching it forks the
+    /// panel's Children/realized bookkeeping into zombie entries and mis-keyed
+    /// rows. The pool therefore only supplies detached containers; still-attached
+    /// ones are dropped (the panel owns them and detaches them when its deferred
+    /// reset runs — they simply lose their pooling opportunity).
+    /// </summary>
+    private bool TryPopDetachedContainer([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out DependencyObject? container)
+    {
+        while (_recyclePool.TryPop(_preferredContainerType!, out container) && container != null)
+        {
+            if (container is not Visual visual || visual.VisualParent == null)
+            {
+                return true;
+            }
+        }
+
+        container = null;
+        return false;
     }
 
     internal bool RecycleIndex(int index)
@@ -340,7 +372,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
                 break;
 
             case NotifyCollectionChangedAction.Move:
-                OnReset();
+                OnItemMoved(e.OldStartingIndex, e.NewStartingIndex, e.NewItems?.Count ?? e.OldItems?.Count ?? 1);
                 break;
 
             case NotifyCollectionChangedAction.Reset:
@@ -373,7 +405,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
         MarkSortedCacheDirty();
         ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
-            NotifyCollectionChangedAction.Add, position, count, 0));
+            NotifyCollectionChangedAction.Add, position, count, 0, index));
     }
 
     private void OnItemRemoved(int index, int count)
@@ -406,7 +438,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
         MarkSortedCacheDirty();
         ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
-            NotifyCollectionChangedAction.Remove, position, count, count));
+            NotifyCollectionChangedAction.Remove, position, count, count, index));
     }
 
     private void OnItemReplaced(int index, int count)
@@ -424,12 +456,68 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         MarkSortedCacheDirty();
         var position = GeneratorPositionFromIndex(index);
         ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
-            NotifyCollectionChangedAction.Replace, position, count, count));
+            NotifyCollectionChangedAction.Replace, position, count, count, index));
+    }
+
+    private void OnItemMoved(int oldIndex, int newIndex, int count)
+    {
+        if (oldIndex < 0 || newIndex < 0 || count <= 0 || oldIndex == newIndex)
+        {
+            // Malformed / degenerate move — fall back to a full reset for safety.
+            OnReset();
+            return;
+        }
+
+        var newPosition = GeneratorPositionFromIndex(newIndex);
+        var oldPosition = GeneratorPositionFromIndex(oldIndex);
+
+        // Recycle every realized container whose absolute index is affected by the move. Items
+        // OUTSIDE this span keep their indices, so their realized entries stay valid; the affected
+        // ones are dropped and re-realized at their new indices on the next measure.
+        var lo = Math.Min(oldIndex, newIndex);
+        var hi = Math.Max(oldIndex, newIndex) + count;
+        var affected = _realizedItems.Keys.Where(k => k >= lo && k < hi).ToArray();
+        foreach (var key in affected)
+        {
+            RemoveIndexInternal(key, recycle: true);
+        }
+
+        MarkSortedCacheDirty();
+        ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
+            NotifyCollectionChangedAction.Move, newPosition, oldPosition, count, count, newIndex, oldIndex));
     }
 
     private void OnReset()
     {
-        RemoveAll();
+        // Tiered reset: unlike RemoveAll (the public full-teardown surface used by the
+        // RefreshItems / ItemsSource / ItemTemplate rebind paths), a collection Reset preserves
+        // the recycle pool so the next measure pops reused containers instead of rebuilding them.
+        // Each realized entry goes through RemoveIndexInternal(recycle: true), i.e.
+        // stop animations -> ClearContainerForItem -> pool.
+        if (_realizedItems.Count > 0)
+        {
+            // Local snapshot, not a shared buffer: ClearContainerForItem below runs
+            // user-overridable code that can re-enter with another collection change,
+            // and a nested Reset refilling a shared buffer would corrupt this loop.
+            // Keys shifted by a re-entrant Add/Remove still go stale — those entries
+            // are skipped by RemoveIndexInternal and swept by the fallback Clear
+            // below (their containers detach via the panel + deferred detach stop,
+            // at the cost of one lost pooling opportunity).
+            var keys = _realizedItems.Keys.ToArray();
+            for (int i = 0; i < keys.Length; i++)
+            {
+                RemoveIndexInternal(keys[i], recycle: true);
+            }
+        }
+
+        // Fallback for any leftover bookkeeping (own-container entries only detach their map
+        // entry above); keeps the state transition identical to the old RemoveAll-based path,
+        // and the Reset event semantics/ordering that VSP/VWP rely on are unchanged.
+        _realizedItems.Clear();
+        _containerToIndex.Clear();
+        _sortedIndices.Clear();
+        _sortedIndexCacheDirty = false;
+        Status = GeneratorStatus.NotStarted;
         ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
             NotifyCollectionChangedAction.Reset, new GeneratorPosition(-1, 0), 0, 0));
     }
@@ -472,9 +560,32 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
         _realizedItems.Remove(index);
         _containerToIndex.Remove(map.Container);
-        if (recycle && !map.IsOwnContainer)
+        if (!map.IsOwnContainer)
         {
-            _recyclePool.Push(map.Container);
+            // Recycle-time animation hygiene, and it must run BEFORE ClearContainerForItem so
+            // overrides (ListBox reading IsSelected, etc.) observe base values. Synchronous on
+            // purpose: a pooled container can be popped again within the same layout pass, so the
+            // deferred NotifyDetached policy is too late. The discard (!recycle) path stops too —
+            // otherwise a running animation keeps the dead container pinned via its
+            // AnimationManager registration. Own containers are app-owned elements that may be
+            // re-attached elsewhere right after removal; they are left to the deferred detach
+            // policy instead.
+            (map.Container as UIElement)?.StopAnimationsForRecycleRecursive();
+
+            if (recycle)
+            {
+                // Clear FIRST, then pool, so the recycle pool only ever holds clean containers that
+                // no longer alias the previous item's content/selection. This single choke point
+                // covers RecycleIndex, OnItemRemoved/Replaced/Moved, OnReset and the
+                // IRecyclingItemContainerGenerator.Recycle surface, for both VirtualizingStackPanel
+                // and VirtualizingWrapPanel.
+                if (map.Container is FrameworkElement containerElement)
+                {
+                    _host.ClearContainerForItemInternal(containerElement, map.Item);
+                }
+
+                _recyclePool.Push(map.Container);
+            }
         }
 
         MarkSortedCacheDirty();

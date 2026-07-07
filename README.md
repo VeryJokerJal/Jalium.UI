@@ -1,4 +1,4 @@
-﻿# Jalium.UI
+# Jalium.UI
 
 **English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
 
@@ -10,8 +10,8 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 ## Project Status
 
-- Active development — v26.10.2-preview (APIs can still evolve between minor versions)
-- Primary target: Windows 10/11 x64
+- Active development — v26.10.6 (APIs can still evolve between minor versions)
+- Primary target: Windows 10/11 (x64, ARM64)
 - Cross-platform: Android (arm64-v8a, x86_64), Linux (Vulkan), macOS (Metal)
 - Runtime target: .NET 10 (`net10.0-windows`, `net10.0-android`, `net10.0`)
 - Rendering: DirectX 12 (Windows), Vulkan (Linux/Android), Metal (macOS), Software fallback
@@ -20,13 +20,16 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 - GPU-native rendering pipeline with ClearType sub-pixel text rendering
 - Familiar programming model (`DependencyObject`, `UIElement`, panels, templates, resources)
-- JALXAML markup with Razor syntax extensions (`@Path`, `@(expr)`, `@{ ... }`, `@if/@section/@RenderSection`)
-- Rich control library: 80+ controls including Charts, Ribbon, Docking, InkCanvas, WebView, Terminal, WindowsFormsHost
+- JALXAML markup with Razor syntax extensions (`@Path`, `@(expr)`, `@{ ... }`, `@if`/`@for`/`@foreach`, `@section`/`@RenderSection`)
+- Rich control library: 100+ controls including Charts, Ribbon, Docking, InkCanvas, WebView, Terminal, MediaElement, MapView, PropertyGrid, WindowsFormsHost
+- Developer experience: JALXAML hot reload (live visual-tree patching) plus an opt-in built-in DevTools inspector and debug HUD
 - Build-time tooling via NuGet (`Jalium.UI.Build`, `Jalium.UI.Xaml.SourceGenerator`)
+- First-class Generic Host integration — `AppBuilder` implements `IHostApplicationBuilder` (`Microsoft.Extensions.Hosting`) for DI, configuration, options, logging and metrics, plus Jalium MVVM view/view-model wiring
 - UIA accessibility support with automation peers
 - Visual effects: liquid glass, backdrop blur, acrylic, mica, transition shaders, animated bitmaps (GIF / APNG / animated WebP)
+- Native GPU video via `MediaElement` / `NativeVideoSurface` (D3D12 / Vulkan surfaces, staged rollout)
+- Full multi-touch input — manipulation with physical inertia, gesture recognition, real-time stylus preview
 - Grapheme-cluster aware text editing (UAX#29) — emoji, ZWJ sequences, skin-tone modifiers, country flags never split
-- Self-contained `Jalium.Extensions.*` stack (Hosting / DI / Configuration / Options / Logging / Metrics) — no `Microsoft.Extensions.Hosting` dependency
 - Native audio pipeline (miniaudio + dr_libs / minimp3) with WSOLA pitch-preserving time-stretching
 
 ## Framework Composition
@@ -36,16 +39,18 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 | Package | Responsibility |
 | --- | --- |
 | `Jalium.UI.Core` | Dependency property system, visual tree, layout, routed events, binding, animation |
-| `Jalium.UI.Media` | Brushes, geometry, drawing primitives, text formatting, imaging, visual effects |
+| `Jalium.UI.Media` | Brushes, geometry, drawing primitives, text formatting, imaging, video, visual effects |
 | `Jalium.UI.Input` | Mouse, keyboard, touch, stylus input abstractions and routing |
 | `Jalium.UI.Interop` | Managed/native bridge, P/Invoke, runtime native dependency packaging |
 | `Jalium.UI.Gpu` | GPU resource management, render graph, materials, shaders, backend abstraction |
-| `Jalium.UI.Controls` | Controls, panels, templates, windowing, themes, docking, charts |
-| `Jalium.UI.Xaml` | JALXAML parse/load pipeline, Razor syntax support, markup services |
+| `Jalium.UI.Controls` | Controls, panels, templates, windowing, themes, docking, charts, hosting |
+| `Jalium.UI.Xaml` | JALXAML parse/load pipeline, Razor syntax support, hot reload, markup services |
 | `Jalium.UI.Build` | MSBuild tasks and build assets for JALXAML compilation workflow |
 | `Jalium.UI.Xaml.SourceGenerator` | Roslyn source generator for XAML/code-behind integration |
-| `Jalium.UI.Compiler` | Standalone `jalxamlc.exe` compiler tool |
 | `Jalium.UI` | Metapackage that references the full framework stack |
+
+> `Jalium.UI.Compiler` builds the standalone `jalxamlc` compiler executable. It is a
+> build tool consumed from source, not a NuGet package (`dotnet add package` does not apply).
 
 ### Native Modules
 
@@ -57,17 +62,18 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 | `jalium.native.metal` | macOS | Metal render backend |
 | `jalium.native.software` | All | CPU-based software rendering fallback |
 | `jalium.native.platform` | All | Platform abstraction (window, input, events) |
-| `jalium.native.text` | Linux, Android | Cross-platform text engine (FreeType + HarfBuzz) |
+| `jalium.native.text` | Linux, Android, macOS | Cross-platform text engine (FreeType + HarfBuzz) |
 | `jalium.native.browser` | Windows | WebView2 browser integration |
 | `jalium.native.media.core` | All | Cross-platform media C ABI + shared audio (miniaudio / dr_libs / minimp3 / stb_vorbis) |
 | `jalium.native.media.windows` | Windows | Media Foundation video / camera / AAC decoder + WIC imaging |
+| `jalium.native.media.android` | Android | Android image / video / camera decoders + YUV SIMD (NEON) via the NDK |
 | `jalium.native.aot` | All | NativeAOT aggregator (hard-links media, text, backends) |
 
 ### Platform Packages
 
 | Package | Target |
 | --- | --- |
-| `Jalium.UI.Desktop` | `net10.0-windows` — Desktop distribution with native DLLs |
+| `Jalium.UI.Desktop` | `net10.0-windows` — Desktop distribution with per-RID native DLLs (win-x64 / win-arm64) |
 | `Jalium.UI.Android` | `net10.0-android` — Android distribution with native .so libraries |
 
 ## Capability Overview
@@ -75,18 +81,22 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 ### Layout and Visual Tree
 
 - Core panels: `Grid`, `StackPanel`, `Canvas`, `DockPanel`, `WrapPanel`, `UniformGrid`
-- Virtualization: `VirtualizingStackPanel`, DataGrid presenters/panels
+- Virtualization: `VirtualizingStackPanel`, `VirtualizingWrapPanel`, DataGrid presenters/panels
 - Docking: `DockLayout`, `DockSplitPanel`, `DockTabPanel`, `Split`
 - Window-level layout host, overlay layer, title bar composition, chrome integration
 
 ### Controls
 
-- **Input**: `Button`, `TextBox`, `PasswordBox`, `NumberBox`, `AutoCompleteBox`, `ComboBox`, `Slider`, `CheckBox`, `RadioButton`
-- **Data**: `TreeView`, `DataGrid`, `TreeDataGrid`, `ListBox`, `ListView`
-- **Navigation**: `NavigationView`, `TabControl`, `Ribbon`, `CommandBar`, `MenuBar`
-- **Documents**: `FlowDocumentViewer`, `FlowDocumentReader`, `FlowDocumentScrollViewer`, `Markdown`
-- **Charts**: Category, DateTime, Logarithmic axes with chart legend
-- **Rich**: `InkCanvas`, `WebView`/`WebBrowser`, `EditControl`, `QRCode` (self-hosted encoder), `TitleBar`, `Terminal`
+- **Input**: `Button`, `TextBox`, `PasswordBox`, `NumberBox`, `AutoCompleteBox`, `ComboBox`, `Slider`, `RangeSlider`, `CheckBox`, `RadioButton`, `ToggleSwitch`, `SplitButton`
+- **Pickers**: `ColorPicker`, `DatePicker`, `TimePicker`, `Calendar`
+- **Data**: `TreeView`, `DataGrid`, `TreeDataGrid`, `ListBox`, `ListView`, `PropertyGrid`, `JsonTreeViewer`
+- **Navigation & bars**: `NavigationView`, `TabControl`, `Ribbon`, `CommandBar`, `MenuBar`, `ToolBar`, `StatusBar`, `GroupBox`, `Expander`, `InfoBar`
+- **Documents**: `DocumentViewer`, `FlowDocumentReader`, `FlowDocumentScrollViewer`, `FlowDocumentPageViewer`, `Markdown`
+- **Charts**: `BarChart`, `LineChart`, `PieChart`, `ScatterPlot`, `CandlestickChart`, `GaugeChart`, `Heatmap`, `GanttChart`, `NetworkGraph`, `SankeyDiagram`, `TreeMap`, `Sparkline`, plus `FlowchartDiagram` / `MermaidDiagram` — Category / DateTime / Logarithmic / Numeric axes, legend and tooltip
+- **Media**: `MediaElement`, `CameraView`
+- **Maps**: `MapView`, `MiniMap`, `GeographicHeatmap`
+- **Rich**: `InkCanvas`, `WebView`/`WebBrowser`, `EditControl`, `RichTextBox`, `QRCode` (self-hosted encoder), `TitleBar`, `Terminal`, `SwipeControl`
+- **Developer tools**: `DiffViewer`, `HexEditor`
 - **Interop**: `WindowsFormsHost` (host `System.Windows.Forms` controls on `net10.0-windows`)
 - **Printing**: `PrintDialog` backed by a native Win32 platform layer
 - **Notifications**: Toast-style notification system
@@ -123,7 +133,9 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 ### Input Pipeline
 
 - Pointer and keyboard routing with hit testing
-- Touch and stylus pathways with gesture recognition
+- Full multi-touch manipulation (pan / pinch / rotate) with physical inertia
+- `GestureRecognizer` (tap / swipe / pinch) wired natively across the control catalog
+- Real-time stylus (RTS) background ink preview
 - Scroll and manipulation event handling
 
 ### GPU Rendering & Effects
@@ -133,21 +145,27 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 - Liquid glass with refraction, chromatic aberration
 - Transition shaders and element effects (blur, drop shadow)
 - Animated bitmaps: GIF, APNG, animated WebP
+- Native GPU video surface (`NativeVideoSurface`): CPU BGRA8 staging plus import of
+  external GPU resources (D3D11 shared texture / Vulkan external `VkImage` / Android
+  `AHardwareBuffer` / Apple `IOSurface`) — API surface in place, per-backend upload
+  paths being filled in incrementally.
 - Custom shader support via HLSL
 - Bitmap downscale cache + virtualizing wrap panel for large image grids
 - Unified path/bitmap telemetry C ABI surfaced in DevTools Perf tab
 
 ### Hosting / DI / Configuration
 
-- Self-contained `Jalium.Extensions.*` stack lives inside `Jalium.UI.Controls`
-  (no `Microsoft.Extensions.Hosting` package or any of its 18 transitive deps).
-- Covers Hosting (`HostBuilder` / `Host` / `HostApplicationBuilder`),
-  DependencyInjection (incl. keyed services + `ActivatorUtilities`),
-  Configuration (Json / Xml / Ini / Memory / CommandLine / UserSecrets),
-  Options (with `DataAnnotations` validation), Logging (`LoggerMessage`
-  source-generator inclusive), Metrics, Caching, FileProviders,
-  FileSystemGlobbing, ObjectPool, Primitives.
-- Console support is intentionally not implemented.
+- Built on the standard `Microsoft.Extensions.Hosting` stack (10.0.3). `AppBuilder`
+  implements `IHostApplicationBuilder` (wrapping `HostApplicationBuilder`), so the
+  familiar `IServiceCollection`, `IConfiguration`, `ILoggingBuilder`,
+  `IHostEnvironment` and `Meter` surfaces are available during app startup.
+- Jalium-specific glue lives in `Jalium.UI.Hosting`: MVVM view/view-model
+  registration (`AddView<TView, TViewModel>`, `AddViewsAndViewModels`),
+  `ConfigureJalium` options binding to `JaliumRuntimeOptions`, frame-time metrics
+  (`UseJaliumMetrics` / `JaliumMeter`), and opt-in developer tools
+  (`UseDevTools` / `UseDebugHud`).
+- Trim/AOT-safe configuration binding via `EnableConfigurationBindingGenerator`;
+  reflection-based view discovery overloads are annotated `[RequiresUnreferencedCode]`.
 
 ### Audio Pipeline
 
@@ -170,12 +188,27 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 - `Window.ResolveCursor` returns the standard arrow for disabled elements so
   hover state cannot be confused with enabled controls.
 
+### Developer Tools
+
+- Opt-in DevTools window (`app.UseDevTools()`, F12 / Ctrl+Shift+C element picker):
+  visual / logical / flat tree inspector with virtualization and inline property
+  editing, plus Layout, Events, Bindings, Resources, Perf, UIA, Tools
+  (ruler / colour picker / overdraw & dirty-region overlays / screenshot export)
+  and a live REPL tab.
+- On-screen debug HUD (`app.UseDebugHud()`, F3): frame timings, dirty regions and
+  backend info.
+- Both are off by default, so they never ship in release apps unless explicitly enabled.
+
 ### Markup and Tooling
 
 - Runtime parsing: `Jalium.UI.Markup.XamlReader`
 - Build integration through packaged MSBuild targets/tasks
 - Source generator for compile-time JALXAML code-behind
 - Source generator compile-time lowering of Razor directives — see below.
+- JALXAML hot reload: `HotReloadRuntime` / `HotReloadAgent` patch the live visual
+  tree in-process over a named pipe (auto-started via the `JALIUM_HOTRELOAD_PIPE`
+  environment variable set by the IDE); a standalone file watcher lives at
+  `tools/Jalium.UI.HotReload.Watcher`.
 
 ## Razor Syntax in JALXAML
 
@@ -184,8 +217,11 @@ JALXAML supports Razor-style syntax as additive sugar on top of existing `{Bindi
 - `@Path`
 - `@(expr)`
 - `@{ ... }`
+- `@*...*@` comments
 - mixed text templates (for string/object targets)
 - `@if(expr){<Element />}` block directives (with full `else if` / `else` chains)
+- statement / control-flow directives: `@for`, `@foreach`, `@while`, `@switch`,
+  `@using`, `@lock` (expanded at parse time)
 - `@section`/`@RenderSection` for templated content
 - escapes: `@@` and `\@`
 
@@ -282,7 +318,7 @@ using Jalium.UI.Markup;
 var app = new Application();
 
 var xaml = """
-<Window xmlns="https://jalium.dev/ui" Title="JALXAML Window" Width="800" Height="500">
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="JALXAML Window" Width="800" Height="500">
   <Grid>
     <StackPanel Margin="20">
       <TextBlock Text="Hello from JALXAML" FontSize="24"/>
@@ -337,35 +373,47 @@ Jalium.UI/
   src/
     managed/
       Jalium.UI.Core/          # Dependency property system, visual tree, layout
-      Jalium.UI.Media/         # Brushes, geometry, drawing, text, imaging
+      Jalium.UI.Media/         # Brushes, geometry, drawing, text, imaging, video
       Jalium.UI.Input/         # Input abstractions and routing
       Jalium.UI.Interop/       # Native bridge and P/Invoke
       Jalium.UI.Gpu/           # GPU resources, render graph, shaders
-      Jalium.UI.Controls/      # Controls, panels, themes, docking, charts
-      Jalium.UI.Xaml/          # JALXAML parser and Razor support
+      Jalium.UI.Controls/      # Controls, panels, themes, docking, charts, hosting
+      Jalium.UI.Xaml/          # JALXAML parser, Razor support, hot reload
       Jalium.UI.Build/         # MSBuild tasks for JALXAML compilation
       Jalium.UI.Xaml.SourceGenerator/  # Roslyn source generator
-      Jalium.UI.Compiler/      # Standalone JALXAML compiler
+      Jalium.UI.Compiler/      # Standalone jalxamlc compiler (executable)
     native/
-      jalium.native.core/      # Native runtime core
+      jalium.native.core/      # Native runtime core, backend registry
       jalium.native.d3d12/     # DirectX 12 + Vello GPU backend
       jalium.native.vulkan/    # Vulkan backend
       jalium.native.metal/     # Metal backend (macOS)
       jalium.native.software/  # CPU software renderer
       jalium.native.platform/  # Platform abstraction layer
-      jalium.native.text/      # FreeType + HarfBuzz text engine
+      jalium.native.text/      # FreeType + HarfBuzz text engine (non-Windows)
       jalium.native.browser/   # WebView2 integration
+      jalium.native.media.core/     # Cross-platform media C ABI + shared audio
+      jalium.native.media.windows/  # Media Foundation video / camera + WIC
+      jalium.native.media.android/  # Android media decoders + YUV SIMD
+      jalium.native.aot/       # NativeAOT aggregator (hard-links media/text/backends)
     packaging/
       Jalium.UI/               # Main metapackage
-      Jalium.UI.Desktop/       # Windows desktop package
+      Jalium.UI.Desktop/       # Windows desktop package (win-x64 / win-arm64)
       Jalium.UI.Android/       # Android package
+  samples/                     # Gallery, DesktopDemo, AndroidDemo, HostingDemo,
+                               #   MillionScroll, AotWindowDemo, BorderlessDemo,
+                               #   TransparentBackdropDemo
+  tools/
+    Jalium.UI.HotReload.Watcher/  # Standalone JALXAML hot-reload file watcher
   tests/
     Jalium.UI.Tests/           # xUnit test suite (70+ test classes)
     Jalium.UI.ShaderDemo/      # Shader effects demo
-  docs/
-    razor-syntax.md            # Razor syntax reference
-    drawing-api.md             # Drawing API documentation
-    manual-build-configuration.md  # Build configuration guide
+    Jalium.UI.ParityHarness/   # Backend parity harness
+    Jalium.UI.DeviceLostHarness/  # Device-lost recovery harness
+    Jalium.UI.NuGetTest.Desktop/  # Packaged-desktop smoke test
+    Jalium.UI.NuGetTest.Android/  # Packaged-android smoke test
+  docs/                        # razor-syntax, drawing-api, manual-build-configuration,
+                               #   render-thread-design, present-pacing-design,
+                               #   shell-drag-drop (+ design/ and reference/)
 ```
 
 ## Documentation
@@ -375,6 +423,9 @@ Jalium.UI/
 | [`docs/razor-syntax.md`](docs/razor-syntax.md) | Razor syntax reference for JALXAML |
 | [`docs/drawing-api.md`](docs/drawing-api.md) | Drawing API (DrawingContext, GPU effects, rendering) |
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | Manual build configuration guide |
+| [`docs/render-thread-design.md`](docs/render-thread-design.md) | Render thread architecture |
+| [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | Present pacing / frame scheduling |
+| [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | Shell drag & drop integration |
 
 ## Visual Studio Extension Notes
 

@@ -1,8 +1,11 @@
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Interop;
+using Jalium.UI.Interop.Win32;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using static Jalium.UI.Interop.Win32.Win32Constants;
+using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls;
 
@@ -595,102 +598,9 @@ internal sealed partial class DockIndicatorWindow : IDisposable
 
     private const string IndicatorWindowClassName = "JaliumDockIndicator";
 
-    // Window styles
-    private const uint WS_POPUP = 0x80000000;
-    private const uint WS_EX_TOOLWINDOW = 0x00000080;
-    private const uint WS_EX_NOACTIVATE = 0x08000000;
-    private const uint WS_EX_TOPMOST = 0x00000008;
-    private const uint WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
+    // Click-through transparency extended style — unique to the indicator window; the rest
+    // of the WS_/SW_/SWP_/WM_/MA_ constants now come from Win32Constants (issue #151).
     private const uint WS_EX_TRANSPARENT = 0x00000020;
-
-    // ShowWindow commands
-    private const int SW_HIDE = 0;
-    private const int SW_SHOWNOACTIVATE = 4;
-
-    // SetWindowPos
-    private static readonly nint HWND_TOPMOST = -1;
-    private const uint SWP_NOACTIVATE = 0x0010;
-    private const uint SWP_NOOWNERZORDER = 0x0200;
-
-    // Window messages
-    private const uint WM_DESTROY = 0x0002;
-    private const uint WM_PAINT = 0x000F;
-    private const uint WM_ERASEBKGND = 0x0014;
-    private const uint WM_MOUSEACTIVATE = 0x0021;
-
-    // WM_MOUSEACTIVATE return values
-    private const nint MA_NOACTIVATE = 3;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct PAINTSTRUCT
-    {
-        public nint hdc;
-        public bool fErase;
-        public RECT rcPaint;
-        public bool fRestore;
-        public bool fIncUpdate;
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
-        public byte[]? rgbReserved;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct RECT
-    {
-        public int left, top, right, bottom;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WNDCLASSEX
-    {
-        public uint cbSize;
-        public uint style;
-        public nint lpfnWndProc;
-        public int cbClsExtra;
-        public int cbWndExtra;
-        public nint hInstance;
-        public nint hIcon;
-        public nint hCursor;
-        public nint hbrBackground;
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string? lpszMenuName;
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string lpszClassName;
-        public nint hIconSm;
-    }
-
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern ushort RegisterClassEx(ref WNDCLASSEX lpWndClass);
-
-    [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    private static partial nint CreateWindowEx(
-        uint dwExStyle, string lpClassName, string lpWindowName, uint dwStyle,
-        int x, int y, int nWidth, int nHeight,
-        nint hWndParent, nint hMenu, nint hInstance, nint lpParam);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool ShowWindow(nint hWnd, int nCmdShow);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DestroyWindow(nint hWnd);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-
-    [LibraryImport("user32.dll", EntryPoint = "DefWindowProcW")]
-    private static partial nint DefWindowProc(nint hWnd, uint msg, nint wParam, nint lParam);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial nint GetModuleHandle(string? lpModuleName);
-
-    [DllImport("user32.dll")]
-    private static extern nint BeginPaint(nint hWnd, out PAINTSTRUCT lpPaint);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EndPaint(nint hWnd, ref PAINTSTRUCT lpPaint);
 
     #endregion
 }

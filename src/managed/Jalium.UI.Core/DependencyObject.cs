@@ -573,19 +573,75 @@ public class DependencyObject : DispatcherObject
                 OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
             }
 
-            // 动画结束后兜底重绘。当 oldValue 与 newValue 看似 Equals（例如两个返回
-            // 相同 Color 的 SolidColorBrush，或同 Reference 的资源 Brush），
-            // OnPropertyChanged 不会触发，但 visual 系统可能仍持有 animated value
-            // 时期产生的临时 Brush（每帧 GetCurrentValueCore 创建新实例）引用，导致
-            // 渲染未刷新到 base value。显式 schedule 一次 present 兜住这种竞态。
-            // 合成型 DP 不需要让 cached drawing 失效，仅 schedule present 即可。
-            if (this is UIElement uiElement)
+            InvalidateAfterAnimationCleared(dp);
+        }
+    }
+
+    /// <summary>
+    /// 动画层清除后的兜底重绘。当 oldValue 与 newValue 看似 Equals（例如两个返回
+    /// 相同 Color 的 SolidColorBrush，或同 Reference 的资源 Brush），
+    /// OnPropertyChanged 不会触发，但 visual 系统可能仍持有 animated value
+    /// 时期产生的临时 Brush（每帧 GetCurrentValueCore 创建新实例）引用，导致
+    /// 渲染未刷新到 base value。显式 schedule 一次 present 兜住这种竞态。
+    /// 合成型 DP 不需要让 cached drawing 失效，仅 schedule present 即可。
+    /// </summary>
+    private void InvalidateAfterAnimationCleared(DependencyProperty dp)
+    {
+        if (this is UIElement uiElement)
+        {
+            if (DpAffectsCompositionOnly(dp))
+                uiElement.InvalidateComposition();
+            else
+                uiElement.InvalidateVisual();
+        }
+    }
+
+    /// <summary>
+    /// Removes the animated value for a dependency property WITHOUT the HoldEnd
+    /// promotion performed by <see cref="ClearAnimatedValue"/>: the end value is
+    /// never written back as a current value. Used for container-recycling
+    /// hygiene, where a pooled element must not carry an animation's final value
+    /// as a ghost. Fires OnPropertyChanged when the effective value changes and
+    /// always schedules the same invalidation fallback as ClearAnimatedValue.
+    /// </summary>
+    /// <param name="dp">The dependency property whose animated value to discard.</param>
+    internal void DiscardAnimatedValue(DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+
+        if (_animatedValues.TryGetValue(dp, out var animated))
+        {
+            var oldValue = animated.CurrentValue;
+            _animatedValues.Remove(dp);
+
+            var newValue = GetValue(dp);
+
+            if (!Equals(oldValue, newValue))
             {
-                if (DpAffectsCompositionOnly(dp))
-                    uiElement.InvalidateComposition();
-                else
-                    uiElement.InvalidateVisual();
+                OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
             }
+
+            InvalidateAfterAnimationCleared(dp);
+        }
+    }
+
+    /// <summary>
+    /// Discards every animated value on this object (no HoldEnd promotion).
+    /// Keys are snapshotted first because OnPropertyChanged handlers may
+    /// re-enter and mutate the animated layer. Not a per-frame path, so the
+    /// snapshot allocation is acceptable.
+    /// </summary>
+    internal void DiscardAllAnimatedValues()
+    {
+        if (_animatedValues.Count == 0)
+            return;
+
+        var keys = new DependencyProperty[_animatedValues.Count];
+        _animatedValues.Keys.CopyTo(keys, 0);
+
+        foreach (var dp in keys)
+        {
+            DiscardAnimatedValue(dp);
         }
     }
 

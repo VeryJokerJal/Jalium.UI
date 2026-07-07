@@ -191,6 +191,17 @@ public class NavigationViewItem : ContentControl
         Focusable = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
+        // Phase 1 damage-driven compositor opt-in: each nav item is a content-stable
+        // container, so cache its subtree into a GPU layer and re-composite it (a
+        // cheap quad) on an unrelated hover instead of re-rasterizing every sibling
+        // item's solid-color glyph FillPath (2-pass stencil-then-cover on 8xMSAA),
+        // which pegged a weak iGPU at ~100%. Only the hovered item re-realizes.
+        // NOTE (Phase 1 limitation): top-level items are non-nested; expanded
+        // sub-items ARE nested boundaries (the native nested-capture guard makes the
+        // inner one fall back safely, but the outer can stale-composite). Phase 2
+        // replaces this with an ancestor-checked, non-nested opt-in + LRU eviction.
+        IsLayerBoundary = true;
+
         // Use template-based content management (ContentPresenter in template handles Content)
         UseTemplateContentManagement();
 

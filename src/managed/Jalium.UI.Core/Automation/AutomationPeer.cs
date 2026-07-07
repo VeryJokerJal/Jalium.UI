@@ -425,6 +425,13 @@ public abstract class AutomationPeer
     internal static IAutomationEventSink? EventSink { get; set; }
 
     /// <summary>
+    /// Returns whether a platform accessibility client has attached, so callers can cheaply skip
+    /// building peers or raising automation events when nobody is listening. The sink is armed the
+    /// first time a UI Automation client requests the window's provider (see the Windows UIA bridge).
+    /// </summary>
+    public static bool ListenerExists() => EventSink != null;
+
+    /// <summary>
     /// Invalidates the peer, causing it to be rebuilt.
     /// </summary>
     public void InvalidatePeer()

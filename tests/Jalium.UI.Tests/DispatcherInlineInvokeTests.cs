@@ -128,7 +128,16 @@ public class DispatcherInlineInvokeTests
         }
 
         var ex = Record.Exception(() => Step());
-        dispatcher.ProcessQueue(); // drive the steps that were queued once the cap engaged
+        // Drive the steps that were queued once the cap engaged. ProcessQueue is a
+        // bounded batch (it only processes what was queued when it was entered, so
+        // continuous animation can't starve the message pump) — steps queued by a
+        // step within the batch land in the NEXT batch, so pump until quiescent.
+        int drained;
+        do
+        {
+            drained = totalSteps;
+            dispatcher.ProcessQueue();
+        } while (totalSteps > drained);
 
         Assert.Null(ex);
         Assert.True(fellBackToQueue, "inline re-entrancy was not bounded; a continuation storm would overflow the stack");

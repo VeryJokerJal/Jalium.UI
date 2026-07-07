@@ -78,7 +78,7 @@ public class TextBoxBaseAutomationPeer : FrameworkElementAutomationPeer, IValueP
 /// <summary>
 /// Exposes TextBox types to UI Automation.
 /// </summary>
-public sealed class TextBoxAutomationPeer : TextBoxBaseAutomationPeer
+public sealed class TextBoxAutomationPeer : TextBoxBaseAutomationPeer, ITextProvider
 {
     /// <summary>
     /// Initializes a new instance of the TextBoxAutomationPeer class.
@@ -109,6 +109,39 @@ public sealed class TextBoxAutomationPeer : TextBoxBaseAutomationPeer
 
         return base.GetNameCore();
     }
+
+    /// <inheritdoc />
+    protected override object? GetPatternCore(PatternInterface patternInterface)
+    {
+        // TextBox exposes the Text pattern (in addition to the Value pattern handled by the base
+        // peer) so external UIA clients can detect and read the currently selected text.
+        if (patternInterface == PatternInterface.Text)
+            return this;
+
+        return base.GetPatternCore(patternInterface);
+    }
+
+    #region ITextProvider
+
+    string ITextProvider.Text => TextBoxOwner.Text ?? string.Empty;
+
+    int ITextProvider.SelectionStart => TextBoxOwner.SelectionStart;
+
+    int ITextProvider.SelectionLength => TextBoxOwner.SelectionLength;
+
+    bool ITextProvider.IsReadOnly => TextBoxOwner.IsReadOnly;
+
+    SupportedTextSelection ITextProvider.SupportedTextSelection => SupportedTextSelection.Single;
+
+    void ITextProvider.Select(int start, int length) => TextBoxOwner.Select(start, length);
+
+    // Precise per-glyph selection geometry is not surfaced yet; report none rather than a misleading
+    // rectangle. GetText()/GetSelection() — the path external detectors rely on — remain exact.
+    IReadOnlyList<Rect> ITextProvider.GetBoundingRectangles(int start, int length) => Array.Empty<Rect>();
+
+    void ITextProvider.ScrollIntoView(int start, int length) => TextBoxOwner.ScrollToCaretPosition();
+
+    #endregion
 
     #region IValueProvider
 
