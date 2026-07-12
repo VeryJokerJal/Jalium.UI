@@ -5,9 +5,9 @@ using Jalium.UI.Markup;
 [assembly: InternalsVisibleTo("Jalium.UI.Tests")]
 
 // Expose CLR namespaces defined in Jalium.UI.Media under the canonical JALXAML namespace.
-[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media")]
-[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media.Animation")]
-[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media.Effects")]
-[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media.Imaging")]
-[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media.Media3D")]
-[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media.TextFormatting")]
+[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media", AssemblyName = "Jalium.UI.Managed")]
+[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media.Animation", AssemblyName = "Jalium.UI.Managed")]
+[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media.Effects", AssemblyName = "Jalium.UI.Managed")]
+[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media.Imaging", AssemblyName = "Jalium.UI.Managed")]
+[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media.Media3D", AssemblyName = "Jalium.UI.Managed")]
+[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Media.TextFormatting", AssemblyName = "Jalium.UI.Managed")]

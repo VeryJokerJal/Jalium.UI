@@ -5,12 +5,30 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Represents a binding between an InputGesture and a command.
 /// </summary>
-public class InputBinding
+public partial class InputBinding : Freezable, ICommandSource
 {
-    private ICommand? _command;
     private InputGesture? _gesture;
-    private object? _commandParameter;
-    private IInputElement? _commandTarget;
+
+    public static readonly DependencyProperty CommandProperty =
+        DependencyProperty.Register(
+            nameof(Command),
+            typeof(ICommand),
+            typeof(InputBinding),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty CommandParameterProperty =
+        DependencyProperty.Register(
+            nameof(CommandParameter),
+            typeof(object),
+            typeof(InputBinding),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty CommandTargetProperty =
+        DependencyProperty.Register(
+            nameof(CommandTarget),
+            typeof(IInputElement),
+            typeof(InputBinding),
+            new PropertyMetadata(null));
 
     /// <summary>
     /// Initializes a new instance of the InputBinding class.
@@ -26,7 +44,7 @@ public class InputBinding
     /// <param name="gesture">The input gesture that invokes the command.</param>
     public InputBinding(ICommand command, InputGesture gesture)
     {
-        _command = command ?? throw new ArgumentNullException(nameof(command));
+        Command = command ?? throw new ArgumentNullException(nameof(command));
         _gesture = gesture ?? throw new ArgumentNullException(nameof(gesture));
     }
 
@@ -35,8 +53,8 @@ public class InputBinding
     /// </summary>
     public ICommand? Command
     {
-        get => _command;
-        set => _command = value;
+        get => GetValue(CommandProperty) as ICommand;
+        set => SetValue(CommandProperty, value);
     }
 
     /// <summary>
@@ -44,8 +62,19 @@ public class InputBinding
     /// </summary>
     public virtual InputGesture? Gesture
     {
-        get => _gesture;
-        set => _gesture = value;
+        get
+        {
+            ReadPreamble();
+            return _gesture;
+        }
+        set
+        {
+            WritePreamble();
+            if (ReferenceEquals(_gesture, value))
+                return;
+            _gesture = value;
+            WritePostscript();
+        }
     }
 
     /// <summary>
@@ -53,8 +82,8 @@ public class InputBinding
     /// </summary>
     public object? CommandParameter
     {
-        get => _commandParameter;
-        set => _commandParameter = value;
+        get => GetValue(CommandParameterProperty);
+        set => SetValue(CommandParameterProperty, value);
     }
 
     /// <summary>
@@ -62,21 +91,76 @@ public class InputBinding
     /// </summary>
     public IInputElement? CommandTarget
     {
-        get => _commandTarget;
-        set => _commandTarget = value;
+        get => GetValue(CommandTargetProperty) as IInputElement;
+        set => SetValue(CommandTargetProperty, value);
     }
+
+    protected override Freezable CreateInstanceCore() => new InputBinding();
+
+    protected override void CloneCore(Freezable sourceFreezable)
+    {
+        base.CloneCore(sourceFreezable);
+        Gesture = CloneGesture(((InputBinding)sourceFreezable).Gesture);
+    }
+
+    protected override void CloneCurrentValueCore(Freezable sourceFreezable)
+    {
+        base.CloneCurrentValueCore(sourceFreezable);
+        Gesture = CloneGesture(((InputBinding)sourceFreezable).Gesture);
+    }
+
+    protected override void GetAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetAsFrozenCore(sourceFreezable);
+        Gesture = CloneGesture(((InputBinding)sourceFreezable).Gesture);
+    }
+
+    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetCurrentValueAsFrozenCore(sourceFreezable);
+        Gesture = CloneGesture(((InputBinding)sourceFreezable).Gesture);
+    }
+
+    private static InputGesture? CloneGesture(InputGesture? gesture) => gesture switch
+    {
+        KeyGesture keyGesture => new KeyGesture(
+            keyGesture.Key,
+            keyGesture.Modifiers,
+            keyGesture.DisplayString),
+        MouseGesture mouseGesture => new MouseGesture(
+            mouseGesture.MouseAction,
+            mouseGesture.Modifiers),
+        _ => gesture,
+    };
 }
 
 /// <summary>
 /// Represents a binding between a KeyGesture and a command.
 /// </summary>
-public sealed class KeyBinding : InputBinding
+public partial class KeyBinding : InputBinding
 {
+    private bool _synchronizingGesture;
+
+    public static readonly DependencyProperty KeyProperty =
+        DependencyProperty.Register(
+            nameof(Key),
+            typeof(Key),
+            typeof(KeyBinding),
+            new PropertyMetadata(Key.None, OnKeyOrModifiersChanged));
+
+    public static readonly DependencyProperty ModifiersProperty =
+        DependencyProperty.Register(
+            nameof(Modifiers),
+            typeof(ModifierKeys),
+            typeof(KeyBinding),
+            new PropertyMetadata(ModifierKeys.None, OnKeyOrModifiersChanged));
+
     /// <summary>
     /// Initializes a new instance of the KeyBinding class.
     /// </summary>
     public KeyBinding()
     {
+        Gesture = new KeyGesture(Key.None, ModifierKeys.None);
     }
 
     /// <summary>
@@ -87,6 +171,7 @@ public sealed class KeyBinding : InputBinding
     public KeyBinding(ICommand command, KeyGesture gesture)
         : base(command, gesture)
     {
+        SynchronizePropertiesFromGesture(gesture);
     }
 
     /// <summary>
@@ -96,41 +181,80 @@ public sealed class KeyBinding : InputBinding
     /// <param name="key">The key that invokes the command (as key code).</param>
     /// <param name="modifiers">The modifier keys that must be pressed (as flags).</param>
     public KeyBinding(ICommand command, int key, int modifiers)
-        : base(command, new KeyGesture(key, modifiers))
+        : this(command, new KeyGesture(key, modifiers))
     {
     }
 
     /// <summary>
-    /// Gets or sets the key associated with this binding (as key code).
+    /// Initializes a new instance with the specified command, key, and modifiers.
     /// </summary>
-    public int Key
+    public KeyBinding(ICommand command, Key key, ModifierKeys modifiers)
+        : this(command, new KeyGesture(key, modifiers))
     {
-        get => (Gesture as KeyGesture)?.Key ?? 0;
+    }
+
+    /// <summary>
+    /// Gets or sets the key associated with this binding.
+    /// </summary>
+    public Key Key
+    {
+        get => (Key)(GetValue(KeyProperty) ?? Key.None);
+        set => SetValue(KeyProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the modifier keys associated with this binding.
+    /// </summary>
+    public ModifierKeys Modifiers
+    {
+        get => (ModifierKeys)(GetValue(ModifiersProperty) ?? ModifierKeys.None);
+        set => SetValue(ModifiersProperty, value);
+    }
+
+    public override InputGesture? Gesture
+    {
+        get => base.Gesture;
         set
         {
-            if (Gesture is KeyGesture existing)
-            {
-                Gesture = new KeyGesture(value, existing.Modifiers);
-            }
-            else
-            {
-                Gesture = new KeyGesture(value);
-            }
+            if (value is not null and not KeyGesture)
+                throw new ArgumentException("A KeyBinding requires a KeyGesture.", nameof(value));
+            base.Gesture = value;
+            if (!_synchronizingGesture && value is KeyGesture keyGesture)
+                SynchronizePropertiesFromGesture(keyGesture);
         }
     }
 
-    /// <summary>
-    /// Gets or sets the modifier keys associated with this binding (as flags).
-    /// </summary>
-    public int Modifiers
+    protected override Freezable CreateInstanceCore() => new KeyBinding();
+
+    private static void OnKeyOrModifiersChanged(
+        DependencyObject dependencyObject,
+        DependencyPropertyChangedEventArgs args)
     {
-        get => (Gesture as KeyGesture)?.Modifiers ?? 0;
-        set
+        var binding = (KeyBinding)dependencyObject;
+        if (binding._synchronizingGesture)
+            return;
+        binding._synchronizingGesture = true;
+        try
         {
-            if (Gesture is KeyGesture existing)
-            {
-                Gesture = new KeyGesture(existing.Key, value);
-            }
+            binding.Gesture = new KeyGesture(binding.Key, binding.Modifiers);
+        }
+        finally
+        {
+            binding._synchronizingGesture = false;
+        }
+    }
+
+    private void SynchronizePropertiesFromGesture(KeyGesture gesture)
+    {
+        _synchronizingGesture = true;
+        try
+        {
+            SetValue(KeyProperty, gesture.Key);
+            SetValue(ModifiersProperty, gesture.Modifiers);
+        }
+        finally
+        {
+            _synchronizingGesture = false;
         }
     }
 }
@@ -140,11 +264,21 @@ public sealed class KeyBinding : InputBinding
 /// </summary>
 public sealed class MouseBinding : InputBinding
 {
+    private bool _synchronizingGesture;
+
+    public static readonly DependencyProperty MouseActionProperty =
+        DependencyProperty.Register(
+            nameof(MouseAction),
+            typeof(MouseAction),
+            typeof(MouseBinding),
+            new PropertyMetadata(MouseAction.None, OnMouseActionChanged));
+
     /// <summary>
     /// Initializes a new instance of the MouseBinding class.
     /// </summary>
     public MouseBinding()
     {
+        Gesture = new MouseGesture(MouseAction.None);
     }
 
     /// <summary>
@@ -155,6 +289,7 @@ public sealed class MouseBinding : InputBinding
     public MouseBinding(ICommand command, MouseGesture gesture)
         : base(command, gesture)
     {
+        SynchronizePropertyFromGesture(gesture);
     }
 
     /// <summary>
@@ -162,17 +297,67 @@ public sealed class MouseBinding : InputBinding
     /// </summary>
     public MouseAction MouseAction
     {
-        get => (Gesture as MouseGesture)?.MouseAction ?? MouseAction.None;
+        get => (MouseAction)(GetValue(MouseActionProperty) ?? MouseAction.None);
+        set => SetValue(MouseActionProperty, value);
+    }
+
+    public override InputGesture? Gesture
+    {
+        get => base.Gesture;
         set
         {
-            if (Gesture is MouseGesture existing)
-            {
-                existing.MouseAction = value;
-            }
-            else
-            {
-                Gesture = new MouseGesture(value);
-            }
+            if (value is not null and not MouseGesture)
+                throw new ArgumentException("A MouseBinding requires a MouseGesture.", nameof(value));
+            base.Gesture = value;
+            if (!_synchronizingGesture && value is MouseGesture mouseGesture)
+                SynchronizePropertyFromGesture(mouseGesture);
+        }
+    }
+
+    protected override Freezable CreateInstanceCore() => new MouseBinding();
+
+    protected override void CloneCore(Freezable sourceFreezable) =>
+        base.CloneCore(sourceFreezable);
+
+    protected override void CloneCurrentValueCore(Freezable sourceFreezable) =>
+        base.CloneCurrentValueCore(sourceFreezable);
+
+    protected override void GetAsFrozenCore(Freezable sourceFreezable) =>
+        base.GetAsFrozenCore(sourceFreezable);
+
+    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable) =>
+        base.GetCurrentValueAsFrozenCore(sourceFreezable);
+
+    private static void OnMouseActionChanged(
+        DependencyObject dependencyObject,
+        DependencyPropertyChangedEventArgs args)
+    {
+        var binding = (MouseBinding)dependencyObject;
+        if (binding._synchronizingGesture)
+            return;
+
+        binding._synchronizingGesture = true;
+        try
+        {
+            ModifierKeys modifiers = (binding.Gesture as MouseGesture)?.Modifiers ?? ModifierKeys.None;
+            binding.Gesture = new MouseGesture(binding.MouseAction, modifiers);
+        }
+        finally
+        {
+            binding._synchronizingGesture = false;
+        }
+    }
+
+    private void SynchronizePropertyFromGesture(MouseGesture gesture)
+    {
+        _synchronizingGesture = true;
+        try
+        {
+            SetValue(MouseActionProperty, gesture.MouseAction);
+        }
+        finally
+        {
+            _synchronizingGesture = false;
         }
     }
 }

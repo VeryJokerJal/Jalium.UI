@@ -132,7 +132,8 @@ typedef enum JaliumPlatform {
     JALIUM_PLATFORM_WINDOWS = 1,
     JALIUM_PLATFORM_LINUX_X11 = 2,
     JALIUM_PLATFORM_ANDROID = 3,
-    JALIUM_PLATFORM_MACOS = 4
+    JALIUM_PLATFORM_MACOS = 4,
+    JALIUM_PLATFORM_LINUX_WAYLAND = 5
 } JaliumPlatform;
 
 /// Surface descriptor kind used when creating render targets in a platform-neutral way.
@@ -381,7 +382,8 @@ typedef struct JaliumGpuTimingStats {
 
 /// Platform-neutral native surface descriptor.
 /// handle0/1/2 are backend/platform-specific payload slots (for example HWND,
-/// X11 Display + Window, or ANativeWindow pointer).
+/// X11 Display + Window, Wayland wl_display + wl_surface + borrowed wl_shm,
+/// or an ANativeWindow pointer).
 typedef struct JaliumSurfaceDescriptor {
     int32_t platform;
     int32_t kind;

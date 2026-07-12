@@ -67,7 +67,7 @@ public class SymbolIcon : IconElement
         double fontSize = Math.Min(RenderSize.Width, RenderSize.Height);
         if (fontSize <= 0) fontSize = 16;
 
-        var ft = new FormattedText(glyph, SymbolFontFamily, fontSize)
+        var ft = new FormattedText(glyph, SymbolFontFamily.Source, fontSize)
         {
             Foreground = foreground,
             MaxTextWidth = RenderSize.Width,

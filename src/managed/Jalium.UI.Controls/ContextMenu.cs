@@ -11,7 +11,7 @@ namespace Jalium.UI.Controls;
 /// Represents a context menu that appears on right-click.
 /// Uses a <see cref="Popup"/> to display its content at the correct screen position.
 /// </summary>
-public class ContextMenu : ItemsControl
+public class ContextMenu : MenuBase
 {
     #region Static Brushes
 
@@ -79,6 +79,31 @@ public class ContextMenu : ItemsControl
     public static readonly DependencyProperty StaysOpenProperty =
         DependencyProperty.Register(nameof(StaysOpen), typeof(bool), typeof(ContextMenu),
             new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the CustomPopupPlacementCallback dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty CustomPopupPlacementCallbackProperty =
+        DependencyProperty.Register(nameof(CustomPopupPlacementCallback),
+            typeof(CustomPopupPlacementCallback), typeof(ContextMenu),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Identifies the HasDropShadow dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty HasDropShadowProperty =
+        DependencyProperty.Register(nameof(HasDropShadow), typeof(bool), typeof(ContextMenu),
+            new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the PlacementRectangle dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty PlacementRectangleProperty =
+        DependencyProperty.Register(nameof(PlacementRectangle), typeof(Rect), typeof(ContextMenu),
+            new PropertyMetadata(Rect.Empty));
 
     #endregion
 
@@ -180,6 +205,37 @@ public class ContextMenu : ItemsControl
         set => SetValue(StaysOpenProperty, value);
     }
 
+    /// <summary>
+    /// Gets or sets the callback used when <see cref="Placement"/> is
+    /// <see cref="PlacementMode.Custom"/>.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public CustomPopupPlacementCallback? CustomPopupPlacementCallback
+    {
+        get => (CustomPopupPlacementCallback?)GetValue(CustomPopupPlacementCallbackProperty);
+        set => SetValue(CustomPopupPlacementCallbackProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether the popup should render a drop shadow.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public bool HasDropShadow
+    {
+        get => (bool)GetValue(HasDropShadowProperty)!;
+        set => SetValue(HasDropShadowProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the rectangle relative to the placement target used to position the popup.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public Rect PlacementRectangle
+    {
+        get => (Rect)(GetValue(PlacementRectangleProperty) ?? Rect.Empty);
+        set => SetValue(PlacementRectangleProperty, value);
+    }
+
     #endregion
 
     #region Private Fields
@@ -220,7 +276,10 @@ public class ContextMenu : ItemsControl
             e.Property == HorizontalOffsetProperty ||
             e.Property == VerticalOffsetProperty ||
             e.Property == PlacementTargetProperty ||
-            e.Property == StaysOpenProperty)
+            e.Property == StaysOpenProperty ||
+            e.Property == CustomPopupPlacementCallbackProperty ||
+            e.Property == HasDropShadowProperty ||
+            e.Property == PlacementRectangleProperty)
         {
             UpdatePopupSettings();
         }
@@ -241,7 +300,7 @@ public class ContextMenu : ItemsControl
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item)
+    protected override bool IsItemItsOwnContainerOverride(object item)
     {
         return item is MenuItem || item is Separator;
     }
@@ -308,10 +367,14 @@ public class ContextMenu : ItemsControl
         {
             Placement = PlacementMode.MousePoint,
             StaysOpen = false,
+            CustomPopupPlacementCallback = CustomPopupPlacementCallback,
+            PlacementRectangle = PlacementRectangle,
+            AllowsTransparency = HasDropShadow,
             // Context menus should move to external PopupWindow when they overflow the host window.
             ShouldConstrainToRootBounds = false,
             Child = _popupBorder
         };
+        _popup.Closed += OnPopupClosed;
         UpdatePopupSettings();
     }
 
@@ -388,12 +451,23 @@ public class ContextMenu : ItemsControl
 
         _popup.PlacementTarget = PlacementTarget;
         _popup.StaysOpen = StaysOpen;
+        _popup.CustomPopupPlacementCallback = CustomPopupPlacementCallback;
+        _popup.PlacementRectangle = PlacementRectangle;
+        _popup.AllowsTransparency = HasDropShadow;
 
         if (_popup.IsOpen)
         {
             _popup.Placement = Placement;
             _popup.HorizontalOffset = HorizontalOffset;
             _popup.VerticalOffset = VerticalOffset;
+        }
+    }
+
+    private void OnPopupClosed(object? sender, EventArgs e)
+    {
+        if (IsOpen)
+        {
+            SetCurrentValue(IsOpenProperty, false);
         }
     }
 
@@ -406,7 +480,7 @@ public class ContextMenu : ItemsControl
     {
         // The ContextMenu itself should not take any layout space.
         // All visual content is displayed via the Popup.
-        return Size.Empty;
+        return default(Size);
     }
 
     #endregion
@@ -445,18 +519,37 @@ public class ContextMenu : ItemsControl
 
                 popup.PlacementTarget = contextMenu.PlacementTarget;
                 popup.StaysOpen = contextMenu.StaysOpen;
+                popup.CustomPopupPlacementCallback = contextMenu.CustomPopupPlacementCallback;
+                popup.PlacementRectangle = contextMenu.PlacementRectangle;
+                popup.AllowsTransparency = contextMenu.HasDropShadow;
                 popup.IsOpen = true;
 
                 contextMenu.AnimateOpen();
 
-                contextMenu.RaiseEvent(new RoutedEventArgs(OpenedEvent, contextMenu));
+                contextMenu.OnOpened(new RoutedEventArgs(OpenedEvent, contextMenu));
             }
             else
             {
-                contextMenu.RaiseEvent(new RoutedEventArgs(ClosedEvent, contextMenu));
+                contextMenu.OnClosed(new RoutedEventArgs(ClosedEvent, contextMenu));
                 contextMenu.AnimateClose();
             }
         }
+    }
+
+    /// <summary>
+    /// Raises the <see cref="Opened"/> routed event.
+    /// </summary>
+    protected virtual void OnOpened(RoutedEventArgs e)
+    {
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="Closed"/> routed event.
+    /// </summary>
+    protected virtual void OnClosed(RoutedEventArgs e)
+    {
+        RaiseEvent(e);
     }
 
     #endregion
@@ -472,6 +565,7 @@ public class ContextMenu : ItemsControl
 
         target.Opacity = 0;
         target.RenderOffset = new Point(0, PopupSlideOffsetY);
+        _popup?.RequestHostRender();
 
         var startTick = Environment.TickCount64;
         _popupAnimTimer = new DispatcherTimer
@@ -494,6 +588,8 @@ public class ContextMenu : ItemsControl
                 _popupAnimTimer?.Stop();
                 _popupAnimTimer = null;
             }
+
+            _popup?.RequestHostRender();
         };
         _popupAnimTimer.Start();
     }
@@ -526,6 +622,7 @@ public class ContextMenu : ItemsControl
 
             target.Opacity = startOpacity * (1.0 - eased);
             target.RenderOffset = new Point(0, startOffsetY + (PopupSlideOffsetY - startOffsetY) * eased);
+            _popup?.RequestHostRender();
 
             if (progress >= 1.0)
             {

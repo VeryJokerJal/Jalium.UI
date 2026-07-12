@@ -1,5 +1,8 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
+using CanonicalBrushValueSerializer = Jalium.UI.Media.Converters.BrushValueSerializer;
+using CanonicalGeometryValueSerializer = Jalium.UI.Media.Converters.GeometryValueSerializer;
+using CanonicalTransformValueSerializer = Jalium.UI.Media.Converters.TransformValueSerializer;
 
 namespace Jalium.UI.Tests;
 
@@ -14,9 +17,10 @@ public class DevToolsValueSerializerTests
     {
         Assert.IsType<ImageSourceValueSerializer>(ValueSerializer.GetSerializerFor(typeof(ImageSource)));
         Assert.IsType<FontFamilyValueSerializer>(ValueSerializer.GetSerializerFor(typeof(FontFamily)));
-        Assert.IsType<BrushValueSerializer>(ValueSerializer.GetSerializerFor(typeof(Brush)));
-        Assert.IsType<BrushValueSerializer>(ValueSerializer.GetSerializerFor(typeof(SolidColorBrush)));
-        Assert.IsType<TransformValueSerializer>(ValueSerializer.GetSerializerFor(typeof(Transform)));
+        Assert.IsType<CanonicalBrushValueSerializer>(ValueSerializer.GetSerializerFor(typeof(Brush)));
+        Assert.IsType<CanonicalBrushValueSerializer>(ValueSerializer.GetSerializerFor(typeof(SolidColorBrush)));
+        Assert.IsType<CanonicalGeometryValueSerializer>(ValueSerializer.GetSerializerFor(typeof(Geometry)));
+        Assert.IsType<CanonicalTransformValueSerializer>(ValueSerializer.GetSerializerFor(typeof(Transform)));
     }
 
     [Fact]
@@ -25,8 +29,18 @@ public class DevToolsValueSerializerTests
         Assert.Null(ValueSerializer.GetSerializerFor(typeof(int)));
         Assert.Null(ValueSerializer.GetSerializerFor(typeof(string)));
         Assert.Null(ValueSerializer.GetSerializerFor(null));
-        // Geometry has no reliable string round-trip (ToString is not path markup), so it is excluded.
-        Assert.Null(ValueSerializer.GetSerializerFor(typeof(Geometry)));
+    }
+
+    [Fact]
+    public void GeometrySerializer_RoundTripsPathMarkup()
+    {
+        var serializer = ValueSerializer.GetSerializerFor(typeof(Geometry))!;
+        var geometry = Geometry.Parse("M 0,0 L 10,0 L 10,10 L 0,10 Z");
+
+        var text = serializer.ConvertToString(geometry, null);
+        var roundTrip = Assert.IsAssignableFrom<Geometry>(serializer.ConvertFromString(text, null));
+
+        Assert.Equal(geometry.Bounds, roundTrip.Bounds);
     }
 
     [Fact]

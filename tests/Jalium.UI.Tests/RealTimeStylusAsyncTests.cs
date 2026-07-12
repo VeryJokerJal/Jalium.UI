@@ -16,7 +16,7 @@ public class RealTimeStylusAsyncTests
     {
         var root = new AsyncRtsTestElement();
         var sleeper = new SleepingRtsPlugIn(durationMs: 150);
-        root.StylusPlugIns.Add(sleeper);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(sleeper);
 
         using var rts = new RealTimeStylus(root) { UseRealTimeThread = true };
 
@@ -54,7 +54,7 @@ public class RealTimeStylusAsyncTests
     {
         var root = new AsyncRtsTestElement();
         var probe = new ThreadCapturePlugIn { ForceRealTime = true };
-        root.StylusPlugIns.Add(probe);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(probe);
 
         using var rts = new RealTimeStylus(root) { UseRealTimeThread = true };
         var completedThreadId = 0;
@@ -93,7 +93,7 @@ public class RealTimeStylusAsyncTests
         var root = new AsyncRtsTestElement();
         Guid key = Guid.NewGuid();
         var mutator = new MutateAndCarryPlugIn(key, payload: "from-rts");
-        root.StylusPlugIns.Add(mutator);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(mutator);
 
         using var rts = new RealTimeStylus(root) { UseRealTimeThread = true };
         StylusPointCollection? observedPoints = null;
@@ -133,7 +133,7 @@ public class RealTimeStylusAsyncTests
     {
         var root = new AsyncRtsTestElement();
         var ui = new ThreadCapturePlugIn(); // IsRealTimeCapable = false by default
-        root.StylusPlugIns.Add(ui);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(ui);
 
         using var rts = new RealTimeStylus(root) { UseRealTimeThread = true };
         int uiThreadId = Environment.CurrentManagedThreadId;

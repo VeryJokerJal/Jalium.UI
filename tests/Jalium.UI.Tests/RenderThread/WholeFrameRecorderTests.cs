@@ -272,6 +272,7 @@ public sealed class WholeFrameRecorderTests : System.IDisposable
         {
             if (m.IsSpecialName) continue;             // skip property accessors
             if (m.Name == "Dispose") continue;         // IDisposable lifecycle, not a draw
+            if (m.DeclaringType != rtdc) continue;      // inherited adapter methods are not RTDC overrides
             var baseDef = m.GetBaseDefinition();
             if (baseDef.DeclaringType == dc)           // overrides a DrawingContext virtual
             {

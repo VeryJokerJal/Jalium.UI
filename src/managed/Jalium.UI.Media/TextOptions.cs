@@ -1,69 +1,6 @@
 namespace Jalium.UI.Media;
 
 /// <summary>
-/// Specifies the formatting method for text.
-/// </summary>
-public enum TextFormattingMode
-{
-    /// <summary>
-    /// Text is displayed with resolution-independent glyph ideal metrics.
-    /// </summary>
-    Ideal = 0,
-
-    /// <summary>
-    /// Text is displayed with metrics that produce glyphs snapped to the pixel grid on screen.
-    /// </summary>
-    Display = 1
-}
-
-/// <summary>
-/// Specifies the rendering mode for text.
-/// </summary>
-public enum TextRenderingMode
-{
-    /// <summary>
-    /// Text is rendered with the most appropriate rendering algorithm automatically.
-    /// </summary>
-    Auto = 0,
-
-    /// <summary>
-    /// Text is rendered with bilevel anti-aliasing.
-    /// </summary>
-    Aliased = 1,
-
-    /// <summary>
-    /// Text is rendered with grayscale anti-aliasing.
-    /// </summary>
-    Grayscale = 2,
-
-    /// <summary>
-    /// Text is rendered with ClearType anti-aliasing.
-    /// </summary>
-    ClearType = 3
-}
-
-/// <summary>
-/// Specifies whether text hinting is on or off.
-/// </summary>
-public enum TextHintingMode
-{
-    /// <summary>
-    /// The text rendering engine determines the best hinting mode automatically.
-    /// </summary>
-    Auto = 0,
-
-    /// <summary>
-    /// Hinting is performed on the text using fixed-point hinting values.
-    /// </summary>
-    Fixed = 1,
-
-    /// <summary>
-    /// Hinting is performed using animated values.
-    /// </summary>
-    Animated = 2
-}
-
-/// <summary>
 /// Provides a set of attached properties that affects text rendering in an element.
 /// </summary>
 public static class TextOptions
@@ -125,30 +62,13 @@ public static class TextOptions
 
     private static int s_bridgeWakeAttempted;
 
-    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(
-        "Trimming", "IL2026",
-        Justification = "Bridge type lookup tolerates trimming via the catch block below.")]
-    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(
-        "Trimming", "IL2075",
-        Justification = "Reflection target is preserved by DynamicDependency on TextRenderingBridge.")]
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
     private static void EnsureNativeBridgeAwake()
     {
         if (System.Threading.Interlocked.Exchange(ref s_bridgeWakeAttempted, 1) != 0)
             return;
-        try
-        {
-            var t = System.Type.GetType("Jalium.UI.Interop.TextRenderingBridge, Jalium.UI.Interop", throwOnError: false);
-            t?.GetMethod("EnsureInitialized", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
-              ?.Invoke(null, null);
-        }
-        catch
-        {
-            // Interop assembly absent (managed-only unit-test host) or the
-            // bridge type was trimmed despite our DynamicDependency hints.
-            // The set still raises ProcessTextRenderingModeChanged below;
-            // any other subscriber gets the event normally.
-        }
+
+        Jalium.UI.Interop.TextRenderingBridge.EnsureInitialized();
     }
 
     /// <summary>

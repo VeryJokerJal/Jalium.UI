@@ -642,7 +642,7 @@ public class ChartTests
     {
         var chart = new TreeMap();
 
-        Assert.Null(chart.Items);
+        Assert.Empty(chart.Items);
         Assert.Equal(TreeMapAlgorithm.Squarified, chart.Algorithm);
         Assert.Equal(20.0, chart.MinCellSize);
         Assert.True(chart.ShowLabels);
@@ -674,8 +674,8 @@ public class ChartTests
     {
         var chart = new NetworkGraph();
 
-        Assert.Null(chart.Nodes);
-        Assert.Null(chart.Links);
+        Assert.Empty(chart.Nodes);
+        Assert.Empty(chart.Links);
         Assert.Equal(NetworkLayoutAlgorithm.ForceDirected, chart.LayoutAlgorithm);
         Assert.Equal(15.0, chart.NodeRadius);
         Assert.Null(chart.NodeBrush);
@@ -690,7 +690,7 @@ public class ChartTests
     {
         var chart = new GanttChart();
 
-        Assert.Null(chart.Tasks);
+        Assert.Empty(chart.Tasks);
         Assert.Equal(30.0, chart.RowHeight);
         Assert.Null(chart.TaskBrush);
         Assert.Null(chart.MilestoneBrush);
@@ -706,8 +706,8 @@ public class ChartTests
     {
         var chart = new SankeyDiagram();
 
-        Assert.Null(chart.Nodes);
-        Assert.Null(chart.Links);
+        Assert.Empty(chart.Nodes);
+        Assert.Empty(chart.Links);
         Assert.Equal(20.0, chart.NodeWidth);
         Assert.Equal(10.0, chart.NodeSpacing);
     }

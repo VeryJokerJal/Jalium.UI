@@ -1,10 +1,12 @@
+using System.ComponentModel;
 using System.Globalization;
 
-namespace Jalium.UI.Media;
+namespace Jalium.UI;
 
 /// <summary>
 /// Refers to the density of a typeface, in terms of the lightness or heaviness of the strokes.
 /// </summary>
+[TypeConverter(typeof(Jalium.UI.FontWeightConverter))]
 public readonly struct FontWeight : IEquatable<FontWeight>, IFormattable
 {
     private readonly int _weight;
@@ -15,7 +17,7 @@ public readonly struct FontWeight : IEquatable<FontWeight>, IFormattable
     /// <param name="weight">The OpenType weight value (1-999).</param>
     internal FontWeight(int weight)
     {
-        _weight = Math.Clamp(weight, 1, 999);
+        _weight = weight - 400;
     }
 
     /// <summary>
@@ -25,6 +27,8 @@ public readonly struct FontWeight : IEquatable<FontWeight>, IFormattable
     /// <returns>A new instance of <see cref="FontWeight"/>.</returns>
     public static FontWeight FromOpenTypeWeight(int weightValue)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(weightValue, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(weightValue, 999);
         return new FontWeight(weightValue);
     }
 
@@ -32,7 +36,7 @@ public readonly struct FontWeight : IEquatable<FontWeight>, IFormattable
     /// Returns a value that represents the OpenType usWeightClass for this <see cref="FontWeight"/> object.
     /// </summary>
     /// <returns>An integer value between 1 and 999 that corresponds to the usWeightClass definition in the OpenType specification.</returns>
-    public int ToOpenTypeWeight() => _weight;
+    public int ToOpenTypeWeight() => _weight + 400;
 
     /// <summary>
     /// Compares two instances of <see cref="FontWeight"/>.
@@ -60,7 +64,7 @@ public readonly struct FontWeight : IEquatable<FontWeight>, IFormattable
     /// <inheritdoc />
     public string ToString(string? format, IFormatProvider? formatProvider)
     {
-        return _weight switch
+        return ToOpenTypeWeight() switch
         {
             100 => "Thin",
             200 => "ExtraLight",
@@ -71,7 +75,7 @@ public readonly struct FontWeight : IEquatable<FontWeight>, IFormattable
             700 => "Bold",
             800 => "ExtraBold",
             900 => "Black",
-            _ => _weight.ToString(formatProvider)
+            int value => value.ToString(formatProvider)
         };
     }
 
@@ -140,11 +144,18 @@ public static class FontWeights
 
     /// <summary>Specifies a "Heavy" font weight (900).</summary>
     public static FontWeight Heavy => new(900);
+
+    /// <summary>Specifies an extra-black font weight (950).</summary>
+    public static FontWeight ExtraBlack => new(950);
+
+    /// <summary>Specifies an ultra-black font weight (950).</summary>
+    public static FontWeight UltraBlack => new(950);
 }
 
 /// <summary>
 /// Defines the style of a font face as normal, italic, or oblique.
 /// </summary>
+[TypeConverter(typeof(Jalium.UI.FontStyleConverter))]
 public readonly struct FontStyle : IEquatable<FontStyle>, IFormattable
 {
     private readonly int _style;
@@ -231,6 +242,7 @@ public static class FontStyles
 /// <summary>
 /// Describes the degree to which a font has been stretched compared to the normal aspect ratio of that font.
 /// </summary>
+[TypeConverter(typeof(Jalium.UI.FontStretchConverter))]
 public readonly struct FontStretch : IEquatable<FontStretch>, IFormattable
 {
     private readonly int _stretch;
@@ -241,7 +253,7 @@ public readonly struct FontStretch : IEquatable<FontStretch>, IFormattable
     /// <param name="stretch">The OpenType stretch value (1-9).</param>
     internal FontStretch(int stretch)
     {
-        _stretch = Math.Clamp(stretch, 1, 9);
+        _stretch = stretch - 5;
     }
 
     /// <summary>
@@ -251,6 +263,8 @@ public readonly struct FontStretch : IEquatable<FontStretch>, IFormattable
     /// <returns>A new instance of <see cref="FontStretch"/>.</returns>
     public static FontStretch FromOpenTypeStretch(int stretchValue)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(stretchValue, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(stretchValue, 9);
         return new FontStretch(stretchValue);
     }
 
@@ -258,7 +272,7 @@ public readonly struct FontStretch : IEquatable<FontStretch>, IFormattable
     /// Returns a value that represents the OpenType usStretchClass for this <see cref="FontStretch"/> object.
     /// </summary>
     /// <returns>An integer value between 1 and 9 that corresponds to the usStretchClass definition in the OpenType specification.</returns>
-    public int ToOpenTypeStretch() => _stretch;
+    public int ToOpenTypeStretch() => _stretch + 5;
 
     /// <summary>
     /// Compares two instances of <see cref="FontStretch"/>.
@@ -286,7 +300,7 @@ public readonly struct FontStretch : IEquatable<FontStretch>, IFormattable
     /// <inheritdoc />
     public string ToString(string? format, IFormatProvider? formatProvider)
     {
-        return _stretch switch
+        return ToOpenTypeStretch() switch
         {
             1 => "UltraCondensed",
             2 => "ExtraCondensed",
@@ -297,7 +311,7 @@ public readonly struct FontStretch : IEquatable<FontStretch>, IFormattable
             7 => "Expanded",
             8 => "ExtraExpanded",
             9 => "UltraExpanded",
-            _ => _stretch.ToString(formatProvider)
+            int value => value.ToString(formatProvider)
         };
     }
 

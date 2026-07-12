@@ -3,6 +3,7 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Editor;
 using Jalium.UI.Input;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
@@ -451,7 +452,7 @@ public class EditControlTests
         var editor = new EditControl
         {
             ShowMinimap = false,
-            FontFamily = "Segoe UI",
+            FontFamily = new FontFamily("Segoe UI"),
             FontSize = 14
         };
 

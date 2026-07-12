@@ -1,224 +1,584 @@
+using System.ComponentModel;
+
 namespace Jalium.UI.Media.Imaging;
 
-/// <summary>
-/// Crops a BitmapSource to a specified rectangle.
-/// </summary>
-public sealed class CroppedBitmap : BitmapSource
+/// <summary>Crops a <see cref="BitmapSource"/> to a specified pixel rectangle.</summary>
+public sealed class CroppedBitmap : BitmapSource, ISupportInitialize
 {
-    private BitmapSource? _source;
-    private Int32Rect _sourceRect;
+    public static readonly DependencyProperty SourceProperty =
+        DependencyProperty.Register(nameof(Source), typeof(BitmapSource), typeof(CroppedBitmap),
+            new PropertyMetadata(null, OnSourceChanged));
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="CroppedBitmap"/> class.
-    /// </summary>
+    public static readonly DependencyProperty SourceRectProperty =
+        DependencyProperty.Register(nameof(SourceRect), typeof(Int32Rect), typeof(CroppedBitmap),
+            new PropertyMetadata(Int32Rect.Empty));
+
+    private bool _initializing;
+    private bool _initialized;
+
     public CroppedBitmap()
     {
     }
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="CroppedBitmap"/> class with the specified source and rectangle.
-    /// </summary>
     public CroppedBitmap(BitmapSource source, Int32Rect sourceRect)
     {
-        _source = source;
-        _sourceRect = sourceRect;
+        ArgumentNullException.ThrowIfNull(source);
+        BeginInit();
+        Source = source;
+        SourceRect = sourceRect;
+        EndInit();
     }
 
-    /// <summary>
-    /// Gets or sets the source of the cropped bitmap.
-    /// </summary>
     public BitmapSource? Source
     {
-        get => _source;
-        set => _source = value;
+        get => (BitmapSource?)GetValue(SourceProperty);
+        set => SetValue(SourceProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the rectangular area that the bitmap is cropped to.
-    /// </summary>
     public Int32Rect SourceRect
     {
-        get => _sourceRect;
-        set => _sourceRect = value;
+        get => (Int32Rect)GetValue(SourceRectProperty)!;
+        set => SetValue(SourceRectProperty, value);
     }
 
-    /// <inheritdoc />
-    public override double Width => _sourceRect.Width > 0 ? _sourceRect.Width : (_source?.Width ?? 0);
+    public override int PixelWidth => GetEffectiveRect().Width;
 
-    /// <inheritdoc />
-    public override double Height => _sourceRect.Height > 0 ? _sourceRect.Height : (_source?.Height ?? 0);
+    public override int PixelHeight => GetEffectiveRect().Height;
 
-    /// <inheritdoc />
-    public override nint NativeHandle => _source?.NativeHandle ?? nint.Zero;
+    public override double DpiX => Source?.DpiX ?? 96;
 
-    /// <inheritdoc />
-    public override int PixelWidth => _sourceRect.Width > 0 ? _sourceRect.Width : (_source?.PixelWidth ?? 0);
+    public override double DpiY => Source?.DpiY ?? 96;
 
-    /// <inheritdoc />
-    public override int PixelHeight => _sourceRect.Height > 0 ? _sourceRect.Height : (_source?.PixelHeight ?? 0);
+    public override PixelFormat Format => Source?.Format ?? PixelFormat.Pbgra32;
 
-    /// <inheritdoc />
-    public override double DpiX => _source?.DpiX ?? 96.0;
+    public override BitmapPalette? Palette => Source?.Palette;
 
-    /// <inheritdoc />
-    public override double DpiY => _source?.DpiY ?? 96.0;
+    public override double Width => PixelWidth * 96d / DpiX;
 
-    /// <inheritdoc />
-    public override PixelFormat Format => _source?.Format ?? PixelFormat.Bgra32;
+    public override double Height => PixelHeight * 96d / DpiY;
+
+    public override nint NativeHandle => nint.Zero;
+
+    public void BeginInit()
+    {
+        WritePreamble();
+        if (_initializing || _initialized)
+        {
+            throw new InvalidOperationException("Cannot set the initializing state more than once.");
+        }
+
+        _initializing = true;
+    }
+
+    public void EndInit()
+    {
+        WritePreamble();
+        if (!_initializing)
+        {
+            throw new InvalidOperationException("BeginInit must be called before EndInit.");
+        }
+
+        if (Source is null)
+        {
+            throw new InvalidOperationException("'Source' property is not set.");
+        }
+
+        _ = GetEffectiveRect();
+        _initializing = false;
+        _initialized = true;
+    }
+
+    public override void CopyPixels(Int32Rect sourceRect, byte[] pixels, int stride, int offset)
+    {
+        BitmapSource source = Source ?? throw new InvalidOperationException("'Source' property is not set.");
+        Int32Rect crop = GetEffectiveRect();
+        Int32Rect relative = BitmapPixelOperations.NormalizeRect(sourceRect, crop.Width, crop.Height);
+        BitmapPixelOperations.PixelBuffer buffer = BitmapPixelOperations.Read(source);
+        var translated = new Int32Rect(crop.X + relative.X, crop.Y + relative.Y, relative.Width, relative.Height);
+        BitmapPixelOperations.Copy(buffer.Pixels, buffer.Width, buffer.Height, buffer.Stride, buffer.Format,
+            translated, pixels, stride, offset);
+    }
+
+    public new CroppedBitmap Clone() => (CroppedBitmap)base.Clone();
+
+    public new CroppedBitmap CloneCurrentValue() => (CroppedBitmap)base.CloneCurrentValue();
+
+    protected override Freezable CreateInstanceCore() => new CroppedBitmap();
+
+    protected override void CloneCore(Freezable source)
+    {
+        base.CloneCore(source);
+        CopyInitializationState((CroppedBitmap)source);
+    }
+
+    protected override void CloneCurrentValueCore(Freezable source)
+    {
+        base.CloneCurrentValueCore(source);
+        CopyInitializationState((CroppedBitmap)source);
+    }
+
+    protected override void GetAsFrozenCore(Freezable source)
+    {
+        base.GetAsFrozenCore(source);
+        CopyInitializationState((CroppedBitmap)source);
+    }
+
+    protected override void GetCurrentValueAsFrozenCore(Freezable source)
+    {
+        base.GetCurrentValueAsFrozenCore(source);
+        CopyInitializationState((CroppedBitmap)source);
+    }
+
+    private static void OnSourceChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
+    {
+        var bitmap = (CroppedBitmap)dependencyObject;
+        bitmap.OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, SourceProperty);
+    }
+
+    private Int32Rect GetEffectiveRect()
+    {
+        BitmapSource? source = Source;
+        if (source is null)
+        {
+            return Int32Rect.Empty;
+        }
+
+        return BitmapPixelOperations.NormalizeRect(SourceRect, source.PixelWidth, source.PixelHeight);
+    }
+
+    private void CopyInitializationState(CroppedBitmap source)
+    {
+        _initializing = source._initializing;
+        _initialized = source._initialized;
+    }
 }
 
-/// <summary>
-/// Provides pixel format conversion for a BitmapSource.
-/// </summary>
-public sealed class FormatConvertedBitmap : BitmapSource
+/// <summary>Provides CPU pixel-format conversion for a <see cref="BitmapSource"/>.</summary>
+public sealed class FormatConvertedBitmap : BitmapSource, ISupportInitialize
 {
-    private BitmapSource? _source;
-    private PixelFormat _destinationFormat;
-    private double _alphaThreshold;
-    private BitmapPalette? _destinationPalette;
+    public static readonly DependencyProperty SourceProperty =
+        DependencyProperty.Register(nameof(Source), typeof(BitmapSource), typeof(FormatConvertedBitmap),
+            new PropertyMetadata(null, OnSourceChanged));
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="FormatConvertedBitmap"/> class.
-    /// </summary>
+    public static readonly DependencyProperty DestinationFormatProperty =
+        DependencyProperty.Register(nameof(DestinationFormat), typeof(PixelFormat), typeof(FormatConvertedBitmap),
+            new PropertyMetadata(PixelFormat.Pbgra32, OnConversionPropertyChanged));
+
+    public static readonly DependencyProperty DestinationPaletteProperty =
+        DependencyProperty.Register(nameof(DestinationPalette), typeof(BitmapPalette), typeof(FormatConvertedBitmap),
+            new PropertyMetadata(null, OnConversionPropertyChanged));
+
+    public static readonly DependencyProperty AlphaThresholdProperty =
+        DependencyProperty.Register(nameof(AlphaThreshold), typeof(double), typeof(FormatConvertedBitmap),
+            new PropertyMetadata(0d, OnConversionPropertyChanged));
+
+    private bool _initializing;
+    private bool _initialized;
+    private byte[]? _convertedPixels;
+    private int _convertedStride;
+
     public FormatConvertedBitmap()
     {
     }
 
-    /// <summary>
-    /// Initializes a new instance with source, destination format, palette, and alpha threshold.
-    /// </summary>
-    public FormatConvertedBitmap(BitmapSource source, PixelFormat destinationFormat, BitmapPalette? destinationPalette, double alphaThreshold)
+    public FormatConvertedBitmap(
+        BitmapSource source,
+        PixelFormat destinationFormat,
+        BitmapPalette? destinationPalette,
+        double alphaThreshold)
     {
-        _source = source;
-        _destinationFormat = destinationFormat;
-        _destinationPalette = destinationPalette;
-        _alphaThreshold = alphaThreshold;
+        ArgumentNullException.ThrowIfNull(source);
+        BeginInit();
+        Source = source;
+        DestinationFormat = destinationFormat;
+        DestinationPalette = destinationPalette;
+        AlphaThreshold = alphaThreshold;
+        EndInit();
     }
 
-    /// <summary>
-    /// Gets or sets the source bitmap.
-    /// </summary>
     public BitmapSource? Source
     {
-        get => _source;
-        set => _source = value;
+        get => (BitmapSource?)GetValue(SourceProperty);
+        set => SetValue(SourceProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the destination pixel format.
-    /// </summary>
     public PixelFormat DestinationFormat
     {
-        get => _destinationFormat;
-        set => _destinationFormat = value;
+        get => (PixelFormat)GetValue(DestinationFormatProperty)!;
+        set => SetValue(DestinationFormatProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the destination palette.
-    /// </summary>
     public BitmapPalette? DestinationPalette
     {
-        get => _destinationPalette;
-        set => _destinationPalette = value;
+        get => (BitmapPalette?)GetValue(DestinationPaletteProperty);
+        set => SetValue(DestinationPaletteProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the alpha threshold.
-    /// </summary>
     public double AlphaThreshold
     {
-        get => _alphaThreshold;
-        set => _alphaThreshold = value;
+        get => (double)GetValue(AlphaThresholdProperty)!;
+        set => SetValue(AlphaThresholdProperty, value);
     }
 
-    /// <inheritdoc />
-    public override double Width => _source?.Width ?? 0;
+    public override int PixelWidth => Source?.PixelWidth ?? 0;
 
-    /// <inheritdoc />
-    public override double Height => _source?.Height ?? 0;
+    public override int PixelHeight => Source?.PixelHeight ?? 0;
 
-    /// <inheritdoc />
-    public override nint NativeHandle => _source?.NativeHandle ?? nint.Zero;
+    public override double DpiX => Source?.DpiX ?? 96;
 
-    /// <inheritdoc />
-    public override int PixelWidth => _source?.PixelWidth ?? 0;
+    public override double DpiY => Source?.DpiY ?? 96;
 
-    /// <inheritdoc />
-    public override int PixelHeight => _source?.PixelHeight ?? 0;
+    public override PixelFormat Format => DestinationFormat;
 
-    /// <inheritdoc />
-    public override double DpiX => _source?.DpiX ?? 96.0;
+    public override BitmapPalette? Palette => IsIndexed(DestinationFormat) ? DestinationPalette : null;
 
-    /// <inheritdoc />
-    public override double DpiY => _source?.DpiY ?? 96.0;
+    public override double Width => Source?.Width ?? 0;
 
-    /// <inheritdoc />
-    public override PixelFormat Format => _destinationFormat;
+    public override double Height => Source?.Height ?? 0;
+
+    public override nint NativeHandle => nint.Zero;
+
+    public void BeginInit()
+    {
+        WritePreamble();
+        if (_initializing || _initialized)
+        {
+            throw new InvalidOperationException("Cannot set the initializing state more than once.");
+        }
+
+        _initializing = true;
+    }
+
+    public void EndInit()
+    {
+        WritePreamble();
+        if (!_initializing)
+        {
+            throw new InvalidOperationException("BeginInit must be called before EndInit.");
+        }
+
+        if (Source is null)
+        {
+            throw new InvalidOperationException("'Source' property is not set.");
+        }
+
+        _ = DestinationFormat.BitsPerPixel;
+        _initializing = false;
+        _initialized = true;
+        InvalidatePixels();
+    }
+
+    public override void CopyPixels(Int32Rect sourceRect, byte[] pixels, int stride, int offset)
+    {
+        EnsurePixels();
+        BitmapPixelOperations.Copy(_convertedPixels!, PixelWidth, PixelHeight, _convertedStride,
+            DestinationFormat, sourceRect, pixels, stride, offset);
+    }
+
+    public new FormatConvertedBitmap Clone() => (FormatConvertedBitmap)base.Clone();
+
+    public new FormatConvertedBitmap CloneCurrentValue() => (FormatConvertedBitmap)base.CloneCurrentValue();
+
+    protected override Freezable CreateInstanceCore() => new FormatConvertedBitmap();
+
+    protected override void CloneCore(Freezable source)
+    {
+        base.CloneCore(source);
+        CopyInitializationState((FormatConvertedBitmap)source);
+    }
+
+    protected override void CloneCurrentValueCore(Freezable source)
+    {
+        base.CloneCurrentValueCore(source);
+        CopyInitializationState((FormatConvertedBitmap)source);
+    }
+
+    protected override void GetAsFrozenCore(Freezable source)
+    {
+        base.GetAsFrozenCore(source);
+        CopyInitializationState((FormatConvertedBitmap)source);
+    }
+
+    protected override void GetCurrentValueAsFrozenCore(Freezable source)
+    {
+        base.GetCurrentValueAsFrozenCore(source);
+        CopyInitializationState((FormatConvertedBitmap)source);
+    }
+
+    protected override void OnChanged()
+    {
+        InvalidatePixels();
+        base.OnChanged();
+    }
+
+    private static bool IsIndexed(PixelFormat format)
+        => format == PixelFormat.Indexed1 || format == PixelFormat.Indexed2 ||
+           format == PixelFormat.Indexed4 || format == PixelFormat.Indexed8;
+
+    private static void OnSourceChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
+    {
+        var bitmap = (FormatConvertedBitmap)dependencyObject;
+        bitmap.OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, SourceProperty);
+        bitmap.InvalidatePixels();
+    }
+
+    private static void OnConversionPropertyChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
+        => ((FormatConvertedBitmap)dependencyObject).InvalidatePixels();
+
+    private void EnsurePixels()
+    {
+        if (_convertedPixels is not null)
+        {
+            return;
+        }
+
+        BitmapSource source = Source ?? throw new InvalidOperationException("'Source' property is not set.");
+        BitmapPixelOperations.PixelBuffer converted = BitmapPixelOperations.Convert(
+            source, DestinationFormat, DestinationPalette, AlphaThreshold);
+        _convertedPixels = converted.Pixels;
+        _convertedStride = converted.Stride;
+    }
+
+    private void InvalidatePixels()
+    {
+        _convertedPixels = null;
+        _convertedStride = 0;
+    }
+
+    private void CopyInitializationState(FormatConvertedBitmap source)
+    {
+        _initializing = source._initializing;
+        _initialized = source._initialized;
+        InvalidatePixels();
+    }
 }
 
-/// <summary>
-/// Scales and rotates a BitmapSource.
-/// </summary>
-public sealed class TransformedBitmap : BitmapSource
+/// <summary>Scales, rotates, translates, or otherwise applies an affine transform to a bitmap.</summary>
+public sealed class TransformedBitmap : BitmapSource, ISupportInitialize
 {
-    private BitmapSource? _source;
-    private Transform _transform = Transform.Identity;
+    private static readonly Transform s_identityTransform = Transform.Identity;
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="TransformedBitmap"/> class.
-    /// </summary>
+    public static readonly DependencyProperty SourceProperty =
+        DependencyProperty.Register(nameof(Source), typeof(BitmapSource), typeof(TransformedBitmap),
+            new PropertyMetadata(null, OnSourceChanged));
+
+    public static readonly DependencyProperty TransformProperty =
+        DependencyProperty.Register(nameof(Transform), typeof(Transform), typeof(TransformedBitmap),
+            new PropertyMetadata(s_identityTransform, OnTransformChanged));
+
+    private bool _initializing;
+    private bool _initialized;
+    private byte[]? _transformedPixels;
+    private int _transformedStride;
+    private int _pixelWidth;
+    private int _pixelHeight;
+
     public TransformedBitmap()
     {
+        AttachTransform(Transform);
     }
 
-    /// <summary>
-    /// Initializes a new instance with the specified source and transform.
-    /// </summary>
     public TransformedBitmap(BitmapSource source, Transform transform)
+        : this()
     {
-        _source = source;
-        _transform = transform;
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(transform);
+        BeginInit();
+        Source = source;
+        Transform = transform;
+        EndInit();
     }
 
-    /// <summary>
-    /// Gets or sets the source bitmap.
-    /// </summary>
     public BitmapSource? Source
     {
-        get => _source;
-        set => _source = value;
+        get => (BitmapSource?)GetValue(SourceProperty);
+        set => SetValue(SourceProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the transform to apply to the bitmap.
-    /// </summary>
     public Transform Transform
     {
-        get => _transform;
-        set => _transform = value;
+        get => (Transform?)GetValue(TransformProperty) ?? s_identityTransform;
+        set => SetValue(TransformProperty, value);
     }
 
-    /// <inheritdoc />
-    public override double Width => _source?.Width ?? 0;
+    public override int PixelWidth
+    {
+        get
+        {
+            EnsurePixels();
+            return _pixelWidth;
+        }
+    }
 
-    /// <inheritdoc />
-    public override double Height => _source?.Height ?? 0;
+    public override int PixelHeight
+    {
+        get
+        {
+            EnsurePixels();
+            return _pixelHeight;
+        }
+    }
 
-    /// <inheritdoc />
-    public override nint NativeHandle => _source?.NativeHandle ?? nint.Zero;
+    public override double DpiX => Source?.DpiX ?? 96;
 
-    /// <inheritdoc />
-    public override int PixelWidth => _source?.PixelWidth ?? 0;
+    public override double DpiY => Source?.DpiY ?? 96;
 
-    /// <inheritdoc />
-    public override int PixelHeight => _source?.PixelHeight ?? 0;
+    public override PixelFormat Format => Source?.Format ?? PixelFormat.Pbgra32;
 
-    /// <inheritdoc />
-    public override double DpiX => _source?.DpiX ?? 96.0;
+    public override BitmapPalette? Palette => Source?.Palette;
 
-    /// <inheritdoc />
-    public override double DpiY => _source?.DpiY ?? 96.0;
+    public override double Width => PixelWidth * 96d / DpiX;
 
-    /// <inheritdoc />
-    public override PixelFormat Format => _source?.Format ?? PixelFormat.Bgra32;
+    public override double Height => PixelHeight * 96d / DpiY;
+
+    public override nint NativeHandle => nint.Zero;
+
+    public void BeginInit()
+    {
+        WritePreamble();
+        if (_initializing || _initialized)
+        {
+            throw new InvalidOperationException("Cannot set the initializing state more than once.");
+        }
+
+        _initializing = true;
+    }
+
+    public void EndInit()
+    {
+        WritePreamble();
+        if (!_initializing)
+        {
+            throw new InvalidOperationException("BeginInit must be called before EndInit.");
+        }
+
+        if (Source is null)
+        {
+            throw new InvalidOperationException("'Source' property is not set.");
+        }
+
+        if (GetValue(TransformProperty) is null)
+        {
+            throw new InvalidOperationException("'Transform' property is not set.");
+        }
+
+        if (!Transform.Value.HasInverse)
+        {
+            throw new InvalidOperationException("The bitmap transform must be invertible.");
+        }
+
+        _initializing = false;
+        _initialized = true;
+        InvalidatePixels();
+    }
+
+    public override void CopyPixels(Int32Rect sourceRect, byte[] pixels, int stride, int offset)
+    {
+        EnsurePixels();
+        BitmapPixelOperations.Copy(_transformedPixels!, _pixelWidth, _pixelHeight, _transformedStride,
+            Format, sourceRect, pixels, stride, offset);
+    }
+
+    public new TransformedBitmap Clone() => (TransformedBitmap)base.Clone();
+
+    public new TransformedBitmap CloneCurrentValue() => (TransformedBitmap)base.CloneCurrentValue();
+
+    protected override Freezable CreateInstanceCore() => new TransformedBitmap();
+
+    protected override void CloneCore(Freezable source)
+    {
+        base.CloneCore(source);
+        CopyInitializationState((TransformedBitmap)source);
+    }
+
+    protected override void CloneCurrentValueCore(Freezable source)
+    {
+        base.CloneCurrentValueCore(source);
+        CopyInitializationState((TransformedBitmap)source);
+    }
+
+    protected override void GetAsFrozenCore(Freezable source)
+    {
+        base.GetAsFrozenCore(source);
+        CopyInitializationState((TransformedBitmap)source);
+    }
+
+    protected override void GetCurrentValueAsFrozenCore(Freezable source)
+    {
+        base.GetCurrentValueAsFrozenCore(source);
+        CopyInitializationState((TransformedBitmap)source);
+    }
+
+    protected override void OnChanged()
+    {
+        InvalidatePixels();
+        base.OnChanged();
+    }
+
+    private static void OnSourceChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
+    {
+        var bitmap = (TransformedBitmap)dependencyObject;
+        bitmap.OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, SourceProperty);
+        bitmap.InvalidatePixels();
+    }
+
+    private static void OnTransformChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
+    {
+        var bitmap = (TransformedBitmap)dependencyObject;
+        bitmap.DetachTransform(e.OldValue as Transform);
+        bitmap.AttachTransform(e.NewValue as Transform);
+        bitmap.InvalidatePixels();
+    }
+
+    private void AttachTransform(Transform? transform)
+    {
+        if (transform is not null)
+        {
+            transform.Changed += OnTransformSubPropertyChanged;
+        }
+    }
+
+    private void DetachTransform(Transform? transform)
+    {
+        if (transform is not null)
+        {
+            transform.Changed -= OnTransformSubPropertyChanged;
+        }
+    }
+
+    private void OnTransformSubPropertyChanged(object? sender, EventArgs e)
+    {
+        InvalidatePixels();
+        WritePostscript();
+    }
+
+    private void EnsurePixels()
+    {
+        if (_transformedPixels is not null)
+        {
+            return;
+        }
+
+        BitmapSource source = Source ?? throw new InvalidOperationException("'Source' property is not set.");
+        BitmapPixelOperations.PixelBuffer transformed = BitmapPixelOperations.Transform(source, Transform.Value);
+        _transformedPixels = transformed.Pixels;
+        _transformedStride = transformed.Stride;
+        _pixelWidth = transformed.Width;
+        _pixelHeight = transformed.Height;
+    }
+
+    private void InvalidatePixels()
+    {
+        _transformedPixels = null;
+        _transformedStride = 0;
+        _pixelWidth = 0;
+        _pixelHeight = 0;
+    }
+
+    private void CopyInitializationState(TransformedBitmap source)
+    {
+        _initializing = source._initializing;
+        _initialized = source._initialized;
+        InvalidatePixels();
+    }
 }

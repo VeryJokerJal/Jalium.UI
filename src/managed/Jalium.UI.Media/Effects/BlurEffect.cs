@@ -22,14 +22,17 @@ public sealed class BlurEffect : Effect
     /// </summary>
     public static readonly DependencyProperty KernelTypeProperty =
         DependencyProperty.Register(nameof(KernelType), typeof(KernelType), typeof(BlurEffect),
-            new PropertyMetadata(KernelType.Gaussian, OnPropertyChanged));
+            new PropertyMetadata(KernelType.Gaussian, OnPropertyChanged),
+            value => value is KernelType type && (type == KernelType.Gaussian || type == KernelType.Box));
 
     /// <summary>
     /// Identifies the RenderingBias dependency property.
     /// </summary>
     public static readonly DependencyProperty RenderingBiasProperty =
         DependencyProperty.Register(nameof(RenderingBias), typeof(RenderingBias), typeof(BlurEffect),
-            new PropertyMetadata(RenderingBias.Performance, OnPropertyChanged));
+            new PropertyMetadata(RenderingBias.Performance, OnPropertyChanged),
+            value => value is RenderingBias bias &&
+                (bias == RenderingBias.Performance || bias == RenderingBias.Quality));
 
     #endregion
 
@@ -63,7 +66,7 @@ public sealed class BlurEffect : Effect
     public double Radius
     {
         get => (double)GetValue(RadiusProperty)!;
-        set => SetValue(RadiusProperty, Math.Max(0, value));
+        set => SetValue(RadiusProperty, value);
     }
 
     /// <summary>
@@ -110,6 +113,16 @@ public sealed class BlurEffect : Effect
     #endregion
 
     #region Methods
+
+    /// <summary>Creates a modifiable clone of this effect.</summary>
+    public new BlurEffect Clone() => (BlurEffect)base.Clone();
+
+    /// <summary>Creates a modifiable clone using current property values.</summary>
+    public new BlurEffect CloneCurrentValue() => (BlurEffect)base.CloneCurrentValue();
+
+#pragma warning disable CS0628 // WPF exposes the Freezable factory override on this sealed type.
+    protected override Freezable CreateInstanceCore() => new BlurEffect();
+#pragma warning restore CS0628
 
     /// <summary>
     /// Gets the render bounds after applying the blur effect.

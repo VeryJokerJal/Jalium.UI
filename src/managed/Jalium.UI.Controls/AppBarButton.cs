@@ -191,7 +191,7 @@ public class AppBarButton : Button, ICommandBarElement
     {
         while (style != null)
         {
-            foreach (var setter in style.Setters)
+            foreach (var setter in style.Setters.OfType<Setter>())
             {
                 if (setter.Property == TemplateProperty && setter.Value is ControlTemplate controlTemplate)
                 {

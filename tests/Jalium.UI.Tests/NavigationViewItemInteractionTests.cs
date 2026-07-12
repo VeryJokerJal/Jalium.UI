@@ -52,7 +52,8 @@ public class NavigationViewItemInteractionTests
 
             var itemBorder = Assert.IsType<Border>(item.FindName("PART_ItemBorder"));
             var selectedBrush = Assert.IsType<SolidColorBrush>(app.Resources["SelectionBackgroundWeak"]);
-            var pressedBrush = Assert.IsType<SolidColorBrush>(app.Resources["AccentBrushPressed"]);
+            var pressedBrush = Assert.IsType<LinearGradientBrush>(app.Resources["AccentBrushPressed"]);
+            Assert.Equal(2, pressedBrush.GradientStops.Count);
 
             Assert.Same(selectedBrush, itemBorder.Background);
             Assert.True(item.CaptureMouse());

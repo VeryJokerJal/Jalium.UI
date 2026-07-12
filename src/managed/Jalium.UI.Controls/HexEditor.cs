@@ -14,9 +14,9 @@ namespace Jalium.UI.Controls;
 public class HexEditor : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.HexEditorAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.HexEditorAutomationPeer(this);
     }
 
     // Default brushes
@@ -522,7 +522,7 @@ public class HexEditor : Control
             LargeChange = 10,
             Focusable = false,
             IsThumbSlim = true,
-            Cursor = Jalium.UI.Cursors.Arrow,
+            Cursor = Jalium.UI.Input.Cursors.Arrow,
         };
         _verticalScrollBar.Scroll += OnScrollBarScroll;
         AddVisualChild(_verticalScrollBar);
@@ -604,9 +604,9 @@ public class HexEditor : Control
 
     #region Visual Children (scrollbar)
 
-    public override int VisualChildrenCount => base.VisualChildrenCount + 1;
+    protected override int VisualChildrenCount => base.VisualChildrenCount + 1;
 
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index == base.VisualChildrenCount)
             return _verticalScrollBar;
@@ -2082,7 +2082,7 @@ public class HexEditor : Control
 
     private string GetMonospaceFont()
     {
-        return FontFamily ?? "Cascadia Code";
+        return FontFamily?.Source ?? "Cascadia Code";
     }
 
     private double GetFontSize()

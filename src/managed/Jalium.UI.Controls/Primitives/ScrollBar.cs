@@ -11,9 +11,29 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class ScrollBar : RangeBase
 {
+    public static readonly RoutedCommand LineUpCommand = new("LineUp", typeof(ScrollBar));
+    public static readonly RoutedCommand LineDownCommand = new("LineDown", typeof(ScrollBar));
+    public static readonly RoutedCommand LineLeftCommand = new("LineLeft", typeof(ScrollBar));
+    public static readonly RoutedCommand LineRightCommand = new("LineRight", typeof(ScrollBar));
+    public static readonly RoutedCommand PageUpCommand = new("PageUp", typeof(ScrollBar));
+    public static readonly RoutedCommand PageDownCommand = new("PageDown", typeof(ScrollBar));
+    public static readonly RoutedCommand PageLeftCommand = new("PageLeft", typeof(ScrollBar));
+    public static readonly RoutedCommand PageRightCommand = new("PageRight", typeof(ScrollBar));
+    public static readonly RoutedCommand ScrollToEndCommand = new("ScrollToEnd", typeof(ScrollBar));
+    public static readonly RoutedCommand ScrollToHomeCommand = new("ScrollToHome", typeof(ScrollBar));
+    public static readonly RoutedCommand ScrollToRightEndCommand = new("ScrollToRightEnd", typeof(ScrollBar));
+    public static readonly RoutedCommand ScrollToLeftEndCommand = new("ScrollToLeftEnd", typeof(ScrollBar));
+    public static readonly RoutedCommand ScrollToTopCommand = new("ScrollToTop", typeof(ScrollBar));
+    public static readonly RoutedCommand ScrollToBottomCommand = new("ScrollToBottom", typeof(ScrollBar));
+    public static readonly RoutedCommand ScrollToHorizontalOffsetCommand = new("ScrollToHorizontalOffset", typeof(ScrollBar));
+    public static readonly RoutedCommand ScrollToVerticalOffsetCommand = new("ScrollToVerticalOffset", typeof(ScrollBar));
+    public static readonly RoutedCommand DeferScrollToHorizontalOffsetCommand = new("DeferScrollToToHorizontalOffset", typeof(ScrollBar));
+    public static readonly RoutedCommand DeferScrollToVerticalOffsetCommand = new("DeferScrollToVerticalOffset", typeof(ScrollBar));
+    public static readonly RoutedCommand ScrollHereCommand = new("ScrollHere", typeof(ScrollBar));
+
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.ScrollBarAutomationPeer(this);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.ScrollBarAutomationPeer(this);
 
     #region Static Brushes
 
@@ -132,6 +152,9 @@ public class ScrollBar : RangeBase
         set => SetValue(IsThumbSlimProperty, value);
     }
 
+    /// <summary>Gets the track that owns the thumb and page buttons.</summary>
+    public Track Track => _track!;
+
     #endregion
 
     #region Private Fields
@@ -205,9 +228,105 @@ public class ScrollBar : RangeBase
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
         ResourcesChanged += OnResourcesChangedHandler;
+        RegisterScrollCommandBindings();
 
         _autoHideCollapseProgress = IsThumbSlim ? 1.0 : 0.0;
         ApplyAutoHideVisualState(_autoHideCollapseProgress, null, suppressArrangeInvalidation: true);
+    }
+
+    private void RegisterScrollCommandBindings()
+    {
+        AddScrollCommand(LineUpCommand, static bar => bar.ChangeBy(-bar.SmallChange, ScrollEventType.SmallDecrement));
+        AddScrollCommand(LineLeftCommand, static bar => bar.ChangeBy(-bar.SmallChange, ScrollEventType.SmallDecrement));
+        AddScrollCommand(LineDownCommand, static bar => bar.ChangeBy(bar.SmallChange, ScrollEventType.SmallIncrement));
+        AddScrollCommand(LineRightCommand, static bar => bar.ChangeBy(bar.SmallChange, ScrollEventType.SmallIncrement));
+        AddScrollCommand(PageUpCommand, static bar => bar.ChangeBy(-bar.LargeChange, ScrollEventType.LargeDecrement));
+        AddScrollCommand(PageLeftCommand, static bar => bar.ChangeBy(-bar.LargeChange, ScrollEventType.LargeDecrement));
+        AddScrollCommand(PageDownCommand, static bar => bar.ChangeBy(bar.LargeChange, ScrollEventType.LargeIncrement));
+        AddScrollCommand(PageRightCommand, static bar => bar.ChangeBy(bar.LargeChange, ScrollEventType.LargeIncrement));
+        AddScrollCommand(ScrollToHomeCommand, static bar => bar.ChangeTo(bar.Minimum, ScrollEventType.First));
+        AddScrollCommand(ScrollToLeftEndCommand, static bar => bar.ChangeTo(bar.Minimum, ScrollEventType.First));
+        AddScrollCommand(ScrollToTopCommand, static bar => bar.ChangeTo(bar.Minimum, ScrollEventType.First));
+        AddScrollCommand(ScrollToEndCommand, static bar => bar.ChangeTo(bar.Maximum, ScrollEventType.Last));
+        AddScrollCommand(ScrollToRightEndCommand, static bar => bar.ChangeTo(bar.Maximum, ScrollEventType.Last));
+        AddScrollCommand(ScrollToBottomCommand, static bar => bar.ChangeTo(bar.Maximum, ScrollEventType.Last));
+        AddOffsetCommand(ScrollToHorizontalOffsetCommand, deferred: false);
+        AddOffsetCommand(ScrollToVerticalOffsetCommand, deferred: false);
+        AddOffsetCommand(DeferScrollToHorizontalOffsetCommand, deferred: true);
+        AddOffsetCommand(DeferScrollToVerticalOffsetCommand, deferred: true);
+        AddOffsetCommand(ScrollHereCommand, deferred: false);
+    }
+
+    private void AddScrollCommand(RoutedCommand command, Action<ScrollBar> action)
+    {
+        CommandBindings.Add(new CommandBinding(
+            command,
+            (_, e) =>
+            {
+                action(this);
+                e.Handled = true;
+            },
+            (_, e) =>
+            {
+                e.CanExecute = IsEnabled;
+                e.Handled = true;
+            }));
+    }
+
+    private void AddOffsetCommand(RoutedCommand command, bool deferred)
+    {
+        CommandBindings.Add(new CommandBinding(
+            command,
+            (_, e) =>
+            {
+                if (TryConvertOffset(e.Parameter, out double offset))
+                {
+                    ChangeTo(offset, deferred ? ScrollEventType.ThumbTrack : ScrollEventType.ThumbPosition);
+                }
+                e.Handled = true;
+            },
+            (_, e) =>
+            {
+                e.CanExecute = IsEnabled && TryConvertOffset(e.Parameter, out double ignoredOffset);
+                e.Handled = true;
+            }));
+    }
+
+    private void ChangeBy(double delta, ScrollEventType eventType) => ChangeTo(Value + delta, eventType);
+
+    private void ChangeTo(double requestedValue, ScrollEventType eventType)
+    {
+        double value = Math.Clamp(requestedValue, Minimum, Maximum);
+        if (Math.Abs(value - Value) <= double.Epsilon)
+        {
+            return;
+        }
+
+        Value = value;
+        RaiseScrollEvent(eventType);
+    }
+
+    private static bool TryConvertOffset(object? parameter, out double offset)
+    {
+        switch (parameter)
+        {
+            case double number when double.IsFinite(number):
+                offset = number;
+                return true;
+            case IConvertible convertible:
+                try
+                {
+                    offset = convertible.ToDouble(System.Globalization.CultureInfo.InvariantCulture);
+                    return double.IsFinite(offset);
+                }
+                catch (Exception exception) when (exception is FormatException or InvalidCastException or OverflowException)
+                {
+                    break;
+                }
+        }
+
+        offset = 0;
+        return false;
     }
 
     private void CreateVisualChildren()
@@ -226,7 +345,7 @@ public class ScrollBar : RangeBase
             MinWidth = 0,
             MinHeight = 0
         };
-        _lineUpButton.Cursor = Jalium.UI.Cursors.Arrow;
+        _lineUpButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
         _lineUpButton.Click += OnLineUpClick;
         AddVisualChild(_lineUpButton);
 
@@ -250,7 +369,7 @@ public class ScrollBar : RangeBase
             Height = double.NaN
         };
         _track.Thumb.SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
-        _track.Thumb.Cursor = Jalium.UI.Cursors.Arrow;
+        _track.Thumb.Cursor = Jalium.UI.Input.Cursors.Arrow;
         _track.Thumb.DragStarted += OnThumbDragStarted;
         _track.Thumb.DragDelta += OnThumbDragDelta;
         _track.Thumb.DragCompleted += OnThumbDragCompleted;
@@ -273,7 +392,7 @@ public class ScrollBar : RangeBase
             MinWidth = 0,
             MinHeight = 0
         };
-        _track.DecreaseRepeatButton.Cursor = Jalium.UI.Cursors.Arrow;
+        _track.DecreaseRepeatButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
         _track.DecreaseRepeatButton.Click += OnPageUpClick;
         WirePageButtonTrackPaging(_track.DecreaseRepeatButton);
 
@@ -295,7 +414,7 @@ public class ScrollBar : RangeBase
             MinWidth = 0,
             MinHeight = 0
         };
-        _track.IncreaseRepeatButton.Cursor = Jalium.UI.Cursors.Arrow;
+        _track.IncreaseRepeatButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
         _track.IncreaseRepeatButton.Click += OnPageDownClick;
         WirePageButtonTrackPaging(_track.IncreaseRepeatButton);
 
@@ -315,7 +434,7 @@ public class ScrollBar : RangeBase
             MinWidth = 0,
             MinHeight = 0
         };
-        _lineDownButton.Cursor = Jalium.UI.Cursors.Arrow;
+        _lineDownButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
         _lineDownButton.Click += OnLineDownClick;
         AddVisualChild(_lineDownButton);
 
@@ -654,10 +773,10 @@ public class ScrollBar : RangeBase
     #region Visual Children
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => 3; // LineUp, Track, LineDown
+    protected override int VisualChildrenCount => 3; // LineUp, Track, LineDown
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         return index switch
         {

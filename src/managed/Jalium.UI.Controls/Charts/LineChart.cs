@@ -159,9 +159,9 @@ public class LineChart : AxisChartBase
     #region Automation
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.LineChartAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.LineChartAutomationPeer(this);
     }
 
     #endregion

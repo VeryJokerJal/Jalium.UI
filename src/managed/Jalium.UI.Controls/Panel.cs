@@ -45,18 +45,39 @@ public abstract class Panel : FrameworkElement
     /// </summary>
     public static readonly DependencyProperty IsItemsHostProperty =
         DependencyProperty.Register(nameof(IsItemsHost), typeof(bool), typeof(Panel),
-            new PropertyMetadata(false));
+            new FrameworkPropertyMetadata(
+                false,
+                FrameworkPropertyMetadataOptions.NotDataBindable,
+                OnIsItemsHostChanged));
 
     /// <summary>
-    /// Gets a value indicating whether this panel is the items host of an
+    /// Gets or sets a value indicating whether this panel is the items host of an
     /// <see cref="ItemsControl"/>. Set by the framework when the panel is installed as the items host;
     /// enables <see cref="ItemsControl.GetItemsOwner"/> and
     /// <see cref="ItemsControl.ItemsControlFromItemContainer"/>.
     /// </summary>
+    [System.ComponentModel.Bindable(false)]
+    [System.ComponentModel.Category("Behavior")]
     public bool IsItemsHost
     {
         get => (bool)(GetValue(IsItemsHostProperty) ?? false);
-        internal set => SetValue(IsItemsHostProperty, value);
+        set => SetValue(IsItemsHostProperty, value);
+    }
+
+    private static void OnIsItemsHostChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Panel panel)
+        {
+            panel.OnIsItemsHostChanged(e.OldValue is true, e.NewValue is true);
+        }
+    }
+
+    /// <summary>
+    /// Called when the panel starts or stops acting as the items host for an
+    /// <see cref="ItemsControl"/>.
+    /// </summary>
+    protected virtual void OnIsItemsHostChanged(bool oldIsItemsHost, bool newIsItemsHost)
+    {
     }
 
     #endregion
@@ -150,7 +171,7 @@ public abstract class Panel : FrameworkElement
     }
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         var children = Children;
         var count = children.Count;
@@ -172,22 +193,76 @@ public abstract class Panel : FrameworkElement
     }
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => Children.Count;
+    protected override int VisualChildrenCount => Children.Count;
 
     #endregion
 
     /// <summary>
     /// Gets the collection of child elements.
     /// </summary>
-    public UIElementCollection Children { get; }
+    [System.ComponentModel.DesignerSerializationVisibility(
+        System.ComponentModel.DesignerSerializationVisibility.Content)]
+    public UIElementCollection Children => InternalChildren;
+
+    private UIElementCollection? _children;
+
+    /// <summary>
+    /// Allows a visual-only host (for example a popup items panel) to retain an element's
+    /// existing logical owner while temporarily presenting it in this panel.
+    /// </summary>
+    internal bool PreserveExistingLogicalParents { get; set; }
+
+    /// <summary>
+    /// Gets the collection used internally to store this panel's child elements.
+    /// </summary>
+    protected internal UIElementCollection InternalChildren =>
+        _children ??= CreateUIElementCollection(this);
+
+    /// <summary>
+    /// Creates the collection used to store this panel's visual children.
+    /// </summary>
+    protected virtual UIElementCollection CreateUIElementCollection(FrameworkElement logicalParent) =>
+        new(this, logicalParent);
+
+    /// <summary>
+    /// Gets whether this panel exposes a meaningful logical scrolling orientation.
+    /// </summary>
+    protected internal virtual bool HasLogicalOrientation => false;
+
+    /// <summary>
+    /// Gets the logical scrolling orientation used by this panel.
+    /// </summary>
+    protected internal virtual Orientation LogicalOrientation => Orientation.Vertical;
+
+    /// <summary>
+    /// Gets whether this panel exposes a meaningful logical scrolling orientation.
+    /// </summary>
+    public bool HasLogicalOrientationPublic => HasLogicalOrientation;
+
+    /// <summary>
+    /// Gets the logical scrolling orientation used by this panel.
+    /// </summary>
+    public Orientation LogicalOrientationPublic => LogicalOrientation;
+
+    /// <summary>
+    /// Returns whether the child collection should be serialized as panel content.
+    /// </summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public bool ShouldSerializeChildren() =>
+        !IsItemsHost && _children is { Count: > 0 };
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Panel"/> class.
     /// </summary>
     protected Panel()
     {
-        Children = new UIElementCollection(this);
     }
+
+    /// <inheritdoc />
+    protected internal override System.Collections.IEnumerator LogicalChildren =>
+        IsItemsHost
+            ? Enumerable.Empty<object>().GetEnumerator()
+            : base.LogicalChildren;
 
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
@@ -260,29 +335,50 @@ public abstract class Panel : FrameworkElement
 /// <summary>
 /// Collection of UI elements for a panel.
 /// </summary>
-public sealed class UIElementCollection : IList<UIElement>
+public class UIElementCollection : System.Collections.IList, IEnumerable<UIElement>
 {
     private readonly List<UIElement> _items = new();
-    private readonly Panel _parent;
+    private readonly UIElement _parent;
+    private readonly Panel? _panelParent;
+    private readonly FrameworkElement? _logicalParent;
     private int _batchUpdateCount;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="UIElementCollection"/> class.
     /// </summary>
     public UIElementCollection(Panel parent)
+        : this(parent, parent)
     {
-        _parent = parent;
+    }
+
+    /// <summary>
+    /// Initializes a collection with separate visual and logical parents.
+    /// </summary>
+    public UIElementCollection(UIElement visualParent, FrameworkElement? logicalParent)
+    {
+        ArgumentNullException.ThrowIfNull(visualParent);
+        _parent = visualParent;
+        _panelParent = visualParent as Panel;
+        _logicalParent = logicalParent;
     }
 
     /// <summary>
     /// Gets the number of elements in the collection.
     /// </summary>
-    public int Count => _items.Count;
+    public virtual int Count => _items.Count;
 
-    /// <summary>
-    /// Gets a value indicating whether the collection is read-only.
-    /// </summary>
-    public bool IsReadOnly => false;
+    /// <summary>Gets or sets the number of elements the backing store can hold without growing.</summary>
+    public virtual int Capacity
+    {
+        get => _items.Capacity;
+        set => _items.Capacity = value;
+    }
+
+    /// <summary>Gets whether access to the collection is synchronized.</summary>
+    public virtual bool IsSynchronized => ((System.Collections.ICollection)_items).IsSynchronized;
+
+    /// <summary>Gets the synchronization object exposed by the collection contract.</summary>
+    public virtual object SyncRoot => ((System.Collections.ICollection)_items).SyncRoot;
 
     /// <summary>
     /// Gets a value indicating whether a batch update is in progress.
@@ -311,7 +407,7 @@ public sealed class UIElementCollection : IList<UIElement>
         _batchUpdateCount--;
         if (_batchUpdateCount == 0)
         {
-            _parent.EndVisualChildBatch();
+            _panelParent?.EndVisualChildBatch();
             _parent.InvalidateMeasure();
         }
     }
@@ -319,7 +415,7 @@ public sealed class UIElementCollection : IList<UIElement>
     /// <summary>
     /// Gets or sets the element at the specified index.
     /// </summary>
-    public UIElement this[int index]
+    public virtual UIElement this[int index]
     {
         get => _items[index];
         set
@@ -327,13 +423,15 @@ public sealed class UIElementCollection : IList<UIElement>
             var oldItem = _items[index];
             if (oldItem != value)
             {
-                _parent.RemoveVisualChildInternal(oldItem);
+                RemoveVisualChild(oldItem);
+                ClearLogicalParent(oldItem);
                 PrepareIncomingChild(value);
                 _items[index] = value;
+                SetLogicalParent(value);
                 if (IsBatchUpdating)
-                    _parent.AddVisualChildBatch(value);
+                    AddVisualChild(value, batch: true);
                 else
-                    _parent.AddVisualChildInternal(value);
+                    AddVisualChild(value, batch: false);
                 if (!IsBatchUpdating) _parent.InvalidateMeasure();
             }
         }
@@ -342,21 +440,24 @@ public sealed class UIElementCollection : IList<UIElement>
     /// <summary>
     /// Adds an element to the collection.
     /// </summary>
-    public void Add(UIElement item)
+    public virtual int Add(UIElement item)
     {
         ArgumentNullException.ThrowIfNull(item);
-        if (!PrepareIncomingChild(item)) return; // already our child — idempotent no-op
+        if (!PrepareIncomingChild(item)) return _items.IndexOf(item); // already our child — idempotent no-op
         _items.Add(item);
+        SetLogicalParent(item);
 
         if (IsBatchUpdating)
         {
-            _parent.AddVisualChildBatch(item);
+            AddVisualChild(item, batch: true);
         }
         else
         {
-            _parent.AddVisualChildInternal(item);
+            AddVisualChild(item, batch: false);
             _parent.InvalidateMeasure();
         }
+
+        return _items.Count - 1;
     }
 
     /// <summary>
@@ -397,11 +498,12 @@ public sealed class UIElementCollection : IList<UIElement>
     /// <summary>
     /// Clears all elements from the collection.
     /// </summary>
-    public void Clear()
+    public virtual void Clear()
     {
         foreach (var item in _items)
         {
-            _parent.RemoveVisualChildInternal(item);
+            RemoveVisualChild(item);
+            ClearLogicalParent(item);
         }
         _items.Clear();
         // WPF parity: once the children have been detached en masse, let a virtualizing panel
@@ -409,26 +511,64 @@ public sealed class UIElementCollection : IList<UIElement>
         // RefreshItems, fallback teardown, app code) would otherwise leave _realizedContainers
         // pointing at detached zombie containers. Idempotent by contract: the panels' own
         // ClearRealizedContainers also funnels through here after clearing their maps.
-        (_parent as VirtualizingPanel)?.OnClearChildren();
+        (_panelParent as VirtualizingPanel)?.OnClearChildrenInternal();
         if (!IsBatchUpdating) _parent.InvalidateMeasure();
     }
 
     /// <summary>
     /// Determines whether the collection contains a specific element.
     /// </summary>
-    public bool Contains(UIElement item) => _items.Contains(item);
+    public virtual bool Contains(UIElement item) => _items.Contains(item);
 
     /// <summary>
     /// Copies the elements to an array.
     /// </summary>
-    public void CopyTo(UIElement[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
+    public virtual void CopyTo(UIElement[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
+
+    /// <summary>Copies the elements to a one-dimensional array.</summary>
+    public virtual void CopyTo(Array array, int index) =>
+        ((System.Collections.ICollection)_items).CopyTo(array, index);
 
     /// <summary>
     /// Returns an enumerator that iterates through the collection.
     /// </summary>
-    public IEnumerator<UIElement> GetEnumerator() => _items.GetEnumerator();
+    public virtual System.Collections.IEnumerator GetEnumerator() => _items.GetEnumerator();
 
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    IEnumerator<UIElement> IEnumerable<UIElement>.GetEnumerator() => _items.GetEnumerator();
+
+    int System.Collections.IList.Add(object? value)
+    {
+        UIElement element = Cast(value);
+        Add(element);
+        return IndexOf(element);
+    }
+
+    bool System.Collections.IList.Contains(object? value) =>
+        value is UIElement element && Contains(element);
+
+    int System.Collections.IList.IndexOf(object? value) =>
+        value is UIElement element ? IndexOf(element) : -1;
+
+    void System.Collections.IList.Insert(int index, object? value) =>
+        Insert(index, Cast(value));
+
+    bool System.Collections.IList.IsFixedSize => false;
+
+    bool System.Collections.IList.IsReadOnly => false;
+
+    void System.Collections.IList.Remove(object? value)
+    {
+        if (value is UIElement element)
+        {
+            Remove(element);
+        }
+    }
+
+    object? System.Collections.IList.this[int index]
+    {
+        get => this[index];
+        set => this[index] = Cast(value);
+    }
 
     /// <summary>
     /// Adds multiple elements to the collection, invalidating measure only once.
@@ -446,13 +586,14 @@ public sealed class UIElementCollection : IList<UIElement>
             var item = items[i];
             if (!PrepareIncomingChild(item)) continue; // already a child — skip
             _items.Add(item);
-            _parent.AddVisualChildBatch(item);
+            SetLogicalParent(item);
+            AddVisualChild(item, batch: true);
             added++;
         }
 
         if (added > 0)
         {
-            _parent.EndVisualChildBatch();
+            _panelParent?.EndVisualChildBatch();
             _parent.InvalidateMeasure();
         }
     }
@@ -460,24 +601,25 @@ public sealed class UIElementCollection : IList<UIElement>
     /// <summary>
     /// Returns the index of a specific element.
     /// </summary>
-    public int IndexOf(UIElement item) => _items.IndexOf(item);
+    public virtual int IndexOf(UIElement item) => _items.IndexOf(item);
 
     /// <summary>
     /// Inserts an element at the specified index.
     /// </summary>
-    public void Insert(int index, UIElement item)
+    public virtual void Insert(int index, UIElement item)
     {
         ArgumentNullException.ThrowIfNull(item);
         if (!PrepareIncomingChild(item)) return; // already our child — idempotent no-op
         _items.Insert(index, item);
+        SetLogicalParent(item);
 
         if (IsBatchUpdating)
         {
-            _parent.AddVisualChildBatch(item);
+            AddVisualChild(item, batch: true);
         }
         else
         {
-            _parent.AddVisualChildInternal(item);
+            AddVisualChild(item, batch: false);
             _parent.InvalidateMeasure();
         }
     }
@@ -485,11 +627,17 @@ public sealed class UIElementCollection : IList<UIElement>
     /// <summary>
     /// Removes a specific element from the collection.
     /// </summary>
-    public bool Remove(UIElement item)
+    public virtual void Remove(UIElement item)
+    {
+        RemoveCore(item);
+    }
+
+    private bool RemoveCore(UIElement item)
     {
         if (_items.Remove(item))
         {
-            _parent.RemoveVisualChildInternal(item);
+            RemoveVisualChild(item);
+            ClearLogicalParent(item);
             if (!IsBatchUpdating) _parent.InvalidateMeasure();
             return true;
         }
@@ -499,11 +647,106 @@ public sealed class UIElementCollection : IList<UIElement>
     /// <summary>
     /// Removes the element at the specified index.
     /// </summary>
-    public void RemoveAt(int index)
+    public virtual void RemoveAt(int index)
     {
         var item = _items[index];
         _items.RemoveAt(index);
-        _parent.RemoveVisualChildInternal(item);
+        RemoveVisualChild(item);
+        ClearLogicalParent(item);
         if (!IsBatchUpdating) _parent.InvalidateMeasure();
+    }
+
+    /// <summary>Removes up to <paramref name="count"/> elements starting at the given index.</summary>
+    public virtual void RemoveRange(int index, int count)
+    {
+        if (index < 0 || index > _items.Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
+
+        if (count < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(count));
+        }
+
+        count = Math.Min(count, _items.Count - index);
+        if (count == 0)
+        {
+            return;
+        }
+
+        UIElement[] removed = _items.GetRange(index, count).ToArray();
+        _items.RemoveRange(index, count);
+        foreach (UIElement element in removed)
+        {
+            RemoveVisualChild(element);
+            ClearLogicalParent(element);
+        }
+
+        if (!IsBatchUpdating)
+        {
+            _parent.InvalidateMeasure();
+        }
+    }
+
+    /// <summary>Associates an element with the logical parent of this collection.</summary>
+    protected void SetLogicalParent(UIElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        if (_panelParent?.PreserveExistingLogicalParents == true &&
+            element is FrameworkElement { Parent: not null })
+        {
+            return;
+        }
+
+        _logicalParent?.AddLogicalChild(element);
+    }
+
+    /// <summary>Clears the element's association with this collection's logical parent.</summary>
+    protected void ClearLogicalParent(UIElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        _logicalParent?.RemoveLogicalChild(element);
+    }
+
+    private static UIElement Cast(object? value)
+    {
+        if (value == null)
+        {
+            throw new ArgumentException("UIElementCollection does not accept null elements.", nameof(value));
+        }
+
+        return value as UIElement
+            ?? throw new ArgumentException("UIElementCollection accepts only UIElement values.", nameof(value));
+    }
+
+    private void AddVisualChild(UIElement child, bool batch)
+    {
+        if (_panelParent != null)
+        {
+            if (batch)
+            {
+                _panelParent.AddVisualChildBatch(child);
+            }
+            else
+            {
+                _panelParent.AddVisualChildInternal(child);
+            }
+            return;
+        }
+
+        _parent.InternalAddVisualChild(child);
+    }
+
+    private void RemoveVisualChild(UIElement child)
+    {
+        if (_panelParent != null)
+        {
+            _panelParent.RemoveVisualChildInternal(child);
+        }
+        else
+        {
+            _parent.InternalRemoveVisualChild(child);
+        }
     }
 }

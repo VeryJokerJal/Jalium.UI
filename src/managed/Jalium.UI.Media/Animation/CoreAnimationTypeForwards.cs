@@ -1,0 +1,22 @@
+using System.Runtime.CompilerServices;
+using Jalium.UI.Media.Animation;
+
+[assembly: TypeForwardedTo(typeof(FillBehavior))]
+[assembly: TypeForwardedTo(typeof(AnimationTimeline))]
+[assembly: TypeForwardedTo(typeof(AnimationTimeline<>))]
+[assembly: TypeForwardedTo(typeof(AnimationClock))]
+[assembly: TypeForwardedTo(typeof(Clock))]
+[assembly: TypeForwardedTo(typeof(ClockGroup))]
+[assembly: TypeForwardedTo(typeof(ClockController))]
+[assembly: TypeForwardedTo(typeof(ClockState))]
+[assembly: TypeForwardedTo(typeof(TimeSeekOrigin))]
+[assembly: TypeForwardedTo(typeof(ParallelTimeline))]
+[assembly: TypeForwardedTo(typeof(SlipBehavior))]
+[assembly: TypeForwardedTo(typeof(ClockCollection))]
+[assembly: TypeForwardedTo(typeof(MediaTimeline))]
+[assembly: TypeForwardedTo(typeof(RepeatBehavior))]
+[assembly: TypeForwardedTo(typeof(RepeatBehaviorType))]
+[assembly: TypeForwardedTo(typeof(Storyboard))]
+[assembly: TypeForwardedTo(typeof(Timeline))]
+[assembly: TypeForwardedTo(typeof(TimelineGroup))]
+[assembly: TypeForwardedTo(typeof(TimelineCollection))]

@@ -129,11 +129,33 @@ public class XamlResourceDictionarySourceCompatibilityTests
     public void ThemeControlDictionaries_ShouldParseStandalone(string resourceName)
     {
         var assembly = typeof(Button).Assembly;
-        using var stream = assembly.GetManifestResourceStream(resourceName);
-        Assert.NotNull(stream);
+        ThemeLoader.Initialize();
 
-        var dictionary = XamlReader.Load(stream!, resourceName, assembly);
-        Assert.IsType<ResourceDictionary>(dictionary);
+        Assert.True(
+            XamlPrebuiltDictionaryRegistry.TryGet(resourceName, out var builder),
+            $"No generated dictionary builder was registered for '{resourceName}'.");
+        Assert.NotNull(builder);
+
+        var assemblyName = assembly.GetName().Name!;
+        var relativeName = resourceName.StartsWith(assemblyName + ".", StringComparison.Ordinal)
+            ? resourceName[(assemblyName.Length + 1)..]
+            : resourceName;
+        const string JalxamlExtension = ".jalxaml";
+        var relativePath = relativeName.EndsWith(JalxamlExtension, StringComparison.OrdinalIgnoreCase)
+            ? relativeName[..^JalxamlExtension.Length].Replace('.', '/') + JalxamlExtension
+            : relativeName.Replace('.', '/');
+        var sourceUri = new Uri($"resource:///{assemblyName}/{relativePath}", UriKind.Absolute);
+        var dictionary = new ResourceDictionary
+        {
+            Source = sourceUri,
+            BaseUri = sourceUri,
+            SourceAssembly = assembly
+        };
+        var context = XamlBuilder.BeginComponent(dictionary, sourceUri, assembly);
+        builder(dictionary, context);
+        XamlBuilder.EndComponent(dictionary, context);
+
+        Assert.NotNull(dictionary);
     }
 
     private static ResourceDictionary ParseWithAssemblyContext(string xaml)

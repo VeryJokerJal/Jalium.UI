@@ -38,7 +38,7 @@ public readonly struct RepeatBehavior : IEquatable<RepeatBehavior>, IFormattable
     /// <summary>
     /// Gets a RepeatBehavior that specifies an infinite number of repetitions.
     /// </summary>
-    public static RepeatBehavior Forever => new() { };
+    public static RepeatBehavior Forever => new(RepeatBehaviorType.Forever);
 
     private RepeatBehavior(RepeatBehaviorType type)
     {
@@ -87,11 +87,20 @@ public readonly struct RepeatBehavior : IEquatable<RepeatBehavior>, IFormattable
     public bool Equals(RepeatBehavior other) =>
         _type == other._type && _count == other._count && _duration == other._duration;
 
+    /// <summary>Determines whether two repeat behaviors represent the same behavior.</summary>
+    public static bool Equals(RepeatBehavior repeatBehavior1, RepeatBehavior repeatBehavior2) =>
+        repeatBehavior1.Equals(repeatBehavior2);
+
     /// <inheritdoc />
     public override bool Equals(object? obj) => obj is RepeatBehavior other && Equals(other);
 
     /// <inheritdoc />
-    public override int GetHashCode() => HashCode.Combine(_type, _count, _duration);
+    public override int GetHashCode() => _type switch
+    {
+        RepeatBehaviorType.Count => _count.GetHashCode(),
+        RepeatBehaviorType.Duration => _duration.GetHashCode(),
+        _ => int.MaxValue - 42
+    };
 
     /// <summary>Equality operator.</summary>
     public static bool operator ==(RepeatBehavior left, RepeatBehavior right) => left.Equals(right);
@@ -102,13 +111,16 @@ public readonly struct RepeatBehavior : IEquatable<RepeatBehavior>, IFormattable
     /// <inheritdoc />
     public override string ToString() => ToString(null, null);
 
+    /// <summary>Formats this repeat behavior using the supplied culture.</summary>
+    public string ToString(IFormatProvider? formatProvider) => ToString(null, formatProvider);
+
     /// <inheritdoc />
     public string ToString(string? format, IFormatProvider? formatProvider)
     {
         return _type switch
         {
             RepeatBehaviorType.Forever => "Forever",
-            RepeatBehaviorType.Count => $"{_count}x",
+            RepeatBehaviorType.Count => string.Format(formatProvider, "{0:" + format + "}x", _count),
             RepeatBehaviorType.Duration => _duration.ToString(),
             _ => "Forever"
         };
@@ -120,10 +132,10 @@ public readonly struct RepeatBehavior : IEquatable<RepeatBehavior>, IFormattable
 /// </summary>
 public enum RepeatBehaviorType
 {
-    /// <summary>Repeat forever.</summary>
-    Forever,
     /// <summary>Repeat a specified number of times.</summary>
     Count,
     /// <summary>Repeat for a specified duration.</summary>
-    Duration
+    Duration,
+    /// <summary>Repeat forever.</summary>
+    Forever
 }

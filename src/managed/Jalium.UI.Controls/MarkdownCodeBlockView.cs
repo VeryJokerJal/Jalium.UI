@@ -40,7 +40,7 @@ internal sealed class MarkdownCodeBlockView : FrameworkElement, IMarkdownSelecta
         }
     }
 
-    public string? Language
+    public new string? Language
     {
         get => _language;
         set
@@ -62,7 +62,7 @@ internal sealed class MarkdownCodeBlockView : FrameworkElement, IMarkdownSelecta
 
     public MarkdownCodeBlockView()
     {
-        Cursor = Jalium.UI.Cursors.IBeam;
+        Cursor = Jalium.UI.Input.Cursors.IBeam;
         RebuildHighlighting();
     }
 

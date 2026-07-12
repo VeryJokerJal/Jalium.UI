@@ -2,15 +2,16 @@ using System.ComponentModel;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
-namespace Jalium.UI.Controls.Ink;
+namespace Jalium.UI.Ink;
 
 /// <summary>
 /// Represents a single ink stroke consisting of stylus points and drawing attributes.
 /// </summary>
-public sealed class Stroke : INotifyPropertyChanged
+public partial class Stroke : INotifyPropertyChanged
 {
     private StylusPointCollection _stylusPoints;
     private DrawingAttributes _drawingAttributes;
+    private readonly Dictionary<Guid, object> _propertyData = new();
     private StrokeTaperMode _taperMode = StrokeTaperMode.None;
 
     // Rendering cache: avoids expensive per-frame tessellation for committed strokes.
@@ -41,9 +42,12 @@ public sealed class Stroke : INotifyPropertyChanged
     public Stroke(StylusPointCollection stylusPoints, DrawingAttributes drawingAttributes)
     {
         _stylusPoints = stylusPoints ?? throw new ArgumentNullException(nameof(stylusPoints));
+        if (_stylusPoints.Count == 0)
+            throw new ArgumentException("A stroke must contain at least one stylus point.", nameof(stylusPoints));
         _drawingAttributes = drawingAttributes ?? throw new ArgumentNullException(nameof(drawingAttributes));
 
         _stylusPoints.Changed += OnStylusPointsChanged;
+        _stylusPoints.CountGoingToZero += OnStylusPointsCountGoingToZero;
         _drawingAttributes.AttributeChanged += OnDrawingAttributesChanged;
     }
 
@@ -65,7 +69,16 @@ public sealed class Stroke : INotifyPropertyChanged
     /// <summary>
     /// Occurs when the drawing attributes change.
     /// </summary>
-    public event EventHandler? DrawingAttributesChanged;
+    public event PropertyDataChangedEventHandler? DrawingAttributesChanged;
+
+    /// <summary>Occurs when the drawing-attributes instance is replaced.</summary>
+    public event DrawingAttributesReplacedEventHandler? DrawingAttributesReplaced;
+
+    /// <summary>Occurs when the stylus-points instance is replaced.</summary>
+    public event StylusPointsReplacedEventHandler? StylusPointsReplaced;
+
+    /// <summary>Occurs when custom stroke property data changes.</summary>
+    public event PropertyDataChangedEventHandler? PropertyDataChanged;
 
     /// <summary>
     /// Gets or sets the collection of stylus points that define this stroke.
@@ -75,16 +88,23 @@ public sealed class Stroke : INotifyPropertyChanged
         get => _stylusPoints;
         set
         {
+            ArgumentNullException.ThrowIfNull(value);
+            if (value.Count == 0)
+                throw new ArgumentException("A stroke must contain at least one stylus point.", nameof(value));
+
             if (_stylusPoints != value)
             {
-                if (_stylusPoints != null)
-                    _stylusPoints.Changed -= OnStylusPointsChanged;
+                StylusPointCollection previous = _stylusPoints;
+                previous.Changed -= OnStylusPointsChanged;
+                previous.CountGoingToZero -= OnStylusPointsCountGoingToZero;
 
-                _stylusPoints = value ?? throw new ArgumentNullException(nameof(value));
+                _stylusPoints = value;
                 _stylusPoints.Changed += OnStylusPointsChanged;
+                _stylusPoints.CountGoingToZero += OnStylusPointsCountGoingToZero;
 
                 OnPropertyChanged(nameof(StylusPoints));
-                OnInvalidated();
+                OnStylusPointsReplaced(new StylusPointsReplacedEventArgs(value, previous));
+                OnInvalidated(EventArgs.Empty);
             }
         }
     }
@@ -97,16 +117,18 @@ public sealed class Stroke : INotifyPropertyChanged
         get => _drawingAttributes;
         set
         {
+            ArgumentNullException.ThrowIfNull(value);
             if (_drawingAttributes != value)
             {
-                if (_drawingAttributes != null)
-                    _drawingAttributes.AttributeChanged -= OnDrawingAttributesChanged;
+                DrawingAttributes previous = _drawingAttributes;
+                previous.AttributeChanged -= OnDrawingAttributesChanged;
 
-                _drawingAttributes = value ?? throw new ArgumentNullException(nameof(value));
+                _drawingAttributes = value;
                 _drawingAttributes.AttributeChanged += OnDrawingAttributesChanged;
 
                 OnPropertyChanged(nameof(DrawingAttributes));
-                OnInvalidated();
+                OnDrawingAttributesReplaced(new DrawingAttributesReplacedEventArgs(value, previous));
+                OnInvalidated(EventArgs.Empty);
             }
         }
     }
@@ -123,7 +145,7 @@ public sealed class Stroke : INotifyPropertyChanged
             {
                 _taperMode = value;
                 OnPropertyChanged(nameof(TaperMode));
-                OnInvalidated();
+                OnInvalidated(EventArgs.Empty);
             }
         }
     }
@@ -132,10 +154,12 @@ public sealed class Stroke : INotifyPropertyChanged
     /// Creates a copy of this stroke.
     /// </summary>
     /// <returns>A new <see cref="Stroke"/> with cloned points and attributes.</returns>
-    public Stroke Clone()
+    public virtual Stroke Clone()
     {
         var clone = new Stroke(_stylusPoints.Clone(), _drawingAttributes.Clone());
-        clone.TaperMode = TaperMode;
+        clone._taperMode = _taperMode;
+        foreach ((Guid id, object value) in _propertyData)
+            clone._propertyData.Add(id, InkPropertyData.CloneValue(value));
         return clone;
     }
 
@@ -143,21 +167,19 @@ public sealed class Stroke : INotifyPropertyChanged
     /// Gets the bounding rectangle of this stroke.
     /// </summary>
     /// <returns>A <see cref="Rect"/> that bounds this stroke.</returns>
-    public Rect GetBounds()
+    public virtual Rect GetBounds()
     {
         var bounds = _stylusPoints.GetBounds();
         if (bounds.IsEmpty)
             return bounds;
 
-        var halfWidth = _drawingAttributes.Width / 2;
-        var halfHeight = _drawingAttributes.Height / 2;
-        var inflate = Math.Max(halfWidth, halfHeight);
+        (double halfWidth, double halfHeight) = GetTransformedTipHalfExtents(_drawingAttributes);
 
         return new Rect(
-            bounds.X - inflate,
-            bounds.Y - inflate,
-            bounds.Width + inflate * 2,
-            bounds.Height + inflate * 2);
+            bounds.X - halfWidth,
+            bounds.Y - halfHeight,
+            bounds.Width + halfWidth * 2,
+            bounds.Height + halfHeight * 2);
     }
 
     /// <summary>
@@ -168,6 +190,9 @@ public sealed class Stroke : INotifyPropertyChanged
     /// <returns>True if the point hits this stroke; otherwise, false.</returns>
     public bool HitTest(Point point, double diameter)
     {
+        if (!double.IsFinite(diameter) || diameter < DrawingAttributes.MinWidth || diameter > DrawingAttributes.MaxWidth)
+            throw new ArgumentOutOfRangeException(nameof(diameter));
+
         if (_stylusPoints.Count == 0)
             return false;
 
@@ -210,7 +235,43 @@ public sealed class Stroke : INotifyPropertyChanged
     /// <param name="dc">The drawing context.</param>
     public void Draw(DrawingContext dc)
     {
-        DrawCore(dc);
+        Draw(dc, _drawingAttributes);
+    }
+
+    /// <summary>Draws this stroke with an explicit set of drawing attributes.</summary>
+    public void Draw(DrawingContext drawingContext, DrawingAttributes drawingAttributes)
+    {
+        ArgumentNullException.ThrowIfNull(drawingContext);
+        ArgumentNullException.ThrowIfNull(drawingAttributes);
+        DrawCore(drawingContext, drawingAttributes);
+    }
+
+    /// <summary>Provides the overridable drawing implementation used by both public overloads.</summary>
+    protected virtual void DrawCore(DrawingContext drawingContext, DrawingAttributes drawingAttributes)
+    {
+        ArgumentNullException.ThrowIfNull(drawingContext);
+        ArgumentNullException.ThrowIfNull(drawingAttributes);
+
+        if (ReferenceEquals(drawingAttributes, _drawingAttributes))
+        {
+            DrawCached(drawingContext);
+            return;
+        }
+
+        var temporary = new Stroke(_stylusPoints.Clone(), drawingAttributes)
+        {
+            _taperMode = _taperMode,
+        };
+        try
+        {
+            temporary.DrawCached(drawingContext);
+        }
+        finally
+        {
+            temporary._stylusPoints.Changed -= temporary.OnStylusPointsChanged;
+            temporary._stylusPoints.CountGoingToZero -= temporary.OnStylusPointsCountGoingToZero;
+            temporary._drawingAttributes.AttributeChanged -= temporary.OnDrawingAttributesChanged;
+        }
     }
 
     /// <summary>
@@ -218,7 +279,7 @@ public sealed class Stroke : INotifyPropertyChanged
     /// (single draw call) or cached DrawingGroup for particle brushes (replay).
     /// </summary>
     /// <param name="dc">The drawing context.</param>
-    private void DrawCore(DrawingContext dc)
+    private void DrawCached(DrawingContext dc)
     {
         if (_stylusPoints.Count == 0)
             return;
@@ -285,6 +346,69 @@ public sealed class Stroke : INotifyPropertyChanged
 
         // Fallback
         DrawRoundBrush(dc);
+    }
+
+    /// <summary>
+    /// Gets the single filled geometry used by WPF's DynamicRenderer.OnDraw
+    /// contract. Particle brush extensions intentionally return false because
+    /// they require per-particle colors and cannot be losslessly represented by
+    /// one geometry and one brush.
+    /// </summary>
+    internal bool TryGetDynamicRendererDrawing(out Geometry geometry, out Brush fillBrush)
+    {
+        if (_renderCacheDirty)
+        {
+            BuildRenderCache();
+        }
+
+        if (_cachedGeometry is not null)
+        {
+            if (_cachedPen?.Brush is { } penBrush)
+            {
+                geometry = _cachedGeometry.GetWidenedPathGeometry(_cachedPen);
+                fillBrush = penBrush;
+                return true;
+            }
+
+            if (_cachedBrush is not null)
+            {
+                geometry = _cachedGeometry;
+                fillBrush = _cachedBrush;
+                return true;
+            }
+        }
+
+        if (_drawingAttributes.BrushType is BrushType.Round or BrushType.Pen or BrushType.Marker &&
+            _cachedEllipseBatchData is not null &&
+            _cachedEllipseBatchCount > 0)
+        {
+            var group = new GeometryGroup { FillRule = FillRule.Nonzero };
+            for (int index = 0; index < _cachedEllipseBatchCount; index++)
+            {
+                int offset = index * 5;
+                group.Children.Add(new EllipseGeometry
+                {
+                    Center = new Point(
+                        _cachedEllipseBatchData[offset],
+                        _cachedEllipseBatchData[offset + 1]),
+                    RadiusX = _cachedEllipseBatchData[offset + 2],
+                    RadiusY = _cachedEllipseBatchData[offset + 3],
+                });
+            }
+
+            int packedColor = BitConverter.SingleToInt32Bits(_cachedEllipseBatchData[4]);
+            fillBrush = new SolidColorBrush(Color.FromArgb(
+                (byte)((packedColor >> 24) & 0xFF),
+                (byte)(packedColor & 0xFF),
+                (byte)((packedColor >> 8) & 0xFF),
+                (byte)((packedColor >> 16) & 0xFF)));
+            geometry = group;
+            return true;
+        }
+
+        geometry = null!;
+        fillBrush = null!;
+        return false;
     }
 
     /// <summary>
@@ -571,7 +695,7 @@ public sealed class Stroke : INotifyPropertyChanged
     /// A DrawingContext wrapper that delegates to an inner context while also
     /// collecting filled ellipse data for native batch rendering.
     /// </summary>
-    private sealed class EllipseCollectingDrawingContext : DrawingContext
+    private sealed class EllipseCollectingDrawingContext : DrawingContextAdapter
     {
         private readonly DrawingContext _inner;
         private readonly EllipseBatchCollector _collector;
@@ -1112,14 +1236,16 @@ public sealed class Stroke : INotifyPropertyChanged
 
     private void OnStylusPointsChanged(object? sender, EventArgs e)
     {
-        StylusPointsChanged?.Invoke(this, EventArgs.Empty);
-        OnInvalidated();
+        OnStylusPointsChanged(EventArgs.Empty);
+        OnInvalidated(EventArgs.Empty);
     }
 
-    private void OnDrawingAttributesChanged(object? sender, EventArgs e)
+    private void OnStylusPointsCountGoingToZero(object? sender, CancelEventArgs e) => e.Cancel = true;
+
+    private void OnDrawingAttributesChanged(object sender, PropertyDataChangedEventArgs e)
     {
-        DrawingAttributesChanged?.Invoke(this, EventArgs.Empty);
-        OnInvalidated();
+        OnDrawingAttributesChanged(e);
+        OnInvalidated(EventArgs.Empty);
     }
 
     /// <summary>
@@ -1127,14 +1253,57 @@ public sealed class Stroke : INotifyPropertyChanged
     /// </summary>
     private void OnPropertyChanged(string propertyName)
     {
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        OnPropertyChanged(new PropertyChangedEventArgs(propertyName));
     }
 
     /// <summary>
     /// Raises the <see cref="Invalidated"/> event.
     /// </summary>
-    private void OnInvalidated()
+    protected virtual void OnDrawingAttributesChanged(PropertyDataChangedEventArgs e)
     {
+        ArgumentNullException.ThrowIfNull(e);
+        DrawingAttributesChanged?.Invoke(this, e);
+    }
+
+    /// <summary>Raises <see cref="DrawingAttributesReplaced"/>.</summary>
+    protected virtual void OnDrawingAttributesReplaced(DrawingAttributesReplacedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        DrawingAttributesReplaced?.Invoke(this, e);
+    }
+
+    /// <summary>Raises <see cref="StylusPointsReplaced"/>.</summary>
+    protected virtual void OnStylusPointsReplaced(StylusPointsReplacedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        StylusPointsReplaced?.Invoke(this, e);
+    }
+
+    /// <summary>Raises <see cref="StylusPointsChanged"/>.</summary>
+    protected virtual void OnStylusPointsChanged(EventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        StylusPointsChanged?.Invoke(this, e);
+    }
+
+    /// <summary>Raises <see cref="PropertyDataChanged"/>.</summary>
+    protected virtual void OnPropertyDataChanged(PropertyDataChangedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        PropertyDataChanged?.Invoke(this, e);
+    }
+
+    /// <summary>Raises <see cref="PropertyChanged"/>.</summary>
+    protected virtual void OnPropertyChanged(PropertyChangedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        PropertyChanged?.Invoke(this, e);
+    }
+
+    /// <summary>Clears rendering caches and raises <see cref="Invalidated"/>.</summary>
+    protected virtual void OnInvalidated(EventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
         _renderCacheDirty = true;
         _cachedGeometry = null;
         _cachedBrush = null;
@@ -1142,6 +1311,6 @@ public sealed class Stroke : INotifyPropertyChanged
         _cachedDrawing = null;
         _cachedEllipseBatchData = null;
         _cachedEllipseBatchCount = 0;
-        Invalidated?.Invoke(this, EventArgs.Empty);
+        Invalidated?.Invoke(this, e);
     }
 }

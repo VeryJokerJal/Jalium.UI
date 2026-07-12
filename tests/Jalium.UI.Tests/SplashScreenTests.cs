@@ -41,7 +41,7 @@ public class SplashScreenTests
 
         try
         {
-            var splash = new SplashScreen(typeof(SplashScreenTests).Assembly, "Colors.jalxaml");
+            var splash = new SplashScreen(typeof(SplashScreenTests).Assembly, "SplashScreen.bmp");
 
             splash.Show(autoClose: false, topMost: true);
 
@@ -66,7 +66,7 @@ public class SplashScreenTests
 
         try
         {
-            var splash = new SplashScreen(typeof(SplashScreenTests).Assembly, "Colors.jalxaml");
+            var splash = new SplashScreen(typeof(SplashScreenTests).Assembly, "SplashScreen.bmp");
 
             splash.Show(autoClose: true, topMost: false);
 
@@ -103,7 +103,7 @@ public class SplashScreenTests
 
         try
         {
-            var splash = new SplashScreen(typeof(SplashScreenTests).Assembly, "Colors.jalxaml");
+            var splash = new SplashScreen(typeof(SplashScreenTests).Assembly, "SplashScreen.bmp");
 
             splash.Show(autoClose: true, topMost: false);
 

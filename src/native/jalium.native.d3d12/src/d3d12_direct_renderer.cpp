@@ -965,6 +965,39 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
         }
     }
 
+    // The offscreen capture/snapshot/blur textures are shared by every swap-
+    // chain frame. Waiting only for this frame slot's fence protects its command
+    // allocator and back buffer, but not those renderer-wide effect resources.
+    // Do not let a newer frame overwrite or transition them while the GPU is
+    // still consuming the preceding effect-heavy frame.
+    if (effectScratchFenceValue_ > 0 &&
+        fence_->GetCompletedValue() < effectScratchFenceValue_) {
+        ResetEvent(fenceEvent_);
+        fence_->SetEventOnCompletion(effectScratchFenceValue_, fenceEvent_);
+        LARGE_INTEGER waitStart = QpcNow();
+        WaitForSingleObject(fenceEvent_, 50);
+        LARGE_INTEGER waitEnd = QpcNow();
+        accumulatingFrameWaitNs_ += QpcDiffNs(waitStart, waitEnd);
+        if (fence_->GetCompletedValue() < effectScratchFenceValue_) {
+            lastFrameGpuWaitNs_ = accumulatingFrameWaitNs_;
+            return false;
+        }
+    }
+
+    if (glyphAtlasFenceValue_ > 0 &&
+        fence_->GetCompletedValue() < glyphAtlasFenceValue_) {
+        ResetEvent(fenceEvent_);
+        fence_->SetEventOnCompletion(glyphAtlasFenceValue_, fenceEvent_);
+        LARGE_INTEGER waitStart = QpcNow();
+        WaitForSingleObject(fenceEvent_, 50);
+        LARGE_INTEGER waitEnd = QpcNow();
+        accumulatingFrameWaitNs_ += QpcDiffNs(waitStart, waitEnd);
+        if (fence_->GetCompletedValue() < glyphAtlasFenceValue_) {
+            lastFrameGpuWaitNs_ = accumulatingFrameWaitNs_;
+            return false;
+        }
+    }
+
     // BeginFrame proceeded past the wait: flush the accumulator and stamp
     // the present-to-ready wall clock for the previously presented frame.
     lastFrameGpuWaitNs_ = accumulatingFrameWaitNs_;
@@ -1124,6 +1157,7 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     pathMsaaUsedThisFrame_ = false;
     inOffscreenCapture_ = false;
     inRetainedCapture_ = false;  // 防御：与 inOffscreenCapture_ 对称复位，兜底 retained-capture 标志在 resize/abort 时泄漏成 true（详见 EndRetainedLayerCapture），否则 effect capture 永久失败
+    glyphAtlasUsedThisFrame_ = false;
     fr.constantsRingOffset = 0;  // reset ring buffer for this frame
 
     // Keep the in-place blur temps sized to the (monotonically ratcheted)
@@ -1252,6 +1286,7 @@ void D3D12DirectRenderer::AbortFrame()
     pathMsaaUsedThisFrame_ = false;
     inOffscreenCapture_ = false;
     inRetainedCapture_ = false;  // 防御：与 inOffscreenCapture_ 对称复位，兜底 retained-capture 标志在 resize/abort 时泄漏成 true（详见 EndRetainedLayerCapture），否则 effect capture 永久失败
+    glyphAtlasUsedThisFrame_ = false;
 
     // An armed / completed back-buffer readback dies with the aborted frame:
     // its copy commands (if any were recorded) were discarded with the list,
@@ -1426,6 +1461,12 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
     backend_->GetCommandQueue()->Signal(fence_.Get(), frames_[currentFrame_].fenceValue);
     if (pathMsaaUsedThisFrame_) {
         pathScratchFenceValue_ = frames_[currentFrame_].fenceValue;
+    }
+    if (offscreenResourcesUsedThisFrame_ || snapshotUsedThisFrame_ || blurTempsUsedThisFrame_) {
+        effectScratchFenceValue_ = frames_[currentFrame_].fenceValue;
+    }
+    if (glyphAtlasUsedThisFrame_) {
+        glyphAtlasFenceValue_ = frames_[currentFrame_].fenceValue;
     }
 
     // Back-buffer readback armed this frame: the copy recorded above executes
@@ -1879,6 +1920,9 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
                                                   aaMode, hintingMode,
                                                   scaleX, scaleY,
                                                   crispAxisAligned);
+    if (count > 0) {
+        glyphAtlasUsedThisFrame_ = true;
+    }
 
     // Apply transform scaling to each glyph instance.
     // GenerateGlyphs emits BASE-DIP quads (any rasterScale magnification was
@@ -2728,6 +2772,11 @@ void D3D12DirectRenderer::UploadInstances()
         handle.ptr += srvDescriptorSize_;
         if (glyphAtlas_) {
             glyphAtlas_->FlushToGpu(commandList_.Get());
+            // Flush records CopyTextureRegion into the still-open main list.
+            // Bind the one-shot upload allocation to this frame slot's actual
+            // submission fence; the backend graveyard can be overtaken by an
+            // auxiliary mid-frame Signal and is therefore not safe here.
+            glyphAtlas_->DrainRetiredUploadBuffers(fr.retiredInstanceBuffers);
             D3D12_SHADER_RESOURCE_VIEW_DESC atlasSrv = {};
             atlasSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             atlasSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;

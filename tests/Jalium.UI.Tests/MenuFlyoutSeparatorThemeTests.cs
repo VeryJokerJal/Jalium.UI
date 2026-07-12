@@ -25,7 +25,7 @@ public class MenuFlyoutSeparatorThemeTests
         Assert.Same(brush, drawingContext.LastPen?.Brush);
     }
 
-    private sealed class RecordingDrawingContext : DrawingContext
+    private sealed class RecordingDrawingContext : DrawingContextAdapter
     {
         public Pen? LastPen { get; private set; }
 

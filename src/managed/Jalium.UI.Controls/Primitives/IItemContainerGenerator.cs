@@ -33,6 +33,11 @@ public enum GeneratorStatus
 public interface IItemContainerGenerator
 {
     /// <summary>
+    /// Returns the item-container generator appropriate for use by the specified panel.
+    /// </summary>
+    ItemContainerGenerator? GetItemContainerGeneratorForPanel(Panel panel);
+
+    /// <summary>
     /// Returns the GeneratorPosition corresponding to the item at the given index.
     /// </summary>
     GeneratorPosition GeneratorPositionFromIndex(int itemIndex);
@@ -52,6 +57,12 @@ public interface IItemContainerGenerator
     /// Prepares the generator to generate items, starting at the given position and direction.
     /// </summary>
     IDisposable StartAt(GeneratorPosition position, GeneratorDirection direction, bool allowStartAtRealizedItem);
+
+    /// <summary>
+    /// Returns the container element for the next item, stopping when the next item already has
+    /// a realized container.
+    /// </summary>
+    DependencyObject? GenerateNext();
 
     /// <summary>
     /// Returns the container element for the next item. Also indicates whether the

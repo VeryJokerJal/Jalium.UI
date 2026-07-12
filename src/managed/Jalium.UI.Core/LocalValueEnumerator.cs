@@ -16,7 +16,18 @@ public struct LocalValueEnumerator : IEnumerator
         _index = -1;
     }
 
-    public LocalValueEntry Current => _entries[_index];
+    public LocalValueEntry Current
+    {
+        get
+        {
+            if (_index < 0 || _index >= Count)
+            {
+                throw new InvalidOperationException("The local-value enumerator is not positioned on an entry.");
+            }
+
+            return _entries[_index];
+        }
+    }
     object IEnumerator.Current => Current;
 
     public int Count => _entries.Length;
@@ -28,6 +39,21 @@ public struct LocalValueEnumerator : IEnumerator
     }
 
     public void Reset() => _index = -1;
+
+    public override bool Equals(object? obj)
+    {
+        return obj is LocalValueEnumerator other
+            && _index == other._index
+            && ReferenceEquals(_entries, other._entries);
+    }
+
+    public override int GetHashCode() => HashCode.Combine(_entries, _index);
+
+    public static bool operator ==(LocalValueEnumerator obj1, LocalValueEnumerator obj2)
+        => obj1.Equals(obj2);
+
+    public static bool operator !=(LocalValueEnumerator obj1, LocalValueEnumerator obj2)
+        => !obj1.Equals(obj2);
 }
 
 /// <summary>
@@ -44,8 +70,11 @@ public readonly struct LocalValueEntry
     public DependencyProperty Property { get; }
     public object? Value { get; }
 
-    public override bool Equals(object? obj) => obj is LocalValueEntry other && Property == other.Property;
-    public override int GetHashCode() => Property.GetHashCode();
+    public override bool Equals(object? obj)
+        => obj is LocalValueEntry other
+            && Property == other.Property
+            && ReferenceEquals(Value, other.Value);
+    public override int GetHashCode() => HashCode.Combine(Property, Value);
     public static bool operator ==(LocalValueEntry left, LocalValueEntry right) => left.Equals(right);
     public static bool operator !=(LocalValueEntry left, LocalValueEntry right) => !left.Equals(right);
 }

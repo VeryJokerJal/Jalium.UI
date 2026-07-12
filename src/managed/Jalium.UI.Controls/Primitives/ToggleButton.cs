@@ -8,9 +8,9 @@ namespace Jalium.UI.Controls.Primitives;
 public class ToggleButton : ButtonBase
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ToggleButtonAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ToggleButtonAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -132,7 +132,7 @@ public class ToggleButton : ButtonBase
     /// <summary>
     /// Called when the button is toggled.
     /// </summary>
-    protected virtual void OnToggle()
+    protected internal virtual void OnToggle()
     {
         if (IsThreeState)
         {

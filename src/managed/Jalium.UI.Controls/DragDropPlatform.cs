@@ -21,9 +21,17 @@ internal static partial class DragDropPlatform
     {
         if (_initialized) return;
         _initialized = true;
-        OleDropTarget.Initialize();
-        DragDrop.DoDragDropOverride = DoDragDropManaged;
-        DragDrop.DoShellDragDropOverride = OleDragSource.DoDragDrop;
+        if (OperatingSystem.IsWindows())
+        {
+            OleDropTarget.Initialize();
+            DragDrop.DoDragDropOverride = DoDragDropManaged;
+            DragDrop.DoShellDragDropOverride = OleDragSource.DoDragDrop;
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            DragDrop.DoDragDropOverride = DoLinuxDragDrop;
+            DragDrop.DoShellDragDropOverride = DoLinuxDragDrop;
+        }
     }
 
     /// <summary>

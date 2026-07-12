@@ -26,30 +26,52 @@ public enum PathAnimationSource
 /// <summary>
 /// Animates a Double value along a PathGeometry.
 /// </summary>
-public sealed class DoubleAnimationUsingPath : AnimationTimeline<double>
+public sealed class DoubleAnimationUsingPath : DoubleAnimationBase
 {
     private bool _isValid;
     private double _accumulatingValue;
 
+    public static readonly DependencyProperty PathGeometryProperty =
+        DependencyProperty.Register(nameof(PathGeometry), typeof(PathGeometry), typeof(DoubleAnimationUsingPath), new PropertyMetadata(null));
+
+    public static readonly DependencyProperty SourceProperty =
+        DependencyProperty.Register(nameof(Source), typeof(PathAnimationSource), typeof(DoubleAnimationUsingPath), new PropertyMetadata(PathAnimationSource.X));
+
     /// <summary>
     /// Gets or sets the PathGeometry that defines the path.
     /// </summary>
-    public PathGeometry? PathGeometry { get; set; }
+    public PathGeometry? PathGeometry
+    {
+        get => (PathGeometry?)GetValue(PathGeometryProperty);
+        set => SetValue(PathGeometryProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the source of the animation value (X, Y, or Angle).
     /// </summary>
-    public PathAnimationSource Source { get; set; } = PathAnimationSource.X;
+    public PathAnimationSource Source
+    {
+        get => (PathAnimationSource)GetValue(SourceProperty)!;
+        set => SetValue(SourceProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets whether the animation is additive.
     /// </summary>
-    public new bool IsAdditive { get; set; }
+    public bool IsAdditive
+    {
+        get => (bool)GetValue(IsAdditiveProperty)!;
+        set => SetValue(IsAdditiveProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets whether the animation is cumulative across repeats.
     /// </summary>
-    public new bool IsCumulative { get; set; }
+    public bool IsCumulative
+    {
+        get => (bool)GetValue(IsCumulativeProperty)!;
+        set => SetValue(IsCumulativeProperty, value);
+    }
 
     /// <inheritdoc />
     protected override double GetCurrentValueCore(double defaultOriginValue, double defaultDestinationValue, AnimationClock animationClock)
@@ -76,10 +98,9 @@ public sealed class DoubleAnimationUsingPath : AnimationTimeline<double>
         };
 
         // Handle cumulative behavior
-        if (IsCumulative && animationClock.CurrentTime.HasValue)
+        if (IsCumulative && animationClock.CurrentIteration > 1)
         {
-            var duration = Duration.HasTimeSpan ? Duration.TimeSpan.TotalMilliseconds : 1000;
-            var currentRepeat = Math.Floor(animationClock.CurrentTime.Value.TotalMilliseconds / duration);
+            var currentRepeat = animationClock.CurrentIteration.Value - 1;
             if (currentRepeat > 0)
             {
                 pathValue += _accumulatingValue * currentRepeat;
@@ -123,30 +144,49 @@ public sealed class DoubleAnimationUsingPath : AnimationTimeline<double>
         }
         return angle;
     }
+
+    public new DoubleAnimationUsingPath Clone() => (DoubleAnimationUsingPath)base.Clone();
+    protected override Freezable CreateInstanceCore() => new DoubleAnimationUsingPath();
+    protected override void OnChanged() { _isValid = false; base.OnChanged(); }
 }
 
 /// <summary>
 /// Animates a Point value along a PathGeometry.
 /// </summary>
-public sealed class PointAnimationUsingPath : AnimationTimeline<Point>
+public sealed class PointAnimationUsingPath : PointAnimationBase
 {
     private bool _isValid;
     private Vector _accumulatingVector;
 
+    public static readonly DependencyProperty PathGeometryProperty =
+        DependencyProperty.Register(nameof(PathGeometry), typeof(PathGeometry), typeof(PointAnimationUsingPath), new PropertyMetadata(null));
+
     /// <summary>
     /// Gets or sets the PathGeometry that defines the path.
     /// </summary>
-    public PathGeometry? PathGeometry { get; set; }
+    public PathGeometry? PathGeometry
+    {
+        get => (PathGeometry?)GetValue(PathGeometryProperty);
+        set => SetValue(PathGeometryProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets whether the animation is additive.
     /// </summary>
-    public new bool IsAdditive { get; set; }
+    public bool IsAdditive
+    {
+        get => (bool)GetValue(IsAdditiveProperty)!;
+        set => SetValue(IsAdditiveProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets whether the animation is cumulative across repeats.
     /// </summary>
-    public new bool IsCumulative { get; set; }
+    public bool IsCumulative
+    {
+        get => (bool)GetValue(IsCumulativeProperty)!;
+        set => SetValue(IsCumulativeProperty, value);
+    }
 
     /// <inheritdoc />
     protected override Point GetCurrentValueCore(Point defaultOriginValue, Point defaultDestinationValue, AnimationClock animationClock)
@@ -165,10 +205,9 @@ public sealed class PointAnimationUsingPath : AnimationTimeline<Point>
         pathGeometry.GetPointAtFractionLength(animationClock.CurrentProgress, out var pathPoint, out _);
 
         // Handle cumulative behavior
-        if (IsCumulative && animationClock.CurrentTime.HasValue)
+        if (IsCumulative && animationClock.CurrentIteration > 1)
         {
-            var duration = Duration.HasTimeSpan ? Duration.TimeSpan.TotalMilliseconds : 1000;
-            var currentRepeat = Math.Floor(animationClock.CurrentTime.Value.TotalMilliseconds / duration);
+            var currentRepeat = animationClock.CurrentIteration.Value - 1;
             if (currentRepeat > 0)
             {
                 pathPoint = new Point(
@@ -204,41 +243,77 @@ public sealed class PointAnimationUsingPath : AnimationTimeline<Point>
 
         _isValid = true;
     }
+
+    public new PointAnimationUsingPath Clone() => (PointAnimationUsingPath)base.Clone();
+    protected override Freezable CreateInstanceCore() => new PointAnimationUsingPath();
+    protected override void OnChanged() { _isValid = false; base.OnChanged(); }
 }
 
 /// <summary>
 /// Animates a Matrix value along a PathGeometry.
 /// </summary>
-public sealed class MatrixAnimationUsingPath : AnimationTimeline<Matrix>
+public sealed class MatrixAnimationUsingPath : MatrixAnimationBase
 {
     private bool _isValid;
     private double _accumulatingAngle;
     private Vector _accumulatingOffset;
 
+    public static readonly DependencyProperty DoesRotateWithTangentProperty =
+        DependencyProperty.Register(nameof(DoesRotateWithTangent), typeof(bool), typeof(MatrixAnimationUsingPath), new PropertyMetadata(false));
+
+    public static readonly DependencyProperty IsAngleCumulativeProperty =
+        DependencyProperty.Register(nameof(IsAngleCumulative), typeof(bool), typeof(MatrixAnimationUsingPath), new PropertyMetadata(false));
+
+    public static readonly DependencyProperty IsOffsetCumulativeProperty =
+        DependencyProperty.Register(nameof(IsOffsetCumulative), typeof(bool), typeof(MatrixAnimationUsingPath), new PropertyMetadata(false));
+
+    public static readonly DependencyProperty PathGeometryProperty =
+        DependencyProperty.Register(nameof(PathGeometry), typeof(PathGeometry), typeof(MatrixAnimationUsingPath), new PropertyMetadata(null));
+
     /// <summary>
     /// Gets or sets the PathGeometry that defines the path.
     /// </summary>
-    public PathGeometry? PathGeometry { get; set; }
+    public PathGeometry? PathGeometry
+    {
+        get => (PathGeometry?)GetValue(PathGeometryProperty);
+        set => SetValue(PathGeometryProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets whether to rotate the matrix to follow the path tangent.
     /// </summary>
-    public bool DoesRotateWithTangent { get; set; }
+    public bool DoesRotateWithTangent
+    {
+        get => (bool)GetValue(DoesRotateWithTangentProperty)!;
+        set => SetValue(DoesRotateWithTangentProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets whether the animation is additive.
     /// </summary>
-    public new bool IsAdditive { get; set; }
+    public bool IsAdditive
+    {
+        get => (bool)GetValue(IsAdditiveProperty)!;
+        set => SetValue(IsAdditiveProperty, value);
+    }
 
     /// <summary>
-    /// Gets or sets whether the animation is cumulative across repeats.
+    /// Gets or sets whether the path offset accumulates across repeats.
     /// </summary>
-    public new bool IsCumulative { get; set; }
+    public bool IsOffsetCumulative
+    {
+        get => (bool)GetValue(IsOffsetCumulativeProperty)!;
+        set => SetValue(IsOffsetCumulativeProperty, value);
+    }
 
     /// <summary>
-    /// Gets or sets the offset angle when rotating with tangent.
+    /// Gets or sets whether the tangent angle accumulates across repeats.
     /// </summary>
-    public double IsOffsetCumulative { get; set; }
+    public bool IsAngleCumulative
+    {
+        get => (bool)GetValue(IsAngleCumulativeProperty)!;
+        set => SetValue(IsAngleCumulativeProperty, value);
+    }
 
     /// <inheritdoc />
     protected override Matrix GetCurrentValueCore(Matrix defaultOriginValue, Matrix defaultDestinationValue, AnimationClock animationClock)
@@ -266,15 +341,17 @@ public sealed class MatrixAnimationUsingPath : AnimationTimeline<Matrix>
         }
 
         // Handle cumulative behavior
-        if (IsCumulative && animationClock.CurrentTime.HasValue)
+        if ((IsOffsetCumulative || IsAngleCumulative) && animationClock.CurrentIteration > 1)
         {
-            var duration = Duration.HasTimeSpan ? Duration.TimeSpan.TotalMilliseconds : 1000;
-            var currentRepeat = Math.Floor(animationClock.CurrentTime.Value.TotalMilliseconds / duration);
+            var currentRepeat = animationClock.CurrentIteration.Value - 1;
             if (currentRepeat > 0)
             {
-                offsetX += _accumulatingOffset.X * currentRepeat;
-                offsetY += _accumulatingOffset.Y * currentRepeat;
-                if (DoesRotateWithTangent)
+                if (IsOffsetCumulative)
+                {
+                    offsetX += _accumulatingOffset.X * currentRepeat;
+                    offsetY += _accumulatingOffset.Y * currentRepeat;
+                }
+                if (IsAngleCumulative && DoesRotateWithTangent)
                 {
                     angle += _accumulatingAngle * currentRepeat;
                 }
@@ -304,7 +381,7 @@ public sealed class MatrixAnimationUsingPath : AnimationTimeline<Matrix>
 
     private void Validate()
     {
-        if (IsCumulative && PathGeometry != null)
+        if ((IsOffsetCumulative || IsAngleCumulative) && PathGeometry != null)
         {
             PathGeometry.GetPointAtFractionLength(0.0, out var startPoint, out var startTangent);
             PathGeometry.GetPointAtFractionLength(1.0, out var endPoint, out var endTangent);
@@ -323,4 +400,8 @@ public sealed class MatrixAnimationUsingPath : AnimationTimeline<Matrix>
 
         _isValid = true;
     }
+
+    public new MatrixAnimationUsingPath Clone() => (MatrixAnimationUsingPath)base.Clone();
+    protected override Freezable CreateInstanceCore() => new MatrixAnimationUsingPath();
+    protected override void OnChanged() { _isValid = false; base.OnChanged(); }
 }

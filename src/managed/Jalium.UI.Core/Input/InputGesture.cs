@@ -19,6 +19,21 @@ public abstract class InputGesture
 /// </summary>
 public class InputEventArgs : RoutedEventArgs
 {
+    private InputDevice? _device;
+
+    /// <summary>
+    /// Gets the input device that initiated the event.
+    /// </summary>
+    /// <remarks>
+    /// Legacy Jalium constructors do not carry a device and therefore leave this
+    /// value unset. Device-aware constructors preserve the exact device instance.
+    /// </remarks>
+    public InputDevice Device
+    {
+        get => _device!;
+        internal set => _device = value;
+    }
+
     /// <summary>
     /// Gets the timestamp when the event occurred.
     /// </summary>
@@ -37,6 +52,16 @@ public class InputEventArgs : RoutedEventArgs
     /// </summary>
     public InputEventArgs(int timestamp)
     {
+        Timestamp = timestamp;
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="InputEventArgs"/> class with
+    /// the input device and timestamp associated with the event.
+    /// </summary>
+    public InputEventArgs(InputDevice inputDevice, int timestamp)
+    {
+        _device = inputDevice;
         Timestamp = timestamp;
     }
 

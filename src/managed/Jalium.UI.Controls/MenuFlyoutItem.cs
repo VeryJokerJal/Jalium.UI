@@ -1,4 +1,4 @@
-﻿using System.Windows.Input;
+using System.Windows.Input;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Primitives;
@@ -12,8 +12,8 @@ namespace Jalium.UI.Controls;
 public class MenuFlyoutItem : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.MenuFlyoutItemAutomationPeer(this);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.MenuFlyoutItemAutomationPeer(this);
 
     private static readonly SolidColorBrush s_fallbackHoverBrush = new(Color.FromRgb(62, 62, 64));
     private static readonly SolidColorBrush s_fallbackTextBrush = new(Color.FromRgb(255, 255, 255));
@@ -164,7 +164,7 @@ public class MenuFlyoutItem : Control
         double textWidth = 0;
         if (!string.IsNullOrEmpty(Text))
         {
-            var formattedText = new FormattedText(Text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize);
+            var formattedText = new FormattedText(Text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize);
             TextMeasurement.MeasureText(formattedText);
             textWidth = formattedText.Width;
         }
@@ -226,7 +226,7 @@ public class MenuFlyoutItem : Control
         if (!string.IsNullOrEmpty(Text))
         {
             var textFormatted = new FormattedText(
-                Text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
+                Text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
             TextMeasurement.MeasureText(textFormatted);
             dc.DrawText(textFormatted, new Point(x, (RenderSize.Height - textFormatted.Height) / 2));
         }
@@ -236,7 +236,7 @@ public class MenuFlyoutItem : Control
         {
             var accelBrush = ResolveBrush("OneTextSecondary", "TextSecondary", s_fallbackAcceleratorBrush);
             var accelFormatted = new FormattedText(
-                KeyboardAcceleratorTextOverride, FontFamily ?? FrameworkElement.DefaultFontFamilyName, 12) { Foreground = accelBrush };
+                KeyboardAcceleratorTextOverride, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, 12) { Foreground = accelBrush };
             TextMeasurement.MeasureText(accelFormatted);
             var accelX = RenderSize.Width - accelFormatted.Width - RightPadding;
             dc.DrawText(accelFormatted, new Point(accelX, (RenderSize.Height - accelFormatted.Height) / 2));
@@ -269,7 +269,7 @@ public class MenuFlyoutItem : Control
             return;
         }
 
-        foreach (var child in panel.Children)
+        foreach (UIElement child in panel.Children)
         {
             if (child is MenuFlyoutSubItem sibling && !ReferenceEquals(sibling, this))
             {
@@ -473,12 +473,11 @@ public class MenuFlyoutItem : Control
         }
 
         popupRoot.OwnerPopup.IsOpen = false;
-        Dispatcher.BeginInvokeCritical(() =>
-        {
-            ownerItem.ParentMenuBar.FocusSibling(ownerItem, direction, openMenu: true);
-        });
-
-        return true;
+        // Switch the top-level owner synchronously. FocusSibling opens the new menu and
+        // queues exactly one focus transfer to its first command. Deferring this whole
+        // operation would create a nested dispatcher callback; a single ProcessQueue pass
+        // could then stop on the MenuBarItem before the command-focus callback runs.
+        return ownerItem.ParentMenuBar.FocusSibling(ownerItem, direction, openMenu: true);
     }
 
     private PopupRoot? FindAncestorPopupRoot()

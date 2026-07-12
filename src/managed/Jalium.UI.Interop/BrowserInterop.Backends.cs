@@ -15,6 +15,9 @@ internal interface IBrowserInteropBackend
     int SetCallbacks(nint controller, BrowserInterop.NavigationStartingCallback? navigationStarting, BrowserInterop.NavigationCompletedCallback? navigationCompleted, BrowserInterop.SourceChangedCallback? sourceChanged, BrowserInterop.ContentLoadingCallback? contentLoading, BrowserInterop.DocumentTitleChangedCallback? documentTitleChanged, BrowserInterop.WebMessageReceivedCallback? webMessageReceived, BrowserInterop.NewWindowRequestedCallback? newWindowRequested, BrowserInterop.ProcessFailedCallback? processFailed, BrowserInterop.ZoomFactorChangedCallback? zoomFactorChanged, nint userData);
     int Navigate(nint controller, string uri);
     int NavigateToString(nint controller, string html);
+    int NavigateWithWebResourceRequest(nint controller, string uri, string method, byte[]? postData, int postDataLength, string additionalHeaders);
+    int AddHostObjectToScript(nint controller, string name, nint dispatch);
+    int RemoveHostObjectFromScript(nint controller, string name);
     int Reload(nint controller);
     int Stop(nint controller);
     int GoBack(nint controller);
@@ -57,6 +60,9 @@ internal sealed class UnsupportedBrowserInteropBackend : IBrowserInteropBackend
     public int SetCallbacks(nint controller, BrowserInterop.NavigationStartingCallback? navigationStarting, BrowserInterop.NavigationCompletedCallback? navigationCompleted, BrowserInterop.SourceChangedCallback? sourceChanged, BrowserInterop.ContentLoadingCallback? contentLoading, BrowserInterop.DocumentTitleChangedCallback? documentTitleChanged, BrowserInterop.WebMessageReceivedCallback? webMessageReceived, BrowserInterop.NewWindowRequestedCallback? newWindowRequested, BrowserInterop.ProcessFailedCallback? processFailed, BrowserInterop.ZoomFactorChangedCallback? zoomFactorChanged, nint userData) => NotSupported;
     public int Navigate(nint controller, string uri) => NotSupported;
     public int NavigateToString(nint controller, string html) => NotSupported;
+    public int NavigateWithWebResourceRequest(nint controller, string uri, string method, byte[]? postData, int postDataLength, string additionalHeaders) => NotSupported;
+    public int AddHostObjectToScript(nint controller, string name, nint dispatch) => NotSupported;
+    public int RemoveHostObjectFromScript(nint controller, string name) => NotSupported;
     public int Reload(nint controller) => NotSupported;
     public int Stop(nint controller) => NotSupported;
     public int GoBack(nint controller) => NotSupported;
@@ -97,6 +103,9 @@ internal sealed class WindowsBrowserInteropBackend : IBrowserInteropBackend
     public int SetCallbacks(nint controller, BrowserInterop.NavigationStartingCallback? navigationStarting, BrowserInterop.NavigationCompletedCallback? navigationCompleted, BrowserInterop.SourceChangedCallback? sourceChanged, BrowserInterop.ContentLoadingCallback? contentLoading, BrowserInterop.DocumentTitleChangedCallback? documentTitleChanged, BrowserInterop.WebMessageReceivedCallback? webMessageReceived, BrowserInterop.NewWindowRequestedCallback? newWindowRequested, BrowserInterop.ProcessFailedCallback? processFailed, BrowserInterop.ZoomFactorChangedCallback? zoomFactorChanged, nint userData) => WindowsBrowserNativeMethods.SetCallbacks(controller, navigationStarting, navigationCompleted, sourceChanged, contentLoading, documentTitleChanged, webMessageReceived, newWindowRequested, processFailed, zoomFactorChanged, userData);
     public int Navigate(nint controller, string uri) => WindowsBrowserNativeMethods.Navigate(controller, uri);
     public int NavigateToString(nint controller, string html) => WindowsBrowserNativeMethods.NavigateToString(controller, html);
+    public int NavigateWithWebResourceRequest(nint controller, string uri, string method, byte[]? postData, int postDataLength, string additionalHeaders) => WindowsBrowserNativeMethods.NavigateWithWebResourceRequest(controller, uri, method, postData, postDataLength, additionalHeaders);
+    public int AddHostObjectToScript(nint controller, string name, nint dispatch) => WindowsBrowserNativeMethods.AddHostObjectToScript(controller, name, dispatch);
+    public int RemoveHostObjectFromScript(nint controller, string name) => WindowsBrowserNativeMethods.RemoveHostObjectFromScript(controller, name);
     public int Reload(nint controller) => WindowsBrowserNativeMethods.Reload(controller);
     public int Stop(nint controller) => WindowsBrowserNativeMethods.Stop(controller);
     public int GoBack(nint controller) => WindowsBrowserNativeMethods.GoBack(controller);
@@ -150,6 +159,12 @@ internal static class WindowsBrowserNativeMethods
     internal static extern int Navigate(nint controller, string uri);
     [DllImport(BrowserLib, EntryPoint = "jalium_webview2_navigate_to_string", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
     internal static extern int NavigateToString(nint controller, string html);
+    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_navigate_with_web_resource_request", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+    internal static extern int NavigateWithWebResourceRequest(nint controller, string uri, string method, [In] byte[]? postData, int postDataLength, string additionalHeaders);
+    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_add_host_object_to_script", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+    internal static extern int AddHostObjectToScript(nint controller, string name, nint dispatch);
+    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_remove_host_object_from_script", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
+    internal static extern int RemoveHostObjectFromScript(nint controller, string name);
     [DllImport(BrowserLib, EntryPoint = "jalium_webview2_reload", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int Reload(nint controller);
     [DllImport(BrowserLib, EntryPoint = "jalium_webview2_stop", CallingConvention = CallingConvention.Cdecl)]

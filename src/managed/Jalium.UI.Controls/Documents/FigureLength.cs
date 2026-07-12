@@ -1,17 +1,21 @@
+using System.ComponentModel;
+using System.Globalization;
+
 namespace Jalium.UI;
 
 /// <summary>
 /// Describes the height or width of a <see cref="Jalium.UI.Controls.Documents.Figure"/>.
 /// </summary>
-public readonly struct FigureLength : IEquatable<FigureLength>
+[TypeConverter(typeof(FigureLengthConverter))]
+public struct FigureLength : IEquatable<FigureLength>
 {
     private readonly double _value;
     private readonly FigureUnitType _unitType;
 
     /// <summary>
-    /// Initializes a new instance with the specified value and unit type Auto.
+    /// Initializes a new instance with the specified pixel value.
     /// </summary>
-    public FigureLength(double value) : this(value, FigureUnitType.Auto)
+    public FigureLength(double value) : this(value, FigureUnitType.Pixel)
     {
     }
 
@@ -20,14 +24,38 @@ public readonly struct FigureLength : IEquatable<FigureLength>
     /// </summary>
     public FigureLength(double value, FigureUnitType type)
     {
-        _value = value;
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            throw new ArgumentException("FigureLength cannot be NaN or infinite.", nameof(value));
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegative(value);
+        if (!Enum.IsDefined(type))
+        {
+            throw new ArgumentException("Unknown FigureUnitType value.", nameof(type));
+        }
+
+        if (type is FigureUnitType.Content or FigureUnitType.Page)
+        {
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(value, 1d);
+        }
+        else if (type == FigureUnitType.Column)
+        {
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(value, 1000d);
+        }
+        else if (type == FigureUnitType.Pixel)
+        {
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(value, 1_000_000d);
+        }
+
+        _value = type == FigureUnitType.Auto ? 0d : value;
         _unitType = type;
     }
 
     /// <summary>
     /// Gets the value of this FigureLength.
     /// </summary>
-    public double Value => _value;
+    public double Value => _unitType == FigureUnitType.Auto ? 1d : _value;
 
     /// <summary>
     /// Gets the unit type of this FigureLength.
@@ -75,15 +103,7 @@ public readonly struct FigureLength : IEquatable<FigureLength>
     public static bool operator !=(FigureLength left, FigureLength right) => !left.Equals(right);
 
     /// <inheritdoc />
-    public override string ToString() => _unitType switch
-    {
-        FigureUnitType.Auto => "Auto",
-        FigureUnitType.Pixel => $"{_value}px",
-        FigureUnitType.Column => $"{_value}col",
-        FigureUnitType.Content => $"{_value}content",
-        FigureUnitType.Page => $"{_value}page",
-        _ => _value.ToString()
-    };
+    public override string ToString() => FigureLengthConverter.Format(this, CultureInfo.InvariantCulture);
 }
 
 /// <summary>

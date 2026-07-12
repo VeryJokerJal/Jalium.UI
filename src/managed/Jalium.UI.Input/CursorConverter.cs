@@ -48,6 +48,8 @@ public sealed class CursorConverter : TypeConverter
                     CursorType.None => Cursors.None,
                     CursorType.Pen => Cursors.Pen,
                     CursorType.ScrollAll => Cursors.ScrollAll,
+                    CursorType.ScrollNS => Cursors.ScrollNS,
+                    CursorType.ScrollWE => Cursors.ScrollWE,
                     CursorType.ScrollE => Cursors.ScrollE,
                     CursorType.ScrollN => Cursors.ScrollN,
                     CursorType.ScrollNE => Cursors.ScrollNE,
@@ -65,6 +67,7 @@ public sealed class CursorConverter : TypeConverter
                     CursorType.Wait => Cursors.Wait,
                     CursorType.AppStarting => Cursors.AppStarting,
                     CursorType.UpArrow => Cursors.UpArrow,
+                    CursorType.ArrowCD => Cursors.ArrowCD,
                     _ => new Cursor(cursorType),
                 };
             }
@@ -108,6 +111,8 @@ public sealed class CursorConverter : TypeConverter
                 Cursors.None,
                 Cursors.Pen,
                 Cursors.ScrollAll,
+                Cursors.ScrollNS,
+                Cursors.ScrollWE,
                 Cursors.ScrollE,
                 Cursors.ScrollN,
                 Cursors.ScrollNE,
@@ -123,6 +128,7 @@ public sealed class CursorConverter : TypeConverter
                 Cursors.SizeWE,
                 Cursors.UpArrow,
                 Cursors.Wait,
+                Cursors.ArrowCD,
             };
 
             _standardValues = new StandardValuesCollection(values);

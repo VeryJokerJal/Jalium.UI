@@ -53,7 +53,7 @@ public class ToggleMenuFlyoutItem : MenuFlyoutItem
         {
             var checkBrush = ResolveCheckGlyphBrush();
             var checkText = new Jalium.UI.Media.FormattedText(
-                "\u2713", FontFamily, 14) { Foreground = checkBrush };
+                "\u2713", FontFamily.Source, 14) { Foreground = checkBrush };
             dc.DrawText(checkText, new Point(8, (RenderSize.Height - 14) / 2));
         }
     }

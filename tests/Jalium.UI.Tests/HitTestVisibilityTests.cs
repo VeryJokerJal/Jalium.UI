@@ -2,6 +2,7 @@ using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
@@ -103,6 +104,8 @@ public class HitTestVisibilityTests
         {
             Width = 80,
             Height = 80,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Visible,
             VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
             IsScrollBarAutoHideEnabled = false,
@@ -143,6 +146,8 @@ public class HitTestVisibilityTests
         {
             Width = 80,
             Height = 80,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Visible,
             VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
             IsScrollBarAutoHideEnabled = false,

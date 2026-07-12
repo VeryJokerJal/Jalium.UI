@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using Jalium.UI;
 
 namespace Jalium.UI.Input;
@@ -60,6 +61,8 @@ public readonly struct MouseButtonStates
 /// </summary>
 public class MouseEventArgs : InputEventArgs
 {
+    private readonly StylusDevice? _associatedStylusDevice;
+
     /// <summary>
     /// Gets the position of the mouse relative to the source element.
     /// </summary>
@@ -133,6 +136,42 @@ public class MouseEventArgs : InputEventArgs
     }
 
     /// <summary>
+    /// Initializes device-backed mouse event data for the WPF-compatible event
+    /// argument constructors.
+    /// </summary>
+    public MouseEventArgs(MouseDevice mouse, int timestamp)
+        : this(mouse, timestamp, stylusDevice: null)
+    {
+    }
+
+    /// <summary>Initializes device-backed mouse data promoted from a stylus.</summary>
+    public MouseEventArgs(MouseDevice mouse, int timestamp, StylusDevice? stylusDevice)
+        : base(mouse, timestamp)
+    {
+        ArgumentNullException.ThrowIfNull(mouse);
+
+        _associatedStylusDevice = stylusDevice;
+        Position = mouse.GetPosition(null);
+        LeftButton = mouse.LeftButton;
+        MiddleButton = mouse.MiddleButton;
+        RightButton = mouse.RightButton;
+        XButton1 = mouse.XButton1;
+        XButton2 = mouse.XButton2;
+        KeyboardModifiers = mouse.InputManager.PrimaryKeyboardDevice.Modifiers;
+    }
+
+    /// <summary>
+    /// Gets the stylus device that promoted this mouse event, when applicable.
+    /// </summary>
+    protected StylusDevice? AssociatedStylusDevice => _associatedStylusDevice;
+
+    /// <summary>Gets the logical mouse device that generated the event.</summary>
+    public MouseDevice MouseDevice => (MouseDevice)Device;
+
+    /// <summary>Gets the stylus device that promoted the event, when present.</summary>
+    public StylusDevice? StylusDevice => _associatedStylusDevice;
+
+    /// <summary>
     /// Gets the position of the mouse relative to the specified element,
     /// correctly accounting for VisualBounds offsets AND any RenderTransform
     /// on ancestors. Without inverting RenderTransform, hit-tests on
@@ -142,15 +181,15 @@ public class MouseEventArgs : InputEventArgs
     /// thresholds, popup placement) reads the raw, untransformed coordinate
     /// and ends up off by the zoom factor and pan offset.
     /// </summary>
-    public Point GetPosition(UIElement? relativeTo)
+    public Point GetPosition(IInputElement? relativeTo)
     {
-        if (relativeTo == null)
+        if (relativeTo is not UIElement relativeElement)
             return Position;
 
         // Walk up from relativeTo collecting the ancestor chain.
         // chain[0] = relativeTo, chain[last] = topmost ancestor reached.
         var chain = new List<Visual>();
-        Visual? current = relativeTo;
+        Visual? current = relativeElement;
         while (current != null)
         {
             chain.Add(current);
@@ -239,7 +278,7 @@ public class MouseEventArgs : InputEventArgs
     }
 
     /// <inheritdoc />
-    internal override void InvokeEventHandler(Delegate handler, object target)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is MouseEventHandler mouseHandler)
         {
@@ -262,8 +301,13 @@ public delegate void MouseEventHandler(object sender, MouseEventArgs e);
 /// </summary>
 public sealed class MouseButtonEventArgs : MouseEventArgs
 {
+    private readonly MouseButtonState _buttonState;
+    private readonly bool _usesDeviceButtonState;
+
     public MouseButton ChangedButton { get; }
-    public MouseButtonState ButtonState { get; }
+    public MouseButtonState ButtonState => _usesDeviceButtonState && Device is MouseDevice mouse
+        ? GetButtonState(mouse, ChangedButton)
+        : _buttonState;
     public int ClickCount { get; }
 
     public MouseButtonEventArgs(
@@ -282,12 +326,50 @@ public sealed class MouseButtonEventArgs : MouseEventArgs
         : base(routedEvent, position, leftButton, middleButton, rightButton, xButton1, xButton2, modifiers, timestamp)
     {
         ChangedButton = changedButton;
-        ButtonState = buttonState;
+        _buttonState = buttonState;
         ClickCount = clickCount;
     }
 
+    /// <summary>
+    /// Initializes mouse-button event data from a logical mouse device.
+    /// </summary>
+    public MouseButtonEventArgs(MouseDevice mouse, int timestamp, MouseButton button)
+        : this(mouse, timestamp, button, stylusDevice: null)
+    {
+    }
+
+    /// <summary>
+    /// Initializes mouse-button event data promoted from a stylus device.
+    /// </summary>
+    public MouseButtonEventArgs(
+        MouseDevice mouse,
+        int timestamp,
+        MouseButton button,
+        StylusDevice? stylusDevice)
+        : base(mouse, timestamp, stylusDevice)
+    {
+        if (!Enum.IsDefined(button))
+        {
+            throw new InvalidEnumArgumentException(nameof(button), (int)button, typeof(MouseButton));
+        }
+
+        ChangedButton = button;
+        _usesDeviceButtonState = true;
+        ClickCount = 1;
+    }
+
+    private static MouseButtonState GetButtonState(MouseDevice mouse, MouseButton button) => button switch
+    {
+        MouseButton.Left => mouse.LeftButton,
+        MouseButton.Middle => mouse.MiddleButton,
+        MouseButton.Right => mouse.RightButton,
+        MouseButton.XButton1 => mouse.XButton1,
+        MouseButton.XButton2 => mouse.XButton2,
+        _ => MouseButtonState.Released,
+    };
+
     /// <inheritdoc />
-    internal override void InvokeEventHandler(Delegate handler, object target)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is MouseButtonEventHandler buttonHandler)
         {
@@ -328,8 +410,17 @@ public sealed class MouseWheelEventArgs : MouseEventArgs
         Delta = delta;
     }
 
+    /// <summary>
+    /// Initializes mouse-wheel event data from a logical mouse device.
+    /// </summary>
+    public MouseWheelEventArgs(MouseDevice mouse, int timestamp, int delta)
+        : base(mouse, timestamp, stylusDevice: null)
+    {
+        Delta = delta;
+    }
+
     /// <inheritdoc />
-    internal override void InvokeEventHandler(Delegate handler, object target)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is MouseWheelEventHandler wheelHandler)
         {

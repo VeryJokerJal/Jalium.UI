@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -7,10 +7,13 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class StatusBar : ItemsControl
 {
+    private static readonly ResourceKey s_separatorStyleKey =
+        new ComponentResourceKey(typeof(StatusBar), nameof(SeparatorStyleKey));
+
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.StatusBarAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.StatusBarAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -22,6 +25,22 @@ public class StatusBar : ItemsControl
     public static readonly DependencyProperty SeparatorBrushProperty =
         DependencyProperty.Register(nameof(SeparatorBrush), typeof(Brush), typeof(StatusBar),
             new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the <see cref="ItemContainerTemplateSelector"/> dependency property.</summary>
+    public static readonly DependencyProperty ItemContainerTemplateSelectorProperty =
+        DependencyProperty.Register(
+            nameof(ItemContainerTemplateSelector),
+            typeof(ItemContainerTemplateSelector),
+            typeof(StatusBar),
+            new PropertyMetadata(null, OnContainerTemplateChanged));
+
+    /// <summary>Identifies the <see cref="UsesItemContainerTemplate"/> dependency property.</summary>
+    public static readonly DependencyProperty UsesItemContainerTemplateProperty =
+        DependencyProperty.Register(
+            nameof(UsesItemContainerTemplate),
+            typeof(bool),
+            typeof(StatusBar),
+            new PropertyMetadata(false, OnContainerTemplateChanged));
 
     #endregion
 
@@ -36,6 +55,23 @@ public class StatusBar : ItemsControl
         get => (Brush?)GetValue(SeparatorBrushProperty);
         set => SetValue(SeparatorBrushProperty, value);
     }
+
+    /// <summary>Gets or sets the selector used to create item containers.</summary>
+    public ItemContainerTemplateSelector? ItemContainerTemplateSelector
+    {
+        get => (ItemContainerTemplateSelector?)GetValue(ItemContainerTemplateSelectorProperty);
+        set => SetValue(ItemContainerTemplateSelectorProperty, value);
+    }
+
+    /// <summary>Gets or sets whether item-container templates are used.</summary>
+    public bool UsesItemContainerTemplate
+    {
+        get => (bool)(GetValue(UsesItemContainerTemplateProperty) ?? false);
+        set => SetValue(UsesItemContainerTemplateProperty, value);
+    }
+
+    /// <summary>Gets the resource key for the default separator style.</summary>
+    public static ResourceKey SeparatorStyleKey => s_separatorStyleKey;
 
     #endregion
 
@@ -61,11 +97,27 @@ public class StatusBar : ItemsControl
     /// <inheritdoc />
     protected override FrameworkElement GetContainerForItem(object item)
     {
+        if (UsesItemContainerTemplate)
+        {
+            DataTemplate? template = ItemContainerTemplateSelector?.SelectTemplate(item, this);
+            object? generated = template?.LoadContent();
+            if (generated is StatusBarItem or Separator)
+            {
+                return (FrameworkElement)generated;
+            }
+
+            if (generated != null)
+            {
+                throw new InvalidOperationException(
+                    "An item-container template for a StatusBar must create a StatusBarItem or Separator.");
+            }
+        }
+
         return new StatusBarItem();
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item)
+    protected override bool IsItemItsOwnContainerOverride(object item)
     {
         return item is StatusBarItem || item is Separator;
     }
@@ -117,6 +169,13 @@ public class StatusBar : ItemsControl
         }
     }
 
+    private static void OnContainerTemplateChanged(
+        DependencyObject dependencyObject,
+        DependencyPropertyChangedEventArgs e)
+    {
+        ((StatusBar)dependencyObject).RefreshItems();
+    }
+
     #endregion
 }
 
@@ -128,9 +187,9 @@ public class StatusBarItem : ContentControl
     private UIElement? _contentVisual;
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.StatusBarItemAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.StatusBarItemAutomationPeer(this);
     }
 
     #region Constructor
@@ -166,10 +225,10 @@ public class StatusBarItem : ContentControl
     }
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => _contentVisual != null ? 1 : 0;
+    protected override int VisualChildrenCount => _contentVisual != null ? 1 : 0;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index == 0 && _contentVisual != null)
         {
@@ -186,7 +245,7 @@ public class StatusBarItem : ContentControl
 
         if (Content is string text)
         {
-            var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = FontSize > 0 ? FontSize : 12;
             var formattedText = new FormattedText(text, fontFamily, fontSize);
             Interop.TextMeasurement.MeasureText(formattedText);
@@ -246,7 +305,7 @@ public class StatusBarItem : ContentControl
         if (Content is string text)
         {
             var fgBrush = ResolveForegroundBrush();
-            var formattedText = new FormattedText(text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
+            var formattedText = new FormattedText(text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
             {
                 Foreground = fgBrush
             };

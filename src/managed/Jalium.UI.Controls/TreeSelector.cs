@@ -28,9 +28,9 @@ public enum TreeSelectorCheckCascadeMode
 public class TreeSelector : ItemsControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.TreeSelectorAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.TreeSelectorAutomationPeer(this);
     }
 
     private readonly ObservableCollection<object> _selectedItems = new();
@@ -293,7 +293,7 @@ public class TreeSelector : ItemsControl
         // PrepareContainerForItem does not run until first expansion. Wire the root Items
         // collection eagerly so cascade / selection / navigation logic can rely on
         // ParentSelector + ParentItem regardless of whether the popup has been realized.
-        Items.CollectionChanged += OnRootItemsChanged;
+        ((System.Collections.Specialized.INotifyCollectionChanged)Items).CollectionChanged += OnRootItemsChanged;
 
         AddHandler(KeyDownEvent, new KeyEventHandler(OnTreeKeyDown));
     }
@@ -368,7 +368,7 @@ public class TreeSelector : ItemsControl
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item)
+    protected override bool IsItemItsOwnContainerOverride(object item)
     {
         return item is TreeSelectorItem;
     }
@@ -923,7 +923,7 @@ public class TreeSelector : ItemsControl
 
     private static void CollectVisible(Panel panel, List<TreeSelectorItem> result)
     {
-        foreach (var child in panel.Children)
+        foreach (UIElement child in panel.Children)
         {
             if (child is not TreeSelectorItem item || item.Visibility != Visibility.Visible)
             {
@@ -1412,9 +1412,9 @@ public class TreeSelector : ItemsControl
 public class TreeSelectorItem : HeaderedItemsControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.TreeSelectorItemAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.TreeSelectorItemAutomationPeer(this);
     }
 
     private const double IndentSize = 16;
@@ -1523,7 +1523,7 @@ public class TreeSelectorItem : HeaderedItemsControl
     }
 
     /// <summary>Gets whether the item has any child items.</summary>
-    public bool HasItems => Items.Count > 0;
+    public new bool HasItems => base.HasItems;
 
     #endregion
 
@@ -1537,7 +1537,7 @@ public class TreeSelectorItem : HeaderedItemsControl
         Focusable = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
-        Items.CollectionChanged += OnChildItemsChanged;
+        ((System.Collections.Specialized.INotifyCollectionChanged)Items).CollectionChanged += OnChildItemsChanged;
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
@@ -1552,7 +1552,7 @@ public class TreeSelectorItem : HeaderedItemsControl
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item)
+    protected override bool IsItemItsOwnContainerOverride(object item)
     {
         return item is TreeSelectorItem;
     }

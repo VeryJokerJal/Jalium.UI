@@ -192,7 +192,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
             {
                 if (ws > pos)
                     tokens.Add(new SyntaxToken(pos, ws - pos, TokenClassification.PlainText));
-                tokens.Add(new SyntaxToken(ws, 1, TokenClassification.Punctuation));
+                tokens.Add(new SyntaxToken(ws, 1, TokenClassification.Operator));
                 pos = ws + 1;
                 razorBraceDepth = 1;
                 pos = ScanRazorCodeBlockMultiLine(lineText, pos, tokens, ref razorBraceDepth, ref inRazorBlockComment, ref razorPendingBlock);
@@ -1203,7 +1203,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
         if (pos + 1 < text.Length && text[pos + 1] == '{')
         {
             tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
-            tokens.Add(new SyntaxToken(pos + 1, 1, TokenClassification.Punctuation));
+            tokens.Add(new SyntaxToken(pos + 1, 1, TokenClassification.Operator));
             razorBraceDepth = 1;
             return pos + 2;
         }
@@ -1273,7 +1273,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
 
                 if (cursor < text.Length && text[cursor] == '{')
                 {
-                    tokens.Add(new SyntaxToken(cursor, 1, TokenClassification.Punctuation));
+                    tokens.Add(new SyntaxToken(cursor, 1, TokenClassification.Operator));
                     cursor++;
                     razorBraceDepth = 1;
                 }
@@ -1412,7 +1412,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
             // Braces
             if (c == '{')
             {
-                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Punctuation));
+                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
                 pos++;
                 razorBraceDepth++;
                 continue;
@@ -1420,7 +1420,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
 
             if (c == '}')
             {
-                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Punctuation));
+                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
                 pos++;
                 razorBraceDepth--;
                 if (razorBraceDepth <= 0)
@@ -1528,7 +1528,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
 
                 if (cursor < text.Length && text[cursor] == '{')
                 {
-                    tokens.Add(new SyntaxToken(cursor, 1, TokenClassification.Punctuation));
+                    tokens.Add(new SyntaxToken(cursor, 1, TokenClassification.Operator));
                     cursor++;
                     razorBraceDepth = 1;
                 }
@@ -1821,7 +1821,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
                 string identifier = text[pos..pathEnd];
                 var classification = s_razorExpressionControlKeywords.Contains(identifier)
                     ? TokenClassification.ControlKeyword
-                    : s_razorExpressionKeywords.Contains(identifier)
+                    : s_razorExpressionKeywords.Contains(identifier) || s_razorCodeKeywords.Contains(identifier)
                         ? TokenClassification.Keyword
                         : TokenClassification.BindingPath;
                 tokens.Add(new SyntaxToken(pos, pathEnd - pos, classification));

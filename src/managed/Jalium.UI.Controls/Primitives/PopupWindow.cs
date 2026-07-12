@@ -25,15 +25,21 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private readonly LayoutManager _layoutManager = new();
     private readonly Dispatcher _dispatcher;
 
-    private int _renderState; // Bitfield: 1=Scheduled, 2=Rendering, 4=Requested
+    private int _renderState; // Bitfield: 1=Scheduled, 2=Rendering, 4=Requested, 8=DirtyBetween
     private const int RenderFlag_Scheduled = 1;
     private const int RenderFlag_Rendering = 2;
     private const int RenderFlag_Requested = 4;
+    private const int RenderFlag_DirtyBetween = 8;
     private bool _renderRecoveryInProgress;
     private int _renderRecoveryAttempts;
     private const int MaxRenderRecoveryAttempts = 3;
     private DispatcherTimer? _renderRecoveryRetryTimer;
+    private readonly object _renderLifecycleGate = new();
+    private DispatcherOperation? _scheduledRenderOperation;
+    private int _renderLifecycleGeneration;
     private bool _disposed;
+    private bool _frameStartingSubscribed;
+    private bool _registeredAsRenderable;
     private int _screenX;
     private int _screenY;
     private int _width;
@@ -46,7 +52,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private const uint MousePointerId = 1;
     private readonly Dictionary<uint, UIElement?> _activePointerTargets = [];
     private readonly Dictionary<uint, PointerPoint> _lastPointerPoints = [];
-    private readonly Dictionary<uint, PointerStylusDevice> _activeStylusDevices = [];
+    private readonly Dictionary<uint, StylusDevice> _activeStylusDevices = [];
     private readonly Dictionary<uint, PointerManipulationSession> _activeManipulationSessions = [];
     private readonly RealTimeStylus _realTimeStylus;
 
@@ -134,6 +140,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             throw new InvalidOperationException("Failed to create popup window.");
 
         _popupWindows[_hwnd] = this;
+        SubscribeFrameStarting();
 
         // Create composition render target for per-pixel alpha transparency.
         // Uses CreateSwapChainForComposition + DirectComposition (WinUI 3 / Avalonia approach).
@@ -150,6 +157,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
         // Show without activating
         _ = ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
+        UpdateRenderableRegistration(visible: true);
 
         // Trigger initial layout and render
         InvalidateMeasure();
@@ -162,6 +170,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         {
             _ = ShowWindow(_hwnd, SW_HIDE);
         }
+
+        UpdateRenderableRegistration(visible: false);
     }
 
     internal void MoveTo(int screenX, int screenY, int width, int height)
@@ -196,28 +206,73 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     public void InvalidateWindow()
     {
-        if (_hwnd == nint.Zero || _disposed) return;
-
-        if ((Volatile.Read(ref _renderState) & RenderFlag_Rendering) != 0)
+        lock (_renderLifecycleGate)
         {
-            int prev, next;
-            do { prev = Volatile.Read(ref _renderState); next = prev | RenderFlag_Requested; }
-            while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
-            return;
-        }
+            if (!IsRenderLifecycleAlive()) return;
 
-        {
-            int prev, next;
-            do
+            if (HasRenderFlag(RenderFlag_Rendering))
             {
-                prev = Volatile.Read(ref _renderState);
-                if ((prev & RenderFlag_Scheduled) != 0) return;
-                next = prev | RenderFlag_Scheduled;
-            } while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
+                SetRenderFlag(RenderFlag_Requested);
+                Jalium.UI.CompositionTarget.RequestFrame();
+                return;
+            }
+
+            SetRenderFlag(RenderFlag_DirtyBetween);
             Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_INVAL);
-            _dispatcher.BeginInvokeCritical(ProcessRender);
+            Jalium.UI.CompositionTarget.RequestFrame();
         }
     }
+
+    private bool IsRenderLifecycleAlive() =>
+        !Volatile.Read(ref _disposed) && _hwnd != nint.Zero;
+
+    private bool IsRenderLifecycleCurrent(int generation) =>
+        generation == Volatile.Read(ref _renderLifecycleGeneration) && IsRenderLifecycleAlive();
+
+    private bool TrySetRenderFlag(int flag)
+    {
+        int prev, next;
+        do
+        {
+            prev = Volatile.Read(ref _renderState);
+            if ((prev & flag) != 0) return false;
+            next = prev | flag;
+        } while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
+
+        return true;
+    }
+
+    private void SetRenderFlag(int flag)
+    {
+        int prev, next;
+        do
+        {
+            prev = Volatile.Read(ref _renderState);
+            next = prev | flag;
+        } while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
+    }
+
+    private void ClearRenderFlag(int flag)
+    {
+        int prev, next;
+        do
+        {
+            prev = Volatile.Read(ref _renderState);
+            next = prev & ~flag;
+        } while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
+    }
+
+    private void UpdateRenderFlags(int setFlags, int clearFlags)
+    {
+        int prev, next;
+        do
+        {
+            prev = Volatile.Read(ref _renderState);
+            next = (prev | setFlags) & ~clearFlags;
+        } while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
+    }
+
+    private bool HasRenderFlag(int flag) => (Volatile.Read(ref _renderState) & flag) != 0;
 
     public void AddDirtyElement(UIElement element)
     {
@@ -247,7 +302,15 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void EnsureRenderTarget(bool forceReplaceContext = false)
     {
-        if (_hwnd == nint.Zero)
+        lock (_renderLifecycleGate)
+        {
+            EnsureRenderTargetLocked(forceReplaceContext);
+        }
+    }
+
+    private void EnsureRenderTargetLocked(bool forceReplaceContext)
+    {
+        if (!IsRenderLifecycleAlive())
         {
             return;
         }
@@ -257,6 +320,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             return;
         }
 
+        _drawingContext?.ClearCache();
+        _drawingContext = null;
         _renderTarget?.Dispose();
         _renderTarget = null;
 
@@ -268,18 +333,35 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _renderTarget.SetDpi(dpi, dpi);
     }
 
-    private void ProcessRender()
+    private void ProcessRender(int generation)
     {
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_PR);
-        { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Scheduled; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
-        if (_hwnd == nint.Zero || _disposed) return;
-        RenderFrame();
+        lock (_renderLifecycleGate)
+        {
+            _scheduledRenderOperation = null;
+            ClearRenderFlag(RenderFlag_Scheduled | RenderFlag_DirtyBetween);
+            if (!IsRenderLifecycleCurrent(generation)) return;
+        }
+
+        RenderFrameCore(generation);
     }
 
-    private void RenderFrame()
+    // Kept parameterless for the focused render-failure tests and direct internal callers.
+    private void RenderFrame() => RenderFrameCore(Volatile.Read(ref _renderLifecycleGeneration));
+
+    private void RenderFrameCore(int generation)
     {
-        if ((Volatile.Read(ref _renderState) & RenderFlag_Rendering) != 0) return;
-        { int p, n; do { p = Volatile.Read(ref _renderState); n = (p | RenderFlag_Rendering) & ~RenderFlag_Requested; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
+        lock (_renderLifecycleGate)
+        {
+            RenderFrameLocked(generation);
+        }
+    }
+
+    private void RenderFrameLocked(int generation)
+    {
+        if (!IsRenderLifecycleCurrent(generation)) return;
+        if (HasRenderFlag(RenderFlag_Rendering)) return;
+        UpdateRenderFlags(RenderFlag_Rendering, RenderFlag_Requested);
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_RF);
 
         try
@@ -289,7 +371,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                 EnsureRenderTarget();
             }
 
-            if (_renderTarget == null || !_renderTarget.IsValid)
+            var renderTarget = _renderTarget;
+            if (!IsRenderLifecycleCurrent(generation) || renderTarget == null || !renderTarget.IsValid)
             {
                 return;
             }
@@ -303,23 +386,37 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             // otherwise FrameworkElement.HitTestCore short-circuits and mouse input never reaches children.
             SetVisualBounds(new Rect(0, 0, dipWidth, dipHeight));
 
-            if (Child != null)
-                _layoutManager.UpdateLayout(Child, new Size(dipWidth, dipHeight));
+            var child = Child;
+            if (child != null)
+                _layoutManager.UpdateLayout(child, new Size(dipWidth, dipHeight));
 
             // Ensure PopupRoot has been measured and arranged
-            if (Child != null)
+            if (child != null && IsRenderLifecycleCurrent(generation) && ReferenceEquals(Child, child))
             {
                 var constraint = new Size(dipWidth, dipHeight);
-                Child.Measure(constraint);
-                Child.Arrange(new Rect(0, 0, dipWidth, dipHeight));
+                child.Measure(constraint);
+                if (!IsRenderLifecycleCurrent(generation) || !ReferenceEquals(Child, child))
+                {
+                    return;
+                }
+
+                child.Arrange(new Rect(0, 0, dipWidth, dipHeight));
             }
 
-            _renderTarget.SetFullInvalidation();
+            // Layout/render callbacks can synchronously close the popup. Re-check the lifecycle and
+            // target identity before every native draw session so a re-entrant close cannot leave us
+            // calling into a released handle.
+            if (!IsCurrentRenderTarget(generation, renderTarget))
+            {
+                return;
+            }
+
+            renderTarget.SetFullInvalidation();
             // 合成 / 可等待 swapchain 的 BeginDraw 在 GPU 仍在 present 上一帧时返回 InvalidState（D3D12 正常背压，
             // 见 RenderTarget.TryBeginDraw 注释 + Window 主循环用法）。用 TryBeginDraw 跳过本帧并稍后重画，
             // 绝不能在原生 WM_PAINT / dispatcher-critical 回调里抛 RenderPipelineException —— 异常穿过原生回调会
             // 触发 0xC000041D（用户回调期间未处理异常）进程级崩溃。
-            if (!_renderTarget.TryBeginDraw())
+            if (!renderTarget.TryBeginDraw())
             {
                 Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_BEGINFAIL);
                 ScheduleRenderAfterRecovery();
@@ -330,17 +427,23 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             try
             {
                 // Clear with transparent background
-                _renderTarget.Clear(0f, 0f, 0f, 0f);
+                renderTarget.Clear(0f, 0f, 0f, 0f);
 
                 var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
-                if (Child != null)
+                child = Child;
+                if (child != null)
                 {
-                    _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);
+                    _drawingContext ??= new RenderTargetDrawingContext(renderTarget, context);
                     _drawingContext.Offset = Point.Zero;
-                    Child.Render(_drawingContext);
+                    child.Render(_drawingContext);
                 }
 
-                _renderTarget.EndDraw();
+                if (!IsCurrentRenderTarget(generation, renderTarget))
+                {
+                    return;
+                }
+
+                renderTarget.EndDraw();
                 drawSessionActive = false;
                 Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_PRESENT);
                 _renderRecoveryAttempts = 0;
@@ -351,9 +454,9 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                 // closed so the next frame can start a fresh BeginDraw.  Without this
                 // the _isDrawing flag stays true and subsequent BeginDraw calls no-op,
                 // leaving the partially-drawn error frame permanently on screen.
-                if (drawSessionActive && _renderTarget != null && _renderTarget.IsValid)
+                if (drawSessionActive && IsCurrentRenderTarget(generation, renderTarget))
                 {
-                    try { _renderTarget.EndDraw(); } catch { }
+                    try { renderTarget.EndDraw(); } catch { }
                 }
             }
 
@@ -386,18 +489,36 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         }
         finally
         {
-            { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Rendering; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
+            ClearRenderFlag(RenderFlag_Rendering);
         }
 
-        if ((Volatile.Read(ref _renderState) & RenderFlag_Requested) != 0)
+        if (IsRenderLifecycleCurrent(generation) && HasRenderFlag(RenderFlag_Requested))
         {
-            { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Requested; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
+            ClearRenderFlag(RenderFlag_Requested);
             InvalidateWindow();
         }
     }
 
+    private bool IsCurrentRenderTarget(int generation, RenderTarget renderTarget) =>
+        IsRenderLifecycleCurrent(generation) &&
+        ReferenceEquals(_renderTarget, renderTarget) &&
+        renderTarget.IsValid;
+
     private void TryResizeRenderTarget(int width, int height, string stage)
     {
+        lock (_renderLifecycleGate)
+        {
+            TryResizeRenderTargetLocked(width, height, stage);
+        }
+    }
+
+    private void TryResizeRenderTargetLocked(int width, int height, string stage)
+    {
+        if (!IsRenderLifecycleAlive())
+        {
+            return;
+        }
+
         var renderTarget = _renderTarget;
         if (renderTarget == null || !renderTarget.IsValid)
         {
@@ -492,17 +613,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void ScheduleRenderAfterRecovery()
     {
-        if (_hwnd == nint.Zero || _disposed)
-        {
-            return;
-        }
-
-        {
-            int p, n;
-            do { p = Volatile.Read(ref _renderState); if ((p & RenderFlag_Scheduled) != 0) return; n = p | RenderFlag_Scheduled; }
-            while (Interlocked.CompareExchange(ref _renderState, n, p) != p);
-            _dispatcher.BeginInvokeCritical(ProcessRender);
-        }
+        ScheduleProcessRender();
+        Jalium.UI.CompositionTarget.RequestFrame();
     }
 
     private void ScheduleRenderRecoveryRetry()
@@ -533,17 +645,81 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         _renderRecoveryRetryTimer?.Stop();
 
-        if (_hwnd == nint.Zero || _disposed)
+        ScheduleProcessRender();
+        Jalium.UI.CompositionTarget.RequestFrame();
+    }
+
+    private void ScheduleProcessRender()
+    {
+        lock (_renderLifecycleGate)
+        {
+            if (!IsRenderLifecycleAlive())
+            {
+                return;
+            }
+
+            if (TrySetRenderFlag(RenderFlag_Scheduled))
+            {
+                int generation = _renderLifecycleGeneration;
+                _scheduledRenderOperation = _dispatcher.BeginInvokeCritical(
+                    () => ProcessRender(generation));
+            }
+        }
+    }
+
+    private void SubscribeFrameStarting()
+    {
+        if (_frameStartingSubscribed)
         {
             return;
         }
 
+        Jalium.UI.CompositionTarget.FrameStarting += OnFrameStarting;
+        _frameStartingSubscribed = true;
+    }
+
+    private void UnsubscribeFrameStarting()
+    {
+        if (!_frameStartingSubscribed)
         {
-            int p, n;
-            do { p = Volatile.Read(ref _renderState); if ((p & RenderFlag_Scheduled) != 0) return; n = p | RenderFlag_Scheduled; }
-            while (Interlocked.CompareExchange(ref _renderState, n, p) != p);
-            _dispatcher.BeginInvokeCritical(ProcessRender);
+            return;
         }
+
+        Jalium.UI.CompositionTarget.FrameStarting -= OnFrameStarting;
+        _frameStartingSubscribed = false;
+    }
+
+    private void UpdateRenderableRegistration(bool visible)
+    {
+        // External popups own a presentable HWND/composition surface. Count them
+        // directly so popup animations keep ticking even when the parent window
+        // is not the surface that is currently requesting frames.
+        bool shouldBe = visible && _hwnd != nint.Zero && !_disposed;
+        if (shouldBe == _registeredAsRenderable)
+        {
+            return;
+        }
+
+        _registeredAsRenderable = shouldBe;
+        if (shouldBe)
+        {
+            Jalium.UI.CompositionTarget.NotifyRenderableWindowAdded();
+        }
+        else
+        {
+            Jalium.UI.CompositionTarget.NotifyRenderableWindowRemoved();
+        }
+    }
+
+    private void OnFrameStarting()
+    {
+        if (_hwnd == nint.Zero || _disposed || !HasRenderFlag(RenderFlag_DirtyBetween))
+        {
+            return;
+        }
+
+        ClearRenderFlag(RenderFlag_DirtyBetween);
+        ScheduleProcessRender();
     }
 
     private void StopRenderRecoveryRetry()
@@ -600,6 +776,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             {
                 case WM_DESTROY:
                     _ = _popupWindows.Remove(hWnd);
+                    popupWindow.OnNativeDestroyed(hWnd);
                     return nint.Zero;
 
                 case WM_ERASEBKGND:
@@ -714,9 +891,17 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             _isMouseTracking = true;
         }
 
-        var captured = UIElement.MouseCapturedElement;
         UIElement? hitElement = HitTest(position)?.VisualHit as UIElement;
-        var target = captured ?? hitElement ?? (UIElement)this;
+        var buttons = new MouseButtonStates
+        {
+            Left = left,
+            Middle = middle,
+            Right = right,
+            XButton1 = xButton1,
+            XButton2 = xButton2,
+        };
+        Mouse.UpdateState(position, hitElement, buttons);
+        var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         // Track mouse over state and raise MouseEnter/MouseLeave chains
         var newMouseOverElement = hitElement;
@@ -783,10 +968,21 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         var modifiers = GetModifierKeys();
         int timestamp = Environment.TickCount;
 
-        var captured = UIElement.MouseCapturedElement;
         var hitElement = HitTest(position)?.VisualHit as UIElement;
         UpdateMouseOverState(hitElement);
-        var target = captured ?? hitElement ?? (UIElement)this;
+        var buttons = new MouseButtonStates
+        {
+            Left = left,
+            Middle = middle,
+            Right = right,
+            XButton1 = xButton1,
+            XButton2 = xButton2,
+        };
+        Mouse.UpdateState(position, hitElement, buttons);
+        Mouse.RaiseOutsideCapturedElementEvent(
+            true, hitElement, position, button, MouseButtonState.Pressed, 1,
+            buttons, modifiers, timestamp);
+        var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         // Raise tunnel event
         MouseButtonEventArgs tunnelArgs = new(
@@ -836,10 +1032,21 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         var modifiers = GetModifierKeys();
         int timestamp = Environment.TickCount;
 
-        var captured = UIElement.MouseCapturedElement;
         var hitElement = HitTest(position)?.VisualHit as UIElement;
         UpdateMouseOverState(hitElement);
-        var target = captured ?? hitElement ?? (UIElement)this;
+        var buttons = new MouseButtonStates
+        {
+            Left = left,
+            Middle = middle,
+            Right = right,
+            XButton1 = xButton1,
+            XButton2 = xButton2,
+        };
+        Mouse.UpdateState(position, hitElement, buttons);
+        Mouse.RaiseOutsideCapturedElementEvent(
+            false, hitElement, position, button, MouseButtonState.Released, 1,
+            buttons, modifiers, timestamp);
+        var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         // Raise tunnel event
         MouseButtonEventArgs tunnelArgs = new(
@@ -918,8 +1125,17 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         int delta = (short)((wParam.ToInt64() >> 16) & 0xFFFF);
         int timestamp = Environment.TickCount;
 
-        var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? HitTest(position)?.VisualHit as UIElement ?? (UIElement)this;
+        var hitElement = HitTest(position)?.VisualHit as UIElement;
+        var buttons = new MouseButtonStates
+        {
+            Left = left,
+            Middle = middle,
+            Right = right,
+            XButton1 = xButton1,
+            XButton2 = xButton2,
+        };
+        Mouse.UpdateState(position, hitElement, buttons);
+        var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         MouseWheelEventArgs tunnelArgs = new(
             PreviewMouseWheelEvent, position, delta,
@@ -1087,7 +1303,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             : Touch.GetDevice((int)pointerData.PointerId) ?? Touch.RegisterTouchPoint((int)pointerData.PointerId, pointerData.Position, target);
 
         touchDevice.UpdatePosition(pointerData.Position);
-        touchDevice.DirectlyOver = target;
+        touchDevice.SetDirectlyOver(target);
 
         RoutedEvent previewEvent = isDown ? PreviewTouchDownEvent : (isUp ? PreviewTouchUpEvent : PreviewTouchMoveEvent);
         RoutedEvent bubbleEvent = isDown ? TouchDownEvent : (isUp ? TouchUpEvent : TouchMoveEvent);
@@ -1107,7 +1323,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
         if (isUp || sourceCanceled)
         {
-            touchDevice.Deactivate();
+            touchDevice.DeactivateForManager();
             Touch.UnregisterTouchPoint((int)pointerData.PointerId);
         }
     }
@@ -1123,7 +1339,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         if (!_activeStylusDevices.TryGetValue(pointerData.PointerId, out var stylusDevice))
         {
-            stylusDevice = new PointerStylusDevice((int)pointerData.PointerId);
+            stylusDevice = new StylusDevice((int)pointerData.PointerId);
             _activeStylusDevices[pointerData.PointerId] = stylusDevice;
         }
 
@@ -1381,11 +1597,10 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         {
             RoutedEvent = PreviewManipulationStartingEvent,
             ManipulationContainer = target,
-            Mode = ManipulationModes.All,
-            Cancel = false
+            Mode = ManipulationModes.All
         };
         target.RaiseEvent(previewArgs);
-        if (previewArgs.Cancel)
+        if (previewArgs.CancelRequested)
             return false;
 
         if (!previewArgs.Handled)
@@ -1396,11 +1611,10 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                 ManipulationContainer = previewArgs.ManipulationContainer ?? target,
                 Mode = previewArgs.Mode,
                 Pivot = previewArgs.Pivot,
-                IsSingleTouchEnabled = previewArgs.IsSingleTouchEnabled,
-                Cancel = false
+                IsSingleTouchEnabled = previewArgs.IsSingleTouchEnabled
             };
             target.RaiseEvent(bubbleArgs);
-            if (bubbleArgs.Cancel)
+            if (bubbleArgs.CancelRequested)
                 return false;
         }
 
@@ -1728,7 +1942,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         TouchDevice? touchDevice = Touch.GetDevice((int)pointerId);
         if (touchDevice != null)
         {
-            touchDevice.Deactivate();
+            touchDevice.DeactivateForManager();
             Touch.UnregisterTouchPoint((int)pointerId);
         }
     }
@@ -1794,6 +2008,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private void OnMouseLeave()
     {
         _isMouseTracking = false;
+        Mouse.OnMouseLeaveWindow();
 
         if (_lastMouseOverElement != null)
         {
@@ -1873,6 +2088,17 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         int hitTest = (short)(lParam.ToInt64() & 0xFFFF);
         if (hitTest != HTCLIENT) return false;
 
+        if (Mouse.OverrideCursor is { } overrideCursor)
+        {
+            var overrideHandle = GetCursorHandle(overrideCursor.CursorType);
+            if (overrideHandle != nint.Zero)
+            {
+                Mouse.SetCursor(overrideCursor);
+                _ = SetCursor(overrideHandle);
+                return true;
+            }
+        }
+
         // Get current cursor position and find element under it
         if (GetCursorPos(out var cursorPt))
         {
@@ -1884,12 +2110,13 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             var hitResult = HitTest(position);
             if (hitResult?.VisualHit is FrameworkElement fe)
             {
-                var cursor = fe.Cursor;
+                var cursor = FrameworkElement.ResolveEffectiveCursor(fe);
                 if (cursor != null)
                 {
                     var cursorHandle = GetCursorHandle(cursor.CursorType);
                     if (cursorHandle != nint.Zero)
                     {
+                        Mouse.SetCursor(cursor);
                         _ = SetCursor(cursorHandle);
                         return true;
                     }
@@ -1898,6 +2125,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         }
 
         // Default arrow
+        Mouse.SetCursor(Cursors.Arrow);
         _ = SetCursor(LoadCursor(nint.Zero, IDC_ARROW));
         return true;
     }
@@ -1989,35 +2217,98 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         return modifiers;
     }
 
+    // Local P/Invoke restored during the Win32 interop split: GetKeyState was
+    // previously pulled in via `using static Win32Methods` but that shared
+    // declaration was removed when GDI/input imports were partitioned. Matches
+    // the per-consumer LibraryImport pattern now used by Window.cs / Keyboard.cs.
+    [LibraryImport("user32.dll")]
+    private static partial short GetKeyState(int nVirtKey);
+
     #endregion
 
     #region IDisposable
 
     public void Dispose()
-    {
-        if (_disposed) return;
-        _disposed = true;
+        => DisposeCore(destroyNativeWindow: true, destroyedHwnd: nint.Zero);
 
+    /// <summary>
+    /// Completes managed teardown when the HWND is destroyed externally (for
+    /// example, when Win32 destroys an owned popup together with its parent).
+    /// This path must not call DestroyWindow again from inside WM_DESTROY.
+    /// </summary>
+    private void OnNativeDestroyed(nint destroyedHwnd)
+        => DisposeCore(destroyNativeWindow: false, destroyedHwnd);
+
+    private void DisposeCore(bool destroyNativeWindow, nint destroyedHwnd)
+    {
+        DispatcherOperation? scheduledRender;
+        nint hwndToDestroy;
+        lock (_renderLifecycleGate)
+        {
+            // Ignore a stale WM_DESTROY for a handle that no longer belongs to
+            // this instance. HWND values can be reused by the OS.
+            if (destroyedHwnd != nint.Zero && _hwnd != destroyedHwnd)
+            {
+                return;
+            }
+
+            if (_disposed)
+            {
+                return;
+            }
+
+            // Invalidate every callback captured by an earlier lifecycle before touching the native
+            // surface. Abort removes a still-pending operation from the dispatcher queue; the
+            // generation check remains the backstop when it was already dequeued/executing.
+            _disposed = true;
+            unchecked { _renderLifecycleGeneration++; }
+            scheduledRender = _scheduledRenderOperation;
+            _scheduledRenderOperation = null;
+            Interlocked.Exchange(ref _renderState, 0);
+
+            // Detach the HWND before releasing the lifecycle gate.  Explicit
+            // disposal removes the dictionary entry before DestroyWindow, so
+            // the synchronous WM_DESTROY cannot recursively enter this object.
+            hwndToDestroy = _hwnd;
+            _hwnd = nint.Zero;
+            if (hwndToDestroy != nint.Zero)
+            {
+                _ = _popupWindows.Remove(hwndToDestroy);
+            }
+        }
+
+        _ = scheduledRender?.Abort();
+
+        UpdateRenderableRegistration(visible: false);
+        UnsubscribeFrameStarting();
         StopRenderRecoveryRetry();
 
         // Remove child before destroying window
         Child = null;
         _lastMouseOverElement = null;
 
-        _drawingContext?.ClearBitmapCache();
-        _drawingContext = null;
+        // PopupWindow owns this RTS instance just like Window owns its RTS.
+        // Tear its worker down on both explicit close and external WM_DESTROY;
+        // Dispose is idempotent, so duplicate native notifications stay safe.
+        try { _realTimeStylus.Dispose(); }
+        catch { /* never let input-thread teardown escape window cleanup */ }
 
-        if (_renderTarget != null)
+        lock (_renderLifecycleGate)
         {
-            _renderTarget.Dispose();
-            _renderTarget = null;
+            _drawingContext?.ClearBitmapCache();
+            _drawingContext = null;
+
+            if (_renderTarget != null)
+            {
+                _renderTarget.Dispose();
+                _renderTarget = null;
+            }
+
         }
 
-        if (_hwnd != nint.Zero)
+        if (destroyNativeWindow && hwndToDestroy != nint.Zero)
         {
-            _ = _popupWindows.Remove(_hwnd);
-            _ = DestroyWindow(_hwnd);
-            _hwnd = nint.Zero;
+            _ = DestroyWindow(hwndToDestroy);
         }
 
         GC.SuppressFinalize(this);
@@ -2034,17 +2325,9 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private const string PopupWindowClassName = "JaliumPopupWindow";
 
-    // Mouse button state flags — MK_LBUTTON/RBUTTON/MBUTTON are kept local: they disagree on
-    // type across the codebase (int here, uint in the drag/drop interop) and are unified in a
-    // later phase. All other WS_/SW_/SWP_/HWND_/WM_/MA_/HTCLIENT/MK_XBUTTON*/TME_/VK_/IDC_
-    // constants now come from Win32Constants (issue #151).
-    private const int MK_LBUTTON = 0x0001;
-    private const int MK_RBUTTON = 0x0002;
-    private const int MK_MBUTTON = 0x0010;
+    // MK_LBUTTON/RBUTTON/MBUTTON and all other WS_/SW_/SWP_/HWND_/WM_/MA_/HTCLIENT/MK_/TME_/
+    // VK_/IDC_ constants now come from Win32Constants (issue #151).
 
-    // Kept local: GetKeyState is not part of the shared window P/Invoke set yet (issue #151).
-    [LibraryImport("user32.dll")]
-    private static partial short GetKeyState(int nVirtKey);
 
     #endregion
 }

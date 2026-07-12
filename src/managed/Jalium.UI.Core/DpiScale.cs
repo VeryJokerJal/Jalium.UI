@@ -61,7 +61,7 @@ public readonly struct DpiScale : IEquatable<DpiScale>
 /// <summary>
 /// Provides data for DPI changed events.
 /// </summary>
-public sealed class DpiChangedEventArgs : EventArgs
+public sealed class DpiChangedEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="DpiChangedEventArgs"/> class.

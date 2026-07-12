@@ -1,246 +1,570 @@
-﻿using Jalium.UI.Documents;
+using System.Collections.ObjectModel;
+using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Documents;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
+using PrimitiveDocumentPaginator = Jalium.UI.Controls.Primitives.DocumentPaginator;
+using PrimitiveDocumentPaginatorSource = Jalium.UI.Controls.Primitives.IDocumentPaginatorSource;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
-/// Provides a control for viewing flow content in a fixed page-by-page format.
+/// Displays a <see cref="FlowDocument"/> one page at a time.
 /// </summary>
 [ContentProperty("Document")]
-public class FlowDocumentPageViewer : Control
+public class FlowDocumentPageViewer : DocumentViewerBase
 {
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Document);
+    private static readonly ReadOnlyCollection<DocumentPageView> s_emptyPageViews =
+        new(Array.Empty<DocumentPageView>());
 
-    #region Dependency Properties
-
-    /// <summary>
-    /// Identifies the Document dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty DocumentProperty =
-        DependencyProperty.Register(nameof(Document), typeof(FlowDocument), typeof(FlowDocumentPageViewer),
-            new PropertyMetadata(null, OnDocumentChanged));
+    private readonly DocumentPageView _pageView;
+    private readonly ReadOnlyCollection<DocumentPageView> _singlePageView;
+    private readonly FlowDocumentSearchSession _search = new();
+    private FlowDocument? _attachedDocument;
+    private TextSelection? _externalSelection;
+    private bool _pageViewsDirty = true;
 
     /// <summary>
-    /// Identifies the Zoom dependency property.
+    /// Initializes a flow-document page viewer and its master page surface.
     /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public static readonly DependencyProperty ZoomProperty =
-        DependencyProperty.Register(nameof(Zoom), typeof(double), typeof(FlowDocumentPageViewer),
-            new PropertyMetadata(100.0));
+    public FlowDocumentPageViewer()
+    {
+        _pageView = new DocumentPageView
+        {
+            Stretch = Stretch.Uniform,
+            StretchDirection = StretchDirection.Both,
+        };
+        SetIsMasterPage(_pageView, true);
+        _singlePageView = new ReadOnlyCollection<DocumentPageView>([_pageView]);
+        AddVisualChild(_pageView);
+        RegisterFlowDocumentCommands();
+        UpdateZoomState();
+        InvalidatePageViews();
+    }
 
-    /// <summary>
-    /// Identifies the MinZoom dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty MinZoomProperty =
-        DependencyProperty.Register(nameof(MinZoom), typeof(double), typeof(FlowDocumentPageViewer),
-            new PropertyMetadata(80.0));
+    #region Dependency properties
 
-    /// <summary>
-    /// Identifies the MaxZoom dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty MaxZoomProperty =
-        DependencyProperty.Register(nameof(MaxZoom), typeof(double), typeof(FlowDocumentPageViewer),
-            new PropertyMetadata(200.0));
+    public new static readonly DependencyProperty DocumentProperty =
+        DependencyProperty.Register(
+            nameof(Document), typeof(FlowDocument), typeof(FlowDocumentPageViewer),
+            new PropertyMetadata(null, OnFlowDocumentChanged));
 
-    /// <summary>
-    /// Identifies the ZoomIncrement dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public static readonly DependencyProperty ZoomIncrementProperty =
-        DependencyProperty.Register(nameof(ZoomIncrement), typeof(double), typeof(FlowDocumentPageViewer),
-            new PropertyMetadata(10.0));
+    public new static readonly DependencyProperty ZoomProperty =
+        DependencyProperty.Register(
+            nameof(Zoom), typeof(double), typeof(FlowDocumentPageViewer),
+            new PropertyMetadata(100.0, OnZoomChanged, CoerceZoom),
+            FlowDocumentViewerSupport.IsValidZoomValue);
 
-    private static readonly DependencyPropertyKey PageCountPropertyKey =
-        DependencyProperty.RegisterReadOnly(nameof(PageCount), typeof(int), typeof(FlowDocumentPageViewer),
-            new PropertyMetadata(0));
+    public new static readonly DependencyProperty MinZoomProperty =
+        DependencyProperty.Register(
+            nameof(MinZoom), typeof(double), typeof(FlowDocumentPageViewer),
+            new PropertyMetadata(80.0, OnMinZoomChanged),
+            FlowDocumentViewerSupport.IsValidZoomValue);
 
-    /// <summary>
-    /// Identifies the PageCount dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty PageCountProperty = PageCountPropertyKey.DependencyProperty;
+    public new static readonly DependencyProperty MaxZoomProperty =
+        DependencyProperty.Register(
+            nameof(MaxZoom), typeof(double), typeof(FlowDocumentPageViewer),
+            new PropertyMetadata(200.0, OnMaxZoomChanged, CoerceMaxZoom),
+            FlowDocumentViewerSupport.IsValidZoomValue);
 
-    private static readonly DependencyPropertyKey PageNumberPropertyKey =
-        DependencyProperty.RegisterReadOnly(nameof(PageNumber), typeof(int), typeof(FlowDocumentPageViewer),
-            new PropertyMetadata(0));
+    public new static readonly DependencyProperty ZoomIncrementProperty =
+        DependencyProperty.Register(
+            nameof(ZoomIncrement), typeof(double), typeof(FlowDocumentPageViewer),
+            new PropertyMetadata(10.0),
+            FlowDocumentViewerSupport.IsValidZoomValue);
 
-    /// <summary>
-    /// Identifies the PageNumber dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty PageNumberProperty = PageNumberPropertyKey.DependencyProperty;
+    protected static readonly DependencyPropertyKey CanIncreaseZoomPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(CanIncreaseZoom), typeof(bool), typeof(FlowDocumentPageViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty CanIncreaseZoomProperty =
+        CanIncreaseZoomPropertyKey.DependencyProperty;
+
+    protected static readonly DependencyPropertyKey CanDecreaseZoomPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(CanDecreaseZoom), typeof(bool), typeof(FlowDocumentPageViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty CanDecreaseZoomProperty =
+        CanDecreaseZoomPropertyKey.DependencyProperty;
+
+    public static readonly DependencyProperty SelectionBrushProperty =
+        TextBoxBase.SelectionBrushProperty.AddOwner(
+            typeof(FlowDocumentPageViewer),
+            new PropertyMetadata(SystemColors.HighlightBrush, OnSelectionVisualChanged));
+
+    public static readonly DependencyProperty SelectionOpacityProperty =
+        TextBoxBase.SelectionOpacityProperty.AddOwner(
+            typeof(FlowDocumentPageViewer),
+            new PropertyMetadata(1.0, OnSelectionVisualChanged));
+
+    private static readonly DependencyPropertyKey IsSelectionActivePropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(IsSelectionActive), typeof(bool), typeof(FlowDocumentPageViewer), new PropertyMetadata(false));
+
+    public static readonly DependencyProperty IsSelectionActiveProperty =
+        IsSelectionActivePropertyKey.DependencyProperty;
+
+    public static readonly DependencyProperty IsInactiveSelectionHighlightEnabledProperty =
+        TextBoxBase.IsInactiveSelectionHighlightEnabledProperty.AddOwner(
+            typeof(FlowDocumentPageViewer), new PropertyMetadata(false, OnSelectionVisualChanged));
 
     #endregion
 
     #region Properties
 
-    /// <summary>
-    /// Gets or sets the FlowDocument displayed by this viewer.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public FlowDocument? Document
+    public new FlowDocument? Document
     {
         get => (FlowDocument?)GetValue(DocumentProperty);
         set => SetValue(DocumentProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the current zoom level as a percentage.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public double Zoom
+    public new double Zoom
     {
         get => (double)GetValue(ZoomProperty)!;
         set => SetValue(ZoomProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the minimum zoom level.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public double MinZoom
+    public new double MinZoom
     {
         get => (double)GetValue(MinZoomProperty)!;
         set => SetValue(MinZoomProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the maximum zoom level.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public double MaxZoom
+    public new double MaxZoom
     {
         get => (double)GetValue(MaxZoomProperty)!;
         set => SetValue(MaxZoomProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the zoom increment.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public double ZoomIncrement
+    public new double ZoomIncrement
     {
         get => (double)GetValue(ZoomIncrementProperty)!;
         set => SetValue(ZoomIncrementProperty, value);
     }
 
-    /// <summary>
-    /// Gets the page count of the document.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public int PageCount
+    public virtual bool CanIncreaseZoom => (bool)GetValue(CanIncreaseZoomProperty)!;
+
+    public virtual bool CanDecreaseZoom => (bool)GetValue(CanDecreaseZoomProperty)!;
+
+    public Brush? SelectionBrush
     {
-        get => (int)GetValue(PageCountProperty)!;
-        private set => SetValue(PageCountPropertyKey.DependencyProperty, value);
+        get => (Brush?)GetValue(SelectionBrushProperty);
+        set => SetValue(SelectionBrushProperty, value);
     }
 
-    /// <summary>
-    /// Gets the current page number.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public int PageNumber
+    public double SelectionOpacity
     {
-        get => (int)GetValue(PageNumberProperty)!;
-        private set => SetValue(PageNumberPropertyKey.DependencyProperty, value);
+        get => (double)GetValue(SelectionOpacityProperty)!;
+        set => SetValue(SelectionOpacityProperty, value);
     }
 
-    /// <summary>
-    /// Gets a value indicating whether the viewer can navigate to the next page.
-    /// </summary>
-    public bool CanGoToNextPage => PageNumber < PageCount;
+    public bool IsSelectionActive => (bool)GetValue(IsSelectionActiveProperty)!;
+
+    public bool IsInactiveSelectionHighlightEnabled
+    {
+        get => (bool)GetValue(IsInactiveSelectionHighlightEnabledProperty)!;
+        set => SetValue(IsInactiveSelectionHighlightEnabledProperty, value);
+    }
+
+    public TextSelection? Selection => _externalSelection ?? _search.Selection;
 
     /// <summary>
-    /// Gets a value indicating whether the viewer can navigate to the previous page.
+    /// Gets the one-based page number currently displayed.
     /// </summary>
-    public bool CanGoToPreviousPage => PageNumber > 1;
+    public int PageNumber => MasterPageNumber;
+
+    /// <summary>
+    /// Gets or sets the text used by the parameterless find command.
+    /// </summary>
+    public string SearchText { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets whether the built-in find affordance is currently active.
+    /// </summary>
+    public bool IsFindToolBarVisible { get; private set; }
 
     #endregion
 
-    #region Methods
+    #region Public commands
+
+    public new void IncreaseZoom() => OnIncreaseZoomCommand();
+
+    public new void DecreaseZoom() => OnDecreaseZoomCommand();
+
+    public void Find() => OnFindCommand();
 
     /// <summary>
-    /// Increases the zoom level.
+    /// Finds the next occurrence and makes its page current.
     /// </summary>
-    public void IncreaseZoom()
+    public bool Find(string searchText)
     {
-        Zoom = Math.Min(MaxZoom, Zoom + ZoomIncrement);
+        SearchText = searchText ?? throw new ArgumentNullException(nameof(searchText));
+        _externalSelection = null;
+        if (!_search.Find(SearchText))
+        {
+            return false;
+        }
+
+        NavigateToSelection();
+        return true;
     }
 
-    /// <summary>
-    /// Decreases the zoom level.
-    /// </summary>
-    public void DecreaseZoom()
+    #endregion
+
+    #region Protected hooks
+
+    protected override void OnDocumentChanged()
     {
-        Zoom = Math.Max(MinZoom, Zoom - ZoomIncrement);
+        if (_attachedDocument != null)
+        {
+            _attachedDocument.ViewerPaginationChanged -= OnPaginationChanged;
+        }
+
+        _attachedDocument = Document;
+        if (_attachedDocument != null)
+        {
+            _attachedDocument.ViewerPaginationChanged += OnPaginationChanged;
+        }
+
+        _search.Attach(_attachedDocument);
+        _externalSelection = null;
+        base.OnDocumentChanged();
+        SetMasterPageNumber(PageCount > 0 ? 1 : 0);
+        _pageViewsDirty = true;
+        InvalidatePageViews();
+        UpdateCurrentPageView();
     }
 
-    /// <summary>
-    /// Navigates to the first page.
-    /// </summary>
-    public void FirstPage()
+    protected override void OnPageViewsChanged()
     {
-        if (PageCount > 0)
-            PageNumber = 1;
+        UpdateCurrentPageView();
+        base.OnPageViewsChanged();
     }
 
-    /// <summary>
-    /// Navigates to the last page.
-    /// </summary>
-    public void LastPage()
+    protected override void OnMasterPageNumberChanged()
     {
-        if (PageCount > 0)
-            PageNumber = PageCount;
+        UpdateCurrentPageView();
+        base.OnMasterPageNumberChanged();
     }
 
-    /// <summary>
-    /// Navigates to the next page.
-    /// </summary>
-    public void NextPage()
-    {
-        if (CanGoToNextPage)
-            PageNumber++;
-    }
-
-    /// <summary>
-    /// Navigates to the previous page.
-    /// </summary>
-    public void PreviousPage()
+    protected override void OnPreviousPageCommand()
     {
         if (CanGoToPreviousPage)
-            PageNumber--;
-    }
-
-    /// <summary>
-    /// Navigates to the specified page number.
-    /// </summary>
-    public void GoToPage(int pageNumber)
-    {
-        if (pageNumber >= 1 && pageNumber <= PageCount)
-            PageNumber = pageNumber;
-    }
-
-    private static void OnDocumentChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is FlowDocumentPageViewer viewer)
         {
-            viewer.OnDocumentChanged((FlowDocument?)e.OldValue, (FlowDocument?)e.NewValue);
+            base.OnPreviousPageCommand();
         }
     }
 
-    /// <summary>
-    /// Called when the document changes.
-    /// </summary>
-    protected void OnDocumentChanged(FlowDocument? oldDocument, FlowDocument? newDocument)
+    protected override void OnNextPageCommand()
     {
-        PageCount = newDocument != null ? 1 : 0;
-        PageNumber = newDocument != null ? 1 : 0;
-        InvalidateArrange();
+        if (CanGoToNextPage)
+        {
+            base.OnNextPageCommand();
+        }
+    }
+
+    protected override void OnFirstPageCommand()
+    {
+        if (CanGoToPreviousPage)
+        {
+            base.OnFirstPageCommand();
+        }
+    }
+
+    protected override void OnLastPageCommand()
+    {
+        if (CanGoToNextPage)
+        {
+            base.OnLastPageCommand();
+        }
+    }
+
+    protected override void OnGoToPageCommand(int pageNumber)
+    {
+        if (CanGoToPage(pageNumber) && MasterPageNumber != pageNumber)
+        {
+            base.OnGoToPageCommand(pageNumber);
+        }
+    }
+
+    protected virtual void OnFindCommand()
+    {
+        IsFindToolBarVisible = !IsFindToolBarVisible;
+        _externalSelection = null;
+        if (!string.IsNullOrWhiteSpace(SearchText) && _search.Find(SearchText))
+        {
+            NavigateToSelection();
+        }
+    }
+
+    protected override void OnPrintCommand()
+    {
+        base.OnPrintCommand();
+        OnPrintCompleted();
+    }
+
+    protected override void OnCancelPrintCommand()
+    {
+        base.OnCancelPrintCommand();
+    }
+
+    protected virtual void OnPrintCompleted()
+    {
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    protected virtual void OnIncreaseZoomCommand()
+    {
+        if (CanIncreaseZoom)
+        {
+            Zoom = Math.Min(MaxZoom, Zoom + ZoomIncrement);
+        }
+    }
+
+    protected virtual void OnDecreaseZoomCommand()
+    {
+        if (CanDecreaseZoom)
+        {
+            Zoom = Math.Max(MinZoom, Zoom - ZoomIncrement);
+        }
+    }
+
+    protected override ReadOnlyCollection<DocumentPageView> GetPageViewsCollection(out bool changed)
+    {
+        changed = _pageViewsDirty;
+        _pageViewsDirty = false;
+        return Document != null && PageCount > 0 ? _singlePageView : s_emptyPageViews;
+    }
+
+    protected override void OnIsKeyboardFocusWithinChanged(bool isFocusWithin)
+    {
+        base.OnIsKeyboardFocusWithinChanged(isFocusWithin);
+        SetValue(IsSelectionActivePropertyKey, isFocusWithin);
+        ApplySelectionToCurrentPage();
     }
 
     #endregion
+
+    #region Layout
+
+    protected override int VisualChildrenCount => base.VisualChildrenCount + 1;
+
+    protected override Visual? GetVisualChild(int index)
+    {
+        var baseCount = base.VisualChildrenCount;
+        if (index < baseCount)
+        {
+            return base.GetVisualChild(index);
+        }
+
+        return index == baseCount ? _pageView : throw new ArgumentOutOfRangeException(nameof(index));
+    }
+
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        if (Document == null || PageCount == 0)
+        {
+            _pageView.Measure(Size.Empty);
+            return base.MeasureOverride(availableSize);
+        }
+
+        var pageSize = Document.ViewerPaginator.PageSize;
+        var scale = Zoom / 100.0;
+        var target = new Size(Math.Max(0.0, pageSize.Width * scale), Math.Max(0.0, pageSize.Height * scale));
+        _pageView.Measure(target);
+        ApplySelectionToCurrentPage();
+        return new Size(
+            double.IsPositiveInfinity(availableSize.Width) ? target.Width : Math.Min(target.Width, availableSize.Width),
+            double.IsPositiveInfinity(availableSize.Height) ? target.Height : Math.Min(target.Height, availableSize.Height));
+    }
+
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        var desired = _pageView.DesiredSize;
+        var width = Math.Min(finalSize.Width, desired.Width);
+        var height = Math.Min(finalSize.Height, desired.Height);
+        _pageView.Arrange(new Rect(
+            Math.Max(0.0, (finalSize.Width - width) / 2.0),
+            Math.Max(0.0, (finalSize.Height - height) / 2.0),
+            width,
+            height));
+        return finalSize;
+    }
+
+    #endregion
+
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() =>
+        new Jalium.UI.Automation.Peers.FlowDocumentPageViewerAutomationPeer(this);
+
+    private void RegisterFlowDocumentCommands()
+    {
+        AddCommandBinding(ApplicationCommands.Find, static viewer => viewer.OnFindCommand(), static viewer => viewer.Document != null);
+        AddCommandBinding(NavigationCommands.IncreaseZoom, static viewer => viewer.OnIncreaseZoomCommand(), static viewer => viewer.CanIncreaseZoom);
+        AddCommandBinding(NavigationCommands.DecreaseZoom, static viewer => viewer.OnDecreaseZoomCommand(), static viewer => viewer.CanDecreaseZoom);
+        AddCommandBinding(ApplicationCommands.SelectAll, static viewer => viewer.SelectAll(), static viewer => viewer.Document != null);
+    }
+
+    private void AddCommandBinding(RoutedUICommand command, Action<FlowDocumentPageViewer> execute, Predicate<FlowDocumentPageViewer> canExecute)
+    {
+        CommandBindings.Add(new CommandBinding(
+            command,
+            (_, _) => execute(this),
+            (_, args) => args.CanExecute = canExecute(this)));
+    }
+
+    private void SelectAll()
+    {
+        _externalSelection = null;
+        _search.SelectAll();
+        InvalidateVisual();
+    }
+
+    private void NavigateToSelection()
+    {
+        if (Document == null || Selection == null)
+        {
+            return;
+        }
+
+        var pageNumber = FlowDocumentViewerSupport.GetPageNumberForOffset(Document, Selection.Start.DocumentOffset);
+        OnGoToPageCommand(pageNumber);
+        InvalidateVisual();
+    }
+
+    private void UpdateCurrentPageView()
+    {
+        _pageView.DocumentPaginator = Document?.ViewerPaginator;
+        _pageView.PageNumber = Math.Max(0, MasterPageNumber - 1);
+        _pageView.InvalidateMeasure();
+        InvalidateMeasure();
+    }
+
+    internal void ApplySelection(TextSelection? selection)
+    {
+        _externalSelection = selection;
+        ApplySelectionToCurrentPage();
+        InvalidateVisual();
+    }
+
+    private void ApplySelectionToCurrentPage()
+    {
+        if (_pageView.DocumentPage?.Visual is not TextBlock textBlock)
+        {
+            return;
+        }
+
+        textBlock.SelectionBrush = CreateSelectionBrush(SelectionBrush, SelectionOpacity);
+        if (Document == null || Selection == null ||
+            (!IsSelectionActive && !IsInactiveSelectionHighlightEnabled))
+        {
+            textBlock.Select(0, 0);
+            return;
+        }
+
+        var pageStart = FlowDocumentViewerSupport.GetPageStartOffset(Document, Math.Max(1, MasterPageNumber));
+        var localStart = Math.Clamp(Selection.Start.DocumentOffset - pageStart, 0, textBlock.Text.Length);
+        var localEnd = Math.Clamp(Selection.End.DocumentOffset - pageStart, localStart, textBlock.Text.Length);
+        textBlock.Select(localStart, localEnd - localStart);
+    }
+
+    private static Brush? CreateSelectionBrush(Brush? brush, double opacity)
+    {
+        if (brush is SolidColorBrush solidColorBrush)
+        {
+            return new SolidColorBrush(solidColorBrush.Color)
+            {
+                Opacity = solidColorBrush.Opacity * Math.Clamp(opacity, 0.0, 1.0),
+            };
+        }
+
+        return brush;
+    }
+
+    private void UpdateZoomState()
+    {
+        SetValue(CanIncreaseZoomPropertyKey, Zoom < MaxZoom);
+        SetValue(CanDecreaseZoomPropertyKey, Zoom > MinZoom);
+        InvalidateMeasure();
+    }
+
+    private void OnPaginationChanged(object? sender, EventArgs e)
+    {
+        var oldPage = MasterPageNumber;
+        base.OnDocumentChanged();
+        SetMasterPageNumber(PageCount > 0 ? Math.Clamp(oldPage, 1, PageCount) : 0);
+        _pageViewsDirty = true;
+        InvalidatePageViews();
+        UpdateCurrentPageView();
+    }
+
+    private static void OnFlowDocumentChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is FlowDocumentPageViewer viewer)
+        {
+            viewer.SetDocumentPaginatorSource(e.NewValue is FlowDocument document
+                ? new FlowDocumentPaginatorSource(document)
+                : null);
+        }
+    }
+
+    private void SetDocumentPaginatorSource(PrimitiveDocumentPaginatorSource? source) =>
+        base.Document = source;
+
+    internal sealed class FlowDocumentPaginatorSource : PrimitiveDocumentPaginatorSource
+    {
+        private readonly FlowDocument _document;
+
+        public FlowDocumentPaginatorSource(FlowDocument document)
+        {
+            _document = document;
+        }
+
+        public PrimitiveDocumentPaginator DocumentPaginator => _document.ViewerPaginator;
+    }
+
+    private static void OnZoomChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is FlowDocumentPageViewer viewer)
+        {
+            viewer.UpdateZoomState();
+        }
+    }
+
+    private static void OnMinZoomChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is FlowDocumentPageViewer viewer)
+        {
+            viewer.CoerceValue(MaxZoomProperty);
+            viewer.CoerceValue(ZoomProperty);
+            viewer.UpdateZoomState();
+        }
+    }
+
+    private static void OnMaxZoomChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is FlowDocumentPageViewer viewer)
+        {
+            viewer.CoerceValue(ZoomProperty);
+            viewer.UpdateZoomState();
+        }
+    }
+
+    private static object? CoerceZoom(DependencyObject d, object? value) =>
+        d is FlowDocumentPageViewer viewer && value is double zoom
+            ? FlowDocumentViewerSupport.CoerceZoom(zoom, viewer.MinZoom, viewer.MaxZoom)
+            : value;
+
+    private static object? CoerceMaxZoom(DependencyObject d, object? value) =>
+        d is FlowDocumentPageViewer viewer && value is double maxZoom
+            ? Math.Max(viewer.MinZoom, maxZoom)
+            : value;
+
+    private static void OnSelectionVisualChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is FlowDocumentPageViewer viewer)
+        {
+            viewer.ApplySelectionToCurrentPage();
+            viewer.InvalidateVisual();
+        }
+    }
 }

@@ -9,8 +9,82 @@ namespace Jalium.UI.Xaml;
 /// <summary>
 /// Provides a static Save method that can be used for limited XAML serialization of provided objects into XAML markup.
 /// </summary>
-public static class XamlWriter
+public abstract class XamlWriter : IDisposable
 {
+    private bool _isDisposed;
+
+    protected XamlWriter()
+    {
+    }
+
+    /// <summary>Gets the schema context used by this writer.</summary>
+    public abstract XamlSchemaContext SchemaContext { get; }
+
+    /// <summary>Gets whether this writer has been closed.</summary>
+    protected bool IsDisposed => _isDisposed;
+
+    public abstract void WriteEndMember();
+    public abstract void WriteEndObject();
+    public abstract void WriteGetObject();
+    public abstract void WriteNamespace(NamespaceDeclaration namespaceDeclaration);
+    public abstract void WriteStartMember(XamlMember xamlMember);
+    public abstract void WriteStartObject(XamlType type);
+    public abstract void WriteValue(object? value);
+
+    /// <summary>Copies the current node from a reader to this writer.</summary>
+    public void WriteNode(Jalium.UI.Xaml.XamlReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        switch (reader.NodeType)
+        {
+            case XamlNodeType.None:
+                return;
+            case XamlNodeType.StartObject:
+                WriteStartObject(reader.Type ?? throw new XamlException("A StartObject node requires a XAML type."));
+                return;
+            case XamlNodeType.GetObject:
+                WriteGetObject();
+                return;
+            case XamlNodeType.EndObject:
+                WriteEndObject();
+                return;
+            case XamlNodeType.StartMember:
+                WriteStartMember(reader.Member ?? throw new XamlException("A StartMember node requires a XAML member."));
+                return;
+            case XamlNodeType.EndMember:
+                WriteEndMember();
+                return;
+            case XamlNodeType.Value:
+                WriteValue(reader.Value);
+                return;
+            case XamlNodeType.NamespaceDeclaration:
+                WriteNamespace(reader.Namespace ?? throw new XamlException("A namespace node requires a declaration."));
+                return;
+            default:
+                throw new NotImplementedException($"Unsupported XAML node type '{reader.NodeType}'.");
+        }
+    }
+
+    public void Close() => Dispose();
+
+    void IDisposable.Dispose() => Dispose();
+
+    private void Dispose()
+    {
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        Dispose(disposing: true);
+        _isDisposed = true;
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+    }
+
     /// <summary>
     /// Returns a XAML string that serializes the provided object.
     /// </summary>

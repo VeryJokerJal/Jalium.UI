@@ -7,6 +7,10 @@ namespace Jalium.UI.Media;
 /// </summary>
 public sealed class StreamGeometry : Geometry
 {
+    public static readonly DependencyProperty FillRuleProperty =
+        DependencyProperty.Register(nameof(FillRule), typeof(FillRule), typeof(StreamGeometry),
+            new PropertyMetadata(FillRule.EvenOdd));
+
     private PathGeometry? _pathGeometry;
     private bool _isOpen;
 
@@ -88,13 +92,13 @@ public sealed class StreamGeometry : Geometry
     /// </summary>
     public FillRule FillRule
     {
-        get => _pathGeometry?.FillRule ?? FillRule.EvenOdd;
+        get => (FillRule)GetValue(FillRuleProperty)!;
         set
         {
+            SetValue(FillRuleProperty, value);
             if (_pathGeometry != null)
-            {
                 _pathGeometry.FillRule = value;
-            }
+            WritePostscript();
         }
     }
 
@@ -116,6 +120,7 @@ public sealed class StreamGeometry : Geometry
     /// <returns>A StreamGeometryContext that can be used to describe the geometry.</returns>
     public StreamGeometryContext Open()
     {
+        WritePreamble();
         if (_isOpen)
         {
             throw new InvalidOperationException("StreamGeometry is already open.");
@@ -136,6 +141,7 @@ public sealed class StreamGeometry : Geometry
     /// </summary>
     public void Clear()
     {
+        WritePreamble();
         if (_isOpen)
         {
             throw new InvalidOperationException("Cannot clear while StreamGeometry is open.");
@@ -190,17 +196,77 @@ public sealed class StreamGeometry : Geometry
     public override PathGeometry GetFlattenedPathGeometry(double tolerance, ToleranceType toleranceType)
         => _pathGeometry?.GetFlattenedPathGeometry(tolerance, toleranceType) ?? new PathGeometry();
 
-    /// <inheritdoc />
-    public override Geometry Clone()
+    public new StreamGeometry Clone() => (StreamGeometry)base.Clone();
+    public new StreamGeometry CloneCurrentValue() => (StreamGeometry)base.CloneCurrentValue();
+
+    protected override Freezable CreateInstanceCore() => new StreamGeometry();
+
+    protected override bool FreezeCore(bool isChecking)
     {
-        var clone = new StreamGeometry();
-        if (_pathGeometry != null)
+        if (!base.FreezeCore(isChecking))
+            return false;
+        if (_pathGeometry is null)
+            return true;
+        if (isChecking)
+            return _pathGeometry.CanFreeze;
+        _pathGeometry.Freeze();
+        return true;
+    }
+
+    protected override void CloneCore(Freezable source)
+    {
+        base.CloneCore(source);
+        CopyGeometry((StreamGeometry)source, currentValue: false, frozen: false);
+    }
+
+    protected override void CloneCurrentValueCore(Freezable source)
+    {
+        base.CloneCurrentValueCore(source);
+        CopyGeometry((StreamGeometry)source, currentValue: true, frozen: false);
+    }
+
+    protected override void GetAsFrozenCore(Freezable source)
+    {
+        base.GetAsFrozenCore(source);
+        CopyGeometry((StreamGeometry)source, currentValue: false, frozen: true);
+    }
+
+    protected override void GetCurrentValueAsFrozenCore(Freezable source)
+    {
+        base.GetCurrentValueAsFrozenCore(source);
+        CopyGeometry((StreamGeometry)source, currentValue: true, frozen: true);
+    }
+
+    protected override void OnChanged()
+    {
+        if (_pathGeometry is not null)
+            _pathGeometry.FillRule = FillRule;
+        _isComposed = false;
+        _composedCommands = null;
+        _composedLength = 0;
+        base.OnChanged();
+    }
+
+    private void CopyGeometry(StreamGeometry source, bool currentValue, bool frozen)
+    {
+        if (source._pathGeometry is null)
         {
-            var clonedPath = _pathGeometry.ClonePathGeometry();
-            clone._pathGeometry = clonedPath;
+            _pathGeometry = null;
         }
-        clone.Transform = Transform;
-        return clone;
+        else if (frozen)
+        {
+            _pathGeometry = (PathGeometry)(currentValue
+                ? source._pathGeometry.GetCurrentValueAsFrozen()
+                : source._pathGeometry.GetAsFrozen());
+        }
+        else
+        {
+            _pathGeometry = currentValue
+                ? source._pathGeometry.CloneCurrentValue()
+                : source._pathGeometry.Clone();
+        }
+        _isOpen = false;
+        Compose();
     }
 
     /// <summary>

@@ -167,9 +167,15 @@ internal sealed class ResourceReclaimer : IDisposable
                     catch { /* swallow — never let cleanup poison the loop */ }
                 }
 
-                if (invokeReclaimable && visual is IReclaimableResource reclaimable)
+                if (invokeReclaimable)
                 {
-                    try { reclaimable.ReclaimIdleResources(); }
+                    try
+                    {
+                        if (visual is Jalium.UI.Controls.Image image)
+                            image.ReclaimIdleResources();
+                        else if (visual is IReclaimableResource reclaimable)
+                            reclaimable.ReclaimIdleResources();
+                    }
                     catch { /* swallow — same rationale */ }
                 }
             }

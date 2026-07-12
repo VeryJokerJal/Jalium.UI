@@ -90,9 +90,9 @@ internal sealed class MenuFlyoutPresenter : Control
         return finalSize;
     }
 
-    public override int VisualChildrenCount => 1;
+    protected override int VisualChildrenCount => 1;
 
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index == 0) return _scrollHost;
         throw new ArgumentOutOfRangeException(nameof(index));

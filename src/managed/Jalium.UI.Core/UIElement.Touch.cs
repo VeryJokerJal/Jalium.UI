@@ -2,7 +2,7 @@ using Jalium.UI.Input;
 
 namespace Jalium.UI;
 
-public abstract partial class UIElement
+public partial class UIElement
 {
     // ─────────────────────────────────────────────────────────────
     //  Touch capture & over tracking.
@@ -29,28 +29,28 @@ public abstract partial class UIElement
     // ── CLR event wrappers ──
 
     /// <summary>Occurs when a touch contact enters the bounds of this element.</summary>
-    public event RoutedEventHandler TouchEnter
+    public event TouchEventHandler TouchEnter
     {
         add => AddHandler(TouchEnterEvent, value);
         remove => RemoveHandler(TouchEnterEvent, value);
     }
 
     /// <summary>Occurs when a touch contact leaves the bounds of this element.</summary>
-    public event RoutedEventHandler TouchLeave
+    public event TouchEventHandler TouchLeave
     {
         add => AddHandler(TouchLeaveEvent, value);
         remove => RemoveHandler(TouchLeaveEvent, value);
     }
 
     /// <summary>Occurs when this element acquires capture of a touch contact.</summary>
-    public event RoutedEventHandler GotTouchCapture
+    public event TouchEventHandler GotTouchCapture
     {
         add => AddHandler(GotTouchCaptureEvent, value);
         remove => RemoveHandler(GotTouchCaptureEvent, value);
     }
 
     /// <summary>Occurs when a captured touch contact is released from this element.</summary>
-    public event RoutedEventHandler LostTouchCapture
+    public event TouchEventHandler LostTouchCapture
     {
         add => AddHandler(LostTouchCaptureEvent, value);
         remove => RemoveHandler(LostTouchCaptureEvent, value);
@@ -101,7 +101,26 @@ public abstract partial class UIElement
     public bool AreAnyTouchesDirectlyOver => _touchesDirectlyOver is { Count: > 0 };
 
     /// <summary>True if any touch contact is over this element or any of its descendants.</summary>
-    public bool AreAnyTouchesOver => _touchesOver is { Count: > 0 };
+    public bool AreAnyTouchesOver
+    {
+        get
+        {
+            if (_touchesOver is { Count: > 0 })
+            {
+                return true;
+            }
+
+            for (var index = 0; index < VisualChildrenCount; index++)
+            {
+                if (GetVisualChild(index) is UIElement child && child.AreAnyTouchesOver)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
 
     /// <summary>
     /// Captures the specified touch contact to this element. Any prior capture for that
@@ -118,13 +137,11 @@ public abstract partial class UIElement
             if (ReferenceEquals(previous.Element, this))
                 return true;
             previous.Element.RemoveCapturedTouchInternal(touchDevice);
-            previous.Element.RaiseLostTouchCapture(touchDevice);
         }
 
         s_touchCaptures[touchDevice.Id] = new CaptureRecord(this, touchDevice);
-        touchDevice.Capture(this);
         AddCapturedTouchInternal(touchDevice);
-        RaiseGotTouchCapture(touchDevice);
+        touchDevice.Capture(this);
         return true;
     }
 
@@ -135,9 +152,8 @@ public abstract partial class UIElement
         if (!s_touchCaptures.TryGetValue(touchDevice.Id, out var record) || !ReferenceEquals(record.Element, this))
             return false;
         s_touchCaptures.Remove(touchDevice.Id);
-        touchDevice.Capture(null);
         RemoveCapturedTouchInternal(touchDevice);
-        RaiseLostTouchCapture(touchDevice);
+        touchDevice.Capture(null);
         return true;
     }
 
@@ -169,9 +185,8 @@ public abstract partial class UIElement
         foreach (var pair in snapshot)
         {
             CaptureRecord record = pair.Value;
-            record.Device.Capture(null);
             record.Element.RemoveCapturedTouchInternal(record.Device);
-            record.Element.RaiseLostTouchCapture(record.Device);
+            record.Device.Capture(null);
         }
     }
 
@@ -180,31 +195,37 @@ public abstract partial class UIElement
     internal void AddCapturedTouchInternal(TouchDevice device)
     {
         (_touchesCaptured ??= new List<TouchDevice>(1)).Add(device);
+        UpdateTouchDependencyState();
     }
 
     internal void RemoveCapturedTouchInternal(TouchDevice device)
     {
         _touchesCaptured?.Remove(device);
+        UpdateTouchDependencyState();
     }
 
     internal void AddDirectlyOverTouchInternal(TouchDevice device)
     {
         (_touchesDirectlyOver ??= new List<TouchDevice>(1)).Add(device);
+        UpdateTouchDependencyState();
     }
 
     internal void RemoveDirectlyOverTouchInternal(TouchDevice device)
     {
         _touchesDirectlyOver?.Remove(device);
+        UpdateTouchDependencyState();
     }
 
     internal void AddOverTouchInternal(TouchDevice device)
     {
         (_touchesOver ??= new List<TouchDevice>(1)).Add(device);
+        UpdateTouchDependencyState();
     }
 
     internal void RemoveOverTouchInternal(TouchDevice device)
     {
         _touchesOver?.Remove(device);
+        UpdateTouchDependencyState();
     }
 
     internal void RaiseGotTouchCapture(TouchDevice device)

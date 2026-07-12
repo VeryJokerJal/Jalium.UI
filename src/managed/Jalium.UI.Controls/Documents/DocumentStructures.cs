@@ -1,13 +1,14 @@
 using System.Collections;
 using System.Collections.ObjectModel;
 using System.Linq;
+using Jalium.UI.Markup;
 
 namespace Jalium.UI.Documents.DocumentStructures;
 
 /// <summary>
 /// Abstract base class for elements in the document structure tree.
 /// </summary>
-public abstract class BlockElement
+public class BlockElement
 {
 }
 
@@ -32,7 +33,7 @@ public class NamedElement : BlockElement
 /// <summary>
 /// Abstract base class for semantic document structure elements that can contain child elements.
 /// </summary>
-public abstract class SemanticBasicElement : BlockElement
+public class SemanticBasicElement : BlockElement
 {
     private readonly List<BlockElement> _blockElementList = new();
 
@@ -40,12 +41,16 @@ public abstract class SemanticBasicElement : BlockElement
     /// Gets the list of child block elements.
     /// </summary>
     internal List<BlockElement> BlockElementList => _blockElementList;
+
+    internal SemanticBasicElement()
+    {
+    }
 }
 
 /// <summary>
 /// Represents a section in the document structure.
 /// </summary>
-public sealed class SectionStructure : SemanticBasicElement, IEnumerable<BlockElement>, IEnumerable
+public class SectionStructure : SemanticBasicElement, IEnumerable<BlockElement>, IEnumerable, IAddChild
 {
     /// <summary>
     /// Adds a block element to this section.
@@ -66,6 +71,9 @@ public sealed class SectionStructure : SemanticBasicElement, IEnumerable<BlockEl
             nameof(element));
     }
 
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<BlockElement>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
+
     IEnumerator<BlockElement> IEnumerable<BlockElement>.GetEnumerator()
     {
         return BlockElementList.GetEnumerator();
@@ -80,7 +88,7 @@ public sealed class SectionStructure : SemanticBasicElement, IEnumerable<BlockEl
 /// <summary>
 /// Represents a paragraph in the document structure.
 /// </summary>
-public sealed class ParagraphStructure : SemanticBasicElement, IEnumerable<NamedElement>, IEnumerable
+public class ParagraphStructure : SemanticBasicElement, IEnumerable<NamedElement>, IEnumerable, IAddChild
 {
     /// <summary>
     /// Adds a named element to this paragraph.
@@ -91,6 +99,9 @@ public sealed class ParagraphStructure : SemanticBasicElement, IEnumerable<Named
 
         BlockElementList.Add(element);
     }
+
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<NamedElement>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
 
     IEnumerator<NamedElement> IEnumerable<NamedElement>.GetEnumerator()
     {
@@ -106,7 +117,7 @@ public sealed class ParagraphStructure : SemanticBasicElement, IEnumerable<Named
 /// <summary>
 /// Represents a figure in the document structure.
 /// </summary>
-public sealed class FigureStructure : SemanticBasicElement, IEnumerable<NamedElement>, IEnumerable
+public class FigureStructure : SemanticBasicElement, IEnumerable<NamedElement>, IEnumerable, IAddChild
 {
     /// <summary>
     /// Adds a named element to this figure.
@@ -117,6 +128,9 @@ public sealed class FigureStructure : SemanticBasicElement, IEnumerable<NamedEle
 
         BlockElementList.Add(element);
     }
+
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<NamedElement>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
 
     IEnumerator<NamedElement> IEnumerable<NamedElement>.GetEnumerator()
     {
@@ -132,7 +146,7 @@ public sealed class FigureStructure : SemanticBasicElement, IEnumerable<NamedEle
 /// <summary>
 /// Represents a list in the document structure.
 /// </summary>
-public sealed class ListStructure : SemanticBasicElement, IEnumerable<ListItemStructure>, IEnumerable
+public class ListStructure : SemanticBasicElement, IEnumerable<ListItemStructure>, IEnumerable, IAddChild
 {
     /// <summary>
     /// Adds a list item to this list.
@@ -143,6 +157,9 @@ public sealed class ListStructure : SemanticBasicElement, IEnumerable<ListItemSt
 
         BlockElementList.Add(listItem);
     }
+
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<ListItemStructure>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
 
     IEnumerator<ListItemStructure> IEnumerable<ListItemStructure>.GetEnumerator()
     {
@@ -158,7 +175,7 @@ public sealed class ListStructure : SemanticBasicElement, IEnumerable<ListItemSt
 /// <summary>
 /// Represents a list item in the document structure.
 /// </summary>
-public sealed class ListItemStructure : SemanticBasicElement, IEnumerable<BlockElement>, IEnumerable
+public class ListItemStructure : SemanticBasicElement, IEnumerable<BlockElement>, IEnumerable, IAddChild
 {
     /// <summary>
     /// Gets or sets the marker text for the list item.
@@ -184,6 +201,9 @@ public sealed class ListItemStructure : SemanticBasicElement, IEnumerable<BlockE
             nameof(element));
     }
 
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<BlockElement>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
+
     IEnumerator<BlockElement> IEnumerable<BlockElement>.GetEnumerator()
     {
         return BlockElementList.GetEnumerator();
@@ -198,7 +218,7 @@ public sealed class ListItemStructure : SemanticBasicElement, IEnumerable<BlockE
 /// <summary>
 /// Represents a table in the document structure.
 /// </summary>
-public sealed class TableStructure : SemanticBasicElement, IEnumerable<TableRowGroupStructure>, IEnumerable
+public class TableStructure : SemanticBasicElement, IEnumerable<TableRowGroupStructure>, IEnumerable, IAddChild
 {
     /// <summary>
     /// Adds a table row group to this table.
@@ -209,6 +229,9 @@ public sealed class TableStructure : SemanticBasicElement, IEnumerable<TableRowG
 
         BlockElementList.Add(tableRowGroup);
     }
+
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<TableRowGroupStructure>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
 
     IEnumerator<TableRowGroupStructure> IEnumerable<TableRowGroupStructure>.GetEnumerator()
     {
@@ -224,7 +247,7 @@ public sealed class TableStructure : SemanticBasicElement, IEnumerable<TableRowG
 /// <summary>
 /// Represents a table row group in the document structure.
 /// </summary>
-public sealed class TableRowGroupStructure : SemanticBasicElement, IEnumerable<TableRowStructure>, IEnumerable
+public class TableRowGroupStructure : SemanticBasicElement, IEnumerable<TableRowStructure>, IEnumerable, IAddChild
 {
     /// <summary>
     /// Adds a table row to this row group.
@@ -235,6 +258,9 @@ public sealed class TableRowGroupStructure : SemanticBasicElement, IEnumerable<T
 
         BlockElementList.Add(tableRow);
     }
+
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<TableRowStructure>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
 
     IEnumerator<TableRowStructure> IEnumerable<TableRowStructure>.GetEnumerator()
     {
@@ -250,7 +276,7 @@ public sealed class TableRowGroupStructure : SemanticBasicElement, IEnumerable<T
 /// <summary>
 /// Represents a table row in the document structure.
 /// </summary>
-public sealed class TableRowStructure : SemanticBasicElement, IEnumerable<TableCellStructure>, IEnumerable
+public class TableRowStructure : SemanticBasicElement, IEnumerable<TableCellStructure>, IEnumerable, IAddChild
 {
     /// <summary>
     /// Adds a table cell to this row.
@@ -261,6 +287,9 @@ public sealed class TableRowStructure : SemanticBasicElement, IEnumerable<TableC
 
         BlockElementList.Add(tableCell);
     }
+
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<TableCellStructure>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
 
     IEnumerator<TableCellStructure> IEnumerable<TableCellStructure>.GetEnumerator()
     {
@@ -276,7 +305,7 @@ public sealed class TableRowStructure : SemanticBasicElement, IEnumerable<TableC
 /// <summary>
 /// Represents a table cell in the document structure.
 /// </summary>
-public sealed class TableCellStructure : SemanticBasicElement, IEnumerable<BlockElement>, IEnumerable
+public class TableCellStructure : SemanticBasicElement, IEnumerable<BlockElement>, IEnumerable, IAddChild
 {
     private int _rowSpan = 1;
     private int _columnSpan = 1;
@@ -318,6 +347,9 @@ public sealed class TableCellStructure : SemanticBasicElement, IEnumerable<Block
             nameof(element));
     }
 
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<BlockElement>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
+
     IEnumerator<BlockElement> IEnumerable<BlockElement>.GetEnumerator()
     {
         return BlockElementList.GetEnumerator();
@@ -333,7 +365,7 @@ public sealed class TableCellStructure : SemanticBasicElement, IEnumerable<Block
 /// Represents a fragment of a story in the document structure.
 /// A story fragment is a portion of a story that is contained within a single page.
 /// </summary>
-public sealed class StoryFragment : IEnumerable<BlockElement>, IEnumerable
+public class StoryFragment : IEnumerable<BlockElement>, IEnumerable, IAddChild
 {
     private readonly List<BlockElement> _blockElementList = new();
 
@@ -378,6 +410,9 @@ public sealed class StoryFragment : IEnumerable<BlockElement>, IEnumerable
             nameof(element));
     }
 
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<BlockElement>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
+
     IEnumerator<BlockElement> IEnumerable<BlockElement>.GetEnumerator()
     {
         return BlockElementList.GetEnumerator();
@@ -393,7 +428,7 @@ public sealed class StoryFragment : IEnumerable<BlockElement>, IEnumerable
 /// Represents a collection of story fragments in the document structure.
 /// This is the root element for XPS document structure markup.
 /// </summary>
-public sealed class StoryFragments : IEnumerable<StoryFragment>, IEnumerable
+public class StoryFragments : IEnumerable<StoryFragment>, IEnumerable, IAddChild
 {
     private readonly List<StoryFragment> _storyFragmentList = new();
 
@@ -412,6 +447,9 @@ public sealed class StoryFragments : IEnumerable<StoryFragment>, IEnumerable
         _storyFragmentList.Add(storyFragment);
     }
 
+    void IAddChild.AddChild(object value) => Add(DocumentStructureMarkup.Require<StoryFragment>(value));
+    void IAddChild.AddText(string text) => DocumentStructureMarkup.ValidateText(text);
+
     IEnumerator<StoryFragment> IEnumerable<StoryFragment>.GetEnumerator()
     {
         return _storyFragmentList.GetEnumerator();
@@ -420,5 +458,26 @@ public sealed class StoryFragments : IEnumerable<StoryFragment>, IEnumerable
     IEnumerator IEnumerable.GetEnumerator()
     {
         return ((IEnumerable<StoryFragment>)this).GetEnumerator();
+    }
+}
+
+internal static class DocumentStructureMarkup
+{
+    internal static T Require<T>(object value)
+        where T : class
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return value as T ?? throw new ArgumentException(
+            $"A child of type '{typeof(T).FullName}' is required.",
+            nameof(value));
+    }
+
+    internal static void ValidateText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            throw new ArgumentException("Text content is not supported by document-structure elements.", nameof(text));
+        }
     }
 }

@@ -1,5 +1,7 @@
 namespace Jalium.UI.Media;
 
+using Jalium.UI.Interop;
+
 /// <summary>
 /// Provides options for controlling rendering behavior of visual objects.
 /// </summary>
@@ -25,6 +27,14 @@ public static class RenderOptions
     public static readonly DependencyProperty CachingHintProperty =
         DependencyProperty.RegisterAttached("CachingHint", typeof(CachingHint), typeof(RenderOptions),
             new PropertyMetadata(CachingHint.Unspecified));
+
+    /// <summary>Identifies the ClearTypeHint attached property.</summary>
+    public static readonly DependencyProperty ClearTypeHintProperty =
+        DependencyProperty.RegisterAttached(
+            "ClearTypeHint",
+            typeof(ClearTypeHint),
+            typeof(RenderOptions),
+            new PropertyMetadata(ClearTypeHint.Auto));
 
     /// <summary>
     /// Identifies the CacheInvalidationThresholdMinimum attached property.
@@ -74,6 +84,14 @@ public static class RenderOptions
     public static CachingHint GetCachingHint(DependencyObject target) =>
         target.GetValue(CachingHintProperty) is CachingHint v ? v : CachingHint.Unspecified;
 
+    /// <summary>Sets the ClearType hint for the specified element.</summary>
+    public static void SetClearTypeHint(DependencyObject target, ClearTypeHint clearTypeHint) =>
+        target.SetValue(ClearTypeHintProperty, clearTypeHint);
+
+    /// <summary>Gets the ClearType hint for the specified element.</summary>
+    public static ClearTypeHint GetClearTypeHint(DependencyObject target) =>
+        target.GetValue(ClearTypeHintProperty) is ClearTypeHint value ? value : ClearTypeHint.Auto;
+
     /// <summary>Sets the cache invalidation threshold minimum.</summary>
     public static void SetCacheInvalidationThresholdMinimum(DependencyObject target, double value) =>
         target.SetValue(CacheInvalidationThresholdMinimumProperty, value);
@@ -95,26 +113,17 @@ public static class RenderOptions
 public enum BitmapScalingMode
 {
     /// <summary>Use default scaling.</summary>
-    Unspecified,
+    Unspecified = 0,
     /// <summary>Use low quality scaling.</summary>
-    LowQuality,
+    LowQuality = 1,
     /// <summary>Use high quality scaling.</summary>
-    HighQuality,
+    HighQuality = 2,
     /// <summary>Use nearest neighbor scaling.</summary>
-    NearestNeighbor,
+    NearestNeighbor = 3,
     /// <summary>Use linear scaling.</summary>
-    Linear,
+    Linear = 1,
     /// <summary>Use Fant scaling.</summary>
-    Fant
-}
-
-/// <summary>Specifies the rendering mode for the process.</summary>
-public enum RenderMode
-{
-    /// <summary>Default rendering.</summary>
-    Default,
-    /// <summary>Force software rendering.</summary>
-    SoftwareOnly
+    Fant = 2
 }
 
 /// <summary>Specifies caching behavior for TileBrush objects.</summary>

@@ -96,7 +96,7 @@ public class ToastNotificationTests
         };
 
         toast.Measure(new Size(400, 200));
-        Assert.Equal(Size.Empty, toast.DesiredSize);
+        Assert.Equal(default(Size), toast.DesiredSize);
     }
 
     [Fact]

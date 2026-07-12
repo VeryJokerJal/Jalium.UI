@@ -1,8 +1,10 @@
 ﻿using Jalium.UI.Input;
+using Jalium.UI.Documents;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Threading;
+using RenderTargetDrawingContext = Jalium.UI.Interop.RenderTargetDrawingContext;
 
 namespace Jalium.UI.Controls;
 
@@ -10,12 +12,11 @@ namespace Jalium.UI.Controls;
 /// Draws a border, background, or both around another element.
 /// </summary>
 [ContentProperty("Child")]
-public class Border : FrameworkElement
+public class Border : Decorator
 {
     private const float DefaultGlassTintChannel = 0.08f;
     private const float DefaultGlassTintOpacity = 0.3f;
 
-    private UIElement? _child;
     private Pen? _cachedBorderPen;
     private Brush? _cachedBorderBrush;
     private double _cachedBorderWidth;
@@ -334,27 +335,10 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets the child element.
     /// </summary>
-    public UIElement? Child
+    public override UIElement? Child
     {
-        get => _child;
-        set
-        {
-            if (_child == value) return;
-
-            if (_child != null)
-            {
-                RemoveVisualChild(_child);
-            }
-
-            _child = value;
-
-            if (_child != null)
-            {
-                AddVisualChild(_child);
-            }
-
-            InvalidateMeasure();
-        }
+        get => base.Child;
+        set => base.Child = value;
     }
 
     #endregion
@@ -382,12 +366,13 @@ public class Border : FrameworkElement
             Math.Max(0, availableSize.Width - totalHorizontal),
             Math.Max(0, availableSize.Height - totalVertical));
 
-        var childSize = Size.Empty;
+        var childSize = default(Size);
 
-        if (_child != null)
+        UIElement? child = Child;
+        if (child != null)
         {
-            _child.Measure(childAvailable);
-            childSize = _child.DesiredSize;
+            child.Measure(childAvailable);
+            childSize = child.DesiredSize;
         }
 
         return new Size(
@@ -401,7 +386,8 @@ public class Border : FrameworkElement
         var rawBorder = BorderThickness;
         var padding = Padding;
 
-        if (_child != null)
+        UIElement? child = Child;
+        if (child != null)
         {
             // Snap each side of BorderThickness independently before computing
             // the inner rect so the child's _visualBounds lines up exactly
@@ -443,7 +429,7 @@ public class Border : FrameworkElement
                 Math.Max(0, right - x),
                 Math.Max(0, bottom - y));
 
-            _child.Arrange(childRect);
+            child.Arrange(childRect);
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
         }
 
@@ -770,7 +756,7 @@ public class Border : FrameworkElement
             float[]? neighborData = null;
             if (fusionRadius > 0 && VisualParent is Panel parentPanel)
             {
-                foreach (var child in parentPanel.Children)
+                foreach (UIElement child in parentPanel.Children)
                 {
                     if (child is Border sibling && sibling != this &&
                         sibling.LiquidGlass && sibling._lgScreenRect.Width > 0)
@@ -793,7 +779,7 @@ public class Border : FrameworkElement
             if (neighborCount == 0 && fusionRadius > 0 && !_lgFusionRetryPending &&
                 VisualParent is Panel pp)
             {
-                foreach (var c in pp.Children)
+                foreach (UIElement c in pp.Children)
                 {
                     if (c is Border sib && sib != this &&
                         sib.LiquidGlass && sib._lgScreenRect.Width == 0)
@@ -1319,7 +1305,12 @@ public class Border : FrameworkElement
     {
         var pos = e.GetPosition(this);
         _lgLightLocal = pos;
-        _lgMouseOver = true;
+        var influence = Math.Max(LiquidGlassRefractionAmount,
+            Math.Max(LiquidGlassFusionRadius, LiquidGlassBlurRadius * 2.0));
+        _lgMouseOver = _lgPressed ||
+            new Rect(-influence, -influence,
+                Math.Max(0, ActualWidth) + influence * 2.0,
+                Math.Max(0, ActualHeight) + influence * 2.0).Contains(pos);
 
         // Track drag offset while pressed
         // Power curve applied at input for diminishing returns during drag;

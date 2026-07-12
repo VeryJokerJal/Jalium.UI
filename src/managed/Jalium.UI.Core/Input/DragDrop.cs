@@ -1,4 +1,9 @@
 using System.Collections.Specialized;
+using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
+using System.Reflection.Metadata;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace Jalium.UI;
 
@@ -13,7 +18,7 @@ public enum DragDropEffects
     Move = 2,
     Link = 4,
     Scroll = unchecked((int)0x80000000),
-    All = Copy | Move | Link | Scroll
+    All = Copy | Move | Scroll
 }
 
 /// <summary>
@@ -95,77 +100,580 @@ public interface IDataObject
 /// <summary>
 /// Implements IDataObject for data transfer in drag-and-drop and clipboard operations.
 /// </summary>
-public sealed class DataObject : IDataObject
+public sealed class DataObject : ITypedDataObject
 {
-    private readonly Dictionary<string, object> _data = new(StringComparer.OrdinalIgnoreCase);
+    private const string FileNameAnsiFormat = "FileName";
+    private const string FileNameUnicodeFormat = "FileNameW";
+    private const string BinaryBitmapFormat = "System.Drawing.Bitmap";
+    private const string BinaryMetafileFormat = "System.Drawing.Imaging.Metafile";
+
+    private readonly Dictionary<string, DataEntry> _data = new(StringComparer.OrdinalIgnoreCase);
+
+    public static readonly RoutedEvent CopyingEvent = EventManager.RegisterRoutedEvent(
+        "Copying",
+        RoutingStrategy.Bubble,
+        typeof(DataObjectCopyingEventHandler),
+        typeof(DataObject));
+
+    public static readonly RoutedEvent PastingEvent = EventManager.RegisterRoutedEvent(
+        "Pasting",
+        RoutingStrategy.Bubble,
+        typeof(DataObjectPastingEventHandler),
+        typeof(DataObject));
+
+    public static readonly RoutedEvent SettingDataEvent = EventManager.RegisterRoutedEvent(
+        "SettingData",
+        RoutingStrategy.Bubble,
+        typeof(DataObjectSettingDataEventHandler),
+        typeof(DataObject));
 
     public DataObject() { }
     public DataObject(object data) => SetData(data);
     public DataObject(string format, object data) => SetData(format, data);
+    public DataObject(string format, object data, bool autoConvert) => SetData(format, data, autoConvert);
+    public DataObject(Type format, object data) => SetData(format, data);
 
-    public object? GetData(string format) => GetData(format, true);
-    public object? GetData(Type format) => GetData(format.FullName ?? format.Name);
-    public object? GetData(string format, bool autoConvert)
+    public object? GetData(string format) => GetData(format, autoConvert: true);
+
+    public object? GetData(Type format)
     {
-        _data.TryGetValue(format, out var data);
-        return data;
+        ArgumentNullException.ThrowIfNull(format);
+        return GetData(GetTypeFormat(format));
     }
 
-    public bool GetDataPresent(string format) => GetDataPresent(format, true);
-    public bool GetDataPresent(Type format) => GetDataPresent(format.FullName ?? format.Name);
-    public bool GetDataPresent(string format, bool autoConvert) => _data.ContainsKey(format);
+    public object? GetData(string format, bool autoConvert)
+    {
+        if (!TryGetEntry(format, autoConvert, out DataEntry entry))
+        {
+            return null;
+        }
 
-    public string[] GetFormats() => GetFormats(true);
-    public string[] GetFormats(bool autoConvert) => _data.Keys.ToArray();
+        return entry.Data is IJsonData jsonData ? jsonData.Deserialize() : entry.Data;
+    }
+
+    public bool GetDataPresent(string format) => GetDataPresent(format, autoConvert: true);
+
+    public bool GetDataPresent(Type format)
+    {
+        ArgumentNullException.ThrowIfNull(format);
+        return GetDataPresent(GetTypeFormat(format));
+    }
+
+    public bool GetDataPresent(string format, bool autoConvert)
+    {
+        if (string.IsNullOrWhiteSpace(format))
+        {
+            return false;
+        }
+
+        if (_data.ContainsKey(format))
+        {
+            return true;
+        }
+
+        if (!autoConvert)
+        {
+            return false;
+        }
+
+        foreach ((string storedFormat, DataEntry entry) in _data)
+        {
+            if (!entry.AutoConvert)
+            {
+                continue;
+            }
+
+            foreach (string mappedFormat in GetMappedFormats(storedFormat))
+            {
+                if (format.Equals(mappedFormat, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    public string[] GetFormats() => GetFormats(autoConvert: true);
+
+    public string[] GetFormats(bool autoConvert)
+    {
+        if (!autoConvert)
+        {
+            return _data.Keys.ToArray();
+        }
+
+        var formats = new List<string>(_data.Count);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach ((string format, DataEntry entry) in _data)
+        {
+            AddDistinct(format);
+            if (entry.AutoConvert)
+            {
+                foreach (string mappedFormat in GetMappedFormats(format))
+                {
+                    AddDistinct(mappedFormat);
+                }
+            }
+        }
+
+        return formats.ToArray();
+
+        void AddDistinct(string format)
+        {
+            if (seen.Add(format))
+            {
+                formats.Add(format);
+            }
+        }
+    }
 
     public void SetData(object data)
     {
-        var type = data.GetType();
-        SetData(type.FullName ?? type.Name, data);
-
-        if (data is string text)
-        {
-            SetData(DataFormats.Text, text);
-            SetData(DataFormats.UnicodeText, text);
-        }
-        else if (data is string[] files)
-        {
-            SetData(DataFormats.FileDrop, files);
-        }
+        ArgumentNullException.ThrowIfNull(data);
+        SetData(data.GetType(), data);
     }
 
-    public void SetData(string format, object data) => SetData(format, data, true);
-    public void SetData(Type format, object data) => SetData(format.FullName ?? format.Name, data);
-    public void SetData(string format, object data, bool autoConvert) => _data[format] = data;
+    public void SetData(string format, object data) => SetData(format, data, autoConvert: true);
 
-    public bool ContainsFileDropList() => GetDataPresent(DataFormats.FileDrop);
+    public void SetData(Type format, object data)
+    {
+        ArgumentNullException.ThrowIfNull(format);
+        SetData(GetTypeFormat(format), data);
+    }
+
+    public void SetData(string format, object data, bool autoConvert)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        ArgumentException.ThrowIfNullOrWhiteSpace(format);
+        _data[format] = new DataEntry(data, autoConvert);
+    }
+
+    public bool TryGetData<T>([NotNullWhen(true), MaybeNullWhen(false)] out T data) =>
+        TryGetData(GetTypeFormat(typeof(T)), autoConvert: true, out data);
+
+    public bool TryGetData<T>(
+        string format,
+        [NotNullWhen(true), MaybeNullWhen(false)] out T data) =>
+        TryGetData(format, autoConvert: true, out data);
+
+    public bool TryGetData<T>(
+        string format,
+        bool autoConvert,
+        [NotNullWhen(true), MaybeNullWhen(false)] out T data)
+    {
+        data = default;
+        if (!IsValidTypeForFormat<T>(format) || !TryGetEntry(format, autoConvert, out DataEntry entry))
+        {
+            return false;
+        }
+
+        if (entry.Data is T value)
+        {
+            data = value;
+            return true;
+        }
+
+        if (entry.Data is JsonData<T> jsonData)
+        {
+            data = (T)jsonData.Deserialize();
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool TryGetData<T>(
+        string format,
+        Func<TypeName, Type?> resolver,
+        bool autoConvert,
+        [NotNullWhen(true), MaybeNullWhen(false)] out T data)
+    {
+        data = default;
+        ArgumentNullException.ThrowIfNull(resolver);
+        return TryGetData(format, autoConvert, out data);
+    }
+
+    [RequiresUnreferencedCode("Use the JsonTypeInfo<T> overload for trimming and NativeAOT.")]
+    [RequiresDynamicCode("Use the JsonTypeInfo<T> overload for NativeAOT.")]
+    public void SetDataAsJson<T>(T data) =>
+        SetDataAsJson(GetTypeFormat(typeof(T)), data);
+
+    [RequiresUnreferencedCode("Use the JsonTypeInfo<T> overload for trimming and NativeAOT.")]
+    [RequiresDynamicCode("Use the JsonTypeInfo<T> overload for NativeAOT.")]
+    public void SetDataAsJson<T>(string format, T data)
+    {
+        ValidateJsonData(format, data);
+        if (!JsonSerializer.IsReflectionEnabledByDefault)
+        {
+            throw new NotSupportedException(
+                "Reflection-based JSON metadata is disabled. Use SetDataAsJson with a source-generated JsonTypeInfo<T>.");
+        }
+
+        _data[format] = new DataEntry(JsonData<T>.CreateReflection(data), AutoConvert: false);
+    }
+
+    public void SetDataAsJson<T>(T data, JsonTypeInfo<T> jsonTypeInfo) =>
+        SetDataAsJson(GetTypeFormat(typeof(T)), data, jsonTypeInfo);
+
+    public void SetDataAsJson<T>(string format, T data, JsonTypeInfo<T> jsonTypeInfo)
+    {
+        ArgumentNullException.ThrowIfNull(jsonTypeInfo);
+        ValidateJsonData(format, data);
+        _data[format] = new DataEntry(JsonData<T>.Create(data, jsonTypeInfo), AutoConvert: false);
+    }
+
+    private static void ValidateJsonData<T>(string format, T data)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(format);
+        ArgumentNullException.ThrowIfNull(data);
+
+        if (IsPredefinedFormat(format))
+        {
+            throw new ArgumentException("Predefined data formats cannot be JSON serialized.", nameof(format));
+        }
+
+        if (typeof(T).IsAssignableTo(typeof(DataObject)))
+        {
+            throw new ArgumentException("A DataObject cannot be JSON serialized as data.", nameof(data));
+        }
+
+    }
+
+    public bool ContainsAudio() => GetDataPresent(DataFormats.WaveAudio, autoConvert: false);
+
+    public bool ContainsFileDropList() => GetDataPresent(DataFormats.FileDrop, autoConvert: false);
+
+    public bool ContainsImage() => GetDataPresent(DataFormats.Bitmap, autoConvert: false);
+
+    public bool ContainsText() => ContainsText(TextDataFormat.UnicodeText);
+
+    public bool ContainsText(TextDataFormat format)
+    {
+        ValidateTextDataFormat(format);
+        return GetDataPresent(ConvertTextDataFormat(format), autoConvert: false);
+    }
+
+    public Stream? GetAudioStream() => GetData(DataFormats.WaveAudio, autoConvert: false) as Stream;
 
     public StringCollection GetFileDropList()
     {
-        var files = GetData(DataFormats.FileDrop) as string[];
         var collection = new StringCollection();
-        if (files != null)
+        if (GetData(DataFormats.FileDrop, autoConvert: true) is string[] files)
+        {
             collection.AddRange(files);
+        }
+
         return collection;
     }
 
+    public Media.Imaging.BitmapSource? GetImage() =>
+        GetData(DataFormats.Bitmap, autoConvert: false) as Media.Imaging.BitmapSource;
+
     public void SetFileDropList(StringCollection fileDropList)
     {
+        ArgumentNullException.ThrowIfNull(fileDropList);
+        if (fileDropList.Count == 0)
+        {
+            throw new ArgumentException("The file drop list cannot be empty.", nameof(fileDropList));
+        }
+
         var files = new string[fileDropList.Count];
         fileDropList.CopyTo(files, 0);
-        SetData(DataFormats.FileDrop, files);
+        foreach (string? file in files)
+        {
+            if (string.IsNullOrEmpty(file) || file.Contains('\0'))
+            {
+                throw new ArgumentException("The file drop list contains an invalid path.", nameof(fileDropList));
+            }
+        }
+
+        SetData(DataFormats.FileDrop, files, autoConvert: true);
     }
 
-    public bool ContainsText() =>
-        GetDataPresent(DataFormats.Text) || GetDataPresent(DataFormats.UnicodeText);
-
-    public string GetText() =>
-        GetData(DataFormats.UnicodeText) as string ?? GetData(DataFormats.Text) as string ?? string.Empty;
-
-    public void SetText(string textData)
+    public void SetImage(Media.Imaging.BitmapSource image)
     {
-        SetData(DataFormats.Text, textData);
-        SetData(DataFormats.UnicodeText, textData);
+        ArgumentNullException.ThrowIfNull(image);
+        SetData(DataFormats.Bitmap, image, autoConvert: false);
+    }
+
+    public string GetText() => GetText(TextDataFormat.UnicodeText);
+
+    public string GetText(TextDataFormat format)
+    {
+        ValidateTextDataFormat(format);
+        return GetData(ConvertTextDataFormat(format), autoConvert: false) as string ?? string.Empty;
+    }
+
+    public void SetAudio(byte[] audioBytes)
+    {
+        ArgumentNullException.ThrowIfNull(audioBytes);
+        SetAudio(new MemoryStream(audioBytes));
+    }
+
+    public void SetAudio(Stream audioStream)
+    {
+        ArgumentNullException.ThrowIfNull(audioStream);
+        SetData(DataFormats.WaveAudio, audioStream, autoConvert: false);
+    }
+
+    public void SetText(string textData) => SetText(textData, TextDataFormat.UnicodeText);
+
+    public void SetText(string textData, TextDataFormat format)
+    {
+        ArgumentNullException.ThrowIfNull(textData);
+        ValidateTextDataFormat(format);
+        SetData(ConvertTextDataFormat(format), textData, autoConvert: false);
+    }
+
+    public static void AddCopyingHandler(DependencyObject element, DataObjectCopyingEventHandler handler) =>
+        AddHandler(element, CopyingEvent, handler);
+
+    public static void RemoveCopyingHandler(DependencyObject element, DataObjectCopyingEventHandler handler) =>
+        RemoveHandler(element, CopyingEvent, handler);
+
+    public static void AddPastingHandler(DependencyObject element, DataObjectPastingEventHandler handler) =>
+        AddHandler(element, PastingEvent, handler);
+
+    public static void RemovePastingHandler(DependencyObject element, DataObjectPastingEventHandler handler) =>
+        RemoveHandler(element, PastingEvent, handler);
+
+    public static void AddSettingDataHandler(DependencyObject element, DataObjectSettingDataEventHandler handler) =>
+        AddHandler(element, SettingDataEvent, handler);
+
+    public static void RemoveSettingDataHandler(DependencyObject element, DataObjectSettingDataEventHandler handler) =>
+        RemoveHandler(element, SettingDataEvent, handler);
+
+    private static void AddHandler(DependencyObject element, RoutedEvent routedEvent, Delegate handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+
+        if (element is not UIElement uiElement)
+        {
+            throw new ArgumentException("The element must be a UIElement.", nameof(element));
+        }
+
+        uiElement.AddHandler(routedEvent, handler);
+    }
+
+    private static void RemoveHandler(DependencyObject element, RoutedEvent routedEvent, Delegate handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+
+        if (element is not UIElement uiElement)
+        {
+            throw new ArgumentException("The element must be a UIElement.", nameof(element));
+        }
+
+        uiElement.RemoveHandler(routedEvent, handler);
+    }
+
+    private bool TryGetEntry(string? format, bool autoConvert, out DataEntry entry)
+    {
+        if (string.IsNullOrWhiteSpace(format))
+        {
+            entry = default;
+            return false;
+        }
+
+        if (_data.TryGetValue(format, out entry))
+        {
+            return true;
+        }
+
+        if (autoConvert)
+        {
+            foreach (string mappedFormat in GetMappedFormats(format))
+            {
+                if (_data.TryGetValue(mappedFormat, out entry))
+                {
+                    return true;
+                }
+            }
+        }
+
+        entry = default;
+        return false;
+    }
+
+    private static IEnumerable<string> GetMappedFormats(string format)
+    {
+        if (format.Equals(DataFormats.Text, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return DataFormats.StringFormat;
+            yield return DataFormats.UnicodeText;
+        }
+        else if (format.Equals(DataFormats.UnicodeText, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return DataFormats.StringFormat;
+            yield return DataFormats.Text;
+        }
+        else if (format.Equals(DataFormats.StringFormat, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return DataFormats.Text;
+            yield return DataFormats.UnicodeText;
+        }
+        else if (format.Equals(DataFormats.FileDrop, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return FileNameUnicodeFormat;
+            yield return FileNameAnsiFormat;
+        }
+        else if (format.Equals(FileNameUnicodeFormat, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return DataFormats.FileDrop;
+            yield return FileNameAnsiFormat;
+        }
+        else if (format.Equals(FileNameAnsiFormat, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return DataFormats.FileDrop;
+            yield return FileNameUnicodeFormat;
+        }
+        else if (format.Equals(DataFormats.Bitmap, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return BinaryBitmapFormat;
+        }
+        else if (format.Equals(BinaryBitmapFormat, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return DataFormats.Bitmap;
+        }
+        else if (format.Equals(DataFormats.EnhancedMetafile, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return BinaryMetafileFormat;
+        }
+        else if (format.Equals(BinaryMetafileFormat, StringComparison.OrdinalIgnoreCase))
+        {
+            yield return DataFormats.EnhancedMetafile;
+        }
+    }
+
+    private static bool IsValidTypeForFormat<T>(string? format)
+    {
+        if (string.IsNullOrWhiteSpace(format))
+        {
+            return false;
+        }
+
+        Type type = typeof(T);
+        bool valid = IsTextFormat(format)
+            ? type == typeof(string)
+            : IsFileDropFormat(format)
+                ? type == typeof(string[])
+                : true;
+
+        if (!valid)
+        {
+            throw new NotSupportedException($"The data format '{format}' is not compatible with type '{type.FullName}'.");
+        }
+
+        return true;
+    }
+
+    private static bool IsTextFormat(string format) =>
+        format.Equals(DataFormats.Text, StringComparison.OrdinalIgnoreCase) ||
+        format.Equals(DataFormats.UnicodeText, StringComparison.OrdinalIgnoreCase) ||
+        format.Equals(DataFormats.StringFormat, StringComparison.OrdinalIgnoreCase) ||
+        format.Equals(DataFormats.Rtf, StringComparison.OrdinalIgnoreCase) ||
+        format.Equals(DataFormats.Html, StringComparison.OrdinalIgnoreCase) ||
+        format.Equals(DataFormats.OemText, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsFileDropFormat(string format) =>
+        format.Equals(DataFormats.FileDrop, StringComparison.OrdinalIgnoreCase) ||
+        format.Equals(FileNameAnsiFormat, StringComparison.OrdinalIgnoreCase) ||
+        format.Equals(FileNameUnicodeFormat, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsPredefinedFormat(string format) => format is
+        "Text" or
+        "UnicodeText" or
+        "Rich Text Format" or
+        "HTML Format" or
+        "OEMText" or
+        "FileDrop" or
+        FileNameAnsiFormat or
+        FileNameUnicodeFormat or
+        "System.String" or
+        BinaryBitmapFormat or
+        "CSV" or
+        "Csv" or
+        "DeviceIndependentBitmap" or
+        "DataInterchangeFormat" or
+        "Locale" or
+        "PenData" or
+        "RiffAudio" or
+        "SymbolicLink" or
+        "TaggedImageFileFormat" or
+        "WaveAudio" or
+        "Bitmap" or
+        "EnhancedMetafile" or
+        "Palette" or
+        "MetaFilePict";
+
+    private static string ConvertTextDataFormat(TextDataFormat format) => format switch
+    {
+        TextDataFormat.Text => DataFormats.Text,
+        TextDataFormat.UnicodeText => DataFormats.UnicodeText,
+        TextDataFormat.Rtf => DataFormats.Rtf,
+        TextDataFormat.Html => DataFormats.Html,
+        TextDataFormat.CommaSeparatedValue => DataFormats.CommaSeparatedValue,
+        TextDataFormat.Xaml => DataFormats.Xaml,
+        _ => DataFormats.UnicodeText,
+    };
+
+    private static void ValidateTextDataFormat(TextDataFormat format)
+    {
+        if (format is < TextDataFormat.Text or > TextDataFormat.Xaml)
+        {
+            throw new InvalidEnumArgumentException(nameof(format), (int)format, typeof(TextDataFormat));
+        }
+    }
+
+    private static string GetTypeFormat(Type type) =>
+        type.FullName ?? throw new ArgumentException("The type must have a full name.", nameof(type));
+
+    private readonly record struct DataEntry(object Data, bool AutoConvert);
+
+    private interface IJsonData
+    {
+        object Deserialize();
+    }
+
+    private sealed class JsonData<T> : IJsonData
+    {
+        private readonly byte[] _jsonBytes;
+        private readonly Func<byte[], T?> _deserialize;
+
+        private JsonData(byte[] jsonBytes, Func<byte[], T?> deserialize)
+        {
+            _jsonBytes = jsonBytes;
+            _deserialize = deserialize;
+        }
+
+        public static JsonData<T> Create(T data, JsonTypeInfo<T> jsonTypeInfo) =>
+            new(
+                JsonSerializer.SerializeToUtf8Bytes(data, jsonTypeInfo),
+                bytes => JsonSerializer.Deserialize(bytes, jsonTypeInfo));
+
+        [RequiresUnreferencedCode("Use Create with JsonTypeInfo<T> for trimming and NativeAOT.")]
+        [RequiresDynamicCode("Use Create with JsonTypeInfo<T> for NativeAOT.")]
+        public static JsonData<T> CreateReflection(T data) =>
+            new(
+                JsonSerializer.SerializeToUtf8Bytes(data),
+                static bytes => JsonSerializer.Deserialize<T>(bytes));
+
+        public object Deserialize()
+        {
+            try
+            {
+                return _deserialize(_jsonBytes)
+                    ?? throw new InvalidOperationException("JSON deserialization returned null.");
+            }
+            catch (Exception exception)
+            {
+                return new NotSupportedException(exception.Message, exception);
+            }
+        }
     }
 }
 
@@ -174,20 +682,99 @@ public sealed class DataObject : IDataObject
 /// </summary>
 public static class DataFormats
 {
-    public const string Text = "Text";
-    public const string UnicodeText = "UnicodeText";
-    public const string Rtf = "Rich Text Format";
-    public const string Html = "HTML Format";
-    public const string FileDrop = "FileDrop";
-    public const string Bitmap = "Bitmap";
-    public const string Dib = "DeviceIndependentBitmap";
-    public const string Xaml = "Xaml";
-    public const string XamlPackage = "XamlPackage";
-    public const string Serializable = "PersistentObject";
-    public const string StringFormat = "System.String";
-    public const string Locale = "Locale";
-    public const string OemText = "OEMText";
-    public const string CommaSeparatedValue = "CSV";
+    private static readonly object s_syncRoot = new();
+    private static readonly Dictionary<string, DataFormat> s_byName = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<int, DataFormat> s_byId = new();
+    private static int s_nextRegisteredId = 0xBFFF;
+
+    public static readonly string Text = "Text";
+    public static readonly string UnicodeText = "UnicodeText";
+    public static readonly string Rtf = "Rich Text Format";
+    public static readonly string Html = "HTML Format";
+    public static readonly string FileDrop = "FileDrop";
+    public static readonly string Bitmap = "Bitmap";
+    public static readonly string Dib = "DeviceIndependentBitmap";
+    public static readonly string Xaml = "Xaml";
+    public static readonly string XamlPackage = "XamlPackage";
+    public static readonly string Serializable = "PersistentObject";
+    public static readonly string StringFormat = "System.String";
+    public static readonly string Locale = "Locale";
+    public static readonly string OemText = "OEMText";
+    public static readonly string CommaSeparatedValue = "CSV";
+    public static readonly string EnhancedMetafile = "EnhancedMetafile";
+    public static readonly string MetafilePicture = "MetaFilePict";
+    public static readonly string SymbolicLink = "SymbolicLink";
+    public static readonly string Dif = "DataInterchangeFormat";
+    public static readonly string Tiff = "TaggedImageFileFormat";
+    public static readonly string Palette = "Palette";
+    public static readonly string PenData = "PenData";
+    public static readonly string Riff = "RiffAudio";
+    public static readonly string WaveAudio = "WaveAudio";
+
+    static DataFormats()
+    {
+        RegisterPredefined(Text, 1);
+        RegisterPredefined(Bitmap, 2);
+        RegisterPredefined(MetafilePicture, 3);
+        RegisterPredefined(SymbolicLink, 4);
+        RegisterPredefined(Dif, 5);
+        RegisterPredefined(Tiff, 6);
+        RegisterPredefined(OemText, 7);
+        RegisterPredefined(Dib, 8);
+        RegisterPredefined(Palette, 9);
+        RegisterPredefined(PenData, 10);
+        RegisterPredefined(Riff, 11);
+        RegisterPredefined(WaveAudio, 12);
+        RegisterPredefined(UnicodeText, 13);
+        RegisterPredefined(EnhancedMetafile, 14);
+        RegisterPredefined(FileDrop, 15);
+        RegisterPredefined(Locale, 16);
+    }
+
+    public static DataFormat GetDataFormat(string format)
+    {
+        ArgumentNullException.ThrowIfNull(format);
+        if (format.Length == 0)
+        {
+            throw new ArgumentException("The data format cannot be empty.", nameof(format));
+        }
+
+        lock (s_syncRoot)
+        {
+            if (s_byName.TryGetValue(format, out DataFormat? existing))
+            {
+                return existing;
+            }
+
+            var created = new DataFormat(format, ++s_nextRegisteredId);
+            s_byName.Add(format, created);
+            s_byId.Add(created.Id, created);
+            return created;
+        }
+    }
+
+    public static DataFormat GetDataFormat(int id)
+    {
+        lock (s_syncRoot)
+        {
+            if (s_byId.TryGetValue(id, out DataFormat? existing))
+            {
+                return existing;
+            }
+
+            var created = new DataFormat($"Format{id}", id);
+            s_byId.Add(id, created);
+            s_byName.TryAdd(created.Name, created);
+            return created;
+        }
+    }
+
+    private static void RegisterPredefined(string name, int id)
+    {
+        var format = new DataFormat(name, id);
+        s_byName.Add(name, format);
+        s_byId.Add(id, format);
+    }
 }
 
 /// <summary>
@@ -251,7 +838,7 @@ public class DragEventArgs : RoutedEventArgs
         => DropDescriptionSetter?.Invoke(DropImageType.Invalid, null, null);
 
     /// <inheritdoc />
-    internal override void InvokeEventHandler(Delegate handler, object target)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is DragEventHandler dragHandler)
             dragHandler(target, this);
@@ -280,7 +867,7 @@ public class GiveFeedbackEventArgs : RoutedEventArgs
     }
 
     /// <inheritdoc />
-    internal override void InvokeEventHandler(Delegate handler, object target)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is GiveFeedbackEventHandler feedbackHandler)
             feedbackHandler(target, this);
@@ -312,7 +899,7 @@ public class QueryContinueDragEventArgs : RoutedEventArgs
     }
 
     /// <inheritdoc />
-    internal override void InvokeEventHandler(Delegate handler, object target)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is QueryContinueDragEventHandler queryHandler)
             queryHandler(target, this);
@@ -428,6 +1015,12 @@ public static class DragDrop
     public static readonly RoutedEvent GiveFeedbackEvent =
         EventManager.RegisterRoutedEvent("GiveFeedback", RoutingStrategy.Bubble, typeof(GiveFeedbackEventHandler), typeof(DragDrop));
 
+    public static readonly RoutedEvent PreviewQueryContinueDragEvent =
+        EventManager.RegisterRoutedEvent("PreviewQueryContinueDrag", RoutingStrategy.Tunnel, typeof(QueryContinueDragEventHandler), typeof(DragDrop));
+
+    public static readonly RoutedEvent PreviewGiveFeedbackEvent =
+        EventManager.RegisterRoutedEvent("PreviewGiveFeedback", RoutingStrategy.Tunnel, typeof(GiveFeedbackEventHandler), typeof(DragDrop));
+
     #endregion
 
     #region Event Handler Registration
@@ -452,6 +1045,38 @@ public static class DragDrop
     public static void RemoveGiveFeedbackHandler(DependencyObject element, GiveFeedbackEventHandler handler) { if (element is UIElement ui) ui.RemoveHandler(GiveFeedbackEvent, handler); }
     public static void AddQueryContinueDragHandler(DependencyObject element, QueryContinueDragEventHandler handler) { if (element is UIElement ui) ui.AddHandler(QueryContinueDragEvent, handler); }
     public static void RemoveQueryContinueDragHandler(DependencyObject element, QueryContinueDragEventHandler handler) { if (element is UIElement ui) ui.RemoveHandler(QueryContinueDragEvent, handler); }
+    public static void AddPreviewGiveFeedbackHandler(DependencyObject element, GiveFeedbackEventHandler handler) =>
+        AddHandler(element, PreviewGiveFeedbackEvent, handler);
+    public static void RemovePreviewGiveFeedbackHandler(DependencyObject element, GiveFeedbackEventHandler handler) =>
+        RemoveHandler(element, PreviewGiveFeedbackEvent, handler);
+    public static void AddPreviewQueryContinueDragHandler(DependencyObject element, QueryContinueDragEventHandler handler) =>
+        AddHandler(element, PreviewQueryContinueDragEvent, handler);
+    public static void RemovePreviewQueryContinueDragHandler(DependencyObject element, QueryContinueDragEventHandler handler) =>
+        RemoveHandler(element, PreviewQueryContinueDragEvent, handler);
+
+    private static void AddHandler(DependencyObject element, RoutedEvent routedEvent, Delegate handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (element is not IInputElement inputElement)
+        {
+            throw new ArgumentException("The element must implement IInputElement.", nameof(element));
+        }
+
+        inputElement.AddHandler(routedEvent, handler);
+    }
+
+    private static void RemoveHandler(DependencyObject element, RoutedEvent routedEvent, Delegate handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (element is not IInputElement inputElement)
+        {
+            throw new ArgumentException("The element must implement IInputElement.", nameof(element));
+        }
+
+        inputElement.RemoveHandler(routedEvent, handler);
+    }
 
     #endregion
 

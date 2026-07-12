@@ -34,8 +34,9 @@ internal static unsafe class UiaComInterop
 /// <remarks>
 /// <para>
 /// Providers are exposed as source-generated COM ([GeneratedComClass]/[GeneratedComInterface]),
-/// which works under both JIT and NativeAOT. Every outbound call marshals the provider to a
-/// COM pointer explicitly through <see cref="UiaComInterop"/> and releases it afterward.
+/// which works under both JIT and NativeAOT. Each provider keeps one stable AddRef'd COM
+/// pointer while its window is connected to UIA; outbound UIA calls reuse that pointer so
+/// UIAutomationCore never observes a CCW that was released between events.
 /// </para>
 /// <para>
 /// The <see cref="s_comInteropUnavailable"/> latch is retained as belt-and-suspenders: with the
@@ -48,6 +49,9 @@ internal static unsafe class UiaComInterop
 internal static class UiaAccessibilityBridge
 {
     private static readonly ConditionalWeakTable<AutomationPeer, AutomationPeerProvider> s_providers = new();
+    private static readonly object s_windowProvidersGate = new();
+    private static readonly Dictionary<nint, HashSet<AutomationPeerProvider>> s_windowProviders = new();
+    private static readonly bool s_raiseNativeEvents = IsEnvironmentEnabled("JALIUM_UIA_RAISE_EVENTS", defaultValue: true);
 
     /// <summary>
     /// Latched true when managed→COM marshalling is unavailable (or force-disabled via the
@@ -65,6 +69,8 @@ internal static class UiaAccessibilityBridge
             var disable = Environment.GetEnvironmentVariable("JALIUM_UIA_AOT_DISABLE");
             if (disable is "1" or "true" or "TRUE")
                 s_comInteropUnavailable = true;
+
+            UiaTrace.Log($"UiaAccessibilityBridge init disabled={s_comInteropUnavailable} raiseNativeEvents={s_raiseNativeEvents}");
         }
     }
 
@@ -83,12 +89,78 @@ internal static class UiaAccessibilityBridge
 
     internal static AutomationPeerProvider GetOrCreateProvider(AutomationPeer peer, nint hwnd)
     {
-        return s_providers.GetValue(peer, p => new AutomationPeerProvider(p, hwnd));
+        var provider = s_providers.GetValue(peer, p => new AutomationPeerProvider(p, hwnd));
+        provider.EnsureHwnd(hwnd);
+        TrackProviderForWindow(provider);
+        return provider;
     }
 
     internal static bool TryGetProvider(AutomationPeer peer, out AutomationPeerProvider? provider)
     {
         return s_providers.TryGetValue(peer, out provider);
+    }
+
+    internal static void NotifyWindowDestroyed(nint hwnd)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        if (hwnd == nint.Zero) return;
+
+        var hasWindowProviders = HasProvidersForWindow(hwnd);
+        UiaTrace.Log($"NotifyWindowDestroyed hwnd=0x{FormatPointer(hwnd)} hasProviders={hasWindowProviders} sink={AutomationPeer.EventSink != null}");
+        if ((hasWindowProviders || AutomationPeer.EventSink != null) && !s_comInteropUnavailable)
+        {
+            try
+            {
+                _ = UiaNativeMethods.UiaReturnRawElementProvider(hwnd, nint.Zero, nint.Zero, nint.Zero);
+                UiaTrace.Log($"NotifyWindowDestroyed cleared hwnd=0x{FormatPointer(hwnd)}");
+            }
+            catch (Exception ex)
+            {
+                if (IsMarshallingFailure(ex)) MarkComInteropUnavailable();
+                UiaTrace.Log($"NotifyWindowDestroyed failed hwnd=0x{FormatPointer(hwnd)} ex={ex.GetType().Name}: {ex.Message}");
+            }
+        }
+
+        ReleaseProvidersForWindow(hwnd);
+    }
+
+    private static void TrackProviderForWindow(AutomationPeerProvider provider)
+    {
+        var hwnd = provider.Hwnd;
+        if (hwnd == nint.Zero)
+            return;
+
+        lock (s_windowProvidersGate)
+        {
+            if (!s_windowProviders.TryGetValue(hwnd, out var providers))
+            {
+                providers = [];
+                s_windowProviders.Add(hwnd, providers);
+            }
+
+            providers.Add(provider);
+        }
+    }
+
+    private static bool HasProvidersForWindow(nint hwnd)
+    {
+        lock (s_windowProvidersGate)
+        {
+            return s_windowProviders.TryGetValue(hwnd, out var providers) && providers.Count > 0;
+        }
+    }
+
+    private static void ReleaseProvidersForWindow(nint hwnd)
+    {
+        HashSet<AutomationPeerProvider>? providers;
+        lock (s_windowProvidersGate)
+        {
+            if (!s_windowProviders.Remove(hwnd, out providers))
+                return;
+        }
+
+        foreach (var provider in providers)
+            provider.ReleaseProviderPointerForWindow(hwnd);
     }
 
     /// <summary>
@@ -103,44 +175,51 @@ internal static class UiaAccessibilityBridge
         if (s_comInteropUnavailable) return nint.Zero;
 
         var provider = GetOrCreateProvider(peer, hwnd);
-        nint pProvider = nint.Zero;
-        nint result;
         try
         {
-            pProvider = UiaComInterop.ProviderToPointer(provider);
-            result = UiaNativeMethods.UiaReturnRawElementProvider(hwnd, wParam, lParam, pProvider);
+            var pProvider = provider.GetOrCreateProviderPointer();
+            if (pProvider == nint.Zero) return nint.Zero;
+
+            var result = UiaNativeMethods.UiaReturnRawElementProvider(hwnd, wParam, lParam, pProvider);
+            AutomationPeer.EventSink ??= new UiaAutomationEventSink();
+            UiaTrace.Log($"TryGetRootProvider S_OK hwnd=0x{FormatPointer(hwnd)} provider=0x{FormatPointer(pProvider)} result=0x{FormatPointer(result)}");
+            return result;
         }
         catch (Exception ex)
         {
             // Never let an exception escape the window procedure path: latch on a genuine
             // marshalling failure, swallow anything else and just decline the provider.
             if (IsMarshallingFailure(ex)) MarkComInteropUnavailable();
+            UiaTrace.Log($"TryGetRootProvider failed hwnd=0x{FormatPointer(hwnd)} ex={ex.GetType().Name}: {ex.Message}");
             return nint.Zero;
         }
-        finally
-        {
-            UiaComInterop.FreeProviderPointer(pProvider);
-        }
-
-        AutomationPeer.EventSink ??= new UiaAutomationEventSink();
-        return result;
     }
 
     internal static void RaiseAutomationEvent(AutomationPeer peer, AutomationEvents eventId)
     {
         if (!OperatingSystem.IsWindows()) return;
         if (s_comInteropUnavailable) return;
+        if (!s_raiseNativeEvents)
+        {
+            if (UiaTrace.Enabled)
+                UiaTrace.Log($"RaiseAutomationEvent skipped native event event={eventId} peer={peer.GetType().Name}");
+            return;
+        }
+
         if (!UiaNativeMethods.UiaClientsAreListening()) return;
         if (!TryGetProvider(peer, out var provider) || provider == null) return;
+        if (provider.Hwnd == nint.Zero) return;
 
         int uiaEventId = UiaConstants.MapAutomationEvent(eventId);
         if (uiaEventId == 0) return;
 
-        nint pProvider = nint.Zero;
         try
         {
-            pProvider = UiaComInterop.ProviderToPointer(provider);
-            UiaNativeMethods.UiaRaiseAutomationEvent(pProvider, uiaEventId);
+            var pProvider = provider.GetOrCreateProviderPointer();
+            if (pProvider == nint.Zero) return;
+
+            var hr = UiaNativeMethods.UiaRaiseAutomationEvent(pProvider, uiaEventId);
+            UiaTrace.Log($"RaiseAutomationEvent hr=0x{hr:X8} event={eventId} uia=0x{uiaEventId:X8} provider=0x{FormatPointer(pProvider)}");
         }
         catch (Exception ex)
         {
@@ -148,10 +227,7 @@ internal static class UiaAccessibilityBridge
             // latch the kill-switch on a genuine marshalling failure, best-effort-swallow the
             // rest — a dropped UIA event is acceptable, crashing the app is not.
             if (IsMarshallingFailure(ex)) MarkComInteropUnavailable();
-        }
-        finally
-        {
-            UiaComInterop.FreeProviderPointer(pProvider);
+            UiaTrace.Log($"RaiseAutomationEvent failed event={eventId} ex={ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -159,21 +235,31 @@ internal static class UiaAccessibilityBridge
     {
         if (!OperatingSystem.IsWindows()) return;
         if (s_comInteropUnavailable) return;
+        if (!s_raiseNativeEvents)
+        {
+            if (UiaTrace.Enabled)
+                UiaTrace.Log($"RaisePropertyChanged skipped native event property={property.Name} peer={peer.GetType().Name}");
+            return;
+        }
+
         if (!UiaNativeMethods.UiaClientsAreListening()) return;
         if (!TryGetProvider(peer, out var provider) || provider == null) return;
+        if (provider.Hwnd == nint.Zero) return;
 
         int uiaPropertyId = UiaConstants.MapAutomationProperty(property);
         if (uiaPropertyId == 0) return;
 
-        nint pProvider = nint.Zero;
         UiaVariant vOld = default;
         UiaVariant vNew = default;
         try
         {
-            pProvider = UiaComInterop.ProviderToPointer(provider);
+            var pProvider = provider.GetOrCreateProviderPointer();
+            if (pProvider == nint.Zero) return;
+
             vOld = UiaVariant.From(oldValue);
             vNew = UiaVariant.From(newValue);
-            UiaNativeMethods.UiaRaiseAutomationPropertyChangedEvent(pProvider, uiaPropertyId, vOld, vNew);
+            var hr = UiaNativeMethods.UiaRaiseAutomationPropertyChangedEvent(pProvider, uiaPropertyId, vOld, vNew);
+            UiaTrace.Log($"RaisePropertyChanged hr=0x{hr:X8} property={property.Name} uia=0x{uiaPropertyId:X8} provider=0x{FormatPointer(pProvider)}");
         }
         catch (Exception ex)
         {
@@ -181,12 +267,65 @@ internal static class UiaAccessibilityBridge
             // latch the kill-switch on a genuine marshalling failure, best-effort-swallow the
             // rest — a dropped UIA event is acceptable, crashing the app is not.
             if (IsMarshallingFailure(ex)) MarkComInteropUnavailable();
+            UiaTrace.Log($"RaisePropertyChanged failed property={property.Name} ex={ex.GetType().Name}: {ex.Message}");
         }
         finally
         {
             vOld.Clear();
             vNew.Clear();
-            UiaComInterop.FreeProviderPointer(pProvider);
+        }
+    }
+
+    internal static void RaiseAsyncContentLoaded(AutomationPeer peer, AsyncContentLoadedEventArgs args)
+    {
+        if (!CanRaiseNativeEvent(peer, out AutomationPeerProvider? provider) || provider is null)
+            return;
+
+        try
+        {
+            nint pProvider = provider.GetOrCreateProviderPointer();
+            if (pProvider == nint.Zero) return;
+
+            int hr = UiaNativeMethods.UiaRaiseAsyncContentLoadedEvent(
+                pProvider,
+                (int)args.AsyncContentLoadedState,
+                args.PercentComplete);
+            UiaTrace.Log($"RaiseAsyncContentLoaded hr=0x{hr:X8} state={args.AsyncContentLoadedState} percent={args.PercentComplete} provider=0x{FormatPointer(pProvider)}");
+        }
+        catch (Exception ex)
+        {
+            if (IsMarshallingFailure(ex)) MarkComInteropUnavailable();
+            UiaTrace.Log($"RaiseAsyncContentLoaded failed state={args.AsyncContentLoadedState} ex={ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    internal static void RaiseNotification(
+        AutomationPeer peer,
+        AutomationNotificationKind notificationKind,
+        AutomationNotificationProcessing notificationProcessing,
+        string displayString,
+        string activityId)
+    {
+        if (!CanRaiseNativeEvent(peer, out AutomationPeerProvider? provider) || provider is null)
+            return;
+
+        try
+        {
+            nint pProvider = provider.GetOrCreateProviderPointer();
+            if (pProvider == nint.Zero) return;
+
+            int hr = UiaNativeMethods.UiaRaiseNotificationEvent(
+                pProvider,
+                (int)notificationKind,
+                (int)notificationProcessing,
+                displayString,
+                activityId);
+            UiaTrace.Log($"RaiseNotification hr=0x{hr:X8} kind={notificationKind} processing={notificationProcessing} provider=0x{FormatPointer(pProvider)}");
+        }
+        catch (Exception ex)
+        {
+            if (IsMarshallingFailure(ex)) MarkComInteropUnavailable();
+            UiaTrace.Log($"RaiseNotification failed kind={notificationKind} ex={ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -194,14 +333,24 @@ internal static class UiaAccessibilityBridge
     {
         if (!OperatingSystem.IsWindows()) return;
         if (s_comInteropUnavailable) return;
+        if (!s_raiseNativeEvents)
+        {
+            if (UiaTrace.Enabled)
+                UiaTrace.Log($"RaiseFocusChanged skipped native event peer={peer.GetType().Name}");
+            return;
+        }
+
         if (!UiaNativeMethods.UiaClientsAreListening()) return;
         if (!TryGetProvider(peer, out var provider) || provider == null) return;
+        if (provider.Hwnd == nint.Zero) return;
 
-        nint pProvider = nint.Zero;
         try
         {
-            pProvider = UiaComInterop.ProviderToPointer(provider);
-            UiaNativeMethods.UiaRaiseAutomationEvent(pProvider, UiaConstants.UIA_AutomationFocusChangedEventId);
+            var pProvider = provider.GetOrCreateProviderPointer();
+            if (pProvider == nint.Zero) return;
+
+            var hr = UiaNativeMethods.UiaRaiseAutomationEvent(pProvider, UiaConstants.UIA_AutomationFocusChangedEventId);
+            UiaTrace.Log($"RaiseFocusChanged hr=0x{hr:X8} provider=0x{FormatPointer(pProvider)}");
         }
         catch (Exception ex)
         {
@@ -209,10 +358,7 @@ internal static class UiaAccessibilityBridge
             // latch the kill-switch on a genuine marshalling failure, best-effort-swallow the
             // rest — a dropped UIA event is acceptable, crashing the app is not.
             if (IsMarshallingFailure(ex)) MarkComInteropUnavailable();
-        }
-        finally
-        {
-            UiaComInterop.FreeProviderPointer(pProvider);
+            UiaTrace.Log($"RaiseFocusChanged failed ex={ex.GetType().Name}: {ex.Message}");
         }
     }
 
@@ -220,15 +366,25 @@ internal static class UiaAccessibilityBridge
     {
         if (!OperatingSystem.IsWindows()) return;
         if (s_comInteropUnavailable) return;
+        if (!s_raiseNativeEvents)
+        {
+            if (UiaTrace.Enabled)
+                UiaTrace.Log($"RaiseStructureChanged skipped native event change={changeType} peer={peer.GetType().Name}");
+            return;
+        }
+
         if (!UiaNativeMethods.UiaClientsAreListening()) return;
         if (!TryGetProvider(peer, out var provider) || provider == null) return;
+        if (provider.Hwnd == nint.Zero) return;
 
-        nint pProvider = nint.Zero;
         try
         {
             var runtimeId = provider.GetRuntimeIdArray();
-            pProvider = UiaComInterop.ProviderToPointer(provider);
-            UiaNativeMethods.UiaRaiseStructureChangedEvent(pProvider, (int)changeType, runtimeId, runtimeId.Length);
+            var pProvider = provider.GetOrCreateProviderPointer();
+            if (pProvider == nint.Zero) return;
+
+            var hr = UiaNativeMethods.UiaRaiseStructureChangedEvent(pProvider, (int)changeType, runtimeId, runtimeId.Length);
+            UiaTrace.Log($"RaiseStructureChanged hr=0x{hr:X8} change={changeType} provider=0x{FormatPointer(pProvider)}");
         }
         catch (Exception ex)
         {
@@ -236,11 +392,35 @@ internal static class UiaAccessibilityBridge
             // latch the kill-switch on a genuine marshalling failure, best-effort-swallow the
             // rest — a dropped UIA event is acceptable, crashing the app is not.
             if (IsMarshallingFailure(ex)) MarkComInteropUnavailable();
+            UiaTrace.Log($"RaiseStructureChanged failed change={changeType} ex={ex.GetType().Name}: {ex.Message}");
         }
-        finally
-        {
-            UiaComInterop.FreeProviderPointer(pProvider);
-        }
+    }
+
+    private static bool CanRaiseNativeEvent(AutomationPeer peer, out AutomationPeerProvider? provider)
+    {
+        provider = null;
+        if (!OperatingSystem.IsWindows() || s_comInteropUnavailable || !s_raiseNativeEvents)
+            return false;
+        if (!UiaNativeMethods.UiaClientsAreListening())
+            return false;
+        if (!TryGetProvider(peer, out provider) || provider is null || provider.Hwnd == nint.Zero)
+            return false;
+        return true;
+    }
+
+    private static string FormatPointer(nint pointer)
+        => ((nuint)pointer).ToString("X");
+
+    private static bool IsEnvironmentEnabled(string name, bool defaultValue = false)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(value))
+            return defaultValue;
+
+        if (value is "0" or "false" or "FALSE" or "no" or "NO")
+            return false;
+
+        return value is "1" or "true" or "TRUE" or "yes" or "YES";
     }
 }
 
@@ -254,4 +434,20 @@ internal sealed class UiaAutomationEventSink : IAutomationEventSink
 
     public void OnFocusChanged(AutomationPeer peer)
         => UiaAccessibilityBridge.RaiseFocusChanged(peer);
+
+    public void OnAsyncContentLoadedRaised(AutomationPeer peer, AsyncContentLoadedEventArgs args)
+        => UiaAccessibilityBridge.RaiseAsyncContentLoaded(peer, args);
+
+    public void OnNotificationRaised(
+        AutomationPeer peer,
+        AutomationNotificationKind notificationKind,
+        AutomationNotificationProcessing notificationProcessing,
+        string displayString,
+        string activityId) =>
+        UiaAccessibilityBridge.RaiseNotification(
+            peer,
+            notificationKind,
+            notificationProcessing,
+            displayString,
+            activityId);
 }

@@ -64,6 +64,13 @@ public sealed class NumberSubstitution
         DependencyProperty.RegisterAttached("CultureSource", typeof(NumberCultureSource), typeof(NumberSubstitution),
             new PropertyMetadata(NumberCultureSource.Text));
 
+    public static readonly DependencyProperty CultureOverrideProperty =
+        DependencyProperty.RegisterAttached(
+            "CultureOverride",
+            typeof(System.Globalization.CultureInfo),
+            typeof(NumberSubstitution),
+            new PropertyMetadata(null));
+
     /// <summary>
     /// Identifies the Substitution attached property.
     /// </summary>
@@ -117,6 +124,18 @@ public sealed class NumberSubstitution
     public static void SetCultureSource(DependencyObject element, NumberCultureSource value)
     {
         element.SetValue(CultureSourceProperty, value);
+    }
+
+    public static System.Globalization.CultureInfo? GetCultureOverride(DependencyObject target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        return (System.Globalization.CultureInfo?)target.GetValue(CultureOverrideProperty);
+    }
+
+    public static void SetCultureOverride(DependencyObject target, System.Globalization.CultureInfo? value)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        target.SetValue(CultureOverrideProperty, value);
     }
 
     /// <summary>

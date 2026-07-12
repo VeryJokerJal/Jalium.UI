@@ -10,7 +10,7 @@ public class ToolBarPanel : StackPanel
     /// <summary>
     /// Gets or sets the ToolBar that owns this panel.
     /// </summary>
-    public ToolBar? ToolBarOwner { get; internal set; }
+    public Jalium.UI.Controls.ToolBar? ToolBarOwner { get; internal set; }
 
     /// <summary>
     /// Gets the list of items that overflow the panel.
@@ -22,6 +22,12 @@ public class ToolBarPanel : StackPanel
     /// </summary>
     public bool HasOverflowItems => OverflowItems.Count > 0;
 
+    internal void SetOverflowItems(IEnumerable<UIElement> items)
+    {
+        OverflowItems.Clear();
+        OverflowItems.AddRange(items);
+    }
+
     #endregion
 
     #region Layout
@@ -29,30 +35,21 @@ public class ToolBarPanel : StackPanel
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        OverflowItems.Clear();
-
         var isHorizontal = Orientation == Orientation.Horizontal;
         var totalSize = 0.0;
         var maxCrossSize = 0.0;
-        var limit = isHorizontal ? availableSize.Width : availableSize.Height;
+        var childConstraint = isHorizontal
+            ? new Size(double.PositiveInfinity, availableSize.Height)
+            : new Size(availableSize.Width, double.PositiveInfinity);
 
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
-            child.Measure(availableSize);
+            child.Measure(childConstraint);
 
             var childMainSize = isHorizontal ? child.DesiredSize.Width : child.DesiredSize.Height;
             var childCrossSize = isHorizontal ? child.DesiredSize.Height : child.DesiredSize.Width;
-
-            if (totalSize + childMainSize > limit && !double.IsPositiveInfinity(limit))
-            {
-                // This item and all subsequent items overflow
-                OverflowItems.Add(child);
-            }
-            else
-            {
-                totalSize += childMainSize;
-                maxCrossSize = Math.Max(maxCrossSize, childCrossSize);
-            }
+            totalSize += childMainSize;
+            maxCrossSize = Math.Max(maxCrossSize, childCrossSize);
         }
 
         return isHorizontal
@@ -66,15 +63,8 @@ public class ToolBarPanel : StackPanel
         var isHorizontal = Orientation == Orientation.Horizontal;
         var offset = 0.0;
 
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
-            if (OverflowItems.Contains(child))
-            {
-                // Hide overflow items
-                child.Arrange(new Rect(0, 0, 0, 0));
-                continue;
-            }
-
             if (isHorizontal)
             {
                 child.Arrange(new Rect(offset, 0, child.DesiredSize.Width, finalSize.Height));
@@ -91,15 +81,4 @@ public class ToolBarPanel : StackPanel
     }
 
     #endregion
-}
-
-/// <summary>
-/// Placeholder for ToolBar reference.
-/// </summary>
-public class ToolBar : ItemsControl
-{
-    /// <summary>
-    /// Gets or sets a value indicating whether there are overflow items.
-    /// </summary>
-    public bool HasOverflowItems { get; internal set; }
 }

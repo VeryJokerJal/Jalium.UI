@@ -32,9 +32,9 @@ public enum StretchDirection
 public class Viewbox : FrameworkElement
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ViewboxAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ViewboxAutomationPeer(this);
     }
 
     private FrameworkElement? _child;
@@ -153,10 +153,10 @@ public class Viewbox : FrameworkElement
     #region Layout
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => 1;
+    protected override int VisualChildrenCount => 1;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index != 0)
             throw new ArgumentOutOfRangeException(nameof(index));
@@ -167,14 +167,14 @@ public class Viewbox : FrameworkElement
     protected override Size MeasureOverride(Size availableSize)
     {
         if (_child == null)
-            return Size.Empty;
+            return default(Size);
 
         // 用 infinite 测 wrapper（→ 内层 Child）获取自然尺寸，再算 scale
         _wrapper.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var childSize = _wrapper.DesiredSize;
 
         if (childSize.Width == 0 || childSize.Height == 0)
-            return Size.Empty;
+            return default(Size);
 
         var scale = ComputeScaleFactor(availableSize, childSize, Stretch, StretchDirection);
 

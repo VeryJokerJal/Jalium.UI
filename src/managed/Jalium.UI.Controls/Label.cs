@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Input;
+using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -11,9 +11,9 @@ namespace Jalium.UI.Controls;
 public class Label : ContentControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.LabelAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.LabelAutomationPeer(this);
     }
 
     private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0x1E, 0x79, 0x3F));
@@ -555,7 +555,7 @@ public class Label : ContentControl
     {
         if (_labelBorder == null)
         {
-            Cursor = CanShowDirectTextCursor() ? Jalium.UI.Cursors.IBeam : null;
+            Cursor = CanShowDirectTextCursor() ? Jalium.UI.Input.Cursors.IBeam : null;
         }
     }
 
@@ -604,7 +604,7 @@ public class Label : ContentControl
     {
         if (Content is string text)
         {
-            var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = FontSize > 0 ? FontSize : 14;
             var formattedText = new FormattedText(text, fontFamily, fontSize);
             TextMeasurement.MeasureText(formattedText);
@@ -645,7 +645,7 @@ public class Label : ContentControl
         // Draw content
         if (Content is string text && Foreground != null)
         {
-            var formattedText = new FormattedText(text, FontFamily, FontSize)
+            var formattedText = new FormattedText(text, FontFamily.Source, FontSize)
             {
                 Foreground = Foreground
             };
@@ -691,11 +691,11 @@ public class Label : ContentControl
                 {
                     // Calculate underline position (approximate)
                     var preText = text.Substring(0, accessKeyIndex);
-                    var preFormattedText = new FormattedText(preText, FontFamily, FontSize);
+                    var preFormattedText = new FormattedText(preText, FontFamily.Source, FontSize);
                     TextMeasurement.MeasureText(preFormattedText);
 
                     var charText = text.Substring(accessKeyIndex, 1);
-                    var charFormattedText = new FormattedText(charText, FontFamily, FontSize);
+                    var charFormattedText = new FormattedText(charText, FontFamily.Source, FontSize);
                     TextMeasurement.MeasureText(charFormattedText);
 
                     var underlineX = textX + preFormattedText.Width;
@@ -862,7 +862,7 @@ public class Label : ContentControl
     {
         var rect = new Rect(RenderSize);
         var padding = Padding;
-        var formattedText = new FormattedText(text, FontFamily, FontSize);
+        var formattedText = new FormattedText(text, FontFamily.Source, FontSize);
         TextMeasurement.MeasureText(formattedText);
 
         var textX = padding.Left;
@@ -898,7 +898,7 @@ public class Label : ContentControl
             return 0;
         }
 
-        var formattedText = new FormattedText(text, FontFamily, FontSize);
+        var formattedText = new FormattedText(text, FontFamily.Source, FontSize);
         TextMeasurement.MeasureText(formattedText);
         return formattedText.Width;
     }

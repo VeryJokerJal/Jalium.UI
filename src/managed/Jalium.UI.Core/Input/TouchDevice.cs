@@ -1,52 +1,149 @@
+using System.Collections.ObjectModel;
+using System.ComponentModel;
+
 namespace Jalium.UI.Input;
 
-/// <summary>
-/// Represents a single touch input contact (one finger / stylus tip).
-/// </summary>
-public sealed class TouchDevice
+/// <summary>Represents one independently tracked touch contact.</summary>
+public abstract class TouchDevice : InputDevice, IManipulator
 {
+    private static readonly object ActiveDeviceGate = new();
+    private static readonly List<TouchDevice> ActiveDeviceList = [];
+
+    private readonly int _deviceId;
+    private bool _isActive;
+    private IInputElement? _rawDirectlyOver;
+    private IInputElement? _directlyOver;
+    private IInputElement? _captured;
+    private CaptureMode _captureMode;
+    private PresentationSource? _activeSource;
     private Point _position;
     private Point _previousPosition;
-    private bool _isActive;
-    private UIElement? _capturedElement;
     private StylusPointCollection? _lastStylusPoints;
     private Rect _lastContactRect = Rect.Empty;
     private TouchAction _lastAction = TouchAction.Move;
     private int _lastTimestamp;
 
-    /// <summary>Gets the unique identifier for this touch device.</summary>
-    public int Id { get; }
+    protected TouchDevice(int deviceId)
+    {
+        _deviceId = deviceId;
+    }
 
-    /// <summary>Gets the element that this touch device is targeting.</summary>
-    public UIElement? Target { get; private set; }
-
-    /// <summary>Gets the current position of the touch.</summary>
-    public Point Position => _position;
-
-    /// <summary>Gets the previous position of the touch.</summary>
-    public Point PreviousPosition => _previousPosition;
-
-    /// <summary>Indicates whether this contact is currently active.</summary>
+    public int Id => _deviceId;
     public bool IsActive => _isActive;
-
-    /// <summary>The element that has captured this contact (or null).</summary>
-    public UIElement? Captured => _capturedElement;
-
-    /// <summary>The direct hit-test target (before capture redirection).</summary>
-    public UIElement? DirectlyOver { get; set; }
-
-    /// <summary>Last contact patch reported by the platform (DIPs in <see cref="Target"/>'s client space).</summary>
+    public IInputElement? DirectlyOver => _directlyOver;
+    public IInputElement? Captured => _captured;
+    public CaptureMode CaptureMode => _captureMode;
+    public Point Position => _position;
+    public Point PreviousPosition => _previousPosition;
     public Rect ContactRect => _lastContactRect;
-
-    /// <summary>Timestamp (Environment.TickCount) of the most recent update.</summary>
     public int LastTimestamp => _lastTimestamp;
 
-    public TouchDevice(int id, UIElement? target)
+    public sealed override IInputElement? Target => _directlyOver;
+    public sealed override PresentationSource? ActiveSource => _activeSource;
+
+    public event EventHandler? Activated;
+    public event EventHandler? Deactivated;
+    public event EventHandler? Updated;
+
+    public abstract TouchPoint GetTouchPoint(IInputElement? relativeTo);
+    public abstract TouchPointCollection GetIntermediateTouchPoints(IInputElement? relativeTo);
+
+    public bool Capture(IInputElement? element) => Capture(element, CaptureMode.Element);
+
+    public bool Capture(IInputElement? element, CaptureMode captureMode)
     {
-        Id = id;
-        Target = target;
-        _isActive = true;
+        if (!Enum.IsDefined(captureMode))
+            throw new InvalidEnumArgumentException(nameof(captureMode), (int)captureMode, typeof(CaptureMode));
+        if (element is null || captureMode == CaptureMode.None)
+        {
+            element = null;
+            captureMode = CaptureMode.None;
+        }
+        else if (!element.IsEnabled || element is UIElement uiElement && uiElement.Visibility != Visibility.Visible)
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(_captured, element) && _captureMode == captureMode)
+            return true;
+
+        IInputElement? previous = _captured;
+        _captured = element;
+        _captureMode = captureMode;
+        _directlyOver = ResolveDirectlyOver(_rawDirectlyOver);
+        OnCapture(element, captureMode);
+
+        if (previous is not null)
+        {
+            previous.RaiseEvent(new TouchEventArgs(this, Environment.TickCount)
+            {
+                RoutedEvent = UIElement.LostTouchCaptureEvent,
+                Source = previous,
+            });
+        }
+        if (element is not null)
+        {
+            element.RaiseEvent(new TouchEventArgs(this, Environment.TickCount)
+            {
+                RoutedEvent = UIElement.GotTouchCaptureEvent,
+                Source = element,
+            });
+        }
+        Synchronize();
+        return true;
     }
+
+    protected virtual void OnCapture(IInputElement? element, CaptureMode captureMode)
+    {
+    }
+
+    protected void Activate()
+    {
+        if (_isActive)
+            throw new InvalidOperationException("The touch device is already active.");
+        lock (ActiveDeviceGate)
+            ActiveDeviceList.Add(this);
+        _isActive = true;
+        Activated?.Invoke(this, EventArgs.Empty);
+    }
+
+    protected void Deactivate()
+    {
+        if (!_isActive)
+            throw new InvalidOperationException("The touch device is not active.");
+        Capture(null);
+        lock (ActiveDeviceGate)
+            ActiveDeviceList.Remove(this);
+        _isActive = false;
+        Deactivated?.Invoke(this, EventArgs.Empty);
+    }
+
+    protected bool ReportDown() => Report(TouchAction.Down, UIElement.PreviewTouchDownEvent, UIElement.TouchDownEvent);
+    protected bool ReportMove() => Report(TouchAction.Move, UIElement.PreviewTouchMoveEvent, UIElement.TouchMoveEvent);
+    protected bool ReportUp() => Report(TouchAction.Up, UIElement.PreviewTouchUpEvent, UIElement.TouchUpEvent);
+
+    protected void SetActiveSource(PresentationSource? activeSource) => _activeSource = activeSource;
+
+    public void Synchronize()
+    {
+        if (_activeSource?.IsDisposed == true)
+            return;
+        OnUpdated();
+        ReportFrame(_lastTimestamp == 0 ? Environment.TickCount : _lastTimestamp);
+    }
+
+    protected virtual void OnManipulationStarted()
+    {
+    }
+
+    protected virtual void OnManipulationEnded(bool cancel)
+    {
+        if (_captured is not null)
+            Capture(null);
+    }
+
+    Point IManipulator.GetPosition(IInputElement? relativeTo) => GetTouchPoint(relativeTo).Position;
+    void IManipulator.ManipulationEnded(bool cancel) => OnManipulationEnded(cancel);
 
     public void UpdatePosition(Point newPosition)
     {
@@ -54,216 +151,220 @@ public sealed class TouchDevice
         _position = newPosition;
     }
 
-    /// <summary>Replaces this device's <see cref="Target"/> (used when capture changes).</summary>
-    internal void RetargetTo(UIElement? target)
+    internal void RetargetTo(UIElement? target) => SetDirectlyOver(target);
+    internal void SetDirectlyOver(IInputElement? directlyOver)
     {
-        Target = target;
+        _rawDirectlyOver = directlyOver;
+        _directlyOver = ResolveDirectlyOver(directlyOver);
     }
 
-    /// <summary>
-    /// Records the latest high-frequency packet frame from the platform pointer source.
-    /// </summary>
     internal void RecordFrame(StylusPointCollection? stylusPoints, Rect contactRect, TouchAction action, int timestamp)
     {
-        _lastStylusPoints = stylusPoints;
+        _lastStylusPoints = stylusPoints?.Clone();
         _lastContactRect = contactRect;
         _lastAction = action;
         _lastTimestamp = timestamp;
+        OnUpdated();
+        ReportFrame(timestamp);
     }
 
-    /// <summary>
-    /// Captures this touch device to the specified element. Returns true on success.
-    /// </summary>
-    public bool Capture(UIElement? element)
+    internal void ActivateForManager()
     {
-        _capturedElement = element;
-        return true;
+        if (!_isActive)
+            Activate();
     }
 
-    /// <summary>Gets the touch point relative to <paramref name="relativeTo"/>.</summary>
-    public TouchPoint GetTouchPoint(UIElement? relativeTo)
+    internal void DeactivateForManager()
     {
-        Point position = TransformPoint(_position, relativeTo);
-        Rect bounds = TransformRect(_lastContactRect, position, relativeTo);
-        return new TouchPoint(this, position, bounds, _lastAction);
+        if (_isActive)
+            Deactivate();
     }
 
-    /// <summary>Gets intermediate touch points captured between the previous report and this one.</summary>
-    public TouchPointCollection GetIntermediateTouchPoints(UIElement? relativeTo)
+    protected Point CurrentPosition => _position;
+    protected StylusPointCollection? LastStylusPoints => _lastStylusPoints;
+    protected Rect LastContactRect => _lastContactRect;
+    protected TouchAction LastAction => _lastAction;
+
+    internal static TouchPointCollection GetTouchPoints(IInputElement? relativeTo)
     {
-        if (_lastStylusPoints == null || _lastStylusPoints.Count == 0)
+        TouchDevice[] devices;
+        lock (ActiveDeviceGate)
+            devices = ActiveDeviceList.ToArray();
+        TouchPointCollection points = new();
+        foreach (TouchDevice device in devices)
+            points.Add(device.GetTouchPoint(relativeTo));
+        return points;
+    }
+
+    internal static TouchPoint? GetPrimaryTouchPoint(IInputElement? relativeTo)
+    {
+        lock (ActiveDeviceGate)
+            return ActiveDeviceList.Count == 0 ? null : ActiveDeviceList[0].GetTouchPoint(relativeTo);
+    }
+
+    internal static event Action<int>? FrameUpdated;
+
+    private bool Report(TouchAction action, RoutedEvent previewEvent, RoutedEvent bubbleEvent)
+    {
+        _lastAction = action;
+        IInputElement? target = _captured ?? _directlyOver;
+        bool handled = false;
+        if (target is not null)
         {
-            return new TouchPointCollection { GetTouchPoint(relativeTo) };
+            TouchEventArgs preview = new(this, _lastTimestamp == 0 ? Environment.TickCount : _lastTimestamp)
+            {
+                RoutedEvent = previewEvent,
+            };
+            target.RaiseEvent(preview);
+            handled = preview.Handled;
+            if (!preview.Handled)
+            {
+                TouchEventArgs bubble = new(this, preview.Timestamp) { RoutedEvent = bubbleEvent };
+                target.RaiseEvent(bubble);
+                handled |= bubble.Handled;
+            }
         }
-
-        var collection = new TouchPointCollection();
-        int lastIndex = _lastStylusPoints.Count - 1;
-        for (int i = 0; i < _lastStylusPoints.Count; i++)
-        {
-            StylusPoint sp = _lastStylusPoints[i];
-            Point raw = new(sp.X, sp.Y);
-            Point pt = TransformPoint(raw, relativeTo);
-            Rect bounds = TransformRect(_lastContactRect, pt, relativeTo);
-            TouchAction action = (i == lastIndex) ? _lastAction : TouchAction.Move;
-            collection.Add(new TouchPoint(this, pt, bounds, action));
-        }
-        return collection;
+        OnUpdated();
+        ReportFrame(_lastTimestamp == 0 ? Environment.TickCount : _lastTimestamp);
+        return handled;
     }
 
-    public void Deactivate()
+    private void OnUpdated() => Updated?.Invoke(this, EventArgs.Empty);
+    private static void ReportFrame(int timestamp) => FrameUpdated?.Invoke(timestamp);
+
+    private IInputElement? ResolveDirectlyOver(IInputElement? rawDirectlyOver)
     {
-        _isActive = false;
-        _capturedElement = null;
+        if (_captured is null || _captureMode == CaptureMode.None)
+            return rawDirectlyOver;
+        if (_captureMode == CaptureMode.Element)
+            return _captured;
+        return IsWithinCapturedSubtree(rawDirectlyOver, _captured) ? rawDirectlyOver : _captured;
     }
 
-    /// <summary>
-    /// Transforms <paramref name="source"/> — which is stored in window-root
-    /// client coordinates (the same space as <c>MouseEventArgs.Position</c>) —
-    /// into the local coordinate space of <paramref name="relativeTo"/>.
-    /// </summary>
-    /// <remarks>
-    /// This mirrors <see cref="MouseEventArgs.GetPosition"/> exactly: walk up
-    /// from <paramref name="relativeTo"/> collecting the ancestor chain, then
-    /// descend from the root undoing each step's VisualBounds offset and
-    /// RenderTransform. An earlier implementation used
-    /// <c>Target.TransformToVisual(relativeTo).Transform(source)</c>, but
-    /// <c>source</c> is window-local rather than Target-local, so the
-    /// transform composed in the wrong direction and the InkCanvas drew
-    /// strokes offset by the canvas's top-left position.
-    /// </remarks>
-    private static Point TransformPoint(Point source, UIElement? relativeTo)
+    private static bool IsWithinCapturedSubtree(IInputElement? candidate, IInputElement captured)
     {
-        if (relativeTo == null) return source;
-
-        var chain = new List<Visual>();
-        Visual? current = relativeTo;
-        while (current != null)
+        if (ReferenceEquals(candidate, captured))
+            return true;
+        if (candidate is not Visual visual || captured is not Visual capturedVisual)
+            return false;
+        Visual? current = visual.VisualParent;
+        while (current is not null)
         {
-            chain.Add(current);
+            if (ReferenceEquals(current, capturedVisual))
+                return true;
             current = current.VisualParent;
         }
+        return false;
+    }
+}
 
-        var p = source;
-        for (int i = chain.Count - 2; i >= 0; i--)
-        {
-            var child = chain[i];
-
-            if (child is FrameworkElement fe)
-            {
-                p = new Point(p.X - fe.VisualBounds.X, p.Y - fe.VisualBounds.Y);
-            }
-
-            if (child is UIElement ui && ui.RenderTransform is { } rt
-                && rt.Value.TryInvert(out var inv))
-            {
-                var origin = ui.RenderTransformOrigin;
-                var size = ui.RenderSize;
-                var ox = origin.X * size.Width;
-                var oy = origin.Y * size.Height;
-                var translated = new Point(p.X - ox, p.Y - oy);
-                var inverted = inv.Transform(translated);
-                p = new Point(inverted.X + ox, inverted.Y + oy);
-            }
-        }
-
-        return p;
+/// <summary>Touch device populated by the platform pointer pipeline.</summary>
+internal sealed class PointerTouchDevice : TouchDevice
+{
+    internal PointerTouchDevice(int id, UIElement? target)
+        : base(id)
+    {
+        SetDirectlyOver(target);
+        ActivateForManager();
     }
 
-    private static Rect TransformRect(Rect rect, Point center, UIElement? relativeTo)
+    public override TouchPoint GetTouchPoint(IInputElement? relativeTo)
     {
-        if (rect.IsEmpty || relativeTo == null)
+        Point position = InputCoordinateHelper.FromRoot(CurrentPosition, relativeTo);
+        Rect bounds = TransformRect(LastContactRect, position, relativeTo);
+        return new TouchPoint(this, position, bounds, LastAction);
+    }
+
+    public override TouchPointCollection GetIntermediateTouchPoints(IInputElement? relativeTo)
+    {
+        StylusPointCollection? packets = LastStylusPoints;
+        if (packets is null || packets.Count == 0)
+            return new TouchPointCollection { GetTouchPoint(relativeTo) };
+
+        TouchPointCollection points = new();
+        for (int index = 0; index < packets.Count; index++)
         {
-            return rect;
+            Point position = InputCoordinateHelper.FromRoot(packets[index].ToPoint(), relativeTo);
+            Rect bounds = TransformRect(LastContactRect, position, relativeTo);
+            TouchAction action = index == packets.Count - 1 ? LastAction : TouchAction.Move;
+            points.Add(new TouchPoint(this, position, bounds, action));
         }
-        // Re-center the contact patch around the transformed point so the
-        // size carries over while the position follows the contact.
+        return points;
+    }
+
+    private static Rect TransformRect(Rect rect, Point center, IInputElement? relativeTo)
+    {
+        if (rect.IsEmpty || relativeTo is null)
+            return rect;
         return new Rect(center.X - rect.Width / 2, center.Y - rect.Height / 2, rect.Width, rect.Height);
     }
 }
 
-/// <summary>
-/// Represents a single touch point sample.
-/// </summary>
-public sealed class TouchPoint
+/// <summary>Represents one reported position and contact area for a touch device.</summary>
+public class TouchPoint : IEquatable<TouchPoint>
 {
-    public TouchDevice TouchDevice { get; }
-    public Point Position { get; }
-    public Rect Bounds { get; }
-    public TouchAction Action { get; }
-    public Size Size => Bounds.IsEmpty ? Size.Empty : Bounds.Size;
-
     public TouchPoint(TouchDevice touchDevice, Point position, Rect bounds, TouchAction action)
     {
-        TouchDevice = touchDevice;
+        TouchDevice = touchDevice ?? throw new ArgumentNullException(nameof(touchDevice));
         Position = position;
         Bounds = bounds;
         Action = action;
     }
+
+    public TouchDevice TouchDevice { get; }
+    public Point Position { get; }
+    public Rect Bounds { get; }
+    public Size Size => Bounds.Size;
+    public TouchAction Action { get; }
+
+    bool IEquatable<TouchPoint>.Equals(TouchPoint? other)
+        => other is not null &&
+           ReferenceEquals(other.TouchDevice, TouchDevice) &&
+           other.Position == Position &&
+           other.Bounds == Bounds &&
+           other.Action == Action;
 }
 
 /// <summary>Collection of touch points.</summary>
-public sealed class TouchPointCollection : List<TouchPoint>
+public class TouchPointCollection : Collection<TouchPoint>
 {
 }
 
-/// <summary>Specifies the action that caused a touch event.</summary>
 public enum TouchAction
 {
-    /// <summary>A touch point was pressed.</summary>
     Down,
-    /// <summary>A touch point was moved.</summary>
     Move,
-    /// <summary>A touch point was released.</summary>
     Up,
-    /// <summary>A touch point was canceled by the system.</summary>
-    Cancel
+    Cancel,
 }
 
-/// <summary>Describes the static capabilities of the system's touch digitizer.</summary>
 public sealed class TouchCapabilities
 {
-    /// <summary>True if a touch digitizer is present.</summary>
     public bool TouchPresent { get; init; }
-    /// <summary>Maximum number of simultaneous contacts the device supports.</summary>
     public int Contacts { get; init; }
 }
 
-/// <summary>
-/// Event arguments for touch routed events.
-/// </summary>
+/// <summary>Event data for touch routed events.</summary>
 public sealed class TouchEventArgs : InputEventArgs
 {
-    /// <summary>The touch device that raised this event.</summary>
-    public TouchDevice TouchDevice { get; }
-
-    /// <summary>Gets or sets whether downstream pointer promotion should be cancelled.</summary>
-    public bool Cancel { get; set; }
-
     public TouchEventArgs(TouchDevice touchDevice, int timestamp)
-        : base(timestamp)
+        : base(touchDevice, timestamp)
     {
-        TouchDevice = touchDevice;
+        TouchDevice = touchDevice ?? throw new ArgumentNullException(nameof(touchDevice));
     }
 
-    /// <summary>Gets the touch point relative to the specified element.</summary>
-    public TouchPoint GetTouchPoint(UIElement? relativeTo) => TouchDevice.GetTouchPoint(relativeTo);
+    public TouchDevice TouchDevice { get; }
+    public bool Cancel { get; set; }
+    public TouchPoint GetTouchPoint(IInputElement? relativeTo) => TouchDevice.GetTouchPoint(relativeTo);
+    public TouchPointCollection GetIntermediateTouchPoints(IInputElement? relativeTo) => TouchDevice.GetIntermediateTouchPoints(relativeTo);
 
-    /// <summary>Gets intermediate touch points captured between the previous report and this one.</summary>
-    public TouchPointCollection GetIntermediateTouchPoints(UIElement? relativeTo) => TouchDevice.GetIntermediateTouchPoints(relativeTo);
-
-    /// <inheritdoc />
-    internal override void InvokeEventHandler(Delegate handler, object target)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is TouchEventHandler touchHandler)
-        {
             touchHandler(target, this);
-        }
         else
-        {
             base.InvokeEventHandler(handler, target);
-        }
     }
 }
 
-/// <summary>Event handler delegate for touch events.</summary>
 public delegate void TouchEventHandler(object sender, TouchEventArgs e);

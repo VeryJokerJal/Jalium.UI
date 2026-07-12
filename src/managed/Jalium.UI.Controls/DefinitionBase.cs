@@ -4,13 +4,8 @@ namespace Jalium.UI.Controls;
 /// Defines the functionality required to support a shared-size group
 /// that is used by the ColumnDefinitionCollection and RowDefinitionCollection classes.
 /// </summary>
-public abstract class DefinitionBase : DependencyObject
+public abstract class DefinitionBase : FrameworkContentElement
 {
-    /// <summary>
-    /// Gets or sets the logical name of the definition.
-    /// </summary>
-    public string? Name { get; set; }
-
     /// <summary>
     /// 所属 Grid — 由 <see cref="Grid"/> 在 measure 阶段或集合 Add 时设置。
     /// 用于 Width/Height/MinWidth/... 等 layout DP 变化时通知 Grid 重新 layout。
@@ -18,6 +13,9 @@ public abstract class DefinitionBase : DependencyObject
     /// 在运行时被改变，会出现"列宽设置后不更新"的脏渲染问题。
     /// </summary>
     internal Grid? OwnerGrid { get; set; }
+
+    /// <summary>Tracks collection membership independently from Grid attachment.</summary>
+    internal object? OwnerCollection { get; set; }
 
     /// <summary>
     /// Layout 相关 DP 共享的 PropertyChangedCallback —
@@ -27,9 +25,7 @@ public abstract class DefinitionBase : DependencyObject
     {
         if (d is DefinitionBase def && def.OwnerGrid is { } grid)
         {
-            grid.InvalidateMeasure();
-            grid.InvalidateArrange();
-            grid.InvalidateVisual();
+            grid.OnDefinitionChanged();
         }
     }
 
@@ -39,7 +35,7 @@ public abstract class DefinitionBase : DependencyObject
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SharedSizeGroupProperty =
         DependencyProperty.Register(nameof(SharedSizeGroup), typeof(string), typeof(DefinitionBase),
-            new PropertyMetadata(null, OnLayoutPropertyChanged));
+            new FrameworkPropertyMetadata(null, OnLayoutPropertyChanged), IsValidSharedSizeGroup);
 
     /// <summary>
     /// Gets or sets a value that identifies a ColumnDefinition or RowDefinition
@@ -50,5 +46,30 @@ public abstract class DefinitionBase : DependencyObject
     {
         get => (string?)GetValue(SharedSizeGroupProperty);
         set => SetValue(SharedSizeGroupProperty, value);
+    }
+
+    private static bool IsValidSharedSizeGroup(object? value)
+    {
+        if (value == null)
+        {
+            return true;
+        }
+
+        if (value is not string text || text.Length == 0)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < text.Length; index++)
+        {
+            var character = text[index];
+            if ((index == 0 && char.IsDigit(character)) ||
+                (!char.IsDigit(character) && !char.IsLetter(character) && character != '_'))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

@@ -6,8 +6,17 @@ namespace Jalium.UI.Documents;
 /// <summary>
 /// Represents a selection of content between two TextPointer positions.
 /// </summary>
-public sealed class TextRange
+public class TextRange
 {
+    private static readonly HashSet<string> s_supportedDataFormats = new(StringComparer.OrdinalIgnoreCase)
+    {
+        DataFormats.Text,
+        DataFormats.UnicodeText,
+        DataFormats.Rtf,
+        DataFormats.Xaml,
+        DataFormats.XamlPackage,
+    };
+
     #region Fields
 
     private TextPointer _start;
@@ -215,13 +224,15 @@ public sealed class TextRange
 
     private void SetText(string value)
     {
-                    value ??= string.Empty;
+        value ??= string.Empty;
 
         // Delete existing content
         DeleteContent();
 
         // Insert new text at start position
         InsertTextAtPosition(_start, value);
+        OnRangeContentChanged();
+        OnChanged();
     }
 
     private void DeleteContent()
@@ -351,6 +362,75 @@ public sealed class TextRange
     #endregion
 
     #region Formatting Methods
+
+    /// <summary>Returns whether this range can load the specified clipboard format.</summary>
+    public bool CanLoad(string dataFormat)
+    {
+        ArgumentNullException.ThrowIfNull(dataFormat);
+        return s_supportedDataFormats.Contains(dataFormat);
+    }
+
+    /// <summary>Returns whether this range can save the specified clipboard format.</summary>
+    public bool CanSave(string dataFormat)
+    {
+        ArgumentNullException.ThrowIfNull(dataFormat);
+        return s_supportedDataFormats.Contains(dataFormat);
+    }
+
+    /// <summary>Loads range content from a stream in a supported text format.</summary>
+    public void Load(Stream stream, string dataFormat)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (!CanLoad(dataFormat))
+        {
+            throw new ArgumentException($"The data format '{dataFormat}' is not supported.", nameof(dataFormat));
+        }
+
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
+        Text = reader.ReadToEnd();
+    }
+
+    /// <summary>Saves range content to a stream in a supported text format.</summary>
+    public void Save(Stream stream, string dataFormat) => Save(stream, dataFormat, preserveTextElements: false);
+
+    /// <summary>Saves range content while optionally preserving compatible text elements.</summary>
+    public void Save(Stream stream, string dataFormat, bool preserveTextElements)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (!CanSave(dataFormat))
+        {
+            throw new ArgumentException($"The data format '{dataFormat}' is not supported.", nameof(dataFormat));
+        }
+
+        using var writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false), leaveOpen: true);
+        writer.Write(Text);
+        writer.Flush();
+    }
+
+    /// <summary>Clears locally applied formatting properties from content in this range.</summary>
+    public void ClearAllProperties()
+    {
+        if (IsEmpty)
+        {
+            return;
+        }
+
+        var startOffset = _start.DocumentOffset;
+        var endOffset = _end.DocumentOffset;
+        var currentOffset = 0;
+        foreach (var block in _start.Document.Blocks)
+        {
+            var blockLength = GetBlockLength(block);
+            if (currentOffset + blockLength > startOffset && currentOffset < endOffset)
+            {
+                ClearPropertiesInBlock(block, currentOffset, startOffset, endOffset);
+            }
+            currentOffset += blockLength;
+        }
+
+        OnRangeContentChanged();
+        OnChanged();
+    }
 
     /// <summary>
     /// Gets the value of a formatting property for this range.
@@ -589,7 +669,81 @@ public sealed class TextRange
             _end = position1;
         }
 
+        OnRangeSelected(position1, position2);
         OnChanged();
+    }
+
+    private static void ClearPropertiesInBlock(
+        Block block,
+        int baseOffset,
+        int startOffset,
+        int endOffset)
+    {
+        if (block is Paragraph paragraph)
+        {
+            var currentOffset = baseOffset;
+            foreach (var inline in paragraph.Inlines)
+            {
+                var length = GetInlineLength(inline);
+                if (currentOffset + length > startOffset && currentOffset < endOffset)
+                {
+                    ClearPropertiesInInline(inline, currentOffset, startOffset, endOffset);
+                }
+                currentOffset += length;
+            }
+        }
+        else if (block is Section section)
+        {
+            var currentOffset = baseOffset;
+            foreach (var child in section.Blocks)
+            {
+                var length = GetBlockLength(child);
+                if (currentOffset + length > startOffset && currentOffset < endOffset)
+                {
+                    ClearPropertiesInBlock(child, currentOffset, startOffset, endOffset);
+                }
+                currentOffset += length;
+            }
+        }
+    }
+
+    private static void ClearPropertiesInInline(
+        Inline inline,
+        int baseOffset,
+        int startOffset,
+        int endOffset)
+    {
+        inline.ClearValue(TextElement.FontFamilyProperty);
+        inline.ClearValue(TextElement.FontSizeProperty);
+        inline.ClearValue(TextElement.FontStretchProperty);
+        inline.ClearValue(TextElement.FontStyleProperty);
+        inline.ClearValue(TextElement.FontWeightProperty);
+        inline.ClearValue(TextElement.ForegroundProperty);
+        inline.ClearValue(TextElement.BackgroundProperty);
+        inline.ClearValue(TextElement.TextDecorationsProperty);
+        inline.ClearValue(TextElement.TextEffectsProperty);
+
+        if (inline is Span span)
+        {
+            var currentOffset = baseOffset;
+            foreach (var child in span.Inlines)
+            {
+                var length = GetInlineLength(child);
+                if (currentOffset + length > startOffset && currentOffset < endOffset)
+                {
+                    ClearPropertiesInInline(child, currentOffset, startOffset, endOffset);
+                }
+                currentOffset += length;
+            }
+        }
+    }
+
+    internal virtual void OnRangeSelected(TextPointer position1, TextPointer position2)
+    {
+    }
+
+    internal virtual void OnRangeContentChanged()
+    {
     }
 
     /// <summary>

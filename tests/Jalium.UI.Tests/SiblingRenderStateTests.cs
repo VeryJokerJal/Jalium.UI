@@ -50,7 +50,7 @@ public class SiblingRenderStateTests
         }
     }
 
-    private sealed class ProbeDrawingContext : DrawingContext, IOffsetDrawingContext, IClipBoundsDrawingContext
+    private sealed class ProbeDrawingContext : DrawingContextAdapter, IOffsetDrawingContext, IClipBoundsDrawingContext
     {
         private readonly Stack<Rect?> _clipStack = new();
 

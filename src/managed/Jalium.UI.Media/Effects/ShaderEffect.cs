@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using Jalium.UI;
 using Jalium.UI.Media;
 
@@ -14,7 +15,7 @@ public abstract class ShaderEffect : Effect
     /// <summary>
     /// Identifies the PixelShader dependency property.
     /// </summary>
-    public static readonly DependencyProperty PixelShaderProperty =
+    protected static readonly DependencyProperty PixelShaderProperty =
         DependencyProperty.Register(nameof(PixelShader), typeof(PixelShader), typeof(ShaderEffect),
             new PropertyMetadata(null, OnPixelShaderChanged));
 
@@ -51,11 +52,14 @@ public abstract class ShaderEffect : Effect
     /// <summary>
     /// Gets or sets the PixelShader to use for this effect.
     /// </summary>
-    public PixelShader? PixelShader
+    protected PixelShader? PixelShader
     {
         get => (PixelShader?)GetValue(PixelShaderProperty);
         set => SetValue(PixelShaderProperty, value);
     }
+
+    /// <summary>Gets the shader used by the rendering backend without widening WPF's protected API.</summary>
+    internal PixelShader? PixelShaderForRendering => PixelShader;
 
     #endregion
 
@@ -137,7 +141,14 @@ public abstract class ShaderEffect : Effect
     protected int DdxUvDdyUvRegisterIndex
     {
         get => _ddxUvDdyUvRegisterIndex;
-        set => _ddxUvDdyUvRegisterIndex = value;
+        set
+        {
+            if (_ddxUvDdyUvRegisterIndex != value)
+            {
+                _ddxUvDdyUvRegisterIndex = value;
+                OnEffectChanged();
+            }
+        }
     }
 
     #endregion
@@ -157,6 +168,51 @@ public abstract class ShaderEffect : Effect
     #endregion
 
     #region Protected Methods
+
+    /// <summary>Creates a modifiable clone of this shader effect.</summary>
+    public new ShaderEffect Clone() => (ShaderEffect)base.Clone();
+
+    /// <summary>Creates a modifiable clone using current property values.</summary>
+    public new ShaderEffect CloneCurrentValue() => (ShaderEffect)base.CloneCurrentValue();
+
+    /// <inheritdoc />
+    protected override void CloneCore(Freezable sourceFreezable)
+    {
+        base.CloneCore(sourceFreezable);
+        CopyCommon((ShaderEffect)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void CloneCurrentValueCore(Freezable sourceFreezable)
+    {
+        base.CloneCurrentValueCore(sourceFreezable);
+        CopyCommon((ShaderEffect)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void GetAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetAsFrozenCore(sourceFreezable);
+        CopyCommon((ShaderEffect)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetCurrentValueAsFrozenCore(sourceFreezable);
+        CopyCommon((ShaderEffect)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2072",
+        Justification = "Concrete ShaderEffect implementations preserve a parameterless constructor as part of the Freezable cloning contract.")]
+    protected override Freezable CreateInstanceCore()
+    {
+        return (Freezable)(Activator.CreateInstance(GetType(), nonPublic: true) ??
+            throw new InvalidOperationException($"ShaderEffect type '{GetType().FullName}' must have a parameterless constructor."));
+    }
 
     /// <summary>
     /// Tells the Effect that the shader constant or sampler corresponding to
@@ -342,6 +398,8 @@ public abstract class ShaderEffect : Effect
             var oldShader = e.OldValue as PixelShader;
             var newShader = e.NewValue as PixelShader;
 
+            effect.OnFreezablePropertyChanged(oldShader, newShader);
+
             if (oldShader != null)
             {
                 oldShader.ShaderBytecodeChanged -= effect.OnPixelShaderBytecodeChanged;
@@ -359,6 +417,39 @@ public abstract class ShaderEffect : Effect
     private void OnPixelShaderBytecodeChanged(object? sender, EventArgs e)
     {
         OnEffectChanged();
+    }
+
+    private void CopyCommon(ShaderEffect source)
+    {
+        _topPadding = source._topPadding;
+        _bottomPadding = source._bottomPadding;
+        _leftPadding = source._leftPadding;
+        _rightPadding = source._rightPadding;
+        _ddxUvDdyUvRegisterIndex = source._ddxUvDdyUvRegisterIndex;
+
+        _floatRegisters.Clear();
+        foreach (var pair in source._floatRegisters)
+        {
+            _floatRegisters.Add(pair.Key, pair.Value);
+        }
+
+        _intRegisters.Clear();
+        foreach (var pair in source._intRegisters)
+        {
+            _intRegisters.Add(pair.Key, pair.Value);
+        }
+
+        _boolRegisters.Clear();
+        foreach (var pair in source._boolRegisters)
+        {
+            _boolRegisters.Add(pair.Key, pair.Value);
+        }
+
+        _samplerData.Clear();
+        foreach (var pair in source._samplerData)
+        {
+            _samplerData.Add(pair.Key, pair.Value);
+        }
     }
 
     private void UpdateShaderConstant(DependencyProperty dp, object? newValue, int registerIndex)
@@ -513,17 +604,17 @@ public struct SamplerData
 public enum SamplingMode
 {
     /// <summary>
-    /// The system will automatically select the most appropriate sampling mode.
+    /// Uses nearest-neighbor sampling.
     /// </summary>
-    Auto,
+    NearestNeighbor = 0,
 
     /// <summary>
-    /// Uses nearest neighbor sampling. Fast but may produce pixelated results.
+    /// Uses bilinear sampling.
     /// </summary>
-    NearestNeighbor,
+    Bilinear = 1,
 
     /// <summary>
-    /// Uses bilinear sampling. Produces smoother results than nearest neighbor.
+    /// The system automatically selects the most appropriate sampling mode.
     /// </summary>
-    Bilinear
+    Auto = 2
 }

@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using Jalium.UI.Data;
 
 namespace Jalium.UI;
@@ -7,9 +8,31 @@ namespace Jalium.UI;
 /// </summary>
 public class FrameworkPropertyMetadata : UIPropertyMetadata
 {
+    private bool _affectsMeasure;
+    private bool _affectsArrange;
+    private bool _affectsRender;
+    private bool _affectsParentMeasure;
+    private bool _affectsParentArrange;
+    private bool _affectsCompositionOnly;
+    private bool _bindsTwoWayByDefault;
+    private bool _isNotDataBindable;
+    private bool _subPropertiesDoNotAffectRender;
+    private bool _journal;
+    private bool _overridesInheritanceBehavior;
+    private bool _readOnly;
+    private bool _subPropertiesDoNotAffectRenderModified;
+    private bool _journalModified;
+    private bool _overridesInheritanceBehaviorModified;
+    private bool _defaultUpdateSourceTriggerModified;
+    private UpdateSourceTrigger _defaultUpdateSourceTrigger = UpdateSourceTrigger.PropertyChanged;
+
     public FrameworkPropertyMetadata() : base() { }
     public FrameworkPropertyMetadata(object? defaultValue) : base(defaultValue) { }
-    public FrameworkPropertyMetadata(PropertyChangedCallback? propertyChangedCallback) : base(null, propertyChangedCallback) { }
+    public FrameworkPropertyMetadata(PropertyChangedCallback? propertyChangedCallback) : base(propertyChangedCallback) { }
+    public FrameworkPropertyMetadata(PropertyChangedCallback? propertyChangedCallback, CoerceValueCallback? coerceValueCallback) : base(propertyChangedCallback)
+    {
+        CoerceValueCallback = coerceValueCallback;
+    }
     public FrameworkPropertyMetadata(object? defaultValue, PropertyChangedCallback? propertyChangedCallback) : base(defaultValue, propertyChangedCallback) { }
     public FrameworkPropertyMetadata(object? defaultValue, PropertyChangedCallback? propertyChangedCallback, CoerceValueCallback? coerceValueCallback) : base(defaultValue, propertyChangedCallback, coerceValueCallback) { }
     public FrameworkPropertyMetadata(object? defaultValue, FrameworkPropertyMetadataOptions flags) : base(defaultValue)
@@ -29,11 +52,64 @@ public class FrameworkPropertyMetadata : UIPropertyMetadata
         SetFlags(flags);
     }
 
-    public bool AffectsMeasure { get; set; }
-    public bool AffectsArrange { get; set; }
-    public bool AffectsRender { get; set; }
-    public bool AffectsParentMeasure { get; set; }
-    public bool AffectsParentArrange { get; set; }
+    public FrameworkPropertyMetadata(
+        object? defaultValue,
+        FrameworkPropertyMetadataOptions flags,
+        PropertyChangedCallback? propertyChangedCallback,
+        CoerceValueCallback? coerceValueCallback,
+        bool isAnimationProhibited,
+        UpdateSourceTrigger defaultUpdateSourceTrigger)
+        : base(defaultValue, propertyChangedCallback, coerceValueCallback, isAnimationProhibited)
+    {
+        if (!Enum.IsDefined(defaultUpdateSourceTrigger))
+        {
+            throw new InvalidEnumArgumentException(
+                nameof(defaultUpdateSourceTrigger),
+                (int)defaultUpdateSourceTrigger,
+                typeof(UpdateSourceTrigger));
+        }
+
+        if (defaultUpdateSourceTrigger == UpdateSourceTrigger.Default)
+        {
+            throw new ArgumentException(
+                "The default update source trigger cannot be UpdateSourceTrigger.Default.",
+                nameof(defaultUpdateSourceTrigger));
+        }
+
+        SetFlags(flags);
+        DefaultUpdateSourceTrigger = defaultUpdateSourceTrigger;
+    }
+
+    public bool AffectsMeasure
+    {
+        get => _affectsMeasure;
+        set { ThrowIfSealed(); _affectsMeasure = value; }
+    }
+
+    public bool AffectsArrange
+    {
+        get => _affectsArrange;
+        set { ThrowIfSealed(); _affectsArrange = value; }
+    }
+
+    public bool AffectsRender
+    {
+        get => _affectsRender;
+        set { ThrowIfSealed(); _affectsRender = value; }
+    }
+
+    public bool AffectsParentMeasure
+    {
+        get => _affectsParentMeasure;
+        set { ThrowIfSealed(); _affectsParentMeasure = value; }
+    }
+
+    public bool AffectsParentArrange
+    {
+        get => _affectsParentArrange;
+        set { ThrowIfSealed(); _affectsParentArrange = value; }
+    }
+
     /// <summary>
     /// When set, changes to this property are treated as a composition-only invalidation:
     /// the parent's child-render loop reads the live property value via PushOpacity /
@@ -42,35 +118,145 @@ public class FrameworkPropertyMetadata : UIPropertyMetadata
     /// instead of <see cref="UIElement.InvalidateVisual()"/> for animation ticks and
     /// fallback paths. Implies <c>AffectsRender</c>.
     /// </summary>
-    public bool AffectsCompositionOnly { get; set; }
-    public bool BindsTwoWayByDefault { get; set; }
-    public bool IsNotDataBindable { get; set; }
-    public bool SubPropertiesDoNotAffectRender { get; set; }
-    public UpdateSourceTrigger DefaultUpdateSourceTrigger { get; set; }
-    public bool Journal { get; set; }
-    public bool OverridesInheritanceBehavior { get; set; }
+    public bool AffectsCompositionOnly
+    {
+        get => _affectsCompositionOnly;
+        set { ThrowIfSealed(); _affectsCompositionOnly = value; }
+    }
+
+    public bool BindsTwoWayByDefault
+    {
+        get => _bindsTwoWayByDefault;
+        set { ThrowIfSealed(); _bindsTwoWayByDefault = value; }
+    }
+
+    public bool IsNotDataBindable
+    {
+        get => _isNotDataBindable;
+        set { ThrowIfSealed(); _isNotDataBindable = value; }
+    }
+
+    public bool SubPropertiesDoNotAffectRender
+    {
+        get => _subPropertiesDoNotAffectRender;
+        set
+        {
+            ThrowIfSealed();
+            _subPropertiesDoNotAffectRender = value;
+            _subPropertiesDoNotAffectRenderModified = true;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets whether the dependency-property value is inherited by descendants.
+    /// </summary>
+    public new bool Inherits
+    {
+        get => base.Inherits;
+        set => base.Inherits = value;
+    }
+
+    public UpdateSourceTrigger DefaultUpdateSourceTrigger
+    {
+        get => _defaultUpdateSourceTrigger;
+        set
+        {
+            ThrowIfSealed();
+
+            if (!Enum.IsDefined(value))
+            {
+                throw new InvalidEnumArgumentException(
+                    nameof(value),
+                    (int)value,
+                    typeof(UpdateSourceTrigger));
+            }
+
+            if (value == UpdateSourceTrigger.Default)
+                throw new ArgumentException("The default update source trigger cannot be UpdateSourceTrigger.Default.", nameof(value));
+
+            _defaultUpdateSourceTrigger = value;
+            _defaultUpdateSourceTriggerModified = true;
+        }
+    }
+
+    public bool Journal
+    {
+        get => _journal;
+        set
+        {
+            ThrowIfSealed();
+            _journal = value;
+            _journalModified = true;
+        }
+    }
+
+    public bool OverridesInheritanceBehavior
+    {
+        get => _overridesInheritanceBehavior;
+        set
+        {
+            ThrowIfSealed();
+            _overridesInheritanceBehavior = value;
+            _overridesInheritanceBehaviorModified = true;
+        }
+    }
+
+    /// <summary>
+    /// Gets whether data binding is allowed for this metadata and property.
+    /// </summary>
+    public bool IsDataBindingAllowed => !_isNotDataBindable && !_readOnly;
 
     private void SetFlags(FrameworkPropertyMetadataOptions flags)
     {
-        AffectsMeasure = (flags & FrameworkPropertyMetadataOptions.AffectsMeasure) != 0;
-        AffectsArrange = (flags & FrameworkPropertyMetadataOptions.AffectsArrange) != 0;
-        AffectsRender = (flags & FrameworkPropertyMetadataOptions.AffectsRender) != 0;
-        AffectsParentMeasure = (flags & FrameworkPropertyMetadataOptions.AffectsParentMeasure) != 0;
-        AffectsParentArrange = (flags & FrameworkPropertyMetadataOptions.AffectsParentArrange) != 0;
-        AffectsCompositionOnly = (flags & FrameworkPropertyMetadataOptions.AffectsCompositionOnly) != 0;
-        BindsTwoWayByDefault = (flags & FrameworkPropertyMetadataOptions.BindsTwoWayByDefault) != 0;
-        IsNotDataBindable = (flags & FrameworkPropertyMetadataOptions.NotDataBindable) != 0;
-        Journal = (flags & FrameworkPropertyMetadataOptions.Journal) != 0;
-        SubPropertiesDoNotAffectRender = (flags & FrameworkPropertyMetadataOptions.SubPropertiesDoNotAffectRender) != 0;
-        OverridesInheritanceBehavior = (flags & FrameworkPropertyMetadataOptions.OverridesInheritanceBehavior) != 0;
-        // PropertyMetadata.Inherits used to be read-only and was set only via the 4-arg
-        // base ctor. FrameworkPropertyMetadata never went through that ctor, so any
-        // FrameworkPropertyMetadataOptions.Inherits passed via flags was silently dropped
-        // and FrameworkElement.InheritanceContext walked over the property in vain
-        // (TextOptions.TextFormattingMode et al. were never inheriting). Now that
-        // PropertyMetadata.Inherits has an internal setter, propagate the flag here so
-        // the bit actually reaches the inheritance-aware code paths.
-        Inherits = (flags & FrameworkPropertyMetadataOptions.Inherits) != 0;
+        if ((flags & FrameworkPropertyMetadataOptions.AffectsMeasure) != 0) AffectsMeasure = true;
+        if ((flags & FrameworkPropertyMetadataOptions.AffectsArrange) != 0) AffectsArrange = true;
+        if ((flags & FrameworkPropertyMetadataOptions.AffectsRender) != 0) AffectsRender = true;
+        if ((flags & FrameworkPropertyMetadataOptions.AffectsParentMeasure) != 0) AffectsParentMeasure = true;
+        if ((flags & FrameworkPropertyMetadataOptions.AffectsParentArrange) != 0) AffectsParentArrange = true;
+        if ((flags & FrameworkPropertyMetadataOptions.AffectsCompositionOnly) != 0) AffectsCompositionOnly = true;
+        if ((flags & FrameworkPropertyMetadataOptions.BindsTwoWayByDefault) != 0) BindsTwoWayByDefault = true;
+        if ((flags & FrameworkPropertyMetadataOptions.NotDataBindable) != 0) IsNotDataBindable = true;
+        if ((flags & FrameworkPropertyMetadataOptions.Journal) != 0) Journal = true;
+        if ((flags & FrameworkPropertyMetadataOptions.SubPropertiesDoNotAffectRender) != 0) SubPropertiesDoNotAffectRender = true;
+        if ((flags & FrameworkPropertyMetadataOptions.OverridesInheritanceBehavior) != 0) OverridesInheritanceBehavior = true;
+        if ((flags & FrameworkPropertyMetadataOptions.Inherits) != 0) Inherits = true;
+    }
+
+    /// <inheritdoc />
+    protected override void Merge(PropertyMetadata baseMetadata, DependencyProperty dp)
+    {
+        base.Merge(baseMetadata, dp);
+
+        if (baseMetadata is not FrameworkPropertyMetadata frameworkBase)
+            return;
+
+        _affectsMeasure |= frameworkBase.AffectsMeasure;
+        _affectsArrange |= frameworkBase.AffectsArrange;
+        _affectsRender |= frameworkBase.AffectsRender;
+        _affectsParentMeasure |= frameworkBase.AffectsParentMeasure;
+        _affectsParentArrange |= frameworkBase.AffectsParentArrange;
+        _affectsCompositionOnly |= frameworkBase.AffectsCompositionOnly;
+        _bindsTwoWayByDefault |= frameworkBase.BindsTwoWayByDefault;
+        _isNotDataBindable |= frameworkBase.IsNotDataBindable;
+
+        if (!_subPropertiesDoNotAffectRenderModified)
+            _subPropertiesDoNotAffectRender = frameworkBase.SubPropertiesDoNotAffectRender;
+
+        if (!_journalModified)
+            _journal = frameworkBase.Journal;
+
+        if (!_overridesInheritanceBehaviorModified)
+            _overridesInheritanceBehavior = frameworkBase.OverridesInheritanceBehavior;
+
+        if (!_defaultUpdateSourceTriggerModified)
+            _defaultUpdateSourceTrigger = frameworkBase.DefaultUpdateSourceTrigger;
+    }
+
+    /// <inheritdoc />
+    protected override void OnApply(DependencyProperty dp, Type targetType)
+    {
+        _readOnly = dp.ReadOnly;
+        base.OnApply(dp, targetType);
     }
 }
 
@@ -79,8 +265,11 @@ public class FrameworkPropertyMetadata : UIPropertyMetadata
 /// </summary>
 public class UIPropertyMetadata : PropertyMetadata
 {
+    private bool _isAnimationProhibited;
+
     public UIPropertyMetadata() : base() { }
     public UIPropertyMetadata(object? defaultValue) : base(defaultValue) { }
+    public UIPropertyMetadata(PropertyChangedCallback? propertyChangedCallback) : base(propertyChangedCallback) { }
     public UIPropertyMetadata(object? defaultValue, PropertyChangedCallback? propertyChangedCallback) : base(defaultValue, propertyChangedCallback) { }
     public UIPropertyMetadata(object? defaultValue, PropertyChangedCallback? propertyChangedCallback, CoerceValueCallback? coerceValueCallback) : base(defaultValue, propertyChangedCallback, coerceValueCallback) { }
     public UIPropertyMetadata(object? defaultValue, PropertyChangedCallback? propertyChangedCallback, CoerceValueCallback? coerceValueCallback, bool isAnimationProhibited) : base(defaultValue, propertyChangedCallback, coerceValueCallback)
@@ -88,7 +277,15 @@ public class UIPropertyMetadata : PropertyMetadata
         IsAnimationProhibited = isAnimationProhibited;
     }
 
-    public bool IsAnimationProhibited { get; set; }
+    public bool IsAnimationProhibited
+    {
+        get => _isAnimationProhibited;
+        set
+        {
+            ThrowIfSealed();
+            _isAnimationProhibited = value;
+        }
+    }
 }
 
 [Flags]

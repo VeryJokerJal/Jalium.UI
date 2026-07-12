@@ -80,7 +80,7 @@ public class TextBlockSelectionTests
         textBlock.RaiseEvent(CreateMouseDown(new Point(0, 12)));
         textBlock.RaiseEvent(CreateMouseMove(new Point(180, 12), MouseButtonState.Pressed));
 
-        Assert.Same(Jalium.UI.Cursors.IBeam, textBlock.Cursor);
+        Assert.Same(Jalium.UI.Input.Cursors.IBeam, textBlock.Cursor);
         Assert.Equal("Copy me", textBlock.SelectedText);
     }
 
@@ -160,7 +160,7 @@ public class TextBlockSelectionTests
         label.RaiseEvent(CreateMouseMove(new Point(210, 12), MouseButtonState.Pressed));
         Assert.True(GetPrivateField<int>(label, "_directSelectionLength") > 0);
 
-        Assert.Same(Jalium.UI.Cursors.IBeam, label.Cursor);
+        Assert.Same(Jalium.UI.Input.Cursors.IBeam, label.Cursor);
         Assert.Equal("Copy label", label.SelectedText);
     }
 

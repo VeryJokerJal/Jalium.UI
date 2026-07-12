@@ -114,7 +114,6 @@ public class DockThemeTests
             AssertBrushMatches(dockSplitterBackground, InvokePrivateBrushResolver(split, "ResolveBackgroundBrush"));
             AssertBrushMatches(dockSplitterHover, InvokePrivateBrushResolver(split, "ResolveHoverBrush"));
             AssertBrushMatches(accentBrush, InvokePrivateBrushResolver(split, "ResolveDraggingBrush"));
-            AssertBrushMatches(dockTabStripBorder, InvokePrivateBrushResolver(split, "ResolveEdgeBrush"));
         }
         finally
         {

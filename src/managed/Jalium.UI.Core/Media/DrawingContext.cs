@@ -1,4 +1,5 @@
 using Jalium.UI;
+using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Media;
 
@@ -66,6 +67,17 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <param name="point1">The end point.</param>
     public abstract void DrawLine(Pen pen, Point point0, Point point1);
 
+    /// <summary>Draws an animated line, using the current values of its clocks.</summary>
+    public abstract void DrawLine(
+        Pen pen,
+        Point point0,
+        AnimationClock? point0Animations,
+        Point point1,
+        AnimationClock? point1Animations);
+
+    /// <summary>Draws a retained drawing into this context.</summary>
+    public abstract void DrawDrawing(Drawing drawing);
+
     /// <summary>
     /// Draws a rectangle.
     /// </summary>
@@ -73,6 +85,13 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <param name="pen">The pen for the outline, or null for no outline.</param>
     /// <param name="rectangle">The rectangle to draw.</param>
     public abstract void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle);
+
+    /// <summary>Draws an animated rectangle using the current rectangle value.</summary>
+    public abstract void DrawRectangle(
+        Brush? brush,
+        Pen? pen,
+        Rect rectangle,
+        AnimationClock? rectangleAnimations);
 
     /// <summary>
     /// Draws a rounded rectangle.
@@ -83,6 +102,17 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <param name="radiusX">The X radius of the corners.</param>
     /// <param name="radiusY">The Y radius of the corners.</param>
     public abstract void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, double radiusX, double radiusY);
+
+    /// <summary>Draws an animated rounded rectangle using the current supplied values.</summary>
+    public abstract void DrawRoundedRectangle(
+        Brush? brush,
+        Pen? pen,
+        Rect rectangle,
+        AnimationClock? rectangleAnimations,
+        double radiusX,
+        AnimationClock? radiusXAnimations,
+        double radiusY,
+        AnimationClock? radiusYAnimations);
 
     /// <summary>
     /// Draws a rounded rectangle with potentially non-uniform corner radii.
@@ -261,11 +291,22 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <param name="radiusY">The Y radius.</param>
     public abstract void DrawEllipse(Brush? brush, Pen? pen, Point center, double radiusX, double radiusY);
 
+    /// <summary>Draws an animated ellipse using the current supplied values.</summary>
+    public abstract void DrawEllipse(
+        Brush? brush,
+        Pen? pen,
+        Point center,
+        AnimationClock? centerAnimations,
+        double radiusX,
+        AnimationClock? radiusXAnimations,
+        double radiusY,
+        AnimationClock? radiusYAnimations);
+
     /// <summary>
     /// Draws a batch of identical filled circles in one call. All circles
     /// share the same brush and radius — intended for dense particle-like
     /// scenarios (grid dots, scatter plots, node ports, marker lists) where
-    /// issuing thousands of individual <see cref="DrawEllipse"/> calls
+    /// issuing thousands of individual <see cref="DrawEllipse(Brush,Pen,Point,double,double)"/> calls
     /// dominates frame time even though the GPU collapses them to one
     /// instanced draw.
     /// </summary>
@@ -280,14 +321,14 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// </para>
     /// <para>
     /// The default implementation falls back to a loop over
-    /// <see cref="DrawEllipse"/> so any <see cref="DrawingContext"/>
+    /// <see cref="DrawEllipse(Brush,Pen,Point,double,double)"/> so any <see cref="DrawingContext"/>
     /// subclass (test doubles, export contexts) keeps working without
     /// change.
     /// </para>
     /// <para>
     /// Stroke rendering is intentionally not supported here — the native
     /// batch path is fill-only. Callers needing stroked batches can loop
-    /// <see cref="DrawEllipse"/> explicitly.
+    /// <see cref="DrawEllipse(Brush,Pen,Point,double,double)"/> explicitly.
     /// </para>
     /// </remarks>
     /// <param name="brush">The fill brush. Must be non-null; passing null
@@ -311,7 +352,7 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <summary>
     /// Draws a batch of line segments that all share the same
     /// <see cref="Pen"/>. Intended for designer grids, rulers, charts, and
-    /// any scenario that would otherwise loop <see cref="DrawLine"/> with
+    /// any scenario that would otherwise loop <see cref="DrawLine(Pen,Point,Point)"/> with
     /// an unchanging pen — the loop's managed-to-native round-trips and
     /// per-call brush-cache lookups are the dominant cost at scale.
     /// </summary>
@@ -324,7 +365,7 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <para>
     /// Optimised backends resolve the pen's native brush once up front and
     /// reuse it for every segment, saving N-1 brush-cache lookups. The
-    /// default fallback loops <see cref="DrawLine"/> so any
+    /// default fallback loops <see cref="DrawLine(Pen,Point,Point)"/> so any
     /// <see cref="DrawingContext"/> subclass works unchanged.
     /// </para>
     /// </remarks>
@@ -347,7 +388,24 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// </summary>
     /// <param name="formattedText">The formatted text to draw.</param>
     /// <param name="origin">The top-left origin point.</param>
-    public abstract void DrawText(FormattedText formattedText, Point origin);
+    public void DrawText(FormattedText formattedText, Point origin)
+    {
+        ArgumentNullException.ThrowIfNull(formattedText);
+
+        // DrawingContext.DrawText is concrete and non-virtual in WPF. Existing Jalium
+        // backends historically overrode the abstract member, so dispatch through the
+        // migration adapter while keeping DrawingContext's public metadata exact.
+        if (this is DrawingContextAdapter adapter)
+        {
+            adapter.DrawText(formattedText, origin);
+            return;
+        }
+
+        DrawGeometry(formattedText.Foreground, null, formattedText.BuildGeometry(origin));
+    }
+
+    /// <summary>Draws the positioned glyphs in a glyph run.</summary>
+    public abstract void DrawGlyphRun(Brush? foregroundBrush, GlyphRun glyphRun);
 
     /// <summary>
     /// Draws text at the specified location using the given typeface and brush.
@@ -384,6 +442,21 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <param name="imageSource">The image to draw.</param>
     /// <param name="rectangle">The destination rectangle.</param>
     public abstract void DrawImage(ImageSource imageSource, Rect rectangle);
+
+    /// <summary>Draws an image into an animated rectangle using its current value.</summary>
+    public abstract void DrawImage(
+        ImageSource imageSource,
+        Rect rectangle,
+        AnimationClock? rectangleAnimations);
+
+    /// <summary>Draws the current frame exposed by a media player.</summary>
+    public abstract void DrawVideo(MediaPlayer player, Rect rectangle);
+
+    /// <summary>Draws video into an animated rectangle using its current value.</summary>
+    public abstract void DrawVideo(
+        MediaPlayer player,
+        Rect rectangle,
+        AnimationClock? rectangleAnimations);
 
     /// <summary>
     /// Draws an image using the specified bitmap scaling mode.
@@ -450,6 +523,21 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <param name="opacity">The opacity (0.0 - 1.0).</param>
     public abstract void PushOpacity(double opacity);
 
+    /// <summary>Pushes animated opacity using its current supplied value.</summary>
+    public abstract void PushOpacity(double opacity, AnimationClock? opacityAnimations);
+
+    /// <summary>Pushes a guideline set onto the drawing stack.</summary>
+    public abstract void PushGuidelineSet(GuidelineSet guidelines);
+
+    /// <summary>Pushes an opacity mask onto the drawing stack.</summary>
+    public abstract void PushOpacityMask(Brush opacityMask);
+
+    /// <summary>Pushes a deprecated bitmap effect onto the drawing stack.</summary>
+    [Obsolete("BitmapEffect is deprecated. Use Effect instead.")]
+    public abstract void PushEffect(
+        Effects.BitmapEffect effect,
+        Effects.BitmapEffectInput effectInput);
+
     /// <summary>
     /// Pops the most recent transform, clip, or opacity.
     /// </summary>
@@ -464,7 +552,7 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <remarks>
     /// <para>
     /// Unlike <see cref="UIElement"/>'s whole-element <c>Effect</c> (applied
-    /// automatically by the render pipeline), <see cref="PushEffect"/> lets
+    /// automatically by the render pipeline), <see cref="PushEffect(IEffect,Rect)"/> lets
     /// callers wrap an arbitrary range of draw calls — e.g. a single glyph in an
     /// animated text presenter — with its own effect. Each push allocates an
     /// offscreen capture target, so this is expensive per draw; use sparingly
@@ -474,7 +562,7 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// Default implementation is a no-op, making this safe to call on drawing
     /// contexts that don't support effect capture (headless test contexts, PDF
     /// export, etc.). Implementations that honour it must match each
-    /// <see cref="PushEffect"/> with exactly one <see cref="PopEffect"/>.
+    /// <see cref="PushEffect(IEffect,Rect)"/> with exactly one <see cref="PopEffect"/>.
     /// </para>
     /// </remarks>
     /// <param name="effect">Effect to apply. Must be non-null; a null effect
@@ -489,12 +577,12 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     }
 
     /// <summary>
-    /// Ends the most recent <see cref="PushEffect"/> scope: stops capturing,
+    /// Ends the most recent <see cref="PushEffect(IEffect,Rect)"/> scope: stops capturing,
     /// applies the pushed effect to the captured bitmap, and composes the
     /// result back onto the main render target at the captured bounds.
     /// </summary>
     /// <remarks>
-    /// Must be paired one-for-one with <see cref="PushEffect"/> calls. Calling
+    /// Must be paired one-for-one with <see cref="PushEffect(IEffect,Rect)"/> calls. Calling
     /// when no matching push is active is a no-op.
     /// </remarks>
     public virtual void PopEffect()
@@ -538,61 +626,226 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <inheritdoc />
     public void Dispose()
     {
-        Close();
+        DisposeCore();
         GC.SuppressFinalize(this);
     }
+
+    /// <summary>Releases resources owned by this drawing context.</summary>
+    protected abstract void DisposeCore();
+
+    /// <summary>Compatibility hook reserved for nonstructural API validation.</summary>
+    protected virtual void VerifyApiNonstructuralChange()
+    {
+    }
+}
+
+/// <summary>
+/// Migration adapter for Jalium drawing backends. DrawingContext itself exposes WPF's exact
+/// abstract contract; existing backends inherit this adapter to map animated/current-value and
+/// retained-drawing operations onto their real primitive implementations.
+/// </summary>
+[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+public abstract class DrawingContextAdapter : DrawingContext
+{
+    /// <summary>
+    /// Compatibility dispatch point for Jalium backends that historically overrode
+    /// <see cref="DrawingContext.DrawText(FormattedText, Point)"/>.
+    /// </summary>
+    public new virtual void DrawText(FormattedText formattedText, Point origin)
+    {
+        ArgumentNullException.ThrowIfNull(formattedText);
+        DrawGeometry(formattedText.Foreground, null, formattedText.BuildGeometry(origin));
+    }
+
+    public override void DrawLine(
+        Pen pen,
+        Point point0,
+        AnimationClock? point0Animations,
+        Point point1,
+        AnimationClock? point1Animations) => DrawLine(pen, point0, point1);
+
+    public override void DrawDrawing(Drawing drawing)
+    {
+        ArgumentNullException.ThrowIfNull(drawing);
+        drawing.RenderTo(this);
+    }
+
+    public override void DrawGlyphRun(Brush? foregroundBrush, GlyphRun glyphRun)
+    {
+        ArgumentNullException.ThrowIfNull(glyphRun);
+        DrawGeometry(foregroundBrush, null, glyphRun.BuildGeometry());
+    }
+
+    public override void DrawRectangle(
+        Brush? brush,
+        Pen? pen,
+        Rect rectangle,
+        AnimationClock? rectangleAnimations) => DrawRectangle(brush, pen, rectangle);
+
+    public override void DrawRoundedRectangle(
+        Brush? brush,
+        Pen? pen,
+        Rect rectangle,
+        AnimationClock? rectangleAnimations,
+        double radiusX,
+        AnimationClock? radiusXAnimations,
+        double radiusY,
+        AnimationClock? radiusYAnimations) =>
+        DrawRoundedRectangle(brush, pen, rectangle, radiusX, radiusY);
+
+    public override void DrawEllipse(
+        Brush? brush,
+        Pen? pen,
+        Point center,
+        AnimationClock? centerAnimations,
+        double radiusX,
+        AnimationClock? radiusXAnimations,
+        double radiusY,
+        AnimationClock? radiusYAnimations) =>
+        DrawEllipse(brush, pen, center, radiusX, radiusY);
+
+    public override void DrawImage(
+        ImageSource imageSource,
+        Rect rectangle,
+        AnimationClock? rectangleAnimations) => DrawImage(imageSource, rectangle);
+
+    public override void DrawVideo(MediaPlayer player, Rect rectangle)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+        if (player.CurrentFrame is ImageSource frame)
+        {
+            DrawImage(frame, rectangle);
+        }
+    }
+
+    public override void DrawVideo(
+        MediaPlayer player,
+        Rect rectangle,
+        AnimationClock? rectangleAnimations) => DrawVideo(player, rectangle);
+
+    public override void PushOpacity(double opacity, AnimationClock? opacityAnimations) =>
+        PushOpacity(opacity);
+
+    public override void PushGuidelineSet(GuidelineSet guidelines)
+    {
+        ArgumentNullException.ThrowIfNull(guidelines);
+    }
+
+    public override void PushOpacityMask(Brush opacityMask)
+    {
+        ArgumentNullException.ThrowIfNull(opacityMask);
+    }
+
+    [Obsolete("BitmapEffect is deprecated. Use Effect instead.")]
+    public override void PushEffect(
+        Effects.BitmapEffect effect,
+        Effects.BitmapEffectInput effectInput)
+    {
+        ArgumentNullException.ThrowIfNull(effect);
+        ArgumentNullException.ThrowIfNull(effectInput);
+    }
+
+    protected override void DisposeCore() => Close();
 }
 
 /// <summary>
 /// Describes how a shape is outlined.
 /// </summary>
-public class Pen
+public sealed class Pen : Animatable
 {
-    /// <summary>
-    /// Gets or sets the brush for the stroke.
-    /// </summary>
-    public Brush? Brush { get; set; }
+    public static readonly DependencyProperty BrushProperty =
+        DependencyProperty.Register(nameof(Brush), typeof(Brush), typeof(Pen), new PropertyMetadata(null));
 
-    private double _thickness = 1;
+    public static readonly DependencyProperty ThicknessProperty =
+        DependencyProperty.Register(nameof(Thickness), typeof(double), typeof(Pen), new PropertyMetadata(1.0));
+
+    public static readonly DependencyProperty StartLineCapProperty =
+        DependencyProperty.Register(nameof(StartLineCap), typeof(PenLineCap), typeof(Pen), new PropertyMetadata(PenLineCap.Flat));
+
+    public static readonly DependencyProperty EndLineCapProperty =
+        DependencyProperty.Register(nameof(EndLineCap), typeof(PenLineCap), typeof(Pen), new PropertyMetadata(PenLineCap.Flat));
+
+    public static readonly DependencyProperty DashCapProperty =
+        DependencyProperty.Register(nameof(DashCap), typeof(PenLineCap), typeof(Pen), new PropertyMetadata(PenLineCap.Square));
+
+    public static readonly DependencyProperty LineJoinProperty =
+        DependencyProperty.Register(nameof(LineJoin), typeof(PenLineJoin), typeof(Pen), new PropertyMetadata(PenLineJoin.Miter));
+
+    public static readonly DependencyProperty MiterLimitProperty =
+        DependencyProperty.Register(nameof(MiterLimit), typeof(double), typeof(Pen), new PropertyMetadata(10.0));
+
+    public static readonly DependencyProperty DashStyleProperty =
+        DependencyProperty.Register(nameof(DashStyle), typeof(DashStyle), typeof(Pen), new PropertyMetadata(null));
+
+    /// <summary>Gets or sets the brush for the stroke.</summary>
+    public Brush? Brush
+    {
+        get => (Brush?)GetValue(BrushProperty);
+        set => SetValue(BrushProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the stroke thickness. Must be non-negative.
     /// </summary>
     public double Thickness
     {
-        get => _thickness;
-        set => _thickness = value >= 0 ? value : 0;
+        get => (double)(GetValue(ThicknessProperty) ?? 1.0);
+        set => SetValue(ThicknessProperty, value);
     }
 
     /// <summary>
     /// Gets or sets the line cap style for the start of the line.
     /// </summary>
-    public PenLineCap StartLineCap { get; set; } = PenLineCap.Flat;
+    public PenLineCap StartLineCap
+    {
+        get => (PenLineCap)(GetValue(StartLineCapProperty) ?? PenLineCap.Flat);
+        set => SetValue(StartLineCapProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the line cap style for the end of the line.
     /// </summary>
-    public PenLineCap EndLineCap { get; set; } = PenLineCap.Flat;
+    public PenLineCap EndLineCap
+    {
+        get => (PenLineCap)(GetValue(EndLineCapProperty) ?? PenLineCap.Flat);
+        set => SetValue(EndLineCapProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the dash cap style.
     /// </summary>
-    public PenLineCap DashCap { get; set; } = PenLineCap.Flat;
+    public PenLineCap DashCap
+    {
+        get => (PenLineCap)(GetValue(DashCapProperty) ?? PenLineCap.Square);
+        set => SetValue(DashCapProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the line join style.
     /// </summary>
-    public PenLineJoin LineJoin { get; set; } = PenLineJoin.Miter;
+    public PenLineJoin LineJoin
+    {
+        get => (PenLineJoin)(GetValue(LineJoinProperty) ?? PenLineJoin.Miter);
+        set => SetValue(LineJoinProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the miter limit.
     /// </summary>
-    public double MiterLimit { get; set; } = 10;
+    public double MiterLimit
+    {
+        get => (double)(GetValue(MiterLimitProperty) ?? 10.0);
+        set => SetValue(MiterLimitProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the dash style.
     /// </summary>
-    public DashStyle? DashStyle { get; set; }
+    public DashStyle DashStyle
+    {
+        get => (DashStyle?)GetValue(DashStyleProperty) ?? DashStyles.Solid;
+        set => SetValue(DashStyleProperty, value);
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Pen"/> class.
@@ -617,42 +870,56 @@ public class Pen
     /// shared (brushes are not yet cloneable); the <see cref="DashStyle"/> is deep-copied so
     /// the clone's dash pattern is independent of the original.
     /// </summary>
-    public Pen Clone()
-    {
-        return new Pen
-        {
-            Brush = Brush,
-            Thickness = Thickness,
-            StartLineCap = StartLineCap,
-            EndLineCap = EndLineCap,
-            DashCap = DashCap,
-            LineJoin = LineJoin,
-            MiterLimit = MiterLimit,
-            DashStyle = DashStyle?.Clone(),
-        };
-    }
+    public new Pen Clone() => (Pen)base.Clone();
+
+    public new Pen CloneCurrentValue() => (Pen)base.CloneCurrentValue();
+
+    protected override Freezable CreateInstanceCore() => new Pen();
 }
 
 /// <summary>
 /// Describes the dash pattern of a stroke.
 /// </summary>
-public sealed class DashStyle
+public sealed class DashStyle : Animatable
 {
-    /// <summary>
-    /// Gets the collection of dash lengths.
-    /// </summary>
-    public List<double> Dashes { get; } = new();
+    public static readonly DependencyProperty DashesProperty =
+        DependencyProperty.Register(nameof(Dashes), typeof(DoubleCollection), typeof(DashStyle), new PropertyMetadata(null));
+
+    public static readonly DependencyProperty OffsetProperty =
+        DependencyProperty.Register(nameof(Offset), typeof(double), typeof(DashStyle), new PropertyMetadata(0.0));
+
+    /// <summary>Gets or sets the collection of dash lengths.</summary>
+    public DoubleCollection Dashes
+    {
+        get
+        {
+            if (GetValue(DashesProperty) is DoubleCollection value)
+            {
+                return value;
+            }
+
+            value = new DoubleCollection();
+            SetCurrentValue(DashesProperty, value);
+            return value;
+        }
+        set => SetValue(DashesProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the offset to start the dash pattern.
     /// </summary>
-    public double Offset { get; set; }
+    public double Offset
+    {
+        get => (double)(GetValue(OffsetProperty) ?? 0.0);
+        set => SetValue(OffsetProperty, value);
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DashStyle"/> class.
     /// </summary>
     public DashStyle()
     {
+        SetCurrentValue(DashesProperty, new DoubleCollection());
     }
 
     /// <summary>
@@ -662,12 +929,16 @@ public sealed class DashStyle
     /// <param name="offset">The dash offset.</param>
     public DashStyle(IEnumerable<double> dashes, double offset = 0)
     {
-        Dashes.AddRange(dashes);
+        ArgumentNullException.ThrowIfNull(dashes);
+        Dashes = new DoubleCollection(dashes);
         Offset = offset;
     }
 
-    /// <summary>Creates a copy of this dash style with an independent dashes list.</summary>
-    public DashStyle Clone() => new DashStyle(Dashes, Offset);
+    public new DashStyle Clone() => (DashStyle)base.Clone();
+
+    public new DashStyle CloneCurrentValue() => (DashStyle)base.CloneCurrentValue();
+
+    protected override Freezable CreateInstanceCore() => new DashStyle();
 
     /// <summary>
     /// Gets a solid (no dashes) style.
@@ -703,22 +974,22 @@ public enum PenLineCap
     /// <summary>
     /// A cap that does not extend past the end point.
     /// </summary>
-    Flat,
+    Flat = 0,
 
     /// <summary>
     /// A semicircular cap.
     /// </summary>
-    Round,
+    Round = 2,
 
     /// <summary>
     /// A triangular cap.
     /// </summary>
-    Triangle,
+    Triangle = 3,
 
     /// <summary>
     /// A square cap that extends past the end point.
     /// </summary>
-    Square
+    Square = 1
 }
 
 /// <summary>
@@ -745,7 +1016,7 @@ public enum PenLineJoin
 /// <summary>
 /// Represents formatted text for rendering and measurement.
 /// </summary>
-public sealed class FormattedText
+public sealed partial class FormattedText
 {
     /// <summary>
     /// Gets the text content.
@@ -755,12 +1026,12 @@ public sealed class FormattedText
     /// <summary>
     /// Gets the font family name.
     /// </summary>
-    public string FontFamily { get; }
+    public string FontFamily { get; private set; }
 
     /// <summary>
     /// Gets the font size.
     /// </summary>
-    public double FontSize { get; }
+    public double FontSize { get; private set; }
 
     /// <summary>
     /// Gets or sets the foreground brush.
@@ -770,12 +1041,31 @@ public sealed class FormattedText
     /// <summary>
     /// Gets or sets the maximum width for text wrapping.
     /// </summary>
-    public double MaxTextWidth { get; set; } = double.MaxValue;
+    public double MaxTextWidth
+    {
+        get => _maxTextWidth;
+        set
+        {
+            ValidateMaxTextWidth(value, nameof(value));
+            _maxTextWidth = value;
+            _maxTextWidths = null;
+            RecomputeApproximateMetrics();
+        }
+    }
 
     /// <summary>
     /// Gets or sets the maximum height.
     /// </summary>
-    public double MaxTextHeight { get; set; } = double.MaxValue;
+    public double MaxTextHeight
+    {
+        get => _maxTextHeight;
+        set
+        {
+            ValidateMaxTextHeight(value, nameof(value));
+            _maxTextHeight = value;
+            RecomputeApproximateMetrics();
+        }
+    }
 
     /// <summary>
     /// Gets or sets the text trimming mode.
@@ -828,125 +1118,75 @@ public sealed class FormattedText
     /// </summary>
     public FormattedText(string text, string fontFamily, double fontSize)
     {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(fontFamily);
+        ValidateEmSize(fontSize, nameof(fontSize));
+
         Text = text;
         FontFamily = fontFamily;
         FontSize = fontSize;
+        InitializeCompatibilityFormatting();
     }
 
     /// <summary>
     /// Gets the width of the text layout.
     /// </summary>
-    public double Width { get; set; }
+    public double Width { get; internal set; }
 
     /// <summary>
     /// Gets the height of the text layout.
     /// </summary>
-    public double Height { get; set; }
+    public double Height { get; internal set; }
 
     /// <summary>
     /// Gets the natural line height (ascent + descent + line gap).
     /// This is the WPF-style line height based on actual font metrics.
     /// </summary>
-    public double LineHeight { get; set; }
+    public double LineHeight { get; internal set; }
 
     /// <summary>
     /// Gets the font ascent (distance from baseline to top of the tallest glyph).
     /// </summary>
-    public double Ascent { get; set; }
+    public double Ascent { get; internal set; }
 
     /// <summary>
     /// Gets the font descent (distance from baseline to bottom of the lowest glyph).
     /// </summary>
-    public double Descent { get; set; }
+    public double Descent { get; internal set; }
 
     /// <summary>
     /// Gets the recommended line gap between lines.
     /// </summary>
-    public double LineGap { get; set; }
+    public double LineGap { get; internal set; }
 
     /// <summary>
     /// Gets the baseline offset from the top of the line.
     /// </summary>
-    public double Baseline { get; set; }
+    public double Baseline { get; internal set; }
 
     /// <summary>
     /// Gets the number of lines in the text layout.
     /// </summary>
-    public int LineCount { get; set; } = 1;
+    public int LineCount { get; internal set; } = 1;
 
     /// <summary>
     /// Gets whether this text has been measured using native text measurement.
     /// </summary>
-    public bool IsMeasured { get; set; }
-}
-
-/// <summary>
-/// Specifies how text is trimmed when it overflows the edge of its container.
-/// </summary>
-public enum TextTrimming
-{
-    /// <summary>
-    /// Text is not trimmed.
-    /// </summary>
-    None,
-
-    /// <summary>
-    /// Text is trimmed at a character boundary. An ellipsis (...) is drawn in place of remaining text.
-    /// </summary>
-    CharacterEllipsis,
-
-    /// <summary>
-    /// Text is trimmed at a word boundary. An ellipsis (...) is drawn in place of remaining text.
-    /// </summary>
-    WordEllipsis
+    public bool IsMeasured { get; internal set; }
 }
 
 /// <summary>
 /// Base class for geometry objects.
 /// </summary>
-public abstract class Geometry
+public abstract class Geometry : Animatable, IFormattable
 {
-    private bool _isFrozen;
+    /// <summary>Identifies the <see cref="Transform"/> dependency property.</summary>
+    public static readonly DependencyProperty TransformProperty =
+        DependencyProperty.Register(nameof(Transform), typeof(Transform), typeof(Geometry),
+            new PropertyMetadata(null));
 
-    /// <summary>
-    /// Gets whether this geometry is frozen (immutable).
-    /// </summary>
-    public bool IsFrozen => _isFrozen;
-
-    /// <summary>
-    /// Gets whether this geometry can be frozen (WPF <c>Freezable.CanFreeze</c>). Composite
-    /// geometries return false when any child cannot be frozen.
-    /// </summary>
-    public virtual bool CanFreeze => true;
-
-    /// <summary>
-    /// Makes this geometry immutable (WPF <c>Freezable.Freeze</c> semantics): recursively
-    /// freezes child geometries first, then marks this one frozen. No-op if already frozen.
-    /// <para>Enforcement is currently cooperative/opt-in: <see cref="IsFrozen"/> is a flag that
-    /// consumers (e.g. the render thread sharing geometry by reference) honor; property setters
-    /// do not yet throw on mutating a frozen geometry.</para>
-    /// </summary>
-    public void Freeze()
-    {
-        if (_isFrozen) return;
-        if (!CanFreeze)
-            throw new InvalidOperationException("This Geometry has a child that cannot be frozen.");
-        FreezeCore();
-        _isFrozen = true;
-    }
-
-    /// <summary>
-    /// When overridden, recursively freezes child geometries before this one is sealed.
-    /// </summary>
-    protected virtual void FreezeCore() { }
-
-    /// <summary>
-    /// Verifies that the geometry is not frozen before allowing modification.
-    /// </summary>
-    protected void WritePreamble()
-    {
-        if (_isFrozen) throw new InvalidOperationException("Cannot modify a frozen Geometry.");
-    }
+    /// <summary>The tolerance used by the parameterless flattening APIs.</summary>
+    public static double StandardFlatteningTolerance => 0.25;
 
     /// <summary>
     /// Gets the bounding box of this geometry.
@@ -956,7 +1196,20 @@ public abstract class Geometry
     /// <summary>
     /// Gets or sets a Transform to apply to this geometry.
     /// </summary>
-    public Transform? Transform { get; set; }
+    public Transform? Transform
+    {
+        get => (Transform?)GetValue(TransformProperty);
+        set
+        {
+            if (ReferenceEquals(Transform, value))
+                return;
+            SetValue(TransformProperty, value);
+            WritePostscript();
+        }
+    }
+
+    /// <summary>Returns whether a non-default transform should be serialized.</summary>
+    public bool ShouldSerializeTransform() => Transform is not null;
 
     /// <summary>
     /// Creates a Geometry from a path markup mini-language string.
@@ -967,6 +1220,13 @@ public abstract class Geometry
     {
         return PathMarkupParser.Parse(source);
     }
+
+    /// <summary>
+    /// Preserves Jalium source compatibility for code that historically assigned path markup
+    /// strings directly to Path.Data while the property itself now has WPF's Geometry type.
+    /// </summary>
+    public static implicit operator Geometry?(string? source) =>
+        string.IsNullOrWhiteSpace(source) ? null : Parse(source);
 
     /// <summary>
     /// Gets an empty Geometry.
@@ -1003,6 +1263,20 @@ public abstract class Geometry
         return FillContains(point);
     }
 
+    /// <summary>Returns whether this geometry completely contains another geometry.</summary>
+    public bool FillContains(Geometry geometry)
+    {
+        ArgumentNullException.ThrowIfNull(geometry);
+        return FillContains(geometry, StandardFlatteningTolerance, ToleranceType.Absolute);
+    }
+
+    /// <summary>Returns whether this geometry completely contains another geometry.</summary>
+    public bool FillContains(Geometry geometry, double tolerance, ToleranceType type)
+    {
+        ArgumentNullException.ThrowIfNull(geometry);
+        return FillContainsWithDetail(geometry, tolerance, type) == IntersectionDetail.FullyContains;
+    }
+
     /// <summary>
     /// Returns true if the specified point is on the stroke outline.
     /// </summary>
@@ -1016,6 +1290,31 @@ public abstract class Geometry
         var inner = new Rect(bounds.X + half, bounds.Y + half,
             Math.Max(0, bounds.Width - pen.Thickness), Math.Max(0, bounds.Height - pen.Thickness));
         return outer.Contains(point) && !inner.Contains(point);
+    }
+
+    /// <summary>Tests a point against the stroked outline using the requested tolerance.</summary>
+    public bool StrokeContains(Pen pen, Point hitPoint, double tolerance, ToleranceType type)
+    {
+        ArgumentNullException.ThrowIfNull(pen);
+        ValidateTolerance(tolerance);
+        return StrokeContains(pen, hitPoint);
+    }
+
+    /// <summary>Gets the geometry bounds expanded by the supplied pen.</summary>
+    public Rect GetRenderBounds(Pen pen) =>
+        GetRenderBounds(pen, StandardFlatteningTolerance, ToleranceType.Absolute);
+
+    /// <summary>Gets the geometry bounds expanded by the supplied pen.</summary>
+    public virtual Rect GetRenderBounds(Pen pen, double tolerance, ToleranceType type)
+    {
+        ValidateTolerance(tolerance);
+        Rect bounds = Bounds;
+        if (bounds.IsEmpty || pen is null || pen.Thickness <= 0)
+            return bounds;
+
+        double half = pen.Thickness / 2.0;
+        return new Rect(bounds.X - half, bounds.Y - half,
+            bounds.Width + pen.Thickness, bounds.Height + pen.Thickness);
     }
 
     /// <summary>
@@ -1042,6 +1341,13 @@ public abstract class Geometry
     {
         var flat = GetFlattenedPathGeometry();
         return flat.ComputeArea();
+    }
+
+    /// <summary>Gets the filled area using the requested flattening tolerance.</summary>
+    public virtual double GetArea(double tolerance, ToleranceType type)
+    {
+        ValidateTolerance(tolerance);
+        return GetFlattenedPathGeometry(tolerance, type).ComputeArea();
     }
 
     /// <summary>
@@ -1102,7 +1408,7 @@ public abstract class Geometry
         var otherBounds = geometry.Bounds;
 
         // Check for no intersection
-        var intersection = thisBounds.Intersect(otherBounds);
+        var intersection = Rect.Intersect(thisBounds, otherBounds);
         if (intersection.Width <= 0 || intersection.Height <= 0)
             return IntersectionDetail.Empty;
 
@@ -1115,6 +1421,17 @@ public abstract class Geometry
             return IntersectionDetail.FullyInside;
 
         return IntersectionDetail.Intersects;
+    }
+
+    /// <summary>Gets the fill intersection relationship using the requested tolerance.</summary>
+    public virtual IntersectionDetail FillContainsWithDetail(
+        Geometry geometry,
+        double tolerance,
+        ToleranceType type)
+    {
+        ArgumentNullException.ThrowIfNull(geometry);
+        ValidateTolerance(tolerance);
+        return FillContainsWithDetail(geometry);
     }
 
     /// <summary>
@@ -1131,7 +1448,7 @@ public abstract class Geometry
             thisBounds.Width + pen.Thickness, thisBounds.Height + pen.Thickness);
         var otherBounds = geometry.Bounds;
 
-        var intersection = strokeBounds.Intersect(otherBounds);
+        var intersection = Rect.Intersect(strokeBounds, otherBounds);
         if (intersection.Width <= 0 || intersection.Height <= 0)
             return IntersectionDetail.Empty;
 
@@ -1142,6 +1459,19 @@ public abstract class Geometry
             return IntersectionDetail.FullyInside;
 
         return IntersectionDetail.Intersects;
+    }
+
+    /// <summary>Gets the stroke intersection relationship using the requested tolerance.</summary>
+    public IntersectionDetail StrokeContainsWithDetail(
+        Pen pen,
+        Geometry geometry,
+        double tolerance,
+        ToleranceType type)
+    {
+        ArgumentNullException.ThrowIfNull(pen);
+        ArgumentNullException.ThrowIfNull(geometry);
+        ValidateTolerance(tolerance);
+        return StrokeContainsWithDetail(pen, geometry);
     }
 
     /// <summary>
@@ -1279,6 +1609,24 @@ public abstract class Geometry
         return result;
     }
 
+    /// <summary>Combines two geometries using an explicit flattening tolerance.</summary>
+    public static PathGeometry Combine(
+        Geometry geometry1,
+        Geometry geometry2,
+        GeometryCombineMode mode,
+        Transform? transform,
+        double tolerance,
+        ToleranceType type)
+    {
+        ArgumentNullException.ThrowIfNull(geometry1);
+        ArgumentNullException.ThrowIfNull(geometry2);
+        ValidateTolerance(tolerance);
+
+        PathGeometry left = geometry1.GetFlattenedPathGeometry(tolerance, type);
+        PathGeometry right = geometry2.GetFlattenedPathGeometry(tolerance, type);
+        return Combine(left, right, mode, transform);
+    }
+
     private static Point TransformPointByMatrix(Point p, Matrix m)
     {
         return new Point(
@@ -1398,12 +1746,26 @@ public abstract class Geometry
     /// <summary>
     /// Creates a deep copy of this geometry.
     /// </summary>
-    public virtual Geometry Clone()
+    public new Geometry Clone() => (Geometry)base.Clone();
+
+    /// <summary>Creates a modifiable clone using current animated values.</summary>
+    public new Geometry CloneCurrentValue() => (Geometry)base.CloneCurrentValue();
+
+    /// <inheritdoc />
+    public override string ToString() => ToString(System.Globalization.CultureInfo.CurrentCulture);
+
+    /// <summary>Formats the geometry as path markup.</summary>
+    public string ToString(IFormatProvider? provider) =>
+        GetFlattenedPathGeometry(StandardFlatteningTolerance, ToleranceType.Absolute)
+            .Figures.ToString(provider);
+
+    string IFormattable.ToString(string? format, IFormatProvider? provider) =>
+        ToString(provider);
+
+    protected static void ValidateTolerance(double tolerance)
     {
-        // Base implementation returns a flattened copy.
-        var flat = GetFlattenedPathGeometry();
-        flat.Transform = Transform;
-        return flat;
+        if (double.IsNaN(tolerance) || double.IsInfinity(tolerance) || tolerance < 0)
+            throw new ArgumentOutOfRangeException(nameof(tolerance));
     }
 
     /// <summary>
@@ -1433,27 +1795,62 @@ public enum ToleranceType
 /// </summary>
 public sealed class RectangleGeometry : Geometry
 {
+    public static readonly DependencyProperty RectProperty =
+        DependencyProperty.Register(nameof(Rect), typeof(Rect), typeof(RectangleGeometry),
+            new PropertyMetadata(Rect.Empty));
+
+    public static readonly DependencyProperty RadiusXProperty =
+        DependencyProperty.Register(nameof(RadiusX), typeof(double), typeof(RectangleGeometry),
+            new PropertyMetadata(0.0));
+
+    public static readonly DependencyProperty RadiusYProperty =
+        DependencyProperty.Register(nameof(RadiusY), typeof(double), typeof(RectangleGeometry),
+            new PropertyMetadata(0.0));
+
+    private CornerRadius _cornerRadius;
+
     /// <summary>
     /// Gets or sets the rectangle.
     /// </summary>
-    public Rect Rect { get; set; }
+    public Rect Rect
+    {
+        get => (Rect)GetValue(RectProperty)!;
+        set { SetValue(RectProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the X radius of the corners.
     /// </summary>
-    public double RadiusX { get; set; }
+    public double RadiusX
+    {
+        get => (double)GetValue(RadiusXProperty)!;
+        set { SetValue(RadiusXProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the Y radius of the corners.
     /// </summary>
-    public double RadiusY { get; set; }
+    public double RadiusY
+    {
+        get => (double)GetValue(RadiusYProperty)!;
+        set { SetValue(RadiusYProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Optional per-corner radii. When any component is non-zero, this overrides
     /// <see cref="RadiusX"/>/<see cref="RadiusY"/> for downstream consumers that
     /// support per-corner rounded rects (e.g. native rounded-rect clip).
     /// </summary>
-    public CornerRadius CornerRadius { get; set; }
+    public CornerRadius CornerRadius
+    {
+        get => _cornerRadius;
+        set
+        {
+            WritePreamble();
+            _cornerRadius = value;
+            WritePostscript();
+        }
+    }
 
     /// <summary>
     /// True when <see cref="CornerRadius"/> carries non-uniform per-corner data
@@ -1491,6 +1888,12 @@ public sealed class RectangleGeometry : Geometry
         Rect = rect;
         RadiusX = radiusX;
         RadiusY = radiusY;
+    }
+
+    public RectangleGeometry(Rect rect, double radiusX, double radiusY, Transform transform)
+        : this(rect, radiusX, radiusY)
+    {
+        Transform = transform;
     }
 
     /// <summary>
@@ -1598,13 +2001,31 @@ public sealed class RectangleGeometry : Geometry
     }
 
     /// <inheritdoc />
-    public override Geometry Clone()
+    public override double GetArea(double tolerance, ToleranceType type)
     {
-        return new RectangleGeometry(Rect, RadiusX, RadiusY)
-        {
-            Transform = Transform,
-            CornerRadius = CornerRadius,
-        };
+        ValidateTolerance(tolerance);
+        double width = Math.Max(0, Rect.Width);
+        double height = Math.Max(0, Rect.Height);
+        double rx = Math.Min(Math.Abs(RadiusX), width / 2.0);
+        double ry = Math.Min(Math.Abs(RadiusY), height / 2.0);
+        return width * height - (4.0 - Math.PI) * rx * ry;
+    }
+
+    public new RectangleGeometry Clone() => (RectangleGeometry)base.Clone();
+    public new RectangleGeometry CloneCurrentValue() => (RectangleGeometry)base.CloneCurrentValue();
+
+    protected override Freezable CreateInstanceCore() => new RectangleGeometry();
+
+    protected override void CloneCore(Freezable source)
+    {
+        base.CloneCore(source);
+        _cornerRadius = ((RectangleGeometry)source)._cornerRadius;
+    }
+
+    protected override void CloneCurrentValueCore(Freezable source)
+    {
+        base.CloneCurrentValueCore(source);
+        _cornerRadius = ((RectangleGeometry)source)._cornerRadius;
     }
 }
 
@@ -1613,20 +2034,67 @@ public sealed class RectangleGeometry : Geometry
 /// </summary>
 public sealed class EllipseGeometry : Geometry
 {
+    public static readonly DependencyProperty CenterProperty =
+        DependencyProperty.Register(nameof(Center), typeof(Point), typeof(EllipseGeometry),
+            new PropertyMetadata(new Point()));
+
+    public static readonly DependencyProperty RadiusXProperty =
+        DependencyProperty.Register(nameof(RadiusX), typeof(double), typeof(EllipseGeometry),
+            new PropertyMetadata(0.0));
+
+    public static readonly DependencyProperty RadiusYProperty =
+        DependencyProperty.Register(nameof(RadiusY), typeof(double), typeof(EllipseGeometry),
+            new PropertyMetadata(0.0));
+
     /// <summary>
     /// Gets or sets the center point.
     /// </summary>
-    public Point Center { get; set; }
+    public Point Center
+    {
+        get => (Point)GetValue(CenterProperty)!;
+        set { SetValue(CenterProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the X radius.
     /// </summary>
-    public double RadiusX { get; set; }
+    public double RadiusX
+    {
+        get => (double)GetValue(RadiusXProperty)!;
+        set { SetValue(RadiusXProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the Y radius.
     /// </summary>
-    public double RadiusY { get; set; }
+    public double RadiusY
+    {
+        get => (double)GetValue(RadiusYProperty)!;
+        set { SetValue(RadiusYProperty, value); WritePostscript(); }
+    }
+
+    public EllipseGeometry()
+    {
+    }
+
+    public EllipseGeometry(Point center, double radiusX, double radiusY)
+    {
+        Center = center;
+        RadiusX = radiusX;
+        RadiusY = radiusY;
+    }
+
+    public EllipseGeometry(Point center, double radiusX, double radiusY, Transform transform)
+        : this(center, radiusX, radiusY)
+    {
+        Transform = transform;
+    }
+
+    public EllipseGeometry(Rect rect)
+        : this(new Point(rect.X + rect.Width / 2.0, rect.Y + rect.Height / 2.0),
+            rect.Width / 2.0, rect.Height / 2.0)
+    {
+    }
 
     /// <inheritdoc />
     public override Rect Bounds
@@ -1681,11 +2149,16 @@ public sealed class EllipseGeometry : Geometry
         return Math.PI * Math.Abs(RadiusX) * Math.Abs(RadiusY);
     }
 
-    /// <inheritdoc />
-    public override Geometry Clone()
+    public override double GetArea(double tolerance, ToleranceType type)
     {
-        return new EllipseGeometry { Center = Center, RadiusX = RadiusX, RadiusY = RadiusY, Transform = Transform };
+        ValidateTolerance(tolerance);
+        return GetArea();
     }
+
+    /// <inheritdoc />
+    public new EllipseGeometry Clone() => (EllipseGeometry)base.Clone();
+    public new EllipseGeometry CloneCurrentValue() => (EllipseGeometry)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new EllipseGeometry();
 }
 
 /// <summary>
@@ -1693,15 +2166,31 @@ public sealed class EllipseGeometry : Geometry
 /// </summary>
 public sealed class LineGeometry : Geometry
 {
+    public static readonly DependencyProperty StartPointProperty =
+        DependencyProperty.Register(nameof(StartPoint), typeof(Point), typeof(LineGeometry),
+            new PropertyMetadata(new Point()));
+
+    public static readonly DependencyProperty EndPointProperty =
+        DependencyProperty.Register(nameof(EndPoint), typeof(Point), typeof(LineGeometry),
+            new PropertyMetadata(new Point()));
+
     /// <summary>
     /// Gets or sets the start point of the line.
     /// </summary>
-    public Point StartPoint { get; set; }
+    public Point StartPoint
+    {
+        get => (Point)GetValue(StartPointProperty)!;
+        set { SetValue(StartPointProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the end point of the line.
     /// </summary>
-    public Point EndPoint { get; set; }
+    public Point EndPoint
+    {
+        get => (Point)GetValue(EndPointProperty)!;
+        set { SetValue(EndPointProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LineGeometry"/> class.
@@ -1719,6 +2208,12 @@ public sealed class LineGeometry : Geometry
     {
         StartPoint = startPoint;
         EndPoint = endPoint;
+    }
+
+    public LineGeometry(Point startPoint, Point endPoint, Transform transform)
+        : this(startPoint, endPoint)
+    {
+        Transform = transform;
     }
 
     /// <inheritdoc />
@@ -1761,10 +2256,15 @@ public sealed class LineGeometry : Geometry
     }
 
     /// <inheritdoc />
-    public override Geometry Clone()
+    public override double GetArea(double tolerance, ToleranceType type)
     {
-        return new LineGeometry(StartPoint, EndPoint) { Transform = Transform };
+        ValidateTolerance(tolerance);
+        return 0.0;
     }
+
+    public new LineGeometry Clone() => (LineGeometry)base.Clone();
+    public new LineGeometry CloneCurrentValue() => (LineGeometry)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new LineGeometry();
 }
 
 /// <summary>
@@ -1772,15 +2272,43 @@ public sealed class LineGeometry : Geometry
 /// </summary>
 public sealed class GeometryGroup : Geometry
 {
+    public static readonly DependencyProperty ChildrenProperty =
+        DependencyProperty.Register(nameof(Children), typeof(GeometryCollection), typeof(GeometryGroup),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty FillRuleProperty =
+        DependencyProperty.Register(nameof(FillRule), typeof(FillRule), typeof(GeometryGroup),
+            new PropertyMetadata(FillRule.EvenOdd));
+
+    public GeometryGroup()
+    {
+        Children = new GeometryCollection();
+    }
+
     /// <summary>
     /// Gets the collection of child geometries.
     /// </summary>
-    public List<Geometry> Children { get; } = new();
+    public GeometryCollection Children
+    {
+        get => (GeometryCollection)GetValue(ChildrenProperty)!;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            GeometryCollection? old = (GeometryCollection?)GetValue(ChildrenProperty);
+            OnFreezablePropertyChanged(old, value, ChildrenProperty);
+            SetValue(ChildrenProperty, value);
+            WritePostscript();
+        }
+    }
 
     /// <summary>
     /// Gets or sets the fill rule for this geometry.
     /// </summary>
-    public FillRule FillRule { get; set; } = FillRule.EvenOdd;
+    public FillRule FillRule
+    {
+        get => (FillRule)GetValue(FillRuleProperty)!;
+        set { SetValue(FillRuleProperty, value); WritePostscript(); }
+    }
 
     /// <inheritdoc />
     public override Rect Bounds
@@ -1792,7 +2320,7 @@ public sealed class GeometryGroup : Geometry
             var result = Children[0].Bounds;
             for (int i = 1; i < Children.Count; i++)
             {
-                result = result.Union(Children[i].Bounds);
+                result = Rect.Union(result, Children[i].Bounds);
             }
             return result;
         }
@@ -1834,33 +2362,9 @@ public sealed class GeometryGroup : Geometry
     }
 
     /// <inheritdoc />
-    public override Geometry Clone()
-    {
-        var clone = new GeometryGroup { FillRule = FillRule, Transform = Transform };
-        foreach (var child in Children)
-        {
-            clone.Children.Add(child.Clone());
-        }
-        return clone;
-    }
-
-    /// <inheritdoc />
-    public override bool CanFreeze
-    {
-        get
-        {
-            foreach (var child in Children)
-                if (!child.CanFreeze) return false;
-            return true;
-        }
-    }
-
-    /// <inheritdoc />
-    protected override void FreezeCore()
-    {
-        foreach (var child in Children)
-            child.Freeze();
-    }
+    public new GeometryGroup Clone() => (GeometryGroup)base.Clone();
+    public new GeometryGroup CloneCurrentValue() => (GeometryGroup)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new GeometryGroup();
 }
 
 /// <summary>
@@ -1868,20 +2372,82 @@ public sealed class GeometryGroup : Geometry
 /// </summary>
 public sealed class CombinedGeometry : Geometry
 {
+    public static readonly DependencyProperty Geometry1Property =
+        DependencyProperty.Register(nameof(Geometry1), typeof(Geometry), typeof(CombinedGeometry),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty Geometry2Property =
+        DependencyProperty.Register(nameof(Geometry2), typeof(Geometry), typeof(CombinedGeometry),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty GeometryCombineModeProperty =
+        DependencyProperty.Register(nameof(GeometryCombineMode), typeof(GeometryCombineMode), typeof(CombinedGeometry),
+            new PropertyMetadata(GeometryCombineMode.Union));
+
+    public CombinedGeometry()
+    {
+    }
+
+    public CombinedGeometry(Geometry geometry1, Geometry geometry2)
+        : this(GeometryCombineMode.Union, geometry1, geometry2)
+    {
+    }
+
+    public CombinedGeometry(GeometryCombineMode geometryCombineMode, Geometry geometry1, Geometry geometry2)
+    {
+        GeometryCombineMode = geometryCombineMode;
+        Geometry1 = geometry1;
+        Geometry2 = geometry2;
+    }
+
+    public CombinedGeometry(
+        GeometryCombineMode geometryCombineMode,
+        Geometry geometry1,
+        Geometry geometry2,
+        Transform transform)
+        : this(geometryCombineMode, geometry1, geometry2)
+    {
+        Transform = transform;
+    }
+
     /// <summary>
     /// Gets or sets the first geometry.
     /// </summary>
-    public Geometry? Geometry1 { get; set; }
+    public Geometry? Geometry1
+    {
+        get => (Geometry?)GetValue(Geometry1Property);
+        set
+        {
+            Geometry? old = Geometry1;
+            OnFreezablePropertyChanged(old, value, Geometry1Property);
+            SetValue(Geometry1Property, value);
+            WritePostscript();
+        }
+    }
 
     /// <summary>
     /// Gets or sets the second geometry.
     /// </summary>
-    public Geometry? Geometry2 { get; set; }
+    public Geometry? Geometry2
+    {
+        get => (Geometry?)GetValue(Geometry2Property);
+        set
+        {
+            Geometry? old = Geometry2;
+            OnFreezablePropertyChanged(old, value, Geometry2Property);
+            SetValue(Geometry2Property, value);
+            WritePostscript();
+        }
+    }
 
     /// <summary>
     /// Gets or sets the method used to combine the two geometries.
     /// </summary>
-    public GeometryCombineMode GeometryCombineMode { get; set; } = GeometryCombineMode.Union;
+    public GeometryCombineMode GeometryCombineMode
+    {
+        get => (GeometryCombineMode)GetValue(GeometryCombineModeProperty)!;
+        set { SetValue(GeometryCombineModeProperty, value); WritePostscript(); }
+    }
 
     /// <inheritdoc />
     public override Rect Bounds
@@ -1893,11 +2459,11 @@ public sealed class CombinedGeometry : Geometry
 
             return GeometryCombineMode switch
             {
-                GeometryCombineMode.Union => bounds1.Union(bounds2),
-                GeometryCombineMode.Intersect => bounds1.Intersect(bounds2),
+                GeometryCombineMode.Union => Rect.Union(bounds1, bounds2),
+                GeometryCombineMode.Intersect => Rect.Intersect(bounds1, bounds2),
                 GeometryCombineMode.Exclude => bounds1,
-                GeometryCombineMode.Xor => bounds1.Union(bounds2),
-                _ => bounds1.Union(bounds2)
+                GeometryCombineMode.Xor => Rect.Union(bounds1, bounds2),
+                _ => Rect.Union(bounds1, bounds2)
             };
         }
     }
@@ -1937,27 +2503,12 @@ public sealed class CombinedGeometry : Geometry
     }
 
     /// <inheritdoc />
-    public override Geometry Clone()
-    {
-        return new CombinedGeometry
-        {
-            Geometry1 = Geometry1?.Clone(),
-            Geometry2 = Geometry2?.Clone(),
-            GeometryCombineMode = GeometryCombineMode,
-            Transform = Transform
-        };
-    }
+    public override double GetArea(double tolerance, ToleranceType type) =>
+        GetFlattenedPathGeometry(tolerance, type).ComputeArea();
 
-    /// <inheritdoc />
-    public override bool CanFreeze =>
-        (Geometry1?.CanFreeze ?? true) && (Geometry2?.CanFreeze ?? true);
-
-    /// <inheritdoc />
-    protected override void FreezeCore()
-    {
-        Geometry1?.Freeze();
-        Geometry2?.Freeze();
-    }
+    public new CombinedGeometry Clone() => (CombinedGeometry)base.Clone();
+    public new CombinedGeometry CloneCurrentValue() => (CombinedGeometry)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new CombinedGeometry();
 }
 
 /// <summary>
@@ -1968,22 +2519,22 @@ public enum GeometryCombineMode
     /// <summary>
     /// The two geometries are combined by taking their union.
     /// </summary>
-    Union,
+    Union = 0,
 
     /// <summary>
     /// The two geometries are combined by taking their intersection.
     /// </summary>
-    Intersect,
+    Intersect = 1,
 
     /// <summary>
     /// The second geometry is excluded from the first.
     /// </summary>
-    Exclude,
+    Xor = 2,
 
     /// <summary>
     /// The two geometries are combined by taking the area that exists in the first geometry but not the second and the area that exists in the second geometry but not the first.
     /// </summary>
-    Xor
+    Exclude = 3
 }
 
 /// <summary>
@@ -2007,15 +2558,70 @@ public enum FillRule
 /// </summary>
 public sealed class PathGeometry : Geometry
 {
+    public static readonly DependencyProperty FiguresProperty =
+        DependencyProperty.Register(nameof(Figures), typeof(PathFigureCollection), typeof(PathGeometry),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty FillRuleProperty =
+        DependencyProperty.Register(nameof(FillRule), typeof(FillRule), typeof(PathGeometry),
+            new PropertyMetadata(FillRule.EvenOdd));
+
+    public PathGeometry()
+    {
+        Figures = new PathFigureCollection();
+    }
+
+    public PathGeometry(IEnumerable<PathFigure> figures)
+        : this(figures, FillRule.EvenOdd, null)
+    {
+    }
+
+    public PathGeometry(IEnumerable<PathFigure> figures, FillRule fillRule, Transform? transform)
+        : this()
+    {
+        ArgumentNullException.ThrowIfNull(figures);
+        Figures = new PathFigureCollection(figures);
+        FillRule = fillRule;
+        Transform = transform;
+    }
+
     /// <summary>
     /// Gets the collection of path figures.
     /// </summary>
-    public List<PathFigure> Figures { get; } = new();
+    public PathFigureCollection Figures
+    {
+        get => (PathFigureCollection)GetValue(FiguresProperty)!;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            PathFigureCollection? old = (PathFigureCollection?)GetValue(FiguresProperty);
+            OnFreezablePropertyChanged(old, value, FiguresProperty);
+            SetValue(FiguresProperty, value);
+            WritePostscript();
+        }
+    }
 
     /// <summary>
     /// Gets or sets the fill rule for this geometry.
     /// </summary>
-    public FillRule FillRule { get; set; } = FillRule.EvenOdd;
+    public FillRule FillRule
+    {
+        get => (FillRule)GetValue(FillRuleProperty)!;
+        set { SetValue(FillRuleProperty, value); WritePostscript(); }
+    }
+
+    public static PathGeometry CreateFromGeometry(Geometry geometry)
+    {
+        ArgumentNullException.ThrowIfNull(geometry);
+        return geometry is PathGeometry path ? path.Clone() : geometry.GetFlattenedPathGeometry();
+    }
+
+    public void Clear()
+    {
+        WritePreamble();
+        Figures.Clear();
+        WritePostscript();
+    }
 
     /// <inheritdoc />
     public override bool IsEmpty() => Figures.Count == 0;
@@ -3028,56 +3634,17 @@ public sealed class PathGeometry : Geometry
         return points;
     }
 
-    /// <inheritdoc />
-    public override Geometry Clone() => ClonePathGeometry();
+    public new PathGeometry Clone() => (PathGeometry)base.Clone();
+    public new PathGeometry CloneCurrentValue() => (PathGeometry)base.CloneCurrentValue();
 
-    /// <summary>
-    /// Creates a deep copy of this PathGeometry.
-    /// </summary>
-    public PathGeometry ClonePathGeometry()
-    {
-        var clone = new PathGeometry { FillRule = FillRule, Transform = Transform };
-        foreach (var figure in Figures)
-        {
-            var newFigure = new PathFigure
-            {
-                StartPoint = figure.StartPoint,
-                IsClosed = figure.IsClosed,
-                IsFilled = figure.IsFilled,
-            };
-            foreach (var segment in figure.Segments)
-            {
-                newFigure.Segments.Add(CloneSegment(segment));
-            }
-            clone.Figures.Add(newFigure);
-        }
-        return clone;
-    }
+    /// <summary>Creates a deep copy of this path geometry.</summary>
+    public PathGeometry ClonePathGeometry() => Clone();
 
-    private static PathSegment CloneSegment(PathSegment segment) => segment switch
-    {
-        LineSegment s => new LineSegment(s.Point, s.IsStroked),
-        PolyLineSegment s => new PolyLineSegment(s.Points, s.IsStroked),
-        BezierSegment s => new BezierSegment(s.Point1, s.Point2, s.Point3, s.IsStroked),
-        QuadraticBezierSegment s => new QuadraticBezierSegment(s.Point1, s.Point2, s.IsStroked),
-        ArcSegment s => new ArcSegment(s.Point, s.Size, s.RotationAngle, s.IsLargeArc, s.SweepDirection, s.IsStroked),
-        PolyBezierSegment s => ClonePolyBezier(s),
-        PolyQuadraticBezierSegment s => ClonePolyQuad(s),
-        _ => throw new NotSupportedException($"Unknown segment type: {segment.GetType()}")
-    };
+    protected override Freezable CreateInstanceCore() => new PathGeometry();
 
-    private static PolyBezierSegment ClonePolyBezier(PolyBezierSegment s)
+    protected override void OnChanged()
     {
-        var clone = new PolyBezierSegment { IsStroked = s.IsStroked };
-        clone.Points.AddRange(s.Points);
-        return clone;
-    }
-
-    private static PolyQuadraticBezierSegment ClonePolyQuad(PolyQuadraticBezierSegment s)
-    {
-        var clone = new PolyQuadraticBezierSegment { IsStroked = s.IsStroked };
-        clone.Points.AddRange(s.Points);
-        return clone;
+        base.OnChanged();
     }
 
     /// <inheritdoc />
@@ -3484,33 +4051,73 @@ public sealed class PathGeometry : Geometry
 /// <summary>
 /// Represents a subsection of a path geometry.
 /// </summary>
-public sealed class PathFigure
+public sealed class PathFigure : Animatable, IFormattable
 {
+    public static readonly DependencyProperty StartPointProperty =
+        DependencyProperty.Register(nameof(StartPoint), typeof(Point), typeof(PathFigure),
+            new PropertyMetadata(new Point()));
+
+    public static readonly DependencyProperty SegmentsProperty =
+        DependencyProperty.Register(nameof(Segments), typeof(PathSegmentCollection), typeof(PathFigure),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty IsClosedProperty =
+        DependencyProperty.Register(nameof(IsClosed), typeof(bool), typeof(PathFigure),
+            new PropertyMetadata(false));
+
+    public static readonly DependencyProperty IsFilledProperty =
+        DependencyProperty.Register(nameof(IsFilled), typeof(bool), typeof(PathFigure),
+            new PropertyMetadata(true));
+
     /// <summary>
     /// Gets or sets the start point of the figure.
     /// </summary>
-    public Point StartPoint { get; set; }
+    public Point StartPoint
+    {
+        get => (Point)GetValue(StartPointProperty)!;
+        set { SetValue(StartPointProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets the collection of segments in this figure.
     /// </summary>
-    public List<PathSegment> Segments { get; } = new();
+    public PathSegmentCollection Segments
+    {
+        get => (PathSegmentCollection)GetValue(SegmentsProperty)!;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            PathSegmentCollection? old = (PathSegmentCollection?)GetValue(SegmentsProperty);
+            OnFreezablePropertyChanged(old, value, SegmentsProperty);
+            SetValue(SegmentsProperty, value);
+            WritePostscript();
+        }
+    }
 
     /// <summary>
     /// Gets or sets whether this figure is closed.
     /// </summary>
-    public bool IsClosed { get; set; }
+    public bool IsClosed
+    {
+        get => (bool)GetValue(IsClosedProperty)!;
+        set { SetValue(IsClosedProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets whether this figure is filled.
     /// </summary>
-    public bool IsFilled { get; set; } = true;
+    public bool IsFilled
+    {
+        get => (bool)GetValue(IsFilledProperty)!;
+        set { SetValue(IsFilledProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PathFigure"/> class.
     /// </summary>
     public PathFigure()
     {
+        Segments = new PathSegmentCollection();
     }
 
     /// <summary>
@@ -3520,22 +4127,130 @@ public sealed class PathFigure
     /// <param name="segments">The segments.</param>
     /// <param name="isClosed">Whether the figure is closed.</param>
     public PathFigure(Point startPoint, IEnumerable<PathSegment> segments, bool isClosed)
+        : this()
     {
         StartPoint = startPoint;
         Segments.AddRange(segments);
         IsClosed = isClosed;
     }
+
+    public bool MayHaveCurves() => Segments.Any(static segment =>
+        segment is ArcSegment or BezierSegment or QuadraticBezierSegment
+            or PolyBezierSegment or PolyQuadraticBezierSegment);
+
+    public PathFigure GetFlattenedPathFigure() =>
+        GetFlattenedPathFigure(Geometry.StandardFlatteningTolerance, ToleranceType.Absolute);
+
+    public PathFigure GetFlattenedPathFigure(double tolerance, ToleranceType type)
+    {
+        var geometry = new PathGeometry(new[] { Clone() });
+        PathGeometry flattened = geometry.GetFlattenedPathGeometry(tolerance, type);
+        return flattened.Figures.Count == 0 ? new PathFigure() : flattened.Figures[0].Clone();
+    }
+
+    public new PathFigure Clone() => (PathFigure)base.Clone();
+    public new PathFigure CloneCurrentValue() => (PathFigure)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new PathFigure();
+
+    public override string ToString() => ToString(System.Globalization.CultureInfo.CurrentCulture);
+
+    public string ToString(IFormatProvider? provider)
+    {
+        provider ??= System.Globalization.CultureInfo.CurrentCulture;
+        var builder = new System.Text.StringBuilder();
+        builder.Append('M').Append(' ').Append(FormatPoint(StartPoint, provider));
+        foreach (PathSegment segment in Segments)
+        {
+            AppendSegment(builder, segment, provider);
+        }
+        if (IsClosed)
+            builder.Append(" Z");
+        return builder.ToString();
+    }
+
+    string IFormattable.ToString(string? format, IFormatProvider? provider) =>
+        ToString(provider);
+
+    internal static void AppendSegment(
+        System.Text.StringBuilder builder,
+        PathSegment segment,
+        IFormatProvider provider)
+    {
+        switch (segment)
+        {
+            case LineSegment line:
+                builder.Append(" L ").Append(FormatPoint(line.Point, provider));
+                break;
+            case PolyLineSegment polyLine:
+                foreach (Point point in polyLine.Points)
+                    builder.Append(" L ").Append(FormatPoint(point, provider));
+                break;
+            case BezierSegment bezier:
+                builder.Append(" C ").Append(FormatPoint(bezier.Point1, provider)).Append(' ')
+                    .Append(FormatPoint(bezier.Point2, provider)).Append(' ')
+                    .Append(FormatPoint(bezier.Point3, provider));
+                break;
+            case PolyBezierSegment polyBezier:
+                for (int i = 0; i + 2 < polyBezier.Points.Count; i += 3)
+                    builder.Append(" C ").Append(FormatPoint(polyBezier.Points[i], provider)).Append(' ')
+                        .Append(FormatPoint(polyBezier.Points[i + 1], provider)).Append(' ')
+                        .Append(FormatPoint(polyBezier.Points[i + 2], provider));
+                break;
+            case QuadraticBezierSegment quadratic:
+                builder.Append(" Q ").Append(FormatPoint(quadratic.Point1, provider)).Append(' ')
+                    .Append(FormatPoint(quadratic.Point2, provider));
+                break;
+            case PolyQuadraticBezierSegment polyQuadratic:
+                for (int i = 0; i + 1 < polyQuadratic.Points.Count; i += 2)
+                    builder.Append(" Q ").Append(FormatPoint(polyQuadratic.Points[i], provider)).Append(' ')
+                        .Append(FormatPoint(polyQuadratic.Points[i + 1], provider));
+                break;
+            case ArcSegment arc:
+                builder.Append(" A ")
+                    .Append(arc.Size.Width.ToString(null, provider)).Append(',')
+                    .Append(arc.Size.Height.ToString(null, provider)).Append(' ')
+                    .Append(arc.RotationAngle.ToString(null, provider)).Append(' ')
+                    .Append(arc.IsLargeArc ? '1' : '0').Append(' ')
+                    .Append(arc.SweepDirection == SweepDirection.Clockwise ? '1' : '0').Append(' ')
+                    .Append(FormatPoint(arc.Point, provider));
+                break;
+        }
+    }
+
+    private static string FormatPoint(Point point, IFormatProvider provider) =>
+        string.Format(provider, "{0},{1}", point.X, point.Y);
 }
 
 /// <summary>
 /// Base class for path segments.
 /// </summary>
-public abstract class PathSegment
+public abstract class PathSegment : Animatable
 {
+    public static readonly DependencyProperty IsStrokedProperty =
+        DependencyProperty.Register(nameof(IsStroked), typeof(bool), typeof(PathSegment),
+            new PropertyMetadata(true));
+
+    public static readonly DependencyProperty IsSmoothJoinProperty =
+        DependencyProperty.Register(nameof(IsSmoothJoin), typeof(bool), typeof(PathSegment),
+            new PropertyMetadata(false));
+
     /// <summary>
     /// Gets or sets whether the segment is stroked.
     /// </summary>
-    public bool IsStroked { get; set; } = true;
+    public bool IsStroked
+    {
+        get => (bool)GetValue(IsStrokedProperty)!;
+        set { SetValue(IsStrokedProperty, value); WritePostscript(); }
+    }
+
+    public bool IsSmoothJoin
+    {
+        get => (bool)GetValue(IsSmoothJoinProperty)!;
+        set { SetValue(IsSmoothJoinProperty, value); WritePostscript(); }
+    }
+
+    public new PathSegment Clone() => (PathSegment)base.Clone();
+    public new PathSegment CloneCurrentValue() => (PathSegment)base.CloneCurrentValue();
 
     /// <summary>
     /// Gets the points that define this segment.
@@ -3555,10 +4270,18 @@ public abstract class PathSegment
 /// </summary>
 public sealed class LineSegment : PathSegment
 {
+    public static readonly DependencyProperty PointProperty =
+        DependencyProperty.Register(nameof(Point), typeof(Point), typeof(LineSegment),
+            new PropertyMetadata(new Point()));
+
     /// <summary>
     /// Gets or sets the end point of the line segment.
     /// </summary>
-    public Point Point { get; set; }
+    public Point Point
+    {
+        get => (Point)GetValue(PointProperty)!;
+        set { SetValue(PointProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LineSegment"/> class.
@@ -3586,6 +4309,10 @@ public sealed class LineSegment : PathSegment
 
     /// <inheritdoc />
     public override Point GetEndPoint(Point startPoint) => Point;
+
+    public new LineSegment Clone() => (LineSegment)base.Clone();
+    public new LineSegment CloneCurrentValue() => (LineSegment)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new LineSegment();
 }
 
 /// <summary>
@@ -3593,16 +4320,32 @@ public sealed class LineSegment : PathSegment
 /// </summary>
 public sealed class PolyLineSegment : PathSegment
 {
+    public static readonly DependencyProperty PointsProperty =
+        DependencyProperty.Register(nameof(Points), typeof(PointCollection), typeof(PolyLineSegment),
+            new PropertyMetadata(null));
+
     /// <summary>
     /// Gets the collection of points defining the poly line.
     /// </summary>
-    public List<Point> Points { get; } = new();
+    public PointCollection Points
+    {
+        get => (PointCollection)GetValue(PointsProperty)!;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            PointCollection? old = (PointCollection?)GetValue(PointsProperty);
+            OnFreezablePropertyChanged(old, value, PointsProperty);
+            SetValue(PointsProperty, value);
+            WritePostscript();
+        }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PolyLineSegment"/> class.
     /// </summary>
     public PolyLineSegment()
     {
+        Points = new PointCollection();
     }
 
     /// <summary>
@@ -3612,7 +4355,7 @@ public sealed class PolyLineSegment : PathSegment
     /// <param name="isStroked">Whether the segment is stroked.</param>
     public PolyLineSegment(IEnumerable<Point> points, bool isStroked = true)
     {
-        Points.AddRange(points);
+        Points = new PointCollection(points);
         IsStroked = isStroked;
     }
 
@@ -3621,6 +4364,10 @@ public sealed class PolyLineSegment : PathSegment
 
     /// <inheritdoc />
     public override Point GetEndPoint(Point startPoint) => Points.Count > 0 ? Points[^1] : startPoint;
+
+    public new PolyLineSegment Clone() => (PolyLineSegment)base.Clone();
+    public new PolyLineSegment CloneCurrentValue() => (PolyLineSegment)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new PolyLineSegment();
 }
 
 /// <summary>
@@ -3628,30 +4375,70 @@ public sealed class PolyLineSegment : PathSegment
 /// </summary>
 public sealed class ArcSegment : PathSegment
 {
+    public static readonly DependencyProperty PointProperty =
+        DependencyProperty.Register(nameof(Point), typeof(Point), typeof(ArcSegment),
+            new PropertyMetadata(new Point()));
+
+    public static readonly DependencyProperty SizeProperty =
+        DependencyProperty.Register(nameof(Size), typeof(Size), typeof(ArcSegment),
+            new PropertyMetadata(new Size()));
+
+    public static readonly DependencyProperty RotationAngleProperty =
+        DependencyProperty.Register(nameof(RotationAngle), typeof(double), typeof(ArcSegment),
+            new PropertyMetadata(0.0));
+
+    public static readonly DependencyProperty IsLargeArcProperty =
+        DependencyProperty.Register(nameof(IsLargeArc), typeof(bool), typeof(ArcSegment),
+            new PropertyMetadata(false));
+
+    public static readonly DependencyProperty SweepDirectionProperty =
+        DependencyProperty.Register(nameof(SweepDirection), typeof(SweepDirection), typeof(ArcSegment),
+            new PropertyMetadata(SweepDirection.Counterclockwise));
+
     /// <summary>
     /// Gets or sets the end point of the arc.
     /// </summary>
-    public Point Point { get; set; }
+    public Point Point
+    {
+        get => (Point)GetValue(PointProperty)!;
+        set { SetValue(PointProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the size (radii) of the arc.
     /// </summary>
-    public Size Size { get; set; }
+    public Size Size
+    {
+        get => (Size)GetValue(SizeProperty)!;
+        set { SetValue(SizeProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the rotation angle in degrees.
     /// </summary>
-    public double RotationAngle { get; set; }
+    public double RotationAngle
+    {
+        get => (double)GetValue(RotationAngleProperty)!;
+        set { SetValue(RotationAngleProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets whether the arc spans more than 180 degrees.
     /// </summary>
-    public bool IsLargeArc { get; set; }
+    public bool IsLargeArc
+    {
+        get => (bool)GetValue(IsLargeArcProperty)!;
+        set { SetValue(IsLargeArcProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the sweep direction.
     /// </summary>
-    public SweepDirection SweepDirection { get; set; } = SweepDirection.Counterclockwise;
+    public SweepDirection SweepDirection
+    {
+        get => (SweepDirection)GetValue(SweepDirectionProperty)!;
+        set { SetValue(SweepDirectionProperty, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ArcSegment"/> class.
@@ -3681,6 +4468,10 @@ public sealed class ArcSegment : PathSegment
 
     /// <inheritdoc />
     public override Point GetEndPoint(Point startPoint) => Point;
+
+    public new ArcSegment Clone() => (ArcSegment)base.Clone();
+    public new ArcSegment CloneCurrentValue() => (ArcSegment)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new ArcSegment();
 }
 
 /// <summary>
@@ -3704,20 +4495,39 @@ public enum SweepDirection
 /// </summary>
 public sealed class BezierSegment : PathSegment
 {
+    public static readonly DependencyProperty Point1Property =
+        DependencyProperty.Register(nameof(Point1), typeof(Point), typeof(BezierSegment), new PropertyMetadata(new Point()));
+    public static readonly DependencyProperty Point2Property =
+        DependencyProperty.Register(nameof(Point2), typeof(Point), typeof(BezierSegment), new PropertyMetadata(new Point()));
+    public static readonly DependencyProperty Point3Property =
+        DependencyProperty.Register(nameof(Point3), typeof(Point), typeof(BezierSegment), new PropertyMetadata(new Point()));
+
     /// <summary>
     /// Gets or sets the first control point.
     /// </summary>
-    public Point Point1 { get; set; }
+    public Point Point1
+    {
+        get => (Point)GetValue(Point1Property)!;
+        set { SetValue(Point1Property, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the second control point.
     /// </summary>
-    public Point Point2 { get; set; }
+    public Point Point2
+    {
+        get => (Point)GetValue(Point2Property)!;
+        set { SetValue(Point2Property, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the end point.
     /// </summary>
-    public Point Point3 { get; set; }
+    public Point Point3
+    {
+        get => (Point)GetValue(Point3Property)!;
+        set { SetValue(Point3Property, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="BezierSegment"/> class.
@@ -3747,6 +4557,10 @@ public sealed class BezierSegment : PathSegment
 
     /// <inheritdoc />
     public override Point GetEndPoint(Point startPoint) => Point3;
+
+    public new BezierSegment Clone() => (BezierSegment)base.Clone();
+    public new BezierSegment CloneCurrentValue() => (BezierSegment)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new BezierSegment();
 }
 
 /// <summary>
@@ -3754,20 +4568,36 @@ public sealed class BezierSegment : PathSegment
 /// </summary>
 public sealed class PolyBezierSegment : PathSegment
 {
+    public static readonly DependencyProperty PointsProperty =
+        DependencyProperty.Register(nameof(Points), typeof(PointCollection), typeof(PolyBezierSegment),
+            new PropertyMetadata(null));
+
     /// <summary>
     /// Gets the collection of points (in groups of 3: control1, control2, end).
     /// </summary>
-    public List<Point> Points { get; } = new();
+    public PointCollection Points
+    {
+        get => (PointCollection)GetValue(PointsProperty)!;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            PointCollection? old = (PointCollection?)GetValue(PointsProperty);
+            OnFreezablePropertyChanged(old, value, PointsProperty);
+            SetValue(PointsProperty, value);
+            WritePostscript();
+        }
+    }
 
     /// <summary>Initializes a new empty instance.</summary>
     public PolyBezierSegment()
     {
+        Points = new PointCollection();
     }
 
     /// <summary>Initializes a new instance from points (in groups of 3) and a stroke flag.</summary>
     public PolyBezierSegment(IEnumerable<Point> points, bool isStroked = true)
     {
-        Points.AddRange(points);
+        Points = new PointCollection(points);
         IsStroked = isStroked;
     }
 
@@ -3776,6 +4606,10 @@ public sealed class PolyBezierSegment : PathSegment
 
     /// <inheritdoc />
     public override Point GetEndPoint(Point startPoint) => Points.Count > 0 ? Points[^1] : startPoint;
+
+    public new PolyBezierSegment Clone() => (PolyBezierSegment)base.Clone();
+    public new PolyBezierSegment CloneCurrentValue() => (PolyBezierSegment)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new PolyBezierSegment();
 }
 
 /// <summary>
@@ -3783,15 +4617,30 @@ public sealed class PolyBezierSegment : PathSegment
 /// </summary>
 public sealed class QuadraticBezierSegment : PathSegment
 {
+    public static readonly DependencyProperty Point1Property =
+        DependencyProperty.Register(nameof(Point1), typeof(Point), typeof(QuadraticBezierSegment),
+            new PropertyMetadata(new Point()));
+    public static readonly DependencyProperty Point2Property =
+        DependencyProperty.Register(nameof(Point2), typeof(Point), typeof(QuadraticBezierSegment),
+            new PropertyMetadata(new Point()));
+
     /// <summary>
     /// Gets or sets the control point.
     /// </summary>
-    public Point Point1 { get; set; }
+    public Point Point1
+    {
+        get => (Point)GetValue(Point1Property)!;
+        set { SetValue(Point1Property, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Gets or sets the end point.
     /// </summary>
-    public Point Point2 { get; set; }
+    public Point Point2
+    {
+        get => (Point)GetValue(Point2Property)!;
+        set { SetValue(Point2Property, value); WritePostscript(); }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="QuadraticBezierSegment"/> class.
@@ -3819,6 +4668,10 @@ public sealed class QuadraticBezierSegment : PathSegment
 
     /// <inheritdoc />
     public override Point GetEndPoint(Point startPoint) => Point2;
+
+    public new QuadraticBezierSegment Clone() => (QuadraticBezierSegment)base.Clone();
+    public new QuadraticBezierSegment CloneCurrentValue() => (QuadraticBezierSegment)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new QuadraticBezierSegment();
 }
 
 /// <summary>
@@ -3826,20 +4679,36 @@ public sealed class QuadraticBezierSegment : PathSegment
 /// </summary>
 public sealed class PolyQuadraticBezierSegment : PathSegment
 {
+    public static readonly DependencyProperty PointsProperty =
+        DependencyProperty.Register(nameof(Points), typeof(PointCollection), typeof(PolyQuadraticBezierSegment),
+            new PropertyMetadata(null));
+
     /// <summary>
     /// Gets the collection of points (in groups of 2: control, end).
     /// </summary>
-    public List<Point> Points { get; } = new();
+    public PointCollection Points
+    {
+        get => (PointCollection)GetValue(PointsProperty)!;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            PointCollection? old = (PointCollection?)GetValue(PointsProperty);
+            OnFreezablePropertyChanged(old, value, PointsProperty);
+            SetValue(PointsProperty, value);
+            WritePostscript();
+        }
+    }
 
     /// <summary>Initializes a new empty instance.</summary>
     public PolyQuadraticBezierSegment()
     {
+        Points = new PointCollection();
     }
 
     /// <summary>Initializes a new instance from points (in groups of 2) and a stroke flag.</summary>
     public PolyQuadraticBezierSegment(IEnumerable<Point> points, bool isStroked = true)
     {
-        Points.AddRange(points);
+        Points = new PointCollection(points);
         IsStroked = isStroked;
     }
 
@@ -3848,6 +4717,10 @@ public sealed class PolyQuadraticBezierSegment : PathSegment
 
     /// <inheritdoc />
     public override Point GetEndPoint(Point startPoint) => Points.Count > 0 ? Points[^1] : startPoint;
+
+    public new PolyQuadraticBezierSegment Clone() => (PolyQuadraticBezierSegment)base.Clone();
+    public new PolyQuadraticBezierSegment CloneCurrentValue() => (PolyQuadraticBezierSegment)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new PolyQuadraticBezierSegment();
 }
 
 // ImageSource is defined in ImageSource.cs

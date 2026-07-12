@@ -65,8 +65,28 @@
     <PackageReference Include="System.Reflection.MetadataLoadContext" Version="10.0.7" />
   </ItemGroup>
 
-  <Target Name="BuildJalxamlCompilerBeforePack" BeforeTargets="GenerateNuspec">
-    <MSBuild Projects="..\Jalium.UI.Compiler\Jalium.UI.Compiler.csproj" Targets="Build" Properties="Configuration=$(Configuration)" />
+  <Target Name="BuildJalxamlCompilerBeforePack" BeforeTargets="_GetPackageFiles">
+    <MSBuild Projects="..\Jalium.UI.Compiler\Jalium.UI.Compiler.csproj"
+             Targets="Restore;Build"
+             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;UseAppHost=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false">
+      <Output TaskParameter="TargetOutputs" ItemName="_JalxamlCompilerTargetPath" />
+    </MSBuild>
+
+    <PropertyGroup>
+      <_JalxamlCompilerOutputDirectory>@(_JalxamlCompilerTargetPath->'%(RootDir)%(Directory)')</_JalxamlCompilerOutputDirectory>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <!-- TargetOutputs gives us the actual output path even when a caller has
+           customized BaseOutputPath. Package the complete dependency closure so
+           dotnet exec can honor jalxamlc.deps.json on every supported host. -->
+      <_JalxamlCompilerOutput Include="$(_JalxamlCompilerOutputDirectory)**\*" />
+      <Content Include="@(_JalxamlCompilerOutput)"
+               PackagePath="tools\net10.0\%(RecursiveDir)%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <Error Condition="'@(_JalxamlCompilerTargetPath)' == '' or !Exists('@(_JalxamlCompilerTargetPath)')"
+           Text="The portable JALXAML compiler failed to build; jalxamlc.dll is required in the Jalium.UI.Build package." />
   </Target>
 
   <!--
@@ -104,14 +124,6 @@
     <Content Include="build\**\*" PackagePath="build\" />
     <Content Include="buildMultiTargeting\**\*" PackagePath="buildMultiTargeting\" />
     <Content Include="buildTransitive\**\*" PackagePath="buildTransitive\" />
-  </ItemGroup>
-
-  <!-- 包含编译器到 NuGet 包 -->
-  <ItemGroup Condition="Exists('..\Jalium.UI.Compiler\bin\$(Configuration)\net10.0-windows\win-x64\publish\jalxamlc.exe')">
-    <Content Include="..\Jalium.UI.Compiler\bin\$(Configuration)\net10.0-windows\win-x64\publish\jalxamlc.exe" PackagePath="tools\" />
-  </ItemGroup>
-  <ItemGroup Condition="!Exists('..\Jalium.UI.Compiler\bin\$(Configuration)\net10.0-windows\win-x64\publish\jalxamlc.exe') And Exists('..\Jalium.UI.Compiler\bin\$(Configuration)\net10.0-windows\win-x64\jalxamlc.exe')">
-    <Content Include="..\Jalium.UI.Compiler\bin\$(Configuration)\net10.0-windows\win-x64\jalxamlc.exe" PackagePath="tools\" />
   </ItemGroup>
 
   <ItemGroup>

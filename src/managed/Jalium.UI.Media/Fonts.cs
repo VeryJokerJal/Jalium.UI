@@ -33,6 +33,13 @@ public static class Fonts
         return GetFontFamilies(baseUri.ToString());
     }
 
+    public static ICollection<FontFamily> GetFontFamilies(Uri baseUri, string location)
+    {
+        ArgumentNullException.ThrowIfNull(baseUri);
+        ArgumentNullException.ThrowIfNull(location);
+        return new ReadOnlyCollection<FontFamily>(new[] { new FontFamily(baseUri, location) });
+    }
+
     /// <summary>
     /// Returns the collection of Typeface objects from a specified font location.
     /// </summary>
@@ -47,6 +54,17 @@ public static class Fonts
     public static ICollection<Typeface> GetTypefaces(Uri baseUri)
     {
         return GetTypefaces(baseUri.ToString());
+    }
+
+    public static ICollection<Typeface> GetTypefaces(Uri baseUri, string location)
+    {
+        ArgumentNullException.ThrowIfNull(baseUri);
+        ArgumentNullException.ThrowIfNull(location);
+        var family = new FontFamily(baseUri, location);
+        ICollection<Typeface> typefaces = family.GetTypefaces();
+        return typefaces.Count != 0
+            ? new ReadOnlyCollection<Typeface>(typefaces.ToArray())
+            : new ReadOnlyCollection<Typeface>(new[] { new Typeface(family) });
     }
 
     private static ICollection<FontFamily> GetSystemFontFamilies()
@@ -70,25 +88,15 @@ public static class Fonts
 /// <summary>
 /// Provides metadata for an image.
 /// </summary>
-public abstract class ImageMetadata
+public abstract class ImageMetadata : Freezable
 {
     /// <summary>
     /// Creates a modifiable clone of this ImageMetadata.
     /// </summary>
-    public abstract ImageMetadata Clone();
+    public new virtual ImageMetadata Clone() => (ImageMetadata)base.Clone();
 
-    /// <summary>
-    /// Gets a value indicating whether the metadata is frozen (read-only).
-    /// </summary>
-    public bool IsFrozen { get; protected set; }
-
-    /// <summary>
-    /// Makes this metadata object unmodifiable.
-    /// </summary>
-    public void Freeze()
-    {
-        IsFrozen = true;
-    }
+    /// <summary>Creates a modifiable copy using current property values.</summary>
+    public new virtual ImageMetadata CloneCurrentValue() => (ImageMetadata)base.CloneCurrentValue();
 }
 
 /// <summary>
@@ -96,7 +104,7 @@ public abstract class ImageMetadata
 /// </summary>
 public class BitmapMetadataBase : ImageMetadata
 {
-    public override ImageMetadata Clone() => (ImageMetadata)MemberwiseClone();
+    protected override Freezable CreateInstanceCore() => new BitmapMetadataBase();
 }
 
 /// <summary>
@@ -104,6 +112,13 @@ public class BitmapMetadataBase : ImageMetadata
 /// </summary>
 public sealed class CharacterMetrics
 {
+    /// <summary>Gets or sets all metrics as a comma-separated invariant string.</summary>
+    public string Metrics
+    {
+        get => ToString();
+        set => ApplyMetrics(value);
+    }
+
     /// <summary>
     /// Gets or sets the width of the black box for the character.
     /// </summary>
@@ -154,17 +169,7 @@ public sealed class CharacterMetrics
     /// BlackBoxWidth,BlackBoxHeight,Baseline,LeftSideBearing,RightSideBearing,TopSideBearing,BottomSideBearing.</param>
     public CharacterMetrics(string metrics)
     {
-        if (string.IsNullOrWhiteSpace(metrics))
-            return;
-
-        var parts = metrics.Split(',');
-        if (parts.Length >= 1) BlackBoxWidth = double.Parse(parts[0], System.Globalization.CultureInfo.InvariantCulture);
-        if (parts.Length >= 2) BlackBoxHeight = double.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture);
-        if (parts.Length >= 3) Baseline = double.Parse(parts[2], System.Globalization.CultureInfo.InvariantCulture);
-        if (parts.Length >= 4) LeftSideBearing = double.Parse(parts[3], System.Globalization.CultureInfo.InvariantCulture);
-        if (parts.Length >= 5) RightSideBearing = double.Parse(parts[4], System.Globalization.CultureInfo.InvariantCulture);
-        if (parts.Length >= 6) TopSideBearing = double.Parse(parts[5], System.Globalization.CultureInfo.InvariantCulture);
-        if (parts.Length >= 7) BottomSideBearing = double.Parse(parts[6], System.Globalization.CultureInfo.InvariantCulture);
+        ApplyMetrics(metrics);
     }
 
     /// <inheritdoc />
@@ -192,7 +197,36 @@ public sealed class CharacterMetrics
     /// <inheritdoc />
     public override string ToString()
     {
-        return $"{BlackBoxWidth},{BlackBoxHeight},{Baseline},{LeftSideBearing},{RightSideBearing},{TopSideBearing},{BottomSideBearing}";
+        return FormattableString.Invariant(
+            $"{BlackBoxWidth},{BlackBoxHeight},{Baseline},{LeftSideBearing},{RightSideBearing},{TopSideBearing},{BottomSideBearing}");
+    }
+
+    private void ApplyMetrics(string metrics)
+    {
+        ArgumentNullException.ThrowIfNull(metrics);
+        string[] parts = metrics.Split(',');
+        if (parts.Length is < 2 or > 7 ||
+            string.IsNullOrWhiteSpace(parts[0]) ||
+            string.IsNullOrWhiteSpace(parts[1]))
+        {
+            throw new FormatException("Character metrics require black-box width and height and allow up to seven values.");
+        }
+
+        var values = new double[7];
+        for (int index = 0; index < parts.Length; index++)
+        {
+            values[index] = string.IsNullOrWhiteSpace(parts[index])
+                ? 0
+                : double.Parse(parts[index], System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        BlackBoxWidth = values[0];
+        BlackBoxHeight = values[1];
+        Baseline = values[2];
+        LeftSideBearing = values[3];
+        RightSideBearing = values[4];
+        TopSideBearing = values[5];
+        BottomSideBearing = values[6];
     }
 }
 
@@ -329,41 +363,41 @@ public sealed class FamilyMapCollection : Collection<FamilyMap>
 public enum FontEmbeddingRight
 {
     /// <summary>Fonts can be embedded and permanently installed on the remote system.</summary>
-    Installable,
+    Installable = 0,
 
     /// <summary>Fonts can be embedded and permanently installed but must not be subsetted.</summary>
-    InstallableButNoSubsetting,
+    InstallableButNoSubsetting = 1,
 
     /// <summary>Fonts can be embedded and permanently installed with bitmaps only.</summary>
-    InstallableButWithBitmapsOnly,
+    InstallableButWithBitmapsOnly = 2,
 
     /// <summary>Fonts can be embedded and permanently installed with bitmaps only and must not be subsetted.</summary>
-    InstallableButNoSubsettingAndWithBitmapsOnly,
-
-    /// <summary>Fonts can be embedded but must only be installed temporarily.</summary>
-    Editable,
-
-    /// <summary>Fonts can be embedded temporarily but must not be subsetted.</summary>
-    EditableButNoSubsetting,
-
-    /// <summary>Fonts can be embedded temporarily with bitmaps only.</summary>
-    EditableButWithBitmapsOnly,
-
-    /// <summary>Fonts can be embedded temporarily with bitmaps only and must not be subsetted.</summary>
-    EditableButNoSubsettingAndWithBitmapsOnly,
-
-    /// <summary>Fonts can be embedded for preview and print only.</summary>
-    PreviewAndPrint,
-
-    /// <summary>Fonts can be embedded for preview and print only but must not be subsetted.</summary>
-    PreviewAndPrintButNoSubsetting,
-
-    /// <summary>Fonts can be embedded for preview and print only with bitmaps only.</summary>
-    PreviewAndPrintButWithBitmapsOnly,
-
-    /// <summary>Fonts can be embedded for preview and print only with bitmaps only and must not be subsetted.</summary>
-    PreviewAndPrintButNoSubsettingAndWithBitmapsOnly,
+    InstallableButNoSubsettingAndWithBitmapsOnly = 3,
 
     /// <summary>Fonts may not be embedded or temporarily loaded.</summary>
-    RestrictedLicense
+    RestrictedLicense = 4,
+
+    /// <summary>Fonts can be embedded for preview and print only.</summary>
+    PreviewAndPrint = 5,
+
+    /// <summary>Fonts can be embedded for preview and print only but must not be subsetted.</summary>
+    PreviewAndPrintButNoSubsetting = 6,
+
+    /// <summary>Fonts can be embedded for preview and print only with bitmaps only.</summary>
+    PreviewAndPrintButWithBitmapsOnly = 7,
+
+    /// <summary>Fonts can be embedded for preview and print only with bitmaps only and must not be subsetted.</summary>
+    PreviewAndPrintButNoSubsettingAndWithBitmapsOnly = 8,
+
+    /// <summary>Fonts can be embedded but must only be installed temporarily.</summary>
+    Editable = 9,
+
+    /// <summary>Fonts can be embedded temporarily but must not be subsetted.</summary>
+    EditableButNoSubsetting = 10,
+
+    /// <summary>Fonts can be embedded temporarily with bitmaps only.</summary>
+    EditableButWithBitmapsOnly = 11,
+
+    /// <summary>Fonts can be embedded temporarily with bitmaps only and must not be subsetted.</summary>
+    EditableButNoSubsettingAndWithBitmapsOnly = 12,
 }

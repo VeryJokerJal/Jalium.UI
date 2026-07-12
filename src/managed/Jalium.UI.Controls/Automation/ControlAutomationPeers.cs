@@ -2,14 +2,14 @@ using System.Collections.Generic;
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Primitives;
 
-namespace Jalium.UI.Controls.Automation;
+namespace Jalium.UI.Automation.Peers;
 
 #region Selector Controls
 
 /// <summary>
 /// Exposes ListBox types to UI Automation.
 /// </summary>
-public sealed class ListBoxAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
+public class ListBoxAutomationPeer : SelectorAutomationPeer
 {
     /// <summary>
     /// Initializes a new instance of the ListBoxAutomationPeer class.
@@ -19,6 +19,8 @@ public sealed class ListBoxAutomationPeer : FrameworkElementAutomationPeer, ISel
     }
 
     private ListBox ListBoxOwner => (ListBox)Owner;
+
+    protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new ListBoxItemAutomationPeer(item, this);
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -44,17 +46,17 @@ public sealed class ListBoxAutomationPeer : FrameworkElementAutomationPeer, ISel
     #region ISelectionProvider
 
     /// <inheritdoc />
-    public AutomationPeer[] GetSelection()
+    public override AutomationPeer[] GetSelection()
     {
         // Simplified - return empty if no way to get container
         return Array.Empty<AutomationPeer>();
     }
 
     /// <inheritdoc />
-    public bool IsSelectionRequired => false;
+    public override bool IsSelectionRequired => false;
 
     /// <inheritdoc />
-    public bool CanSelectMultiple => ListBoxOwner.SelectionMode != SelectionMode.Single;
+    public override bool CanSelectMultiple => ListBoxOwner.SelectionMode != SelectionMode.Single;
 
     #endregion
 }
@@ -62,12 +64,17 @@ public sealed class ListBoxAutomationPeer : FrameworkElementAutomationPeer, ISel
 /// <summary>
 /// Exposes ListBoxItem types to UI Automation.
 /// </summary>
-public sealed class ListBoxItemAutomationPeer : FrameworkElementAutomationPeer, ISelectionItemProvider, IScrollItemProvider
+public class ListBoxItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.Automation.Provider.IScrollItemProvider
 {
     /// <summary>
     /// Initializes a new instance of the ListBoxItemAutomationPeer class.
     /// </summary>
     public ListBoxItemAutomationPeer(ListBoxItem owner) : base(owner)
+    {
+    }
+
+    public ListBoxItemAutomationPeer(object owner, SelectorAutomationPeer selectorAutomationPeer)
+        : base(owner, selectorAutomationPeer)
     {
     }
 
@@ -109,10 +116,10 @@ public sealed class ListBoxItemAutomationPeer : FrameworkElementAutomationPeer, 
     #region ISelectionItemProvider
 
     /// <inheritdoc />
-    public bool IsSelected => ItemOwner.IsSelected;
+    public override bool IsSelected => ItemOwner.IsSelected;
 
     /// <inheritdoc />
-    public AutomationPeer SelectionContainer
+    public override AutomationPeer SelectionContainer
     {
         get
         {
@@ -124,19 +131,19 @@ public sealed class ListBoxItemAutomationPeer : FrameworkElementAutomationPeer, 
     }
 
     /// <inheritdoc />
-    public void Select()
+    public override void Select()
     {
         ItemOwner.IsSelected = true;
     }
 
     /// <inheritdoc />
-    public void AddToSelection()
+    public override void AddToSelection()
     {
         ItemOwner.IsSelected = true;
     }
 
     /// <inheritdoc />
-    public void RemoveFromSelection()
+    public override void RemoveFromSelection()
     {
         ItemOwner.IsSelected = false;
     }
@@ -157,7 +164,9 @@ public sealed class ListBoxItemAutomationPeer : FrameworkElementAutomationPeer, 
 /// <summary>
 /// Exposes ComboBox types to UI Automation.
 /// </summary>
-public sealed class ComboBoxAutomationPeer : FrameworkElementAutomationPeer, IExpandCollapseProvider, ISelectionProvider
+public partial class ComboBoxAutomationPeer : SelectorAutomationPeer,
+    Jalium.UI.Automation.Provider.IExpandCollapseProvider,
+    Jalium.UI.Automation.Provider.IValueProvider
 {
     /// <summary>
     /// Initializes a new instance of the ComboBoxAutomationPeer class.
@@ -167,6 +176,8 @@ public sealed class ComboBoxAutomationPeer : FrameworkElementAutomationPeer, IEx
     }
 
     private ComboBox ComboBoxOwner => (ComboBox)Owner;
+
+    protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new SelectorItemAutomationPeer(item, this);
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -187,6 +198,9 @@ public sealed class ComboBoxAutomationPeer : FrameworkElementAutomationPeer, IEx
             return this;
 
         if (patternInterface == PatternInterface.Selection)
+            return this;
+
+        if (patternInterface == PatternInterface.Value)
             return this;
 
         return base.GetPatternCore(patternInterface);
@@ -219,16 +233,38 @@ public sealed class ComboBoxAutomationPeer : FrameworkElementAutomationPeer, IEx
     #region ISelectionProvider
 
     /// <inheritdoc />
-    public AutomationPeer[] GetSelection()
+    public override AutomationPeer[] GetSelection()
     {
         return Array.Empty<AutomationPeer>();
     }
 
     /// <inheritdoc />
-    public bool IsSelectionRequired => false;
+    public override bool IsSelectionRequired => false;
 
     /// <inheritdoc />
-    public bool CanSelectMultiple => false;
+    public override bool CanSelectMultiple => false;
+
+    string Jalium.UI.Automation.Provider.IValueProvider.Value =>
+        ComboBoxOwner.IsEditable
+            ? ComboBoxOwner.Text ?? string.Empty
+            : ComboBoxOwner.SelectedItem?.ToString() ?? ComboBoxOwner.Text ?? string.Empty;
+
+    bool Jalium.UI.Automation.Provider.IValueProvider.IsReadOnly => !ComboBoxOwner.IsEditable;
+
+    void Jalium.UI.Automation.Provider.IValueProvider.SetValue(string val)
+    {
+        if (!ComboBoxOwner.IsEditable)
+            throw new InvalidOperationException("The ComboBox is not editable.");
+        if (!IsEnabled())
+            throw new InvalidOperationException("Cannot set value on a disabled ComboBox.");
+        ArgumentNullException.ThrowIfNull(val);
+        ComboBoxOwner.Text = val;
+    }
+
+    string IValueProvider.Value => ((Jalium.UI.Automation.Provider.IValueProvider)this).Value;
+    bool IValueProvider.IsReadOnly => ((Jalium.UI.Automation.Provider.IValueProvider)this).IsReadOnly;
+    void IValueProvider.SetValue(string val) =>
+        ((Jalium.UI.Automation.Provider.IValueProvider)this).SetValue(val);
 
     #endregion
 }
@@ -240,7 +276,8 @@ public sealed class ComboBoxAutomationPeer : FrameworkElementAutomationPeer, IEx
 /// <summary>
 /// Exposes TreeView types to UI Automation.
 /// </summary>
-public sealed class TreeViewAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
+public class TreeViewAutomationPeer : ItemsControlAutomationPeer,
+    Jalium.UI.Automation.Provider.ISelectionProvider
 {
     /// <summary>
     /// Initializes a new instance of the TreeViewAutomationPeer class.
@@ -250,6 +287,8 @@ public sealed class TreeViewAutomationPeer : FrameworkElementAutomationPeer, ISe
     }
 
     private TreeView TreeViewOwner => (TreeView)Owner;
+
+    protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new TreeViewDataItemAutomationPeer(item, this);
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -275,16 +314,16 @@ public sealed class TreeViewAutomationPeer : FrameworkElementAutomationPeer, ISe
     #region ISelectionProvider
 
     /// <inheritdoc />
-    public AutomationPeer[] GetSelection()
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] Jalium.UI.Automation.Provider.ISelectionProvider.GetSelection()
     {
-        return Array.Empty<AutomationPeer>();
+        object? selectedItem = TreeViewOwner.SelectedItem;
+        return selectedItem is null
+            ? []
+            : [ProviderFromPeer(FindOrCreateItemAutomationPeer(selectedItem))];
     }
 
-    /// <inheritdoc />
-    public bool IsSelectionRequired => false;
-
-    /// <inheritdoc />
-    public bool CanSelectMultiple => false;
+    bool Jalium.UI.Automation.Provider.ISelectionProvider.IsSelectionRequired => false;
+    bool Jalium.UI.Automation.Provider.ISelectionProvider.CanSelectMultiple => false;
 
     #endregion
 }
@@ -292,7 +331,10 @@ public sealed class TreeViewAutomationPeer : FrameworkElementAutomationPeer, ISe
 /// <summary>
 /// Exposes TreeViewItem types to UI Automation.
 /// </summary>
-public sealed class TreeViewItemAutomationPeer : FrameworkElementAutomationPeer, IExpandCollapseProvider, ISelectionItemProvider, IScrollItemProvider
+public class TreeViewItemAutomationPeer : ItemsControlAutomationPeer,
+    Jalium.UI.Automation.Provider.IExpandCollapseProvider,
+    Jalium.UI.Automation.Provider.ISelectionItemProvider,
+    Jalium.UI.Automation.Provider.IScrollItemProvider
 {
     /// <summary>
     /// Initializes a new instance of the TreeViewItemAutomationPeer class.
@@ -302,6 +344,10 @@ public sealed class TreeViewItemAutomationPeer : FrameworkElementAutomationPeer,
     }
 
     private TreeViewItem ItemOwner => (TreeViewItem)Owner;
+
+    protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new TreeViewDataItemAutomationPeer(item, this);
+
+    protected internal override ItemAutomationPeer FindOrCreateItemAutomationPeer(object item) => base.FindOrCreateItemAutomationPeer(item);
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -373,10 +419,7 @@ public sealed class TreeViewItemAutomationPeer : FrameworkElementAutomationPeer,
     #region ISelectionItemProvider
 
     /// <inheritdoc />
-    public bool IsSelected => ItemOwner.IsSelected;
-
-    /// <inheritdoc />
-    public AutomationPeer SelectionContainer
+    private AutomationPeer? SelectionContainerPeer
     {
         get
         {
@@ -388,27 +431,16 @@ public sealed class TreeViewItemAutomationPeer : FrameworkElementAutomationPeer,
                     return treeView.GetAutomationPeer() ?? new TreeViewAutomationPeer(treeView);
                 parent = (parent as FrameworkElement)?.VisualParent;
             }
-            return null!;
+            return null;
         }
     }
 
-    /// <inheritdoc />
-    public void Select()
-    {
-        ItemOwner.IsSelected = true;
-    }
-
-    /// <inheritdoc />
-    public void AddToSelection()
-    {
-        ItemOwner.IsSelected = true;
-    }
-
-    /// <inheritdoc />
-    public void RemoveFromSelection()
-    {
-        ItemOwner.IsSelected = false;
-    }
+    bool Jalium.UI.Automation.Provider.ISelectionItemProvider.IsSelected => ItemOwner.IsSelected;
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple? Jalium.UI.Automation.Provider.ISelectionItemProvider.SelectionContainer =>
+        SelectionContainerPeer is AutomationPeer peer ? ProviderFromPeer(peer) : null;
+    void Jalium.UI.Automation.Provider.ISelectionItemProvider.Select() => ItemOwner.IsSelected = true;
+    void Jalium.UI.Automation.Provider.ISelectionItemProvider.AddToSelection() => ItemOwner.IsSelected = true;
+    void Jalium.UI.Automation.Provider.ISelectionItemProvider.RemoveFromSelection() => ItemOwner.IsSelected = false;
 
     #endregion
 
@@ -430,7 +462,7 @@ public sealed class TreeViewItemAutomationPeer : FrameworkElementAutomationPeer,
 /// <summary>
 /// Exposes Slider types to UI Automation.
 /// </summary>
-public sealed class SliderAutomationPeer : FrameworkElementAutomationPeer, IRangeValueProvider
+public class SliderAutomationPeer : RangeBaseAutomationPeer
 {
     /// <summary>
     /// Initializes a new instance of the SliderAutomationPeer class.
@@ -453,6 +485,8 @@ public sealed class SliderAutomationPeer : FrameworkElementAutomationPeer, IRang
         return nameof(Slider);
     }
 
+    protected override Point GetClickablePointCore() => new(double.NaN, double.NaN);
+
     /// <inheritdoc />
     protected override object? GetPatternCore(PatternInterface patternInterface)
     {
@@ -465,25 +499,25 @@ public sealed class SliderAutomationPeer : FrameworkElementAutomationPeer, IRang
     #region IRangeValueProvider
 
     /// <inheritdoc />
-    public double Value => SliderOwner.Value;
+    public override double Value => SliderOwner.Value;
 
     /// <inheritdoc />
-    public double Minimum => SliderOwner.Minimum;
+    public override double Minimum => SliderOwner.Minimum;
 
     /// <inheritdoc />
-    public double Maximum => SliderOwner.Maximum;
+    public override double Maximum => SliderOwner.Maximum;
 
     /// <inheritdoc />
-    public double SmallChange => SliderOwner.SmallChange;
+    public override double SmallChange => SliderOwner.SmallChange;
 
     /// <inheritdoc />
-    public double LargeChange => SliderOwner.LargeChange;
+    public override double LargeChange => SliderOwner.LargeChange;
 
     /// <inheritdoc />
-    public bool IsReadOnly => !IsEnabled();
+    public override bool IsReadOnly => !IsEnabled();
 
     /// <inheritdoc />
-    public void SetValue(double value)
+    public override void SetValue(double value)
     {
         if (!IsEnabled())
             throw new InvalidOperationException("Cannot set value on a disabled Slider.");
@@ -500,7 +534,7 @@ public sealed class SliderAutomationPeer : FrameworkElementAutomationPeer, IRang
 /// <summary>
 /// Exposes ProgressBar types to UI Automation.
 /// </summary>
-public sealed class ProgressBarAutomationPeer : FrameworkElementAutomationPeer, IRangeValueProvider
+public class ProgressBarAutomationPeer : RangeBaseAutomationPeer, Jalium.UI.Automation.Provider.IRangeValueProvider
 {
     /// <summary>
     /// Initializes a new instance of the ProgressBarAutomationPeer class.
@@ -535,25 +569,25 @@ public sealed class ProgressBarAutomationPeer : FrameworkElementAutomationPeer, 
     #region IRangeValueProvider
 
     /// <inheritdoc />
-    public double Value => ProgressBarOwner.Value;
+    public override double Value => ProgressBarOwner.Value;
 
     /// <inheritdoc />
-    public double Minimum => ProgressBarOwner.Minimum;
+    public override double Minimum => ProgressBarOwner.Minimum;
 
     /// <inheritdoc />
-    public double Maximum => ProgressBarOwner.Maximum;
+    public override double Maximum => ProgressBarOwner.Maximum;
 
     /// <inheritdoc />
-    public double SmallChange => 0;
+    public override double SmallChange => 0;
 
     /// <inheritdoc />
-    public double LargeChange => 0;
+    public override double LargeChange => 0;
 
     /// <inheritdoc />
-    public bool IsReadOnly => true;
+    public override bool IsReadOnly => true;
 
     /// <inheritdoc />
-    public void SetValue(double value)
+    public override void SetValue(double value)
     {
         throw new InvalidOperationException("ProgressBar value cannot be set via automation.");
     }
@@ -568,7 +602,7 @@ public sealed class ProgressBarAutomationPeer : FrameworkElementAutomationPeer, 
 /// <summary>
 /// Exposes TabControl types to UI Automation.
 /// </summary>
-public sealed class TabControlAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
+public class TabControlAutomationPeer : SelectorAutomationPeer, Jalium.UI.Automation.Provider.ISelectionProvider
 {
     /// <summary>
     /// Initializes a new instance of the TabControlAutomationPeer class.
@@ -578,6 +612,10 @@ public sealed class TabControlAutomationPeer : FrameworkElementAutomationPeer, I
     }
 
     private TabControl TabControlOwner => (TabControl)Owner;
+
+    protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new TabItemAutomationPeer(item, this);
+
+    protected override Point GetClickablePointCore() => new(double.NaN, double.NaN);
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -603,16 +641,16 @@ public sealed class TabControlAutomationPeer : FrameworkElementAutomationPeer, I
     #region ISelectionProvider
 
     /// <inheritdoc />
-    public AutomationPeer[] GetSelection()
+    public override AutomationPeer[] GetSelection()
     {
         return Array.Empty<AutomationPeer>();
     }
 
     /// <inheritdoc />
-    public bool IsSelectionRequired => true;
+    public override bool IsSelectionRequired => true;
 
     /// <inheritdoc />
-    public bool CanSelectMultiple => false;
+    public override bool CanSelectMultiple => false;
 
     #endregion
 }
@@ -620,12 +658,17 @@ public sealed class TabControlAutomationPeer : FrameworkElementAutomationPeer, I
 /// <summary>
 /// Exposes TabItem types to UI Automation.
 /// </summary>
-public sealed class TabItemAutomationPeer : FrameworkElementAutomationPeer, ISelectionItemProvider
+public class TabItemAutomationPeer : SelectorItemAutomationPeer, Jalium.UI.Automation.Provider.ISelectionItemProvider
 {
     /// <summary>
     /// Initializes a new instance of the TabItemAutomationPeer class.
     /// </summary>
     public TabItemAutomationPeer(TabItem owner) : base(owner)
+    {
+    }
+
+    public TabItemAutomationPeer(object owner, TabControlAutomationPeer tabControlAutomationPeer)
+        : base(owner, tabControlAutomationPeer)
     {
     }
 
@@ -664,10 +707,10 @@ public sealed class TabItemAutomationPeer : FrameworkElementAutomationPeer, ISel
     #region ISelectionItemProvider
 
     /// <inheritdoc />
-    public bool IsSelected => ItemOwner.IsSelected;
+    public override bool IsSelected => ItemOwner.IsSelected;
 
     /// <inheritdoc />
-    public AutomationPeer SelectionContainer
+    public override AutomationPeer SelectionContainer
     {
         get
         {
@@ -683,19 +726,19 @@ public sealed class TabItemAutomationPeer : FrameworkElementAutomationPeer, ISel
     }
 
     /// <inheritdoc />
-    public void Select()
+    public override void Select()
     {
         ItemOwner.IsSelected = true;
     }
 
     /// <inheritdoc />
-    public void AddToSelection()
+    public override void AddToSelection()
     {
         ItemOwner.IsSelected = true;
     }
 
     /// <inheritdoc />
-    public void RemoveFromSelection()
+    public override void RemoveFromSelection()
     {
         throw new InvalidOperationException("Cannot deselect a TabItem without selecting another.");
     }
@@ -765,6 +808,62 @@ public sealed class MenuItemAutomationPeer : FrameworkElementAutomationPeer, IEx
         if (header is string text)
             return text;
         return header?.ToString() ?? base.GetNameCore();
+    }
+
+    protected override string GetAccessKeyCore()
+    {
+        if (MenuItemOwner.Header is AccessText accessText && accessText.AccessKey != '\0')
+            return accessText.AccessKey.ToString();
+
+        if (MenuItemOwner.Header is not string header)
+            return base.GetAccessKeyCore();
+
+        for (int index = 0; index < header.Length - 1; index++)
+        {
+            if (header[index] != '_')
+                continue;
+            if (header[index + 1] == '_')
+            {
+                index++;
+                continue;
+            }
+
+            return header[index + 1].ToString();
+        }
+
+        return base.GetAccessKeyCore();
+    }
+
+    protected override int GetPositionInSetCore()
+    {
+        ItemsControl? parent = GetParentItemsControl();
+        if (parent is null)
+            return base.GetPositionInSetCore();
+
+        int index = parent.ItemContainerGenerator.IndexFromContainer(MenuItemOwner);
+        if (index < 0)
+            index = parent.Items.IndexOf(MenuItemOwner);
+        return index < 0 ? base.GetPositionInSetCore() : index + 1;
+    }
+
+    protected override int GetSizeOfSetCore() =>
+        GetParentItemsControl()?.Items.Count ?? base.GetSizeOfSetCore();
+
+    private ItemsControl? GetParentItemsControl()
+    {
+        ItemsControl? parent = ItemsControl.ItemsControlFromItemContainer(MenuItemOwner);
+        if (parent is not null && !ReferenceEquals(parent, MenuItemOwner))
+            return parent;
+
+        Visual? current = MenuItemOwner.VisualParent;
+        while (current is not null)
+        {
+            if (current is ItemsControl itemsControl && !ReferenceEquals(itemsControl, MenuItemOwner))
+                return itemsControl;
+            current = current.VisualParent;
+        }
+
+        return null;
     }
 
     /// <inheritdoc />
@@ -1020,7 +1119,7 @@ public sealed class ScrollViewerAutomationPeer : FrameworkElementAutomationPeer,
 /// <summary>
 /// Exposes Window types to UI Automation.
 /// </summary>
-public sealed class WindowAutomationPeer : FrameworkElementAutomationPeer
+public class WindowAutomationPeer : FrameworkElementAutomationPeer
 {
     /// <summary>
     /// Initializes a new instance of the WindowAutomationPeer class.
@@ -1048,6 +1147,29 @@ public sealed class WindowAutomationPeer : FrameworkElementAutomationPeer
     {
         return WindowOwner.Title ?? base.GetNameCore();
     }
+
+    protected override int GetPositionInSetCore()
+    {
+        if (Owner.VisualParent is Panel panel)
+            return panel.Children.IndexOf(Owner) + 1;
+        return base.GetPositionInSetCore();
+    }
+
+    protected override int GetSizeOfSetCore() => Owner.VisualParent is Panel panel
+        ? panel.Children.Count
+        : base.GetSizeOfSetCore();
+
+    /// <inheritdoc />
+    protected override bool IsKeyboardFocusableCore()
+    {
+        return WindowOwner.IsEnabled && WindowOwner.Visibility == Visibility.Visible;
+    }
+
+    /// <inheritdoc />
+    protected override bool HasKeyboardFocusCore()
+    {
+        return WindowOwner.IsActive || base.HasKeyboardFocusCore();
+    }
 }
 
 #endregion
@@ -1057,8 +1179,17 @@ public sealed class WindowAutomationPeer : FrameworkElementAutomationPeer
 /// <summary>
 /// Exposes DataGrid types to UI Automation.
 /// </summary>
-public sealed class DataGridAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
+public sealed partial class DataGridAutomationPeer : ItemsControlAutomationPeer,
+    Jalium.UI.Automation.Provider.IGridProvider,
+    Jalium.UI.Automation.Provider.ISelectionProvider,
+    Jalium.UI.Automation.Provider.ITableProvider
 {
+    private readonly Dictionary<object, Dictionary<DataGridColumn, DataGridCellItemAutomationPeer>> _cellPeers =
+        new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<DataGridColumn, DataGridHeaderItemAutomationPeer> _columnHeaderPeers = [];
+    private readonly Dictionary<object, DataGridHeaderItemAutomationPeer> _rowHeaderPeers =
+        new(ReferenceEqualityComparer.Instance);
+
     /// <summary>
     /// Initializes a new instance of the DataGridAutomationPeer class.
     /// </summary>
@@ -1067,6 +1198,8 @@ public sealed class DataGridAutomationPeer : FrameworkElementAutomationPeer, ISe
     }
 
     private DataGrid DataGridOwner => (DataGrid)Owner;
+
+    protected override ItemAutomationPeer CreateItemAutomationPeer(object item) => new DataGridItemAutomationPeer(item, this);
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -1083,7 +1216,7 @@ public sealed class DataGridAutomationPeer : FrameworkElementAutomationPeer, ISe
     /// <inheritdoc />
     protected override object? GetPatternCore(PatternInterface patternInterface)
     {
-        if (patternInterface == PatternInterface.Selection)
+        if (patternInterface is PatternInterface.Selection or PatternInterface.Grid or PatternInterface.Table)
             return this;
 
         return base.GetPatternCore(patternInterface);
@@ -1094,7 +1227,10 @@ public sealed class DataGridAutomationPeer : FrameworkElementAutomationPeer, ISe
     /// <inheritdoc />
     public AutomationPeer[] GetSelection()
     {
-        return Array.Empty<AutomationPeer>();
+        return DataGridOwner.SelectedItems
+            .Select(FindOrCreateItemAutomationPeer)
+            .Cast<AutomationPeer>()
+            .ToArray();
     }
 
     /// <inheritdoc />
@@ -1103,6 +1239,188 @@ public sealed class DataGridAutomationPeer : FrameworkElementAutomationPeer, ISe
     /// <inheritdoc />
     public bool CanSelectMultiple =>
         DataGridOwner.SelectionMode == DataGridSelectionMode.Extended;
+
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] Jalium.UI.Automation.Provider.ISelectionProvider.GetSelection() =>
+        GetSelection().Select(ProviderFromPeer).ToArray();
+    bool Jalium.UI.Automation.Provider.ISelectionProvider.IsSelectionRequired => IsSelectionRequired;
+    bool Jalium.UI.Automation.Provider.ISelectionProvider.CanSelectMultiple => CanSelectMultiple;
+
+    int Jalium.UI.Automation.Provider.IGridProvider.RowCount => DataGridOwner.Items.Count;
+    int Jalium.UI.Automation.Provider.IGridProvider.ColumnCount => DataGridOwner.Columns.Count;
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple? Jalium.UI.Automation.Provider.IGridProvider.GetItem(int row, int column)
+    {
+        if ((uint)row >= (uint)DataGridOwner.Items.Count || (uint)column >= (uint)DataGridOwner.Columns.Count)
+            throw new ArgumentOutOfRangeException(
+                row < 0 || row >= DataGridOwner.Items.Count ? nameof(row) : nameof(column));
+
+        object item = DataGridOwner.Items[row];
+        DataGridColumn dataGridColumn = DataGridOwner.Columns[column];
+        return ProviderFromPeer(GetCellPeer(item, dataGridColumn));
+    }
+
+    RowOrColumnMajor Jalium.UI.Automation.Provider.ITableProvider.RowOrColumnMajor => RowOrColumnMajor.RowMajor;
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] Jalium.UI.Automation.Provider.ITableProvider.GetColumnHeaders()
+    {
+        if (!DataGridOwner.HeadersVisibility.HasFlag(DataGridHeadersVisibility.Column))
+            return [];
+
+        return DataGridOwner.Columns
+            .Select(column => ProviderFromPeer(GetColumnHeaderPeer(column)))
+            .ToArray();
+    }
+
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] Jalium.UI.Automation.Provider.ITableProvider.GetRowHeaders()
+    {
+        if (!DataGridOwner.HeadersVisibility.HasFlag(DataGridHeadersVisibility.Row))
+            return [];
+
+        return DataGridOwner.Items
+            .Cast<object>()
+            .Select(item => ProviderFromPeer(GetRowHeaderPeer(item)))
+            .ToArray();
+    }
+
+    private DataGridCellItemAutomationPeer GetCellPeer(object item, DataGridColumn column)
+    {
+        if (!_cellPeers.TryGetValue(item, out Dictionary<DataGridColumn, DataGridCellItemAutomationPeer>? rowPeers))
+        {
+            rowPeers = [];
+            _cellPeers.Add(item, rowPeers);
+        }
+
+        if (!rowPeers.TryGetValue(column, out DataGridCellItemAutomationPeer? peer))
+        {
+            peer = new DataGridCellItemAutomationPeer(item, column, this);
+            rowPeers.Add(column, peer);
+        }
+
+        return peer;
+    }
+
+    private DataGridHeaderItemAutomationPeer GetColumnHeaderPeer(DataGridColumn column)
+    {
+        if (!_columnHeaderPeers.TryGetValue(column, out DataGridHeaderItemAutomationPeer? peer))
+        {
+            peer = new DataGridHeaderItemAutomationPeer(column.Header?.ToString() ?? string.Empty, this);
+            _columnHeaderPeers.Add(column, peer);
+        }
+
+        return peer;
+    }
+
+    private DataGridHeaderItemAutomationPeer GetRowHeaderPeer(object item)
+    {
+        if (!_rowHeaderPeers.TryGetValue(item, out DataGridHeaderItemAutomationPeer? peer))
+        {
+            peer = new DataGridHeaderItemAutomationPeer(item.ToString() ?? string.Empty, this);
+            _rowHeaderPeers.Add(item, peer);
+        }
+
+        return peer;
+    }
+
+    private sealed class DataGridCellItemAutomationPeer : AutomationPeer
+    {
+        private readonly object _item;
+        private readonly DataGridColumn _column;
+        private readonly DataGridAutomationPeer _parent;
+
+        internal DataGridCellItemAutomationPeer(object item, DataGridColumn column, DataGridAutomationPeer parent)
+        {
+            _item = item;
+            _column = column;
+            _parent = parent;
+        }
+
+        public override object? GetPattern(PatternInterface patternInterface) => null;
+        protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.DataItem;
+        protected override string GetClassNameCore() => nameof(DataGridCell);
+        protected override string GetNameCore() =>
+            GetRealizedCell()?.Content?.ToString() ?? _column.GetCellValueInternal(_item)?.ToString() ?? string.Empty;
+        protected override string GetAutomationIdCore() =>
+            $"Cell_{_parent.DataGridOwner.Items.IndexOf(_item)}_{_parent.DataGridOwner.Columns.IndexOf(_column)}";
+        protected override string GetHelpTextCore() => string.Empty;
+        protected override string GetAcceleratorKeyCore() => string.Empty;
+        protected override string GetAccessKeyCore() => string.Empty;
+        protected override string GetItemStatusCore() => string.Empty;
+        protected override string GetItemTypeCore() => "Cell";
+        protected override string GetLocalizedControlTypeCore() => "cell";
+        protected override Rect GetBoundingRectangleCore()
+        {
+            DataGridCell? cell = GetRealizedCell();
+            return cell is null
+                ? Rect.Empty
+                : cell.MapLocalRectToScreen(new Rect(0, 0, cell.RenderSize.Width, cell.RenderSize.Height));
+        }
+        protected override Point GetClickablePointCore()
+        {
+            Rect bounds = GetBoundingRectangleCore();
+            return bounds.IsEmpty
+                ? new Point(double.NaN, double.NaN)
+                : new Point(bounds.X + bounds.Width / 2, bounds.Y + bounds.Height / 2);
+        }
+        protected override AutomationOrientation GetOrientationCore() => AutomationOrientation.None;
+        protected override bool IsEnabledCore() => _parent.IsEnabled();
+        protected override bool IsKeyboardFocusableCore() => GetRealizedCell()?.Focusable == true;
+        protected override bool HasKeyboardFocusCore() => GetRealizedCell()?.IsKeyboardFocused == true;
+        protected override bool IsOffscreenCore() => GetRealizedCell() is not { Visibility: Visibility.Visible };
+        protected override bool IsContentElementCore() => true;
+        protected override bool IsControlElementCore() => true;
+        protected override bool IsPasswordCore() => false;
+        protected override bool IsRequiredForFormCore() => false;
+        protected override AutomationPeer? GetLabeledByCore() => null;
+        protected override AutomationPeer GetParentCore() => _parent;
+        protected override List<AutomationPeer> GetChildrenCore() => [];
+        protected override void SetFocusCore() => (GetRealizedCell() as UIElement ?? _parent.DataGridOwner).Focus();
+
+        private DataGridCell? GetRealizedCell()
+        {
+            int columnIndex = _parent.DataGridOwner.Columns.IndexOf(_column);
+            return _parent.DataGridOwner.ItemContainerGenerator.ContainerFromItem(_item) is DataGridRow row &&
+                   row.CellsByColumn.TryGetValue(columnIndex, out DataGridCell? cell)
+                ? cell
+                : null;
+        }
+    }
+
+    private sealed class DataGridHeaderItemAutomationPeer : AutomationPeer
+    {
+        private readonly string _name;
+        private readonly DataGridAutomationPeer _parent;
+
+        internal DataGridHeaderItemAutomationPeer(string name, DataGridAutomationPeer parent)
+        {
+            _name = name;
+            _parent = parent;
+        }
+
+        public override object? GetPattern(PatternInterface patternInterface) => null;
+        protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.HeaderItem;
+        protected override string GetClassNameCore() => "DataGridHeader";
+        protected override string GetNameCore() => _name;
+        protected override string GetAutomationIdCore() => _name;
+        protected override string GetHelpTextCore() => string.Empty;
+        protected override string GetAcceleratorKeyCore() => string.Empty;
+        protected override string GetAccessKeyCore() => string.Empty;
+        protected override string GetItemStatusCore() => string.Empty;
+        protected override string GetItemTypeCore() => "Header";
+        protected override string GetLocalizedControlTypeCore() => "header";
+        protected override Rect GetBoundingRectangleCore() => Rect.Empty;
+        protected override Point GetClickablePointCore() => new(double.NaN, double.NaN);
+        protected override AutomationOrientation GetOrientationCore() => AutomationOrientation.None;
+        protected override bool IsEnabledCore() => _parent.IsEnabled();
+        protected override bool IsKeyboardFocusableCore() => false;
+        protected override bool HasKeyboardFocusCore() => false;
+        protected override bool IsOffscreenCore() => _parent.IsOffscreen();
+        protected override bool IsContentElementCore() => true;
+        protected override bool IsControlElementCore() => true;
+        protected override bool IsPasswordCore() => false;
+        protected override bool IsRequiredForFormCore() => false;
+        protected override AutomationPeer? GetLabeledByCore() => null;
+        protected override AutomationPeer GetParentCore() => _parent;
+        protected override List<AutomationPeer> GetChildrenCore() => [];
+        protected override void SetFocusCore() { }
+    }
 
     #endregion
 }

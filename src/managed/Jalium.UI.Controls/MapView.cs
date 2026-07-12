@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Themes;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -12,9 +12,9 @@ namespace Jalium.UI.Controls;
 public class MapView : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.MapViewAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.MapViewAutomationPeer(this);
     }
 
     // Cached brushes
@@ -840,7 +840,7 @@ public class MapView : Control
             if (!string.IsNullOrEmpty(label))
             {
                 var fontSize = Math.Max(10, markerSize * 0.8);
-                var ft = new FormattedText(label, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize)
+                var ft = new FormattedText(label, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize)
                 {
                     Foreground = s_markerLabelForeground
                 };
@@ -889,7 +889,7 @@ public class MapView : Control
         dc.DrawRoundedRectangle(s_scaleBarBackground, null, bgRect, 3, 3);
 
         // Draw label
-        var ft = new FormattedText(label, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize)
+        var ft = new FormattedText(label, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize)
         {
             Foreground = s_scaleBarBrush
         };
@@ -927,7 +927,7 @@ public class MapView : Control
         const double fontSize = 9;
         const double margin = 4;
 
-        var ft = new FormattedText(tileSource.Attribution, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize)
+        var ft = new FormattedText(tileSource.Attribution, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize)
         {
             Foreground = s_attributionForeground
         };
@@ -957,7 +957,7 @@ public class MapView : Control
         var zoomInRect = new Rect(x, y, buttonSize, buttonSize);
         dc.DrawRoundedRectangle(s_zoomButtonBackground, new Pen(s_scaleBarBrush, 0.5), zoomInRect, 4, 4);
 
-        var plusText = new FormattedText("+", FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize)
+        var plusText = new FormattedText("+", FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize)
         {
             Foreground = s_zoomButtonForeground
         };
@@ -971,7 +971,7 @@ public class MapView : Control
         var zoomOutRect = new Rect(x, y, buttonSize, buttonSize);
         dc.DrawRoundedRectangle(s_zoomButtonBackground, new Pen(s_scaleBarBrush, 0.5), zoomOutRect, 4, 4);
 
-        var minusText = new FormattedText("\u2212", FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize)
+        var minusText = new FormattedText("\u2212", FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize)
         {
             Foreground = s_zoomButtonForeground
         };

@@ -14,6 +14,15 @@ public static class Touch
     private static readonly Dictionary<int, TouchDevice> _touchDevices = new();
     private static TouchCapabilities? _cachedCapabilities;
 
+    static Touch()
+    {
+        TouchDevice.FrameUpdated += static timestamp =>
+            FrameReported?.Invoke(null!, new TouchFrameEventArgs(timestamp));
+    }
+
+    /// <summary>Occurs whenever any active touch device reports a state change.</summary>
+    public static event TouchFrameEventHandler? FrameReported;
+
     /// <summary>Gets the collection of active touch devices.</summary>
     public static IReadOnlyCollection<TouchDevice> ActiveDevices => _touchDevices.Values;
 
@@ -71,7 +80,9 @@ public static class Touch
     /// <summary>Registers a new touch contact.</summary>
     public static TouchDevice RegisterTouchPoint(int pointerId, Point position, UIElement? target)
     {
-        var device = new TouchDevice(pointerId, target);
+        if (_touchDevices.Remove(pointerId, out TouchDevice? previous))
+            previous.DeactivateForManager();
+        var device = new PointerTouchDevice(pointerId, target);
         device.UpdatePosition(position);
         _touchDevices[pointerId] = device;
         return device;
@@ -89,7 +100,8 @@ public static class Touch
     /// <summary>Removes a touch contact from the active set.</summary>
     public static void UnregisterTouchPoint(int pointerId)
     {
-        _touchDevices.Remove(pointerId);
+        if (_touchDevices.Remove(pointerId, out TouchDevice? device))
+            device.DeactivateForManager();
     }
 
     /// <summary>Looks up an active touch contact by id, or returns null.</summary>

@@ -3,7 +3,7 @@ namespace Jalium.UI.Media.Animation;
 /// <summary>
 /// Animates the value of a Rect property between two target values.
 /// </summary>
-public sealed class RectAnimation : AnimationTimeline<Rect>
+public sealed partial class RectAnimation : RectAnimationBase
 {
     #region Dependency Properties
 
@@ -13,6 +13,10 @@ public sealed class RectAnimation : AnimationTimeline<Rect>
 
     public static readonly DependencyProperty ToProperty =
         DependencyProperty.Register(nameof(To), typeof(Rect?), typeof(RectAnimation),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty ByProperty =
+        DependencyProperty.Register(nameof(By), typeof(Rect?), typeof(RectAnimation),
             new PropertyMetadata(null));
 
     public static readonly DependencyProperty EasingFunctionProperty =
@@ -33,6 +37,12 @@ public sealed class RectAnimation : AnimationTimeline<Rect>
     {
         get => (Rect?)GetValue(ToProperty);
         set => SetValue(ToProperty, value);
+    }
+
+    public Rect? By
+    {
+        get => (Rect?)GetValue(ByProperty);
+        set => SetValue(ByProperty, value);
     }
 
     public IEasingFunction? EasingFunction
@@ -68,7 +78,13 @@ public sealed class RectAnimation : AnimationTimeline<Rect>
         }
 
         var from = From ?? defaultOriginValue;
-        var to = To ?? defaultDestinationValue;
+        var to = To ?? (By.HasValue
+            ? new Rect(
+                from.X + By.Value.X,
+                from.Y + By.Value.Y,
+                from.Width + By.Value.Width,
+                from.Height + By.Value.Height)
+            : defaultDestinationValue);
 
         return new Rect(
             from.X + (to.X - from.X) * progress,
@@ -81,7 +97,7 @@ public sealed class RectAnimation : AnimationTimeline<Rect>
 /// <summary>
 /// Animates the value of a Size property between two target values.
 /// </summary>
-public sealed class SizeAnimation : AnimationTimeline<Size>
+public sealed partial class SizeAnimation : SizeAnimationBase
 {
     #region Dependency Properties
 
@@ -91,6 +107,10 @@ public sealed class SizeAnimation : AnimationTimeline<Size>
 
     public static readonly DependencyProperty ToProperty =
         DependencyProperty.Register(nameof(To), typeof(Size?), typeof(SizeAnimation),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty ByProperty =
+        DependencyProperty.Register(nameof(By), typeof(Size?), typeof(SizeAnimation),
             new PropertyMetadata(null));
 
     public static readonly DependencyProperty EasingFunctionProperty =
@@ -111,6 +131,12 @@ public sealed class SizeAnimation : AnimationTimeline<Size>
     {
         get => (Size?)GetValue(ToProperty);
         set => SetValue(ToProperty, value);
+    }
+
+    public Size? By
+    {
+        get => (Size?)GetValue(ByProperty);
+        set => SetValue(ByProperty, value);
     }
 
     public IEasingFunction? EasingFunction
@@ -146,7 +172,9 @@ public sealed class SizeAnimation : AnimationTimeline<Size>
         }
 
         var from = From ?? defaultOriginValue;
-        var to = To ?? defaultDestinationValue;
+        var to = To ?? (By.HasValue
+            ? new Size(from.Width + By.Value.Width, from.Height + By.Value.Height)
+            : defaultDestinationValue);
 
         return new Size(
             from.Width + (to.Width - from.Width) * progress,
@@ -157,7 +185,7 @@ public sealed class SizeAnimation : AnimationTimeline<Size>
 /// <summary>
 /// Animates the value of a Vector property between two target values.
 /// </summary>
-public sealed class VectorAnimation : AnimationTimeline<Vector>
+public sealed partial class VectorAnimation : VectorAnimationBase
 {
     #region Dependency Properties
 
@@ -167,6 +195,10 @@ public sealed class VectorAnimation : AnimationTimeline<Vector>
 
     public static readonly DependencyProperty ToProperty =
         DependencyProperty.Register(nameof(To), typeof(Vector?), typeof(VectorAnimation),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty ByProperty =
+        DependencyProperty.Register(nameof(By), typeof(Vector?), typeof(VectorAnimation),
             new PropertyMetadata(null));
 
     public static readonly DependencyProperty EasingFunctionProperty =
@@ -187,6 +219,12 @@ public sealed class VectorAnimation : AnimationTimeline<Vector>
     {
         get => (Vector?)GetValue(ToProperty);
         set => SetValue(ToProperty, value);
+    }
+
+    public Vector? By
+    {
+        get => (Vector?)GetValue(ByProperty);
+        set => SetValue(ByProperty, value);
     }
 
     public IEasingFunction? EasingFunction
@@ -221,19 +259,23 @@ public sealed class VectorAnimation : AnimationTimeline<Vector>
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? defaultDestinationValue;
-
-        return new Vector(
-            from.X + (to.X - from.X) * progress,
-            from.Y + (to.Y - from.Y) * progress);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }
 
 /// <summary>
 /// Animates the value of an Int32 property between two target values.
 /// </summary>
-public sealed class Int32Animation : AnimationTimeline<int>
+public sealed partial class Int32Animation : Int32AnimationBase
 {
     #region Dependency Properties
 
@@ -307,17 +349,23 @@ public sealed class Int32Animation : AnimationTimeline<int>
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? (By.HasValue ? from + By.Value : defaultDestinationValue);
-
-        return (int)Math.Round(from + (to - from) * progress);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }
 
 /// <summary>
 /// Animates the value of a Byte property between two target values.
 /// </summary>
-public sealed class ByteAnimation : AnimationTimeline<byte>
+public sealed partial class ByteAnimation : ByteAnimationBase
 {
     #region Dependency Properties
 
@@ -327,6 +375,10 @@ public sealed class ByteAnimation : AnimationTimeline<byte>
 
     public static readonly DependencyProperty ToProperty =
         DependencyProperty.Register(nameof(To), typeof(byte?), typeof(ByteAnimation),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty ByProperty =
+        DependencyProperty.Register(nameof(By), typeof(byte?), typeof(ByteAnimation),
             new PropertyMetadata(null));
 
     public static readonly DependencyProperty EasingFunctionProperty =
@@ -347,6 +399,12 @@ public sealed class ByteAnimation : AnimationTimeline<byte>
     {
         get => (byte?)GetValue(ToProperty);
         set => SetValue(ToProperty, value);
+    }
+
+    public byte? By
+    {
+        get => (byte?)GetValue(ByProperty);
+        set => SetValue(ByProperty, value);
     }
 
     public IEasingFunction? EasingFunction
@@ -381,17 +439,23 @@ public sealed class ByteAnimation : AnimationTimeline<byte>
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? defaultDestinationValue;
-
-        return (byte)Math.Round(from + (to - from) * progress);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }
 
 /// <summary>
 /// Animates the value of a Decimal property between two target values.
 /// </summary>
-public sealed class DecimalAnimation : AnimationTimeline<decimal>
+public sealed partial class DecimalAnimation : DecimalAnimationBase
 {
     #region Dependency Properties
 
@@ -458,24 +522,30 @@ public sealed class DecimalAnimation : AnimationTimeline<decimal>
 
     protected override decimal GetCurrentValueCore(decimal defaultOriginValue, decimal defaultDestinationValue, AnimationClock animationClock)
     {
-        var progress = (decimal)animationClock.CurrentProgress;
+        var progress = animationClock.CurrentProgress;
 
         if (EasingFunction != null)
         {
-            progress = (decimal)EasingFunction.Ease((double)progress);
+            progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? (By.HasValue ? from + By.Value : defaultDestinationValue);
-
-        return from + (to - from) * progress;
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }
 
 /// <summary>
 /// Animates the value of a Single (float) property between two target values.
 /// </summary>
-public sealed class SingleAnimation : AnimationTimeline<float>
+public sealed partial class SingleAnimation : SingleAnimationBase
 {
     #region Dependency Properties
 
@@ -549,17 +619,23 @@ public sealed class SingleAnimation : AnimationTimeline<float>
             progress = (float)EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? (By.HasValue ? from + By.Value : defaultDestinationValue);
-
-        return from + (to - from) * progress;
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }
 
 /// <summary>
 /// Animates the value of an Int16 property between two target values.
 /// </summary>
-public sealed class Int16Animation : AnimationTimeline<short>
+public sealed partial class Int16Animation : Int16AnimationBase
 {
     #region Dependency Properties
 
@@ -569,6 +645,10 @@ public sealed class Int16Animation : AnimationTimeline<short>
 
     public static readonly DependencyProperty ToProperty =
         DependencyProperty.Register(nameof(To), typeof(short?), typeof(Int16Animation),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty ByProperty =
+        DependencyProperty.Register(nameof(By), typeof(short?), typeof(Int16Animation),
             new PropertyMetadata(null));
 
     public static readonly DependencyProperty EasingFunctionProperty =
@@ -589,6 +669,12 @@ public sealed class Int16Animation : AnimationTimeline<short>
     {
         get => (short?)GetValue(ToProperty);
         set => SetValue(ToProperty, value);
+    }
+
+    public short? By
+    {
+        get => (short?)GetValue(ByProperty);
+        set => SetValue(ByProperty, value);
     }
 
     public IEasingFunction? EasingFunction
@@ -623,17 +709,23 @@ public sealed class Int16Animation : AnimationTimeline<short>
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? defaultDestinationValue;
-
-        return (short)Math.Round(from + (to - from) * progress);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }
 
 /// <summary>
 /// Animates the value of an Int64 property between two target values.
 /// </summary>
-public sealed class Int64Animation : AnimationTimeline<long>
+public sealed partial class Int64Animation : Int64AnimationBase
 {
     #region Dependency Properties
 
@@ -707,10 +799,16 @@ public sealed class Int64Animation : AnimationTimeline<long>
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? (By.HasValue ? from + By.Value : defaultDestinationValue);
-
-        return (long)Math.Round(from + (to - from) * progress);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }
 

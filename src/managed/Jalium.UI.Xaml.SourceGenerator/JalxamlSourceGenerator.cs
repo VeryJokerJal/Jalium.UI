@@ -737,7 +737,7 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
         bool isTpl = name == "Jalium.UI.ControlTemplate" ||
                      name == "Jalium.UI.DataTemplate" ||
                      name == "Jalium.UI.HierarchicalDataTemplate" ||
-                     name == "Jalium.UI.ItemsPanelTemplate" ||
+                     name == "Jalium.UI.Controls.ItemsPanelTemplate" ||
                      name == "Jalium.UI.ItemContainerTemplate";
         if (isTpl && node.Children.Count > 1)
             return node;

@@ -95,7 +95,7 @@ public partial class DevToolsWindow
             sb.Append(" BasedOn=\"{StaticResource ").Append(style.BasedOn.TargetType.Name).Append("Style}\"");
         sb.AppendLine(">");
 
-        foreach (var setter in style.Setters)
+        foreach (var setter in style.Setters.OfType<Setter>())
         {
             var name = setter.Property?.Name ?? "?";
             var value = setter.Value switch

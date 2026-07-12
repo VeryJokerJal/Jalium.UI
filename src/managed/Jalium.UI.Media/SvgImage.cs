@@ -7,6 +7,9 @@ namespace Jalium.UI.Media;
 /// </summary>
 public sealed class SvgImage : ImageSource, IDisposable
 {
+    /// <inheritdoc />
+    public override ImageMetadata? Metadata => null;
+
     private double _width;
     private double _height;
     private Uri? _uriSource;

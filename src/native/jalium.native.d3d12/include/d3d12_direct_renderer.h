@@ -775,6 +775,20 @@ private:
     // that touched them so another in-flight frame cannot clear/resolve the
     // same textures before the GPU has finished reading the prior contents.
     uint64_t pathScratchFenceValue_ = 0;
+    // Offscreen effect captures, snapshot/backdrop storage, and blur temps are
+    // renderer-wide scratch resources too (not per FrameResources slot). A
+    // render thread can submit the next swap-chain frame before the preceding
+    // frame's GPU work completes, so fence their last use exactly like the path
+    // MSAA scratch set. Re-recording barriers/descriptors against those shared
+    // textures while the previous submission still owns them is undefined and
+    // has manifested as driver AVs in Begin/EndEffectCapture.
+    uint64_t effectScratchFenceValue_ = 0;
+    // The glyph atlas texture and its upload buffer are likewise shared across
+    // every FrameResources slot. A later frame may rasterize/upload new glyphs
+    // while the preceding frame still samples the atlas, so track the last text
+    // submission and wait before mutating/reusing those resources.
+    uint64_t glyphAtlasFenceValue_ = 0;
+    bool glyphAtlasUsedThisFrame_ = false;
 
     // ── Frame-pacing instrumentation (DevTools Perf tab) ────────────────
     // The native side surfaces this through QueryGpuStats so DevTools can

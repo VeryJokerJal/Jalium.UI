@@ -858,7 +858,7 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
         foreach (var root in roots)
         {
             sb.Append("dynamic ").Append(root).Append(" = __resolve(")
-                .Append(ToStringLiteral(root)).Append("); ");
+                .Append(ToStringLiteral(root)).Append(")!; ");
         }
 
         sb.Append("return (object?)(").Append(expression).Append("); }");
@@ -1333,7 +1333,7 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
                 continue;
 
             sb.Append("dynamic ").Append(root).Append(" = __resolve(")
-                .Append(ToStringLiteral(root)).Append("); ");
+                .Append(ToStringLiteral(root)).Append(")!; ");
         }
 
         sb.Append("var __parts = new System.Collections.Generic.List<object?>(); ");

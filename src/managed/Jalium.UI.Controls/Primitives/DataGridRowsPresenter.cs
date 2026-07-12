@@ -4,7 +4,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// Represents a control that displays the rows in a DataGrid.
 /// Uses virtualization for efficient rendering of large data sets.
 /// </summary>
-public sealed class DataGridRowsPresenter : VirtualizingStackPanel
+public class DataGridRowsPresenter : VirtualizingStackPanel
 {
     #region CLR Properties
 
@@ -51,6 +51,31 @@ public sealed class DataGridRowsPresenter : VirtualizingStackPanel
             return null;
 
         return Children[index] as FrameworkElement;
+    }
+
+    /// <summary>Called before a virtualized row container is discarded.</summary>
+    protected override void OnCleanUpVirtualizedItem(CleanUpVirtualizedItemEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        base.OnCleanUpVirtualizedItem(e);
+        if (Validation.GetHasError(e.UIElement))
+        {
+            e.Cancel = true;
+        }
+    }
+
+    /// <summary>Called when the panel starts or stops serving as an items host.</summary>
+    protected override void OnIsItemsHostChanged(bool oldIsItemsHost, bool newIsItemsHost)
+    {
+        base.OnIsItemsHostChanged(oldIsItemsHost, newIsItemsHost);
+        InvalidateMeasure();
+    }
+
+    /// <summary>Called when the viewport size changes.</summary>
+    protected override void OnViewportSizeChanged(Size oldViewportSize, Size newViewportSize)
+    {
+        base.OnViewportSizeChanged(oldViewportSize, newViewportSize);
+        InvalidateMeasure();
     }
 
     #endregion

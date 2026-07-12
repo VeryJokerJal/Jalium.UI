@@ -7,7 +7,7 @@ namespace Jalium.UI.Tests;
 public class XamlTriggerValidationTests
 {
     [Fact]
-    public void PropertyTrigger_UnresolvedProperty_ShouldThrowAtLoadTime()
+    public void PropertyTrigger_UnresolvedProperty_ShouldParseThenThrowWhenSealedOrApplied()
     {
         const string xaml = """
             <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
@@ -19,14 +19,20 @@ public class XamlTriggerValidationTests
             </Style>
             """;
 
-        var ex = Assert.Throws<XamlParseException>(() => XamlReader.Parse(xaml));
-        Assert.Contains("NotExist", ex.Message);
-        Assert.Contains("StyleTargetType='Jalium.UI.Controls.Button'", ex.Message);
-        Assert.Contains("Line=", ex.Message);
+        var style = Assert.IsType<Style>(XamlReader.Parse(xaml));
+        var trigger = Assert.IsType<Trigger>(Assert.Single(style.Triggers));
+        Assert.Null(trigger.Property);
+
+        var sealException = Assert.Throws<InvalidOperationException>(style.Seal);
+        Assert.Contains("Property", sealException.Message);
+
+        var secondStyle = Assert.IsType<Style>(XamlReader.Parse(xaml));
+        var applyException = Assert.Throws<InvalidOperationException>(() => new Button { Style = secondStyle });
+        Assert.Contains("Property", applyException.Message);
     }
 
     [Fact]
-    public void MultiTrigger_UnresolvedConditionProperty_ShouldThrowAtLoadTime()
+    public void MultiTrigger_UnresolvedConditionProperty_ShouldParseThenThrowWhenSealed()
     {
         const string xaml = """
             <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
@@ -42,10 +48,34 @@ public class XamlTriggerValidationTests
             </Style>
             """;
 
-        var ex = Assert.Throws<XamlParseException>(() => XamlReader.Parse(xaml));
-        Assert.Contains("NotExist", ex.Message);
-        Assert.Contains("StyleTargetType='Jalium.UI.Controls.Button'", ex.Message);
-        Assert.Contains("Line=", ex.Message);
+        var style = Assert.IsType<Style>(XamlReader.Parse(xaml));
+        var trigger = Assert.IsType<MultiTrigger>(Assert.Single(style.Triggers));
+        Assert.Null(trigger.Conditions[1].Property);
+
+        var ex = Assert.Throws<InvalidOperationException>(style.Seal);
+        Assert.Contains("Property", ex.Message);
+    }
+
+    [Fact]
+    public void PropertyTrigger_OwnerQualifiedInheritedProperty_ShouldResolveAndApply()
+    {
+        const string xaml = """
+            <Style xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" TargetType="Button">
+                <Style.Triggers>
+                    <Trigger Property="Control.IsMouseOver" Value="True">
+                        <Setter Property="Opacity" Value="0.5" />
+                    </Trigger>
+                </Style.Triggers>
+            </Style>
+            """;
+
+        var style = Assert.IsType<Style>(XamlReader.Parse(xaml));
+        var trigger = Assert.IsType<Trigger>(Assert.Single(style.Triggers));
+        Assert.Same(UIElement.IsMouseOverProperty, trigger.Property);
+
+        var button = new Button { Style = style };
+        button.SetIsMouseOver(true);
+        Assert.Equal(0.5, button.Opacity);
     }
 
     [Fact]

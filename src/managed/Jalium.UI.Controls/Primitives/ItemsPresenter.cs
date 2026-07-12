@@ -100,6 +100,19 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
         InvalidateMeasure();
     }
 
+    /// <summary>Called when the owning items-panel template changes.</summary>
+    protected virtual void OnTemplateChanged(
+        ItemsPanelTemplate? oldTemplate,
+        ItemsPanelTemplate? newTemplate)
+    {
+        InvalidatePanel();
+    }
+
+    internal void NotifyTemplateChanged(
+        ItemsPanelTemplate? oldTemplate,
+        ItemsPanelTemplate? newTemplate) =>
+        OnTemplateChanged(oldTemplate, newTemplate);
+
     /// <summary>
     /// Called when the template's parent changes to find the owning ItemsControl.
     /// </summary>
@@ -156,10 +169,10 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
     }
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => _itemsPanel != null ? 1 : 0;
+    protected override int VisualChildrenCount => _itemsPanel != null ? 1 : 0;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index == 0 && _itemsPanel != null)
             return _itemsPanel;

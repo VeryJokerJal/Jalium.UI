@@ -4,37 +4,6 @@ using Jalium.UI;
 namespace Jalium.UI.Media.TextFormatting;
 
 /// <summary>
-/// Specifies the direction in which text and other UI elements flow within their parent element.
-/// </summary>
-public enum FlowDirection
-{
-    /// <summary>
-    /// Text and other elements flow from left to right as the default layout direction.
-    /// </summary>
-    LeftToRight,
-
-    /// <summary>
-    /// Text and other elements flow from right to left.
-    /// </summary>
-    RightToLeft
-}
-
-/// <summary>
-/// Specifies the vertical alignment of an inline element relative to the baseline.
-/// </summary>
-public enum BaselineAlignment
-{
-    Top,
-    Center,
-    Bottom,
-    Baseline,
-    TextTop,
-    TextBottom,
-    Subscript,
-    Superscript
-}
-
-/// <summary>
 /// Provides services for formatting text and breaking text lines.
 /// </summary>
 public abstract class TextFormatter : IDisposable
@@ -60,6 +29,17 @@ public abstract class TextFormatter : IDisposable
         TextLineBreak? previousLineBreak);
 
     /// <summary>
+    /// Creates a line of text while reusing text runs held by the caller-owned cache.
+    /// </summary>
+    public abstract TextLine FormatLine(
+        TextSource textSource,
+        int firstCharIndex,
+        double paragraphWidth,
+        TextParagraphProperties paragraphProperties,
+        TextLineBreak? previousLineBreak,
+        TextRunCache textRunCache);
+
+    /// <summary>
     /// Returns a value that represents the smallest and largest possible paragraph width
     /// that can fully contain the specified text content.
     /// </summary>
@@ -67,6 +47,15 @@ public abstract class TextFormatter : IDisposable
         TextSource textSource,
         int firstCharIndex,
         TextParagraphProperties paragraphProperties);
+
+    /// <summary>
+    /// Returns the paragraph width range while reusing text runs held by the caller-owned cache.
+    /// </summary>
+    public abstract MinMaxParagraphWidth FormatMinMaxParagraphWidth(
+        TextSource textSource,
+        int firstCharIndex,
+        TextParagraphProperties paragraphProperties,
+        TextRunCache textRunCache);
 
     /// <inheritdoc />
     public virtual void Dispose()
@@ -80,6 +69,27 @@ public abstract class TextFormatter : IDisposable
 /// </summary>
 public abstract class TextLine : IDisposable
 {
+    private double _pixelsPerDip = 1.0;
+
+    /// <summary>Initializes a text line using the default display density.</summary>
+    protected TextLine()
+    {
+    }
+
+    /// <summary>Initializes a text line using the specified display density.</summary>
+    /// <param name="pixelsPerDip">The number of physical pixels per device-independent pixel.</param>
+    protected TextLine(double pixelsPerDip)
+    {
+        _pixelsPerDip = pixelsPerDip;
+    }
+
+    /// <summary>Gets or sets the display density used to render the line.</summary>
+    public double PixelsPerDip
+    {
+        get => _pixelsPerDip;
+        set => _pixelsPerDip = value;
+    }
+
     /// <summary>Gets the distance from the top to the bottom of the line of text.</summary>
     public abstract double Height { get; }
 
@@ -94,6 +104,12 @@ public abstract class TextLine : IDisposable
 
     /// <summary>Gets the number of characters in the line.</summary>
     public abstract int Length { get; }
+
+    /// <summary>Gets the number of trailing whitespace characters in the line.</summary>
+    public abstract int TrailingWhitespaceLength { get; }
+
+    /// <summary>Gets the number of characters after the line that can affect its formatting.</summary>
+    public abstract int DependentLength { get; }
 
     /// <summary>Gets the number of newline characters at the end of the line.</summary>
     public abstract int NewlineLength { get; }
@@ -116,6 +132,9 @@ public abstract class TextLine : IDisposable
     /// <summary>Gets the height of the text and any decoration in the line.</summary>
     public abstract double TextHeight { get; }
 
+    /// <summary>Gets the height of the actual ink occupied by the line.</summary>
+    public abstract double Extent { get; }
+
     /// <summary>Gets the distance from the top of the marker to the baseline.</summary>
     public abstract double MarkerBaseline { get; }
 
@@ -128,8 +147,20 @@ public abstract class TextLine : IDisposable
     /// <summary>Gets a value indicating whether the line has been collapsed.</summary>
     public abstract bool HasCollapsed { get; }
 
+    /// <summary>Gets whether the formatter truncated the line in the middle of a word.</summary>
+    public virtual bool IsTruncated => false;
+
     /// <summary>Gets the collection of text runs in the line.</summary>
-    public abstract IList<TextRun> GetTextRunSpans();
+    public abstract IList<TextSpan<TextRun>> GetTextRunSpans();
+
+    /// <summary>Collapses this line using the first applicable collapsing policy.</summary>
+    public abstract TextLine Collapse(params TextCollapsingProperties[] collapsingPropertiesList);
+
+    /// <summary>Gets the source ranges omitted from a collapsed line.</summary>
+    public abstract IList<TextCollapsedRange> GetTextCollapsedRanges();
+
+    /// <summary>Enumerates glyph runs and their source character ranges.</summary>
+    public abstract IEnumerable<IndexedGlyphRun> GetIndexedGlyphRuns();
 
     /// <summary>Gets the character hit corresponding to the specified distance from the beginning of the line.</summary>
     public abstract CharacterHit GetCharacterHitFromDistance(double distance);
@@ -182,6 +213,8 @@ public abstract class TextRun
 /// </summary>
 public abstract class TextRunProperties
 {
+    private double _pixelsPerDip = 1.0;
+
     /// <summary>Gets the typeface for the text run.</summary>
     public abstract Typeface Typeface { get; }
 
@@ -211,6 +244,16 @@ public abstract class TextRunProperties
 
     /// <summary>Gets the number substitution settings.</summary>
     public virtual NumberSubstitution? NumberSubstitution => null;
+
+    /// <summary>Gets the OpenType typography settings for the text run.</summary>
+    public virtual TextRunTypographyProperties? TypographyProperties => null;
+
+    /// <summary>Gets or sets the number of physical pixels per device-independent pixel.</summary>
+    public double PixelsPerDip
+    {
+        get => _pixelsPerDip;
+        set => _pixelsPerDip = value;
+    }
 }
 
 /// <summary>
@@ -239,8 +282,17 @@ public abstract class TextParagraphProperties
     /// <summary>Gets the indent for the paragraph.</summary>
     public abstract double Indent { get; }
 
+    /// <summary>Gets whether the formatted line may be collapsed even when it does not overflow.</summary>
+    public virtual bool AlwaysCollapsible => false;
+
+    /// <summary>Gets decorations that are applied to every run in the paragraph.</summary>
+    public virtual TextDecorationCollection? TextDecorations => null;
+
     /// <summary>Gets the paragraph indent.</summary>
     public virtual double ParagraphIndent => 0;
+
+    /// <summary>Gets the default distance between incremental tab stops.</summary>
+    public virtual double DefaultIncrementalTab => 4 * DefaultTextRunProperties.FontRenderingEmSize;
 
     /// <summary>Gets the text marker properties.</summary>
     public virtual TextMarkerProperties? TextMarkerProperties => null;
@@ -254,6 +306,8 @@ public abstract class TextParagraphProperties
 /// </summary>
 public abstract class TextSource
 {
+    private double _pixelsPerDip = 1.0;
+
     /// <summary>Retrieves a TextRun starting at a specified TextSource position.</summary>
     public abstract TextRun GetTextRun(int textSourceCharacterIndex);
 
@@ -262,6 +316,66 @@ public abstract class TextSource
 
     /// <summary>Gets a value that maps a TextEffect character index to a TextSource character index.</summary>
     public abstract int GetTextEffectCharacterIndexFromTextSourceCharacterIndex(int textSourceCharacterIndex);
+
+    /// <summary>
+    /// Gets or sets the number of physical pixels per device-independent pixel at which text is rendered.
+    /// </summary>
+    /// <remarks>
+    /// The default corresponds to 96 DPI. As in WPF, the value is stored verbatim so a text source can
+    /// track the rendering surface's DPI policy.
+    /// </remarks>
+    public double PixelsPerDip
+    {
+        get => _pixelsPerDip;
+        set => _pixelsPerDip = value;
+    }
+}
+
+/// <summary>
+/// Stores text runs returned by a <see cref="TextSource"/> so repeated formatting can reuse them.
+/// </summary>
+public sealed class TextRunCache
+{
+    private readonly Dictionary<int, TextRun> _runs = new();
+
+    public TextRunCache()
+    {
+    }
+
+    /// <summary>
+    /// Notifies the cache that text was inserted or removed at the specified source index.
+    /// Runs before the edit that cannot overlap it are retained; all affected and shifted runs are discarded.
+    /// </summary>
+    public void Change(int textSourceCharacterIndex, int addition, int removal)
+    {
+        if (_runs.Count == 0)
+        {
+            return;
+        }
+
+        foreach (int runStart in _runs
+                     .Where(pair => pair.Key >= textSourceCharacterIndex ||
+                                    pair.Key + Math.Max(0, pair.Value.Length) > textSourceCharacterIndex)
+                     .Select(static pair => pair.Key)
+                     .ToArray())
+        {
+            _runs.Remove(runStart);
+        }
+    }
+
+    /// <summary>Discards every cached text run.</summary>
+    public void Invalidate() => _runs.Clear();
+
+    internal TextRun GetOrAdd(TextSource textSource, int textSourceCharacterIndex)
+    {
+        if (!_runs.TryGetValue(textSourceCharacterIndex, out TextRun? run))
+        {
+            run = textSource.GetTextRun(textSourceCharacterIndex);
+            _runs.Add(textSourceCharacterIndex, run);
+        }
+
+        return run;
+    }
 }
 
 /// <summary>
@@ -280,23 +394,75 @@ public sealed class TextCharacters : TextRun
         : this(characterString, 0, characterString?.Length ?? 0, textRunProperties) { }
 
     /// <summary>
+    /// Initializes a run from a range within a character array.
+    /// </summary>
+    public TextCharacters(
+        char[] characterArray,
+        int offsetToFirstChar,
+        int length,
+        TextRunProperties textRunProperties)
+        : this(new CharacterBufferReference(characterArray, offsetToFirstChar), length, textRunProperties)
+    {
+    }
+
+    /// <summary>
     /// Initializes a new instance using a substring.
     /// </summary>
     public TextCharacters(string characterString, int offsetToFirstChar, int length, TextRunProperties textRunProperties)
+        : this(new CharacterBufferReference(characterString, offsetToFirstChar), length, textRunProperties)
     {
-        _charRef = new CharacterBufferReference(characterString ?? "", offsetToFirstChar);
+    }
+
+    /// <summary>
+    /// Initializes a run from an unmanaged character buffer. The characters are snapshotted so the run
+    /// remains valid after the caller releases the pointer.
+    /// </summary>
+#pragma warning disable CS3021 // Attribute is part of the WPF public contract.
+    [CLSCompliant(false)]
+    public unsafe TextCharacters(
+        char* unsafeCharacterString,
+        int length,
+        TextRunProperties textRunProperties)
+        : this(new CharacterBufferReference(unsafeCharacterString, length), length, textRunProperties)
+    {
+    }
+#pragma warning restore CS3021
+
+    private TextCharacters(
+        CharacterBufferReference characterBufferReference,
+        int length,
+        TextRunProperties textRunProperties)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(length);
+        ArgumentNullException.ThrowIfNull(textRunProperties);
+
+        if (textRunProperties.Typeface is null)
+        {
+            throw new ArgumentNullException("textRunProperties.Typeface");
+        }
+
+        if (textRunProperties.CultureInfo is null)
+        {
+            throw new ArgumentNullException("textRunProperties.CultureInfo");
+        }
+
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(
+            textRunProperties.FontRenderingEmSize,
+            "textRunProperties.FontRenderingEmSize");
+
+        _charRef = characterBufferReference;
         _length = length;
         _properties = textRunProperties;
     }
 
     /// <inheritdoc />
-    public override CharacterBufferReference CharacterBufferReference => _charRef;
+    public sealed override CharacterBufferReference CharacterBufferReference => _charRef;
 
     /// <inheritdoc />
-    public override int Length => _length;
+    public sealed override int Length => _length;
 
     /// <inheritdoc />
-    public override TextRunProperties? Properties => _properties;
+    public sealed override TextRunProperties Properties => _properties;
 }
 
 /// <summary>
@@ -305,25 +471,53 @@ public sealed class TextCharacters : TextRun
 public class TextEndOfLine : TextRun
 {
     private readonly int _length;
+    private readonly TextRunProperties? _properties;
 
-    public TextEndOfLine(int length) { _length = length; }
+    public TextEndOfLine(int length)
+        : this(length, null)
+    {
+    }
+
+    /// <summary>
+    /// Initializes an end-of-line run with the supplied character length and optional run properties.
+    /// </summary>
+    public TextEndOfLine(int length, TextRunProperties? textRunProperties)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(length);
+
+        if (textRunProperties is not null && textRunProperties.Typeface is null)
+        {
+            throw new ArgumentNullException("textRunProperties.Typeface");
+        }
+
+        _length = length;
+        _properties = textRunProperties;
+    }
 
     /// <inheritdoc />
-    public override CharacterBufferReference CharacterBufferReference => default;
+    public sealed override CharacterBufferReference CharacterBufferReference => default;
 
     /// <inheritdoc />
-    public override int Length => _length;
+    public sealed override int Length => _length;
 
     /// <inheritdoc />
-    public override TextRunProperties? Properties => null;
+    public sealed override TextRunProperties? Properties => _properties;
 }
 
 /// <summary>
 /// Represents the end of a paragraph.
 /// </summary>
-public sealed class TextEndOfParagraph : TextEndOfLine
+public class TextEndOfParagraph : TextEndOfLine
 {
     public TextEndOfParagraph(int length) : base(length) { }
+
+    /// <summary>
+    /// Initializes an end-of-paragraph run with the supplied character length and optional run properties.
+    /// </summary>
+    public TextEndOfParagraph(int length, TextRunProperties? textRunProperties)
+        : base(length, textRunProperties)
+    {
+    }
 }
 
 /// <summary>
@@ -350,6 +544,12 @@ public sealed class TextHidden : TextRun
 /// </summary>
 public abstract class TextEmbeddedObject : TextRun
 {
+    /// <summary>Gets the line-breaking condition before the embedded object.</summary>
+    public abstract LineBreakCondition BreakBefore { get; }
+
+    /// <summary>Gets the line-breaking condition after the embedded object.</summary>
+    public abstract LineBreakCondition BreakAfter { get; }
+
     /// <summary>Gets a value indicating whether the embedded object has a fixed size.</summary>
     public abstract bool HasFixedSize { get; }
 
@@ -390,10 +590,52 @@ public sealed class TextEmbeddedObjectMetrics
 /// </summary>
 public sealed class TextLineBreak : IDisposable
 {
+    private readonly object? _currentScope;
+    private BreakRecord? _breakRecord;
+
+    internal TextLineBreak(object? currentScope, object? continuationState)
+    {
+        _currentScope = currentScope;
+        _breakRecord = continuationState is null ? null : new BreakRecord(continuationState);
+    }
+
+    private TextLineBreak(object? currentScope, BreakRecord? breakRecord)
+    {
+        _currentScope = currentScope;
+        _breakRecord = breakRecord;
+    }
+
+    /// <summary>
+    /// Creates an independently disposable copy of this line-break continuation.
+    /// </summary>
+    public TextLineBreak Clone()
+        => new(_currentScope, _breakRecord?.Clone());
+
     /// <inheritdoc />
     public void Dispose()
     {
+        _breakRecord = null;
         GC.SuppressFinalize(this);
+    }
+
+    internal object? TextModifierScope => _currentScope;
+
+    internal object? ContinuationState => _breakRecord?.State;
+
+    internal object? BreakRecordIdentity => _breakRecord;
+
+    internal bool HasBreakRecord => _breakRecord is not null;
+
+    private sealed class BreakRecord
+    {
+        internal BreakRecord(object state)
+        {
+            State = state;
+        }
+
+        internal object State { get; }
+
+        internal BreakRecord Clone() => new(State);
     }
 }
 
@@ -402,32 +644,99 @@ public sealed class TextLineBreak : IDisposable
 /// </summary>
 public struct CharacterBufferReference : IEquatable<CharacterBufferReference>
 {
+    private readonly object? _buffer;
+    private readonly object? _identity;
+
     public CharacterBufferReference(string characterBuffer, int offsetToFirstChar)
     {
-        CharacterBuffer = characterBuffer;
+        ValidateOffset(characterBuffer?.Length ?? 0, offsetToFirstChar);
+        _buffer = characterBuffer;
+        _identity = new object();
         OffsetToFirstChar = offsetToFirstChar;
     }
 
+    /// <summary>Initializes a reference to a range within a character array.</summary>
+    public CharacterBufferReference(char[] characterArray, int offsetToFirstChar)
+    {
+        ValidateOffset(characterArray?.Length ?? 0, offsetToFirstChar);
+        _buffer = characterArray;
+        _identity = new object();
+        OffsetToFirstChar = offsetToFirstChar;
+    }
+
+    /// <summary>
+    /// Initializes a reference from an unmanaged character buffer. The characters are copied so this
+    /// managed reference does not outlive the source pointer.
+    /// </summary>
+#pragma warning disable CS3021 // Attribute is part of the WPF public contract.
+    [CLSCompliant(false)]
+    public unsafe CharacterBufferReference(char* unsafeCharacterString, int characterLength)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(characterLength);
+
+        if (unsafeCharacterString == null && characterLength != 0)
+        {
+            throw new ArgumentNullException(nameof(unsafeCharacterString));
+        }
+
+        _buffer = characterLength == 0
+            ? string.Empty
+            : new string(unsafeCharacterString, 0, characterLength);
+        _identity = new object();
+        OffsetToFirstChar = 0;
+    }
+#pragma warning restore CS3021
+
     /// <summary>Gets the character buffer string.</summary>
-    public string CharacterBuffer { get; }
+    public string CharacterBuffer => _buffer switch
+    {
+        string value => value,
+        char[] value => new string(value),
+        _ => string.Empty,
+    };
 
     /// <summary>Gets the offset to the first character.</summary>
     public int OffsetToFirstChar { get; }
 
     public bool Equals(CharacterBufferReference other)
-        => CharacterBuffer == other.CharacterBuffer && OffsetToFirstChar == other.OffsetToFirstChar;
+        => ReferenceEquals(_identity, other._identity) && OffsetToFirstChar == other.OffsetToFirstChar;
 
     public override bool Equals(object? obj)
         => obj is CharacterBufferReference other && Equals(other);
 
     public override int GetHashCode()
-        => HashCode.Combine(CharacterBuffer, OffsetToFirstChar);
+        => _identity is null ? 0 : HashCode.Combine(_identity, OffsetToFirstChar);
 
     public static bool operator ==(CharacterBufferReference left, CharacterBufferReference right)
         => left.Equals(right);
 
     public static bool operator !=(CharacterBufferReference left, CharacterBufferReference right)
         => !left.Equals(right);
+
+    internal int Count => _buffer switch
+    {
+        string value => value.Length,
+        char[] value => value.Length,
+        _ => 0,
+    };
+
+    internal char GetCharacter(int index)
+    {
+        int absoluteIndex = checked(OffsetToFirstChar + index);
+        return _buffer switch
+        {
+            string value => value[absoluteIndex],
+            char[] value => value[absoluteIndex],
+            _ => throw new ArgumentOutOfRangeException(nameof(index)),
+        };
+    }
+
+    private static void ValidateOffset(int characterCount, int offsetToFirstChar)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(offsetToFirstChar);
+        int maximumOffset = Math.Max(0, characterCount - 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(offsetToFirstChar, maximumOffset);
+    }
 }
 
 /// <summary>
@@ -686,23 +995,19 @@ public sealed class TextSpan<T>
 /// <summary>
 /// Represents a culture-specific character buffer range.
 /// </summary>
-public sealed class CultureSpecificCharacterBufferRange
+public class CultureSpecificCharacterBufferRange
 {
-    public CultureSpecificCharacterBufferRange(CultureInfo? cultureInfo, CharacterBufferReference characterBufferRange, int length)
+    public CultureSpecificCharacterBufferRange(CultureInfo? culture, CharacterBufferRange characterBufferRange)
     {
-        CultureInfo = cultureInfo;
+        CultureInfo = culture;
         CharacterBufferRange = characterBufferRange;
-        Length = length;
     }
 
     /// <summary>Gets the CultureInfo for the culture-specific range.</summary>
     public CultureInfo? CultureInfo { get; }
 
-    /// <summary>Gets the CharacterBufferReference for the range.</summary>
-    public CharacterBufferReference CharacterBufferRange { get; }
-
-    /// <summary>Gets the length of the range.</summary>
-    public int Length { get; }
+    /// <summary>Gets the character buffer range.</summary>
+    public CharacterBufferRange CharacterBufferRange { get; }
 }
 
 /// <summary>
@@ -729,7 +1034,19 @@ internal sealed class SimpleTextFormatter : TextFormatter
         TextParagraphProperties paragraphProperties,
         TextLineBreak? previousLineBreak)
     {
-        return new SimpleTextLine(textSource, firstCharIndex, paragraphWidth, paragraphProperties);
+        return new SimpleTextLine(textSource, firstCharIndex, paragraphWidth, paragraphProperties, null);
+    }
+
+    public override TextLine FormatLine(
+        TextSource textSource,
+        int firstCharIndex,
+        double paragraphWidth,
+        TextParagraphProperties paragraphProperties,
+        TextLineBreak? previousLineBreak,
+        TextRunCache textRunCache)
+    {
+        ArgumentNullException.ThrowIfNull(textRunCache);
+        return new SimpleTextLine(textSource, firstCharIndex, paragraphWidth, paragraphProperties, textRunCache);
     }
 
     public override MinMaxParagraphWidth FormatMinMaxParagraphWidth(
@@ -737,7 +1054,312 @@ internal sealed class SimpleTextFormatter : TextFormatter
         int firstCharIndex,
         TextParagraphProperties paragraphProperties)
     {
-        return new MinMaxParagraphWidth(0, double.MaxValue);
+        return MeasureParagraph(textSource, firstCharIndex, paragraphProperties, null);
+    }
+
+    public override MinMaxParagraphWidth FormatMinMaxParagraphWidth(
+        TextSource textSource,
+        int firstCharIndex,
+        TextParagraphProperties paragraphProperties,
+        TextRunCache textRunCache)
+    {
+        ArgumentNullException.ThrowIfNull(textRunCache);
+        return MeasureParagraph(textSource, firstCharIndex, paragraphProperties, textRunCache);
+    }
+
+    private static MinMaxParagraphWidth MeasureParagraph(
+        TextSource textSource,
+        int firstCharIndex,
+        TextParagraphProperties paragraphProperties,
+        TextRunCache? textRunCache)
+    {
+        ArgumentNullException.ThrowIfNull(textSource);
+        ArgumentNullException.ThrowIfNull(paragraphProperties);
+        ArgumentOutOfRangeException.ThrowIfNegative(firstCharIndex);
+
+        int sourceIndex = firstCharIndex;
+        double currentLineWidth = 0;
+        double maximumLineWidth = 0;
+        double maximumUnbreakableWidth = 0;
+
+        // A TextSource is callback-based and can be user code. Bound the walk so a malformed source that
+        // never returns an end run cannot hang the formatter.
+        for (int runCount = 0; runCount < 4096; runCount++)
+        {
+            TextRun run = textRunCache?.GetOrAdd(textSource, sourceIndex)
+                ?? textSource.GetTextRun(sourceIndex);
+            ArgumentNullException.ThrowIfNull(run);
+
+            if (run.Length <= 0)
+            {
+                break;
+            }
+
+            if (run is TextEndOfParagraph)
+            {
+                maximumLineWidth = Math.Max(maximumLineWidth, currentLineWidth);
+                break;
+            }
+
+            if (run is TextEndOfLine)
+            {
+                maximumLineWidth = Math.Max(maximumLineWidth, currentLineWidth);
+                currentLineWidth = 0;
+            }
+            else
+            {
+                (double width, double unbreakableWidth) = TextRunMetrics.Measure(run);
+                currentLineWidth += width;
+                maximumUnbreakableWidth = Math.Max(maximumUnbreakableWidth, unbreakableWidth);
+            }
+
+            try
+            {
+                sourceIndex = checked(sourceIndex + run.Length);
+            }
+            catch (OverflowException)
+            {
+                break;
+            }
+        }
+
+        maximumLineWidth = Math.Max(maximumLineWidth, currentLineWidth);
+        return new MinMaxParagraphWidth(maximumUnbreakableWidth, maximumLineWidth);
+    }
+}
+
+internal static class TextRunMetrics
+{
+    internal static (double Width, double UnbreakableWidth) Measure(TextRun run)
+    {
+        if (run is TextCharacters characters)
+        {
+            return MeasureCharacters(characters);
+        }
+
+        if (run is TextEmbeddedObject embeddedObject)
+        {
+            double width = Math.Max(0, embeddedObject.Format(double.MaxValue).Width);
+            return (width, width);
+        }
+
+        if (run is TextHidden)
+        {
+            return (0, 0);
+        }
+
+        double emSize = Math.Max(0, run.Properties?.FontRenderingEmSize ?? 0);
+        double widthEstimate = emSize * 0.5 * Math.Max(0, run.Length);
+        return (widthEstimate, widthEstimate);
+    }
+
+    private static (double Width, double UnbreakableWidth) MeasureCharacters(TextCharacters characters)
+    {
+        CharacterBufferReference buffer = characters.CharacterBufferReference;
+        double emSize = Math.Max(0, characters.Properties.FontRenderingEmSize);
+        double totalWidth = 0;
+        double currentWordWidth = 0;
+        double longestWordWidth = 0;
+        int availableLength = Math.Max(0, buffer.Count - buffer.OffsetToFirstChar);
+        int materializedLength = Math.Min(characters.Length, availableLength);
+
+        for (int index = 0; index < materializedLength; index++)
+        {
+            char character = buffer.GetCharacter(index);
+            double characterWidth = emSize * (char.IsWhiteSpace(character) ? 0.33 : 0.5);
+            totalWidth += characterWidth;
+
+            if (char.IsWhiteSpace(character))
+            {
+                longestWordWidth = Math.Max(longestWordWidth, currentWordWidth);
+                currentWordWidth = 0;
+            }
+            else
+            {
+                currentWordWidth += characterWidth;
+            }
+        }
+
+        // WPF accepts a declared run length that extends beyond its current buffer. Keep the formatter
+        // deterministic for such a source while still honoring the run's declared length.
+        int unmaterializedLength = Math.Max(0, characters.Length - materializedLength);
+        double unmaterializedWidth = emSize * 0.5 * unmaterializedLength;
+        totalWidth += unmaterializedWidth;
+        currentWordWidth += unmaterializedWidth;
+        longestWordWidth = Math.Max(longestWordWidth, currentWordWidth);
+        return (totalWidth, longestWordWidth);
+    }
+
+    internal static int CountTrailingWhitespace(TextRun run)
+    {
+        int count = 0;
+        for (int index = Math.Max(0, run.Length) - 1; index >= 0; index--)
+        {
+            if (!TryGetCharacter(run, index, out char character) || !char.IsWhiteSpace(character))
+            {
+                break;
+            }
+
+            count++;
+        }
+
+        return count;
+    }
+
+    internal static int GetFittingCharacterCount(TextRun run, double availableWidth)
+    {
+        if (availableWidth <= 0)
+        {
+            return 0;
+        }
+
+        double width = 0;
+        int length = Math.Max(0, run.Length);
+        for (int index = 0; index < length; index++)
+        {
+            double nextWidth = GetCharacterWidth(run, index);
+            if (width + nextWidth > availableWidth)
+            {
+                return index;
+            }
+
+            width += nextWidth;
+        }
+
+        return length;
+    }
+
+    internal static double MeasurePrefix(TextRun run, int length)
+    {
+        double width = 0;
+        int end = Math.Min(Math.Max(0, length), Math.Max(0, run.Length));
+        for (int index = 0; index < end; index++)
+        {
+            width += GetCharacterWidth(run, index);
+        }
+
+        return width;
+    }
+
+    internal static double GetCharacterWidth(TextRun run, int characterIndex)
+    {
+        double emSize = Math.Max(0, run.Properties?.FontRenderingEmSize ?? 0);
+        return TryGetCharacter(run, characterIndex, out char character) && char.IsWhiteSpace(character)
+            ? emSize * 0.33
+            : emSize * 0.5;
+    }
+
+    internal static bool TryGetCharacter(TextRun run, int characterIndex, out char character)
+    {
+        if (run is TextCharacters characters)
+        {
+            CharacterBufferReference buffer = characters.CharacterBufferReference;
+            int availableLength = Math.Max(0, buffer.Count - buffer.OffsetToFirstChar);
+            if ((uint)characterIndex < (uint)Math.Min(characters.Length, availableLength))
+            {
+                character = buffer.GetCharacter(characterIndex);
+                return true;
+            }
+        }
+
+        character = default;
+        return false;
+    }
+
+    internal static TextRun Slice(TextRun run, int length)
+    {
+        int sliceLength = Math.Min(Math.Max(0, length), Math.Max(0, run.Length));
+        if (sliceLength == run.Length)
+        {
+            return run;
+        }
+
+        if (run is TextCharacters characters && sliceLength > 0)
+        {
+            CharacterBufferReference buffer = characters.CharacterBufferReference;
+            int availableLength = Math.Max(0, buffer.Count - buffer.OffsetToFirstChar);
+            int materializedLength = Math.Min(sliceLength, availableLength);
+            if (materializedLength == sliceLength)
+            {
+                return new TextCharacters(
+                    buffer.CharacterBuffer,
+                    buffer.OffsetToFirstChar,
+                    sliceLength,
+                    characters.Properties);
+            }
+        }
+
+        return new TextRunSlice(run, sliceLength);
+    }
+
+    internal static GlyphRun? CreateGlyphRun(TextRun run, double start, double baseline, double pixelsPerDip)
+    {
+        if (run is not TextCharacters characters || characters.Length <= 0)
+        {
+            return null;
+        }
+
+        TextRunProperties properties = characters.Properties;
+        var characterValues = new List<char>(characters.Length);
+        var glyphIndices = new List<ushort>(characters.Length);
+        var advanceWidths = new List<double>(characters.Length);
+        var clusterMap = new List<ushort>(characters.Length);
+        var caretStops = new List<bool>(characters.Length + 1);
+
+        properties.Typeface.TryGetGlyphTypeface(out GlyphTypeface? glyphTypeface);
+        for (int index = 0; index < characters.Length; index++)
+        {
+            char character = TryGetCharacter(characters, index, out char materialized)
+                ? materialized
+                : '\ufffd';
+            characterValues.Add(character);
+
+            ushort glyphIndex = (ushort)character;
+            if (glyphTypeface?.CharacterToGlyphMap.TryGetValue(character, out ushort mappedGlyph) == true)
+            {
+                glyphIndex = mappedGlyph;
+            }
+
+            glyphIndices.Add(glyphIndex);
+            advanceWidths.Add(GetCharacterWidth(characters, index));
+            clusterMap.Add((ushort)Math.Min(index, ushort.MaxValue));
+            caretStops.Add(true);
+        }
+
+        caretStops.Add(true);
+        return new GlyphRun
+        {
+            FontFamily = properties.Typeface.FontFamily,
+            GlyphTypeface = glyphTypeface,
+            FontRenderingEmSize = properties.FontRenderingEmSize,
+            PixelsPerDip = (float)pixelsPerDip,
+            GlyphIndices = glyphIndices,
+            BaselineOrigin = new Point(start, baseline),
+            AdvanceWidths = advanceWidths,
+            GlyphOffsets = Enumerable.Repeat(default(Point), glyphIndices.Count).ToArray(),
+            Characters = characterValues,
+            DeviceFontName = properties.Typeface.FontFamily.Source,
+            ClusterMap = clusterMap,
+            CaretStops = caretStops,
+            Language = Jalium.UI.Markup.XmlLanguage.GetLanguage(properties.CultureInfo.IetfLanguageTag),
+        };
+    }
+
+    private sealed class TextRunSlice : TextRun
+    {
+        private readonly TextRun _source;
+
+        internal TextRunSlice(TextRun source, int length)
+        {
+            _source = source;
+            Length = length;
+        }
+
+        public override CharacterBufferReference CharacterBufferReference => _source.CharacterBufferReference;
+
+        public override int Length { get; }
+
+        public override TextRunProperties? Properties => _source.Properties;
     }
 }
 
@@ -748,61 +1370,268 @@ internal sealed class SimpleTextLine : TextLine
 {
     private readonly TextSource _textSource;
     private readonly int _firstCharIndex;
-    private readonly double _paragraphWidth;
+    private readonly TextRun _run;
+    private readonly IList<TextSpan<TextRun>> _runSpans;
+    private readonly IList<TextCollapsedRange> _collapsedRanges;
+    private readonly FlowDirection _flowDirection;
+    private readonly double _naturalWidth;
+    private readonly double _width;
+    private readonly double _widthIncludingTrailingWhitespace;
     private readonly double _height;
     private readonly int _length;
+    private readonly int _trailingWhitespaceLength;
+    private readonly bool _hasOverflowed;
+    private readonly bool _hasCollapsed;
+    private readonly bool _isTruncated;
 
     public SimpleTextLine(
         TextSource textSource,
         int firstCharIndex,
         double paragraphWidth,
-        TextParagraphProperties paragraphProperties)
+        TextParagraphProperties paragraphProperties,
+        TextRunCache? textRunCache)
+        : base(textSource?.PixelsPerDip ?? 1.0)
     {
+        ArgumentNullException.ThrowIfNull(textSource);
+        ArgumentNullException.ThrowIfNull(paragraphProperties);
+        ArgumentOutOfRangeException.ThrowIfNegative(firstCharIndex);
+
         _textSource = textSource;
         _firstCharIndex = firstCharIndex;
-        _paragraphWidth = paragraphWidth;
+        _flowDirection = paragraphProperties.FlowDirection;
 
         var emSize = paragraphProperties.DefaultTextRunProperties.FontRenderingEmSize;
         _height = emSize * 1.2;
 
-        var run = textSource.GetTextRun(firstCharIndex);
-        _length = run?.Length ?? 0;
+        _run = textRunCache?.GetOrAdd(textSource, firstCharIndex) ?? textSource.GetTextRun(firstCharIndex);
+        ArgumentNullException.ThrowIfNull(_run);
+        _length = Math.Max(0, _run.Length);
+        _trailingWhitespaceLength = TextRunMetrics.CountTrailingWhitespace(_run);
+        _runSpans = _length == 0
+            ? Array.Empty<TextSpan<TextRun>>()
+            : [new TextSpan<TextRun>(_length, _run)];
+        _collapsedRanges = Array.Empty<TextCollapsedRange>();
+
+        (double naturalWidth, double unbreakableWidth) = TextRunMetrics.Measure(_run);
+        _naturalWidth = naturalWidth;
+        double trailingWhitespaceWidth = TextRunMetrics.MeasurePrefix(
+            _run,
+            _length) - TextRunMetrics.MeasurePrefix(
+            _run,
+            _length - _trailingWhitespaceLength);
+        double widthExcludingTrailingWhitespace = Math.Max(0, naturalWidth - trailingWhitespaceWidth);
+        double constrainedWidth = double.IsPositiveInfinity(paragraphWidth)
+            ? naturalWidth
+            : Math.Max(0, paragraphWidth);
+        _width = Math.Min(widthExcludingTrailingWhitespace, constrainedWidth);
+        _widthIncludingTrailingWhitespace = Math.Min(naturalWidth, constrainedWidth);
+        _hasOverflowed = naturalWidth > constrainedWidth;
+        _isTruncated = _hasOverflowed
+            && paragraphProperties.TextWrapping == TextWrapping.Wrap
+            && unbreakableWidth > constrainedWidth;
     }
 
-    public override double Width => _paragraphWidth;
+    private SimpleTextLine(
+        SimpleTextLine source,
+        TextRun symbol,
+        int visibleLength,
+        double visibleWidth,
+        double symbolWidth)
+        : base(source.PixelsPerDip)
+    {
+        _textSource = source._textSource;
+        _firstCharIndex = source._firstCharIndex;
+        _run = source._run;
+        _flowDirection = source._flowDirection;
+        _naturalWidth = source._naturalWidth;
+        _height = source._height;
+        _length = source._length;
+        _hasOverflowed = source._hasOverflowed;
+        _hasCollapsed = true;
+
+        var spans = new List<TextSpan<TextRun>>(2);
+        if (visibleLength > 0)
+        {
+            spans.Add(new TextSpan<TextRun>(visibleLength, TextRunMetrics.Slice(_run, visibleLength)));
+        }
+
+        if (symbol.Length > 0)
+        {
+            spans.Add(new TextSpan<TextRun>(symbol.Length, symbol));
+        }
+
+        _runSpans = spans;
+        int collapsedLength = Math.Max(0, _length - visibleLength);
+        _collapsedRanges = collapsedLength == 0
+            ? Array.Empty<TextCollapsedRange>()
+            : [new TextCollapsedRange(
+                _firstCharIndex + visibleLength,
+                collapsedLength,
+                Math.Max(0, _naturalWidth - visibleWidth))];
+        _width = visibleWidth + symbolWidth;
+        _widthIncludingTrailingWhitespace = _width;
+    }
+
+    public override double Width => _width;
     public override double Height => _height;
     public override double Baseline => _height * 0.8;
     public override double TextBaseline => Baseline;
     public override int Length => _length;
+    public override int TrailingWhitespaceLength => _trailingWhitespaceLength;
+    public override int DependentLength => 0;
     public override int NewlineLength => 0;
     public override double Start => 0;
-    public override double WidthIncludingTrailingWhitespace => _paragraphWidth;
+    public override double WidthIncludingTrailingWhitespace => _widthIncludingTrailingWhitespace;
     public override double OverhangLeading => 0;
     public override double OverhangTrailing => 0;
     public override double OverhangAfter => 0;
     public override double TextHeight => _height;
+    public override double Extent => _height;
     public override double MarkerBaseline => 0;
     public override double MarkerHeight => 0;
-    public override bool HasOverflowed => false;
-    public override bool HasCollapsed => false;
+    public override bool HasOverflowed => _hasOverflowed;
+    public override bool HasCollapsed => _hasCollapsed;
+    public override bool IsTruncated => _isTruncated;
 
-    public override IList<TextRun> GetTextRunSpans() => Array.Empty<TextRun>();
+    public override IList<TextSpan<TextRun>> GetTextRunSpans() => _runSpans;
 
-    public override CharacterHit GetCharacterHitFromDistance(double distance) => new(0, 0);
+    public override TextLine Collapse(params TextCollapsingProperties[] collapsingPropertiesList)
+    {
+        ArgumentNullException.ThrowIfNull(collapsingPropertiesList);
+        if (collapsingPropertiesList.Length == 0)
+        {
+            return this;
+        }
 
-    public override double GetDistanceFromCharacterHit(CharacterHit characterHit) => 0;
+        TextCollapsingProperties collapsingProperties = collapsingPropertiesList[0];
+        ArgumentNullException.ThrowIfNull(collapsingProperties);
+        TextRun symbol = collapsingProperties.Symbol;
+        ArgumentNullException.ThrowIfNull(symbol);
+
+        double targetWidth = Math.Max(0, collapsingProperties.Width);
+        if (_naturalWidth <= targetWidth || _length == 0)
+        {
+            return this;
+        }
+
+        double symbolWidth = TextRunMetrics.Measure(symbol).Width;
+        double availableTextWidth = Math.Max(0, targetWidth - symbolWidth);
+        int visibleLength = TextRunMetrics.GetFittingCharacterCount(_run, availableTextWidth);
+        if (collapsingProperties.Style == TextCollapsingStyle.TrailingWord && visibleLength < _length)
+        {
+            while (visibleLength > 0
+                   && TextRunMetrics.TryGetCharacter(_run, visibleLength - 1, out char trailingCharacter)
+                   && !char.IsWhiteSpace(trailingCharacter))
+            {
+                visibleLength--;
+            }
+
+            while (visibleLength > 0
+                   && TextRunMetrics.TryGetCharacter(_run, visibleLength - 1, out char whitespaceCharacter)
+                   && char.IsWhiteSpace(whitespaceCharacter))
+            {
+                visibleLength--;
+            }
+        }
+
+        double visibleWidth = TextRunMetrics.MeasurePrefix(_run, visibleLength);
+        return new SimpleTextLine(
+            this,
+            symbol,
+            visibleLength,
+            visibleWidth,
+            Math.Min(symbolWidth, targetWidth));
+    }
+
+    public override IList<TextCollapsedRange> GetTextCollapsedRanges() => _collapsedRanges;
+
+    public override IEnumerable<IndexedGlyphRun> GetIndexedGlyphRuns()
+    {
+        double glyphStart = Start;
+        int textSourceCharacterIndex = _firstCharIndex;
+        foreach (TextSpan<TextRun> span in _runSpans)
+        {
+            GlyphRun? glyphRun = TextRunMetrics.CreateGlyphRun(
+                span.Value,
+                glyphStart,
+                Baseline,
+                PixelsPerDip);
+            if (glyphRun is not null)
+            {
+                yield return new IndexedGlyphRun(textSourceCharacterIndex, span.Length, glyphRun);
+                glyphStart += glyphRun.AdvanceWidths?.Sum() ?? 0;
+            }
+
+            textSourceCharacterIndex += span.Length;
+        }
+    }
+
+    public override CharacterHit GetCharacterHitFromDistance(double distance)
+    {
+        if (distance <= Start || _length == 0)
+        {
+            return new CharacterHit(_firstCharIndex, 0);
+        }
+
+        double currentDistance = Start;
+        for (int index = 0; index < _length; index++)
+        {
+            double advance = TextRunMetrics.GetCharacterWidth(_run, index);
+            if (distance < currentDistance + advance)
+            {
+                int trailingLength = distance >= currentDistance + (advance / 2) ? 1 : 0;
+                return new CharacterHit(_firstCharIndex + index, trailingLength);
+            }
+
+            currentDistance += advance;
+        }
+
+        return new CharacterHit(_firstCharIndex + _length - 1, 1);
+    }
+
+    public override double GetDistanceFromCharacterHit(CharacterHit characterHit)
+    {
+        int relativeIndex = Math.Clamp(characterHit.FirstCharacterIndex - _firstCharIndex, 0, _length);
+        double distance = Start + TextRunMetrics.MeasurePrefix(_run, relativeIndex);
+        if (characterHit.TrailingLength > 0 && relativeIndex < _length)
+        {
+            distance += TextRunMetrics.GetCharacterWidth(_run, relativeIndex);
+        }
+
+        return distance;
+    }
 
     public override CharacterHit GetNextCaretCharacterHit(CharacterHit characterHit)
-        => new(characterHit.FirstCharacterIndex + 1, 0);
+    {
+        int position = characterHit.FirstCharacterIndex + Math.Max(1, characterHit.TrailingLength);
+        return new CharacterHit(Math.Min(_firstCharIndex + _length, position), 0);
+    }
 
     public override CharacterHit GetPreviousCaretCharacterHit(CharacterHit characterHit)
-        => new(Math.Max(0, characterHit.FirstCharacterIndex - 1), 0);
+    {
+        int position = characterHit.FirstCharacterIndex - (characterHit.TrailingLength == 0 ? 1 : 0);
+        return new CharacterHit(Math.Max(_firstCharIndex, position), 0);
+    }
 
     public override CharacterHit GetBackspaceCaretCharacterHit(CharacterHit characterHit)
         => GetPreviousCaretCharacterHit(characterHit);
 
     public override IList<TextBounds> GetTextBounds(int firstTextSourceCharacterIndex, int textLength)
-        => Array.Empty<TextBounds>();
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(textLength);
+        int first = Math.Clamp(firstTextSourceCharacterIndex - _firstCharIndex, 0, _length);
+        int last = Math.Clamp(first + textLength, first, _length);
+        double start = Start + TextRunMetrics.MeasurePrefix(_run, first);
+        double width = TextRunMetrics.MeasurePrefix(_run, last) - TextRunMetrics.MeasurePrefix(_run, first);
+        var rectangle = new Rect(start, 0, width, Height);
+        return
+        [
+            new TextBounds(
+                rectangle,
+                _flowDirection,
+                [new TextRunBounds(rectangle, _firstCharIndex + first, last - first, _run)]),
+        ];
+    }
 
     public override TextLineBreak? GetTextLineBreak() => null;
 

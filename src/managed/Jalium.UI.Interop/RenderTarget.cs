@@ -69,6 +69,15 @@ public sealed class RenderTarget : IDisposable
 
     private readonly IRenderTargetNative _native;
     private readonly RenderContext? _ownerContext;
+
+    /// <summary>
+    /// The context that created this target. Backend resources used while
+    /// replaying a frame must come from this context, not from the process-wide
+    /// current context, which another window/recovery may replace concurrently.
+    /// </summary>
+    internal RenderContext? OwnerContext => _ownerContext;
+
+    internal int OwnerContextGeneration => _ownerContext?.Generation ?? 0;
     private readonly RenderBackend _backend;
     private readonly NativeSurfaceDescriptor _surface;
     private readonly nint _hwnd;
@@ -79,7 +88,11 @@ public sealed class RenderTarget : IDisposable
     // serialized by the render-thread idle drain, but the field still needs an
     // acquire/release fence across that barrier (FIX #4).
     private volatile bool _isDrawing;
-    private int _ownerContextReleased;
+    // Starts in the released state. A finalizable object is eligible for
+    // finalization even when its constructor throws, so RegisterRenderTarget
+    // must succeed before this flips to 0. Otherwise the finalizer for a
+    // half-constructed target would unregister a pin it never acquired.
+    private int _ownerContextReleased = 1;
     private float _dpiX = 96.0f;
     private float _dpiY = 96.0f;
 
@@ -91,7 +104,10 @@ public sealed class RenderTarget : IDisposable
     /// <summary>
     /// Gets whether the render target is valid.
     /// </summary>
-    public bool IsValid => _handle != nint.Zero && !_disposed;
+    public bool IsValid =>
+        _handle != nint.Zero &&
+        !_disposed &&
+        (_ownerContext == null || _ownerContext.IsValid);
 
     /// <summary>
     /// Gets whether a drawing session is active.
@@ -123,7 +139,7 @@ public sealed class RenderTarget : IDisposable
     /// Gets the active rendering engine for this render target.
     /// </summary>
     public RenderingEngine RenderingEngine =>
-        _handle != nint.Zero ? _native.GetEngine(_handle) : RenderingEngine.Auto;
+        IsValid ? _native.GetEngine(_handle) : RenderingEngine.Auto;
 
     /// <summary>
     /// Queries the swap chain present configuration (SwapEffect / tearing / waitable /
@@ -132,7 +148,7 @@ public sealed class RenderTarget : IDisposable
     /// </summary>
     public PresentInfo? GetPresentInfo()
     {
-        if (_handle == nint.Zero || _disposed) return null;
+        if (!IsValid) return null;
         if (NativeGpuMethods.RenderTargetGetPresentInfo(_handle, out var info) == 0)
             return info;
         return null;
@@ -143,7 +159,7 @@ public sealed class RenderTarget : IDisposable
     /// </summary>
     public void SetRenderingEngine(RenderingEngine engine)
     {
-        if (_handle != nint.Zero)
+        if (IsValid)
         {
             NativeMethods.RenderTargetSetEngine(_handle, engine);
         }
@@ -164,7 +180,7 @@ public sealed class RenderTarget : IDisposable
     /// </remarks>
     public void ReclaimIdleResources()
     {
-        if (_disposed || _handle == nint.Zero || _isDrawing)
+        if (!IsValid || _isDrawing)
         {
             return;
         }
@@ -202,7 +218,11 @@ public sealed class RenderTarget : IDisposable
         Width = width;
         Height = height;
 
-        _ownerContext?.RegisterRenderTarget();
+        if (_ownerContext != null)
+        {
+            _ownerContext.RegisterRenderTarget();
+            Volatile.Write(ref _ownerContextReleased, 0);
+        }
         try
         {
             _handle = useComposition
@@ -218,7 +238,29 @@ public sealed class RenderTarget : IDisposable
         }
         catch
         {
-            ReleaseOwnerContextReference();
+            // A failure after native creation (for example while querying a
+            // capability) must destroy the target while the owner pin still
+            // keeps its backend alive. Releasing the pin first can destroy the
+            // context and leave this native target pointing at freed backend
+            // state until its finalizer runs.
+            var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+            try
+            {
+                if (handle != nint.Zero)
+                {
+                    _native.Destroy(handle);
+                }
+            }
+            catch
+            {
+                // Preserve the construction exception. The handle is detached
+                // so the finalizer cannot issue a second destroy.
+            }
+            finally
+            {
+                _disposed = true;
+                ReleaseOwnerContextReference();
+            }
             throw;
         }
     }
@@ -1821,7 +1863,7 @@ public sealed class RenderTarget : IDisposable
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(!IsValid, this);
     }
 
     private void ThrowIfNativeFailure(string stage, int resultCode)
@@ -1865,31 +1907,53 @@ public sealed class RenderTarget : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        if (_isDrawing)
+        try
         {
-            try { _ = _native.EndDraw(_handle); } catch { }
+            // A disposal-requested owner is intentionally no longer usable,
+            // but its native backend remains alive while this target holds its
+            // pin.  Destroy the target first; releasing the pin below may then
+            // perform the owner's deferred ContextDestroy.
+            if (_isDrawing && (_ownerContext == null || _ownerContext.IsNativeBackendAlive))
+            {
+                try { _ = _native.EndDraw(_handle); } catch { }
+            }
             _isDrawing = false;
-        }
 
-        if (_handle != nint.Zero)
+            if (_handle != nint.Zero &&
+                (_ownerContext == null || _ownerContext.IsNativeBackendAlive))
+            {
+                _native.Destroy(_handle);
+            }
+        }
+        finally
         {
-            _native.Destroy(_handle);
             _handle = nint.Zero;
+            ReleaseOwnerContextReference();
+            GC.SuppressFinalize(this);
         }
-
-        ReleaseOwnerContextReference();
-        GC.SuppressFinalize(this);
     }
 
     ~RenderTarget()
     {
-        if (_handle != nint.Zero)
+        try
         {
-            NativeMethods.RenderTargetDestroy(_handle);
+            if (_handle != nint.Zero &&
+                (_ownerContext == null || _ownerContext.IsNativeBackendAlive))
+            {
+                _native.Destroy(_handle);
+            }
         }
-        _isDrawing = false;
-        _disposed = true;
-        _handle = nint.Zero;
+        catch
+        {
+            // Finalizers must never surface native cleanup failures.
+        }
+        finally
+        {
+            _isDrawing = false;
+            _disposed = true;
+            _handle = nint.Zero;
+            ReleaseOwnerContextReference();
+        }
     }
 
     private void ReleaseOwnerContextReference()

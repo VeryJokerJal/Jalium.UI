@@ -3,6 +3,7 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <new>
 
@@ -78,6 +79,7 @@ struct JaliumWebView2ControllerHandle {
     ComPtr<ICoreWebView2Controller> controller;
     ComPtr<ICoreWebView2Controller2> controller2;
     ComPtr<ICoreWebView2CompositionController> composition_controller;
+    ComPtr<ICoreWebView2Environment2> environment2;
     ComPtr<ICoreWebView2> core;
 
     void* user_data = nullptr;
@@ -601,6 +603,7 @@ int jalium_webview2_create_controller(
     handle->core = core;
     handle->composition_controller = composition_controller;
     handle->controller.As(&handle->controller2);
+    environment->environment.As(&handle->environment2);
 
     *controller_out = handle;
     return S_OK;
@@ -677,6 +680,106 @@ int jalium_webview2_navigate_to_string(JaliumWebView2ControllerHandle* controlle
     }
 
     return controller->core->NavigateToString(html);
+}
+
+int jalium_webview2_navigate_with_web_resource_request(
+    JaliumWebView2ControllerHandle* controller,
+    const wchar_t* uri,
+    const wchar_t* method,
+    const uint8_t* post_data,
+    int post_data_length,
+    const wchar_t* additional_headers) {
+    HRESULT hr = ValidateController(controller);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    if (!uri || !method || post_data_length < 0 || (post_data_length > 0 && !post_data)) {
+        return E_INVALIDARG;
+    }
+
+    if (!controller->environment2) {
+        return E_NOINTERFACE;
+    }
+
+    ComPtr<IStream> content;
+    if (_wcsicmp(method, L"POST") == 0 && post_data_length > 0) {
+        HGLOBAL global = GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(post_data_length));
+        if (!global) {
+            return E_OUTOFMEMORY;
+        }
+
+        void* destination = GlobalLock(global);
+        if (!destination) {
+            const HRESULT lock_hr = HRESULT_FROM_WIN32(GetLastError());
+            GlobalFree(global);
+            return lock_hr;
+        }
+
+        std::memcpy(destination, post_data, static_cast<size_t>(post_data_length));
+        GlobalUnlock(global);
+
+        IStream* raw_stream = nullptr;
+        hr = CreateStreamOnHGlobal(global, TRUE, &raw_stream);
+        if (FAILED(hr)) {
+            GlobalFree(global);
+            return hr;
+        }
+        content.Attach(raw_stream);
+    }
+
+    ComPtr<ICoreWebView2WebResourceRequest> request;
+    hr = controller->environment2->CreateWebResourceRequest(
+        uri,
+        method,
+        content.Get(),
+        additional_headers ? additional_headers : L"",
+        &request);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    ComPtr<ICoreWebView2_2> core2;
+    hr = controller->core.As(&core2);
+    if (FAILED(hr) || !core2) {
+        return FAILED(hr) ? hr : E_NOINTERFACE;
+    }
+
+    return core2->NavigateWithWebResourceRequest(request.Get());
+}
+
+int jalium_webview2_add_host_object_to_script(
+    JaliumWebView2ControllerHandle* controller,
+    const wchar_t* name,
+    intptr_t dispatch) {
+    HRESULT hr = ValidateController(controller);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    if (!name || dispatch == 0) {
+        return E_INVALIDARG;
+    }
+
+    VARIANT host_object{};
+    host_object.vt = VT_DISPATCH;
+    host_object.pdispVal = reinterpret_cast<IDispatch*>(dispatch);
+    return controller->core->AddHostObjectToScript(name, &host_object);
+}
+
+int jalium_webview2_remove_host_object_from_script(
+    JaliumWebView2ControllerHandle* controller,
+    const wchar_t* name) {
+    HRESULT hr = ValidateController(controller);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    if (!name) {
+        return E_INVALIDARG;
+    }
+
+    return controller->core->RemoveHostObjectFromScript(name);
 }
 
 int jalium_webview2_reload(JaliumWebView2ControllerHandle* controller) {

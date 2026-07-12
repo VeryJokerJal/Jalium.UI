@@ -8,12 +8,12 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents the base class for all button controls.
 /// </summary>
-public abstract class ButtonBase : ContentControl
+public abstract class ButtonBase : ContentControl, ICommandSource
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ButtonBaseAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.GenericButtonBaseAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -82,7 +82,11 @@ public abstract class ButtonBase : ContentControl
     /// <summary>
     /// Gets a value indicating whether the button is currently pressed.
     /// </summary>
-    public new bool IsPressed => base.IsPressed;
+    public new bool IsPressed
+    {
+        get => base.IsPressed;
+        protected set => base.SetIsPressed(value);
+    }
 
     /// <summary>
     /// Gets or sets the command to invoke when this button is pressed.
@@ -582,6 +586,17 @@ public abstract class ButtonBase : ContentControl
     protected override void OnIsPressedChanged(bool oldValue, bool newValue)
     {
         base.OnIsPressedChanged(oldValue, newValue);
+        OnIsPressedChanged(new DependencyPropertyChangedEventArgs(
+            IsPressedProperty,
+            oldValue,
+            newValue));
+    }
+
+    /// <summary>
+    /// Called when the value of <see cref="IsPressed"/> changes.
+    /// </summary>
+    protected virtual void OnIsPressedChanged(DependencyPropertyChangedEventArgs e)
+    {
     }
 
     #endregion

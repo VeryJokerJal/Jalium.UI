@@ -271,6 +271,8 @@ public sealed class SpellChecker : IDisposable
 /// </summary>
 public sealed class SpellingError
 {
+    private readonly Action<SpellingError, string>? _correct;
+    private readonly Action<SpellingError>? _ignoreAll;
     /// <summary>
     /// Gets the start index of the error in the text.
     /// </summary>
@@ -299,21 +301,69 @@ public sealed class SpellingError
     /// <summary>
     /// Gets the suggested corrections.
     /// </summary>
-    public IReadOnlyList<string> Suggestions { get; }
+    public IEnumerable<string> Suggestions { get; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SpellingError"/> class.
     /// </summary>
     public SpellingError(int startIndex, int length, string word, SpellingErrorType errorType,
         string? replacement, IReadOnlyList<string> suggestions)
+        : this(startIndex, length, word, errorType, replacement, suggestions, null, null)
+    {
+    }
+
+    private SpellingError(
+        int startIndex,
+        int length,
+        string word,
+        SpellingErrorType errorType,
+        string? replacement,
+        IReadOnlyList<string> suggestions,
+        Action<SpellingError, string>? correct,
+        Action<SpellingError>? ignoreAll)
     {
         StartIndex = startIndex;
         Length = length;
         Word = word;
         ErrorType = errorType;
         Replacement = replacement;
-        Suggestions = suggestions;
+        Suggestions = suggestions ?? throw new ArgumentNullException(nameof(suggestions));
+        _correct = correct;
+        _ignoreAll = ignoreAll;
     }
+
+    /// <summary>Replaces this misspelling with the supplied text.</summary>
+    public void Correct(string correctedText)
+    {
+        ArgumentNullException.ThrowIfNull(correctedText);
+        _correct?.Invoke(this, correctedText);
+    }
+
+    /// <summary>Ignores every occurrence of this misspelled word for the current session.</summary>
+    public void IgnoreAll()
+    {
+        if (_ignoreAll != null)
+        {
+            _ignoreAll(this);
+        }
+        else
+        {
+            SpellChecker.Default?.IgnoreWord(Word);
+        }
+    }
+
+    internal SpellingError WithHandlers(
+        Action<SpellingError, string> correct,
+        Action<SpellingError> ignoreAll) =>
+        new(
+            StartIndex,
+            Length,
+            Word,
+            ErrorType,
+            Replacement,
+            Suggestions.ToArray(),
+            correct,
+            ignoreAll);
 }
 
 /// <summary>

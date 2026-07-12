@@ -20,9 +20,9 @@ public class ComboBox : Selector
     private static readonly CubicEase s_arrowFlipEase = new() { EasingMode = EasingMode.EaseInOut };
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ComboBoxAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ComboBoxAutomationPeer(this);
     }
 
     private Popup? _popup;
@@ -32,6 +32,9 @@ public class ComboBox : Selector
     private Grid? _dropDownArea;
     private bool _isDropDownOpen;
     private bool _isUpdatingEditableText;
+    private bool _isApplyingTextCompletion;
+    private string _textSearchPrefix = string.Empty;
+    private long _lastTextSearchTick;
 
     private Shapes.Path? _arrowPath;
     private string? _arrowDownData;
@@ -58,6 +61,15 @@ public class ComboBox : Selector
 
     #region Dependency Properties
 
+    static ComboBox()
+    {
+        // WPF enables incremental text search for ComboBox by default, while
+        // ItemsControl leaves it disabled for the general case.
+        ItemsControl.IsTextSearchEnabledProperty.OverrideMetadata(
+            typeof(ComboBox),
+            new FrameworkPropertyMetadata(true));
+    }
+
     /// <summary>
     /// Identifies the IsDropDownOpen dependency property.
     /// </summary>
@@ -81,6 +93,26 @@ public class ComboBox : Selector
     public static readonly DependencyProperty IsEditableProperty =
         DependencyProperty.Register(nameof(IsEditable), typeof(bool), typeof(ComboBox),
             new PropertyMetadata(false, OnIsEditableChanged));
+
+    /// <summary>
+    /// Identifies the <see cref="IsReadOnly"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty IsReadOnlyProperty =
+        TextBoxBase.IsReadOnlyProperty.AddOwner(
+            typeof(ComboBox),
+            new PropertyMetadata(false, OnIsReadOnlyChanged));
+
+    /// <summary>
+    /// Identifies the <see cref="ShouldPreserveUserEnteredPrefix"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty ShouldPreserveUserEnteredPrefixProperty =
+        DependencyProperty.Register(
+            nameof(ShouldPreserveUserEnteredPrefix),
+            typeof(bool),
+            typeof(ComboBox),
+            new PropertyMetadata(false));
 
     /// <summary>
     /// Identifies the <see cref="StaysOpenOnEdit"/> dependency property.
@@ -110,9 +142,54 @@ public class ComboBox : Selector
     /// Identifies the SelectionBoxItem dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    private static readonly DependencyPropertyKey SelectionBoxItemPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(SelectionBoxItem),
+            typeof(object),
+            typeof(ComboBox),
+            new PropertyMetadata(string.Empty, OnSelectionBoxItemChanged));
+
+    /// <summary>
+    /// Identifies the read-only <see cref="SelectionBoxItem"/> dependency property.
+    /// </summary>
     public static readonly DependencyProperty SelectionBoxItemProperty =
-        DependencyProperty.Register(nameof(SelectionBoxItem), typeof(object), typeof(ComboBox),
-            new PropertyMetadata(null, OnSelectionBoxItemChanged));
+        SelectionBoxItemPropertyKey.DependencyProperty;
+
+    private static readonly DependencyPropertyKey SelectionBoxItemTemplatePropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(SelectionBoxItemTemplate),
+            typeof(DataTemplate),
+            typeof(ComboBox),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Identifies the read-only <see cref="SelectionBoxItemTemplate"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty SelectionBoxItemTemplateProperty =
+        SelectionBoxItemTemplatePropertyKey.DependencyProperty;
+
+    private static readonly DependencyPropertyKey SelectionBoxItemStringFormatPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(SelectionBoxItemStringFormat),
+            typeof(string),
+            typeof(ComboBox),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Identifies the read-only <see cref="SelectionBoxItemStringFormat"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty SelectionBoxItemStringFormatProperty =
+        SelectionBoxItemStringFormatPropertyKey.DependencyProperty;
+
+    private static readonly DependencyPropertyKey IsSelectionBoxHighlightedPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(IsSelectionBoxHighlighted),
+            typeof(bool),
+            typeof(ComboBox),
+            new PropertyMetadata(false));
+
+    private static readonly DependencyProperty IsSelectionBoxHighlightedProperty =
+        IsSelectionBoxHighlightedPropertyKey.DependencyProperty;
 
     private static void OnSelectionBoxItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -130,6 +207,14 @@ public class ComboBox : Selector
             comboBox.UpdateEditableModeVisualState();
             comboBox.UpdateCursorState();
             comboBox.UpdateSelectionBoxItem();
+        }
+    }
+
+    private static void OnIsReadOnlyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is ComboBox comboBox)
+        {
+            comboBox.UpdateReadOnlyState();
         }
     }
 
@@ -184,6 +269,27 @@ public class ComboBox : Selector
     }
 
     /// <summary>
+    /// Gets or sets whether the editable text area accepts user edits.
+    /// Selection from the drop-down remains available in read-only mode.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool IsReadOnly
+    {
+        get => (bool)GetValue(IsReadOnlyProperty)!;
+        set => SetValue(IsReadOnlyProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether text completion retains the exact prefix entered by the user.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool ShouldPreserveUserEnteredPrefix
+    {
+        get => (bool)GetValue(ShouldPreserveUserEnteredPrefixProperty)!;
+        set => SetValue(ShouldPreserveUserEnteredPrefixProperty, value);
+    }
+
+    /// <summary>
     /// Gets or sets whether the drop-down stays open while the user edits the
     /// text of an editable combo box. When <see langword="false"/> (the
     /// default), clicking into the editable text box closes the drop-down.
@@ -223,8 +329,32 @@ public class ComboBox : Selector
     public object? SelectionBoxItem
     {
         get => GetValue(SelectionBoxItemProperty);
-        private set => SetValue(SelectionBoxItemProperty, value);
+        private set => SetValue(SelectionBoxItemPropertyKey, value);
     }
+
+    /// <summary>
+    /// Gets the template used to display <see cref="SelectionBoxItem"/>.
+    /// </summary>
+    public DataTemplate? SelectionBoxItemTemplate
+    {
+        get => (DataTemplate?)GetValue(SelectionBoxItemTemplateProperty);
+        private set => SetValue(SelectionBoxItemTemplatePropertyKey, value);
+    }
+
+    /// <summary>
+    /// Gets the composite format string used by the selection box.
+    /// </summary>
+    public string? SelectionBoxItemStringFormat
+    {
+        get => (string?)GetValue(SelectionBoxItemStringFormatProperty);
+        private set => SetValue(SelectionBoxItemStringFormatPropertyKey, value);
+    }
+
+    /// <summary>
+    /// Gets whether the content displayed in the closed selection box is highlighted.
+    /// </summary>
+    public bool IsSelectionBoxHighlighted =>
+        (bool)GetValue(IsSelectionBoxHighlightedProperty)!;
 
     #endregion
 
@@ -239,6 +369,22 @@ public class ComboBox : Selector
     /// Occurs when the dropdown closes.
     /// </summary>
     public event EventHandler? DropDownClosed;
+
+    /// <summary>
+    /// Reports that the drop-down has opened.
+    /// </summary>
+    protected virtual void OnDropDownOpened(EventArgs e)
+    {
+        DropDownOpened?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Reports that the drop-down has closed.
+    /// </summary>
+    protected virtual void OnDropDownClosed(EventArgs e)
+    {
+        DropDownClosed?.Invoke(this, e);
+    }
 
     #endregion
 
@@ -256,6 +402,7 @@ public class ComboBox : Selector
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
         AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotKeyboardFocusHandler));
     }
 
@@ -293,7 +440,7 @@ public class ComboBox : Selector
         {
             _toggleButton.Checked += OnToggleButtonChecked;
             _toggleButton.Unchecked += OnToggleButtonUnchecked;
-            _toggleButton.Cursor = Jalium.UI.Cursors.Arrow;
+            _toggleButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
         }
 
         // Wire up popup
@@ -313,7 +460,8 @@ public class ComboBox : Selector
         _arrowPath = FindDescendant<Shapes.Path>(_toggleButton);
         if (_arrowPath != null)
         {
-            _arrowDownData = string.IsNullOrWhiteSpace(_arrowPath.Data) ? ArrowDownData : _arrowPath.Data!;
+            string? arrowData = _arrowPath.Data?.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            _arrowDownData = string.IsNullOrWhiteSpace(arrowData) ? ArrowDownData : arrowData;
             BuildChevronBase();
             _arrowAngle = _isDropDownOpen ? 180.0 : 0.0;
             ApplyArrowAngle(_arrowAngle);
@@ -322,6 +470,7 @@ public class ComboBox : Selector
         // Update selection box
         UpdatePlaceholderState();
         UpdateEditableModeVisualState();
+        UpdateReadOnlyState();
         UpdateCursorState();
         UpdateSelectionBoxItem();
     }
@@ -348,7 +497,7 @@ public class ComboBox : Selector
         SetArrowDirection(false);
 
         SetValue(IsDropDownOpenProperty, false);
-        DropDownClosed?.Invoke(this, EventArgs.Empty);
+        OnDropDownClosed(EventArgs.Empty);
     }
 
     private void OnGotKeyboardFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
@@ -430,10 +579,7 @@ public class ComboBox : Selector
             // Preserve TextBox editing behavior in editable mode.
             if (e.Key == Key.F4)
             {
-                if (IsDropDownOpen)
-                    CloseDropDown();
-                else
-                    OpenDropDown();
+                IsDropDownOpen = !IsDropDownOpen;
                 e.Handled = true;
             }
 
@@ -455,31 +601,28 @@ public class ComboBox : Selector
                 break;
 
             case Key.Enter:
-                if (IsDropDownOpen)
-                {
-                    CloseDropDown();
-                }
-                else
-                {
-                    OpenDropDown();
-                }
+                IsDropDownOpen = !IsDropDownOpen;
                 e.Handled = true;
                 break;
 
             case Key.Escape:
                 if (IsDropDownOpen)
                 {
-                    CloseDropDown();
+                    IsDropDownOpen = false;
                     e.Handled = true;
                 }
                 break;
 
             case Key.Space:
-                if (IsDropDownOpen)
-                    CloseDropDown();
-                else
-                    OpenDropDown();
+                IsDropDownOpen = !IsDropDownOpen;
                 e.Handled = true;
+                break;
+
+            case Key.Back:
+                if (!IsEditable && IsTextSearchEnabled && DeleteTextSearchCharacter())
+                {
+                    e.Handled = true;
+                }
                 break;
 
             case Key.Home:
@@ -499,12 +642,27 @@ public class ComboBox : Selector
 
             case Key.F4:
                 // F4 toggles dropdown (standard Windows behavior)
-                if (IsDropDownOpen)
-                    CloseDropDown();
-                else
-                    OpenDropDown();
+                IsDropDownOpen = !IsDropDownOpen;
                 e.Handled = true;
                 break;
+        }
+    }
+
+    private void OnTextInputHandler(object sender, TextCompositionEventArgs e)
+    {
+        if (!IsEnabled || IsEditable || !IsTextSearchEnabled || string.IsNullOrEmpty(e.Text))
+        {
+            if (!IsTextSearchEnabled)
+            {
+                ResetTextSearch();
+            }
+
+            return;
+        }
+
+        if (PerformTextSearch(e.Text))
+        {
+            e.Handled = true;
         }
     }
 
@@ -521,6 +679,8 @@ public class ComboBox : Selector
             {
                 comboBox.CloseDropDown();
             }
+
+            comboBox.UpdateSelectionBoxHighlighted();
         }
     }
 
@@ -537,11 +697,14 @@ public class ComboBox : Selector
         if (host == null) return;
 
         var selectedItem = SelectedItem;
-        foreach (var child in host.Children)
+        foreach (UIElement child in host.Children)
         {
             if (child is ComboBoxItem container)
             {
-                var logicalItem = container.Tag ?? container.Content;
+                int index = ItemContainerGenerator.IndexFromContainer(container);
+                var logicalItem = index >= 0 && index < GetItemCount()
+                    ? GetItemAt(index)
+                    : container.Content;
                 var shouldBeSelected = Equals(logicalItem, selectedItem);
                 if (container.IsSelected != shouldBeSelected)
                 {
@@ -573,21 +736,58 @@ public class ComboBox : Selector
         }
     }
 
+    /// <inheritdoc />
+    protected override void OnIsKeyboardFocusWithinChanged(bool isFocusWithin)
+    {
+        base.OnIsKeyboardFocusWithinChanged(isFocusWithin);
+        UpdateSelectionBoxHighlighted();
+    }
+
     private void UpdateSelectionBoxItem()
     {
         var selectedItem = SelectedItem;
         if (selectedItem != null)
         {
             var selectedText = GetItemText(selectedItem);
-            SelectionBoxItem = selectedText;
+            object? displayItem = selectedItem;
+            DataTemplate? displayTemplate = ItemTemplate;
+            string? displayStringFormat = ItemStringFormat;
 
-            if (IsEditable && !string.Equals(Text, selectedText, StringComparison.Ordinal))
+            // WPF displays the content of an item container, rather than the
+            // ComboBoxItem wrapper itself, and honors the container's own
+            // presentation contract for own-container items.
+            if (selectedItem is ContentControl contentControl)
             {
-                Text = selectedText;
+                displayItem = contentControl.Content;
+                displayTemplate = contentControl.ContentTemplate;
+                displayStringFormat = contentControl.ContentStringFormat;
+            }
+
+            // A UIElement cannot be parented simultaneously by the drop-down
+            // container and the closed selection presenter. WPF paints a visual
+            // clone in this case; a VisualBrush-backed rectangle provides the
+            // same single-parent behavior here.
+            if (displayTemplate == null && ItemTemplateSelector == null &&
+                displayStringFormat == null && displayItem is UIElement visualItem)
+            {
+                displayItem = CreateSelectionVisualClone(visualItem);
+            }
+
+            SelectionBoxItem = displayItem ?? string.Empty;
+            SelectionBoxItemTemplate = displayTemplate;
+            SelectionBoxItemStringFormat = displayStringFormat;
+
+            if (!_isApplyingTextCompletion &&
+                !string.Equals(Text, selectedText, StringComparison.Ordinal))
+            {
+                SetCurrentValue(TextProperty, selectedText);
             }
         }
         else
         {
+            SelectionBoxItemTemplate = null;
+            SelectionBoxItemStringFormat = null;
+
             if (IsEditable)
             {
                 SelectionBoxItem = string.IsNullOrEmpty(Text) ? PlaceholderText : Text;
@@ -607,8 +807,9 @@ public class ComboBox : Selector
         {
             SelectionBoxItem = string.IsNullOrEmpty(Text) ? PlaceholderText : Text;
             UpdateEditableTextBoxText();
-            SyncSelectionWithText(Text);
         }
+
+        SyncSelectionWithText(Text);
     }
 
     private void UpdatePlaceholderState()
@@ -620,6 +821,8 @@ public class ComboBox : Selector
 
         if (SelectedItem == null && (!IsEditable || string.IsNullOrEmpty(Text)))
         {
+            SelectionBoxItemTemplate = null;
+            SelectionBoxItemStringFormat = null;
             SelectionBoxItem = PlaceholderText;
         }
     }
@@ -637,7 +840,16 @@ public class ComboBox : Selector
             _editableTextBox.PlaceholderText = PlaceholderText;
         }
 
+        UpdateReadOnlyState();
         UpdateEditableTextBoxText();
+    }
+
+    private void UpdateReadOnlyState()
+    {
+        if (_editableTextBox != null)
+        {
+            _editableTextBox.IsReadOnly = IsReadOnly;
+        }
     }
 
     private void UpdateCursorState()
@@ -648,17 +860,17 @@ public class ComboBox : Selector
     private void UpdateCursorState(Point? pointerPosition)
     {
         Cursor = !IsEditable || (pointerPosition.HasValue && IsPointInToggleArea(pointerPosition.Value))
-            ? Jalium.UI.Cursors.Arrow
-            : Jalium.UI.Cursors.IBeam;
+            ? Jalium.UI.Input.Cursors.Arrow
+            : Jalium.UI.Input.Cursors.IBeam;
 
         if (_dropDownArea != null)
         {
-            _dropDownArea.Cursor = Jalium.UI.Cursors.Arrow;
+            _dropDownArea.Cursor = Jalium.UI.Input.Cursors.Arrow;
         }
 
         if (_toggleButton != null)
         {
-            _toggleButton.Cursor = Jalium.UI.Cursors.Arrow;
+            _toggleButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
         }
     }
 
@@ -682,18 +894,23 @@ public class ComboBox : Selector
 
     private void OnEditableTextBoxTextChanged(object sender, TextChangedEventArgs e)
     {
-        if (!IsEditable || _isUpdatingEditableText || _editableTextBox == null) return;
+        if (!IsEditable || IsReadOnly || _isUpdatingEditableText || _editableTextBox == null) return;
 
         var editableText = _editableTextBox.Text ?? string.Empty;
+        if (TryCompleteEditableText(editableText, e))
+        {
+            return;
+        }
+
         if (!string.Equals(Text, editableText, StringComparison.Ordinal))
         {
-            Text = editableText;
+            SetCurrentValue(TextProperty, editableText);
         }
     }
 
     private void SyncSelectionWithText(string text)
     {
-        if (!IsEditable) return;
+        if (!IsTextSearchEnabled) return;
 
         if (string.IsNullOrEmpty(text))
         {
@@ -708,7 +925,7 @@ public class ComboBox : Selector
         var itemCount = GetItemCount();
         for (int i = 0; i < itemCount; i++)
         {
-            if (string.Equals(GetItemText(GetItemAt(i)), text, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(GetItemText(GetItemAt(i)), text, StringComparison.CurrentCulture))
             {
                 matchedIndex = i;
                 break;
@@ -726,6 +943,202 @@ public class ComboBox : Selector
         {
             SelectedIndex = -1;
         }
+    }
+
+    private bool TryCompleteEditableText(string enteredText, TextChangedEventArgs e)
+    {
+        bool changeEndsAtTextEnd = e.Changes.Any(change =>
+            change.AddedLength > 0 && change.Offset + change.AddedLength == enteredText.Length);
+
+        if (_editableTextBox == null || !IsTextSearchEnabled || string.IsNullOrEmpty(enteredText) ||
+            !changeEndsAtTextEnd)
+        {
+            return false;
+        }
+
+        int matchedIndex = FindMatchingIndex(enteredText, 0);
+        if (matchedIndex < 0)
+        {
+            return false;
+        }
+
+        string matchedText = GetItemText(GetItemAt(matchedIndex));
+        string completedText = ShouldPreserveUserEnteredPrefix
+            ? string.Concat(enteredText, matchedText.AsSpan(Math.Min(enteredText.Length, matchedText.Length)))
+            : matchedText;
+
+        _isApplyingTextCompletion = true;
+        _isUpdatingEditableText = true;
+        try
+        {
+            if (!string.Equals(Text, completedText, StringComparison.Ordinal))
+            {
+                SetCurrentValue(TextProperty, completedText);
+            }
+
+            if (SelectedIndex != matchedIndex)
+            {
+                SelectedIndex = matchedIndex;
+            }
+
+            if (!string.Equals(_editableTextBox.Text, completedText, StringComparison.Ordinal))
+            {
+                _editableTextBox.Text = completedText;
+            }
+
+            int prefixLength = Math.Min(enteredText.Length, completedText.Length);
+            _editableTextBox.Select(prefixLength, completedText.Length - prefixLength);
+        }
+        finally
+        {
+            _isUpdatingEditableText = false;
+            _isApplyingTextCompletion = false;
+        }
+
+        return true;
+    }
+
+    private bool PerformTextSearch(string text)
+    {
+        long now = Environment.TickCount64;
+        if (unchecked(now - _lastTextSearchTick) > 1000)
+        {
+            _textSearchPrefix = string.Empty;
+        }
+
+        _lastTextSearchTick = now;
+        string candidate = _textSearchPrefix + text;
+        int matchedIndex = FindMatchingIndex(candidate, 0);
+
+        if (matchedIndex < 0 && _textSearchPrefix.Length > 0)
+        {
+            // Repeated character searches cycle through items with the same
+            // prefix, matching the standard ComboBox keyboard interaction.
+            candidate = text;
+            matchedIndex = FindMatchingIndex(candidate, SelectedIndex + 1);
+        }
+
+        if (matchedIndex < 0)
+        {
+            return false;
+        }
+
+        _textSearchPrefix = candidate;
+        SelectedIndex = matchedIndex;
+        return true;
+    }
+
+    private bool DeleteTextSearchCharacter()
+    {
+        if (_textSearchPrefix.Length == 0 ||
+            unchecked(Environment.TickCount64 - _lastTextSearchTick) > 1000)
+        {
+            ResetTextSearch();
+            return false;
+        }
+
+        _textSearchPrefix = _textSearchPrefix[..^1];
+        _lastTextSearchTick = Environment.TickCount64;
+        if (_textSearchPrefix.Length == 0)
+        {
+            return true;
+        }
+
+        int matchedIndex = FindMatchingIndex(_textSearchPrefix, 0);
+        if (matchedIndex >= 0)
+        {
+            SelectedIndex = matchedIndex;
+        }
+
+        return true;
+    }
+
+    private void ResetTextSearch()
+    {
+        _textSearchPrefix = string.Empty;
+        _lastTextSearchTick = 0;
+    }
+
+    private int FindMatchingIndex(string prefix, int startIndex)
+    {
+        int count = GetItemCount();
+        if (count == 0 || string.IsNullOrEmpty(prefix))
+        {
+            return -1;
+        }
+
+        int normalizedStart = ((startIndex % count) + count) % count;
+        var comparison = IsTextSearchCaseSensitive
+            ? StringComparison.CurrentCulture
+            : StringComparison.CurrentCultureIgnoreCase;
+
+        for (int offset = 0; offset < count; offset++)
+        {
+            int index = (normalizedStart + offset) % count;
+            if (GetItemText(GetItemAt(index)).StartsWith(prefix, comparison))
+            {
+                return index;
+            }
+        }
+
+        return -1;
+    }
+
+    private void UpdateSelectionBoxHighlighted()
+    {
+        SetValue(
+            IsSelectionBoxHighlightedPropertyKey,
+            !IsDropDownOpen && IsKeyboardFocusWithin);
+    }
+
+    private static UIElement CreateSelectionVisualClone(UIElement visual)
+    {
+        var size = visual.RenderSize;
+        var brush = new VisualBrush(visual)
+        {
+            Stretch = Stretch.None,
+            ViewboxUnits = BrushMappingMode.Absolute,
+            Viewbox = new Rect(size),
+            ViewportUnits = BrushMappingMode.Absolute,
+            Viewport = new Rect(size),
+        };
+
+        return new Shapes.Rectangle
+        {
+            Fill = brush,
+            Width = size.Width,
+            Height = size.Height,
+        };
+    }
+
+    /// <inheritdoc />
+    protected override void OnDisplayMemberPathChanged(string oldDisplayMemberPath, string newDisplayMemberPath)
+    {
+        base.OnDisplayMemberPathChanged(oldDisplayMemberPath, newDisplayMemberPath);
+        UpdateSelectionBoxItem();
+    }
+
+    /// <inheritdoc />
+    protected override void OnItemStringFormatChanged(string? oldItemStringFormat, string? newItemStringFormat)
+    {
+        base.OnItemStringFormatChanged(oldItemStringFormat, newItemStringFormat);
+        UpdateSelectionBoxItem();
+    }
+
+    /// <inheritdoc />
+    protected override void OnItemTemplateChanged(DataTemplate? oldItemTemplate, DataTemplate? newItemTemplate)
+    {
+        base.OnItemTemplateChanged(oldItemTemplate, newItemTemplate);
+        UpdateSelectionBoxItem();
+    }
+
+    /// <inheritdoc />
+    protected override void OnItemTemplateSelectorChanged(
+        DataTemplateSelector? oldItemTemplateSelector,
+        DataTemplateSelector? newItemTemplateSelector)
+    {
+        base.OnItemTemplateSelectorChanged(oldItemTemplateSelector, newItemTemplateSelector);
+        UpdateSelectionBoxItem();
     }
 
     private bool IsEventFromEditableTextBox(RoutedEventArgs e)
@@ -832,7 +1245,7 @@ public class ComboBox : Selector
 
         AnimateOpen();
 
-        DropDownOpened?.Invoke(this, EventArgs.Empty);
+        OnDropDownOpened(EventArgs.Empty);
     }
 
     private void CloseDropDown()
@@ -848,7 +1261,7 @@ public class ComboBox : Selector
 
         AnimateClose();
 
-        DropDownClosed?.Invoke(this, EventArgs.Empty);
+        OnDropDownClosed(EventArgs.Empty);
     }
 
     private void OnComboBoxSizeChanged(object? sender, SizeChangedEventArgs e)
@@ -1011,7 +1424,8 @@ public class ComboBox : Selector
         // 无法构建基准几何时降级为瞬时切换（朝上/朝下静态 chevron）。
         if (_chevronBase == null)
         {
-            _arrowPath.Data = toAngle >= 90.0 ? ArrowUpData : (_arrowDownData ?? ArrowDownData);
+            _arrowPath.Data = Geometry.Parse(
+                toAngle >= 90.0 ? ArrowUpData : (_arrowDownData ?? ArrowDownData));
             return;
         }
 
@@ -1050,7 +1464,7 @@ public class ComboBox : Selector
     {
         _arrowAngle = angle;
         if (_arrowPath == null || _chevronBase == null) return;
-        _arrowPath.Geometry = RotateChevron(_chevronBase, angle, _chevronCenterX, _chevronCenterY);
+        _arrowPath.Data = RotateChevron(_chevronBase, angle, _chevronCenterX, _chevronCenterY);
     }
 
     // 均匀拉伸 src 至 boxW×boxH 并居中（圆弧半径同比缩放）。
@@ -1160,7 +1574,7 @@ public class ComboBox : Selector
     #endregion
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item) => item is ComboBoxItem;
+    protected override bool IsItemItsOwnContainerOverride(object item) => item is ComboBoxItem;
 
     /// <inheritdoc />
     protected override FrameworkElement GetContainerForItem(object item) => new ComboBoxItem();
@@ -1168,65 +1582,120 @@ public class ComboBox : Selector
     /// <inheritdoc />
     protected override void PrepareContainerForItem(FrameworkElement element, object item)
     {
+        base.PrepareContainerForItem(element, item);
         if (element is not ComboBoxItem container)
         {
-            base.PrepareContainerForItem(element, item);
             return;
         }
 
-        // 当 item 已经是 ComboBoxItem 自身时,不要把它的 Content 改写成自己的 ToString;
-        // 否则用 GetItemText 把数据项转成可显示文本(尊重 ItemTemplate 不在 ComboBox 路径中的简单文本场景)。
         if (!ReferenceEquals(container, item))
         {
-            container.Content = GetItemText(item);
+            container.ContentTemplateSelector = ItemTemplateSelector;
+            container.ContentStringFormat = ItemStringFormat;
         }
 
-        // Tag 用作"逻辑数据项"的反查通道:点击或同步选中态时通过 container.Tag 拿回原始 item。
-        container.Tag = item;
         container.IsSelected = Equals(item, SelectedItem);
 
-        // 幂等 hook:Delegate.Remove 对未注册的 handler 是 no-op,所以 -=/+= 安全可重入,
-        // 避免容器在 ItemsSource Reset 时被复用导致重复触发 SelectedIndex 设置。
+        // Recycled containers retain exactly one owner callback.
         container.ItemClicked -= OnContainerItemClicked;
         container.ItemClicked += OnContainerItemClicked;
+    }
+
+    /// <inheritdoc />
+    protected override void ClearContainerForItem(FrameworkElement element, object item)
+    {
+        if (element is ComboBoxItem container)
+        {
+            container.ItemClicked -= OnContainerItemClicked;
+            container.SetIsHighlighted(false);
+            if (!ReferenceEquals(container, item))
+            {
+                container.IsSelected = false;
+            }
+        }
+
+        base.ClearContainerForItem(element, item);
     }
 
     private void OnContainerItemClicked(object? sender, EventArgs e)
     {
         if (sender is not ComboBoxItem container) return;
 
-        var logicalItem = container.Tag ?? container.Content;
-        var index = GetIndexOf(logicalItem);
+        var index = ItemContainerGenerator.IndexFromContainer(container);
         if (index >= 0)
         {
             SelectedIndex = index;
         }
         else
         {
-            SelectedItem = logicalItem;
+            SelectedItem = container;
         }
 
-        CloseDropDown();
+        IsDropDownOpen = false;
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2026",
+        Justification = "Text search supports PropertyAccessorRegistry registrations and retains reflection fallback for unregistered runtime item types.")]
     private string GetItemText(object? item)
     {
         if (item == null) return string.Empty;
 
-        // If item is a ComboBoxItem, get its content
-        if (item is ComboBoxItem cbi)
+        if (item is DependencyObject dependencyObject)
         {
-            return cbi.Content?.ToString() ?? string.Empty;
+            string explicitText = TextSearch.GetText(dependencyObject);
+            if (!string.IsNullOrEmpty(explicitText))
+            {
+                return explicitText;
+            }
+        }
+
+        if (item is ContentControl contentControl)
+        {
+            item = contentControl.Content;
+            if (item == null) return string.Empty;
+        }
+
+        string textPath = TextSearch.GetTextPath(this);
+        if (string.IsNullOrEmpty(textPath))
+        {
+            textPath = DisplayMemberPath;
+        }
+
+        if (!string.IsNullOrEmpty(textPath) && TryReadPropertyPath(item, textPath, out var value))
+        {
+            return value?.ToString() ?? string.Empty;
         }
 
         return item.ToString() ?? string.Empty;
+    }
+
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2026",
+        Justification = "PropertyAccessorRegistry is the framework AOT-aware lookup boundary; applications can register typed accessors for trimmed models.")]
+    private static bool TryReadPropertyPath(object source, string path, out object? value)
+    {
+        object? current = source;
+        foreach (string segment in path.Split('.', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (current == null || !PropertyAccessorRegistry.TryReadProperty(current, segment, out current))
+            {
+                value = null;
+                return false;
+            }
+        }
+
+        value = current;
+        return true;
     }
 }
 
 /// <summary>
 /// Represents an item in a ComboBox.
 /// </summary>
-public class ComboBoxItem : ContentControl
+public class ComboBoxItem : ListBoxItem
 {
     private static readonly SolidColorBrush s_fallbackHoverBackgroundBrush = new(Themes.ThemeColors.HighlightBackground);
     private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Themes.ThemeColors.SelectionBackground);
@@ -1234,24 +1703,35 @@ public class ComboBoxItem : ContentControl
     #region Dependency Properties
 
     /// <summary>
-    /// Identifies the IsSelected dependency property.
+    /// Identifies the read-only <see cref="IsHighlighted"/> dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsSelectedProperty =
-        DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(ComboBoxItem),
-            new PropertyMetadata(false, OnIsSelectedChanged));
+    private static readonly DependencyPropertyKey IsHighlightedPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(IsHighlighted),
+            typeof(bool),
+            typeof(ComboBoxItem),
+            new PropertyMetadata(false, OnIsHighlightedChanged));
+
+    /// <summary>
+    /// Identifies the read-only <see cref="IsHighlighted"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsHighlightedProperty =
+        IsHighlightedPropertyKey.DependencyProperty;
 
     #endregion
 
     /// <summary>
-    /// Gets or sets whether this item is selected.
+    /// Gets whether this item is the current keyboard or pointer highlight.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsSelected
+    public bool IsHighlighted
     {
-        get => (bool)GetValue(IsSelectedProperty)!;
-        set => SetValue(IsSelectedProperty, value);
+        get => (bool)GetValue(IsHighlightedProperty)!;
+        protected set => SetValue(IsHighlightedPropertyKey, value);
     }
+
+    internal void SetIsHighlighted(bool value) => IsHighlighted = value;
 
     /// <summary>
     /// Occurs when the item is clicked.
@@ -1281,13 +1761,15 @@ public class ComboBoxItem : ContentControl
         ResourcesChanged += OnResourcesChangedHandler;
 
         // Set up mouse event handlers for click behavior and hover tracking
-        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
-        AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
-        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
-        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
-        AddHandler(TouchMoveEvent, new RoutedEventHandler(OnTouchMoveHandler));
-        AddHandler(TouchUpEvent, new RoutedEventHandler(OnTouchUpHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler), handledEventsToo: true);
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler), handledEventsToo: true);
+        AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler), handledEventsToo: true);
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler), handledEventsToo: true);
+        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler), handledEventsToo: true);
+        AddHandler(TouchMoveEvent, new RoutedEventHandler(OnTouchMoveHandler), handledEventsToo: true);
+        AddHandler(TouchUpEvent, new RoutedEventHandler(OnTouchUpHandler), handledEventsToo: true);
+        AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotKeyboardFocusHandler), handledEventsToo: true);
+        AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnLostKeyboardFocusHandler), handledEventsToo: true);
         TouchHelper.SetIsRippleEnabled(this, true);
     }
 
@@ -1372,6 +1854,7 @@ public class ComboBoxItem : ContentControl
 
     private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
+        SetIsHighlighted(true);
         if (!_isItemMouseOver)
         {
             _isItemMouseOver = true;
@@ -1381,10 +1864,28 @@ public class ComboBoxItem : ContentControl
 
     private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
+        if (!IsKeyboardFocused)
+        {
+            SetIsHighlighted(false);
+        }
+
         if (_isItemMouseOver)
         {
             _isItemMouseOver = false;
             UpdateContainerVisualState();
+        }
+    }
+
+    private void OnGotKeyboardFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        SetIsHighlighted(true);
+    }
+
+    private void OnLostKeyboardFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (!_isItemMouseOver)
+        {
+            SetIsHighlighted(false);
         }
     }
 
@@ -1398,7 +1899,7 @@ public class ComboBoxItem : ContentControl
         }
     }
 
-    private static void OnIsSelectedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private static void OnIsHighlightedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is ComboBoxItem item)
         {
@@ -1419,7 +1920,7 @@ public class ComboBoxItem : ContentControl
             return;
         }
 
-        if (_isItemMouseOver)
+        if (_isItemMouseOver || IsHighlighted)
         {
             _backgroundBorder.Background = ResolveHoverBackgroundBrush();
             return;

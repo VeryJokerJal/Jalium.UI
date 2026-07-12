@@ -37,7 +37,7 @@ public class TreeAndNavigationExpandStateTests
 
             item.ApplyTemplate();
 
-            var itemsHost = GetPrivateField<StackPanel>(item, "_itemsHost");
+            var itemsHost = GetPrivateField<FrameworkElement>(item, "_itemsHost");
             var expanderBorder = GetPrivateField<Border>(item, "_expanderBorder");
             var expanderArrow = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(item, "_expanderArrow");
 
@@ -46,7 +46,7 @@ public class TreeAndNavigationExpandStateTests
             Assert.NotNull(expanderArrow);
             Assert.Equal(Visibility.Visible, itemsHost!.Visibility);
             Assert.Equal(Visibility.Visible, expanderBorder!.Visibility);
-            Assert.Equal(90d, GetAngle(expanderArrow!), 3);
+            Assert.Equal(0d, GetAngle(expanderArrow!), 3);
         }
         finally
         {
@@ -69,7 +69,7 @@ public class TreeAndNavigationExpandStateTests
 
             item.Items.Add(new TreeViewItem { Header = "Child" });
 
-            var itemsHost = GetPrivateField<StackPanel>(item, "_itemsHost");
+            var itemsHost = GetPrivateField<FrameworkElement>(item, "_itemsHost");
             var expanderBorder = GetPrivateField<Border>(item, "_expanderBorder");
             var expanderArrow = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(item, "_expanderArrow");
 
@@ -78,7 +78,7 @@ public class TreeAndNavigationExpandStateTests
             Assert.NotNull(expanderArrow);
             Assert.Equal(Visibility.Visible, itemsHost!.Visibility);
             Assert.Equal(Visibility.Visible, expanderBorder!.Visibility);
-            Assert.Equal(90d, GetAngle(expanderArrow!), 3);
+            Assert.Equal(0d, GetAngle(expanderArrow!), 3);
         }
         finally
         {
@@ -108,14 +108,14 @@ public class TreeAndNavigationExpandStateTests
 
             item.IsExpanded = true;
 
-            var itemsHost = GetPrivateField<StackPanel>(item, "_itemsHost");
+            var itemsHost = GetPrivateField<FrameworkElement>(item, "_itemsHost");
             var expanderArrow = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(item, "_expanderArrow");
             var expandAnimTimer = GetPrivateField<Jalium.UI.Threading.DispatcherTimer>(item, "_expandAnimTimer");
 
             Assert.NotNull(expandAnimTimer);
             Assert.True(expandAnimTimer!.IsEnabled);
             Assert.Equal(Visibility.Visible, itemsHost!.Visibility);
-            Assert.InRange(GetAngle(expanderArrow!), 0d, 90d);
+            Assert.InRange(GetAngle(expanderArrow!), -90d, 0d);
 
             expandAnimTimer.Stop();
         }
@@ -504,6 +504,7 @@ public class TreeAndNavigationExpandStateTests
             {
                 Width = 100,
                 Height = 32,
+                VerticalAlignment = VerticalAlignment.Top,
                 Content = "Action",
                 Style = Assert.IsType<Style>(app.Resources[typeof(Button)])
             };
@@ -719,7 +720,7 @@ public class TreeAndNavigationExpandStateTests
     }
 
     [Fact]
-    public void TreeViewItem_HitTest_ShouldIgnoreTransparentAreaOutsideHeaderAndChildren()
+    public void TreeViewItem_HitTest_ShouldIncludeTransparentArrangedBounds()
     {
         ResetApplicationState();
         ThemeLoader.Initialize();
@@ -746,7 +747,7 @@ public class TreeAndNavigationExpandStateTests
             var transparentAreaHit = item.HitTest(new Point(12, 80));
 
             Assert.NotNull(headerHit);
-            Assert.Null(transparentAreaHit);
+            Assert.Same(item, transparentAreaHit?.VisualHit);
         }
         finally
         {

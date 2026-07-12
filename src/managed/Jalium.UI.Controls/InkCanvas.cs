@@ -1,10 +1,13 @@
 ﻿using System.Buffers;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
-using Jalium.UI.Controls.Ink;
-using Jalium.UI.Controls.Ink.Shaders;
+using System.ComponentModel;
+using Jalium.UI.Ink;
+using Jalium.UI.Ink.Shaders;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Interop;
+using Jalium.UI.Markup;
 using Jalium.UI.Media;
 using InkStylusPoint = Jalium.UI.Input.StylusPoint;
 using InkStylusPointCollection = Jalium.UI.Input.StylusPointCollection;
@@ -15,12 +18,12 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Provides an area for ink collection and display.
 /// </summary>
-public class InkCanvas : FrameworkElement
+public class InkCanvas : FrameworkElement, IAddChild
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.InkCanvasAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.InkCanvasAutomationPeer(this);
     }
 
     #region Private Fields
@@ -28,6 +31,10 @@ public class InkCanvas : FrameworkElement
     private InkStylusPointCollection? _currentPoints;
     private Stroke? _currentStroke;
     private bool _isDrawing;
+    private StrokeCollection _selectedStrokes = new();
+    private List<UIElement> _selectedElements = new();
+    private SelectionEditSession? _selectionEditSession;
+    private readonly InkCanvasChildrenHost _childrenHost = new();
     private readonly InkPresenter _dynamicInkPresenter = new();
     private DynamicRenderer _dynamicRenderer;
     private readonly InkCollectionStylusPlugIn _inkCollectionStylusPlugIn;
@@ -130,6 +137,19 @@ public class InkCanvas : FrameworkElement
     /// </summary>
     private readonly Dictionary<int, TouchStrokeSession> _activeTouchStrokes = new();
 
+    private StylusPointDescription _defaultStylusPointDescription = new();
+    private StylusShape _eraserShape = new RectangleStylusShape(8.0, 8.0);
+    private InkCanvasClipboardFormat[] _preferredPasteFormats =
+        [InkCanvasClipboardFormat.InkSerializedFormat];
+    private ApplicationGesture[] _enabledGestures = [ApplicationGesture.AllGestures];
+    private bool _moveEnabled = true;
+    private bool _resizeEnabled = true;
+    private bool _useCustomCursor;
+    private bool _isStylusInverted;
+
+    private static readonly object s_clipboardGate = new();
+    private static InkCanvasClipboardPayload? s_clipboardPayload;
+
     /// <summary>
     /// Minimum distance (in pixels) between consecutive points to avoid jitter.
     /// </summary>
@@ -179,7 +199,70 @@ public class InkCanvas : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty EditingModeProperty =
         DependencyProperty.Register(nameof(EditingMode), typeof(InkCanvasEditingMode), typeof(InkCanvas),
-            new PropertyMetadata(InkCanvasEditingMode.Ink, OnEditingModeChanged));
+            new PropertyMetadata(InkCanvasEditingMode.Ink, OnEditingModeChanged), IsValidEditingMode);
+
+    /// <summary>
+    /// Identifies the editing mode used by the inverted end of a stylus.
+    /// </summary>
+    public static readonly DependencyProperty EditingModeInvertedProperty =
+        DependencyProperty.Register(
+            nameof(EditingModeInverted),
+            typeof(InkCanvasEditingMode),
+            typeof(InkCanvas),
+            new PropertyMetadata(
+                InkCanvasEditingMode.EraseByStroke,
+                OnEditingModeInvertedPropertyChanged),
+            IsValidEditingMode);
+
+    private static readonly DependencyPropertyKey ActiveEditingModePropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(ActiveEditingMode),
+            typeof(InkCanvasEditingMode),
+            typeof(InkCanvas),
+            new PropertyMetadata(InkCanvasEditingMode.Ink),
+            IsValidEditingMode);
+
+    /// <summary>
+    /// Identifies the current editing mode, accounting for stylus inversion.
+    /// </summary>
+    public static readonly DependencyProperty ActiveEditingModeProperty =
+        ActiveEditingModePropertyKey.DependencyProperty;
+
+    /// <summary>Identifies the Left attached property.</summary>
+    public static readonly DependencyProperty LeftProperty =
+        DependencyProperty.RegisterAttached(
+            "Left",
+            typeof(double),
+            typeof(InkCanvas),
+            new PropertyMetadata(double.NaN, OnPositioningChanged),
+            IsValidPositioningValue);
+
+    /// <summary>Identifies the Top attached property.</summary>
+    public static readonly DependencyProperty TopProperty =
+        DependencyProperty.RegisterAttached(
+            "Top",
+            typeof(double),
+            typeof(InkCanvas),
+            new PropertyMetadata(double.NaN, OnPositioningChanged),
+            IsValidPositioningValue);
+
+    /// <summary>Identifies the Right attached property.</summary>
+    public static readonly DependencyProperty RightProperty =
+        DependencyProperty.RegisterAttached(
+            "Right",
+            typeof(double),
+            typeof(InkCanvas),
+            new PropertyMetadata(double.NaN, OnPositioningChanged),
+            IsValidPositioningValue);
+
+    /// <summary>Identifies the Bottom attached property.</summary>
+    public static readonly DependencyProperty BottomProperty =
+        DependencyProperty.RegisterAttached(
+            "Bottom",
+            typeof(double),
+            typeof(InkCanvas),
+            new PropertyMetadata(double.NaN, OnPositioningChanged),
+            IsValidPositioningValue);
 
     /// <summary>
     /// Identifies the EraserDiameter dependency property.
@@ -211,6 +294,7 @@ public class InkCanvas : FrameworkElement
         // callbacks dereference _committedLayer to invalidate it.
         _committedLayer = new InkCanvasCommittedLayer(this);
         AddVisualChild(_committedLayer);
+        AddVisualChild(_childrenHost);
 
         Strokes = new StrokeCollection();
         DefaultDrawingAttributes = new DrawingAttributes();
@@ -240,6 +324,9 @@ public class InkCanvas : FrameworkElement
         AddHandler(PreviewStylusDownEvent, new Input.StylusDownEventHandler((s, e) => OnPreviewStylusInputHandler(s, e)));
         AddHandler(PreviewStylusMoveEvent, new Input.StylusEventHandler(OnPreviewStylusInputHandler));
         AddHandler(PreviewStylusUpEvent, new Input.StylusEventHandler(OnPreviewStylusInputHandler));
+        AddHandler(PreviewStylusInAirMoveEvent, new Input.StylusEventHandler(OnPreviewStylusStateHandler));
+        AddHandler(PreviewStylusInRangeEvent, new Input.StylusEventHandler(OnPreviewStylusStateHandler));
+        AddHandler(PreviewStylusOutOfRangeEvent, new Input.StylusEventHandler(OnPreviewStylusOutOfRangeHandler));
 
         // Touch event handlers — provide a direct fallback path for touch input.
         // This allows multi-touch drawing even when touch → stylus promotion is not
@@ -252,7 +339,7 @@ public class InkCanvas : FrameworkElement
         // Without this, an ink layer + compiled shader PSOs linger until GC
         // runs the finalizer, which can delay reclaim by seconds in debug
         // builds and keep a device-lost reference alive across recovery.
-        Unloaded += (_, _) => DisposeInkLayerResources();
+        Unloaded += OnInkCanvasUnloaded;
     }
 
     #endregion
@@ -276,7 +363,11 @@ public class InkCanvas : FrameworkElement
     public StrokeCollection Strokes
     {
         get => (StrokeCollection?)GetValue(StrokesProperty) ?? new StrokeCollection();
-        set => SetValue(StrokesProperty, value);
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            SetValue(StrokesProperty, value);
+        }
     }
 
     /// <summary>
@@ -286,13 +377,17 @@ public class InkCanvas : FrameworkElement
     public DrawingAttributes DefaultDrawingAttributes
     {
         get => (DrawingAttributes?)GetValue(DefaultDrawingAttributesProperty) ?? new DrawingAttributes();
-        set => SetValue(DefaultDrawingAttributesProperty, value);
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            SetValue(DefaultDrawingAttributesProperty, value);
+        }
     }
 
     /// <summary>
     /// Gets or sets the dynamic renderer used for real-time stylus preview.
     /// </summary>
-    public DynamicRenderer DynamicRenderer
+    protected DynamicRenderer DynamicRenderer
     {
         get => _dynamicRenderer;
         set
@@ -315,6 +410,12 @@ public class InkCanvas : FrameworkElement
         }
     }
 
+    /// <summary>Gets the presenter used for dynamic stylus feedback.</summary>
+    protected InkPresenter InkPresenter => _dynamicInkPresenter;
+
+    /// <summary>Gets the visual children hosted by the ink surface.</summary>
+    public UIElementCollection Children => _childrenHost.Children;
+
     /// <summary>
     /// Gets or sets the editing mode for this InkCanvas.
     /// </summary>
@@ -325,6 +426,83 @@ public class InkCanvas : FrameworkElement
         set => SetValue(EditingModeProperty, value);
     }
 
+    /// <summary>Gets the editing mode currently used for input.</summary>
+    public InkCanvasEditingMode ActiveEditingMode =>
+        (InkCanvasEditingMode)(GetValue(ActiveEditingModeProperty) ?? InkCanvasEditingMode.Ink);
+
+    /// <summary>Gets or sets the editing mode used by an inverted stylus.</summary>
+    public InkCanvasEditingMode EditingModeInverted
+    {
+        get => (InkCanvasEditingMode)(
+            GetValue(EditingModeInvertedProperty) ?? InkCanvasEditingMode.EraseByStroke);
+        set => SetValue(EditingModeInvertedProperty, value);
+    }
+
+    /// <summary>Gets or sets the stylus packet description used for new ink.</summary>
+    public StylusPointDescription DefaultStylusPointDescription
+    {
+        get => _defaultStylusPointDescription;
+        set => _defaultStylusPointDescription = value
+            ?? throw new ArgumentNullException(nameof(value));
+    }
+
+    /// <summary>Gets or sets the shape used by point erasing.</summary>
+    public StylusShape EraserShape
+    {
+        get => _eraserShape;
+        set
+        {
+            _eraserShape = value ?? throw new ArgumentNullException(nameof(value));
+            SetValue(EraserDiameterProperty, Math.Max(value.Width, value.Height));
+        }
+    }
+
+    /// <summary>Gets whether ink gesture recognition is available.</summary>
+    public bool IsGestureRecognizerAvailable => true;
+
+    /// <summary>Gets or sets whether a selected item may be moved.</summary>
+    public bool MoveEnabled
+    {
+        get => _moveEnabled;
+        set => _moveEnabled = value;
+    }
+
+    /// <summary>Gets or sets whether a selected item may be resized.</summary>
+    public bool ResizeEnabled
+    {
+        get => _resizeEnabled;
+        set => _resizeEnabled = value;
+    }
+
+    /// <summary>Gets or sets whether application cursor selection overrides InkCanvas cursors.</summary>
+    public bool UseCustomCursor
+    {
+        get => _useCustomCursor;
+        set => _useCustomCursor = value;
+    }
+
+    /// <summary>Gets or sets the ordered clipboard formats considered during paste.</summary>
+    public IEnumerable<InkCanvasClipboardFormat> PreferredPasteFormats
+    {
+        get => Array.AsReadOnly(_preferredPasteFormats);
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            var formats = new List<InkCanvasClipboardFormat>();
+            foreach (InkCanvasClipboardFormat format in value)
+            {
+                if (!Enum.IsDefined(format))
+                    throw new ArgumentException(
+                        "Specified InkCanvasClipboardFormat is not valid.",
+                        nameof(value));
+                if (!formats.Contains(format))
+                    formats.Add(format);
+            }
+
+            _preferredPasteFormats = formats.ToArray();
+        }
+    }
+
     /// <summary>
     /// Gets or sets the diameter of the eraser.
     /// </summary>
@@ -332,7 +510,13 @@ public class InkCanvas : FrameworkElement
     public double EraserDiameter
     {
         get => (double)GetValue(EraserDiameterProperty)!;
-        set => SetValue(EraserDiameterProperty, value);
+        set
+        {
+            if (!double.IsFinite(value) || value <= 0)
+                throw new ArgumentOutOfRangeException(nameof(value));
+            SetValue(EraserDiameterProperty, value);
+            _eraserShape = new RectangleStylusShape(value, value);
+        }
     }
 
     /// <summary>
@@ -350,14 +534,127 @@ public class InkCanvas : FrameworkElement
     #region Events
 
     /// <summary>
+    /// Identifies the <see cref="StrokeCollected"/> routed event.
+    /// </summary>
+    public static readonly RoutedEvent StrokeCollectedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(StrokeCollected),
+            RoutingStrategy.Bubble,
+            typeof(InkCanvasStrokeCollectedEventHandler),
+            typeof(InkCanvas));
+
+    /// <summary>
+    /// Identifies the <see cref="Gesture"/> routed event.
+    /// </summary>
+    public static readonly RoutedEvent GestureEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(Gesture),
+            RoutingStrategy.Bubble,
+            typeof(InkCanvasGestureEventHandler),
+            typeof(InkCanvas));
+
+    /// <summary>
+    /// Identifies the <see cref="StrokeErased"/> routed event.
+    /// </summary>
+    public static readonly RoutedEvent StrokeErasedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(StrokeErased),
+            RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler),
+            typeof(InkCanvas));
+
+    /// <summary>
+    /// Identifies the <see cref="EditingModeChanged"/> routed event.
+    /// </summary>
+    public static readonly RoutedEvent EditingModeChangedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(EditingModeChanged),
+            RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler),
+            typeof(InkCanvas));
+
+    /// <summary>Identifies the ActiveEditingModeChanged routed event.</summary>
+    public static readonly RoutedEvent ActiveEditingModeChangedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(ActiveEditingModeChanged),
+            RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler),
+            typeof(InkCanvas));
+
+    /// <summary>Identifies the EditingModeInvertedChanged routed event.</summary>
+    public static readonly RoutedEvent EditingModeInvertedChangedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(EditingModeInvertedChanged),
+            RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler),
+            typeof(InkCanvas));
+
+    /// <summary>
     /// Occurs when a new stroke has been collected.
     /// </summary>
-    public event EventHandler<InkCanvasStrokeCollectedEventArgs>? StrokeCollected;
+    public event InkCanvasStrokeCollectedEventHandler StrokeCollected
+    {
+        add => AddHandler(StrokeCollectedEvent, value);
+        remove => RemoveHandler(StrokeCollectedEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when a stroke has been recognized as a gesture.
+    /// </summary>
+    public event InkCanvasGestureEventHandler Gesture
+    {
+        add => AddHandler(GestureEvent, value);
+        remove => RemoveHandler(GestureEvent, value);
+    }
 
     /// <summary>
     /// Occurs when a stroke is about to be erased.
     /// </summary>
-    public event EventHandler<InkCanvasStrokeErasingEventArgs>? StrokeErasing;
+    public event InkCanvasStrokeErasingEventHandler? StrokeErasing;
+
+    /// <summary>
+    /// Occurs after a stroke has been erased.
+    /// </summary>
+    public event RoutedEventHandler StrokeErased
+    {
+        add => AddHandler(StrokeErasedEvent, value);
+        remove => RemoveHandler(StrokeErasedEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the <see cref="Strokes"/> collection is replaced.
+    /// </summary>
+    public event InkCanvasStrokesReplacedEventHandler? StrokesReplaced;
+
+    /// <summary>
+    /// Occurs before the programmatic selection changes.
+    /// </summary>
+    public event InkCanvasSelectionChangingEventHandler? SelectionChanging;
+
+    /// <summary>
+    /// Occurs after the selection changes.
+    /// </summary>
+    public event EventHandler? SelectionChanged;
+
+    /// <summary>
+    /// Occurs before a selection move is committed.
+    /// </summary>
+    public event InkCanvasSelectionEditingEventHandler? SelectionMoving;
+
+    /// <summary>
+    /// Occurs after a selection move is committed.
+    /// </summary>
+    public event EventHandler? SelectionMoved;
+
+    /// <summary>
+    /// Occurs before a selection resize is committed.
+    /// </summary>
+    public event InkCanvasSelectionEditingEventHandler? SelectionResizing;
+
+    /// <summary>
+    /// Occurs after a selection resize is committed.
+    /// </summary>
+    public event EventHandler? SelectionResized;
 
     /// <summary>
     /// Occurs when the strokes collection changes.
@@ -367,11 +664,215 @@ public class InkCanvas : FrameworkElement
     /// <summary>
     /// Occurs when the editing mode changes.
     /// </summary>
-    public event EventHandler<RoutedEventArgs>? EditingModeChanged;
+    public event RoutedEventHandler EditingModeChanged
+    {
+        add => AddHandler(EditingModeChangedEvent, value);
+        remove => RemoveHandler(EditingModeChangedEvent, value);
+    }
+
+    /// <summary>Occurs when stylus inversion changes the effective editing mode.</summary>
+    public event RoutedEventHandler ActiveEditingModeChanged
+    {
+        add => AddHandler(ActiveEditingModeChangedEvent, value);
+        remove => RemoveHandler(ActiveEditingModeChangedEvent, value);
+    }
+
+    /// <summary>Occurs when <see cref="EditingModeInverted"/> changes.</summary>
+    public event RoutedEventHandler EditingModeInvertedChanged
+    {
+        add => AddHandler(EditingModeInvertedChangedEvent, value);
+        remove => RemoveHandler(EditingModeInvertedChangedEvent, value);
+    }
+
+    /// <summary>Occurs when <see cref="DefaultDrawingAttributes"/> is replaced.</summary>
+    public event DrawingAttributesReplacedEventHandler? DefaultDrawingAttributesReplaced;
 
     #endregion
 
     #region Public Methods
+
+    public static double GetLeft(UIElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (double)(element.GetValue(LeftProperty) ?? double.NaN);
+    }
+
+    public static void SetLeft(UIElement element, double length)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(LeftProperty, length);
+    }
+
+    public static double GetTop(UIElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (double)(element.GetValue(TopProperty) ?? double.NaN);
+    }
+
+    public static void SetTop(UIElement element, double length)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(TopProperty, length);
+    }
+
+    public static double GetRight(UIElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (double)(element.GetValue(RightProperty) ?? double.NaN);
+    }
+
+    public static void SetRight(UIElement element, double length)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(RightProperty, length);
+    }
+
+    public static double GetBottom(UIElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (double)(element.GetValue(BottomProperty) ?? double.NaN);
+    }
+
+    public static void SetBottom(UIElement element, double length)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(BottomProperty, length);
+    }
+
+    /// <summary>Gets a snapshot of the gestures currently enabled for recognition.</summary>
+    public ReadOnlyCollection<ApplicationGesture> GetEnabledGestures() =>
+        Array.AsReadOnly((ApplicationGesture[])_enabledGestures.Clone());
+
+    /// <summary>Replaces the set of gestures considered by the recognizer.</summary>
+    public void SetEnabledGestures(IEnumerable<ApplicationGesture> applicationGestures)
+    {
+        ArgumentNullException.ThrowIfNull(applicationGestures);
+        var gestures = new List<ApplicationGesture>();
+        foreach (ApplicationGesture gesture in applicationGestures)
+        {
+            if (!Enum.IsDefined(gesture))
+                throw new ArgumentException(
+                    "The specified ApplicationGesture is not valid.",
+                    nameof(applicationGestures));
+            if (gestures.Contains(gesture))
+                throw new ArgumentException(
+                    "Duplicate ApplicationGesture values are not allowed.",
+                    nameof(applicationGestures));
+            gestures.Add(gesture);
+        }
+
+        if (gestures.Count == 0)
+            throw new ArgumentException(
+                "The ApplicationGesture collection must contain at least one member.",
+                nameof(applicationGestures));
+        if (gestures.Contains(ApplicationGesture.AllGestures) && gestures.Count != 1)
+            throw new ArgumentException(
+                "If AllGestures is specified, it must be the only member.",
+                nameof(applicationGestures));
+
+        _enabledGestures = gestures.ToArray();
+    }
+
+    /// <summary>Returns whether this process currently has compatible ink data to paste.</summary>
+    public bool CanPaste()
+    {
+        if (!_preferredPasteFormats.Contains(InkCanvasClipboardFormat.InkSerializedFormat))
+            return false;
+
+        lock (s_clipboardGate)
+        {
+            return s_clipboardPayload is { Strokes.Count: > 0 };
+        }
+    }
+
+    /// <summary>Copies the selected ink to the process clipboard.</summary>
+    public void CopySelection()
+    {
+        if (_selectedStrokes.Count == 0)
+            return;
+
+        var clone = _selectedStrokes.Clone();
+        lock (s_clipboardGate)
+        {
+            s_clipboardPayload = new InkCanvasClipboardPayload(clone, clone.GetBounds());
+        }
+    }
+
+    /// <summary>Copies and then removes the selected ink.</summary>
+    public void CutSelection()
+    {
+        if (_selectedStrokes.Count == 0)
+            return;
+
+        CopySelection();
+        var removed = _selectedStrokes.ToArray();
+        Strokes.RemoveRange(removed);
+        if (_selectedStrokes.Count != 0 || _selectedElements.Count != 0)
+        {
+            _selectedStrokes = new StrokeCollection();
+            _selectedElements.Clear();
+            OnSelectionChanged(EventArgs.Empty);
+        }
+    }
+
+    /// <summary>Pastes ink at its original clipboard coordinates.</summary>
+    public void Paste() => PasteCore(null);
+
+    /// <summary>Pastes ink with its upper-left bound at <paramref name="point"/>.</summary>
+    public void Paste(Point point)
+    {
+        if (!double.IsFinite(point.X) || !double.IsFinite(point.Y))
+            throw new ArgumentException("The paste point must contain finite coordinates.", nameof(point));
+        PasteCore(point);
+    }
+
+    /// <summary>Gets the bounds occupied by all selected strokes and elements.</summary>
+    public Rect GetSelectionBounds()
+    {
+        Rect bounds = _selectedStrokes.GetBounds();
+        foreach (UIElement element in _selectedElements)
+        {
+            Rect elementBounds = GetElementBounds(element);
+            if (!elementBounds.IsEmpty)
+                bounds = bounds.IsEmpty ? elementBounds : Rect.Union(bounds, elementBounds);
+        }
+
+        return bounds;
+    }
+
+    /// <summary>Hit-tests the selection body and its eight resize handles.</summary>
+    public InkCanvasSelectionHitResult HitTestSelection(Point point)
+    {
+        Rect bounds = GetSelectionBounds();
+        if (bounds.IsEmpty)
+            return InkCanvasSelectionHitResult.None;
+
+        const double handleOffset = 5.0;
+        const double hitRadius = 4.0;
+        double centerX = bounds.X + bounds.Width * 0.5;
+        double centerY = bounds.Y + bounds.Height * 0.5;
+
+        if (IsHandleHit(point, bounds.Left - handleOffset, bounds.Top - handleOffset, hitRadius))
+            return InkCanvasSelectionHitResult.TopLeft;
+        if (IsHandleHit(point, centerX, bounds.Top - handleOffset, hitRadius))
+            return InkCanvasSelectionHitResult.Top;
+        if (IsHandleHit(point, bounds.Right + handleOffset, bounds.Top - handleOffset, hitRadius))
+            return InkCanvasSelectionHitResult.TopRight;
+        if (IsHandleHit(point, bounds.Right + handleOffset, centerY, hitRadius))
+            return InkCanvasSelectionHitResult.Right;
+        if (IsHandleHit(point, bounds.Right + handleOffset, bounds.Bottom + handleOffset, hitRadius))
+            return InkCanvasSelectionHitResult.BottomRight;
+        if (IsHandleHit(point, centerX, bounds.Bottom + handleOffset, hitRadius))
+            return InkCanvasSelectionHitResult.Bottom;
+        if (IsHandleHit(point, bounds.Left - handleOffset, bounds.Bottom + handleOffset, hitRadius))
+            return InkCanvasSelectionHitResult.BottomLeft;
+        if (IsHandleHit(point, bounds.Left - handleOffset, centerY, hitRadius))
+            return InkCanvasSelectionHitResult.Left;
+
+        return bounds.Contains(point)
+            ? InkCanvasSelectionHitResult.Selection
+            : InkCanvasSelectionHitResult.None;
+    }
 
     /// <summary>
     /// Clears all strokes from this InkCanvas.
@@ -380,6 +881,142 @@ public class InkCanvas : FrameworkElement
     {
         Strokes.Clear();
     }
+
+    /// <summary>
+    /// Gets a snapshot of the currently selected strokes.
+    /// </summary>
+    public StrokeCollection GetSelectedStrokes() => new(_selectedStrokes);
+
+    /// <summary>
+    /// Gets a read-only snapshot of the currently selected elements.
+    /// </summary>
+    public ReadOnlyCollection<UIElement> GetSelectedElements() =>
+        new(_selectedElements.ToList());
+
+    /// <summary>
+    /// Selects the specified strokes and clears the element selection.
+    /// </summary>
+    public void Select(StrokeCollection selectedStrokes) =>
+        Select(selectedStrokes, selectedElements: null);
+
+    /// <summary>
+    /// Selects the specified elements and clears the stroke selection.
+    /// </summary>
+    public void Select(IEnumerable<UIElement> selectedElements) =>
+        Select(selectedStrokes: null, selectedElements: selectedElements);
+
+    /// <summary>
+    /// Selects the specified strokes and elements.
+    /// </summary>
+    public void Select(StrokeCollection? selectedStrokes, IEnumerable<UIElement>? selectedElements)
+    {
+        if (EditingMode != InkCanvasEditingMode.Select)
+        {
+            EditingMode = InkCanvasEditingMode.Select;
+        }
+
+        var validStrokes = ValidateSelectedStrokes(selectedStrokes);
+        var validElements = ValidateSelectedElements(selectedElements);
+
+        if (SelectionsAreEqual(validStrokes, validElements))
+        {
+            return;
+        }
+
+        var args = new InkCanvasSelectionChangingEventArgs(validStrokes, validElements);
+        OnSelectionChanging(args);
+        if (args.Cancel)
+        {
+            return;
+        }
+
+        if (args.StrokesChanged)
+        {
+            validStrokes = ValidateSelectedStrokes(args.GetSelectedStrokes());
+        }
+
+        if (args.ElementsChanged)
+        {
+            validElements = ValidateSelectedElements(args.GetSelectedElements());
+        }
+
+        if (SelectionsAreEqual(validStrokes, validElements))
+        {
+            return;
+        }
+
+        _selectedStrokes = new StrokeCollection(validStrokes);
+        _selectedElements = validElements.ToList();
+        OnSelectionChanged(EventArgs.Empty);
+    }
+
+    void IAddChild.AddChild(object value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value is not UIElement element)
+            throw new ArgumentException("InkCanvas children must be UIElement instances.", nameof(value));
+        Children.Add(element);
+    }
+
+    void IAddChild.AddText(string textData)
+    {
+        ArgumentNullException.ThrowIfNull(textData);
+        if (!string.IsNullOrWhiteSpace(textData))
+            throw new ArgumentException("InkCanvas does not accept text children.", nameof(textData));
+    }
+
+    private void PasteCore(Point? point)
+    {
+        if (!_preferredPasteFormats.Contains(InkCanvasClipboardFormat.InkSerializedFormat))
+            return;
+
+        StrokeCollection pasted;
+        Rect sourceBounds;
+        lock (s_clipboardGate)
+        {
+            if (s_clipboardPayload is null || s_clipboardPayload.Strokes.Count == 0)
+                return;
+            pasted = s_clipboardPayload.Strokes.Clone();
+            sourceBounds = s_clipboardPayload.Bounds;
+        }
+
+        if (point is Point target && !sourceBounds.IsEmpty)
+        {
+            double offsetX = target.X - sourceBounds.X;
+            double offsetY = target.Y - sourceBounds.Y;
+            foreach (Stroke stroke in pasted)
+                stroke.StylusPoints.Transform(1, 0, 0, 1, offsetX, offsetY);
+        }
+
+        foreach (Stroke stroke in pasted)
+            Strokes.Add(stroke);
+        Select(pasted);
+    }
+
+    private Rect GetElementBounds(UIElement element)
+    {
+        double x = 0;
+        double y = 0;
+        Visual? current = element;
+        while (current is not null && !ReferenceEquals(current, this))
+        {
+            if (current is UIElement currentElement)
+            {
+                Rect visualBounds = currentElement.VisualBounds;
+                x += visualBounds.X;
+                y += visualBounds.Y;
+            }
+            current = current.VisualParent;
+        }
+
+        if (!ReferenceEquals(current, this))
+            return Rect.Empty;
+
+        return new Rect(x, y, element.RenderSize.Width, element.RenderSize.Height);
+    }
+
+    private static bool IsHandleHit(Point point, double centerX, double centerY, double radius) =>
+        Math.Abs(point.X - centerX) <= radius && Math.Abs(point.Y - centerY) <= radius;
 
     #endregion
 
@@ -394,6 +1031,7 @@ public class InkCanvas : FrameworkElement
             double.IsInfinity(availableSize.Width) ? 0 : availableSize.Width,
             double.IsInfinity(availableSize.Height) ? 0 : availableSize.Height);
         _committedLayer.Measure(size);
+        _childrenHost.Measure(size);
         return size;
     }
 
@@ -401,6 +1039,7 @@ public class InkCanvas : FrameworkElement
     protected override Size ArrangeOverride(Size finalSize)
     {
         _committedLayer.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
+        _childrenHost.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
         return finalSize;
     }
 
@@ -495,11 +1134,12 @@ public class InkCanvas : FrameworkElement
                 && _currentPoints != null && _currentPoints.Count > 0)
             {
                 var last = _currentPoints[_currentPoints.Count - 1];
-                var radius = EraserDiameter * 0.5;
+                var radiusX = EraserShape.Width * 0.5;
+                var radiusY = EraserShape.Height * 0.5;
                 var ringBrush = new Media.SolidColorBrush(
                     Media.Color.FromArgb(160, 128, 128, 128));
                 var ringPen = new Media.Pen(ringBrush, 1.5);
-                dc.DrawEllipse(null, ringPen, new Point(last.X, last.Y), radius, radius);
+                dc.DrawEllipse(null, ringPen, new Point(last.X, last.Y), radiusX, radiusY);
             }
             // RTS-session eraser cursor: mirror the mouse path so the user
             // sees a ring under the pen tip during a stylus EraseByPoint drag.
@@ -510,12 +1150,14 @@ public class InkCanvas : FrameworkElement
                 var pts = s.SnapshotPoints();
                 if (pts.Length == 0) continue;
                 var last = pts[pts.Length - 1];
-                var radius = EraserDiameter * 0.5;
+                var radiusX = EraserShape.Width * 0.5;
+                var radiusY = EraserShape.Height * 0.5;
                 var ringBrush = new Media.SolidColorBrush(
                     Media.Color.FromArgb(160, 128, 128, 128));
                 var ringPen = new Media.Pen(ringBrush, 1.5);
-                dc.DrawEllipse(null, ringPen, new Point(last.X, last.Y), radius, radius);
+                dc.DrawEllipse(null, ringPen, new Point(last.X, last.Y), radiusX, radiusY);
             }
+            DrawSelectionAdorner(dc);
             return;
         }
 
@@ -541,6 +1183,50 @@ public class InkCanvas : FrameworkElement
         // the in-flight stroke twice.
         if (rtsSessionsCpu.Length == 0)
             _dynamicRenderer.DrawPreview(dc);
+        DrawSelectionAdorner(dc);
+    }
+
+    private void DrawSelectionAdorner(DrawingContext drawingContext)
+    {
+        if (EditingMode != InkCanvasEditingMode.Select)
+            return;
+
+        Rect bounds = _selectionEditSession is { } session
+            ? GetEditedSelectionBounds(session, session.CurrentPoint)
+            : GetSelectionBounds();
+        if (bounds.IsEmpty)
+            return;
+
+        var accent = new SolidColorBrush(Color.FromArgb(220, 30, 120, 220));
+        drawingContext.DrawRectangle(null, new Pen(accent, 1.0), bounds);
+        if (!ResizeEnabled)
+            return;
+
+        const double offset = 5.0;
+        const double size = 6.0;
+        double centerX = bounds.X + bounds.Width * 0.5;
+        double centerY = bounds.Y + bounds.Height * 0.5;
+        DrawSelectionHandle(drawingContext, accent, bounds.Left - offset, bounds.Top - offset, size);
+        DrawSelectionHandle(drawingContext, accent, centerX, bounds.Top - offset, size);
+        DrawSelectionHandle(drawingContext, accent, bounds.Right + offset, bounds.Top - offset, size);
+        DrawSelectionHandle(drawingContext, accent, bounds.Right + offset, centerY, size);
+        DrawSelectionHandle(drawingContext, accent, bounds.Right + offset, bounds.Bottom + offset, size);
+        DrawSelectionHandle(drawingContext, accent, centerX, bounds.Bottom + offset, size);
+        DrawSelectionHandle(drawingContext, accent, bounds.Left - offset, bounds.Bottom + offset, size);
+        DrawSelectionHandle(drawingContext, accent, bounds.Left - offset, centerY, size);
+    }
+
+    private static void DrawSelectionHandle(
+        DrawingContext drawingContext,
+        Brush brush,
+        double centerX,
+        double centerY,
+        double size)
+    {
+        drawingContext.DrawRectangle(
+            brush,
+            null,
+            new Rect(centerX - size * 0.5, centerY - size * 0.5, size, size));
     }
 
     #endregion
@@ -557,6 +1243,8 @@ public class InkCanvas : FrameworkElement
         switch (EditingMode)
         {
             case InkCanvasEditingMode.Ink:
+            case InkCanvasEditingMode.GestureOnly:
+            case InkCanvasEditingMode.InkAndGesture:
                 StartDrawing(position);
                 break;
 
@@ -572,6 +1260,10 @@ public class InkCanvas : FrameworkElement
                 // drag progresses.
                 StartDrawing(position, BuildEraserAttributes());
                 break;
+
+            case InkCanvasEditingMode.Select:
+                StartSelectionEdit(position);
+                break;
         }
 
         e.Handled = true;
@@ -581,11 +1273,21 @@ public class InkCanvas : FrameworkElement
     {
         var position = e.GetPosition(this);
 
+        if (_selectionEditSession is not null && e.LeftButton == MouseButtonState.Pressed)
+        {
+            _selectionEditSession.CurrentPoint = position;
+            InvalidateVisual();
+            e.Handled = true;
+            return;
+        }
+
         // Ink + EraseByPoint both go through the active-stroke pipeline —
         // ContinueDrawing inspects the stroke's brush and dispatches the
         // eraser shader to the committed layer incrementally.
         if (_isDrawing &&
             (EditingMode == InkCanvasEditingMode.Ink
+             || EditingMode == InkCanvasEditingMode.GestureOnly
+             || EditingMode == InkCanvasEditingMode.InkAndGesture
              || EditingMode == InkCanvasEditingMode.EraseByPoint))
         {
             ContinueDrawing(position);
@@ -604,8 +1306,17 @@ public class InkCanvas : FrameworkElement
         if (e.ChangedButton != MouseButton.Left)
             return;
 
+        if (_selectionEditSession is not null)
+        {
+            FinishSelectionEdit(e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
         if (_isDrawing &&
             (EditingMode == InkCanvasEditingMode.Ink
+             || EditingMode == InkCanvasEditingMode.GestureOnly
+             || EditingMode == InkCanvasEditingMode.InkAndGesture
              || EditingMode == InkCanvasEditingMode.EraseByPoint))
         {
             FinishDrawing();
@@ -615,7 +1326,16 @@ public class InkCanvas : FrameworkElement
 
     private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
-        if (_isDrawing && EditingMode == InkCanvasEditingMode.Ink)
+        if (_selectionEditSession is not null)
+        {
+            _selectionEditSession = null;
+            ReleaseMouseCapture();
+            InvalidateVisual();
+        }
+
+        if (_isDrawing && EditingMode is InkCanvasEditingMode.Ink
+            or InkCanvasEditingMode.GestureOnly
+            or InkCanvasEditingMode.InkAndGesture)
         {
             FinishDrawing();
         }
@@ -623,11 +1343,22 @@ public class InkCanvas : FrameworkElement
 
     private void OnPreviewStylusInputHandler(object sender, Input.StylusEventArgs e)
     {
-        if (EditingMode is InkCanvasEditingMode.Ink or InkCanvasEditingMode.EraseByStroke or InkCanvasEditingMode.EraseByPoint)
+        UpdateActiveEditingMode(e.Inverted);
+        if (ActiveEditingMode is InkCanvasEditingMode.Ink
+            or InkCanvasEditingMode.InkAndGesture
+            or InkCanvasEditingMode.GestureOnly
+            or InkCanvasEditingMode.EraseByStroke
+            or InkCanvasEditingMode.EraseByPoint)
         {
             e.Handled = true;
         }
     }
+
+    private void OnPreviewStylusStateHandler(object sender, Input.StylusEventArgs e) =>
+        UpdateActiveEditingMode(e.Inverted);
+
+    private void OnPreviewStylusOutOfRangeHandler(object sender, Input.StylusEventArgs e) =>
+        UpdateActiveEditingMode(inverted: false);
 
     #region Touch Input
 
@@ -640,6 +1371,8 @@ public class InkCanvas : FrameworkElement
         switch (EditingMode)
         {
             case InkCanvasEditingMode.Ink:
+            case InkCanvasEditingMode.GestureOnly:
+            case InkCanvasEditingMode.InkAndGesture:
                 StartTouchDrawing(touchDevice.Id, position, pressure);
                 touchDevice.Capture(this);
                 break;
@@ -670,6 +1403,8 @@ public class InkCanvas : FrameworkElement
         switch (EditingMode)
         {
             case InkCanvasEditingMode.Ink:
+            case InkCanvasEditingMode.GestureOnly:
+            case InkCanvasEditingMode.InkAndGesture:
             case InkCanvasEditingMode.EraseByPoint:
                 ContinueTouchDrawing(touchDevice.Id, position, pressure);
                 break;
@@ -690,6 +1425,8 @@ public class InkCanvas : FrameworkElement
         switch (EditingMode)
         {
             case InkCanvasEditingMode.Ink:
+            case InkCanvasEditingMode.GestureOnly:
+            case InkCanvasEditingMode.InkAndGesture:
             case InkCanvasEditingMode.EraseByPoint:
                 FinishTouchDrawing(touchDevice.Id);
                 break;
@@ -758,8 +1495,7 @@ public class InkCanvas : FrameworkElement
         if (session.Points.Count > 0)
         {
             var finishedBounds = session.Stroke.GetBounds();
-            Strokes.Add(session.Stroke);
-            OnStrokeCollected(new InkCanvasStrokeCollectedEventArgs(session.Stroke));
+            CommitCollectedStroke(session.Stroke);
             InvalidateVisual(finishedBounds);
         }
     }
@@ -854,7 +1590,7 @@ public class InkCanvas : FrameworkElement
     /// path during drag.
     /// </summary>
     private static bool IsEraserStroke(Stroke stroke)
-        => stroke?.DrawingAttributes?.BrushShader is Jalium.UI.Controls.Ink.Shaders.EraserBrushShader;
+        => stroke?.DrawingAttributes?.BrushShader is Jalium.UI.Ink.Shaders.EraserBrushShader;
 
     /// <summary>
     /// Builds a fresh eraser DrawingAttributes: zero-based copy of the
@@ -865,12 +1601,12 @@ public class InkCanvas : FrameworkElement
     private DrawingAttributes BuildEraserAttributes()
         => new()
         {
-            Width          = EraserDiameter,
-            Height         = EraserDiameter,
+            Width          = EraserShape.Width,
+            Height         = EraserShape.Height,
             Color          = Media.Colors.Black,
             FitToCurve     = true,
             IgnorePressure = true,
-            BrushShader    = Jalium.UI.Controls.Ink.Shaders.EraserBrushShader.Instance,
+            BrushShader    = Jalium.UI.Ink.Shaders.EraserBrushShader.Instance,
         };
 
     /// <summary>
@@ -932,8 +1668,7 @@ public class InkCanvas : FrameworkElement
             TaperMode = DefaultStrokeTaperMode
         };
         var finishedBounds = stroke.GetBounds();
-        Strokes.Add(stroke);
-        OnStrokeCollected(new InkCanvasStrokeCollectedEventArgs(stroke));
+        CommitCollectedStroke(stroke);
         InvalidateVisual(finishedBounds);
     }
 
@@ -954,8 +1689,7 @@ public class InkCanvas : FrameworkElement
             // the in-progress stroke last occupied (vs invalidating the whole
             // InkCanvas).
             var finishedBounds = _currentStroke.GetBounds();
-            Strokes.Add(_currentStroke);
-            OnStrokeCollected(new InkCanvasStrokeCollectedEventArgs(_currentStroke));
+            CommitCollectedStroke(_currentStroke);
             InvalidateVisual(finishedBounds);
         }
 
@@ -1014,7 +1748,9 @@ public class InkCanvas : FrameworkElement
 
     private void EraseStrokesAt(Point position)
     {
-        var hitStrokes = Strokes.HitTest(position, EraserDiameter);
+        var hitStrokes = Strokes.HitTest(
+            position,
+            Math.Max(EraserShape.Width, EraserShape.Height));
 
         foreach (var stroke in hitStrokes)
         {
@@ -1023,7 +1759,10 @@ public class InkCanvas : FrameworkElement
 
             if (!erasingArgs.Cancel)
             {
-                Strokes.Remove(stroke);
+                if (Strokes.Remove(stroke))
+                {
+                    OnStrokeErased(new RoutedEventArgs(StrokeErasedEvent, this));
+                }
             }
         }
 
@@ -1054,9 +1793,95 @@ public class InkCanvas : FrameworkElement
             TaperMode = DefaultStrokeTaperMode
         };
 
+        CommitCollectedStroke(stroke);
+        InvalidateVisual();
+    }
+
+    private void CommitCollectedStroke(Stroke stroke)
+    {
+        InkCanvasEditingMode mode = ActiveEditingMode;
+        if (!IsEraserStroke(stroke)
+            && mode is InkCanvasEditingMode.GestureOnly or InkCanvasEditingMode.InkAndGesture)
+        {
+            GestureRecognitionResult? result = RecognizeGesture(stroke);
+            if (result is not null)
+            {
+                var gestureArgs = new InkCanvasGestureEventArgs(
+                    new StrokeCollection { stroke },
+                    new[] { result });
+                OnGesture(gestureArgs);
+
+                // Cancel=true means the candidate is ink, matching WPF's event contract.
+                if (mode == InkCanvasEditingMode.GestureOnly || !gestureArgs.Cancel)
+                    return;
+            }
+            else if (mode == InkCanvasEditingMode.GestureOnly)
+            {
+                return;
+            }
+        }
+
         Strokes.Add(stroke);
         OnStrokeCollected(new InkCanvasStrokeCollectedEventArgs(stroke));
-        InvalidateVisual();
+    }
+
+    private GestureRecognitionResult? RecognizeGesture(Stroke stroke)
+    {
+        InkStylusPointCollection points = stroke.StylusPoints;
+        if (points.Count == 0)
+            return null;
+
+        InkStylusPoint first = points[0];
+        InkStylusPoint last = points[points.Count - 1];
+        double dx = last.X - first.X;
+        double dy = last.Y - first.Y;
+        double displacement = Math.Sqrt(dx * dx + dy * dy);
+        double pathLength = 0;
+        for (int i = 1; i < points.Count; i++)
+        {
+            double segmentX = points[i].X - points[i - 1].X;
+            double segmentY = points[i].Y - points[i - 1].Y;
+            pathLength += Math.Sqrt(segmentX * segmentX + segmentY * segmentY);
+        }
+
+        ApplicationGesture candidate;
+        if (pathLength <= 20.0 && displacement <= 12.0)
+        {
+            candidate = ApplicationGesture.Tap;
+        }
+        else if (displacement < 10.0)
+        {
+            return null;
+        }
+        else if (Math.Abs(dx) >= Math.Abs(dy) * 2.0)
+        {
+            candidate = dx >= 0 ? ApplicationGesture.Right : ApplicationGesture.Left;
+        }
+        else if (Math.Abs(dy) >= Math.Abs(dx) * 2.0)
+        {
+            candidate = dy >= 0 ? ApplicationGesture.Down : ApplicationGesture.Up;
+        }
+        else if (dx >= 0)
+        {
+            candidate = dy >= 0 ? ApplicationGesture.DownRight : ApplicationGesture.UpRight;
+        }
+        else
+        {
+            candidate = dy >= 0 ? ApplicationGesture.DownLeft : ApplicationGesture.UpLeft;
+        }
+
+        bool allEnabled = _enabledGestures.Length == 1
+            && _enabledGestures[0] == ApplicationGesture.AllGestures;
+        if (!allEnabled && !_enabledGestures.Contains(candidate))
+            return null;
+
+        double straightness = pathLength <= double.Epsilon ? 1.0 : displacement / pathLength;
+        RecognitionConfidence confidence = straightness >= 0.85
+            ? RecognitionConfidence.Strong
+            : straightness >= 0.60
+                ? RecognitionConfidence.Intermediate
+                : RecognitionConfidence.Poor;
+        return new GestureRecognitionResult(confidence, candidate);
     }
 
     /// <summary>
@@ -1075,6 +1900,222 @@ public class InkCanvas : FrameworkElement
     #endregion
 
     #region Event Handlers
+
+    private StrokeCollection ValidateSelectedStrokes(StrokeCollection? selectedStrokes)
+    {
+        var validStrokes = new StrokeCollection();
+        if (selectedStrokes is null)
+        {
+            return validStrokes;
+        }
+
+        foreach (var stroke in selectedStrokes)
+        {
+            if (Strokes.Contains(stroke) && !validStrokes.Contains(stroke))
+            {
+                validStrokes.Add(stroke);
+            }
+        }
+
+        return validStrokes;
+    }
+
+    private List<UIElement> ValidateSelectedElements(IEnumerable<UIElement>? selectedElements)
+    {
+        var validElements = new List<UIElement>();
+        if (selectedElements is null)
+        {
+            return validElements;
+        }
+
+        foreach (var element in selectedElements)
+        {
+            if (element is null || validElements.Contains(element) || ReferenceEquals(element, this))
+            {
+                continue;
+            }
+
+            for (Visual? ancestor = element.VisualParent; ancestor is not null; ancestor = ancestor.VisualParent)
+            {
+                if (ReferenceEquals(ancestor, this))
+                {
+                    validElements.Add(element);
+                    break;
+                }
+            }
+        }
+
+        return validElements;
+    }
+
+    private bool SelectionsAreEqual(StrokeCollection strokes, IReadOnlyCollection<UIElement> elements)
+    {
+        if (_selectedStrokes.Count != strokes.Count || _selectedElements.Count != elements.Count)
+        {
+            return false;
+        }
+
+        return _selectedStrokes.All(strokes.Contains) && _selectedElements.All(elements.Contains);
+    }
+
+    private void StartSelectionEdit(Point point)
+    {
+        InkCanvasSelectionHitResult hit = HitTestSelection(point);
+        if (hit == InkCanvasSelectionHitResult.None)
+        {
+            StrokeCollection hitStrokes = Strokes.HitTest(point, 6.0);
+            if (hitStrokes.Count == 0)
+            {
+                Select(new StrokeCollection(), Array.Empty<UIElement>());
+                return;
+            }
+
+            Select(new StrokeCollection { hitStrokes[hitStrokes.Count - 1] });
+            hit = InkCanvasSelectionHitResult.Selection;
+        }
+
+        if ((hit == InkCanvasSelectionHitResult.Selection && !MoveEnabled)
+            || (hit != InkCanvasSelectionHitResult.Selection && !ResizeEnabled))
+        {
+            return;
+        }
+
+        Rect bounds = GetSelectionBounds();
+        if (bounds.IsEmpty)
+            return;
+
+        _selectionEditSession = new SelectionEditSession(hit, point, bounds);
+        CaptureMouse();
+    }
+
+    private void FinishSelectionEdit(Point point)
+    {
+        SelectionEditSession? session = _selectionEditSession;
+        _selectionEditSession = null;
+        ReleaseMouseCapture();
+        if (session is null)
+            return;
+
+        Rect newBounds = GetEditedSelectionBounds(session, point);
+        if (newBounds == session.OriginalBounds)
+        {
+            InvalidateVisual();
+            return;
+        }
+
+        var args = new InkCanvasSelectionEditingEventArgs(session.OriginalBounds, newBounds);
+        bool moving = session.HitResult == InkCanvasSelectionHitResult.Selection;
+        if (moving)
+            OnSelectionMoving(args);
+        else
+            OnSelectionResizing(args);
+
+        if (!args.Cancel && !args.NewRectangle.IsEmpty)
+        {
+            ApplySelectionBounds(session.OriginalBounds, args.NewRectangle, resize: !moving);
+            if (moving)
+                OnSelectionMoved(EventArgs.Empty);
+            else
+                OnSelectionResized(EventArgs.Empty);
+        }
+
+        InvalidateVisual();
+    }
+
+    private static Rect GetEditedSelectionBounds(SelectionEditSession session, Point point)
+    {
+        Rect old = session.OriginalBounds;
+        double dx = point.X - session.StartPoint.X;
+        double dy = point.Y - session.StartPoint.Y;
+        if (session.HitResult == InkCanvasSelectionHitResult.Selection)
+            return new Rect(old.X + dx, old.Y + dy, old.Width, old.Height);
+
+        double left = old.Left;
+        double top = old.Top;
+        double right = old.Right;
+        double bottom = old.Bottom;
+        switch (session.HitResult)
+        {
+            case InkCanvasSelectionHitResult.TopLeft:
+                left += dx;
+                top += dy;
+                break;
+            case InkCanvasSelectionHitResult.Top:
+                top += dy;
+                break;
+            case InkCanvasSelectionHitResult.TopRight:
+                right += dx;
+                top += dy;
+                break;
+            case InkCanvasSelectionHitResult.Right:
+                right += dx;
+                break;
+            case InkCanvasSelectionHitResult.BottomRight:
+                right += dx;
+                bottom += dy;
+                break;
+            case InkCanvasSelectionHitResult.Bottom:
+                bottom += dy;
+                break;
+            case InkCanvasSelectionHitResult.BottomLeft:
+                left += dx;
+                bottom += dy;
+                break;
+            case InkCanvasSelectionHitResult.Left:
+                left += dx;
+                break;
+        }
+
+        if (right - left < 1.0)
+        {
+            if (session.HitResult is InkCanvasSelectionHitResult.Left
+                or InkCanvasSelectionHitResult.TopLeft
+                or InkCanvasSelectionHitResult.BottomLeft)
+                left = right - 1.0;
+            else
+                right = left + 1.0;
+        }
+        if (bottom - top < 1.0)
+        {
+            if (session.HitResult is InkCanvasSelectionHitResult.Top
+                or InkCanvasSelectionHitResult.TopLeft
+                or InkCanvasSelectionHitResult.TopRight)
+                top = bottom - 1.0;
+            else
+                bottom = top + 1.0;
+        }
+
+        return new Rect(left, top, right - left, bottom - top);
+    }
+
+    private void ApplySelectionBounds(Rect oldBounds, Rect newBounds, bool resize)
+    {
+        double scaleX = resize && oldBounds.Width > double.Epsilon
+            ? newBounds.Width / oldBounds.Width
+            : 1.0;
+        double scaleY = resize && oldBounds.Height > double.Epsilon
+            ? newBounds.Height / oldBounds.Height
+            : 1.0;
+        double offsetX = newBounds.X - oldBounds.X * scaleX;
+        double offsetY = newBounds.Y - oldBounds.Y * scaleY;
+
+        foreach (Stroke stroke in _selectedStrokes)
+            stroke.StylusPoints.Transform(scaleX, 0, 0, scaleY, offsetX, offsetY);
+
+        foreach (UIElement element in _selectedElements)
+        {
+            Rect elementBounds = GetElementBounds(element);
+            double newX = elementBounds.X * scaleX + offsetX;
+            double newY = elementBounds.Y * scaleY + offsetY;
+            SetLeft(element, newX);
+            SetTop(element, newY);
+            if (resize && element is FrameworkElement frameworkElement)
+            {
+                frameworkElement.Width = Math.Max(0, elementBounds.Width * scaleX);
+                frameworkElement.Height = Math.Max(0, elementBounds.Height * scaleY);
+            }
+        }
+    }
 
     private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -1100,6 +2141,15 @@ public class InkCanvas : FrameworkElement
         if (e.NewValue is StrokeCollection newCollection)
         {
             newCollection.CollectionChanged += canvas.OnStrokesCollectionChanged;
+        }
+
+        if (e.OldValue is StrokeCollection previousStrokes &&
+            e.NewValue is StrokeCollection replacementStrokes &&
+            !ReferenceEquals(previousStrokes, replacementStrokes))
+        {
+            canvas._selectedStrokes = new StrokeCollection();
+            canvas.OnStrokesReplaced(
+                new InkCanvasStrokesReplacedEventArgs(replacementStrokes, previousStrokes));
         }
 
         canvas._committedLayer.InvalidateVisual();
@@ -1149,12 +2199,12 @@ public class InkCanvas : FrameworkElement
             if (e.NewItems != null)
             {
                 foreach (Stroke s in e.NewItems)
-                    dirty = dirty.IsEmpty ? s.GetBounds() : dirty.Union(s.GetBounds());
+                    dirty = dirty.IsEmpty ? s.GetBounds() : Rect.Union(dirty, s.GetBounds());
             }
             if (e.OldItems != null)
             {
                 foreach (Stroke s in e.OldItems)
-                    dirty = dirty.IsEmpty ? s.GetBounds() : dirty.Union(s.GetBounds());
+                    dirty = dirty.IsEmpty ? s.GetBounds() : Rect.Union(dirty, s.GetBounds());
             }
         }
 
@@ -1162,6 +2212,13 @@ public class InkCanvas : FrameworkElement
             _committedLayer.InvalidateVisual();
         else
             _committedLayer.InvalidateVisual(dirty);
+
+        var validSelectedStrokes = ValidateSelectedStrokes(_selectedStrokes);
+        if (validSelectedStrokes.Count != _selectedStrokes.Count)
+        {
+            _selectedStrokes = validSelectedStrokes;
+            OnSelectionChanged(EventArgs.Empty);
+        }
 
         StrokesChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -1327,6 +2384,24 @@ public class InkCanvas : FrameworkElement
         _previewInkLayer = null;
     }
 
+    private void OnInkCanvasUnloaded(object? sender, RoutedEventArgs e)
+    {
+        // An Unloaded InkCanvas can be detached in the middle of a pointer
+        // sequence. Drop every in-flight preview so queued RTS processed
+        // callbacks cannot keep stale stroke buffers alive or commit them when
+        // the same instance is attached again later.
+        _realTimePreviewPlugIn.Reset();
+        _dynamicRenderer.Reset();
+        _inkCollectionStylusPlugIn.Reset();
+        _activeTouchStrokes.Clear();
+        _currentStroke = null;
+        _currentPoints = null;
+        _selectionEditSession = null;
+        _isDrawing = false;
+
+        DisposeInkLayerResources();
+    }
+
     /// <summary>
     /// Constructs an <see cref="InkLayerBitmap"/> through the test seam when one
     /// is installed (<see cref="_inkNativeOpsOverride"/>), otherwise the
@@ -1347,7 +2422,7 @@ public class InkCanvas : FrameworkElement
     {
         foreach (BrushType type in Enum.GetValues<BrushType>())
             AcquireShaderHandle(BrushShaderRegistry.GetBuiltIn(type));
-        AcquireShaderHandle(Jalium.UI.Controls.Ink.Shaders.EraserBrushShader.Instance);
+        AcquireShaderHandle(Jalium.UI.Ink.Shaders.EraserBrushShader.Instance);
     }
 
     /// <summary>
@@ -1566,9 +2641,18 @@ public class InkCanvas : FrameworkElement
 
     private static void OnDefaultDrawingAttributesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is InkCanvas canvas && canvas._dynamicRenderer != null)
-        {
+        if (d is not InkCanvas canvas)
+            return;
+
+        if (canvas._dynamicRenderer != null)
             canvas._dynamicRenderer.DrawingAttributes = canvas.DefaultDrawingAttributes.Clone();
+
+        if (e.OldValue is DrawingAttributes previous
+            && e.NewValue is DrawingAttributes replacement
+            && !ReferenceEquals(previous, replacement))
+        {
+            canvas.OnDefaultDrawingAttributesReplaced(
+                new DrawingAttributesReplacedEventArgs(replacement, previous));
         }
     }
 
@@ -1588,6 +2672,7 @@ public class InkCanvas : FrameworkElement
 
             // Cancel any active touch drawing sessions.
             canvas._activeTouchStrokes.Clear();
+            canvas._selectionEditSession = null;
 
             canvas._dynamicRenderer?.Reset();
             canvas._inkCollectionStylusPlugIn?.Reset();
@@ -1595,8 +2680,48 @@ public class InkCanvas : FrameworkElement
             // change must not leave a stale Ink session bleeding into the next
             // editing mode (eraser, select, etc.).
             canvas._realTimePreviewPlugIn?.Reset();
-            canvas.EditingModeChanged?.Invoke(canvas, new RoutedEventArgs());
+            if (!canvas._isStylusInverted)
+                canvas.UpdateActiveEditingMode(inverted: false);
+            canvas.OnEditingModeChanged(
+                new RoutedEventArgs(EditingModeChangedEvent, canvas));
         }
+    }
+
+    private static void OnEditingModeInvertedPropertyChanged(
+        DependencyObject d,
+        DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not InkCanvas canvas)
+            return;
+
+        if (canvas._isStylusInverted)
+            canvas.UpdateActiveEditingMode(inverted: true);
+        canvas.OnEditingModeInvertedChanged(
+            new RoutedEventArgs(EditingModeInvertedChangedEvent, canvas));
+    }
+
+    private static bool IsValidEditingMode(object? value) =>
+        value is InkCanvasEditingMode mode && Enum.IsDefined(mode);
+
+    private static bool IsValidPositioningValue(object? value) =>
+        value is double length && (double.IsNaN(length) || double.IsFinite(length));
+
+    private static void OnPositioningChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement { VisualParent: InkCanvasChildrenHost host })
+            host.InvalidateArrange();
+    }
+
+    private void UpdateActiveEditingMode(bool inverted)
+    {
+        _isStylusInverted = inverted;
+        InkCanvasEditingMode next = inverted ? EditingModeInverted : EditingMode;
+        if (ActiveEditingMode == next)
+            return;
+
+        SetValue(ActiveEditingModePropertyKey, next);
+        OnActiveEditingModeChanged(
+            new RoutedEventArgs(ActiveEditingModeChangedEvent, this));
     }
 
     private sealed class InkCollectionStylusPlugIn : StylusPlugIn
@@ -1615,35 +2740,35 @@ public class InkCanvas : FrameworkElement
         // RTS background thread (which then commits on the UI thread via
         // InkCanvas.CommitRealTimePreviewSession). Keeping the two modes
         // here would double-commit each stroke.
-        protected override bool IsActiveForInput(RawStylusInput rawStylusInput)
+        protected override bool IsActiveForInputCore(RawStylusInput rawStylusInput)
         {
-            return _owner.EditingMode is InkCanvasEditingMode.EraseByStroke;
+            return _owner.ActiveEditingMode is InkCanvasEditingMode.EraseByStroke;
         }
 
         protected override void OnStylusDown(RawStylusInput rawStylusInput)
         {
             var points = rawStylusInput.GetStylusPoints();
             _owner.EraseStrokesAt(points);
-            rawStylusInput.NotifyWhenProcessed(this);
+            rawStylusInput.NotifyWhenProcessed(rawStylusInput);
         }
 
         protected override void OnStylusMove(RawStylusInput rawStylusInput)
         {
             var points = rawStylusInput.GetStylusPoints();
             _owner.EraseStrokesAt(points);
-            rawStylusInput.NotifyWhenProcessed(this);
+            rawStylusInput.NotifyWhenProcessed(rawStylusInput);
         }
 
         protected override void OnStylusUp(RawStylusInput rawStylusInput)
         {
             var points = rawStylusInput.GetStylusPoints();
             _owner.EraseStrokesAt(points);
-            rawStylusInput.NotifyWhenProcessed(this);
+            rawStylusInput.NotifyWhenProcessed(rawStylusInput);
         }
 
-        protected override void OnStylusDownProcessed(RawStylusInput rawStylusInput) => _owner.InvalidateVisual();
-        protected override void OnStylusMoveProcessed(RawStylusInput rawStylusInput) => _owner.InvalidateVisual();
-        protected override void OnStylusUpProcessed(RawStylusInput rawStylusInput) => _owner.InvalidateVisual();
+        protected override void OnStylusDownProcessed(object callbackData, bool targetVerified) => _owner.InvalidateVisual();
+        protected override void OnStylusMoveProcessed(object callbackData, bool targetVerified) => _owner.InvalidateVisual();
+        protected override void OnStylusUpProcessed(object callbackData, bool targetVerified) => _owner.InvalidateVisual();
 
     }
 
@@ -1654,20 +2779,219 @@ public class InkCanvas : FrameworkElement
     /// <summary>
     /// Raises the <see cref="StrokeCollected"/> event.
     /// </summary>
-    protected void OnStrokeCollected(InkCanvasStrokeCollectedEventArgs e)
+    protected virtual void OnStrokeCollected(InkCanvasStrokeCollectedEventArgs e)
     {
-        StrokeCollected?.Invoke(this, e);
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="Gesture"/> event.
+    /// </summary>
+    protected virtual void OnGesture(InkCanvasGestureEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
     }
 
     /// <summary>
     /// Raises the <see cref="StrokeErasing"/> event.
     /// </summary>
-    protected void OnStrokeErasing(InkCanvasStrokeErasingEventArgs e)
+    protected virtual void OnStrokeErasing(InkCanvasStrokeErasingEventArgs e)
     {
+        ArgumentNullException.ThrowIfNull(e);
         StrokeErasing?.Invoke(this, e);
     }
 
+    /// <summary>
+    /// Raises the <see cref="StrokeErased"/> event.
+    /// </summary>
+    protected virtual void OnStrokeErased(RoutedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="StrokesReplaced"/> event.
+    /// </summary>
+    protected virtual void OnStrokesReplaced(InkCanvasStrokesReplacedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        StrokesReplaced?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="EditingModeChanged"/> event.
+    /// </summary>
+    protected virtual void OnEditingModeChanged(RoutedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    /// <summary>Raises <see cref="ActiveEditingModeChanged"/>.</summary>
+    protected virtual void OnActiveEditingModeChanged(RoutedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    /// <summary>Raises <see cref="EditingModeInvertedChanged"/>.</summary>
+    protected virtual void OnEditingModeInvertedChanged(RoutedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    /// <summary>Raises <see cref="DefaultDrawingAttributesReplaced"/>.</summary>
+    protected virtual void OnDefaultDrawingAttributesReplaced(
+        DrawingAttributesReplacedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        DefaultDrawingAttributesReplaced?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="SelectionChanging"/> event.
+    /// </summary>
+    protected virtual void OnSelectionChanging(InkCanvasSelectionChangingEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        SelectionChanging?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="SelectionChanged"/> event.
+    /// </summary>
+    protected virtual void OnSelectionChanged(EventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        SelectionChanged?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="SelectionMoving"/> event.
+    /// </summary>
+    protected virtual void OnSelectionMoving(InkCanvasSelectionEditingEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        SelectionMoving?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="SelectionMoved"/> event.
+    /// </summary>
+    protected virtual void OnSelectionMoved(EventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        SelectionMoved?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="SelectionResizing"/> event.
+    /// </summary>
+    protected virtual void OnSelectionResizing(InkCanvasSelectionEditingEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        SelectionResizing?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="SelectionResized"/> event.
+    /// </summary>
+    protected virtual void OnSelectionResized(EventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        SelectionResized?.Invoke(this, e);
+    }
+
     #endregion
+
+    private sealed class InkCanvasClipboardPayload
+    {
+        public InkCanvasClipboardPayload(StrokeCollection strokes, Rect bounds)
+        {
+            Strokes = strokes;
+            Bounds = bounds;
+        }
+
+        public StrokeCollection Strokes { get; }
+
+        public Rect Bounds { get; }
+    }
+
+    private sealed class SelectionEditSession
+    {
+        public SelectionEditSession(
+            InkCanvasSelectionHitResult hitResult,
+            Point startPoint,
+            Rect originalBounds)
+        {
+            HitResult = hitResult;
+            StartPoint = startPoint;
+            CurrentPoint = startPoint;
+            OriginalBounds = originalBounds;
+        }
+
+        public InkCanvasSelectionHitResult HitResult { get; }
+
+        public Point StartPoint { get; }
+
+        public Point CurrentPoint { get; set; }
+
+        public Rect OriginalBounds { get; }
+    }
+
+    /// <summary>
+    /// Hosts non-ink UI children and applies InkCanvas's own positioning attached
+    /// properties. Keeping this layer separate preserves committed-ink caching while
+    /// letting application content render and hit-test above the strokes.
+    /// </summary>
+    private sealed class InkCanvasChildrenHost : Panel
+    {
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            double width = 0;
+            double height = 0;
+            var infinite = new Size(double.PositiveInfinity, double.PositiveInfinity);
+            foreach (UIElement child in Children)
+            {
+                child.Measure(infinite);
+                double left = GetLeft(child);
+                double top = GetTop(child);
+                if (double.IsNaN(left)) left = 0;
+                if (double.IsNaN(top)) top = 0;
+                width = Math.Max(width, Math.Max(0, left) + child.DesiredSize.Width);
+                height = Math.Max(height, Math.Max(0, top) + child.DesiredSize.Height);
+            }
+
+            return new Size(width, height);
+        }
+
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            foreach (UIElement child in Children)
+            {
+                double left = GetLeft(child);
+                double top = GetTop(child);
+                double right = GetRight(child);
+                double bottom = GetBottom(child);
+                double width = child.DesiredSize.Width;
+                double height = child.DesiredSize.Height;
+
+                double x = !double.IsNaN(left)
+                    ? left
+                    : !double.IsNaN(right) ? finalSize.Width - right - width : 0;
+                double y = !double.IsNaN(top)
+                    ? top
+                    : !double.IsNaN(bottom) ? finalSize.Height - bottom - height : 0;
+                child.Arrange(new Rect(x, y, width, height));
+            }
+
+            return finalSize;
+        }
+    }
 
     /// <summary>
     /// Internal child visual that owns rendering of the InkCanvas background
@@ -1765,56 +3089,149 @@ public class InkCanvas : FrameworkElement
 }
 
 /// <summary>
+/// Represents the method that handles the <see cref="InkCanvas.StrokeCollected"/> event.
+/// </summary>
+public delegate void InkCanvasStrokeCollectedEventHandler(
+    object sender,
+    InkCanvasStrokeCollectedEventArgs e);
+
+/// <summary>
+/// Represents the method that handles the <see cref="InkCanvas.StrokesReplaced"/> event.
+/// </summary>
+public delegate void InkCanvasStrokesReplacedEventHandler(
+    object sender,
+    InkCanvasStrokesReplacedEventArgs e);
+
+/// <summary>
+/// Represents the method that handles the <see cref="InkCanvas.SelectionChanging"/> event.
+/// </summary>
+public delegate void InkCanvasSelectionChangingEventHandler(
+    object sender,
+    InkCanvasSelectionChangingEventArgs e);
+
+/// <summary>
+/// Represents the method that handles the selection editing events.
+/// </summary>
+public delegate void InkCanvasSelectionEditingEventHandler(
+    object sender,
+    InkCanvasSelectionEditingEventArgs e);
+
+/// <summary>
+/// Represents the method that handles the <see cref="InkCanvas.StrokeErasing"/> event.
+/// </summary>
+public delegate void InkCanvasStrokeErasingEventHandler(
+    object sender,
+    InkCanvasStrokeErasingEventArgs e);
+
+/// <summary>
+/// Represents the method that handles the <see cref="InkCanvas.Gesture"/> event.
+/// </summary>
+public delegate void InkCanvasGestureEventHandler(
+    object sender,
+    InkCanvasGestureEventArgs e);
+
+/// <summary>
 /// Provides data for the <see cref="InkCanvas.StrokeCollected"/> event.
 /// </summary>
-public sealed class InkCanvasStrokeCollectedEventArgs : EventArgs
+public class InkCanvasStrokeCollectedEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="InkCanvasStrokeCollectedEventArgs"/> class.
     /// </summary>
     /// <param name="stroke">The stroke that was collected.</param>
     public InkCanvasStrokeCollectedEventArgs(Stroke stroke)
+        : base(InkCanvas.StrokeCollectedEvent)
     {
-        Stroke = stroke;
+        Stroke = stroke ?? throw new ArgumentNullException(nameof(stroke));
     }
 
     /// <summary>
     /// Gets the stroke that was collected.
     /// </summary>
     public Stroke Stroke { get; }
+
+    protected override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is InkCanvasStrokeCollectedEventHandler strokeCollectedHandler)
+        {
+            strokeCollectedHandler(target, this);
+            return;
+        }
+
+        base.InvokeEventHandler(handler, target);
+    }
 }
 
 /// <summary>
-/// Provides data for the <see cref="InkCanvas.StrokeErasing"/> event.
+/// Provides data for the <see cref="InkCanvas.StrokesReplaced"/> event.
 /// </summary>
-public sealed class InkCanvasStrokeErasingEventArgs : EventArgs
+public class InkCanvasStrokesReplacedEventArgs : EventArgs
 {
-    /// <summary>
-    /// Initializes a new instance of the <see cref="InkCanvasStrokeErasingEventArgs"/> class.
-    /// </summary>
-    /// <param name="stroke">The stroke that is about to be erased.</param>
-    public InkCanvasStrokeErasingEventArgs(Stroke stroke)
+    internal InkCanvasStrokesReplacedEventArgs(
+        StrokeCollection newStrokes,
+        StrokeCollection previousStrokes)
     {
-        Stroke = stroke;
+        NewStrokes = newStrokes ?? throw new ArgumentNullException(nameof(newStrokes));
+        PreviousStrokes = previousStrokes ?? throw new ArgumentNullException(nameof(previousStrokes));
     }
 
-    /// <summary>
-    /// Gets the stroke that is about to be erased.
-    /// </summary>
-    public Stroke Stroke { get; }
+    /// <summary>Gets the replacement stroke collection.</summary>
+    public StrokeCollection NewStrokes { get; }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether to cancel the erase operation.
-    /// </summary>
-    public bool Cancel { get; set; }
+    /// <summary>Gets the stroke collection that was replaced.</summary>
+    public StrokeCollection PreviousStrokes { get; }
 }
 
 /// <summary>
-/// Provides data for the <see cref="InkCanvas.SelectionMoving"/> and <see cref="InkCanvas.SelectionResizing"/> events.
+/// Provides data for the <see cref="InkCanvas.SelectionChanging"/> event.
 /// </summary>
-public sealed class InkCanvasSelectionEditingEventArgs : EventArgs
+public class InkCanvasSelectionChangingEventArgs : CancelEventArgs
 {
-    public InkCanvasSelectionEditingEventArgs(Rect oldRectangle, Rect newRectangle)
+    private StrokeCollection _strokes;
+    private List<UIElement> _elements;
+
+    internal InkCanvasSelectionChangingEventArgs(
+        StrokeCollection selectedStrokes,
+        IEnumerable<UIElement> selectedElements)
+    {
+        _strokes = selectedStrokes ?? throw new ArgumentNullException(nameof(selectedStrokes));
+        ArgumentNullException.ThrowIfNull(selectedElements);
+        _elements = new List<UIElement>(selectedElements);
+    }
+
+    internal bool StrokesChanged { get; private set; }
+
+    internal bool ElementsChanged { get; private set; }
+
+    /// <summary>Replaces the candidate selected elements.</summary>
+    public void SetSelectedElements(IEnumerable<UIElement> selectedElements)
+    {
+        ArgumentNullException.ThrowIfNull(selectedElements);
+        _elements = new List<UIElement>(selectedElements);
+        ElementsChanged = true;
+    }
+
+    /// <summary>Gets the candidate selected elements.</summary>
+    public ReadOnlyCollection<UIElement> GetSelectedElements() => new(_elements);
+
+    /// <summary>Replaces the candidate selected strokes.</summary>
+    public void SetSelectedStrokes(StrokeCollection selectedStrokes)
+    {
+        _strokes = selectedStrokes ?? throw new ArgumentNullException(nameof(selectedStrokes));
+        StrokesChanged = true;
+    }
+
+    /// <summary>Gets a copy of the candidate selected strokes.</summary>
+    public StrokeCollection GetSelectedStrokes() => new(_strokes);
+}
+
+/// <summary>
+/// Provides data for the <see cref="InkCanvas.SelectionMoving"/> and
+/// <see cref="InkCanvas.SelectionResizing"/> events.
+/// </summary>
+public class InkCanvasSelectionEditingEventArgs : CancelEventArgs
+{
+    internal InkCanvasSelectionEditingEventArgs(Rect oldRectangle, Rect newRectangle)
     {
         OldRectangle = oldRectangle;
         NewRectangle = newRectangle;
@@ -1825,20 +3242,48 @@ public sealed class InkCanvasSelectionEditingEventArgs : EventArgs
 
     /// <summary>Gets or sets the bounds of the selection after the editing operation.</summary>
     public Rect NewRectangle { get; set; }
+}
 
-    /// <summary>Gets or sets a value indicating whether to cancel the operation.</summary>
-    public bool Cancel { get; set; }
+/// <summary>
+/// Provides data for the <see cref="InkCanvas.StrokeErasing"/> event.
+/// </summary>
+public class InkCanvasStrokeErasingEventArgs : CancelEventArgs
+{
+    internal InkCanvasStrokeErasingEventArgs(Stroke stroke)
+    {
+        Stroke = stroke ?? throw new ArgumentNullException(nameof(stroke));
+    }
+
+    /// <summary>Gets the stroke that is about to be erased.</summary>
+    public Stroke Stroke { get; }
 }
 
 /// <summary>
 /// Provides data for the <see cref="InkCanvas.Gesture"/> event.
 /// </summary>
-public sealed class InkCanvasGestureEventArgs : RoutedEventArgs
+public class InkCanvasGestureEventArgs : RoutedEventArgs
 {
-    public InkCanvasGestureEventArgs(StrokeCollection strokes, IReadOnlyList<GestureRecognitionResult> gestureRecognitionResults)
+    private readonly ReadOnlyCollection<GestureRecognitionResult> _gestureRecognitionResults;
+
+    public InkCanvasGestureEventArgs(
+        StrokeCollection strokes,
+        IEnumerable<GestureRecognitionResult> gestureRecognitionResults)
+        : base(InkCanvas.GestureEvent)
     {
-        Strokes = strokes;
-        GestureRecognitionResults = gestureRecognitionResults;
+        Strokes = strokes ?? throw new ArgumentNullException(nameof(strokes));
+        if (strokes.Count == 0)
+        {
+            throw new ArgumentException("The stroke collection cannot be empty.", nameof(strokes));
+        }
+
+        ArgumentNullException.ThrowIfNull(gestureRecognitionResults);
+        var results = new List<GestureRecognitionResult>(gestureRecognitionResults);
+        if (results.Count == 0)
+        {
+            throw new ArgumentException("The recognition result sequence cannot be empty.", nameof(gestureRecognitionResults));
+        }
+
+        _gestureRecognitionResults = new ReadOnlyCollection<GestureRecognitionResult>(results);
     }
 
     /// <summary>Gets the strokes that represent the gesture.</summary>
@@ -1846,33 +3291,35 @@ public sealed class InkCanvasGestureEventArgs : RoutedEventArgs
     public StrokeCollection Strokes { get; }
 
     /// <summary>Gets the recognition results for the gesture.</summary>
-    public IReadOnlyList<GestureRecognitionResult> GestureRecognitionResults { get; }
+    public IReadOnlyList<GestureRecognitionResult> GestureRecognitionResults =>
+        _gestureRecognitionResults;
 
-    /// <summary>Gets or sets a value indicating whether the event should be canceled.</summary>
+    /// <summary>Gets the recognition results for the gesture.</summary>
+    public ReadOnlyCollection<GestureRecognitionResult> GetGestureRecognitionResults() =>
+        _gestureRecognitionResults;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the event should be canceled.
+    /// </summary>
     public bool Cancel { get; set; }
-}
 
-/// <summary>
-/// Contains information about a gesture recognition result.
-/// </summary>
-public sealed class GestureRecognitionResult
-{
-    public GestureRecognitionResult(InkCanvasGesture applicationGesture, RecognitionConfidence recognitionConfidence)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
-        ApplicationGesture = applicationGesture;
-        RecognitionConfidence = recognitionConfidence;
+        if (handler is InkCanvasGestureEventHandler gestureHandler)
+        {
+            gestureHandler(target, this);
+            return;
+        }
+
+        base.InvokeEventHandler(handler, target);
     }
-
-    /// <summary>Gets the recognized gesture.</summary>
-    public InkCanvasGesture ApplicationGesture { get; }
-
-    /// <summary>Gets the confidence level of the recognition.</summary>
-    public RecognitionConfidence RecognitionConfidence { get; }
 }
 
 /// <summary>
-/// Specifies application gestures.
+/// Specifies legacy Jalium gesture names. New code should use
+/// <see cref="ApplicationGesture"/>, whose values match WPF persistence identifiers.
 /// </summary>
+[Obsolete("Use Jalium.UI.Ink.ApplicationGesture.")]
 public enum InkCanvasGesture
 {
     NoGesture = 0,
@@ -1914,14 +3361,4 @@ public enum InkCanvasGesture
     RightUp,
     RightDown,
     Exclamation
-}
-
-/// <summary>
-/// Specifies the level of confidence for a recognition result.
-/// </summary>
-public enum RecognitionConfidence
-{
-    Strong,
-    Intermediate,
-    Poor
 }

@@ -3,7 +3,7 @@ namespace Jalium.UI.Media.Animation;
 /// <summary>
 /// Animates the value of a double property between two target values.
 /// </summary>
-public sealed class DoubleAnimation : AnimationTimeline<double>
+public sealed partial class DoubleAnimation : DoubleAnimationBase
 {
     #region Dependency Properties
 
@@ -113,19 +113,23 @@ public sealed class DoubleAnimation : AnimationTimeline<double>
             progress = EasingFunction.Ease(progress);
         }
 
-        // Determine actual from and to values
-        var from = From ?? defaultOriginValue;
-        var to = To ?? (By.HasValue ? from + By.Value : defaultDestinationValue);
-
-        // Linear interpolation
-        return from + (to - from) * progress;
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }
 
 /// <summary>
 /// Animates the value of a Color property between two target values.
 /// </summary>
-public sealed class ColorAnimation : AnimationTimeline<Color>
+public sealed partial class ColorAnimation : ColorAnimationBase
 {
     #region Dependency Properties
 
@@ -141,6 +145,13 @@ public sealed class ColorAnimation : AnimationTimeline<Color>
     /// </summary>
     public static readonly DependencyProperty ToProperty =
         DependencyProperty.Register(nameof(To), typeof(Color?), typeof(ColorAnimation),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Identifies the By dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ByProperty =
+        DependencyProperty.Register(nameof(By), typeof(Color?), typeof(ColorAnimation),
             new PropertyMetadata(null));
 
     /// <summary>
@@ -170,6 +181,15 @@ public sealed class ColorAnimation : AnimationTimeline<Color>
     {
         get => (Color?)GetValue(ToProperty);
         set => SetValue(ToProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the amount by which the animation changes its starting value.
+    /// </summary>
+    public Color? By
+    {
+        get => (Color?)GetValue(ByProperty);
+        set => SetValue(ByProperty, value);
     }
 
     /// <summary>
@@ -220,7 +240,7 @@ public sealed class ColorAnimation : AnimationTimeline<Color>
         }
 
         var from = From ?? defaultOriginValue;
-        var to = To ?? defaultDestinationValue;
+        var to = To ?? (By.HasValue ? AddColors(from, By.Value) : defaultDestinationValue);
 
         // Linear interpolation for each color component
         var a = (byte)(from.A + (to.A - from.A) * progress);
@@ -230,12 +250,23 @@ public sealed class ColorAnimation : AnimationTimeline<Color>
 
         return Color.FromArgb(a, r, g, b);
     }
+
+    // Color's full WPF scRGB composition is intentionally outside this batch;
+    // ARGB channel saturation still gives By deterministic, bounded behavior.
+    private static Color AddColors(Color origin, Color offset) => Color.FromArgb(
+        AddChannel(origin.A, offset.A),
+        AddChannel(origin.R, offset.R),
+        AddChannel(origin.G, offset.G),
+        AddChannel(origin.B, offset.B));
+
+    private static byte AddChannel(byte origin, byte offset) =>
+        (byte)Math.Min(byte.MaxValue, origin + offset);
 }
 
 /// <summary>
 /// Animates the value of a Point property between two target values.
 /// </summary>
-public sealed class PointAnimation : AnimationTimeline<Point>
+public sealed partial class PointAnimation : PointAnimationBase
 {
     #region Dependency Properties
 
@@ -251,6 +282,13 @@ public sealed class PointAnimation : AnimationTimeline<Point>
     /// </summary>
     public static readonly DependencyProperty ToProperty =
         DependencyProperty.Register(nameof(To), typeof(Point?), typeof(PointAnimation),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Identifies the By dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ByProperty =
+        DependencyProperty.Register(nameof(By), typeof(Point?), typeof(PointAnimation),
             new PropertyMetadata(null));
 
     /// <summary>
@@ -283,6 +321,15 @@ public sealed class PointAnimation : AnimationTimeline<Point>
     }
 
     /// <summary>
+    /// Gets or sets the amount by which the animation changes its starting value.
+    /// </summary>
+    public Point? By
+    {
+        get => (Point?)GetValue(ByProperty);
+        set => SetValue(ByProperty, value);
+    }
+
+    /// <summary>
     /// Gets or sets the easing function applied to this animation.
     /// </summary>
     public IEasingFunction? EasingFunction
@@ -302,19 +349,23 @@ public sealed class PointAnimation : AnimationTimeline<Point>
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? defaultDestinationValue;
-
-        return new Point(
-            from.X + (to.X - from.X) * progress,
-            from.Y + (to.Y - from.Y) * progress);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }
 
 /// <summary>
 /// Animates the value of a Thickness property between two target values.
 /// </summary>
-public sealed class ThicknessAnimation : AnimationTimeline<Thickness>
+public sealed partial class ThicknessAnimation : ThicknessAnimationBase
 {
     #region Dependency Properties
 
@@ -330,6 +381,13 @@ public sealed class ThicknessAnimation : AnimationTimeline<Thickness>
     /// </summary>
     public static readonly DependencyProperty ToProperty =
         DependencyProperty.Register(nameof(To), typeof(Thickness?), typeof(ThicknessAnimation),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Identifies the By dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ByProperty =
+        DependencyProperty.Register(nameof(By), typeof(Thickness?), typeof(ThicknessAnimation),
             new PropertyMetadata(null));
 
     /// <summary>
@@ -362,6 +420,15 @@ public sealed class ThicknessAnimation : AnimationTimeline<Thickness>
     }
 
     /// <summary>
+    /// Gets or sets the amount by which the animation changes its starting value.
+    /// </summary>
+    public Thickness? By
+    {
+        get => (Thickness?)GetValue(ByProperty);
+        set => SetValue(ByProperty, value);
+    }
+
+    /// <summary>
     /// Gets or sets the easing function applied to this animation.
     /// </summary>
     public IEasingFunction? EasingFunction
@@ -381,13 +448,15 @@ public sealed class ThicknessAnimation : AnimationTimeline<Thickness>
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? defaultOriginValue;
-        var to = To ?? defaultDestinationValue;
-
-        return new Thickness(
-            from.Left + (to.Left - from.Left) * progress,
-            from.Top + (to.Top - from.Top) * progress,
-            from.Right + (to.Right - from.Right) * progress,
-            from.Bottom + (to.Bottom - from.Bottom) * progress);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }

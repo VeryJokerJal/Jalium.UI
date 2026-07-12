@@ -1074,12 +1074,13 @@ private:
     float currentShapeExponent_ = 4.0f;
 
     // Tessellates the SuperEllipse boundary for (x,y,w,h) at currentShapeExponent_
-    // into a closed CCW polygon (x,y interleaved) approximating D3D12's
-    // sdSuperEllipseRect, so it can be filled / stroked through the Impeller path.
-    // Tessellates an iOS-style squircle: STRAIGHT edges joined by continuous-
-    // curvature (Lamé, exponent currentShapeExponent_) CORNERS of the given
-    // per-corner radii — NOT a full-rect superellipse (which collapses a wide /
-    // short element into a flattened oval). Radii clamp to min(w,h)/2.
+    // into a closed polygon (x,y interleaved, first/last vertex NOT repeated):
+    // the full-rect Lamé curve |X/(w/2)|^n + |Y/(h/2)|^n = 1, matching D3D12's
+    // sdSuperEllipseRect and the managed Border layout clip. The per-corner
+    // radius parameters are ignored on purpose (the shared shape contract
+    // derives curvature from the exponent alone — CornerRadius defaults to 0
+    // for Shape=SuperEllipse, and an earlier per-corner-arc variant therefore
+    // rendered square-cornered rectangles that only Vulkan displayed).
     void BuildSuperEllipsePolygon(float x, float y, float w, float h,
                                   float tl, float tr, float br, float bl,
                                   std::vector<float>& outPts) const;

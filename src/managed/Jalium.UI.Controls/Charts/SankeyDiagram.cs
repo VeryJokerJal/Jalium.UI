@@ -273,9 +273,9 @@ public class SankeyDiagram : ChartBase
     #region Automation
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.SankeyDiagramAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.SankeyDiagramAutomationPeer(this);
     }
 
     #endregion
@@ -858,7 +858,7 @@ public class SankeyDiagram : ChartBase
     {
         bool isHorizontal = Orientation == Orientation.Horizontal;
         double nodeW = NodeWidth;
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var labelPos = LabelPosition;
         bool showVals = ShowValues;
 

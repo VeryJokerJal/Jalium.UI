@@ -1,5 +1,7 @@
+using System.Collections;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
@@ -7,7 +9,9 @@ using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Markup;
 using Jalium.UI.Media.Animation;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI;
 
@@ -15,10 +19,30 @@ namespace Jalium.UI;
 /// Encapsulates a Jalium.UI application.
 /// </summary>
 [ContentProperty("Resources")]
-public partial class Application
+public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryAmbient
 {
     private static Application? _current;
+    private static Assembly? _resourceAssembly;
     private readonly WorkingSetTrimController? _workingSetTrimController;
+    private readonly IDictionary _properties = new Hashtable();
+    private readonly WindowCollection _windows = new(Window.SnapshotOpenWindows);
+    private bool _isActive;
+#pragma warning disable WPF0001 // Backing storage for the experimental public ThemeMode API.
+    private ThemeMode _themeMode = ThemeMode.None;
+#pragma warning restore WPF0001
+
+    // Keep type initialization safe for headless tooling. Generated JALXAML module
+    // initializers touch Application.StartupObjectLoader before Main runs, so starting a
+    // Linux display connection here would make commands such as --diagnostics-only fail
+    // before they can inspect the native payload. Windows DPI awareness is process-wide
+    // and does not require a display connection, so it remains safe to establish here.
+    static Application()
+    {
+        if (PlatformFactory.IsWindows)
+        {
+            _ = TryEnablePerMonitorDpiAwareness();
+        }
+    }
     
     /// <summary>
     /// Framework-internal startup object loader registered by Jalium.UI.Xaml.
@@ -29,6 +53,52 @@ public partial class Application
     /// Gets the current application instance.
     /// </summary>
     public static Application? Current => _current;
+
+    /// <summary>
+    /// Gets the application-scoped property bag.
+    /// </summary>
+    public IDictionary Properties => _properties;
+
+    /// <summary>
+    /// Gets or sets the assembly used to resolve application resources.
+    /// </summary>
+    public static Assembly ResourceAssembly
+    {
+        get => _resourceAssembly ??= Assembly.GetEntryAssembly() ?? typeof(Application).Assembly;
+        set => _resourceAssembly = value ?? throw new ArgumentNullException(nameof(value));
+    }
+
+    /// <summary>
+    /// Gets or sets the theme mode requested by the application.
+    /// </summary>
+    [Experimental("WPF0001")]
+    public ThemeMode ThemeMode
+    {
+        get => _themeMode;
+        set
+        {
+            if (_themeMode == value)
+            {
+                return;
+            }
+
+            _themeMode = value;
+
+            if (value == Jalium.UI.ThemeMode.Light)
+            {
+                ThemeManager.ApplyTheme(ThemeVariant.Light);
+            }
+            else if (value == Jalium.UI.ThemeMode.Dark)
+            {
+                ThemeManager.ApplyTheme(ThemeVariant.Dark);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets a live collection of the application's open windows.
+    /// </summary>
+    public WindowCollection Windows => _windows;
 
     /// <summary>
     /// Occurs when the current application instance changes.
@@ -69,6 +139,7 @@ public partial class Application
     /// <summary>
     /// Gets or sets the application-level resources.
     /// </summary>
+    [Ambient]
     public ResourceDictionary Resources
     {
         get
@@ -78,6 +149,10 @@ public partial class Application
                 _resources = new ResourceDictionary();
                 _resources.Changed += OnApplicationResourcesDictionaryChanged;
                 _resources.ChangedWithKeys += OnApplicationResourcesChangedWithKeys;
+                Diagnostics.ResourceDictionaryDiagnosticsStore.RegisterOwner(
+                    _resources,
+                    this,
+                    Diagnostics.ResourceDictionaryOwnerKind.Application);
             }
 
             return _resources;
@@ -91,13 +166,53 @@ public partial class Application
             {
                 _resources.Changed -= OnApplicationResourcesDictionaryChanged;
                 _resources.ChangedWithKeys -= OnApplicationResourcesChangedWithKeys;
+                Diagnostics.ResourceDictionaryDiagnosticsStore.UnregisterOwner(_resources, this);
             }
 
-            _resources = value ?? new ResourceDictionary();
-            _resources.Changed += OnApplicationResourcesDictionaryChanged;
-            _resources.ChangedWithKeys += OnApplicationResourcesChangedWithKeys;
+            _resources = value;
+            if (_resources != null)
+            {
+                _resources.Changed += OnApplicationResourcesDictionaryChanged;
+                _resources.ChangedWithKeys += OnApplicationResourcesChangedWithKeys;
+                Diagnostics.ResourceDictionaryDiagnosticsStore.RegisterOwner(
+                    _resources,
+                    this,
+                    Diagnostics.ResourceDictionaryOwnerKind.Application);
+            }
             OnApplicationResourcesChanged();
         }
+    }
+
+    bool IQueryAmbient.IsAmbientPropertyAvailable(string propertyName)
+        => propertyName == nameof(Resources) && _resources != null;
+
+    /// <summary>
+    /// Searches application, theme, and system resources for the specified key.
+    /// </summary>
+    /// <exception cref="ResourceReferenceKeyNotFoundException">
+    /// No application, theme, or system resource has the supplied key.
+    /// </exception>
+    public object FindResource(object resourceKey)
+    {
+        var resource = TryFindResource(resourceKey);
+        if (resource == null)
+        {
+            throw new ResourceReferenceKeyNotFoundException(
+                $"Resource '{resourceKey}' was not found.",
+                resourceKey);
+        }
+
+        return resource;
+    }
+
+    /// <summary>
+    /// Searches application, theme, and system resources for the specified key.
+    /// </summary>
+    /// <returns>The resource, or <see langword="null"/> when no matching resource exists.</returns>
+    public object? TryFindResource(object resourceKey)
+    {
+        ArgumentNullException.ThrowIfNull(resourceKey);
+        return TryFindApplicationOrSystemResource(resourceKey);
     }
 
     /// <summary>
@@ -113,19 +228,38 @@ public partial class Application
     /// <summary>
     /// Occurs when the application is starting, before the startup window is shown.
     /// </summary>
-    public event EventHandler<StartupEventArgs>? Startup;
+    public event StartupEventHandler? Startup;
+
+    /// <summary>
+    /// Occurs when the application becomes active.
+    /// </summary>
+    public event EventHandler? Activated;
+
+    /// <summary>
+    /// Occurs when the application ceases to be active.
+    /// </summary>
+    public event EventHandler? Deactivated;
+
+    /// <summary>
+    /// Forwards unhandled exceptions raised by this application's dispatcher.
+    /// </summary>
+    public event Jalium.UI.Threading.DispatcherUnhandledExceptionEventHandler DispatcherUnhandledException
+    {
+        add => Dispatcher.Invoke(() => Dispatcher.UnhandledException += value);
+        remove => Dispatcher.Invoke(() => Dispatcher.UnhandledException -= value);
+    }
 
     /// <summary>
     /// Occurs after the message loop exits and before the application cleans up.
     /// Handlers may observe / override <see cref="ExitEventArgs.ApplicationExitCode"/>.
     /// </summary>
-    public event EventHandler<ExitEventArgs>? Exit;
+    public event ExitEventHandler? Exit;
 
     /// <summary>
     /// Occurs when the Windows session is ending (logoff or shutdown). The handler
     /// may cancel the end-session request by setting <see cref="SessionEndingCancelEventArgs.Cancel"/>.
     /// </summary>
-    public event EventHandler<SessionEndingCancelEventArgs>? SessionEnding;
+    public event SessionEndingCancelEventHandler? SessionEnding;
 
     /// <summary>
     /// Raises the <see cref="Startup"/> event. Override to perform application-level
@@ -135,6 +269,24 @@ public partial class Application
     protected virtual void OnStartup(StartupEventArgs e)
     {
         Startup?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="Activated"/> event.
+    /// </summary>
+    protected virtual void OnActivated(EventArgs e)
+    {
+        VerifyAccess();
+        Activated?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="Deactivated"/> event.
+    /// </summary>
+    protected virtual void OnDeactivated(EventArgs e)
+    {
+        VerifyAccess();
+        Deactivated?.Invoke(this, e);
     }
 
     /// <summary>
@@ -166,6 +318,31 @@ public partial class Application
     }
 
     /// <summary>
+    /// Updates application activation state from a platform-wide activation notification.
+    /// Multiple top-level windows receive the same native notification, so transitions are
+    /// deliberately de-duplicated here.
+    /// </summary>
+    internal void SetPlatformActivationState(bool isActive)
+    {
+        VerifyAccess();
+
+        if (_isActive == isActive)
+        {
+            return;
+        }
+
+        _isActive = isActive;
+        if (isActive)
+        {
+            OnActivated(EventArgs.Empty);
+        }
+        else
+        {
+            OnDeactivated(EventArgs.Empty);
+        }
+    }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="Application"/> class.
     /// </summary>
     public Application()
@@ -175,35 +352,31 @@ public partial class Application
             throw new InvalidOperationException("Only one Application instance can be created.");
         }
 
-        // Make the process DPI-aware before any framework HWND is created so
-        // consumer apps launched from the NuGet quick-start path stay crisp on
-        // scaled displays even without a custom app.manifest.
-        if (PlatformFactory.IsWindows)
+        if (!PlatformFactory.IsWindows)
         {
-            _ = TryEnablePerMonitorDpiAwareness();
-        }
-        else
-        {
-            // Initialize the cross-platform native platform library
+            // DispatcherObject's base constructor has already captured the thread
+            // dispatcher. Its first native-wake attempt may have preceded platform
+            // initialization, so initialize the display backend and repair the wake
+            // handle before application services can enqueue work.
             PlatformFactory.InitializePlatform();
+            Dispatcher.EnsureNativeWake();
         }
 
-        // Note: render-context (D3D12/Vulkan device) creation is kicked off on a
-        // background thread by GpuPrewarmInitializer's [ModuleInitializer] when
-        // Jalium.UI.Controls is loaded — earlier than this constructor — so the
-        // ~200–400 ms native device init runs in parallel with AppBuilder.Build,
-        // ThemeManager.Initialize below, and the user's MainWindow construction.
+        // Touch native GPU state only when an actual application is being created.
+        // This still overlaps device creation with theme and MainWindow construction,
+        // while build tools and managed-only hosts can load the framework safely.
+        GpuPrewarmInitializer.Prewarm();
 
         _current = this;
         CurrentChanged?.Invoke(this, EventArgs.Empty);
 
         // Initialize the dispatcher for the main UI thread
-        Dispatcher.SetAsMainThread();
+        Jalium.UI.Dispatcher.SetAsMainThread();
         // Install a SynchronizationContext so async/await resumes on the UI dispatcher thread.
         // WebView2 initialization relies on UI-thread affinity across awaits.
         SynchronizationContext.SetSynchronizationContext(
             new Jalium.UI.Threading.DispatcherSynchronizationContext(
-                Dispatcher.MainDispatcher ?? Dispatcher.GetForCurrentThread()));
+                Jalium.UI.Dispatcher.MainDispatcher ?? Jalium.UI.Dispatcher.GetForCurrentThread()));
 
         // Initialize keyboard/focus system
         Keyboard.Initialize();
@@ -219,6 +392,7 @@ public partial class Application
 
         // Register application resource lookup callback
         ResourceLookup.ApplicationResourceLookup = LookupApplicationResource;
+        ResourceLookup.ApplicationResourceLookupWithSource = LookupApplicationResourceWithSource;
         ResourceLookup.AncestorRedirectLookup = ResolveResourceAncestorRedirect;
 
         // Initialize default theme (loads default styles for all controls)
@@ -265,14 +439,65 @@ public partial class Application
 
     private static object? LookupApplicationResource(object resourceKey)
     {
-        if (_current?._resources != null)
+        return _current?.TryFindApplicationOrSystemResource(resourceKey);
+    }
+
+    private static (object? Value, ResourceDictionary? Dictionary)
+        LookupApplicationResourceWithSource(object resourceKey)
+    {
+        if (_current is null)
         {
-            if (_current._resources.TryGetValue(resourceKey, out var value))
-            {
-                return value;
-            }
+            return (null, null);
         }
-        return null;
+
+        return _current.TryFindApplicationOrSystemResourceWithSource(resourceKey);
+    }
+
+    private (object? Value, ResourceDictionary? Dictionary)
+        TryFindApplicationOrSystemResourceWithSource(object resourceKey)
+    {
+        if (_resources != null &&
+            _resources.TryGetValue(
+                resourceKey,
+                out var value,
+                out var dictionary) &&
+            value != null &&
+            !ReferenceEquals(value, DependencyProperty.UnsetValue))
+        {
+            return (value, dictionary);
+        }
+
+        if (SystemColors.TryGetResource(resourceKey, out var systemResource))
+        {
+            return (systemResource, null);
+        }
+
+        return SystemFonts.TryGetResource(resourceKey, out systemResource)
+            ? (systemResource, null)
+            : (null, null);
+    }
+
+    private object? TryFindApplicationOrSystemResource(object resourceKey)
+    {
+        // ThemeManager installs its dictionaries into Application.Resources.MergedDictionaries,
+        // so ResourceDictionary.TryGetValue performs the application -> active theme portion of
+        // the WPF lookup chain in the correct override order.
+        if (_resources != null &&
+            _resources.TryGetValue(resourceKey, out var value) &&
+            value != null &&
+            !ReferenceEquals(value, DependencyProperty.UnsetValue))
+        {
+            return value;
+        }
+
+        if (SystemColors.TryGetResource(resourceKey, out var systemResource))
+        {
+            return systemResource;
+        }
+
+        return SystemFonts.TryGetResource(resourceKey, out systemResource)
+            ? systemResource
+            : null;
     }
 
     private static FrameworkElement? ResolveResourceAncestorRedirect(FrameworkElement element)
@@ -321,6 +546,7 @@ public partial class Application
 
     private void OnApplicationResourcesChanged()
     {
+        ResourceLookup.InvalidateResourceCache();
         ResourcesChanged?.Invoke(this, EventArgs.Empty);
 
         if (MainWindow is FrameworkElement root)
@@ -362,7 +588,7 @@ public partial class Application
                 // this replaces, a posted dispatcher wake (WM_DISPATCHER_INVOKE) no
                 // longer outranks hardware input, so continuous rendering/animation
                 // cannot starve mouse/keyboard input. Returns the WM_QUIT exit code.
-                var dispatcher = Dispatcher.MainDispatcher ?? Dispatcher.GetForCurrentThread();
+                var dispatcher = Jalium.UI.Dispatcher.MainDispatcher ?? Jalium.UI.Dispatcher.GetForCurrentThread();
                 exitCode = dispatcher.RunMainMessageLoop();
             }
             else

@@ -1,3 +1,4 @@
+using System.Collections;
 using Jalium.UI.Media.Media3D;
 
 namespace Jalium.UI.Media.Animation;
@@ -7,7 +8,7 @@ namespace Jalium.UI.Media.Animation;
 /// rotations. Interpolation runs in quaternion space (SLERP) so the rotation
 /// follows the shortest arc regardless of how each endpoint was authored.
 /// </summary>
-public sealed class Rotation3DAnimation : AnimationTimeline
+public sealed partial class Rotation3DAnimation : Rotation3DAnimationBase
 {
     #region Dependency Properties
 
@@ -83,11 +84,6 @@ public sealed class Rotation3DAnimation : AnimationTimeline
     #endregion
 
     /// <summary>
-    /// Gets the type of value that this animation produces.
-    /// </summary>
-    public override Type TargetPropertyType => typeof(Rotation3D);
-
-    /// <summary>
     /// Creates a new <see cref="Rotation3DAnimation"/>.
     /// </summary>
     public Rotation3DAnimation()
@@ -116,7 +112,10 @@ public sealed class Rotation3DAnimation : AnimationTimeline
     /// <summary>
     /// Gets the current animated value as a <see cref="QuaternionRotation3D"/>.
     /// </summary>
-    public override object GetCurrentValue(object defaultOriginValue, object defaultDestinationValue, AnimationClock animationClock)
+    protected override Rotation3D GetCurrentValueCore(
+        Rotation3D defaultOriginValue,
+        Rotation3D defaultDestinationValue,
+        AnimationClock animationClock)
     {
         var progress = animationClock.CurrentProgress;
         if (EasingFunction != null)
@@ -124,7 +123,7 @@ public sealed class Rotation3DAnimation : AnimationTimeline
             progress = EasingFunction.Ease(progress);
         }
 
-        var fromRotation = From ?? (defaultOriginValue as Rotation3D) ?? Rotation3D.Identity;
+        var fromRotation = From ?? defaultOriginValue ?? Rotation3D.Identity;
         var fromQuaternion = ToQuaternion(fromRotation);
 
         Quaternion toQuaternion;
@@ -139,7 +138,7 @@ public sealed class Rotation3DAnimation : AnimationTimeline
         }
         else
         {
-            toQuaternion = ToQuaternion((defaultDestinationValue as Rotation3D) ?? Rotation3D.Identity);
+            toQuaternion = ToQuaternion(defaultDestinationValue ?? Rotation3D.Identity);
         }
 
         return new QuaternionRotation3D(Quaternion.Slerp(fromQuaternion, toQuaternion, progress));
@@ -160,62 +159,73 @@ public sealed class Rotation3DAnimation : AnimationTimeline
 /// <summary>
 /// Animates the value of a <see cref="Rotation3D"/> property using key frames.
 /// </summary>
-public sealed class Rotation3DAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Rotation3D>
+public partial class Rotation3DAnimationUsingKeyFrames : Rotation3DAnimationBase
 {
-    private readonly Rotation3DKeyFrameCollection _keyFrames = new();
+    private Rotation3DKeyFrameCollection _keyFrames = new();
 
     /// <summary>
     /// Gets the collection of keyframes.
     /// </summary>
-    public override KeyFrameCollection<Rotation3D> KeyFrames => _keyFrames;
+    public Rotation3DKeyFrameCollection KeyFrames
+    {
+        get => _keyFrames;
+        set => ReplaceAnimationChild(ref _keyFrames, value);
+    }
 }
-
-/// <summary>
-/// A collection of <see cref="Rotation3D"/> keyframes.
-/// </summary>
-public sealed class Rotation3DKeyFrameCollection : KeyFrameCollection<Rotation3D> { }
 
 #region Rotation3D KeyFrames
 
 /// <summary>
 /// A keyframe that defines a <see cref="Rotation3D"/> value with discrete interpolation.
 /// </summary>
-public sealed class DiscreteRotation3DKeyFrame : KeyFrame<Rotation3D>
+public class DiscreteRotation3DKeyFrame : Rotation3DKeyFrame
 {
     public DiscreteRotation3DKeyFrame() { }
     public DiscreteRotation3DKeyFrame(Rotation3D value) => TypedValue = value;
     public DiscreteRotation3DKeyFrame(Rotation3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
 
-    public override Rotation3D InterpolateValue(Rotation3D baseValue, double keyFrameProgress)
+    protected override Rotation3D InterpolateValueCore(Rotation3D baseValue, double keyFrameProgress)
         => keyFrameProgress >= 1.0 ? TypedValue : baseValue;
+
+    protected override Freezable CreateInstanceCore() => new DiscreteRotation3DKeyFrame();
 }
 
 /// <summary>
 /// A keyframe that defines a <see cref="Rotation3D"/> value with linear (SLERP) interpolation.
 /// </summary>
-public sealed class LinearRotation3DKeyFrame : KeyFrame<Rotation3D>
+public class LinearRotation3DKeyFrame : Rotation3DKeyFrame
 {
     public LinearRotation3DKeyFrame() { }
     public LinearRotation3DKeyFrame(Rotation3D value) => TypedValue = value;
     public LinearRotation3DKeyFrame(Rotation3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
 
-    public override Rotation3D InterpolateValue(Rotation3D baseValue, double keyFrameProgress)
+    protected override Rotation3D InterpolateValueCore(Rotation3D baseValue, double keyFrameProgress)
     {
         var from = Rotation3DAnimation.ToQuaternion(baseValue ?? Rotation3D.Identity);
         var to = Rotation3DAnimation.ToQuaternion(TypedValue);
         return new QuaternionRotation3D(Quaternion.Slerp(from, to, keyFrameProgress));
     }
+
+    protected override Freezable CreateInstanceCore() => new LinearRotation3DKeyFrame();
 }
 
 /// <summary>
 /// A keyframe that defines a <see cref="Rotation3D"/> value with spline interpolation.
 /// </summary>
-public sealed class SplineRotation3DKeyFrame : KeyFrame<Rotation3D>
+public class SplineRotation3DKeyFrame : Rotation3DKeyFrame
 {
     /// <summary>
     /// Gets or sets the spline that controls the animation.
     /// </summary>
-    public KeySpline? KeySpline { get; set; }
+    public static readonly DependencyProperty KeySplineProperty =
+        DependencyProperty.Register(nameof(KeySpline), typeof(KeySpline), typeof(SplineRotation3DKeyFrame),
+            new PropertyMetadata(null, OnKeySplineChanged));
+
+    public KeySpline? KeySpline
+    {
+        get => (KeySpline?)GetValue(KeySplineProperty);
+        set => SetValue(KeySplineProperty, value);
+    }
 
     public SplineRotation3DKeyFrame() { }
     public SplineRotation3DKeyFrame(Rotation3D value) => TypedValue = value;
@@ -227,24 +237,35 @@ public sealed class SplineRotation3DKeyFrame : KeyFrame<Rotation3D>
         KeySpline = keySpline;
     }
 
-    public override Rotation3D InterpolateValue(Rotation3D baseValue, double keyFrameProgress)
+    protected override Rotation3D InterpolateValueCore(Rotation3D baseValue, double keyFrameProgress)
     {
         var progress = KeySpline?.GetSplineProgress(keyFrameProgress) ?? keyFrameProgress;
         var from = Rotation3DAnimation.ToQuaternion(baseValue ?? Rotation3D.Identity);
         var to = Rotation3DAnimation.ToQuaternion(TypedValue);
         return new QuaternionRotation3D(Quaternion.Slerp(from, to, progress));
     }
+
+    protected override Freezable CreateInstanceCore() => new SplineRotation3DKeyFrame();
+
+    private static void OnKeySplineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((SplineRotation3DKeyFrame)d).OnFreezableChildPropertyChanged(e, KeySplineProperty);
 }
 
 /// <summary>
 /// A keyframe that uses an easing function for <see cref="Rotation3D"/> animation.
 /// </summary>
-public sealed class EasingRotation3DKeyFrame : KeyFrame<Rotation3D>
+public class EasingRotation3DKeyFrame : Rotation3DKeyFrame
 {
-    /// <summary>
-    /// Gets or sets the easing function applied to this keyframe.
-    /// </summary>
-    public IEasingFunction? EasingFunction { get; set; }
+    public static readonly DependencyProperty EasingFunctionProperty =
+        DependencyProperty.Register(nameof(EasingFunction), typeof(IEasingFunction), typeof(EasingRotation3DKeyFrame),
+            new PropertyMetadata(null, OnEasingFunctionChanged));
+
+    /// <summary>Gets or sets the easing function applied to this keyframe.</summary>
+    public IEasingFunction? EasingFunction
+    {
+        get => (IEasingFunction?)GetValue(EasingFunctionProperty);
+        set => SetValue(EasingFunctionProperty, value);
+    }
 
     public EasingRotation3DKeyFrame() { }
     public EasingRotation3DKeyFrame(Rotation3D value) => TypedValue = value;
@@ -256,13 +277,18 @@ public sealed class EasingRotation3DKeyFrame : KeyFrame<Rotation3D>
         EasingFunction = easingFunction;
     }
 
-    public override Rotation3D InterpolateValue(Rotation3D baseValue, double keyFrameProgress)
+    protected override Rotation3D InterpolateValueCore(Rotation3D baseValue, double keyFrameProgress)
     {
         var progress = EasingFunction?.Ease(keyFrameProgress) ?? keyFrameProgress;
         var from = Rotation3DAnimation.ToQuaternion(baseValue ?? Rotation3D.Identity);
         var to = Rotation3DAnimation.ToQuaternion(TypedValue);
         return new QuaternionRotation3D(Quaternion.Slerp(from, to, progress));
     }
+
+    protected override Freezable CreateInstanceCore() => new EasingRotation3DKeyFrame();
+
+    private static void OnEasingFunctionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((EasingRotation3DKeyFrame)d).OnFreezableChildPropertyChanged(e, EasingFunctionProperty);
 }
 
 #endregion

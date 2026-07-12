@@ -16,6 +16,7 @@ namespace Jalium.UI.Media;
 /// assembly, which Core cannot reference, so Core's value collections derive from
 /// <see cref="Freezable"/> directly — the freeze/clone/change contract is identical.)
 /// </remarks>
+[System.ComponentModel.TypeConverter(typeof(DoubleCollectionConverter))]
 public sealed class DoubleCollection : Freezable, IFormattable, IList, IList<double>
 {
     private readonly List<double> _collection;

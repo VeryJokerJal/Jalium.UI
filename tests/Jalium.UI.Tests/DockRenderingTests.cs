@@ -35,7 +35,7 @@ public class DockRenderingTests
     }
 
     [Fact]
-    public void DockItem_FirstSelectedTab_ShouldUseSquareTopLeftCorner()
+    public void DockItem_FirstSelectedTab_ShouldKeepRoundedTopLeftCorner()
     {
         var host = new LayoutHostPanel();
         var panel = new DockTabPanel();
@@ -57,7 +57,7 @@ public class DockRenderingTests
         var fillGeometry = Assert.IsType<PathGeometry>(fillGeometryCall.Geometry);
         var figure = Assert.Single(fillGeometry.Figures);
 
-        Assert.InRange(figure.StartPoint.X, -0.1, 0.1);
+        Assert.InRange(figure.StartPoint.X, 7.9, 8.1);
         Assert.InRange(figure.StartPoint.Y, -0.1, 0.1);
     }
 
@@ -84,10 +84,10 @@ public class DockRenderingTests
         Assert.InRange(contentBackground.RadiusX, 7.9, 8.1);
         Assert.InRange(contentBackground.RadiusY, 7.9, 8.1);
 
-        var outerBorder = Assert.Single(drawingContext.RoundedRectCalls,
+        // The selected tab and content border are one closed path. A second
+        // rounded-rectangle stroke would double-paint the outer shell.
+        Assert.DoesNotContain(drawingContext.RoundedRectCalls,
             call => call.Brush == null && call.Pen != null);
-        Assert.InRange(outerBorder.RadiusX, 7.9, 8.1);
-        Assert.InRange(outerBorder.RadiusY, 7.9, 8.1);
 
         var borderGeometryCall = Assert.Single(drawingContext.GeometryCalls,
             call => call.Brush == null && call.Pen != null);
@@ -105,7 +105,7 @@ public class DockRenderingTests
     }
 
     [Fact]
-    public void DockTabPanel_FirstSelectedTab_ShouldKeepTopLeftCornerSquare()
+    public void DockTabPanel_FirstSelectedTab_ShouldUseUnifiedRoundedTopLeftCorner()
     {
         var host = new LayoutHostPanel();
         var panel = new DockTabPanel();
@@ -122,15 +122,17 @@ public class DockRenderingTests
         var drawingContext = new RecordingDrawingContext();
         panel.Render(drawingContext);
 
-        Assert.Contains(drawingContext.LineCalls, call =>
-            PointsAreClose(call.Start, new Point(0.5, panel.TabStripHeight)) &&
-            Math.Abs(call.End.X - 0.5) < 0.1);
+        Assert.Empty(drawingContext.LineCalls);
 
         var borderGeometryCall = Assert.Single(drawingContext.GeometryCalls,
             call => call.Brush == null && call.Pen != null);
         var borderGeometry = Assert.IsType<PathGeometry>(borderGeometryCall.Geometry);
         var figure = Assert.Single(borderGeometry.Figures);
-        Assert.True(figure.StartPoint.X < 0.6);
+        Assert.True(figure.IsClosed);
+        Assert.Contains(figure.Segments.OfType<LineSegment>(), segment =>
+            PointsAreClose(segment.Point, new Point(0.5, 8.5)));
+        Assert.Contains(figure.Segments.OfType<BezierSegment>(), segment =>
+            PointsAreClose(segment.Point3, new Point(8.5, 0.5)));
     }
 
     private static bool PointsAreClose(Point actual, Point expected)
@@ -152,7 +154,7 @@ public class DockRenderingTests
 
         protected override Size MeasureOverride(Size availableSize)
         {
-            foreach (var child in Children)
+            foreach (UIElement child in Children)
             {
                 if (child.Visibility != Visibility.Collapsed)
                     child.Measure(availableSize);
@@ -163,7 +165,7 @@ public class DockRenderingTests
 
         protected override Size ArrangeOverride(Size finalSize)
         {
-            foreach (var child in Children)
+            foreach (UIElement child in Children)
             {
                 if (child.Visibility != Visibility.Collapsed)
                     child.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
@@ -173,7 +175,7 @@ public class DockRenderingTests
         }
     }
 
-    private sealed class RecordingDrawingContext : DrawingContext
+    private sealed class RecordingDrawingContext : DrawingContextAdapter
     {
         public List<RoundedRectCall> RoundedRectCalls { get; } = new();
         public List<GeometryCall> GeometryCalls { get; } = new();

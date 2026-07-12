@@ -1,3 +1,4 @@
+using System.Collections;
 using Jalium.UI.Media.Media3D;
 
 namespace Jalium.UI.Media.Animation;
@@ -6,7 +7,7 @@ namespace Jalium.UI.Media.Animation;
 /// Animates the value of a <see cref="Point3D"/> property between two target
 /// values using linear interpolation.
 /// </summary>
-public sealed class Point3DAnimation : AnimationTimeline
+public sealed partial class Point3DAnimation : Point3DAnimationBase
 {
     #region Dependency Properties
 
@@ -81,11 +82,6 @@ public sealed class Point3DAnimation : AnimationTimeline
     #endregion
 
     /// <summary>
-    /// Gets the type of value that this animation produces.
-    /// </summary>
-    public override Type TargetPropertyType => typeof(Point3D);
-
-    /// <summary>
     /// Creates a new <see cref="Point3DAnimation"/>.
     /// </summary>
     public Point3DAnimation()
@@ -114,7 +110,10 @@ public sealed class Point3DAnimation : AnimationTimeline
     /// <summary>
     /// Gets the current animated value.
     /// </summary>
-    public override object GetCurrentValue(object defaultOriginValue, object defaultDestinationValue, AnimationClock animationClock)
+    protected override Point3D GetCurrentValueCore(
+        Point3D defaultOriginValue,
+        Point3D defaultDestinationValue,
+        AnimationClock animationClock)
     {
         var progress = animationClock.CurrentProgress;
         if (EasingFunction != null)
@@ -122,76 +121,88 @@ public sealed class Point3DAnimation : AnimationTimeline
             progress = EasingFunction.Ease(progress);
         }
 
-        var from = From ?? (defaultOriginValue is Point3D p ? p : default);
-        var to = To ?? (By.HasValue
-            ? new Point3D(from.X + By.Value.X, from.Y + By.Value.Y, from.Z + By.Value.Z)
-            : (defaultDestinationValue is Point3D dp ? dp : default));
-
-        return new Point3D(
-            from.X + (to.X - from.X) * progress,
-            from.Y + (to.Y - from.Y) * progress,
-            from.Z + (to.Z - from.Z) * progress);
+        return AnimationValueOperations.EvaluateFromToBy(
+            defaultOriginValue,
+            defaultDestinationValue,
+            From,
+            To,
+            By,
+            progress,
+            animationClock.CurrentIteration ?? 1,
+            IsAdditive,
+            IsCumulative);
     }
 }
 
 /// <summary>
 /// Animates the value of a <see cref="Point3D"/> property using key frames.
 /// </summary>
-public sealed class Point3DAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Point3D>
+public partial class Point3DAnimationUsingKeyFrames : Point3DAnimationBase
 {
-    private readonly Point3DKeyFrameCollection _keyFrames = new();
+    private Point3DKeyFrameCollection _keyFrames = new();
 
     /// <summary>
     /// Gets the collection of keyframes.
     /// </summary>
-    public override KeyFrameCollection<Point3D> KeyFrames => _keyFrames;
+    public Point3DKeyFrameCollection KeyFrames
+    {
+        get => _keyFrames;
+        set => ReplaceAnimationChild(ref _keyFrames, value);
+    }
 }
-
-/// <summary>
-/// A collection of <see cref="Point3D"/> keyframes.
-/// </summary>
-public sealed class Point3DKeyFrameCollection : KeyFrameCollection<Point3D> { }
 
 #region Point3D KeyFrames
 
 /// <summary>
 /// A keyframe that defines a <see cref="Point3D"/> value with discrete interpolation.
 /// </summary>
-public sealed class DiscretePoint3DKeyFrame : KeyFrame<Point3D>
+public class DiscretePoint3DKeyFrame : Point3DKeyFrame
 {
     public DiscretePoint3DKeyFrame() { }
     public DiscretePoint3DKeyFrame(Point3D value) => TypedValue = value;
     public DiscretePoint3DKeyFrame(Point3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
 
-    public override Point3D InterpolateValue(Point3D baseValue, double keyFrameProgress)
+    protected override Point3D InterpolateValueCore(Point3D baseValue, double keyFrameProgress)
         => keyFrameProgress >= 1.0 ? TypedValue : baseValue;
+
+    protected override Freezable CreateInstanceCore() => new DiscretePoint3DKeyFrame();
 }
 
 /// <summary>
 /// A keyframe that defines a <see cref="Point3D"/> value with linear interpolation.
 /// </summary>
-public sealed class LinearPoint3DKeyFrame : KeyFrame<Point3D>
+public class LinearPoint3DKeyFrame : Point3DKeyFrame
 {
     public LinearPoint3DKeyFrame() { }
     public LinearPoint3DKeyFrame(Point3D value) => TypedValue = value;
     public LinearPoint3DKeyFrame(Point3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
 
-    public override Point3D InterpolateValue(Point3D baseValue, double keyFrameProgress)
+    protected override Point3D InterpolateValueCore(Point3D baseValue, double keyFrameProgress)
         => new(
             baseValue.X + (TypedValue.X - baseValue.X) * keyFrameProgress,
             baseValue.Y + (TypedValue.Y - baseValue.Y) * keyFrameProgress,
             baseValue.Z + (TypedValue.Z - baseValue.Z) * keyFrameProgress);
+
+    protected override Freezable CreateInstanceCore() => new LinearPoint3DKeyFrame();
 }
 
 /// <summary>
 /// A keyframe that defines a <see cref="Point3D"/> value with spline interpolation.
 /// </summary>
-public sealed class SplinePoint3DKeyFrame : KeyFrame<Point3D>
+public class SplinePoint3DKeyFrame : Point3DKeyFrame
 {
     /// <summary>
     /// Gets or sets the spline that controls the animation.
     /// </summary>
-    public KeySpline? KeySpline { get; set; }
+    public static readonly DependencyProperty KeySplineProperty =
+        DependencyProperty.Register(nameof(KeySpline), typeof(KeySpline), typeof(SplinePoint3DKeyFrame),
+            new PropertyMetadata(null, OnKeySplineChanged));
+
+    public KeySpline? KeySpline
+    {
+        get => (KeySpline?)GetValue(KeySplineProperty);
+        set => SetValue(KeySplineProperty, value);
+    }
 
     public SplinePoint3DKeyFrame() { }
     public SplinePoint3DKeyFrame(Point3D value) => TypedValue = value;
@@ -203,7 +214,7 @@ public sealed class SplinePoint3DKeyFrame : KeyFrame<Point3D>
         KeySpline = keySpline;
     }
 
-    public override Point3D InterpolateValue(Point3D baseValue, double keyFrameProgress)
+    protected override Point3D InterpolateValueCore(Point3D baseValue, double keyFrameProgress)
     {
         var progress = KeySpline?.GetSplineProgress(keyFrameProgress) ?? keyFrameProgress;
         return new(
@@ -211,17 +222,28 @@ public sealed class SplinePoint3DKeyFrame : KeyFrame<Point3D>
             baseValue.Y + (TypedValue.Y - baseValue.Y) * progress,
             baseValue.Z + (TypedValue.Z - baseValue.Z) * progress);
     }
+
+    protected override Freezable CreateInstanceCore() => new SplinePoint3DKeyFrame();
+
+    private static void OnKeySplineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((SplinePoint3DKeyFrame)d).OnFreezableChildPropertyChanged(e, KeySplineProperty);
 }
 
 /// <summary>
 /// A keyframe that uses an easing function for <see cref="Point3D"/> animation.
 /// </summary>
-public sealed class EasingPoint3DKeyFrame : KeyFrame<Point3D>
+public class EasingPoint3DKeyFrame : Point3DKeyFrame
 {
-    /// <summary>
-    /// Gets or sets the easing function applied to this keyframe.
-    /// </summary>
-    public IEasingFunction? EasingFunction { get; set; }
+    public static readonly DependencyProperty EasingFunctionProperty =
+        DependencyProperty.Register(nameof(EasingFunction), typeof(IEasingFunction), typeof(EasingPoint3DKeyFrame),
+            new PropertyMetadata(null, OnEasingFunctionChanged));
+
+    /// <summary>Gets or sets the easing function applied to this keyframe.</summary>
+    public IEasingFunction? EasingFunction
+    {
+        get => (IEasingFunction?)GetValue(EasingFunctionProperty);
+        set => SetValue(EasingFunctionProperty, value);
+    }
 
     public EasingPoint3DKeyFrame() { }
     public EasingPoint3DKeyFrame(Point3D value) => TypedValue = value;
@@ -233,7 +255,7 @@ public sealed class EasingPoint3DKeyFrame : KeyFrame<Point3D>
         EasingFunction = easingFunction;
     }
 
-    public override Point3D InterpolateValue(Point3D baseValue, double keyFrameProgress)
+    protected override Point3D InterpolateValueCore(Point3D baseValue, double keyFrameProgress)
     {
         var progress = EasingFunction?.Ease(keyFrameProgress) ?? keyFrameProgress;
         return new(
@@ -241,6 +263,11 @@ public sealed class EasingPoint3DKeyFrame : KeyFrame<Point3D>
             baseValue.Y + (TypedValue.Y - baseValue.Y) * progress,
             baseValue.Z + (TypedValue.Z - baseValue.Z) * progress);
     }
+
+    protected override Freezable CreateInstanceCore() => new EasingPoint3DKeyFrame();
+
+    private static void OnEasingFunctionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((EasingPoint3DKeyFrame)d).OnFreezableChildPropertyChanged(e, EasingFunctionProperty);
 }
 
 #endregion

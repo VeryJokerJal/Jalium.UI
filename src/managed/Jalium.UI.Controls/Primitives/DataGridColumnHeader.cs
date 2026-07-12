@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -10,6 +10,18 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class DataGridColumnHeader : ButtonBase
 {
+    private static readonly ComponentResourceKey s_columnFloatingHeaderStyleKey =
+        new(typeof(DataGridColumnHeader), nameof(ColumnFloatingHeaderStyleKey));
+    private static readonly ComponentResourceKey s_columnHeaderDropSeparatorStyleKey =
+        new(typeof(DataGridColumnHeader), nameof(ColumnHeaderDropSeparatorStyleKey));
+
+    /// <summary>Gets the resource key for the floating column-header style.</summary>
+    public static ComponentResourceKey ColumnFloatingHeaderStyleKey => s_columnFloatingHeaderStyleKey;
+
+    /// <summary>Gets the resource key for the column-header drop-separator style.</summary>
+    public static ComponentResourceKey ColumnHeaderDropSeparatorStyleKey =>
+        s_columnHeaderDropSeparatorStyleKey;
+
     #region Static Brushes & Pens
 
     private static readonly SolidColorBrush s_pressedBgBrush = new(Color.FromRgb(60, 60, 60));
@@ -106,7 +118,7 @@ public class DataGridColumnHeader : ButtonBase
     public ListSortDirection? SortDirection
     {
         get => (ListSortDirection?)GetValue(SortDirectionProperty);
-        set => SetValue(SortDirectionProperty, value);
+        internal set => SetValue(SortDirectionProperty, value);
     }
 
     /// <summary>
@@ -116,7 +128,7 @@ public class DataGridColumnHeader : ButtonBase
     public bool CanUserSort
     {
         get => (bool)GetValue(CanUserSortProperty)!;
-        set => SetValue(CanUserSortProperty, value);
+        internal set => SetValue(CanUserSortProperty, value);
     }
 
     /// <summary>
@@ -146,7 +158,7 @@ public class DataGridColumnHeader : ButtonBase
     public int DisplayIndex
     {
         get => (int)GetValue(DisplayIndexProperty)!;
-        set => SetValue(DisplayIndexProperty, value);
+        internal set => SetValue(DisplayIndexProperty, value);
     }
 
     /// <summary>
@@ -156,7 +168,7 @@ public class DataGridColumnHeader : ButtonBase
     public bool IsFrozen
     {
         get => (bool)GetValue(IsFrozenProperty)!;
-        set => SetValue(IsFrozenProperty, value);
+        internal set => SetValue(IsFrozenProperty, value);
     }
 
     /// <summary>
@@ -182,7 +194,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets the column associated with this header.
     /// </summary>
-    public DataGridColumn? Column { get; internal set; }
+    public Jalium.UI.Controls.DataGridColumn? Column { get; internal set; }
 
     #endregion
 
@@ -273,7 +285,11 @@ public class DataGridColumnHeader : ButtonBase
     protected override Size MeasureOverride(Size availableSize)
     {
         var padding = Padding;
-        var width = Column?.Width ?? 100;
+        var width = Column?.ActualWidth ?? 100;
+        if (!(width > 0))
+        {
+            width = Column?.Width.DisplayValue ?? 100;
+        }
 
         return new Size(width, Height > 0 ? Height : 28);
     }
@@ -355,7 +371,7 @@ public class DataGridColumnHeader : ButtonBase
         if (Content is string text)
         {
             var fgBrush = ResolveForegroundBrush();
-            var formattedText = new FormattedText(text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
+            var formattedText = new FormattedText(text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
             {
                 Foreground = fgBrush
             };
@@ -431,20 +447,4 @@ public class DataGridColumnHeader : ButtonBase
     }
 
     #endregion
-}
-
-/// <summary>
-/// Represents a column in a DataGrid (placeholder for reference).
-/// </summary>
-public abstract class DataGridColumn
-{
-    /// <summary>
-    /// Gets or sets the width of the column.
-    /// </summary>
-    public double Width { get; set; } = 100;
-
-    /// <summary>
-    /// Gets or sets the header content.
-    /// </summary>
-    public object? Header { get; set; }
 }

@@ -50,7 +50,7 @@ public class Polyline : Shape
     {
         var points = Points;
         if (points == null || points.Count == 0)
-            return Size.Empty;
+            return default(Size);
 
         var bounds = GetBounds(points);
         var strokeThickness = StrokeThickness;

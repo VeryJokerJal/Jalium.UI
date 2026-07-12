@@ -698,6 +698,50 @@ public sealed class CoreWebView2
         WebView2NativeHelpers.ThrowIfFailed(hr, "Failed to navigate WebView2 to string content.");
     }
 
+    public void NavigateWithWebResourceRequest(
+        string uri,
+        string method,
+        byte[]? postData,
+        string additionalHeaders)
+    {
+        var hr = BrowserInterop.NavigateWithWebResourceRequest(
+            _controller.NativeHandle,
+            uri,
+            method,
+            postData,
+            postData?.Length ?? 0,
+            additionalHeaders);
+        WebView2NativeHelpers.ThrowIfFailed(hr, "Failed to navigate WebView2 with a web resource request.");
+    }
+
+    public void AddHostObjectToScript(string name, object hostObject)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        ArgumentNullException.ThrowIfNull(hostObject);
+        if (!OperatingSystem.IsWindows())
+        {
+            throw new PlatformNotSupportedException("WebView2 host objects require Windows COM interop.");
+        }
+
+        var dispatch = Marshal.GetIDispatchForObject(hostObject);
+        try
+        {
+            var hr = BrowserInterop.AddHostObjectToScript(_controller.NativeHandle, name, dispatch);
+            WebView2NativeHelpers.ThrowIfFailed(hr, "Failed to add a WebView2 host object.");
+        }
+        finally
+        {
+            Marshal.Release(dispatch);
+        }
+    }
+
+    public void RemoveHostObjectFromScript(string name)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        var hr = BrowserInterop.RemoveHostObjectFromScript(_controller.NativeHandle, name);
+        WebView2NativeHelpers.ThrowIfFailed(hr, "Failed to remove a WebView2 host object.");
+    }
+
     public void GoBack()
     {
         var hr = BrowserInterop.GoBack(_controller.NativeHandle);

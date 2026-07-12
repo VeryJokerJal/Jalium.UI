@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
 using Jalium.UI.Media;
+using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 
 namespace Jalium.UI.Controls;
 
@@ -641,12 +642,6 @@ public sealed class FontDialog
 
     [DllImport("comdlg32.dll")]
     private static extern uint CommDlgExtendedError();
-
-    [DllImport("user32.dll")]
-    private static extern nint GetDC(nint windowHandle);
-
-    [DllImport("user32.dll")]
-    private static extern int ReleaseDC(nint windowHandle, nint deviceContext);
 
     [DllImport("gdi32.dll")]
     private static extern int GetDeviceCaps(nint deviceContext, int index);

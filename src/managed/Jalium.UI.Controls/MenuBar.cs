@@ -12,8 +12,8 @@ namespace Jalium.UI.Controls;
 public class MenuBar : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.MenuBarAutomationPeer(this);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.MenuBarAutomationPeer(this);
 
     private readonly ObservableCollection<MenuBarItem> _items = new();
     private StackPanel? _panel;
@@ -63,10 +63,10 @@ public class MenuBar : Control
     }
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => _panel != null ? 1 : 0;
+    protected override int VisualChildrenCount => _panel != null ? 1 : 0;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index == 0 && _panel != null) return _panel;
         throw new ArgumentOutOfRangeException(nameof(index));

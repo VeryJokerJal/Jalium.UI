@@ -10,7 +10,7 @@ namespace Jalium.UI.Interop;
 /// <summary>
 /// A DrawingContext implementation that renders to a RenderTarget.
 /// </summary>
-public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingContext, IClipBoundsDrawingContext, IOpacityDrawingContext, IEffectDrawingContext, ITransformDrawingContext, ICacheableDrawingContext, ILayerCompositingDrawingContext
+public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetDrawingContext, IClipBoundsDrawingContext, IOpacityDrawingContext, IEffectDrawingContext, ITransformDrawingContext, ICacheableDrawingContext, ILayerCompositingDrawingContext
 {
     private const int MaxBrushCacheSize = 256;
     private const int MaxTextFormatCacheSize = 64;
@@ -129,7 +129,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     }
 
     /// <summary>
-    /// Snapshot of a <see cref="DrawingContext.PushEffect"/> call. We store the
+    /// Snapshot of a <see cref="DrawingContext.PushEffect(IEffect,Rect)"/> call. We store the
     /// <b>full capture region</b> (element bounds inflated by the effect's
     /// padding), not just the element bounds — that way <see cref="DrawingContext.PopEffect"/>
     /// can draw the whole blurred/shadowed/shader'd extent back onto the main
@@ -302,7 +302,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         if (_clipBoundsStack.Count > 0)
         {
             var parentClip = _clipBoundsStack.Peek();
-            effectiveClip = parentClip.HasValue ? parentClip.Value.Intersect(surfaceClip) : surfaceClip;
+            effectiveClip = parentClip.HasValue ? Rect.Intersect(parentClip.Value, surfaceClip) : surfaceClip;
         }
         _clipBoundsStack.Push(effectiveClip);
     }
@@ -3261,7 +3261,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
         else if (effect is Media.Effects.ShaderEffect shaderEffect)
         {
-            var pixelShader = shaderEffect.PixelShader;
+            var pixelShader = shaderEffect.PixelShaderForRendering;
             var sourceHlsl = pixelShader?.SourceHlsl;
             if (!string.IsNullOrEmpty(sourceHlsl))
             {
@@ -3769,7 +3769,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                Math.Abs(a.Height - b.Height) < Eps;
     }
 
-    private static float[] MarshalGradientStops(IReadOnlyList<GradientStop> stops)
+    private static float[] MarshalGradientStops(IList<GradientStop> stops)
     {
         var arr = new float[stops.Count * 5];
         for (int i = 0; i < stops.Count; i++)

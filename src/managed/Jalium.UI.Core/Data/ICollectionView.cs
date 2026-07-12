@@ -51,7 +51,7 @@ public interface ICollectionView : IEnumerable, INotifyCollectionChanged
     /// Gets a collection of GroupDescription objects that describe how the items in the collection
     /// are grouped in the view.
     /// </summary>
-    System.Collections.ObjectModel.ObservableCollection<GroupDescription> GroupDescriptions { get; }
+    System.Collections.ObjectModel.ObservableCollection<System.ComponentModel.GroupDescription> GroupDescriptions { get; }
 
     /// <summary>
     /// Gets the top-level groups.
@@ -77,7 +77,7 @@ public interface ICollectionView : IEnumerable, INotifyCollectionChanged
     /// Gets a collection of SortDescription objects that describe how the items in the collection
     /// are sorted in the view.
     /// </summary>
-    SortDescriptionCollection SortDescriptions { get; }
+    System.ComponentModel.SortDescriptionCollection SortDescriptions { get; }
 
     /// <summary>
     /// Returns the underlying collection.
@@ -154,12 +154,13 @@ public interface ICollectionView : IEnumerable, INotifyCollectionChanged
 /// <summary>
 /// Provides data for the CurrentChanging event.
 /// </summary>
-public sealed class CurrentChangingEventArgs : EventArgs
+public sealed class CurrentChangingEventArgs : System.ComponentModel.CurrentChangingEventArgs
 {
     /// <summary>
     /// Initializes a new instance of the CurrentChangingEventArgs class.
     /// </summary>
-    public CurrentChangingEventArgs() : this(true)
+    public CurrentChangingEventArgs()
+        : base()
     {
     }
 
@@ -169,19 +170,9 @@ public sealed class CurrentChangingEventArgs : EventArgs
     /// </summary>
     /// <param name="isCancelable">true if the event is cancelable; otherwise, false.</param>
     public CurrentChangingEventArgs(bool isCancelable)
+        : base(isCancelable)
     {
-        IsCancelable = isCancelable;
     }
-
-    /// <summary>
-    /// Gets a value that indicates whether the current item change is cancelable.
-    /// </summary>
-    public bool IsCancelable { get; }
-
-    /// <summary>
-    /// Gets or sets a value that indicates whether the event should be canceled.
-    /// </summary>
-    public bool Cancel { get; set; }
 }
 
 /// <summary>

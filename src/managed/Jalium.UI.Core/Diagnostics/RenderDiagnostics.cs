@@ -116,7 +116,7 @@ public static class RenderDiagnostics
 
     public static void RecordDirtyRegion(Rect region)
     {
-        if (region.IsEmpty) return;
+        if (region.IsEmpty || region.Width <= 0 || region.Height <= 0) return;
         int index = Interlocked.Increment(ref s_frameCounter);
         s_dirtyHistory.Enqueue(new DirtyRegionSnapshot(region, index));
         while (s_dirtyHistory.Count > DirtyHistoryCapacity && s_dirtyHistory.TryDequeue(out _)) { }

@@ -1,4 +1,6 @@
 using Jalium.UI.Media;
+using Jalium.UI.Media.Effects;
+using Jalium.UI.Media.Media3D;
 using Jalium.UI.Rendering;
 
 namespace Jalium.UI;
@@ -13,6 +15,25 @@ public abstract class Visual : DependencyObject
     private readonly List<Visual> _children = new();
     private bool _isRenderDirty;
     private bool _isSubtreeDirty;
+#pragma warning disable CS0618 // WPF parity requires retaining the legacy BitmapEffect surface.
+    private BitmapEffect? _visualBitmapEffect;
+    private BitmapEffectInput? _visualBitmapEffectInput;
+#pragma warning restore CS0618
+    private BitmapScalingMode _visualBitmapScalingMode;
+    private CacheMode? _visualCacheMode;
+    private Geometry? _visualClip;
+    private EdgeMode _visualEdgeMode;
+    private Effect? _visualEffect;
+    private Vector _visualOffset;
+    private double _visualOpacity = 1.0;
+    private Brush? _visualOpacityMask;
+    private Rect? _visualScrollableAreaClip;
+    private TextHintingMode _visualTextHintingMode;
+    private TextRenderingMode _visualTextRenderingMode;
+    private Transform? _visualTransform;
+    private DoubleCollection? _visualXSnappingGuidelines;
+    private DoubleCollection? _visualYSnappingGuidelines;
+    private DpiScale _dpiScale = new(1.0, 1.0);
 
     // Composition-only dirtiness, propagated UP the ancestor chain SEPARATELY from
     // the content flag _isSubtreeDirty. Set by MarkSubtreeDirtyForComposition (an
@@ -68,6 +89,133 @@ public abstract class Visual : DependencyObject
     {
         get => _isCompositorBoundary;
         set => _isCompositorBoundary = value;
+    }
+
+    /// <summary>Gets or sets the resolved ClearType hint for this visual subtree.</summary>
+    protected internal ClearTypeHint VisualClearTypeHint { get; set; } = ClearTypeHint.Auto;
+
+#pragma warning disable CS0618 // The obsolete public members intentionally expose WPF's legacy types.
+    /// <summary>Gets or sets the legacy bitmap effect associated with this visual.</summary>
+    [Obsolete("BitmapEffect is deprecated. Use Effect instead.")]
+    protected internal BitmapEffect? VisualBitmapEffect
+    {
+        get => _visualBitmapEffect;
+        protected set => SetVisualState(ref _visualBitmapEffect, value);
+    }
+
+    /// <summary>Gets or sets the input used by the legacy bitmap-effect pipeline.</summary>
+    [Obsolete("BitmapEffectInput is deprecated. Use Effect instead.")]
+    protected internal BitmapEffectInput? VisualBitmapEffectInput
+    {
+        get => _visualBitmapEffectInput;
+        protected set => SetVisualState(ref _visualBitmapEffectInput, value);
+    }
+#pragma warning restore CS0618
+
+    /// <summary>Gets or sets the bitmap scaling mode used by this visual.</summary>
+    protected internal BitmapScalingMode VisualBitmapScalingMode
+    {
+        get => _visualBitmapScalingMode;
+        protected set => SetVisualState(ref _visualBitmapScalingMode, value);
+    }
+
+    /// <summary>Gets or sets the cache mode used by this visual.</summary>
+    protected internal CacheMode? VisualCacheMode
+    {
+        get => _visualCacheMode;
+        protected set => SetVisualState(ref _visualCacheMode, value);
+    }
+
+    /// <summary>Gets or sets this visual's composition clip.</summary>
+    protected internal Geometry? VisualClip
+    {
+        get => _visualClip;
+        protected set => SetVisualState(ref _visualClip, value);
+    }
+
+    /// <summary>Gets or sets the edge-rendering mode used by this visual.</summary>
+    protected internal EdgeMode VisualEdgeMode
+    {
+        get => _visualEdgeMode;
+        protected set => SetVisualState(ref _visualEdgeMode, value);
+    }
+
+    /// <summary>Gets or sets the shader effect associated with this visual.</summary>
+    protected internal Effect? VisualEffect
+    {
+        get => _visualEffect;
+        protected set => SetVisualState(ref _visualEffect, value);
+    }
+
+    /// <summary>Gets or sets the composition offset of this visual.</summary>
+    protected internal Vector VisualOffset
+    {
+        get => _visualOffset;
+        protected set => SetVisualState(ref _visualOffset, value, compositionOnly: true);
+    }
+
+    /// <summary>Gets or sets the composition opacity of this visual.</summary>
+    protected internal double VisualOpacity
+    {
+        get => _visualOpacity;
+        protected set
+        {
+            if (!double.IsFinite(value) || value < 0.0 || value > 1.0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value));
+            }
+
+            SetVisualState(ref _visualOpacity, value, compositionOnly: true);
+        }
+    }
+
+    /// <summary>Gets or sets the opacity mask associated with this visual.</summary>
+    protected internal Brush? VisualOpacityMask
+    {
+        get => _visualOpacityMask;
+        protected set => SetVisualState(ref _visualOpacityMask, value);
+    }
+
+    /// <summary>Gets or sets an optional scrollable-area clip.</summary>
+    protected internal Rect? VisualScrollableAreaClip
+    {
+        get => _visualScrollableAreaClip;
+        protected set => SetVisualState(ref _visualScrollableAreaClip, value);
+    }
+
+    /// <summary>Gets or sets the text hinting mode used by this visual.</summary>
+    protected internal TextHintingMode VisualTextHintingMode
+    {
+        get => _visualTextHintingMode;
+        set => SetVisualState(ref _visualTextHintingMode, value);
+    }
+
+    /// <summary>Gets or sets the text rendering mode used by this visual.</summary>
+    protected internal TextRenderingMode VisualTextRenderingMode
+    {
+        get => _visualTextRenderingMode;
+        set => SetVisualState(ref _visualTextRenderingMode, value);
+    }
+
+    /// <summary>Gets or sets this visual's composition transform.</summary>
+    protected internal Transform? VisualTransform
+    {
+        get => _visualTransform;
+        protected set => SetVisualState(ref _visualTransform, value, compositionOnly: true);
+    }
+
+    /// <summary>Gets or sets the vertical-edge snapping guidelines.</summary>
+    protected internal DoubleCollection? VisualXSnappingGuidelines
+    {
+        get => _visualXSnappingGuidelines;
+        protected set => SetVisualState(ref _visualXSnappingGuidelines, value);
+    }
+
+    /// <summary>Gets or sets the horizontal-edge snapping guidelines.</summary>
+    protected internal DoubleCollection? VisualYSnappingGuidelines
+    {
+        get => _visualYSnappingGuidelines;
+        protected set => SetVisualState(ref _visualYSnappingGuidelines, value);
     }
 
     // Layers whose owning visual was evicted / detached / GC'd WITHOUT a live
@@ -234,19 +382,22 @@ public abstract class Visual : DependencyObject
     /// <summary>
     /// Gets the parent visual.
     /// </summary>
-    public Visual? VisualParent => _parent;
+    protected new DependencyObject? VisualParent => _parent;
+
+    /// <summary>Strongly typed helper for derived Jalium visuals.</summary>
+    protected Visual? ParentVisual => _parent;
 
     /// <summary>
     /// Gets the number of child visuals.
     /// </summary>
-    public virtual int VisualChildrenCount => _children.Count;
+    protected new virtual int VisualChildrenCount => _children.Count;
 
     /// <summary>
     /// Gets a child visual by index.
     /// </summary>
     /// <param name="index">The index of the child.</param>
     /// <returns>The child visual.</returns>
-    public virtual Visual? GetVisualChild(int index)
+    protected new virtual Visual? GetVisualChild(int index)
     {
         if (index < 0 || index >= _children.Count)
         {
@@ -255,6 +406,12 @@ public abstract class Visual : DependencyObject
 
         return _children[index];
     }
+
+    internal Visual? InternalVisualParent => _parent;
+
+    internal int InternalVisualChildrenCount => VisualChildrenCount;
+
+    internal Visual? InternalGetVisualChild(int index) => GetVisualChild(index);
 
     /// <summary>
     /// Adds a child visual.
@@ -284,7 +441,12 @@ public abstract class Visual : DependencyObject
             // should be a no-op. Happens during own-container realization when
             // multiple pipelines (ItemsControl populate + VSP realize) converge
             // on the same container within one layout pass.
-            if (!_children.Contains(child)) _children.Add(child);
+            if (!_children.Contains(child))
+            {
+                _children.Add(child);
+                ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
+            }
+            ((DependencyObject)child).VisualParent = this;
             return;
         }
 
@@ -295,7 +457,9 @@ public abstract class Visual : DependencyObject
 
         var oldParent = child._parent;
         child._parent = this;
+        ((DependencyObject)child).VisualParent = this;
         _children.Add(child);
+        ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
 
         // Propagate diagnostics-ignored flag down. Doing this at attach time
         // (not at ShouldIgnore query time) means the check is O(1) later,
@@ -305,6 +469,11 @@ public abstract class Visual : DependencyObject
 
         OnVisualChildrenChanged(child, null);
         child.OnVisualParentChanged(oldParent);
+        Diagnostics.VisualDiagnostics.NotifyVisualChildChanged(
+            this,
+            child,
+            _children.Count - 1,
+            Diagnostics.VisualTreeChangeType.Add);
     }
 
     /// <summary>
@@ -354,10 +523,17 @@ public abstract class Visual : DependencyObject
 
         var oldParent = child._parent;
         child._parent = null;
+        ((DependencyObject)child).VisualParent = null;
         _children.Remove(child);
+        ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
 
         OnVisualChildrenChanged(null, child);
         child.OnVisualParentChanged(oldParent);
+        Diagnostics.VisualDiagnostics.NotifyVisualChildChanged(
+            this,
+            child,
+            -1,
+            Diagnostics.VisualTreeChangeType.Remove);
     }
 
     /// <summary>
@@ -365,6 +541,12 @@ public abstract class Visual : DependencyObject
     /// </summary>
     /// <param name="oldParent">The previous parent visual, or null.</param>
     protected virtual void OnVisualParentChanged(Visual? oldParent)
+    {
+        OnVisualParentChanged((DependencyObject?)oldParent);
+    }
+
+    /// <summary>Called when the dependency-object visual parent changes.</summary>
+    protected internal virtual void OnVisualParentChanged(DependencyObject? oldParent)
     {
     }
 
@@ -387,6 +569,32 @@ public abstract class Visual : DependencyObject
     /// <param name="visualRemoved">The child that was removed, if any.</param>
     protected virtual void OnVisualChildrenChanged(Visual? visualAdded, Visual? visualRemoved)
     {
+        OnVisualChildrenChanged((DependencyObject?)visualAdded, visualRemoved);
+    }
+
+    /// <summary>Called when dependency-object children are added to or removed from this visual.</summary>
+    protected internal virtual void OnVisualChildrenChanged(
+        DependencyObject? visualAdded,
+        DependencyObject? visualRemoved)
+    {
+    }
+
+    private void SetVisualState<T>(ref T storage, T value, bool compositionOnly = false)
+    {
+        if (EqualityComparer<T>.Default.Equals(storage, value))
+        {
+            return;
+        }
+
+        storage = value;
+        if (compositionOnly)
+        {
+            MarkSubtreeDirtyForComposition();
+        }
+        else
+        {
+            SetRenderDirty();
+        }
     }
 
     /// <summary>
@@ -510,6 +718,30 @@ public abstract class Visual : DependencyObject
     {
         return null;
     }
+
+    protected virtual HitTestResult? HitTestCore(PointHitTestParameters hitTestParameters)
+    {
+        ArgumentNullException.ThrowIfNull(hitTestParameters);
+        return HitTestCore(hitTestParameters.HitPoint);
+    }
+
+    protected virtual GeometryHitTestResult? HitTestCore(GeometryHitTestParameters hitTestParameters)
+    {
+        ArgumentNullException.ThrowIfNull(hitTestParameters);
+        return null;
+    }
+
+    internal HitTestResult? HitTestPointCore(PointHitTestParameters hitTestParameters) =>
+        HitTestCore(hitTestParameters);
+
+    internal GeometryHitTestResult? HitTestGeometryCore(GeometryHitTestParameters hitTestParameters) =>
+        HitTestCore(hitTestParameters);
+
+    internal virtual Rect ContentBoundsCore =>
+        this is UIElement element ? new Rect(element.RenderSize) : Rect.Empty;
+
+    /// <summary>Returns retained vector content for VisualTreeHelper.GetDrawing.</summary>
+    internal virtual DrawingGroup? DrawingCore => null;
 
     /// <summary>
     /// Performs rendering using the specified drawing context.
@@ -1194,6 +1426,176 @@ public abstract class Visual : DependencyObject
     {
     }
 
+    /// <summary>Determines whether this visual is an ancestor of the specified object.</summary>
+    public bool IsAncestorOf(DependencyObject descendant)
+    {
+        ArgumentNullException.ThrowIfNull(descendant);
+
+        for (Visual? current = descendant as Visual; current != null; current = current.InternalVisualParent)
+        {
+            if (ReferenceEquals(current.InternalVisualParent, this))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Determines whether this visual is a descendant of the specified object.</summary>
+    public bool IsDescendantOf(DependencyObject ancestor)
+    {
+        ArgumentNullException.ThrowIfNull(ancestor);
+        return ancestor is Visual visual && visual.IsAncestorOf(this);
+    }
+
+    /// <summary>Finds the nearest visual ancestor shared with the specified object.</summary>
+    public DependencyObject? FindCommonVisualAncestor(DependencyObject otherVisual)
+    {
+        ArgumentNullException.ThrowIfNull(otherVisual);
+
+        if (otherVisual is not Visual other)
+        {
+            return null;
+        }
+
+        var ancestors = new HashSet<Visual>();
+        for (Visual? current = this; current != null; current = current.InternalVisualParent)
+        {
+            ancestors.Add(current);
+        }
+
+        for (Visual? current = other; current != null; current = current.InternalVisualParent)
+        {
+            if (ancestors.Contains(current))
+            {
+                return current;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Transforms a point from this visual's coordinates to screen coordinates.</summary>
+    public Point PointToScreen(Point point)
+    {
+        Point rootPoint = GetTransformToRoot()?.Transform(point) ?? point;
+        IWindowHost? host = FindWindowHost();
+        if (host is null || host.Handle == nint.Zero || !OperatingSystem.IsWindows())
+        {
+            return rootPoint;
+        }
+
+        double scale = host.DpiScale > 0.0 ? host.DpiScale : 1.0;
+        var nativePoint = new Interop.Win32.POINT
+        {
+            X = checked((int)Math.Round(rootPoint.X * scale)),
+            Y = checked((int)Math.Round(rootPoint.Y * scale)),
+        };
+        _ = Interop.Win32.Win32Methods.ClientToScreen(host.Handle, ref nativePoint);
+        return new Point(nativePoint.X, nativePoint.Y);
+    }
+
+    /// <summary>Transforms a point from screen coordinates to this visual's coordinates.</summary>
+    public Point PointFromScreen(Point point)
+    {
+        Point rootPoint = point;
+        IWindowHost? host = FindWindowHost();
+        if (host is not null && host.Handle != nint.Zero && OperatingSystem.IsWindows())
+        {
+            var nativePoint = new Interop.Win32.POINT
+            {
+                X = checked((int)Math.Round(point.X)),
+                Y = checked((int)Math.Round(point.Y)),
+            };
+            _ = Interop.Win32.Win32Methods.ScreenToClient(host.Handle, ref nativePoint);
+            double scale = host.DpiScale > 0.0 ? host.DpiScale : 1.0;
+            rootPoint = new Point(nativePoint.X / scale, nativePoint.Y / scale);
+        }
+
+        GeneralTransform? inverse = GetTransformToRoot()?.Inverse;
+        return inverse?.Transform(rootPoint) ?? rootPoint;
+    }
+
+    /// <summary>Returns the transform from this visual to an ancestor visual.</summary>
+    public Media.GeneralTransform TransformToAncestor(Visual ancestor)
+    {
+        ArgumentNullException.ThrowIfNull(ancestor);
+        if (!ReferenceEquals(this, ancestor) && !ancestor.IsAncestorOf(this))
+        {
+            throw new InvalidOperationException("The specified visual is not an ancestor of this visual.");
+        }
+
+        return ToMediaGeneralTransform(TransformToVisual(ancestor));
+    }
+
+    /// <summary>
+    /// Returns a transform from this two-dimensional visual into an ancestor 3-D visual when
+    /// this visual is hosted by a Viewport2DVisual3D in that ancestor's subtree.
+    /// </summary>
+    public GeneralTransform2DTo3D TransformToAncestor(Visual3D ancestor)
+    {
+        ArgumentNullException.ThrowIfNull(ancestor);
+
+        Viewport2DVisual3D? host = FindVisual3DHost(ancestor, this);
+        if (host?.Visual is not Visual hostedRoot)
+        {
+            throw new InvalidOperationException(
+                "This visual is not hosted below the specified Visual3D ancestor.");
+        }
+
+        Media.GeneralTransform transform2D = ReferenceEquals(this, hostedRoot)
+            ? new Media.MatrixTransform(Matrix.Identity)
+            : TransformToAncestor(hostedRoot);
+        GeneralTransform3D transform3D = host.TransformToAncestor(ancestor);
+        return new GeneralTransform2DTo3D(transform2D, host, transform3D);
+    }
+
+    /// <summary>Returns the transform from this visual to a descendant visual.</summary>
+    public Media.GeneralTransform TransformToDescendant(Visual descendant)
+    {
+        ArgumentNullException.ThrowIfNull(descendant);
+        if (!ReferenceEquals(this, descendant) && !IsAncestorOf(descendant))
+        {
+            throw new InvalidOperationException("The specified visual is not a descendant of this visual.");
+        }
+
+        return ToMediaGeneralTransform(TransformToVisual(descendant));
+    }
+
+    /// <summary>Called when the DPI used to render this visual changes.</summary>
+    protected virtual void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
+    {
+    }
+
+    internal DpiScale DpiScale => _dpiScale;
+
+    internal void SetRootDpi(DpiScale dpiScale)
+    {
+        if (_dpiScale == dpiScale)
+        {
+            return;
+        }
+
+        DpiScale oldDpi = _dpiScale;
+        _dpiScale = dpiScale;
+        OnDpiChanged(oldDpi, dpiScale);
+        SetRenderDirty();
+    }
+
+    private IWindowHost? FindWindowHost()
+    {
+        for (Visual? current = this; current != null; current = current.InternalVisualParent)
+        {
+            if (current is IWindowHost host)
+            {
+                return host;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// Returns a transform that can be used to transform coordinates from this Visual to the specified Visual.
     /// </summary>
@@ -1225,6 +1627,48 @@ public abstract class Visual : DependencyObject
         return group;
     }
 
+    private static Media.GeneralTransform ToMediaGeneralTransform(GeneralTransform? transform)
+    {
+        if (transform is null)
+        {
+            return new Media.MatrixTransform(Matrix.Identity);
+        }
+
+        // The legacy Jalium transform returned by TransformToVisual is affine. Sampling the
+        // origin and unit axes preserves its full translate/scale/rotate/skew matrix while
+        // returning WPF's canonical Media.GeneralTransform hierarchy.
+        Point origin = transform.Transform(default);
+        Point unitX = transform.Transform(new Point(1.0, 0.0));
+        Point unitY = transform.Transform(new Point(0.0, 1.0));
+        return new Media.MatrixTransform(new Matrix(
+            unitX.X - origin.X,
+            unitX.Y - origin.Y,
+            unitY.X - origin.X,
+            unitY.Y - origin.Y,
+            origin.X,
+            origin.Y));
+    }
+
+    private static Viewport2DVisual3D? FindVisual3DHost(Visual3D current, Visual reference)
+    {
+        if (current is Viewport2DVisual3D host && host.Visual is Visual root &&
+            (ReferenceEquals(root, reference) || root.IsAncestorOf(reference)))
+        {
+            return host;
+        }
+
+        foreach (Visual3D child in current.InternalChildren)
+        {
+            Viewport2DVisual3D? found = FindVisual3DHost(child, reference);
+            if (found is not null)
+            {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// Gets the transform from this visual to the root of the visual tree.
     /// </summary>
@@ -1246,41 +1690,5 @@ public abstract class Visual : DependencyObject
             return new MatrixGeneralTransform(uiElement.GetRenderMatrix());
 
         return new MatrixGeneralTransform(Matrix.Identity);
-    }
-}
-
-/// <summary>
-/// Result of a hit test operation.
-/// </summary>
-public class HitTestResult
-{
-    // Reusable instance to avoid allocations on every mouse move
-    [ThreadStatic]
-    private static HitTestResult? _reusable;
-
-    /// <summary>
-    /// Gets the visual that was hit.
-    /// </summary>
-    public Visual VisualHit { get; private set; }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="HitTestResult"/> class.
-    /// </summary>
-    /// <param name="visualHit">The visual that was hit.</param>
-    public HitTestResult(Visual visualHit)
-    {
-        VisualHit = visualHit;
-    }
-
-    /// <summary>
-    /// Gets a reusable HitTestResult instance to avoid allocations.
-    /// </summary>
-    /// <param name="visualHit">The visual that was hit.</param>
-    /// <returns>A HitTestResult instance.</returns>
-    internal static HitTestResult GetReusable(Visual visualHit)
-    {
-        _reusable ??= new HitTestResult(visualHit);
-        _reusable.VisualHit = visualHit;
-        return _reusable;
     }
 }

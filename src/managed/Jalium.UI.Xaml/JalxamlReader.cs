@@ -1198,9 +1198,7 @@ internal sealed class JalxamlReader : XmlReader, IXmlLineInfo
         {
             // _src[_pos..] starts with "@{"
             var blockStart = _pos;
-            var codeStart = _pos + 2;
-            var braceEnd = RazorCodeBlockPreprocessor.FindMatchingBrace(_src, codeStart);
-            if (braceEnd < 0)
+            if (!TryCollectExecutionGroup(_src, blockStart, out var consumedEnd, out var code))
             {
                 // Unbalanced — emit the '@' as literal text and let the loop continue
                 sb.Append('@');
@@ -1208,12 +1206,12 @@ internal sealed class JalxamlReader : XmlReader, IXmlLineInfo
                 return;
             }
 
-            var code = _src.Substring(codeStart, braceEnd - codeStart).Trim();
-
-            // Advance outer position past the entire @{ ... } block
-            while (_pos < braceEnd + 1) Advance();
-
+            // Collect the complete adjacent execution group before expanding any part of it.
+            // This guarantees that side effects run once and every construct shares one scope.
             var expanded = RazorCodeBlockPreprocessor.ExpandCodeBlock(code);
+
+            // Advance past every construct in the collected group.
+            while (_pos < consumedEnd) Advance();
             if (string.IsNullOrEmpty(expanded))
                 return;
 
@@ -1240,25 +1238,123 @@ internal sealed class JalxamlReader : XmlReader, IXmlLineInfo
         {
             if (_pos >= _src.Length || _src[_pos] != '@') return false;
 
-            int blockEnd;
-            string code;
-            if (!RazorCodeBlockPreprocessor.TryMatchBlockDirective(_src, _pos, out blockEnd, out code)
-                && !RazorCodeBlockPreprocessor.TryMatchDoWhileDirective(_src, _pos, out blockEnd, out code)
-                && !RazorCodeBlockPreprocessor.TryMatchTryCatchDirective(_src, _pos, out blockEnd, out code))
+            if (!TryMatchFlowControlDirective(_src, _pos, out _, out _)
+                || !TryCollectExecutionGroup(_src, _pos, out var blockEnd, out var code))
             {
                 return false;
             }
+
+            // Expand once, after the complete adjacent execution group has been collected.
+            var expanded = RazorCodeBlockPreprocessor.ExpandCodeBlock(code);
 
             FlushText(sb, ref startLine, ref startCol, ref startPos);
 
             // Advance outer position past the entire directive
             while (_pos < blockEnd) Advance();
 
-            var expanded = RazorCodeBlockPreprocessor.ExpandCodeBlock(code);
-            if (!string.IsNullOrEmpty(expanded))
-                TokenizeNested(expanded);
+            if (string.IsNullOrEmpty(expanded))
+                return true;
+
+            if (RazorCodeBlockPreprocessor.IsRuntimeCodeBlock(expanded))
+            {
+                // Pure code is deferred to the runtime template engine. Appending the already
+                // expanded form avoids recursively expanding the same execution group again.
+                sb.Append(expanded);
+                return true;
+            }
+
+            TokenizeNested(expanded);
 
             return true;
+        }
+
+        /// <summary>
+        /// Collects one complete Razor execution group beginning at <paramref name="atPosition"/>.
+        /// A group consists of any number of <c>@{ ... }</c> blocks and supported flow-control
+        /// directives separated only by whitespace. The original whitespace is retained in the
+        /// combined code so token and line boundaries are not changed before the single expansion.
+        /// </summary>
+        private static bool TryCollectExecutionGroup(
+            string source,
+            int atPosition,
+            out int groupEnd,
+            out string code)
+        {
+            groupEnd = atPosition;
+            code = string.Empty;
+
+            var combined = new StringBuilder();
+            var constructStart = atPosition;
+            var previousEnd = atPosition;
+            var foundAny = false;
+
+            while (TryMatchExecutionConstruct(
+                       source,
+                       constructStart,
+                       out var constructEnd,
+                       out var constructCode))
+            {
+                if (foundAny)
+                    combined.Append(source, previousEnd, constructStart - previousEnd);
+
+                combined.Append(constructCode);
+                foundAny = true;
+                previousEnd = constructEnd;
+                groupEnd = constructEnd;
+
+                constructStart = constructEnd;
+                while (constructStart < source.Length && char.IsWhiteSpace(source[constructStart]))
+                    constructStart++;
+            }
+
+            if (!foundAny)
+                return false;
+
+            code = combined.ToString();
+            return true;
+        }
+
+        private static bool TryMatchExecutionConstruct(
+            string source,
+            int atPosition,
+            out int blockEnd,
+            out string code)
+        {
+            blockEnd = atPosition;
+            code = string.Empty;
+
+            if (atPosition < 0 || atPosition + 1 >= source.Length || source[atPosition] != '@')
+                return false;
+
+            if (source[atPosition + 1] == '{')
+            {
+                var codeStart = atPosition + 2;
+                var braceEnd = RazorCodeBlockPreprocessor.FindMatchingBrace(source, codeStart);
+                if (braceEnd < 0)
+                    return false;
+
+                blockEnd = braceEnd + 1;
+                code = source.Substring(codeStart, braceEnd - codeStart);
+                return true;
+            }
+
+            if (!TryMatchFlowControlDirective(source, atPosition, out blockEnd, out _))
+                return false;
+
+            // Keep the directive's original formatting while removing only the leading '@'.
+            code = source.Substring(atPosition + 1, blockEnd - atPosition - 1);
+            return true;
+        }
+
+        private static bool TryMatchFlowControlDirective(
+            string source,
+            int atPosition,
+            out int blockEnd,
+            out string code)
+        {
+            return RazorCodeBlockPreprocessor.TryMatchBlockDirective(source, atPosition, out blockEnd, out code)
+                || RazorCodeBlockPreprocessor.TryMatchDoWhileDirective(source, atPosition, out blockEnd, out code)
+                || RazorCodeBlockPreprocessor.TryMatchTryCatchDirective(source, atPosition, out blockEnd, out code);
         }
 
         /// <summary>

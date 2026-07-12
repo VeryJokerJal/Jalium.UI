@@ -47,11 +47,12 @@ public class MenuKeyboardTests
         ResetApplicationState();
         ResetInputState();
         _ = new Application();
+        MenuBarItem? fileItem = null;
 
         try
         {
             var fileCommand = new MenuFlyoutItem { Text = "Open" };
-            var fileItem = new MenuBarItem { Title = "File" };
+            fileItem = new MenuBarItem { Title = "File" };
             fileItem.Items.Add(fileCommand);
 
             var menuBar = new MenuBar();
@@ -76,6 +77,7 @@ public class MenuKeyboardTests
         }
         finally
         {
+            fileItem?.CloseMenu();
             ResetInputState();
             ResetApplicationState();
         }
@@ -131,15 +133,17 @@ public class MenuKeyboardTests
         ResetApplicationState();
         ResetInputState();
         _ = new Application();
+        MenuBarItem? fileItem = null;
+        MenuBarItem? editItem = null;
 
         try
         {
             var openItem = new MenuFlyoutItem { Text = "Open" };
             var pasteItem = new MenuFlyoutItem { Text = "Paste" };
 
-            var fileItem = new MenuBarItem { Title = "File" };
+            fileItem = new MenuBarItem { Title = "File" };
             fileItem.Items.Add(openItem);
-            var editItem = new MenuBarItem { Title = "Edit" };
+            editItem = new MenuBarItem { Title = "Edit" };
             editItem.Items.Add(pasteItem);
 
             var menuBar = new MenuBar();
@@ -169,6 +173,8 @@ public class MenuKeyboardTests
         }
         finally
         {
+            editItem?.CloseMenu();
+            fileItem?.CloseMenu();
             ResetInputState();
             ResetApplicationState();
         }

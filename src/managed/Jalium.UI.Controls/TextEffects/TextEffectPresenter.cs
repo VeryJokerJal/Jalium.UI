@@ -69,7 +69,10 @@ public partial class TextEffectPresenter : FrameworkElement
     /// </summary>
     public static readonly DependencyProperty FontFamilyProperty =
         Jalium.UI.Documents.TextElement.FontFamilyProperty.AddOwner(typeof(TextEffectPresenter),
-            new PropertyMetadata(FrameworkElement.DefaultFontFamilyName, OnFontPropertyChanged, null, inherits: true));
+            new FrameworkPropertyMetadata(
+                SystemFonts.MessageFontFamily,
+                FrameworkPropertyMetadataOptions.Inherits,
+                OnFontPropertyChanged));
 
     /// <summary>
     /// Identifies the <see cref="FontSize"/> dependency property.
@@ -222,7 +225,7 @@ public partial class TextEffectPresenter : FrameworkElement
     }
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
         return new TextEffectPresenterAutomationPeer(this);
     }
@@ -239,9 +242,9 @@ public partial class TextEffectPresenter : FrameworkElement
     }
 
     /// <summary>Gets or sets the font family.</summary>
-    public string FontFamily
+    public FontFamily FontFamily
     {
-        get => (string)(GetValue(FontFamilyProperty) ?? FrameworkElement.DefaultFontFamilyName);
+        get => (FontFamily)GetValue(FontFamilyProperty)!;
         set => SetValue(FontFamilyProperty, value);
     }
 

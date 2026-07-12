@@ -21,6 +21,17 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     // The GCHandle to 'this' passed as userData to the native callback
     private GCHandle _selfHandle;
 
+    internal static string? CodepointToText(uint codepoint)
+    {
+        if (!System.Text.Rune.TryCreate(codepoint, out var rune) ||
+            System.Text.Rune.IsControl(rune))
+            return null;
+
+        Span<char> utf16 = stackalloc char[2];
+        int length = rune.EncodeToUtf16(utf16);
+        return new string(utf16[..length]);
+    }
+
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void NativeEventCallbackDelegate(nint eventPtr, nint userData);
 
@@ -33,32 +44,51 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         // Pin 'this' so we can recover it from userData
         _selfHandle = GCHandle.Alloc(this);
 
-        unsafe
+        try
         {
-            fixed (char* titlePtr = title)
+            unsafe
             {
-                var windowParams = new NativePlatformWindowParams
+                // C# char is a fixed-width UTF-16 code unit. The native ABI uses
+                // uint16_t rather than wchar_t so this remains valid on Linux,
+                // where wchar_t is 32-bit.
+                fixed (char* titlePtr = title)
                 {
-                    Title = (nint)titlePtr,
-                    X = x,
-                    Y = y,
-                    Width = width,
-                    Height = height,
-                    Style = style,
-                    ParentHandle = parent,
-                };
+                    var windowParams = new NativePlatformWindowParams
+                    {
+                        Title = (nint)titlePtr,
+                        X = x,
+                        Y = y,
+                        Width = width,
+                        Height = height,
+                        Style = style,
+                        ParentHandle = parent,
+                    };
 
-                _handle = NativeMethods.WindowCreate(ref windowParams);
+                    _handle = NativeMethods.WindowCreate(ref windowParams);
+                }
             }
+
+            if (_handle == nint.Zero)
+                throw new InvalidOperationException("Failed to create platform window.");
+
+            // Register event callback with native window
+            WindowSetEventCallback(_handle,
+                Marshal.GetFunctionPointerForDelegate(_nativeCallback),
+                GCHandle.ToIntPtr(_selfHandle));
         }
-
-        if (_handle == nint.Zero)
-            throw new InvalidOperationException("Failed to create platform window.");
-
-        // Register event callback with native window
-        WindowSetEventCallback(_handle,
-            Marshal.GetFunctionPointerForDelegate(_nativeCallback),
-            GCHandle.ToIntPtr(_selfHandle));
+        catch
+        {
+            if (_handle != nint.Zero)
+            {
+                NativeMethods.WindowDestroy(_handle);
+                _handle = nint.Zero;
+            }
+            if (_selfHandle.IsAllocated)
+                _selfHandle.Free();
+            if (_callbackHandle.IsAllocated)
+                _callbackHandle.Free();
+            throw;
+        }
     }
 
     public nint NativeHandle => _handle != nint.Zero
@@ -86,7 +116,10 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     public void Close()
     {
         if (_handle != nint.Zero)
+        {
+            WindowSetEventCallback(_handle, nint.Zero, nint.Zero);
             NativeMethods.WindowDestroy(_handle);
+        }
         _handle = nint.Zero;
     }
 
@@ -179,11 +212,12 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
 
         // Union data - use largest member size with explicit offsets
         // We read the union based on event type, using the flat struct below.
-        // Sized to hold the largest union member (pointer event = 44 bytes)
+        // Sized to hold the largest union member (drag event = 56 bytes on
+        // 64-bit platforms).
         public float Data0, Data1, Data2, Data3;
         public float Data4, Data5, Data6, Data7;
-        public float Data8, Data9;
-        public int Data10;
+        public float Data8, Data9, Data10, Data11;
+        public float Data12, Data13;
     }
 
     /// <summary>
@@ -271,6 +305,18 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                     evt.Codepoint = (uint)idata[0];
                     break;
 
+                case PlatformEventType.CompositionStart:
+                case PlatformEventType.CompositionUpdate:
+                case PlatformEventType.CompositionEnd:
+                {
+                    nint textPointer = *(nint*)data;
+                    evt.CompositionText = textPointer == nint.Zero
+                        ? string.Empty
+                        : Marshal.PtrToStringUTF8(textPointer) ?? string.Empty;
+                    evt.CompositionCursor = *(int*)((byte*)data + nint.Size);
+                    break;
+                }
+
                 case PlatformEventType.PointerDown:
                 case PlatformEventType.PointerUp:
                 case PlatformEventType.PointerMove:
@@ -301,6 +347,37 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                 case PlatformEventType.OrientationChanged:
                     evt.Orientation = idata[0];
                     break;
+
+                case PlatformEventType.DragEnter:
+                case PlatformEventType.DragOver:
+                case PlatformEventType.DragLeave:
+                case PlatformEventType.Drop:
+                case PlatformEventType.DragFinished:
+                {
+                    evt.MouseX = data[0];
+                    evt.MouseY = data[1];
+                    evt.DragKeyStates = (uint)idata[2];
+                    evt.DragAllowedEffects = (uint)idata[3];
+                    evt.DragSessionId = *(ulong*)((byte*)data + 16);
+
+                    nint mimeTypes = *(nint*)((byte*)data + 24);
+                    string? formats = mimeTypes == nint.Zero ? null : Marshal.PtrToStringUTF8(mimeTypes);
+                    evt.DragMimeTypes = string.IsNullOrEmpty(formats)
+                        ? []
+                        : formats.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+                    nint dataMime = *(nint*)((byte*)data + 32);
+                    evt.DragDataMimeType = dataMime == nint.Zero ? null : Marshal.PtrToStringUTF8(dataMime);
+
+                    nint bytes = *(nint*)((byte*)data + 40);
+                    int length = *(int*)((byte*)data + 48);
+                    if (bytes != nint.Zero && length > 0)
+                    {
+                        evt.DragData = new byte[length];
+                        Marshal.Copy(bytes, evt.DragData, 0, length);
+                    }
+                    break;
+                }
             }
         }
 
@@ -331,4 +408,24 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     // P/Invoke for event callback registration
     [LibraryImport("jalium.native.platform", EntryPoint = "jalium_window_set_event_callback")]
     private static partial void WindowSetEventCallback(nint window, nint callback, nint userData);
+
+    internal void SetDragEffect(ulong sessionId, uint effect)
+    {
+        if (_handle != nint.Zero)
+            NativeMethods.DragSetEffect(_handle, sessionId, effect);
+    }
+
+    internal unsafe uint BeginDrag(ReadOnlySpan<NativeDragDataItem> items, uint allowedEffects)
+    {
+        if (_handle == nint.Zero || items.IsEmpty)
+            return 0;
+
+        fixed (NativeDragDataItem* itemsPtr = items)
+        {
+            int result = NativeMethods.DragBegin(
+                _handle, (nint)itemsPtr, (uint)items.Length, allowedEffects,
+                out uint performedEffect);
+            return result == 0 ? performedEffect : 0;
+        }
+    }
 }

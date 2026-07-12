@@ -11,9 +11,9 @@ namespace Jalium.UI.Controls;
 public class ToastNotificationHost : Panel
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ToastNotificationHostAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ToastNotificationHostAutomationPeer(this);
     }
 
     #region Dependency Properties

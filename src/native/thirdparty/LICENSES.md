@@ -11,6 +11,7 @@ All single-header libraries vendored under `src/native/thirdparty/` are dual-lic
 | `dr_libs/dr_flac.h` | v0.13.4 | https://github.com/mackron/dr_libs | Public domain or MIT-0 | `47a4f08e777faddf59a8955c4ea84f69f41020d5` |
 | `minimp3/minimp3.h` | — | https://github.com/lieff/minimp3 | CC0 (public domain) | `7b590fdcfa5a79c033e76eacc05d0c3e4c79f536` |
 | `minimp3/minimp3_ex.h` | — | https://github.com/lieff/minimp3 | CC0 (public domain) | `7b590fdcfa5a79c033e76eacc05d0c3e4c79f536` |
+| `stb/stb_image.h` | v2.30 | https://github.com/nothings/stb | Public domain or MIT | `31c1ad37456438565541f4919958214b6e762fb4` |
 | `stb/stb_vorbis.c` | v1.22 | https://github.com/nothings/stb | Public domain or MIT | `31c1ad37456438565541f4919958214b6e762fb4` |
 
 To update, re-pull from the corresponding raw URL at a chosen commit:
@@ -40,4 +41,5 @@ Each single-header is implemented in **exactly one** `.cpp` to avoid duplicate s
 | `dr_wav.h`    | `src/native/jalium.native.media.core/src/audio/decoder_wav.cpp` (defines `DR_WAV_IMPLEMENTATION` before include) |
 | `dr_flac.h`   | `src/native/jalium.native.media.core/src/audio/decoder_flac.cpp` (defines `DR_FLAC_IMPLEMENTATION` before include) |
 | `minimp3_ex.h`| `src/native/jalium.native.media.core/src/audio/decoder_mp3.cpp` (defines `MINIMP3_IMPLEMENTATION` before include) |
+| `stb_image.h` | `src/native/jalium.native.vulkan/src/vulkan_backend.cpp` and `src/native/jalium.native.software/src/software_backend.cpp` (one private implementation in each shared backend) |
 | `stb_vorbis.c`| `src/native/jalium.native.media.core/src/audio/decoder_vorbis.cpp` (directly `#include "stb_vorbis.c"`; no separate header) |

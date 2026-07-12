@@ -1,3 +1,7 @@
+using Jalium.UI.Media;
+using Jalium.UI.Media.Effects;
+using Jalium.UI.Media.Media3D;
+
 namespace Jalium.UI;
 
 /// <summary>
@@ -13,7 +17,7 @@ public static class VisualTreeHelper
         ArgumentNullException.ThrowIfNull(reference);
 
         if (reference is Visual visual)
-            return visual.VisualChildrenCount;
+            return visual.InternalVisualChildrenCount;
 
         return 0;
     }
@@ -26,7 +30,7 @@ public static class VisualTreeHelper
         ArgumentNullException.ThrowIfNull(reference);
 
         if (reference is Visual visual)
-            return visual.GetVisualChild(childIndex);
+            return visual.InternalGetVisualChild(childIndex);
 
         throw new ArgumentException("Reference must be a Visual.", nameof(reference));
     }
@@ -39,7 +43,7 @@ public static class VisualTreeHelper
         ArgumentNullException.ThrowIfNull(reference);
 
         if (reference is Visual visual)
-            return visual.VisualParent;
+            return visual.InternalVisualParent;
 
         return null;
     }
@@ -54,9 +58,9 @@ public static class VisualTreeHelper
         if (reference is not Visual visual)
             return null;
 
-        while (visual.VisualParent != null)
+        while (visual.InternalVisualParent != null)
         {
-            visual = visual.VisualParent;
+            visual = visual.InternalVisualParent;
         }
 
         return visual;
@@ -74,11 +78,146 @@ public static class VisualTreeHelper
         return bounds;
     }
 
+    /// <summary>Returns the content bounds for a visual, excluding descendants.</summary>
+    public static Rect GetContentBounds(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference.ContentBoundsCore;
+    }
+
+    /// <summary>Returns retained vector content recorded by a visual, when available.</summary>
+    public static DrawingGroup? GetDrawing(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference.DrawingCore;
+    }
+
+    /// <summary>Returns the local model bounds owned directly by a 3-D visual.</summary>
+    public static Rect3D GetContentBounds(Visual3D reference) =>
+        Visual3DTreeHelper.GetContentBounds(reference);
+
+    /// <summary>Returns local bounds enclosing a complete 3-D visual subtree.</summary>
+    public static Rect3D GetDescendantBounds(Visual3D reference) =>
+        Visual3DTreeHelper.GetDescendantBounds(reference);
+
+    /// <summary>Returns the legacy bitmap effect associated with a visual.</summary>
+    [Obsolete("BitmapEffect is deprecated. Use Effect instead.")]
+    public static BitmapEffect? GetBitmapEffect(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference is UIElement element ? element.BitmapEffect : reference.VisualBitmapEffect;
+    }
+
+    /// <summary>Returns the legacy bitmap-effect input associated with a visual.</summary>
+    [Obsolete("BitmapEffectInput is deprecated. Use Effect instead.")]
+    public static BitmapEffectInput? GetBitmapEffectInput(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference is UIElement element ? element.BitmapEffectInput : reference.VisualBitmapEffectInput;
+    }
+
+    /// <summary>Returns the cache mode associated with a visual.</summary>
+    public static CacheMode? GetCacheMode(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference is UIElement element ? element.CacheMode : reference.VisualCacheMode;
+    }
+
+    /// <summary>Returns the composition clip associated with a visual.</summary>
+    public static Geometry? GetClip(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference is UIElement element ? element.Clip : reference.VisualClip;
+    }
+
+    /// <summary>Returns the DPI scale used to render a visual.</summary>
+    public static DpiScale GetDpi(Visual visual)
+    {
+        ArgumentNullException.ThrowIfNull(visual);
+        if (visual is IWindowHost host)
+        {
+            double scale = host.DpiScale > 0.0 ? host.DpiScale : 1.0;
+            return new DpiScale(scale, scale);
+        }
+
+        return visual.DpiScale;
+    }
+
+    /// <summary>Returns the edge-rendering mode associated with a visual.</summary>
+    public static EdgeMode GetEdgeMode(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference is UIElement ? RenderOptions.GetEdgeMode(reference) : reference.VisualEdgeMode;
+    }
+
+    /// <summary>Returns the shader effect associated with a visual.</summary>
+    public static Effect? GetEffect(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference is UIElement element ? element.Effect : reference.VisualEffect;
+    }
+
+    /// <summary>Returns the composition offset associated with a visual.</summary>
+    public static Vector GetOffset(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        if (reference is UIElement element)
+        {
+            return new Vector(
+                element.VisualBounds.X + element.RenderOffset.X,
+                element.VisualBounds.Y + element.RenderOffset.Y);
+        }
+
+        return reference.VisualOffset;
+    }
+
+    /// <summary>Returns the composition opacity associated with a visual.</summary>
+    public static double GetOpacity(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference is UIElement element ? element.Opacity : reference.VisualOpacity;
+    }
+
+    /// <summary>Returns the opacity mask associated with a visual.</summary>
+    public static Brush? GetOpacityMask(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference is UIElement element ? element.OpacityMask : reference.VisualOpacityMask;
+    }
+
+    /// <summary>Returns the composition transform associated with a visual.</summary>
+    public static Transform? GetTransform(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference is UIElement element ? element.RenderTransform : reference.VisualTransform;
+    }
+
+    /// <summary>Returns the vertical-edge snapping guidelines associated with a visual.</summary>
+    public static DoubleCollection? GetXSnappingGuidelines(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference.VisualXSnappingGuidelines;
+    }
+
+    /// <summary>Returns the horizontal-edge snapping guidelines associated with a visual.</summary>
+    public static DoubleCollection? GetYSnappingGuidelines(Visual reference)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        return reference.VisualYSnappingGuidelines;
+    }
+
+    /// <summary>Sets the DPI scale on a root visual and raises its DPI-change hook.</summary>
+    public static void SetRootDpi(Visual visual, DpiScale dpiInfo)
+    {
+        ArgumentNullException.ThrowIfNull(visual);
+        visual.SetRootDpi(dpiInfo);
+    }
+
     private static void GetDescendantBoundsCore(Visual parent, double offsetX, double offsetY, ref Rect bounds)
     {
-        for (int i = 0; i < parent.VisualChildrenCount; i++)
+        for (int i = 0; i < parent.InternalVisualChildrenCount; i++)
         {
-            var child = parent.GetVisualChild(i);
+            var child = parent.InternalGetVisualChild(i);
             if (child == null) continue;
 
             double childOffsetX = offsetX, childOffsetY = offsetY;
@@ -113,9 +252,9 @@ public static class VisualTreeHelper
 
         // Walk the visual tree from top to bottom (reverse child order)
         // Use incremental coordinate transform instead of TransformToVisual per child
-        for (int i = reference.VisualChildrenCount - 1; i >= 0; i--)
+        for (int i = reference.InternalVisualChildrenCount - 1; i >= 0; i--)
         {
-            var child = reference.GetVisualChild(i);
+            var child = reference.InternalGetVisualChild(i);
             if (child == null) continue;
 
             // Compute child offset directly instead of TransformToVisual + Inverse
@@ -132,6 +271,12 @@ public static class VisualTreeHelper
             var result = HitTest(child, childPoint);
             if (result != null)
                 return result;
+        }
+
+        HitTestResult? customResult = reference.HitTestPointCore(new PointHitTestParameters(point));
+        if (customResult != null)
+        {
+            return customResult;
         }
 
         // Test the reference itself
@@ -165,7 +310,23 @@ public static class VisualTreeHelper
         {
             HitTestWithFilter(reference, filterCallback, resultCallback, pointParams.HitPoint);
         }
+        else if (hitTestParameters is GeometryHitTestParameters geometryParams)
+        {
+            HitTestGeometryWithFilter(reference, filterCallback, resultCallback, geometryParams);
+        }
     }
+
+    /// <summary>Performs a callback-based ray hit test against a 3-D visual subtree.</summary>
+    public static void HitTest(
+        Visual3D reference,
+        HitTestFilterCallback? filterCallback,
+        HitTestResultCallback resultCallback,
+        HitTestParameters3D hitTestParameters) =>
+        Visual3DTreeHelper.HitTest(
+            reference,
+            filterCallback,
+            resultCallback,
+            hitTestParameters);
 
     private static HitTestFilterBehavior HitTestWithFilter(Visual visual,
         HitTestFilterCallback? filterCallback,
@@ -204,9 +365,9 @@ public static class VisualTreeHelper
 
         // Test children (reverse order for z-order)
         // Use incremental coordinate transform instead of TransformToVisual per child
-        for (int i = visual.VisualChildrenCount - 1; i >= 0; i--)
+        for (int i = visual.InternalVisualChildrenCount - 1; i >= 0; i--)
         {
-            var child = visual.GetVisualChild(i);
+            var child = visual.InternalGetVisualChild(i);
             if (child == null) continue;
 
             // Compute child offset directly
@@ -237,6 +398,12 @@ public static class VisualTreeHelper
 
     private static HitTestResultBehavior TestSelf(Visual visual, HitTestResultCallback resultCallback, Point point)
     {
+        HitTestResult? customResult = visual.HitTestPointCore(new PointHitTestParameters(point));
+        if (customResult != null)
+        {
+            return resultCallback(customResult);
+        }
+
         if (visual is UIElement element &&
             element.IsHitTestVisible &&
             element.Visibility == Visibility.Visible &&
@@ -249,89 +416,46 @@ public static class VisualTreeHelper
         }
         return HitTestResultBehavior.Continue;
     }
-}
 
-/// <summary>
-/// Provides the return value for a hit test filter callback.
-/// </summary>
-public enum HitTestFilterBehavior
-{
-    /// <summary>Hit test against the current visual and its children.</summary>
-    Continue,
-    /// <summary>Do not hit test against the current visual or its children.</summary>
-    ContinueSkipSelfAndChildren,
-    /// <summary>Hit test against the current visual but not its children.</summary>
-    ContinueSkipChildren,
-    /// <summary>Do not hit test against the current visual but hit test its children.</summary>
-    ContinueSkipSelf,
-    /// <summary>Stop hit testing.</summary>
-    Stop
-}
-
-/// <summary>
-/// Provides the return value for a hit test result callback.
-/// </summary>
-public enum HitTestResultBehavior
-{
-    /// <summary>Stop any further hit testing and return.</summary>
-    Stop,
-    /// <summary>Continue hit testing against the next visual in the tree.</summary>
-    Continue
-}
-
-// HitTestResult is defined in Visual.cs
-
-/// <summary>
-/// Base class for hit test parameters.
-/// </summary>
-public abstract class HitTestParameters
-{
-}
-
-/// <summary>
-/// Specifies a point as the parameter to use for hit testing of a visual object.
-/// </summary>
-public sealed class PointHitTestParameters : HitTestParameters
-{
-    /// <summary>
-    /// Gets the point to use for hit testing.
-    /// </summary>
-    public Point HitPoint { get; }
-
-    /// <summary>
-    /// Initializes a new instance with the specified point.
-    /// </summary>
-    public PointHitTestParameters(Point hitPoint)
+    private static HitTestResultBehavior HitTestGeometryWithFilter(
+        Visual visual,
+        HitTestFilterCallback? filterCallback,
+        HitTestResultCallback resultCallback,
+        GeometryHitTestParameters parameters)
     {
-        HitPoint = hitPoint;
+        HitTestFilterBehavior filterResult = filterCallback?.Invoke(visual) ?? HitTestFilterBehavior.Continue;
+        if (filterResult == HitTestFilterBehavior.Stop)
+        {
+            return HitTestResultBehavior.Stop;
+        }
+
+        bool skipChildren = filterResult is HitTestFilterBehavior.ContinueSkipChildren
+            or HitTestFilterBehavior.ContinueSkipSelfAndChildren;
+        bool skipSelf = filterResult is HitTestFilterBehavior.ContinueSkipSelf
+            or HitTestFilterBehavior.ContinueSkipSelfAndChildren;
+
+        if (!skipChildren)
+        {
+            for (int i = visual.InternalVisualChildrenCount - 1; i >= 0; i--)
+            {
+                Visual? child = visual.InternalGetVisualChild(i);
+                if (child != null &&
+                    HitTestGeometryWithFilter(child, filterCallback, resultCallback, parameters) == HitTestResultBehavior.Stop)
+                {
+                    return HitTestResultBehavior.Stop;
+                }
+            }
+        }
+
+        if (!skipSelf)
+        {
+            GeometryHitTestResult? result = visual.HitTestGeometryCore(parameters);
+            if (result != null && resultCallback(result) == HitTestResultBehavior.Stop)
+            {
+                return HitTestResultBehavior.Stop;
+            }
+        }
+
+        return HitTestResultBehavior.Continue;
     }
 }
-
-/// <summary>
-/// Specifies a Geometry as the parameter to use for hit testing of a visual object.
-/// </summary>
-public sealed class GeometryHitTestParameters : HitTestParameters
-{
-    /// <summary>
-    /// Gets the Geometry to use for hit testing.
-    /// </summary>
-    public object HitGeometry { get; }
-
-    /// <summary>
-    /// Initializes a new instance with the specified geometry.
-    /// </summary>
-    public GeometryHitTestParameters(object hitGeometry)
-    {
-        HitGeometry = hitGeometry;
-    }
-}
-
-/// <summary>
-/// Delegate for hit test filter callbacks.
-/// </summary>
-public delegate HitTestFilterBehavior HitTestFilterCallback(DependencyObject potentialHitTestTarget);
-
-/// <summary>
-/// Delegate for hit test result callbacks.
-/// </summary>
-public delegate HitTestResultBehavior HitTestResultCallback(HitTestResult result);

@@ -34,6 +34,7 @@ internal static class Scenes
         ("opacity-layers", OpacityLayers),
         ("painter-order", PainterOrder),
         ("rounded-container-border", RoundedContainerBorder),
+        ("superellipse", SuperEllipse),
 
         // ── Effect-system scenes (RenderTarget effect C ABI) ─────────────────
         // Each captures a KNOWN element into an offscreen bitmap
@@ -601,6 +602,61 @@ internal static class Scenes
 
         // Border stroke on top of the clipped content (outside the clip).
         s.Target.DrawRoundedRectangle(64, 64, 384, 384, 28, 28, hairline, 2f);
+    }
+
+    // ── SuperEllipse (Border.Shape=SuperEllipse): SetShapeType + rounded-rect ──
+    // Shape contract: shapeType==1 renders the FULL-RECT Lamé superellipse
+    // |X/(w/2)|^n + |Y/(h/2)|^n = 1 — curvature comes from the exponent alone,
+    // the corner-radius arguments are ignored (D3D12 sdSuperEllipseRect, the
+    // managed Border layout clip, and the Vulkan tessellator all agree).
+    // Every call pair mirrors the managed Border: set(1,n) → draw → set(0,4).
+    // The radius=0 tiles are the regression case: the managed Border passes the
+    // element's real CornerRadius, which DEFAULTS TO 0 — an earlier Vulkan
+    // per-corner-arc implementation degenerated exactly these into
+    // sharp-cornered rectangles while D3D12 showed the full squircle.
+    private static void SuperEllipse(SceneContext s)
+    {
+        var fillA = s.Solid(0.85f, 0.35f, 0.25f);
+        var fillB = s.Solid(0.25f, 0.65f, 0.85f);
+        var fillC = s.Solid(0.45f, 0.80f, 0.35f);
+        var stroke = s.Solid(0.95f, 0.90f, 0.30f);
+
+        // Per-corner fill, radius 0 (the Border default — the regression case).
+        s.Target.SetShapeType(1, 4.0f);
+        s.Target.FillPerCornerRoundedRectangle(32, 32, 200, 120, 0, 0, 0, 0, fillA);
+        s.Target.SetShapeType(0, 4.0f);
+
+        // Per-corner fill, NON-zero radii — must render identically to radius 0
+        // (the radii are ignored under shapeType==1 by contract).
+        s.Target.SetShapeType(1, 4.0f);
+        s.Target.FillPerCornerRoundedRectangle(280, 32, 200, 120, 24, 24, 24, 24, fillB);
+        s.Target.SetShapeType(0, 4.0f);
+
+        // Gradient fill (exercises the Vulkan in-order gradient fan path).
+        var grad = s.Linear(32, 190, 232, 270,
+        [
+            0.00f, 0.90f, 0.10f, 0.10f, 1f,
+            0.50f, 0.95f, 0.80f, 0.10f, 1f,
+            1.00f, 0.15f, 0.35f, 0.90f, 1f,
+        ]);
+        s.Target.SetShapeType(1, 4.0f);
+        s.Target.FillPerCornerRoundedRectangle(32, 190, 200, 80, 0, 0, 0, 0, grad);
+        s.Target.SetShapeType(0, 4.0f);
+
+        // Per-corner stroke, radius 0 (the Border BorderBrush path).
+        s.Target.SetShapeType(1, 4.0f);
+        s.Target.DrawPerCornerRoundedRectangle(280, 190, 200, 80, 0, 0, 0, 0, stroke, 5f);
+        s.Target.SetShapeType(0, 4.0f);
+
+        // Lower exponent (n=2.5, closer to an ellipse) — exponent plumbing.
+        s.Target.SetShapeType(1, 2.5f);
+        s.Target.FillPerCornerRoundedRectangle(32, 310, 200, 150, 0, 0, 0, 0, fillC);
+        s.Target.SetShapeType(0, 4.0f);
+
+        // Uniform overload + high exponent (n=6, nearly rectangular).
+        s.Target.SetShapeType(1, 6.0f);
+        s.Target.FillRoundedRectangle(280, 310, 200, 150, 0, 0, fillB);
+        s.Target.SetShapeType(0, 4.0f);
     }
 
     // ========================================================================

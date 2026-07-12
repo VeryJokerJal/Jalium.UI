@@ -256,14 +256,12 @@ public class StoryboardLifecycleTests
 
         storyboard.Stop();
 
-        // Regression anchor for the CURRENT semantics: an element-side stop of
-        // a HoldEnd timeline promotes the value displayed at the stop instant
-        // into the current-value layer (ClearAnimatedValue's HoldEnd branch) —
-        // the animation entry and animated layer themselves are gone. Recycle
-        // hygiene deliberately bypasses this promotion (see the recycle tests).
+        // WPF controllable-storyboard semantics: Stop removes the animation
+        // clock and restores the property's base value. HoldEnd applies while
+        // a completed clock remains attached; it does not rewrite the base.
         Assert.False(element.HasAnimation(UIElement.OpacityProperty));
         Assert.False(element.HasAnimatedValue(UIElement.OpacityProperty));
-        Assert.Equal(0.5, (double)element.GetValue(UIElement.OpacityProperty)!, 3);
+        Assert.Equal(0.8, (double)element.GetValue(UIElement.OpacityProperty)!, 3);
     }
 
     [Fact]

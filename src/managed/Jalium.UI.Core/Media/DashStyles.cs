@@ -14,25 +14,32 @@ public static class DashStyles
     /// <summary>
     /// Gets a DashStyle that represents a solid line (no dashes).
     /// </summary>
-    public static DashStyle Solid => _solid ??= new DashStyle();
+    public static DashStyle Solid => _solid ??= CreateFrozen([]);
 
     /// <summary>
     /// Gets a DashStyle that represents a dashed line.
     /// </summary>
-    public static DashStyle Dash => _dash ??= new DashStyle(new[] { 2.0, 2.0 }, 0);
+    public static DashStyle Dash => _dash ??= CreateFrozen([2.0, 2.0]);
 
     /// <summary>
     /// Gets a DashStyle that represents a dotted line.
     /// </summary>
-    public static DashStyle Dot => _dot ??= new DashStyle(new[] { 0.0, 2.0 }, 0);
+    public static DashStyle Dot => _dot ??= CreateFrozen([0.0, 2.0]);
 
     /// <summary>
     /// Gets a DashStyle that represents an alternating dash-dot line.
     /// </summary>
-    public static DashStyle DashDot => _dashDot ??= new DashStyle(new[] { 2.0, 2.0, 0.0, 2.0 }, 0);
+    public static DashStyle DashDot => _dashDot ??= CreateFrozen([2.0, 2.0, 0.0, 2.0]);
 
     /// <summary>
     /// Gets a DashStyle that represents an alternating dash-dot-dot line.
     /// </summary>
-    public static DashStyle DashDotDot => _dashDotDot ??= new DashStyle(new[] { 2.0, 2.0, 0.0, 2.0, 0.0, 2.0 }, 0);
+    public static DashStyle DashDotDot => _dashDotDot ??= CreateFrozen([2.0, 2.0, 0.0, 2.0, 0.0, 2.0]);
+
+    private static DashStyle CreateFrozen(IEnumerable<double> dashes)
+    {
+        var result = new DashStyle(dashes, 0);
+        result.Freeze();
+        return result;
+    }
 }

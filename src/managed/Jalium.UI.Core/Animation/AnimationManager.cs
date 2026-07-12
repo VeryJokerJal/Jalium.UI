@@ -73,9 +73,9 @@ internal sealed class AnimationTickSubscription
 /// Rendering subscriptions previously created by UIElement, Storyboard and
 /// DevTools timers.
 ///
-/// Threading invariant: all members are UI-thread only, hence no locks. The
-/// frame loop marshals to the dispatcher before raising Rendering, and every
-/// register/unregister call site lives on the UI thread.
+/// Threading invariant: subscription and frame processing are UI-thread only.
+/// Deferred detach notifications can arrive from distinct dispatcher threads,
+/// so that queue is protected independently by <c>_pendingDetachGate</c>.
 /// </summary>
 internal static class AnimationManager
 {
@@ -87,6 +87,7 @@ internal static class AnimationManager
     // Not readonly: ProcessPendingDetachChecks swaps the two lists.
     private static List<WeakReference<UIElement>> _pendingDetachChecks = new(16);
     private static List<WeakReference<UIElement>> _detachCheckScratch = new(16);
+    private static readonly object _pendingDetachGate = new();
 
     private static bool _ticking;
     private static bool _draining;
@@ -178,7 +179,10 @@ internal static class AnimationManager
     /// </summary>
     internal static void NotifyDetached(UIElement element)
     {
-        _pendingDetachChecks.Add(new WeakReference<UIElement>(element));
+        lock (_pendingDetachGate)
+        {
+            _pendingDetachChecks.Add(new WeakReference<UIElement>(element));
+        }
 
         // The re-check must run even if the detached subtree holds the only
         // active animations (or none at all): keep a frame source alive until
@@ -193,13 +197,16 @@ internal static class AnimationManager
     /// </summary>
     internal static void CancelPendingDetach(UIElement element)
     {
-        var list = _pendingDetachChecks;
-        for (int i = list.Count - 1; i >= 0; i--)
+        lock (_pendingDetachGate)
         {
-            if (list[i].TryGetTarget(out var pending) && ReferenceEquals(pending, element))
+            var list = _pendingDetachChecks;
+            for (int i = list.Count - 1; i >= 0; i--)
             {
-                list[i] = list[^1];
-                list.RemoveAt(list.Count - 1);
+                if (list[i].TryGetTarget(out var pending) && ReferenceEquals(pending, element))
+                {
+                    list[i] = list[^1];
+                    list.RemoveAt(list.Count - 1);
+                }
             }
         }
     }
@@ -299,27 +306,30 @@ internal static class AnimationManager
 
     private static void ProcessPendingDetachChecks()
     {
-        if (_pendingDetachChecks.Count == 0)
-            return;
-
-        // Swap-and-iterate: stopping a subtree runs user code (OnPropertyChanged,
-        // storyboard bookkeeping) that may detach further elements — those new
-        // NotifyDetached entries must land in a list we are not iterating.
-        (_pendingDetachChecks, _detachCheckScratch) = (_detachCheckScratch, _pendingDetachChecks);
-        var due = _detachCheckScratch;
-
-        for (int i = 0; i < due.Count; i++)
+        lock (_pendingDetachGate)
         {
-            if (!due[i].TryGetTarget(out var element))
-                continue; // collected: nothing left to stop
+            if (_pendingDetachChecks.Count == 0)
+                return;
 
-            if (element.VisualParent != null)
-                continue; // re-attached before the re-check: cancelled
+            // Swap-and-iterate: stopping a subtree runs user code (OnPropertyChanged,
+            // storyboard bookkeeping) that may detach further elements. Those new
+            // NotifyDetached entries must land in a list we are not iterating.
+            (_pendingDetachChecks, _detachCheckScratch) = (_detachCheckScratch, _pendingDetachChecks);
+            var due = _detachCheckScratch;
 
-            element.StopAnimationsForRecycleRecursive();
+            for (int i = 0; i < due.Count; i++)
+            {
+                if (!due[i].TryGetTarget(out var element))
+                    continue; // collected: nothing left to stop
+
+                if (element.VisualParent != null)
+                    continue; // re-attached before the re-check: cancelled
+
+                element.StopAnimationsForRecycleRecursive();
+            }
+
+            due.Clear();
         }
-
-        due.Clear();
     }
 
     /// <summary>

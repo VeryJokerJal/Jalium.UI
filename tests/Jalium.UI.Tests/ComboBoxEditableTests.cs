@@ -186,7 +186,12 @@ public class ComboBoxEditableTests
             host.Measure(new Size(400, 300));
             host.Arrange(new Rect(0, 0, 400, 300));
 
-            comboBox.RaiseEvent(CreateMouseDown(new Point(216, 8)));
+            // Synthetic mouse coordinates are host-relative. The explicit-width ComboBox is
+            // centered by its StackPanel, so translate the intended local right-edge point.
+            var rightEdge = new Point(
+                comboBox.VisualBounds.X + comboBox.RenderSize.Width - 4,
+                comboBox.VisualBounds.Y + 8);
+            comboBox.RaiseEvent(CreateMouseDown(rightEdge));
 
             Assert.True(comboBox.IsDropDownOpen);
         }
@@ -312,11 +317,11 @@ public class ComboBoxEditableTests
             var toggleButton = FindDescendant<ToggleButton>(comboBox);
             var dropDownArea = FindNamedDescendant<Grid>(comboBox, "PART_DropDownArea");
 
-            Assert.Same(Jalium.UI.Cursors.IBeam, comboBox.Cursor);
+            Assert.Same(Jalium.UI.Input.Cursors.IBeam, comboBox.Cursor);
             Assert.NotNull(toggleButton);
             Assert.NotNull(dropDownArea);
-            Assert.Same(Jalium.UI.Cursors.Arrow, dropDownArea!.Cursor);
-            Assert.Same(Jalium.UI.Cursors.Arrow, toggleButton!.Cursor);
+            Assert.Same(Jalium.UI.Input.Cursors.Arrow, dropDownArea!.Cursor);
+            Assert.Same(Jalium.UI.Input.Cursors.Arrow, toggleButton!.Cursor);
         }
         finally
         {

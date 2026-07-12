@@ -1,8 +1,11 @@
+using System.Collections.Specialized;
 using Jalium.UI.Automation;
+using Jalium.UI.Automation.Peers;
 using Jalium.UI.Controls.Navigation;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Navigation;
 
-namespace Jalium.UI.Controls.Automation;
+namespace Jalium.UI.Automation.Peers;
 
 #region Expander / GroupBox
 
@@ -149,7 +152,7 @@ public sealed class HyperlinkButtonAutomationPeer : ButtonBaseAutomationPeer
 /// <summary>
 /// Exposes RepeatButton types to UI Automation.
 /// </summary>
-public sealed class RepeatButtonAutomationPeer : ButtonBaseAutomationPeer
+public sealed class RepeatButtonAutomationPeer : ButtonBaseAutomationPeer, Jalium.UI.Automation.Provider.IInvokeProvider
 {
     public RepeatButtonAutomationPeer(RepeatButton owner) : base(owner) { }
 
@@ -192,7 +195,7 @@ public sealed class GridSplitterAutomationPeer : FrameworkElementAutomationPeer
 /// <summary>
 /// Exposes RichTextBox types to UI Automation.
 /// </summary>
-public sealed class RichTextBoxAutomationPeer : FrameworkElementAutomationPeer
+public class RichTextBoxAutomationPeer : TextAutomationPeer
 {
     public RichTextBoxAutomationPeer(RichTextBox owner) : base(owner) { }
 
@@ -209,27 +212,69 @@ public sealed class RichTextBoxAutomationPeer : FrameworkElementAutomationPeer
 /// <summary>
 /// Exposes ListView types to UI Automation.
 /// </summary>
-public sealed class ListViewAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
+public class ListViewAutomationPeer : ListBoxAutomationPeer
 {
-    public ListViewAutomationPeer(ListView owner) : base(owner) { }
+    private IViewAutomationPeer? _viewAutomationPeer;
+    private ViewBase? _automationView;
+
+    public ListViewAutomationPeer(ListView owner) : base(owner)
+    {
+        _automationView = owner.View;
+        _viewAutomationPeer = owner.View?.GetAutomationPeer(owner);
+    }
 
     private ListView ListViewOwner => (ListView)Owner;
 
+    protected internal IViewAutomationPeer? ViewAutomationPeer
+    {
+        get => _viewAutomationPeer;
+        set => _viewAutomationPeer = value;
+    }
+
     protected override AutomationControlType GetAutomationControlTypeCore()
-        => AutomationControlType.List;
+        => EnsureViewAutomationPeer()?.GetAutomationControlType() ?? AutomationControlType.List;
 
     protected override string GetClassNameCore() => nameof(ListView);
 
+    protected override ItemAutomationPeer CreateItemAutomationPeer(object item) =>
+        EnsureViewAutomationPeer()?.CreateItemAutomationPeer(item) as ItemAutomationPeer ?? new ListBoxItemAutomationPeer(item, this);
+
     protected override object? GetPatternCore(PatternInterface patternInterface)
     {
+        object? viewPattern = EnsureViewAutomationPeer()?.GetPattern(patternInterface);
+        if (viewPattern != null)
+            return viewPattern;
+
         if (patternInterface == PatternInterface.Selection)
             return this;
         return base.GetPatternCore(patternInterface);
     }
 
-    public AutomationPeer[] GetSelection() => Array.Empty<AutomationPeer>();
-    public bool IsSelectionRequired => false;
-    public bool CanSelectMultiple => ListViewOwner.SelectionMode != SelectionMode.Single;
+    protected override List<AutomationPeer> GetChildrenCore()
+    {
+        List<AutomationPeer> children = base.GetChildrenCore();
+        return EnsureViewAutomationPeer()?.GetChildren(children) ?? children;
+    }
+
+    internal void NotifyItemsChanged(NotifyCollectionChangedEventArgs e) =>
+        EnsureViewAutomationPeer()?.ItemsChanged(e);
+
+    private IViewAutomationPeer? EnsureViewAutomationPeer()
+    {
+        ViewBase? currentView = ListViewOwner.View;
+        if (!ReferenceEquals(_automationView, currentView))
+        {
+            _viewAutomationPeer?.ViewDetached();
+            _automationView = currentView;
+            _viewAutomationPeer = currentView?.GetAutomationPeer(ListViewOwner);
+        }
+
+        return _viewAutomationPeer;
+    }
+
+    public override AutomationPeer[] GetSelection() => base.GetSelection();
+    public override bool IsSelectionRequired => false;
+    public override bool CanSelectMultiple => ListViewOwner.SelectionMode != SelectionMode.Single;
 }
 
 #endregion
@@ -239,7 +284,9 @@ public sealed class ListViewAutomationPeer : FrameworkElementAutomationPeer, ISe
 /// <summary>
 /// Exposes DatePicker types to UI Automation.
 /// </summary>
-public sealed class DatePickerAutomationPeer : FrameworkElementAutomationPeer, IValueProvider
+public sealed partial class DatePickerAutomationPeer : FrameworkElementAutomationPeer,
+    Jalium.UI.Automation.Provider.IExpandCollapseProvider,
+    Jalium.UI.Automation.Provider.IValueProvider
 {
     public DatePickerAutomationPeer(DatePicker owner) : base(owner) { }
 
@@ -259,10 +306,34 @@ public sealed class DatePickerAutomationPeer : FrameworkElementAutomationPeer, I
 
     protected override object? GetPatternCore(PatternInterface patternInterface)
     {
-        if (patternInterface == PatternInterface.Value)
+        if (patternInterface is PatternInterface.Value or PatternInterface.ExpandCollapse)
             return this;
         return base.GetPatternCore(patternInterface);
     }
+
+    ExpandCollapseState Jalium.UI.Automation.Provider.IExpandCollapseProvider.ExpandCollapseState =>
+        DatePickerOwner.IsDropDownOpen ? ExpandCollapseState.Expanded : ExpandCollapseState.Collapsed;
+
+    void Jalium.UI.Automation.Provider.IExpandCollapseProvider.Expand()
+    {
+        if (!IsEnabled())
+            throw new InvalidOperationException("Cannot expand a disabled DatePicker.");
+        DatePickerOwner.IsDropDownOpen = true;
+    }
+
+    void Jalium.UI.Automation.Provider.IExpandCollapseProvider.Collapse()
+    {
+        if (!IsEnabled())
+            throw new InvalidOperationException("Cannot collapse a disabled DatePicker.");
+        DatePickerOwner.IsDropDownOpen = false;
+    }
+
+    ExpandCollapseState IExpandCollapseProvider.ExpandCollapseState =>
+        ((Jalium.UI.Automation.Provider.IExpandCollapseProvider)this).ExpandCollapseState;
+    void IExpandCollapseProvider.Expand() =>
+        ((Jalium.UI.Automation.Provider.IExpandCollapseProvider)this).Expand();
+    void IExpandCollapseProvider.Collapse() =>
+        ((Jalium.UI.Automation.Provider.IExpandCollapseProvider)this).Collapse();
 
     public string Value => DatePickerOwner.SelectedDate?.ToString("d") ?? string.Empty;
     public bool IsReadOnly => !IsEnabled();
@@ -279,14 +350,249 @@ public sealed class DatePickerAutomationPeer : FrameworkElementAutomationPeer, I
 /// <summary>
 /// Exposes Calendar types to UI Automation.
 /// </summary>
-public sealed class CalendarAutomationPeer : FrameworkElementAutomationPeer
+public sealed partial class CalendarAutomationPeer : FrameworkElementAutomationPeer,
+    Jalium.UI.Automation.Provider.IGridProvider,
+    Jalium.UI.Automation.Provider.IItemContainerProvider,
+    Jalium.UI.Automation.Provider.IMultipleViewProvider,
+    Jalium.UI.Automation.Provider.ISelectionProvider,
+    Jalium.UI.Automation.Provider.ITableProvider
 {
+    private readonly Dictionary<DateTime, DateTimeAutomationPeer> _datePeers = [];
+    private readonly Dictionary<DayOfWeek, CalendarHeaderAutomationPeer> _headerPeers = [];
+
     public CalendarAutomationPeer(Calendar owner) : base(owner) { }
+
+    private Calendar CalendarOwner => (Calendar)Owner;
 
     protected override AutomationControlType GetAutomationControlTypeCore()
         => AutomationControlType.Calendar;
 
     protected override string GetClassNameCore() => nameof(Calendar);
+
+    protected override object? GetPatternCore(PatternInterface patternInterface) => patternInterface switch
+    {
+        PatternInterface.Grid or PatternInterface.ItemContainer or PatternInterface.MultipleView or
+        PatternInterface.Selection or PatternInterface.Table => this,
+        _ => base.GetPatternCore(patternInterface),
+    };
+
+    protected override List<AutomationPeer> GetChildrenCore()
+    {
+        var children = new List<AutomationPeer>();
+        if (CalendarOwner.DisplayMode == CalendarMode.Month)
+        {
+            for (int column = 0; column < 7; column++)
+                children.Add(GetHeaderPeer(GetHeaderDay(column)));
+        }
+
+        children.AddRange(GetVisibleDates().Select(GetDatePeer));
+        return children;
+    }
+
+    int Jalium.UI.Automation.Provider.IGridProvider.RowCount =>
+        CalendarOwner.DisplayMode == CalendarMode.Month ? 6 : 3;
+
+    int Jalium.UI.Automation.Provider.IGridProvider.ColumnCount =>
+        CalendarOwner.DisplayMode == CalendarMode.Month ? 7 : 4;
+
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple? Jalium.UI.Automation.Provider.IGridProvider.GetItem(int row, int column)
+    {
+        int columns = CalendarOwner.DisplayMode == CalendarMode.Month ? 7 : 4;
+        int rows = CalendarOwner.DisplayMode == CalendarMode.Month ? 6 : 3;
+        if ((uint)row >= (uint)rows || (uint)column >= (uint)columns)
+            throw new ArgumentOutOfRangeException(row < 0 || row >= rows ? nameof(row) : nameof(column));
+
+        DateTime value = GetVisibleDates()[row * columns + column];
+        return ProviderFromPeer(GetDatePeer(value));
+    }
+
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple? Jalium.UI.Automation.Provider.IItemContainerProvider.FindItemByProperty(
+        Jalium.UI.Automation.Provider.IRawElementProviderSimple? startAfterProvider, int propertyId, object? value)
+    {
+        IReadOnlyList<DateTime> visibleDates = GetVisibleDates();
+        int startIndex = -1;
+        if (startAfterProvider is not null)
+        {
+            AutomationPeer startPeer = PeerFromProvider(startAfterProvider);
+            if (startPeer is not DateTimeAutomationPeer datePeer || !ReferenceEquals(datePeer.GetParent(), this))
+                return null;
+            startIndex = IndexOfDate(visibleDates, datePeer.Value);
+            if (startIndex < 0)
+                return null;
+        }
+
+        for (int index = startIndex + 1; index < visibleDates.Count; index++)
+        {
+            DateTimeAutomationPeer peer = GetDatePeer(visibleDates[index]);
+            if (MatchesCalendarProperty(peer, propertyId, value))
+                return ProviderFromPeer(peer);
+        }
+
+        return null;
+    }
+
+    int Jalium.UI.Automation.Provider.IMultipleViewProvider.CurrentView => (int)CalendarOwner.DisplayMode;
+    int[] Jalium.UI.Automation.Provider.IMultipleViewProvider.GetSupportedViews() => [0, 1, 2];
+    string Jalium.UI.Automation.Provider.IMultipleViewProvider.GetViewName(int viewId)
+    {
+        if (!Enum.IsDefined(typeof(CalendarMode), viewId))
+            throw new ArgumentOutOfRangeException(nameof(viewId));
+        return ((CalendarMode)viewId).ToString();
+    }
+
+    void Jalium.UI.Automation.Provider.IMultipleViewProvider.SetCurrentView(int viewId)
+    {
+        if (!Enum.IsDefined(typeof(CalendarMode), viewId))
+            throw new ArgumentOutOfRangeException(nameof(viewId));
+        CalendarOwner.DisplayMode = (CalendarMode)viewId;
+        ResetChildrenCache();
+    }
+
+    bool Jalium.UI.Automation.Provider.ISelectionProvider.CanSelectMultiple =>
+        CalendarOwner.SelectionMode is CalendarSelectionMode.SingleRange or CalendarSelectionMode.MultipleRange;
+    bool Jalium.UI.Automation.Provider.ISelectionProvider.IsSelectionRequired => false;
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] Jalium.UI.Automation.Provider.ISelectionProvider.GetSelection() =>
+        CalendarOwner.SelectedDates.Select(date => ProviderFromPeer(GetDatePeer(date))).ToArray();
+
+    RowOrColumnMajor Jalium.UI.Automation.Provider.ITableProvider.RowOrColumnMajor => RowOrColumnMajor.RowMajor;
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] Jalium.UI.Automation.Provider.ITableProvider.GetColumnHeaders()
+    {
+        if (CalendarOwner.DisplayMode != CalendarMode.Month)
+            return [];
+        return Enumerable.Range(0, 7)
+            .Select(column => ProviderFromPeer(GetHeaderPeer(GetHeaderDay(column))))
+            .ToArray();
+    }
+
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] Jalium.UI.Automation.Provider.ITableProvider.GetRowHeaders() => [];
+
+    private DateTimeAutomationPeer GetDatePeer(DateTime value)
+    {
+        value = value.Date;
+        if (!_datePeers.TryGetValue(value, out DateTimeAutomationPeer? peer))
+        {
+            peer = new DateTimeAutomationPeer(value, this);
+            _datePeers.Add(value, peer);
+        }
+
+        return peer;
+    }
+
+    private CalendarHeaderAutomationPeer GetHeaderPeer(DayOfWeek day)
+    {
+        if (!_headerPeers.TryGetValue(day, out CalendarHeaderAutomationPeer? peer))
+        {
+            peer = new CalendarHeaderAutomationPeer(
+                System.Globalization.CultureInfo.CurrentCulture.DateTimeFormat.GetDayName(day),
+                this);
+            _headerPeers.Add(day, peer);
+        }
+
+        return peer;
+    }
+
+    private DayOfWeek GetHeaderDay(int column) =>
+        (DayOfWeek)(((int)CalendarOwner.FirstDayOfWeek + column) % 7);
+
+    private IReadOnlyList<DateTime> GetVisibleDates()
+    {
+        var result = new DateTime[CalendarOwner.DisplayMode == CalendarMode.Month ? 42 : 12];
+        if (CalendarOwner.DisplayMode == CalendarMode.Month)
+        {
+            DateTime firstOfMonth = new(CalendarOwner.DisplayDate.Year, CalendarOwner.DisplayDate.Month, 1);
+            int offset = ((int)firstOfMonth.DayOfWeek - (int)CalendarOwner.FirstDayOfWeek + 7) % 7;
+            DateTime firstCell = SafeAddDays(firstOfMonth, -offset);
+            for (int index = 0; index < result.Length; index++)
+                result[index] = SafeAddDays(firstCell, index);
+        }
+        else if (CalendarOwner.DisplayMode == CalendarMode.Year)
+        {
+            for (int index = 0; index < result.Length; index++)
+                result[index] = new DateTime(CalendarOwner.DisplayDate.Year, index + 1, 1);
+        }
+        else
+        {
+            int decadeStart = CalendarOwner.DisplayDate.Year - CalendarOwner.DisplayDate.Year % 10;
+            int firstYear = Math.Clamp(decadeStart - 1, DateTime.MinValue.Year, DateTime.MaxValue.Year - 11);
+            for (int index = 0; index < result.Length; index++)
+                result[index] = new DateTime(firstYear + index, 1, 1);
+        }
+
+        return result;
+    }
+
+    private static DateTime SafeAddDays(DateTime value, int days)
+    {
+        try
+        {
+            return value.AddDays(days);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return days < 0 ? DateTime.MinValue : DateTime.MaxValue;
+        }
+    }
+
+    private static int IndexOfDate(IReadOnlyList<DateTime> dates, DateTime value)
+    {
+        for (int index = 0; index < dates.Count; index++)
+        {
+            if (dates[index].Date == value.Date)
+                return index;
+        }
+
+        return -1;
+    }
+
+    private static bool MatchesCalendarProperty(DateTimeAutomationPeer peer, int propertyId, object? value)
+    {
+        if (propertyId == 0)
+            return value is null || Equals(peer.Value.Date, value is DateTime date ? date.Date : value);
+        if (propertyId == AutomationProperty.NameProperty.Id)
+            return string.Equals(peer.GetName(), value as string, StringComparison.CurrentCulture);
+        if (propertyId == AutomationProperty.AutomationIdProperty.Id)
+            return string.Equals(peer.GetAutomationId(), value as string, StringComparison.Ordinal);
+        return value is DateTime expected && peer.Value.Date == expected.Date;
+    }
+
+    private sealed class CalendarHeaderAutomationPeer : AutomationPeer
+    {
+        private readonly string _name;
+        private readonly CalendarAutomationPeer _parent;
+
+        internal CalendarHeaderAutomationPeer(string name, CalendarAutomationPeer parent)
+        {
+            _name = name;
+            _parent = parent;
+        }
+
+        public override object? GetPattern(PatternInterface patternInterface) => null;
+        protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.HeaderItem;
+        protected override string GetClassNameCore() => "CalendarDayTitle";
+        protected override string GetNameCore() => _name;
+        protected override string GetAutomationIdCore() => _name;
+        protected override string GetHelpTextCore() => string.Empty;
+        protected override string GetAcceleratorKeyCore() => string.Empty;
+        protected override string GetAccessKeyCore() => string.Empty;
+        protected override string GetItemStatusCore() => string.Empty;
+        protected override string GetItemTypeCore() => "DayOfWeek";
+        protected override string GetLocalizedControlTypeCore() => "column header";
+        protected override Rect GetBoundingRectangleCore() => Rect.Empty;
+        protected override Point GetClickablePointCore() => new(double.NaN, double.NaN);
+        protected override AutomationOrientation GetOrientationCore() => AutomationOrientation.None;
+        protected override bool IsEnabledCore() => _parent.IsEnabled();
+        protected override bool IsKeyboardFocusableCore() => false;
+        protected override bool HasKeyboardFocusCore() => false;
+        protected override bool IsOffscreenCore() => _parent.IsOffscreen();
+        protected override bool IsContentElementCore() => true;
+        protected override bool IsControlElementCore() => true;
+        protected override bool IsPasswordCore() => false;
+        protected override bool IsRequiredForFormCore() => false;
+        protected override AutomationPeer? GetLabeledByCore() => null;
+        protected override AutomationPeer GetParentCore() => _parent;
+        protected override List<AutomationPeer> GetChildrenCore() => [];
+        protected override void SetFocusCore() { }
+    }
 }
 
 /// <summary>
@@ -713,19 +1019,6 @@ public sealed class ViewboxAutomationPeer : FrameworkElementAutomationPeer
 #region ItemsControl / ContentControl
 
 /// <summary>
-/// Exposes ItemsControl types to UI Automation.
-/// </summary>
-public sealed class ItemsControlAutomationPeer : FrameworkElementAutomationPeer
-{
-    public ItemsControlAutomationPeer(ItemsControl owner) : base(owner) { }
-
-    protected override AutomationControlType GetAutomationControlTypeCore()
-        => AutomationControlType.List;
-
-    protected override string GetClassNameCore() => nameof(ItemsControl);
-}
-
-/// <summary>
 /// Exposes ContentControl types to UI Automation.
 /// </summary>
 public sealed class ContentControlAutomationPeer : FrameworkElementAutomationPeer
@@ -857,14 +1150,14 @@ public sealed class StatusBarAutomationPeer : FrameworkElementAutomationPeer
 /// </summary>
 public sealed class StatusBarItemAutomationPeer : FrameworkElementAutomationPeer
 {
-    public StatusBarItemAutomationPeer(StatusBarItem owner) : base(owner) { }
+    public StatusBarItemAutomationPeer(Jalium.UI.Controls.StatusBarItem owner) : base(owner) { }
 
-    private StatusBarItem ItemOwner => (StatusBarItem)Owner;
+    private Jalium.UI.Controls.StatusBarItem ItemOwner => (Jalium.UI.Controls.StatusBarItem)Owner;
 
     protected override AutomationControlType GetAutomationControlTypeCore()
         => AutomationControlType.Custom;
 
-    protected override string GetClassNameCore() => nameof(StatusBarItem);
+    protected override string GetClassNameCore() => nameof(Jalium.UI.Controls.StatusBarItem);
 
     protected override string GetNameCore()
     {
@@ -907,7 +1200,7 @@ public sealed class FrameAutomationPeer : FrameworkElementAutomationPeer
 /// <summary>
 /// Exposes NavigationWindow types to UI Automation.
 /// </summary>
-public sealed class NavigationWindowAutomationPeer : FrameworkElementAutomationPeer
+public class NavigationWindowAutomationPeer : WindowAutomationPeer
 {
     public NavigationWindowAutomationPeer(NavigationWindow owner) : base(owner) { }
 
@@ -996,16 +1289,16 @@ public sealed class DataGridCellAutomationPeer : FrameworkElementAutomationPeer
 /// <summary>
 /// Exposes DataGridColumnHeader types to UI Automation.
 /// </summary>
-public sealed class DataGridColumnHeaderAutomationPeer : FrameworkElementAutomationPeer
+public sealed partial class DataGridColumnHeaderAutomationPeer : ButtonBaseAutomationPeer
 {
-    public DataGridColumnHeaderAutomationPeer(DataGridColumnHeader owner) : base(owner) { }
+    public DataGridColumnHeaderAutomationPeer(Jalium.UI.Controls.DataGridColumnHeader owner) : base(owner) { }
 
-    private DataGridColumnHeader HeaderOwner => (DataGridColumnHeader)Owner;
+    private Jalium.UI.Controls.DataGridColumnHeader HeaderOwner => (Jalium.UI.Controls.DataGridColumnHeader)Owner;
 
     protected override AutomationControlType GetAutomationControlTypeCore()
         => AutomationControlType.HeaderItem;
 
-    protected override string GetClassNameCore() => nameof(DataGridColumnHeader);
+    protected override string GetClassNameCore() => nameof(Jalium.UI.Controls.DataGridColumnHeader);
 
     protected override string GetNameCore()
     {
@@ -1030,6 +1323,17 @@ public sealed class GroupItemAutomationPeer : FrameworkElementAutomationPeer
         => AutomationControlType.Group;
 
     protected override string GetClassNameCore() => nameof(GroupItem);
+
+    protected override int GetPositionInSetCore()
+    {
+        if (Owner.VisualParent is Panel panel)
+            return panel.Children.IndexOf((UIElement)Owner) + 1;
+        return base.GetPositionInSetCore();
+    }
+
+    protected override int GetSizeOfSetCore() => Owner.VisualParent is Panel panel
+        ? panel.Children.Count
+        : base.GetSizeOfSetCore();
 }
 
 #endregion
@@ -1066,7 +1370,7 @@ internal sealed class GenericAutomationPeer : FrameworkElementAutomationPeer
 /// <summary>
 /// Exposes ScrollBar types to UI Automation.
 /// </summary>
-public sealed class ScrollBarAutomationPeer : FrameworkElementAutomationPeer, IRangeValueProvider
+public class ScrollBarAutomationPeer : RangeBaseAutomationPeer
 {
     public ScrollBarAutomationPeer(ScrollBar owner) : base(owner) { }
 
@@ -1077,16 +1381,22 @@ public sealed class ScrollBarAutomationPeer : FrameworkElementAutomationPeer, IR
 
     protected override string GetClassNameCore() => nameof(ScrollBar);
 
+    protected override AutomationOrientation GetOrientationCore() => ScrollBarOwner.Orientation == Orientation.Horizontal
+        ? AutomationOrientation.Horizontal
+        : AutomationOrientation.Vertical;
+
+    protected override Point GetClickablePointCore() => new(double.NaN, double.NaN);
+
     protected override object? GetPatternCore(PatternInterface patternInterface)
         => patternInterface == PatternInterface.RangeValue ? this : base.GetPatternCore(patternInterface);
 
-    public void SetValue(double value) => ScrollBarOwner.Value = value;
-    public double Value => ScrollBarOwner.Value;
-    public bool IsReadOnly => false;
-    public double Maximum => ScrollBarOwner.Maximum;
-    public double Minimum => ScrollBarOwner.Minimum;
-    public double LargeChange => ScrollBarOwner.LargeChange;
-    public double SmallChange => ScrollBarOwner.SmallChange;
+    public override void SetValue(double value) => ScrollBarOwner.Value = value;
+    public override double Value => ScrollBarOwner.Value;
+    public override bool IsReadOnly => false;
+    public override double Maximum => ScrollBarOwner.Maximum;
+    public override double Minimum => ScrollBarOwner.Minimum;
+    public override double LargeChange => ScrollBarOwner.LargeChange;
+    public override double SmallChange => ScrollBarOwner.SmallChange;
 }
 
 #endregion

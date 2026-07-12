@@ -1,12 +1,13 @@
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Input;
 
-namespace Jalium.UI.Controls.Automation;
+namespace Jalium.UI.Automation.Peers;
 
 /// <summary>
 /// Exposes Button types to UI Automation.
 /// </summary>
-public sealed class ButtonAutomationPeer : FrameworkElementAutomationPeer, IInvokeProvider
+public partial class ButtonAutomationPeer : ButtonBaseAutomationPeer, Jalium.UI.Automation.Provider.IInvokeProvider
 {
     /// <summary>
     /// Initializes a new instance of the ButtonAutomationPeer class.
@@ -64,7 +65,7 @@ public sealed class ButtonAutomationPeer : FrameworkElementAutomationPeer, IInvo
     /// <summary>
     /// Sends a request to activate the button and initiate its single, unambiguous action.
     /// </summary>
-    public void Invoke()
+    public new void Invoke()
     {
         if (!IsEnabled())
         {
@@ -84,13 +85,13 @@ public sealed class ButtonAutomationPeer : FrameworkElementAutomationPeer, IInvo
 /// <summary>
 /// Exposes ButtonBase types to UI Automation.
 /// </summary>
-public class ButtonBaseAutomationPeer : FrameworkElementAutomationPeer, IInvokeProvider
+public abstract partial class ButtonBaseAutomationPeer : FrameworkElementAutomationPeer
 {
     /// <summary>
     /// Initializes a new instance of the ButtonBaseAutomationPeer class.
     /// </summary>
     /// <param name="owner">The ButtonBase that is associated with this peer.</param>
-    public ButtonBaseAutomationPeer(ButtonBase owner) : base(owner)
+    protected ButtonBaseAutomationPeer(ButtonBase owner) : base(owner)
     {
     }
 
@@ -109,6 +110,14 @@ public class ButtonBaseAutomationPeer : FrameworkElementAutomationPeer, IInvokeP
     protected override string GetClassNameCore()
     {
         return Owner.GetType().Name;
+    }
+
+    protected override string GetAcceleratorKeyCore()
+    {
+        string value = base.GetAcceleratorKeyCore();
+        return string.IsNullOrEmpty(value) && ButtonBaseOwner.Command is RoutedCommand command
+            ? command.InputGestures.FirstOrDefault()?.ToString() ?? string.Empty
+            : value;
     }
 
     /// <inheritdoc />

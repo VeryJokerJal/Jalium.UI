@@ -1,3 +1,5 @@
+using System.Runtime.Serialization;
+
 namespace Jalium.UI.Data;
 
 /// <summary>
@@ -22,34 +24,76 @@ public sealed class DataChangedEventManager : WeakEventManager
     /// <summary>
     /// Adds a handler for the DataChanged event from the specified source.
     /// </summary>
-    /// <param name="source">The object that raises the event.</param>
+    /// <param name="source">The provider that raises the event.</param>
     /// <param name="handler">The handler to add.</param>
-    public static void AddHandler(object source, EventHandler handler)
+    public static void AddHandler(DataSourceProvider source, EventHandler<EventArgs> handler)
     {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(handler);
         CurrentManager.ProtectedAddHandler(source, handler);
     }
 
     /// <summary>
     /// Removes a handler for the DataChanged event from the specified source.
     /// </summary>
-    /// <param name="source">The object that raises the event.</param>
+    /// <param name="source">The provider that raises the event.</param>
     /// <param name="handler">The handler to remove.</param>
-    public static void RemoveHandler(object source, EventHandler handler)
+    public static void RemoveHandler(DataSourceProvider source, EventHandler<EventArgs> handler)
     {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(handler);
         CurrentManager.ProtectedRemoveHandler(source, handler);
     }
 
-    /// <inheritdoc />
-    protected override void StartListening(object source) { }
+    /// <summary>
+    /// Adds a weak listener for a <see cref="DataSourceProvider.DataChanged"/> event.
+    /// </summary>
+    public static void AddListener(DataSourceProvider source, IWeakEventListener listener)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(listener);
+        CurrentManager.ProtectedAddListener(source, listener);
+    }
+
+    /// <summary>
+    /// Removes a weak listener for a <see cref="DataSourceProvider.DataChanged"/> event.
+    /// </summary>
+    public static void RemoveListener(DataSourceProvider source, IWeakEventListener listener)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(listener);
+        CurrentManager.ProtectedRemoveListener(source, listener);
+    }
 
     /// <inheritdoc />
-    protected override void StopListening(object source) { }
+    protected override ListenerList NewListenerList() => new ListenerList<EventArgs>();
+
+    /// <inheritdoc />
+    protected override void StartListening(object source)
+    {
+        ((DataSourceProvider)source).DataChanged += OnDataChanged;
+    }
+
+    /// <inheritdoc />
+    protected override void StopListening(object source)
+    {
+        ((DataSourceProvider)source).DataChanged -= OnDataChanged;
+    }
+
+    private void OnDataChanged(object? sender, EventArgs eventArgs)
+    {
+        if (sender is not null)
+        {
+            DeliverEvent(sender, eventArgs);
+        }
+    }
 }
 
 /// <summary>
 /// Exception thrown when a binding value is unavailable.
 /// </summary>
-public sealed class ValueUnavailableException : InvalidOperationException
+[Serializable]
+public class ValueUnavailableException : SystemException
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="ValueUnavailableException"/> class.
@@ -70,6 +114,16 @@ public sealed class ValueUnavailableException : InvalidOperationException
     /// <param name="message">The error message.</param>
     /// <param name="innerException">The inner exception.</param>
     public ValueUnavailableException(string message, Exception innerException) : base(message, innerException) { }
+
+#pragma warning disable SYSLIB0051 // Required for the WPF-compatible exception serialization contract.
+    /// <summary>
+    /// Initializes a serialized instance of the <see cref="ValueUnavailableException"/> class.
+    /// </summary>
+    protected ValueUnavailableException(SerializationInfo info, StreamingContext context)
+        : base(info, context)
+    {
+    }
+#pragma warning restore SYSLIB0051
 }
 
 /// <summary>
@@ -151,6 +205,12 @@ public sealed class ValueConversionAttribute : Attribute
     /// Gets or sets the type of the parameter passed to the converter.
     /// </summary>
     public Type? ParameterType { get; set; }
+
+    /// <inheritdoc />
+    public override object TypeId => this;
+
+    /// <inheritdoc />
+    public override int GetHashCode() => SourceType.GetHashCode() + TargetType.GetHashCode();
 }
 
 /// <summary>

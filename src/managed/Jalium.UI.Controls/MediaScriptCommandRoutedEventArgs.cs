@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls;
+namespace Jalium.UI;
 
 /// <summary>
 /// Provides data for the MediaElement.ScriptCommand event.
@@ -8,8 +8,12 @@ public sealed class MediaScriptCommandRoutedEventArgs : RoutedEventArgs
     /// <summary>
     /// Initializes a new instance of the <see cref="MediaScriptCommandRoutedEventArgs"/> class.
     /// </summary>
-    internal MediaScriptCommandRoutedEventArgs(string parameterType, string parameterValue)
-        : base()
+    internal MediaScriptCommandRoutedEventArgs(
+        RoutedEvent routedEvent,
+        object source,
+        string parameterType,
+        string parameterValue)
+        : base(routedEvent, source)
     {
         ParameterType = parameterType;
         ParameterValue = parameterValue;

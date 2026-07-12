@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Interop;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -78,7 +78,7 @@ public sealed class CalendarButton : Button
     /// </summary>
     internal void SetHasSelectedDays(bool value)
     {
-        SetValue(HasSelectedDaysPropertyKey.DependencyProperty, value);
+        SetValue(HasSelectedDaysPropertyKey, value);
     }
 
     #endregion
@@ -125,7 +125,7 @@ public sealed class CalendarButton : Button
                 fgBrush = Foreground ?? new SolidColorBrush(Color.White);
             }
 
-            var formattedText = new FormattedText(text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var formattedText = new FormattedText(text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = fgBrush
             };

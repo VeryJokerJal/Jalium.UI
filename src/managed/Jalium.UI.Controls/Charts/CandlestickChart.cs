@@ -336,9 +336,9 @@ public class CandlestickChart : AxisChartBase
     #region Automation
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.CandlestickChartAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.CandlestickChartAutomationPeer(this);
     }
 
     #endregion

@@ -43,7 +43,7 @@ public sealed class DispatcherTimer
     /// </summary>
     /// <param name="priority">The priority at which to invoke the timer.</param>
     public DispatcherTimer(DispatcherPriority priority)
-        : this(priority, Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread())
+        : this(priority, Dispatcher.CurrentDispatcher)
     {
     }
 
@@ -56,8 +56,23 @@ public sealed class DispatcherTimer
     public DispatcherTimer(DispatcherPriority priority, Dispatcher dispatcher)
     {
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+        Dispatcher.ValidatePriority(priority, nameof(priority));
         Priority = priority;
         _interval = TimeSpan.Zero;
+    }
+
+    /// <summary>Compatibility overload for the original Jalium dispatcher priority.</summary>
+    public DispatcherTimer(Jalium.UI.DispatcherPriority priority)
+        : this(Dispatcher.FromLegacyPriority(priority))
+    {
+    }
+
+    /// <summary>Compatibility overload for the original Jalium dispatcher surface.</summary>
+    public DispatcherTimer(
+        Jalium.UI.DispatcherPriority priority,
+        Jalium.UI.Dispatcher dispatcher)
+        : this(Dispatcher.FromLegacyPriority(priority), Dispatcher.FromLegacy(dispatcher))
+    {
     }
 
     /// <summary>
@@ -71,12 +86,26 @@ public sealed class DispatcherTimer
     public DispatcherTimer(TimeSpan interval, DispatcherPriority priority, EventHandler callback, Dispatcher dispatcher)
         : this(priority, dispatcher)
     {
-        _interval = interval;
+        Interval = interval;
 
         if (callback != null)
         {
             Tick += callback;
         }
+    }
+
+    /// <summary>Compatibility overload for the original Jalium dispatcher surface.</summary>
+    public DispatcherTimer(
+        TimeSpan interval,
+        Jalium.UI.DispatcherPriority priority,
+        EventHandler callback,
+        Jalium.UI.Dispatcher dispatcher)
+        : this(
+            interval,
+            Dispatcher.FromLegacyPriority(priority),
+            callback,
+            Dispatcher.FromLegacy(dispatcher))
+    {
     }
 
     /// <summary>

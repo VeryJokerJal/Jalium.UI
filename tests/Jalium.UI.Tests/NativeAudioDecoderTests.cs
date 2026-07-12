@@ -191,24 +191,23 @@ public class NativeAudioDecoderTests : IDisposable
     {
         // Step 4a 之后:Windows 上 AAC 路由到 win_mf_aac_decoder。喂一个不存在的
         // .m4a/.aac,期望抛 NativeMediaException 但 status 不是 NotImplemented
-        // —— 这证明 hook 已注册、dispatch 真路由到 MF 桥(MF 找不到文件返回 IoError)。
-        // Linux/macOS/Android 暂未做 AAC 桥,这测试在那些平台上仍会期望 NotImplemented;
-        // 用 RuntimeInformation 区分。
+        // —— 这证明 hook 已注册、dispatch 真路由到平台桥(找不到文件返回 IoError)。
+        // Windows 使用 MF，Linux 使用 GStreamer；macOS/Android 暂保留
+        // NotImplemented 预期。
         var phantom = Path.Combine(Path.GetTempPath(),
             $"jalium_aac_phantom_{Guid.NewGuid():N}{ext}");
 
         using var decoder = new NativeAudioDecoder();
         var ex = Assert.Throws<NativeMediaException>(() => decoder.Open(phantom));
 
-        if (System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
-                System.Runtime.InteropServices.OSPlatform.Windows))
+        if (OperatingSystem.IsWindows() || OperatingSystem.IsLinux())
         {
             Assert.NotEqual(NativeMediaStatus.NotImplemented, ex.Status);
             Assert.NotEqual(NativeMediaStatus.UnsupportedCodec, ex.Status);
         }
         else
         {
-            // 其他平台 AAC 桥还没接(plan Step 4b/c/d),仍是 NotImplemented。
+            // macOS/Android AAC 桥还没接，仍是 NotImplemented。
             Assert.Equal(NativeMediaStatus.NotImplemented, ex.Status);
         }
     }

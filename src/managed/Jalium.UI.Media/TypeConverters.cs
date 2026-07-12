@@ -31,6 +31,25 @@ public sealed class ImageSourceConverter : TypeConverter
         }
         return base.ConvertFrom(context, culture, value);
     }
+
+    public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType) =>
+        destinationType == typeof(string) || base.CanConvertTo(context, destinationType);
+
+    public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
+    {
+        if (destinationType == typeof(string))
+        {
+            return value switch
+            {
+                SvgImage svg when svg.UriSource is not null => svg.UriSource.OriginalString,
+                BitmapImage bitmap when bitmap.UriSource is not null => bitmap.UriSource.OriginalString,
+                ImageSource image => image.ToString(culture),
+                _ => base.ConvertTo(context, culture, value, destinationType),
+            };
+        }
+
+        return base.ConvertTo(context, culture, value, destinationType);
+    }
 }
 
 /// <summary>
@@ -82,6 +101,14 @@ public sealed class BrushConverter : TypeConverter
         }
         return base.ConvertFrom(context, culture, value);
     }
+
+    public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType) =>
+        destinationType == typeof(string) || base.CanConvertTo(context, destinationType);
+
+    public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType) =>
+        destinationType == typeof(string) && value is Brush brush
+            ? brush is SolidColorBrush solid ? solid.Color.ToString(culture) : brush.ToString(culture)
+            : base.ConvertTo(context, culture, value, destinationType);
 }
 
 /// <summary>
@@ -102,6 +129,14 @@ public sealed class ColorConverter : TypeConverter
         }
         return base.ConvertFrom(context, culture, value);
     }
+
+    public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType) =>
+        destinationType == typeof(string) || base.CanConvertTo(context, destinationType);
+
+    public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType) =>
+        destinationType == typeof(string) && value is Color color
+            ? color.ToString(culture)
+            : base.ConvertTo(context, culture, value, destinationType);
 
     /// <summary>
     /// Converts a string representation of a color to a Color.
@@ -177,6 +212,32 @@ public sealed class GeometryConverter : TypeConverter
         }
         return base.ConvertFrom(context, culture, value);
     }
+
+    public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType) =>
+        destinationType == typeof(string) || base.CanConvertTo(context, destinationType);
+
+    public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType) =>
+        destinationType == typeof(string) && value is Geometry geometry
+            ? geometry.ToString()
+            : base.ConvertTo(context, culture, value, destinationType);
+}
+
+/// <summary>Converts point collections to and from their compact XAML representation.</summary>
+public sealed class PointCollectionConverter : TypeConverter
+{
+    public override bool CanConvertFrom(ITypeDescriptorContext? context, Type sourceType) =>
+        sourceType == typeof(string) || base.CanConvertFrom(context, sourceType);
+
+    public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType) =>
+        destinationType == typeof(string) || base.CanConvertTo(context, destinationType);
+
+    public override object ConvertFrom(ITypeDescriptorContext? context, CultureInfo? culture, object value) =>
+        value is string text ? PointCollection.Parse(text) : base.ConvertFrom(context, culture, value)!;
+
+    public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType) =>
+        destinationType == typeof(string) && value is PointCollection points
+            ? points.ToString(culture ?? CultureInfo.CurrentCulture)
+            : base.ConvertTo(context, culture, value, destinationType);
 }
 
 /// <summary>
@@ -187,6 +248,49 @@ public sealed class PixelFormatConverter : TypeConverter
     public override bool CanConvertFrom(ITypeDescriptorContext? context, Type sourceType)
     {
         return sourceType == typeof(string) || base.CanConvertFrom(context, sourceType);
+    }
+
+    public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType)
+    {
+        return destinationType == typeof(string) || base.CanConvertTo(context, destinationType);
+    }
+
+    public override object ConvertFrom(ITypeDescriptorContext? td, CultureInfo? ci, object o)
+    {
+        if (o is string text)
+        {
+            string name = text.Trim();
+            var property = typeof(PixelFormats).GetProperties(BindingFlags.Public | BindingFlags.Static)
+                .FirstOrDefault(candidate =>
+                    candidate.PropertyType == typeof(PixelFormat) &&
+                    string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase));
+            if (property is not null)
+            {
+                return (PixelFormat)property.GetValue(null)!;
+            }
+
+            throw new FormatException($"'{text}' is not a recognized pixel format.");
+        }
+
+        return base.ConvertFrom(td, ci, o)!;
+    }
+
+    public new object ConvertFromString(string value) =>
+        ConvertFrom(null, CultureInfo.CurrentCulture, value);
+
+    public override object? ConvertTo(
+        ITypeDescriptorContext? context,
+        CultureInfo? culture,
+        object? value,
+        Type destinationType)
+    {
+        ArgumentNullException.ThrowIfNull(destinationType);
+        if (destinationType == typeof(string) && value is PixelFormat format)
+        {
+            return format.ToString();
+        }
+
+        return base.ConvertTo(context, culture, value, destinationType);
     }
 }
 
@@ -255,8 +359,34 @@ public abstract class ValueSerializer
 
     private static readonly ImageSourceValueSerializer s_imageSourceSerializer = new();
     private static readonly FontFamilyValueSerializer s_fontFamilySerializer = new();
-    private static readonly BrushValueSerializer s_brushSerializer = new();
-    private static readonly TransformValueSerializer s_transformSerializer = new();
+    private static readonly Converters.BrushValueSerializer s_brushSerializer = new();
+    private static readonly Converters.GeometryValueSerializer s_geometrySerializer = new();
+    private static readonly Converters.TransformValueSerializer s_transformSerializer = new();
+    private static readonly Converters.CacheModeValueSerializer s_cacheModeSerializer = new();
+    private static readonly Converters.DoubleCollectionValueSerializer s_doubleCollectionSerializer = new();
+    private static readonly Converters.MatrixValueSerializer s_matrixSerializer = new();
+    private static readonly Converters.PathFigureCollectionValueSerializer s_pathFigureCollectionSerializer = new();
+    private static readonly Converters.PointCollectionValueSerializer s_pointCollectionSerializer = new();
+    private static readonly Converters.VectorCollectionValueSerializer s_vectorCollectionSerializer = new();
+    private static readonly global::Jalium.UI.Converters.Int32RectValueSerializer s_int32RectSerializer = new();
+    private static readonly global::Jalium.UI.Converters.PointValueSerializer s_pointSerializer = new();
+    private static readonly global::Jalium.UI.Converters.RectValueSerializer s_rectSerializer = new();
+    private static readonly global::Jalium.UI.Converters.SizeValueSerializer s_sizeSerializer = new();
+    private static readonly global::Jalium.UI.Converters.VectorValueSerializer s_vectorSerializer = new();
+    private static readonly ValueSerializer s_matrix3DSerializer =
+        new MarkupValueSerializerAdapter(new Media3D.Converters.Matrix3DValueSerializer());
+    private static readonly ValueSerializer s_point3DSerializer =
+        new MarkupValueSerializerAdapter(new Media3D.Converters.Point3DValueSerializer());
+    private static readonly ValueSerializer s_point4DSerializer =
+        new MarkupValueSerializerAdapter(new Media3D.Converters.Point4DValueSerializer());
+    private static readonly ValueSerializer s_quaternionSerializer =
+        new MarkupValueSerializerAdapter(new Media3D.Converters.QuaternionValueSerializer());
+    private static readonly ValueSerializer s_rect3DSerializer =
+        new MarkupValueSerializerAdapter(new Media3D.Converters.Rect3DValueSerializer());
+    private static readonly ValueSerializer s_size3DSerializer =
+        new MarkupValueSerializerAdapter(new Media3D.Converters.Size3DValueSerializer());
+    private static readonly ValueSerializer s_vector3DSerializer =
+        new MarkupValueSerializerAdapter(new Media3D.Converters.Vector3DValueSerializer());
 
     /// <summary>
     /// Returns the built-in <see cref="ValueSerializer"/> that can round-trip the supplied type
@@ -282,12 +412,104 @@ public abstract class ValueSerializer
         {
             return s_brushSerializer;
         }
+        if (typeof(Geometry).IsAssignableFrom(type))
+        {
+            return s_geometrySerializer;
+        }
         if (typeof(Transform).IsAssignableFrom(type))
         {
             return s_transformSerializer;
         }
+        if (typeof(CacheMode).IsAssignableFrom(type))
+        {
+            return s_cacheModeSerializer;
+        }
+        if (type == typeof(DoubleCollection))
+        {
+            return s_doubleCollectionSerializer;
+        }
+        if (type == typeof(Matrix))
+        {
+            return s_matrixSerializer;
+        }
+        if (type == typeof(PathFigureCollection))
+        {
+            return s_pathFigureCollectionSerializer;
+        }
+        if (type == typeof(PointCollection))
+        {
+            return s_pointCollectionSerializer;
+        }
+        if (type == typeof(VectorCollection))
+        {
+            return s_vectorCollectionSerializer;
+        }
+        if (type == typeof(Int32Rect))
+        {
+            return s_int32RectSerializer;
+        }
+        if (type == typeof(Point))
+        {
+            return s_pointSerializer;
+        }
+        if (type == typeof(Rect))
+        {
+            return s_rectSerializer;
+        }
+        if (type == typeof(Size))
+        {
+            return s_sizeSerializer;
+        }
+        if (type == typeof(Vector))
+        {
+            return s_vectorSerializer;
+        }
+        if (type == typeof(Media3D.Matrix3D))
+        {
+            return s_matrix3DSerializer;
+        }
+        if (type == typeof(Media3D.Point3D))
+        {
+            return s_point3DSerializer;
+        }
+        if (type == typeof(Media3D.Point4D))
+        {
+            return s_point4DSerializer;
+        }
+        if (type == typeof(Media3D.Quaternion))
+        {
+            return s_quaternionSerializer;
+        }
+        if (type == typeof(Media3D.Rect3D))
+        {
+            return s_rect3DSerializer;
+        }
+        if (type == typeof(Media3D.Size3D))
+        {
+            return s_size3DSerializer;
+        }
+        if (type == typeof(Media3D.Vector3D))
+        {
+            return s_vector3DSerializer;
+        }
 
         return null;
+    }
+
+    private sealed class MarkupValueSerializerAdapter(Jalium.UI.Markup.ValueSerializer serializer)
+        : ValueSerializer
+    {
+        public override bool CanConvertToString(object value, IValueSerializerContext? context) =>
+            serializer.CanConvertToString(value, null);
+
+        public override bool CanConvertFromString(string value, IValueSerializerContext? context) =>
+            serializer.CanConvertFromString(value, null);
+
+        public override string ConvertToString(object value, IValueSerializerContext? context) =>
+            serializer.ConvertToString(value, null);
+
+        public override object ConvertFromString(string value, IValueSerializerContext? context) =>
+            serializer.ConvertFromString(value, null);
     }
 }
 

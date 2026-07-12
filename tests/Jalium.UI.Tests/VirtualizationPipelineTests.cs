@@ -3,6 +3,7 @@ using System.Collections.Specialized;
 using System.ComponentModel.Design.Serialization;
 using System.Globalization;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Primitives;
 
 namespace Jalium.UI.Tests;
 
@@ -53,10 +54,10 @@ public class VirtualizationPipelineTests
     }
 
     [Fact]
-    public void VirtualizingPanel_HierarchicalSeams_DefaultToFlatBehavior()
+    public void VirtualizingPanel_HierarchicalSeams_VspEnablesHierarchicalVirtualization()
     {
         var panel = new VirtualizingStackPanel();
-        Assert.False(panel.CanHierarchicallyScrollAndVirtualize);
+        Assert.True(panel.CanHierarchicallyScrollAndVirtualize);
         Assert.Equal(0.0, panel.GetItemOffset(new VirtualizingStackPanel()));
         Assert.Throws<ArgumentNullException>(() => panel.GetItemOffset(null!));
     }
@@ -188,14 +189,15 @@ public class VirtualizationPipelineTests
     [Fact]
     public void IHierarchicalVirtualizationAndScrollInfo_ContractShape_Compiles()
     {
-        IHierarchicalVirtualizationAndScrollInfo stub = new HvasiStub();
+        var stubImplementation = new HvasiStub();
+        IHierarchicalVirtualizationAndScrollInfo stub = stubImplementation;
 
         var header = new HierarchicalVirtualizationHeaderDesiredSizes(new Size(1, 2), new Size(3, 4));
         var items = new HierarchicalVirtualizationItemDesiredSizes(
             new Size(1, 1), new Size(2, 2), new Size(3, 3), new Size(4, 4),
             new Size(5, 5), new Size(6, 6), new Size(7, 7), new Size(8, 8));
 
-        stub.HeaderDesiredSizes = header;
+        stubImplementation.HeaderDesiredSizes = header;
         stub.ItemDesiredSizes = items;
         stub.Constraints = new HierarchicalVirtualizationConstraints(new VirtualizationCacheLength(1), VirtualizationCacheLengthUnit.Pixel, new Rect(0, 0, 10, 10));
 

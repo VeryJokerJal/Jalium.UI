@@ -63,6 +63,10 @@ internal static class BrowserInterop
         => s_backend.SetCallbacks(controller, navigationStarting, navigationCompleted, sourceChanged, contentLoading, documentTitleChanged, webMessageReceived, newWindowRequested, processFailed, zoomFactorChanged, userData);
     internal static int Navigate(nint controller, string uri) => s_backend.Navigate(controller, uri);
     internal static int NavigateToString(nint controller, string html) => s_backend.NavigateToString(controller, html);
+    internal static int NavigateWithWebResourceRequest(nint controller, string uri, string method, byte[]? postData, int postDataLength, string additionalHeaders) =>
+        s_backend.NavigateWithWebResourceRequest(controller, uri, method, postData, postDataLength, additionalHeaders);
+    internal static int AddHostObjectToScript(nint controller, string name, nint dispatch) => s_backend.AddHostObjectToScript(controller, name, dispatch);
+    internal static int RemoveHostObjectFromScript(nint controller, string name) => s_backend.RemoveHostObjectFromScript(controller, name);
     internal static int Reload(nint controller) => s_backend.Reload(controller);
     internal static int Stop(nint controller) => s_backend.Stop(controller);
     internal static int GoBack(nint controller) => s_backend.GoBack(controller);

@@ -1,5 +1,26 @@
 namespace Jalium.UI.Media;
 
+/// <summary>Result of a visual hit-test operation.</summary>
+public class HitTestResult
+{
+    [ThreadStatic]
+    private static HitTestResult? s_reusable;
+
+    public HitTestResult(Visual visualHit)
+    {
+        VisualHit = visualHit ?? throw new ArgumentNullException(nameof(visualHit));
+    }
+
+    public DependencyObject VisualHit { get; private set; }
+
+    internal static HitTestResult GetReusable(Visual visualHit)
+    {
+        s_reusable ??= new HitTestResult(visualHit);
+        s_reusable.VisualHit = visualHit;
+        return s_reusable;
+    }
+}
+
 /// <summary>
 /// Returns the result of a hit test that uses a Point as a hit test parameter.
 /// </summary>
@@ -71,6 +92,9 @@ public class GeometryHitTestParameters : HitTestParameters
 
     /// <summary>Gets the Geometry that defines the hit test area.</summary>
     public Geometry HitTestArea { get; }
+
+    /// <summary>Gets the geometry used for the hit test.</summary>
+    public Geometry HitGeometry => HitTestArea;
 }
 
 /// <summary>
@@ -86,20 +110,39 @@ public abstract class HitTestParameters
 public enum IntersectionDetail
 {
     /// <summary>The visual was not hit.</summary>
-    NotCalculated,
+    NotCalculated = 0,
 
     /// <summary>The geometries are not intersecting.</summary>
-    Empty,
+    Empty = 1,
 
     /// <summary>The hit test geometry is fully contained within the visual.</summary>
-    FullyContains,
+    FullyContains = 3,
 
     /// <summary>The visual is fully contained within the hit test geometry.</summary>
-    FullyInside,
+    FullyInside = 2,
 
     /// <summary>The geometries intersect but neither is fully contained.</summary>
-    Intersects
+    Intersects = 4
 }
+
+public enum HitTestFilterBehavior
+{
+    ContinueSkipSelfAndChildren = 0,
+    ContinueSkipChildren = 2,
+    ContinueSkipSelf = 4,
+    Continue = 6,
+    Stop = 8,
+}
+
+public enum HitTestResultBehavior
+{
+    Stop,
+    Continue,
+}
+
+public delegate HitTestFilterBehavior HitTestFilterCallback(DependencyObject potentialHitTestTarget);
+
+public delegate HitTestResultBehavior HitTestResultCallback(HitTestResult result);
 
 /// <summary>
 /// Provides data for the <see cref="CompositionTarget.Rendering"/> event.

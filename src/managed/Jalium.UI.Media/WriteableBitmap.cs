@@ -5,7 +5,7 @@ namespace Jalium.UI.Media;
 /// <summary>
 /// Provides a BitmapSource that can be written to and updated.
 /// </summary>
-public sealed class WriteableBitmap : BitmapSource
+public class WriteableBitmap : Imaging.BitmapSource
 {
     private byte[] _backBuffer;
     private readonly int _pixelWidth;
@@ -354,34 +354,35 @@ public sealed class WriteableBitmap : BitmapSource
         var bytesPerPixel = GetBytesPerPixel(_format);
         var offset = (y * _stride) + (x * bytesPerPixel);
 
-        switch (_format)
+        if (_format == PixelFormat.Bgra32 || _format == PixelFormat.Pbgra32)
         {
-            case PixelFormat.Bgra32:
-            case PixelFormat.Pbgra32:
-                _backBuffer[offset] = color.B;
-                _backBuffer[offset + 1] = color.G;
-                _backBuffer[offset + 2] = color.R;
-                _backBuffer[offset + 3] = color.A;
-                break;
-            case PixelFormat.Rgba32:
-                _backBuffer[offset] = color.R;
-                _backBuffer[offset + 1] = color.G;
-                _backBuffer[offset + 2] = color.B;
-                _backBuffer[offset + 3] = color.A;
-                break;
-            case PixelFormat.Bgr24:
-                _backBuffer[offset] = color.B;
-                _backBuffer[offset + 1] = color.G;
-                _backBuffer[offset + 2] = color.R;
-                break;
-            case PixelFormat.Rgb24:
-                _backBuffer[offset] = color.R;
-                _backBuffer[offset + 1] = color.G;
-                _backBuffer[offset + 2] = color.B;
-                break;
-            case PixelFormat.Gray8:
-                _backBuffer[offset] = (byte)((color.R * 77 + color.G * 150 + color.B * 29) >> 8);
-                break;
+            _backBuffer[offset] = color.B;
+            _backBuffer[offset + 1] = color.G;
+            _backBuffer[offset + 2] = color.R;
+            _backBuffer[offset + 3] = color.A;
+        }
+        else if (_format == PixelFormat.Rgba32)
+        {
+            _backBuffer[offset] = color.R;
+            _backBuffer[offset + 1] = color.G;
+            _backBuffer[offset + 2] = color.B;
+            _backBuffer[offset + 3] = color.A;
+        }
+        else if (_format == PixelFormat.Bgr24)
+        {
+            _backBuffer[offset] = color.B;
+            _backBuffer[offset + 1] = color.G;
+            _backBuffer[offset + 2] = color.R;
+        }
+        else if (_format == PixelFormat.Rgb24)
+        {
+            _backBuffer[offset] = color.R;
+            _backBuffer[offset + 1] = color.G;
+            _backBuffer[offset + 2] = color.B;
+        }
+        else if (_format == PixelFormat.Gray8)
+        {
+            _backBuffer[offset] = (byte)((color.R * 77 + color.G * 150 + color.B * 29) >> 8);
         }
     }
 
@@ -396,20 +397,32 @@ public sealed class WriteableBitmap : BitmapSource
         var bytesPerPixel = GetBytesPerPixel(_format);
         var offset = (y * _stride) + (x * bytesPerPixel);
 
-        return _format switch
+        if (_format == PixelFormat.Bgra32 || _format == PixelFormat.Pbgra32)
         {
-            PixelFormat.Bgra32 or PixelFormat.Pbgra32 =>
-                Color.FromArgb(_backBuffer[offset + 3], _backBuffer[offset + 2], _backBuffer[offset + 1], _backBuffer[offset]),
-            PixelFormat.Rgba32 =>
-                Color.FromArgb(_backBuffer[offset + 3], _backBuffer[offset], _backBuffer[offset + 1], _backBuffer[offset + 2]),
-            PixelFormat.Bgr24 =>
-                Color.FromRgb(_backBuffer[offset + 2], _backBuffer[offset + 1], _backBuffer[offset]),
-            PixelFormat.Rgb24 =>
-                Color.FromRgb(_backBuffer[offset], _backBuffer[offset + 1], _backBuffer[offset + 2]),
-            PixelFormat.Gray8 =>
-                Color.FromRgb(_backBuffer[offset], _backBuffer[offset], _backBuffer[offset]),
-            _ => Color.Transparent
-        };
+            return Color.FromArgb(_backBuffer[offset + 3], _backBuffer[offset + 2], _backBuffer[offset + 1], _backBuffer[offset]);
+        }
+
+        if (_format == PixelFormat.Rgba32)
+        {
+            return Color.FromArgb(_backBuffer[offset + 3], _backBuffer[offset], _backBuffer[offset + 1], _backBuffer[offset + 2]);
+        }
+
+        if (_format == PixelFormat.Bgr24)
+        {
+            return Color.FromRgb(_backBuffer[offset + 2], _backBuffer[offset + 1], _backBuffer[offset]);
+        }
+
+        if (_format == PixelFormat.Rgb24)
+        {
+            return Color.FromRgb(_backBuffer[offset], _backBuffer[offset + 1], _backBuffer[offset + 2]);
+        }
+
+        if (_format == PixelFormat.Gray8)
+        {
+            return Color.FromRgb(_backBuffer[offset], _backBuffer[offset], _backBuffer[offset]);
+        }
+
+        return Color.Transparent;
     }
 
     /// <summary>
@@ -668,12 +681,24 @@ public sealed class WriteableBitmap : BitmapSource
         }
     }
 
-    private static int GetBytesPerPixel(PixelFormat format) => format switch
+    private static int GetBytesPerPixel(PixelFormat format)
     {
-        PixelFormat.Bgra32 or PixelFormat.Rgba32 or PixelFormat.Rgb32 or PixelFormat.Pbgra32 => 4,
-        PixelFormat.Bgr24 or PixelFormat.Rgb24 => 3,
-        PixelFormat.Gray16 => 2,
-        PixelFormat.Gray8 => 1,
-        _ => 4
-    };
+        if (format == PixelFormat.Bgra32 || format == PixelFormat.Rgba32 ||
+            format == PixelFormat.Rgb32 || format == PixelFormat.Pbgra32)
+        {
+            return 4;
+        }
+
+        if (format == PixelFormat.Bgr24 || format == PixelFormat.Rgb24)
+        {
+            return 3;
+        }
+
+        if (format == PixelFormat.Gray16)
+        {
+            return 2;
+        }
+
+        return format == PixelFormat.Gray8 ? 1 : 4;
+    }
 }

@@ -10,9 +10,9 @@ namespace Jalium.UI.Controls;
 public class ToolTip : ContentControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ToolTipAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ToolTipAutomationPeer(this);
     }
 
     #region Static Brushes
@@ -24,7 +24,6 @@ public class ToolTip : ContentControl
     #endregion
 
     private Popup? _popup;
-    private UIElement? _placementTarget;
     private DispatcherTimer? _showTimer;
     private DispatcherTimer? _hideTimer;
 
@@ -77,6 +76,28 @@ public class ToolTip : ContentControl
     public static readonly DependencyProperty ShowDurationProperty =
         DependencyProperty.Register(nameof(ShowDuration), typeof(int), typeof(ToolTip),
             new PropertyMetadata(int.MaxValue));
+
+    public static readonly DependencyProperty CustomPopupPlacementCallbackProperty =
+        DependencyProperty.Register(
+            nameof(CustomPopupPlacementCallback),
+            typeof(CustomPopupPlacementCallback),
+            typeof(ToolTip),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty HasDropShadowProperty =
+        ToolTipService.HasDropShadowProperty.AddOwner(typeof(ToolTip));
+
+    public static readonly DependencyProperty PlacementRectangleProperty =
+        ToolTipService.PlacementRectangleProperty.AddOwner(typeof(ToolTip));
+
+    public static readonly DependencyProperty PlacementTargetProperty =
+        ToolTipService.PlacementTargetProperty.AddOwner(typeof(ToolTip));
+
+    public static readonly DependencyProperty ShowsToolTipOnKeyboardFocusProperty =
+        ToolTipService.ShowsToolTipOnKeyboardFocusProperty.AddOwner(typeof(ToolTip));
+
+    public static readonly DependencyProperty StaysOpenProperty =
+        DependencyProperty.Register(nameof(StaysOpen), typeof(bool), typeof(ToolTip), new PropertyMetadata(true));
 
     #endregion
 
@@ -142,14 +163,44 @@ public class ToolTip : ContentControl
         set => SetValue(ShowDurationProperty, value);
     }
 
+    public CustomPopupPlacementCallback CustomPopupPlacementCallback
+    {
+        get => (CustomPopupPlacementCallback)GetValue(CustomPopupPlacementCallbackProperty)!;
+        set => SetValue(CustomPopupPlacementCallbackProperty, value);
+    }
+
+    public bool HasDropShadow
+    {
+        get => (bool)(GetValue(HasDropShadowProperty) ?? false);
+        set => SetValue(HasDropShadowProperty, value);
+    }
+
+    public Rect PlacementRectangle
+    {
+        get => (Rect)(GetValue(PlacementRectangleProperty) ?? Rect.Empty);
+        set => SetValue(PlacementRectangleProperty, value);
+    }
+
+    public bool? ShowsToolTipOnKeyboardFocus
+    {
+        get => (bool?)GetValue(ShowsToolTipOnKeyboardFocusProperty);
+        set => SetValue(ShowsToolTipOnKeyboardFocusProperty, value);
+    }
+
+    public bool StaysOpen
+    {
+        get => (bool)(GetValue(StaysOpenProperty) ?? true);
+        set => SetValue(StaysOpenProperty, value);
+    }
+
     /// <summary>
     /// Gets or sets the element relative to which the tooltip is positioned.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public UIElement? PlacementTarget
     {
-        get => _placementTarget;
-        set => _placementTarget = value;
+        get => (UIElement?)GetValue(PlacementTargetProperty);
+        set => SetValue(PlacementTargetProperty, value);
     }
 
     #endregion
@@ -159,12 +210,34 @@ public class ToolTip : ContentControl
     /// <summary>
     /// Occurs when the tooltip is opened.
     /// </summary>
-    public event EventHandler? Opened;
+    public static readonly RoutedEvent OpenedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(Opened),
+            RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler),
+            typeof(ToolTip));
+
+    public event RoutedEventHandler Opened
+    {
+        add => AddHandler(OpenedEvent, value);
+        remove => RemoveHandler(OpenedEvent, value);
+    }
 
     /// <summary>
     /// Occurs when the tooltip is closed.
     /// </summary>
-    public event EventHandler? Closed;
+    public static readonly RoutedEvent ClosedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(Closed),
+            RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler),
+            typeof(ToolTip));
+
+    public event RoutedEventHandler Closed
+    {
+        add => AddHandler(ClosedEvent, value);
+        remove => RemoveHandler(ClosedEvent, value);
+    }
 
     #endregion
 
@@ -233,17 +306,22 @@ public class ToolTip : ContentControl
         _popup = new Popup
         {
             Child = this,
-            PlacementTarget = _placementTarget,
+            PlacementTarget = PlacementTarget,
             Placement = Placement,
-            HorizontalOffset = HorizontalOffset + 12, // Offset to the right of cursor
-            VerticalOffset = VerticalOffset + 20, // Offset below cursor image (~20 DIPs for standard arrow cursor)
-            StaysOpen = true, // ToolTip closing is managed by ToolTipService, not light-dismiss
+            PlacementRectangle = PlacementRectangle,
+            CustomPopupPlacementCallback = CustomPopupPlacementCallback,
+            HorizontalOffset = HorizontalOffset + (PlacementRectangle.IsEmpty ? 12 : 0),
+            VerticalOffset = VerticalOffset + (PlacementRectangle.IsEmpty ? 20 : 0),
+            StaysOpen = StaysOpen,
+            AllowsTransparency = true,
+            PopupAnimation = SystemParameters.ToolTipPopupAnimation,
             ShouldConstrainToRootBounds = true, // Force overlay mode (simpler, avoids external window issues)
             IsHitTestVisible = false // Prevent tooltip overlay from stealing mouse events
         };
 
         _popup.IsOpen = true;
-        Opened?.Invoke(this, EventArgs.Empty);
+        var openedArgs = new RoutedEventArgs(OpenedEvent, this);
+        OnOpened(openedArgs);
 
         // Start auto-hide timer
         StartHideTimer();
@@ -258,7 +336,18 @@ public class ToolTip : ContentControl
             _popup.IsOpen = false;
         }
 
-        Closed?.Invoke(this, EventArgs.Empty);
+        var closedArgs = new RoutedEventArgs(ClosedEvent, this);
+        OnClosed(closedArgs);
+    }
+
+    protected virtual void OnOpened(RoutedEventArgs e)
+    {
+        RaiseEvent(e);
+    }
+
+    protected virtual void OnClosed(RoutedEventArgs e)
+    {
+        RaiseEvent(e);
     }
 
     internal void StartShowTimer(Point mousePosition)
@@ -305,7 +394,6 @@ public class ToolTip : ContentControl
     // Layout and rendering are handled by the ControlTemplate (Border + ContentPresenter).
     // No custom MeasureOverride, ArrangeOverride, or OnRender needed.
 }
-
 /// <summary>
 /// Provides static methods and attached properties for managing tooltips.
 /// </summary>
@@ -333,11 +421,9 @@ public static class ToolTipService
         if (e is not Input.StylusSystemGestureEventArgs gestureArgs) return;
         if (gestureArgs.SystemGesture != Input.SystemGesture.HoldEnter) return;
         // Only touch-initiated holds reveal the tooltip; pen and mouse use existing paths.
-        if (gestureArgs.StylusDevice is not Input.PointerStylusDevice ps) return;
-
         object? toolTip = GetToolTip(owner);
         if (toolTip == null) return;
-        var position = ps.GetPosition(null);
+        var position = gestureArgs.StylusDevice.GetPosition(null);
         ShowToolTip(owner, toolTip, position);
         e.Handled = true;
     }
@@ -445,11 +531,11 @@ public static class ToolTipService
 
     /// <summary>Identifies the ToolTipOpening routed event.</summary>
     public static readonly RoutedEvent ToolTipOpeningEvent =
-        new RoutedEvent("ToolTipOpening", RoutingStrategy.Direct, typeof(ToolTipEventHandler), typeof(ToolTipService));
+        FrameworkElement.ToolTipOpeningEvent.AddOwner(typeof(ToolTipService));
 
     /// <summary>Identifies the ToolTipClosing routed event.</summary>
     public static readonly RoutedEvent ToolTipClosingEvent =
-        new RoutedEvent("ToolTipClosing", RoutingStrategy.Direct, typeof(ToolTipEventHandler), typeof(ToolTipService));
+        FrameworkElement.ToolTipClosingEvent.AddOwner(typeof(ToolTipService));
 
     #endregion
 
@@ -529,6 +615,19 @@ public static class ToolTipService
     /// </summary>
     public static void ShowToolTip(UIElement owner, object content, Point mousePosition)
     {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(content);
+
+        var openingArgs = new ToolTipEventArgs(ToolTipOpeningEvent)
+        {
+            Source = owner,
+        };
+        owner.RaiseEvent(openingArgs);
+        if (openingArgs.Handled)
+        {
+            return;
+        }
+
         // Close any existing tooltip
         HideToolTip(_currentOwner);
 
@@ -579,26 +678,18 @@ public static class ToolTipService
     /// </summary>
     public static void HideToolTip(UIElement? owner)
     {
-        if (owner == _currentOwner && _currentToolTip != null)
+        if (owner != null && owner == _currentOwner && _currentToolTip != null)
         {
+            var closingArgs = new ToolTipEventArgs(ToolTipClosingEvent)
+            {
+                Source = owner,
+            };
+            owner.RaiseEvent(closingArgs);
+
             _currentToolTip.StopTimers();
             _currentToolTip.IsOpen = false;
             _currentToolTip = null;
             _currentOwner = null;
         }
     }
-}
-
-/// <summary>
-/// Represents the method that handles routed events related to tooltip operations.
-/// </summary>
-public delegate void ToolTipEventHandler(object sender, ToolTipEventArgs e);
-
-/// <summary>
-/// Provides data for tooltip events.
-/// </summary>
-public sealed class ToolTipEventArgs : RoutedEventArgs
-{
-    public ToolTipEventArgs() { }
-    public ToolTipEventArgs(RoutedEvent routedEvent) : base(routedEvent) { }
 }

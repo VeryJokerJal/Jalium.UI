@@ -9,7 +9,7 @@ namespace Jalium.UI.Tests;
 /// Self-consistency tests for the source-generated COM UIA providers. They build a real
 /// StrategyBasedComWrappers CCW for a provider and invoke it THROUGH its native vtable —
 /// exactly the way UIAutomationCore would — validating QueryInterface across the
-/// IRawElementProviderSimple/Fragment/FragmentRoot inheritance chain, the HRESULT method
+/// IRawElementProviderSimple/Fragment/FragmentRoot sibling interfaces, the HRESULT method
 /// shapes, the blittable <see cref="UiaVariant"/>, the custom SAFEARRAY marshaller, and a
 /// pattern-wrapper CCW.
 ///
@@ -24,7 +24,8 @@ public class UiaComWrappersTests
     private const int Slot_get_ProviderOptions = 3;
     private const int Slot_GetPatternProvider = 4;
     private const int Slot_GetPropertyValue = 5;
-    private const int Slot_GetRuntimeId = 8; // on the IRawElementProviderFragment vtable
+    private const int Slot_get_HostRawElementProvider = 6;
+    private const int Slot_Fragment_GetRuntimeId = 4;
 
     // IUiaTextProvider vtable slots (3..8 after IUnknown 0-2).
     private const int Slot_Text_GetSelection = 3;
@@ -48,7 +49,7 @@ public class UiaComWrappersTests
 
     private static nint QueryInterface(nint pUnk, Guid iid)
     {
-        int hr = Marshal.QueryInterface(pUnk, ref iid, out nint p);
+        int hr = Marshal.QueryInterface(pUnk, in iid, out nint p);
         Assert.True(hr == 0, $"QueryInterface({iid}) failed: 0x{hr:X8}");
         Assert.NotEqual(nint.Zero, p);
         return p;
@@ -64,7 +65,7 @@ public class UiaComWrappersTests
     }
 
     [Fact]
-    public void Ccw_ExposesProviderInterfaceChain_AndCoreVtableWorks()
+    public void Ccw_ExposesProviderInterfaces_AndCoreVtablesWork()
     {
         var button = new Button();
         var peer = button.GetAutomationPeer();
@@ -75,7 +76,7 @@ public class UiaComWrappersTests
         Assert.NotEqual(nint.Zero, pSimple);
         try
         {
-            // QueryInterface must succeed for every IID in the inheritance chain.
+            // QueryInterface must succeed for every sibling UIA provider IID.
             Marshal.Release(QueryInterface(pSimple, typeof(IRawElementProviderSimple).GUID));
             nint pFragment = QueryInterface(pSimple, typeof(IRawElementProviderFragment).GUID);
             Marshal.Release(QueryInterface(pSimple, typeof(IRawElementProviderFragmentRoot).GUID));
@@ -100,9 +101,16 @@ public class UiaComWrappersTests
             Assert.Equal("Button", Marshal.PtrToStringBSTR(vClass.bstrVal));
             vClass.Clear(); // we own the returned VARIANT's BSTR
 
-            // GetRuntimeId (Fragment slot 8) builds a real SAFEARRAY(VT_I4); read it back
+            hr = Slot<GetPtrOut>(pSimple, Slot_get_HostRawElementProvider)(pSimple, out nint pHost);
+            Assert.Equal(0, hr);
+            if (pHost != nint.Zero)
+                Marshal.Release(pHost);
+
+            // GetRuntimeId is Fragment slot 4 in UIAutomationCore.h: Fragment is a sibling
+            // interface, not Simple's derived interface.
+            // It builds a real SAFEARRAY(VT_I4); read it back
             // through the same custom marshaller. Expect [AppendRuntimeId, <hash>].
-            hr = Slot<GetPtrOut>(pFragment, Slot_GetRuntimeId)(pFragment, out nint pSafeArray);
+            hr = Slot<GetPtrOut>(pFragment, Slot_Fragment_GetRuntimeId)(pFragment, out nint pSafeArray);
             Assert.Equal(0, hr);
             Assert.NotEqual(nint.Zero, pSafeArray);
             int[]? runtimeId = SafeArrayInt32Marshaller.ConvertToManaged(pSafeArray);
@@ -116,6 +124,33 @@ public class UiaComWrappersTests
         finally
         {
             UiaComInterop.FreeProviderPointer(pSimple);
+        }
+    }
+
+    [Fact]
+    public void CachedProviderPointer_RemainsUsableAfterTemporaryReferenceRelease()
+    {
+        var button = new Button();
+        var peer = button.GetAutomationPeer();
+        Assert.NotNull(peer);
+        var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer!, nint.Zero);
+
+        nint pStable = provider.GetOrCreateProviderPointer();
+        try
+        {
+            Assert.NotEqual(nint.Zero, pStable);
+            Assert.Equal(pStable, provider.GetOrCreateProviderPointer());
+
+            nint pTemporary = UiaComInterop.ProviderToPointer(provider);
+            UiaComInterop.FreeProviderPointer(pTemporary);
+
+            int hr = Slot<GetIntOut>(pStable, Slot_get_ProviderOptions)(pStable, out int options);
+            Assert.Equal(0, hr);
+            Assert.Equal((int)(ProviderOptions.ServerSideProvider | ProviderOptions.UseComThreading), options);
+        }
+        finally
+        {
+            provider.ReleaseProviderPointer();
         }
     }
 
@@ -149,6 +184,54 @@ public class UiaComWrappersTests
         {
             UiaComInterop.FreeProviderPointer(pSimple);
         }
+    }
+
+    [Fact]
+    public void Ccw_GetPatternProvider_UnsupportedPattern_ReturnsNullPointer()
+    {
+        var button = new Button { Content = "Hi" };
+        var peer = button.GetAutomationPeer();
+        Assert.NotNull(peer);
+        var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer!, nint.Zero);
+
+        nint pSimple = UiaComInterop.ProviderToPointer(provider);
+        try
+        {
+            int hr = Slot<GetPatternProviderFn>(pSimple, Slot_GetPatternProvider)(
+                pSimple, UiaConstants.UIA_TextPatternId, out nint pPattern);
+            Assert.Equal(0, hr);
+            Assert.Equal(nint.Zero, pPattern);
+        }
+        finally
+        {
+            UiaComInterop.FreeProviderPointer(pSimple);
+        }
+    }
+
+    [Fact]
+    public unsafe void GetPatternProvider_InvalidOutPointer_ReturnsEPointer()
+    {
+        var button = new Button { Content = "Hi" };
+        var peer = button.GetAutomationPeer();
+        Assert.NotNull(peer);
+        var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer!, nint.Zero);
+
+        int hr = provider.GetPatternProvider(0x4717C4E8, (nint*)0x2492492492492493);
+
+        Assert.Equal(unchecked((int)0x80004003), hr);
+    }
+
+    [Fact]
+    public unsafe void GetPropertyValue_InvalidOutPointer_ReturnsEPointer()
+    {
+        var button = new Button { Content = "Hi" };
+        var peer = button.GetAutomationPeer();
+        Assert.NotNull(peer);
+        var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer!, nint.Zero);
+
+        int hr = provider.GetPropertyValue(UiaConstants.UIA_NamePropertyId, (UiaVariant*)0x2492492492492493);
+
+        Assert.Equal(unchecked((int)0x80004003), hr);
     }
 
     [Fact]
@@ -238,7 +321,7 @@ public class UiaComWrappersTests
         // Locks in ITextRangeProvider.FindText search direction (used by Narrator "find" and some
         // look-up tools): forward returns the first match, backward the last; a miss returns null.
         var textBox = new TextBox { Text = "ab ab ab" };
-        var peer = (Jalium.UI.Controls.Automation.TextBoxAutomationPeer)textBox.GetAutomationPeer()!;
+        var peer = (Jalium.UI.Automation.Peers.TextBoxAutomationPeer)textBox.GetAutomationPeer()!;
         var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer, nint.Zero);
         var textProvider = new UiaTextProviderWrapper((ITextProvider)peer, provider);
 

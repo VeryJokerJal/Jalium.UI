@@ -1,7 +1,9 @@
 ﻿using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Documents;
+using System.Collections.ObjectModel;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Markup;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -9,18 +11,23 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Displays text content.
 /// </summary>
-public class TextBlock : FrameworkElement
+[ContentProperty(nameof(Inlines))]
+public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContentHost
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.TextBlockAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.TextBlockAutomationPeer(this);
     }
 
     private const int MaxTextWidthCacheEntries = 256;
     private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0x1E, 0x79, 0x3F));
 
     private readonly Dictionary<string, double> _textWidthCache = new(StringComparer.Ordinal);
+    private readonly InlineCollection _inlines;
+    private string _displayText = string.Empty;
+    private bool _synchronizingTextAndInlines;
+    private bool _inlinesExplicitlyModified;
 
     private List<TextLayoutLine> _layoutLines = new();
     private bool _layoutDirty = true;
@@ -37,6 +44,7 @@ public class TextBlock : FrameworkElement
     private double _cachedFontSize;
     private int _cachedFontWeight;
     private int _cachedFontStyle;
+    private int _cachedFontStretch;
 
     private int _selectionStart;
     private int _selectionLength;
@@ -46,6 +54,8 @@ public class TextBlock : FrameworkElement
     private int _wordSelectionAnchorStart;
     private int _wordSelectionAnchorEnd;
     private bool _isRenderingText;
+    private FlowDocument? _contentPointerDocument;
+    private string? _contentPointerText;
 
     /// <summary>
     /// Identifies the Text dependency property.
@@ -65,13 +75,32 @@ public class TextBlock : FrameworkElement
             new PropertyMetadata(new SolidColorBrush(Themes.ThemeColors.TextPrimary), OnVisualPropertyChanged, null, inherits: true));
 
     /// <summary>
+    /// Identifies the Background dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty BackgroundProperty =
+        TextElement.BackgroundProperty.AddOwner(typeof(TextBlock),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the BaselineOffset attached dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty BaselineOffsetProperty =
+        DependencyProperty.RegisterAttached(nameof(BaselineOffset), typeof(double), typeof(TextBlock),
+            new PropertyMetadata(double.NaN, OnTextChanged));
+
+    /// <summary>
     /// Identifies the FontFamily dependency property.
     /// Shared with Control and TextElement via AddOwner.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         TextElement.FontFamilyProperty.AddOwner(typeof(TextBlock),
-            new PropertyMetadata(FrameworkElement.DefaultFontFamilyName, OnTextChanged, null, inherits: true));
+            new FrameworkPropertyMetadata(
+                SystemFonts.MessageFontFamily,
+                FrameworkPropertyMetadataOptions.Inherits,
+                OnTextChanged));
 
     /// <summary>
     /// Identifies the FontSize dependency property.
@@ -99,6 +128,62 @@ public class TextBlock : FrameworkElement
     public static readonly DependencyProperty FontWeightProperty =
         TextElement.FontWeightProperty.AddOwner(typeof(TextBlock),
             new PropertyMetadata(FontWeights.Normal, OnTextChanged, null, inherits: true));
+
+    /// <summary>
+    /// Identifies the FontStretch dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty FontStretchProperty =
+        Control.FontStretchProperty.AddOwner(typeof(TextBlock),
+            new PropertyMetadata(FontStretches.Normal, OnTextChanged, null, inherits: true));
+
+    /// <summary>
+    /// Identifies the LineHeight attached dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty LineHeightProperty =
+        Block.LineHeightProperty.AddOwner(typeof(TextBlock),
+            new PropertyMetadata(double.NaN, OnTextChanged));
+
+    /// <summary>
+    /// Identifies the LineStackingStrategy attached dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty LineStackingStrategyProperty =
+        DependencyProperty.RegisterAttached(nameof(LineStackingStrategy), typeof(LineStackingStrategy), typeof(TextBlock),
+            new PropertyMetadata(LineStackingStrategy.MaxHeight, OnTextChanged));
+
+    /// <summary>
+    /// Identifies the Padding dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty PaddingProperty =
+        Block.PaddingProperty.AddOwner(typeof(TextBlock),
+            new PropertyMetadata(new Thickness(0), OnTextChanged));
+
+    /// <summary>
+    /// Identifies the TextDecorations dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty TextDecorationsProperty =
+        TextElement.TextDecorationsProperty.AddOwner(typeof(TextBlock),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the TextEffects dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty TextEffectsProperty =
+        DependencyProperty.Register(nameof(TextEffects), typeof(TextEffectCollection), typeof(TextBlock),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the IsHyphenationEnabled dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty IsHyphenationEnabledProperty =
+        FlowDocument.IsHyphenationEnabledProperty.AddOwner(typeof(TextBlock),
+            new PropertyMetadata(false, OnTextChanged));
 
     /// <summary>
     /// Identifies the TextWrapping dependency property.
@@ -152,6 +237,7 @@ public class TextBlock : FrameworkElement
     /// </summary>
     public TextBlock()
     {
+        _inlines = new InlineCollection(OnInlinesChanged);
         Focusable = true;
         KeyboardNavigation.SetIsTabStop(this, false);
 
@@ -163,6 +249,16 @@ public class TextBlock : FrameworkElement
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
         AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnKeyboardFocusChanged));
         AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnKeyboardFocusChanged));
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="TextBlock"/> class with an initial inline.
+    /// </summary>
+    public TextBlock(Inline inline)
+        : this()
+    {
+        ArgumentNullException.ThrowIfNull(inline);
+        Inlines.Add(inline);
     }
 
     /// <summary>
@@ -181,8 +277,24 @@ public class TextBlock : FrameworkElement
     public string Text
     {
         get => (string)(GetValue(TextProperty) ?? string.Empty);
-        set => SetValue(TextProperty, value);
+        set
+        {
+            value ??= string.Empty;
+            if (string.Equals(Text, value, StringComparison.Ordinal) &&
+                !string.Equals(_displayText, value, StringComparison.Ordinal))
+            {
+                SynchronizeInlinesFromText(value);
+                InvalidateTextContent();
+            }
+
+            SetValue(TextProperty, value);
+        }
     }
+
+    /// <summary>
+    /// Gets the inline content displayed by this text block.
+    /// </summary>
+    public InlineCollection Inlines => _inlines;
 
     /// <summary>
     /// Gets or sets the foreground brush.
@@ -195,12 +307,32 @@ public class TextBlock : FrameworkElement
     }
 
     /// <summary>
+    /// Gets or sets the brush used to paint the text block background.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Brush? Background
+    {
+        get => (Brush?)GetValue(BackgroundProperty);
+        set => SetValue(BackgroundProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the distance from the top of the text block to its baseline.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public double BaselineOffset
+    {
+        get => (double)GetValue(BaselineOffsetProperty)!;
+        set => SetValue(BaselineOffsetProperty, value);
+    }
+
+    /// <summary>
     /// Gets or sets the font family.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public string FontFamily
+    public FontFamily FontFamily
     {
-        get => (string)(GetValue(FontFamilyProperty) ?? FrameworkElement.DefaultFontFamilyName);
+        get => (FontFamily)GetValue(FontFamilyProperty)!;
         set => SetValue(FontFamilyProperty, value);
     }
 
@@ -233,6 +365,121 @@ public class TextBlock : FrameworkElement
         get => GetValue(FontWeightProperty) is FontWeight fw ? fw : FontWeights.Normal;
         set => SetValue(FontWeightProperty, value);
     }
+
+    /// <summary>
+    /// Gets or sets the font stretch.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public FontStretch FontStretch
+    {
+        get => GetValue(FontStretchProperty) is FontStretch stretch ? stretch : FontStretches.Normal;
+        set => SetValue(FontStretchProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the requested line height. <see cref="double.NaN"/> selects the font's natural line height.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public double LineHeight
+    {
+        get => (double)GetValue(LineHeightProperty)!;
+        set => SetValue(LineHeightProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets how explicit and natural line heights are combined.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public LineStackingStrategy LineStackingStrategy
+    {
+        get => (LineStackingStrategy)GetValue(LineStackingStrategyProperty)!;
+        set => SetValue(LineStackingStrategyProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the space between the text block edge and its text.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public Thickness Padding
+    {
+        get => (Thickness)GetValue(PaddingProperty)!;
+        set => SetValue(PaddingProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets decorations applied to the displayed text.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public TextDecorationCollection TextDecorations
+    {
+        get
+        {
+            if (GetValue(TextDecorationsProperty) is TextDecorationCollection value)
+            {
+                return value;
+            }
+
+            value = new TextDecorationCollection();
+            SetCurrentValue(TextDecorationsProperty, value);
+            return value;
+        }
+        set => SetValue(TextDecorationsProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets effects applied to the displayed text.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public TextEffectCollection TextEffects
+    {
+        get
+        {
+            if (GetValue(TextEffectsProperty) is TextEffectCollection value)
+            {
+                return value;
+            }
+
+            value = new TextEffectCollection();
+            SetCurrentValue(TextEffectsProperty, value);
+            return value;
+        }
+        set => SetValue(TextEffectsProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether the formatter may hyphenate words when wrapping.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public bool IsHyphenationEnabled
+    {
+        get => (bool)GetValue(IsHyphenationEnabledProperty)!;
+        set => SetValue(IsHyphenationEnabledProperty, value);
+    }
+
+    /// <summary>
+    /// Gets the preferred line break behavior before this element.
+    /// </summary>
+    public LineBreakCondition BreakBefore => LineBreakCondition.BreakDesired;
+
+    /// <summary>
+    /// Gets the preferred line break behavior after this element.
+    /// </summary>
+    public LineBreakCondition BreakAfter => LineBreakCondition.BreakDesired;
+
+    /// <summary>
+    /// Gets instance access to the OpenType typography properties on this element.
+    /// </summary>
+    public Documents.Typography Typography => new(this);
+
+    /// <summary>Gets the start of the text content hosted by this TextBlock.</summary>
+    public TextPointer ContentStart => EnsureContentPointerDocument().ContentStart;
+
+    /// <summary>Gets the end of the text content hosted by this TextBlock.</summary>
+    public TextPointer ContentEnd => EnsureContentPointerDocument().ContentEnd;
+
+    /// <summary>Gets the input elements hosted by inline UI containers.</summary>
+    protected virtual IEnumerator<IInputElement> HostedElementsCore =>
+        EnumerateHostedElements().GetEnumerator();
 
     /// <summary>
     /// Gets or sets the text wrapping mode.
@@ -284,6 +531,227 @@ public class TextBlock : FrameworkElement
         set => SetValue(SelectionBrushProperty, value);
     }
 
+    public static void SetBaselineOffset(DependencyObject element, double value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(BaselineOffsetProperty, value);
+    }
+
+    public static double GetBaselineOffset(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (double)element.GetValue(BaselineOffsetProperty)!;
+    }
+
+    public static void SetFontFamily(DependencyObject element, FontFamily value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(FontFamilyProperty, value);
+    }
+
+    public static FontFamily GetFontFamily(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (FontFamily)element.GetValue(FontFamilyProperty)!;
+    }
+
+    public static void SetFontSize(DependencyObject element, double value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(FontSizeProperty, value);
+    }
+
+    public static double GetFontSize(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (double)element.GetValue(FontSizeProperty)!;
+    }
+
+    public static void SetFontStretch(DependencyObject element, FontStretch value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(FontStretchProperty, value);
+    }
+
+    public static FontStretch GetFontStretch(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return element.GetValue(FontStretchProperty) is FontStretch value ? value : FontStretches.Normal;
+    }
+
+    public static void SetFontStyle(DependencyObject element, FontStyle value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(FontStyleProperty, value);
+    }
+
+    public static FontStyle GetFontStyle(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return element.GetValue(FontStyleProperty) is FontStyle value ? value : FontStyles.Normal;
+    }
+
+    public static void SetFontWeight(DependencyObject element, FontWeight value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(FontWeightProperty, value);
+    }
+
+    public static FontWeight GetFontWeight(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return element.GetValue(FontWeightProperty) is FontWeight value ? value : FontWeights.Normal;
+    }
+
+    public static void SetForeground(DependencyObject element, Brush? value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(ForegroundProperty, value);
+    }
+
+    public static Brush? GetForeground(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (Brush?)element.GetValue(ForegroundProperty);
+    }
+
+    public static void SetLineHeight(DependencyObject element, double value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(LineHeightProperty, value);
+    }
+
+    public static double GetLineHeight(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (double)element.GetValue(LineHeightProperty)!;
+    }
+
+    public static void SetLineStackingStrategy(DependencyObject element, LineStackingStrategy value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(LineStackingStrategyProperty, value);
+    }
+
+    public static LineStackingStrategy GetLineStackingStrategy(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (LineStackingStrategy)element.GetValue(LineStackingStrategyProperty)!;
+    }
+
+    public static void SetTextAlignment(DependencyObject element, TextAlignment value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(TextAlignmentProperty, value);
+    }
+
+    public static TextAlignment GetTextAlignment(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (TextAlignment)element.GetValue(TextAlignmentProperty)!;
+    }
+
+    /// <summary>
+    /// Returns whether a non-NaN local baseline offset should be serialized.
+    /// </summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public bool ShouldSerializeBaselineOffset()
+    {
+        var localValue = ReadLocalValue(BaselineOffsetProperty);
+        return localValue is double value && !double.IsNaN(value);
+    }
+
+    /// <summary>
+    /// Returns whether the simple Text property should be serialized.
+    /// </summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public bool ShouldSerializeText()
+    {
+        var localValue = ReadLocalValue(TextProperty);
+        return !_inlinesExplicitlyModified && localValue is string value && value.Length > 0;
+    }
+
+    /// <summary>Indicates whether inline content should be serialized.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public bool ShouldSerializeInlines(XamlDesignerSerializationManager manager)
+    {
+        return _inlinesExplicitlyModified && manager is not null && manager.XmlWriter is null;
+    }
+
+    /// <summary>Returns the text position nearest to a point in control coordinates.</summary>
+    public TextPointer? GetPositionFromPoint(Point point, bool snapToText)
+    {
+        if (!snapToText && !new Rect(RenderSize).Contains(point))
+            return null;
+
+        var document = EnsureContentPointerDocument();
+        var index = Math.Clamp(GetCharacterIndexFromPosition(point), 0, _displayText.Length);
+        return document.GetPositionAtOffset(index, LogicalDirection.Forward) ?? document.ContentEnd;
+    }
+
+    /// <summary>Returns layout rectangles occupied by a hosted content element.</summary>
+    protected virtual ReadOnlyCollection<Rect> GetRectanglesCore(ContentElement child)
+    {
+        ArgumentNullException.ThrowIfNull(child);
+        return Array.AsReadOnly(Array.Empty<Rect>());
+    }
+
+    /// <summary>Performs content-host input hit testing.</summary>
+    protected virtual IInputElement? InputHitTestCore(Point point)
+    {
+        return new Rect(RenderSize).Contains(point) ? this : null;
+    }
+
+    /// <summary>Responds when a hosted child changes its desired size.</summary>
+    protected virtual void OnChildDesiredSizeChangedCore(UIElement child)
+    {
+        ArgumentNullException.ThrowIfNull(child);
+        InvalidateMeasure();
+    }
+
+    IEnumerator<IInputElement> IContentHost.HostedElements => HostedElementsCore;
+
+    ReadOnlyCollection<Rect> IContentHost.GetRectangles(ContentElement child) =>
+        GetRectanglesCore(child);
+
+    IInputElement IContentHost.InputHitTest(Point point) =>
+        InputHitTestCore(point) ?? this;
+
+    void IContentHost.OnChildDesiredSizeChanged(UIElement child) =>
+        OnChildDesiredSizeChangedCore(child);
+
+    void IAddChild.AddChild(object value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        switch (value)
+        {
+            case Inline inline:
+                Inlines.Add(inline);
+                break;
+            default:
+                throw new ArgumentException($"A TextBlock can contain only Inline children, not {value.GetType().FullName}.", nameof(value));
+        }
+    }
+
+    void IAddChild.AddText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (_inlinesExplicitlyModified)
+        {
+            Inlines.Add(text);
+        }
+        else
+        {
+            Text += text;
+        }
+    }
+
+    object? IServiceProvider.GetService(Type serviceType)
+    {
+        ArgumentNullException.ThrowIfNull(serviceType);
+        return null;
+    }
+
     /// <summary>
     /// Gets the start index of the current selection.
     /// </summary>
@@ -301,14 +769,15 @@ public class TextBlock : FrameworkElement
     {
         get
         {
-            if (_selectionLength == 0 || string.IsNullOrEmpty(Text))
+            var text = _displayText;
+            if (_selectionLength == 0 || string.IsNullOrEmpty(text))
             {
                 return string.Empty;
             }
 
-            var start = Math.Clamp(_selectionStart, 0, Text.Length);
-            var length = Math.Clamp(_selectionLength, 0, Text.Length - start);
-            return Text.Substring(start, length);
+            var start = Math.Clamp(_selectionStart, 0, text.Length);
+            var length = Math.Clamp(_selectionLength, 0, text.Length - start);
+            return text.Substring(start, length);
         }
     }
 
@@ -317,13 +786,13 @@ public class TextBlock : FrameworkElement
     /// </summary>
     public void SelectAll()
     {
-        if (string.IsNullOrEmpty(Text))
+        if (string.IsNullOrEmpty(_displayText))
         {
             return;
         }
 
         _selectionAnchor = 0;
-        ApplySelection(0, Text.Length);
+        ApplySelection(0, _displayText.Length);
     }
 
     /// <summary>
@@ -331,14 +800,14 @@ public class TextBlock : FrameworkElement
     /// </summary>
     public void Select(int start, int length)
     {
-        if (string.IsNullOrEmpty(Text))
+        if (string.IsNullOrEmpty(_displayText))
         {
             ClearSelection();
             return;
         }
 
-        var clampedStart = Math.Clamp(start, 0, Text.Length);
-        var clampedLength = Math.Clamp(length, 0, Text.Length - clampedStart);
+        var clampedStart = Math.Clamp(start, 0, _displayText.Length);
+        var clampedLength = Math.Clamp(length, 0, _displayText.Length - clampedStart);
         _selectionAnchor = clampedStart;
         ApplySelection(clampedStart, clampedLength);
     }
@@ -365,9 +834,11 @@ public class TextBlock : FrameworkElement
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        if (string.IsNullOrEmpty(Text))
+        var horizontalPadding = Padding.Left + Padding.Right;
+        var verticalPadding = Padding.Top + Padding.Bottom;
+        if (string.IsNullOrEmpty(_displayText))
         {
-            return Size.Empty;
+            return new Size(horizontalPadding, verticalPadding);
         }
 
         EnsureLayout(GetLayoutConstraintWidth(availableSize.Width));
@@ -379,8 +850,8 @@ public class TextBlock : FrameworkElement
             maxLineWidth = Math.Max(maxLineWidth, _layoutLines[i].Width);
         }
 
-        var measuredWidth = maxLineWidth + 2;
-        var measuredHeight = Math.Max(_layoutLines.Count, 1) * lineHeight + 2;
+        var measuredWidth = maxLineWidth + horizontalPadding + 2;
+        var measuredHeight = Math.Max(_layoutLines.Count, 1) * lineHeight + verticalPadding + 2;
 
         if (TextTrimming != TextTrimming.None &&
             TextWrapping == TextWrapping.NoWrap &&
@@ -410,7 +881,12 @@ public class TextBlock : FrameworkElement
         {
             base.OnRender(drawingContext);
 
-            if (string.IsNullOrEmpty(Text) || Foreground == null)
+            if (Background != null)
+            {
+                drawingContext.DrawRectangle(Background, null, new Rect(RenderSize));
+            }
+
+            if (string.IsNullOrEmpty(_displayText) || Foreground == null)
             {
                 return;
             }
@@ -445,17 +921,18 @@ public class TextBlock : FrameworkElement
     private void DrawTextLines(DrawingContext dc)
     {
         var lineHeight = GetLineHeight();
-        var renderWidth = RenderSize.Width;
+        var renderWidth = GetContentWidth(RenderSize.Width);
         var verticalOffset = GetVerticalContentOffset(lineHeight);
 
         // Rebuild formatted text cache only when layout or text properties changed
         if (_formattedLinesCacheDirty || _cachedFormattedLines == null ||
             _cachedFormattedLines.Count != _layoutLines.Count)
         {
-            var fontFamily = FontFamily;
+            var fontFamily = FontFamily.Source;
             var fontSize = FontSize;
             var fontWeight = FontWeight.ToOpenTypeWeight();
             var fontStyle = FontStyle.ToOpenTypeStyle();
+            var fontStretch = FontStretch.ToOpenTypeStretch();
 
             _cachedFormattedLines ??= new List<FormattedText>(_layoutLines.Count);
             _cachedFormattedLines.Clear();
@@ -469,7 +946,7 @@ public class TextBlock : FrameworkElement
                     continue;
                 }
 
-                var lineText = Text.Substring(line.StartIndex, line.Length);
+                var lineText = _displayText.Substring(line.StartIndex, line.Length);
                 var formattedText = new FormattedText(lineText, fontFamily, fontSize)
                 {
                     Foreground = Foreground,
@@ -487,6 +964,7 @@ public class TextBlock : FrameworkElement
                     MaxTextHeight = lineHeight,
                     FontWeight = fontWeight,
                     FontStyle = fontStyle,
+                    FontStretch = fontStretch,
                     Trimming = TextWrapping == TextWrapping.NoWrap ? TextTrimming : TextTrimming.None
                 };
                 // Pull TextOptions.{TextRenderingMode,TextFormattingMode,TextHintingMode}
@@ -554,7 +1032,55 @@ public class TextBlock : FrameworkElement
                 }
             }
 
-            dc.DrawText(ft, new Point(GetLineOriginX(_layoutLines[i], renderWidth), lineY));
+            var lineOriginX = GetLineOriginX(_layoutLines[i], renderWidth);
+            dc.DrawText(ft, new Point(lineOriginX, lineY));
+            DrawTextDecorations(dc, _layoutLines[i], lineOriginX, lineY, lineHeight);
+        }
+    }
+
+    private void DrawTextDecorations(
+        DrawingContext drawingContext,
+        in TextLayoutLine line,
+        double lineOriginX,
+        double lineY,
+        double lineHeight)
+    {
+        if (line.Width <= 0 || GetValue(TextDecorationsProperty) is not TextDecorationCollection decorations || decorations.Count == 0)
+        {
+            return;
+        }
+
+        var metrics = TextMeasurement.GetFontMetrics(
+            FontFamily.Source,
+            FontSize > 0 ? FontSize : 14,
+            FontWeight.ToOpenTypeWeight(),
+            FontStyle.ToOpenTypeStyle());
+        var baseline = lineY + (metrics.Ascent > 0 ? metrics.Ascent : lineHeight * 0.8);
+
+        foreach (var decoration in decorations)
+        {
+            var brush = decoration.Brush ?? Foreground;
+            if (brush == null)
+            {
+                continue;
+            }
+
+            var thickness = decoration.Thickness > 0 ? decoration.Thickness : 1.0;
+            var offset = decoration.OffsetUnit == TextDecorationUnit.Pixel
+                ? decoration.Offset
+                : decoration.Offset * FontSize;
+            var y = decoration.Location switch
+            {
+                TextDecorationLocation.OverLine => lineY + offset,
+                TextDecorationLocation.Strikethrough => lineY + (baseline - lineY) * 0.55 + offset,
+                TextDecorationLocation.Baseline => baseline + offset,
+                _ => baseline + Math.Max(1, FontSize * 0.08) + offset,
+            };
+
+            drawingContext.DrawLine(
+                new Pen(brush, thickness),
+                new Point(lineOriginX, y),
+                new Point(lineOriginX + line.Width, y));
         }
     }
 
@@ -580,10 +1106,10 @@ public class TextBlock : FrameworkElement
     {
         if (lineHeight <= 0 || _layoutLines.Count == 0)
         {
-            return 0;
+            return Padding.Top;
         }
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily.Source;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var metrics = TextMeasurement.GetFontMetrics(
             fontFamily,
@@ -597,16 +1123,16 @@ public class TextBlock : FrameworkElement
         {
             // Native metrics unavailable; fall back to box-based centering.
             var totalLinesHeight = _layoutLines.Count * lineHeight;
-            var fallbackSlack = RenderSize.Height - totalLinesHeight;
-            return fallbackSlack > 0 ? fallbackSlack / 2 : 0;
+            var fallbackSlack = Math.Max(0, RenderSize.Height - Padding.Top - Padding.Bottom) - totalLinesHeight;
+            return Padding.Top + (fallbackSlack > 0 ? fallbackSlack / 2 : 0);
         }
 
         // For N lines: lines 1..N-1 each advance by a full lineHeight (since the
         // glyph + lineGap stack up between baselines), and the last line contributes
         // its glyph height. So visible extent = (N-1) * lineHeight + glyphHeight.
         var totalVisibleHeight = (_layoutLines.Count - 1) * lineHeight + glyphHeight;
-        var slack = RenderSize.Height - totalVisibleHeight;
-        return slack > 0 ? slack / 2 : 0;
+        var slack = Math.Max(0, RenderSize.Height - Padding.Top - Padding.Bottom) - totalVisibleHeight;
+        return Padding.Top + (slack > 0 ? slack / 2 : 0);
     }
 
     private void DrawSelection(DrawingContext dc)
@@ -619,7 +1145,7 @@ public class TextBlock : FrameworkElement
 
         var selectionEnd = _selectionStart + _selectionLength;
         var lineHeight = GetLineHeight();
-        var renderWidth = RenderSize.Width;
+        var renderWidth = GetContentWidth(RenderSize.Width);
         var verticalOffset = GetVerticalContentOffset(lineHeight);
 
         for (int i = 0; i < _layoutLines.Count; i++)
@@ -632,7 +1158,7 @@ public class TextBlock : FrameworkElement
                 continue;
             }
 
-            var lineText = line.Length > 0 ? Text.Substring(line.StartIndex, line.Length) : string.Empty;
+            var lineText = line.Length > 0 ? _displayText.Substring(line.StartIndex, line.Length) : string.Empty;
             var startInLine = Math.Max(0, _selectionStart - line.StartIndex);
             var endInLine = Math.Min(line.Length, selectionEnd - line.StartIndex);
             var lineOriginX = GetLineOriginX(line, renderWidth);
@@ -755,7 +1281,7 @@ public class TextBlock : FrameworkElement
             return;
         }
 
-        if (e.IsControlDown && e.Key == Key.A && !string.IsNullOrEmpty(Text))
+        if (e.IsControlDown && e.Key == Key.A && !string.IsNullOrEmpty(_displayText))
         {
             SelectAll();
             e.Handled = true;
@@ -771,12 +1297,12 @@ public class TextBlock : FrameworkElement
 
     private void UpdateHoverCursor()
     {
-        Cursor = CanShowTextSelectionCursor() ? Jalium.UI.Cursors.IBeam : null;
+        Cursor = CanShowTextSelectionCursor() ? Jalium.UI.Input.Cursors.IBeam : null;
     }
 
     private bool CanStartSelection()
     {
-        if (!IsEnabled || !IsTextSelectionEnabled || string.IsNullOrEmpty(Text))
+        if (!IsEnabled || !IsTextSelectionEnabled || string.IsNullOrEmpty(_displayText))
         {
             return false;
         }
@@ -788,13 +1314,13 @@ public class TextBlock : FrameworkElement
     {
         return IsEnabled &&
             IsTextSelectionEnabled &&
-            !string.IsNullOrEmpty(Text) &&
+            !string.IsNullOrEmpty(_displayText) &&
             (!IsSelectionBlockedByInteractiveAncestor() || HasLocalValue(IsTextSelectionEnabledProperty));
     }
 
     private bool IsSelectionBlockedByInteractiveAncestor()
     {
-        for (Visual? current = VisualParent; current != null; current = current.VisualParent)
+        for (Visual? current = ParentVisual; current != null; current = current.VisualParent)
         {
             if (current is ButtonBase or MenuFlyoutItem or MenuItem or MenuBarItem or Thumb or ListBoxItem
                 or ComboBoxItem or TabItem or TreeViewItem or AutoCompleteBox or DataGrid
@@ -816,7 +1342,7 @@ public class TextBlock : FrameworkElement
 
     private void SelectWordAt(int index)
     {
-        var text = Text;
+        var text = _displayText;
         if (string.IsNullOrEmpty(text))
         {
             return;
@@ -862,7 +1388,7 @@ public class TextBlock : FrameworkElement
 
     private void ExtendWordSelection(int caretIndex)
     {
-        if (string.IsNullOrEmpty(Text))
+        if (string.IsNullOrEmpty(_displayText))
         {
             ApplySelection(0, 0);
             return;
@@ -893,7 +1419,7 @@ public class TextBlock : FrameworkElement
 
     private (int start, int end) GetWordRangeAtIndex(int index)
     {
-        var text = Text;
+        var text = _displayText;
         if (string.IsNullOrEmpty(text))
         {
             return (0, 0);
@@ -959,7 +1485,7 @@ public class TextBlock : FrameworkElement
 
     private void ApplySelection(int start, int length)
     {
-        var text = Text ?? string.Empty;
+        var text = _displayText;
         var textLength = text.Length;
         var rawStart = Math.Clamp(start, 0, textLength);
         var rawLength = Math.Clamp(length, 0, textLength - rawStart);
@@ -1016,14 +1542,14 @@ public class TextBlock : FrameworkElement
             : Math.Clamp((int)Math.Floor(Math.Max(0, adjustedY) / lineHeight), 0, _layoutLines.Count - 1);
 
         var line = _layoutLines[lineIndex];
-        var lineOriginX = GetLineOriginX(line, RenderSize.Width);
+        var lineOriginX = GetLineOriginX(line, GetContentWidth(RenderSize.Width));
         var relativeX = position.X - lineOriginX;
         if (relativeX <= 0 || line.Length == 0)
         {
             return line.StartIndex;
         }
 
-        var lineText = Text.Substring(line.StartIndex, line.Length);
+        var lineText = _displayText.Substring(line.StartIndex, line.Length);
         int columnIndex = line.Length;
         double previousWidth = 0;
 
@@ -1052,21 +1578,21 @@ public class TextBlock : FrameworkElement
     {
         if (TextAlignment == TextAlignment.Center)
         {
-            return Math.Max(0, (renderWidth - line.Width) / 2);
+            return Padding.Left + Math.Max(0, (renderWidth - line.Width) / 2);
         }
 
         if (TextAlignment == TextAlignment.Right)
         {
-            return Math.Max(0, renderWidth - line.Width);
+            return Padding.Left + Math.Max(0, renderWidth - line.Width);
         }
 
-        return 0;
+        return Padding.Left;
     }
 
     private void EnsureLayout(double constraintWidth)
     {
         if (!_layoutDirty &&
-            string.Equals(Text, _layoutText, StringComparison.Ordinal) &&
+            string.Equals(_displayText, _layoutText, StringComparison.Ordinal) &&
             ConstraintWidthUnchanged(_layoutConstraintWidth, constraintWidth))
         {
             return;
@@ -1099,7 +1625,7 @@ public class TextBlock : FrameworkElement
     private void RebuildLayout(double constraintWidth)
     {
         _layoutLines = new List<TextLayoutLine>();
-        _layoutText = Text;
+        _layoutText = _displayText;
         _layoutConstraintWidth = constraintWidth;
         _layoutDirty = false;
 
@@ -1114,27 +1640,27 @@ public class TextBlock : FrameworkElement
         // only safeguard.
         _formattedLinesCacheDirty = true;
 
-        if (string.IsNullOrEmpty(Text))
+        if (string.IsNullOrEmpty(_displayText))
         {
             _layoutLines.Add(new TextLayoutLine(0, 0, 0, false));
             return;
         }
 
         var index = 0;
-        while (index < Text.Length)
+        while (index < _displayText.Length)
         {
             var lineStart = index;
-            while (index < Text.Length && Text[index] != '\r' && Text[index] != '\n')
+            while (index < _displayText.Length && _displayText[index] != '\r' && _displayText[index] != '\n')
             {
                 index++;
             }
 
             var lineLength = index - lineStart;
             var hasLineBreakAfter = false;
-            if (index < Text.Length)
+            if (index < _displayText.Length)
             {
                 hasLineBreakAfter = true;
-                if (Text[index] == '\r' && index + 1 < Text.Length && Text[index + 1] == '\n')
+                if (_displayText[index] == '\r' && index + 1 < _displayText.Length && _displayText[index + 1] == '\n')
                 {
                     index += 2;
                 }
@@ -1147,9 +1673,9 @@ public class TextBlock : FrameworkElement
             AppendLayoutLines(lineStart, lineLength, hasLineBreakAfter, constraintWidth);
         }
 
-        if (EndsWithLineBreak(Text))
+        if (EndsWithLineBreak(_displayText))
         {
-            _layoutLines.Add(new TextLayoutLine(Text.Length, 0, 0, false));
+            _layoutLines.Add(new TextLayoutLine(_displayText.Length, 0, 0, false));
         }
     }
 
@@ -1157,7 +1683,7 @@ public class TextBlock : FrameworkElement
     {
         if (TextWrapping == TextWrapping.NoWrap || double.IsInfinity(constraintWidth) || constraintWidth <= 0)
         {
-            var lineText = lineLength > 0 ? Text.Substring(lineStart, lineLength) : string.Empty;
+            var lineText = lineLength > 0 ? _displayText.Substring(lineStart, lineLength) : string.Empty;
             _layoutLines.Add(new TextLayoutLine(lineStart, lineLength, MeasureTextWidth(lineText), hasLineBreakAfter));
             return;
         }
@@ -1179,7 +1705,7 @@ public class TextBlock : FrameworkElement
                 currentLength = 1;
             }
 
-            var currentText = Text.Substring(currentStart, currentLength);
+            var currentText = _displayText.Substring(currentStart, currentLength);
             var isLastFragment = consumed + currentLength >= lineLength;
             _layoutLines.Add(new TextLayoutLine(
                 currentStart,
@@ -1205,7 +1731,7 @@ public class TextBlock : FrameworkElement
         while (low <= high)
         {
             var mid = low + ((high - low) / 2);
-            var candidate = Text.Substring(startIndex, mid);
+            var candidate = _displayText.Substring(startIndex, mid);
             var width = MeasureTextWidth(candidate);
 
             if (width <= availableWidth)
@@ -1226,7 +1752,7 @@ public class TextBlock : FrameworkElement
 
         for (int i = best - 1; i > 0; i--)
         {
-            if (char.IsWhiteSpace(Text[startIndex + i]))
+            if (char.IsWhiteSpace(_displayText[startIndex + i]))
             {
                 return i + 1;
             }
@@ -1247,7 +1773,17 @@ public class TextBlock : FrameworkElement
             return double.PositiveInfinity;
         }
 
-        return availableWidth;
+        return GetContentWidth(availableWidth);
+    }
+
+    private double GetContentWidth(double width)
+    {
+        if (double.IsPositiveInfinity(width))
+        {
+            return width;
+        }
+
+        return Math.Max(0, width - Padding.Left - Padding.Right);
     }
 
     private double MeasureTextWidth(string text)
@@ -1257,21 +1793,24 @@ public class TextBlock : FrameworkElement
             return 0;
         }
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily.Source;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
+        var fontStretch = FontStretch.ToOpenTypeStretch();
 
         if (!string.Equals(_cachedFontFamily, fontFamily, StringComparison.Ordinal) ||
             Math.Abs(_cachedFontSize - fontSize) > 0.001 ||
             _cachedFontWeight != fontWeight ||
-            _cachedFontStyle != fontStyle)
+            _cachedFontStyle != fontStyle ||
+            _cachedFontStretch != fontStretch)
         {
             _textWidthCache.Clear();
             _cachedFontFamily = fontFamily;
             _cachedFontSize = fontSize;
             _cachedFontWeight = fontWeight;
             _cachedFontStyle = fontStyle;
+            _cachedFontStretch = fontStretch;
         }
 
         if (_textWidthCache.TryGetValue(text, out var width))
@@ -1282,7 +1821,8 @@ public class TextBlock : FrameworkElement
         var formattedText = new FormattedText(text, fontFamily, fontSize)
         {
             FontWeight = fontWeight,
-            FontStyle = fontStyle
+            FontStyle = fontStyle,
+            FontStretch = fontStretch
         };
 
         if (TextMeasurement.MeasureText(formattedText) && formattedText.IsMeasured)
@@ -1357,9 +1897,21 @@ public class TextBlock : FrameworkElement
 
     private double GetLineHeight()
     {
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily.Source;
         var fontSize = FontSize > 0 ? FontSize : 14;
-        return TextMeasurement.GetLineHeight(fontFamily, fontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle());
+        var naturalLineHeight = TextMeasurement.GetLineHeight(
+            fontFamily,
+            fontSize,
+            FontWeight.ToOpenTypeWeight(),
+            FontStyle.ToOpenTypeStyle());
+        if (double.IsNaN(LineHeight))
+        {
+            return naturalLineHeight;
+        }
+
+        return LineStackingStrategy == LineStackingStrategy.MaxHeight
+            ? Math.Max(naturalLineHeight, LineHeight)
+            : Math.Max(0, LineHeight);
     }
 
     private static bool EndsWithLineBreak(string text)
@@ -1382,6 +1934,93 @@ public class TextBlock : FrameworkElement
         _textWidthCache.Clear();
     }
 
+    private void SynchronizeInlinesFromText(string text)
+    {
+        _synchronizingTextAndInlines = true;
+        try
+        {
+            _inlines.Clear();
+            if (text.Length > 0)
+            {
+                _inlines.Add(new Run(text));
+            }
+
+            _displayText = text;
+            _inlinesExplicitlyModified = false;
+        }
+        finally
+        {
+            _synchronizingTextAndInlines = false;
+        }
+    }
+
+    private void OnInlinesChanged()
+    {
+        if (_synchronizingTextAndInlines)
+        {
+            return;
+        }
+
+        _displayText = _inlines.GetText();
+        _inlinesExplicitlyModified = true;
+        _synchronizingTextAndInlines = true;
+        try
+        {
+            SetCurrentValue(TextProperty, _displayText);
+        }
+        finally
+        {
+            _synchronizingTextAndInlines = false;
+        }
+        InvalidateTextContent();
+    }
+
+    private void InvalidateTextContent()
+    {
+        _contentPointerDocument = null;
+        _contentPointerText = null;
+        InvalidateCaches();
+        CoerceSelectionIntoBounds();
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    private FlowDocument EnsureContentPointerDocument()
+    {
+        if (_contentPointerDocument == null ||
+            !string.Equals(_contentPointerText, _displayText, StringComparison.Ordinal))
+        {
+            _contentPointerText = _displayText;
+            _contentPointerDocument = FlowDocument.FromText(_displayText);
+        }
+
+        return _contentPointerDocument;
+    }
+
+    private IEnumerable<IInputElement> EnumerateHostedElements()
+    {
+        foreach (var inline in Inlines)
+        {
+            foreach (var element in EnumerateHostedElements(inline))
+                yield return element;
+        }
+    }
+
+    private static IEnumerable<IInputElement> EnumerateHostedElements(Inline inline)
+    {
+        if (inline is InlineUIContainer { Child: IInputElement child })
+            yield return child;
+
+        if (inline is Span span)
+        {
+            foreach (var nested in span.Inlines)
+            {
+                foreach (var element in EnumerateHostedElements(nested))
+                    yield return element;
+            }
+        }
+    }
+
     private static void OnTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is not TextBlock textBlock)
@@ -1389,10 +2028,19 @@ public class TextBlock : FrameworkElement
             return;
         }
 
+        if (e.Property == TextProperty && !textBlock._synchronizingTextAndInlines)
+        {
+            textBlock.SynchronizeInlinesFromText((string?)e.NewValue ?? string.Empty);
+        }
+
+        textBlock._contentPointerDocument = null;
+        textBlock._contentPointerText = null;
         textBlock.InvalidateCaches();
         textBlock.CoerceSelectionIntoBounds();
 
-        if (e.Property != TextProperty && string.IsNullOrEmpty(textBlock.Text))
+        if (e.Property != TextProperty &&
+            e.Property != PaddingProperty &&
+            string.IsNullOrEmpty(textBlock._displayText))
         {
             return;
         }
@@ -1448,7 +2096,7 @@ public class TextBlock : FrameworkElement
 
     private void CoerceSelectionIntoBounds()
     {
-        var textLength = Text.Length;
+        var textLength = _displayText.Length;
         var newSelectionStart = Math.Clamp(_selectionStart, 0, textLength);
         var newSelectionLength = Math.Clamp(_selectionLength, 0, textLength - newSelectionStart);
         var changed = newSelectionStart != _selectionStart || newSelectionLength != _selectionLength;

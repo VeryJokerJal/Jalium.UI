@@ -165,7 +165,7 @@ public class PerCellEffectTests
     }
 
     /// <summary>A DrawingContext that keeps the default PushEffect/PopEffect implementations.</summary>
-    private sealed class NoOpDrawingContext : Jalium.UI.Media.DrawingContext
+    private sealed class NoOpDrawingContext : Jalium.UI.Media.DrawingContextAdapter
     {
         public override void Close() { }
         public override void DrawLine(Jalium.UI.Media.Pen pen, Point p0, Point p1) { }

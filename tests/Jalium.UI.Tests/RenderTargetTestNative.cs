@@ -12,6 +12,11 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
     public int BeginDrawResult { get; set; } = (int)JaliumResult.Ok;
     public int EndDrawResult { get; set; } = (int)JaliumResult.Ok;
     public bool SupportsPartialPresentationValue { get; set; } = true;
+    public bool ThrowOnSupportsPartialPresentation { get; set; }
+    public int BeginDrawCalls { get; private set; }
+    public int EndDrawCalls { get; private set; }
+    public int DestroyCalls { get; private set; }
+    public Action? OnDestroy { get; set; }
 
     public nint CreateForSurface(nint context, NativeSurfaceDescriptor surface, int width, int height)
     {
@@ -29,9 +34,17 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
 
     public int Resize(nint renderTarget, int width, int height) => ResizeResult;
 
-    public int BeginDraw(nint renderTarget) => BeginDrawResult;
+    public int BeginDraw(nint renderTarget)
+    {
+        BeginDrawCalls++;
+        return BeginDrawResult;
+    }
 
-    public int EndDraw(nint renderTarget) => EndDrawResult;
+    public int EndDraw(nint renderTarget)
+    {
+        EndDrawCalls++;
+        return EndDrawResult;
+    }
 
     /// <summary>
     /// Reported engine for the fake target. Returning a value here keeps
@@ -67,7 +80,15 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
         LastPathMsaaSampleCount = sampleCount;
     }
 
-    public bool SupportsPartialPresentation(nint renderTarget) => SupportsPartialPresentationValue;
+    public bool SupportsPartialPresentation(nint renderTarget)
+    {
+        if (ThrowOnSupportsPartialPresentation)
+        {
+            throw new InvalidOperationException("Injected capability-query failure.");
+        }
+
+        return SupportsPartialPresentationValue;
+    }
 
     /// <summary>Number of retained-layer destroy requests routed through the seam.</summary>
     public int DestroyRetainedLayerCalls { get; private set; }
@@ -76,5 +97,7 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
 
     public void Destroy(nint renderTarget)
     {
+        DestroyCalls++;
+        OnDestroy?.Invoke();
     }
 }

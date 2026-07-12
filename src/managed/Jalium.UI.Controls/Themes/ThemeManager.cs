@@ -132,13 +132,23 @@ public static class ThemeManager
     {
         ArgumentNullException.ThrowIfNull(app);
 
+        var previousApplication = _application;
         _application = app;
         SyncThemeFromCurrentThemeKey();
         ResourceDictionary.CurrentThemeKey = CurrentTheme.ToString();
 
         if (_initialized)
         {
-            ForceThemeRefresh();
+            // No theme state changed. Repeated initialization of the current app is a
+            // no-op; when a host starts a replacement Application in the same process,
+            // move the already-built dictionaries instead of sweeping every live
+            // DynamicResource binding.
+            if (!ReferenceEquals(previousApplication, app))
+            {
+                DetachManagedDictionaries(previousApplication);
+            }
+
+            EnsureManagedDictionariesAttached(app);
             return;
         }
 
@@ -148,7 +158,7 @@ public static class ThemeManager
         // If that already completed initialization, stop here to avoid duplicate dictionary insertion.
         if (_initialized)
         {
-            ForceThemeRefresh();
+            EnsureManagedDictionariesAttached(app);
             return;
         }
 
@@ -173,6 +183,8 @@ public static class ThemeManager
         _genericThemeDictionary = LoadGenericTheme();
         if (_genericThemeDictionary != null)
         {
+            Jalium.UI.Diagnostics.ResourceDictionaryDiagnostics.RegisterGenericResourceDictionary(
+                _genericThemeDictionary);
             app.Resources.MergedDictionaries.Add(_genericThemeDictionary);
         }
 
@@ -219,6 +231,14 @@ public static class ThemeManager
             var refreshedGeneric = LoadGenericTheme();
             if (refreshedGeneric != null)
             {
+                if (_genericThemeDictionary != null)
+                {
+                    Jalium.UI.Diagnostics.ResourceDictionaryDiagnostics.UnregisterGenericResourceDictionary(
+                        _genericThemeDictionary);
+                }
+
+                Jalium.UI.Diagnostics.ResourceDictionaryDiagnostics.RegisterGenericResourceDictionary(
+                    refreshedGeneric);
                 ReplaceManagedDictionary(ref _genericThemeDictionary, refreshedGeneric);
             }
 
@@ -382,6 +402,14 @@ public static class ThemeManager
     /// </summary>
     internal static void Reset()
     {
+        DynamicResourceBindingOperations.ResetRegistryForTesting();
+
+        if (_genericThemeDictionary != null)
+        {
+            Jalium.UI.Diagnostics.ResourceDictionaryDiagnostics.UnregisterGenericResourceDictionary(
+                _genericThemeDictionary);
+        }
+
         _initialized = false;
         _application = null;
         _genericThemeDictionary = null;
@@ -421,6 +449,44 @@ public static class ThemeManager
         }
 
         current = replacement;
+    }
+
+    private static void EnsureManagedDictionariesAttached(Application app)
+    {
+        var dictionaries = app.Resources.MergedDictionaries;
+        using var notifications = app.Resources.DeferNotifications();
+
+        AddIfMissing(_genericThemeDictionary);
+        AddIfMissing(_accentDictionary);
+        AddIfMissing(_typographyDictionary);
+
+        void AddIfMissing(ResourceDictionary? dictionary)
+        {
+            if (dictionary != null && !dictionaries.Contains(dictionary))
+            {
+                dictionaries.Add(dictionary);
+            }
+        }
+    }
+
+    private static void DetachManagedDictionaries(Application? app)
+    {
+        if (app == null)
+            return;
+
+        var dictionaries = app.Resources.MergedDictionaries;
+        using var notifications = app.Resources.DeferNotifications();
+        RemoveIfPresent(_genericThemeDictionary);
+        RemoveIfPresent(_accentDictionary);
+        RemoveIfPresent(_typographyDictionary);
+
+        void RemoveIfPresent(ResourceDictionary? dictionary)
+        {
+            if (dictionary != null)
+            {
+                dictionaries.Remove(dictionary);
+            }
+        }
     }
 
     private static void ForceThemeRefresh()
@@ -528,9 +594,9 @@ public static class ThemeManager
     {
         return new ResourceDictionary
         {
-            ["DisplayFontFamily"] = display,
-            ["BodyFontFamily"] = body,
-            ["MonoFontFamily"] = mono,
+            ["DisplayFontFamily"] = new FontFamily(display),
+            ["BodyFontFamily"] = new FontFamily(body),
+            ["MonoFontFamily"] = new FontFamily(mono),
             ["BodyFontSize"] = bodyFontSize,
             ["CaptionFontSize"] = Math.Max(bodyFontSize - 2, 8.0),
             ["SmallFontSize"] = Math.Max(bodyFontSize - 4, 6.0)
@@ -657,7 +723,7 @@ public static class ThemeManager
         CurrentTheme = variant;
     }
 
-    [DynamicDependency(DynamicallyAccessedMemberTypes.NonPublicProperties, "Jalium.UI.TypeResolver", "Jalium.UI.Core")]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.NonPublicProperties, typeof(global::Jalium.UI.TypeResolver))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicMethods, "Jalium.UI.Markup.XamlTypeRegistry", XamlAssemblyName)]
     [RequiresUnreferencedCode("Reflectively resolves TypeResolver and XamlTypeRegistry members via Assembly.GetType. Both types are preserved by the DynamicDependency above.")]
     private static void TryRegisterTypeResolver(Assembly xamlAssembly)

@@ -31,6 +31,8 @@ public static class ThemeLoader
         ThemeManager.XamlLoader = LoadResourceDictionaryFromStream;
         ResourceDictionary.SourceLoader = LoadReferencedResourceDictionary;
         Application.StartupObjectLoader = LoadStartupObjectFromUri;
+        Application.ComponentLoader = LoadComponentIntoExistingObject;
+        Application.ComponentObjectLoader = LoadApplicationComponentFromUri;
 
         // Register AOT-safe type resolver for PropertyPath and other Core types
         TypeResolver.ResolveTypeByName = XamlTypeRegistry.GetType;
@@ -381,16 +383,15 @@ public static class ThemeLoader
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Loads a startup XAML object from a stream via XamlReader, which carries the RUC contract.")]
-    private static object? LoadStartupObjectFromUri(Application app, Uri startupUri)
+    private static object? LoadStartupObjectFromUri(Application? app, Uri startupUri)
     {
-        ArgumentNullException.ThrowIfNull(app);
         ArgumentNullException.ThrowIfNull(startupUri);
 
         var startupUriText = startupUri.IsAbsoluteUri ? startupUri.AbsoluteUri : startupUri.OriginalString;
         if (string.IsNullOrWhiteSpace(startupUriText))
             return null;
 
-        var appAssembly = app.GetType().Assembly;
+        var appAssembly = app?.GetType().Assembly ?? Application.ResourceAssembly;
         var assembly = appAssembly;
         var pathCandidates = new List<string>();
 
@@ -497,6 +498,45 @@ public static class ThemeLoader
             using var parseStream = new MemoryStream(payload);
             return XamlReader.Load(parseStream, resolvedResourceName, assembly);
         }
+    }
+
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Loads a XAML component through XamlReader, which carries the RUC contract.")]
+    private static object? LoadApplicationComponentFromUri(Uri resourceLocator)
+        => LoadStartupObjectFromUri(Application.Current, resourceLocator);
+
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Loads XAML into an existing component through XamlReader, which carries the RUC contract.")]
+    private static void LoadComponentIntoExistingObject(object component, Uri resourceLocator)
+    {
+        ArgumentNullException.ThrowIfNull(component);
+        ArgumentNullException.ThrowIfNull(resourceLocator);
+
+        var uriText = resourceLocator.OriginalString;
+        var assembly = component.GetType().Assembly;
+        string resourcePath;
+
+        if (TryParsePackComponentUri(uriText, out var assemblyName, out var componentPath))
+        {
+            assembly = ResolveAssembly(assemblyName)
+                ?? throw new XamlParseException(
+                    $"Component URI '{uriText}' references assembly '{assemblyName}', but it could not be loaded.");
+            resourcePath = componentPath;
+        }
+        else
+        {
+            resourcePath = uriText.TrimStart('/');
+        }
+
+        var candidates = BuildPathCandidates(resourcePath).ToArray();
+        var attemptedNames = new List<string>();
+        using var probe = TryOpenEmbeddedResource(assembly, candidates, attemptedNames, out var resolvedResourceName);
+        if (probe == null || string.IsNullOrEmpty(resolvedResourceName))
+        {
+            throw new XamlParseException(
+                $"Cannot resolve component URI '{uriText}' in assembly '{assembly.GetName().Name}'. " +
+                $"Candidates=[{string.Join(", ", attemptedNames)}].");
+        }
+
+        XamlReader.LoadComponent(component, resolvedResourceName, assembly);
     }
 
     private static object CreateStartupInstance(

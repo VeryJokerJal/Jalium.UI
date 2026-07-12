@@ -89,7 +89,7 @@ public class RenderCullingTests
         }
     }
 
-    private sealed class ClipAwareDrawingContext : DrawingContext, IOffsetDrawingContext, IClipBoundsDrawingContext
+    private sealed class ClipAwareDrawingContext : DrawingContextAdapter, IOffsetDrawingContext, IClipBoundsDrawingContext
     {
         public ClipAwareDrawingContext(Rect clipBounds)
         {

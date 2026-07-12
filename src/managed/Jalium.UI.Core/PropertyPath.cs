@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Collections.ObjectModel;
 using System.Reflection;
 
 namespace Jalium.UI;
@@ -10,8 +11,8 @@ namespace Jalium.UI;
 [TypeConverter(typeof(PropertyPathConverter))]
 public sealed class PropertyPath
 {
-    private readonly string _path;
-    private readonly object[] _pathParameters;
+    private string _path;
+    private readonly Collection<object> _pathParameters;
 
     /// <summary>
     /// Initializes a new instance of the PropertyPath class.
@@ -20,7 +21,7 @@ public sealed class PropertyPath
     public PropertyPath(string path)
     {
         _path = path ?? string.Empty;
-        _pathParameters = Array.Empty<object>();
+        _pathParameters = new Collection<object>();
     }
 
     /// <summary>
@@ -31,7 +32,8 @@ public sealed class PropertyPath
     public PropertyPath(string path, params object[] pathParameters)
     {
         _path = path ?? string.Empty;
-        _pathParameters = pathParameters ?? Array.Empty<object>();
+        _pathParameters = new Collection<object>(
+            (pathParameters ?? Array.Empty<object>()).ToList());
     }
 
     /// <summary>
@@ -43,29 +45,33 @@ public sealed class PropertyPath
         if (parameter is DependencyProperty dp)
         {
             _path = $"({dp.OwnerType.Name}.{dp.Name})";
-            _pathParameters = new[] { parameter };
+            _pathParameters = new Collection<object> { parameter };
         }
         else if (parameter is string str)
         {
             _path = str;
-            _pathParameters = Array.Empty<object>();
+            _pathParameters = new Collection<object>();
         }
         else
         {
             _path = parameter?.ToString() ?? string.Empty;
-            _pathParameters = Array.Empty<object>();
+            _pathParameters = new Collection<object>();
         }
     }
 
     /// <summary>
     /// Gets the path string.
     /// </summary>
-    public string Path => _path;
+    public string Path
+    {
+        get => _path;
+        set => _path = value ?? string.Empty;
+    }
 
     /// <summary>
     /// Gets the collection of parameters to use when the path refers to indexed parameters.
     /// </summary>
-    public IList<object> PathParameters => _pathParameters;
+    public Collection<object> PathParameters => _pathParameters;
 
     /// <summary>
     /// Gets the path segments (simple dot-separated split).

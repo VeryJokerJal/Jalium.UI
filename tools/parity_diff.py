@@ -45,6 +45,18 @@ SCENE_OVERRIDES: dict[str, tuple[float, int]] = {
     # (diffPct%, maxRegionPx²)
     "solid-rect-grid": (0.05, 16),          # axis-aligned opaque fills: near-exact
     "rounded-container-border": (0.5, 128), # SDF corner AA arcs differ slightly
+    "superellipse": (1.6, 1024),            # D3D12 renders the Lamé boundary as a
+                                            # per-pixel SDF, Vulkan as a tessellated
+                                            # polygon: the whole curved perimeter is
+                                            # an AA-model seam (~1.5%). The stroke
+                                            # tile also carries a KNOWN D3D12 defect
+                                            # (sdSuperEllipseRect pseudo-distance is
+                                            # anisotropic, so its stroke band is up
+                                            # to ~2.4x too wide on the long sides).
+                                            # Sized so the shape-contract regression
+                                            # (square corners at radius 0: 5.7%)
+                                            # lands in FAIL; tighten once the D3D12
+                                            # stroke distance is normalised.
     "gradient-linear": (1.0, 256),          # interpolation precision differs
     "gradient-radial": (1.5, 512),
     "text": (3.0, 4096),                    # glyph raster/hinting: whole glyphs may shift

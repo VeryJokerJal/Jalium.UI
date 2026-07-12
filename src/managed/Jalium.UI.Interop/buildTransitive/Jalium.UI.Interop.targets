@@ -1,56 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <!-- Auto-select the RID-specific native payload at the consumer.
-       Whichever runtimes/<rid>/native folder ships in the package gets copied. -->
-  <PropertyGroup>
-    <_JaliumInteropNativeDir Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\win-arm64\native')">$(MSBuildThisFileDirectory)..\runtimes\win-arm64\native</_JaliumInteropNativeDir>
-    <_JaliumInteropNativeDir Condition="'$(_JaliumInteropNativeDir)' == '' and Exists('$(MSBuildThisFileDirectory)..\runtimes\win-x64\native')">$(MSBuildThisFileDirectory)..\runtimes\win-x64\native</_JaliumInteropNativeDir>
+  <!-- Resolve the native payload from the target RID, never from whichever
+       runtimes directory happens to exist first in the package. -->
+  <PropertyGroup Condition="'$(UseJaliumNativeAot)' != 'true'">
+    <_JaliumInteropRequestedRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_JaliumInteropRequestedRid>
+    <_JaliumInteropRequestedRid Condition="'$(_JaliumInteropRequestedRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</_JaliumInteropRequestedRid>
+    <_JaliumInteropIsLinuxDistro>$([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('linux'))</_JaliumInteropIsLinuxDistro>
+    <_JaliumInteropIsLinuxDistro Condition="$([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('ubuntu')) or $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('debian')) or $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('fedora')) or $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('rhel')) or $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('centos')) or $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('opensuse')) or $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('sles')) or $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('alpine'))">true</_JaliumInteropIsLinuxDistro>
+
+    <_JaliumInteropResolvedRid Condition="Exists('$(MSBuildThisFileDirectory)../runtimes/$(_JaliumInteropRequestedRid)/native')">$(_JaliumInteropRequestedRid)</_JaliumInteropResolvedRid>
+    <_JaliumInteropResolvedRid Condition="'$(_JaliumInteropResolvedRid)' == '' and $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('win')) and $([System.String]::Copy('$(_JaliumInteropRequestedRid)').EndsWith('-x64'))">win-x64</_JaliumInteropResolvedRid>
+    <_JaliumInteropResolvedRid Condition="'$(_JaliumInteropResolvedRid)' == '' and $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('win')) and $([System.String]::Copy('$(_JaliumInteropRequestedRid)').EndsWith('-arm64'))">win-arm64</_JaliumInteropResolvedRid>
+    <_JaliumInteropResolvedRid Condition="'$(_JaliumInteropResolvedRid)' == '' and ($([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('linux-musl')) or $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('alpine'))) and $([System.String]::Copy('$(_JaliumInteropRequestedRid)').EndsWith('-x64'))">linux-musl-x64</_JaliumInteropResolvedRid>
+    <_JaliumInteropResolvedRid Condition="'$(_JaliumInteropResolvedRid)' == '' and ($([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('linux-musl')) or $([System.String]::Copy('$(_JaliumInteropRequestedRid)').StartsWith('alpine'))) and $([System.String]::Copy('$(_JaliumInteropRequestedRid)').EndsWith('-arm64'))">linux-musl-arm64</_JaliumInteropResolvedRid>
+    <_JaliumInteropResolvedRid Condition="'$(_JaliumInteropResolvedRid)' == '' and '$(_JaliumInteropIsLinuxDistro)' == 'true' and $([System.String]::Copy('$(_JaliumInteropRequestedRid)').EndsWith('-x64'))">linux-x64</_JaliumInteropResolvedRid>
+    <_JaliumInteropResolvedRid Condition="'$(_JaliumInteropResolvedRid)' == '' and '$(_JaliumInteropIsLinuxDistro)' == 'true' and $([System.String]::Copy('$(_JaliumInteropRequestedRid)').EndsWith('-arm64'))">linux-arm64</_JaliumInteropResolvedRid>
+
+    <_JaliumInteropNativeDir Condition="'$(_JaliumInteropResolvedRid)' != '' and Exists('$(MSBuildThisFileDirectory)../runtimes/$(_JaliumInteropResolvedRid)/native')">$(MSBuildThisFileDirectory)../runtimes/$(_JaliumInteropResolvedRid)/native</_JaliumInteropNativeDir>
   </PropertyGroup>
-  <ItemGroup Condition="'$(_JaliumInteropNativeDir)' != ''">
-    <None Include="$(_JaliumInteropNativeDir)\jalium.native.core.dll"
-          Link="jalium.native.core.dll"
+
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and '$(_JaliumInteropNativeDir)' != ''">
+    <None Include="$(_JaliumInteropNativeDir)/*.dll;$(_JaliumInteropNativeDir)/*.so"
+          Link="%(Filename)%(Extension)"
           CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.core.dll')" />
-    <None Include="$(_JaliumInteropNativeDir)\jalium.native.d3d12.dll"
-          Link="jalium.native.d3d12.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.d3d12.dll')" />
-    <None Include="$(_JaliumInteropNativeDir)\jalium.native.vulkan.dll"
-          Link="jalium.native.vulkan.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.vulkan.dll')" />
-    <None Include="$(_JaliumInteropNativeDir)\jalium.native.software.dll"
-          Link="jalium.native.software.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.software.dll')" />
-    <None Include="$(_JaliumInteropNativeDir)\jalium.native.platform.dll"
-          Link="jalium.native.platform.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.platform.dll')" />
-    <None Include="$(_JaliumInteropNativeDir)\jalium.native.browser.dll"
-          Link="jalium.native.browser.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.browser.dll')" />
-    <None Include="$(_JaliumInteropNativeDir)\jalium.native.media.dll"
-          Link="jalium.native.media.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.media.dll')" />
-    <None Include="$(_JaliumInteropNativeDir)\jalium.native.media.core.dll"
-          Link="jalium.native.media.core.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.media.core.dll')" />
-    <None Include="$(_JaliumInteropNativeDir)\WebView2Loader.dll"
-          Link="WebView2Loader.dll"
-          CopyToOutputDirectory="PreserveNewest"
-          Visible="false"
-          Condition="Exists('$(_JaliumInteropNativeDir)\WebView2Loader.dll')" />
+          CopyToPublishDirectory="PreserveNewest"
+          Visible="false" />
   </ItemGroup>
 </Project>

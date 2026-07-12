@@ -8,14 +8,84 @@ namespace Jalium.UI.Tests;
 public class RealTimeStylusThreadTests
 {
     [Fact]
+    public void Constructor_WithoutRealTimeWork_DoesNotStartWorkerThread()
+    {
+        int baseline = RealTimeStylus.ActiveThreadCount;
+
+        using var rts = new RealTimeStylus(new RtsTestElement());
+
+        Assert.Equal(baseline, RealTimeStylus.ActiveThreadCount);
+    }
+
+    [Fact]
+    public void Dispose_AfterRealTimeWork_StopsWorkerThread_AndIsIdempotent()
+    {
+        int baseline = RealTimeStylus.ActiveThreadCount;
+        var root = new RtsTestElement();
+        root.GetStylusPlugIns(createIfMissing: true)!
+            .Add(new ThreadCapturePlugIn(realTime: true));
+        var rts = new RealTimeStylus(root);
+
+        rts.Process(
+            pointerId: 700, target: root, action: StylusInputAction.Down,
+            stylusPoints: new StylusPointCollection(new[] { new StylusPoint(0, 0, 0.5f) }),
+            timestamp: 0, inAir: false, inRange: true,
+            barrelButtonPressed: false, eraserPressed: false, inverted: false, pointerCanceled: false);
+
+        Assert.Equal(baseline + 1, RealTimeStylus.ActiveThreadCount);
+
+        rts.Dispose();
+        rts.Dispose();
+
+        Assert.True(
+            SpinWait.SpinUntil(
+                () => RealTimeStylus.ActiveThreadCount == baseline,
+                TimeSpan.FromSeconds(2)),
+            $"RTS worker count remained {RealTimeStylus.ActiveThreadCount}; expected {baseline}.");
+    }
+
+    [Fact]
+    public void AbandonedOwnerCycle_IsCollectible_AndFinalizerStopsWorkerThread()
+    {
+        int baseline = RealTimeStylus.ActiveThreadCount;
+        (WeakReference owner, WeakReference rts) = CreateAbandonedOwnerCycle();
+
+        Assert.Equal(baseline + 1, RealTimeStylus.ActiveThreadCount);
+
+        for (int attempt = 0;
+             attempt < 5 && (owner.IsAlive || rts.IsAlive || RealTimeStylus.ActiveThreadCount != baseline);
+             attempt++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Thread.Sleep(20);
+        }
+
+        Assert.False(
+            owner.IsAlive,
+            $"The RTS worker retained its owner/root element; rtsAlive={rts.IsAlive}, " +
+            $"activeThreads={RealTimeStylus.ActiveThreadCount}, baseline={baseline}.");
+        Assert.False(
+            rts.IsAlive,
+            $"The RTS worker retained RealTimeStylus; activeThreads={RealTimeStylus.ActiveThreadCount}, " +
+            $"baseline={baseline}.");
+        Assert.True(
+            SpinWait.SpinUntil(
+                () => RealTimeStylus.ActiveThreadCount == baseline,
+                TimeSpan.FromSeconds(2)),
+            $"Finalized RTS worker count remained {RealTimeStylus.ActiveThreadCount}; expected {baseline}.");
+    }
+
+    [Fact]
     public void CustomStylusData_AddedFromOnePlugIn_IsVisibleToLaterPlugIns()
     {
         var root = new RtsTestElement();
         Guid key = Guid.NewGuid();
         var writer = new CustomDataWriterPlugIn(key, "hello");
         var reader = new CustomDataReaderPlugIn(key);
-        root.StylusPlugIns.Add(writer);
-        root.StylusPlugIns.Add(reader);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(writer);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(reader);
 
         using var rts = new RealTimeStylus(root) { UseRealTimeThread = false };
         rts.Process(
@@ -32,7 +102,7 @@ public class RealTimeStylusThreadTests
     {
         var root = new RtsTestElement();
         var probe = new ThreadCapturePlugIn(realTime: true);
-        root.StylusPlugIns.Add(probe);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(probe);
 
         using var rts = new RealTimeStylus(root) { UseRealTimeThread = true };
         int uiThreadId = Environment.CurrentManagedThreadId;
@@ -52,7 +122,7 @@ public class RealTimeStylusThreadTests
     {
         var root = new RtsTestElement();
         var probe = new ThreadCapturePlugIn(realTime: false);
-        root.StylusPlugIns.Add(probe);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(probe);
 
         using var rts = new RealTimeStylus(root) { UseRealTimeThread = true };
         int uiThreadId = Environment.CurrentManagedThreadId;
@@ -73,8 +143,8 @@ public class RealTimeStylusThreadTests
         Guid key = Guid.NewGuid();
         var rtsWriter = new CustomDataWriterPlugIn(key, "rts-payload") { ForceRealTime = true };
         var uiReader = new ProcessedCallbackReaderPlugIn(key);
-        root.StylusPlugIns.Add(rtsWriter);
-        root.StylusPlugIns.Add(uiReader);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(rtsWriter);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(uiReader);
 
         using var rts = new RealTimeStylus(root) { UseRealTimeThread = true };
         var result = rts.Process(
@@ -97,8 +167,8 @@ public class RealTimeStylusThreadTests
         var root = new RtsTestElement();
         var bad = new ThrowingPlugIn { ForceRealTime = true };
         var after = new MarkerPlugIn();
-        root.StylusPlugIns.Add(bad);
-        root.StylusPlugIns.Add(after);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(bad);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(after);
 
         using var rts = new RealTimeStylus(root) { UseRealTimeThread = true };
         var result = rts.Process(
@@ -130,6 +200,30 @@ public class RealTimeStylusThreadTests
         public void AddChild(UIElement child) => AddVisualChild(child);
     }
 
+    private sealed class OwningRtsTestElement : FrameworkElement
+    {
+        public RealTimeStylus? RealTimeStylus { get; set; }
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(
+        System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static (WeakReference owner, WeakReference rts) CreateAbandonedOwnerCycle()
+    {
+        var owner = new OwningRtsTestElement();
+        owner.GetStylusPlugIns(createIfMissing: true)!
+            .Add(new ThreadCapturePlugIn(realTime: true));
+        var rts = new RealTimeStylus(owner);
+        owner.RealTimeStylus = rts;
+
+        rts.Process(
+            pointerId: 701, target: owner, action: StylusInputAction.Up,
+            stylusPoints: new StylusPointCollection(new[] { new StylusPoint(0, 0, 0.5f) }),
+            timestamp: 0, inAir: false, inRange: false,
+            barrelButtonPressed: false, eraserPressed: false, inverted: false, pointerCanceled: false);
+
+        return (new WeakReference(owner), new WeakReference(rts));
+    }
+
     private sealed class CustomDataWriterPlugIn : StylusPlugIn
     {
         private readonly Guid _id;
@@ -143,7 +237,7 @@ public class RealTimeStylusThreadTests
         protected override void OnStylusDown(RawStylusInput rawStylusInput)
         {
             rawStylusInput.AddCustomData(_id, _payload);
-            rawStylusInput.NotifyWhenProcessed(this);
+            rawStylusInput.NotifyWhenProcessed(rawStylusInput);
         }
     }
 
@@ -165,11 +259,12 @@ public class RealTimeStylusThreadTests
         public object? Observed { get; private set; }
         protected override void OnStylusDown(RawStylusInput rawStylusInput)
         {
-            rawStylusInput.NotifyWhenProcessed(this);
+            rawStylusInput.NotifyWhenProcessed(rawStylusInput);
         }
-        protected override void OnStylusDownProcessed(RawStylusInput rawStylusInput)
+        protected override void OnStylusDownProcessed(object callbackData, bool targetVerified)
         {
-            Observed = rawStylusInput.GetCustomData<object>(_id);
+            if (callbackData is RawStylusInput rawStylusInput)
+                Observed = rawStylusInput.GetCustomData<object>(_id);
         }
     }
 

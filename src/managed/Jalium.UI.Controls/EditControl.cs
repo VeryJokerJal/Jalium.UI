@@ -15,8 +15,8 @@ namespace Jalium.UI.Controls;
 public class EditControl : Control, IImeSupport, IEditorViewMetrics
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Edit);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Edit);
 
     #region Static Brushes
 
@@ -237,7 +237,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         Justification = "This static field initializer only registers the OnLanguageChanged callback as a PropertyMetadata delegate token; no reflection runs here. The RequiresUnreferencedCode contract for the actual reflective work is declared at OnLanguageChanged (and its callee EnsureLspIntegration), whose message documents it as the opt-in LSP editor feature that uses System.Text.Json reflection — preserving the LSP/JSON types is the documented responsibility of consumers that enable that feature.")]
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
         Justification = "This static field initializer only registers the OnLanguageChanged callback as a PropertyMetadata delegate token; no runtime code generation runs here. The RequiresDynamicCode contract is declared at OnLanguageChanged (and its callee EnsureLspIntegration), documented as the opt-in LSP editor feature that uses System.Text.Json runtime code generation; under AOT consumers either avoid that feature or provide a System.Text.Json source-generated context.")]
-    public static readonly DependencyProperty LanguageProperty =
+    public new static readonly DependencyProperty LanguageProperty =
         DependencyProperty.Register(nameof(Language), typeof(string), typeof(EditControl),
             new PropertyMetadata("plaintext", OnLanguageChanged));
 
@@ -358,7 +358,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     }
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public string Language
+    public new string Language
     {
         get => (string)(GetValue(LanguageProperty) ?? "plaintext");
         set => SetValue(LanguageProperty, value);
@@ -683,7 +683,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     {
         Focusable = true;
         ClipToBounds = true;
-        Cursor = Jalium.UI.Cursors.IBeam;
+        Cursor = Jalium.UI.Input.Cursors.IBeam;
 
         // Wire document events
         _document.Changed += OnDocumentChanged;
@@ -763,7 +763,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         var dc = drawingContext;
         if (RenderSize.Width <= 0 || RenderSize.Height <= 0) return;
 
-        var fontFamily = FontFamily ?? "Cascadia Code";
+        var fontFamily = FontFamily?.Source ?? "Cascadia Code";
         var fontSize = FontSize > 0 ? FontSize : 14;
 
         _view.UpdateLayout(fontFamily, fontSize);
@@ -1440,8 +1440,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             || IsPointerOverMinimap(position)
             || IsPointerOverFoldingMarker(position)
             || IsPointerOverFoldedSectionHint(position)
-            ? Jalium.UI.Cursors.Arrow
-            : Jalium.UI.Cursors.IBeam;
+            ? Jalium.UI.Input.Cursors.Arrow
+            : Jalium.UI.Input.Cursors.IBeam;
 
         if (!ReferenceEquals(Cursor, desiredCursor))
             Cursor = desiredCursor;
@@ -1739,7 +1739,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             return false;
 
         string hintText = GetFoldedSectionHintText(candidate);
-        string fontFamily = FontFamily ?? "Cascadia Code";
+        string fontFamily = FontFamily?.Source ?? "Cascadia Code";
         double fontSize = FontSize > 0 ? FontSize : 14;
         var hintLayout = CreateFoldedSectionHintLayout(hintText, fontFamily, fontSize);
         if (!TryGetFoldedSectionHintRect(candidate, hintLayout, contentWidth, contentHeight, out hintRect))
@@ -1847,7 +1847,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
             InputMethod.SetTarget(null);
 
         _scrollBarDragMode = ScrollBarDragMode.None;
@@ -3623,19 +3623,19 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     private void OnImeCompositionStarted(object? sender, EventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
             OnImeCompositionStart();
     }
 
     private void OnImeCompositionUpdated(object? sender, CompositionEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
             OnImeCompositionUpdate(e.Text, e.CursorPosition);
     }
 
     private void OnImeCompositionEnded(object? sender, CompositionResultEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
             OnImeCompositionEnd(e.Result);
     }
 
@@ -5092,7 +5092,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         if (string.IsNullOrWhiteSpace(tooltipText))
             return;
 
-        string fontFamily = FontFamily ?? "Cascadia Code";
+        string fontFamily = FontFamily?.Source ?? "Cascadia Code";
         double fontSize = FontSize > 0 ? FontSize : 14;
         var tooltip = new FormattedText(tooltipText, fontFamily, Math.Max(11, fontSize - 1))
         {
@@ -5227,7 +5227,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     private void EnsureViewLayoutMetrics()
     {
-        var fontFamily = FontFamily ?? "Cascadia Code";
+        var fontFamily = FontFamily?.Source ?? "Cascadia Code";
         var fontSize = FontSize > 0 ? FontSize : 14;
         _view.UpdateLayout(fontFamily, fontSize);
 

@@ -3,13 +3,14 @@ using Jalium.UI.Diagnostics;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Effects;
 
 namespace Jalium.UI;
 
 /// <summary>
 /// Base class for UI elements that participate in layout, input, and rendering.
 /// </summary>
-public abstract partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatable
+public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatable, Media.Animation.IAnimatable
 {
     #region Static Constructor — Class Handler Registration
 
@@ -20,8 +21,8 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         EventManager.RegisterClassHandler(typeof(UIElement), KeyDownEvent, new KeyEventHandler((s, e) => ((UIElement)s).OnKeyDown(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), PreviewKeyUpEvent, new KeyEventHandler((s, e) => ((UIElement)s).OnPreviewKeyUp(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), KeyUpEvent, new KeyEventHandler((s, e) => ((UIElement)s).OnKeyUp(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTextInputEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewTextInput(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), TextInputEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTextInput(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTextInputEvent, new TextCompositionEventHandler((s, e) => ((UIElement)s).OnPreviewTextInput(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TextInputEvent, new TextCompositionEventHandler((s, e) => ((UIElement)s).OnTextInput(e)));
 
         // Mouse — Down/Up Thunk：MouseDown/Up 是真正被 dispatcher raise 的 Bubble 事件。
         // 类处理器 OnXxxDownThunk 调虚方法 OnMouseDown/Up，然后把通用事件"裂解"成
@@ -58,32 +59,32 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         EventManager.RegisterClassHandler(typeof(UIElement), MouseWheelEvent, new MouseWheelEventHandler((s, e) => ((UIElement)s).OnMouseWheel(e)));
 
         // Touch
-        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTouchDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewTouchDown(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), TouchDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchDown(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTouchMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewTouchMove(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), TouchMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchMove(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTouchUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewTouchUp(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), TouchUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchUp(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), TouchEnterEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchEnter(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), TouchLeaveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchLeave(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), GotTouchCaptureEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnGotTouchCapture(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), LostTouchCaptureEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnLostTouchCapture(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTouchDownEvent, new TouchEventHandler((s, e) => ((UIElement)s).OnPreviewTouchDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TouchDownEvent, new TouchEventHandler((s, e) => ((UIElement)s).OnTouchDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTouchMoveEvent, new TouchEventHandler((s, e) => ((UIElement)s).OnPreviewTouchMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TouchMoveEvent, new TouchEventHandler((s, e) => ((UIElement)s).OnTouchMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTouchUpEvent, new TouchEventHandler((s, e) => ((UIElement)s).OnPreviewTouchUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TouchUpEvent, new TouchEventHandler((s, e) => ((UIElement)s).OnTouchUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TouchEnterEvent, new TouchEventHandler((s, e) => ((UIElement)s).OnTouchEnter(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TouchLeaveEvent, new TouchEventHandler((s, e) => ((UIElement)s).OnTouchLeave(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), GotTouchCaptureEvent, new TouchEventHandler((s, e) => ((UIElement)s).OnGotTouchCapture(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), LostTouchCaptureEvent, new TouchEventHandler((s, e) => ((UIElement)s).OnLostTouchCapture(e)));
 
         // Stylus
-        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewStylusDown(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusDown(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewStylusMove(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusMove(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewStylusUp(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusUp(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusInAirMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusInAirMove(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusEnterEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusEnter(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusLeaveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusLeave(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusInRangeEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusInRange(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusOutOfRangeEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusOutOfRange(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusButtonDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusButtonDown(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusButtonUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusButtonUp(e)));
-        EventManager.RegisterClassHandler(typeof(UIElement), StylusSystemGestureEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusSystemGesture(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusDownEvent, new StylusDownEventHandler((s, e) => ((UIElement)s).OnPreviewStylusDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusDownEvent, new StylusDownEventHandler((s, e) => ((UIElement)s).OnStylusDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusMoveEvent, new StylusEventHandler((s, e) => ((UIElement)s).OnPreviewStylusMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusMoveEvent, new StylusEventHandler((s, e) => ((UIElement)s).OnStylusMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusUpEvent, new StylusEventHandler((s, e) => ((UIElement)s).OnPreviewStylusUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusUpEvent, new StylusEventHandler((s, e) => ((UIElement)s).OnStylusUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusInAirMoveEvent, new StylusEventHandler((s, e) => ((UIElement)s).OnStylusInAirMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusEnterEvent, new StylusEventHandler((s, e) => ((UIElement)s).OnStylusEnter(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusLeaveEvent, new StylusEventHandler((s, e) => ((UIElement)s).OnStylusLeave(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusInRangeEvent, new StylusEventHandler((s, e) => ((UIElement)s).OnStylusInRange(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusOutOfRangeEvent, new StylusEventHandler((s, e) => ((UIElement)s).OnStylusOutOfRange(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusButtonDownEvent, new StylusButtonEventHandler((s, e) => ((UIElement)s).OnStylusButtonDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusButtonUpEvent, new StylusButtonEventHandler((s, e) => ((UIElement)s).OnStylusButtonUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusSystemGestureEvent, new StylusSystemGestureEventHandler((s, e) => ((UIElement)s).OnStylusSystemGesture(e)));
 
         // Drag and Drop
         EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.PreviewDragEnterEvent, new DragEventHandler((s, e) => ((UIElement)s).OnPreviewDragEnter(e)));
@@ -96,6 +97,11 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.DropEvent, new DragEventHandler((s, e) => ((UIElement)s).OnDrop(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.GiveFeedbackEvent, new GiveFeedbackEventHandler((s, e) => ((UIElement)s).OnGiveFeedback(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.QueryContinueDragEvent, new QueryContinueDragEventHandler((s, e) => ((UIElement)s).OnQueryContinueDrag(e)));
+        InitializeWpfParityClassHandlers();
+    }
+
+    public UIElement()
+    {
     }
 
     // Thunk = WPF 风格的"原始事件 → 翻译事件"裂解：MouseDownEvent（Bubble）路由到每个
@@ -194,7 +200,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Gets the stylus plug-ins attached to this element.
     /// </summary>
-    public StylusPlugInCollection StylusPlugIns => GetStylusPlugIns(createIfMissing: true)!;
+    protected StylusPlugInCollection StylusPlugIns => GetStylusPlugIns(createIfMissing: true)!;
 
     internal StylusPlugInCollection? GetStylusPlugIns(bool createIfMissing)
     {
@@ -385,7 +391,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         {
             if (!e.Handled || classHandler.HandledEventsToo)
             {
-                e.InvokeEventHandler(classHandler.Handler, sender);
+                e.InvokeHandler(classHandler.Handler, sender);
             }
         }
 
@@ -395,9 +401,9 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
             var snapshot = handlers.ToArray();
             foreach (var handler in snapshot)
             {
-                if (!e.Handled || handler.HandledEventsToo)
+                if (!e.Handled || handler.InvokeHandledEventsToo)
                 {
-                    e.InvokeEventHandler(handler.Handler, sender);
+                    e.InvokeHandler(handler.Handler, sender);
                 }
             }
         }
@@ -407,7 +413,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         {
             if (routedEvent == Input.RoutedCommand.CanExecuteEvent && e is Input.CanExecuteRoutedEventArgs canExecArgs)
             {
-                foreach (var binding in _commandBindings)
+                foreach (Input.CommandBinding binding in _commandBindings)
                 {
                     if (binding.Command == canExecArgs.Command)
                     {
@@ -418,7 +424,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
             }
             else if (routedEvent == Input.RoutedCommand.ExecutedEvent && e is Input.ExecutedRoutedEventArgs execArgs)
             {
-                foreach (var binding in _commandBindings)
+                foreach (Input.CommandBinding binding in _commandBindings)
                 {
                     if (binding.Command == execArgs.Command)
                     {
@@ -429,7 +435,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
             }
             else if (routedEvent == Input.RoutedCommand.PreviewCanExecuteEvent && e is Input.CanExecuteRoutedEventArgs previewCanExecArgs)
             {
-                foreach (var binding in _commandBindings)
+                foreach (Input.CommandBinding binding in _commandBindings)
                 {
                     if (binding.Command == previewCanExecArgs.Command)
                     {
@@ -440,7 +446,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
             }
             else if (routedEvent == Input.RoutedCommand.PreviewExecutedEvent && e is Input.ExecutedRoutedEventArgs previewExecArgs)
             {
-                foreach (var binding in _commandBindings)
+                foreach (Input.CommandBinding binding in _commandBindings)
                 {
                     if (binding.Command == previewExecArgs.Command)
                     {
@@ -504,15 +510,29 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty EffectProperty =
-        DependencyProperty.Register(nameof(Effect), typeof(object), typeof(UIElement),
+        DependencyProperty.Register(nameof(Effect), typeof(Effect), typeof(UIElement),
             new PropertyMetadata(null, OnEffectChanged));
+
+    public static readonly DependencyProperty CacheModeProperty =
+        DependencyProperty.Register(nameof(CacheMode), typeof(CacheMode), typeof(UIElement),
+            new PropertyMetadata(null, OnCacheModeChanged));
+
+    [Obsolete("BitmapEffect is deprecated. Use Effect instead.")]
+    public static readonly DependencyProperty BitmapEffectProperty =
+        DependencyProperty.Register(nameof(BitmapEffect), typeof(BitmapEffect), typeof(UIElement),
+            new PropertyMetadata(null, OnBitmapEffectChanged));
+
+    [Obsolete("BitmapEffectInput is deprecated. Use Effect instead.")]
+    public static readonly DependencyProperty BitmapEffectInputProperty =
+        DependencyProperty.Register(nameof(BitmapEffectInput), typeof(BitmapEffectInput), typeof(UIElement),
+            new PropertyMetadata(null, OnBitmapEffectChanged));
 
     /// <summary>
     /// Identifies the OpacityMask dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty OpacityMaskProperty =
-        DependencyProperty.Register(nameof(OpacityMask), typeof(object), typeof(UIElement),
+        DependencyProperty.Register(nameof(OpacityMask), typeof(Brush), typeof(UIElement),
             new PropertyMetadata(null, OnOpacityMaskChanged));
 
     /// <summary>
@@ -542,7 +562,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty FocusableProperty =
         DependencyProperty.Register(nameof(Focusable), typeof(bool), typeof(UIElement),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnFocusablePropertyChanged));
 
     /// <summary>
     /// Identifies the IsManipulationEnabled dependency property.
@@ -658,7 +678,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         get
         {
             var localValue = (bool)GetValue(IsEnabledProperty)!;
-            if (!localValue) return false;
+            if (!localValue || !IsEnabledCore) return false;
             // Check parent chain
             return VisualParent is not UIElement parent || parent.IsEnabled;
         }
@@ -709,10 +729,30 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// This is distinct from BackdropEffect which affects content behind the element.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public object? Effect
+    public Effect? Effect
     {
-        get => GetValue(EffectProperty);
+        get => (Effect?)GetValue(EffectProperty);
         set => SetValue(EffectProperty, value);
+    }
+
+    public CacheMode? CacheMode
+    {
+        get => (CacheMode?)GetValue(CacheModeProperty);
+        set => SetValue(CacheModeProperty, value);
+    }
+
+    [Obsolete("BitmapEffect is deprecated. Use Effect instead.")]
+    public BitmapEffect? BitmapEffect
+    {
+        get => (BitmapEffect?)GetValue(BitmapEffectProperty);
+        set => SetValue(BitmapEffectProperty, value);
+    }
+
+    [Obsolete("BitmapEffectInput is deprecated. Use Effect instead.")]
+    public BitmapEffectInput? BitmapEffectInput
+    {
+        get => (BitmapEffectInput?)GetValue(BitmapEffectInputProperty);
+        set => SetValue(BitmapEffectInputProperty, value);
     }
 
     /// <summary>
@@ -720,9 +760,9 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// The alpha channel of the brush determines the opacity of corresponding parts of the element.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public object? OpacityMask
+    public Brush? OpacityMask
     {
-        get => GetValue(OpacityMaskProperty);
+        get => (Brush?)GetValue(OpacityMaskProperty);
         set => SetValue(OpacityMaskProperty, value);
     }
 
@@ -774,6 +814,29 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     public bool IsMouseOver => (bool)GetValue(IsMouseOverProperty)!;
 
     /// <summary>
+    /// Gets a value indicating whether the mouse pointer is directly over this element.
+    /// </summary>
+    public bool IsMouseDirectlyOver => ReferenceEquals(_mouseDirectlyOver, this);
+
+    private static UIElement? _mouseDirectlyOver;
+
+    /// <summary>Gets the element most recently reported directly under the mouse.</summary>
+    public static UIElement? MouseDirectlyOverElement => _mouseDirectlyOver;
+
+    /// <summary>
+    /// Updates the direct mouse-over element tracked by the platform input dispatcher.
+    /// </summary>
+    internal static void SetMouseDirectlyOverElement(UIElement? element)
+    {
+        var previous = _mouseDirectlyOver;
+        if (ReferenceEquals(previous, element))
+            return;
+
+        _mouseDirectlyOver = element;
+        UpdateMouseDirectlyOverDependencyState(previous, element);
+    }
+
+    /// <summary>
     /// Sets the IsMouseOver property value. Called internally by mouse tracking.
     /// </summary>
     internal void SetIsMouseOver(bool value)
@@ -784,7 +847,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         // parent chain — so a child of a disabled ancestor is rejected too.
         if (value && !IsEnabled)
             value = false;
-        SetValue(IsMouseOverPropertyKey.DependencyProperty, value);
+        SetValue(IsMouseOverPropertyKey, value);
     }
 
     /// <summary>
@@ -802,7 +865,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         // SetIsMouseOver — pressed visuals do not apply to a disabled control.
         if (value && !IsEnabled)
             value = false;
-        SetValue(IsPressedPropertyKey.DependencyProperty, value);
+        SetValue(IsPressedPropertyKey, value);
     }
 
     /// <summary>
@@ -853,7 +916,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// </summary>
     internal void SetIsFocused(bool value)
     {
-        SetValue(IsFocusedPropertyKey.DependencyProperty, value);
+        SetValue(IsFocusedPropertyKey, value);
     }
 
     /// <summary>
@@ -881,6 +944,19 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         return FocusService.MoveFocus(this, direction);
     }
 
+    /// <summary>Moves keyboard focus according to the specified traversal request.</summary>
+    public virtual bool MoveFocus(TraversalRequest request)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        return FocusService.MoveFocus(this, request.FocusNavigationDirection);
+    }
+
+    /// <summary>Returns the element that would receive focus without moving it.</summary>
+    public virtual DependencyObject? PredictFocus(FocusNavigationDirection direction)
+    {
+        return FocusService.PredictFocus(this, direction);
+    }
+
     /// <summary>
     /// Updates the IsKeyboardFocused state. Called by the Keyboard class.
     /// </summary>
@@ -888,7 +964,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     {
         if (IsKeyboardFocused != isFocused)
         {
-            SetValue(IsKeyboardFocusedPropertyKey.DependencyProperty, isFocused);
+            SetValue(IsKeyboardFocusedPropertyKey, isFocused);
         }
     }
 
@@ -899,7 +975,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     {
         if (IsKeyboardFocusWithin != isFocusWithin)
         {
-            SetValue(IsKeyboardFocusWithinPropertyKey.DependencyProperty, isFocusWithin);
+            SetValue(IsKeyboardFocusWithinPropertyKey, isFocusWithin);
         }
     }
 
@@ -910,11 +986,21 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     {
     }
 
+    protected virtual void OnIsKeyboardFocusedChanged(DependencyPropertyChangedEventArgs e)
+    {
+        OnIsKeyboardFocusedChanged((bool)(e.NewValue ?? false));
+    }
+
     /// <summary>
     /// Called when the IsKeyboardFocusWithin property changes.
     /// </summary>
     protected virtual void OnIsKeyboardFocusWithinChanged(bool isFocusWithin)
     {
+    }
+
+    protected virtual void OnIsKeyboardFocusWithinChanged(DependencyPropertyChangedEventArgs e)
+    {
+        OnIsKeyboardFocusWithinChanged((bool)(e.NewValue ?? false));
     }
 
     #endregion
@@ -1052,7 +1138,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     // "先改值后失效 + 长空闲后不连续跳变 + 新 AABB 不含旧 AABB"场景下上次画过的
     // 像素。UI 线程写；后台注册线程可能读到撕裂值——影响限于一帧的过/欠擦除矩形，
     // 与既有跨线程 bounds 读取同级。
-    internal Rect LastDirtyBounds;
+    internal Rect LastDirtyBounds = Rect.Empty;
 
     /// <summary>
     /// Gets the desired size computed during the measure pass.
@@ -1062,7 +1148,31 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Gets the final render size after arrangement.
     /// </summary>
-    public Size RenderSize => _renderSize;
+    public Size RenderSize
+    {
+        get => _renderSize;
+        set
+        {
+            if (!double.IsFinite(value.Width) || !double.IsFinite(value.Height) || value.Width < 0 || value.Height < 0)
+            {
+                throw new ArgumentException("RenderSize must contain finite, non-negative dimensions.", nameof(value));
+            }
+
+            if (_renderSize == value)
+            {
+                return;
+            }
+
+            var previous = _renderSize;
+            _renderSize = value;
+            OnRenderSizeChanged(new SizeChangedInfo(
+                this,
+                previous,
+                previous.Width != value.Width,
+                previous.Height != value.Height));
+            SetRenderDirty();
+        }
+    }
 
     /// <summary>
     /// Gets the visual bounds of this element in parent coordinates.
@@ -1296,7 +1406,11 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// </param>
     public void InvalidateVisual(Rect localDirtyRect)
     {
-        if (localDirtyRect.IsEmpty)
+        // Rect.Empty is a distinct WPF sentinel. Preserve the renderer's
+        // historical handling of degenerate dirty rectangles: they carry no
+        // pixels, so fall back to a full invalidation instead of queuing an
+        // unusable precise region.
+        if (localDirtyRect.IsEmpty || localDirtyRect.Width <= 0 || localDirtyRect.Height <= 0)
         {
             InvalidateVisual();
             return;
@@ -1680,7 +1794,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
 
     /// <summary>
     /// Walks the visual-parent chain from this element's parent up to (but excluding) the
-    /// <see cref="IWindowHost"/>, intersecting each ancestor's <see cref="GetLayoutClip"/>
+    /// <see cref="IWindowHost"/>, intersecting each ancestor's <see cref="GetLayoutClip()"/>
     /// projected into screen space. Returns <c>false</c> — meaning the caller must NOT cull —
     /// whenever the chain cannot be reasoned about geometrically:
     /// <list type="bullet">
@@ -1708,10 +1822,10 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// </remarks>
     private bool TryGetAncestorClipScreenBounds(out Rect clipBounds)
     {
-        clipBounds = default;
+        clipBounds = Rect.Empty;
         bool found = false;
         // Start at the parent: an element's own layout clip never clips its own bounds.
-        Visual? current = VisualParent;
+        Visual? current = ParentVisual;
         while (current != null && current is not IWindowHost)
         {
             if (current is UIElement ui)
@@ -1733,7 +1847,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
                     var b = clip.Bounds;
                     var o = ui.GetScreenBounds(); // ancestor screen origin (chain proven clean above)
                     var screenClip = new Rect(o.X + b.X, o.Y + b.Y, b.Width, b.Height);
-                    clipBounds = found ? clipBounds.Intersect(screenClip) : screenClip;
+                    clipBounds = found ? Rect.Intersect(clipBounds, screenClip) : screenClip;
                     found = true;
                 }
             }
@@ -1741,7 +1855,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         }
 
         // Degenerate zero-area ancestor clip: refuse to cull rather than lean on Empty.Intersect.
-        if (found && clipBounds.IsEmpty)
+        if (found && (clipBounds.Width <= 0 || clipBounds.Height <= 0))
             return false;
 
         return found; // false ⇒ caller does not cull
@@ -1773,7 +1887,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     {
         if (Visibility == Visibility.Collapsed)
         {
-            _desiredSize = Size.Empty;
+            _desiredSize = default;
             _isMeasureValid = true;
             return;
         }
@@ -1787,7 +1901,16 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
 
         bool trace = LayoutDiagnostics.IsRecording;
         long startTicks = trace ? Stopwatch.GetTimestamp() : 0;
-        _desiredSize = MeasureCore(availableSize);
+        Dispatcher.LastLayoutExceptionElement = null;
+        try
+        {
+            _desiredSize = MeasureCore(availableSize);
+        }
+        catch
+        {
+            Dispatcher.LastLayoutExceptionElement ??= this;
+            throw;
+        }
         _isMeasureValid = true;
         if (trace)
         {
@@ -1813,7 +1936,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     {
         if (Visibility == Visibility.Collapsed)
         {
-            _renderSize = Size.Empty;
+            _renderSize = default;
             _isArrangeValid = true;
             return;
         }
@@ -1844,7 +1967,16 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
 
         bool trace = LayoutDiagnostics.IsRecording;
         long startTicks = trace ? Stopwatch.GetTimestamp() : 0;
-        _renderSize = ArrangeCore(finalRect);
+        Dispatcher.LastLayoutExceptionElement = null;
+        try
+        {
+            ArrangeCore(finalRect);
+        }
+        catch
+        {
+            Dispatcher.LastLayoutExceptionElement ??= this;
+            throw;
+        }
         _isArrangeValid = true;
         if (trace)
         {
@@ -1894,8 +2026,8 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
                     // 省掉一次注定被推翻的 old 交集。TryGetAncestorClipScreenBounds 返回 false
                     // （无 clip 祖先 / 已退化）时 && 首项即假，走原样 full 注册。
                     bool cull = TryGetAncestorClipScreenBounds(out var clip)
-                                && newDirtyBounds.Intersect(clip).IsEmpty
-                                && oldDirtyBounds.Intersect(clip).IsEmpty;
+                                && Rect.Intersect(newDirtyBounds, clip).IsEmpty
+                                && Rect.Intersect(oldDirtyBounds, clip).IsEmpty;
                     if (!cull)
                     {
                         if (!oldDirtyBounds.IsEmpty)
@@ -1919,6 +2051,11 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         // If render size changed, mark this element as needing re-render
         if (_renderSize != oldRenderSize)
         {
+            OnRenderSizeChanged(new SizeChangedInfo(
+                this,
+                oldRenderSize,
+                oldRenderSize.Width != _renderSize.Width,
+                oldRenderSize.Height != _renderSize.Height));
             SetRenderDirty();
         }
     }
@@ -1930,17 +2067,16 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <returns>The desired size.</returns>
     protected virtual Size MeasureCore(Size availableSize)
     {
-        return Size.Empty;
+        return default(Size);
     }
 
     /// <summary>
     /// Override to implement custom arrange logic.
     /// </summary>
     /// <param name="finalRect">The final rectangle.</param>
-    /// <returns>The render size.</returns>
-    protected virtual Size ArrangeCore(Rect finalRect)
+    protected virtual void ArrangeCore(Rect finalRect)
     {
-        return new Size(finalRect.Width, finalRect.Height);
+        _renderSize = new Size(finalRect.Width, finalRect.Height);
     }
 
     #endregion
@@ -1970,6 +2106,8 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
                 parent.InvalidateArrange();
                 parent.InvalidateVisual();
             }
+
+            element.UpdateIsVisibleFromTree();
         }
     }
 
@@ -1998,6 +2136,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
             var oldValue = (bool)(e.OldValue ?? true);
             var newValue = (bool)(e.NewValue ?? true);
             element.OnIsEnabledChanged(oldValue, newValue);
+            element.RaiseIsEnabledChanged(e);
             // Propagate effective IsEnabled change to descendants
             element.PropagateIsEnabledToDescendants();
 
@@ -2013,6 +2152,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         if (d is UIElement element)
         {
             element.OnIsHitTestVisibleChanged((bool)(e.OldValue ?? true), (bool)(e.NewValue ?? true));
+            element.RaiseIsHitTestVisibleChanged(e);
             element.PropagateIsHitTestVisibleToDescendants();
         }
     }
@@ -2091,7 +2231,25 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     {
         if (d is UIElement element)
         {
-            element.OnIsFocusedChanged((bool)(e.OldValue ?? false), (bool)(e.NewValue ?? false));
+            var oldValue = (bool)(e.OldValue ?? false);
+            var newValue = (bool)(e.NewValue ?? false);
+            element.OnIsFocusedChanged(oldValue, newValue);
+
+            // DependencyObject suppresses equal-value callbacks, but retain this guard so
+            // logical focus is explicitly tied to a real state transition if that changes.
+            if (oldValue != newValue)
+            {
+                var routedEvent = newValue ? GotFocusEvent : LostFocusEvent;
+                var args = new RoutedEventArgs(routedEvent, element);
+                if (newValue)
+                {
+                    element.OnGotFocus(args);
+                }
+                else
+                {
+                    element.OnLostFocus(args);
+                }
+            }
         }
     }
 
@@ -2112,7 +2270,8 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
                 element.SetIsFocused(isFocused);
             }
 
-            element.OnIsKeyboardFocusedChanged(isFocused);
+            element.OnIsKeyboardFocusedChanged(e);
+            element.RaiseIsKeyboardFocusedChanged(e);
             element.InvalidateVisual();
 
             // Notify UIA of focus change
@@ -2120,7 +2279,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
             {
                 var peer = element.GetAutomationPeer();
                 if (peer != null)
-                    Automation.AutomationPeer.EventSink?.OnFocusChanged(peer);
+                    Automation.Peers.AutomationPeer.EventSink?.OnFocusChanged(peer);
             }
 
             IsKeyboardFocusedChangedStatic?.Invoke(element, isFocused);
@@ -2131,7 +2290,8 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     {
         if (d is UIElement element)
         {
-            element.OnIsKeyboardFocusWithinChanged((bool)(e.NewValue ?? false));
+            element.OnIsKeyboardFocusWithinChanged(e);
+            element.RaiseIsKeyboardFocusWithinChanged(e);
         }
     }
 
@@ -2156,6 +2316,24 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     protected virtual void OnIsFocusedChanged(bool oldValue, bool newValue)
     {
         InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Called when this element receives logical focus.
+    /// </summary>
+    /// <param name="e">The routed event data.</param>
+    protected virtual void OnGotFocus(RoutedEventArgs e)
+    {
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Called when this element loses logical focus.
+    /// </summary>
+    /// <param name="e">The routed event data.</param>
+    protected virtual void OnLostFocus(RoutedEventArgs e)
+    {
+        RaiseEvent(e);
     }
 
     private static void OnBackdropEffectChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -2208,6 +2386,36 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     private void OnEffectPropertyChanged(object? sender, EventArgs e)
     {
         InvalidateVisual();
+    }
+
+    private static void OnCacheModeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not UIElement element)
+        {
+            return;
+        }
+
+        if (e.OldValue is CacheMode oldCache)
+        {
+            oldCache.Changed -= element.OnCacheModePropertyChanged;
+        }
+
+        if (e.NewValue is CacheMode newCache)
+        {
+            newCache.Changed += element.OnCacheModePropertyChanged;
+        }
+
+        element.InvalidateVisual();
+    }
+
+    private void OnCacheModePropertyChanged(object? sender, EventArgs e) => InvalidateVisual();
+
+    private static void OnBitmapEffectChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element)
+        {
+            element.InvalidateVisual();
+        }
     }
 
     private static void OnOpacityMaskChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -2332,6 +2540,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
 
         var previousCaptured = _mouseCaptured;
         _mouseCaptured = this;
+        UpdateMouseCaptureDependencyState(previousCaptured, this);
 
         // Tell Win32 to keep sending mouse messages even when cursor is outside the window
         GetWindowHostOrNull()?.SetNativeCapture();
@@ -2355,7 +2564,9 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         if (_mouseCaptured == this)
         {
             var windowHost = GetWindowHostOrNull();
+            var previousCaptured = _mouseCaptured;
             _mouseCaptured = null;
+            UpdateMouseCaptureDependencyState(previousCaptured, null);
             windowHost?.ReleaseNativeCapture();
             RaiseMouseCaptureChanged(false);
         }
@@ -2371,6 +2582,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         {
             var windowHost = captured.GetWindowHostOrNull();
             _mouseCaptured = null;
+            UpdateMouseCaptureDependencyState(captured, null);
             windowHost?.ReleaseNativeCapture();
             captured.RaiseMouseCaptureChanged(false);
         }
@@ -2386,6 +2598,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         if (captured != null)
         {
             _mouseCaptured = null;
+            UpdateMouseCaptureDependencyState(captured, null);
             captured.RaiseMouseCaptureChanged(false);
         }
     }
@@ -2394,18 +2607,18 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// Identifies the GotMouseCapture routed event.
     /// </summary>
     public static readonly RoutedEvent GotMouseCaptureEvent =
-        EventManager.RegisterRoutedEvent(nameof(GotMouseCapture), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(GotMouseCapture), RoutingStrategy.Bubble, typeof(MouseEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the LostMouseCapture routed event.
     /// </summary>
     public static readonly RoutedEvent LostMouseCaptureEvent =
-        EventManager.RegisterRoutedEvent(nameof(LostMouseCapture), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(LostMouseCapture), RoutingStrategy.Bubble, typeof(MouseEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Occurs when this element captures the mouse.
     /// </summary>
-    public event RoutedEventHandler GotMouseCapture
+    public event MouseEventHandler GotMouseCapture
     {
         add => AddHandler(GotMouseCaptureEvent, value);
         remove => RemoveHandler(GotMouseCaptureEvent, value);
@@ -2414,7 +2627,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when this element loses mouse capture.
     /// </summary>
-    public event RoutedEventHandler LostMouseCapture
+    public event MouseEventHandler LostMouseCapture
     {
         add => AddHandler(LostMouseCaptureEvent, value);
         remove => RemoveHandler(LostMouseCaptureEvent, value);
@@ -2428,16 +2641,30 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     {
         if (captured)
         {
-            OnGotMouseCapture();
-            var args = new RoutedEventArgs(GotMouseCaptureEvent, this);
+            var args = new MouseEventArgs(GotMouseCaptureEvent) { Source = this };
+            OnGotMouseCapture(args);
             RaiseEvent(args);
         }
         else
         {
-            OnLostMouseCapture();
-            var args = new RoutedEventArgs(LostMouseCaptureEvent, this);
+            var args = new MouseEventArgs(LostMouseCaptureEvent) { Source = this };
+            OnLostMouseCapture(args);
             RaiseEvent(args);
         }
+    }
+
+    /// <summary>Called when this element captures the mouse.</summary>
+    protected virtual void OnGotMouseCapture(MouseEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        OnGotMouseCapture();
+    }
+
+    /// <summary>Called when this element loses mouse capture.</summary>
+    protected virtual void OnLostMouseCapture(MouseEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        OnLostMouseCapture();
     }
 
     /// <summary>
@@ -2452,6 +2679,113 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// </summary>
     protected virtual void OnLostMouseCapture()
     {
+    }
+
+    #endregion
+
+    #region Stylus State And Capture
+
+    private static UIElement? _stylusDirectlyOver;
+    private static UIElement? _stylusCaptured;
+
+    /// <summary>
+    /// Gets a value indicating whether the stylus is over this element or one of its descendants.
+    /// </summary>
+    public bool IsStylusOver
+    {
+        get
+        {
+            Visual? current = _stylusDirectlyOver;
+            while (current != null)
+            {
+                if (ReferenceEquals(current, this))
+                {
+                    return true;
+                }
+
+                current = current.VisualParent;
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Gets a value indicating whether the stylus is directly over this element.
+    /// </summary>
+    public bool IsStylusDirectlyOver => ReferenceEquals(_stylusDirectlyOver, this);
+
+    /// <summary>
+    /// Gets a value indicating whether this element has stylus capture.
+    /// </summary>
+    public bool IsStylusCaptured => ReferenceEquals(_stylusCaptured, this);
+
+    internal static UIElement? StylusCapturedElement => _stylusCaptured;
+    internal static Func<UIElement, bool>? StylusCaptureRequested { get; set; }
+    internal static Action<UIElement>? StylusCaptureReleaseRequested { get; set; }
+
+    internal static void SetStylusDirectlyOverElement(UIElement? element)
+    {
+        var previous = _stylusDirectlyOver;
+        _stylusDirectlyOver = element;
+        UpdateStylusDirectlyOverDependencyState(previous, element);
+    }
+
+    internal static void SetStylusCapturedElement(UIElement? element)
+    {
+        var previous = _stylusCaptured;
+        if (ReferenceEquals(previous, element))
+        {
+            return;
+        }
+
+        _stylusCaptured = element;
+        UpdateStylusCaptureDependencyState(previous, element);
+
+        if (Tablet.CurrentStylusDevice is { } device)
+        {
+            if (previous != null)
+            {
+                previous.RaiseEvent(new StylusEventArgs(device, Environment.TickCount)
+                {
+                    RoutedEvent = LostStylusCaptureEvent,
+                    Source = previous,
+                });
+            }
+
+            if (element != null)
+            {
+                element.RaiseEvent(new StylusEventArgs(device, Environment.TickCount)
+                {
+                    RoutedEvent = GotStylusCaptureEvent,
+                    Source = element,
+                });
+            }
+        }
+    }
+
+    /// <summary>
+    /// Captures the current stylus to this element.
+    /// </summary>
+    public bool CaptureStylus()
+    {
+        if (!IsEnabled || Visibility != Visibility.Visible)
+        {
+            return false;
+        }
+
+        return StylusCaptureRequested?.Invoke(this) == true;
+    }
+
+    /// <summary>
+    /// Releases stylus capture from this element.
+    /// </summary>
+    public void ReleaseStylusCapture()
+    {
+        if (IsStylusCaptured)
+        {
+            StylusCaptureReleaseRequested?.Invoke(this);
+        }
     }
 
     #endregion
@@ -2486,13 +2820,13 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// Identifies the PreviewTextInput routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewTextInputEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewTextInput), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        TextCompositionManager.PreviewTextInputEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the TextInput routed event.
     /// </summary>
     public static readonly RoutedEvent TextInputEvent =
-        EventManager.RegisterRoutedEvent(nameof(TextInput), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        TextCompositionManager.TextInputEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewMouseDown routed event.
@@ -2622,145 +2956,145 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// Identifies the PreviewTouchDown routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewTouchDownEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewTouchDown), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewTouchDown), RoutingStrategy.Tunnel, typeof(TouchEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the TouchDown routed event.
     /// </summary>
     public static readonly RoutedEvent TouchDownEvent =
-        EventManager.RegisterRoutedEvent(nameof(TouchDown), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(TouchDown), RoutingStrategy.Bubble, typeof(TouchEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewTouchMove routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewTouchMoveEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewTouchMove), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewTouchMove), RoutingStrategy.Tunnel, typeof(TouchEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the TouchMove routed event.
     /// </summary>
     public static readonly RoutedEvent TouchMoveEvent =
-        EventManager.RegisterRoutedEvent(nameof(TouchMove), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(TouchMove), RoutingStrategy.Bubble, typeof(TouchEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewTouchUp routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewTouchUpEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewTouchUp), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewTouchUp), RoutingStrategy.Tunnel, typeof(TouchEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the TouchUp routed event.
     /// </summary>
     public static readonly RoutedEvent TouchUpEvent =
-        EventManager.RegisterRoutedEvent(nameof(TouchUp), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(TouchUp), RoutingStrategy.Bubble, typeof(TouchEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the TouchEnter routed event.
     /// </summary>
     public static readonly RoutedEvent TouchEnterEvent =
-        EventManager.RegisterRoutedEvent(nameof(TouchEnter), RoutingStrategy.Direct, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(TouchEnter), RoutingStrategy.Direct, typeof(TouchEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the TouchLeave routed event.
     /// </summary>
     public static readonly RoutedEvent TouchLeaveEvent =
-        EventManager.RegisterRoutedEvent(nameof(TouchLeave), RoutingStrategy.Direct, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(TouchLeave), RoutingStrategy.Direct, typeof(TouchEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the GotTouchCapture routed event.
     /// </summary>
     public static readonly RoutedEvent GotTouchCaptureEvent =
-        EventManager.RegisterRoutedEvent(nameof(GotTouchCapture), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(GotTouchCapture), RoutingStrategy.Bubble, typeof(TouchEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the LostTouchCapture routed event.
     /// </summary>
     public static readonly RoutedEvent LostTouchCaptureEvent =
-        EventManager.RegisterRoutedEvent(nameof(LostTouchCapture), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(LostTouchCapture), RoutingStrategy.Bubble, typeof(TouchEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewStylusDown routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewStylusDownEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewStylusDown), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.PreviewStylusDownEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusDown routed event.
     /// </summary>
     public static readonly RoutedEvent StylusDownEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusDown), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusDownEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewStylusMove routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewStylusMoveEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewStylusMove), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.PreviewStylusMoveEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusMove routed event.
     /// </summary>
     public static readonly RoutedEvent StylusMoveEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusMove), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusMoveEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewStylusUp routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewStylusUpEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewStylusUp), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.PreviewStylusUpEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusUp routed event.
     /// </summary>
     public static readonly RoutedEvent StylusUpEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusUp), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusUpEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusInAirMove routed event.
     /// </summary>
     public static readonly RoutedEvent StylusInAirMoveEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusInAirMove), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusInAirMoveEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusEnter routed event.
     /// </summary>
     public static readonly RoutedEvent StylusEnterEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusEnter), RoutingStrategy.Direct, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusEnterEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusLeave routed event.
     /// </summary>
     public static readonly RoutedEvent StylusLeaveEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusLeave), RoutingStrategy.Direct, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusLeaveEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusInRange routed event.
     /// </summary>
     public static readonly RoutedEvent StylusInRangeEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusInRange), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusInRangeEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusOutOfRange routed event.
     /// </summary>
     public static readonly RoutedEvent StylusOutOfRangeEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusOutOfRange), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusOutOfRangeEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusButtonDown routed event.
     /// </summary>
     public static readonly RoutedEvent StylusButtonDownEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusButtonDown), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusButtonDownEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusButtonUp routed event.
     /// </summary>
     public static readonly RoutedEvent StylusButtonUpEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusButtonUp), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusButtonUpEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the StylusSystemGesture routed event.
     /// </summary>
     public static readonly RoutedEvent StylusSystemGestureEvent =
-        EventManager.RegisterRoutedEvent(nameof(StylusSystemGesture), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        Stylus.StylusSystemGestureEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewPointerDown routed event.
@@ -2832,73 +3166,73 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// Identifies the PreviewManipulationStarting routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewManipulationStartingEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationStarting), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationStarting), RoutingStrategy.Tunnel, typeof(EventHandler<ManipulationStartingEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the ManipulationStarting routed event.
     /// </summary>
     public static readonly RoutedEvent ManipulationStartingEvent =
-        EventManager.RegisterRoutedEvent(nameof(ManipulationStarting), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(ManipulationStarting), RoutingStrategy.Bubble, typeof(EventHandler<ManipulationStartingEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewManipulationStarted routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewManipulationStartedEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationStarted), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationStarted), RoutingStrategy.Tunnel, typeof(EventHandler<ManipulationStartedEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the ManipulationStarted routed event.
     /// </summary>
     public static readonly RoutedEvent ManipulationStartedEvent =
-        EventManager.RegisterRoutedEvent(nameof(ManipulationStarted), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(ManipulationStarted), RoutingStrategy.Bubble, typeof(EventHandler<ManipulationStartedEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewManipulationDelta routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewManipulationDeltaEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationDelta), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationDelta), RoutingStrategy.Tunnel, typeof(EventHandler<ManipulationDeltaEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the ManipulationDelta routed event.
     /// </summary>
     public static readonly RoutedEvent ManipulationDeltaEvent =
-        EventManager.RegisterRoutedEvent(nameof(ManipulationDelta), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(ManipulationDelta), RoutingStrategy.Bubble, typeof(EventHandler<ManipulationDeltaEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewManipulationInertiaStarting routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewManipulationInertiaStartingEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationInertiaStarting), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationInertiaStarting), RoutingStrategy.Tunnel, typeof(EventHandler<ManipulationInertiaStartingEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the ManipulationInertiaStarting routed event.
     /// </summary>
     public static readonly RoutedEvent ManipulationInertiaStartingEvent =
-        EventManager.RegisterRoutedEvent(nameof(ManipulationInertiaStarting), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(ManipulationInertiaStarting), RoutingStrategy.Bubble, typeof(EventHandler<ManipulationInertiaStartingEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewManipulationBoundaryFeedback routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewManipulationBoundaryFeedbackEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationBoundaryFeedback), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationBoundaryFeedback), RoutingStrategy.Tunnel, typeof(EventHandler<ManipulationBoundaryFeedbackEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the ManipulationBoundaryFeedback routed event.
     /// </summary>
     public static readonly RoutedEvent ManipulationBoundaryFeedbackEvent =
-        EventManager.RegisterRoutedEvent(nameof(ManipulationBoundaryFeedback), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(ManipulationBoundaryFeedback), RoutingStrategy.Bubble, typeof(EventHandler<ManipulationBoundaryFeedbackEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewManipulationCompleted routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewManipulationCompletedEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationCompleted), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationCompleted), RoutingStrategy.Tunnel, typeof(EventHandler<ManipulationCompletedEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Identifies the ManipulationCompleted routed event.
     /// </summary>
     public static readonly RoutedEvent ManipulationCompletedEvent =
-        EventManager.RegisterRoutedEvent(nameof(ManipulationCompleted), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(ManipulationCompleted), RoutingStrategy.Bubble, typeof(EventHandler<ManipulationCompletedEventArgs>), typeof(UIElement));
 
     /// <summary>
     /// Occurs when a key is pressed (tunnel).
@@ -2939,7 +3273,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when text is input (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewTextInput
+    public event TextCompositionEventHandler PreviewTextInput
     {
         add => AddHandler(PreviewTextInputEvent, value);
         remove => RemoveHandler(PreviewTextInputEvent, value);
@@ -2948,7 +3282,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when text is input (bubble).
     /// </summary>
-    public event RoutedEventHandler TextInput
+    public event TextCompositionEventHandler TextInput
     {
         add => AddHandler(TextInputEvent, value);
         remove => RemoveHandler(TextInputEvent, value);
@@ -3119,7 +3453,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when touch begins (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewTouchDown
+    public event TouchEventHandler PreviewTouchDown
     {
         add => AddHandler(PreviewTouchDownEvent, value);
         remove => RemoveHandler(PreviewTouchDownEvent, value);
@@ -3128,7 +3462,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when touch begins (bubble).
     /// </summary>
-    public event RoutedEventHandler TouchDown
+    public event TouchEventHandler TouchDown
     {
         add => AddHandler(TouchDownEvent, value);
         remove => RemoveHandler(TouchDownEvent, value);
@@ -3137,7 +3471,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when touch moves (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewTouchMove
+    public event TouchEventHandler PreviewTouchMove
     {
         add => AddHandler(PreviewTouchMoveEvent, value);
         remove => RemoveHandler(PreviewTouchMoveEvent, value);
@@ -3146,7 +3480,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when touch moves (bubble).
     /// </summary>
-    public event RoutedEventHandler TouchMove
+    public event TouchEventHandler TouchMove
     {
         add => AddHandler(TouchMoveEvent, value);
         remove => RemoveHandler(TouchMoveEvent, value);
@@ -3155,7 +3489,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when touch ends (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewTouchUp
+    public event TouchEventHandler PreviewTouchUp
     {
         add => AddHandler(PreviewTouchUpEvent, value);
         remove => RemoveHandler(PreviewTouchUpEvent, value);
@@ -3164,7 +3498,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when touch ends (bubble).
     /// </summary>
-    public event RoutedEventHandler TouchUp
+    public event TouchEventHandler TouchUp
     {
         add => AddHandler(TouchUpEvent, value);
         remove => RemoveHandler(TouchUpEvent, value);
@@ -3173,7 +3507,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus contact begins (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewStylusDown
+    public event StylusDownEventHandler PreviewStylusDown
     {
         add => AddHandler(PreviewStylusDownEvent, value);
         remove => RemoveHandler(PreviewStylusDownEvent, value);
@@ -3182,7 +3516,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus contact begins (bubble).
     /// </summary>
-    public event RoutedEventHandler StylusDown
+    public event StylusDownEventHandler StylusDown
     {
         add => AddHandler(StylusDownEvent, value);
         remove => RemoveHandler(StylusDownEvent, value);
@@ -3191,7 +3525,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus moves (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewStylusMove
+    public event StylusEventHandler PreviewStylusMove
     {
         add => AddHandler(PreviewStylusMoveEvent, value);
         remove => RemoveHandler(PreviewStylusMoveEvent, value);
@@ -3200,7 +3534,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus moves (bubble).
     /// </summary>
-    public event RoutedEventHandler StylusMove
+    public event StylusEventHandler StylusMove
     {
         add => AddHandler(StylusMoveEvent, value);
         remove => RemoveHandler(StylusMoveEvent, value);
@@ -3209,7 +3543,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus contact ends (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewStylusUp
+    public event StylusEventHandler PreviewStylusUp
     {
         add => AddHandler(PreviewStylusUpEvent, value);
         remove => RemoveHandler(PreviewStylusUpEvent, value);
@@ -3218,7 +3552,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus contact ends (bubble).
     /// </summary>
-    public event RoutedEventHandler StylusUp
+    public event StylusEventHandler StylusUp
     {
         add => AddHandler(StylusUpEvent, value);
         remove => RemoveHandler(StylusUpEvent, value);
@@ -3227,7 +3561,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus moves in air.
     /// </summary>
-    public event RoutedEventHandler StylusInAirMove
+    public event StylusEventHandler StylusInAirMove
     {
         add => AddHandler(StylusInAirMoveEvent, value);
         remove => RemoveHandler(StylusInAirMoveEvent, value);
@@ -3236,7 +3570,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus enters this element.
     /// </summary>
-    public event RoutedEventHandler StylusEnter
+    public event StylusEventHandler StylusEnter
     {
         add => AddHandler(StylusEnterEvent, value);
         remove => RemoveHandler(StylusEnterEvent, value);
@@ -3245,7 +3579,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus leaves this element.
     /// </summary>
-    public event RoutedEventHandler StylusLeave
+    public event StylusEventHandler StylusLeave
     {
         add => AddHandler(StylusLeaveEvent, value);
         remove => RemoveHandler(StylusLeaveEvent, value);
@@ -3254,7 +3588,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus enters detection range.
     /// </summary>
-    public event RoutedEventHandler StylusInRange
+    public event StylusEventHandler StylusInRange
     {
         add => AddHandler(StylusInRangeEvent, value);
         remove => RemoveHandler(StylusInRangeEvent, value);
@@ -3263,7 +3597,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when stylus exits detection range.
     /// </summary>
-    public event RoutedEventHandler StylusOutOfRange
+    public event StylusEventHandler StylusOutOfRange
     {
         add => AddHandler(StylusOutOfRangeEvent, value);
         remove => RemoveHandler(StylusOutOfRangeEvent, value);
@@ -3272,7 +3606,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when a stylus button is pressed.
     /// </summary>
-    public event RoutedEventHandler StylusButtonDown
+    public event StylusButtonEventHandler StylusButtonDown
     {
         add => AddHandler(StylusButtonDownEvent, value);
         remove => RemoveHandler(StylusButtonDownEvent, value);
@@ -3281,7 +3615,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when a stylus button is released.
     /// </summary>
-    public event RoutedEventHandler StylusButtonUp
+    public event StylusButtonEventHandler StylusButtonUp
     {
         add => AddHandler(StylusButtonUpEvent, value);
         remove => RemoveHandler(StylusButtonUpEvent, value);
@@ -3290,7 +3624,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when a stylus system gesture is recognized.
     /// </summary>
-    public event RoutedEventHandler StylusSystemGesture
+    public event StylusSystemGestureEventHandler StylusSystemGesture
     {
         add => AddHandler(StylusSystemGestureEvent, value);
         remove => RemoveHandler(StylusSystemGestureEvent, value);
@@ -3398,7 +3732,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when manipulation is starting (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewManipulationStarting
+    public event EventHandler<ManipulationStartingEventArgs> PreviewManipulationStarting
     {
         add => AddHandler(PreviewManipulationStartingEvent, value);
         remove => RemoveHandler(PreviewManipulationStartingEvent, value);
@@ -3407,7 +3741,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when manipulation is starting (bubble).
     /// </summary>
-    public event RoutedEventHandler ManipulationStarting
+    public event EventHandler<ManipulationStartingEventArgs> ManipulationStarting
     {
         add => AddHandler(ManipulationStartingEvent, value);
         remove => RemoveHandler(ManipulationStartingEvent, value);
@@ -3416,7 +3750,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when manipulation has started (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewManipulationStarted
+    public event EventHandler<ManipulationStartedEventArgs> PreviewManipulationStarted
     {
         add => AddHandler(PreviewManipulationStartedEvent, value);
         remove => RemoveHandler(PreviewManipulationStartedEvent, value);
@@ -3425,7 +3759,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when manipulation has started (bubble).
     /// </summary>
-    public event RoutedEventHandler ManipulationStarted
+    public event EventHandler<ManipulationStartedEventArgs> ManipulationStarted
     {
         add => AddHandler(ManipulationStartedEvent, value);
         remove => RemoveHandler(ManipulationStartedEvent, value);
@@ -3434,7 +3768,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when manipulation delta is produced (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewManipulationDelta
+    public event EventHandler<ManipulationDeltaEventArgs> PreviewManipulationDelta
     {
         add => AddHandler(PreviewManipulationDeltaEvent, value);
         remove => RemoveHandler(PreviewManipulationDeltaEvent, value);
@@ -3443,7 +3777,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when manipulation delta is produced (bubble).
     /// </summary>
-    public event RoutedEventHandler ManipulationDelta
+    public event EventHandler<ManipulationDeltaEventArgs> ManipulationDelta
     {
         add => AddHandler(ManipulationDeltaEvent, value);
         remove => RemoveHandler(ManipulationDeltaEvent, value);
@@ -3452,7 +3786,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when manipulation inertia starts (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewManipulationInertiaStarting
+    public event EventHandler<ManipulationInertiaStartingEventArgs> PreviewManipulationInertiaStarting
     {
         add => AddHandler(PreviewManipulationInertiaStartingEvent, value);
         remove => RemoveHandler(PreviewManipulationInertiaStartingEvent, value);
@@ -3461,7 +3795,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when manipulation inertia starts (bubble).
     /// </summary>
-    public event RoutedEventHandler ManipulationInertiaStarting
+    public event EventHandler<ManipulationInertiaStartingEventArgs> ManipulationInertiaStarting
     {
         add => AddHandler(ManipulationInertiaStartingEvent, value);
         remove => RemoveHandler(ManipulationInertiaStartingEvent, value);
@@ -3470,7 +3804,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when boundary feedback is raised (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewManipulationBoundaryFeedback
+    public event EventHandler<ManipulationBoundaryFeedbackEventArgs> PreviewManipulationBoundaryFeedback
     {
         add => AddHandler(PreviewManipulationBoundaryFeedbackEvent, value);
         remove => RemoveHandler(PreviewManipulationBoundaryFeedbackEvent, value);
@@ -3479,7 +3813,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when boundary feedback is raised (bubble).
     /// </summary>
-    public event RoutedEventHandler ManipulationBoundaryFeedback
+    public event EventHandler<ManipulationBoundaryFeedbackEventArgs> ManipulationBoundaryFeedback
     {
         add => AddHandler(ManipulationBoundaryFeedbackEvent, value);
         remove => RemoveHandler(ManipulationBoundaryFeedbackEvent, value);
@@ -3488,7 +3822,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when manipulation completes (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewManipulationCompleted
+    public event EventHandler<ManipulationCompletedEventArgs> PreviewManipulationCompleted
     {
         add => AddHandler(PreviewManipulationCompletedEvent, value);
         remove => RemoveHandler(PreviewManipulationCompletedEvent, value);
@@ -3497,7 +3831,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Occurs when manipulation completes (bubble).
     /// </summary>
-    public event RoutedEventHandler ManipulationCompleted
+    public event EventHandler<ManipulationCompletedEventArgs> ManipulationCompleted
     {
         add => AddHandler(ManipulationCompletedEvent, value);
         remove => RemoveHandler(ManipulationCompletedEvent, value);
@@ -3540,14 +3874,14 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Invoked when an unhandled PreviewTextInput attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnPreviewTextInput(RoutedEventArgs e)
+    protected virtual void OnPreviewTextInput(TextCompositionEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled TextInput attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnTextInput(RoutedEventArgs e)
+    protected virtual void OnTextInput(TextCompositionEventArgs e)
     {
     }
 
@@ -3684,70 +4018,70 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Invoked when an unhandled PreviewTouchDown attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnPreviewTouchDown(RoutedEventArgs e)
+    protected virtual void OnPreviewTouchDown(TouchEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled TouchDown attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnTouchDown(RoutedEventArgs e)
+    protected virtual void OnTouchDown(TouchEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled PreviewTouchMove attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnPreviewTouchMove(RoutedEventArgs e)
+    protected virtual void OnPreviewTouchMove(TouchEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled TouchMove attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnTouchMove(RoutedEventArgs e)
+    protected virtual void OnTouchMove(TouchEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled PreviewTouchUp attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnPreviewTouchUp(RoutedEventArgs e)
+    protected virtual void OnPreviewTouchUp(TouchEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled TouchUp attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnTouchUp(RoutedEventArgs e)
+    protected virtual void OnTouchUp(TouchEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when a touch contact enters the bounds of this element.
     /// </summary>
-    protected virtual void OnTouchEnter(RoutedEventArgs e)
+    protected virtual void OnTouchEnter(TouchEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when a touch contact leaves the bounds of this element.
     /// </summary>
-    protected virtual void OnTouchLeave(RoutedEventArgs e)
+    protected virtual void OnTouchLeave(TouchEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when this element captures a touch contact.
     /// </summary>
-    protected virtual void OnGotTouchCapture(RoutedEventArgs e)
+    protected virtual void OnGotTouchCapture(TouchEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when this element loses a captured touch contact.
     /// </summary>
-    protected virtual void OnLostTouchCapture(RoutedEventArgs e)
+    protected virtual void OnLostTouchCapture(TouchEventArgs e)
     {
     }
 
@@ -3756,98 +4090,98 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
     /// <summary>
     /// Invoked when an unhandled PreviewStylusDown attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnPreviewStylusDown(RoutedEventArgs e)
+    protected virtual void OnPreviewStylusDown(StylusDownEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusDown attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusDown(RoutedEventArgs e)
+    protected virtual void OnStylusDown(StylusDownEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled PreviewStylusMove attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnPreviewStylusMove(RoutedEventArgs e)
+    protected virtual void OnPreviewStylusMove(StylusEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusMove attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusMove(RoutedEventArgs e)
+    protected virtual void OnStylusMove(StylusEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled PreviewStylusUp attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnPreviewStylusUp(RoutedEventArgs e)
+    protected virtual void OnPreviewStylusUp(StylusEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusUp attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusUp(RoutedEventArgs e)
+    protected virtual void OnStylusUp(StylusEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusInAirMove attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusInAirMove(RoutedEventArgs e)
+    protected virtual void OnStylusInAirMove(StylusEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusEnter attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusEnter(RoutedEventArgs e)
+    protected virtual void OnStylusEnter(StylusEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusLeave attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusLeave(RoutedEventArgs e)
+    protected virtual void OnStylusLeave(StylusEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusInRange attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusInRange(RoutedEventArgs e)
+    protected virtual void OnStylusInRange(StylusEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusOutOfRange attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusOutOfRange(RoutedEventArgs e)
+    protected virtual void OnStylusOutOfRange(StylusEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusButtonDown attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusButtonDown(RoutedEventArgs e)
+    protected virtual void OnStylusButtonDown(StylusButtonEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusButtonUp attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusButtonUp(RoutedEventArgs e)
+    protected virtual void OnStylusButtonUp(StylusButtonEventArgs e)
     {
     }
 
     /// <summary>
     /// Invoked when an unhandled StylusSystemGesture attached event reaches this element. Override to handle this event.
     /// </summary>
-    protected virtual void OnStylusSystemGesture(RoutedEventArgs e)
+    protected virtual void OnStylusSystemGesture(StylusSystemGestureEventArgs e)
     {
     }
 
@@ -4103,8 +4437,71 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         }
     }
 
+    /// <summary>Applies an animation clock to the specified dependency property.</summary>
+    public void ApplyAnimationClock(DependencyProperty dp, Media.Animation.AnimationClock? clock)
+    {
+        ApplyAnimationClock(dp, clock, Media.Animation.HandoffBehavior.SnapshotAndReplace);
+    }
+
+    /// <summary>Applies an animation clock with the requested handoff behavior.</summary>
+    public void ApplyAnimationClock(
+        DependencyProperty dp,
+        Media.Animation.AnimationClock? clock,
+        Media.Animation.HandoffBehavior handoffBehavior)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        if (!Enum.IsDefined(handoffBehavior))
+        {
+            throw new ArgumentOutOfRangeException(nameof(handoffBehavior));
+        }
+
+        IAnimationTimeline? animation = clock?.Timeline as IAnimationTimeline;
+        if (clock is not null && animation is null)
+        {
+            throw new ArgumentException(
+                "The clock must be backed by an AnimationTimeline.",
+                nameof(clock));
+        }
+
+        _ = BeginAnimationCore(
+            dp,
+            animation,
+            (HandoffBehavior)(int)handoffBehavior,
+            ElementAnimationKind.Explicit,
+            clearAnimatedValueOnReplace: true,
+            allowAutomaticToReplaceExplicit: true,
+            existingClock: clock);
+    }
+
+    /// <summary>Starts an animation using the WPF-compatible animation timeline.</summary>
+    public void BeginAnimation(DependencyProperty dp, Media.Animation.AnimationTimeline? animation)
+    {
+        BeginAnimation(dp, animation, Media.Animation.HandoffBehavior.SnapshotAndReplace);
+    }
+
+    /// <summary>Starts an animation using the WPF-compatible handoff behavior.</summary>
+    public void BeginAnimation(
+        DependencyProperty dp,
+        Media.Animation.AnimationTimeline? animation,
+        Media.Animation.HandoffBehavior handoffBehavior)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        if (!Enum.IsDefined(handoffBehavior))
+        {
+            throw new ArgumentOutOfRangeException(nameof(handoffBehavior));
+        }
+
+        _ = BeginAnimationCore(
+            dp,
+            animation,
+            (HandoffBehavior)(int)handoffBehavior,
+            ElementAnimationKind.Explicit,
+            clearAnimatedValueOnReplace: true,
+            allowAutomaticToReplaceExplicit: true);
+    }
+
     /// <summary>
-    /// Starts an animation for the specified dependency property.
+    /// Starts an animation for the specified dependency property through the core animation abstraction.
     /// </summary>
     /// <param name="dp">The dependency property to animate.</param>
     /// <param name="animation">The animation timeline, or null to stop any existing animation.</param>
@@ -4238,7 +4635,8 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         DependencyProperty dp,
         IAnimationTimeline animation,
         IAnimationClock clock,
-        IStoryboardClockOwner owner)
+        IStoryboardClockOwner owner,
+        Media.Animation.HandoffBehavior handoffBehavior = Media.Animation.HandoffBehavior.SnapshotAndReplace)
     {
         ArgumentNullException.ThrowIfNull(dp);
         ArgumentNullException.ThrowIfNull(animation);
@@ -4258,7 +4656,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         return BeginAnimationCore(
             dp,
             animation,
-            HandoffBehavior.SnapshotAndReplace,
+            (HandoffBehavior)(int)handoffBehavior,
             ElementAnimationKind.Storyboard,
             clearAnimatedValueOnReplace: true,
             allowAutomaticToReplaceExplicit: true,
@@ -4319,7 +4717,18 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
 
         if (clearAnimatedValue)
         {
-            ClearAnimatedValue(dp);
+            if (animation.Kind == ElementAnimationKind.Storyboard)
+            {
+                // Explicit Storyboard Stop/Remove and replacement restore the DP's
+                // base layer even when the running animation uses HoldEnd. HoldEnd
+                // promotes only after natural completion; it must not overwrite the
+                // base value during a controllable-clock teardown.
+                DiscardAnimatedValue(dp);
+            }
+            else
+            {
+                ClearAnimatedValue(dp);
+            }
         }
 
         // A storyboard-driven clock stopped from the element side never fires
@@ -4652,23 +5061,25 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
 
     #region Automation
 
-    private Automation.AutomationPeer? _automationPeer;
+    private Automation.Peers.AutomationPeer? _automationPeer;
 
     /// <summary>
     /// Creates the automation peer for this element.
     /// </summary>
     /// <returns>The automation peer, or null if no peer should be created.</returns>
-    protected virtual Automation.AutomationPeer? OnCreateAutomationPeer() => null;
+    protected virtual Automation.Peers.AutomationPeer? OnCreateAutomationPeer() => null;
 
     /// <summary>
     /// Gets or creates the automation peer for this element.
     /// </summary>
     /// <returns>The automation peer, or null if the element doesn't support automation.</returns>
-    public Automation.AutomationPeer? GetAutomationPeer()
+    public Automation.Peers.AutomationPeer? GetAutomationPeer()
     {
         _automationPeer ??= OnCreateAutomationPeer();
         return _automationPeer;
     }
+
+    internal Automation.Peers.AutomationPeer? GetExistingAutomationPeer() => _automationPeer;
 
     /// <summary>
     /// Invalidates the automation peer, causing it to be recreated on next access.
@@ -4692,7 +5103,7 @@ public abstract partial class UIElement : Visual, IInputElement, Animation.IFram
         {
             if (current._automationPeer != null)
             {
-                current._automationPeer.RaiseAutomationEvent(Automation.AutomationEvents.StructureChanged);
+                current._automationPeer.RaiseAutomationEvent(Automation.Peers.AutomationEvents.StructureChanged);
                 break;
             }
             current = current.VisualParent as UIElement;
@@ -4726,16 +5137,49 @@ public enum Visibility
 /// <summary>
 /// Information about an instance-level event handler.
 /// </summary>
-internal sealed class RoutedEventHandlerInfo
+public struct RoutedEventHandlerInfo
 {
-    public Delegate Handler { get; }
-    public bool HandledEventsToo { get; }
+    private Delegate _handler;
+    private bool _handledEventsToo;
 
-    public RoutedEventHandlerInfo(Delegate handler, bool handledEventsToo)
+    public Delegate Handler => _handler;
+    public bool InvokeHandledEventsToo => _handledEventsToo;
+
+    internal RoutedEventHandlerInfo(Delegate handler, bool handledEventsToo)
     {
-        Handler = handler;
-        HandledEventsToo = handledEventsToo;
+        _handler = handler;
+        _handledEventsToo = handledEventsToo;
     }
+
+    internal void InvokeHandler(object target, RoutedEventArgs routedEventArgs)
+    {
+        if (routedEventArgs.Handled && !_handledEventsToo)
+        {
+            return;
+        }
+
+        if (_handler is RoutedEventHandler routedHandler)
+        {
+            routedHandler(target, routedEventArgs);
+        }
+        else
+        {
+            routedEventArgs.InvokeHandler(_handler, target);
+        }
+    }
+
+    public bool Equals(RoutedEventHandlerInfo handlerInfo)
+        => _handler == handlerInfo._handler && _handledEventsToo == handlerInfo._handledEventsToo;
+
+    public override bool Equals(object? obj) => obj is RoutedEventHandlerInfo other && Equals(other);
+
+    public override int GetHashCode() => base.GetHashCode();
+
+    public static bool operator ==(RoutedEventHandlerInfo handlerInfo1, RoutedEventHandlerInfo handlerInfo2)
+        => handlerInfo1.Equals(handlerInfo2);
+
+    public static bool operator !=(RoutedEventHandlerInfo handlerInfo1, RoutedEventHandlerInfo handlerInfo2)
+        => !handlerInfo1.Equals(handlerInfo2);
 }
 
 /// <summary>

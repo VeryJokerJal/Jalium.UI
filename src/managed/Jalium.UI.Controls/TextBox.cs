@@ -1,10 +1,11 @@
-﻿using System.Text;
+using System.Text;
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Markup;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -12,7 +13,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// A control for editing plain text.
 /// </summary>
-public class TextBox : TextBoxBase, IImeSupport
+public class TextBox : TextBoxBase, IImeSupport, IAddChild
 {
     #region Automation
 
@@ -121,6 +122,11 @@ public class TextBox : TextBoxBase, IImeSupport
         DependencyProperty.Register(nameof(TextAlignment), typeof(TextAlignment), typeof(TextBox),
             new PropertyMetadata(TextAlignment.Left, OnVisualPropertyChanged));
 
+    /// <summary>Identifies the TextDecorations dependency property.</summary>
+    public static readonly DependencyProperty TextDecorationsProperty =
+        Documents.TextElement.TextDecorationsProperty.AddOwner(typeof(TextBox),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
+
     /// <summary>
     /// Identifies the PlaceholderText dependency property.
     /// </summary>
@@ -143,7 +149,7 @@ public class TextBox : TextBoxBase, IImeSupport
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SpellCheckLanguageProperty =
         DependencyProperty.Register(nameof(SpellCheckLanguage), typeof(string), typeof(TextBox),
-            new PropertyMetadata("en-US"));
+            new PropertyMetadata("en-US", OnSpellCheckConfigurationChanged));
 
     /// <summary>
     /// Identifies the IsAutoCorrectEnabled dependency property.
@@ -374,42 +380,6 @@ public class TextBox : TextBoxBase, IImeSupport
 
     #endregion
 
-    #region Routed Events
-
-    /// <summary>
-    /// Identifies the TextChanged routed event.
-    /// </summary>
-    public static readonly RoutedEvent TextChangedEvent =
-        EventManager.RegisterRoutedEvent(nameof(TextChanged), RoutingStrategy.Bubble,
-            typeof(TextChangedEventHandler), typeof(TextBox));
-
-    /// <summary>
-    /// Identifies the SelectionChanged routed event.
-    /// </summary>
-    public static readonly RoutedEvent SelectionChangedEvent =
-        EventManager.RegisterRoutedEvent(nameof(SelectionChanged), RoutingStrategy.Bubble,
-            typeof(RoutedEventHandler), typeof(TextBox));
-
-    /// <summary>
-    /// Occurs when the text content changes.
-    /// </summary>
-    public event TextChangedEventHandler TextChanged
-    {
-        add => AddHandler(TextChangedEvent, value);
-        remove => RemoveHandler(TextChangedEvent, value);
-    }
-
-    /// <summary>
-    /// Occurs when the selection changes.
-    /// </summary>
-    public event RoutedEventHandler SelectionChanged
-    {
-        add => AddHandler(SelectionChangedEvent, value);
-        remove => RemoveHandler(SelectionChangedEvent, value);
-    }
-
-    #endregion
-
     #region Constructor
 
     /// <summary>
@@ -418,7 +388,7 @@ public class TextBox : TextBoxBase, IImeSupport
     public TextBox()
     {
         // Set IBeam cursor for text input
-        Cursor = Jalium.UI.Cursors.IBeam;
+        Cursor = Jalium.UI.Input.Cursors.IBeam;
 
         // Subscribe to IME events
         InputMethod.CompositionStarted += OnImeCompositionStarted;
@@ -437,7 +407,7 @@ public class TextBox : TextBoxBase, IImeSupport
 
     private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             InputMethod.SetTarget(null);
         }
@@ -445,7 +415,7 @@ public class TextBox : TextBoxBase, IImeSupport
 
     private void OnImeCompositionStarted(object? sender, EventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionStart();
         }
@@ -453,7 +423,7 @@ public class TextBox : TextBoxBase, IImeSupport
 
     private void OnImeCompositionUpdated(object? sender, CompositionEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionUpdate(e.Text, e.CursorPosition);
         }
@@ -461,7 +431,7 @@ public class TextBox : TextBoxBase, IImeSupport
 
     private void OnImeCompositionEnded(object? sender, CompositionResultEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionEnd(e.Result);
         }
@@ -480,7 +450,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
@@ -492,7 +462,7 @@ public class TextBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
@@ -788,7 +758,7 @@ public class TextBox : TextBoxBase, IImeSupport
 
         if (lineText.Length > 0)
         {
-            var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = FontSize > 0 ? FontSize : 14;
             var fontWeight = FontWeight.ToOpenTypeWeight();
             var fontStyle = FontStyle.ToOpenTypeStyle();
@@ -899,7 +869,7 @@ public class TextBox : TextBoxBase, IImeSupport
         var lineText = Text.Substring(targetLine.StartIndex, targetLine.Length);
         var localY = (float)Math.Max(0, contentY - targetLineTopY);
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
@@ -1023,16 +993,184 @@ public class TextBox : TextBoxBase, IImeSupport
         }
     }
 
-    /// <summary>
-    /// Appends text to the end.
-    /// </summary>
-    public void AppendText(string textData)
+    /// <summary>Returns the character index nearest to a point in control coordinates.</summary>
+    public int GetCharacterIndexFromPoint(Point point, bool snapToText)
     {
-        if (string.IsNullOrEmpty(textData))
-            return;
+        var viewport = GetTextViewportRect();
+        if (!snapToText && !viewport.Contains(point))
+            return -1;
 
-        Text += textData;
-        CaretIndex = Text.Length;
+        var index = Math.Clamp(GetCaretIndexFromPosition(point), 0, Text.Length);
+        if (!snapToText && !IsPointOverCharacter(point, index) && !IsPointOverCharacter(point, index - 1))
+            return -1;
+
+        return index;
+    }
+
+    private bool IsPointOverCharacter(Point point, int charIndex)
+    {
+        if ((uint)charIndex >= (uint)Text.Length || Text[charIndex] is '\r' or '\n')
+            return false;
+
+        var leading = GetRectFromCharacterIndex(charIndex, trailingEdge: false);
+        var trailing = GetRectFromCharacterIndex(charIndex, trailingEdge: true);
+        var left = Math.Min(leading.X, trailing.X);
+        var right = Math.Max(leading.X, trailing.X);
+        var top = Math.Min(leading.Y, trailing.Y);
+        var bottom = Math.Max(leading.Bottom, trailing.Bottom);
+        if (right <= left || bottom <= top)
+            return false;
+
+        return new Rect(left - 0.5, top, right - left + 1, bottom - top).Contains(point);
+    }
+
+    /// <summary>Returns the first logical text line visible in the viewport.</summary>
+    public int GetFirstVisibleLineIndex()
+    {
+        EnsureLinesValid();
+        if (_lines.Count == 0)
+            return -1;
+
+        var lineHeight = Math.Max(1, Math.Round(GetLineHeight()));
+        EnsureVisualLineCounts(GetCurrentTextContentWidth(), lineHeight);
+        return GetLogicalLineForVisualRow(Math.Max(0, (int)Math.Floor(_verticalOffset / lineHeight)));
+    }
+
+    /// <summary>Returns the last logical text line visible in the viewport.</summary>
+    public int GetLastVisibleLineIndex()
+    {
+        EnsureLinesValid();
+        if (_lines.Count == 0)
+            return -1;
+
+        var lineHeight = Math.Max(1, Math.Round(GetLineHeight()));
+        EnsureVisualLineCounts(GetCurrentTextContentWidth(), lineHeight);
+        var viewportBottom = _verticalOffset + Math.Max(0, GetCurrentTextContentHeight());
+        var lastVisibleY = viewportBottom > _verticalOffset
+            ? Math.BitDecrement(viewportBottom)
+            : viewportBottom;
+        var lastRow = Math.Max(0, (int)Math.Floor(lastVisibleY / lineHeight));
+        return GetLogicalLineForVisualRow(lastRow);
+    }
+
+    /// <summary>Returns the caret rectangle at a character index.</summary>
+    public Rect GetRectFromCharacterIndex(int charIndex) =>
+        GetRectFromCharacterIndex(charIndex, trailingEdge: false);
+
+    /// <summary>Returns the leading or trailing caret rectangle at a character index.</summary>
+    public Rect GetRectFromCharacterIndex(int charIndex, bool trailingEdge)
+    {
+        if (charIndex < 0 || charIndex > Text.Length)
+            throw new ArgumentOutOfRangeException(nameof(charIndex));
+
+        EnsureLinesValid();
+        var viewport = GetTextViewportRect();
+        var lineHeight = Math.Max(1, Math.Round(GetLineHeight()));
+        EnsureVisualLineCounts(Math.Max(0, viewport.Width), lineHeight);
+
+        var (lineIndex, columnIndex) = GetLineColumnFromCharIndex(charIndex);
+        var lineText = GetLineTextInternal(lineIndex);
+        columnIndex = Math.Clamp(columnIndex, 0, lineText.Length);
+        var x = viewport.X - _horizontalOffset;
+        var y = viewport.Y + GetVisualRowsBeforeLogicalLine(lineIndex) * lineHeight - _verticalOffset;
+        var height = lineHeight;
+
+        if (lineText.Length > 0 && TextMeasurement.HitTestTextPositionWrapped(
+                lineText,
+                FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName,
+                FontSize > 0 ? FontSize : 14,
+                FontWeight.ToOpenTypeWeight(),
+                FontStyle.ToOpenTypeStyle(),
+                TextWrapping == TextWrapping.NoWrap ? 100000f : (float)Math.Max(1, viewport.Width),
+                (uint)columnIndex,
+                trailingEdge,
+                out var hit))
+        {
+            x += hit.CaretX;
+            y += hit.CaretY;
+            if (hit.CaretHeight > 0)
+                height = hit.CaretHeight;
+        }
+        else
+        {
+            x += GetCharacterXInLine(lineText, columnIndex);
+        }
+
+        return new Rect(Math.Round(x), Math.Round(y), 0, Math.Max(1, Math.Round(height)));
+    }
+
+    /// <summary>Returns the next spelling-error start in the requested direction.</summary>
+    public int GetNextSpellingErrorCharacterIndex(int charIndex, Documents.LogicalDirection direction)
+    {
+        if (charIndex < 0 || charIndex > Text.Length)
+            throw new ArgumentOutOfRangeException(nameof(charIndex));
+
+        return direction == Documents.LogicalDirection.Forward
+            ? _spellingErrors.Where(error => error.StartIndex >= charIndex)
+                .OrderBy(error => error.StartIndex).Select(error => error.StartIndex).FirstOrDefault(-1)
+            : _spellingErrors.Where(error => error.StartIndex < charIndex)
+                .OrderByDescending(error => error.StartIndex).Select(error => error.StartIndex).FirstOrDefault(-1);
+    }
+
+    /// <summary>Gets the spelling error containing a character index.</summary>
+    public SpellingError? GetSpellingError(int charIndex) => GetSpellingErrorAtPosition(charIndex);
+
+    /// <summary>Gets the start index of the spelling error containing a character index.</summary>
+    public int GetSpellingErrorStart(int charIndex) => GetSpellingError(charIndex)?.StartIndex ?? -1;
+
+    /// <summary>Gets the length of the spelling error containing a character index.</summary>
+    public int GetSpellingErrorLength(int charIndex) => GetSpellingError(charIndex)?.Length ?? 0;
+
+    /// <summary>Indicates whether the Text property should be serialized.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public bool ShouldSerializeText(XamlDesignerSerializationManager manager)
+    {
+        return manager.XmlWriter is null;
+    }
+
+    void IAddChild.AddChild(object value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value is string text)
+        {
+            ((IAddChild)this).AddText(text);
+            return;
+        }
+
+        throw new ArgumentException("TextBox accepts text content only.", nameof(value));
+    }
+
+    void IAddChild.AddText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        Text += text;
+    }
+
+    private int GetLogicalLineForVisualRow(int visualRow)
+    {
+        var row = 0;
+        for (var lineIndex = 0; lineIndex < _lines.Count; lineIndex++)
+        {
+            var count = lineIndex < _lineVisualCounts.Count ? Math.Max(1, _lineVisualCounts[lineIndex]) : 1;
+            if (visualRow < row + count)
+                return lineIndex;
+            row += count;
+        }
+
+        return _lines.Count - 1;
+    }
+
+    private Rect GetTextViewportRect()
+    {
+        var border = BorderThickness;
+        var padding = Padding;
+        var width = HasContentHost
+            ? _textContentSize.Width
+            : Math.Max(0, RenderSize.Width - border.Left - border.Right - padding.Left - padding.Right);
+        var height = HasContentHost
+            ? _textContentSize.Height
+            : Math.Max(0, RenderSize.Height - border.Top - border.Bottom - padding.Top - padding.Bottom);
+        return new Rect(border.Left + padding.Left, border.Top + padding.Top, width, height);
     }
 
     /// <summary>
@@ -1111,7 +1249,7 @@ public class TextBox : TextBoxBase, IImeSupport
         EnsureLinesValid();
 
         var wrapMode = TextWrapping;
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
@@ -1457,7 +1595,7 @@ public class TextBox : TextBoxBase, IImeSupport
         var text = Text;
 
         // Draw selection background
-        if (_selectionLength > 0 && IsKeyboardFocused)
+        if (_selectionLength > 0 && (IsKeyboardFocused || IsInactiveSelectionHighlightEnabled))
         {
             DrawSelection(dc, contentRect, lineHeight);
         }
@@ -1470,7 +1608,7 @@ public class TextBox : TextBoxBase, IImeSupport
                 var placeholderBrush = ResolvePlaceholderBrush();
                 var roundedHorizontalOffset = Math.Round(_horizontalOffset);
                 var roundedVerticalOffset = Math.Round(_verticalOffset);
-                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
                 {
                     Foreground = placeholderBrush,
                     MaxTextWidth = contentRect.Width,
@@ -1498,7 +1636,7 @@ public class TextBox : TextBoxBase, IImeSupport
         }
 
         // Draw caret
-        if (IsFocused && !IsReadOnly)
+        if (IsFocused && (!IsReadOnly || IsReadOnlyCaretVisible))
         {
             DrawCaret(dc, contentRect, lineHeight);
         }
@@ -1565,7 +1703,7 @@ public class TextBox : TextBoxBase, IImeSupport
                 ? double.MaxValue
                 : wrapWidth;
 
-            var formattedText = new FormattedText(lineText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+            var formattedText = new FormattedText(lineText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = textBrush,
                 MaxTextWidth = maxTextWidth,
@@ -1590,6 +1728,77 @@ public class TextBox : TextBoxBase, IImeSupport
 
             // Round to pixel boundaries to prevent sub-pixel jittering
             dc.DrawText(formattedText, new Point(x, y));
+            DrawTextDecorations(dc, x, y, lineWidth, wrapWidth, visualRows, lineHeight, textBrush, wrapMode);
+        }
+    }
+
+    private void DrawTextDecorations(
+        DrawingContext drawingContext,
+        double lineOriginX,
+        double lineY,
+        double unwrappedLineWidth,
+        double wrapWidth,
+        int visualRows,
+        double lineHeight,
+        Brush? textBrush,
+        TextWrapping wrapMode)
+    {
+        if (unwrappedLineWidth <= 0 || TextDecorations is not { Count: > 0 } decorations)
+            return;
+
+        var fontSize = FontSize > 0 ? FontSize : 14;
+        var metrics = TextMeasurement.GetFontMetrics(
+            FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName,
+            fontSize,
+            FontWeight.ToOpenTypeWeight(),
+            FontStyle.ToOpenTypeStyle());
+        var baselineOffset = metrics.Ascent > 0 ? metrics.Ascent : lineHeight * 0.8;
+        var rowCount = wrapMode == TextWrapping.NoWrap ? 1 : Math.Max(1, visualRows);
+
+        for (var row = 0; row < rowCount; row++)
+        {
+            var rowWidth = unwrappedLineWidth;
+            if (rowCount > 1 && double.IsFinite(wrapWidth))
+            {
+                rowWidth = row < rowCount - 1
+                    ? wrapWidth
+                    : Math.Clamp(unwrappedLineWidth - wrapWidth * (rowCount - 1), 0, wrapWidth);
+                if (rowWidth <= 0)
+                    rowWidth = wrapWidth;
+            }
+            else if (double.IsFinite(wrapWidth))
+            {
+                rowWidth = Math.Min(rowWidth, wrapWidth);
+            }
+
+            if (rowWidth <= 0)
+                continue;
+
+            var rowTop = lineY + row * lineHeight;
+            var baseline = rowTop + baselineOffset;
+            foreach (var decoration in decorations)
+            {
+                var brush = decoration.Brush ?? textBrush;
+                if (brush == null)
+                    continue;
+
+                var thickness = decoration.Thickness > 0 ? decoration.Thickness : 1.0;
+                var offset = decoration.OffsetUnit == TextDecorationUnit.Pixel
+                    ? decoration.Offset
+                    : decoration.Offset * fontSize;
+                var decorationY = decoration.Location switch
+                {
+                    TextDecorationLocation.OverLine => rowTop + offset,
+                    TextDecorationLocation.Strikethrough => rowTop + baselineOffset * 0.55 + offset,
+                    TextDecorationLocation.Baseline => baseline + offset,
+                    _ => baseline + Math.Max(1, fontSize * 0.08) + offset,
+                };
+
+                drawingContext.DrawLine(
+                    new Pen(brush, thickness),
+                    new Point(lineOriginX, decorationY),
+                    new Point(lineOriginX + rowWidth, decorationY));
+            }
         }
     }
 
@@ -1740,7 +1949,7 @@ public class TextBox : TextBoxBase, IImeSupport
                         // last row from the left edge to endCaret. This matches
                         // the glyph extents exactly, so there is no trailing
                         // whitespace tail on the final wrapped row.
-                        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+                        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
                         var fontSize = FontSize > 0 ? FontSize : 14;
                         var fontWeight = FontWeight.ToOpenTypeWeight();
                         var fontStyle = FontStyle.ToOpenTypeStyle();
@@ -1873,7 +2082,7 @@ public class TextBox : TextBoxBase, IImeSupport
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, y, compositionWidth, lineHeight));
 
         // Draw composition text
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
@@ -1947,7 +2156,7 @@ public class TextBox : TextBoxBase, IImeSupport
             // regardless of which wrap row the caret index actually belongs
             // to. Use DirectWrite's wrapped hit-test to land on the exact
             // (x, y) of the glyph the user clicked.
-            var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = FontSize > 0 ? FontSize : 14;
             var fontWeight = FontWeight.ToOpenTypeWeight();
             var fontStyle = FontStyle.ToOpenTypeStyle();
@@ -2058,9 +2267,18 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override void OnSelectionChanged()
     {
-        var e = new RoutedEventArgs(SelectionChangedEvent, this);
-        RaiseEvent(e);
+        base.OnSelectionChanged();
     }
+
+    /// <summary>Gets or sets decorations applied to the text.</summary>
+    public TextDecorationCollection? TextDecorations
+    {
+        get => (TextDecorationCollection?)GetValue(TextDecorationsProperty);
+        set => SetValue(TextDecorationsProperty, value);
+    }
+
+    /// <summary>Gets the OpenType typography settings for this text box.</summary>
+    public Documents.Typography Typography => new(this);
 
     /// <summary>
     /// Applies the current <see cref="CharacterCasing"/> rule to a fragment of
@@ -2117,17 +2335,64 @@ public class TextBox : TextBoxBase, IImeSupport
             }
 
             // Invalidate spell check
-            // Raise TextChanged event
-            var eventArgs = new TextChangedEventArgs(TextChangedEvent, textBox);
-            textBox.RaiseEvent(eventArgs);
+            if (textBox.IsSpellCheckEnabled)
+            {
+                textBox.PerformSpellCheck();
+            }
+            else
+            {
+                textBox._spellingErrors.Clear();
+            }
+
+            // Raise TextChanged with the compact changed range used by WPF.
+            string oldText = (string)(e.OldValue ?? string.Empty);
+            TextChange change = CreateTextChange(oldText, newText);
+            var eventArgs = new TextChangedEventArgs(
+                TextChangedEvent,
+                UndoAction.Create,
+                new[] { change });
+            textBox.OnTextChanged(eventArgs);
         }
+    }
+
+    private static TextChange CreateTextChange(string oldText, string newText)
+    {
+        int prefixLength = 0;
+        int commonLength = Math.Min(oldText.Length, newText.Length);
+        while (prefixLength < commonLength && oldText[prefixLength] == newText[prefixLength])
+        {
+            prefixLength++;
+        }
+
+        int oldSuffix = oldText.Length;
+        int newSuffix = newText.Length;
+        while (oldSuffix > prefixLength
+            && newSuffix > prefixLength
+            && oldText[oldSuffix - 1] == newText[newSuffix - 1])
+        {
+            oldSuffix--;
+            newSuffix--;
+        }
+
+        return new TextChange
+        {
+            Offset = prefixLength,
+            RemovedLength = oldSuffix - prefixLength,
+            AddedLength = newSuffix - prefixLength,
+        };
     }
 
     private static void OnSpellCheckEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is TextBox textBox)
         {
-            if ((bool)(e.NewValue ?? false))
+            bool isEnabled = (bool)(e.NewValue ?? false);
+            if (Jalium.UI.Controls.SpellCheck.GetIsEnabled(textBox) != isEnabled)
+            {
+                Jalium.UI.Controls.SpellCheck.SetIsEnabled(textBox, isEnabled);
+            }
+
+            if (isEnabled)
             {
                 textBox.PerformSpellCheck();
             }
@@ -2136,6 +2401,14 @@ public class TextBox : TextBoxBase, IImeSupport
                 textBox._spellingErrors.Clear();
             }
             textBox.InvalidateVisual();
+        }
+    }
+
+    private static void OnSpellCheckConfigurationChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is TextBox { IsSpellCheckEnabled: true } textBox)
+        {
+            textBox.PerformSpellCheck();
         }
     }
 
@@ -2282,7 +2555,9 @@ public class TextBox : TextBoxBase, IImeSupport
         }
 
         var errors = SpellChecker.Default.Check(text);
-        _spellingErrors = errors.ToList();
+        _spellingErrors = errors
+            .Select(error => error.WithHandlers(ReplaceSpellingError, IgnoreSpellingError))
+            .ToList();
         InvalidateVisual();
     }
 
@@ -2430,14 +2705,36 @@ public enum UndoAction
 /// <summary>
 /// Provides data for the TextChanged event.
 /// </summary>
-public sealed class TextChangedEventArgs : RoutedEventArgs
+public class TextChangedEventArgs : RoutedEventArgs
 {
+    private static readonly ICollection<TextChange> s_emptyChanges = Array.Empty<TextChange>();
+
+    /// <summary>
+    /// Initializes a new instance with the specified undo action.
+    /// </summary>
+    public TextChangedEventArgs(RoutedEvent id, UndoAction action)
+        : this(id, action, s_emptyChanges)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance with the changed text ranges.
+    /// </summary>
+    public TextChangedEventArgs(RoutedEvent id, UndoAction action, ICollection<TextChange> changes)
+        : base(id ?? throw new ArgumentNullException(nameof(id)))
+    {
+        ValidateUndoAction(action, nameof(action));
+        UndoAction = action;
+        Changes = changes;
+    }
+
     /// <summary>
     /// Initializes a new instance of the <see cref="TextChangedEventArgs"/> class.
     /// </summary>
     public TextChangedEventArgs(RoutedEvent routedEvent, object source)
         : base(routedEvent, source)
     {
+        Changes = s_emptyChanges;
     }
 
     /// <summary>
@@ -2446,13 +2743,42 @@ public sealed class TextChangedEventArgs : RoutedEventArgs
     public TextChangedEventArgs(RoutedEvent routedEvent, object source, UndoAction undoAction)
         : base(routedEvent, source)
     {
+        ValidateUndoAction(undoAction, nameof(undoAction));
         UndoAction = undoAction;
+        Changes = s_emptyChanges;
     }
 
     /// <summary>
     /// Gets the undo action associated with this text change.
     /// </summary>
     public UndoAction UndoAction { get; }
+
+    /// <summary>
+    /// Gets the changed text ranges, ordered by document offset.
+    /// </summary>
+    public ICollection<TextChange> Changes { get; }
+
+    protected override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is TextChangedEventHandler textChangedHandler)
+        {
+            textChangedHandler(target, this);
+            return;
+        }
+
+        base.InvokeEventHandler(handler, target);
+    }
+
+    private static void ValidateUndoAction(UndoAction action, string parameterName)
+    {
+        if (action < UndoAction.None || action > UndoAction.Create)
+        {
+            throw new System.ComponentModel.InvalidEnumArgumentException(
+                parameterName,
+                (int)action,
+                typeof(UndoAction));
+        }
+    }
 }
 
 /// <summary>

@@ -156,16 +156,16 @@ public class DevToolsWindowTests
                 InvokePrivate(devTools, "UpdatePropertiesPanel", button);
 
                 var propertiesPanel = GetPrivateField<StackPanel>(devTools, "_propertiesPanel");
-                var headerTexts = propertiesPanel.Children
+                var headerTexts = EnumerateVisuals(propertiesPanel)
                     .OfType<TextBlock>()
-                    .Select(textBlock => textBlock.Text ?? string.Empty)
+                    .Select(textBlock => NormalizeHeaderText(textBlock.Text))
                     .ToList();
 
-                Assert.Contains(headerTexts, text => text.Contains("Properties by Category", StringComparison.Ordinal));
-                Assert.Contains(headerTexts, text => text.Contains("Framework", StringComparison.Ordinal));
-                Assert.Contains(headerTexts, text => text.Contains("Layout", StringComparison.Ordinal));
-                Assert.Contains(headerTexts, text => text.Contains("Appearance", StringComparison.Ordinal));
-                Assert.Contains(headerTexts, text => text.Contains("Other", StringComparison.Ordinal));
+                Assert.Contains(headerTexts, text => text.Contains("PROPERTIESBYCATEGORY", StringComparison.Ordinal));
+                Assert.Contains(headerTexts, text => text.Contains("FRAMEWORK", StringComparison.Ordinal));
+                Assert.Contains(headerTexts, text => text.Contains("LAYOUT", StringComparison.Ordinal));
+                Assert.Contains(headerTexts, text => text.Contains("APPEARANCE", StringComparison.Ordinal));
+                Assert.Contains(headerTexts, text => text.Contains("OTHER", StringComparison.Ordinal));
             }
             finally
             {
@@ -315,6 +315,31 @@ public class DevToolsWindowTests
             if (child != null) count += CountVisuals(child);
         }
         return count;
+    }
+
+    private static IEnumerable<Visual> EnumerateVisuals(Visual root)
+    {
+        yield return root;
+
+        for (int i = 0; i < root.VisualChildrenCount; i++)
+        {
+            if (root.GetVisualChild(i) is not Visual child)
+            {
+                continue;
+            }
+
+            foreach (var descendant in EnumerateVisuals(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
+    private static string NormalizeHeaderText(string? text)
+    {
+        return string.Concat((text ?? string.Empty)
+            .Where(char.IsLetterOrDigit))
+            .ToUpperInvariant();
     }
 
     private static object? GetPrivateFieldOrNull(object instance, string fieldName)

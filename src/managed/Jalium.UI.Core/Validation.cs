@@ -43,6 +43,26 @@ public static class Validation
             new PropertyMetadata(null));
 
     /// <summary>
+    /// Identifies the attached property that redirects a validation adorner to another element.
+    /// </summary>
+    public static readonly DependencyProperty ValidationAdornerSiteProperty =
+        DependencyProperty.RegisterAttached(
+            "ValidationAdornerSite",
+            typeof(DependencyObject),
+            typeof(Validation),
+            new PropertyMetadata(null, OnValidationAdornerSiteChanged));
+
+    /// <summary>
+    /// Identifies the reverse link from an adorner site to the element whose errors it displays.
+    /// </summary>
+    public static readonly DependencyProperty ValidationAdornerSiteForProperty =
+        DependencyProperty.RegisterAttached(
+            "ValidationAdornerSiteFor",
+            typeof(DependencyObject),
+            typeof(Validation),
+            new PropertyMetadata(null, OnValidationAdornerSiteForChanged));
+
+    /// <summary>
     /// Gets the HasError value.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
@@ -69,6 +89,68 @@ public static class Validation
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetErrorTemplate(DependencyObject element, ControlTemplate? value) =>
         element.SetValue(ErrorTemplateProperty, value);
+
+    /// <summary>Gets the alternate element on which validation adorners are displayed.</summary>
+    public static DependencyObject? GetValidationAdornerSite(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (DependencyObject?)element.GetValue(ValidationAdornerSiteProperty);
+    }
+
+    /// <summary>Sets the alternate element on which validation adorners are displayed.</summary>
+    public static void SetValidationAdornerSite(DependencyObject element, DependencyObject? value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(ValidationAdornerSiteProperty, value);
+    }
+
+    /// <summary>Gets the element for which this object acts as a validation adorner site.</summary>
+    public static DependencyObject? GetValidationAdornerSiteFor(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (DependencyObject?)element.GetValue(ValidationAdornerSiteForProperty);
+    }
+
+    /// <summary>Sets the element for which this object acts as a validation adorner site.</summary>
+    public static void SetValidationAdornerSiteFor(DependencyObject element, DependencyObject? value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(ValidationAdornerSiteForProperty, value);
+    }
+
+    private static void OnValidationAdornerSiteChanged(
+        DependencyObject element,
+        DependencyPropertyChangedEventArgs args)
+    {
+        if (args.OldValue is DependencyObject oldSite
+            && ReferenceEquals(GetValidationAdornerSiteFor(oldSite), element))
+        {
+            oldSite.ClearValue(ValidationAdornerSiteForProperty);
+        }
+
+        if (args.NewValue is DependencyObject newSite
+            && !ReferenceEquals(GetValidationAdornerSiteFor(newSite), element))
+        {
+            newSite.SetValue(ValidationAdornerSiteForProperty, element);
+        }
+    }
+
+    private static void OnValidationAdornerSiteForChanged(
+        DependencyObject site,
+        DependencyPropertyChangedEventArgs args)
+    {
+        if (args.OldValue is DependencyObject oldElement
+            && ReferenceEquals(GetValidationAdornerSite(oldElement), site))
+        {
+            oldElement.ClearValue(ValidationAdornerSiteProperty);
+        }
+
+        if (args.NewValue is DependencyObject newElement
+            && !ReferenceEquals(GetValidationAdornerSite(newElement), site))
+        {
+            newElement.SetValue(ValidationAdornerSiteProperty, site);
+        }
+    }
 
     #endregion
 
@@ -133,6 +215,14 @@ public static class Validation
         }
     }
 
+    /// <summary>Marks the target of a binding expression as invalid.</summary>
+    public static void MarkInvalid(BindingExpressionBase bindingExpression, ValidationError validationError)
+    {
+        ArgumentNullException.ThrowIfNull(bindingExpression);
+        ArgumentNullException.ThrowIfNull(validationError);
+        MarkInvalid(bindingExpression.Target, validationError);
+    }
+
     /// <summary>
     /// Removes all validation errors from the element.
     /// </summary>
@@ -157,6 +247,13 @@ public static class Validation
         }
     }
 
+    /// <summary>Clears validation errors from the target of a binding expression.</summary>
+    public static void ClearInvalid(BindingExpressionBase bindingExpression)
+    {
+        ArgumentNullException.ThrowIfNull(bindingExpression);
+        ClearInvalid(bindingExpression.Target);
+    }
+
     #endregion
 }
 
@@ -168,22 +265,35 @@ public sealed class ValidationError
     /// <summary>
     /// Gets the validation rule that caused the error.
     /// </summary>
-    public ValidationRule? RuleInError { get; }
+    public ValidationRule? RuleInError { get; set; }
 
     /// <summary>
     /// Gets the binding source that caused the error.
     /// </summary>
-    public object? BindingSource { get; }
+    public object? BindingSource => BindingInError;
+
+    /// <summary>
+    /// Gets the binding expression or binding source associated with the error.
+    /// </summary>
+    public object? BindingInError { get; }
 
     /// <summary>
     /// Gets the error content.
     /// </summary>
-    public object? ErrorContent { get; }
+    public object? ErrorContent { get; set; }
 
     /// <summary>
     /// Gets the exception that caused the error.
     /// </summary>
-    public Exception? Exception { get; }
+    public Exception? Exception { get; set; }
+
+    /// <summary>
+    /// Creates a validation error for a rule and binding.
+    /// </summary>
+    public ValidationError(ValidationRule? ruleInError, object? bindingInError)
+        : this(ruleInError, bindingInError, null, null)
+    {
+    }
 
     /// <summary>
     /// Creates a new ValidationError.
@@ -191,7 +301,7 @@ public sealed class ValidationError
     public ValidationError(ValidationRule? rule, object? bindingSource, object? errorContent, Exception? exception)
     {
         RuleInError = rule;
-        BindingSource = bindingSource;
+        BindingInError = bindingSource;
         ErrorContent = errorContent;
         Exception = exception;
     }
@@ -253,6 +363,23 @@ public enum ValidationErrorEventAction
 public abstract class ValidationRule
 {
     /// <summary>
+    /// Initializes a validation rule that runs against the raw proposed value.
+    /// </summary>
+    protected ValidationRule()
+        : this(ValidationStep.RawProposedValue, false)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a validation rule for the specified validation step.
+    /// </summary>
+    protected ValidationRule(ValidationStep validationStep, bool validatesOnTargetUpdated)
+    {
+        ValidationStep = validationStep;
+        ValidatesOnTargetUpdated = validatesOnTargetUpdated;
+    }
+
+    /// <summary>
     /// Gets or sets when validation should occur.
     /// </summary>
     public ValidationStep ValidationStep { get; set; } = ValidationStep.RawProposedValue;
@@ -269,6 +396,31 @@ public abstract class ValidationRule
     /// <param name="cultureInfo">The culture to use.</param>
     /// <returns>The validation result.</returns>
     public abstract ValidationResult Validate(object? value, CultureInfo cultureInfo);
+
+    /// <summary>
+    /// Validates a value in the context of a binding expression.
+    /// </summary>
+    public virtual ValidationResult Validate(
+        object? value,
+        CultureInfo cultureInfo,
+        BindingExpressionBase owner)
+    {
+        if (ValidationStep is ValidationStep.UpdatedValue or ValidationStep.CommittedValue)
+        {
+            value = owner;
+        }
+
+        return Validate(value, cultureInfo);
+    }
+
+    /// <summary>
+    /// Validates a binding group.
+    /// </summary>
+    public virtual ValidationResult Validate(
+        object? value,
+        CultureInfo cultureInfo,
+        BindingGroup owner) =>
+        Validate(owner, cultureInfo);
 }
 
 /// <summary>
@@ -300,7 +452,7 @@ public enum ValidationStep
 /// <summary>
 /// Represents the result of a validation operation.
 /// </summary>
-public sealed class ValidationResult
+public class ValidationResult
 {
     /// <summary>
     /// Gets whether the validation passed.
@@ -325,6 +477,31 @@ public sealed class ValidationResult
         IsValid = isValid;
         ErrorContent = errorContent;
     }
+
+    /// <summary>Compares two validation results by validity and error-content identity.</summary>
+    public static bool operator ==(ValidationResult? left, ValidationResult? right) =>
+        Equals(left, right);
+
+    /// <summary>Compares two validation results for inequality.</summary>
+    public static bool operator !=(ValidationResult? left, ValidationResult? right) =>
+        !Equals(left, right);
+
+    /// <inheritdoc />
+    public override bool Equals(object? obj)
+    {
+        if (ReferenceEquals(this, obj))
+        {
+            return true;
+        }
+
+        return obj is ValidationResult other
+            && IsValid == other.IsValid
+            && ReferenceEquals(ErrorContent, other.ErrorContent);
+    }
+
+    /// <inheritdoc />
+    public override int GetHashCode() =>
+        IsValid.GetHashCode() ^ (ErrorContent ?? int.MinValue).GetHashCode();
 }
 
 /// <summary>

@@ -281,7 +281,7 @@ public class Track : FrameworkElement
     #region Visual Children
 
     /// <inheritdoc />
-    public override int VisualChildrenCount
+    protected override int VisualChildrenCount
     {
         get
         {
@@ -294,7 +294,7 @@ public class Track : FrameworkElement
     }
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         var currentIndex = 0;
 
@@ -573,7 +573,7 @@ public class Track : FrameworkElement
     /// </summary>
     /// <param name="pt">The point to convert.</param>
     /// <returns>The value at the specified point.</returns>
-    public double ValueFromPoint(Point pt)
+    public virtual double ValueFromPoint(Point pt)
     {
         double val;
 
@@ -595,7 +595,7 @@ public class Track : FrameworkElement
     /// <param name="horizontal">The horizontal distance.</param>
     /// <param name="vertical">The vertical distance.</param>
     /// <returns>The value change.</returns>
-    public double ValueFromDistance(double horizontal, double vertical)
+    public virtual double ValueFromDistance(double horizontal, double vertical)
     {
         if (_density == 0)
         {

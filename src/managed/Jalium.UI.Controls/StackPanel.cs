@@ -1,3 +1,5 @@
+using Jalium.UI.Controls.Primitives;
+
 namespace Jalium.UI.Controls;
 
 /// <summary>
@@ -6,6 +8,10 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class StackPanel : Panel, IScrollInfo
 {
+    protected internal override bool HasLogicalOrientation => true;
+
+    protected internal override Orientation LogicalOrientation => Orientation;
+
     // Layout snapping uses the inherited DPI-aware FrameworkElement.SnapLayoutValue,
     // which rounds to the nearest physical-pixel boundary. A previous local override
     // here did a plain Math.Round and silently lost DPI awareness on fractional scales
@@ -193,7 +199,7 @@ public class StackPanel : Panel, IScrollInfo
         var spacing = EffectiveSpacing;
         var sawFirstVisible = false;
 
-        foreach (var c in Children)
+        foreach (UIElement c in Children)
         {
             if (c == child) break;
             if (c.Visibility == Visibility.Collapsed) continue;

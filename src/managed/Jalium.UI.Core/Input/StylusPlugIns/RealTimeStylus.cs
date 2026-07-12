@@ -24,9 +24,19 @@ public sealed class RealTimeStylus : IDisposable
     private readonly UIElement _root;
     private readonly Dictionary<uint, StylusSession> _sessions = [];
     private readonly object _sessionsGate = new();
-    private readonly BlockingCollection<WorkItem> _rtsQueue = new(new ConcurrentQueue<WorkItem>());
-    private readonly Thread _rtsThread;
-    private bool _disposed;
+    private readonly object _workerGate = new();
+    private RtsWorker? _worker;
+    private int _disposeState;
+    private static int s_activeThreadCount;
+
+    /// <summary>
+    /// Number of dedicated RTS worker threads that are currently alive. Kept
+    /// internal so lifecycle tests and diagnostics can detect worker leaks
+    /// without adding a Jalium-specific member to the public WPF surface.
+    /// </summary>
+    internal static int ActiveThreadCount => Volatile.Read(ref s_activeThreadCount);
+
+    private bool IsDisposed => Volatile.Read(ref _disposeState) != 0;
 
     /// <summary>
     /// Enables routing of <see cref="StylusPlugIn.IsRealTimeCapable"/>
@@ -40,13 +50,6 @@ public sealed class RealTimeStylus : IDisposable
     public RealTimeStylus(UIElement root)
     {
         _root = root ?? throw new ArgumentNullException(nameof(root));
-        _rtsThread = new Thread(RtsThreadLoop)
-        {
-            Name = "Jalium.RTS",
-            IsBackground = true,
-            Priority = ThreadPriority.AboveNormal
-        };
-        _rtsThread.Start();
     }
 
     public UIElement RootElement => _root;
@@ -104,9 +107,10 @@ public sealed class RealTimeStylus : IDisposable
         // not race with layout). Split into RTS and UI buckets up front so the
         // background thread can run without touching the visual tree.
         var path = BuildPathFromRootToTarget(target);
+        NotifyBoundaryTransitions(rawStylusInput, previousTarget, path, enteredRange, exitedRange);
         var (rtsPlugIns, uiPlugIns) = PartitionPlugIns(path);
 
-        if (UseRealTimeThread && rtsPlugIns.Count > 0 && !_disposed)
+        if (UseRealTimeThread && rtsPlugIns.Count > 0 && !IsDisposed)
         {
             // Hand the RTS-capable plug-ins to the dedicated thread and block
             // until it completes. This keeps the public API synchronous (the
@@ -115,14 +119,13 @@ public sealed class RealTimeStylus : IDisposable
             // dependency they'd otherwise create.
             using var completed = new ManualResetEventSlim(false);
             var work = new WorkItem(rawStylusInput, rtsPlugIns, completed);
-            try
+            if (TryQueue(work))
             {
-                _rtsQueue.Add(work);
                 completed.Wait();
             }
-            catch (InvalidOperationException)
+            else
             {
-                // Queue was completed (disposed) between the check and Add.
+                // Disposal may have won the race before the work was queued.
                 ExecutePlugInList(rawStylusInput, rtsPlugIns);
             }
         }
@@ -225,6 +228,7 @@ public sealed class RealTimeStylus : IDisposable
             inAir, inRange, inverted, barrelButtonPressed, eraserPressed);
 
         var path = BuildPathFromRootToTarget(target);
+        NotifyBoundaryTransitions(rawStylusInput, previousTarget, path, enteredRange, exitedRange);
         var (rtsPlugIns, uiPlugIns) = PartitionPlugIns(path);
 
         void RunUiContinuation()
@@ -266,7 +270,7 @@ public sealed class RealTimeStylus : IDisposable
             catch { /* never let continuation failures escape */ }
         }
 
-        if (rtsPlugIns.Count == 0 || !UseRealTimeThread || _disposed)
+        if (rtsPlugIns.Count == 0 || !UseRealTimeThread || IsDisposed)
         {
             // Fast path: no background work, run UI continuation synchronously.
             if (rtsPlugIns.Count > 0)
@@ -280,13 +284,9 @@ public sealed class RealTimeStylus : IDisposable
         // RTS thread runs the real-time plug-ins, then schedules the UI
         // continuation through the dispatcher. UI thread returns immediately.
         var work = new WorkItem(rawStylusInput, rtsPlugIns, _root.Dispatcher, RunUiContinuation);
-        try
+        if (!TryQueue(work))
         {
-            _rtsQueue.Add(work);
-        }
-        catch (InvalidOperationException)
-        {
-            // Queue completed before we could enqueue. Fall back to sync.
+            // Disposal may have completed the queue before we could enqueue.
             ExecutePlugInList(rawStylusInput, rtsPlugIns);
             RunUiContinuation();
         }
@@ -303,14 +303,20 @@ public sealed class RealTimeStylus : IDisposable
         }
 
         var dispatcher = _root.Dispatcher;
-        foreach (var stylusPlugIn in callbacks)
+        foreach (var callback in callbacks)
         {
-            var plugIn = stylusPlugIn;
+            var pendingCallback = callback;
             dispatcher.BeginInvoke(() =>
             {
                 try
                 {
-                    plugIn.InvokeProcessed(processResult.RawStylusInput);
+                    bool targetVerified = IsTargetWithinElement(
+                        processResult.RawStylusInput.Target,
+                        pendingCallback.PlugIn.Element);
+                    pendingCallback.PlugIn.InvokeProcessed(
+                        pendingCallback.Action,
+                        pendingCallback.CallbackData,
+                        targetVerified);
                 }
                 catch
                 {
@@ -329,60 +335,58 @@ public sealed class RealTimeStylus : IDisposable
     }
 
     /// <summary>
-    /// Synchronously stops the RTS thread and releases the queue. Idempotent.
+    /// Synchronously requests that the RTS thread stop and waits briefly for
+    /// queued work to drain. Idempotent.
     /// After <see cref="Dispose"/> further <see cref="Process"/> calls run all
     /// plug-ins on the calling thread (graceful degradation).
     /// </summary>
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        try
-        {
-            _rtsQueue.CompleteAdding();
-        }
-        catch (ObjectDisposedException) { }
-        try
-        {
-            _rtsThread.Join(TimeSpan.FromMilliseconds(500));
-        }
-        catch (ThreadStateException) { }
-        _rtsQueue.Dispose();
+        DisposeCore(waitForWorker: true);
+        GC.SuppressFinalize(this);
     }
 
-    private void RtsThreadLoop()
+    ~RealTimeStylus()
     {
-        try
+        // The worker deliberately does not reference its RealTimeStylus owner,
+        // so an abandoned Window/InkCanvas pipeline remains collectible. Never
+        // block the finalizer thread; CompleteAdding is enough for the worker to
+        // drain and terminate in the background.
+        DisposeCore(waitForWorker: false);
+    }
+
+    private void DisposeCore(bool waitForWorker)
+    {
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
+            return;
+
+        RtsWorker? worker;
+        lock (_workerGate)
         {
-            foreach (var item in _rtsQueue.GetConsumingEnumerable())
-            {
-                try
-                {
-                    ExecutePlugInList(item.RawStylusInput, item.PlugIns);
-                }
-                catch
-                {
-                    item.RawStylusInput.Cancel();
-                }
-                finally
-                {
-                    if (item.CompletionSignal != null)
-                    {
-                        try { item.CompletionSignal.Set(); } catch (ObjectDisposedException) { }
-                    }
-                    if (item.UiContinuation != null && item.UiDispatcher != null)
-                    {
-                        // Marshal UI-stage execution back to the UI thread.
-                        try { item.UiDispatcher.BeginInvoke(item.UiContinuation); }
-                        catch { /* dispatcher may be shutting down */ }
-                    }
-                }
-            }
+            worker = _worker;
+            _worker = null;
         }
-        catch (ObjectDisposedException)
+
+        worker?.Stop(waitForWorker);
+
+        lock (_sessionsGate)
         {
-            // Queue was disposed; exit cleanly.
+            _sessions.Clear();
         }
+    }
+
+    private bool TryQueue(WorkItem work)
+    {
+        RtsWorker? worker;
+        lock (_workerGate)
+        {
+            if (IsDisposed)
+                return false;
+
+            worker = _worker ??= new RtsWorker();
+        }
+
+        return worker.TryAdd(work);
     }
 
     private static void ExecutePlugInList(RawStylusInput rawStylusInput, List<StylusPlugIn> plugIns)
@@ -453,6 +457,74 @@ public sealed class RealTimeStylus : IDisposable
         return path;
     }
 
+    private void NotifyBoundaryTransitions(
+        RawStylusInput rawStylusInput,
+        UIElement? previousTarget,
+        List<UIElement> currentPath,
+        bool enteredRange,
+        bool exitedRange)
+    {
+        List<UIElement> previousPath = previousTarget is null
+            ? []
+            : BuildPathFromRootToTarget(previousTarget);
+
+        int commonPrefixLength = 0;
+        if (!enteredRange && !exitedRange)
+        {
+            int commonCount = Math.Min(previousPath.Count, currentPath.Count);
+            while (commonPrefixLength < commonCount &&
+                   ReferenceEquals(previousPath[commonPrefixLength], currentPath[commonPrefixLength]))
+            {
+                commonPrefixLength++;
+            }
+        }
+
+        // Leave the old branch from the former target back toward the common
+        // ancestor. A plug-in on a shared ancestor remains active and must not
+        // receive a synthetic leave/enter pair when only a descendant changes.
+        for (int index = previousPath.Count - 1; index >= commonPrefixLength; index--)
+        {
+            StylusPlugInCollection? plugIns = previousPath[index].GetStylusPlugIns(createIfMissing: false);
+            if (plugIns is null)
+                continue;
+            foreach (StylusPlugIn plugIn in plugIns.Snapshot())
+            {
+                if (plugIn.IsActiveForInput)
+                    plugIn.InvokeStylusLeave(rawStylusInput, confirmed: true);
+            }
+        }
+
+        if (exitedRange || !rawStylusInput.InRange)
+            return;
+
+        // Enter the new branch from the common ancestor toward the target.
+        // On initial range entry the common prefix is intentionally zero, so
+        // every active plug-in in the path receives its enter notification.
+        for (int index = commonPrefixLength; index < currentPath.Count; index++)
+        {
+            StylusPlugInCollection? plugIns = currentPath[index].GetStylusPlugIns(createIfMissing: false);
+            if (plugIns is null)
+                continue;
+            foreach (StylusPlugIn plugIn in plugIns.Snapshot())
+            {
+                if (plugIn.IsActiveForInput)
+                    plugIn.InvokeStylusEnter(rawStylusInput, confirmed: true);
+            }
+        }
+    }
+
+    private static bool IsTargetWithinElement(UIElement target, UIElement? element)
+    {
+        if (element is null)
+            return false;
+        for (Visual? current = target; current is not null; current = current.VisualParent)
+        {
+            if (ReferenceEquals(current, element))
+                return true;
+        }
+        return false;
+    }
+
     private sealed class StylusSession
     {
         public UIElement? Target { get; set; }
@@ -461,6 +533,155 @@ public sealed class RealTimeStylus : IDisposable
         public bool BarrelButtonPressed { get; set; }
         public bool Inverted { get; set; }
         public bool EraserPressed { get; set; }
+    }
+
+    /// <summary>
+    /// Owns the queue and thread without retaining the parent
+    /// <see cref="RealTimeStylus"/>. This separation is essential: an instance
+    /// ThreadStart delegate would root the entire input host forever when a
+    /// caller forgot to dispose it, preventing even finalization from running.
+    /// </summary>
+    private sealed class RtsWorker
+    {
+        private readonly BlockingCollection<WorkItem> _queue =
+            new(new ConcurrentQueue<WorkItem>());
+        private readonly Thread _thread;
+        private int _stopState;
+
+        public RtsWorker()
+        {
+            _thread = new Thread(static state => ((RtsWorker)state!).Run())
+            {
+                Name = "Jalium.RTS",
+                IsBackground = true,
+                Priority = ThreadPriority.AboveNormal
+            };
+
+            Interlocked.Increment(ref s_activeThreadCount);
+            try
+            {
+                _thread.Start(this);
+            }
+            catch
+            {
+                Interlocked.Decrement(ref s_activeThreadCount);
+                _queue.Dispose();
+                throw;
+            }
+        }
+
+        public bool TryAdd(WorkItem work)
+        {
+            if (Volatile.Read(ref _stopState) != 0)
+                return false;
+
+            try
+            {
+                _queue.Add(work);
+                return true;
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        public void Stop(bool waitForWorker)
+        {
+            if (Interlocked.Exchange(ref _stopState, 1) == 0)
+            {
+                try { _queue.CompleteAdding(); }
+                catch (ObjectDisposedException) { }
+            }
+
+            if (!waitForWorker || ReferenceEquals(Thread.CurrentThread, _thread))
+                return;
+
+            try
+            {
+                _thread.Join(TimeSpan.FromMilliseconds(500));
+            }
+            catch (ThreadStateException)
+            {
+                // A failed Thread.Start is rethrown by the constructor, so this
+                // can only be a defensive race during process teardown.
+            }
+        }
+
+        private void Run()
+        {
+            try
+            {
+                while (true)
+                {
+                    // Clear the previous item before blocking for the next one.
+                    // A raw input packet retains its target; keeping the last
+                    // packet in a worker-local would otherwise recreate the
+                    // Window -> RealTimeStylus ownership cycle we intentionally
+                    // broke by separating this worker from its owner.
+                    WorkItem? item = null;
+                    if (!_queue.TryTake(out item, Timeout.Infinite))
+                        break;
+
+                    try
+                    {
+                        ProcessWorkItem(item);
+                    }
+                    finally
+                    {
+                        // BlockingCollection/Thread stack implementations may
+                        // retain the last dequeued WorkItem while waiting. Make
+                        // the item harmless even in that case by severing all
+                        // packet, target and continuation references explicitly.
+                        item.ReleaseReferences();
+                    }
+
+                    item = null;
+                }
+            }
+            catch (ObjectDisposedException)
+            {
+                // The queue is disposed by this worker's finally block; this is
+                // only a defensive guard for process-shutdown races.
+            }
+            finally
+            {
+                _queue.Dispose();
+                Interlocked.Decrement(ref s_activeThreadCount);
+            }
+        }
+
+        private static void ProcessWorkItem(WorkItem item)
+        {
+            RawStylusInput rawStylusInput = item.RawStylusInput!;
+            try
+            {
+                ExecutePlugInList(rawStylusInput, item.PlugIns!);
+            }
+            catch
+            {
+                rawStylusInput.Cancel();
+            }
+            finally
+            {
+                if (item.CompletionSignal != null)
+                {
+                    try { item.CompletionSignal.Set(); }
+                    catch (ObjectDisposedException) { }
+                }
+
+                if (item.UiContinuation != null && item.UiDispatcher != null)
+                {
+                    // Marshal UI-stage execution back to the UI thread.
+                    try { item.UiDispatcher.BeginInvoke(item.UiContinuation); }
+                    catch { /* dispatcher may be shutting down */ }
+                }
+            }
+        }
     }
 
     private sealed class WorkItem
@@ -479,11 +700,20 @@ public sealed class RealTimeStylus : IDisposable
             UiDispatcher = uiDispatcher;
             UiContinuation = uiContinuation;
         }
-        public RawStylusInput RawStylusInput { get; }
-        public List<StylusPlugIn> PlugIns { get; }
-        public ManualResetEventSlim? CompletionSignal { get; }
-        public Dispatcher? UiDispatcher { get; }
-        public Action? UiContinuation { get; }
+        public RawStylusInput? RawStylusInput { get; private set; }
+        public List<StylusPlugIn>? PlugIns { get; private set; }
+        public ManualResetEventSlim? CompletionSignal { get; private set; }
+        public Dispatcher? UiDispatcher { get; private set; }
+        public Action? UiContinuation { get; private set; }
+
+        public void ReleaseReferences()
+        {
+            RawStylusInput = null;
+            PlugIns = null;
+            CompletionSignal = null;
+            UiDispatcher = null;
+            UiContinuation = null;
+        }
     }
 }
 

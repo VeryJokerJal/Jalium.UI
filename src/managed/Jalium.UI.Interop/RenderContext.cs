@@ -32,7 +32,10 @@ public sealed class RenderContext : IDisposable
     private static int _generationCounter;
     private static RenderContext? _current;
     private nint _handle;
-    private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for thread-safety)
+    // 0 = usable, 1 = disposal requested.  A requested context can retain its
+    // native handle while backend-bound resources are still pinned; the final
+    // pin release performs the physical native teardown.
+    private int _disposed;
     private bool _retireRequested;
     // Number of live resources whose native lifetime is bound to this context's
     // backend: render targets AND backend-owned dependent handles
@@ -66,6 +69,14 @@ public sealed class RenderContext : IDisposable
     /// Gets whether the context is valid.
     /// </summary>
     public bool IsValid => _handle != nint.Zero && Volatile.Read(ref _disposed) == 0;
+
+    /// <summary>
+    /// Gets whether the native backend is still physically alive.  This can
+    /// remain true after <see cref="Dispose"/> has made the context unusable,
+    /// while a backend-bound resource is pinned and still needs to destroy its
+    /// native handle through that backend.
+    /// </summary>
+    internal bool IsNativeBackendAlive => _handle != nint.Zero;
 
     /// <summary>
     /// Gets the GPU adapter preference used to create this context.
@@ -262,7 +273,18 @@ public sealed class RenderContext : IDisposable
     /// </summary>
     internal void RegisterRenderTarget()
     {
-        _ = Interlocked.Increment(ref _activeRenderTargetCount);
+        // Registration and the zero-pin disposal decision must be one atomic
+        // transition.  Otherwise Dispose can observe zero, destroy the native
+        // backend, and a racing resource constructor can pin/use the stale
+        // handle immediately afterwards.
+        lock (s_sync)
+        {
+            ObjectDisposedException.ThrowIf(
+                Volatile.Read(ref _disposed) != 0 || _handle == nint.Zero,
+                this);
+
+            _activeRenderTargetCount++;
+        }
     }
 
     /// <summary>
@@ -273,55 +295,64 @@ public sealed class RenderContext : IDisposable
     /// </summary>
     internal void UnregisterRenderTarget()
     {
-        var remaining = Interlocked.Decrement(ref _activeRenderTargetCount);
-        if (remaining <= 0)
+        bool resourcesDrained;
+        lock (s_sync)
         {
-            if (remaining < 0)
+            if (_activeRenderTargetCount > 0)
             {
-                _ = Interlocked.Exchange(ref _activeRenderTargetCount, 0);
+                _activeRenderTargetCount--;
             }
 
+            resourcesDrained = _activeRenderTargetCount == 0;
+        }
+
+        if (resourcesDrained)
+        {
             TryDisposeRetiredContexts();
         }
     }
 
-    private bool CanDisposeRetiredUnsafe()
-        => _retireRequested &&
-           Volatile.Read(ref _disposed) == 0 &&
+    private bool CanFinalizeNativeDisposeUnsafe()
+        => (_retireRequested || Volatile.Read(ref _disposed) != 0) &&
            _handle != nint.Zero &&
-           Volatile.Read(ref _activeRenderTargetCount) == 0 &&
+           _activeRenderTargetCount == 0 &&
            !ReferenceEquals(_current, this);
 
     private static void TryDisposeRetiredContexts()
     {
-        List<RenderContext>? toDispose = null;
+        List<nint>? handlesToDestroy = null;
         lock (s_sync)
         {
-            foreach (var candidate in _retiredContexts)
+            foreach (var candidate in _retiredContexts.ToArray())
             {
-                if (!candidate.CanDisposeRetiredUnsafe())
+                if (!candidate.CanFinalizeNativeDisposeUnsafe())
                 {
                     continue;
                 }
 
-                toDispose ??= [];
-                toDispose.Add(candidate);
-            }
-
-            if (toDispose == null)
-            {
-                return;
-            }
-
-            foreach (var candidate in toDispose)
-            {
+                // Mark unusable and detach the native handle while holding the
+                // same gate used by RegisterRenderTarget.  No new resource can
+                // pin this context after the zero-pin decision.
+                Volatile.Write(ref candidate._disposed, 1);
+                var handle = candidate._handle;
+                candidate._handle = nint.Zero;
                 _retiredContexts.Remove(candidate);
+                if (handle != nint.Zero)
+                {
+                    handlesToDestroy ??= [];
+                    handlesToDestroy.Add(handle);
+                }
             }
         }
 
-        foreach (var candidate in toDispose)
+        if (handlesToDestroy == null)
         {
-            candidate.Dispose();
+            return;
+        }
+
+        foreach (var handle in handlesToDestroy)
+        {
+            NativeMethods.ContextDestroy(handle);
         }
     }
 
@@ -493,21 +524,39 @@ public sealed class RenderContext : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
-
-        var handle = Interlocked.Exchange(ref _handle, nint.Zero);
-        if (handle != nint.Zero)
-        {
-            NativeMethods.ContextDestroy(handle);
-        }
-
+        nint handleToDestroy = nint.Zero;
         lock (s_sync)
         {
-            _retiredContexts.Remove(this);
+            Volatile.Write(ref _disposed, 1);
+            _retireRequested = true;
+
             if (_current == this)
             {
                 _current = null;
             }
+
+            if (_handle != nint.Zero && _activeRenderTargetCount == 0)
+            {
+                handleToDestroy = _handle;
+                _handle = nint.Zero;
+                _retiredContexts.Remove(this);
+            }
+            else if (_handle != nint.Zero)
+            {
+                // Keep the backend alive until every target/dependent handle
+                // has destroyed itself through that backend and released its
+                // pin.  UnregisterRenderTarget drives the final teardown.
+                _retiredContexts.Add(this);
+            }
+            else
+            {
+                _retiredContexts.Remove(this);
+            }
+        }
+
+        if (handleToDestroy != nint.Zero)
+        {
+            NativeMethods.ContextDestroy(handleToDestroy);
         }
 
         GC.SuppressFinalize(this);
@@ -515,7 +564,15 @@ public sealed class RenderContext : IDisposable
 
     ~RenderContext()
     {
+        // Leak-safe fallback: do not destroy the native backend from the
+        // finalizer. Legacy wrappers such as NativeBitmap, NativeBrush, and
+        // NativeTextFormat do not retain/pin their creating RenderContext, so
+        // one of those wrappers can remain reachable after this managed
+        // context becomes collectible. Destroying the backend here would leave
+        // the live wrapper pointing at a released device/factory and turn its
+        // next use or cleanup into native use-after-free. Explicit Dispose is
+        // still deterministic and uses the two-phase pin-aware teardown above.
         Volatile.Write(ref _disposed, 1);
-        Volatile.Write(ref _handle, nint.Zero);
+        _ = Interlocked.Exchange(ref _handle, nint.Zero);
     }
 }

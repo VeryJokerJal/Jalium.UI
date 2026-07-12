@@ -1,4 +1,4 @@
-namespace Jalium.UI;
+namespace Jalium.UI.Input;
 
 /// <summary>
 /// Provides a set of predefined <see cref="Cursor"/> values.
@@ -129,4 +129,8 @@ public static class Cursors
     /// Gets an up arrow cursor.
     /// </summary>
     public static Cursor UpArrow { get; } = new Cursor(CursorType.UpArrow);
+
+    public static Cursor ScrollNS { get; } = new Cursor(CursorType.ScrollNS);
+    public static Cursor ScrollWE { get; } = new Cursor(CursorType.ScrollWE);
+    public static Cursor ArrowCD { get; } = new Cursor(CursorType.ArrowCD);
 }

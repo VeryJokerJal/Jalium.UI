@@ -4,6 +4,8 @@ using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 
+using Jalium.UI.Media;
+
 namespace Jalium.UI.Tests;
 
 [Collection("Application")]
@@ -607,7 +609,7 @@ public class WindowPressedStateTests
         {
             var (window, _, _) = CreateWindowTree();
 
-            bool handled = InvokeKeyDownHandled(window, Key.Alt, lParam: nint.Zero);
+            bool handled = InvokeKeyDownHandled(window, Key.LeftAlt, lParam: nint.Zero);
 
             Assert.False(handled);
         }
@@ -641,7 +643,7 @@ public class WindowPressedStateTests
     {
         Assert.True(InvokeIsShellReservedVirtualKey(0x5B)); // VK_LWIN
         Assert.True(InvokeIsShellReservedVirtualKey(0x5C)); // VK_RWIN
-        Assert.False(InvokeIsShellReservedVirtualKey((int)Key.Enter));
+        Assert.False(InvokeIsShellReservedVirtualKey(KeyInterop.VirtualKeyFromKey(Key.Enter)));
     }
 
     [Fact]
@@ -688,7 +690,7 @@ public class WindowPressedStateTests
     }
 
     [Fact]
-    public void HitTestElement_ShouldReuseCachedSubtree_ForRepeatedMovesWithinSameBranch()
+    public void HitTestElement_ShouldMemoizeRepeatedPointWithinSameLayoutGeneration()
     {
         ResetInputState();
 
@@ -722,11 +724,13 @@ public class WindowPressedStateTests
             branchRoot.ResetHitTestCount();
             siblingBranch.ResetHitTestCount();
 
-            var secondHit = InvokeHitTestElement(window, new Point(11, 10));
+            var secondHit = InvokeHitTestElement(window, new Point(10, 10));
 
             Assert.Same(leaf, secondHit);
             Assert.Equal(0, siblingBranch.HitTestCount);
-            Assert.True(leaf.HitTestCount > 0);
+            Assert.Equal(0, branchRoot.HitTestCount);
+            Assert.Equal(0, branchMid.HitTestCount);
+            Assert.Equal(0, leaf.HitTestCount);
         }
         finally
         {
@@ -741,7 +745,13 @@ public class WindowPressedStateTests
 
         try
         {
-            var oldLeaf = new CountingBorder { Width = 32, Height = 24 };
+            var oldLeaf = new CountingBorder
+            {
+                Width = 32,
+                Height = 24,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top
+            };
             var oldHost = new StackPanel();
             oldHost.Children.Add(oldLeaf);
 
@@ -759,7 +769,13 @@ public class WindowPressedStateTests
             var initialHit = InvokeHitTestElement(window, new Point(10, 10));
             Assert.Same(oldLeaf, initialHit);
 
-            var newLeaf = new CountingBorder { Width = 32, Height = 24 };
+            var newLeaf = new CountingBorder
+            {
+                Width = 32,
+                Height = 24,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top
+            };
             var newHost = new StackPanel();
             newHost.Children.Add(newLeaf);
 
@@ -786,7 +802,13 @@ public class WindowPressedStateTests
 
         try
         {
-            var leaf = new CountingBorder { Width = 32, Height = 24 };
+            var leaf = new CountingBorder
+            {
+                Width = 32,
+                Height = 24,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top
+            };
             var host = new StackPanel();
             host.Children.Add(leaf);
 
@@ -908,7 +930,7 @@ public class WindowPressedStateTests
             Assert.True(InvokeCanHandleImeMessages(window));
             Assert.True(InputMethod.IsComposing);
             Assert.True(richTextBox.IsImeComposing);
-            Assert.Same(richTextBox, InputMethod.Current);
+            Assert.Same(richTextBox, InputMethod.CurrentTarget);
         }
         finally
         {
@@ -926,7 +948,7 @@ public class WindowPressedStateTests
             var (window, _, _) = CreateWindowTree();
             window.AddHandler(UIElement.KeyDownEvent, new KeyEventHandler((_, _) => throw new InvalidOperationException("boom")));
 
-            var exception = Record.Exception(() => InvokeWndProc(window, msg: 0x0100, wParam: (nint)(int)Key.A, lParam: nint.Zero)); // WM_KEYDOWN
+            var exception = Record.Exception(() => InvokeWndProc(window, msg: 0x0100, wParam: (nint)KeyInterop.VirtualKeyFromKey(Key.A), lParam: nint.Zero)); // WM_KEYDOWN
 
             Assert.Null(exception);
         }
@@ -1013,23 +1035,23 @@ public class WindowPressedStateTests
 
     private static void InvokeKeyDown(Window window, Key key, nint lParam)
     {
-        var method = typeof(Window).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
+        var method = typeof(Window).GetMethod("OnNativeKeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        method!.Invoke(window, new object[] { (nint)(int)key, lParam });
+        method!.Invoke(window, new object[] { (nint)KeyInterop.VirtualKeyFromKey(key), lParam });
     }
 
     private static bool InvokeKeyDownHandled(Window window, Key key, nint lParam)
     {
-        var method = typeof(Window).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
+        var method = typeof(Window).GetMethod("OnNativeKeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        return (bool)method!.Invoke(window, new object[] { (nint)(int)key, lParam })!;
+        return (bool)method!.Invoke(window, new object[] { (nint)KeyInterop.VirtualKeyFromKey(key), lParam })!;
     }
 
     private static void InvokeKeyUp(Window window, Key key, nint lParam)
     {
-        var method = typeof(Window).GetMethod("OnKeyUp", BindingFlags.Instance | BindingFlags.NonPublic);
+        var method = typeof(Window).GetMethod("OnNativeKeyUp", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        method!.Invoke(window, new object[] { (nint)(int)key, lParam });
+        method!.Invoke(window, new object[] { (nint)KeyInterop.VirtualKeyFromKey(key), lParam });
     }
 
     private static void InvokeChar(Window window, char c)

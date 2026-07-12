@@ -178,9 +178,9 @@ public class BarChart : AxisChartBase
     #region Automation
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.BarChartAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.BarChartAutomationPeer(this);
     }
 
     #endregion
@@ -373,7 +373,7 @@ public class BarChart : AxisChartBase
         double usableBand = bandWidth - GroupSpacing;
         if (usableBand < 2) usableBand = 2;
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var labelBrush = new SolidColorBrush(Color.FromRgb(220, 220, 220));
 
         for (int ci = 0; ci < categoryCount; ci++)

@@ -109,9 +109,9 @@ public class ArrowKeyNavigationTests
 
     private static void InvokeKeyDown(Window window, Key key)
     {
-        var method = typeof(Window).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
+        var method = typeof(Window).GetMethod("OnNativeKeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        method!.Invoke(window, new object[] { (nint)(int)key, nint.Zero });
+        method!.Invoke(window, new object[] { (nint)KeyInterop.VirtualKeyFromKey(key), nint.Zero });
     }
 
     private static void ResetInputState()

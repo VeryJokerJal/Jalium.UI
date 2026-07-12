@@ -28,43 +28,104 @@ public class ContainerVisual : Visual
     /// <summary>
     /// Gets or sets the clip region of this ContainerVisual.
     /// </summary>
-    public Geometry? Clip { get; set; }
+    public Geometry? Clip
+    {
+        get => VisualClip;
+        set => VisualClip = value;
+    }
 
     /// <summary>
     /// Gets or sets the opacity of this ContainerVisual.
     /// </summary>
-    public double Opacity { get; set; } = 1.0;
+    public double Opacity
+    {
+        get => VisualOpacity;
+        set => VisualOpacity = value;
+    }
 
     /// <summary>
     /// Gets or sets the opacity mask of this ContainerVisual.
     /// </summary>
-    public Brush? OpacityMask { get; set; }
+    public Brush? OpacityMask
+    {
+        get => VisualOpacityMask;
+        set => VisualOpacityMask = value;
+    }
 
     /// <summary>
     /// Gets or sets the Transform that is applied to this ContainerVisual.
     /// </summary>
-    public Transform? Transform { get; set; }
+    public Transform? Transform
+    {
+        get => VisualTransform;
+        set => VisualTransform = value;
+    }
 
     /// <summary>
     /// Gets or sets the BitmapEffect applied to this ContainerVisual.
     /// </summary>
-    public Effect? Effect { get; set; }
+    public Effect? Effect
+    {
+        get => VisualEffect;
+        set => VisualEffect = value;
+    }
 
     /// <summary>
     /// Gets or sets the X snapping guidelines.
     /// </summary>
-    public IList<double>? XSnappingGuidelines { get; set; }
+    public DoubleCollection? XSnappingGuidelines
+    {
+        get => VisualXSnappingGuidelines;
+        set => VisualXSnappingGuidelines = value;
+    }
 
     /// <summary>
     /// Gets or sets the Y snapping guidelines.
     /// </summary>
-    public IList<double>? YSnappingGuidelines { get; set; }
+    public DoubleCollection? YSnappingGuidelines
+    {
+        get => VisualYSnappingGuidelines;
+        set => VisualYSnappingGuidelines = value;
+    }
+
+    /// <summary>Gets or sets the deprecated bitmap effect associated with this visual.</summary>
+    [Obsolete("BitmapEffect is deprecated. Use Effect instead.")]
+    public BitmapEffect? BitmapEffect
+    {
+        get => VisualBitmapEffect;
+        set => VisualBitmapEffect = value;
+    }
+
+    /// <summary>Gets or sets the deprecated bitmap-effect input.</summary>
+    [Obsolete("BitmapEffectInput is deprecated. Use Effect instead.")]
+    public BitmapEffectInput? BitmapEffectInput
+    {
+        get => VisualBitmapEffectInput;
+        set => VisualBitmapEffectInput = value;
+    }
+
+    /// <summary>Gets or sets the retained composition cache mode.</summary>
+    public CacheMode? CacheMode
+    {
+        get => VisualCacheMode;
+        set => VisualCacheMode = value;
+    }
+
+    /// <summary>Gets or sets the composition offset.</summary>
+    public Vector Offset
+    {
+        get => VisualOffset;
+        set => VisualOffset = value;
+    }
+
+    /// <summary>Gets this visual's parent.</summary>
+    public DependencyObject? Parent => VisualParent;
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => _children.Count;
+    protected sealed override int VisualChildrenCount => _children.Count;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index) => _children[index];
+    protected sealed override Visual? GetVisualChild(int index) => _children[index];
 
     /// <summary>
     /// Returns the bounding box for the contents of this ContainerVisual.
@@ -87,6 +148,8 @@ public class ContainerVisual : Visual
         }
     }
 
+    internal override Rect ContentBoundsCore => ContentBounds;
+
     /// <summary>
     /// Returns the bounding box that includes this visual and all its descendants.
     /// </summary>
@@ -98,5 +161,14 @@ public class ContainerVisual : Visual
     public HitTestResult? HitTest(Point point)
     {
         return VisualTreeHelper.HitTest(this, point);
+    }
+
+    /// <summary>Performs a callback-based hit test against this visual subtree.</summary>
+    public void HitTest(
+        HitTestFilterCallback? filterCallback,
+        HitTestResultCallback resultCallback,
+        HitTestParameters hitTestParameters)
+    {
+        VisualTreeHelper.HitTest(this, filterCallback, resultCallback, hitTestParameters);
     }
 }

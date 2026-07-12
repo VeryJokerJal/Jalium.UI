@@ -138,9 +138,9 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
 
     public Rect MakeVisible(Visual visual, Rect rectangle)
     {
-        if (ItemContainerGenerator != null && visual is DependencyObject container)
+        if (Generator != null && visual is DependencyObject container)
         {
-            var index = ItemContainerGenerator.IndexFromContainer(container);
+            var index = Generator.IndexFromContainer(container);
             if (index >= 0) BringIndexIntoView(index);
         }
         return rectangle;
@@ -328,7 +328,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
     #region Virtualization Support
 
     /// <inheritdoc />
-    protected override void BringIndexIntoViewOverride(int index)
+    protected internal override void BringIndexIntoView(int index)
     {
         var itemCount = GetItemCount();
         if (index < 0 || index >= itemCount || _itemsPerRow <= 0) return;
@@ -357,7 +357,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
     }
 
     /// <inheritdoc />
-    internal override void OnClearChildren()
+    protected override void OnClearChildren()
     {
         base.OnClearChildren();
         _realizedContainers.Clear();
@@ -369,10 +369,10 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
 
     private bool ShouldVirtualize()
     {
-        return GetIsVirtualizing(GetOwner()) && ItemContainerGenerator != null;
+        return GetIsVirtualizing(GetOwner()) && Generator != null;
     }
 
-    private int GetItemCount() => ItemContainerGenerator?.ItemCount ?? Children.Count;
+    private int GetItemCount() => Generator?.ItemCount ?? Children.Count;
 
     private void ResolveItemSize(Size availableSize, int itemCount)
     {
@@ -440,12 +440,12 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
     private UIElement? RealizeContainer(int index)
     {
         if (_realizedContainers.TryGetValue(index, out var existing)) return existing;
-        if (ItemContainerGenerator == null) return null;
+        if (Generator == null) return null;
 
-        var container = ItemContainerGenerator.GetOrCreateContainerForIndex(index, out var isNewlyRealized);
+        var container = Generator.GetOrCreateContainerForIndex(index, out var isNewlyRealized);
         if (container is not UIElement child) return null;
 
-        if (isNewlyRealized) ItemContainerGenerator.PrepareItemContainer(container);
+        if (isNewlyRealized) Generator.PrepareItemContainer(container);
 
         _realizedContainers[index] = child;
         var insertPosition = _realizedContainers.IndexOfKey(index);
@@ -478,10 +478,10 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
             if (visualIndex >= 0) RemoveInternalChildRange(visualIndex, 1);
             _realizedContainers.Remove(index);
 
-            if (ItemContainerGenerator != null)
+            if (Generator != null)
             {
-                if (isRecycling) ItemContainerGenerator.RecycleIndex(index);
-                else ItemContainerGenerator.RemoveIndex(index);
+                if (isRecycling) Generator.RecycleIndex(index);
+                else Generator.RemoveIndex(index);
             }
         }
     }
@@ -498,10 +498,10 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         for (int i = _realizedContainers.Count - 1; i >= 0; i--)
         {
             var index = _realizedContainers.Keys[i];
-            if (ItemContainerGenerator != null)
+            if (Generator != null)
             {
-                if (isRecycling) ItemContainerGenerator.RecycleIndex(index);
-                else ItemContainerGenerator.RemoveIndex(index);
+                if (isRecycling) Generator.RecycleIndex(index);
+                else Generator.RemoveIndex(index);
             }
         }
         _realizedContainers.Clear();

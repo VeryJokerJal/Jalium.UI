@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Text;
 using System.Xml;
 using Jalium.UI;
+using Jalium.UI.Controls;
 using Jalium.UI.Data;
 
 namespace Jalium.UI.Markup;
@@ -544,8 +545,13 @@ internal static class RazorBindingEngine
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Reads ContentPropertyAttribute via reflection on the runtime type.")]
     private static string? ResolveContentPropertyName(Type type)
     {
-        var attr = type.GetCustomAttribute<Jalium.UI.ContentPropertyAttribute>(inherit: true);
-        return attr?.Name;
+        if (typeof(TextBlock).IsAssignableFrom(type))
+        {
+            return nameof(TextBlock.Text);
+        }
+
+        return type.GetCustomAttribute<ContentPropertyAttribute>(inherit: true)?.Name
+            ?? type.GetCustomAttribute<Jalium.UI.ContentPropertyAttribute>(inherit: true)?.Name;
     }
 
     // Internal accessors so the SG-facing methods above can reuse the private helpers

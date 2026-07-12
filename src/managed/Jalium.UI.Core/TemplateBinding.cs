@@ -42,7 +42,7 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
     private FrameworkElement? _templatedParent;
 
     public TemplateBindingExpression(TemplateBinding binding, DependencyObject target, DependencyProperty targetProperty)
-        : base(target, targetProperty)
+        : base(binding, target, targetProperty)
     {
         _binding = binding;
     }
@@ -61,6 +61,7 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
             return;
 
         IsActive = true;
+        AttachToBindingGroup();
 
         // Subscribe to property changes on the templated parent
         _templatedParent.PropertyChangedInternal += OnTemplatedParentPropertyChanged;
@@ -75,6 +76,7 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
             return;
 
         IsActive = false;
+        DetachFromBindingGroup();
 
         if (_templatedParent != null)
         {
@@ -134,7 +136,7 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
     {
         if (target is FrameworkElement fe)
         {
-            return fe.TemplatedParent;
+            return fe.TemplatedParent as FrameworkElement;
         }
         return null;
     }

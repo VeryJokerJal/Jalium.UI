@@ -13,7 +13,8 @@ public class WindowStylusPipelineTests
     {
         var window = new Window();
         var stylusDevice = new PointerStylusDevice(1001);
-        Dictionary<uint, PointerStylusDevice> activeStylusDevices = GetField<Dictionary<uint, PointerStylusDevice>>(window, "_activeStylusDevices");
+        Dictionary<uint, StylusDevice> activeStylusDevices =
+            GetField<Dictionary<uint, StylusDevice>>(window, "_activeStylusDevices");
         activeStylusDevices[1001] = stylusDevice;
         Tablet.CurrentStylusDevice = stylusDevice;
 
@@ -28,7 +29,7 @@ public class WindowStylusPipelineTests
     {
         var window = new Window();
         var order = new List<string>();
-        window.StylusPlugIns.Add(new OrderedStylusPlugIn(() => order.Add("plugin")));
+        window.GetStylusPlugIns(createIfMissing: true)!.Add(new OrderedStylusPlugIn(() => order.Add("plugin")));
         window.AddHandler(UIElement.PreviewStylusDownEvent, new RoutedEventHandler((_, _) => order.Add("preview")));
         window.AddHandler(UIElement.StylusDownEvent, new RoutedEventHandler((_, _) => order.Add("bubble")));
 
@@ -46,7 +47,7 @@ public class WindowStylusPipelineTests
     public void DispatchStylusSourcePipeline_WhenPlugInCancels_ShouldSetSourceCanceled()
     {
         var window = new Window();
-        window.StylusPlugIns.Add(new CancelingStylusPlugIn());
+        window.GetStylusPlugIns(createIfMissing: true)!.Add(new CancelingStylusPlugIn());
 
         object pointerData = CreatePenPointerData(pointerId: 2002, inContact: true, inRange: true, isCanceled: false);
         bool sourceHandled = false;
@@ -97,10 +98,10 @@ public class WindowStylusPipelineTests
     private static object CreatePenPointerData(uint pointerId, bool inContact, bool inRange, bool isCanceled)
     {
         Assembly controlsAssembly = typeof(Window).Assembly;
-        Type dataType = controlsAssembly.GetType("Jalium.UI.Controls.Win32PointerData")
-            ?? throw new InvalidOperationException("Win32PointerData type not found.");
-        Type kindType = controlsAssembly.GetType("Jalium.UI.Controls.Win32PointerKind")
-            ?? throw new InvalidOperationException("Win32PointerKind type not found.");
+        Type dataType = controlsAssembly.GetType("Jalium.UI.Controls.PointerInputData")
+            ?? throw new InvalidOperationException("PointerInputData type not found.");
+        Type kindType = controlsAssembly.GetType("Jalium.UI.Controls.PointerInputKind")
+            ?? throw new InvalidOperationException("PointerInputKind type not found.");
 
         object penKind = Enum.ToObject(kindType, 3);
         var position = new Point(50, 80);

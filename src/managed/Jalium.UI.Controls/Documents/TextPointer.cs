@@ -26,33 +26,33 @@ public enum TextPointerContext
     /// <summary>
     /// No content. Position is at the beginning or end of the document.
     /// </summary>
-    None,
+    None = 0,
 
     /// <summary>
     /// Text content.
     /// </summary>
-    Text,
-
-    /// <summary>
-    /// An element opening tag.
-    /// </summary>
-    ElementStart,
-
-    /// <summary>
-    /// An element closing tag.
-    /// </summary>
-    ElementEnd,
+    Text = 1,
 
     /// <summary>
     /// An embedded object.
     /// </summary>
-    EmbeddedElement
+    EmbeddedElement = 2,
+
+    /// <summary>
+    /// An element opening tag.
+    /// </summary>
+    ElementStart = 3,
+
+    /// <summary>
+    /// An element closing tag.
+    /// </summary>
+    ElementEnd = 4
 }
 
 /// <summary>
 /// Represents an immutable position in a FlowDocument.
 /// </summary>
-public sealed class TextPointer : IComparable<TextPointer>
+public sealed class TextPointer : ContentPosition, IComparable<TextPointer>
 {
     #region Fields
 
@@ -88,7 +88,7 @@ public sealed class TextPointer : IComparable<TextPointer>
     /// <summary>
     /// Gets the parent element at this position.
     /// </summary>
-    public TextElement? Parent => _parent;
+    public DependencyObject? Parent => _parent;
 
     /// <summary>
     /// Gets the logical direction of this TextPointer.
@@ -99,6 +99,19 @@ public sealed class TextPointer : IComparable<TextPointer>
     /// Gets the offset from the beginning of the parent element.
     /// </summary>
     public int Offset => _offset;
+
+    /// <summary>Gets the first content position in this document.</summary>
+    public TextPointer DocumentStart => _document.ContentStart;
+
+    /// <summary>Gets the final content position in this document.</summary>
+    public TextPointer DocumentEnd => _document.ContentEnd;
+
+    /// <summary>Gets whether layout information for this position is current.</summary>
+    public bool HasValidLayout => false;
+
+    /// <summary>Gets whether this position is at the beginning of a logical line.</summary>
+    public bool IsAtLineStartPosition =>
+        _parent is Paragraph && _offset == 0 || _parent is Run && _offset == 0 && _parent.Parent is Paragraph;
 
     /// <summary>
     /// Gets a value indicating whether this TextPointer is at the start of its containing paragraph.
@@ -135,23 +148,7 @@ public sealed class TextPointer : IComparable<TextPointer>
     /// </summary>
     public int DocumentOffset
     {
-        get
-        {
-            int offset = 0;
-
-            // Calculate offset by traversing document from start to this position
-            foreach (var block in _document.Blocks)
-            {
-                var blockOffset = GetOffsetInBlock(block, this);
-                if (blockOffset >= 0)
-                {
-                    return offset + blockOffset;
-                }
-                offset += GetBlockLength(block);
-            }
-
-            return offset;
-        }
+        get => _document.GetDocumentOffset(_parent, _offset);
     }
 
     #endregion
@@ -217,12 +214,133 @@ public sealed class TextPointer : IComparable<TextPointer>
     /// <returns>A TextPointer at the start of the current line.</returns>
     public TextPointer? GetLineStartPosition(int count)
     {
-        // For now, return the start of the paragraph
-        var paragraph = Paragraph;
-        if (paragraph == null)
-            return null;
+        return GetLineStartPosition(count, out _);
+    }
 
-        return new TextPointer(_document, paragraph, 0, LogicalDirection.Forward);
+    /// <summary>Returns the start of a nearby logical line and reports the number moved.</summary>
+    public TextPointer? GetLineStartPosition(int count, out int actualCount)
+    {
+        actualCount = 0;
+        var paragraphs = _document.EnumerateParagraphs().ToList();
+        var paragraph = Paragraph;
+        if (paragraph is null)
+        {
+            return null;
+        }
+
+        var index = paragraphs.IndexOf(paragraph);
+        if (index < 0)
+        {
+            return null;
+        }
+
+        var target = Math.Clamp(index + count, 0, paragraphs.Count - 1);
+        actualCount = target - index;
+        return new TextPointer(_document, paragraphs[target], 0, LogicalDirection.Forward);
+    }
+
+    /// <summary>Returns the nearest valid insertion position in the requested direction.</summary>
+    public TextPointer GetInsertionPosition(LogicalDirection direction) =>
+        _document.GetPositionAtOffset(DocumentOffset, direction) ?? this;
+
+    /// <summary>Returns the next position whose adjacent content context can be queried.</summary>
+    public TextPointer? GetNextContextPosition(LogicalDirection direction) =>
+        GetPositionAtOffset(direction == LogicalDirection.Forward ? 1 : -1, direction);
+
+    /// <summary>Returns the signed offset from this position to another position.</summary>
+    public int GetOffsetToPosition(TextPointer position)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        if (!ReferenceEquals(_document, position._document))
+        {
+            throw new ArgumentException("The TextPointer belongs to a different document.", nameof(position));
+        }
+
+        return position.DocumentOffset - DocumentOffset;
+    }
+
+    /// <summary>Returns whether two positions belong to the same document.</summary>
+    public bool IsInSameDocument(TextPointer textPosition)
+    {
+        ArgumentNullException.ThrowIfNull(textPosition);
+        return ReferenceEquals(_document, textPosition._document);
+    }
+
+    /// <summary>Copies adjacent run text into a caller-provided buffer.</summary>
+    public int GetTextInRun(LogicalDirection direction, char[] textBuffer, int startIndex, int count)
+    {
+        ArgumentNullException.ThrowIfNull(textBuffer);
+        ArgumentOutOfRangeException.ThrowIfNegative(startIndex);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if (startIndex > textBuffer.Length - count)
+        {
+            throw new ArgumentException("The requested buffer range is outside the array.");
+        }
+
+        var text = GetTextInRun(direction);
+        var copied = Math.Min(count, text.Length);
+        text.CopyTo(0, textBuffer, startIndex, copied);
+        return copied;
+    }
+
+    /// <summary>Inserts text at this position in a run.</summary>
+    public void InsertTextInRun(string textData)
+    {
+        ArgumentNullException.ThrowIfNull(textData);
+        if (_parent is not Run run || _offset < 0 || _offset > run.Text.Length)
+        {
+            throw new InvalidOperationException("Text can only be inserted at a position inside a Run.");
+        }
+
+        run.Text = run.Text.Insert(_offset, textData);
+    }
+
+    /// <summary>Deletes up to the requested number of characters from the adjacent run.</summary>
+    public int DeleteTextInRun(int count)
+    {
+        if (_parent is not Run run || count == 0)
+        {
+            return 0;
+        }
+
+        if (count > 0)
+        {
+            var removed = Math.Min(count, run.Text.Length - _offset);
+            run.Text = run.Text.Remove(_offset, removed);
+            return removed;
+        }
+
+        var backward = Math.Min(-count, _offset);
+        run.Text = run.Text.Remove(_offset - backward, backward);
+        return -backward;
+    }
+
+    /// <summary>Inserts a line break and returns the position following it.</summary>
+    public TextPointer InsertLineBreak()
+    {
+        var offset = DocumentOffset;
+        _ = new LineBreak(this);
+        return _document.GetPositionAtOffset(offset + 1, LogicalDirection.Forward) ?? _document.ContentEnd;
+    }
+
+    /// <summary>Splits the containing paragraph and returns the start of the new paragraph.</summary>
+    public TextPointer InsertParagraphBreak() => _document.InsertParagraphBreak(this);
+
+    /// <summary>Returns an approximate layout rectangle for the adjacent character.</summary>
+    public Rect GetCharacterRect(LogicalDirection direction)
+    {
+        var paragraph = Paragraph;
+        if (paragraph is null)
+        {
+            return Rect.Empty;
+        }
+
+        var fontSize = Math.Max(1.0, paragraph.GetEffectiveFontSize());
+        var lineHeight = double.IsFinite(paragraph.LineHeight) && paragraph.LineHeight > 0
+            ? paragraph.LineHeight
+            : fontSize * 1.35;
+        var x = Math.Max(0, DocumentOffset) * fontSize * 0.55;
+        return new Rect(x, 0, Math.Max(1.0, fontSize * 0.55), lineHeight);
     }
 
     /// <summary>

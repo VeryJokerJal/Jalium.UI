@@ -279,9 +279,9 @@ public class GanttChart : AxisChartBase
     #region Automation
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.GanttChartAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.GanttChartAutomationPeer(this);
     }
 
     #endregion
@@ -353,7 +353,7 @@ public class GanttChart : AxisChartBase
         var xAxis = XAxis ?? new DateTimeAxis();
         double rowH = RowHeight;
         double cornerR = BarCornerRadius;
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
 
         // The gantt area has a label portion on the left, chart portion on the right
         double chartLeft = plotArea.Left + LabelAreaWidth;

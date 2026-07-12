@@ -465,7 +465,7 @@ public class ComboBoxRenderingTests
             if (app.Resources.TryGetValue(typeof(ComboBox), out var styleObj) && styleObj is Style comboBoxStyle)
             {
                 // 鏌ユ壘 Template Setter
-                foreach (var setter in comboBoxStyle.Setters)
+                foreach (var setter in comboBoxStyle.Setters.OfType<Setter>())
                 {
                     if (setter.Property?.Name == "Template" && setter.Value is ControlTemplate template)
                     {

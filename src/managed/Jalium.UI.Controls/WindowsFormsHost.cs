@@ -168,7 +168,7 @@ public class WindowsFormsHost : HwndHost
         var child = Child;
         if (child == null)
         {
-            return Size.Empty;
+            return default(Size);
         }
 
         // Honour an explicitly requested Windows Forms preferred size, but never exceed
@@ -244,7 +244,7 @@ public class WindowsFormsHost : HwndHost
     /// </summary>
     private IWindowHost? FindHostWindow()
     {
-        Visual? current = VisualParent;
+        Visual? current = ParentVisual;
         while (current != null)
         {
             if (current is IWindowHost host)

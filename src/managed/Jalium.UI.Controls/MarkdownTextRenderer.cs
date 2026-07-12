@@ -55,7 +55,7 @@ internal sealed class MarkdownTextRenderer : FrameworkElement, IMarkdownSelectab
     {
         if (Spans.Count == 0)
         {
-            return Size.Empty;
+            return default(Size);
         }
 
         var widthConstraint = Wrap && !double.IsInfinity(availableSize.Width)
@@ -129,12 +129,12 @@ internal sealed class MarkdownTextRenderer : FrameworkElement, IMarkdownSelectab
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
         // A link shows the hand cursor; everywhere else the text is selectable, so use the I-beam.
-        Cursor = TryGetLinkAt(e.GetPosition(this)) != null ? Jalium.UI.Cursors.Hand : Jalium.UI.Cursors.IBeam;
+        Cursor = TryGetLinkAt(e.GetPosition(this)) != null ? Jalium.UI.Input.Cursors.Hand : Jalium.UI.Input.Cursors.IBeam;
     }
 
     private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
-        Cursor = Jalium.UI.Cursors.Arrow;
+        Cursor = Jalium.UI.Input.Cursors.Arrow;
     }
 
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)

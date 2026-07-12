@@ -11,8 +11,8 @@ namespace Jalium.UI.Controls;
 public class CommandBar : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.CommandBarAutomationPeer(this);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.CommandBarAutomationPeer(this);
 
     private const double MoreButtonWidth = 40;
     private const double OverflowMinWidth = 200;
@@ -305,7 +305,7 @@ public class CommandBar : Control
     }
 
     /// <inheritdoc />
-    public override int VisualChildrenCount
+    protected override int VisualChildrenCount
     {
         get
         {
@@ -318,7 +318,7 @@ public class CommandBar : Control
     }
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index == 0) return _primaryItemsPanel;
         if (index == 1) return _moreButton;

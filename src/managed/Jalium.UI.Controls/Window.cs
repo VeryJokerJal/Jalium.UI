@@ -11,6 +11,9 @@ using Jalium.UI.Rendering;
 using Jalium.UI.Threading;
 using Jalium.UI.Controls.DevTools;
 using System.Diagnostics;
+using RenderTargetDrawingContext = Jalium.UI.Interop.RenderTargetDrawingContext;
+using static Jalium.UI.Interop.Win32.Win32Constants;
+using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls;
 
@@ -33,9 +36,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private static readonly bool VSyncDisabledByEnv = IsEnvironmentSwitchEnabled("JALIUM_DISABLE_VSYNC");
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.WindowAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.WindowAutomationPeer(this);
     }
 
     /// <summary>
@@ -164,7 +167,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         private string _engineName = "?";
         private int _windowWidth, _windowHeight;
         private float _dpiScale;
-        private Rect _dirtyRegion;
+        private Rect _dirtyRegion = Rect.Empty;
         private long _gcTotalBytes;
         private int _gcGen0, _gcGen1, _gcGen2;
 
@@ -392,7 +395,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private readonly object _dirtyLock = new(); // Protects _dirtyElements from cross-thread access
     private int _appliedDwmTopMarginPhysical = -1;
     private bool _attemptedAutoWindowIcon;
-    private bool _isActive;
     private bool _contentRendered;
     private bool _isSyncingPosition;
     private Rect _restoreBounds;
@@ -403,6 +405,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private uint _fullScreenSavedExStyle;
     private WindowState _fullScreenPreviousState;
     private readonly List<Window> _ownedWindows = [];
+    private readonly Jalium.UI.WindowCollection _ownedWindowCollection;
     private const double DefaultTitleBarHeightDip = 32.0;
     private const int GpuBusyRetryDelayMs = 1;
     private const int RenderRecoveryRetryInitialDelayMs = 120;
@@ -620,6 +623,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             new PropertyMetadata(null, OnWindowTitleBarPresentationChanged));
 
     /// <summary>
+    /// WPF-compatible alias for the historical <see cref="WindowIconProperty"/>.
+    /// </summary>
+    public static readonly DependencyProperty IconProperty = WindowIconProperty;
+
+    /// <summary>
     /// Identifies the Left dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
@@ -742,6 +750,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private IPlatformWindow? _platformWindow;
 
+    internal uint BeginPlatformDrag(ReadOnlySpan<NativeDragDataItem> items, uint allowedEffects) =>
+        _platformWindow is NativePlatformWindow native
+            ? native.BeginDrag(items, allowedEffects)
+            : 0;
+
+    internal void SetPlatformDragEffect(ulong sessionId, uint effect)
+    {
+        if (_platformWindow is NativePlatformWindow native)
+            native.SetDragEffect(sessionId, effect);
+    }
+
     /// <summary>
     /// Gets the render target for this window.
     /// </summary>
@@ -750,7 +769,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <summary>
     /// Gets the DPI scale factor for this window (1.0 = 96 DPI = 100%).
     /// </summary>
-    public double DpiScale => _dpiScale;
+    public new double DpiScale => _dpiScale;
 
     /// <summary>
     /// Gets the safe area insets (in DIPs) for notch/cutout/status bar avoidance on mobile.
@@ -795,7 +814,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <summary>
     /// Gets or sets the TaskbarItemInfo object that provides taskbar integration features.
     /// </summary>
-    public TaskbarItemInfo? TaskbarItemInfo { get; set; }
+    public Jalium.UI.Shell.TaskbarItemInfo? TaskbarItemInfo
+    {
+        get => (Jalium.UI.Shell.TaskbarItemInfo?)GetValue(TaskbarItemInfoProperty);
+        set => SetValue(TaskbarItemInfoProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets a value indicating whether this window appears on top of all other windows.
@@ -953,6 +976,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         set => SetValue(WindowIconProperty, value);
     }
 
+    /// <summary>Gets or sets the window icon.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public ImageSource? Icon
+    {
+        get => (ImageSource?)GetValue(IconProperty);
+        set => SetValue(IconProperty, value);
+    }
+
     /// <summary>
     /// Gets or sets the position of the window's left edge, in DIPs, relative to the desktop.
     /// </summary>
@@ -1018,11 +1049,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     /// <summary>
-    /// Gets a value that indicates whether this window has been loaded (shown at least once).
-    /// </summary>
-    public bool IsLoaded => _contentRendered;
-
-    /// <summary>
     /// Gets the size and location of a window before being either minimized or maximized.
     /// </summary>
     public Rect RestoreBounds => _restoreBounds;
@@ -1030,7 +1056,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <summary>
     /// Gets a collection of windows that are owned by this window.
     /// </summary>
-    public IReadOnlyList<Window> OwnedWindows => _ownedWindows;
+    public Jalium.UI.WindowCollection OwnedWindows => _ownedWindowCollection;
 
     /// <summary>
     /// Gets or sets a value that indicates whether the window allows transparency.
@@ -1047,7 +1073,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <see cref="UIElement.Background"/>（A&lt;255 的 SolidColorBrush 或 null）强制改成不透明，
     /// 避免 PREMULTIPLIED swap chain 与桌面合成时的"鬼影"伪影（侧边栏文字重影、桌面内容透过控件可见）。
     /// </remarks>
-    public bool AllowsTransparency { get; set; }
+    public bool AllowsTransparency
+    {
+        get => (bool)(GetValue(AllowsTransparencyProperty) ?? false);
+        set => SetValue(AllowsTransparencyProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the window that owns this window.
@@ -1074,8 +1104,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     #region Events
 
-    public override event RoutedEventHandler? Loaded;
-    public override event RoutedEventHandler? Unloaded;
     public override event SizeChangedEventHandler? SizeChanged;
     public event EventHandler<System.ComponentModel.CancelEventArgs>? Closing;
     public event EventHandler? Closed;
@@ -1085,13 +1113,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     public event EventHandler? StateChanged;
     public event EventHandler? ContentRendered;
     public event EventHandler? SourceInitialized;
-    public event DpiChangedEventHandler? DpiChanged;
+    public event DpiChangedEventHandler DpiChanged
+    {
+        add => AddHandler(DpiChangedEvent, value);
+        remove => RemoveHandler(DpiChangedEvent, value);
+    }
     public event EventHandler? SystemSettingsChanged;
     public event EventHandler<SessionEndingCancelEventArgs>? SessionEnding;
     public event EventHandler? Shown;
     public event EventHandler? Hiding;
 
-    public bool IsActive => _isActive;
+    public bool IsActive => (bool)(GetValue(IsActiveProperty) ?? false);
 
     #endregion
 
@@ -1111,12 +1143,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     protected virtual void OnLocationChanged(EventArgs e) => LocationChanged?.Invoke(this, e);
     protected virtual void OnClosing(System.ComponentModel.CancelEventArgs e) => Closing?.Invoke(this, e);
     protected virtual void OnClosed(EventArgs e) => Closed?.Invoke(this, e);
-    protected virtual void OnDpiChanged(DpiChangedEventArgs e) => DpiChanged?.Invoke(this, e);
+    protected virtual void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        NotifyDpiChangedRecursive(e.OldDpi, e.NewDpi);
+        e.RoutedEvent = DpiChangedEvent;
+        RaiseEvent(e);
+    }
     protected virtual void OnSizeChanged(SizeChangedEventArgs e) => SizeChanged?.Invoke(this, e);
     protected virtual void OnSystemSettingsChanged(EventArgs e) => SystemSettingsChanged?.Invoke(this, e);
     protected virtual void OnSessionEnding(SessionEndingCancelEventArgs e) => SessionEnding?.Invoke(this, e);
-    protected virtual void OnLoaded(RoutedEventArgs e) => Loaded?.Invoke(this, e);
-    protected virtual void OnUnloaded(RoutedEventArgs e) => Unloaded?.Invoke(this, e);
     protected virtual void OnShown(EventArgs e) => Shown?.Invoke(this, e);
     protected virtual void OnHiding(EventArgs e) => Hiding?.Invoke(this, e);
     protected virtual bool OnPreviewWindowKeyDown(Key key, ModifierKeys modifiers, bool isRepeat) => false;
@@ -1203,7 +1238,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             else
             {
                 _ = ShowWindow(Handle, value == Visibility.Visible
-                    ? (ShowActivated ? SW_SHOW : SW_SHOWNOACTIVATE)
+                    ? (ShowActivated ? SW_SHOW : SW_SHOWNA)
                     : SW_HIDE);
             }
 
@@ -1253,7 +1288,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     #endregion
 
-
     /// <summary>
     /// Gets the title bar control. Only available when TitleBarStyle is Custom.
     /// </summary>
@@ -1262,7 +1296,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private const uint MousePointerId = 1;
     private readonly Dictionary<uint, UIElement?> _activePointerTargets = [];
     private readonly Dictionary<uint, PointerPoint> _lastPointerPoints = [];
-    private readonly Dictionary<uint, PointerStylusDevice> _activeStylusDevices = [];
+    private readonly Dictionary<uint, StylusDevice> _activeStylusDevices = [];
     private readonly Dictionary<uint, PointerManipulationSession> _activeManipulationSessions = [];
     private readonly RealTimeStylus _realTimeStylus;
 
@@ -1287,8 +1321,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     public Window()
     {
         _inputDispatcher = new WindowInputDispatcher(this);
+        _ownedWindowCollection = new Jalium.UI.WindowCollection(() => _ownedWindows);
 
-        if (PlatformFactory.IsWindows)
+        if (PlatformFactory.IsWindows || PlatformFactory.IsLinux)
             DragDropPlatform.EnsureInitialized();
 
         Width = 800;
@@ -1362,15 +1397,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void RemoveTitleBar()
     {
-        if (TitleBar != null)
+        var titleBar = TitleBar;
+        if (titleBar == null)
         {
-            TitleBar.MinimizeClicked -= OnTitleBarMinimizeClicked;
-            TitleBar.MaximizeRestoreClicked -= OnTitleBarMaximizeRestoreClicked;
-            TitleBar.CloseClicked -= OnTitleBarCloseClicked;
-
-            RemoveVisualChild(TitleBar);
-            TitleBar = null;
+            return;
         }
+
+        titleBar.MinimizeClicked -= OnTitleBarMinimizeClicked;
+        titleBar.MaximizeRestoreClicked -= OnTitleBarMaximizeRestoreClicked;
+        titleBar.CloseClicked -= OnTitleBarCloseClicked;
+
+        // Visual.RemoveVisualChild synchronizes DependencyObject's historical public
+        // VisualChildrenCount compatibility field from this Window's virtual count.
+        // Clear the state first so that synchronization no longer counts the title bar
+        // that is being removed; otherwise callers see one phantom child afterwards.
+        TitleBar = null;
+        RemoveVisualChild(titleBar);
     }
 
     private void ApplyTitleBarPresentation()
@@ -1954,7 +1996,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return true;
     }
 
-
     private bool TryGetDwmMaxButtonBounds(out (int left, int top, int right, int bottom) dwmMaxRect)
     {
         dwmMaxRect = default;
@@ -2191,7 +2232,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     #region Visual Children
 
     /// <inheritdoc />
-    public override int VisualChildrenCount
+    protected override int VisualChildrenCount
     {
         get
         {
@@ -2204,7 +2245,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         // Order: ContentElement(s) → TitleBar → AdornerLayer → OverlayLayer
         // (last = rendered on top, hit-tested first). Adorners paint above content but
@@ -2367,8 +2408,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             WindowState.Maximized => SW_MAXIMIZE,
             WindowState.Minimized => SW_MINIMIZE,
-            WindowState.FullScreen => ShowActivated ? SW_SHOW : SW_SHOWNOACTIVATE,
-            _ => ShowActivated ? SW_SHOW : SW_SHOWNOACTIVATE
+            WindowState.FullScreen => ShowActivated ? SW_SHOW : SW_SHOWNA,
+            _ => ShowActivated ? SW_SHOW : SW_SHOWNA
         };
 
         // Restore the desired state in case EnsureHandle's WM_SIZE overwrote it.
@@ -2435,7 +2476,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // (combined with DPI adjustment), so no additional call is needed here.
         // Removing the duplicate saves a DWM roundtrip (~10-50ms).
 
-        OnLoaded(new RoutedEventArgs());
+        SetLoadedState(true);
 
         if (!_contentRendered)
         {
@@ -2444,6 +2485,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         OnShown(EventArgs.Empty);
+
+        if (OperatingSystem.IsLinux())
+            Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowCreated(this);
     }
 
     /// <summary>
@@ -2531,20 +2575,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        // EnsureHandle creates the target before Show() reaches this pre-show
+        // clear, and target creation may already have started the render worker.
+        // Never let this UI-thread Begin/End overlap that worker's replay. Stop
+        // and join it for the one startup frame, then restore normal ownership.
+        bool restartRenderThread = _renderThread != null;
+        if (restartRenderThread && !StopRenderThread())
+        {
+            return;
+        }
+
         try
         {
-            if (!RenderTarget.TryBeginDraw())
+            lock (_renderTargetUseGate)
             {
-                return;
-            }
+                var renderTarget = RenderTarget;
+                if (renderTarget is null || !renderTarget.IsValid || !renderTarget.TryBeginDraw())
+                {
+                    return;
+                }
 
-            try
-            {
-                ClearBackground();
-            }
-            finally
-            {
-                _ = RenderTarget.TryEndDraw();
+                try
+                {
+                    ClearBackground(renderTarget);
+                }
+                finally
+                {
+                    _ = renderTarget.TryEndDraw();
+                }
             }
         }
         catch (RenderPipelineException)
@@ -2554,6 +2612,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // fall through silently.  ShowWindow + the post-show first frame
             // will still paint correctly; user just sees the legacy uninitialized
             // back-buffer for the brief instant before the full first frame.
+        }
+        finally
+        {
+            if (restartRenderThread)
+            {
+                StartRenderThreadIfSupported();
+            }
         }
     }
 
@@ -2781,6 +2846,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// Closes the window.
     /// </summary>
     private bool _isClosing;
+    private readonly object _renderLifecycleGate = new();
+    private int _renderLifecycleGeneration;
+    private bool _managedTeardownStarted;
+    private bool _managedTeardownPending;
+    private nint _pendingTeardownNativeHandle;
+    private bool _pendingTeardownNativeDestroyed;
+    private bool _managedTeardownCompleted;
     private bool _isSyncingWindowState;
     private bool _registeredAsRenderable;
     // Tracks whether the native HWND has been driven to a hidden state
@@ -2824,7 +2896,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     public virtual void Close()
     {
-        if (_isClosing) return;
+        if (_isClosing || _managedTeardownCompleted) return;
         _isClosing = true;
 
         // Exit modal loop if ShowDialog is waiting
@@ -2846,7 +2918,70 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        CompleteManagedTeardown(nativeHandle: Handle, nativeDestroyed: false);
+    }
+
+    /// <summary>
+    /// Completes the managed half of window destruction. This path is shared by
+    /// <see cref="Close"/> and WM_DESTROY so an HWND destroyed outside Close still
+    /// releases every renderer-owned resource. When <paramref name="nativeDestroyed"/>
+    /// is true, the native handle is already gone and must never be destroyed again.
+    /// </summary>
+    private void CompleteManagedTeardown(nint nativeHandle, bool nativeDestroyed)
+    {
+        nint effectiveNativeHandle;
+        bool effectiveNativeDestroyed;
+        lock (_renderLifecycleGate)
+        {
+            if (_managedTeardownCompleted)
+            {
+                return;
+            }
+
+            if (!_managedTeardownStarted)
+            {
+                _managedTeardownStarted = true;
+                unchecked { _renderLifecycleGeneration++; }
+            }
+
+            _isClosing = true;
+            _isModal = false;
+            if (nativeHandle != nint.Zero)
+            {
+                _pendingTeardownNativeHandle = nativeHandle;
+            }
+            _pendingTeardownNativeDestroyed |= nativeDestroyed;
+
+            // User layout/render callbacks can close the window re-entrantly.
+            // Invalidate their lifecycle token now, but defer native resource
+            // release until RenderFrame's finally block has ended any draw.
+            if (HasRenderFlag(RenderFlag_Rendering))
+            {
+                _managedTeardownPending = true;
+                return;
+            }
+
+            _managedTeardownPending = false;
+            _managedTeardownCompleted = true;
+            effectiveNativeHandle = _pendingTeardownNativeHandle;
+            effectiveNativeDestroyed = _pendingTeardownNativeDestroyed;
+        }
+
+        CompleteManagedTeardownCore(effectiveNativeHandle, effectiveNativeDestroyed);
+    }
+
+    private void CompleteManagedTeardownCore(nint nativeHandle, bool nativeDestroyed)
+    {
+
+        CompositionTarget.FrameStarting -= OnFrameStarting;
+        UpdateRenderableRegistration();
+
         StopRenderRecoveryRetry();
+
+        var throttleTimer = Interlocked.Exchange(ref _renderThrottleTimer, null);
+        try { throttleTimer?.Dispose(); }
+        catch { /* queued callbacks also observe _isClosing */ }
+        ClearRenderFlag(RenderFlag_Scheduled | RenderFlag_Requested | RenderFlag_DirtyBetween);
 
         if (ActiveContentDialog != null)
         {
@@ -2877,35 +3012,44 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Stop the render thread FIRST — it owns _drawingContext + RenderTarget and
         // must be joined before either is cleared/disposed below (else use-after-free
         // on the swap chain / drawing context mid-present).
-        StopRenderThread();
+        bool renderThreadStopped = StopRenderThread();
+        if (renderThreadStopped)
+        {
+            ReleaseRenderResourcesAfterRenderThreadStopped();
+        }
+        else if (_renderThread is { } stalledRenderThread)
+        {
+            // A present/TDR can exceed the bounded UI-thread join. Keep the
+            // swap chain alive and retain the Thread reference until it really
+            // exits; freeing it while that thread is native is a use-after-free.
+            ScheduleDeferredRenderResourceRelease(stalledRenderThread);
+        }
 
-        // Release large image resources before dropping the drawing context reference.
-        // Avoid full ClearCache() here because text/brush teardown order can still be sensitive
-        // during process shutdown.
-        _drawingContext?.ClearBitmapCache();
-        _drawingContext = null;
+        var managedHandle = Handle;
+        Handle = nint.Zero;
 
-        // Stop the pacer thread before disposing the render target — the
-        // waitable HANDLE belongs to the swap chain and is closed during
-        // RenderTarget.Dispose, so the pacer must already be off the wait.
-        StopFramePacer();
-        // Same HANDLE-lifetime rule for the external-pacing registered wait:
-        // unregister before the swap chain closes the waitable.
-        StopExternalPresentPacing();
+        if (managedHandle != nint.Zero)
+        {
+            _windows.Remove(managedHandle);
+        }
+        if (nativeHandle != nint.Zero && nativeHandle != managedHandle)
+        {
+            _windows.Remove(nativeHandle);
+        }
 
-        // Dispose render target
-        RenderTarget?.Dispose();
-        RenderTarget = null;
-
-        if (Handle != nint.Zero)
+        var handleToRelease = nativeHandle != nint.Zero ? nativeHandle : managedHandle;
+        if (handleToRelease != nint.Zero)
         {
             if (PlatformFactory.IsWindows)
-                OleDropTarget.RevokeWindow(this);
+                OleDropTarget.RevokeWindow(handleToRelease, nativeWindowAlive: !nativeDestroyed);
+            else if (PlatformFactory.IsLinux)
+                LinuxDropTarget.RevokeWindow(this);
+        }
 
-            var handle = Handle;
-            Handle = nint.Zero;
-            // Remove from window map and destroy
-            _windows.Remove(handle);
+        if (handleToRelease != nint.Zero && !nativeDestroyed)
+        {
+            if (OperatingSystem.IsLinux())
+                Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowDestroyed(this);
 
             if (_platformWindow != null)
             {
@@ -2915,7 +3059,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
             else
             {
-                _ = DestroyWindow(handle);
+                _ = DestroyWindow(handleToRelease);
             }
 
             // Let Application decide whether to shut down based on ShutdownMode
@@ -2934,11 +3078,65 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         OnClosed(EventArgs.Empty);
-        OnUnloaded(new RoutedEventArgs());
+        SetLoadedState(false);
 
         // Tear down the RTS background thread so it doesn't outlive the window.
         try { _realTimeStylus?.Dispose(); }
         catch { /* never let teardown failures escape Close */ }
+    }
+
+    private void CompletePendingManagedTeardown()
+    {
+        nint nativeHandle;
+        bool nativeDestroyed;
+        lock (_renderLifecycleGate)
+        {
+            if (!_managedTeardownPending || _managedTeardownCompleted ||
+                HasRenderFlag(RenderFlag_Rendering))
+            {
+                return;
+            }
+
+            nativeHandle = _pendingTeardownNativeHandle;
+            nativeDestroyed = _pendingTeardownNativeDestroyed;
+        }
+
+        CompleteManagedTeardown(nativeHandle, nativeDestroyed);
+    }
+
+    private bool IsRenderLifecycleCurrent(int generation, RenderTarget? target = null)
+    {
+        if (_managedTeardownStarted || _isClosing ||
+            generation != Volatile.Read(ref _renderLifecycleGeneration))
+        {
+            return false;
+        }
+
+        return target == null ||
+            (ReferenceEquals(RenderTarget, target) && target.IsValid);
+    }
+
+    private bool AbortRenderFrameIfLifecycleChanged(int generation, RenderTarget target)
+    {
+        if (IsRenderLifecycleCurrent(generation, target))
+        {
+            return false;
+        }
+
+        // Teardown is deferred while RenderFlag_Rendering is held, so this
+        // target is still alive. Close its draw session before RenderFrame's
+        // finally block releases the lifecycle flag and drains teardown.
+        if (target.IsDrawing)
+        {
+            try { _ = target.TryEndDraw(); }
+            catch { }
+        }
+        return true;
+    }
+
+    private void OnNativeDestroyed(nint nativeHandle)
+    {
+        CompleteManagedTeardown(nativeHandle, nativeDestroyed: true);
     }
 
     private void ApplyLayeredWindowOpacity(double opacity)
@@ -3210,6 +3408,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         // Initialize platform if needed
         PlatformFactory.InitializePlatform();
+        Dispatcher.EnsureNativeWake();
 
         // Map window style
         uint style = 0;
@@ -3316,6 +3515,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 break;
 
             case PlatformEventType.Destroyed:
+                if (OperatingSystem.IsLinux())
+                    Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowDestroyed(this);
                 _ = _windows.Remove(Handle);
                 // External destruction (system shutdown / native teardown) may
                 // skip Close() — make sure we still pull out of the renderable
@@ -3333,11 +3534,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 break;
 
             case PlatformEventType.FocusGained:
-                OnActivated(EventArgs.Empty);
+                if (!IsActive)
+                {
+                    SetIsActive(true);
+                    OnActivated(EventArgs.Empty);
+                }
+                Application.Current?.SetPlatformActivationState(true);
+                if (OperatingSystem.IsLinux())
+                    Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowActivated(this, active: true);
                 break;
 
             case PlatformEventType.FocusLost:
-                OnDeactivated(EventArgs.Empty);
+                if (IsActive)
+                {
+                    SetIsActive(false);
+                    OnDeactivated(EventArgs.Empty);
+                }
+                Application.Current?.SetPlatformActivationState(false);
+                if (OperatingSystem.IsLinux())
+                    Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowActivated(this, active: false);
                 _inputDispatcher.ClearMousePressedChain();
                 break;
 
@@ -3379,7 +3594,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.KeyDown:
             {
-                Key key = (Key)evt.KeyCode;
+                Key key = KeyInterop.KeyFromVirtualKey(evt.KeyCode);
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
                 bool isRepeat = evt.IsRepeat != 0;
                 _inputDispatcher.HandleKeyDown(key, modifiers, isRepeat, Environment.TickCount);
@@ -3388,7 +3603,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.KeyUp:
             {
-                Key key = (Key)evt.KeyCode;
+                Key key = KeyInterop.KeyFromVirtualKey(evt.KeyCode);
                 var modifiers = MapPlatformModifiers(evt.Modifiers);
                 _inputDispatcher.HandleKeyUp(key, modifiers, Environment.TickCount);
                 break;
@@ -3396,10 +3611,31 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.CharInput:
             {
-                if (evt.Codepoint >= 0x20 && evt.Codepoint != 0x7F)
-                {
-                    _inputDispatcher.HandleCharInput(((char)evt.Codepoint).ToString(), Environment.TickCount);
-                }
+                string? text = NativePlatformWindow.CodepointToText(evt.Codepoint);
+                if (text != null)
+                    _inputDispatcher.HandleCharInput(text, Environment.TickCount);
+                break;
+            }
+
+            case PlatformEventType.CompositionStart:
+                if (!InputMethod.IsComposing)
+                    InputMethod.StartComposition();
+                break;
+
+            case PlatformEventType.CompositionUpdate:
+                if (!InputMethod.IsComposing)
+                    InputMethod.StartComposition();
+                InputMethod.UpdateComposition(
+                    evt.CompositionText ?? string.Empty,
+                    Math.Max(0, evt.CompositionCursor));
+                break;
+
+            case PlatformEventType.CompositionEnd:
+            {
+                string result = evt.CompositionText ?? string.Empty;
+                InputMethod.EndComposition(result.Length == 0 ? null : result);
+                if (result.Length != 0)
+                    _inputDispatcher.HandleCharInput(result, Environment.TickCount);
                 break;
             }
 
@@ -3543,6 +3779,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 break;
             }
+
+            case PlatformEventType.DragEnter:
+            case PlatformEventType.DragOver:
+            case PlatformEventType.DragLeave:
+            case PlatformEventType.Drop:
+            case PlatformEventType.DragFinished:
+                LinuxDropTarget.ProcessEvent(this, evt);
+                break;
 
             case PlatformEventType.Quit:
                 Application.Current?.Shutdown();
@@ -3811,7 +4055,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var touchDevice = Touch.GetDevice((int)evt.PointerId);
                 if (touchDevice != null)
                 {
-                    touchDevice.Deactivate();
+                    touchDevice.DeactivateForManager();
                     Touch.UnregisterTouchPoint((int)evt.PointerId);
                 }
                 _activeStylusDevices.Remove(evt.PointerId);
@@ -4465,7 +4709,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // render thread (StartRenderThreadIfSupported refuses composition), so
             // a window transitioning to composition must stop+join the render
             // thread BEFORE disposing the RenderTarget it owns.
-            StopRenderThread();
+            if (!StopRenderThread())
+            {
+                return false;
+            }
 
             var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
 
@@ -4477,9 +4724,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // from before the transition stays on screen permanently.
             // Nulling the render target first causes the intermediate RenderFrame
             // to early-return (RenderTarget == null check at the top).
-            var oldDrawingContext = _drawingContext;
-            _drawingContext = null;
-            oldDrawingContext?.ClearCache();
+            ReleaseDrawingContextBeforeRenderTargetDisposal(clearAllCaches: true);
 
             var oldRenderTarget = RenderTarget;
             RenderTarget = null;
@@ -4929,18 +5174,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         var element = HitTestElement(clientPos, "cursor");
 
         // Walk up the visual tree to find the first element with a non-null Cursor
-        var cursor = ResolveCursor(element);
+        var cursor = Mouse.OverrideCursor ?? ResolveCursor(element);
 
         // Set the cursor
-        nint cursorHandle;
-        if (cursor != null)
-        {
-            cursorHandle = GetCursorHandle(cursor.CursorType);
-        }
-        else
-        {
-            cursorHandle = GetCursorHandle(CursorType.Arrow);
-        }
+        Cursor effectiveCursor = cursor ?? Cursors.Arrow;
+        Mouse.SetCursor(effectiveCursor);
+        nint cursorHandle = GetCursorHandle(effectiveCursor.CursorType);
 
         if (cursorHandle != nint.Zero)
         {
@@ -4963,9 +5202,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         while (element != null)
         {
-            if (element is FrameworkElement fe && fe.Cursor != null)
+            if (element is FrameworkElement fe)
             {
-                return fe.Cursor;
+                return FrameworkElement.ResolveEffectiveCursor(fe);
             }
 
             element = element.VisualParent as UIElement;
@@ -5244,7 +5483,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfComInteropCannotBeGuaranteed",
-        Justification = "The WM_GETOBJECT path passes an IRawElementProviderSimple to the UiaReturnRawElementProvider P/Invoke for native UIA interop. That COM interface is preserved by the <type fullname=\"Jalium.UI.Controls.Automation.Uia.IRawElementProviderSimple\" preserve=\"all\" /> entry in Jalium.UI.Controls/ILLink.Descriptors.xml (as documented on UiaNativeMethods), so the trimmer keeps the vtable members the runtime calls through this P/Invoke.")]
+        Justification = "The WM_GETOBJECT path passes an IRawElementProviderSimple to the UiaReturnRawElementProvider P/Invoke for native UIA interop. That COM interface is preserved by the <type fullname=\"Jalium.UI.Controls.Automation.Uia.IRawElementProviderSimple\" preserve=\"all\" /> entry in Jalium.UI.Managed/ILLink.Descriptors.xml (as documented on UiaNativeMethods), so the trimmer keeps the vtable members the runtime calls through this P/Invoke.")]
     private nint WndProcCore(nint hWnd, uint msg, nint wParam, nint lParam)
     {
         Window? window = null;
@@ -5357,15 +5596,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     return nint.Zero;
 
                 case WM_DESTROY:
-                    // Just clean up the window map; quit logic is handled by
-                    // Close() 鈫?Application.OnWindowClosed() based on ShutdownMode.
-                    // Do NOT call PostQuitMessage here 鈥?it would kill the app
-                    // when closing any window in a multi-window scenario.
-                    _ = _windows.Remove(hWnd);
-                    // External destruction can bypass Close(); make sure the
-                    // window leaves the renderable-count census even then.
-                    window._isClosing = true;
-                    window.UpdateRenderableRegistration();
+                    Automation.Uia.UiaAccessibilityBridge.NotifyWindowDestroyed(hWnd);
+                    // Native destruction can bypass Close. Release the same managed
+                    // resources, but do not recursively destroy the HWND or post quit.
+                    window.OnNativeDestroyed(hWnd);
                     return nint.Zero;
 
                 case WM_NCCALCSIZE:
@@ -5767,7 +6001,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         break;
                     }
 
-                    bool keyDownHandled = window.OnKeyDown(wParam, lParam);
+                    bool keyDownHandled = window.OnNativeKeyDown(wParam, lParam);
                     if (keyDownHandled || hWnd == nint.Zero)
                     {
                         return nint.Zero;
@@ -5780,7 +6014,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         break;
                     }
 
-                    bool keyUpHandled = window.OnKeyUp(wParam, lParam);
+                    bool keyUpHandled = window.OnNativeKeyUp(wParam, lParam);
                     if (keyUpHandled || hWnd == nint.Zero)
                     {
                         return nint.Zero;
@@ -5788,7 +6022,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     break;
 
                 case WM_SYSKEYDOWN:
-                    bool sysKeyDownHandled = window.OnKeyDown(wParam, lParam);
+                    bool sysKeyDownHandled = window.OnNativeKeyDown(wParam, lParam);
                     if (sysKeyDownHandled || hWnd == nint.Zero)
                     {
                         return nint.Zero;
@@ -5796,7 +6030,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     break;
 
                 case WM_SYSKEYUP:
-                    bool sysKeyUpHandled = window.OnKeyUp(wParam, lParam);
+                    bool sysKeyUpHandled = window.OnNativeKeyUp(wParam, lParam);
                     if (sysKeyUpHandled || hWnd == nint.Zero)
                     {
                         return nint.Zero;
@@ -5947,6 +6181,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     window.OnActivateChanged(activateState, lParam);
                     break;
 
+                case WM_ACTIVATEAPP:
+                    // Unlike WM_ACTIVATE, this is process-wide. Every top-level HWND receives
+                    // it, and Application de-duplicates those identical notifications.
+                    Application.Current?.SetPlatformActivationState(wParam != nint.Zero);
+                    break;
+
                 case WM_SETFOCUS:
                     window.OnSetFocus();
                     // Notify UIA that this window received focus so Narrator can announce it.
@@ -5962,7 +6202,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         {
                             var focusPeer = window.GetAutomationPeer();
                             if (focusPeer != null)
-                                Jalium.UI.Automation.AutomationPeer.EventSink?.OnFocusChanged(focusPeer);
+                                Jalium.UI.Automation.Peers.AutomationPeer.EventSink?.OnFocusChanged(focusPeer);
                         });
                     }
                     break;
@@ -6256,20 +6496,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         _renderRecoveryInProgress = true;
-        // FIX #2/#5: park the render thread before disposing/recreating the
-        // RenderTarget it owns. If it can't park in time (a hung present during the
-        // device-removed/TDR stall that triggers recovery), do NOT dispose the RT
-        // under an in-flight present — resume and reschedule recovery.
-        if (!RequestRenderThreadIdle())
+        // A recovered target must start with a fresh render worker and drawing
+        // context. Joining the old worker is stronger than merely parking it:
+        // after this point it cannot resume and touch either the retired target
+        // or a newly-created drawing context.
+        if (!StopRenderThread())
         {
-            ResumeRenderThread();
             _renderRecoveryInProgress = false;
             ScheduleRenderRecoveryRetry(escalateBackoff: false);
             return false;
         }
 
+        bool recovered = false;
         try
         {
+            // A capture recorded before the device-loss boundary can contain
+            // retained-layer/effect commands whose native handles belong to the
+            // failed context. The render thread is parked and this callback runs
+            // on the publishing (UI) thread, so discard that queued capture before
+            // retiring the old target. Recovery already requests a full repaint;
+            // the next capture is rebuilt entirely against the replacement device.
+            lock (_rtChannelLock) { _rtPendingFrame = null; }
+
             RenderBackend failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
             if (failedBackend == RenderBackend.Auto &&
                 Enum.TryParse<RenderBackend>(exception.Backend, ignoreCase: true, out var parsedBackend))
@@ -6286,10 +6534,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // draining later would destroy the handles on the NEW target whose
             // backend pointer they don't belong to.
             Visual.ReleaseRetainedLayersRecursive(this);
-            _drawingContext?.DrainPendingRetainedLayers();
-
-            _drawingContext?.ClearCache();
-            _drawingContext = null;
+            ReleaseDrawingContextBeforeRenderTargetDisposal(clearAllCaches: true);
 
             // The registered swap wait targets the waitable HANDLE that
             // RenderTarget.Dispose is about to close — unregister first
@@ -6326,6 +6571,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             InvalidateMeasure();
             ScheduleRenderRecoveryRetry(escalateBackoff: false);
+            recovered = true;
             return true;
         }
         catch (RenderPipelineException recoveryException) when (IsRecoverableRenderPipelineException(recoveryException))
@@ -6340,8 +6586,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         finally
         {
-            ResumeRenderThread();
             _renderRecoveryInProgress = false;
+            if (recovered)
+            {
+                StartRenderThreadIfSupported();
+            }
         }
     }
 
@@ -6356,29 +6605,27 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         _renderRecoveryInProgress = true;
-        // FIX #2/#5: park the render thread before disposing/recreating the
-        // RenderTarget it owns. If it can't park in time (a hung present during the
-        // device-removed/TDR stall that triggers recovery), do NOT dispose the RT
-        // under an in-flight present — resume and reschedule recovery.
-        if (!RequestRenderThreadIdle())
+        // Same stop-and-join ownership boundary as the exception overload.
+        if (!StopRenderThread())
         {
-            ResumeRenderThread();
             _renderRecoveryInProgress = false;
             ScheduleRenderRecoveryRetry(escalateBackoff: false);
             return false;
         }
 
+        bool recovered = false;
         try
         {
+            // See the exception overload above: no pre-recovery command stream
+            // may be replayed after its creating device has been retired.
+            lock (_rtChannelLock) { _rtPendingFrame = null; }
+
             RenderBackend failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
 
             // Evict + drain retained layers on the OLD target before disposing
             // it (same rule as the exception-typed recovery overload above).
             Visual.ReleaseRetainedLayersRecursive(this);
-            _drawingContext?.DrainPendingRetainedLayers();
-
-            _drawingContext?.ClearCache();
-            _drawingContext = null;
+            ReleaseDrawingContextBeforeRenderTargetDisposal(clearAllCaches: true);
 
             // Unregister the swap wait before Dispose closes its HANDLE
             // (same rule as the exception-typed recovery overload above).
@@ -6414,6 +6661,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             InvalidateMeasure();
             ScheduleRenderRecoveryRetry(escalateBackoff: false);
+            recovered = true;
             return true;
         }
         catch (RenderPipelineException recoveryException) when (IsRecoverableRenderPipelineException(recoveryException))
@@ -6428,8 +6676,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         finally
         {
-            ResumeRenderThread();
             _renderRecoveryInProgress = false;
+            if (recovered)
+            {
+                StartRenderThreadIfSupported();
+            }
         }
     }
 
@@ -6444,6 +6695,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             _dispatcher.BeginInvokeCritical(ProcessRender);
         }
+    }
+
+    /// <summary>
+    /// Replays a frame that the native backend intentionally abandoned while its
+    /// device is still healthy. InvalidState at End means the command list/frame
+    /// was already closed or aborted (for example by a serialized resize); it is
+    /// not evidence that the render target or device must be rebuilt.
+    /// </summary>
+    private void ScheduleDroppedFrameRetry()
+    {
+        RequestFullInvalidation();
+        ScheduleRenderAfterRecovery();
     }
 
     private void MarkRecoverableRenderFailure()
@@ -6790,6 +7053,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return false;
         }
 
+        if (endResult == JaliumResult.InvalidState)
+        {
+            // The native frame has already been aborted/closed. Preserve the
+            // same render target and retry a full frame; recreating it here turns
+            // a transient command-state collision into an observable recovery.
+            ScheduleDroppedFrameRetry();
+            return false;
+        }
+
         if (IsRecoverableRenderPipelineFailure(endResult, "End"))
         {
             lock (_dirtyLock)
@@ -6922,7 +7194,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     { _debugHud.OnProcessRender();
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.PR);
         ClearRenderFlag(RenderFlag_Scheduled);
-        if (Handle == nint.Zero) return;
+        if (_isClosing || Handle == nint.Zero) return;
 
         // Dispose any pending throttle timer from a previous rate-limit cycle.
         var throttleTimer = _renderThrottleTimer;
@@ -6941,7 +7213,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void ScheduleDeferredRender(int delayMs)
     {
-        if (Handle == nint.Zero || _dispatcher == null)
+        if (_isClosing || Handle == nint.Zero || _dispatcher == null)
         {
             return;
         }
@@ -6968,6 +7240,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // frame is already queued and this retry's purpose is served.
         var deferredTimer = new Timer(_ =>
         {
+            if (_isClosing || Handle == nint.Zero)
+            {
+                return;
+            }
+
             if (TrySetRenderFlag(RenderFlag_Scheduled))
             {
                 _dispatcher?.BeginInvokeCritical(ProcessRender);
@@ -7070,9 +7347,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // (no dirty-rect partial present): on iGPU the present cost is dominated by the
     // DWM flip release regardless of dirty area, so full-frame is the simpler, safe
     // path. DComp/composition windows fall back to the inline same-thread path.
-    private sealed class FrameCapture { public object Drawing = null!; }
+    private sealed class FrameCapture
+    {
+        public object Drawing = null!;
+        public RenderTarget Target = null!;
+        public RenderContext? OwnerContext;
+        public int ContextGeneration;
+        public int LifecycleGeneration;
+    }
 
     private Thread? _renderThread;
+    private int _deferredRenderResourceReleaseScheduled;
     private volatile bool _renderThreadStop;
     private readonly object _rtChannelLock = new();
     private FrameCapture? _rtPendingFrame;
@@ -7082,6 +7367,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private volatile bool _rtActive;
     private volatile bool _rtBusy;   // render thread is mid BeginDraw..EndDraw (back-pressure gate)
     private bool _renderThreadDisabledForSchemaGap;  // latched after un-recordable content; do not resurrect the render thread on RT recreate
+    // Serializes every direct native draw session that can run outside the UI
+    // render lifecycle. In particular, the pre-show background frame and the
+    // dedicated render worker must never record into the same command list.
+    private readonly object _renderTargetUseGate = new();
 
     private void StartRenderThreadIfSupported()
     {
@@ -7115,9 +7404,117 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // TDR stall (well beyond steady state). Cover the ~2s Windows TDR window so a
         // caller doesn't dispose the RenderTarget out from under an in-flight present.
         bool joined = t.Join(2000);
-        _renderThread = null;
+        if (!joined)
+        {
+            // Retain the Thread reference. Callers must defer every resource
+            // owned by it rather than pretending the timed-out join succeeded.
+            return false;
+        }
+
+        _ = Interlocked.CompareExchange(ref _renderThread, null, t);
         lock (_rtChannelLock) { _rtPendingFrame = null; }
-        return joined;
+        return true;
+    }
+
+    private bool TryCompleteRenderThreadSchemaFallback()
+    {
+        if (!StopRenderThread())
+        {
+            // The worker has been asked to exit but is still inside native code.
+            // Keep the UI out of the inline path and do not arm another wait on
+            // this target until a later retry can join the worker conclusively.
+            RequestFullInvalidation();
+            return false;
+        }
+
+        StartExternalPresentPacingIfSupported();
+        return true;
+    }
+
+    /// <summary>
+    /// Detaches the drawing context while its render target/backend are still
+    /// alive. The ordering is intentional: pending retained handles are drained,
+    /// the static GPU-eviction subscription is removed, and only then are cached
+    /// native resources released. Callers may dispose the RenderTarget after this
+    /// method returns.
+    /// </summary>
+    private void ReleaseDrawingContextBeforeRenderTargetDisposal(bool clearAllCaches)
+    {
+        var drawingContext = _drawingContext;
+        _drawingContext = null;
+        if (drawingContext == null)
+        {
+            return;
+        }
+
+        try
+        {
+            drawingContext.DrainPendingRetainedLayers();
+        }
+        finally
+        {
+            // Close is the ownership boundary, not a cache operation: it removes
+            // ImageSource.GpuCacheEvictionRequested's static delegate, which would
+            // otherwise root this context together with its retired RT/Context.
+            drawingContext.Close();
+            if (clearAllCaches)
+            {
+                drawingContext.ClearCache();
+            }
+            else
+            {
+                drawingContext.ClearBitmapCache();
+            }
+        }
+    }
+
+    private void ReleaseRenderResourcesAfterRenderThreadStopped()
+    {
+        // Release large image resources before dropping the drawing context.
+        // Avoid full ClearCache during shutdown because text/brush ordering is
+        // still sensitive.
+        try { ReleaseDrawingContextBeforeRenderTargetDisposal(clearAllCaches: false); }
+        catch { /* shutdown cleanup is best effort */ }
+
+        // Both waiters borrow HANDLEs owned by the swap chain and must be gone
+        // before RenderTarget.Dispose closes those handles.
+        StopFramePacer();
+        StopExternalPresentPacing();
+
+        var renderTarget = RenderTarget;
+        RenderTarget = null;
+        try { renderTarget?.Dispose(); }
+        catch { /* never surface deferred/native teardown failures */ }
+    }
+
+    private void ScheduleDeferredRenderResourceRelease(Thread stalledRenderThread)
+    {
+        if (Interlocked.Exchange(ref _deferredRenderResourceReleaseScheduled, 1) != 0)
+        {
+            return;
+        }
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                // No timeout here: if the native present never returns, leaking
+                // the still-in-use target is safer than freeing it underneath
+                // the live render thread.
+                stalledRenderThread.Join();
+                if (Interlocked.CompareExchange(
+                        ref _renderThread, null, stalledRenderThread) == stalledRenderThread)
+                {
+                    lock (_rtChannelLock) { _rtPendingFrame = null; }
+                    ReleaseRenderResourcesAfterRenderThreadStopped();
+                }
+            }
+            catch
+            {
+                // Process shutdown / thread teardown: retain resources rather
+                // than risk releasing them while ownership is uncertain.
+            }
+        });
     }
 
     // Park the render thread (provably out of BeginDraw..EndDraw) so the UI thread
@@ -7173,15 +7570,33 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void PresentCaptureOnRenderThread(FrameCapture cap)
     {
-        var rt = RenderTarget;
-        if (rt == null || !rt.IsValid) return;
+        lock (_renderTargetUseGate)
+        {
+            PresentCaptureOnRenderThreadCore(cap);
+        }
+    }
+
+    private void PresentCaptureOnRenderThreadCore(FrameCapture cap)
+    {
+        var rt = cap.Target;
+        if (!IsRenderLifecycleCurrent(cap.LifecycleGeneration, rt) ||
+            !ReferenceEquals(rt.OwnerContext, cap.OwnerContext) ||
+            !rt.IsValid ||
+            rt.OwnerContextGeneration != cap.ContextGeneration)
+        {
+            return;
+        }
         var host = Visual.RenderCacheHost;
         if (host == null) return;
 
         // The render thread EXCLUSIVELY owns _drawingContext on this path (the UI
         // thread no longer touches it — see RenderFrame). Create + maintain it here
         // so the brush-cache trim and Replay run on a single thread.
-        var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+        // A global Current lookup is not an ownership proof: another window can
+        // replace it while this target remains pinned to its creating backend.
+        // Every cache/resource created for replay must use the target's owner.
+        var context = rt.OwnerContext;
+        if (context == null || !context.IsValid) return;
         var dc = _drawingContext ??= new RenderTargetDrawingContext(rt, context);
         // backdrop/LiquidGlass（snapshot/背景折射型 effect）在拖拽中仍降级回扁平 overlay：
         // 其背景 snapshot 滞后于 in-flight 的 resize back buffer，真折射会采到错位的屏幕区域
@@ -7210,10 +7625,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         bool ended = false;
         try
         {
-            ClearBackground();
+            ClearBackground(rt);
             dc.Offset = Point.Zero;
             host.Replay(cap.Drawing, dc);
+            if (!IsRenderLifecycleCurrent(cap.LifecycleGeneration, rt) ||
+                !ReferenceEquals(rt.OwnerContext, cap.OwnerContext))
+            {
+                return;
+            }
             OnRender(rt);
+            if (!IsRenderLifecycleCurrent(cap.LifecycleGeneration, rt) ||
+                !ReferenceEquals(rt.OwnerContext, cap.OwnerContext))
+            {
+                return;
+            }
             JaliumResult endResult = rt.TryEndDraw();   // non-throwing; Ok or failure result
             ended = endResult == JaliumResult.Ok;
             if (ended && _consecutiveRecoverableRenderFailures != 0)
@@ -7226,7 +7651,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // fine: a missed reset is retried on the next presented frame.
                 _dispatcher?.BeginInvokeCritical(ResetRenderRecoveryBackoff);
             }
-            if (!ended && IsRecoverableRenderPipelineFailure(endResult, "End"))
+            if (!ended && endResult == JaliumResult.InvalidState)
+            {
+                // End/InvalidState is a dropped frame on a healthy device, not a
+                // device-loss incident. Requeue a full capture on the SAME target;
+                // do not touch the recovery latch/backoff or rebuild the RT.
+                ScheduleDroppedFrameRetry();
+            }
+            else if (!ended && IsRecoverableRenderPipelineFailure(endResult, "End"))
             {
                 // Surface device loss to the UI thread NOW instead of waiting
                 // for the next frame's TryBeginDraw to throw — saves a frame of
@@ -7265,7 +7697,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void MarshalRenderRecovery(RenderPipelineException ex)
     {
-        if (Interlocked.CompareExchange(ref _recoveryMarshalPending, 1, 0) != 0)
+        int alreadyPending = Interlocked.CompareExchange(ref _recoveryMarshalPending, 1, 0);
+        if (alreadyPending != 0)
         {
             return; // a recovery for this incident is already queued — coalesce
         }
@@ -7302,8 +7735,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // UI thread: record the whole tree into a Drawing and hand it to the render
     // thread (overwriting any un-consumed pending frame = latest-frame-wins), then
     // return immediately. Never blocks on the present.
-    private void PublishFrameToRenderThread()
+    private void PublishFrameToRenderThread(int lifecycleGeneration, RenderTarget renderTarget)
     {
+        if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return;
+
         // Back-pressure (FIX): if the render thread is still presenting the
         // previous frame and a capture is already queued, skip recording this tick
         // — the expensive Render walk would only overwrite the unconsumed pending
@@ -7325,12 +7760,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // JOIN the render thread (FIX: don't leave it alive owning the RT while
             // the UI thread resumes ownership).
             _renderThreadDisabledForSchemaGap = true;
-            StopRenderThread();
+            _ = TryCompleteRenderThreadSchemaFallback();
             // The window now lives on the inline path permanently — hand present
             // pacing to the event-driven scheduler it would otherwise have missed
             // (StartRenderThreadIfSupported won't resurrect the thread: the latch
             // blocks it), so a slow compositor can't pin the UI thread here either.
-            StartExternalPresentPacingIfSupported();
             ScheduleDeferredRender(1);
             return;
         }
@@ -7347,6 +7781,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             drawing = host.FinishRecord(recorder);
         }
 
+        // Render(recorder) walks user-extensible visuals. A callback can close
+        // or externally destroy the window; never publish that stale capture to
+        // the render thread after its lifecycle token has been invalidated.
+        if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget)) return;
+
         // schema-gap (render-thread path): the capture hit content it can't
         // represent (windowless WebView punch, video surface, ink-layer blit, …).
         // Don't publish a lossy frame — permanently fall back to the inline UI
@@ -7356,18 +7795,45 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (drawing is Jalium.UI.Media.Rendering.Drawing d && !d.IsFullyRecordable)
         {
             _renderThreadDisabledForSchemaGap = true;
-            StopRenderThread();          // drains + joins; sets _rtActive = false
+            _ = TryCompleteRenderThreadSchemaFallback();
             // Same as the host-null latch above: the inline path this window
             // falls back to gets event-driven present pacing.
-            StartExternalPresentPacingIfSupported();
             ScheduleDeferredRender(1);   // repaint inline (dirty intact)
             return;
         }
 
-        lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
+        var cap = new FrameCapture
+        {
+            Drawing = drawing,
+            Target = renderTarget,
+            OwnerContext = renderTarget.OwnerContext,
+            ContextGeneration = renderTarget.OwnerContextGeneration,
+            LifecycleGeneration = lifecycleGeneration,
+        };
 
-        var cap = new FrameCapture { Drawing = drawing };
-        lock (_rtChannelLock) { _rtPendingFrame = cap; }
+        // Publish and consume dirty state as one lifecycle transaction. If
+        // teardown, recovery, or schema fallback won the race after recording,
+        // leave dirty intact and never expose this stale capture to the worker.
+        lock (_renderLifecycleGate)
+        {
+            if (!IsRenderLifecycleCurrent(lifecycleGeneration, renderTarget) ||
+                !_rtActive || _renderThread == null || _renderThreadStop ||
+                !ReferenceEquals(renderTarget.OwnerContext, cap.OwnerContext))
+            {
+                return;
+            }
+
+            lock (_rtChannelLock)
+            {
+                _rtPendingFrame = cap;
+                lock (_dirtyLock)
+                {
+                    _dirtyElements.Clear();
+                    _dirtyFreeRects.Clear();
+                    _fullInvalidation = false;
+                }
+            }
+        }
         _rtFrameAvailable?.Set();
     }
 
@@ -7807,27 +8273,82 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void RenderFrame()
     { _debugHud.OnRenderFrame();
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.RF);
-        if (HasRenderFlag(RenderFlag_Rendering)) return;
-        // A swap-chain resize is mid-flight (native ResizeBuffers can pump a
-        // reentrant WM_PAINT through the kernel callback). Beginning a frame now
-        // would draw into buffers that are being recreated → AccessViolation.
-        // Skip this frame; a render is already scheduled to run once the resize
-        // finishes (TryResizeRenderTarget/FlushPendingRenderTargetResize call
-        // RequestFullInvalidation).
-        if (_resizeInProgress) return;
-        // Same rationale as ProcessRender: DWM ignores presents to a minimized
-        // window. The early-out here is defence-in-depth for callers that
-        // bypass ProcessRender (WM_PAINT, ForceRenderFrame on a stale
-        // ShowWindow → minimize race, etc.).
-        if (WindowState == WindowState.Minimized) return;
-        SetRenderFlag(RenderFlag_Rendering);
-        ClearRenderFlag(RenderFlag_Requested);
+        int frameLifecycleGeneration;
+        lock (_renderLifecycleGate)
+        {
+            // A zero HWND does not by itself mean the managed render lifecycle
+            // has ended. ForceRenderFrame supports an explicitly supplied render
+            // target for offline/test rendering before a native window is shown.
+            // Close/WM_DESTROY both invalidate the lifecycle through
+            // _managedTeardownStarted, so that is the authoritative teardown gate.
+            if (_managedTeardownStarted || _isClosing) return;
+            if (HasRenderFlag(RenderFlag_Rendering)) return;
+            // A swap-chain resize is mid-flight (native ResizeBuffers can pump a
+            // reentrant WM_PAINT through the kernel callback). Beginning a frame now
+            // would draw into buffers that are being recreated → AccessViolation.
+            if (_resizeInProgress) return;
+            if (WindowState == WindowState.Minimized) return;
+            SetRenderFlag(RenderFlag_Rendering);
+            ClearRenderFlag(RenderFlag_Requested);
+            frameLifecycleGeneration = _renderLifecycleGeneration;
+        }
 
         // RC4-a 帧事务状态：swapped=true 表示本帧已把活动脏集捕获为帧独占集且尚未
         // 收尾（Discard/RetainOrDrop 会把它翻回 false）；finally 兜底对仍未收尾的
         // 捕获集 MergeBack——单一出口审计，任何 return/throw 都不可能弄丢失效。
         bool frameDirtySwapped = false;
         long frameFullSeq = 0;
+        RenderTarget? frameRenderTarget = null;
+        // This token records ownership acquired by THIS UI-thread RenderFrame.
+        // RenderTarget.IsDrawing is shared with the dedicated render worker and
+        // therefore cannot prove who opened the native command list: after the
+        // publish branch returns, the worker may BeginDraw before this method's
+        // finally runs. Ending merely because IsDrawing became true would close
+        // the worker's command list while it is still replaying.
+        bool ownsNativeDrawSession = false;
+
+        bool TryBeginOwnedNativeDrawSession()
+        {
+            if (!TryBeginDrawOrScheduleRetry())
+            {
+                return false;
+            }
+
+            ownsNativeDrawSession = true;
+            return true;
+        }
+
+        bool CompleteOwnedNativeDrawSession()
+        {
+            if (!ownsNativeDrawSession)
+            {
+                return false;
+            }
+
+            try
+            {
+                return CompleteEndDrawOrHandleFailure();
+            }
+            finally
+            {
+                // RenderTarget.TryEndDraw clears its drawing state on every
+                // result, including recoverable failures.
+                ownsNativeDrawSession = false;
+            }
+        }
+
+        void EndOwnedNativeDrawSessionBestEffort()
+        {
+            if (!ownsNativeDrawSession)
+            {
+                return;
+            }
+
+            // Clear first so re-entrant recovery/teardown cannot end twice.
+            ownsNativeDrawSession = false;
+            try { _ = frameRenderTarget?.TryEndDraw(); }
+            catch { }
+        }
 
         try
         {
@@ -7843,6 +8364,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 return;
             }
 
+            // A schema-gap fallback may have timed out while joining a worker
+            // stuck in native Present. StopRenderThread already lowered
+            // _rtActive, so without this explicit pending-owner gate the code
+            // below would immediately enter inline rendering on the same target.
+            if (_renderThreadDisabledForSchemaGap && _renderThread != null &&
+                !TryCompleteRenderThreadSchemaFallback())
+            {
+                ScheduleDeferredRender(1);
+                return;
+            }
+
             // Apply any resize that was deferred because it arrived mid-frame.
             // Safe here: RenderFlag_Rendering is set (so a reentrant resize defers
             // instead of racing) and we have not begun drawing yet. Recovery inside
@@ -7851,14 +8383,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (RenderTarget == null || !RenderTarget.IsValid)
                 return;
 
+            frameRenderTarget = RenderTarget;
+            if (frameRenderTarget == null ||
+                !IsRenderLifecycleCurrent(frameLifecycleGeneration, frameRenderTarget))
+                return;
+
             // Increment-1 architecture gate (env-gated, one-shot). Safe here: no
             // frame command list is open yet, so the probe's one-shot clear queues
             // cleanly on the shared command queue before this frame's BeginDraw.
             MaybeFireAnimProbe();
+            if (!IsRenderLifecycleCurrent(frameLifecycleGeneration, frameRenderTarget))
+                return;
 
             // Perform layout before rendering (queue-based: only dirty elements).
             // UpdateLayout may trigger further invalidations via AddDirtyElement.
             UpdateLayout();
+            if (!IsRenderLifecycleCurrent(frameLifecycleGeneration, frameRenderTarget))
+                return;
             _debugHud.MarkLayout();
 
             // ── Compute dirty region from accumulated dirty elements ──
@@ -7870,7 +8411,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // D3D12 now uses retained-mode dirty rects by default.
             // If a specific driver shows stale-buffer artifacts, the old behavior can be
             // restored with JALIUM_D3D12_FORCE_FULL_REPLAY=1.
-            bool requiresFullReplay = RenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12;
+            bool requiresFullReplay = frameRenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12;
             // _rtActive 只在 UI 线程翻转（Start/StopRenderThread），帧首读入局部对本帧
             // 稳定；swap 条件与后面的分支必须用同一个值，防止中途翻转把捕获集晾在
             // render-thread 路径上。
@@ -7952,9 +8493,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 _debugHud.SetDirtyInfo(dirtyCountForHud, aggregator?.GetBoundingBox() ?? Rect.Empty);
             }
 
-            _debugHud.SetBackend(RenderTarget.Backend.ToString());
-            _debugHud.SetEngine(RenderTarget.RenderingEngine.ToString());
-            _debugHud.SetWindowSize(RenderTarget.Width, RenderTarget.Height);
+            _debugHud.SetBackend(frameRenderTarget.Backend.ToString());
+            _debugHud.SetEngine(frameRenderTarget.RenderingEngine.ToString());
+            _debugHud.SetWindowSize(frameRenderTarget.Width, frameRenderTarget.Height);
             _debugHud.SetDpiScale((float)_dpiScale);
 
             // VSync 状态由 EnsureRenderTarget（JALIUM_DISABLE_VSYNC-gated，默认 ON）与
@@ -7984,14 +8525,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // stale-buffer tail and never arms the flush counter. A flush frame
                 // must not be published there — drop it defensively.
                 if (isFlushFrame) { _partialPresentsToFlush = 0; return; }
-                PublishFrameToRenderThread();
+                PublishFrameToRenderThread(frameLifecycleGeneration, frameRenderTarget);
                 return;
             }
 
             // Inline (default) path: only reached when the render thread is off, so
             // the UI thread solely owns _drawingContext from here on.
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
-            _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
+            var context = ResolveRenderTargetContext(frameRenderTarget);
+            _drawingContext ??= new RenderTargetDrawingContext(frameRenderTarget, context);
             // backdrop/LiquidGlass（snapshot/背景折射型）拖拽中仍降级：snapshot 滞后于 in-flight
             // resize buffer，真折射采到错位屏幕区域（玻璃"跑到面板外"）。glow/shadow 不受影响。
             _drawingContext.SimplifyBackdropEffects = _isSizing;
@@ -8025,14 +8566,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // 失败时脏集经 finally 归还且 _fullInvalidation 未被 Discard 清掉，
                 // 重试帧仍走 full。
                 SeedDirtyHistoryFullWindow(windowBounds);
-                RenderTarget.SetFullInvalidation();
+                frameRenderTarget.SetFullInvalidation();
 
                 // TryBeginDraw: non-blocking.  If the GPU hasn't finished the
                 // previous frame for this swap chain buffer, skip this frame
                 // and let the UI thread process input messages instead.
                 // Dirty state stays in the frame capture and is merged back by the
                 // finally net, so the next attempt renders it.
-                if (!TryBeginDrawOrScheduleRetry())
+                if (!TryBeginOwnedNativeDrawSession())
                 {
                     return;
                 }
@@ -8040,14 +8581,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 try
                 {
                     _debugHud.OnFull();
-                    ClearBackground();
+                    ClearBackground(frameRenderTarget);
                     _drawingContext.Offset = Point.Zero;
                     RenderTreeOrCapture(_drawingContext);
+                    if (AbortRenderFrameIfLifecycleChanged(frameLifecycleGeneration, frameRenderTarget)) return;
                     _debugHud.MarkRender();
                     DevToolsOverlay?.DrawOverlay(_drawingContext);
-                    OnRender(RenderTarget);
+                    if (AbortRenderFrameIfLifecycleChanged(frameLifecycleGeneration, frameRenderTarget)) return;
+                    OnRender(frameRenderTarget);
+                    if (AbortRenderFrameIfLifecycleChanged(frameLifecycleGeneration, frameRenderTarget)) return;
                     // EndDraw/present 失败不再丢脏：直接 return，捕获集由 finally 归还。
-                    if (!CompleteEndDrawOrHandleFailure()) { return; }
+                    if (!CompleteOwnedNativeDrawSession()) { return; }
                     // Present 成功——捕获的脏状态已经上屏，此刻才真正消费掉。
                     // RC4-c：结构性 full 跳过了 ComputeDirtyRegions（LastDirtyBounds 的
                     // 唯一常规写点），Discard 前必须补回写，否则首帧后缓存恒为陈旧值，
@@ -8067,8 +8611,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 catch (RenderPipelineException ex)
                 {
-                    if (RenderTarget.IsDrawing)
-                        try { _ = RenderTarget.TryEndDraw(); } catch { }
+                    EndOwnedNativeDrawSessionBestEffort();
                     if (HandleRecoverableRenderPipelineFailure(ex, "RenderFrame"))
                     {
                         return;
@@ -8078,8 +8621,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 catch
                 {
-                    if (RenderTarget.IsDrawing)
-                        try { RenderTarget.EndDraw(); } catch { }
+                    EndOwnedNativeDrawSessionBestEffort();
                     throw;
                 }
             }
@@ -8187,19 +8729,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // 也不再被整体污染）；present 成功后 CommitDirtyHistory 提交单槽全窗
                     // 条目，在 DirtyHistoryCount 帧内让每个备用 FLIP buffer 各收到一次
                     // 全量重涂后自然老化。
-                    RenderTarget.SetFullInvalidation();
-                    if (!TryBeginDrawOrScheduleRetry()) { return; }
+                    frameRenderTarget.SetFullInvalidation();
+                    if (!TryBeginOwnedNativeDrawSession()) { return; }
                     try
                     {
                         _debugHud.OnPromoted();
-                        ClearBackground();
+                        ClearBackground(frameRenderTarget);
                         _drawingContext.Offset = Point.Zero;
                         RenderTreeOrCapture(_drawingContext);
+                        if (AbortRenderFrameIfLifecycleChanged(frameLifecycleGeneration, frameRenderTarget)) return;
                         _debugHud.MarkRender();
                         DevToolsOverlay?.DrawOverlay(_drawingContext);
+                        if (AbortRenderFrameIfLifecycleChanged(frameLifecycleGeneration, frameRenderTarget)) return;
                         _debugHud.UpdateOverlay(_debugHudOverlay);
-                        OnRender(RenderTarget);
-                        if (!CompleteEndDrawOrHandleFailure()) { return; }
+                        OnRender(frameRenderTarget);
+                        if (AbortRenderFrameIfLifecycleChanged(frameLifecycleGeneration, frameRenderTarget)) return;
+                        if (!CompleteOwnedNativeDrawSession()) { return; }
                         if (!LegacyPromoteBehavior)
                         {
                             // painted(=全窗) ⊇ changed：以上界入 ring，不依赖"全树重放
@@ -8213,8 +8758,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     catch (RenderPipelineException ex)
                     {
-                        if (RenderTarget.IsDrawing)
-                            try { _ = RenderTarget.TryEndDraw(); } catch { }
+                        EndOwnedNativeDrawSessionBestEffort();
                         if (HandleRecoverableRenderPipelineFailure(ex, "RenderFrame"))
                         {
                             return;
@@ -8224,8 +8768,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     catch
                     {
-                        if (RenderTarget.IsDrawing)
-                            try { RenderTarget.EndDraw(); } catch { }
+                        EndOwnedNativeDrawSessionBestEffort();
                         throw;
                     }
                 }
@@ -8237,12 +8780,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // scissor clip because D2D clip stack takes a single rect.
                     foreach (var r in aggregator.EnumerateRects())
                     {
-                        RenderTarget.AddDirtyRect(
+                        frameRenderTarget.AddDirtyRect(
                             (float)r.X, (float)r.Y,
                             (float)r.Width, (float)r.Height);
                     }
 
-                    var clipRegion = aggregator.GetBoundingBox().Intersect(windowBounds);
+                    var clipRegion = Rect.Intersect(aggregator.GetBoundingBox(), windowBounds);
                     if (clipRegion.IsEmpty)
                     {
                         // RC4-a：同空 aggregator 分支——选择性保留（flush 帧未 swap，此处为 no-op）。
@@ -8253,24 +8796,31 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         return;
                     }
 
-                    if (!TryBeginDrawOrScheduleRetry()) { return; }
+                    if (!TryBeginOwnedNativeDrawSession()) { return; }
                     try
                     {
                         _debugHud.OnPartial();
                         _drawingContext.Offset = Point.Zero;
                         _drawingContext.PushDirtyRegionClip(clipRegion);
 
-                        ClearBackground(clipRegion);
+                        ClearBackground(frameRenderTarget, clipRegion);
                         RenderTreeOrCapture(_drawingContext);
+                        if (AbortRenderFrameIfLifecycleChanged(frameLifecycleGeneration, frameRenderTarget))
+                        {
+                            try { _drawingContext.PopDirtyRegionClip(); } catch { }
+                            return;
+                        }
                         _debugHud.MarkRender();
 
                         _drawingContext.PopDirtyRegionClip();
                         DevToolsOverlay?.DrawOverlay(_drawingContext);
+                        if (AbortRenderFrameIfLifecycleChanged(frameLifecycleGeneration, frameRenderTarget)) return;
                         _debugHud.UpdateOverlay(_debugHudOverlay);
-                        OnRender(RenderTarget);
+                        OnRender(frameRenderTarget);
+                        if (AbortRenderFrameIfLifecycleChanged(frameLifecycleGeneration, frameRenderTarget)) return;
                         // EndDraw/present 失败不再丢脏（旧代码 BeginDraw 后即清，EndDraw
                         // 失败只能靠 recovery 的整窗兜底）——return 交 finally 归还。
-                        if (!CompleteEndDrawOrHandleFailure()) { return; }
+                        if (!CompleteOwnedNativeDrawSession()) { return; }
                         if (!isFlushFrame && !LegacyPromoteBehavior)
                         {
                             // RC2：ring 语义 = "最近 DirtyHistoryCount 个已成功 present 帧
@@ -8287,8 +8837,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     catch (RenderPipelineException ex)
                     {
-                        if (RenderTarget.IsDrawing)
-                            try { _ = RenderTarget.TryEndDraw(); } catch { }
+                        EndOwnedNativeDrawSessionBestEffort();
                         if (HandleRecoverableRenderPipelineFailure(ex, "RenderFrame"))
                         {
                             return;
@@ -8298,8 +8847,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     }
                     catch
                     {
-                        if (RenderTarget.IsDrawing)
-                            try { RenderTarget.EndDraw(); } catch { }
+                        EndOwnedNativeDrawSessionBestEffort();
                         throw;
                     }
                 }
@@ -8344,12 +8892,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         finally
         {
+            EndOwnedNativeDrawSessionBestEffort();
+
             // RC4-a 单一出口兜底：任何未走到"present 成功 → Discard"或"空 aggregator
             // → RetainOrDrop"的退出（BeginDraw credit/fence 失败、EndDraw/present 失败、
             // 可恢复异常、rethrow）都在这里把帧捕获的脏状态并回活动集——失效不可能
             // 因失败而丢失，帧间"捕获容器恒空"不变量恒成立。
             if (frameDirtySwapped) MergeBackFrameDirty();
-            ClearRenderFlag(RenderFlag_Rendering);
+            lock (_renderLifecycleGate)
+            {
+                ClearRenderFlag(RenderFlag_Rendering);
+            }
+            CompletePendingManagedTeardown();
         }
 
         // If something requested a render during our rendering
@@ -8398,7 +8952,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // are still submitted below so vacated pixels get repainted.
                 foreach (var local in preciseLocal)
                 {
-                    var screenRect = element.MapLocalRectToScreen(local).Intersect(windowBounds);
+                    var screenRect = Rect.Intersect(element.MapLocalRectToScreen(local), windowBounds);
                     if (!screenRect.IsEmpty) agg.Add(screenRect);
                 }
                 // 内容级失效不动 bounds——LastDirtyBounds 缓存保持上次全框（恒为
@@ -8410,7 +8964,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // (RC4-c) so the dirty region follows an animating RenderTransform and covers
                 // DropShadow/OuterGlow ink outside RenderSize instead of the static layout box.
                 var newBounds = element.GetDirtyRenderBounds();
-                var postLayoutBounds = newBounds.Intersect(windowBounds);
+                var postLayoutBounds = Rect.Intersect(newBounds, windowBounds);
                 if (!postLayoutBounds.IsEmpty) agg.Add(postLayoutBounds);
                 // RC4-c：回写未 clip 的新 AABB 作"上次被计入 present 的位置"。present
                 // 失败时 merge-back 保留条目侧 PrevPaintedBounds 快照，重试帧仍会提交
@@ -8423,7 +8977,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // which moved or resized leave no stale pixels behind.
             if (!entry.PreLayoutBounds.IsEmpty)
             {
-                var clipped = entry.PreLayoutBounds.Intersect(windowBounds);
+                var clipped = Rect.Intersect(entry.PreLayoutBounds, windowBounds);
                 if (!clipped.IsEmpty) agg.Add(clipped);
             }
 
@@ -8433,14 +8987,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // 只兜不连续跳变）。
             if (!entry.PrevPaintedBounds.IsEmpty)
             {
-                var clipped = entry.PrevPaintedBounds.Intersect(windowBounds);
+                var clipped = Rect.Intersect(entry.PrevPaintedBounds, windowBounds);
                 if (!clipped.IsEmpty) agg.Add(clipped);
             }
         }
 
         foreach (var free in freeRects)
         {
-            var clipped = free.Intersect(windowBounds);
+            var clipped = Rect.Intersect(free, windowBounds);
             if (!clipped.IsEmpty) agg.Add(clipped);
         }
 
@@ -8637,7 +9191,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (history == null) continue;
             foreach (var r in history)
             {
-                var clipped = r.Intersect(windowBounds);
+                var clipped = Rect.Intersect(r, windowBounds);
                 if (clipped.IsEmpty) continue;
                 agg ??= new DirtyRegionAggregator(capacity: 32);
                 agg.Add(clipped);
@@ -8709,9 +9263,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// Clears the render target with the window background color.
     /// When a D2D clip is active (retained mode), only the clipped area is cleared.
     /// </summary>
-    private void ClearBackground()
+    private void ClearBackground(RenderTarget renderTarget)
     {
-        ClearBackground(clipRegion: null);
+        ClearBackground(renderTarget, clipRegion: null);
+    }
+
+    /// <summary>
+    /// Resolves the context that owns resources created for a render target.
+    /// Production targets retain their creating context; the global-current
+    /// fallback exists only for legacy/synthetic targets that predate explicit
+    /// owner pinning.
+    /// </summary>
+    private RenderContext ResolveRenderTargetContext(RenderTarget renderTarget)
+    {
+        return renderTarget.OwnerContext ??
+            RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
     }
 
     /// <summary>
@@ -8720,7 +9286,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// and would destroy transparent punch-through areas (e.g. WebView composition holes)
     /// outside the dirty region.
     /// </summary>
-    private void ClearBackground(Rect? clipRegion)
+    private void ClearBackground(RenderTarget renderTarget, Rect? clipRegion)
     {
         if (clipRegion == null)
         {
@@ -8734,15 +9300,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // 在这里预乘后：(255, 255, 255, 0) → (0, 0, 0, 0)，PREMULTIPLIED 合法值，真透明。
                 // 半透明色如 (255, 0, 0, 128) → (128, 0, 0, 128)，与 swap chain 期望一致。
                 var a = c.A / 255f;
-                RenderTarget!.Clear(c.R / 255f * a, c.G / 255f * a, c.B / 255f * a, a);
+                renderTarget.Clear(c.R / 255f * a, c.G / 255f * a, c.B / 255f * a, a);
             }
             else if (SystemBackdrop != WindowBackdropType.None || AllowsTransparency)
             {
-                RenderTarget!.Clear(0.0f, 0.0f, 0.0f, 0.0f);
+                renderTarget.Clear(0.0f, 0.0f, 0.0f, 0.0f);
             }
             else
             {
-                RenderTarget!.Clear(0.0f, 0.0f, 0.0f, 1.0f);
+                renderTarget.Clear(0.0f, 0.0f, 0.0f, 1.0f);
             }
             return;
         }
@@ -8759,20 +9325,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (solidPartial.Color.A == 255)
             {
                 // 不透明色不需要预乘（A=1 时 RGB*A = RGB）
-                var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+                var context = ResolveRenderTargetContext(renderTarget);
                 using var brush = context.CreateSolidBrush(
                     solidPartial.Color.R / 255f,
                     solidPartial.Color.G / 255f,
                     solidPartial.Color.B / 255f,
                     solidPartial.Color.A / 255f);
-                RenderTarget!.FillRectangle(
+                renderTarget.FillRectangle(
                     (float)r.X, (float)r.Y,
                     (float)r.Width, (float)r.Height,
                     brush);
             }
             else
             {
-                RenderTarget!.PunchTransparentRect(
+                renderTarget.PunchTransparentRect(
                     (float)r.X, (float)r.Y,
                     (float)r.Width, (float)r.Height);
                 if (solidPartial.Color.A > 0)
@@ -8781,13 +9347,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // 否则 Colors.Transparent = (255,255,255,0) 这种 WPF 历史"透明白"被 DWM
                     // 渲染成不透明白色。同 ClearBackground 全屏路径，跟着预乘。
                     var a = solidPartial.Color.A / 255f;
-                    var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+                    var context = ResolveRenderTargetContext(renderTarget);
                     using var brush = context.CreateSolidBrush(
                         solidPartial.Color.R / 255f * a,
                         solidPartial.Color.G / 255f * a,
                         solidPartial.Color.B / 255f * a,
                         a);
-                    RenderTarget!.FillRectangle(
+                    renderTarget.FillRectangle(
                         (float)r.X, (float)r.Y,
                         (float)r.Width, (float)r.Height,
                         brush);
@@ -8796,15 +9362,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
         else if (SystemBackdrop != WindowBackdropType.None || AllowsTransparency)
         {
-            RenderTarget!.PunchTransparentRect(
+            renderTarget.PunchTransparentRect(
                 (float)r.X, (float)r.Y,
                 (float)r.Width, (float)r.Height);
         }
         else
         {
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+            var context = ResolveRenderTargetContext(renderTarget);
             using var brush = context.CreateSolidBrush(0.0f, 0.0f, 0.0f, 1.0f);
-            RenderTarget!.FillRectangle(
+            renderTarget.FillRectangle(
                 (float)r.X, (float)r.Y,
                 (float)r.Width, (float)r.Height,
                 brush);
@@ -8841,7 +9407,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// Updates the layout of all elements in this window.
     /// Uses LayoutManager for queue-based processing: only dirty elements are re-measured/re-arranged.
     /// </summary>
-    private void UpdateLayout()
+    private new void UpdateLayout()
     {
         Size availableSize = new(Width, Height);
 
@@ -8933,6 +9499,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void OnFrameStarting()
     {
+        if (_isClosing || Handle == nint.Zero) return;
+
         // While the window is minimized there is no surface to present to —
         // any dirty work just has to be replayed when the window is restored
         // (RequestFullInvalidation runs on resize anyway). Holding the dirty
@@ -8993,7 +9561,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         Jalium.UI.CompositionTarget.RequestFrame();
     }
 
-
     /// <summary>
     /// Adds a dirty element for partial rendering via native dirty rects.
     /// The element's full screen bounds are used.
@@ -9036,7 +9603,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void AddDirtyElement(UIElement element, Rect localDirtyRect)
     {
-        if (localDirtyRect.IsEmpty)
+        if (localDirtyRect.IsEmpty || localDirtyRect.Width <= 0 || localDirtyRect.Height <= 0)
         {
             AddDirtyElement(element);
             return;
@@ -9071,7 +9638,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void AddDirtyRect(Rect screenRect)
     {
-        if (screenRect.IsEmpty) return;
+        if (screenRect.IsEmpty || screenRect.Width <= 0 || screenRect.Height <= 0) return;
         lock (_dirtyLock) { _dirtyFreeRects.Add(screenRect); }
     }
 
@@ -9158,9 +9725,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return virtualKey is VK_LWIN or VK_RWIN;
     }
 
-    private bool OnKeyDown(nint wParam, nint lParam)
+    private bool OnNativeKeyDown(nint wParam, nint lParam)
     {
-        Key key = (Key)(int)wParam;
+        Key key = KeyInterop.KeyFromVirtualKey((int)wParam);
         var modifiers = GetModifierKeys();
         bool isRepeat = ((lParam.ToInt64() >> 30) & 1) != 0;
         return _inputDispatcher.HandleKeyDown(key, modifiers, isRepeat, Environment.TickCount);
@@ -9290,9 +9857,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
-    private bool OnKeyUp(nint wParam, nint lParam)
+    private bool OnNativeKeyUp(nint wParam, nint lParam)
     {
-        Key key = (Key)(int)wParam;
+        Key key = KeyInterop.KeyFromVirtualKey((int)wParam);
         var modifiers = GetModifierKeys();
         return _inputDispatcher.HandleKeyUp(key, modifiers, Environment.TickCount);
     }
@@ -9301,9 +9868,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (activateState == WA_INACTIVE)
         {
-            if (_isActive)
+            if (IsActive)
             {
-                _isActive = false;
+                SetIsActive(false);
                 OnDeactivated(EventArgs.Empty);
             }
             // Match WPF semantics: a window losing activation must NOT drop the logical
@@ -9317,9 +9884,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        if (!_isActive)
+        if (!IsActive)
         {
-            _isActive = true;
+            SetIsActive(true);
             OnActivated(EventArgs.Empty);
         }
         _inputDispatcher.ArmEscapeSuppressionIfNeeded();
@@ -9336,7 +9903,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Same rationale as OnActivateChanged: WM_KILLFOCUS arrives on activation
         // transitions and on transient focus thefts (popup windows, IME). Preserve
         // the logical keyboard focus so the next WM_SETFOCUS resumes seamlessly.
-        _inputDispatcher.HandleWindowDeactivated(newFocusWindow, clearKeyboardFocus: false);
+        _inputDispatcher.HandleWindowDeactivated(newFocusWindow, clearKeyboardFocus: true);
     }
 
     private void OnSetFocus()
@@ -9546,17 +10113,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         UpdateInputMethodAssociation();
 
-        // Notify UIA of focus change — routed through EventSink (null-skip when no
-        // UIA client has attached) so UIAutomationCore.dll stays unloaded on
-        // processes Narrator / Inspect never touch. Deferred via Dispatcher to
-        // avoid RPC_E_CANTCALLOUT during input-synchronous focus messages.
-        if (OperatingSystem.IsWindows() && e.NewFocus is UIElement focused)
+        // Forward focus through the active platform accessibility sink. On Windows the
+        // sink is armed lazily by WM_GETOBJECT; on Linux it is armed only after the
+        // application has joined the AT-SPI2 bus. Keep the callback deferred because
+        // Windows UIA cannot call out during an input-synchronous focus message.
+        if ((OperatingSystem.IsWindows() || OperatingSystem.IsLinux()) &&
+            e.NewFocus is UIElement focused)
         {
             Dispatcher.BeginInvoke(() =>
             {
                 var peer = focused.GetAutomationPeer();
                 if (peer != null)
-                    Jalium.UI.Automation.AutomationPeer.EventSink?.OnFocusChanged(peer);
+                    Jalium.UI.Automation.Peers.AutomationPeer.EventSink?.OnFocusChanged(peer);
             });
         }
     }
@@ -9606,7 +10174,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void UpdateInputMethodAssociation()
     {
-        if (Handle == nint.Zero)
+        // IMM32 is the Windows IME transport. Linux input-method association is
+        // handled by its platform backend and must never enter these P/Invokes.
+        if (!OperatingSystem.IsWindows() || Handle == nint.Zero)
         {
             return;
         }
@@ -9939,7 +10509,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         EnsureLayoutValidForInput();
 
         long generation = _layoutManager.Generation;
-        if (generation == _hitMemoLayoutGeneration && _hitMemoPoint == windowPosition)
+        // Popup/modal roots can be attached to OverlayLayer between two input messages without
+        // changing the owner's normal content-layout generation.  Never reuse an underlying-tree
+        // hit while an overlay is active; the overlay must receive first hit-test priority.
+        bool overlayRequiresFreshHit = OverlayLayer.HasPopupRoots ||
+                                       OverlayLayer.HasModalRoots ||
+                                       ActiveInPlaceDialogs.Count != 0;
+        if (!overlayRequiresFreshHit &&
+            generation == _hitMemoLayoutGeneration &&
+            _hitMemoPoint == windowPosition &&
+            (_hitMemoElement == null || IsElementAttachedToThisWindow(_hitMemoElement)))
         {
             return _hitMemoElement;
         }
@@ -9953,10 +10532,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return hitElement;
     }
 
+    private bool IsElementAttachedToThisWindow(UIElement element)
+    {
+        for (Visual? current = element; current != null; current = current.VisualParent)
+        {
+            if (ReferenceEquals(current, this))
+                return true;
+        }
+
+        return false;
+    }
+
     // Flush any queued measure/arrange so input handlers see the same layout
     // the next render will. No-op when the window is closing or the queue is
     // empty — the common steady-state path stays free of layout work.
-    private void EnsureLayoutValidForInput()
+    internal void EnsureLayoutValidForInput()
     {
         if (_isClosing || Handle == nint.Zero)
             return;
@@ -10048,7 +10638,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             : Touch.GetDevice((int)pointerData.PointerId) ?? Touch.RegisterTouchPoint((int)pointerData.PointerId, pointerData.Position, target);
 
         touchDevice.UpdatePosition(pointerData.Position);
-        touchDevice.DirectlyOver = target;
+        touchDevice.SetDirectlyOver(target);
 
         // --- Touch → Stylus promotion ---
         // Feed touch input through the RealTimeStylus / StylusPlugIn pipeline so that
@@ -10074,7 +10664,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (isUp || sourceCanceled)
         {
-            touchDevice.Deactivate();
+            touchDevice.DeactivateForManager();
             Touch.UnregisterTouchPoint((int)pointerData.PointerId);
 
             // Clean up the promoted stylus device.
@@ -10095,7 +10685,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (!_activeStylusDevices.TryGetValue(pointerData.PointerId, out var stylusDevice))
         {
-            stylusDevice = new PointerStylusDevice((int)pointerData.PointerId, $"Touch{pointerData.PointerId}");
+            stylusDevice = new StylusDevice((int)pointerData.PointerId, $"Touch{pointerData.PointerId}");
             _activeStylusDevices[pointerData.PointerId] = stylusDevice;
         }
 
@@ -10164,7 +10754,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (!_activeStylusDevices.TryGetValue(pointerData.PointerId, out var stylusDevice))
         {
-            stylusDevice = new PointerStylusDevice((int)pointerData.PointerId);
+            stylusDevice = new StylusDevice((int)pointerData.PointerId);
             _activeStylusDevices[pointerData.PointerId] = stylusDevice;
         }
 
@@ -10423,11 +11013,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             RoutedEvent = PreviewManipulationStartingEvent,
             ManipulationContainer = target,
-            Mode = ManipulationModes.All,
-            Cancel = false
+            Mode = ManipulationModes.All
         };
         target.RaiseEvent(previewArgs);
-        if (previewArgs.Cancel)
+        if (previewArgs.CancelRequested)
             return false;
 
         if (!previewArgs.Handled)
@@ -10438,11 +11027,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 ManipulationContainer = previewArgs.ManipulationContainer ?? target,
                 Mode = previewArgs.Mode,
                 Pivot = previewArgs.Pivot,
-                IsSingleTouchEnabled = previewArgs.IsSingleTouchEnabled,
-                Cancel = false
+                IsSingleTouchEnabled = previewArgs.IsSingleTouchEnabled
             };
             target.RaiseEvent(bubbleArgs);
-            if (bubbleArgs.Cancel)
+            if (bubbleArgs.CancelRequested)
                 return false;
         }
 
@@ -10770,7 +11358,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         TouchDevice? touchDevice = Touch.GetDevice((int)pointerId);
         if (touchDevice != null)
         {
-            touchDevice.Deactivate();
+            touchDevice.DeactivateForManager();
             Touch.UnregisterTouchPoint((int)pointerId);
         }
     }
@@ -10893,513 +11481,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     #endregion
 
     #region Win32 Interop
-
-    private const uint WS_OVERLAPPEDWINDOW = 0x00CF0000;
-    private const uint WS_POPUP = 0x80000000;
-    private const uint WS_CAPTION = 0x00C00000;
-    private const uint WS_THICKFRAME = 0x00040000;
-    private const uint WS_MINIMIZEBOX = 0x00020000;
-    private const uint WS_MAXIMIZEBOX = 0x00010000;
-    private const uint WS_SYSMENU = 0x00080000;
-    private const uint WS_EX_APPWINDOW = 0x00040000;
-    private const uint WS_EX_TOOLWINDOW = 0x00000080;
-    private const uint WS_EX_LAYERED = 0x00080000;
-    private const uint WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
-    private const uint LWA_ALPHA = 0x02;
-    private const int GWL_STYLE = -16;
-    private const int GWL_EXSTYLE = -20;
-    private const uint SWP_FRAMECHANGED = 0x0020;
-    private const uint SWP_NOMOVE = 0x0002;
-    private const uint SWP_NOSIZE = 0x0001;
-    private const uint SWP_NOZORDER = 0x0004;
-    private const uint SWP_NOOWNERZORDER = 0x0200;
-    private const uint SWP_NOACTIVATE = 0x0010;
-    private static readonly nint HWND_TOPMOST = new(-1);
-    private static readonly nint HWND_NOTOPMOST = new(-2);
-    private static readonly nint HWND_TOP = nint.Zero;
-    private const int CW_USEDEFAULT = unchecked((int)0x80000000);
-    private const int SW_SHOW = 5;
-    private const int SW_SHOWNOACTIVATE = 8;
-    private const int SW_HIDE = 0;
-    private const int SW_MINIMIZE = 6;
-    private const int SW_MAXIMIZE = 3;
-    private const int SW_RESTORE = 9;
-    private const uint WM_CLOSE = 0x0010;
-    private const uint WM_GETOBJECT = 0x003D;
-    private const uint WM_GETMINMAXINFO = 0x0024;
-    private const uint WM_QUERYENDSESSION = 0x0011;
-    private const uint WM_ENDSESSION = 0x0016;
-    private const uint WM_SETTINGCHANGE = 0x001A;
-    private const uint WM_THEMECHANGED = 0x031A;
-    private const uint WM_DESTROY = 0x0002;
-    private const uint WM_MOVE = 0x0003;
-    private const uint WM_SIZE = 0x0005;
-    private const uint WM_ERASEBKGND = 0x0014;
-    private const uint WM_NCCALCSIZE = 0x0083;
-    private const uint WM_NCHITTEST = 0x0084;
-    private const uint WM_PAINT = 0x000F;
-
-    // Hit test results
-    private const int HTNOWHERE = 0;
-    private const int HTCLIENT = 1;
-    private const int HTCAPTION = 2;
-    private const int HTSYSMENU = 3;
-    private const int HTMINBUTTON = 8;
-    private const int HTMAXBUTTON = 9;
-    private const int HTLEFT = 10;
-    private const int HTRIGHT = 11;
-    private const int HTTOP = 12;
-    private const int HTTOPLEFT = 13;
-    private const int HTTOPRIGHT = 14;
-    private const int HTBOTTOM = 15;
-    private const int HTBOTTOMLEFT = 16;
-    private const int HTBOTTOMRIGHT = 17;
-    private const int HTCLOSE = 20;
-
-    // System command constants
-    private const int SC_SIZE = 0xF000;
-    private const int SC_MOVE = 0xF010;
-    private const int SC_MINIMIZE = 0xF020;
-    private const int SC_MAXIMIZE = 0xF030;
-    private const int SC_CLOSE = 0xF060;
-    private const int SC_RESTORE = 0xF120;
-
-    // TrackPopupMenu flags
-    private const uint TPM_RETURNCMD = 0x0100;
-    private const uint TPM_LEFTBUTTON = 0x0000;
-
-    // Menu item flags
-    private const uint MF_BYCOMMAND = 0x00000000;
-    private const uint MF_ENABLED = 0x00000000;
-    private const uint MF_GRAYED = 0x00000001;
-
-    // DWM window corner preference
-    private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
-    private const int DWMWCP_DEFAULT = 0;
-    private const int DWMWCP_DONOTROUND = 1;
-    private const int DWMWCP_ROUND = 2;
-    private const int DWMWCP_ROUNDSMALL = 3;
-
-    // DWM system backdrop type (Windows 11 22H2+)
-    private const int DWMWA_SYSTEMBACKDROP_TYPE = 38;
-    private const int DWMWA_CAPTION_BUTTON_BOUNDS = 5;
-    // DWM_SYSTEMBACKDROP_TYPE values
-    private const int DWMSBT_AUTO = 0;           // Auto
-    private const int DWMSBT_NONE = 1;           // None
-    private const int DWMSBT_MAINWINDOW = 2;     // Mica
-    private const int DWMSBT_TRANSIENTWINDOW = 3; // Acrylic
-    private const int DWMSBT_TABBEDWINDOW = 4;   // Mica Alt
-    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
-
-    // SetWindowCompositionAttribute (undocumented, Win10+ fallback for Acrylic)
-    private const int WCA_ACCENT_POLICY = 19;
-    private const int ACCENT_DISABLED = 0;
-    private const int ACCENT_ENABLE_ACRYLICBLURBEHIND = 4;
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ACCENT_POLICY
-    {
-        public int AccentState;
-        public int AccentFlags;
-        public uint GradientColor; // ABGR format
-        public int AnimationId;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WINDOWCOMPOSITIONATTRIBDATA
-    {
-        public int Attribute;
-        public nint Data;
-        public int DataSize;
-    }
-
-    [DllImport("user32.dll")]
-    private static extern int SetWindowCompositionAttribute(nint hwnd, ref WINDOWCOMPOSITIONATTRIBDATA data);
-
-    private const uint WM_MOVING = 0x0216;
-    private const uint WM_SIZING = 0x0214;
-    private const uint WM_DPICHANGED = 0x02E0;
-    private const uint WM_ENTERSIZEMOVE = 0x0231;
-    private const uint WM_EXITSIZEMOVE = 0x0232;
-    private const uint CS_HREDRAW = 0x0002;
-    private const uint CS_VREDRAW = 0x0001;
-    private const int COLOR_WINDOW = 5;
-    private const nint IDC_ARROW = 32512;
-    private const nint IDC_IBEAM = 32513;
-    private const nint IDC_WAIT = 32514;
-    private const nint IDC_CROSS = 32515;
-    private const nint IDC_UPARROW = 32516;
-    private const nint IDC_SIZE = 32640;      // Same as IDC_SIZEALL
-    private const nint IDC_SIZENWSE = 32642;
-    private const nint IDC_SIZENESW = 32643;
-    private const nint IDC_SIZEWE = 32644;
-    private const nint IDC_SIZENS = 32645;
-    private const nint IDC_SIZEALL = 32646;
-    private const nint IDC_NO = 32648;
-    private const nint IDC_HAND = 32649;
-    private const nint IDC_APPSTARTING = 32650;
-    private const nint IDC_HELP = 32651;
-    private const uint RDW_INVALIDATE = 0x0001;
-    private const uint RDW_UPDATENOW = 0x0100;
-    private const uint WM_USER = 0x0400;
-    private const uint WM_APP_REPAINT = WM_USER + 1;
-    private const int SIZE_RESTORED = 0;
-    private const int SIZE_MINIMIZED = 1;
-    private const int SIZE_MAXIMIZED = 2;
-
-    // Input messages
-    private const uint WM_KEYDOWN = 0x0100;
-    private const uint WM_KEYUP = 0x0101;
-    private const uint WM_CHAR = 0x0102;
-    private const uint WM_SYSKEYDOWN = 0x0104;
-    private const uint WM_SYSKEYUP = 0x0105;
-    private const uint WM_MOUSEMOVE = 0x0200;
-    private const uint WM_LBUTTONDOWN = 0x0201;
-    private const uint WM_LBUTTONUP = 0x0202;
-    private const uint WM_LBUTTONDBLCLK = 0x0203;
-    private const uint WM_RBUTTONDOWN = 0x0204;
-    private const uint WM_RBUTTONUP = 0x0205;
-    private const uint WM_RBUTTONDBLCLK = 0x0206;
-    private const uint WM_MBUTTONDOWN = 0x0207;
-    private const uint WM_MBUTTONUP = 0x0208;
-    private const uint WM_MBUTTONDBLCLK = 0x0209;
-    private const uint WM_MOUSEWHEEL = 0x020A;
-    private const uint WM_XBUTTONDOWN = 0x020B;
-    private const uint WM_XBUTTONUP = 0x020C;
-    private const uint WM_MOUSELEAVE = 0x02A3;
-    private const uint WM_CAPTURECHANGED = 0x0215;
-    private const uint WM_CANCELMODE = 0x001F;
-    private const uint WM_ACTIVATE = 0x0006;
-    private const uint WM_SETFOCUS = 0x0007;
-    private const uint WM_KILLFOCUS = 0x0008;
-    private const int WA_INACTIVE = 0;
-
-    // Non-client mouse messages
-    private const uint WM_NCMOUSEMOVE = 0x00A0;
-    private const uint WM_NCMOUSEHOVER = 0x02A0;
-    private const uint WM_NCLBUTTONDOWN = 0x00A1;
-    private const uint WM_NCLBUTTONUP = 0x00A2;
-    private const uint WM_NCLBUTTONDBLCLK = 0x00A3;
-    private const uint WM_NCRBUTTONDOWN = 0x00A4;
-    private const uint WM_NCRBUTTONUP = 0x00A5;
-    private const uint WM_SYSCOMMAND = 0x0112;
-    private const uint WM_NCMOUSELEAVE = 0x02A2;
-
-    // TrackMouseEvent flags
-    private const uint TME_HOVER = 0x00000001;
-    private const uint TME_LEAVE = 0x00000002;
-    private const uint TME_NONCLIENT = 0x00000010;
-    private const uint HOVER_DEFAULT = 0xFFFFFFFF;
-
-    // Cursor message
-    private const uint WM_SETCURSOR = 0x0020;
-    private const int HTCLIENT_SETCURSOR = 1;
-
-    // IME messages
-    private const uint WM_IME_STARTCOMPOSITION = 0x010D;
-    private const uint WM_IME_ENDCOMPOSITION = 0x010E;
-    private const uint WM_IME_COMPOSITION = 0x010F;
-    private const uint WM_IME_SETCONTEXT = 0x0281;
-    private const uint WM_IME_NOTIFY = 0x0282;
-    private const uint WM_IME_CHAR = 0x0286;
-    private const int IACE_DEFAULT = 0x0010;
-
-    // Virtual key codes
     private static Func<int, short> s_getKeyStateProvider = GetKeyState;
-    private const int VK_ESCAPE = 0x1B;
-    private const int VK_LWIN = 0x5B;
-    private const int VK_RWIN = 0x5C;
-    private const int VK_SHIFT = 0x10;
-    private const int VK_CONTROL = 0x11;
-    private const int VK_MENU = 0x12;  // Alt key
-
-    // Mouse button state flags in wParam
-    private const int MK_LBUTTON = 0x0001;
-    private const int MK_RBUTTON = 0x0002;
-    private const int MK_SHIFT = 0x0004;
-    private const int MK_CONTROL = 0x0008;
-    private const int MK_MBUTTON = 0x0010;
-    private const int MK_XBUTTON1 = 0x0020;
-    private const int MK_XBUTTON2 = 0x0040;
-
-    // Monitor constants
-    private const uint MONITOR_DEFAULTTONEAREST = 2;
-    private const uint WM_DISPLAYCHANGE = 0x007E;
-    private const int ENUM_CURRENT_SETTINGS = -1;
-
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MINMAXINFO
-    {
-        public POINT ptReserved;
-        public POINT ptMaxSize;
-        public POINT ptMaxPosition;
-        public POINT ptMinTrackSize;
-        public POINT ptMaxTrackSize;
-    }
-
-    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern ushort RegisterClassEx(ref WNDCLASSEX lpWndClass);
-
-    [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
-    private static partial nint CreateWindowEx(
-        uint dwExStyle,
-        string lpClassName,
-        string lpWindowName,
-        uint dwStyle,
-        int x, int y, int nWidth, int nHeight,
-        nint hWndParent,
-        nint hMenu,
-        nint hInstance,
-        nint lpParam);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool ShowWindow(nint hWnd, int nCmdShow);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool UpdateWindow(nint hWnd);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DestroyWindow(nint hWnd);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowTextW", StringMarshalling = StringMarshalling.Utf16)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowText(nint hWnd, string lpString);
-
-    [LibraryImport("user32.dll", EntryPoint = "DefWindowProcW")]
-    private static partial nint DefWindowProc(nint hWnd, uint msg, nint wParam, nint lParam);
-
-    [LibraryImport("user32.dll")]
-    private static partial void PostQuitMessage(int nExitCode);
-
-    [LibraryImport("user32.dll", EntryPoint = "LoadCursorW")]
-    private static partial nint LoadCursor(nint hInstance, nint lpCursorName);
-
-    [LibraryImport("user32.dll")]
-    private static partial nint SetCursor(nint hCursor);
-
-    // [DllImport] (not [LibraryImport]): POINT is now the shared cross-assembly type in
-    // Jalium.UI.Core; the LibraryImport source generator can't prove a struct from another
-    // assembly is blittable without [assembly:DisableRuntimeMarshalling] there (SYSLIB1051),
-    // so these blittable-struct P/Invokes stay on classic marshalling (AOT-safe). Issue #151.
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetCursorPos(out POINT lpPoint);
-
-    [DllImport("user32.dll")]
-    private static extern nint BeginPaint(nint hWnd, out PAINTSTRUCT lpPaint);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EndPaint(nint hWnd, ref PAINTSTRUCT lpPaint);
-
-    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial nint GetModuleHandle(string? lpModuleName);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool InvalidateRect(nint hWnd, nint lpRect, [MarshalAs(UnmanagedType.Bool)] bool bErase);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool RedrawWindow(nint hWnd, nint lprcUpdate, nint hrgnUpdate, uint flags);
-
-    [LibraryImport("user32.dll", EntryPoint = "PostMessageW")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool PostMessage(nint hWnd, uint msg, nint wParam, nint lParam);
-
-    [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
-    private static partial nint SendMessage(nint hWnd, uint msg, nint wParam, nint lParam);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ScreenToClient(nint hWnd, ref POINT lpPoint);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ClientToScreen(nint hWnd, ref POINT lpPoint);
-
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongW")]
-    private static partial long GetWindowLong(nint hWnd, int nIndex);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongW")]
-    private static partial long SetWindowLong(nint hWnd, int nIndex, long dwNewLong);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
-
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmSetWindowAttribute(nint hwnd, int dwAttribute, ref int pvAttribute, int cbAttribute);
-
-    [DllImport("dwmapi.dll")]
-    private static extern int DwmGetWindowAttribute(nint hwnd, int dwAttribute, out RECT pvAttribute, int cbAttribute);
-
-    [LibraryImport("dwmapi.dll")]
-    private static partial int DwmExtendFrameIntoClientArea(nint hwnd, ref MARGINS pMarInset);
-
-    [DllImport("dwmapi.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool DwmDefWindowProc(nint hwnd, uint msg, nint wParam, nint lParam, out nint plResult);
-
-    private const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool IsZoomed(nint hWnd);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetWindowRect(nint hWnd, out RECT lpRect);
-
-    [LibraryImport("user32.dll")]
-    private static partial nint MonitorFromWindow(nint hwnd, uint dwFlags);
-
-    [LibraryImport("user32.dll")]
-    private static partial uint GetDpiForWindow(nint hwnd);
-
-    [LibraryImport("user32.dll")]
-    private static partial uint GetDpiForSystem();
-
-    [DllImport("user32.dll", CharSet = CharSet.Auto)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetMonitorInfo(nint hMonitor, ref MONITORINFO lpmi);
-
-    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetMonitorInfoEx(nint hMonitor, ref MONITORINFOEX lpmi);
-
-    [DllImport("user32.dll", EntryPoint = "EnumDisplaySettingsW", CharSet = CharSet.Unicode)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumDisplaySettings(string? lpszDeviceName, int iModeNum, ref DEVMODE lpDevMode);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT lpEventTrack);
-
-    [DllImport("user32.dll")]
-    private static extern nint SetCapture(nint hWnd);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool ReleaseCapture();
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool EnableWindow(nint hWnd, [MarshalAs(UnmanagedType.Bool)] bool bEnable);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetForegroundWindow(nint hWnd);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool SetLayeredWindowAttributes(nint hWnd, uint crKey, byte bAlpha, uint dwFlags);
-
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MARGINS
-    {
-        public int Left;
-        public int Right;
-        public int Top;
-        public int Bottom;
-    }
-
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct MONITORINFOEX
-    {
-        public uint cbSize;
-        public RECT rcMonitor;
-        public RECT rcWork;
-        public uint dwFlags;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-        public string szDevice;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct DEVMODE
-    {
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-        public string dmDeviceName;
-        public ushort dmSpecVersion;
-        public ushort dmDriverVersion;
-        public ushort dmSize;
-        public ushort dmDriverExtra;
-        public uint dmFields;
-        public int dmPositionX;
-        public int dmPositionY;
-        public uint dmDisplayOrientation;
-        public uint dmDisplayFixedOutput;
-        public short dmColor;
-        public short dmDuplex;
-        public short dmYResolution;
-        public short dmTTOption;
-        public short dmCollate;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-        public string dmFormName;
-        public ushort dmLogPixels;
-        public uint dmBitsPerPel;
-        public uint dmPelsWidth;
-        public uint dmPelsHeight;
-        public uint dmDisplayFlags;
-        public uint dmDisplayFrequency;
-        public uint dmICMMethod;
-        public uint dmICMIntent;
-        public uint dmMediaType;
-        public uint dmDitherType;
-        public uint dmReserved1;
-        public uint dmReserved2;
-        public uint dmPanningWidth;
-        public uint dmPanningHeight;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NCCALCSIZE_PARAMS
-    {
-        public RECT rgrc0;
-        public RECT rgrc1;
-        public RECT rgrc2;
-        public nint lppos;
-    }
-
-    [DllImport("user32.dll")]
-    private static extern nint GetSystemMenu(nint hWnd, [MarshalAs(UnmanagedType.Bool)] bool bRevert);
-
-    [DllImport("user32.dll")]
-    private static extern int TrackPopupMenu(nint hMenu, uint uFlags, int x, int y, int nReserved, nint hWnd, nint prcRect);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnableMenuItem(nint hMenu, int uIDEnableItem, uint uEnable);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetMenuDefaultItem(nint hMenu, int uItem, uint fByPos);
-
-    // Undocumented uxtheme APIs for dark-mode popup menus (used by Explorer, Notepad, Terminal, etc.)
-    [LibraryImport("uxtheme.dll", EntryPoint = "#135")]
-    private static partial int SetPreferredAppMode(PreferredAppMode mode);
-
-    [LibraryImport("uxtheme.dll", EntryPoint = "#133")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool AllowDarkModeForWindow(nint hWnd, [MarshalAs(UnmanagedType.Bool)] bool allow);
-
-    [LibraryImport("uxtheme.dll", EntryPoint = "#136")]
-    private static partial void FlushMenuThemes();
-
-    private enum PreferredAppMode
-    {
-        Default = 0,
-        AllowDark = 1,
-        ForceDark = 2,
-        ForceLight = 3,
-    }
-
     #endregion
 
     #region IInputDispatcherHost
@@ -11553,32 +11635,6 @@ public enum WindowTitleBarStyle
 }
 
 /// <summary>
-/// Specifies whether a window sizes itself to fit the size of its content.
-/// </summary>
-public enum SizeToContent
-{
-    /// <summary>
-    /// The window does not automatically size itself to fit the size of its content.
-    /// </summary>
-    Manual,
-
-    /// <summary>
-    /// The window automatically sizes itself to fit the width of its content, but not the height.
-    /// </summary>
-    Width,
-
-    /// <summary>
-    /// The window automatically sizes itself to fit the height of its content, but not the width.
-    /// </summary>
-    Height,
-
-    /// <summary>
-    /// The window automatically sizes itself to fit both the width and height of its content.
-    /// </summary>
-    WidthAndHeight
-}
-
-/// <summary>
 /// Specifies whether a window can be resized and whether it has minimize and maximize buttons.
 /// </summary>
 public enum ResizeMode
@@ -11650,39 +11706,3 @@ public enum WindowStartupLocation
     /// </summary>
     CenterOwner
 }
-
-/// <summary>
-/// Specifies the reason a user session is ending.
-/// </summary>
-public enum ReasonSessionEnding
-{
-    /// <summary>
-    /// The user is logging off.
-    /// </summary>
-    Logoff,
-
-    /// <summary>
-    /// The operating system is shutting down.
-    /// </summary>
-    Shutdown
-}
-
-/// <summary>
-/// Provides data for the <see cref="Window.SessionEnding"/> event.
-/// </summary>
-public sealed class SessionEndingCancelEventArgs : System.ComponentModel.CancelEventArgs
-{
-    /// <summary>
-    /// Initializes a new instance of the <see cref="SessionEndingCancelEventArgs"/> class.
-    /// </summary>
-    public SessionEndingCancelEventArgs(ReasonSessionEnding reasonSessionEnding)
-    {
-        ReasonSessionEnding = reasonSessionEnding;
-    }
-
-    /// <summary>
-    /// Gets the reason the session is ending.
-    /// </summary>
-    public ReasonSessionEnding ReasonSessionEnding { get; }
-}
-

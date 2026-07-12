@@ -42,8 +42,8 @@ public class FontDialogTests
     {
         var existing = new TextDecorationCollection
         {
-            new() { Location = TextDecorationLocation.OverLine },
-            new() { Location = TextDecorationLocation.Underline }
+            new TextDecoration { Location = TextDecorationLocation.OverLine },
+            new TextDecoration { Location = TextDecorationLocation.Underline }
         };
 
         var updated = FontDialog.UpdateDialogTextDecorations(existing, underline: false, strikeout: true);
@@ -59,8 +59,8 @@ public class FontDialogTests
     {
         var decorations = new TextDecorationCollection
         {
-            new() { Location = TextDecorationLocation.Underline },
-            new() { Location = TextDecorationLocation.Strikethrough }
+            new TextDecoration { Location = TextDecorationLocation.Underline },
+            new TextDecoration { Location = TextDecorationLocation.Strikethrough }
         };
 
         var effects = FontDialog.GetDialogEffects(decorations);

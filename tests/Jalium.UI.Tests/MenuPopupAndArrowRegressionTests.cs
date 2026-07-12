@@ -336,7 +336,7 @@ public class MenuPopupAndArrowRegressionTests
         field!.SetValue(owner, value);
     }
 
-    private sealed class RecordingDrawingContext : DrawingContext
+    private sealed class RecordingDrawingContext : DrawingContextAdapter
     {
         public int DrawGeometryCalls { get; private set; }
 

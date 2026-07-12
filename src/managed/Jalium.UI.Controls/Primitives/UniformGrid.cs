@@ -123,7 +123,7 @@ public class UniformGrid : Panel
         UpdateComputedValues();
 
         if (_computedRows == 0 || _computedColumns == 0)
-            return Size.Empty;
+            return default(Size);
 
         var columnSpacing = SanitizeSpacing(ColumnSpacing);
         var rowSpacing = SanitizeSpacing(RowSpacing);
@@ -142,7 +142,7 @@ public class UniformGrid : Panel
         var maxChildWidth = 0.0;
         var maxChildHeight = 0.0;
 
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             child.Measure(childAvailableSize);
             maxChildWidth = Math.Max(maxChildWidth, child.DesiredSize.Width);
@@ -173,7 +173,7 @@ public class UniformGrid : Panel
         var row = 0;
         var column = FirstColumn;
 
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             // Skip first column cells if specified
             while (row == 0 && column > 0 && column >= _computedColumns)

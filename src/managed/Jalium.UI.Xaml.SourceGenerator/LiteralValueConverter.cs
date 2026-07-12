@@ -99,12 +99,12 @@ internal static class LiteralValueConverter
                 return TryConvertGridLength(value);
             case "global::Jalium.UI.Media.Color":
                 return TryConvertColor(value);
-            case "global::Jalium.UI.Media.FontWeight":
-                return TryConvertNamedStaticMember(value, "global::Jalium.UI.Media.FontWeights");
-            case "global::Jalium.UI.Media.FontStyle":
-                return TryConvertNamedStaticMember(value, "global::Jalium.UI.Media.FontStyles");
-            case "global::Jalium.UI.Media.FontStretch":
-                return TryConvertNamedStaticMember(value, "global::Jalium.UI.Media.FontStretches");
+            case "global::Jalium.UI.FontWeight":
+                return TryConvertNamedStaticMember(value, "global::Jalium.UI.FontWeights");
+            case "global::Jalium.UI.FontStyle":
+                return TryConvertNamedStaticMember(value, "global::Jalium.UI.FontStyles");
+            case "global::Jalium.UI.FontStretch":
+                return TryConvertNamedStaticMember(value, "global::Jalium.UI.FontStretches");
         }
 
         // Brush hierarchy: anything assignable to Jalium.UI.Media.Brush gets the named-brush

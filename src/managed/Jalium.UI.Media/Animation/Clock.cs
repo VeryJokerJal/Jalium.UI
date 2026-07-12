@@ -1,466 +1,534 @@
+using System.Collections;
+
 namespace Jalium.UI.Media.Animation;
 
 /// <summary>
-/// Maintains run-time timing state for a Timeline.
+/// Maintains run-time timing state for a <see cref="Timeline"/>.
 /// </summary>
 public class Clock
 {
     private readonly Timeline _timeline;
+    private readonly ClockController _controller;
     private ClockState _currentState = ClockState.Stopped;
+    private TimeSpan _currentGlobalTime;
     private TimeSpan _currentTime;
     private double _currentProgress;
+    private bool _hasControllableRoot = true;
 
-    /// <summary>
-    /// Initializes a new instance of the Clock class.
-    /// </summary>
-    public Clock(Timeline timeline)
+    /// <summary>Initializes a clock for the supplied timeline.</summary>
+    protected internal Clock(Timeline timeline)
     {
         _timeline = timeline ?? throw new ArgumentNullException(nameof(timeline));
-        Controller = new ClockController(this);
+        _controller = new ClockController(this);
     }
 
-    /// <summary>
-    /// Gets the Timeline from which this Clock was created.
-    /// </summary>
     public Timeline Timeline => _timeline;
 
     /// <summary>
-    /// Gets the ClockController for this Clock.
+    /// Gets the controller for a controllable root clock. Child clocks and roots
+    /// created with <c>hasControllableRoot == false</c> return <see langword="null"/>.
     /// </summary>
-    public ClockController Controller { get; }
+    public ClockController Controller => Parent is null && HasControllableRoot ? _controller : null!;
 
-    /// <summary>
-    /// Gets the current state of this Clock.
-    /// </summary>
     public ClockState CurrentState
     {
         get => _currentState;
         internal set => _currentState = value;
     }
 
-    /// <summary>
-    /// Gets the current time within this Clock's current iteration.
-    /// </summary>
     public TimeSpan? CurrentTime
     {
-        get => _currentState == ClockState.Stopped ? null : _currentTime;
+        get => _currentState == ClockState.Stopped ? null : GetCurrentTimeCore();
         internal set => _currentTime = value ?? TimeSpan.Zero;
     }
 
-    /// <summary>
-    /// Gets the current progress of this Clock within its current iteration (0.0 to 1.0).
-    /// </summary>
     public double? CurrentProgress
     {
         get => _currentState == ClockState.Stopped ? null : _currentProgress;
-        internal set => _currentProgress = value ?? 0.0;
+        internal set => _currentProgress = value ?? 0d;
     }
 
-    /// <summary>
-    /// Gets the current iteration of this Clock.
-    /// </summary>
     public int? CurrentIteration { get; internal set; }
 
-    /// <summary>
-    /// Gets a value indicating whether the Clock is currently active, filling, or stopped.
-    /// </summary>
     public bool IsPaused { get; internal set; }
 
-    /// <summary>
-    /// Gets the natural duration of this Clock's Timeline.
-    /// </summary>
-    public Duration NaturalDuration => _timeline.Duration;
+    public Duration NaturalDuration => _timeline.GetNaturalDuration(this);
 
-    /// <summary>
-    /// Gets or sets the parent Clock.
-    /// </summary>
-    public ClockGroup? Parent { get; internal set; }
+    public Clock? Parent { get; internal set; }
 
-    /// <summary>
-    /// Occurs when this Clock completely finishes playing.
-    /// </summary>
+    public double? CurrentGlobalSpeed
+    {
+        get
+        {
+            if (_currentState == ClockState.Stopped)
+            {
+                return null;
+            }
+
+            if (IsPaused)
+            {
+                return 0d;
+            }
+
+            double parentSpeed = 1d;
+            if (Parent is not null)
+            {
+                double? inheritedSpeed = Parent.CurrentGlobalSpeed;
+                if (!inheritedSpeed.HasValue)
+                {
+                    return null;
+                }
+                parentSpeed = inheritedSpeed.Value;
+            }
+            return parentSpeed * _timeline.SpeedRatio * _controller.SpeedRatio;
+        }
+    }
+
+    protected TimeSpan CurrentGlobalTime => _currentGlobalTime;
+
+    public bool HasControllableRoot => _hasControllableRoot || Parent?.HasControllableRoot == true;
+
+    internal double AppliedSpeedRatio => _controller.SpeedRatio;
+
     public event EventHandler? Completed;
-
-    /// <summary>
-    /// Occurs when the CurrentState property changes.
-    /// </summary>
     public event EventHandler? CurrentStateInvalidated;
-
-    /// <summary>
-    /// Occurs when the CurrentTime property changes.
-    /// </summary>
     public event EventHandler? CurrentTimeInvalidated;
-
-    /// <summary>
-    /// Occurs when the CurrentGlobalSpeed property changes.
-    /// </summary>
     public event EventHandler? CurrentGlobalSpeedInvalidated;
+    public event EventHandler? RemoveRequested;
 
-    /// <summary>
-    /// Raises the Completed event.
-    /// </summary>
-    internal void RaiseCompleted() => Completed?.Invoke(this, EventArgs.Empty);
-
-    /// <summary>
-    /// Raises the CurrentStateInvalidated event.
-    /// </summary>
-    internal void RaiseCurrentStateInvalidated() => CurrentStateInvalidated?.Invoke(this, EventArgs.Empty);
-
-    /// <summary>
-    /// Raises the CurrentTimeInvalidated event.
-    /// </summary>
-    internal void RaiseCurrentTimeInvalidated() => CurrentTimeInvalidated?.Invoke(this, EventArgs.Empty);
-
-    internal void RaiseCurrentGlobalSpeedInvalidated() => CurrentGlobalSpeedInvalidated?.Invoke(this, EventArgs.Empty);
-}
-
-/// <summary>
-/// Represents a group of Clocks.
-/// </summary>
-public sealed class ClockGroup : Clock
-{
-    private readonly List<Clock> _children = new();
-
-    /// <summary>
-    /// Initializes a new instance of the ClockGroup class.
-    /// </summary>
-    public ClockGroup(Timeline timeline) : base(timeline)
+    protected virtual void DiscontinuousTimeMovement()
     {
     }
 
-    /// <summary>
-    /// Gets the children of this ClockGroup.
-    /// </summary>
-    public IReadOnlyList<Clock> Children => _children;
+    protected virtual bool GetCanSlip() => false;
 
-    /// <summary>
-    /// Adds a child clock to this group.
-    /// </summary>
+    protected virtual TimeSpan GetCurrentTimeCore() => _currentTime;
+
+    protected virtual void SpeedChanged()
+    {
+    }
+
+    protected virtual void Stopped()
+    {
+    }
+
+    internal void SetHasControllableRoot(bool value) => _hasControllableRoot = value;
+
+    internal void SetInteractiveSpeedRatio(double value) => _controller.SpeedRatio = value;
+
+    internal virtual void ControllerBegin()
+    {
+        ClockState oldState = _currentState;
+        _currentState = ClockState.Active;
+        _currentTime = TimeSpan.Zero;
+        _currentGlobalTime = TimeSpan.Zero;
+        _currentProgress = 0d;
+        CurrentIteration = 1;
+        IsPaused = false;
+        DiscontinuousTimeMovement();
+        RaiseCurrentTimeInvalidated();
+        if (oldState != _currentState)
+        {
+            RaiseCurrentStateInvalidated();
+        }
+        RaiseCurrentGlobalSpeedInvalidated();
+    }
+
+    internal virtual void ControllerPause()
+    {
+        if (_currentState == ClockState.Stopped || IsPaused)
+        {
+            return;
+        }
+
+        IsPaused = true;
+        SpeedChanged();
+        RaiseCurrentGlobalSpeedInvalidated();
+    }
+
+    internal virtual void ControllerResume()
+    {
+        if (_currentState == ClockState.Stopped || !IsPaused)
+        {
+            return;
+        }
+
+        IsPaused = false;
+        SpeedChanged();
+        RaiseCurrentGlobalSpeedInvalidated();
+    }
+
+    internal virtual void ControllerSeek(TimeSpan offset, TimeSeekOrigin origin, bool alignedToLastTick)
+    {
+        ValidateSeekOrigin(origin);
+
+        TimeSpan target = offset;
+        Duration duration = NaturalDuration;
+        if (origin == TimeSeekOrigin.Duration && duration.HasTimeSpan)
+        {
+            target = duration.TimeSpan - offset;
+        }
+
+        if (target < TimeSpan.Zero)
+        {
+            target = TimeSpan.Zero;
+        }
+
+        ClockState oldState = _currentState;
+        _currentState = ClockState.Active;
+        _currentGlobalTime = target;
+        _currentTime = target;
+        CurrentIteration = 1;
+        IsPaused = false;
+
+        if (duration.HasTimeSpan && duration.TimeSpan > TimeSpan.Zero)
+        {
+            _currentProgress = Math.Clamp(target.TotalMilliseconds / duration.TimeSpan.TotalMilliseconds, 0d, 1d);
+        }
+        else
+        {
+            _currentProgress = 0d;
+        }
+
+        DiscontinuousTimeMovement();
+        RaiseCurrentTimeInvalidated();
+        if (oldState != _currentState)
+        {
+            RaiseCurrentStateInvalidated();
+        }
+        RaiseCurrentGlobalSpeedInvalidated();
+    }
+
+    internal virtual void ControllerStop()
+    {
+        if (_currentState == ClockState.Stopped)
+        {
+            return;
+        }
+
+        _currentState = ClockState.Stopped;
+        _currentTime = TimeSpan.Zero;
+        _currentGlobalTime = TimeSpan.Zero;
+        _currentProgress = 0d;
+        CurrentIteration = null;
+        IsPaused = false;
+        Stopped();
+        RaiseCurrentTimeInvalidated();
+        RaiseCurrentStateInvalidated();
+        RaiseCurrentGlobalSpeedInvalidated();
+    }
+
+    internal virtual void ControllerSkipToFill()
+    {
+        Duration duration = NaturalDuration;
+        ClockState oldState = _currentState;
+        _currentState = _timeline.FillBehavior == FillBehavior.HoldEnd
+            ? ClockState.Filling
+            : ClockState.Stopped;
+        _currentTime = duration.HasTimeSpan ? duration.TimeSpan : TimeSpan.Zero;
+        _currentGlobalTime = _currentTime;
+        _currentProgress = _currentState == ClockState.Stopped ? 0d : 1d;
+        CurrentIteration ??= 1;
+        IsPaused = false;
+        DiscontinuousTimeMovement();
+        RaiseCurrentTimeInvalidated();
+        if (oldState != _currentState)
+        {
+            RaiseCurrentStateInvalidated();
+        }
+        RaiseCurrentGlobalSpeedInvalidated();
+        RaiseCompleted();
+    }
+
+    internal virtual void ControllerRemove()
+    {
+        ControllerStop();
+        RaiseRemoveRequested();
+    }
+
+    internal virtual void ControllerSpeedRatioChanged()
+    {
+        SpeedChanged();
+        RaiseCurrentGlobalSpeedInvalidated();
+    }
+
+    protected internal void RaiseCompleted() => Completed?.Invoke(this, EventArgs.Empty);
+    protected internal void RaiseCurrentStateInvalidated() => CurrentStateInvalidated?.Invoke(this, EventArgs.Empty);
+    protected internal void RaiseCurrentTimeInvalidated() => CurrentTimeInvalidated?.Invoke(this, EventArgs.Empty);
+    protected internal void RaiseCurrentGlobalSpeedInvalidated() => CurrentGlobalSpeedInvalidated?.Invoke(this, EventArgs.Empty);
+    protected internal void RaiseRemoveRequested() => RemoveRequested?.Invoke(this, EventArgs.Empty);
+
+    private static void ValidateSeekOrigin(TimeSeekOrigin origin)
+    {
+        if (!Enum.IsDefined(origin))
+        {
+            throw new ArgumentOutOfRangeException(nameof(origin));
+        }
+    }
+}
+
+/// <summary>Represents a group of clocks.</summary>
+public class ClockGroup : Clock
+{
+    private readonly List<Clock> _children = [];
+    private readonly ClockCollection _childrenView;
+
+    protected internal ClockGroup(TimelineGroup timelineGroup)
+        : base(timelineGroup)
+    {
+        _childrenView = new ClockCollection(this);
+    }
+
+    public new TimelineGroup Timeline => (TimelineGroup)base.Timeline;
+
+    public ClockCollection Children => _childrenView;
+
+    internal IReadOnlyList<Clock> ChildClocks => _children;
+
     internal void AddChild(Clock clock)
     {
+        ArgumentNullException.ThrowIfNull(clock);
         clock.Parent = this;
         _children.Add(clock);
     }
+
+    internal override void ControllerBegin()
+    {
+        base.ControllerBegin();
+        foreach (Clock child in _children)
+        {
+            child.ControllerBegin();
+        }
+    }
+
+    internal override void ControllerPause()
+    {
+        base.ControllerPause();
+        foreach (Clock child in _children)
+        {
+            child.ControllerPause();
+        }
+    }
+
+    internal override void ControllerResume()
+    {
+        base.ControllerResume();
+        foreach (Clock child in _children)
+        {
+            child.ControllerResume();
+        }
+    }
+
+    internal override void ControllerSeek(TimeSpan offset, TimeSeekOrigin origin, bool alignedToLastTick)
+    {
+        base.ControllerSeek(offset, origin, alignedToLastTick);
+        foreach (Clock child in _children)
+        {
+            child.ControllerSeek(offset, origin, alignedToLastTick);
+        }
+    }
+
+    internal override void ControllerStop()
+    {
+        base.ControllerStop();
+        foreach (Clock child in _children)
+        {
+            child.ControllerStop();
+        }
+    }
+
+    internal override void ControllerSkipToFill()
+    {
+        base.ControllerSkipToFill();
+        foreach (Clock child in _children)
+        {
+            child.ControllerSkipToFill();
+        }
+    }
+
+    internal override void ControllerRemove()
+    {
+        base.ControllerRemove();
+        foreach (Clock child in _children)
+        {
+            child.ControllerRemove();
+        }
+    }
 }
 
-/// <summary>
-/// Interactively controls a Clock.
-/// </summary>
+/// <summary>Interactively controls a root clock.</summary>
 public sealed class ClockController
 {
     private readonly Clock _clock;
+    private double _speedRatio = 1d;
 
     internal ClockController(Clock clock)
     {
         _clock = clock;
     }
 
-    /// <summary>
-    /// Gets the Clock that this ClockController controls.
-    /// </summary>
     public Clock Clock => _clock;
 
-    /// <summary>
-    /// Starts the Clock.
-    /// </summary>
-    public void Begin()
+    public double SpeedRatio
     {
-        _clock.CurrentState = ClockState.Active;
-        _clock.CurrentTime = TimeSpan.Zero;
-        _clock.CurrentProgress = 0.0;
-        _clock.CurrentIteration = 1;
-        _clock.IsPaused = false;
-        _clock.RaiseCurrentStateInvalidated();
+        get => _speedRatio;
+        set
+        {
+            if (!double.IsFinite(value) || value < 0d)
+            {
+                throw new ArgumentException("SpeedRatio must be a finite, non-negative value.", nameof(value));
+            }
+
+            if (_speedRatio.Equals(value))
+            {
+                return;
+            }
+
+            _speedRatio = value;
+            _clock.ControllerSpeedRatioChanged();
+        }
     }
 
-    /// <summary>
-    /// Pauses the Clock.
-    /// </summary>
-    public void Pause()
-    {
-        _clock.IsPaused = true;
-    }
-
-    /// <summary>
-    /// Resumes the Clock.
-    /// </summary>
-    public void Resume()
-    {
-        _clock.IsPaused = false;
-    }
-
-    /// <summary>
-    /// Seeks the Clock to the specified time.
-    /// </summary>
-    public void Seek(TimeSpan offset, TimeSeekOrigin origin)
-    {
-        _clock.CurrentTime = offset;
-        _clock.RaiseCurrentTimeInvalidated();
-    }
-
-    /// <summary>
-    /// Seeks the Clock to the specified time, aligned to the last tick.
-    /// </summary>
-    public void SeekAlignedToLastTick(TimeSpan offset, TimeSeekOrigin origin)
-    {
-        Seek(offset, origin);
-    }
-
-    /// <summary>
-    /// Stops the Clock.
-    /// </summary>
-    public void Stop()
-    {
-        _clock.CurrentState = ClockState.Stopped;
-        _clock.CurrentTime = null;
-        _clock.CurrentProgress = null;
-        _clock.IsPaused = false;
-        _clock.RaiseCurrentStateInvalidated();
-        _clock.RaiseCompleted();
-    }
-
-    /// <summary>
-    /// Advances the Clock to the Fill period.
-    /// </summary>
-    public void SkipToFill()
-    {
-        _clock.CurrentState = ClockState.Filling;
-        _clock.CurrentProgress = 1.0;
-        _clock.RaiseCurrentStateInvalidated();
-    }
-
-    /// <summary>
-    /// Removes the Clock from the timing tree.
-    /// </summary>
-    public void Remove()
-    {
-        Stop();
-    }
-
-    /// <summary>
-    /// Sets the speed ratio for this Clock.
-    /// </summary>
-    public void SpeedRatio(double ratio)
-    {
-        // Speed ratio adjustment
-    }
+    public void Begin() => _clock.ControllerBegin();
+    public void Pause() => _clock.ControllerPause();
+    public void Resume() => _clock.ControllerResume();
+    public void Seek(TimeSpan offset, TimeSeekOrigin origin) => _clock.ControllerSeek(offset, origin, alignedToLastTick: false);
+    public void SeekAlignedToLastTick(TimeSpan offset, TimeSeekOrigin origin) => _clock.ControllerSeek(offset, origin, alignedToLastTick: true);
+    public void Stop() => _clock.ControllerStop();
+    public void SkipToFill() => _clock.ControllerSkipToFill();
+    public void Remove() => _clock.ControllerRemove();
 }
 
-/// <summary>
-/// Describes the potential states of a Clock.
-/// </summary>
 public enum ClockState
 {
-    /// <summary>
-    /// The Clock is active and progressing.
-    /// </summary>
     Active,
-
-    /// <summary>
-    /// The Clock is in its fill period.
-    /// </summary>
     Filling,
-
-    /// <summary>
-    /// The Clock is stopped.
-    /// </summary>
-    Stopped
+    Stopped,
 }
 
-/// <summary>
-/// Specifies the origin of a seek operation.
-/// </summary>
 public enum TimeSeekOrigin
 {
-    /// <summary>
-    /// The offset is relative to the beginning of the timeline.
-    /// </summary>
     BeginTime,
-
-    /// <summary>
-    /// The offset is relative to the end of the timeline's active period.
-    /// </summary>
-    Duration
+    Duration,
 }
 
-/// <summary>
-/// Groups child Timeline objects that should become active at the same time.
-/// </summary>
-public sealed class ParallelTimeline : TimelineGroup
+/// <summary>Groups child timelines that should become active together.</summary>
+public class ParallelTimeline : TimelineGroup
 {
-    /// <summary>
-    /// Initializes a new instance of the ParallelTimeline class.
-    /// </summary>
+    public static readonly DependencyProperty SlipBehaviorProperty =
+        DependencyProperty.Register(
+            nameof(SlipBehavior),
+            typeof(SlipBehavior),
+            typeof(ParallelTimeline),
+            new PropertyMetadata(SlipBehavior.Grow),
+            static value => value is SlipBehavior behavior && Enum.IsDefined(behavior));
+
     public ParallelTimeline()
     {
     }
 
-    /// <summary>
-    /// Initializes a new instance with the specified begin time.
-    /// </summary>
-    public ParallelTimeline(TimeSpan? beginTime) : base(beginTime)
+    public ParallelTimeline(TimeSpan? beginTime)
+        : base(beginTime)
     {
     }
 
-    /// <summary>
-    /// Initializes a new instance with the specified begin time and duration.
-    /// </summary>
-    public ParallelTimeline(TimeSpan? beginTime, Duration duration) : base(beginTime, duration)
+    public ParallelTimeline(TimeSpan? beginTime, Duration duration)
+        : base(beginTime, duration)
     {
     }
 
-    /// <summary>
-    /// Gets or sets the slip behavior for this ParallelTimeline.
-    /// </summary>
-    public SlipBehavior SlipBehavior { get; set; } = SlipBehavior.Grow;
+    public ParallelTimeline(TimeSpan? beginTime, Duration duration, RepeatBehavior repeatBehavior)
+        : base(beginTime, duration, repeatBehavior)
+    {
+    }
+
+    public SlipBehavior SlipBehavior
+    {
+        get => (SlipBehavior)(GetValue(SlipBehaviorProperty) ?? SlipBehavior.Grow);
+        set => SetValue(SlipBehaviorProperty, value);
+    }
+
+    public new ParallelTimeline Clone() => (ParallelTimeline)base.Clone();
+    public new ParallelTimeline CloneCurrentValue() => (ParallelTimeline)base.CloneCurrentValue();
+
+    protected override Freezable CreateInstanceCore() => new ParallelTimeline();
+
+    protected override Duration GetNaturalDurationCore(Clock clock) =>
+        base.GetNaturalDurationCore(clock);
 }
 
-/// <summary>
-/// Describes the behavior of a timeline when one of its children slips.
-/// </summary>
 public enum SlipBehavior
 {
-    /// <summary>
-    /// The parent timeline grows to accommodate the slipping child.
-    /// </summary>
     Grow,
-
-    /// <summary>
-    /// The parent timeline does not adjust.
-    /// </summary>
-    Slip
+    Slip,
 }
 
-/// <summary>
-/// A read-only collection of Clock objects associated with a ClockGroup.
-/// This is the WPF-compatible TimelineClockCollection equivalent.
-/// </summary>
+/// <summary>A read-only collection of child clocks associated with a clock group.</summary>
 public sealed class ClockCollection : ICollection<Clock>, IReadOnlyList<Clock>
 {
     private readonly Clock _owner;
 
-    /// <summary>
-    /// Initializes a new instance of the ClockCollection class for the specified owner clock.
-    /// </summary>
     internal ClockCollection(Clock owner)
     {
         _owner = owner ?? throw new ArgumentNullException(nameof(owner));
     }
 
-    /// <summary>
-    /// Gets the number of elements in the collection.
-    /// </summary>
-    public int Count
-    {
-        get
-        {
-            if (_owner is ClockGroup clockGroup)
-            {
-                return clockGroup.Children.Count;
-            }
-            return 0;
-        }
-    }
+    public static bool Equals(ClockCollection? objA, ClockCollection? objB) =>
+        ReferenceEquals(objA, objB) || objA is not null && objA.Equals(objB);
 
-    /// <summary>
-    /// Gets a value indicating whether the collection is read-only.
-    /// </summary>
+    public int Count => _owner is ClockGroup group ? group.ChildClocks.Count : 0;
+
     public bool IsReadOnly => true;
 
-    /// <summary>
-    /// Gets the element at the specified index.
-    /// </summary>
-    public Clock this[int index]
-    {
-        get
-        {
-            if (_owner is ClockGroup clockGroup)
-            {
-                return clockGroup.Children[index];
-            }
-            throw new ArgumentOutOfRangeException(nameof(index));
-        }
-    }
+    public Clock this[int index] => _owner is ClockGroup group
+        ? group.ChildClocks[index]
+        : throw new ArgumentOutOfRangeException(nameof(index));
 
-    /// <summary>
-    /// Determines whether the collection contains a specific clock.
-    /// </summary>
-    public bool Contains(Clock item)
-    {
-        if (_owner is ClockGroup clockGroup)
-        {
-            return clockGroup.Children.Contains(item);
-        }
-        return false;
-    }
+    public bool Contains(Clock item) => _owner is ClockGroup group && group.ChildClocks.Contains(item);
 
-    /// <summary>
-    /// Copies the elements of the collection to an array.
-    /// </summary>
     public void CopyTo(Clock[] array, int arrayIndex)
     {
-        if (_owner is ClockGroup clockGroup)
+        ArgumentNullException.ThrowIfNull(array);
+        if (_owner is not ClockGroup group)
         {
-            for (var i = 0; i < clockGroup.Children.Count; i++)
-            {
-                array[arrayIndex + i] = clockGroup.Children[i];
-            }
+            return;
+        }
+
+        for (int i = 0; i < group.ChildClocks.Count; i++)
+        {
+            array[arrayIndex + i] = group.ChildClocks[i];
         }
     }
 
-    /// <summary>
-    /// Returns an enumerator that iterates through the collection.
-    /// </summary>
-    public IEnumerator<Clock> GetEnumerator()
-    {
-        if (_owner is ClockGroup clockGroup)
-        {
-            return clockGroup.Children.GetEnumerator();
-        }
-        return Enumerable.Empty<Clock>().GetEnumerator();
-    }
+    public IEnumerator<Clock> GetEnumerator() => _owner is ClockGroup group
+        ? group.ChildClocks.GetEnumerator()
+        : Enumerable.Empty<Clock>().GetEnumerator();
 
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-    void ICollection<Clock>.Add(Clock item) => throw new NotSupportedException("ClockCollection is read-only.");
-    bool ICollection<Clock>.Remove(Clock item) => throw new NotSupportedException("ClockCollection is read-only.");
-    void ICollection<Clock>.Clear() => throw new NotSupportedException("ClockCollection is read-only.");
+    public void Add(Clock item) => throw new NotSupportedException("ClockCollection is read-only.");
+    public bool Remove(Clock item) => throw new NotSupportedException("ClockCollection is read-only.");
+    public void Clear() => throw new NotSupportedException("ClockCollection is read-only.");
 
-    public override bool Equals(object? obj) =>
-        obj is ClockCollection other && _owner == other._owner;
+    void ICollection<Clock>.Add(Clock item) => Add(item);
+    bool ICollection<Clock>.Remove(Clock item) => Remove(item);
+    void ICollection<Clock>.Clear() => Clear();
 
+    public override bool Equals(object? obj) => obj is ClockCollection other && ReferenceEquals(_owner, other._owner);
     public override int GetHashCode() => _owner.GetHashCode();
-
-    public static bool operator ==(ClockCollection? left, ClockCollection? right)
-    {
-        if (ReferenceEquals(left, right)) return true;
-        if (left is null || right is null) return false;
-        return left._owner == right._owner;
-    }
-
-    public static bool operator !=(ClockCollection? left, ClockCollection? right) => !(left == right);
+    public static bool operator ==(ClockCollection? left, ClockCollection? right) => Equals(left, right);
+    public static bool operator !=(ClockCollection? left, ClockCollection? right) => !Equals(left, right);
 }
 
-/// <summary>
-/// Specifies a timeline for media playback.
-/// </summary>
+/// <summary>Specifies a timeline for media playback in the animation namespace.</summary>
 public sealed class MediaTimeline : Timeline
 {
-    /// <summary>
-    /// Gets or sets the media source URI.
-    /// </summary>
     public Uri? Source { get; set; }
 
-    /// <summary>
-    /// Initializes a new instance of the MediaTimeline class.
-    /// </summary>
     public MediaTimeline()
     {
     }
 
-    /// <summary>
-    /// Initializes a new instance with the specified source.
-    /// </summary>
     public MediaTimeline(Uri source)
     {
         Source = source;

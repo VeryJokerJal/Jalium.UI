@@ -3,8 +3,7 @@
 namespace Jalium.UI.Controls.Shapes;
 
 /// <summary>
-/// Draws a series of connected lines and curves described by a <see cref="PathGeometry"/> or
-/// SVG path mini-language string.
+/// Draws a series of connected lines and curves described by a <see cref="Geometry"/>.
 /// </summary>
 public class Path : Shape
 {
@@ -27,28 +26,27 @@ public class Path : Shape
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty DataProperty =
-        DependencyProperty.Register(nameof(Data), typeof(string), typeof(Path),
+        DependencyProperty.Register(nameof(Data), typeof(Geometry), typeof(Path),
             new PropertyMetadata(null, OnDataChanged));
 
     /// <summary>
     /// Identifies the <see cref="Geometry"/> dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
-    public static readonly DependencyProperty GeometryProperty =
-        DependencyProperty.Register(nameof(Geometry), typeof(Geometry), typeof(Path),
-            new PropertyMetadata(null, OnGeometryChanged));
+    public static readonly DependencyProperty GeometryProperty = DataProperty;
 
     #endregion
 
     #region CLR Properties
 
     /// <summary>
-    /// Gets or sets the geometry data in SVG path mini-language format.
+    /// Gets or sets the geometry defining this path. XAML strings are converted through the
+    /// registered Geometry converter.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
-    public string? Data
+    public Geometry? Data
     {
-        get => (string?)GetValue(DataProperty);
+        get => (Geometry?)GetValue(DataProperty);
         set => SetValue(DataProperty, value);
     }
 
@@ -58,8 +56,8 @@ public class Path : Shape
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public Geometry? Geometry
     {
-        get => (Geometry?)GetValue(GeometryProperty);
-        set => SetValue(GeometryProperty, value);
+        get => Data;
+        set => Data = value;
     }
 
     #endregion
@@ -67,7 +65,6 @@ public class Path : Shape
     #region Private Fields
 
     private PathGeometry? _definingGeometry;
-    private bool _suppressPropertySync;
     /// <summary>The rendered geometry with stretch transform applied.</summary>
     private PathGeometry? _renderedGeometry;
     /// <summary>The stretch matrix computed during Arrange.</summary>
@@ -475,7 +472,10 @@ public class Path : Shape
 
     private static bool SizeIsInvalidOrEmpty(Size size)
     {
-        return double.IsNaN(size.Width) || double.IsNaN(size.Height) || size.IsEmpty;
+        return double.IsNaN(size.Width)
+            || double.IsNaN(size.Height)
+            || size.IsEmpty
+            || (size.Width == 0 && size.Height == 0);
     }
 
     #endregion
@@ -494,39 +494,6 @@ public class Path : Shape
     private static void OnDataChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is not Path path) return;
-        if (path._suppressPropertySync) return;
-
-        var data = (string?)e.NewValue;
-        if (string.IsNullOrWhiteSpace(data))
-        {
-            path._definingGeometry = null;
-        }
-        else
-        {
-            try
-            {
-                path._definingGeometry = Geometry.Parse(data) as PathGeometry;
-            }
-            catch (FormatException)
-            {
-                System.Diagnostics.Debug.WriteLine($"[Path] Failed to parse path data: {data}");
-                path._definingGeometry = null;
-            }
-        }
-
-        path._suppressPropertySync = true;
-        try { path.Geometry = null; }
-        finally { path._suppressPropertySync = false; }
-
-        path._renderedGeometry = null;
-        path.InvalidateMeasure();
-        path.InvalidateVisual();
-    }
-
-    private static void OnGeometryChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is not Path path) return;
-        if (path._suppressPropertySync) return;
 
         var geometry = (Geometry?)e.NewValue;
         if (geometry == null)
@@ -542,10 +509,6 @@ public class Path : Shape
                 _ => geometry.GetFlattenedPathGeometry()
             };
         }
-
-        path._suppressPropertySync = true;
-        try { path.Data = null; }
-        finally { path._suppressPropertySync = false; }
 
         path._renderedGeometry = null;
         path.InvalidateMeasure();

@@ -1,6 +1,7 @@
-using Jalium.UI.Controls.Ink;
+using Jalium.UI.Controls;
+using Jalium.UI.Input;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI.Ink;
 
 /// <summary>
 /// Dynamically performs hit testing on an <see cref="InkCanvas"/>.
@@ -31,6 +32,13 @@ public abstract class IncrementalHitTester
         AddPointsCore(points);
     }
 
+    /// <summary>Adds stylus points to the incremental hit tester.</summary>
+    public void AddPoints(StylusPointCollection stylusPoints)
+    {
+        ArgumentNullException.ThrowIfNull(stylusPoints);
+        AddPoints(stylusPoints.Select(static point => point.ToPoint()));
+    }
+
     /// <summary>
     /// When overridden in a derived class, adds points to the hit tester.
     /// </summary>
@@ -52,13 +60,16 @@ public class IncrementalLassoHitTester : IncrementalHitTester
 {
     private readonly StrokeCollection _strokes;
     private readonly List<Point> _lassoPoints = new();
+    private readonly HashSet<Stroke> _selected = new(ReferenceEqualityComparer.Instance);
+    private readonly int _percentageWithinLasso;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="IncrementalLassoHitTester"/> class.
     /// </summary>
-    internal IncrementalLassoHitTester(StrokeCollection strokes)
+    internal IncrementalLassoHitTester(StrokeCollection strokes, int percentageWithinLasso = 80)
     {
         _strokes = strokes;
+        _percentageWithinLasso = percentageWithinLasso;
     }
 
     /// <summary>
@@ -78,44 +89,38 @@ public class IncrementalLassoHitTester : IncrementalHitTester
     {
         if (_lassoPoints.Count < 3) return;
 
-        var selectedStrokes = new StrokeCollection();
-        var deselectedStrokes = new StrokeCollection();
+        var newlySelected = new StrokeCollection();
+        var newlyDeselected = new StrokeCollection();
+        var current = new HashSet<Stroke>(ReferenceEqualityComparer.Instance);
 
         foreach (var stroke in _strokes)
         {
-            bool isInside = IsStrokeInsideLasso(stroke);
-            if (isInside)
-                selectedStrokes.Add(stroke);
+            if (stroke.HitTest(_lassoPoints, _percentageWithinLasso))
+                current.Add(stroke);
         }
 
-        if (selectedStrokes.Count > 0 || deselectedStrokes.Count > 0)
+        foreach (Stroke stroke in current)
         {
-            SelectionChanged?.Invoke(this,
-                new LassoSelectionChangedEventArgs(selectedStrokes, deselectedStrokes));
+            if (!_selected.Contains(stroke))
+                newlySelected.Add(stroke);
         }
+        foreach (Stroke stroke in _selected)
+        {
+            if (!current.Contains(stroke))
+                newlyDeselected.Add(stroke);
+        }
+
+        _selected.Clear();
+        _selected.UnionWith(current);
+        if (newlySelected.Count > 0 || newlyDeselected.Count > 0)
+            OnSelectionChanged(new LassoSelectionChangedEventArgs(newlySelected, newlyDeselected));
     }
 
-    private bool IsStrokeInsideLasso(Stroke stroke)
+    /// <summary>Raises <see cref="SelectionChanged"/>.</summary>
+    protected void OnSelectionChanged(LassoSelectionChangedEventArgs eventArgs)
     {
-        // Simplified: check if the stroke's bounding box center is inside the lasso polygon
-        var bounds = stroke.GetBounds();
-        var center = new Point(bounds.X + bounds.Width / 2, bounds.Y + bounds.Height / 2);
-        return IsPointInPolygon(center, _lassoPoints);
-    }
-
-    private static bool IsPointInPolygon(Point point, List<Point> polygon)
-    {
-        bool inside = false;
-        for (int i = 0, j = polygon.Count - 1; i < polygon.Count; j = i++)
-        {
-            if ((polygon[i].Y > point.Y) != (polygon[j].Y > point.Y) &&
-                point.X < (polygon[j].X - polygon[i].X) * (point.Y - polygon[i].Y) /
-                          (polygon[j].Y - polygon[i].Y) + polygon[i].X)
-            {
-                inside = !inside;
-            }
-        }
-        return inside;
+        ArgumentNullException.ThrowIfNull(eventArgs);
+        SelectionChanged?.Invoke(this, eventArgs);
     }
 }
 
@@ -126,6 +131,7 @@ public class IncrementalStrokeHitTester : IncrementalHitTester
 {
     private readonly StrokeCollection _strokes;
     private readonly StylusShape _eraserShape;
+    private Point? _lastPoint;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="IncrementalStrokeHitTester"/> class.
@@ -146,30 +152,50 @@ public class IncrementalStrokeHitTester : IncrementalHitTester
     {
         foreach (var point in points)
         {
+            Point[] path = _lastPoint is Point previous ? [previous, point] : [point];
             foreach (var stroke in _strokes)
             {
-                if (stroke.HitTest(point, _eraserShape.Width))
+                if (stroke.HitTest(path, _eraserShape))
                 {
-                    StrokeHit?.Invoke(this, new StrokeHitEventArgs(stroke, point));
+                    OnStrokeHit(new StrokeHitEventArgs(stroke, point, _eraserShape));
                 }
             }
+            _lastPoint = point;
         }
+    }
+
+    /// <summary>Raises <see cref="StrokeHit"/>.</summary>
+    protected void OnStrokeHit(StrokeHitEventArgs eventArgs)
+    {
+        ArgumentNullException.ThrowIfNull(eventArgs);
+        StrokeHit?.Invoke(this, eventArgs);
     }
 }
 
 /// <summary>
 /// Represents the shape of a stylus tip.
 /// </summary>
-public class StylusShape
+public abstract class StylusShape
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="StylusShape"/> class.
     /// </summary>
-    protected StylusShape(double width, double height)
+    internal StylusShape(StylusTip stylusTip, double width, double height, double rotation)
     {
+        if (!double.IsFinite(width) || width < DrawingAttributes.MinWidth || width > DrawingAttributes.MaxWidth)
+            throw new ArgumentOutOfRangeException(nameof(width));
+        if (!double.IsFinite(height) || height < DrawingAttributes.MinHeight || height > DrawingAttributes.MaxHeight)
+            throw new ArgumentOutOfRangeException(nameof(height));
+        if (!double.IsFinite(rotation))
+            throw new ArgumentOutOfRangeException(nameof(rotation));
+
+        StylusTip = stylusTip;
         Width = width;
         Height = height;
+        Rotation = rotation % 360.0;
     }
+
+    internal StylusTip StylusTip { get; }
 
     /// <summary>Gets the width of the stylus shape.</summary>
     public double Width { get; }
@@ -177,46 +203,44 @@ public class StylusShape
     /// <summary>Gets the height of the stylus shape.</summary>
     public double Height { get; }
 
-    /// <summary>Gets or sets the rotation of the stylus shape.</summary>
-    public double Rotation { get; set; }
+    /// <summary>Gets the clockwise rotation, in degrees, of the stylus shape.</summary>
+    public double Rotation { get; }
 }
 
 /// <summary>
 /// Represents a rectangular stylus tip.
 /// </summary>
-public class RectangleStylusShape : StylusShape
+public sealed class RectangleStylusShape : StylusShape
 {
     /// <summary>
     /// Initializes a new instance with the specified width and height.
     /// </summary>
-    public RectangleStylusShape(double width, double height) : base(width, height) { }
+    public RectangleStylusShape(double width, double height)
+        : this(width, height, 0.0) { }
 
     /// <summary>
     /// Initializes a new instance with the specified width, height, and rotation.
     /// </summary>
-    public RectangleStylusShape(double width, double height, double rotation) : base(width, height)
-    {
-        Rotation = rotation;
-    }
+    public RectangleStylusShape(double width, double height, double rotation)
+        : base(StylusTip.Rectangle, width, height, rotation) { }
 }
 
 /// <summary>
 /// Represents an elliptical stylus tip.
 /// </summary>
-public class EllipseStylusShape : StylusShape
+public sealed class EllipseStylusShape : StylusShape
 {
     /// <summary>
     /// Initializes a new instance with the specified width and height.
     /// </summary>
-    public EllipseStylusShape(double width, double height) : base(width, height) { }
+    public EllipseStylusShape(double width, double height)
+        : this(width, height, 0.0) { }
 
     /// <summary>
     /// Initializes a new instance with the specified width, height, and rotation.
     /// </summary>
-    public EllipseStylusShape(double width, double height, double rotation) : base(width, height)
-    {
-        Rotation = rotation;
-    }
+    public EllipseStylusShape(double width, double height, double rotation)
+        : base(StylusTip.Ellipse, width, height, rotation) { }
 }
 
 /// <summary>
@@ -250,13 +274,21 @@ public delegate void LassoSelectionChangedEventHandler(object sender, LassoSelec
 /// </summary>
 public class StrokeHitEventArgs : EventArgs
 {
+    private readonly StylusShape _eraserShape;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="StrokeHitEventArgs"/> class.
     /// </summary>
     public StrokeHitEventArgs(Stroke hitStroke, Point hitPoint)
+        : this(hitStroke, hitPoint, new EllipseStylusShape(1.0, 1.0))
     {
-        HitStroke = hitStroke;
+    }
+
+    internal StrokeHitEventArgs(Stroke hitStroke, Point hitPoint, StylusShape eraserShape)
+    {
+        HitStroke = hitStroke ?? throw new ArgumentNullException(nameof(hitStroke));
         HitPoint = hitPoint;
+        _eraserShape = eraserShape ?? throw new ArgumentNullException(nameof(eraserShape));
     }
 
     /// <summary>Gets the stroke that was hit.</summary>
@@ -264,6 +296,11 @@ public class StrokeHitEventArgs : EventArgs
 
     /// <summary>Gets the point at which the hit occurred.</summary>
     public Point HitPoint { get; }
+
+    /// <summary>Gets the fragments left after point-erasing the hit stroke.</summary>
+    public StrokeCollection GetPointEraseResults() => HitStroke.GetEraseResult(
+        [HitPoint],
+        _eraserShape);
 }
 
 /// <summary>

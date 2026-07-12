@@ -100,13 +100,13 @@ public class DockSplitPanel : Panel
     /// <summary>
     /// Includes both pane children and internal splitter bars in visual traversal.
     /// </summary>
-    public override int VisualChildrenCount => base.VisualChildrenCount + _splitters.Count;
+    protected override int VisualChildrenCount => base.VisualChildrenCount + _splitters.Count;
 
     /// <summary>
     /// Returns splitter bars first, then pane children.
     /// This keeps pane borders visually on top when adjacent to splitters.
     /// </summary>
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index < 0)
             throw new ArgumentOutOfRangeException(nameof(index));

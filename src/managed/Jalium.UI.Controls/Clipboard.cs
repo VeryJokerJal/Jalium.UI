@@ -1,7 +1,9 @@
+using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using System.Text;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Interop;
+using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 
 namespace Jalium.UI.Controls;
 
@@ -585,6 +587,128 @@ public static partial class Clipboard
         }
     }
 
+    /// <summary>Tests a canonical WPF format name against the platform clipboard.</summary>
+    internal static bool ContainsDataFormat(string format)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(format);
+        return PlatformFactory.IsWindows && IsClipboardFormatAvailable(ResolveClipboardFormat(format));
+    }
+
+    /// <summary>Reads a global-memory clipboard format.</summary>
+    internal static byte[]? GetBinaryData(string format)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(format);
+        if (!PlatformFactory.IsWindows || !OpenClipboardWithRetry())
+        {
+            return null;
+        }
+
+        try
+        {
+            var handle = GetClipboardData(ResolveClipboardFormat(format));
+            if (handle == nint.Zero)
+            {
+                return null;
+            }
+
+            var nativeSize = GlobalSize(handle);
+            if (nativeSize == 0 || nativeSize > int.MaxValue)
+            {
+                return null;
+            }
+
+            var pointer = GlobalLock(handle);
+            if (pointer == nint.Zero)
+            {
+                return null;
+            }
+
+            try
+            {
+                var bytes = new byte[(int)nativeSize];
+                Marshal.Copy(pointer, bytes, 0, bytes.Length);
+                return bytes;
+            }
+            finally
+            {
+                GlobalUnlock(handle);
+            }
+        }
+        finally
+        {
+            CloseClipboard();
+        }
+    }
+
+    /// <summary>Publishes a global-memory clipboard format in one transaction.</summary>
+    internal static bool SetBinaryData(string format, byte[] data)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(format);
+        ArgumentNullException.ThrowIfNull(data);
+        if (!PlatformFactory.IsWindows || !OpenClipboardWithRetry())
+        {
+            return false;
+        }
+
+        try
+        {
+            EmptyClipboard();
+            return SetClipboardMemory(ResolveClipboardFormat(format), data);
+        }
+        finally
+        {
+            CloseClipboard();
+        }
+    }
+
+    /// <summary>Publishes top-down BGRA pixels as a standard bottom-up CF_DIB payload.</summary>
+    internal static bool SetImagePixels(int width, int height, int stride, byte[] pixels)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
+        ArgumentOutOfRangeException.ThrowIfLessThan(stride, checked(width * 4));
+        ArgumentNullException.ThrowIfNull(pixels);
+        if (pixels.Length < checked(stride * height))
+        {
+            throw new ArgumentException("The pixel buffer is smaller than the declared image.", nameof(pixels));
+        }
+
+        const int bitmapInfoHeaderSize = 40;
+        var dibStride = checked(width * 4);
+        var dib = new byte[checked(bitmapInfoHeaderSize + (dibStride * height))];
+        var header = dib.AsSpan(0, bitmapInfoHeaderSize);
+        BinaryPrimitives.WriteInt32LittleEndian(header[0..4], bitmapInfoHeaderSize);
+        BinaryPrimitives.WriteInt32LittleEndian(header[4..8], width);
+        BinaryPrimitives.WriteInt32LittleEndian(header[8..12], height); // positive => bottom-up
+        BinaryPrimitives.WriteInt16LittleEndian(header[12..14], 1);
+        BinaryPrimitives.WriteInt16LittleEndian(header[14..16], 32);
+        BinaryPrimitives.WriteInt32LittleEndian(header[16..20], 0); // BI_RGB
+        BinaryPrimitives.WriteInt32LittleEndian(header[20..24], dibStride * height);
+
+        for (var y = 0; y < height; y++)
+        {
+            pixels.AsSpan(y * stride, dibStride).CopyTo(
+                dib.AsSpan(bitmapInfoHeaderSize + ((height - 1 - y) * dibStride), dibStride));
+        }
+
+        return SetBinaryData(DataFormats.Dib, dib);
+    }
+
+    private static uint ResolveClipboardFormat(string format)
+    {
+        return format switch
+        {
+            "Text" => CF_TEXT,
+            "Bitmap" => CF_BITMAP,
+            "DeviceIndependentBitmap" => CF_DIB,
+            "RiffAudio" => 11,
+            "WaveAudio" => 12,
+            "UnicodeText" => CF_UNICODETEXT,
+            "FileDrop" => CF_HDROP,
+            _ => RegisterClipboardFormatW(format),
+        };
+    }
+
     /// <summary>
     /// Wraps an HTML fragment in the CF_HTML clipboard format expected by Windows
     /// (Word, browsers, etc.), computing the required byte offsets.
@@ -652,6 +776,9 @@ public static partial class Clipboard
     // Win32 P/Invoke
     // ================================================================
 
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial nuint GlobalSize(nint hMem);
+
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool OpenClipboard(nint hWndNewOwner);
@@ -676,19 +803,6 @@ public static partial class Clipboard
 
     [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial uint RegisterClipboardFormatW(string lpszFormat);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    private static partial nint GlobalAlloc(uint uFlags, nuint dwBytes);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    private static partial nint GlobalLock(nint hMem);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GlobalUnlock(nint hMem);
-
-    [LibraryImport("kernel32.dll", SetLastError = true)]
-    private static partial nint GlobalFree(nint hMem);
 
     [LibraryImport("shell32.dll", StringMarshalling = StringMarshalling.Utf16)]
     private static partial uint DragQueryFileW(nint hDrop, uint iFile, char[]? lpszFile, uint cch);

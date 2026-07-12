@@ -1,6 +1,6 @@
 using Jalium.UI.Automation;
 
-namespace Jalium.UI.Controls.Automation;
+namespace Jalium.UI.Automation.Peers;
 
 /// <summary>
 /// Exposes <see cref="DiffViewer"/> to UI Automation.

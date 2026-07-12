@@ -174,7 +174,7 @@ public class LayoutReparentingStabilityTests
 
         protected override Size MeasureOverride(Size availableSize)
         {
-            foreach (var child in Children)
+            foreach (UIElement child in Children)
             {
                 if (child.Visibility != Visibility.Collapsed)
                 {
@@ -187,7 +187,7 @@ public class LayoutReparentingStabilityTests
 
         protected override Size ArrangeOverride(Size finalSize)
         {
-            foreach (var child in Children)
+            foreach (UIElement child in Children)
             {
                 if (child.Visibility != Visibility.Collapsed)
                 {
@@ -214,7 +214,7 @@ public class LayoutReparentingStabilityTests
 
         protected override Size MeasureOverride(Size availableSize)
         {
-            foreach (var child in Children)
+            foreach (UIElement child in Children)
             {
                 if (child.Visibility != Visibility.Collapsed)
                 {
@@ -227,7 +227,7 @@ public class LayoutReparentingStabilityTests
 
         protected override Size ArrangeOverride(Size finalSize)
         {
-            foreach (var child in Children)
+            foreach (UIElement child in Children)
             {
                 if (child.Visibility != Visibility.Collapsed)
                 {

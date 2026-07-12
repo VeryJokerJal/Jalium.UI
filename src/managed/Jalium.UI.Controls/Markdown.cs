@@ -34,8 +34,8 @@ public sealed class MarkdownLinkClickedEventArgs : EventArgs
 public class Markdown : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Document);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Document);
 
     private static readonly HashSet<string> s_allowedSchemes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -805,13 +805,26 @@ public class Markdown : Control
         return preferred ?? TryFindResource(resourceKey) as Brush ?? fallback;
     }
 
-    private string ResolveBodyFontFamily() =>
-        string.IsNullOrWhiteSpace(FontFamily)
-            ? (TryFindResource("BodyFontFamily") as string ?? FrameworkElement.DefaultFontFamilyName)
-            : FontFamily;
+    private string ResolveBodyFontFamily()
+    {
+        if (!string.IsNullOrWhiteSpace(FontFamily?.Source))
+            return FontFamily.Source;
+
+        return ResolveFontFamilyResource("BodyFontFamily", FrameworkElement.DefaultFontFamilyName);
+    }
 
     private string ResolveMonoFontFamily() =>
-        TryFindResource("MonoFontFamily") as string ?? "Cascadia Code";
+        ResolveFontFamilyResource("MonoFontFamily", "Cascadia Code");
+
+    private string ResolveFontFamilyResource(object resourceKey, string fallback)
+    {
+        return TryFindResource(resourceKey) switch
+        {
+            FontFamily family when !string.IsNullOrWhiteSpace(family.Source) => family.Source,
+            string source when !string.IsNullOrWhiteSpace(source) => source,
+            _ => fallback,
+        };
+    }
 
     #region Content extraction (translation / programmatic copy)
 

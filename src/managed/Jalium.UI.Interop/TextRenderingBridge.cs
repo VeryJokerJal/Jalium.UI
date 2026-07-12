@@ -12,8 +12,8 @@ namespace Jalium.UI.Interop;
 /// </summary>
 /// <remarks>
 /// <para>
-/// Public so the Media layer can locate it via reflection when the
-/// <see cref="ModuleInitializerAttribute"/> path got removed by the IL trimmer
+/// Public so the Media layer can initialize it directly when the
+/// <see cref="ModuleInitializerAttribute"/> path gets removed by the IL trimmer
 /// — <see cref="TextOptions.ProcessTextRenderingMode"/> calls
 /// <c>EnsureInitialized()</c> on first assignment as a defensive fallback.
 /// </para>
@@ -35,8 +35,8 @@ public static class TextRenderingBridge
     /// and pushes the current managed value into the native glyph atlas. Safe
     /// to call repeatedly; the second and subsequent calls return immediately.
     /// Invoked automatically through <see cref="ModuleInitializerAttribute"/>
-    /// in normal builds, and manually from <see cref="TextOptions"/> via
-    /// reflection when the trimmer dropped the module initializer path.
+    /// in normal builds, and directly from <see cref="TextOptions"/> when the
+    /// trimmer dropped the module initializer path.
     /// </summary>
     public static void EnsureInitialized()
     {

@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Themes;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -31,8 +31,8 @@ public sealed class NavigatedToChangeEventArgs : RoutedEventArgs
 public class DiffViewer : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.DiffViewerAutomationPeer(this);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.DiffViewerAutomationPeer(this);
 
     #region Cached Brushes
 
@@ -457,7 +457,7 @@ public class DiffViewer : Control
 
     private void MeasureCharacterDimensions()
     {
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 13;
 
         var measureText = new FormattedText("M", fontFamily, fontSize)
@@ -556,7 +556,7 @@ public class DiffViewer : Control
         var gutterBrush = GutterBackground ?? s_defaultGutterBackground;
         var lineNumBrush = LineNumberForeground ?? s_defaultLineNumberForeground;
         var selBrush = SelectionBrush ?? s_defaultSelectionBrush;
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 13;
 
         double gutterW = _effectiveGutterWidth;
@@ -636,7 +636,7 @@ public class DiffViewer : Control
         var gutterBrush = GutterBackground ?? s_defaultGutterBackground;
         var lineNumBrush = LineNumberForeground ?? s_defaultLineNumberForeground;
         var selBrush = SelectionBrush ?? s_defaultSelectionBrush;
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 13;
 
         double gutterW = _effectiveGutterWidth;

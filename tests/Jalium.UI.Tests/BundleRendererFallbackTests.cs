@@ -129,7 +129,7 @@ public class BundleRendererFallbackTests
         };
     }
 
-    private sealed class RecordingDrawingContext : DrawingContext
+    private sealed class RecordingDrawingContext : DrawingContextAdapter
     {
         public int DrawRectangleCalls { get; private set; }
         public int DrawImageCalls { get; private set; }

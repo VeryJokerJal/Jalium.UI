@@ -26,15 +26,23 @@ public sealed class DependencyProperty
     }
 
     /// <summary>
-    /// Per-type metadata for types that called <see cref="AddOwner"/> or <see cref="OverrideMetadata"/>.
+    /// Per-type metadata for types that called <see cref="AddOwner(Type, PropertyMetadata?)"/> or
+    /// <see cref="OverrideMetadata(Type, PropertyMetadata)"/>.
     /// Enables different types sharing the same DependencyProperty to have different callbacks and defaults.
     /// </summary>
     private readonly Dictionary<Type, PropertyMetadata> _typeMetadata = new();
 
     /// <summary>
-    /// Cache for <see cref="GetMetadata"/> lookups to avoid repeated type-hierarchy walks.
+    /// Cache for <see cref="GetMetadata(Type)"/> lookups to avoid repeated type-hierarchy walks.
     /// </summary>
     private readonly Dictionary<Type, PropertyMetadata> _metadataCache = new();
+
+    /// <summary>
+    /// Serializes metadata-map mutations with cache lookups. A per-property lock keeps unrelated
+    /// dependency properties independent and is reentrant so metadata <c>OnApply</c> callbacks can
+    /// query the metadata currently being applied.
+    /// </summary>
+    private readonly object _metadataSync = new();
 
     // Lazily-synthesized boxed default(T) for a non-nullable value-type property whose registered
     // metadata default is null (see GetEffectiveDefaultValue). A synthesized value-type default is never
@@ -171,6 +179,9 @@ public sealed class DependencyProperty
         ArgumentNullException.ThrowIfNull(propertyType);
         ArgumentNullException.ThrowIfNull(ownerType);
 
+        if (metadata?.Sealed == true)
+            throw new ArgumentException("Property metadata is already in use.", nameof(metadata));
+
         ValidateDefaultValue(metadata, propertyType, ownerType, name, validateValueCallback);
 
         var key = (ownerType, name);
@@ -181,6 +192,8 @@ public sealed class DependencyProperty
             // Return the existing property if already registered (handles concurrent registration)
             return _registered[key];
         }
+
+        dp.DefaultMetadata.Seal(dp, ownerType);
 
         return dp;
     }
@@ -207,6 +220,9 @@ public sealed class DependencyProperty
         ArgumentNullException.ThrowIfNull(propertyType);
         ArgumentNullException.ThrowIfNull(ownerType);
 
+        if (metadata?.Sealed == true)
+            throw new ArgumentException("Property metadata is already in use.", nameof(metadata));
+
         ValidateDefaultValue(metadata, propertyType, ownerType, name, validateValueCallback);
 
         var key = (ownerType, name);
@@ -217,6 +233,8 @@ public sealed class DependencyProperty
             // Return the existing property key if already registered (handles concurrent registration)
             return new DependencyPropertyKey(_registered[key]);
         }
+
+        dp.DefaultMetadata.Seal(dp, ownerType);
 
         return new DependencyPropertyKey(dp);
     }
@@ -241,6 +259,36 @@ public sealed class DependencyProperty
     public static DependencyProperty RegisterAttached(string name, Type propertyType, Type ownerType, PropertyMetadata? metadata, ValidateValueCallback? validateValueCallback)
     {
         return Register(name, propertyType, ownerType, metadata, validateValueCallback);
+    }
+
+    /// <summary>
+    /// Registers a new read-only attached dependency property.
+    /// </summary>
+    public static DependencyPropertyKey RegisterAttachedReadOnly(
+        string name,
+        Type propertyType,
+        Type ownerType,
+        PropertyMetadata? defaultMetadata)
+    {
+        return RegisterAttachedReadOnly(
+            name,
+            propertyType,
+            ownerType,
+            defaultMetadata,
+            validateValueCallback: null);
+    }
+
+    /// <summary>
+    /// Registers a new read-only attached dependency property with a value-validation callback.
+    /// </summary>
+    public static DependencyPropertyKey RegisterAttachedReadOnly(
+        string name,
+        Type propertyType,
+        Type ownerType,
+        PropertyMetadata? defaultMetadata,
+        ValidateValueCallback? validateValueCallback)
+    {
+        return RegisterReadOnly(name, propertyType, ownerType, defaultMetadata, validateValueCallback);
     }
 
     private static void ValidateDefaultValue(PropertyMetadata? metadata, Type propertyType, Type ownerType, string name, ValidateValueCallback? validateValueCallback)
@@ -330,14 +378,19 @@ public sealed class DependencyProperty
     {
         ArgumentNullException.ThrowIfNull(ownerType);
 
-        var metadata = typeMetadata ?? DefaultMetadata;
-        _typeMetadata[ownerType] = metadata;
+        if (typeMetadata is not null)
+            OverrideMetadata(ownerType, typeMetadata);
 
         // Register under the new owner so the global registry can find it
         _registered.TryAdd((ownerType, Name), this);
 
-        // Invalidate the lookup cache since a new type was added
-        _metadataCache.Clear();
+        // Keep cache maintenance serialized with GetMetadata. OverrideMetadata already invalidates
+        // the cache when owner-specific metadata was supplied; this second clear is harmless and
+        // preserves the existing AddOwner invalidation behavior.
+        lock (_metadataSync)
+        {
+            _metadataCache.Clear();
+        }
 
         return this;
     }
@@ -349,11 +402,73 @@ public sealed class DependencyProperty
     /// <param name="typeMetadata">The new metadata.</param>
     public void OverrideMetadata(Type forType, PropertyMetadata typeMetadata)
     {
+        if (ReadOnly)
+            throw new InvalidOperationException($"Metadata for read-only property '{Name}' must be overridden with its DependencyPropertyKey.");
+
+        OverrideMetadataCore(forType, typeMetadata);
+    }
+
+    /// <summary>
+    /// Overrides metadata for a read-only dependency property using its authorization key.
+    /// </summary>
+    public void OverrideMetadata(Type forType, PropertyMetadata typeMetadata, DependencyPropertyKey key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+
+        if (!ReadOnly)
+            throw new InvalidOperationException($"Dependency property '{Name}' is not read-only.");
+
+        if (!ReferenceEquals(key.DependencyProperty, this))
+            throw new ArgumentException($"The supplied key does not authorize metadata changes for '{Name}'.", nameof(key));
+
+        OverrideMetadataCore(forType, typeMetadata);
+    }
+
+    private void OverrideMetadataCore(Type forType, PropertyMetadata typeMetadata)
+    {
         ArgumentNullException.ThrowIfNull(forType);
         ArgumentNullException.ThrowIfNull(typeMetadata);
 
-        _typeMetadata[forType] = typeMetadata;
-        _metadataCache.Clear();
+        if (!typeof(DependencyObject).IsAssignableFrom(forType))
+            throw new ArgumentException("Metadata can only be overridden for DependencyObject-derived types.", nameof(forType));
+
+        lock (_metadataSync)
+        {
+            if (typeMetadata.Sealed)
+                throw new ArgumentException("Property metadata is already in use.", nameof(typeMetadata));
+
+            if (_typeMetadata.ContainsKey(forType))
+                throw new ArgumentException($"Metadata is already registered for type '{forType.FullName}'.", nameof(forType));
+
+            var baseMetadata = forType.BaseType is null
+                ? DefaultMetadata
+                : GetMetadata(forType.BaseType);
+
+            if (!baseMetadata.GetType().IsAssignableFrom(typeMetadata.GetType()))
+            {
+                throw new ArgumentException(
+                    $"Metadata type '{typeMetadata.GetType().FullName}' must derive from '{baseMetadata.GetType().FullName}'.",
+                    nameof(typeMetadata));
+            }
+
+            if (typeMetadata.IsDefaultValueModified)
+                ValidateDefaultValue(typeMetadata, PropertyType, forType, Name, ValidateValueCallback);
+
+            typeMetadata.InvokeMerge(baseMetadata, this);
+            _typeMetadata[forType] = typeMetadata;
+            _metadataCache.Clear();
+
+            try
+            {
+                typeMetadata.Seal(this, forType);
+            }
+            catch
+            {
+                _typeMetadata.Remove(forType);
+                _metadataCache.Clear();
+                throw;
+            }
+        }
     }
 
     /// <summary>
@@ -364,24 +479,48 @@ public sealed class DependencyProperty
     /// <returns>The most specific PropertyMetadata for the given type.</returns>
     public PropertyMetadata GetMetadata(Type forType)
     {
-        // Fast path: check cache
-        if (_metadataCache.TryGetValue(forType, out var cached))
-            return cached;
+        ArgumentNullException.ThrowIfNull(forType);
 
-        // Walk up the type hierarchy
-        var type = forType;
-        while (type != null)
+        lock (_metadataSync)
         {
-            if (_typeMetadata.TryGetValue(type, out var metadata))
-            {
-                _metadataCache[forType] = metadata;
-                return metadata;
-            }
-            type = type.BaseType;
-        }
+            // Fast path: check cache
+            if (_metadataCache.TryGetValue(forType, out var cached))
+                return cached;
 
-        _metadataCache[forType] = DefaultMetadata;
-        return DefaultMetadata;
+            // Walk up the type hierarchy
+            var type = forType;
+            while (type != null)
+            {
+                if (_typeMetadata.TryGetValue(type, out var metadata))
+                {
+                    _metadataCache[forType] = metadata;
+                    return metadata;
+                }
+                type = type.BaseType;
+            }
+
+            _metadataCache[forType] = DefaultMetadata;
+            return DefaultMetadata;
+        }
+    }
+
+    /// <summary>
+    /// Gets the metadata used by a specific dependency object instance.
+    /// </summary>
+    public PropertyMetadata GetMetadata(DependencyObject dependencyObject)
+    {
+        ArgumentNullException.ThrowIfNull(dependencyObject);
+        return GetMetadata(dependencyObject.GetType());
+    }
+
+    /// <summary>
+    /// Gets the metadata used by a cached dependency-object type descriptor.
+    /// </summary>
+    public PropertyMetadata GetMetadata(DependencyObjectType? dependencyObjectType)
+    {
+        return dependencyObjectType is null
+            ? DefaultMetadata
+            : GetMetadata(dependencyObjectType.SystemType);
     }
 
     /// <summary>
@@ -447,6 +586,14 @@ public sealed class DependencyPropertyKey
     {
         DependencyProperty = dp;
     }
+
+    /// <summary>
+    /// Overrides metadata for the associated read-only dependency property.
+    /// </summary>
+    public void OverrideMetadata(Type forType, PropertyMetadata typeMetadata)
+    {
+        DependencyProperty.OverrideMetadata(forType, typeMetadata, this);
+    }
 }
 
 /// <summary>
@@ -454,20 +601,58 @@ public sealed class DependencyPropertyKey
 /// </summary>
 public class PropertyMetadata
 {
+    private object? _defaultValue;
+    private PropertyChangedCallback? _propertyChangedCallback;
+    private CoerceValueCallback? _coerceValueCallback;
+    private AutomaticTransitionFactoryCallback? _automaticTransitionFactory;
+    private bool _inherits;
+    private bool _defaultValueModified;
+    private bool _inheritsModified;
+    private bool _isSealed;
+
     /// <summary>
-    /// Gets the default value for the property.
+    /// Gets or sets the default value for the property.
     /// </summary>
-    public object? DefaultValue { get; }
+    public object? DefaultValue
+    {
+        get => _defaultValue;
+        set
+        {
+            ThrowIfSealed();
+
+            if (ReferenceEquals(value, DependencyProperty.UnsetValue))
+                throw new ArgumentException("DependencyProperty.UnsetValue cannot be used as a metadata default.", nameof(value));
+
+            _defaultValue = value;
+            _defaultValueModified = true;
+        }
+    }
 
     /// <summary>
     /// Gets the callback invoked when the property value changes.
     /// </summary>
-    public PropertyChangedCallback? PropertyChangedCallback { get; }
+    public PropertyChangedCallback? PropertyChangedCallback
+    {
+        get => _propertyChangedCallback;
+        set
+        {
+            ThrowIfSealed();
+            _propertyChangedCallback = value;
+        }
+    }
 
     /// <summary>
     /// Gets the callback invoked to coerce the property value.
     /// </summary>
-    public CoerceValueCallback? CoerceValueCallback { get; }
+    public CoerceValueCallback? CoerceValueCallback
+    {
+        get => _coerceValueCallback;
+        set
+        {
+            ThrowIfSealed();
+            _coerceValueCallback = value;
+        }
+    }
 
     /// <summary>
     /// Gets a value indicating whether this property inherits its value from parent elements.
@@ -480,19 +665,43 @@ public class PropertyMetadata
     /// <see cref="FrameworkPropertyMetadata"/> or the 4-arg <see cref="PropertyMetadata"/>
     /// constructor so the value is locked at construction time.
     /// </remarks>
-    public bool Inherits { get; internal set; }
+    public bool Inherits
+    {
+        get => _inherits;
+        internal set
+        {
+            ThrowIfSealed();
+            _inherits = value;
+            _inheritsModified = true;
+        }
+    }
 
     /// <summary>
     /// Gets or sets the factory used to create automatic transition animations for this property.
     /// When null, the framework falls back to the global type-based animation factory.
     /// </summary>
-    public AutomaticTransitionFactoryCallback? AutomaticTransitionFactory { get; set; }
+    public AutomaticTransitionFactoryCallback? AutomaticTransitionFactory
+    {
+        get => _automaticTransitionFactory;
+        set
+        {
+            ThrowIfSealed();
+            _automaticTransitionFactory = value;
+        }
+    }
+
+    /// <summary>
+    /// Gets whether this metadata has been applied to a dependency property.
+    /// </summary>
+    protected bool IsSealed => _isSealed;
+
+    internal bool Sealed => _isSealed;
+    internal bool IsDefaultValueModified => _defaultValueModified;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="PropertyMetadata"/> class.
     /// </summary>
     public PropertyMetadata()
-        : this(null, null, null, false)
     {
     }
 
@@ -501,8 +710,17 @@ public class PropertyMetadata
     /// </summary>
     /// <param name="defaultValue">The default value.</param>
     public PropertyMetadata(object? defaultValue)
-        : this(defaultValue, null, null, false)
     {
+        DefaultValue = defaultValue;
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PropertyMetadata"/> class.
+    /// </summary>
+    /// <param name="propertyChangedCallback">The property changed callback.</param>
+    public PropertyMetadata(PropertyChangedCallback? propertyChangedCallback)
+    {
+        PropertyChangedCallback = propertyChangedCallback;
     }
 
     /// <summary>
@@ -511,8 +729,9 @@ public class PropertyMetadata
     /// <param name="defaultValue">The default value.</param>
     /// <param name="propertyChangedCallback">The property changed callback.</param>
     public PropertyMetadata(object? defaultValue, PropertyChangedCallback? propertyChangedCallback)
-        : this(defaultValue, propertyChangedCallback, null, false)
     {
+        DefaultValue = defaultValue;
+        PropertyChangedCallback = propertyChangedCallback;
     }
 
     /// <summary>
@@ -522,8 +741,10 @@ public class PropertyMetadata
     /// <param name="propertyChangedCallback">The property changed callback.</param>
     /// <param name="coerceValueCallback">The coerce value callback.</param>
     public PropertyMetadata(object? defaultValue, PropertyChangedCallback? propertyChangedCallback, CoerceValueCallback? coerceValueCallback)
-        : this(defaultValue, propertyChangedCallback, coerceValueCallback, false)
     {
+        DefaultValue = defaultValue;
+        PropertyChangedCallback = propertyChangedCallback;
+        CoerceValueCallback = coerceValueCallback;
     }
 
     /// <summary>
@@ -539,6 +760,55 @@ public class PropertyMetadata
         PropertyChangedCallback = propertyChangedCallback;
         CoerceValueCallback = coerceValueCallback;
         Inherits = inherits;
+    }
+
+    /// <summary>
+    /// Merges inherited metadata into this instance before it is applied.
+    /// </summary>
+    protected virtual void Merge(PropertyMetadata baseMetadata, DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(baseMetadata);
+        ArgumentNullException.ThrowIfNull(dp);
+        ThrowIfSealed();
+
+        if (!_defaultValueModified)
+            _defaultValue = baseMetadata.DefaultValue;
+
+        if (baseMetadata.PropertyChangedCallback is not null)
+            _propertyChangedCallback = baseMetadata.PropertyChangedCallback + _propertyChangedCallback;
+
+        _coerceValueCallback ??= baseMetadata.CoerceValueCallback;
+        _automaticTransitionFactory ??= baseMetadata.AutomaticTransitionFactory;
+
+        if (!_inheritsModified)
+            _inherits = baseMetadata.Inherits;
+    }
+
+    /// <summary>
+    /// Called immediately before this metadata becomes immutable.
+    /// </summary>
+    protected virtual void OnApply(DependencyProperty dp, Type targetType)
+    {
+    }
+
+    internal void InvokeMerge(PropertyMetadata baseMetadata, DependencyProperty dp)
+    {
+        Merge(baseMetadata, dp);
+    }
+
+    internal void Seal(DependencyProperty dp, Type targetType)
+    {
+        if (_isSealed)
+            return;
+
+        OnApply(dp, targetType);
+        _isSealed = true;
+    }
+
+    internal void ThrowIfSealed()
+    {
+        if (_isSealed)
+            throw new InvalidOperationException("Property metadata cannot be changed after it has been applied to a dependency property.");
     }
 }
 
@@ -602,4 +872,25 @@ public readonly struct DependencyPropertyChangedEventArgs
         OldValue = oldValue;
         NewValue = newValue;
     }
+
+    /// <inheritdoc />
+    public override bool Equals(object? obj) =>
+        Equals((DependencyPropertyChangedEventArgs)obj!);
+
+    /// <summary>Compares two property-change records.</summary>
+    public bool Equals(DependencyPropertyChangedEventArgs args) =>
+        ReferenceEquals(Property, args.Property)
+        && ReferenceEquals(OldValue, args.OldValue)
+        && ReferenceEquals(NewValue, args.NewValue);
+
+    /// <inheritdoc />
+    public override int GetHashCode() => base.GetHashCode();
+
+    public static bool operator ==(
+        DependencyPropertyChangedEventArgs left,
+        DependencyPropertyChangedEventArgs right) => left.Equals(right);
+
+    public static bool operator !=(
+        DependencyPropertyChangedEventArgs left,
+        DependencyPropertyChangedEventArgs right) => !left.Equals(right);
 }

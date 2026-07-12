@@ -146,10 +146,21 @@ public class Control : FrameworkElement
     /// appear in the UIA tree. This matches WPF behavior and prevents layout containers
     /// from polluting the accessibility tree with unnamed Custom elements.
     /// </remarks>
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
         return null;
     }
+
+    /// <summary>
+    /// Gets whether this control provides its own keyboard scrolling behavior for a
+    /// <see cref="ScrollViewer"/> in its template.
+    /// </summary>
+    /// <remarks>
+    /// A templated <see cref="ScrollViewer"/> consults this property before handling
+    /// navigation keys so controls such as <see cref="ListBox"/> can own selection and
+    /// scrolling as one operation.
+    /// </remarks>
+    protected internal virtual bool HandlesScrolling => false;
 
     #region Dependency Properties
 
@@ -201,7 +212,10 @@ public class Control : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         TextElement.FontFamilyProperty.AddOwner(typeof(Control),
-            new PropertyMetadata(FrameworkElement.DefaultFontFamilyName, OnVisualPropertyChanged, null, inherits: true));
+            new FrameworkPropertyMetadata(
+                SystemFonts.MessageFontFamily,
+                FrameworkPropertyMetadataOptions.Inherits,
+                OnVisualPropertyChanged));
 
     /// <summary>
     /// Identifies the FontSize dependency property.
@@ -262,6 +276,14 @@ public class Control : FrameworkElement
         DependencyProperty.Register(nameof(VerticalContentAlignment), typeof(VerticalAlignment), typeof(Control),
             new PropertyMetadata(VerticalAlignment.Top, OnLayoutPropertyChanged));
 
+    /// <summary>Identifies the tab-order index property.</summary>
+    public static readonly DependencyProperty TabIndexProperty =
+        KeyboardNavigation.TabIndexProperty.AddOwner(typeof(Control));
+
+    /// <summary>Identifies whether a control participates in tab navigation.</summary>
+    public static readonly DependencyProperty IsTabStopProperty =
+        KeyboardNavigation.IsTabStopProperty.AddOwner(typeof(Control));
+
     /// <summary>
     /// Identifies the Template dependency property.
     /// </summary>
@@ -277,6 +299,8 @@ public class Control : FrameworkElement
     private FrameworkElement? _templateRoot;
     private bool _templateApplied;
     private IList<TriggerBase>? _appliedTemplateTriggers;
+    private readonly Dictionary<string, FrameworkElement> _templateRegisteredNames =
+        new(StringComparer.Ordinal);
 
     #endregion
 
@@ -336,9 +360,9 @@ public class Control : FrameworkElement
     /// Gets or sets the font family.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public string FontFamily
+    public FontFamily FontFamily
     {
-        get => (string)(GetValue(FontFamilyProperty) ?? FrameworkElement.DefaultFontFamilyName);
+        get => (FontFamily)GetValue(FontFamilyProperty)!;
         set => SetValue(FontFamilyProperty, value);
     }
 
@@ -412,6 +436,20 @@ public class Control : FrameworkElement
         set => SetValue(VerticalContentAlignmentProperty, value);
     }
 
+    /// <summary>Gets or sets this control's position in tab navigation order.</summary>
+    public int TabIndex
+    {
+        get => (int)(GetValue(TabIndexProperty) ?? int.MaxValue);
+        set => SetValue(TabIndexProperty, value);
+    }
+
+    /// <summary>Gets or sets whether this control is a tab-navigation stop.</summary>
+    public bool IsTabStop
+    {
+        get => (bool)(GetValue(IsTabStopProperty) ?? true);
+        set => SetValue(IsTabStopProperty, value);
+    }
+
     /// <summary>
     /// Gets or sets the template that defines the visual appearance of the control.
     /// </summary>
@@ -477,12 +515,10 @@ public class Control : FrameworkElement
     /// Applies the template if not already applied.
     /// </summary>
     /// <returns>True if the template was applied; otherwise, false.</returns>
-    public bool ApplyTemplate()
+    protected override bool ApplyTemplateCore()
     {
         if (_templateApplied)
             return false;
-
-        _templateApplied = true;
 
         // Clear existing template content
         ClearTemplateContent();
@@ -496,6 +532,8 @@ public class Control : FrameworkElement
 
             if (_templateRoot != null)
             {
+                _templateApplied = true;
+
                 // Set the templated parent for template bindings
                 SetTemplatedParentRecursive(_templateRoot, this);
 
@@ -546,50 +584,8 @@ public class Control : FrameworkElement
     /// <summary>
     /// Called after the template is applied. Override this to get references to template parts.
     /// </summary>
-    public virtual void OnApplyTemplate()
+    public override void OnApplyTemplate()
     {
-    }
-
-    /// <summary>
-    /// Gets a named element from the applied template.
-    /// </summary>
-    /// <param name="childName">The name of the element to find.</param>
-    /// <returns>The named element, or null if not found.</returns>
-    protected DependencyObject? GetTemplateChild(string childName)
-    {
-        if (string.IsNullOrEmpty(childName) || _templateRoot == null)
-            return null;
-
-        return FindNameInTemplate(_templateRoot, childName);
-    }
-
-    private static DependencyObject? FindNameInTemplate(FrameworkElement root, string name)
-    {
-        // Check if the root has the name
-        if (root.Name == name)
-            return root;
-
-        // Check named elements registry
-        var found = root.FindName(name);
-        if (found != null)
-            return found as DependencyObject;
-
-        // Recursively search children
-        var childCount = root.VisualChildrenCount;
-        for (int i = 0; i < childCount; i++)
-        {
-            if (root.GetVisualChild(i) is FrameworkElement child)
-            {
-                if (child.Name == name)
-                    return child;
-
-                var result = FindNameInTemplate(child, name);
-                if (result != null)
-                    return result;
-            }
-        }
-
-        return null;
     }
 
     private void ClearTemplateContent()
@@ -615,23 +611,87 @@ public class Control : FrameworkElement
             RemoveVisualChild(_templateRoot);
             _templateRoot = null;
         }
+
+        // Template names belong to this particular expanded template instance.
+        // A control can replace its template more than once (for example ScrollBar's
+        // fallback Thumb template is replaced by the theme template). Keeping the old
+        // names in FrameworkElement's scope makes the next instance look like an
+        // illegal duplicate even though the old visual tree is already gone.
+        foreach (var (name, registeredElement) in _templateRegisteredNames)
+        {
+            if (ReferenceEquals(FindName(name), registeredElement))
+            {
+                UnregisterName(name);
+            }
+        }
+        _templateRegisteredNames.Clear();
+    }
+
+    private void RegisterTemplateName(string name, FrameworkElement element)
+    {
+        if (_templateRegisteredNames.TryGetValue(name, out var existing))
+        {
+            if (ReferenceEquals(existing, element))
+            {
+                return;
+            }
+
+            throw new ArgumentException(
+                $"Name '{name}' is already registered by another element in this template.",
+                nameof(name));
+        }
+
+        RegisterName(name, element);
+        _templateRegisteredNames.Add(name, element);
     }
 
     private static void SetTemplatedParentRecursive(FrameworkElement element, FrameworkElement parent)
     {
+        SetTemplatedParentRecursive(element, parent, new HashSet<FrameworkElement>(ReferenceEqualityComparer.Instance));
+    }
+
+    private static void SetTemplatedParentRecursive(
+        FrameworkElement element,
+        FrameworkElement parent,
+        HashSet<FrameworkElement> visited)
+    {
+        if (!visited.Add(element))
+        {
+            return;
+        }
+
         element.SetTemplatedParent(parent);
 
         // Register name if set
         if (!string.IsNullOrEmpty(element.Name))
         {
-            parent.RegisterName(element.Name, element);
+            if (parent is Control controlParent)
+            {
+                controlParent.RegisterTemplateName(element.Name, element);
+            }
+            else
+            {
+                parent.RegisterName(element.Name, element);
+            }
         }
 
-        // If this element is a Control that has already applied its own template,
-        // do NOT descend into its template children — they belong to this control's
-        // template, not the outer parent's template.
-        if (element is Control control && control._templateApplied)
+        // A nested Control is a boundary for its implementation visuals, but
+        // content authored by the outer template remains part of the outer
+        // template namescope and must still receive that templated parent.
+        if (element is Control)
+        {
+            if (element is ContentControl nestedContentControl && nestedContentControl.Content is FrameworkElement nestedContentChild)
+            {
+                SetTemplatedParentRecursive(nestedContentChild, parent, visited);
+            }
+
+            if (element is ScrollViewer nestedScrollViewer && nestedScrollViewer.Content is FrameworkElement nestedScrollContent)
+            {
+                SetTemplatedParentRecursive(nestedScrollContent, parent, visited);
+            }
+
             return;
+        }
 
         // Process visual children
         var childCount = element.VisualChildrenCount;
@@ -639,42 +699,42 @@ public class Control : FrameworkElement
         {
             if (element.GetVisualChild(i) is FrameworkElement child)
             {
-                SetTemplatedParentRecursive(child, parent);
+                SetTemplatedParentRecursive(child, parent, visited);
             }
         }
 
         // Special handling for Popup - its Child is not a visual child but needs TemplatedParent
         if (element is Popup popup && popup.Child is FrameworkElement popupChild)
         {
-            SetTemplatedParentRecursive(popupChild, parent);
+            SetTemplatedParentRecursive(popupChild, parent, visited);
         }
 
         // Special handling for Border - its Child might not be in visual tree yet
         if (element is Border border && border.Child is FrameworkElement borderChild)
         {
-            SetTemplatedParentRecursive(borderChild, parent);
+            SetTemplatedParentRecursive(borderChild, parent, visited);
         }
 
         // Special handling for ContentControl - its content might not be in visual tree yet
         if (element is ContentControl contentControl && contentControl.Content is FrameworkElement contentChild)
         {
-            SetTemplatedParentRecursive(contentChild, parent);
+            SetTemplatedParentRecursive(contentChild, parent, visited);
         }
 
         // Special handling for ScrollViewer - its Content might not be in visual tree yet
         if (element is ScrollViewer scrollViewer && scrollViewer.Content is FrameworkElement scrollContent)
         {
-            SetTemplatedParentRecursive(scrollContent, parent);
+            SetTemplatedParentRecursive(scrollContent, parent, visited);
         }
 
         // Special handling for Panel - ensure all children are processed
         if (element is Panel panel)
         {
-            foreach (var panelChild in panel.Children)
+            foreach (UIElement panelChild in panel.Children)
             {
                 if (panelChild is FrameworkElement panelChildElement)
                 {
-                    SetTemplatedParentRecursive(panelChildElement, parent);
+                    SetTemplatedParentRecursive(panelChildElement, parent, visited);
                 }
             }
         }
@@ -729,7 +789,7 @@ public class Control : FrameworkElement
         // Special handling for Panel - ensure all children are processed
         if (element is Panel panel)
         {
-            foreach (var panelChild in panel.Children)
+            foreach (UIElement panelChild in panel.Children)
             {
                 if (panelChild is FrameworkElement panelChildElement)
                 {
@@ -786,7 +846,7 @@ public class Control : FrameworkElement
         // Special handling for Panel
         if (element is Panel panel)
         {
-            foreach (var panelChild in panel.Children)
+            foreach (UIElement panelChild in panel.Children)
             {
                 if (panelChild is FrameworkElement panelChildElement)
                 {
@@ -797,10 +857,10 @@ public class Control : FrameworkElement
     }
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => _templateRoot != null ? 1 : 0;
+    protected override int VisualChildrenCount => _templateRoot != null ? 1 : 0;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index != 0 || _templateRoot == null)
             return base.GetVisualChild(index);
@@ -886,6 +946,9 @@ public class Control : FrameworkElement
             // Reset template application flag to force re-application
             control._templateApplied = false;
             control.ClearTemplateContent();
+            control.OnTemplateChanged(
+                (e.OldValue as ControlTemplate)!,
+                (e.NewValue as ControlTemplate)!);
 
             // Apply template immediately if we have a new template.
             // TreeViewItem overrides ShouldDeferTemplateApplication to return true
@@ -905,6 +968,26 @@ public class Control : FrameworkElement
     /// in large deferred trees (e.g. TreeViewItem in collapsed subtrees).
     /// </summary>
     internal virtual bool ShouldDeferTemplateApplication() => false;
+
+    /// <summary>Called whenever this control's template changes.</summary>
+    protected virtual void OnTemplateChanged(ControlTemplate oldTemplate, ControlTemplate newTemplate)
+    {
+    }
+
+    /// <inheritdoc />
+    public override string ToString()
+    {
+        var text = this switch
+        {
+            ContentControl { Content: not null } contentControl
+                when !ReferenceEquals(contentControl.Content, contentControl) => contentControl.Content.ToString(),
+            TextBox textBox => textBox.Text,
+            _ => null
+        };
+
+        var baseText = base.ToString() ?? GetType().FullName ?? GetType().Name;
+        return string.IsNullOrEmpty(text) ? baseText : $"{baseText} Content:{text}";
+    }
 
     #endregion
 }

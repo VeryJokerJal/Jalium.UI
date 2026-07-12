@@ -282,7 +282,7 @@ internal sealed class InspectorTreeList : ListBox
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item) => item is InspectorRowContainer;
+    protected override bool IsItemItsOwnContainerOverride(object item) => item is InspectorRowContainer;
 
     /// <inheritdoc />
     protected override void PrepareContainerForItem(FrameworkElement element, object item)

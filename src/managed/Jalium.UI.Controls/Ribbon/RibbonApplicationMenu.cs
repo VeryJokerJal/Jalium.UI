@@ -80,8 +80,8 @@ public class RibbonQuickAccessToolBar : ItemsControl
 public class RibbonContextualTabGroup : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Group);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Group);
 
     /// <summary>
     /// Identifies the Header dependency property.
@@ -95,7 +95,7 @@ public class RibbonContextualTabGroup : Control
     /// Identifies the Visibility dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsVisibleProperty =
+    public new static readonly DependencyProperty IsVisibleProperty =
         DependencyProperty.Register("IsGroupVisible", typeof(bool), typeof(RibbonContextualTabGroup),
             new PropertyMetadata(true));
 
@@ -128,7 +128,7 @@ public class RibbonContextualTabGroup : Control
     /// Gets or sets whether the contextual tab group is visible.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsVisible
+    public new bool IsVisible
     {
         get => IsGroupVisible;
         set => IsGroupVisible = value;

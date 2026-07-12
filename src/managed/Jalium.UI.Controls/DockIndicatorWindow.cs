@@ -4,6 +4,7 @@ using Jalium.UI.Interop;
 using Jalium.UI.Interop.Win32;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using RenderTargetDrawingContext = Jalium.UI.Interop.RenderTargetDrawingContext;
 using static Jalium.UI.Interop.Win32.Win32Constants;
 using static Jalium.UI.Interop.Win32.Win32Methods;
 

@@ -32,6 +32,40 @@ public sealed class AccessKeyManager
     #region Public Methods
 
     /// <summary>
+    /// Adds a handler for the access-key query routed event.
+    /// </summary>
+    public static void AddAccessKeyPressedHandler(
+        DependencyObject element,
+        AccessKeyPressedEventHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (element is not IInputElement inputElement)
+        {
+            throw new ArgumentException("The element must implement IInputElement.", nameof(element));
+        }
+
+        inputElement.AddHandler(AccessKeyPressedEvent, handler);
+    }
+
+    /// <summary>
+    /// Removes a handler for the access-key query routed event.
+    /// </summary>
+    public static void RemoveAccessKeyPressedHandler(
+        DependencyObject element,
+        AccessKeyPressedEventHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (element is not IInputElement inputElement)
+        {
+            throw new ArgumentException("The element must implement IInputElement.", nameof(element));
+        }
+
+        inputElement.RemoveHandler(AccessKeyPressedEvent, handler);
+    }
+
+    /// <summary>
     /// Registers the specified access key for the given element.
     /// </summary>
     /// <param name="key">The access key character to register.</param>
@@ -94,6 +128,10 @@ public sealed class AccessKeyManager
     /// <param name="key">The key to check.</param>
     /// <returns>true if the key is registered; otherwise, false.</returns>
     public static bool IsKeyRegistered(string key)
+        => IsKeyRegistered(scope: null!, key);
+
+    /// <summary>Determines whether a key is registered in a specific access-key scope.</summary>
+    public static bool IsKeyRegistered(object scope, string key)
     {
         if (string.IsNullOrEmpty(key))
             return false;
@@ -106,7 +144,14 @@ public sealed class AccessKeyManager
             if (akm._keyToElements.TryGetValue(normalizedKey, out var elements))
             {
                 PurgeDead(elements, null);
-                return elements.Count > 0;
+                foreach (var weakReference in elements)
+                {
+                    if (weakReference.TryGetTarget(out var element)
+                        && IsInScope(element, scope))
+                    {
+                        return true;
+                    }
+                }
             }
         }
 
@@ -120,6 +165,10 @@ public sealed class AccessKeyManager
     /// <param name="isMultiple">true if there are multiple elements registered for this key.</param>
     /// <returns>true if the key was processed; otherwise, false.</returns>
     public static bool ProcessKey(string key, bool isMultiple)
+        => ProcessKey(scope: null!, key, isMultiple);
+
+    /// <summary>Processes an access key within a specific scope.</summary>
+    public static bool ProcessKey(object scope, string key, bool isMultiple)
     {
         if (string.IsNullOrEmpty(key))
             return false;
@@ -139,7 +188,7 @@ public sealed class AccessKeyManager
                     // Use the first alive element as the target
                     foreach (var weakRef in elements)
                     {
-                        if (weakRef.TryGetTarget(out var element))
+                        if (weakRef.TryGetTarget(out var element) && IsInScope(element, scope))
                         {
                             target = element;
                             break;
@@ -157,6 +206,7 @@ public sealed class AccessKeyManager
                 Target = uiTarget,
             };
             uiTarget.RaiseEvent(args);
+            uiTarget.InvokeAccessKey(new AccessKeyEventArgs(normalizedKey, isMultiple, userInitiated: true));
             return true;
         }
 
@@ -186,6 +236,20 @@ public sealed class AccessKeyManager
         }
     }
 
+    private static bool IsInScope(IInputElement element, object? scope)
+    {
+        if (element is not UIElement uiElement)
+            return scope is null;
+
+        var args = new AccessKeyPressedEventArgs
+        {
+            RoutedEvent = AccessKeyPressedEvent,
+            Source = uiElement,
+        };
+        uiElement.RaiseEvent(args);
+        return ReferenceEquals(args.Scope, scope);
+    }
+
     #endregion
 }
 
@@ -197,10 +261,20 @@ public sealed class AccessKeyPressedEventArgs : RoutedEventArgs
     /// <summary>
     /// Initializes a new instance of the <see cref="AccessKeyPressedEventArgs"/> class.
     /// </summary>
+    public AccessKeyPressedEventArgs()
+    {
+        RoutedEvent = AccessKeyManager.AccessKeyPressedEvent;
+        Key = null!;
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="AccessKeyPressedEventArgs"/> class.
+    /// </summary>
     /// <param name="key">The access key that was pressed.</param>
     public AccessKeyPressedEventArgs(string key)
+        : this()
     {
-        Key = key ?? string.Empty;
+        Key = key;
     }
 
     /// <summary>
@@ -216,7 +290,13 @@ public sealed class AccessKeyPressedEventArgs : RoutedEventArgs
     /// <summary>
     /// Gets or sets the scope element that limits access key lookup.
     /// </summary>
-    public UIElement? Scope { get; set; }
+    public object? Scope { get; set; }
+
+    /// <inheritdoc />
+    protected override void InvokeEventHandler(Delegate genericHandler, object genericTarget)
+    {
+        ((AccessKeyPressedEventHandler)genericHandler)(genericTarget, this);
+    }
 }
 
 /// <summary>

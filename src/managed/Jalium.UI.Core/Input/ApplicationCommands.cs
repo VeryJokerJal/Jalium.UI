@@ -25,12 +25,14 @@ public static class ApplicationCommands
     private static RoutedUICommand? _saveAs;
     private static RoutedUICommand? _close;
     private static RoutedUICommand? _print;
+    private static RoutedUICommand? _cancelPrint;
     private static RoutedUICommand? _printPreview;
     private static RoutedUICommand? _find;
     private static RoutedUICommand? _replace;
     private static RoutedUICommand? _help;
     private static RoutedUICommand? _properties;
     private static RoutedUICommand? _contextMenu;
+    private static RoutedUICommand? _correctionList;
     private static RoutedUICommand? _stop;
     private static RoutedUICommand? _notACommand;
 
@@ -97,6 +99,10 @@ public static class ApplicationCommands
         "Print", "Print", typeof(ApplicationCommands),
         new InputGestureCollection { new KeyGesture(80, 2) }); // P, Ctrl
 
+    /// <summary>Gets the command that cancels an active print operation.</summary>
+    public static RoutedUICommand CancelPrint => _cancelPrint ??= new RoutedUICommand(
+        "Cancel Print", "CancelPrint", typeof(ApplicationCommands));
+
     /// <summary>Gets the PrintPreview command.</summary>
     public static RoutedUICommand PrintPreview => _printPreview ??= new RoutedUICommand(
         "Print Preview", "PrintPreview", typeof(ApplicationCommands));
@@ -123,6 +129,10 @@ public static class ApplicationCommands
     /// <summary>Gets the ContextMenu command.</summary>
     public static RoutedUICommand ContextMenu => _contextMenu ??= new RoutedUICommand(
         "Context Menu", "ContextMenu", typeof(ApplicationCommands));
+
+    /// <summary>Gets the CorrectionList command.</summary>
+    public static RoutedUICommand CorrectionList => _correctionList ??= new RoutedUICommand(
+        "Correction List", "CorrectionList", typeof(ApplicationCommands));
 
     /// <summary>Gets the Stop command.</summary>
     public static RoutedUICommand Stop => _stop ??= new RoutedUICommand(
@@ -159,6 +169,13 @@ public static class ComponentCommands
     private static RoutedUICommand? _extendSelectionDown;
     private static RoutedUICommand? _extendSelectionLeft;
     private static RoutedUICommand? _extendSelectionRight;
+    private static RoutedUICommand? _moveFocusBack;
+    private static RoutedUICommand? _moveFocusDown;
+    private static RoutedUICommand? _moveFocusForward;
+    private static RoutedUICommand? _moveFocusPageDown;
+    private static RoutedUICommand? _moveFocusPageUp;
+    private static RoutedUICommand? _moveFocusUp;
+    private static RoutedUICommand? _scrollByLine;
 
     /// <summary>Gets the ScrollPageUp command.</summary>
     public static RoutedUICommand ScrollPageUp => _scrollPageUp ??= new RoutedUICommand(
@@ -255,6 +272,27 @@ public static class ComponentCommands
     public static RoutedUICommand ExtendSelectionRight => _extendSelectionRight ??= new RoutedUICommand(
         "Extend Selection Right", "ExtendSelectionRight", typeof(ComponentCommands),
         new InputGestureCollection { new KeyGesture(39, 4) }); // Right, Shift
+
+    public static RoutedUICommand MoveFocusBack => _moveFocusBack ??= new RoutedUICommand(
+        "Move Focus Back", "MoveFocusBack", typeof(ComponentCommands));
+
+    public static RoutedUICommand MoveFocusDown => _moveFocusDown ??= new RoutedUICommand(
+        "Move Focus Down", "MoveFocusDown", typeof(ComponentCommands));
+
+    public static RoutedUICommand MoveFocusForward => _moveFocusForward ??= new RoutedUICommand(
+        "Move Focus Forward", "MoveFocusForward", typeof(ComponentCommands));
+
+    public static RoutedUICommand MoveFocusPageDown => _moveFocusPageDown ??= new RoutedUICommand(
+        "Move Focus Page Down", "MoveFocusPageDown", typeof(ComponentCommands));
+
+    public static RoutedUICommand MoveFocusPageUp => _moveFocusPageUp ??= new RoutedUICommand(
+        "Move Focus Page Up", "MoveFocusPageUp", typeof(ComponentCommands));
+
+    public static RoutedUICommand MoveFocusUp => _moveFocusUp ??= new RoutedUICommand(
+        "Move Focus Up", "MoveFocusUp", typeof(ComponentCommands));
+
+    public static RoutedUICommand ScrollByLine => _scrollByLine ??= new RoutedUICommand(
+        "Scroll By Line", "ScrollByLine", typeof(ComponentCommands));
 }
 
 /// <summary>
@@ -348,7 +386,7 @@ public static class NavigationCommands
 /// <summary>
 /// Provides a standard set of editing commands.
 /// </summary>
-public static class EditingCommands
+internal static class EditingCommands
 {
     private static RoutedUICommand? _toggleInsert;
     private static RoutedUICommand? _delete;

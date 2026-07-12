@@ -2,7 +2,7 @@ using System.Collections;
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
-using Jalium.UI.Controls.Ink;
+using Jalium.UI.Ink;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 

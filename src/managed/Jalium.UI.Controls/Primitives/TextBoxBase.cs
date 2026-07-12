@@ -1,11 +1,11 @@
-﻿using Jalium.UI.Controls;
+using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Threading;
 
-using static Jalium.UI.Cursors;
+using static Jalium.UI.Input.Cursors;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -15,9 +15,9 @@ namespace Jalium.UI.Controls.Primitives;
 public abstract class TextBoxBase : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.TextBoxBaseAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.TextBoxBaseAutomationPeer(this);
     }
 
     #region Content Host Fields
@@ -216,6 +216,10 @@ public abstract class TextBoxBase : Control
     /// </summary>
     protected readonly Stack<UndoEntry> _redoStack = new();
 
+    private int _changeBlockLevel;
+    private UndoEntry? _changeBlockStart;
+    private bool _changeBlockUndoCaptured;
+
     /// <summary>
     /// Whether an undo/redo operation is in progress.
     /// </summary>
@@ -240,6 +244,10 @@ public abstract class TextBoxBase : Control
 
     private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0x1E, 0x79, 0x3F));
     private static readonly SolidColorBrush s_defaultCaretBrush = new(Color.White);
+
+    private SolidColorBrush? _selectionOpacityBrush;
+    private SolidColorBrush? _selectionOpacitySource;
+    private double _selectionOpacityCache = double.NaN;
 
     // Static brushes for context menu rendering
     private static readonly SolidColorBrush s_ctxMenuBgBrush = new(Color.FromRgb(45, 45, 48));
@@ -323,6 +331,57 @@ public abstract class TextBoxBase : Control
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
     /// <summary>
+    /// Identifies the SelectionTextBrush dependency property.
+    /// </summary>
+    public static readonly DependencyProperty SelectionTextBrushProperty =
+        DependencyProperty.Register(nameof(SelectionTextBrush), typeof(Brush), typeof(TextBoxBase),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the SelectionOpacity dependency property.
+    /// </summary>
+    public static readonly DependencyProperty SelectionOpacityProperty =
+        DependencyProperty.Register(nameof(SelectionOpacity), typeof(double), typeof(TextBoxBase),
+            new PropertyMetadata(1.0, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the AutoWordSelection dependency property.
+    /// </summary>
+    public static readonly DependencyProperty AutoWordSelectionProperty =
+        DependencyProperty.Register(nameof(AutoWordSelection), typeof(bool), typeof(TextBoxBase),
+            new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the IsReadOnlyCaretVisible dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsReadOnlyCaretVisibleProperty =
+        DependencyProperty.Register(nameof(IsReadOnlyCaretVisible), typeof(bool), typeof(TextBoxBase),
+            new PropertyMetadata(false, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the IsInactiveSelectionHighlightEnabled dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsInactiveSelectionHighlightEnabledProperty =
+        DependencyProperty.Register(
+            nameof(IsInactiveSelectionHighlightEnabled),
+            typeof(bool),
+            typeof(TextBoxBase),
+            new PropertyMetadata(false, OnVisualPropertyChanged));
+
+    internal static readonly DependencyPropertyKey IsSelectionActivePropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(IsSelectionActive),
+            typeof(bool),
+            typeof(TextBoxBase),
+            new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the read-only IsSelectionActive dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsSelectionActiveProperty =
+        IsSelectionActivePropertyKey.DependencyProperty;
+
+    /// <summary>
     /// Identifies the CaretBrush dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
@@ -370,6 +429,26 @@ public abstract class TextBoxBase : Control
         DependencyProperty.Register(nameof(TextTrimming), typeof(TextTrimming), typeof(TextBoxBase),
             new PropertyMetadata(TextTrimming.CharacterEllipsis, OnVisualPropertyChanged));
 
+    /// <summary>
+    /// Identifies the TextChanged routed event.
+    /// </summary>
+    public static readonly RoutedEvent TextChangedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(TextChanged),
+            RoutingStrategy.Bubble,
+            typeof(TextChangedEventHandler),
+            typeof(TextBoxBase));
+
+    /// <summary>
+    /// Identifies the SelectionChanged routed event.
+    /// </summary>
+    public static readonly RoutedEvent SelectionChangedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(SelectionChanged),
+            RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler),
+            typeof(TextBoxBase));
+
     #endregion
 
     #region CLR Properties
@@ -413,6 +492,61 @@ public abstract class TextBoxBase : Control
         get => (Brush?)GetValue(SelectionBrushProperty);
         set => SetValue(SelectionBrushProperty, value);
     }
+
+    /// <summary>
+    /// Gets or sets the brush used to draw selected text.
+    /// </summary>
+    public Brush? SelectionTextBrush
+    {
+        get => (Brush?)GetValue(SelectionTextBrushProperty);
+        set => SetValue(SelectionTextBrushProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the opacity applied to the selection highlight.
+    /// </summary>
+    public double SelectionOpacity
+    {
+        get => (double)GetValue(SelectionOpacityProperty)!;
+        set => SetValue(SelectionOpacityProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether mouse drags expand the selection by whole words.
+    /// </summary>
+    public bool AutoWordSelection
+    {
+        get => (bool)GetValue(AutoWordSelectionProperty)!;
+        set => SetValue(AutoWordSelectionProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether the caret remains visible while the control is read-only.
+    /// </summary>
+    public bool IsReadOnlyCaretVisible
+    {
+        get => (bool)GetValue(IsReadOnlyCaretVisibleProperty)!;
+        set => SetValue(IsReadOnlyCaretVisibleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether a selection remains highlighted while keyboard focus is elsewhere.
+    /// </summary>
+    public bool IsInactiveSelectionHighlightEnabled
+    {
+        get => (bool)GetValue(IsInactiveSelectionHighlightEnabledProperty)!;
+        set => SetValue(IsInactiveSelectionHighlightEnabledProperty, value);
+    }
+
+    /// <summary>
+    /// Gets whether this control currently owns the active selection.
+    /// </summary>
+    public bool IsSelectionActive => (bool)GetValue(IsSelectionActiveProperty)!;
+
+    /// <summary>
+    /// Gets the spell-checking options associated with this text box.
+    /// </summary>
+    public SpellCheck SpellCheck => new(this);
 
     /// <summary>
     /// Gets or sets the brush for the caret.
@@ -518,6 +652,46 @@ public abstract class TextBoxBase : Control
         }
     }
 
+    /// <summary>
+    /// Gets the horizontal size of the scrollable text content.
+    /// </summary>
+    public double ExtentWidth => ScrollHost?.ExtentWidth ?? 0.0;
+
+    /// <summary>
+    /// Gets the vertical size of the scrollable text content.
+    /// </summary>
+    public double ExtentHeight => ScrollHost?.ExtentHeight ?? 0.0;
+
+    /// <summary>
+    /// Gets the horizontal size of the visible text viewport.
+    /// </summary>
+    public double ViewportWidth => ScrollHost?.ViewportWidth ?? 0.0;
+
+    /// <summary>
+    /// Gets the vertical size of the visible text viewport.
+    /// </summary>
+    public double ViewportHeight => ScrollHost?.ViewportHeight ?? 0.0;
+
+    private ScrollViewer? ScrollHost => _contentHost as ScrollViewer;
+
+    /// <summary>
+    /// Occurs when the text content changes.
+    /// </summary>
+    public event TextChangedEventHandler TextChanged
+    {
+        add => AddHandler(TextChangedEvent, value);
+        remove => RemoveHandler(TextChangedEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the selection changes.
+    /// </summary>
+    public event RoutedEventHandler SelectionChanged
+    {
+        add => AddHandler(SelectionChangedEvent, value);
+        remove => RemoveHandler(SelectionChangedEvent, value);
+    }
+
     #endregion
 
     #region Abstract/Virtual Members
@@ -562,7 +736,7 @@ public abstract class TextBoxBase : Control
         if (clampedColumn <= 0)
             return 0;
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
 
         if (clampedColumn < lineText.Length)
@@ -859,6 +1033,254 @@ public abstract class TextBoxBase : Control
     #region Public Methods
 
     /// <summary>
+    /// Appends text to the current content.
+    /// </summary>
+    public void AppendText(string textData)
+    {
+        if (textData is null)
+        {
+            return;
+        }
+
+        string text = GetText() + textData;
+        SetText(text);
+        _caretIndex = text.Length;
+        _selectionStart = _caretIndex;
+        _selectionLength = 0;
+        EnsureCaretVisible();
+    }
+
+    /// <summary>
+    /// Begins an undo change block. Nested blocks are coalesced into one undo unit.
+    /// </summary>
+    public void BeginChange()
+    {
+        if (_changeBlockLevel++ == 0)
+        {
+            _changeBlockStart = new UndoEntry(
+                GetText(),
+                _caretIndex,
+                _selectionStart,
+                _selectionLength);
+            _changeBlockUndoCaptured = false;
+        }
+    }
+
+    /// <summary>
+    /// Ends the current undo change block.
+    /// </summary>
+    public void EndChange()
+    {
+        if (_changeBlockLevel == 0)
+        {
+            throw new InvalidOperationException("EndChange must be paired with a preceding BeginChange call.");
+        }
+
+        if (--_changeBlockLevel == 0)
+        {
+            _changeBlockStart = null;
+            _changeBlockUndoCaptured = false;
+        }
+    }
+
+    /// <summary>
+    /// Begins a change block that ends when the returned object is disposed.
+    /// </summary>
+    public IDisposable DeclareChangeBlock()
+    {
+        BeginChange();
+        return new ChangeBlock(this);
+    }
+
+    /// <summary>
+    /// Prevents the current undo unit from being reopened. Jalium undo units are
+    /// closed eagerly, so the current unit is already locked when this returns.
+    /// </summary>
+    public void LockCurrentUndoUnit()
+    {
+    }
+
+    /// <summary>Scrolls one line to the left.</summary>
+    public void LineLeft() => ScrollByHorizontalLine(-1);
+
+    /// <summary>Scrolls one line to the right.</summary>
+    public void LineRight() => ScrollByHorizontalLine(1);
+
+    /// <summary>Scrolls one line upward.</summary>
+    public void LineUp() => ScrollByVerticalLine(-1);
+
+    /// <summary>Scrolls one line downward.</summary>
+    public void LineDown() => ScrollByVerticalLine(1);
+
+    /// <summary>Scrolls one horizontal page to the left.</summary>
+    public void PageLeft()
+    {
+        if (ScrollHost is { } scrollHost)
+        {
+            FindHostWindow()?.EnsureLayoutValidForInput();
+            scrollHost.PageLeft();
+            return;
+        }
+
+        HorizontalOffset = Math.Max(0, HorizontalOffset - Math.Max(0, RenderSize.Width));
+    }
+
+    /// <summary>Scrolls one horizontal page to the right.</summary>
+    public void PageRight()
+    {
+        if (ScrollHost is { } scrollHost)
+        {
+            FindHostWindow()?.EnsureLayoutValidForInput();
+            scrollHost.PageRight();
+            return;
+        }
+
+        HorizontalOffset += Math.Max(0, RenderSize.Width);
+    }
+
+    /// <summary>Scrolls one vertical page upward.</summary>
+    public void PageUp()
+    {
+        if (ScrollHost is { } scrollHost)
+        {
+            FindHostWindow()?.EnsureLayoutValidForInput();
+            scrollHost.PageUp();
+            return;
+        }
+
+        VerticalOffset = Math.Max(0, VerticalOffset - Math.Max(0, GetVerticalScrollViewportHeight()));
+    }
+
+    /// <summary>Scrolls one vertical page downward.</summary>
+    public void PageDown()
+    {
+        if (ScrollHost is { } scrollHost)
+        {
+            FindHostWindow()?.EnsureLayoutValidForInput();
+            scrollHost.PageDown();
+            return;
+        }
+
+        double viewport = Math.Max(0, GetVerticalScrollViewportHeight());
+        double extent = GetVerticalScrollExtentHeight(Math.Round(GetLineHeight()));
+        VerticalOffset = Math.Min(Math.Max(0, extent - viewport), VerticalOffset + viewport);
+    }
+
+    /// <summary>Scrolls to the beginning of the content.</summary>
+    public void ScrollToHome()
+    {
+        if (ScrollHost is { } scrollHost)
+        {
+            FindHostWindow()?.EnsureLayoutValidForInput();
+            scrollHost.ScrollToHome();
+            return;
+        }
+
+        HorizontalOffset = 0;
+    }
+
+    /// <summary>Scrolls to the end of the content.</summary>
+    public void ScrollToEnd()
+    {
+        if (ScrollHost is { } scrollHost)
+        {
+            FindHostWindow()?.EnsureLayoutValidForInput();
+            scrollHost.ScrollToEnd();
+            return;
+        }
+
+        double maxWidth = 0;
+        for (int index = 0; index < GetLineCount(); index++)
+        {
+            maxWidth = Math.Max(maxWidth, MeasureTextWidth(GetLineTextInternal(index)));
+        }
+
+        HorizontalOffset = Math.Max(0, maxWidth - RenderSize.Width);
+    }
+
+    /// <summary>Scrolls to a horizontal offset.</summary>
+    public void ScrollToHorizontalOffset(double offset)
+    {
+        if (double.IsNaN(offset))
+        {
+            throw new ArgumentOutOfRangeException(nameof(offset));
+        }
+
+        if (ScrollHost is { } scrollHost)
+        {
+            FindHostWindow()?.EnsureLayoutValidForInput();
+            scrollHost.ScrollToHorizontalOffset(offset);
+            return;
+        }
+
+        HorizontalOffset = offset;
+    }
+
+    /// <summary>Scrolls to a vertical offset.</summary>
+    public void ScrollToVerticalOffset(double offset)
+    {
+        if (double.IsNaN(offset))
+        {
+            throw new ArgumentOutOfRangeException(nameof(offset));
+        }
+
+        if (ScrollHost is { } scrollHost)
+        {
+            FindHostWindow()?.EnsureLayoutValidForInput();
+            scrollHost.ScrollToVerticalOffset(offset);
+            return;
+        }
+
+        VerticalOffset = offset;
+    }
+
+    private void ScrollByHorizontalLine(int direction)
+    {
+        if (ScrollHost is { } scrollHost)
+        {
+            FindHostWindow()?.EnsureLayoutValidForInput();
+            if (direction < 0)
+            {
+                scrollHost.LineLeft();
+            }
+            else
+            {
+                scrollHost.LineRight();
+            }
+
+            return;
+        }
+
+        HorizontalOffset = Math.Max(0, HorizontalOffset + (direction * 16.0));
+    }
+
+    private void ScrollByVerticalLine(int direction)
+    {
+        if (ScrollHost is { } scrollHost)
+        {
+            FindHostWindow()?.EnsureLayoutValidForInput();
+            if (direction < 0)
+            {
+                scrollHost.LineUp();
+            }
+            else
+            {
+                scrollHost.LineDown();
+            }
+
+            return;
+        }
+
+        double lineHeight = Math.Round(GetLineHeight());
+        double viewport = Math.Max(0, GetVerticalScrollViewportHeight());
+        double extent = GetVerticalScrollExtentHeight(lineHeight);
+        VerticalOffset = Math.Clamp(
+            VerticalOffset + (direction * lineHeight),
+            0,
+            Math.Max(0, extent - viewport));
+    }
+
+    /// <summary>
     /// Selects all text in the text box.
     /// </summary>
     public void SelectAll()
@@ -949,10 +1371,10 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Undoes the last edit operation.
     /// </summary>
-    public virtual void Undo()
+    public virtual bool Undo()
     {
         if (!IsUndoEnabled || _undoStack.Count == 0)
-            return;
+            return false;
 
         _isUndoRedoing = true;
         try
@@ -971,15 +1393,16 @@ public abstract class TextBoxBase : Control
         }
 
         InvalidateVisual();
+        return true;
     }
 
     /// <summary>
     /// Redoes the last undone operation.
     /// </summary>
-    public virtual void Redo()
+    public virtual bool Redo()
     {
         if (!IsUndoEnabled || _redoStack.Count == 0)
-            return;
+            return false;
 
         _isUndoRedoing = true;
         try
@@ -998,6 +1421,7 @@ public abstract class TextBoxBase : Control
         }
 
         InvalidateVisual();
+        return true;
     }
 
     /// <summary>
@@ -1107,17 +1531,33 @@ public abstract class TextBoxBase : Control
         if (!IsUndoEnabled || _isUndoRedoing)
             return;
 
-        var currentText = GetText();
+        if (_changeBlockLevel > 0)
+        {
+            if (_changeBlockUndoCaptured || _changeBlockStart is null)
+            {
+                return;
+            }
+
+            _changeBlockUndoCaptured = true;
+            PushUndoCore(_changeBlockStart);
+            return;
+        }
+
+        PushUndoCore(new UndoEntry(GetText(), _caretIndex, _selectionStart, _selectionLength));
+    }
+
+    private void PushUndoCore(UndoEntry undoEntry)
+    {
         if (_undoStack.TryPeek(out var entry) &&
-            entry.Text == currentText &&
-            entry.CaretIndex == _caretIndex &&
-            entry.SelectionStart == _selectionStart &&
-            entry.SelectionLength == _selectionLength)
+            entry.Text == undoEntry.Text &&
+            entry.CaretIndex == undoEntry.CaretIndex &&
+            entry.SelectionStart == undoEntry.SelectionStart &&
+            entry.SelectionLength == undoEntry.SelectionLength)
         {
             return;
         }
 
-        _undoStack.Push(new UndoEntry(currentText, _caretIndex, _selectionStart, _selectionLength));
+        _undoStack.Push(undoEntry);
         _redoStack.Clear();
 
         // Limit stack size
@@ -1358,12 +1798,32 @@ public abstract class TextBoxBase : Control
         // Notify UI Automation so external clients (screen readers, dictation, translation/look-up
         // tools) can detect the new selection. Only do the work when a client has attached and the
         // element's peer actually exposes the Text pattern — otherwise this is a cheap null check.
-        if (Jalium.UI.Automation.AutomationPeer.ListenerExists())
+        if (Jalium.UI.Automation.Peers.AutomationPeer.ListenerExists())
         {
             var peer = GetAutomationPeer();
-            if (peer?.GetPattern(Jalium.UI.Automation.PatternInterface.Text) != null)
-                peer.RaiseAutomationEvent(Jalium.UI.Automation.AutomationEvents.TextPatternOnTextSelectionChanged);
+            if (peer?.GetPattern(Jalium.UI.Automation.Peers.PatternInterface.Text) != null)
+                peer.RaiseAutomationEvent(Jalium.UI.Automation.Peers.AutomationEvents.TextPatternOnTextSelectionChanged);
         }
+
+        OnSelectionChanged(new RoutedEventArgs(SelectionChangedEvent, this));
+    }
+
+    /// <summary>
+    /// Raises the SelectionChanged routed event.
+    /// </summary>
+    protected virtual void OnSelectionChanged(RoutedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the TextChanged routed event.
+    /// </summary>
+    protected virtual void OnTextChanged(TextChangedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
     }
 
     /// <summary>
@@ -1392,7 +1852,7 @@ public abstract class TextBoxBase : Control
         // Use DirectWrite's native hit testing for accurate character mapping.
         // This ensures the hit position matches exactly how DirectWrite lays out
         // characters within the rendered text, avoiding prefix-measurement drift.
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         if (TextMeasurement.HitTestPoint(lineText, fontFamily, fontSize, (float)contentX, out var hitResult))
         {
@@ -1653,12 +2113,23 @@ public abstract class TextBoxBase : Control
                 else
                 {
                     _caretIndex = newCaretIndex;
-                    _selectionAnchor = newCaretIndex;
-                    _selectionStart = newCaretIndex;
-                    _selectionLength = 0;
-                    _isWordSelecting = false;
+                    if (AutoWordSelection && text.Length > 0)
+                    {
+                        SelectCurrentWord();
+                        _wordSelectionAnchorStart = _selectionStart;
+                        _wordSelectionAnchorEnd = _selectionStart + _selectionLength;
+                        _isWordSelecting = _selectionLength > 0;
+                    }
+                    else
+                    {
+                        _selectionAnchor = newCaretIndex;
+                        _selectionStart = newCaretIndex;
+                        _selectionLength = 0;
+                        _isWordSelecting = false;
+                        OnSelectionChanged();
+                    }
+
                     _isSelecting = true;
-                    OnSelectionChanged();
                 }
 
                 ResetCaretBlink();
@@ -1776,6 +2247,7 @@ public abstract class TextBoxBase : Control
     protected override void OnIsKeyboardFocusedChanged(bool isFocused)
     {
         base.OnIsKeyboardFocusedChanged(isFocused);
+        SetValue(IsSelectionActivePropertyKey, isFocused);
 
         if (isFocused)
         {
@@ -1792,7 +2264,7 @@ public abstract class TextBoxBase : Control
 
     private void StartCaretTimer()
     {
-        if (IsReadOnly)
+        if (IsReadOnly && !IsReadOnlyCaretVisible)
             return;
 
         if (_caretTimer == null)
@@ -1815,7 +2287,7 @@ public abstract class TextBoxBase : Control
 
     private void OnCaretTimerTick(object? sender, EventArgs e)
     {
-        if (!IsKeyboardFocused || IsReadOnly)
+        if (!IsKeyboardFocused || (IsReadOnly && !IsReadOnlyCaretVisible))
         {
             StopCaretTimer();
             return;
@@ -2328,11 +2800,32 @@ public abstract class TextBoxBase : Control
 
     protected Brush? ResolveSelectionBrush()
     {
-        if (HasLocalValue(SelectionBrushProperty))
-            return SelectionBrush;
+        Brush? source = HasLocalValue(SelectionBrushProperty)
+            ? SelectionBrush
+            : SelectionBrush
+                ?? ResolveThemeBrush("SelectionBackground", s_defaultSelectionBrush, "AccentFillColorSelectedTextBackgroundBrush");
 
-        return SelectionBrush
-            ?? ResolveThemeBrush("SelectionBackground", s_defaultSelectionBrush, "AccentFillColorSelectedTextBackgroundBrush");
+        double opacity = Math.Clamp(SelectionOpacity, 0.0, 1.0);
+        if (source is not SolidColorBrush solidColorBrush || opacity >= 1.0)
+        {
+            return source;
+        }
+
+        if (!ReferenceEquals(_selectionOpacitySource, solidColorBrush)
+            || _selectionOpacityCache != opacity
+            || _selectionOpacityBrush is null
+            || _selectionOpacityBrush.Color != solidColorBrush.Color
+            || _selectionOpacityBrush.Opacity != solidColorBrush.Opacity * opacity)
+        {
+            _selectionOpacitySource = solidColorBrush;
+            _selectionOpacityCache = opacity;
+            _selectionOpacityBrush = new SolidColorBrush(solidColorBrush.Color)
+            {
+                Opacity = solidColorBrush.Opacity * opacity,
+            };
+        }
+
+        return _selectionOpacityBrush;
     }
 
     protected Brush? ResolveCaretBrush()
@@ -2455,6 +2948,7 @@ public abstract class TextBoxBase : Control
         border.RenderOffset = new Point(0, -6);
 
         _contextMenuPopup.IsOpen = true;
+        _contextMenuPopup.RequestHostRender();
 
         // Animate open: fade in + slide down
         AnimateOpenContextMenu(border);
@@ -2481,6 +2975,8 @@ public abstract class TextBoxBase : Control
                 target.Opacity = 1;
                 target.RenderOffset = default;
             }
+
+            _contextMenuPopup?.RequestHostRender();
         };
         _contextMenuAnimTimer.Start();
     }
@@ -2513,6 +3009,7 @@ public abstract class TextBoxBase : Control
 
             target.Opacity = startOpacity * (1.0 - eased);
             target.RenderOffset = new Point(0, startOffsetY + (-6 - startOffsetY) * eased);
+            _contextMenuPopup?.RequestHostRender();
 
             if (progress >= 1.0)
             {
@@ -2635,6 +3132,22 @@ public abstract class TextBoxBase : Control
     #endregion
 
     #region Helper Types
+
+    private sealed class ChangeBlock : IDisposable
+    {
+        private TextBoxBase? _owner;
+
+        internal ChangeBlock(TextBoxBase owner)
+        {
+            _owner = owner;
+        }
+
+        public void Dispose()
+        {
+            TextBoxBase? owner = Interlocked.Exchange(ref _owner, null);
+            owner?.EndChange();
+        }
+    }
 
     /// <summary>
     /// Represents an undo entry.

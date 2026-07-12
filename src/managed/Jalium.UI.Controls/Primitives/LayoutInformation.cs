@@ -43,11 +43,16 @@ public static class LayoutInformation
     /// </summary>
     /// <param name="dispatcher">The dispatcher to query.</param>
     /// <returns>The element that caused the exception, or null.</returns>
-    public static UIElement? GetLayoutExceptionElement(object? dispatcher)
+    public static UIElement? GetLayoutExceptionElement(Dispatcher dispatcher)
     {
-        // In a real implementation, this would track which element
-        // caused a layout exception during the layout pass
-        return null;
+        ArgumentNullException.ThrowIfNull(dispatcher);
+        return dispatcher.LastLayoutExceptionElement;
+    }
+
+    public static UIElement? GetLayoutExceptionElement(Threading.Dispatcher dispatcher)
+    {
+        ArgumentNullException.ThrowIfNull(dispatcher);
+        return dispatcher.LegacyDispatcher.LastLayoutExceptionElement;
     }
 
     /// <summary>

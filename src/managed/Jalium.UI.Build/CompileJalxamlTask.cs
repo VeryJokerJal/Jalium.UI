@@ -125,34 +125,35 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
         Log.LogMessage(MessageImportance.Low, "开始编译: {0}", sourcePath);
 
         // 构建编译器参数
-        var args = new StringBuilder();
+        var args = new List<string>();
 
         // 优化选项
         if (!EnableOptimization)
         {
-            args.Append("-O0 ");
+            args.Add("-O0");
         }
 
         // 调试信息
         if (GenerateDebugInfo)
         {
-            args.Append("-g ");
+            args.Add("-g");
         }
 
         // 输出路径
-        args.Append($"-o \"{outputPath}\" ");
+        args.Add("-o");
+        args.Add(outputPath);
 
         // 输入文件
-        args.Append($"\"{sourcePath}\"");
+        args.Add(sourcePath);
 
         // 执行编译器（如目标文件被短暂锁定则重试）
-        var exitCode = RunCompiler(args.ToString(), out var output, out var error);
+        var exitCode = RunCompiler(args, out var output, out var error);
         for (var attempt = 0;
              attempt < 10 && exitCode != 0 && IsTransientFileLockError(error, output, outputPath);
              attempt++)
         {
             System.Threading.Thread.Sleep(150);
-            exitCode = RunCompiler(args.ToString(), out output, out error);
+            exitCode = RunCompiler(args, out output, out error);
         }
 
         if (exitCode != 0)
@@ -180,7 +181,7 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
         {
             if (File.Exists(outputPath))
             {
-                // 子进程 jalxamlc.exe 退出后，Windows 可能仍短暂持有文件句柄
+                // 编译器子进程退出后，Windows 可能仍短暂持有文件句柄
                 // （杀毒软件/Search 索引/NTFS 缓存），这里做短时间重试避免 IOException
                 var binaryData = ReadAllBytesWithRetry(outputPath);
                 var base64Content = Convert.ToBase64String(binaryData);
@@ -196,28 +197,10 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
         return outputPath;
     }
 
-    private int RunCompiler(string arguments, out string output, out string error)
+    private int RunCompiler(IReadOnlyList<string> arguments, out string output, out string error)
     {
-        string fileName;
-        string args;
-
-        if (!string.IsNullOrEmpty(CompilerPath) && File.Exists(CompilerPath))
-        {
-            // 使用指定的编译器路径
-            fileName = CompilerPath;
-            args = arguments;
-        }
-        else
-        {
-            // 使用 dotnet tool 执行编译器
-            fileName = "dotnet";
-            args = $"jalxamlc {arguments}";
-        }
-
         var psi = new ProcessStartInfo
         {
-            FileName = fileName,
-            Arguments = args,
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -225,12 +208,52 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
             WorkingDirectory = ProjectDirectory ?? Directory.GetCurrentDirectory()
         };
 
-        Log.LogMessage(MessageImportance.Low, "执行: {0} {1}", fileName, args);
+        if (!string.IsNullOrWhiteSpace(CompilerPath))
+        {
+            if (!File.Exists(CompilerPath))
+            {
+                output = string.Empty;
+                error = $"JALXAML compiler was not found at '{CompilerPath}'.";
+                return -1;
+            }
+
+            if (string.Equals(Path.GetExtension(CompilerPath), ".dll", StringComparison.OrdinalIgnoreCase))
+            {
+                // Framework-dependent compiler: portable across Windows and Linux.
+                psi.FileName = GetDotNetHostPath();
+                psi.ArgumentList.Add("exec");
+                psi.ArgumentList.Add(Path.GetFullPath(CompilerPath));
+            }
+            else
+            {
+                // Compatibility path for an existing Windows apphost or an
+                // explicitly supplied platform-native executable.
+                psi.FileName = CompilerPath;
+            }
+        }
+        else
+        {
+            // Preserve support for installations that expose jalxamlc as a
+            // dotnet-prefixed command instead of supplying CompilerPath.
+            psi.FileName = GetDotNetHostPath();
+            psi.ArgumentList.Add("jalxamlc");
+        }
+
+        foreach (var argument in arguments)
+        {
+            psi.ArgumentList.Add(argument);
+        }
+
+        Log.LogMessage(
+            MessageImportance.Low,
+            "Executing: {0} {1}",
+            psi.FileName,
+            string.Join(" ", psi.ArgumentList.Select(QuoteForLog)));
 
         using var process = Process.Start(psi);
         if (process == null)
         {
-            output = "";
+            output = string.Empty;
             error = "无法启动编译器进程";
             return -1;
         }
@@ -240,6 +263,18 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
         process.WaitForExit();
 
         return process.ExitCode;
+    }
+
+    private static string GetDotNetHostPath()
+    {
+        return Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet";
+    }
+
+    private static string QuoteForLog(string argument)
+    {
+        return argument.Any(char.IsWhiteSpace)
+            ? $"\"{argument.Replace("\"", "\\\"", StringComparison.Ordinal)}\""
+            : argument;
     }
 
     private static bool IsTransientFileLockError(string? error, string? output, string targetPath)

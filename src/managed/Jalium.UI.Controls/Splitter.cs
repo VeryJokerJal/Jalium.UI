@@ -1,8 +1,9 @@
 using Jalium.UI.Input;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
-using static Jalium.UI.Cursors;
+using static Jalium.UI.Input.Cursors;
 
 namespace Jalium.UI.Controls;
 
@@ -10,12 +11,12 @@ namespace Jalium.UI.Controls;
 /// Represents a control that provides a draggable divider between two areas.
 /// Used with Grid to create resizable panels.
 /// </summary>
-public class GridSplitter : Control
+public class GridSplitter : Thumb
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.GridSplitterAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.GridSplitterAutomationPeer(this);
     }
 
     #region Static Brushes
@@ -142,8 +143,7 @@ public class GridSplitter : Control
 
     #region Private Fields
 
-    private bool _isDragging;
-    private Point _dragStartPoint;
+    private double _cumulativeDragDelta;
     private double _originalDimension1;
     private double _originalDimension2;
     private GridResizeDirection _effectiveResizeDirection;
@@ -162,9 +162,9 @@ public class GridSplitter : Control
         VerticalAlignment = VerticalAlignment.Stretch;
         Cursor = SizeWE; // Default to horizontal resize cursor
 
-        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        DragStarted += OnDragStartedHandler;
+        DragDelta += OnDragDeltaHandler;
+        DragCompleted += OnDragCompletedHandler;
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
@@ -172,43 +172,28 @@ public class GridSplitter : Control
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
+    private void OnDragStartedHandler(object sender, DragStartedEventArgs e)
     {
-        if (!IsEnabled) return;
-
-        if (e.ChangedButton == MouseButton.Left)
-        {
-            Focus();
-            // Use position relative to parent Grid for stable coordinates during drag
-            var grid = GetParentGrid();
-            var relativeTo = grid as UIElement ?? this;
-            StartDrag(e.GetPosition(relativeTo));
-            e.Handled = true;
-        }
+        StartResize();
     }
 
-    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
+    private void OnDragDeltaHandler(object sender, DragDeltaEventArgs e)
     {
-        if (e.ChangedButton == MouseButton.Left)
-        {
-            if (_isDragging)
-            {
-                FinishDrag();
-            }
-            e.Handled = true;
-        }
+        _cumulativeDragDelta += _effectiveResizeDirection == GridResizeDirection.Columns
+            ? e.HorizontalChange
+            : e.VerticalChange;
+
+        var delta = _cumulativeDragDelta;
+        if (DragIncrement > 1)
+            delta = Math.Round(delta / DragIncrement) * DragIncrement;
+
+        ApplyResize(delta);
     }
 
-    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
+    private void OnDragCompletedHandler(object sender, DragCompletedEventArgs e)
     {
-        if (_isDragging)
-        {
-            // Use position relative to parent Grid for stable coordinates during drag
-            var grid = GetParentGrid();
-            var relativeTo = grid as UIElement ?? this;
-            UpdateDrag(e.GetPosition(relativeTo));
-            e.Handled = true;
-        }
+        ClearValue(BackgroundProperty);
+        _cumulativeDragDelta = 0;
     }
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)
@@ -262,25 +247,13 @@ public class GridSplitter : Control
         }
     }
 
-    /// <inheritdoc />
-    protected override void OnLostMouseCapture()
-    {
-        base.OnLostMouseCapture();
-        if (_isDragging)
-        {
-            FinishDrag();
-        }
-    }
-
     #endregion
 
     #region Drag Operations
 
-    private void StartDrag(Point position)
+    private void StartResize()
     {
-        CaptureMouse();
-        _isDragging = true;
-        _dragStartPoint = position;
+        _cumulativeDragDelta = 0;
         Background = s_draggingBrush;
         _effectiveResizeDirection = GetEffectiveResizeDirection();
 
@@ -304,28 +277,6 @@ public class GridSplitter : Control
                     _originalDimension2 = grid.RowDefinitions[index2].ActualHeight;
             }
         }
-    }
-
-    private void UpdateDrag(Point position)
-    {
-        var delta = _effectiveResizeDirection == GridResizeDirection.Columns
-            ? position.X - _dragStartPoint.X
-            : position.Y - _dragStartPoint.Y;
-
-        // Apply drag increment
-        if (DragIncrement > 1)
-        {
-            delta = Math.Round(delta / DragIncrement) * DragIncrement;
-        }
-
-        ApplyResize(delta);
-    }
-
-    private void FinishDrag()
-    {
-        ReleaseMouseCapture();
-        _isDragging = false;
-        ClearValue(BackgroundProperty);
     }
 
     private void ApplyResize(double delta)
@@ -386,12 +337,12 @@ public class GridSplitter : Control
 
     private Grid? GetParentGrid()
     {
-        var parent = VisualParent;
+        Visual? parent = ParentVisual;
         while (parent != null)
         {
             if (parent is Grid grid)
                 return grid;
-            parent = (parent as Visual)?.VisualParent;
+            parent = parent.InternalVisualParent;
         }
         return null;
     }
@@ -547,20 +498,20 @@ public enum GridResizeBehavior
     /// <summary>
     /// Determine behavior based on splitter alignment.
     /// </summary>
-    BasedOnAlignment,
+    BasedOnAlignment = 0,
 
     /// <summary>
     /// Resize the previous and current row/column.
     /// </summary>
-    PreviousAndCurrent,
+    PreviousAndCurrent = 2,
 
     /// <summary>
     /// Resize the current and next row/column.
     /// </summary>
-    CurrentAndNext,
+    CurrentAndNext = 1,
 
     /// <summary>
     /// Resize the previous and next row/column.
     /// </summary>
-    PreviousAndNext
+    PreviousAndNext = 3
 }

@@ -13,10 +13,18 @@
 // high-performance GPU, so Vulkan renders on the adapter that scans out the
 // display instead of paying a per-frame cross-adapter copy. The Vulkan ICDs
 // honor the same exports as the D3D runtimes.
+//
+// Under static AOT linking (JALIUM_STATIC) the D3D12 backend is always linked
+// into the same image and already defines these exports; defining them here too
+// would trip LNK2005 (symbol already defined in jalium.native.d3d12). The
+// dynamic vulkan DLL still needs its own copy for the standalone-load case, so
+// only elide the definition under static linking.
+#ifndef JALIUM_STATIC
 extern "C" {
     __declspec(dllexport) unsigned long NvOptimusEnablement = 0x00000001;
     __declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
 }
+#endif
 #endif
 
 

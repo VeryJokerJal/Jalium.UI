@@ -25,6 +25,19 @@ public sealed class VisualCollection : IList<Visual>, IReadOnlyList<Visual>
     /// </summary>
     public int Count => _items.Count;
 
+    /// <summary>Gets or sets the number of elements the collection can hold without resizing.</summary>
+    public int Capacity
+    {
+        get => _items.Capacity;
+        set => _items.Capacity = value;
+    }
+
+    /// <summary>Gets whether access to the collection is synchronized.</summary>
+    public bool IsSynchronized => false;
+
+    /// <summary>Gets an object that can be used to synchronize access to the collection.</summary>
+    public object SyncRoot => ((ICollection)_items).SyncRoot;
+
     /// <summary>
     /// Gets a value indicating whether the collection is read-only.
     /// </summary>
@@ -116,9 +129,8 @@ public sealed class VisualCollection : IList<Visual>, IReadOnlyList<Visual>
     {
         for (int i = _items.Count - 1; i >= 0; i--)
         {
-            _owner.InternalRemoveVisualChild(_items[i]);
+            RemoveAt(i);
         }
-        _items.Clear();
     }
 
     /// <summary>
@@ -135,6 +147,9 @@ public sealed class VisualCollection : IList<Visual>, IReadOnlyList<Visual>
     /// Copies the elements of the collection to an array.
     /// </summary>
     public void CopyTo(Visual[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
+
+    /// <summary>Copies the collection to a compatible one-dimensional array.</summary>
+    public void CopyTo(Array array, int index) => ((ICollection)_items).CopyTo(array, index);
 
     /// <inheritdoc />
     public IEnumerator<Visual> GetEnumerator() => _items.GetEnumerator();

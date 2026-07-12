@@ -101,7 +101,7 @@ public class FontIcon : IconElement
         var fontFamily = FontFamily ?? DefaultFontFamily;
         double fontSize = FontSize > 0 ? FontSize : 16;
 
-        var ft = new FormattedText(Glyph, fontFamily, fontSize)
+        var ft = new FormattedText(Glyph, fontFamily.Source, fontSize)
         {
             Foreground = foreground,
             MaxTextWidth = RenderSize.Width,

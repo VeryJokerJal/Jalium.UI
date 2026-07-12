@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <!-- Framework internals are intentionally exposed to Jalium.UI.Tests. Use
+         the same test assembly identity for the portable Linux slice. -->
+    <AssemblyName>Jalium.UI.Tests</AssemblyName>
+    <RootNamespace>Jalium.UI.Tests</RootNamespace>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\Jalium.UI.Tests\LinuxDesktopPortalTests.cs" Link="LinuxDesktopPortalTests.cs" />
+    <Compile Include="..\Jalium.UI.Tests\LinuxDragDropTests.cs" Link="LinuxDragDropTests.cs" />
+    <Compile Include="..\Jalium.UI.Tests\NativePlatformAbiTests.cs" Link="NativePlatformAbiTests.cs" />
+    <Compile Include="..\Jalium.UI.Tests\NativeSurfaceDescriptorTests.cs" Link="NativeSurfaceDescriptorTests.cs" />
+    <Compile Include="..\Jalium.UI.Tests\RenderTargetTestNative.cs" Link="RenderTargetTestNative.cs" />
+  </ItemGroup>
+
+</Project>

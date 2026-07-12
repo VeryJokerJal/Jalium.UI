@@ -322,7 +322,7 @@ public class MarkdownAndQrCodeTests
         }
     }
 
-    private sealed class RecordingDrawingContext : DrawingContext
+    private sealed class RecordingDrawingContext : DrawingContextAdapter
     {
         private readonly Brush _trackedBrush;
 

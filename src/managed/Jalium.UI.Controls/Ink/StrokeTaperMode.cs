@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls.Ink;
+namespace Jalium.UI.Ink;
 
 /// <summary>
 /// Specifies the taper mode for stroke rendering.

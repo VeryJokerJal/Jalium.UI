@@ -55,10 +55,10 @@ public sealed class FocusVisualAdorner : Adorner
     internal FocusVisualHost Host => _host;
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => 1;
+    protected override int VisualChildrenCount => 1;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index != 0)
             throw new ArgumentOutOfRangeException(nameof(index));

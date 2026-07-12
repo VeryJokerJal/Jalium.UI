@@ -17,9 +17,9 @@ public partial class ScrollViewer : Control
     private static readonly bool s_isScrollBarAutoHideEnabledByDefault = DetermineDefaultScrollBarAutoHide();
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ScrollViewerAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ScrollViewerAutomationPeer(this);
     }
 
     #region Fields
@@ -31,10 +31,18 @@ public partial class ScrollViewer : Control
     private double _borderPenThickness;
     private double _horizontalOffset;
     private double _verticalOffset;
+    private double _requestedHorizontalOffset;
+    private double _requestedVerticalOffset;
     private double _extentWidth;
     private double _extentHeight;
     private double _viewportWidth;
     private double _viewportHeight;
+    private double _lastNotifiedExtentWidth;
+    private double _lastNotifiedExtentHeight;
+    private double _lastNotifiedViewportWidth;
+    private double _lastNotifiedViewportHeight;
+    private double _lastNotifiedHorizontalOffset;
+    private double _lastNotifiedVerticalOffset;
     private readonly ScrollBar _verticalScrollBar;
     private readonly ScrollBar _horizontalScrollBar;
     private bool _isUpdatingScrollBars;
@@ -59,23 +67,31 @@ public partial class ScrollViewer : Control
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty =
-        DependencyProperty.Register(nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ScrollViewer),
-            new PropertyMetadata(ScrollBarVisibility.Disabled, OnScrollBarVisibilityChanged));
+        DependencyProperty.RegisterAttached(
+            nameof(HorizontalScrollBarVisibility),
+            typeof(ScrollBarVisibility),
+            typeof(ScrollViewer),
+            new PropertyMetadata(ScrollBarVisibility.Disabled, OnScrollBarVisibilityChanged),
+            IsValidScrollBarVisibility);
 
     /// <summary>
     /// Identifies the VerticalScrollBarVisibility dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
-        DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ScrollViewer),
-            new PropertyMetadata(ScrollBarVisibility.Auto, OnScrollBarVisibilityChanged));
+        DependencyProperty.RegisterAttached(
+            nameof(VerticalScrollBarVisibility),
+            typeof(ScrollBarVisibility),
+            typeof(ScrollViewer),
+            new PropertyMetadata(ScrollBarVisibility.Auto, OnScrollBarVisibilityChanged),
+            IsValidScrollBarVisibility);
 
     /// <summary>
     /// Identifies the CanContentScroll dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanContentScrollProperty =
-        DependencyProperty.Register(nameof(CanContentScroll), typeof(bool), typeof(ScrollViewer),
+        DependencyProperty.RegisterAttached(nameof(CanContentScroll), typeof(bool), typeof(ScrollViewer),
             new PropertyMetadata(false));
 
     /// <summary>
@@ -83,7 +99,7 @@ public partial class ScrollViewer : Control
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PanningModeProperty =
-        DependencyProperty.Register(nameof(PanningMode), typeof(PanningMode), typeof(ScrollViewer),
+        DependencyProperty.RegisterAttached(nameof(PanningMode), typeof(PanningMode), typeof(ScrollViewer),
             // Default to VerticalFirst (WinUI parity): a touch contact that
             // drifts > threshold along the y-axis locks vertical scrolling;
             // crossing the horizontal threshold first lets the gesture pan
@@ -109,16 +125,24 @@ public partial class ScrollViewer : Control
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PanningDecelerationProperty =
-        DependencyProperty.Register(nameof(PanningDeceleration), typeof(double), typeof(ScrollViewer),
-            new PropertyMetadata(DefaultPanningDeceleration, OnPanningParametersChanged));
+        DependencyProperty.RegisterAttached(
+            nameof(PanningDeceleration),
+            typeof(double),
+            typeof(ScrollViewer),
+            new PropertyMetadata(DefaultPanningDeceleration, OnPanningParametersChanged),
+            IsFiniteNonNegative);
 
     /// <summary>
     /// Identifies the PanningRatio dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PanningRatioProperty =
-        DependencyProperty.Register(nameof(PanningRatio), typeof(double), typeof(ScrollViewer),
-            new PropertyMetadata(DefaultPanningRatio, OnPanningParametersChanged));
+        DependencyProperty.RegisterAttached(
+            nameof(PanningRatio),
+            typeof(double),
+            typeof(ScrollViewer),
+            new PropertyMetadata(DefaultPanningRatio, OnPanningParametersChanged),
+            IsFiniteNonNegative);
 
     /// <summary>
     /// Identifies the IsScrollInertiaEnabled dependency property.
@@ -141,7 +165,7 @@ public partial class ScrollViewer : Control
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDeferredScrollingEnabledProperty =
-        DependencyProperty.Register(nameof(IsDeferredScrollingEnabled), typeof(bool), typeof(ScrollViewer),
+        DependencyProperty.RegisterAttached(nameof(IsDeferredScrollingEnabled), typeof(bool), typeof(ScrollViewer),
             new PropertyMetadata(false));
 
     /// <summary>
@@ -310,11 +334,7 @@ public partial class ScrollViewer : Control
             if (_content != value)
             {
                 // Disconnect old IScrollInfo
-                if (_scrollInfo != null)
-                {
-                    _scrollInfo.ScrollOwner = null;
-                    _scrollInfo = null;
-                }
+                ScrollInfo = null;
 
                 // Remove old content from visual tree
                 if (_content != null)
@@ -331,13 +351,7 @@ public partial class ScrollViewer : Control
                 }
 
                 // Connect new IScrollInfo if content implements it
-                _scrollInfo = _content as IScrollInfo;
-                if (_scrollInfo != null)
-                {
-                    _scrollInfo.ScrollOwner = this;
-                    _scrollInfo.CanHorizontallyScroll = HorizontalScrollBarVisibility != ScrollBarVisibility.Disabled;
-                    _scrollInfo.CanVerticallyScroll = VerticalScrollBarVisibility != ScrollBarVisibility.Disabled;
-                }
+                ScrollInfo = _content as IScrollInfo;
 
                 InvalidateMeasure();
             }
@@ -347,12 +361,12 @@ public partial class ScrollViewer : Control
     /// <summary>
     /// Gets the horizontal scroll offset.
     /// </summary>
-    public double HorizontalOffset => _horizontalOffset;
+    public double HorizontalOffset => _requestedHorizontalOffset;
 
     /// <summary>
     /// Gets the vertical scroll offset.
     /// </summary>
-    public double VerticalOffset => _verticalOffset;
+    public double VerticalOffset => _requestedVerticalOffset;
 
     /// <summary>
     /// Gets the width of the scrollable content.
@@ -451,14 +465,9 @@ public partial class ScrollViewer : Control
     private const double SmoothScrollMinSpeedPixelsPerSecond = 60.0;
     private const double SmoothScrollMaxDeltaTimeSeconds = 0.1;
     private static int SmoothScrollIntervalMs => CompositionTarget.FrameIntervalMs;
-    // WPF's default of 0.001 inch/ms² translated to DIPs is roughly 0.0001 —
-    // far too "slippery" on modern touch hardware where finger flicks routinely
-    // hit 2–5 DIP/ms (which under v²/(2a) maps to 2000+ DIP of inertia → the
-    // viewport flies to the bottom on the lightest flick). 0.006 DIP/ms² gives
-    // an iOS-like feel: a 1 DIP/ms swipe travels ~85 DIP, 3 DIP/ms travels
-    // ~750 DIP, 5 DIP/ms travels ~2 k DIP (enough to "fling to bottom" only
-    // for explicit fast flicks).
-    private const double DefaultPanningDeceleration = 0.006;
+    // Match WPF's dependency-property metadata default exactly. Applications that
+    // prefer a shorter touch fling can opt into a larger value explicitly.
+    private const double DefaultPanningDeceleration = 0.001;
     private const double DefaultPanningRatio = 1.0;
     private const double MaxPanningVelocityDipsPerMs = 4.0;
     private const double PointerPanningLockThreshold = 8.0;
@@ -556,7 +565,7 @@ public partial class ScrollViewer : Control
         {
             Orientation = orientation,
             Focusable = false,
-            Cursor = Jalium.UI.Cursors.Arrow,
+            Cursor = Jalium.UI.Input.Cursors.Arrow,
             Visibility = Visibility.Collapsed,
             SmallChange = LineScrollAmount
         };
@@ -1330,6 +1339,8 @@ public partial class ScrollViewer : Control
     /// <param name="offset">The horizontal offset.</param>
     public void ScrollToHorizontalOffset(double offset)
     {
+        offset = ValidateScrollOffset(offset, nameof(offset));
+
         if (!_isApplyingSmoothScrollStep)
         {
             CancelSmoothScroll();
@@ -1340,11 +1351,12 @@ public partial class ScrollViewer : Control
             var oldOffset = _scrollInfo.HorizontalOffset;
             _scrollInfo.SetHorizontalOffset(offset);
             _horizontalOffset = _scrollInfo.HorizontalOffset;
+            UpdateRequestedOffsetsFromContent();
 
             if (oldOffset != _horizontalOffset)
             {
                 InvalidateArrange();
-                RaiseScrollChanged(oldOffset, _verticalOffset);
+                RaiseScrollChanged();
                 UpdateScrollBarMetrics();
             }
             return;
@@ -1352,11 +1364,12 @@ public partial class ScrollViewer : Control
 
         var oldOff = _horizontalOffset;
         _horizontalOffset = Math.Clamp(offset, 0, ScrollableWidth);
+        UpdateRequestedOffsetsFromContent();
 
         if (oldOff != _horizontalOffset)
         {
             InvalidateArrange();
-            RaiseScrollChanged(oldOff, _verticalOffset);
+            RaiseScrollChanged();
             UpdateScrollBarMetrics();
         }
     }
@@ -1367,6 +1380,8 @@ public partial class ScrollViewer : Control
     /// <param name="offset">The vertical offset.</param>
     public void ScrollToVerticalOffset(double offset)
     {
+        offset = ValidateScrollOffset(offset, nameof(offset));
+
         if (!_isApplyingSmoothScrollStep)
         {
             CancelSmoothScroll();
@@ -1377,11 +1392,12 @@ public partial class ScrollViewer : Control
             var oldOffset = _scrollInfo.VerticalOffset;
             _scrollInfo.SetVerticalOffset(offset);
             _verticalOffset = _scrollInfo.VerticalOffset;
+            UpdateRequestedOffsetsFromContent();
 
             if (oldOffset != _verticalOffset)
             {
                 InvalidateArrange();
-                RaiseScrollChanged(_horizontalOffset, oldOffset);
+                RaiseScrollChanged();
                 UpdateScrollBarMetrics();
             }
             return;
@@ -1389,11 +1405,12 @@ public partial class ScrollViewer : Control
 
         var oldOff = _verticalOffset;
         _verticalOffset = Math.Clamp(offset, 0, ScrollableHeight);
+        UpdateRequestedOffsetsFromContent();
 
         if (oldOff != _verticalOffset)
         {
             InvalidateArrange();
-            RaiseScrollChanged(_horizontalOffset, oldOff);
+            RaiseScrollChanged();
             UpdateScrollBarMetrics();
         }
     }
@@ -1537,21 +1554,29 @@ public partial class ScrollViewer : Control
 
         var oldHorizontalOffset = _horizontalOffset;
         var oldVerticalOffset = _verticalOffset;
+        var oldExtentWidth = _extentWidth;
+        var oldExtentHeight = _extentHeight;
 
         _horizontalOffset = _scrollInfo.HorizontalOffset;
         _verticalOffset = _scrollInfo.VerticalOffset;
         SyncExtentFromScrollInfo();
+        if (!_isDeferredScrolling)
+        {
+            UpdateRequestedOffsetsFromContent();
+        }
         // Note: Do NOT sync _viewportWidth/_viewportHeight here; those are authoritatively
         // computed in ArrangeOverride based on finalSize and scrollbar visibility.
         // The IScrollInfo.ViewportWidth/Height reflects the Measure constraint, which can
         // differ from the final Arrange size and cause scrollbar visibility to flicker.
 
-        if (oldHorizontalOffset != _horizontalOffset || oldVerticalOffset != _verticalOffset)
+        if (oldHorizontalOffset != _horizontalOffset || oldVerticalOffset != _verticalOffset ||
+            oldExtentWidth != _extentWidth || oldExtentHeight != _extentHeight)
         {
             InvalidateArrange();
-            RaiseScrollChanged(oldHorizontalOffset, oldVerticalOffset);
-            UpdateScrollBarMetrics();
         }
+
+        RaiseScrollChanged();
+        UpdateScrollBarMetrics();
     }
 
     /// <summary>
@@ -1753,9 +1778,9 @@ public partial class ScrollViewer : Control
             _extentHeight = 0;
             _viewportWidth = 0;
             _viewportHeight = 0;
-            _verticalScrollBar.Measure(Size.Empty);
-            _horizontalScrollBar.Measure(Size.Empty);
-            return Size.Empty;
+            _verticalScrollBar.Measure(default);
+            _horizontalScrollBar.Measure(default);
+            return default(Size);
         }
 
         // Reserve space for scrollbars if they might be needed
@@ -1827,12 +1852,19 @@ public partial class ScrollViewer : Control
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
+        double oldHorizontalOffset = _horizontalOffset;
+        double oldVerticalOffset = _verticalOffset;
+
         // Sync extent/offset from IScrollInfo FIRST so scrollbar visibility uses fresh values
         if (_scrollInfo != null)
         {
             _horizontalOffset = _scrollInfo.HorizontalOffset;
             _verticalOffset = _scrollInfo.VerticalOffset;
             SyncExtentFromScrollInfo();
+            if (!_isDeferredScrolling)
+            {
+                UpdateRequestedOffsetsFromContent();
+            }
         }
 
         // Calculate if scrollbars are needed (now using up-to-date extent values)
@@ -1893,7 +1925,7 @@ public partial class ScrollViewer : Control
         else
         {
             _verticalScrollBar.Visibility = Visibility.Collapsed;
-            _verticalScrollBar.Arrange(Rect.Empty);
+            _verticalScrollBar.Arrange(default);
         }
 
         if (needsHorizontalScrollBar)
@@ -1908,10 +1940,12 @@ public partial class ScrollViewer : Control
         else
         {
             _horizontalScrollBar.Visibility = Visibility.Collapsed;
-            _horizontalScrollBar.Arrange(Rect.Empty);
+            _horizontalScrollBar.Arrange(default);
         }
 
         ApplyScrollBarAutoHideVisualState();
+
+        RaiseScrollChanged();
 
         return finalSize;
     }
@@ -1921,10 +1955,10 @@ public partial class ScrollViewer : Control
     #region Visual Children
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => _content != null ? 3 : 2;
+    protected override int VisualChildrenCount => _content != null ? 3 : 2;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (_content != null)
         {
@@ -2206,6 +2240,9 @@ public partial class ScrollViewer : Control
         if (e.Handled)
             return;
 
+        if (TemplatedParent is Control { HandlesScrolling: true })
+            return;
+
         switch (e.Key)
         {
             case Key.Up:
@@ -2281,6 +2318,7 @@ public partial class ScrollViewer : Control
                 _deferredVerticalOffset = clampedValue;
             else
                 _deferredHorizontalOffset = clampedValue;
+            UpdateDeferredRequestedOffset(isVertical, clampedValue);
             return;
         }
 
@@ -2430,6 +2468,7 @@ public partial class ScrollViewer : Control
         }
 
         ApplyScrollBarAutoHideVisualState();
+        UpdateScrollMetricDependencyProperties();
     }
 
     private void SyncExtentFromScrollInfo()
@@ -2448,30 +2487,38 @@ public partial class ScrollViewer : Control
     /// end of measure when the estimated extent shifted, or a +Infinity scroll-to-end resolving as
     /// more rows realize). Raises ScrollChanged for any offset delta and refreshes the scroll bars.
     /// </summary>
-    internal void InvalidateScrollInfo()
+    public void InvalidateScrollInfo()
     {
         if (_scrollInfo == null)
             return;
 
         var oldHorizontal = _horizontalOffset;
         var oldVertical = _verticalOffset;
+        var oldExtentWidth = _extentWidth;
+        var oldExtentHeight = _extentHeight;
 
         _horizontalOffset = _scrollInfo.HorizontalOffset;
         _verticalOffset = _scrollInfo.VerticalOffset;
         SyncExtentFromScrollInfo();
-
-        if (oldHorizontal != _horizontalOffset || oldVertical != _verticalOffset)
+        if (!_isDeferredScrolling)
         {
-            RaiseScrollChanged(oldHorizontal, oldVertical);
+            UpdateRequestedOffsetsFromContent();
         }
 
+        if (oldHorizontal != _horizontalOffset || oldVertical != _verticalOffset ||
+            oldExtentWidth != _extentWidth || oldExtentHeight != _extentHeight)
+        {
+            InvalidateArrange();
+        }
+
+        RaiseScrollChanged();
         UpdateScrollBarMetrics();
     }
 
     private Size GetContentMargin()
     {
         if (_content is not FrameworkElement frameworkElement)
-            return Size.Empty;
+            return default(Size);
 
         var margin = frameworkElement.Margin;
         return new Size(
@@ -2646,21 +2693,49 @@ public partial class ScrollViewer : Control
         return Math.Abs(left - right) <= 0.001;
     }
 
-    private void RaiseScrollChanged(double oldHorizontalOffset, double oldVerticalOffset)
+    private void RaiseScrollChanged()
     {
-        var e = new ScrollChangedEventArgs(ScrollChangedEvent, this)
-        {
-            HorizontalChange = _horizontalOffset - oldHorizontalOffset,
-            VerticalChange = _verticalOffset - oldVerticalOffset,
-            HorizontalOffset = _horizontalOffset,
-            VerticalOffset = _verticalOffset,
-            ViewportWidth = _viewportWidth,
-            ViewportHeight = _viewportHeight,
-            ExtentWidth = _extentWidth,
-            ExtentHeight = _extentHeight
-        };
+        double horizontalChange = _horizontalOffset - _lastNotifiedHorizontalOffset;
+        double verticalChange = _verticalOffset - _lastNotifiedVerticalOffset;
+        double extentWidthChange = _extentWidth - _lastNotifiedExtentWidth;
+        double extentHeightChange = _extentHeight - _lastNotifiedExtentHeight;
+        double viewportWidthChange = _viewportWidth - _lastNotifiedViewportWidth;
+        double viewportHeightChange = _viewportHeight - _lastNotifiedViewportHeight;
 
-        RaiseEvent(e);
+        if (AreClose(horizontalChange, 0)
+            && AreClose(verticalChange, 0)
+            && AreClose(extentWidthChange, 0)
+            && AreClose(extentHeightChange, 0)
+            && AreClose(viewportWidthChange, 0)
+            && AreClose(viewportHeightChange, 0))
+        {
+            return;
+        }
+
+        var e = new ScrollChangedEventArgs(
+            ScrollChangedEvent,
+            this,
+            horizontalChange,
+            verticalChange,
+            _horizontalOffset,
+            _verticalOffset,
+            _viewportWidth,
+            _viewportHeight,
+            _extentWidth,
+            _extentHeight,
+            extentWidthChange,
+            extentHeightChange,
+            viewportWidthChange,
+            viewportHeightChange);
+
+        _lastNotifiedExtentWidth = _extentWidth;
+        _lastNotifiedExtentHeight = _extentHeight;
+        _lastNotifiedViewportWidth = _viewportWidth;
+        _lastNotifiedViewportHeight = _viewportHeight;
+        _lastNotifiedHorizontalOffset = _horizontalOffset;
+        _lastNotifiedVerticalOffset = _verticalOffset;
+
+        OnScrollChanged(e);
     }
 
     private static void OnScrollBarVisibilityChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -2737,54 +2812,108 @@ public partial class ScrollViewer : Control
 /// <summary>
 /// Provides data for the ScrollChanged event.
 /// </summary>
-public sealed class ScrollChangedEventArgs : RoutedEventArgs
+public class ScrollChangedEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the horizontal offset change.
     /// </summary>
-    public double HorizontalChange { get; init; }
+    public double HorizontalChange { get; }
 
     /// <summary>
     /// Gets the vertical offset change.
     /// </summary>
-    public double VerticalChange { get; init; }
+    public double VerticalChange { get; }
 
     /// <summary>
     /// Gets the current horizontal offset.
     /// </summary>
-    public double HorizontalOffset { get; init; }
+    public double HorizontalOffset { get; }
 
     /// <summary>
     /// Gets the current vertical offset.
     /// </summary>
-    public double VerticalOffset { get; init; }
+    public double VerticalOffset { get; }
 
     /// <summary>
     /// Gets the viewport width.
     /// </summary>
-    public double ViewportWidth { get; init; }
+    public double ViewportWidth { get; }
 
     /// <summary>
     /// Gets the viewport height.
     /// </summary>
-    public double ViewportHeight { get; init; }
+    public double ViewportHeight { get; }
 
     /// <summary>
     /// Gets the extent width.
     /// </summary>
-    public double ExtentWidth { get; init; }
+    public double ExtentWidth { get; }
 
     /// <summary>
     /// Gets the extent height.
     /// </summary>
-    public double ExtentHeight { get; init; }
+    public double ExtentHeight { get; }
+
+    /// <summary>Gets the change in extent width since the previous event.</summary>
+    public double ExtentWidthChange { get; }
+
+    /// <summary>Gets the change in extent height since the previous event.</summary>
+    public double ExtentHeightChange { get; }
+
+    /// <summary>Gets the change in viewport width since the previous event.</summary>
+    public double ViewportWidthChange { get; }
+
+    /// <summary>Gets the change in viewport height since the previous event.</summary>
+    public double ViewportHeightChange { get; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ScrollChangedEventArgs"/> class.
     /// </summary>
-    public ScrollChangedEventArgs(RoutedEvent routedEvent, object source)
+    internal ScrollChangedEventArgs(RoutedEvent routedEvent, object source)
         : base(routedEvent, source)
     {
+    }
+
+    internal ScrollChangedEventArgs(
+        RoutedEvent routedEvent,
+        object source,
+        double horizontalChange,
+        double verticalChange,
+        double horizontalOffset,
+        double verticalOffset,
+        double viewportWidth,
+        double viewportHeight,
+        double extentWidth,
+        double extentHeight,
+        double extentWidthChange,
+        double extentHeightChange,
+        double viewportWidthChange,
+        double viewportHeightChange)
+        : base(routedEvent, source)
+    {
+        HorizontalChange = horizontalChange;
+        VerticalChange = verticalChange;
+        HorizontalOffset = horizontalOffset;
+        VerticalOffset = verticalOffset;
+        ViewportWidth = viewportWidth;
+        ViewportHeight = viewportHeight;
+        ExtentWidth = extentWidth;
+        ExtentHeight = extentHeight;
+        ExtentWidthChange = extentWidthChange;
+        ExtentHeightChange = extentHeightChange;
+        ViewportWidthChange = viewportWidthChange;
+        ViewportHeightChange = viewportHeightChange;
+    }
+
+    protected override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is ScrollChangedEventHandler scrollChangedHandler)
+        {
+            scrollChangedHandler(target, this);
+            return;
+        }
+
+        base.InvokeEventHandler(handler, target);
     }
 }
 

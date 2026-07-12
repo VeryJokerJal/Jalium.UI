@@ -253,7 +253,7 @@ public static class CommandManager
         // Check all common application commands for input gesture matches
         foreach (var command in GetAllRoutedCommands())
         {
-            foreach (var gesture in command.InputGestures)
+            foreach (InputGesture gesture in command.InputGestures)
             {
                 if (gesture.Matches(element, args))
                 {

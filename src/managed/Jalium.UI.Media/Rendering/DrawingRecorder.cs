@@ -36,7 +36,7 @@ namespace Jalium.UI.Media.Rendering;
 /// returned to the pool.
 /// </para>
 /// </remarks>
-internal sealed class DrawingRecorder : DrawingContext,
+internal sealed class DrawingRecorder : DrawingContextAdapter,
     IOffsetDrawingContext, IClipBoundsDrawingContext,
     IClipDrawingContext, IOpacityDrawingContext, ITransformDrawingContext, IEffectDrawingContext
 {

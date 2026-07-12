@@ -76,7 +76,7 @@ public class CornerRadiusNormalizationTests
             });
     }
 
-    private sealed class RecordingDrawingContext : DrawingContext
+    private sealed class RecordingDrawingContext : DrawingContextAdapter
     {
         public double? LastRadiusX { get; private set; }
         public double? LastRadiusY { get; private set; }

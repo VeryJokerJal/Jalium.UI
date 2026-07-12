@@ -113,6 +113,26 @@ public sealed class AdornerLayer : FrameworkElement
         return result.Count > 0 ? result.ToArray() : null;
     }
 
+    /// <summary>Hit-tests the adorner layer and identifies the topmost adorner at a point.</summary>
+    public AdornerHitTestResult? AdornerHitTest(Point point)
+    {
+        for (var index = _adorners.Count - 1; index >= 0; index--)
+        {
+            var adorner = _adorners[index].Adorner;
+            var hit = adorner.HitTest(point);
+            if (hit?.VisualHit is Visual visual)
+            {
+                return new AdornerHitTestResult(visual, point, adorner);
+            }
+        }
+
+        return null;
+    }
+
+    /// <inheritdoc />
+    protected internal override System.Collections.IEnumerator LogicalChildren =>
+        _adorners.ConvertAll(static info => info.Adorner).GetEnumerator();
+
     /// <summary>
     /// Causes the adorner layer to re-render all adorners.
     /// </summary>
@@ -147,12 +167,12 @@ public sealed class AdornerLayer : FrameworkElement
     /// <summary>
     /// Gets the number of visual children.
     /// </summary>
-    public override int VisualChildrenCount => _adorners.Count;
+    protected override int VisualChildrenCount => _adorners.Count;
 
     /// <summary>
     /// Gets the visual child at the specified index.
     /// </summary>
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index < 0 || index >= _adorners.Count)
             throw new ArgumentOutOfRangeException(nameof(index));
@@ -171,7 +191,7 @@ public sealed class AdornerLayer : FrameworkElement
         }
 
         // AdornerLayer doesn't consume any space
-        return Size.Empty;
+        return default(Size);
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Reflection;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
@@ -12,12 +13,13 @@ namespace Jalium.UI.Controls;
 public class TreeView : ItemsControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.TreeViewAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.TreeViewAutomationPeer(this);
     }
 
     private TreeViewItem? _selectedItem;
+    private bool _isChangingSelection;
     internal Style? _cachedTreeViewItemStyle;
 
     #region Dependency Properties
@@ -26,40 +28,59 @@ public class TreeView : ItemsControl
     /// Identifies the SelectedItem dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    private static readonly DependencyPropertyKey SelectedItemPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(SelectedItem), typeof(object), typeof(TreeView),
+            new FrameworkPropertyMetadata(null));
+
     public static readonly DependencyProperty SelectedItemProperty =
-        DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(TreeView),
-            new PropertyMetadata(null, OnSelectedItemChanged));
+        SelectedItemPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the SelectedValue dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    private static readonly DependencyPropertyKey SelectedValuePropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(SelectedValue), typeof(object), typeof(TreeView),
+            new FrameworkPropertyMetadata(null));
+
     public static readonly DependencyProperty SelectedValueProperty =
-        DependencyProperty.Register(nameof(SelectedValue), typeof(object), typeof(TreeView),
-            new PropertyMetadata(null));
+        SelectedValuePropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Identifies the path used to obtain <see cref="SelectedValue"/> from <see cref="SelectedItem"/>.
+    /// </summary>
+    public static readonly DependencyProperty SelectedValuePathProperty =
+        DependencyProperty.Register(nameof(SelectedValuePath), typeof(string), typeof(TreeView),
+            new FrameworkPropertyMetadata(string.Empty, OnSelectedValuePathChanged));
 
     #endregion
 
     #region Properties
 
     /// <summary>
-    /// Gets or sets the currently selected item.
+    /// Gets the currently selected item.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedItem
     {
         get => GetValue(SelectedItemProperty);
-        set => SetValue(SelectedItemProperty, value);
     }
 
     /// <summary>
-    /// Gets or sets the value of the selected item.
+    /// Gets the value of the selected item.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedValue
     {
         get => GetValue(SelectedValueProperty);
-        set => SetValue(SelectedValueProperty, value);
+    }
+
+    /// <summary>Gets or sets the property path used to calculate <see cref="SelectedValue"/>.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
+    public string SelectedValuePath
+    {
+        get => (string)(GetValue(SelectedValuePathProperty) ?? string.Empty);
+        set => SetValue(SelectedValuePathProperty, value);
     }
 
     #endregion
@@ -207,7 +228,7 @@ public class TreeView : ItemsControl
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item)
+    protected override bool IsItemItsOwnContainerOverride(object item)
     {
         return item is TreeViewItem;
     }
@@ -238,6 +259,7 @@ public class TreeView : ItemsControl
         tvi.ParentTreeView = this;
         tvi.ParentItem = null;
         tvi.Level = 0;
+        tvi.SetItemData(item);
 
         if (item is TreeViewItem)
         {
@@ -257,42 +279,138 @@ public class TreeView : ItemsControl
         }
     }
 
-    private static void OnSelectedItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private static void OnSelectedValuePathChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is TreeView treeView)
-        {
-            var oldItem = e.OldValue as TreeViewItem;
-            var newItem = e.NewValue as TreeViewItem;
-
-            // Update selection state
-            if (oldItem != null)
-            {
-                oldItem.IsSelected = false;
-            }
-
-            if (newItem != null)
-            {
-                newItem.IsSelected = true;
-                treeView._selectedItem = newItem;
-            }
-            else
-            {
-                treeView._selectedItem = null;
-            }
-
-            // Raise event
-            var args = new RoutedPropertyChangedEventArgs<object?>(
-                e.OldValue, e.NewValue, SelectedItemChangedEvent);
-            treeView.RaiseEvent(args);
-        }
+        var treeView = (TreeView)d;
+        treeView.UpdateSelectedValue(treeView.SelectedItem);
     }
+
+    /// <summary>Raises the selected-item-changed routed event.</summary>
+    protected virtual void OnSelectedItemChanged(RoutedPropertyChangedEventArgs<object?> e) => RaiseEvent(e);
 
     internal void SelectItem(TreeViewItem? item)
     {
-        if (_selectedItem != item)
+        if (ReferenceEquals(_selectedItem, item) || _isChangingSelection)
         {
-            SelectedItem = item;
+            return;
         }
+
+        _isChangingSelection = true;
+        try
+        {
+            var oldContainer = _selectedItem;
+            var oldValue = SelectedItem;
+            _selectedItem = item;
+
+            if (oldContainer != null && oldContainer.IsSelected)
+            {
+                oldContainer.SetCurrentValue(TreeViewItem.IsSelectedProperty, false);
+            }
+
+            if (item != null && !item.IsSelected)
+            {
+                item.SetCurrentValue(TreeViewItem.IsSelectedProperty, true);
+            }
+
+            var newValue = item?.ItemData;
+            SetValue(SelectedItemPropertyKey, newValue);
+            UpdateSelectedValue(newValue);
+            OnSelectedItemChanged(new RoutedPropertyChangedEventArgs<object?>(
+                oldValue, newValue, SelectedItemChangedEvent));
+        }
+        finally
+        {
+            _isChangingSelection = false;
+        }
+    }
+
+    internal void OnContainerSelectionChanged(TreeViewItem item, bool selected)
+    {
+        if (_isChangingSelection)
+        {
+            return;
+        }
+
+        if (selected)
+        {
+            SelectItem(item);
+        }
+        else if (ReferenceEquals(_selectedItem, item))
+        {
+            SelectItem(null);
+        }
+    }
+
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2026:RequiresUnreferencedCode",
+        Justification = "SelectedValuePath is an opt-in reflective path; consumers can register typed accessors through PropertyAccessorRegistry.")]
+    private void UpdateSelectedValue(object? selectedItem)
+    {
+        object? value = selectedItem;
+        if (selectedItem != null && !string.IsNullOrWhiteSpace(SelectedValuePath))
+        {
+            value = ResolveSelectedValuePath(selectedItem, SelectedValuePath);
+        }
+
+        SetValue(SelectedValuePropertyKey, value);
+    }
+
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode(
+        "Resolves SelectedValuePath through PropertyAccessorRegistry when a typed accessor is not registered.")]
+    private static object? ResolveSelectedValuePath(object source, string path)
+    {
+        object? current = source;
+        foreach (var rawSegment in path.Split('.'))
+        {
+            var segment = rawSegment.Trim();
+            if (segment.Length == 0)
+            {
+                continue;
+            }
+
+            if (current == null)
+            {
+                return null;
+            }
+
+            if (current is IDictionary dictionary)
+            {
+                if (!dictionary.Contains(segment))
+                {
+                    return null;
+                }
+
+                current = dictionary[segment];
+                continue;
+            }
+
+            if (!PropertyAccessorRegistry.TryReadProperty(current, segment, out current))
+            {
+                return null;
+            }
+        }
+
+        return current;
+    }
+
+    /// <summary>Expands a container and every descendant container.</summary>
+    protected virtual bool ExpandSubtree(TreeViewItem container)
+    {
+        if (container == null)
+        {
+            return false;
+        }
+
+        container.ExpandSubtree();
+        return true;
+    }
+
+    /// <inheritdoc />
+    protected override void OnIsKeyboardFocusWithinChanged(bool isFocusWithin)
+    {
+        base.OnIsKeyboardFocusWithinChanged(isFocusWithin);
+        SetValue(Selector.IsSelectionActivePropertyKey, isFocusWithin);
     }
 
     internal bool FocusAdjacentVisibleItem(TreeViewItem currentItem, int direction)
@@ -363,7 +481,7 @@ public class TreeView : ItemsControl
 
     private static void CollectVisibleItems(Panel panel, List<TreeViewItem> items)
     {
-        foreach (var child in panel.Children)
+        foreach (UIElement child in panel.Children)
         {
             if (child is not TreeViewItem treeViewItem || treeViewItem.Visibility != Visibility.Visible)
             {
@@ -392,9 +510,9 @@ public class TreeView : ItemsControl
 public class TreeViewItem : HeaderedItemsControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.TreeViewItemAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.TreeViewItemAutomationPeer(this);
     }
 
     private const double IndentSize = 16;
@@ -412,6 +530,17 @@ public class TreeViewItem : HeaderedItemsControl
 
     internal TreeView? ParentTreeView { get; set; }
     internal TreeViewItem? ParentItem { get; set; }
+
+    private object? _itemData;
+    private bool _hasItemData;
+
+    internal object? ItemData => _hasItemData ? _itemData : this;
+
+    internal void SetItemData(object? item)
+    {
+        _itemData = item;
+        _hasItemData = true;
+    }
 
     private int _level;
     private bool _isHeaderMouseOver;
@@ -477,7 +606,14 @@ public class TreeViewItem : HeaderedItemsControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(TreeViewItem),
-            new PropertyMetadata(false, OnIsSelectedChanged));
+            new FrameworkPropertyMetadata(
+                false,
+                FrameworkPropertyMetadataOptions.BindsTwoWayByDefault,
+                OnIsSelectedChanged));
+
+    /// <summary>Identifies the read-only selection-active property.</summary>
+    public static readonly DependencyProperty IsSelectionActiveProperty =
+        Selector.IsSelectionActiveProperty.AddOwner(typeof(TreeViewItem));
 
     #endregion
 
@@ -503,10 +639,14 @@ public class TreeViewItem : HeaderedItemsControl
         set => SetValue(IsSelectedProperty, value);
     }
 
+    /// <summary>Gets whether selection styling is currently active.</summary>
+    public bool IsSelectionActive =>
+        (bool)(GetValue(IsSelectionActiveProperty) ?? false);
+
     /// <summary>
     /// Gets whether this item has child items (including deferred/not-yet-realized children).
     /// </summary>
-    public bool HasItems => Items.Count > 0 || _deferredItemsSource != null;
+    public new bool HasItems => base.HasItems || _deferredItemsSource != null;
 
     /// <summary>
     /// Gets or sets the indentation level.
@@ -545,6 +685,16 @@ public class TreeViewItem : HeaderedItemsControl
         EventManager.RegisterRoutedEvent(nameof(Collapsed), RoutingStrategy.Bubble,
             typeof(RoutedEventHandler), typeof(TreeViewItem));
 
+    /// <summary>Identifies the Selected routed event.</summary>
+    public static readonly RoutedEvent SelectedEvent =
+        EventManager.RegisterRoutedEvent(nameof(Selected), RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler), typeof(TreeViewItem));
+
+    /// <summary>Identifies the Unselected routed event.</summary>
+    public static readonly RoutedEvent UnselectedEvent =
+        EventManager.RegisterRoutedEvent(nameof(Unselected), RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler), typeof(TreeViewItem));
+
     /// <summary>
     /// Occurs when the item is expanded.
     /// </summary>
@@ -563,13 +713,27 @@ public class TreeViewItem : HeaderedItemsControl
         remove => RemoveHandler(CollapsedEvent, value);
     }
 
+    /// <summary>Occurs when this item becomes selected.</summary>
+    public event RoutedEventHandler Selected
+    {
+        add => AddHandler(SelectedEvent, value);
+        remove => RemoveHandler(SelectedEvent, value);
+    }
+
+    /// <summary>Occurs when this item becomes unselected.</summary>
+    public event RoutedEventHandler Unselected
+    {
+        add => AddHandler(UnselectedEvent, value);
+        remove => RemoveHandler(UnselectedEvent, value);
+    }
+
     #endregion
 
     public TreeViewItem()
     {
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         Focusable = true;
-        Items.CollectionChanged += OnChildItemsChanged;
+        ((System.Collections.Specialized.INotifyCollectionChanged)Items).CollectionChanged += OnChildItemsChanged;
         ResourcesChanged += OnResourcesChangedHandler;
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
 
@@ -641,7 +805,7 @@ public class TreeViewItem : HeaderedItemsControl
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item)
+    protected override bool IsItemItsOwnContainerOverride(object item)
     {
         return item is TreeViewItem;
     }
@@ -661,6 +825,7 @@ public class TreeViewItem : HeaderedItemsControl
         childTvi.ParentTreeView = ParentTreeView;
         childTvi.ParentItem = this;
         childTvi.Level = Level + 1;
+        childTvi.SetItemData(item);
 
         // Pre-apply cached style to avoid per-item implicit style lookup
         if (childTvi.Style == null && ParentTreeView?._cachedTreeViewItemStyle != null)
@@ -1118,7 +1283,7 @@ public class TreeViewItem : HeaderedItemsControl
             return false;
         }
 
-        foreach (var child in childHost.Children)
+        foreach (UIElement child in childHost.Children)
         {
             if (child is TreeViewItem treeViewItem && treeViewItem.Visibility == Visibility.Visible && treeViewItem.Focus())
             {
@@ -1408,7 +1573,7 @@ public class TreeViewItem : HeaderedItemsControl
         }
 
         var children = new List<UIElement>();
-        foreach (var child in panel.Children)
+        foreach (UIElement child in panel.Children)
         {
             if (child is UIElement uiElement && uiElement.Visibility == Visibility.Visible)
             {
@@ -1564,7 +1729,7 @@ public class TreeViewItem : HeaderedItemsControl
             return ParentItem;
         }
 
-        for (Visual? current = VisualParent; current != null; current = current.VisualParent)
+        for (Visual? current = ParentVisual; current != null; current = current.VisualParent)
         {
             if (current is TreeViewItem treeViewItem)
             {
@@ -1634,9 +1799,9 @@ public class TreeViewItem : HeaderedItemsControl
             }
 
             if (expanded)
-                tvi.RaiseEvent(new RoutedEventArgs(ExpandedEvent, tvi));
+                tvi.OnExpanded(new RoutedEventArgs(ExpandedEvent, tvi));
             else
-                tvi.RaiseEvent(new RoutedEventArgs(CollapsedEvent, tvi));
+                tvi.OnCollapsed(new RoutedEventArgs(CollapsedEvent, tvi));
 
             if (tvi.ShouldAnimateExpandedStateChange())
             {
@@ -1666,16 +1831,73 @@ public class TreeViewItem : HeaderedItemsControl
                 PropertyAccessorRegistry.TryWriteProperty(tvi._bridgedDataItem, "IsSelected", selected);
             }
 
-            if (selected && tvi.ParentTreeView != null)
-            {
-                tvi.ParentTreeView.SelectItem(tvi);
-            }
+            tvi.ParentTreeView?.OnContainerSelectionChanged(tvi, selected);
+
+            if (selected)
+                tvi.OnSelected(new RoutedEventArgs(SelectedEvent, tvi));
+            else
+                tvi.OnUnselected(new RoutedEventArgs(UnselectedEvent, tvi));
 
             tvi.UpdateHeaderVisualState();
         }
     }
 
     #endregion
+
+    /// <summary>Raises the <see cref="Expanded"/> event.</summary>
+    protected virtual void OnExpanded(RoutedEventArgs e) => RaiseEvent(e);
+
+    /// <summary>Raises the <see cref="Collapsed"/> event.</summary>
+    protected virtual void OnCollapsed(RoutedEventArgs e) => RaiseEvent(e);
+
+    /// <summary>Raises the <see cref="Selected"/> event.</summary>
+    protected virtual void OnSelected(RoutedEventArgs e) => RaiseEvent(e);
+
+    /// <summary>Raises the <see cref="Unselected"/> event.</summary>
+    protected virtual void OnUnselected(RoutedEventArgs e) => RaiseEvent(e);
+
+    /// <summary>Expands this item and every realized or deferred descendant item.</summary>
+    public void ExpandSubtree()
+    {
+        ExpandSubtreeCore(this);
+    }
+
+    private static void ExpandSubtreeCore(TreeViewItem item)
+    {
+        if (!item.IsExpanded)
+        {
+            item.SetCurrentValue(IsExpandedProperty, true);
+        }
+
+        item.EnsureChildrenRealized();
+        item.RefreshItems();
+        item.ApplyTemplate();
+
+        var descendants = new HashSet<TreeViewItem>();
+        foreach (var child in item.Items)
+        {
+            if (child is TreeViewItem treeViewItem)
+            {
+                descendants.Add(treeViewItem);
+            }
+        }
+
+        if (item.GetItemsHostPanel() is Panel panel)
+        {
+            foreach (UIElement child in panel.Children)
+            {
+                if (child is TreeViewItem treeViewItem)
+                {
+                    descendants.Add(treeViewItem);
+                }
+            }
+        }
+
+        foreach (var descendant in descendants)
+        {
+            ExpandSubtreeCore(descendant);
+        }
+    }
 
     protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
     {
@@ -1712,6 +1934,13 @@ public class TreeViewItem : HeaderedItemsControl
             tvi.ItemTemplate = hdt.ItemTemplate;
         else
             tvi.ItemTemplate = hdt; // Recursive: same template for children
+
+        tvi.ItemTemplateSelector = hdt.ItemTemplateSelector;
+        tvi.ItemContainerStyle = hdt.ItemContainerStyle;
+        tvi.ItemContainerStyleSelector = hdt.ItemContainerStyleSelector;
+        tvi.ItemStringFormat = hdt.ItemStringFormat;
+        tvi.ItemBindingGroup = hdt.ItemBindingGroup;
+        tvi.AlternationCount = hdt.AlternationCount;
 
         // Defer child creation: only resolve whether children exist (for the expander arrow),
         // but don't create TreeViewItem containers until the node is expanded.
@@ -2020,7 +2249,7 @@ public sealed class TreeViewItemDoubleClickedEventArgs : RoutedEventArgs
     public MouseButtonEventArgs SourceArgs { get; }
 
     /// <inheritdoc />
-    internal override void InvokeEventHandler(Delegate handler, object target)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is EventHandler<TreeViewItemDoubleClickedEventArgs> typed)
             typed(target, this);
@@ -2060,7 +2289,7 @@ public sealed class TreeViewItemContextMenuRequestedEventArgs : RoutedEventArgs
     public MouseButtonEventArgs SourceArgs { get; }
 
     /// <inheritdoc />
-    internal override void InvokeEventHandler(Delegate handler, object target)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is EventHandler<TreeViewItemContextMenuRequestedEventArgs> typed)
             typed(target, this);

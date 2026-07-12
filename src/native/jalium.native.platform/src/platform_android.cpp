@@ -15,7 +15,6 @@
 #include <unistd.h>
 #include <string.h>
 #include <stdlib.h>
-#include <wchar.h>
 #include <time.h>
 #include <poll.h>
 
@@ -186,7 +185,7 @@ void jalium_window_hide(JaliumPlatformWindow* window)
     (void)window;
 }
 
-void jalium_window_set_title(JaliumPlatformWindow* window, const wchar_t* title)
+void jalium_window_set_title(JaliumPlatformWindow* window, const JaliumUtf16Char* title)
 {
     // No-op: Android Activity title is set via Java API
     (void)window;
@@ -1032,7 +1031,7 @@ void jalium_input_get_cursor_pos(float* x, float* y)
 // Clipboard (JNI bridge to android.content.ClipboardManager)
 // ============================================================================
 
-JaliumResult jalium_clipboard_get_text(wchar_t** outText)
+JaliumResult jalium_clipboard_get_text(JaliumUtf16Char** outText)
 {
     if (!outText) return JALIUM_ERROR_INVALID_ARGUMENT;
     *outText = nullptr;
@@ -1104,11 +1103,13 @@ JaliumResult jalium_clipboard_get_text(wchar_t** outText)
     if (!jstr)
         return JALIUM_OK;
 
-    // Convert Java UTF-16 string to wchar_t*
+    // Copy Java UTF-16 code units to the fixed-width platform ABI.
     const jchar* chars = env->GetStringChars(jstr, nullptr);
     jsize len = env->GetStringLength(jstr);
 
-    wchar_t* result = (wchar_t*)malloc((len + 1) * sizeof(wchar_t));
+    static_assert(sizeof(jchar) == sizeof(JaliumUtf16Char));
+    auto result = static_cast<JaliumUtf16Char*>(
+        malloc((static_cast<size_t>(len) + 1) * sizeof(JaliumUtf16Char)));
     if (!result)
     {
         env->ReleaseStringChars(jstr, chars);
@@ -1116,9 +1117,8 @@ JaliumResult jalium_clipboard_get_text(wchar_t** outText)
         return JALIUM_ERROR_OUT_OF_MEMORY;
     }
 
-    for (jsize i = 0; i < len; i++)
-        result[i] = (wchar_t)chars[i];
-    result[len] = L'\0';
+    memcpy(result, chars, static_cast<size_t>(len) * sizeof(JaliumUtf16Char));
+    result[len] = 0;
 
     env->ReleaseStringChars(jstr, chars);
     env->DeleteLocalRef(jstr);
@@ -1127,22 +1127,18 @@ JaliumResult jalium_clipboard_get_text(wchar_t** outText)
     return JALIUM_OK;
 }
 
-JaliumResult jalium_clipboard_set_text(const wchar_t* text)
+JaliumResult jalium_clipboard_set_text(const JaliumUtf16Char* text)
 {
     if (!text) return JALIUM_ERROR_INVALID_ARGUMENT;
 
     JNIEnv* env = GetJNIEnv();
     if (!env || !g_activityObj) return JALIUM_ERROR_NOT_SUPPORTED;
 
-    // Convert wchar_t* to Java String (UTF-16)
-    size_t len = wcslen(text);
-    jchar* jchars = (jchar*)malloc(len * sizeof(jchar));
-    if (!jchars) return JALIUM_ERROR_OUT_OF_MEMORY;
-    for (size_t i = 0; i < len; i++)
-        jchars[i] = (jchar)text[i];
-
-    jstring jstr = env->NewString(jchars, (jsize)len);
-    free(jchars);
+    // JaliumUtf16Char and jchar are both fixed-width UTF-16 code units.
+    size_t len = 0;
+    while (text[len] != 0) ++len;
+    jstring jstr = env->NewString(
+        reinterpret_cast<const jchar*>(text), static_cast<jsize>(len));
 
     if (!jstr) return JALIUM_ERROR_UNKNOWN;
 
@@ -1194,6 +1190,16 @@ JaliumResult jalium_clipboard_set_text(const wchar_t* text)
     }
 
     return JALIUM_OK;
+}
+
+void jalium_drag_set_effect(JaliumPlatformWindow*, uint64_t, uint32_t) {}
+
+JaliumResult jalium_drag_begin(
+    JaliumPlatformWindow*, const JaliumDragDataItem*, uint32_t, uint32_t,
+    uint32_t* performedEffect)
+{
+    if (performedEffect) *performedEffect = JALIUM_DRAG_EFFECT_NONE;
+    return JALIUM_ERROR_NOT_SUPPORTED;
 }
 
 #endif // __ANDROID__

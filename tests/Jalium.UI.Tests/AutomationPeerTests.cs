@@ -9,9 +9,7 @@ public class AutomationPeerTests
 {
     public static IEnumerable<object[]> ControlPeerMappings()
     {
-        yield return new object[] { (Func<UIElement>)(() => new Control()), typeof(FrameworkElementAutomationPeer) };
         yield return new object[] { (Func<UIElement>)(() => new ContentControl()), typeof(ContentControlAutomationPeer) };
-        yield return new object[] { (Func<UIElement>)(() => new ItemsControl()), typeof(ItemsControlAutomationPeer) };
         yield return new object[] { (Func<UIElement>)(() => new Jalium.UI.Controls.Primitives.ToggleButton()), typeof(ToggleButtonAutomationPeer) };
         yield return new object[] { (Func<UIElement>)(() => new Jalium.UI.Controls.Primitives.RepeatButton()), typeof(RepeatButtonAutomationPeer) };
         yield return new object[] { (Func<UIElement>)(() => new Jalium.UI.Controls.Primitives.Thumb()), typeof(ThumbAutomationPeer) };
@@ -173,6 +171,18 @@ public class AutomationPeerTests
         // Assert
         Assert.NotNull(peer);
         Assert.IsType(expectedPeerType, peer);
+    }
+
+    [Fact]
+    public void BaseControl_GetAutomationPeer_ReturnsNull()
+    {
+        Assert.Null(new Control().GetAutomationPeer());
+    }
+
+    [Fact]
+    public void ItemsControl_GetAutomationPeer_ReturnsItemsControlPeer()
+    {
+        Assert.IsAssignableFrom<ItemsControlAutomationPeer>(new ItemsControl().GetAutomationPeer());
     }
 
     #endregion

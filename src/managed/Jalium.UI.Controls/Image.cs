@@ -1,19 +1,18 @@
 ﻿using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Markup;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
-/// Represents a control that displays an image.
-/// Uses ControlTemplate for visual customization (border, corner radius, etc.)
-/// and an internal ImageHost element for actual bitmap rendering.
+/// Represents a framework element that displays an image.
 /// </summary>
-public class Image : Control, IReclaimableResource
+public class Image : FrameworkElement, IUriContext
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ImageAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ImageAutomationPeer(this);
     }
 
     /// <inheritdoc />
@@ -30,8 +29,24 @@ public class Image : Control, IReclaimableResource
         (Source as IReclaimableResource)?.ReclaimIdleResources();
     }
 
-    private ImageHost? _imageHost;
-    private Border? _container;
+    private Uri? _baseUri;
+    private bool _hasDpiChangedEverFired;
+
+    /// <summary>Identifies the routed event raised when the image DPI changes.</summary>
+    public static readonly RoutedEvent DpiChangedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(DpiChanged),
+            RoutingStrategy.Bubble,
+            typeof(DpiChangedEventHandler),
+            typeof(Image));
+
+    /// <summary>Identifies the routed event raised when loading or decoding the image fails.</summary>
+    public static readonly RoutedEvent ImageFailedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(ImageFailed),
+            RoutingStrategy.Bubble,
+            typeof(EventHandler<Jalium.UI.ExceptionRoutedEventArgs>),
+            typeof(Image));
 
     #region Dependency Properties
 
@@ -93,10 +108,47 @@ public class Image : Control, IReclaimableResource
         set => SetValue(StretchDirectionProperty, value);
     }
 
+    Uri? IUriContext.BaseUri
+    {
+        get => BaseUri;
+        set => BaseUri = value;
+    }
+
+    /// <summary>Gets or sets the base URI used to resolve a relative image source.</summary>
+    protected virtual Uri? BaseUri
+    {
+        get => _baseUri;
+        set
+        {
+            if (Equals(_baseUri, value))
+            {
+                return;
+            }
+
+            _baseUri = value;
+            ApplySourceBaseUri(Source);
+        }
+    }
+
     #endregion
+
+    /// <summary>Occurs after the DPI used to render this image changes.</summary>
+    public event DpiChangedEventHandler DpiChanged
+    {
+        add => AddHandler(DpiChangedEvent, value);
+        remove => RemoveHandler(DpiChangedEvent, value);
+    }
+
+    /// <summary>Occurs when loading or decoding the current source fails.</summary>
+    public event EventHandler<Jalium.UI.ExceptionRoutedEventArgs> ImageFailed
+    {
+        add => AddHandler(ImageFailedEvent, value);
+        remove => RemoveHandler(ImageFailedEvent, value);
+    }
 
     public Image()
     {
+        ClipToBounds = true;
         AddHandler(ManipulationDeltaEvent, new RoutedEventHandler(OnManipulationDeltaHandler));
         AddHandler(ManipulationCompletedEvent, new RoutedEventHandler(OnManipulationCompletedHandler));
     }
@@ -152,7 +204,7 @@ public class Image : Control, IReclaimableResource
         double clamped = Math.Clamp(newZoom, Math.Max(0.0001, MinZoom), Math.Max(MinZoom, MaxZoom));
         if (Math.Abs(clamped - CurrentZoom) > 0.0001)
         {
-            SetValue(CurrentZoomPropertyKey.DependencyProperty, clamped);
+            SetValue(CurrentZoomPropertyKey, clamped);
         }
 
         // Boundary feedback if the user is trying to zoom past Min/Max.
@@ -178,32 +230,55 @@ public class Image : Control, IReclaimableResource
     }
 
     /// <inheritdoc />
-    public override void OnApplyTemplate()
+    protected override void OnDpiChanged(DpiScale oldDpi, DpiScale newDpi)
     {
-        base.OnApplyTemplate();
-
-        _container = GetTemplateChild("PART_Container") as Border;
-
-        if (_container != null)
+        _hasDpiChangedEverFired = true;
+        InvalidateMeasure();
+        InvalidateVisual();
+        RaiseEvent(new DpiChangedEventArgs(oldDpi, newDpi)
         {
-            _imageHost = new ImageHost { Owner = this };
-            _container.Child = _imageHost;
+            RoutedEvent = DpiChangedEvent,
+            Source = this
+        });
+    }
 
-            // Source may have been assigned BEFORE this template applied — e.g. via
-            // a TemplateBinding from a parent control's template, or an object
-            // initializer / code-behind that ran before the first layout pass. In
-            // that case OnSourceChanged already fired, but its
-            // `_imageHost?.InvalidateVisual()` was a no-op because the host did not
-            // exist yet, and a synchronously-loaded BitmapImage never raises a later
-            // OnImageLoaded to re-trigger a render. On a static page with no further
-            // invalidation the image would then stay blank forever. Force the
-            // freshly-created host to measure + render the already-present Source.
-            if (Source != null)
+    /// <inheritdoc />
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        if (!_hasDpiChangedEverFired)
+        {
+            var scale = FrameworkElement.LayoutDpiScale;
+            if (!(scale > 0) || !double.IsFinite(scale))
             {
-                _imageHost.InvalidateMeasure();
-                _imageHost.InvalidateVisual();
+                scale = 1.0;
             }
+
+            var dpi = new DpiScale(scale, scale);
+            OnDpiChanged(dpi, dpi);
         }
+
+        return TryGetSourceSize(out _, out var imageSize)
+            ? CalculateStretchSize(imageSize, availableSize)
+            : default;
+    }
+
+    /// <inheritdoc />
+    protected override void OnRender(DrawingContext drawingContext)
+    {
+        if (!TryGetSourceSize(out var source, out var imageSize) || source == null)
+            return;
+
+        var stretchedSize = CalculateStretchSize(imageSize, RenderSize);
+        var x = (RenderSize.Width - stretchedSize.Width) / 2;
+        var y = (RenderSize.Height - stretchedSize.Height) / 2;
+        var mode = RenderOptions.GetBitmapScalingMode(this);
+        if (mode == BitmapScalingMode.Unspecified)
+            mode = BitmapScalingMode.HighQuality;
+
+        drawingContext.DrawImage(
+            source,
+            new Rect(x, y, stretchedSize.Width, stretchedSize.Height),
+            mode);
     }
 
     #region Property Changed Callbacks
@@ -213,6 +288,11 @@ public class Image : Control, IReclaimableResource
         if (d is Image image)
         {
             // Unsubscribe from old source's async load / frame events
+            if (e.OldValue is ImageSource oldSource)
+            {
+                oldSource.LoadFailed -= image.OnSourceLoadFailed;
+            }
+
             if (e.OldValue is BitmapImage oldBitmap)
                 oldBitmap.OnImageLoaded -= image.OnSourceAsyncLoaded;
             else if (e.OldValue is SvgImage oldSvg)
@@ -224,18 +304,73 @@ public class Image : Control, IReclaimableResource
             }
 
             // Subscribe to new source's async load / frame events
-            if (e.NewValue is BitmapImage newBitmap)
-                newBitmap.OnImageLoaded += image.OnSourceAsyncLoaded;
-            else if (e.NewValue is SvgImage newSvg)
-                newSvg.OnSvgLoaded += image.OnSourceAsyncLoaded;
-            else if (e.NewValue is AnimatedBitmap newAnim)
+            if (e.NewValue is ImageSource newSource)
             {
-                newAnim.FrameChanged += image.OnAnimatedFrameChanged;
-                newAnim.LoadCompleted += image.OnSourceAsyncLoaded;
+                newSource.LoadFailed += image.OnSourceLoadFailed;
+                image.ApplySourceBaseUri(newSource);
+                if (!ReferenceEquals(image.Source, newSource))
+                {
+                    return;
+                }
+
+                if (newSource.LoadFailure is { } failure)
+                {
+                    image.OnSourceLoadFailed(newSource, failure);
+                    return;
+                }
             }
 
-            image._imageHost?.InvalidateMeasure();
-            image._imageHost?.InvalidateVisual();
+            image.InvalidateMeasure();
+            image.InvalidateVisual();
+        }
+    }
+
+    private void ApplySourceBaseUri(ImageSource? source)
+    {
+        if (source is IUriContext { BaseUri: null } context && BaseUri != null)
+        {
+            context.BaseUri = BaseUri;
+        }
+    }
+
+    private void OnSourceLoadFailed(ImageSource source, Exception exception)
+    {
+        if (!ReferenceEquals(Source, source))
+        {
+            return;
+        }
+
+        SetCurrentValue(SourceProperty, null);
+        RaiseEvent(new Jalium.UI.ExceptionRoutedEventArgs(ImageFailedEvent, this, exception));
+    }
+
+    internal bool TryGetSourceSize(out ImageSource? source, out Size imageSize)
+    {
+        source = Source;
+        imageSize = default;
+        if (source == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            ApplySourceBaseUri(source);
+            var width = source.Width;
+            var height = source.Height;
+            if (!(width > 0) || !(height > 0))
+            {
+                return false;
+            }
+
+            imageSize = new Size(width, height);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            OnSourceLoadFailed(source, ex);
+            source = null;
+            return false;
         }
     }
 
@@ -244,129 +379,65 @@ public class Image : Control, IReclaimableResource
         // Frame index changed on the UI thread (the AnimatedBitmap timer runs
         // on the dispatcher). Re-render only — the bitmap dimensions are
         // constant across frames, so measure doesn't need to be invalidated.
-        _imageHost?.InvalidateVisual();
+        InvalidateVisual();
     }
 
     private void OnSourceAsyncLoaded(object? sender, EventArgs e)
     {
-        _imageHost?.InvalidateMeasure();
-        _imageHost?.InvalidateVisual();
+        InvalidateMeasure();
+        InvalidateVisual();
     }
 
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is Image image)
         {
-            image._imageHost?.InvalidateMeasure();
+            image.InvalidateMeasure();
+            image.InvalidateVisual();
         }
-    }
-
-    #endregion
-}
-
-/// <summary>
-/// Internal element that handles actual image bitmap rendering inside the Image control's template.
-/// </summary>
-internal sealed class ImageHost : FrameworkElement
-{
-    internal Image? Owner { get; set; }
-
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        var source = Owner?.Source;
-        if (source == null || source.Width <= 0 || source.Height <= 0)
-            return Size.Empty;
-
-        var imageSize = new Size(source.Width, source.Height);
-        return CalculateStretchSize(imageSize, availableSize);
-    }
-
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        return finalSize;
-    }
-
-    protected override void OnRender(DrawingContext drawingContext)
-    {
-        var dc = drawingContext;
-
-        var source = Owner?.Source;
-        if (source == null || source.Width <= 0 || source.Height <= 0)
-            return;
-
-        var imageSize = new Size(source.Width, source.Height);
-        var stretchedSize = CalculateStretchSize(imageSize, RenderSize);
-
-        // Center the image in the render area
-        var x = (RenderSize.Width - stretchedSize.Width) / 2;
-        var y = (RenderSize.Height - stretchedSize.Height) / 2;
-
-        // Resolve scaling mode from the owner's RenderOptions attached property.
-        // Image defaults to HighQuality (anisotropic + mipmap) so icons and photos
-        // that are scaled away from their native pixel size stay sharp by default —
-        // matches WPF's "high quality is the right default for UI" intent.
-        var mode = Owner != null
-            ? RenderOptions.GetBitmapScalingMode(Owner)
-            : BitmapScalingMode.Unspecified;
-        if (mode == BitmapScalingMode.Unspecified)
-            mode = BitmapScalingMode.HighQuality;
-
-        dc.DrawImage(source, new Rect(x, y, stretchedSize.Width, stretchedSize.Height), mode);
     }
 
     private Size CalculateStretchSize(Size imageSize, Size availableSize)
     {
         if (imageSize.Width <= 0 || imageSize.Height <= 0)
-            return Size.Empty;
-
-        var stretch = Owner?.Stretch ?? Stretch.Uniform;
-        var stretchDirection = Owner?.StretchDirection ?? StretchDirection.Both;
+            return default;
 
         var width = imageSize.Width;
         var height = imageSize.Height;
         var maxWidth = availableSize.Width;
         var maxHeight = availableSize.Height;
 
-        // Handle explicit width/height on owner
-        if (Owner != null)
-        {
-            if (!double.IsNaN(Owner.Width) && Owner.Width > 0)
-                width = Owner.Width;
-            if (!double.IsNaN(Owner.Height) && Owner.Height > 0)
-                height = Owner.Height;
-        }
+        if (!double.IsNaN(Width) && Width > 0)
+            width = Width;
+        if (!double.IsNaN(Height) && Height > 0)
+            height = Height;
 
-        switch (stretch)
+        switch (Stretch)
         {
             case Stretch.None:
                 break;
-
             case Stretch.Fill:
                 if (!double.IsInfinity(maxWidth))
                     width = maxWidth;
                 if (!double.IsInfinity(maxHeight))
                     height = maxHeight;
                 break;
-
             case Stretch.Uniform:
             {
                 var scaleX = double.IsInfinity(maxWidth) ? double.MaxValue : maxWidth / imageSize.Width;
                 var scaleY = double.IsInfinity(maxHeight) ? double.MaxValue : maxHeight / imageSize.Height;
-                var scale = Math.Min(scaleX, scaleY);
-                scale = ApplyStretchDirection(scale, stretchDirection);
+                var scale = ApplyStretchDirection(Math.Min(scaleX, scaleY), StretchDirection);
                 width = imageSize.Width * scale;
                 height = imageSize.Height * scale;
                 break;
             }
-
             case Stretch.UniformToFill:
             {
                 if (!double.IsInfinity(maxWidth) && !double.IsInfinity(maxHeight))
                 {
-                    var scaleX = maxWidth / imageSize.Width;
-                    var scaleY = maxHeight / imageSize.Height;
-                    var scale = Math.Max(scaleX, scaleY);
-                    scale = ApplyStretchDirection(scale, stretchDirection);
+                    var scale = ApplyStretchDirection(
+                        Math.Max(maxWidth / imageSize.Width, maxHeight / imageSize.Height),
+                        StretchDirection);
                     width = imageSize.Width * scale;
                     height = imageSize.Height * scale;
                 }
@@ -377,13 +448,13 @@ internal sealed class ImageHost : FrameworkElement
         return new Size(width, height);
     }
 
-    private static double ApplyStretchDirection(double scale, StretchDirection direction)
-    {
-        return direction switch
+    private static double ApplyStretchDirection(double scale, StretchDirection direction) =>
+        direction switch
         {
             StretchDirection.UpOnly => Math.Max(1.0, scale),
             StretchDirection.DownOnly => Math.Min(1.0, scale),
-            _ => scale
+            _ => scale,
         };
-    }
+
+    #endregion
 }

@@ -77,7 +77,9 @@ public sealed class DirtyRegionAggregator
     /// </summary>
     public void Add(Rect r)
     {
-        if (r.IsEmpty) return;
+        // WPF Rect.Empty is a distinct sentinel; zero-area rectangles are valid
+        // Rect values but still cover no pixels and must not reach Present1.
+        if (r.IsEmpty || r.Width <= 0 || r.Height <= 0) return;
 
         // 1. Absorption: r is already covered.
         for (int i = 0; i < _rects.Count; i++)
@@ -103,7 +105,7 @@ public sealed class DirtyRegionAggregator
             {
                 if (ShouldMerge(_rects[i], r))
                 {
-                    r = _rects[i].Union(r);
+                    r = Rect.Union(_rects[i], r);
                     _rects.RemoveAt(i);
                     changed = true;
                     break;
@@ -138,11 +140,11 @@ public sealed class DirtyRegionAggregator
     /// </summary>
     public void ClipToBounds(Rect clip)
     {
-        if (clip.IsEmpty) { _rects.Clear(); return; }
+        if (clip.IsEmpty || clip.Width <= 0 || clip.Height <= 0) { _rects.Clear(); return; }
         for (int i = _rects.Count - 1; i >= 0; i--)
         {
-            var clipped = _rects[i].Intersect(clip);
-            if (clipped.IsEmpty) _rects.RemoveAt(i);
+            var clipped = Rect.Intersect(_rects[i], clip);
+            if (clipped.IsEmpty || clipped.Width <= 0 || clipped.Height <= 0) _rects.RemoveAt(i);
             else _rects[i] = clipped;
         }
     }
@@ -168,8 +170,8 @@ public sealed class DirtyRegionAggregator
             var w = r.Width + margin * 2;
             var h = r.Height + margin * 2;
             var ir = new Rect(x, y, w, h);
-            if (clampBounds is { } cb) ir = ir.Intersect(cb);
-            if (!ir.IsEmpty) inflated.Add(ir);
+            if (clampBounds is { } cb) ir = Rect.Intersect(ir, cb);
+            if (!ir.IsEmpty && ir.Width > 0 && ir.Height > 0) inflated.Add(ir);
         }
 
         _rects.Clear();
@@ -182,7 +184,7 @@ public sealed class DirtyRegionAggregator
     public Rect GetBoundingBox()
     {
         var u = Rect.Empty;
-        for (int i = 0; i < _rects.Count; i++) u = u.Union(_rects[i]);
+        for (int i = 0; i < _rects.Count; i++) u = Rect.Union(u, _rects[i]);
         return u;
     }
 
@@ -296,7 +298,7 @@ public sealed class DirtyRegionAggregator
         // with a progress bar (400×8) and losing partial-redraw wins.
         double aArea = a.Width * a.Height;
         double bArea = b.Width * b.Height;
-        var u = a.Union(b);
+        var u = Rect.Union(a, b);
         double uArea = u.Width * u.Height;
         double waste = uArea - (aArea + bArea);
         double larger = Math.Max(aArea, bArea);
@@ -316,7 +318,7 @@ public sealed class DirtyRegionAggregator
             double ai = _rects[i].Width * _rects[i].Height;
             for (int j = i + 1; j < n; j++)
             {
-                var u = _rects[i].Union(_rects[j]);
+                var u = Rect.Union(_rects[i], _rects[j]);
                 double extra = u.Width * u.Height - ai - _rects[j].Width * _rects[j].Height;
                 if (extra < bestExtra)
                 {
@@ -326,7 +328,7 @@ public sealed class DirtyRegionAggregator
                 }
             }
         }
-        var merged = _rects[bestI].Union(_rects[bestJ]);
+        var merged = Rect.Union(_rects[bestI], _rects[bestJ]);
         // Remove higher index first so the lower one stays valid.
         _rects.RemoveAt(bestJ);
         _rects.RemoveAt(bestI);

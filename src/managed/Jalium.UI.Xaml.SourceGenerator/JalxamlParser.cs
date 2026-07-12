@@ -159,8 +159,9 @@ public static class JalxamlParser
         // Templates / styles / triggers (Jalium.UI namespace)
         { "DataTemplate", "Jalium.UI.DataTemplate" },
         { "HierarchicalDataTemplate", "Jalium.UI.HierarchicalDataTemplate" },
+        { "ItemContainerTemplate", "Jalium.UI.Controls.ItemContainerTemplate" },
         { "ControlTemplate", "Jalium.UI.ControlTemplate" },
-        { "ItemsPanelTemplate", "Jalium.UI.ItemsPanelTemplate" },
+        { "ItemsPanelTemplate", "Jalium.UI.Controls.ItemsPanelTemplate" },
         { "Style", "Jalium.UI.Style" },
         { "Setter", "Jalium.UI.Setter" },
         { "Trigger", "Jalium.UI.Trigger" },

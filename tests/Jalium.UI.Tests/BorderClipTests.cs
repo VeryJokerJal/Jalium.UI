@@ -7,7 +7,7 @@ namespace Jalium.UI.Tests;
 public class BorderClipTests
 {
     [Fact]
-    public void Border_ClipToBounds_WithRoundedCorners_UsesFullRenderBounds()
+    public void Border_ClipToBounds_WithRoundedCorners_UsesInnerRenderBounds()
     {
         var border = new TestBorder
         {
@@ -21,9 +21,9 @@ public class BorderClipTests
 
         var clip = Assert.IsType<RectangleGeometry>(border.InvokeGetLayoutClip());
 
-        Assert.Equal(new Rect(0, 0, 120, 40), clip.Rect);
-        Assert.Equal(8, clip.RadiusX);
-        Assert.Equal(8, clip.RadiusY);
+        Assert.Equal(new Rect(3, 3, 114, 34), clip.Rect);
+        Assert.Equal(5, clip.RadiusX);
+        Assert.Equal(5, clip.RadiusY);
     }
 
     [Fact]

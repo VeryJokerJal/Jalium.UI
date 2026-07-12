@@ -2,6 +2,7 @@
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.TerminalEmulator;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -1109,7 +1110,7 @@ public class Terminal : Control, IImeSupport
     /// </summary>
     private string ResolveFontFamily()
     {
-        var ff = FontFamily;
+        var ff = FontFamily?.Source;
         if (!string.IsNullOrEmpty(ff) && !string.Equals(ff, "Segoe UI", StringComparison.OrdinalIgnoreCase))
             return ff;
         // Consolas ships with every supported version of Windows and is

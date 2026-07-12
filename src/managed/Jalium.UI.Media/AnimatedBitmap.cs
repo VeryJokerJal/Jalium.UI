@@ -29,6 +29,9 @@ public enum AnimatedBitmapRepeatBehavior
 /// </summary>
 public sealed class AnimatedBitmap : ImageSource, IDisposable
 {
+    /// <inheritdoc />
+    public override ImageMetadata? Metadata => CurrentFrame?.Metadata;
+
     private BitmapImage[] _frames = Array.Empty<BitmapImage>();
     private int[] _delaysMs = Array.Empty<int>();
     private int _currentIndex;

@@ -6,6 +6,7 @@
     <Project Path="src/managed/Jalium.UI.Gpu/Jalium.UI.Gpu.csproj" />
     <Project Path="src/managed/Jalium.UI.Input/Jalium.UI.Input.csproj" />
     <Project Path="src/managed/Jalium.UI.Interop/Jalium.UI.Interop.csproj" />
+    <Project Path="src/managed/Jalium.UI.Managed/Jalium.UI.Managed.csproj" />
     <Project Path="src/managed/Jalium.UI.Media/Jalium.UI.Media.csproj" />
     <Project Path="src/managed/Jalium.UI.Xaml.SourceGenerator/Jalium.UI.Xaml.SourceGenerator.csproj" />
     <Project Path="src/managed/Jalium.UI.Xaml/Jalium.UI.Xaml.csproj" />
@@ -14,11 +15,13 @@
     <Project Path="src/packaging/Jalium.UI/Jalium.UI.csproj" />
     <Project Path="src/packaging/Jalium.UI.Desktop/Jalium.UI.Desktop.csproj" />
     <Project Path="src/packaging/Jalium.UI.Android/Jalium.UI.Android.csproj" />
+    <Project Path="src/packaging/Jalium.UI.Linux/Jalium.UI.Linux.csproj" />
   </Folder>
   <Folder Name="/src/tools/">
     <Project Path="src/managed/Jalium.UI.Compiler/Jalium.UI.Compiler.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj" />
     <Project Path="tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj" />
   </Folder>
 </Solution>

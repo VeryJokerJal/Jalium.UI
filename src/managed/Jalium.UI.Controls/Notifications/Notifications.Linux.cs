@@ -10,6 +10,8 @@ internal sealed class LinuxNotificationBackend : INotificationBackend
 {
     private string _appName = string.Empty;
     private bool _initialized;
+    private bool _daemonAvailable;
+    private string? _initializationError;
     private bool _disposed;
     private readonly Dictionary<uint, NotificationHandle> _activeNotifications = new();
     private uint _nextId;
@@ -18,10 +20,17 @@ internal sealed class LinuxNotificationBackend : INotificationBackend
     {
         get
         {
+            if (_disposed)
+                return false;
+
+            if (_initialized)
+                return _daemonAvailable;
+
             try
             {
-                // Probe for libnotify
-                return LibNotify.IsAvailable;
+                return LibNotify.TryProbeServer(
+                    string.IsNullOrWhiteSpace(_appName) ? "Jalium.UI" : _appName,
+                    out _);
             }
             catch
             {
@@ -33,12 +42,22 @@ internal sealed class LinuxNotificationBackend : INotificationBackend
     public void Initialize(string appId, string appName)
     {
         _appName = appName;
-        if (!LibNotify.IsAvailable) return;
+        if (!LibNotify.IsAvailable)
+        {
+            _initializationError = "libnotify.so.4 is not installed or could not be loaded.";
+            return;
+        }
 
-        if (!LibNotify.notify_init(appName))
-            throw new InvalidOperationException("Failed to initialize libnotify.");
+        if (!LibNotify.TryInitializeAndVerify(appName, out var failure))
+        {
+            _initializationError = failure;
+            throw new InvalidOperationException(
+                $"Failed to initialize Linux notifications: {failure}");
+        }
 
         _initialized = true;
+        _daemonAvailable = true;
+        _initializationError = null;
     }
 
     public NotificationHandle Show(NotificationContent content)
@@ -46,7 +65,9 @@ internal sealed class LinuxNotificationBackend : INotificationBackend
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (!_initialized || !LibNotify.IsAvailable)
-            throw new InvalidOperationException("Linux notification backend not initialized or libnotify unavailable.");
+            throw new InvalidOperationException(
+                _initializationError ??
+                "Linux notification backend is not initialized or the notification daemon is unavailable.");
 
         // Resolve icon ImageSource to a file path for libnotify
         var iconPath = NotificationImageHelper.ResolveToPath(content.Icon) ?? string.Empty;
@@ -184,7 +205,10 @@ internal sealed class LinuxNotificationBackend : INotificationBackend
         _activeNotifications.Clear();
 
         if (_initialized && LibNotify.IsAvailable)
-            LibNotify.notify_uninit();
+            LibNotify.Uninitialize();
+
+        _initialized = false;
+        _daemonAvailable = false;
     }
 }
 
@@ -194,20 +218,138 @@ internal sealed class LinuxNotificationBackend : INotificationBackend
 internal static class LibNotify
 {
     private const string Lib = "libnotify.so.4";
+    private static readonly object s_probeLock = new();
 
     private static readonly Lazy<bool> s_available = new(() =>
     {
         try
         {
-            return notify_is_initted() || true; // The call succeeding means the library is loaded
+            if (!NativeLibrary.TryLoad(Lib, out var handle))
+                return false;
+
+            NativeLibrary.Free(handle);
+            return true;
         }
-        catch (DllNotFoundException)
+        catch
         {
             return false;
         }
     });
 
     public static bool IsAvailable => s_available.Value;
+
+    internal static bool TryProbeServer(string appName, out string failure)
+    {
+        failure = string.Empty;
+        if (!IsAvailable)
+        {
+            failure = "libnotify.so.4 is not installed or could not be loaded.";
+            return false;
+        }
+
+        lock (s_probeLock)
+        {
+            var alreadyInitialized = false;
+            var initializedForProbe = false;
+            try
+            {
+                alreadyInitialized = notify_is_initted();
+                if (!alreadyInitialized)
+                {
+                    if (!notify_init(appName))
+                    {
+                        failure = "libnotify initialization failed; a D-Bus user session may be unavailable.";
+                        return false;
+                    }
+
+                    initializedForProbe = true;
+                }
+
+                return TryGetServerInfo(out failure);
+            }
+            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+            {
+                failure = $"libnotify capability probing is unavailable: {ex.Message}";
+                return false;
+            }
+            finally
+            {
+                if (initializedForProbe)
+                    notify_uninit();
+            }
+        }
+    }
+
+    internal static bool TryInitializeAndVerify(string appName, out string failure)
+    {
+        failure = string.Empty;
+        if (!IsAvailable)
+        {
+            failure = "libnotify.so.4 is not installed or could not be loaded.";
+            return false;
+        }
+
+        lock (s_probeLock)
+        {
+            var initialized = false;
+            try
+            {
+                if (!notify_init(appName))
+                {
+                    failure = "libnotify initialization failed; a D-Bus user session may be unavailable.";
+                    return false;
+                }
+
+                initialized = true;
+
+                if (TryGetServerInfo(out failure))
+                    return true;
+
+                notify_uninit();
+                initialized = false;
+                return false;
+            }
+            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+            {
+                if (initialized)
+                    notify_uninit();
+                failure = $"libnotify capability probing is unavailable: {ex.Message}";
+                return false;
+            }
+        }
+    }
+
+    internal static void Uninitialize()
+    {
+        lock (s_probeLock)
+            notify_uninit();
+    }
+
+    private static bool TryGetServerInfo(out string failure)
+    {
+        nint name = 0;
+        nint vendor = 0;
+        nint version = 0;
+        nint specVersion = 0;
+        try
+        {
+            if (notify_get_server_info(out name, out vendor, out version, out specVersion))
+            {
+                failure = string.Empty;
+                return true;
+            }
+
+            failure = "no org.freedesktop.Notifications daemon answered on the D-Bus user session.";
+            return false;
+        }
+        finally
+        {
+            if (name != 0) g_free(name);
+            if (vendor != 0) g_free(vendor);
+            if (version != 0) g_free(version);
+            if (specVersion != 0) g_free(specVersion);
+        }
+    }
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -219,6 +361,14 @@ internal static class LibNotify
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool notify_is_initted();
+
+    [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool notify_get_server_info(
+        out nint returnName,
+        out nint returnVendor,
+        out nint returnVersion,
+        out nint returnSpecVersion);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern nint notify_notification_new(
@@ -280,6 +430,9 @@ internal static class LibNotify
     // GLib helpers
     [DllImport("libglib-2.0.so.0", CallingConvention = CallingConvention.Cdecl)]
     public static extern void g_error_free(nint error);
+
+    [DllImport("libglib-2.0.so.0", CallingConvention = CallingConvention.Cdecl)]
+    private static extern void g_free(nint memory);
 
     [DllImport("libgobject-2.0.so.0", CallingConvention = CallingConvention.Cdecl)]
     public static extern void g_object_unref(nint obj);

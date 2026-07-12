@@ -437,7 +437,7 @@ public abstract class AxisChartBase : ChartBase
         var axisBrush = AxisBrush ?? s_defaultAxisBrush;
         var axisPen = new Pen(axisBrush, AxisThickness);
         var labelBrush = s_defaultLabelBrush;
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
 
         // Draw the X axis line (bottom)
         dc.DrawLine(axisPen, new Point(plotArea.Left, plotArea.Bottom), new Point(plotArea.Right, plotArea.Bottom));

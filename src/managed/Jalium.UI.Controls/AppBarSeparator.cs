@@ -9,8 +9,8 @@ namespace Jalium.UI.Controls;
 public class AppBarSeparator : Control, ICommandBarElement
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Separator);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Separator);
 
     private static readonly SolidColorBrush s_fallbackSeparatorBrush = new(ThemeColors.ControlBorder);
 

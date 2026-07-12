@@ -28,30 +28,6 @@ internal sealed class ValidationErrorAdorner : Adorner
 }
 
 /// <summary>
-/// Represents the result of a hit test on an adorner layer.
-/// Provides information about which adorner was hit in addition to the visual and point data.
-/// </summary>
-public sealed class AdornerHitTestResult : Jalium.UI.Media.PointHitTestResult
-{
-    /// <summary>
-    /// Initializes a new instance of the <see cref="AdornerHitTestResult"/> class.
-    /// </summary>
-    /// <param name="visual">The visual that was hit.</param>
-    /// <param name="pt">The point that was hit, in the visual's coordinate space.</param>
-    /// <param name="adorner">The adorner that was hit.</param>
-    internal AdornerHitTestResult(Visual visual, Point pt, Adorner adorner)
-        : base(visual, pt)
-    {
-        Adorner = adorner;
-    }
-
-    /// <summary>
-    /// Gets the adorner that was hit.
-    /// </summary>
-    public Adorner Adorner { get; }
-}
-
-/// <summary>
 /// Registers the validation adorner handler. Called during application startup
 /// to connect the base Validation class with the adorner infrastructure.
 /// </summary>

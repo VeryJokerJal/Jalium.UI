@@ -1,6 +1,8 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
+using Jalium.UI.Controls;
+using Jalium.UI.Markup;
 
 namespace Jalium.UI.Data;
 
@@ -8,9 +10,10 @@ namespace Jalium.UI.Data;
 /// Describes a collection of Binding objects attached to a single binding target property.
 /// </summary>
 [ContentProperty("Bindings")]
-public class MultiBinding : BindingBase
+public class MultiBinding : BindingBase, IAddChild
 {
     private readonly Collection<BindingBase> _bindings = new();
+    private readonly Collection<ValidationRule> _validationRules = new();
 
     /// <summary>
     /// Gets the collection of Binding objects within this MultiBinding instance.
@@ -52,11 +55,55 @@ public class MultiBinding : BindingBase
     /// </summary>
     public bool NotifyOnTargetUpdated { get; set; }
 
+    /// <summary>Gets or sets whether validation errors raise the routed validation event.</summary>
+    public bool NotifyOnValidationError { get; set; }
+
+    /// <summary>Gets or sets the callback used when a source update throws.</summary>
+    public UpdateSourceExceptionFilterCallback? UpdateSourceExceptionFilter { get; set; }
+
+    /// <summary>Gets or sets whether <see cref="IDataErrorInfo"/> participates in validation.</summary>
+    public bool ValidatesOnDataErrors { get; set; }
+
+    /// <summary>Gets or sets whether source-update exceptions participate in validation.</summary>
+    public bool ValidatesOnExceptions { get; set; }
+
+    /// <summary>Gets or sets whether <see cref="INotifyDataErrorInfo"/> participates in validation.</summary>
+    public bool ValidatesOnNotifyDataErrors { get; set; } = true;
+
+    /// <summary>Gets the validation rules applied to the combined target value.</summary>
+    public Collection<ValidationRule> ValidationRules => _validationRules;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="MultiBinding"/> class.
     /// </summary>
     public MultiBinding()
     {
+    }
+
+    /// <summary>Returns whether the bindings collection contains serializable children.</summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public bool ShouldSerializeBindings() => _bindings.Count > 0;
+
+    /// <summary>Returns whether the validation-rules collection contains serializable children.</summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public bool ShouldSerializeValidationRules() => _validationRules.Count > 0;
+
+    void IAddChild.AddChild(object value)
+    {
+        if (value is not BindingBase binding)
+        {
+            throw new ArgumentException("MultiBinding children must derive from BindingBase.", nameof(value));
+        }
+
+        _bindings.Add(binding);
+    }
+
+    void IAddChild.AddText(string text)
+    {
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            throw new InvalidOperationException("MultiBinding does not accept text children.");
+        }
     }
 
     /// <inheritdoc />
@@ -93,11 +140,23 @@ public sealed class MultiBindingExpression : BindingExpressionBase
     /// </summary>
     public ReadOnlyCollection<BindingExpressionBase> BindingExpressions => _bindingExpressions.AsReadOnly();
 
+    /// <inheritdoc />
+    public override bool HasValidationError =>
+        base.HasValidationError || _bindingExpressions.Any(static expression => expression.HasValidationError);
+
+    /// <inheritdoc />
+    public override bool HasError =>
+        base.HasError || _bindingExpressions.Any(static expression => expression.HasError);
+
+    /// <inheritdoc />
+    public override ValidationError? ValidationError =>
+        base.ValidationError ?? _bindingExpressions.Select(static expression => expression.ValidationError).FirstOrDefault(static error => error != null);
+
     /// <summary>
     /// Initializes a new instance of the <see cref="MultiBindingExpression"/> class.
     /// </summary>
     internal MultiBindingExpression(MultiBinding multiBinding, DependencyObject target, DependencyProperty targetProperty)
-        : base(target, targetProperty)
+        : base(multiBinding, target, targetProperty)
     {
         _multiBinding = multiBinding;
     }
@@ -110,6 +169,7 @@ public sealed class MultiBindingExpression : BindingExpressionBase
 
         IsActive = true;
         Status = BindingStatus.Active;
+        AttachToBindingGroup();
 
         // Create and activate child binding expressions
         foreach (var binding in _multiBinding.Bindings)
@@ -139,6 +199,7 @@ public sealed class MultiBindingExpression : BindingExpressionBase
 
         IsActive = false;
         Status = BindingStatus.Inactive;
+        DetachFromBindingGroup();
 
         // Deactivate and remove child binding expressions
         Target.PropertyChangedInternal -= OnChildBindingChanged;
@@ -283,9 +344,17 @@ public sealed class MultiBindingExpression : BindingExpressionBase
                     _multiBinding.ConverterParameter,
                     _multiBinding.ConverterCulture ?? CultureInfo.CurrentCulture);
             }
-            catch
+            catch (Exception exception)
             {
                 Status = BindingStatus.UpdateSourceError;
+                object? errorContent = _multiBinding.UpdateSourceExceptionFilter?.Invoke(this, exception)
+                    ?? exception.Message;
+                if (_multiBinding.ValidatesOnExceptions)
+                {
+                    ValidationError error = new(null, this, errorContent, exception);
+                    AddValidationErrorState(error);
+                    Validation.MarkInvalid(this, error);
+                }
                 return;
             }
 

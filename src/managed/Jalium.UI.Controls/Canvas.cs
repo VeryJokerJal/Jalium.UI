@@ -113,7 +113,7 @@ public class Canvas : Panel
     {
         // Canvas measures children with infinite space but returns Size(0,0)
         // like WPF 閳?it relies on parent layout to determine its actual size.
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             if (child is not FrameworkElement fe) continue;
             fe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
@@ -125,7 +125,7 @@ public class Canvas : Panel
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             if (child is not FrameworkElement fe) continue;
 

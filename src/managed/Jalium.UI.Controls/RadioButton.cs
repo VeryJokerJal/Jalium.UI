@@ -154,7 +154,7 @@ public class RadioButton : ToggleButton
     #region Toggle Handling
 
     /// <inheritdoc />
-    protected override void OnToggle()
+    protected internal override void OnToggle()
     {
         // RadioButton can only be checked, not unchecked by clicking
         if (IsChecked != true)

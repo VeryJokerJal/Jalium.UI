@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Provides a startup screen for a WPF application.
 /// </summary>
-public sealed class SplashScreen
+public class SplashScreen
 {
     private readonly System.Reflection.Assembly _resourceAssembly;
     private readonly string _resourceName;
@@ -290,6 +290,7 @@ public sealed class CleanUpVirtualizedItemEventArgs : RoutedEventArgs
     /// Initializes a new instance of the <see cref="CleanUpVirtualizedItemEventArgs"/> class.
     /// </summary>
     public CleanUpVirtualizedItemEventArgs(object value, UIElement element)
+        : base(VirtualizingStackPanel.CleanUpVirtualizedItemEvent)
     {
         Value = value;
         UIElement = element;

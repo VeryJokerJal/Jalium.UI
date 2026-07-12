@@ -5,15 +5,33 @@ namespace Jalium.UI.Input;
 /// </summary>
 public sealed class KeyEventArgs : InputEventArgs
 {
+    private readonly Key _realKey;
+
     /// <summary>
     /// Gets the key that was pressed or released.
     /// </summary>
-    public Key Key { get; }
+    public Key Key => _realKey;
 
     /// <summary>
     /// Gets the system key if this is a system key event.
     /// </summary>
-    public Key SystemKey { get; }
+    public Key SystemKey => _realKey == Key.System ? _realKey : Key.None;
+
+    /// <summary>Gets the key processed by an input method editor.</summary>
+    public Key ImeProcessedKey => _realKey == Key.ImeProcessed ? _realKey : Key.None;
+
+    /// <summary>Gets the key processed as a dead character.</summary>
+    public Key DeadCharProcessedKey =>
+        _realKey == Key.DeadCharProcessed ? _realKey : Key.None;
+
+    /// <summary>Gets the presentation source that reported the key.</summary>
+    public PresentationSource? InputSource { get; }
+
+    /// <summary>Gets the complete state of the key.</summary>
+    public KeyStates KeyStates { get; }
+
+    /// <summary>Gets whether the key is toggled.</summary>
+    public bool IsToggled => (KeyStates & KeyStates.Toggled) != 0;
 
     /// <summary>
     /// Gets the modifier keys that were pressed during the event.
@@ -28,7 +46,7 @@ public sealed class KeyEventArgs : InputEventArgs
     /// <summary>
     /// Gets a value indicating whether the key is currently down.
     /// </summary>
-    public bool IsDown { get; }
+    public bool IsDown => (KeyStates & KeyStates.Down) != 0;
 
     /// <summary>
     /// Gets a value indicating whether the key is currently up.
@@ -56,14 +74,31 @@ public sealed class KeyEventArgs : InputEventArgs
     public KeyEventArgs(RoutedEvent routedEvent, Key key, ModifierKeys modifiers, bool isDown, bool isRepeat, int timestamp)
         : base(routedEvent, timestamp)
     {
-        Key = key;
+        _realKey = key;
         KeyboardModifiers = modifiers;
-        IsDown = isDown;
+        KeyStates = isDown ? KeyStates.Down : KeyStates.None;
         IsRepeat = isRepeat;
     }
 
+    /// <summary>Initializes device-backed keyboard event data.</summary>
+    public KeyEventArgs(
+        KeyboardDevice keyboard,
+        PresentationSource inputSource,
+        int timestamp,
+        Key key)
+        : base(keyboard ?? throw new ArgumentNullException(nameof(keyboard)), timestamp)
+    {
+        InputSource = inputSource ?? throw new ArgumentNullException(nameof(inputSource));
+        if (!Enum.IsDefined(key))
+            throw new System.ComponentModel.InvalidEnumArgumentException(
+                nameof(key), (int)key, typeof(Key));
+        _realKey = key;
+        KeyStates = keyboard.GetKeyStates(key);
+        KeyboardModifiers = keyboard.Modifiers;
+    }
+
     /// <inheritdoc />
-    internal override void InvokeEventHandler(Delegate handler, object target)
+    protected override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is KeyEventHandler keyHandler)
         {

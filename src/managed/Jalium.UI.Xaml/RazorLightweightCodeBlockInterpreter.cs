@@ -21,6 +21,8 @@ namespace Jalium.UI.Markup;
 [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Razor code-block interpreter may construct generic types/methods at runtime via the expression evaluator.")]
 internal static class RazorLightweightCodeBlockInterpreter
 {
+    private const int MaxLoopIterations = 10_000;
+
     /// <summary>
     /// Expands a code block by interpreting C# code and emitting XML markup.
     /// This is a drop-in replacement for the Roslyn-based <c>ExecuteScript</c>.
@@ -454,7 +456,7 @@ internal static class RazorLightweightCodeBlockInterpreter
         var condExpr = ReadParenthesized(code, ref pos).Trim();
         var body = ReadBraceBody(code, ref pos);
 
-        var limit = 10000;
+        var limit = MaxLoopIterations;
         while (limit-- > 0)
         {
             var cond = RazorLightweightExpressionEvaluator.Evaluate(condExpr, scope.Resolve);
@@ -476,8 +478,8 @@ internal static class RazorLightweightCodeBlockInterpreter
         var condExpr = ReadParenthesized(code, ref pos).Trim();
         SkipSemicolon(code, ref pos);
 
-        var limit = 10000;
-        do
+        var limit = MaxLoopIterations;
+        while (limit-- > 0)
         {
             var bodyFlow = new FlowSignal();
             var bodyPos = 0;
@@ -487,7 +489,7 @@ internal static class RazorLightweightCodeBlockInterpreter
 
             var cond = RazorLightweightExpressionEvaluator.Evaluate(condExpr, scope.Resolve);
             if (!RazorExpressionParser.IsTruthy(cond)) break;
-        } while (limit-- > 0);
+        }
     }
 
     private static void InterpretIfMixed(string code, ref int pos, StringBuilder output, InterpreterScope scope, FlowSignal flow)
@@ -807,7 +809,8 @@ internal static class RazorLightweightCodeBlockInterpreter
                         if (moveNextAsync != null && currentProp != null)
                         {
                             var child = scope.CreateChild();
-                            while (true)
+                            var remainingIterations = MaxLoopIterations;
+                            while (remainingIterations-- > 0)
                             {
                                 var moveResult = moveNextAsync.Invoke(enumerator, null);
                                 bool hasNext;
@@ -2188,7 +2191,7 @@ internal static class RazorLightweightCodeBlockInterpreter
         var bodyStart = pos;
         var bodyEnd = FindBlockEnd(tokens, pos);
 
-        var iterLimit = 10000;
+        var iterLimit = MaxLoopIterations;
         while (iterLimit-- > 0)
         {
             var condVal = RazorLightweightExpressionEvaluator.Evaluate(condExpr, scope.Resolve);
@@ -2220,8 +2223,8 @@ internal static class RazorLightweightCodeBlockInterpreter
         pos++; // skip )
         if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Semicolon) pos++;
 
-        var iterLimit = 10000;
-        do
+        var iterLimit = MaxLoopIterations;
+        while (iterLimit-- > 0)
         {
             var bodyFlow = new FlowSignal();
             ExecuteBlock(tokens, bodyStart, output, scope, bodyFlow);
@@ -2230,7 +2233,7 @@ internal static class RazorLightweightCodeBlockInterpreter
 
             var condVal = RazorLightweightExpressionEvaluator.Evaluate(condExpr, scope.Resolve);
             if (!RazorExpressionParser.IsTruthy(condVal)) break;
-        } while (iterLimit-- > 0);
+        }
 
         return pos;
     }

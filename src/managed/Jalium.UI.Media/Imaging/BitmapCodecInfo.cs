@@ -3,8 +3,12 @@ namespace Jalium.UI.Media.Imaging;
 /// <summary>
 /// Provides information about an imaging codec.
 /// </summary>
-public class BitmapCodecInfo
+public abstract class BitmapCodecInfo
 {
+    /// <summary>Initializes a codec description.</summary>
+    protected BitmapCodecInfo()
+    {
+    }
     /// <summary>
     /// Gets or sets the author of the codec.
     /// </summary>

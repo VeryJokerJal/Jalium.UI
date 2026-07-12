@@ -28,6 +28,7 @@ public sealed partial class Dispatcher : IDisposable
     private readonly ManualResetEventSlim _workAvailable = new(false);
 
     private volatile bool _isShutdown;
+    private volatile bool _exitAllFramesRequested;
     private bool _disposed;
     private int _disableProcessingCount;
     private DispatcherHooks? _hooks;
@@ -110,15 +111,21 @@ public sealed partial class Dispatcher : IDisposable
     internal DispatcherHooks? HooksInternal => _hooks;
 
     /// <summary>
+    /// Gets or sets the element whose measure or arrange operation most recently failed on this dispatcher.
+    /// The value is cleared when the next layout operation begins.
+    /// </summary>
+    internal UIElement? LastLayoutExceptionElement { get; set; }
+
+    /// <summary>
     /// Occurs when a thread exception is thrown and uncaught during execution of a delegate by way of Invoke or BeginInvoke.
     /// </summary>
-    public event DispatcherUnhandledExceptionEventHandler? UnhandledException;
+    public event Threading.DispatcherUnhandledExceptionEventHandler? UnhandledException;
 
     /// <summary>
     /// Occurs when a thread exception is thrown and uncaught during execution of a delegate, before the
     /// <see cref="UnhandledException"/> event, to determine whether the exception should be caught.
     /// </summary>
-    public event DispatcherUnhandledExceptionFilterEventHandler? UnhandledExceptionFilter;
+    public event Threading.DispatcherUnhandledExceptionFilterEventHandler? UnhandledExceptionFilter;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Dispatcher"/> class for the current thread.
@@ -135,14 +142,39 @@ public sealed partial class Dispatcher : IDisposable
         }
         else
         {
+            EnsureNativeWake();
+        }
+    }
+
+    /// <summary>
+    /// Ensures that the non-Windows dispatcher has its platform-native wake handle.
+    /// </summary>
+    /// <remarks>
+    /// A <see cref="DispatcherObject"/> can create the dispatcher before the native
+    /// platform is initialized. The constructor deliberately tolerates that ordering;
+    /// the application or first platform window calls this method again immediately
+    /// after platform initialization. Repeated calls are harmless.
+    /// </remarks>
+    internal void EnsureNativeWake()
+    {
+        if (s_isWindows || _disposed || _dispatcherWake != null)
+            return;
+
+        lock (_instanceLock)
+        {
+            if (_disposed || _dispatcherWake != null)
+                return;
+
             try
             {
-                _dispatcherWake = new NativeDispatcherWake();
-                _dispatcherWake.SetCallback(ProcessQueue);
+                var dispatcherWake = new NativeDispatcherWake();
+                dispatcherWake.SetCallback(ProcessQueue);
+                _dispatcherWake = dispatcherWake;
             }
             catch
             {
-                // Fallback: no wake mechanism, rely on ManualResetEventSlim polling
+                // Platform initialization may not have happened yet. The managed
+                // queue remains usable and a later EnsureNativeWake call retries.
             }
         }
     }
@@ -456,6 +488,66 @@ public sealed partial class Dispatcher : IDisposable
     private DispatcherOperation CreateOperation(Action action, DispatcherPriority priority, bool critical, bool observed)
         => new(this, priority, action, critical, observed);
 
+    internal DispatcherOperation CreateObservedOperation(
+        Action action,
+        DispatcherPriority priority,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        ValidatePriority(priority);
+        var operation = CreateOperation(action, priority, critical: false, observed: true);
+        EnqueueObservedOperation(operation, cancellationToken);
+        return operation;
+    }
+
+    internal DispatcherOperation<TResult> CreateObservedOperation<TResult>(
+        Func<TResult> callback,
+        DispatcherPriority priority,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        ValidatePriority(priority);
+        var operation = new DispatcherOperation<TResult>(this, priority, callback);
+        EnqueueObservedOperation(operation, cancellationToken);
+        return operation;
+    }
+
+    private void EnqueueObservedOperation(
+        DispatcherOperation operation,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            operation.AbortInternal();
+            return;
+        }
+
+        CancellationTokenRegistration cancellationRegistration = default;
+        if (cancellationToken.CanBeCanceled)
+        {
+            cancellationRegistration = cancellationToken.Register(
+                static state => ((DispatcherOperation)state!).Abort(),
+                operation);
+            operation.Aborted += DisposeRegistration;
+            operation.Completed += DisposeRegistration;
+            if (operation.Status == DispatcherOperationStatus.Aborted)
+            {
+                DisposeRegistration(operation, EventArgs.Empty);
+                return;
+            }
+        }
+
+        EnqueueOperation(operation);
+        return;
+
+        void DisposeRegistration(object? sender, EventArgs e)
+        {
+            cancellationRegistration.Dispose();
+            operation.Aborted -= DisposeRegistration;
+            operation.Completed -= DisposeRegistration;
+        }
+    }
+
     private void EnqueueOperation(DispatcherOperation op)
     {
         bool wake;
@@ -472,7 +564,7 @@ public sealed partial class Dispatcher : IDisposable
         }
 
         Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.ENQ);
-        _hooks?.RaiseOperationPosted(op, EventArgs.Empty);
+        _hooks?.RaiseOperationPosted(this, op);
         if (wake)
             NotifyDispatcherThread();
     }
@@ -527,7 +619,7 @@ public sealed partial class Dispatcher : IDisposable
     internal void OnOperationPriorityChanged(DispatcherOperation op)
     {
         // 链表出队时按 op.Priority 实时判定，无需重排；仅唤醒一次以便重新评估。
-        _hooks?.RaiseOperationPriorityChanged(op, EventArgs.Empty);
+        _hooks?.RaiseOperationPriorityChanged(this, op);
         NotifyDispatcherThread();
     }
 
@@ -576,13 +668,22 @@ public sealed partial class Dispatcher : IDisposable
             DispatchOperation(op);
         }
 
+        bool dispatcherInactive;
         lock (_instanceLock)
         {
             Jalium.UI.Diagnostics.HoverTrace.Gauge(Jalium.UI.Diagnostics.HoverTrace.G_QDEPTH, _queue.Count);
+            dispatcherInactive = !_queue.Any(static operation =>
+                operation.Status != DispatcherOperationStatus.Aborted
+                && (int)operation.Priority >= MinDispatchPriority);
             if (_queue.Count == 0)
                 _workAvailable.Reset();
             // Non-empty: keep _workAvailable set so the non-Windows PushFrame loop
-            // (ProcessQueue(); Wait(...)) starts the next batch immediately.
+                // (ProcessQueue(); Wait(...)) starts the next batch immediately.
+        }
+
+        if (dispatcherInactive)
+        {
+            _hooks?.RaiseDispatcherInactive(this);
         }
     }
 
@@ -590,6 +691,7 @@ public sealed partial class Dispatcher : IDisposable
     {
         try
         {
+            _hooks?.RaiseOperationStarted(this, op);
             op.InvokeInternal();
         }
         catch (Exception ex)
@@ -644,17 +746,27 @@ public sealed partial class Dispatcher : IDisposable
         NotifyDispatcherThread();
     }
 
-    private static void ValidatePriority(DispatcherPriority priority)
+    private static void ValidatePriority(DispatcherPriority priority) =>
+        ValidatePriority(priority, nameof(priority));
+
+    /// <summary>
+    /// Validates that a value belongs to the range recognized by the dispatcher.
+    /// </summary>
+    /// <param name="priority">The priority to validate.</param>
+    /// <param name="parameterName">The parameter name used by the validation exception.</param>
+    public static void ValidatePriority(DispatcherPriority priority, string parameterName)
     {
         if (priority < DispatcherPriority.Inactive || priority > DispatcherPriority.Send)
-            throw new ArgumentOutOfRangeException(nameof(priority), priority, "Invalid DispatcherPriority.");
+        {
+            throw new InvalidEnumArgumentException(parameterName, (int)priority, typeof(DispatcherPriority));
+        }
     }
 
     #endregion
 
     #region Frames / pumping
 
-    private static int s_frameDepth;
+    private int _frameDepth;
 
     /// <summary>
     /// Enters an execute loop, pumping the platform message queue (and dispatcher work) until the
@@ -672,7 +784,7 @@ public sealed partial class Dispatcher : IDisposable
                 "via DisableProcessing: dispatcher work cannot run, so the frame would never complete. Close the " +
                 "DisableProcessing scope before pumping.");
 
-        Interlocked.Increment(ref s_frameDepth);
+        Interlocked.Increment(ref _frameDepth);
         try
         {
             if (s_isWindows)
@@ -693,7 +805,10 @@ public sealed partial class Dispatcher : IDisposable
         }
         finally
         {
-            Interlocked.Decrement(ref s_frameDepth);
+            if (Interlocked.Decrement(ref _frameDepth) == 0)
+            {
+                _exitAllFramesRequested = false;
+            }
         }
     }
 
@@ -761,9 +876,15 @@ public sealed partial class Dispatcher : IDisposable
         VerifyAccess();
         if (!s_isWindows)
             return;
-        Interlocked.Increment(ref s_frameDepth);
+        Interlocked.Increment(ref _frameDepth);
         try { RunWindowsMessageLoopCore(new DispatcherFrame(), outermost: false, keepRunning); }
-        finally { Interlocked.Decrement(ref s_frameDepth); }
+        finally
+        {
+            if (Interlocked.Decrement(ref _frameDepth) == 0)
+            {
+                _exitAllFramesRequested = false;
+            }
+        }
     }
 
     private int RunWindowsMessageLoopCore(DispatcherFrame frame, bool outermost, Func<bool>? keepRunning = null)
@@ -884,11 +1005,14 @@ public sealed partial class Dispatcher : IDisposable
     /// </summary>
     public void ExitAllFrames()
     {
-        // Frames observe HasShutdownStarted via DispatcherFrame.Continue when exitWhenRequested;
-        // explicit exit is signalled by marking shutdown-pending semantics. We post a wake so any
-        // pumping frame re-evaluates Continue.
-        NotifyDispatcherThread();
+        if (Volatile.Read(ref _frameDepth) > 0)
+        {
+            _exitAllFramesRequested = true;
+            NotifyDispatcherThread();
+        }
     }
+
+    internal bool ExitAllFramesRequested => _exitAllFramesRequested;
 
     /// <summary>
     /// Disables processing of the queue until the returned structure is disposed.
@@ -1269,11 +1393,16 @@ public sealed partial class Dispatcher : IDisposable
 /// <summary>
 /// Represents the method that handles the <see cref="Dispatcher.UnhandledException"/> event.
 /// </summary>
+// Kept as a source-compatibility shim for code written against early Jalium.UI builds.
+// WPF places this delegate in System.Windows.Threading; framework events use the
+// canonical Jalium.UI.Threading delegate below.
+[Obsolete("Use Jalium.UI.Threading.DispatcherUnhandledExceptionEventHandler.")]
 public delegate void DispatcherUnhandledExceptionEventHandler(object sender, DispatcherUnhandledExceptionEventArgs e);
 
 /// <summary>
 /// Represents the method that handles the <see cref="Dispatcher.UnhandledExceptionFilter"/> event.
 /// </summary>
+[Obsolete("Use Jalium.UI.Threading.DispatcherUnhandledExceptionFilterEventHandler.")]
 public delegate void DispatcherUnhandledExceptionFilterEventHandler(object sender, DispatcherUnhandledExceptionFilterEventArgs e);
 
 /// <summary>

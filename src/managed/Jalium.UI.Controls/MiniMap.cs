@@ -71,9 +71,9 @@ public class MiniMapMarker
 public class MiniMap : FrameworkElement
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.MiniMapAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.MiniMapAutomationPeer(this);
     }
 
     // Cached brushes

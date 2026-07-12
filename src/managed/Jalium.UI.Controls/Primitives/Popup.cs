@@ -1,5 +1,8 @@
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
+using Jalium.UI.Data;
+using Jalium.UI.Media;
+using Jalium.UI.Threading;
 using Jalium.UI.Interop.Win32;
 using static Jalium.UI.Interop.Win32.Win32Constants;
 using static Jalium.UI.Interop.Win32.Win32Methods;
@@ -14,53 +17,59 @@ public enum PlacementMode
     /// <summary>
     /// Popup is positioned at the bottom-left of the target element.
     /// </summary>
-    Bottom,
-
-    /// <summary>
-    /// Popup is positioned centered over the target element.
-    /// </summary>
-    Center,
-
-    /// <summary>
-    /// Popup is positioned to the right of the target element.
-    /// </summary>
-    Right,
-
-    /// <summary>
-    /// Popup is positioned at the top-left of the target element.
-    /// </summary>
-    Top,
-
-    /// <summary>
-    /// Popup is positioned to the left of the target element.
-    /// </summary>
-    Left,
-
-    /// <summary>
-    /// Popup is positioned relative to the mouse cursor.
-    /// </summary>
-    Mouse,
-
-    /// <summary>
-    /// Position at the mouse pointer location.
-    /// </summary>
-    MousePoint,
+    Absolute = 0,
 
     /// <summary>
     /// Popup is positioned relative to the top-left of the target element.
     /// </summary>
-    Relative,
+    Relative = 1,
+
+    Bottom = 2,
 
     /// <summary>
-    /// Popup is positioned at the specified absolute position within the window.
+    /// Popup is positioned centered over the target element.
     /// </summary>
-    Absolute,
+    Center = 3,
 
     /// <summary>
-    /// Popup is positioned at the bottom-left of the target element,
-    /// but repositioned if it would go off the window bounds.
+    /// Popup is positioned to the right of the target element.
     /// </summary>
-    Custom
+    Right = 4,
+
+    /// <summary>
+    /// Popup is positioned at an absolute point.
+    /// </summary>
+    AbsolutePoint = 5,
+
+    /// <summary>
+    /// Popup is positioned at a point relative to the target.
+    /// </summary>
+    RelativePoint = 6,
+
+    /// <summary>
+    /// Popup is positioned at the top-left of the target element.
+    /// </summary>
+    Mouse = 7,
+
+    /// <summary>
+    /// Popup is positioned to the left of the target element.
+    /// </summary>
+    MousePoint = 8,
+
+    /// <summary>
+    /// Popup is positioned relative to the mouse cursor.
+    /// </summary>
+    Left = 9,
+
+    /// <summary>
+    /// Position at the mouse pointer location.
+    /// </summary>
+    Top = 10,
+
+    /// <summary>
+    /// Popup is positioned relative to the top-left of the target element.
+    /// </summary>
+    Custom = 11,
 }
 
 /// <summary>
@@ -73,9 +82,9 @@ public enum PlacementMode
 public partial class Popup : FrameworkElement
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.PopupAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.PopupAutomationPeer(this);
     }
 
     private PopupRoot? _popupRoot;
@@ -83,6 +92,7 @@ public partial class Popup : FrameworkElement
     private PopupWindow? _popupWindow;
     private Window? _parentWindow;
     private bool _isUsingExternalWindow;
+    private DispatcherTimer? _openAnimationTimer;
 
     #region Dependency Properties
 
@@ -180,6 +190,60 @@ public partial class Popup : FrameworkElement
     public static readonly DependencyProperty PreferExternalWindowProperty =
         DependencyProperty.Register(nameof(PreferExternalWindow), typeof(bool), typeof(Popup),
             new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the <see cref="CustomPopupPlacementCallback"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty CustomPopupPlacementCallbackProperty =
+        DependencyProperty.Register(
+            nameof(CustomPopupPlacementCallback),
+            typeof(CustomPopupPlacementCallback),
+            typeof(Popup),
+            new PropertyMetadata(null, OnOffsetChanged));
+
+    /// <summary>
+    /// Identifies the <see cref="PlacementRectangle"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty PlacementRectangleProperty =
+        DependencyProperty.Register(
+            nameof(PlacementRectangle),
+            typeof(Rect),
+            typeof(Popup),
+            new PropertyMetadata(Rect.Empty, OnOffsetChanged));
+
+    /// <summary>
+    /// Identifies the <see cref="PopupAnimation"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty PopupAnimationProperty =
+        DependencyProperty.Register(
+            nameof(PopupAnimation),
+            typeof(PopupAnimation),
+            typeof(Popup),
+            new PropertyMetadata(PopupAnimation.None, null, CoercePopupAnimation),
+            value => value is PopupAnimation animation && Enum.IsDefined(animation));
+
+    /// <summary>
+    /// Identifies the <see cref="AllowsTransparency"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty AllowsTransparencyProperty =
+        DependencyProperty.Register(
+            nameof(AllowsTransparency),
+            typeof(bool),
+            typeof(Popup),
+            new PropertyMetadata(false, OnAllowsTransparencyChanged));
+
+    private static readonly DependencyPropertyKey HasDropShadowPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(HasDropShadow),
+            typeof(bool),
+            typeof(Popup),
+            new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the read-only <see cref="HasDropShadow"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty HasDropShadowProperty =
+        HasDropShadowPropertyKey.DependencyProperty;
 
     #endregion
 
@@ -310,6 +374,48 @@ public partial class Popup : FrameworkElement
         set => SetValue(PreferExternalWindowProperty, value);
     }
 
+    /// <summary>
+    /// Gets or sets the callback used when <see cref="Placement"/> is
+    /// <see cref="PlacementMode.Custom"/>.
+    /// </summary>
+    public CustomPopupPlacementCallback? CustomPopupPlacementCallback
+    {
+        get => (CustomPopupPlacementCallback?)GetValue(CustomPopupPlacementCallbackProperty);
+        set => SetValue(CustomPopupPlacementCallbackProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the rectangle relative to the placement target used to position the popup.
+    /// </summary>
+    public Rect PlacementRectangle
+    {
+        get => (Rect)(GetValue(PlacementRectangleProperty) ?? Rect.Empty);
+        set => SetValue(PlacementRectangleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the animation applied the next time the popup opens.
+    /// </summary>
+    public PopupAnimation PopupAnimation
+    {
+        get => (PopupAnimation)(GetValue(PopupAnimationProperty) ?? PopupAnimation.None);
+        set => SetValue(PopupAnimationProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether the popup can render transparent content.
+    /// </summary>
+    public bool AllowsTransparency
+    {
+        get => (bool)(GetValue(AllowsTransparencyProperty) ?? false);
+        set => SetValue(AllowsTransparencyProperty, value);
+    }
+
+    /// <summary>
+    /// Gets whether the popup should render a system drop shadow.
+    /// </summary>
+    public bool HasDropShadow => (bool)(GetValue(HasDropShadowProperty) ?? false);
+
     #endregion
 
     #region Events
@@ -325,6 +431,41 @@ public partial class Popup : FrameworkElement
     public event EventHandler? Closed;
 
     #endregion
+
+    /// <summary>
+    /// Connects a popup to a child that exposes the standard popup placement properties.
+    /// </summary>
+    /// <remarks>
+    /// The one-way bindings intentionally mirror WPF's root-popup hookup.  In particular,
+    /// <see cref="IsOpen"/> is bound last so all placement state is ready before the child
+    /// can cause the popup to open.
+    /// </remarks>
+    public static void CreateRootPopup(Popup popup, UIElement child)
+    {
+        ArgumentNullException.ThrowIfNull(popup);
+        ArgumentNullException.ThrowIfNull(child);
+
+        if (child.VisualParent != null)
+        {
+            throw new InvalidOperationException("The popup child already has a visual parent.");
+        }
+
+        static Binding OneWay(UIElement source, string path) => new(path)
+        {
+            Mode = BindingMode.OneWay,
+            Source = source
+        };
+
+        popup.SetBinding(PlacementTargetProperty, OneWay(child, nameof(PlacementTarget)));
+        popup.Child = child;
+        popup.SetBinding(VerticalOffsetProperty, OneWay(child, nameof(VerticalOffset)));
+        popup.SetBinding(HorizontalOffsetProperty, OneWay(child, nameof(HorizontalOffset)));
+        popup.SetBinding(PlacementRectangleProperty, OneWay(child, nameof(PlacementRectangle)));
+        popup.SetBinding(PlacementProperty, OneWay(child, nameof(Placement)));
+        popup.SetBinding(StaysOpenProperty, OneWay(child, nameof(StaysOpen)));
+        popup.SetBinding(CustomPopupPlacementCallbackProperty, OneWay(child, nameof(CustomPopupPlacementCallback)));
+        popup.SetBinding(IsOpenProperty, OneWay(child, nameof(IsOpen)));
+    }
 
     #region Property Changed Callbacks
 
@@ -366,6 +507,20 @@ public partial class Popup : FrameworkElement
         {
             popup.StaysOpen = !(bool)e.NewValue!;
         }
+    }
+
+    private static void OnAllowsTransparencyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var popup = (Popup)d;
+        popup.SetValue(HasDropShadowPropertyKey, Jalium.UI.SystemParameters.DropShadow && (bool)e.NewValue!);
+        popup.CoerceValue(PopupAnimationProperty);
+    }
+
+    private static object? CoercePopupAnimation(DependencyObject d, object? baseValue)
+    {
+        return ((Popup)d).AllowsTransparency
+            ? baseValue
+            : PopupAnimation.None;
     }
 
     #endregion
@@ -463,7 +618,8 @@ public partial class Popup : FrameworkElement
         // Subscribe to parent window moves for repositioning
         _parentWindow.LocationChanged += OnParentWindowLocationChanged;
 
-        Opened?.Invoke(this, EventArgs.Empty);
+        StartOpenAnimation();
+        OnOpened(EventArgs.Empty);
     }
 
     private void OpenAsOverlay(Point position, Size popupSize, Size windowSize)
@@ -479,10 +635,25 @@ public partial class Popup : FrameworkElement
 
         _overlayLayer.AddPopupRoot(_popupRoot!);
 
-        // Force a full invalidation so the overlay content is rendered immediately,
-        // even if CompositionTarget is throttling between-frame InvalidateWindow calls.
-        _parentWindow.RequestFullInvalidation();
-        _parentWindow.InvalidateWindow();
+        RequestHostRender();
+    }
+
+    internal void RequestHostRender()
+    {
+        IWindowHost? host = _isUsingExternalWindow
+            ? _popupWindow
+            : _parentWindow;
+
+        if (host == null)
+        {
+            return;
+        }
+
+        // Popup open/close/slide/fade animations mutate opacity and render offset.
+        // A full host invalidation avoids stale translucent pixels when the popup is
+        // rendered as an overlay inside the parent window's retained back buffer.
+        host.RequestFullInvalidation();
+        host.InvalidateWindow();
     }
 
     private void OpenAsExternalWindow(Point windowLocalPos, Size popupSize)
@@ -512,6 +683,8 @@ public partial class Popup : FrameworkElement
     {
         if (_popupRoot == null) return;
 
+        StopOpenAnimation(resetVisualState: true);
+
         if (_isUsingExternalWindow)
         {
             _popupWindow?.Dispose();
@@ -528,6 +701,7 @@ public partial class Popup : FrameworkElement
         // Detach event subscriptions
         _popupRoot.Detach();
         _popupRoot = null;
+        RequestHostRender();
         _isUsingExternalWindow = false;
 
         if (_parentWindow != null)
@@ -538,7 +712,117 @@ public partial class Popup : FrameworkElement
         _overlayLayer = null;
         SetIsMouseOver(false);
 
-        Closed?.Invoke(this, EventArgs.Empty);
+        OnClosed(EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Called after the popup has opened.
+    /// </summary>
+    protected virtual void OnOpened(EventArgs e)
+    {
+        Opened?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Called after the popup has closed.
+    /// </summary>
+    protected virtual void OnClosed(EventArgs e)
+    {
+        Closed?.Invoke(this, e);
+    }
+
+    private void StartOpenAnimation()
+    {
+        StopOpenAnimation(resetVisualState: true);
+
+        var root = _popupRoot;
+        var animation = PopupAnimation;
+        if (root == null || !AllowsTransparency || animation == PopupAnimation.None)
+        {
+            return;
+        }
+
+        var translate = new TranslateTransform();
+        var startOpacity = animation == PopupAnimation.Fade ? 0.0 : 1.0;
+        var distance = animation == PopupAnimation.Scroll ? 6.0 : 10.0;
+
+        switch (Placement)
+        {
+            case PlacementMode.Top:
+                translate.Y = distance;
+                break;
+            case PlacementMode.Left:
+                translate.X = distance;
+                break;
+            case PlacementMode.Right:
+                translate.X = -distance;
+                break;
+            default:
+                translate.Y = -distance;
+                break;
+        }
+
+        if (animation == PopupAnimation.Fade)
+        {
+            translate.X = 0;
+            translate.Y = 0;
+        }
+
+        var startX = translate.X;
+        var startY = translate.Y;
+        var started = DateTime.UtcNow;
+        var duration = animation == PopupAnimation.Fade
+            ? TimeSpan.FromMilliseconds(150)
+            : TimeSpan.FromMilliseconds(120);
+
+        root.Opacity = startOpacity;
+        root.RenderTransform = translate;
+
+        _openAnimationTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(16)
+        };
+        _openAnimationTimer.Tick += OnTick;
+        _openAnimationTimer.Start();
+        RequestHostRender();
+
+        void OnTick(object? sender, EventArgs e)
+        {
+            if (!ReferenceEquals(root, _popupRoot))
+            {
+                StopOpenAnimation(resetVisualState: false);
+                return;
+            }
+
+            var progress = Math.Clamp(
+                (DateTime.UtcNow - started).TotalMilliseconds / duration.TotalMilliseconds,
+                0.0,
+                1.0);
+
+            // Smoothstep avoids an abrupt stop while remaining deterministic and allocation-free.
+            var eased = progress * progress * (3.0 - (2.0 * progress));
+            root.Opacity = startOpacity + ((1.0 - startOpacity) * eased);
+            translate.X = startX * (1.0 - eased);
+            translate.Y = startY * (1.0 - eased);
+            RequestHostRender();
+
+            if (progress >= 1.0)
+            {
+                StopOpenAnimation(resetVisualState: true);
+            }
+        }
+    }
+
+    private void StopOpenAnimation(bool resetVisualState)
+    {
+        _openAnimationTimer?.Stop();
+        _openAnimationTimer = null;
+
+        if (resetVisualState && _popupRoot != null)
+        {
+            _popupRoot.Opacity = 1.0;
+            _popupRoot.RenderTransform = null;
+        }
     }
 
     private void OnParentWindowLocationChanged(object? sender, EventArgs e)
@@ -576,6 +860,7 @@ public partial class Popup : FrameworkElement
             Canvas.SetLeft(_popupRoot, adjustedPos.X);
             Canvas.SetTop(_popupRoot, adjustedPos.Y);
             _overlayLayer.InvalidateVisual();
+            RequestHostRender();
         }
     }
 
@@ -586,7 +871,7 @@ public partial class Popup : FrameworkElement
     private Point CalculateWindowLocalPosition(Size popupSize)
     {
         var target = PlacementTarget ?? this;
-        var targetWindowBounds = GetElementWindowBounds(target);
+        var targetWindowBounds = GetPlacementBounds(target);
 
         double x = 0, y = 0;
 
@@ -618,13 +903,15 @@ public partial class Popup : FrameworkElement
                 break;
 
             case PlacementMode.Relative:
+            case PlacementMode.RelativePoint:
                 x = targetWindowBounds.X;
                 y = targetWindowBounds.Y;
                 break;
 
             case PlacementMode.Absolute:
-                x = 0;
-                y = 0;
+            case PlacementMode.AbsolutePoint:
+                x = PlacementRectangle.IsEmpty ? 0 : PlacementRectangle.X;
+                y = PlacementRectangle.IsEmpty ? 0 : PlacementRectangle.Y;
                 break;
 
             case PlacementMode.Mouse:
@@ -642,6 +929,24 @@ public partial class Popup : FrameworkElement
                 break;
 
             case PlacementMode.Custom:
+                var callback = CustomPopupPlacementCallback;
+                if (callback != null)
+                {
+                    var placements = callback(
+                        popupSize,
+                        new Size(targetWindowBounds.Width, targetWindowBounds.Height),
+                        new Point(HorizontalOffset, VerticalOffset));
+
+                    if (placements is { Length: > 0 })
+                    {
+                        // Custom placement points are already responsible for applying the
+                        // callback's offset argument, matching the WPF callback contract.
+                        return new Point(
+                            targetWindowBounds.X + placements[0].Point.X,
+                            targetWindowBounds.Y + placements[0].Point.Y);
+                    }
+                }
+
                 x = targetWindowBounds.X;
                 y = targetWindowBounds.Y + targetWindowBounds.Height;
                 break;
@@ -659,7 +964,7 @@ public partial class Popup : FrameworkElement
             return position;
 
         var target = PlacementTarget ?? this;
-        var targetBounds = GetElementWindowBounds(target);
+        var targetBounds = GetPlacementBounds(target);
 
         // Vertical flip: Bottom -> Top
         if (position.Y + popupSize.Height > windowSize.Height && Placement == PlacementMode.Bottom)
@@ -740,7 +1045,7 @@ public partial class Popup : FrameworkElement
 
         // Get target element's screen position for flipping
         var target = PlacementTarget ?? this;
-        var targetWindowBounds = GetElementWindowBounds(target);
+        var targetWindowBounds = GetPlacementBounds(target);
         var targetScreenTopLeft = WindowLocalToScreen(new Point(targetWindowBounds.X, targetWindowBounds.Y));
         var physTargetW = targetWindowBounds.Width * dpiScale;
         var physTargetH = targetWindowBounds.Height * dpiScale;
@@ -963,6 +1268,22 @@ public partial class Popup : FrameworkElement
         }
 
         return bounds;
+    }
+
+    private Rect GetPlacementBounds(UIElement target)
+    {
+        var targetBounds = GetElementWindowBounds(target);
+        var rectangle = PlacementRectangle;
+        if (rectangle.IsEmpty)
+        {
+            return targetBounds;
+        }
+
+        return new Rect(
+            targetBounds.X + rectangle.X,
+            targetBounds.Y + rectangle.Y,
+            rectangle.Width,
+            rectangle.Height);
     }
 
     private static void InvalidateSubtree(UIElement element)

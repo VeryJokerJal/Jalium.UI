@@ -21,6 +21,9 @@ namespace jalium {
 
 // Forward declarations
 class SoftwareBackend;
+#ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
+class WaylandShmPresenter;
+#endif
 
 // ============================================================================
 // Resource Classes
@@ -510,6 +513,10 @@ private:
 
     // Platform-neutral surface descriptor for non-Windows present
     JaliumSurfaceDescriptor surfaceDescriptor_{};
+
+#ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
+    std::unique_ptr<WaylandShmPresenter> waylandPresenter_;
+#endif
 
 #ifdef _WIN32
     void* hwnd_ = nullptr;

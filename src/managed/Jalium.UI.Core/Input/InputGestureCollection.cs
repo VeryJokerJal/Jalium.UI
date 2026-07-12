@@ -9,7 +9,7 @@ namespace Jalium.UI.Input;
 public sealed class InputGestureCollection : IList<InputGesture>, IList
 {
     private readonly List<InputGesture> _gestures;
-    private readonly bool _isReadOnly;
+    private bool _isReadOnly;
 
     /// <summary>
     /// Initializes a new instance of the InputGestureCollection class.
@@ -23,10 +23,17 @@ public sealed class InputGestureCollection : IList<InputGesture>, IList
     /// <summary>
     /// Initializes a new instance of the InputGestureCollection class with the specified gestures.
     /// </summary>
-    /// <param name="gestures">The gestures to add to the collection.</param>
-    public InputGestureCollection(IEnumerable<InputGesture> gestures)
+    /// <param name="inputGestures">The gestures to add to the collection.</param>
+    public InputGestureCollection(IList inputGestures)
     {
-        _gestures = new List<InputGesture>(gestures);
+        ArgumentNullException.ThrowIfNull(inputGestures);
+        _gestures = new List<InputGesture>(inputGestures.Count);
+        foreach (object? value in inputGestures)
+        {
+            if (value is not InputGesture gesture)
+                throw new NotSupportedException("Collection only accepts InputGesture instances.");
+            _gestures.Add(gesture);
+        }
         _isReadOnly = false;
     }
 
@@ -80,10 +87,37 @@ public sealed class InputGestureCollection : IList<InputGesture>, IList
     /// <summary>
     /// Adds a gesture to the collection.
     /// </summary>
-    public void Add(InputGesture item)
+    public int Add(InputGesture inputGesture)
     {
         CheckReadOnly();
-        _gestures.Add(item);
+        ArgumentNullException.ThrowIfNull(inputGesture);
+        _gestures.Add(inputGesture);
+        return _gestures.Count - 1;
+    }
+
+    void ICollection<InputGesture>.Add(InputGesture item) => Add(item);
+
+    /// <summary>
+    /// Adds the input gestures in <paramref name="collection"/> to the end of the collection.
+    /// </summary>
+    public void AddRange(ICollection collection)
+    {
+        CheckReadOnly();
+        ArgumentNullException.ThrowIfNull(collection);
+        if (collection.Count <= 0)
+        {
+            return;
+        }
+
+        foreach (object? item in collection)
+        {
+            if (item is not InputGesture gesture)
+            {
+                throw new NotSupportedException("Collection only accepts InputGesture instances.");
+            }
+
+            _gestures.Add(gesture);
+        }
     }
 
     int IList.Add(object? value)
@@ -121,8 +155,8 @@ public sealed class InputGestureCollection : IList<InputGesture>, IList
     /// <summary>
     /// Returns an enumerator that iterates through the collection.
     /// </summary>
-    public IEnumerator<InputGesture> GetEnumerator() => _gestures.GetEnumerator();
-    IEnumerator IEnumerable.GetEnumerator() => _gestures.GetEnumerator();
+    public IEnumerator GetEnumerator() => _gestures.GetEnumerator();
+    IEnumerator<InputGesture> IEnumerable<InputGesture>.GetEnumerator() => _gestures.GetEnumerator();
 
     /// <summary>
     /// Returns the index of the specified gesture.
@@ -149,7 +183,13 @@ public sealed class InputGestureCollection : IList<InputGesture>, IList
     /// <summary>
     /// Removes the specified gesture from the collection.
     /// </summary>
-    public bool Remove(InputGesture item)
+    public void Remove(InputGesture inputGesture)
+    {
+        CheckReadOnly();
+        _gestures.Remove(inputGesture);
+    }
+
+    bool ICollection<InputGesture>.Remove(InputGesture item)
     {
         CheckReadOnly();
         return _gestures.Remove(item);
@@ -169,6 +209,14 @@ public sealed class InputGestureCollection : IList<InputGesture>, IList
     {
         CheckReadOnly();
         _gestures.RemoveAt(index);
+    }
+
+    /// <summary>
+    /// Makes this collection read-only.
+    /// </summary>
+    public void Seal()
+    {
+        _isReadOnly = true;
     }
 
     /// <summary>

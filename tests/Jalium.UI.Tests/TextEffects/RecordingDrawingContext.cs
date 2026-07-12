@@ -10,7 +10,7 @@ namespace Jalium.UI.Tests.TextEffects;
 /// Only records events relevant to <see cref="Controls.TextEffects.TextEffectPresenter"/>
 /// — DrawText, PushEffect/PopEffect, PushTransform/PushOpacity/Pop.
 /// </summary>
-internal sealed class RecordingDrawingContext : DrawingContext
+internal sealed class RecordingDrawingContext : DrawingContextAdapter
 {
     public List<string> Events { get; } = new();
     public List<IEffect> PushedEffects { get; } = new();

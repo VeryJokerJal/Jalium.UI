@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.CompilerServices;
@@ -10,7 +11,7 @@ namespace Jalium.UI;
 /// Provides a hash table/dictionary implementation that contains resources
 /// used by components and other elements of a UI application.
 /// </summary>
-public class ResourceDictionary : IDictionary<object, object?>, IDictionary
+public class ResourceDictionary : IDictionary<object, object?>, IDictionary, ISupportInitialize, INameScope
 {
     private sealed class NotificationDeferralScope : IDisposable
     {
@@ -37,8 +38,12 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
 
     private readonly Dictionary<object, object?> _innerDictionary = new();
     private readonly MergedDictionaryCollection _mergedDictionaries;
+    private readonly NameScope _nameScope = new();
     private Dictionary<object, ResourceDictionary>? _themeDictionaries;
+    private DeferrableContent? _deferrableContent;
     private Uri? _source;
+    private bool _invalidatesImplicitDataTemplateResources;
+    private bool _isInitializing;
     private int _notificationDeferralDepth;
     private bool _notificationPending;
     private HashSet<object>? _pendingChangedKeys; // null means "all keys changed"
@@ -86,7 +91,31 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     /// <summary>
     /// Gets a collection of merged dictionaries.
     /// </summary>
-    public IList<ResourceDictionary> MergedDictionaries => _mergedDictionaries;
+    public Collection<ResourceDictionary> MergedDictionaries => _mergedDictionaries;
+
+    /// <summary>
+    /// Gets or sets the deferred XAML content associated with this dictionary.
+    /// </summary>
+    /// <remarks>
+    /// The XAML loader owns the payload represented by this object. Resource values produced
+    /// from deferred content are finalized through <see cref="OnGettingValue"/> when read.
+    /// </remarks>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public DeferrableContent? DeferrableContent
+    {
+        get => _deferrableContent;
+        set => _deferrableContent = value;
+    }
+
+    /// <summary>
+    /// Gets or sets whether implicit data-template resource changes invalidate template selection.
+    /// </summary>
+    [DefaultValue(false)]
+    public bool InvalidatesImplicitDataTemplateResources
+    {
+        get => _invalidatesImplicitDataTemplateResources;
+        set => _invalidatesImplicitDataTemplateResources = value;
+    }
 
     /// <summary>
     /// Gets the collection of theme dictionaries, keyed by theme name (e.g., "Light", "Dark", "HighContrast").
@@ -130,7 +159,25 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     public Uri? Source
     {
         get => _source;
-        set => _source = value;
+        set
+        {
+            if (Equals(_source, value))
+            {
+                return;
+            }
+
+            if (_source is not null)
+            {
+                Diagnostics.ResourceDictionaryDiagnosticsStore.UnregisterSource(this, _source);
+            }
+
+            _source = value;
+
+            if (_source is not null)
+            {
+                Diagnostics.ResourceDictionaryDiagnosticsStore.RegisterSource(this, _source);
+            }
+        }
     }
 
     /// <summary>
@@ -161,12 +208,67 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     }
 
     /// <summary>
+    /// Marks the beginning of an initialization transaction.
+    /// </summary>
+    public void BeginInit()
+    {
+        if (_isInitializing)
+        {
+            throw new InvalidOperationException("Nested BeginInit calls are not supported.");
+        }
+
+        _isInitializing = true;
+        _notificationDeferralDepth++;
+    }
+
+    /// <summary>
+    /// Marks the end of an initialization transaction and publishes accumulated changes.
+    /// </summary>
+    public void EndInit()
+    {
+        if (!_isInitializing)
+        {
+            throw new InvalidOperationException("BeginInit must be called before EndInit.");
+        }
+
+        _isInitializing = false;
+        EndNotificationDeferral();
+    }
+
+    /// <summary>
+    /// Registers an object in this dictionary's name scope.
+    /// </summary>
+    public void RegisterName(string name, object scopedElement)
+    {
+        _nameScope.RegisterName(name, scopedElement);
+    }
+
+    /// <summary>
+    /// Removes a name from this dictionary's name scope.
+    /// </summary>
+    public void UnregisterName(string name)
+    {
+        _nameScope.UnregisterName(name);
+    }
+
+    /// <summary>
+    /// Finds an object registered in this dictionary's name scope.
+    /// </summary>
+    public object? FindName(string name)
+    {
+        return _nameScope.FindName(name);
+    }
+
+    /// <summary>
     /// Copies all resources from another dictionary into this one.
     /// </summary>
     /// <param name="source">The source dictionary to copy from.</param>
     internal void CopyFrom(ResourceDictionary source)
     {
         var changed = false;
+
+        _deferrableContent = source._deferrableContent;
+        _invalidatesImplicitDataTemplateResources = source._invalidatesImplicitDataTemplateResources;
 
         foreach (var kvp in source._innerDictionary)
         {
@@ -217,7 +319,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     /// <summary>
     /// Gets a collection containing the values.
     /// </summary>
-    public ICollection<object?> Values => _innerDictionary.Values;
+    public ICollection<object?> Values => new ResourceValuesCollection(this);
 
     /// <summary>
     /// Gets or sets the element with the specified key.
@@ -294,15 +396,29 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     /// Tries to get the value associated with the specified key.
     /// </summary>
     public bool TryGetValue(object key, out object? value)
+        => TryGetValue(key, out value, out _);
+
+    /// <summary>
+    /// Tries to resolve a resource and also returns the dictionary that supplied the value.
+    /// The source dictionary is used by the WPF-compatible static-resource diagnostics path.
+    /// </summary>
+    internal bool TryGetValue(
+        object key,
+        out object? value,
+        out ResourceDictionary? sourceDictionary)
     {
         // Check local dictionary first
-        if (_innerDictionary.TryGetValue(key, out value))
+        if (TryGetLocalValue(key, out value))
+        {
+            sourceDictionary = this;
             return true;
+        }
 
         var chain = t_lookupChain ??= new HashSet<ResourceDictionary>(ReferenceEqualityComparer.Instance);
         if (!chain.Add(this))
         {
             value = null;
+            sourceDictionary = null;
             return false; // Cycle detected
         }
 
@@ -313,7 +429,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
             {
                 if (_themeDictionaries.TryGetValue(CurrentThemeKey, out var themeDict))
                 {
-                    if (themeDict.TryGetValue(key, out value))
+                    if (themeDict.TryGetValue(key, out value, out sourceDictionary))
                         return true;
                 }
             }
@@ -321,11 +437,12 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
             // Check merged dictionaries in reverse order (later overrides earlier)
             for (int i = _mergedDictionaries.Count - 1; i >= 0; i--)
             {
-                if (_mergedDictionaries[i].TryGetValue(key, out value))
+                if (_mergedDictionaries[i].TryGetValue(key, out value, out sourceDictionary))
                     return true;
             }
 
             value = null;
+            sourceDictionary = null;
             return false;
         }
         finally
@@ -370,13 +487,21 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
 
     public bool Contains(KeyValuePair<object, object?> item)
     {
-        return _innerDictionary.ContainsKey(item.Key) &&
-               EqualityComparer<object?>.Default.Equals(_innerDictionary[item.Key], item.Value);
+        return TryGetLocalValue(item.Key, out object? value) &&
+               EqualityComparer<object?>.Default.Equals(value, item.Value);
     }
 
     public void CopyTo(KeyValuePair<object, object?>[] array, int arrayIndex)
     {
-        ((ICollection<KeyValuePair<object, object?>>)_innerDictionary).CopyTo(array, arrayIndex);
+        ArgumentNullException.ThrowIfNull(array);
+        ValidateCopyToArguments(array.Length, arrayIndex);
+
+        int destinationIndex = arrayIndex;
+        foreach (var entry in SnapshotEntries())
+        {
+            object? value = GetValueForRead(entry.Key, entry.Value);
+            array[destinationIndex++] = new KeyValuePair<object, object?>(entry.Key, value);
+        }
     }
 
     public bool Remove(KeyValuePair<object, object?> item)
@@ -394,7 +519,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
 
     public IEnumerator<KeyValuePair<object, object?>> GetEnumerator()
     {
-        return _innerDictionary.GetEnumerator();
+        return new ResourceEnumerator(this, SnapshotEntries());
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -410,7 +535,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
 
     ICollection IDictionary.Keys => _innerDictionary.Keys;
 
-    ICollection IDictionary.Values => _innerDictionary.Values;
+    ICollection IDictionary.Values => new ResourceValuesCollection(this);
 
     bool ICollection.IsSynchronized => false;
 
@@ -434,12 +559,108 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
 
     IDictionaryEnumerator IDictionary.GetEnumerator()
     {
-        return ((IDictionary)_innerDictionary).GetEnumerator();
+        return new ResourceDictionaryEnumerator(GetEnumerator());
     }
 
     void ICollection.CopyTo(Array array, int index)
     {
-        ((ICollection)_innerDictionary).CopyTo(array, index);
+        ArgumentNullException.ThrowIfNull(array);
+
+        if (array is DictionaryEntry[] dictionaryEntries)
+        {
+            CopyTo(dictionaryEntries, index);
+            return;
+        }
+
+        if (array is KeyValuePair<object, object?>[] keyValuePairs)
+        {
+            CopyTo(keyValuePairs, index);
+            return;
+        }
+
+        throw new ArgumentException("The destination array type is not supported.", nameof(array));
+    }
+
+    /// <summary>
+    /// Copies the local dictionary entries to an array of <see cref="DictionaryEntry"/> values.
+    /// </summary>
+    public void CopyTo(DictionaryEntry[] array, int arrayIndex)
+    {
+        ArgumentNullException.ThrowIfNull(array);
+        ValidateCopyToArguments(array.Length, arrayIndex);
+
+        int destinationIndex = arrayIndex;
+        foreach (var entry in SnapshotEntries())
+        {
+            object? value = GetValueForRead(entry.Key, entry.Value);
+            array[destinationIndex++] = new DictionaryEntry(entry.Key, value);
+        }
+    }
+
+    /// <summary>
+    /// Gives derived dictionaries an opportunity to realize or replace a value when it is read.
+    /// </summary>
+    /// <param name="key">The resource key being read.</param>
+    /// <param name="value">The resource value, which may be replaced by the override.</param>
+    /// <param name="canCache">Whether a replacement value may be cached in this dictionary.</param>
+    protected virtual void OnGettingValue(object key, ref object? value, out bool canCache)
+    {
+        canCache = true;
+    }
+
+    private bool TryGetLocalValue(object key, out object? value)
+    {
+        if (!_innerDictionary.TryGetValue(key, out value))
+        {
+            return false;
+        }
+
+        value = GetValueForRead(key, value);
+        return true;
+    }
+
+    private object? GetValueForRead(object key, object? value)
+    {
+        // WPF does not invoke the deferred-value hook for a stored null value.
+        if (value is null)
+        {
+            return null;
+        }
+
+        object? resolvedValue = value;
+        OnGettingValue(key, ref resolvedValue, out bool canCache);
+
+        if (canCache &&
+            _innerDictionary.TryGetValue(key, out object? currentValue) &&
+            Equals(currentValue, value) &&
+            !Equals(currentValue, resolvedValue))
+        {
+            // Realizing deferred content is a cache operation, not a resource mutation, so it
+            // intentionally does not raise Changed or invalidate the resource lookup cache.
+            _innerDictionary[key] = resolvedValue;
+        }
+
+        return resolvedValue;
+    }
+
+    private KeyValuePair<object, object?>[] SnapshotEntries()
+    {
+        var entries = new KeyValuePair<object, object?>[_innerDictionary.Count];
+        ((ICollection<KeyValuePair<object, object?>>)_innerDictionary).CopyTo(entries, 0);
+        return entries;
+    }
+
+    private void ValidateCopyToArguments(int arrayLength, int arrayIndex)
+    {
+        if (arrayIndex < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(arrayIndex));
+        }
+
+        if (arrayIndex > arrayLength || arrayLength - arrayIndex < Count)
+        {
+            throw new ArgumentException("The destination array is not long enough.");
+        }
     }
 
     private void OnChangedForKey(object key)
@@ -502,11 +723,13 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     private void OnMergedDictionaryAdded(ResourceDictionary dictionary)
     {
         dictionary.Changed += OnMergedDictionaryChanged;
+        Diagnostics.ResourceDictionaryDiagnosticsStore.LinkMergedDictionary(this, dictionary);
     }
 
     private void OnMergedDictionaryRemoved(ResourceDictionary dictionary)
     {
         dictionary.Changed -= OnMergedDictionaryChanged;
+        Diagnostics.ResourceDictionaryDiagnosticsStore.UnlinkMergedDictionary(this, dictionary);
     }
 
     private void OnMergedDictionaryChanged(object? sender, EventArgs e)
@@ -562,9 +785,198 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
         }
     }
 
+    private sealed class ResourceEnumerator : IEnumerator<KeyValuePair<object, object?>>
+    {
+        private readonly ResourceDictionary _owner;
+        private readonly KeyValuePair<object, object?>[] _entries;
+        private int _index = -1;
+        private KeyValuePair<object, object?> _current;
+
+        public ResourceEnumerator(
+            ResourceDictionary owner,
+            KeyValuePair<object, object?>[] entries)
+        {
+            _owner = owner;
+            _entries = entries;
+        }
+
+        public KeyValuePair<object, object?> Current
+        {
+            get
+            {
+                if (_index < 0 || _index >= _entries.Length)
+                {
+                    throw new InvalidOperationException();
+                }
+
+                return _current;
+            }
+        }
+
+        object IEnumerator.Current => Current;
+
+        public bool MoveNext()
+        {
+            if (_index < _entries.Length)
+            {
+                _index++;
+            }
+
+            if (_index >= _entries.Length)
+            {
+                _current = default;
+                return false;
+            }
+
+            KeyValuePair<object, object?> entry = _entries[_index];
+            object? value = _owner.GetValueForRead(entry.Key, entry.Value);
+            _current = new KeyValuePair<object, object?>(entry.Key, value);
+            return true;
+        }
+
+        public void Reset()
+        {
+            _index = -1;
+            _current = default;
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class ResourceDictionaryEnumerator : IDictionaryEnumerator, IDisposable
+    {
+        private readonly IEnumerator<KeyValuePair<object, object?>> _enumerator;
+
+        public ResourceDictionaryEnumerator(IEnumerator<KeyValuePair<object, object?>> enumerator)
+        {
+            _enumerator = enumerator;
+        }
+
+        public DictionaryEntry Entry
+        {
+            get
+            {
+                KeyValuePair<object, object?> current = _enumerator.Current;
+                return new DictionaryEntry(current.Key, current.Value);
+            }
+        }
+
+        public object Key => Entry.Key;
+
+        public object? Value => Entry.Value;
+
+        public object Current => Entry;
+
+        public bool MoveNext() => _enumerator.MoveNext();
+
+        public void Reset() => _enumerator.Reset();
+
+        public void Dispose() => _enumerator.Dispose();
+    }
+
+    private sealed class ResourceValuesCollection : ICollection<object?>, ICollection
+    {
+        private readonly ResourceDictionary _owner;
+
+        public ResourceValuesCollection(ResourceDictionary owner)
+        {
+            _owner = owner;
+        }
+
+        public int Count => _owner.Count;
+
+        public bool IsReadOnly => true;
+
+        bool ICollection.IsSynchronized => false;
+
+        object ICollection.SyncRoot => ((ICollection)_owner._innerDictionary).SyncRoot;
+
+        public bool Contains(object? item)
+        {
+            foreach (object? value in this)
+            {
+                if (EqualityComparer<object?>.Default.Equals(value, item))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public void CopyTo(object?[] array, int arrayIndex)
+        {
+            ArgumentNullException.ThrowIfNull(array);
+            _owner.ValidateCopyToArguments(array.Length, arrayIndex);
+
+            foreach (object? value in this)
+            {
+                array[arrayIndex++] = value;
+            }
+        }
+
+        void ICollection.CopyTo(Array array, int index)
+        {
+            ArgumentNullException.ThrowIfNull(array);
+
+            if (array.Rank != 1 || array.GetLowerBound(0) != 0)
+            {
+                throw new ArgumentException("Only single-dimensional, zero-based arrays are supported.", nameof(array));
+            }
+
+            _owner.ValidateCopyToArguments(array.Length, index);
+
+            try
+            {
+                foreach (object? value in this)
+                {
+                    array.SetValue(value, index++);
+                }
+            }
+            catch (Exception exception) when (exception is InvalidCastException or ArrayTypeMismatchException)
+            {
+                throw new ArgumentException("The destination array type is not compatible.", nameof(array), exception);
+            }
+        }
+
+        public IEnumerator<object?> GetEnumerator()
+        {
+            return new ResourceValueEnumerator(_owner.GetEnumerator());
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        public void Add(object? item) => throw new NotSupportedException();
+
+        public void Clear() => throw new NotSupportedException();
+
+        public bool Remove(object? item) => throw new NotSupportedException();
+    }
+
+    private sealed class ResourceValueEnumerator : IEnumerator<object?>
+    {
+        private readonly IEnumerator<KeyValuePair<object, object?>> _enumerator;
+
+        public ResourceValueEnumerator(IEnumerator<KeyValuePair<object, object?>> enumerator)
+        {
+            _enumerator = enumerator;
+        }
+
+        public object? Current => _enumerator.Current.Value;
+
+        object IEnumerator.Current => Current!;
+
+        public bool MoveNext() => _enumerator.MoveNext();
+
+        public void Reset() => _enumerator.Reset();
+
+        public void Dispose() => _enumerator.Dispose();
+    }
+
     #endregion
 }
-
 /// <summary>
 /// Provides static methods for finding resources in the element tree.
 /// </summary>
@@ -575,6 +987,13 @@ public static class ResourceLookup
     /// This is set by the Application class in Jalium.UI.Controls.
     /// </summary>
     public static Func<object, object?>? ApplicationResourceLookup { get; set; }
+
+    /// <summary>
+    /// Optional application lookup that also identifies the dictionary supplying a resource.
+    /// Controls installs this alongside <see cref="ApplicationResourceLookup"/> for diagnostics.
+    /// </summary>
+    internal static Func<object, (object? Value, ResourceDictionary? Dictionary)>?
+        ApplicationResourceLookupWithSource { get; set; }
 
     /// <summary>
     /// Gets or sets an optional callback that can redirect resource lookup
@@ -639,6 +1058,29 @@ public static class ResourceLookup
         return FindResourceCore(element, resourceKey, new HashSet<object>());
     }
 
+    /// <summary>
+    /// Finds a resource without using the value-only cache and reports its source dictionary.
+    /// This overload is intentionally internal because the source identity is diagnostics data,
+    /// not part of the regular resource lookup contract.
+    /// </summary>
+    internal static object? FindResource(
+        FrameworkElement? element,
+        object resourceKey,
+        out ResourceDictionary? sourceDictionary)
+    {
+        if (resourceKey is null)
+        {
+            sourceDictionary = null;
+            return null;
+        }
+
+        return FindResourceCoreWithSource(
+            element,
+            resourceKey,
+            new HashSet<object>(),
+            out sourceDictionary);
+    }
+
     private static object? FindResourceCore(
         FrameworkElement? element,
         object resourceKey,
@@ -657,6 +1099,11 @@ public static class ResourceLookup
                 return ResolveDynamicResourceValue(element, value, resourceChain);
             }
 
+            if (current.Style?.Resources.TryGetValue(resourceKey, out var styleValue) == true)
+            {
+                return ResolveDynamicResourceValue(element, styleValue, resourceChain);
+            }
+
             FrameworkElement? next = null;
 
             // Allow controls layer to bridge non-visual ancestry (e.g., PopupRoot -> Popup owner)
@@ -667,7 +1114,7 @@ public static class ResourceLookup
                     next = null;
             }
 
-            next ??= current.VisualParent as FrameworkElement;
+            next ??= current.FrameworkParent;
             current = next;
         }
 
@@ -678,6 +1125,88 @@ public static class ResourceLookup
         }
 
         return null;
+    }
+
+    private static object? FindResourceCoreWithSource(
+        FrameworkElement? element,
+        object resourceKey,
+        HashSet<object> resourceChain,
+        out ResourceDictionary? sourceDictionary)
+    {
+        if (!resourceChain.Add(resourceKey))
+        {
+            sourceDictionary = null;
+            return null;
+        }
+
+        var current = element;
+        int depthGuard = 0;
+        while (current != null && depthGuard++ < 2048)
+        {
+            if (current.Resources.TryGetValue(resourceKey, out var value, out sourceDictionary))
+            {
+                if (value is IDynamicResourceReference dynamicReference)
+                {
+                    return FindResourceCoreWithSource(
+                        element,
+                        dynamicReference.ResourceKey,
+                        resourceChain,
+                        out sourceDictionary);
+                }
+
+                return value;
+            }
+
+            var styleResources = current.Style?.Resources;
+            if (styleResources is not null &&
+                styleResources.TryGetValue(
+                    resourceKey,
+                    out var styleValue,
+                    out sourceDictionary))
+            {
+                if (styleValue is IDynamicResourceReference dynamicReference)
+                {
+                    return FindResourceCoreWithSource(
+                        element,
+                        dynamicReference.ResourceKey,
+                        resourceChain,
+                        out sourceDictionary);
+                }
+
+                return styleValue;
+            }
+
+            FrameworkElement? next = null;
+            if (AncestorRedirectLookup != null)
+            {
+                next = AncestorRedirectLookup(current);
+                if (ReferenceEquals(next, current))
+                {
+                    next = null;
+                }
+            }
+
+            current = next ?? current.FrameworkParent;
+        }
+
+        if (ApplicationResourceLookupWithSource is not null)
+        {
+            var applicationResult = ApplicationResourceLookupWithSource(resourceKey);
+            sourceDictionary = applicationResult.Dictionary;
+            if (applicationResult.Value is IDynamicResourceReference dynamicReference)
+            {
+                return FindResourceCoreWithSource(
+                    element,
+                    dynamicReference.ResourceKey,
+                    resourceChain,
+                    out sourceDictionary);
+            }
+
+            return applicationResult.Value;
+        }
+
+        sourceDictionary = null;
+        return ApplicationResourceLookup?.Invoke(resourceKey);
     }
 
     private static object? ResolveDynamicResourceValue(
@@ -754,36 +1283,4 @@ public static class ResourceLookup
 
         return null;
     }
-}
-
-/// <summary>
-/// Represents a key for an implicit DataTemplate resource.
-/// </summary>
-public sealed class DataTemplateKey : IEquatable<DataTemplateKey>
-{
-    /// <summary>
-    /// Gets the data type for which this key is used.
-    /// </summary>
-    public Type DataType { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="DataTemplateKey"/> class.
-    /// </summary>
-    /// <param name="dataType">The data type for which this key is used.</param>
-    public DataTemplateKey(Type dataType)
-    {
-        DataType = dataType ?? throw new ArgumentNullException(nameof(dataType));
-    }
-
-    /// <inheritdoc />
-    public override bool Equals(object? obj) => Equals(obj as DataTemplateKey);
-
-    /// <inheritdoc />
-    public bool Equals(DataTemplateKey? other) => other != null && DataType == other.DataType;
-
-    /// <inheritdoc />
-    public override int GetHashCode() => DataType.GetHashCode();
-
-    /// <inheritdoc />
-    public override string ToString() => $"DataTemplateKey({DataType.Name})";
 }

@@ -1,5 +1,7 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
+using Jalium.UI.Markup;
 
 namespace Jalium.UI.Data;
 
@@ -8,7 +10,7 @@ namespace Jalium.UI.Data;
 /// which receives its value from the first binding in the collection that produces a value successfully.
 /// </summary>
 [ContentProperty("Bindings")]
-public sealed class PriorityBinding : BindingBase
+public class PriorityBinding : BindingBase, IAddChild
 {
     private readonly Collection<BindingBase> _bindings = new();
 
@@ -22,6 +24,30 @@ public sealed class PriorityBinding : BindingBase
     /// </summary>
     public PriorityBinding()
     {
+    }
+
+    /// <summary>
+    /// Returns whether the <see cref="Bindings"/> collection contains values that should be serialized.
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public bool ShouldSerializeBindings() => _bindings.Count > 0;
+
+    void IAddChild.AddChild(object value)
+    {
+        if (value is not BindingBase binding)
+        {
+            throw new ArgumentException("PriorityBinding children must derive from BindingBase.", nameof(value));
+        }
+
+        _bindings.Add(binding);
+    }
+
+    void IAddChild.AddText(string text)
+    {
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            throw new InvalidOperationException("PriorityBinding does not accept text children.");
+        }
     }
 
     /// <inheritdoc />
@@ -60,11 +86,14 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
             ? _bindingExpressions[_activeBindingIndex]
             : null;
 
+    /// <inheritdoc />
+    public override bool HasValidationError => ActiveBindingExpression?.HasValidationError ?? false;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="PriorityBindingExpression"/> class.
     /// </summary>
     internal PriorityBindingExpression(PriorityBinding priorityBinding, DependencyObject target, DependencyProperty targetProperty)
-        : base(target, targetProperty)
+        : base(priorityBinding, target, targetProperty)
     {
         _priorityBinding = priorityBinding;
     }
@@ -77,6 +106,7 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
 
         IsActive = true;
         Status = BindingStatus.Active;
+        AttachToBindingGroup();
 
         // Create shadow properties and binding expressions for each binding
         for (int i = 0; i < _priorityBinding.Bindings.Count; i++)
@@ -110,6 +140,7 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
 
         IsActive = false;
         Status = BindingStatus.Inactive;
+        DetachFromBindingGroup();
 
         Target.PropertyChangedInternal -= OnShadowPropertyChanged;
 

@@ -53,9 +53,9 @@ public class PropertyGrid : Control
     private bool _descriptionVisible;
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.PropertyGridAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.PropertyGridAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -679,10 +679,10 @@ public class PropertyGrid : Control
     private FrameworkElement? _fallbackRoot;
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => _fallbackRoot != null && Template == null ? 1 : base.VisualChildrenCount;
+    protected override int VisualChildrenCount => _fallbackRoot != null && Template == null ? 1 : base.VisualChildrenCount;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (_fallbackRoot != null && Template == null && index == 0) return _fallbackRoot;
         return base.GetVisualChild(index);

@@ -1,5 +1,7 @@
 ﻿using System.IO;
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI;
@@ -7,7 +9,8 @@ namespace Jalium.UI;
 /// <summary>
 /// Provides a framework-level set of properties, events, and methods for UI elements.
 /// </summary>
-public partial class FrameworkElement : UIElement
+[Markup.XmlLangProperty(nameof(Language))]
+public partial class FrameworkElement : UIElement, IFrameworkInputElement, Markup.IQueryAmbient
 {
     /// <summary>
     /// The default font family name used across the UI framework.
@@ -266,15 +269,9 @@ public partial class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the <see cref="ContextMenu"/> dependency property.
     /// </summary>
-    /// <remarks>
-    /// Declared as <see cref="object"/> because the concrete <c>ContextMenu</c> control type lives in
-    /// <c>Jalium.UI.Controls</c>, which depends on this Core assembly. <c>ContextMenuService</c> aliases this
-    /// DP so <c>ContextMenuService.ContextMenuProperty</c> and <c>FrameworkElement.ContextMenuProperty</c>
-    /// resolve to the same identifier — assigning either updates the same store.
-    /// </remarks>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ContextMenuProperty =
-        DependencyProperty.Register(nameof(ContextMenu), typeof(object), typeof(FrameworkElement),
+        DependencyProperty.Register(nameof(ContextMenu), typeof(ContextMenu), typeof(FrameworkElement),
             new PropertyMetadata(null));
 
     /// <summary>
@@ -338,7 +335,13 @@ public partial class FrameworkElement : UIElement
     /// <param name="sizeInfo">Details of the size change.</param>
     protected virtual void OnSizeChanged(SizeChangedInfo sizeInfo)
     {
-        SizeChanged?.Invoke(this, new SizeChangedEventArgs(sizeInfo));
+        var args = new SizeChangedEventArgs(sizeInfo)
+        {
+            RoutedEvent = SizeChangedEvent,
+            Source = this,
+        };
+        RaiseEvent(args);
+        SizeChanged?.Invoke(this, args);
     }
 
     #endregion
@@ -372,7 +375,7 @@ public partial class FrameworkElement : UIElement
     /// <summary>
     /// Named elements registered in this element's scope (when it's a template root).
     /// </summary>
-    private Dictionary<string, FrameworkElement>? _namedElements;
+    private Dictionary<string, object>? _namedElements;
 
     #endregion
 
@@ -381,7 +384,7 @@ public partial class FrameworkElement : UIElement
     /// <summary>
     /// Gets the element that owns the template in which this element is defined.
     /// </summary>
-    public FrameworkElement? TemplatedParent => _templatedParent;
+    public DependencyObject? TemplatedParent => _templatedParent;
 
     /// <summary>
     /// Sets the templated parent. This is called internally when applying templates.
@@ -418,11 +421,23 @@ public partial class FrameworkElement : UIElement
     /// Registers a named element in this element's template scope.
     /// </summary>
     /// <param name="name">The name of the element.</param>
-    /// <param name="element">The element to register.</param>
-    public void RegisterName(string name, FrameworkElement element)
+    /// <param name="scopedElement">The object to register.</param>
+    public void RegisterName(string name, object scopedElement)
     {
-        _namedElements ??= new Dictionary<string, FrameworkElement>();
-        _namedElements[name] = element;
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        ArgumentNullException.ThrowIfNull(scopedElement);
+
+        if (NameScope.GetNameScope(this) is { } nameScope)
+        {
+            nameScope.RegisterName(name, scopedElement);
+            return;
+        }
+
+        _namedElements ??= new Dictionary<string, object>(StringComparer.Ordinal);
+        if (!_namedElements.TryAdd(name, scopedElement))
+        {
+            throw new ArgumentException($"Name '{name}' is already registered in this scope.", nameof(name));
+        }
     }
 
     /// <summary>
@@ -431,7 +446,17 @@ public partial class FrameworkElement : UIElement
     /// <param name="name">The name to unregister.</param>
     public void UnregisterName(string name)
     {
-        _namedElements?.Remove(name);
+        ArgumentException.ThrowIfNullOrEmpty(name);
+        if (NameScope.GetNameScope(this) is { } nameScope)
+        {
+            nameScope.UnregisterName(name);
+            return;
+        }
+
+        if (_namedElements == null || !_namedElements.Remove(name))
+        {
+            throw new ArgumentException($"Name '{name}' was not found in this scope.", nameof(name));
+        }
     }
 
     /// <summary>
@@ -453,7 +478,7 @@ public partial class FrameworkElement : UIElement
 
         // Stop at template boundary: if the parent is the TemplatedParent of this element,
         // we've reached the template root and should not continue searching upward.
-        if (VisualParent is FrameworkElement parent && parent != _templatedParent)
+        if (FrameworkParent is FrameworkElement parent && parent != _templatedParent)
         {
             return parent.FindName(name);
         }
@@ -477,7 +502,7 @@ public partial class FrameworkElement : UIElement
         }
 
         // For inheriting properties, check parent chain
-        if (dp.DefaultMetadata.Inherits && VisualParent is FrameworkElement parent)
+        if (dp.GetMetadata(GetType()).Inherits && FrameworkParent is FrameworkElement parent)
         {
             if (TryGetInheritedBaseValue(parent, dp, out var inheritedValue))
             {
@@ -496,7 +521,7 @@ public partial class FrameworkElement : UIElement
         if (localSource.BaseValueSource != BaseValueSource.Default || localSource.IsAnimated)
             return localSource;
 
-        if (dp.DefaultMetadata.Inherits && VisualParent is FrameworkElement parent)
+        if (dp.GetMetadata(GetType()).Inherits && FrameworkParent is FrameworkElement parent)
             return new ValueSource(BaseValueSource.Inherited, localSource.IsExpression, localSource.IsAnimated, localSource.IsCoerced);
 
         return localSource;
@@ -512,7 +537,7 @@ public partial class FrameworkElement : UIElement
             return localValue;
         }
 
-        if (dp.DefaultMetadata.Inherits && VisualParent is FrameworkElement parent)
+        if (dp.GetMetadata(GetType()).Inherits && FrameworkParent is FrameworkElement parent)
         {
             if (TryGetInheritedBaseValue(parent, dp, out var inheritedValue))
             {
@@ -653,12 +678,12 @@ public partial class FrameworkElement : UIElement
 
             // Walk up the visual tree to find inherited DataContext,
             // matching WPF's inherited-property behaviour.
-            var parent = VisualParent as FrameworkElement;
+            var parent = FrameworkParent;
             while (parent != null)
             {
                 if (parent.HasLocalValue(DataContextProperty))
                     return parent.GetValue(DataContextProperty);
-                parent = parent.VisualParent as FrameworkElement;
+                parent = parent.FrameworkParent;
             }
 
             return null;
@@ -697,14 +722,12 @@ public partial class FrameworkElement : UIElement
     }
 
     /// <summary>
-    /// Gets or sets the context menu shown when the user requests it on this element. The runtime
-    /// type is <c>Jalium.UI.Controls.ContextMenu</c>; the property is typed as <see cref="object"/>
-    /// because <c>FrameworkElement</c> lives in Core and cannot reference the Controls assembly.
+    /// Gets or sets the context menu shown when the user requests it on this element.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public object? ContextMenu
+    public ContextMenu? ContextMenu
     {
-        get => GetValue(ContextMenuProperty);
+        get => (ContextMenu?)GetValue(ContextMenuProperty);
         set => SetValue(ContextMenuProperty, value);
     }
 
@@ -773,6 +796,10 @@ public partial class FrameworkElement : UIElement
             {
                 _resources = new ResourceDictionary();
                 _resources.Changed += OnLocalResourcesDictionaryChanged;
+                Diagnostics.ResourceDictionaryDiagnosticsStore.RegisterOwner(
+                    _resources,
+                    this,
+                    Diagnostics.ResourceDictionaryOwnerKind.FrameworkElement);
             }
 
             return _resources;
@@ -784,13 +811,29 @@ public partial class FrameworkElement : UIElement
                 if (_resources != null)
                 {
                     _resources.Changed -= OnLocalResourcesDictionaryChanged;
+                    Diagnostics.ResourceDictionaryDiagnosticsStore.UnregisterOwner(_resources, this);
                 }
 
                 _resources = value ?? new ResourceDictionary();
                 _resources.Changed += OnLocalResourcesDictionaryChanged;
+                Diagnostics.ResourceDictionaryDiagnosticsStore.RegisterOwner(
+                    _resources,
+                    this,
+                    Diagnostics.ResourceDictionaryOwnerKind.FrameworkElement);
                 OnResourcesChanged();
             }
         }
+    }
+
+    bool Markup.IQueryAmbient.IsAmbientPropertyAvailable(string propertyName)
+    {
+        ArgumentNullException.ThrowIfNull(propertyName);
+        return propertyName switch
+        {
+            nameof(Resources) => _resources is not null,
+            nameof(Style) => HasLocalValue(StyleProperty),
+            _ => DependencyProperty.FromName(GetType(), propertyName) is { } property && HasLocalValue(property),
+        };
     }
 
     /// <summary>
@@ -841,6 +884,17 @@ public partial class FrameworkElement : UIElement
                     stack.Add(child);
                 }
             }
+
+            if (current._logicalChildren != null)
+            {
+                foreach (var logicalChild in current._logicalChildren.OfType<FrameworkElement>())
+                {
+                    if (logicalChild.VisualParent == null)
+                    {
+                        stack.Add(logicalChild);
+                    }
+                }
+            }
         }
     }
 
@@ -876,12 +930,12 @@ public partial class FrameworkElement : UIElement
     /// <summary>
     /// Gets the actual rendered width of this element.
     /// </summary>
-    public double ActualWidth => RenderSize.Width;
+    public double ActualWidth => (double)(GetValue(ActualWidthProperty) ?? 0.0);
 
     /// <summary>
     /// Gets the actual rendered height of this element.
     /// </summary>
-    public double ActualHeight => RenderSize.Height;
+    public double ActualHeight => (double)(GetValue(ActualHeightProperty) ?? 0.0);
 
     /// <summary>
     /// Gets or sets the style used by this element.
@@ -1046,13 +1100,14 @@ public partial class FrameworkElement : UIElement
         resultWidth = Math.Clamp(resultWidth, MinWidth, MaxWidth);
         resultHeight = Math.Clamp(resultHeight, MinHeight, MaxHeight);
 
+        var transformedSize = ApplyLayoutTransformToDesiredSize(new Size(resultWidth, resultHeight));
         return new Size(
-            Math.Max(0, resultWidth + marginWidth),
-            Math.Max(0, resultHeight + marginHeight));
+            Math.Max(0, transformedSize.Width + marginWidth),
+            Math.Max(0, transformedSize.Height + marginHeight));
     }
 
     /// <inheritdoc />
-    protected override Size ArrangeCore(Rect finalRect)
+    protected sealed override void ArrangeCore(Rect finalRect)
     {
         var margin = Margin;
         var marginWidth = margin.Left + margin.Right;
@@ -1146,6 +1201,15 @@ public partial class FrameworkElement : UIElement
         // don't actually drift when nothing is animating; this comment used to claim
         // otherwise but the real defect it was masking was elsewhere.
         // (WPF parity: layout rounding is opt-in via UseLayoutRounding, off by default.)
+        if (UseLayoutRounding)
+        {
+            x = RoundLayoutValue(x);
+            y = RoundLayoutValue(y);
+            renderSize = new Size(
+                Math.Max(0, RoundLayoutValue(renderSize.Width)),
+                Math.Max(0, RoundLayoutValue(renderSize.Height)));
+        }
+
         var previousVisualBounds = _visualBounds;
         _visualBounds = new Rect(x, y, renderSize.Width, renderSize.Height);
 
@@ -1161,26 +1225,21 @@ public partial class FrameworkElement : UIElement
         // Stable layouts don't change bounds, so the cache still replays for them.
         if (_visualBounds != previousVisualBounds)
         {
+            // ArrangeOverride runs before this element's final parent-space bounds are
+            // stored and may let descendants populate their screen-offset cache against
+            // the old ancestor position. Bump the global epoch after the new bounds are
+            // committed so those descendant caches cannot remain falsely current.
+            InvalidateScreenOffsetCache();
             SetRenderDirty();
         }
 
         // Update _renderSize BEFORE firing SizeChanged so that handlers
         // reading ActualWidth/ActualHeight/RenderSize see the new values.
         _renderSize = renderSize;
+        SetValue(ActualWidthPropertyKey, renderSize.Width);
+        SetValue(ActualHeightPropertyKey, renderSize.Height);
 
-        // Check for size change and raise SizeChanged event
-        if (renderSize != _previousRenderSize)
-        {
-            var widthChanged = renderSize.Width != _previousRenderSize.Width;
-            var heightChanged = renderSize.Height != _previousRenderSize.Height;
 
-            var sizeInfo = new SizeChangedInfo(this, _previousRenderSize, widthChanged, heightChanged);
-            _previousRenderSize = renderSize;
-
-            OnSizeChanged(sizeInfo);
-        }
-
-        return renderSize;
     }
 
     /// <summary>
@@ -1190,7 +1249,7 @@ public partial class FrameworkElement : UIElement
     /// <returns>The desired size.</returns>
     protected virtual Size MeasureOverride(Size availableSize)
     {
-        return Size.Empty;
+        return default(Size);
     }
 
     /// <summary>
@@ -1351,7 +1410,7 @@ public partial class FrameworkElement : UIElement
     /// fixing IME/UI-Automation/dock-hit placement that previously ignored it. With no transform on
     /// the chain this reduces to the historical sum of <see cref="VisualBounds"/> offsets.
     /// </remarks>
-    public Point TransformToAncestor(Visual? ancestor)
+    public new Point TransformToAncestor(Visual? ancestor)
     {
         return GetRenderMatrixTo(ancestor).Transform(Point.Zero);
     }
@@ -1431,12 +1490,15 @@ public partial class FrameworkElement : UIElement
     /// <summary>
     /// Occurs when the DataContext property changes.
     /// </summary>
-    public event EventHandler<DependencyPropertyChangedEventArgs>? DataContextChanged;
+    public event DependencyPropertyChangedEventHandler? DataContextChanged;
 
     private static void OnStyleChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is FrameworkElement element)
         {
+            var oldStyle = e.OldValue as Style;
+            var newStyle = e.NewValue as Style;
+
             // Remove implicit style if explicit style is being set
             if (e.NewValue != null && element._implicitStyle != null)
             {
@@ -1445,13 +1507,13 @@ public partial class FrameworkElement : UIElement
             }
 
             // Remove old style
-            if (e.OldValue is Style oldStyle)
+            if (oldStyle != null)
             {
                 oldStyle.Remove(element);
             }
 
             // Apply new style
-            if (e.NewValue is Style newStyle)
+            if (newStyle != null)
             {
                 newStyle.Apply(element);
             }
@@ -1461,7 +1523,7 @@ public partial class FrameworkElement : UIElement
                 element.ApplyImplicitStyleIfNeeded();
             }
 
-            element.InvalidateVisual();
+            element.OnStyleChanged(oldStyle, newStyle);
         }
     }
 
@@ -1470,7 +1532,7 @@ public partial class FrameworkElement : UIElement
     #region Visual Parent Changed
 
     /// <inheritdoc />
-    protected override void OnVisualParentChanged(Visual? oldParent)
+    protected internal override void OnVisualParentChanged(DependencyObject? oldParent)
     {
         base.OnVisualParentChanged(oldParent);
 
@@ -1520,17 +1582,20 @@ public partial class FrameworkElement : UIElement
             InvalidateArrange();
             InvalidateVisual();
 
-            // Defer Loaded event until after layout completes.
-            // WPF fires Loaded after the first Measure/Arrange pass, so
-            // ActualWidth/ActualHeight are available in handlers.
-            var dispatcher = Dispatcher.CurrentDispatcher;
-            if (dispatcher != null)
+            // A subtree becomes loaded only when its new framework parent is already
+            // connected to a presentation host. Window/PopupWindow set their own root
+            // state after the first layout pass and this recursively updates descendants.
+            if (FrameworkParent?.IsLoaded == true)
             {
-                dispatcher.BeginInvoke(() => Loaded?.Invoke(this, new RoutedEventArgs()));
-            }
-            else
-            {
-                Loaded?.Invoke(this, new RoutedEventArgs());
+                var dispatcher = Dispatcher.CurrentDispatcher;
+                if (dispatcher != null)
+                {
+                    dispatcher.BeginInvoke(() => SetLoadedState(true));
+                }
+                else
+                {
+                    SetLoadedState(true);
+                }
             }
         }
         else if (oldParent != null)
@@ -1543,9 +1608,12 @@ public partial class FrameworkElement : UIElement
             }
 
             // Remove from LayoutManager queues when detached from tree
-            RemoveFromLayoutManager(oldParent);
+            if (oldParent is Visual oldVisualParent)
+            {
+                RemoveFromLayoutManager(oldVisualParent);
+            }
 
-            Unloaded?.Invoke(this, new RoutedEventArgs());
+            SetLoadedState(false);
         }
     }
 
@@ -1676,8 +1744,12 @@ public partial class FrameworkElement : UIElement
         var newImplicit = LookupImplicitStyle();
         if (newImplicit == null)
         {
-            // No implicit style found; apply first-time if needed.
-            ApplyImplicitStyleIfNeeded();
+            if (_implicitStyle != null)
+            {
+                _implicitStyle.Remove(this);
+                _implicitStyle = null;
+                InvalidateVisual();
+            }
             return;
         }
 
@@ -1701,6 +1773,21 @@ public partial class FrameworkElement : UIElement
     /// </summary>
     private Style? LookupImplicitStyle()
     {
+        var defaultStyleKey = DefaultStyleKey;
+        if (defaultStyleKey != null)
+        {
+            var keyedStyle = TryFindResource(defaultStyleKey) as Style;
+            if (keyedStyle != null && IsStyleApplicable(keyedStyle))
+            {
+                return keyedStyle;
+            }
+
+            if (OverridesDefaultStyle)
+            {
+                return null;
+            }
+        }
+
         var currentType = GetType();
         while (currentType != null && currentType != typeof(FrameworkElement))
         {
@@ -1883,7 +1970,7 @@ public delegate void SizeChangedEventHandler(object sender, SizeChangedEventArgs
 /// <summary>
 /// Provides data for the SizeChanged event.
 /// </summary>
-public sealed class SizeChangedEventArgs : EventArgs
+public class SizeChangedEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="SizeChangedEventArgs"/> class.
@@ -1916,6 +2003,19 @@ public sealed class SizeChangedEventArgs : EventArgs
     /// Gets a value indicating whether the height component changed.
     /// </summary>
     public bool HeightChanged { get; }
+
+    /// <inheritdoc />
+    protected override void InvokeEventHandler(Delegate genericHandler, object genericTarget)
+    {
+        if (genericHandler is SizeChangedEventHandler handler)
+        {
+            handler(genericTarget, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(genericHandler, genericTarget);
+        }
+    }
 }
 
 /// <summary>

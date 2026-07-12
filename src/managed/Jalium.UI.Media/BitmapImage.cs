@@ -1,5 +1,6 @@
 using Jalium.UI.Media.Imaging;
 using Jalium.UI.Media.Native;
+using Jalium.UI.Markup;
 
 namespace Jalium.UI.Media;
 
@@ -8,7 +9,7 @@ namespace Jalium.UI.Media;
 /// decoded to BGRA8 pixels by the platform-native <see cref="INativeImageDecoder"/>
 /// (WIC on Windows, NDK <c>AImageDecoder</c> / <c>BitmapFactory</c> on Android).
 /// </summary>
-public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
+public class BitmapImage : Imaging.BitmapSource, IDisposable, IReclaimableResource, IUriContext
 {
     private static INativeImageDecoder? s_decoder;
     private static readonly object s_decoderLock = new();
@@ -17,10 +18,12 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
     private double _width;
     private double _height;
     private Uri? _uriSource;
+    private Uri? _baseUri;
     private byte[]? _imageData;
     private byte[]? _rawPixelData;
     private int _pixelStride;
     private CancellationTokenSource? _httpCts;
+    private bool _isDownloading;
 
     /// <summary>
     /// Occurs when the image has been loaded from a remote source.
@@ -49,12 +52,15 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
     /// <summary>
     /// Gets the pixel width.
     /// </summary>
-    public int PixelWidth => (int)Math.Round(_width);
+    public override int PixelWidth => (int)Math.Round(_width);
 
     /// <summary>
     /// Gets the pixel height.
     /// </summary>
-    public int PixelHeight => (int)Math.Round(_height);
+    public override int PixelHeight => (int)Math.Round(_height);
+
+    /// <inheritdoc />
+    public override bool IsDownloading => _isDownloading;
 
     /// <summary>
     /// Gets the number of bytes between two adjacent rows in the raw pixel buffer.
@@ -74,9 +80,46 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
             _httpCts = null;
 
             _uriSource = value;
+            ClearLoadFailure();
             if (value != null)
             {
-                LoadFromUri(value);
+                LoadFromUri(ResolveUri(value));
+            }
+        }
+    }
+
+    Uri? IUriContext.BaseUri
+    {
+        get => BaseUriCore;
+        set => BaseUriCore = value;
+    }
+
+    /// <summary>Gets or sets the base URI used by derived WPF-compatible facades.</summary>
+    protected Uri? BaseUriCore
+    {
+        get => _baseUri;
+        set
+        {
+            if (Equals(_baseUri, value))
+            {
+                return;
+            }
+
+            _baseUri = value;
+            if (_uriSource is not { IsAbsoluteUri: false } relativeSource)
+            {
+                return;
+            }
+
+            ClearLoadFailure();
+            try
+            {
+                LoadFromUri(ResolveUri(relativeSource));
+            }
+            catch
+            {
+                // The concrete load path already reported the exception. Base URI propagation
+                // occurs inside a Source property callback, so keep that callback event-driven.
             }
         }
     }
@@ -200,6 +243,8 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
         {
             var cts = new CancellationTokenSource();
             _httpCts = cts;
+            _isDownloading = true;
+            OnDownloadProgress(0);
             _ = LoadFromHttpAsync(uri, cts.Token);
             return;
         }
@@ -223,9 +268,24 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
                 if (System.IO.File.Exists(diskCandidate))
                 {
                     LoadFromFile(diskCandidate);
+                    return;
                 }
             }
+
+            ReportLoadFailure(new FileNotFoundException(
+                $"The image resource '{uri.OriginalString}' could not be found.",
+                uri.OriginalString));
         }
+    }
+
+    private Uri ResolveUri(Uri uri)
+    {
+        if (uri.IsAbsoluteUri || _baseUri is not { IsAbsoluteUri: true } baseUri)
+        {
+            return uri;
+        }
+
+        return new Uri(baseUri, uri);
     }
 
     /// <summary>
@@ -319,9 +379,9 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
 
     private async Task LoadFromHttpAsync(Uri uri, CancellationToken cancellationToken)
     {
+        var dispatcher = Dispatcher.CurrentDispatcher;
         try
         {
-            var dispatcher = Dispatcher.CurrentDispatcher;
             using var httpClient = new System.Net.Http.HttpClient();
             var bytes = await httpClient.GetByteArrayAsync(uri, cancellationToken).ConfigureAwait(false);
 
@@ -331,18 +391,60 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
             {
                 // Fire-and-forget marshal back to the UI thread; BeginInvoke now returns a
                 // DispatcherOperation (awaitable), so discard it to signal intentional no-await.
-                _ = dispatcher.BeginInvoke(() => LoadFromBytes(bytes));
+                _ = dispatcher.BeginInvoke(() =>
+                {
+                    try
+                    {
+                        LoadFromBytes(bytes);
+                        _isDownloading = false;
+                        OnDownloadProgress(100);
+                        OnDownloadCompleted();
+                    }
+                    catch (Exception ex)
+                    {
+                        // LoadFromBytes reports decode failures before rethrowing.
+                        _isDownloading = false;
+                        OnDownloadFailed(ex);
+                    }
+                });
             }
             else
             {
-                LoadFromBytes(bytes);
+                try
+                {
+                    LoadFromBytes(bytes);
+                    _isDownloading = false;
+                    OnDownloadProgress(100);
+                    OnDownloadCompleted();
+                }
+                catch (Exception ex)
+                {
+                    // LoadFromBytes reports decode failures before rethrowing.
+                    _isDownloading = false;
+                    OnDownloadFailed(ex);
+                }
             }
         }
         catch (OperationCanceledException)
         {
+            _isDownloading = false;
         }
-        catch
+        catch (Exception ex)
         {
+            _isDownloading = false;
+            if (dispatcher != null)
+            {
+                _ = dispatcher.BeginInvoke(() =>
+                {
+                    ReportLoadFailure(ex);
+                    OnDownloadFailed(ex);
+                });
+            }
+            else
+            {
+                ReportLoadFailure(ex);
+                OnDownloadFailed(ex);
+            }
             // HTTP 请求失败、网络错误等：保持空状态。
         }
     }
@@ -362,17 +464,209 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
         ArgumentNullException.ThrowIfNull(data);
         if (data.Length == 0) throw new ArgumentException("Image data is empty.", nameof(data));
 
-        _imageData = data;
-        var decoder = GetDecoderOrThrow();
-        var decoded = decoder.Decode(data);
-        AdoptDecoded(decoded);
+        try
+        {
+            _imageData = data;
+            var decoder = GetDecoderOrThrow();
+            var decoded = decoder.Decode(data);
+            AdoptDecoded(decoded);
+        }
+        catch (Exception ex)
+        {
+            ReportLoadFailure(ex);
+            OnDecodeFailed(ex);
+            throw;
+        }
+    }
+
+    /// <summary>Loads encoded image data from a caller-owned stream.</summary>
+    protected void LoadFromStreamSource(Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        if (!stream.CanRead)
+        {
+            throw new ArgumentException("The bitmap stream must be readable.", nameof(stream));
+        }
+
+        using var copy = new MemoryStream();
+        stream.CopyTo(copy);
+        LoadFromBytes(copy.ToArray());
+    }
+
+    /// <summary>Copies the decoded and source state into a clone.</summary>
+    protected void CopyBitmapStateFrom(BitmapImage source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        _nativeHandle = source._nativeHandle;
+        _width = source._width;
+        _height = source._height;
+        _uriSource = source._uriSource;
+        _baseUri = source._baseUri;
+        _imageData = source._imageData is null ? null : (byte[])source._imageData.Clone();
+        _rawPixelData = source._rawPixelData is null ? null : (byte[])source._rawPixelData.Clone();
+        _pixelStride = source._pixelStride;
+    }
+
+    /// <summary>Applies WPF BitmapImage crop, rotation, and decode-size options.</summary>
+    protected void ApplyDecodeOptions(Int32Rect sourceRect, int decodePixelWidth, int decodePixelHeight, Rotation rotation)
+    {
+        if (_rawPixelData is null || PixelWidth <= 0 || PixelHeight <= 0)
+        {
+            return;
+        }
+
+        int width = PixelWidth;
+        int height = PixelHeight;
+        byte[] pixels = _rawPixelData;
+        int stride = _pixelStride;
+
+        if (!sourceRect.IsEmpty)
+        {
+            if (sourceRect.X < 0 || sourceRect.Y < 0 || sourceRect.Width <= 0 || sourceRect.Height <= 0 ||
+                sourceRect.X + sourceRect.Width > width || sourceRect.Y + sourceRect.Height > height)
+            {
+                throw new ArgumentOutOfRangeException(nameof(sourceRect));
+            }
+
+            int croppedStride = checked(sourceRect.Width * 4);
+            var cropped = new byte[checked(croppedStride * sourceRect.Height)];
+            for (int row = 0; row < sourceRect.Height; row++)
+            {
+                Buffer.BlockCopy(
+                    pixels,
+                    ((sourceRect.Y + row) * stride) + (sourceRect.X * 4),
+                    cropped,
+                    row * croppedStride,
+                    croppedStride);
+            }
+
+            pixels = cropped;
+            width = sourceRect.Width;
+            height = sourceRect.Height;
+            stride = croppedStride;
+        }
+
+        if (rotation != Rotation.Rotate0)
+        {
+            int rotatedWidth = rotation is Rotation.Rotate90 or Rotation.Rotate270 ? height : width;
+            int rotatedHeight = rotation is Rotation.Rotate90 or Rotation.Rotate270 ? width : height;
+            int rotatedStride = checked(rotatedWidth * 4);
+            var rotated = new byte[checked(rotatedStride * rotatedHeight)];
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    (int destinationX, int destinationY) = rotation switch
+                    {
+                        Rotation.Rotate90 => (height - 1 - y, x),
+                        Rotation.Rotate180 => (width - 1 - x, height - 1 - y),
+                        Rotation.Rotate270 => (y, width - 1 - x),
+                        _ => (x, y),
+                    };
+                    Buffer.BlockCopy(pixels, (y * stride) + (x * 4), rotated,
+                        (destinationY * rotatedStride) + (destinationX * 4), 4);
+                }
+            }
+
+            pixels = rotated;
+            width = rotatedWidth;
+            height = rotatedHeight;
+            stride = rotatedStride;
+        }
+
+        if (decodePixelWidth > 0 || decodePixelHeight > 0)
+        {
+            int targetWidth = decodePixelWidth;
+            int targetHeight = decodePixelHeight;
+            if (targetWidth <= 0)
+            {
+                targetWidth = Math.Max(1, (int)Math.Round(width * (targetHeight / (double)height)));
+            }
+            else if (targetHeight <= 0)
+            {
+                targetHeight = Math.Max(1, (int)Math.Round(height * (targetWidth / (double)width)));
+            }
+
+            if (targetWidth != width || targetHeight != height)
+            {
+                int targetStride = checked(targetWidth * 4);
+                var resized = new byte[checked(targetStride * targetHeight)];
+                for (int y = 0; y < targetHeight; y++)
+                {
+                    int sourceY = Math.Min(height - 1, (int)((long)y * height / targetHeight));
+                    for (int x = 0; x < targetWidth; x++)
+                    {
+                        int sourceX = Math.Min(width - 1, (int)((long)x * width / targetWidth));
+                        Buffer.BlockCopy(pixels, (sourceY * stride) + (sourceX * 4), resized,
+                            (y * targetStride) + (x * 4), 4);
+                    }
+                }
+
+                pixels = resized;
+                width = targetWidth;
+                height = targetHeight;
+                stride = targetStride;
+            }
+        }
+
+        _rawPixelData = pixels;
+        _width = width;
+        _height = height;
+        _pixelStride = stride;
+    }
+
+    /// <inheritdoc />
+    public override void CopyPixels(Int32Rect sourceRect, byte[] pixels, int stride, int offset)
+    {
+        ArgumentNullException.ThrowIfNull(pixels);
+        if (_rawPixelData is null)
+        {
+            throw new InvalidOperationException("The bitmap has not been decoded.");
+        }
+
+        int width = sourceRect.Width == 0 ? PixelWidth : sourceRect.Width;
+        int height = sourceRect.Height == 0 ? PixelHeight : sourceRect.Height;
+        if (sourceRect.X < 0 || sourceRect.Y < 0 || width < 0 || height < 0 ||
+            sourceRect.X + width > PixelWidth || sourceRect.Y + height > PixelHeight)
+        {
+            throw new ArgumentOutOfRangeException(nameof(sourceRect));
+        }
+
+        int rowBytes = checked(width * 4);
+        if (stride < rowBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(stride));
+        }
+
+        int required = height == 0 ? offset : checked(offset + ((height - 1) * stride) + rowBytes);
+        if (offset < 0 || required > pixels.Length)
+        {
+            throw new ArgumentException("The destination buffer is too small.", nameof(pixels));
+        }
+
+        for (int row = 0; row < height; row++)
+        {
+            Buffer.BlockCopy(_rawPixelData,
+                ((sourceRect.Y + row) * _pixelStride) + (sourceRect.X * 4),
+                pixels, offset + (row * stride), rowBytes);
+        }
     }
 
     private void LoadFromFile(string filePath)
     {
         ArgumentException.ThrowIfNullOrEmpty(filePath);
 
-        var bytes = System.IO.File.ReadAllBytes(filePath);
+        byte[] bytes;
+        try
+        {
+            bytes = System.IO.File.ReadAllBytes(filePath);
+        }
+        catch (Exception ex)
+        {
+            ReportLoadFailure(ex);
+            throw;
+        }
+
         LoadFromBytes(bytes);
     }
 
@@ -387,6 +681,7 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
         _rawPixelData = copy;
         _pixelStride = decoded.Stride;
 
+        ClearLoadFailure();
         OnImageLoaded?.Invoke(this, EventArgs.Empty);
     }
 

@@ -187,9 +187,9 @@ public class PieChart : ChartBase
     #region Automation
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.PieChartAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.PieChartAutomationPeer(this);
     }
 
     #endregion
@@ -252,7 +252,7 @@ public class PieChart : ChartBase
         var center = new Point(centerX, centerY);
         var borderPen = new Pen(new SolidColorBrush(Color.FromArgb(60, 0, 0, 0)), 1);
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var labelFgBrush = Foreground ?? new SolidColorBrush(Color.FromRgb(220, 220, 220));
 
         double currentAngle = StartAngle;

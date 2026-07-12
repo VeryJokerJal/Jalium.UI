@@ -14,24 +14,25 @@ namespace Jalium.UI.Controls.Automation.Uia;
 // under both JIT and AOT.
 //
 // ABI RULES honored here (see docs/uia-aot-design):
+//   * IRawElementProviderSimple, IRawElementProviderFragment, and
+//     IRawElementProviderFragmentRoot are sibling COM interfaces in UIAutomationCore.h.
+//     FragmentRoot does not inherit Fragment, and Fragment does not inherit Simple. A
+//     provider object may implement all three and UIA uses QueryInterface to switch
+//     between them, but every interface vtable starts at its own slot 3.
 //   * .NET 10's COM source generator does NOT support C# properties (that shipped in
 //     .NET 11), so every UIA property is modelled as an explicit HRESULT-returning
 //     get_* METHOD in exact native vtable order. A C# member returning a value T is
 //     lowered by the generator to native `HRESULT M(..., T* retVal)`; a `void` member
 //     to `HRESULT M(...)`. Do NOT reorder members — COM dispatch is by vtable slot.
-//   * Interfaces form a single-base generated-COM chain (Simple <- Fragment <-
-//     FragmentRoot); base members are NOT redeclared and must all live in this assembly.
 //   * VARIANT return  -> [MarshalUsing(typeof(ComVariantMarshaller))] object?
-//     IUnknown return -> [MarshalUsing(typeof(ComInterfaceMarshaller<object>))] object?
+//     IUnknown return -> PreserveSig raw nint* out pointer (see GetPatternProvider)
 //     BSTR return     -> [MarshalUsing(typeof(BStrStringMarshaller))] string
 //     SAFEARRAY return-> custom [MarshalUsing(typeof(SafeArray*Marshaller))] (source-gen
 //                        has no SAFEARRAY support; see UiaSafeArrayMarshallers).
 //     Win32 BOOL      -> `int` (0/1) to match UIA's 4-byte BOOL unambiguously.
 // ============================================================================
 
-// unsafe: get_ProviderOptions takes a raw ProviderOptions* (see below). The chain below
 // (Fragment/FragmentRoot) must be unsafe too — the COM source generator re-emits this
-// inherited pointer method into their generated partials, which need an unsafe context.
 [GeneratedComInterface]
 [Guid("d6dd68d1-86fd-4332-8666-9abedea2d24c")]
 public unsafe partial interface IRawElementProviderSimple
@@ -49,20 +50,26 @@ public unsafe partial interface IRawElementProviderSimple
     [PreserveSig]
     unsafe int get_ProviderOptions(ProviderOptions* pRetVal);
 
-    [return: MarshalUsing(typeof(ComInterfaceMarshaller<object>))]
-    object? GetPatternProvider(int patternId);
+    // [PreserveSig] + raw IUnknown** out pointer. The source generator's generic
+    // object->IUnknown return path can fault inside ComInterfaceMarshaller<object>
+    // when aggressive UIA clients probe unsupported patterns, so the provider owns
+    // null handling and typed pattern-wrapper marshalling directly.
+    [PreserveSig]
+    unsafe int GetPatternProvider(int patternId, nint* pRetVal);
 
     // Returns a blittable VARIANT struct (ABI-identical to VARIANT*), built by the provider.
     // The object<->VARIANT auto-marshaller requires assembly-wide [DisableRuntimeMarshalling]
     // (SYSLIB1051), not viable here; a plain blittable struct needs no runtime marshalling.
-    UiaVariant GetPropertyValue(int propertyId);
+    [PreserveSig]
+    unsafe int GetPropertyValue(int propertyId, UiaVariant* pRetVal);
 
-    IRawElementProviderSimple? get_HostRawElementProvider();
+    [PreserveSig]
+    unsafe int get_HostRawElementProvider(nint* pRetVal);
 }
 
 [GeneratedComInterface]
 [Guid("f7063da8-8359-439c-9297-bbc5299a7d87")]
-public unsafe partial interface IRawElementProviderFragment : IRawElementProviderSimple
+public partial interface IRawElementProviderFragment
 {
     IRawElementProviderFragment? Navigate(NavigateDirection direction);
 
@@ -81,7 +88,7 @@ public unsafe partial interface IRawElementProviderFragment : IRawElementProvide
 
 [GeneratedComInterface]
 [Guid("620ce2a5-ab8f-40a9-86cb-de3c75599b58")]
-public unsafe partial interface IRawElementProviderFragmentRoot : IRawElementProviderFragment
+public partial interface IRawElementProviderFragmentRoot
 {
     IRawElementProviderFragment? ElementProviderFromPoint(double x, double y);
 

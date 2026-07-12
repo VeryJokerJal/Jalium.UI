@@ -3,7 +3,7 @@ namespace Jalium.UI.Media;
 /// <summary>
 /// Converts a Visual object into a bitmap.
 /// </summary>
-public sealed class RenderTargetBitmap : BitmapSource
+public class RenderTargetBitmap : Imaging.BitmapSource
 {
     private byte[] _pixelBuffer;
     private readonly int _pixelWidth;
@@ -117,7 +117,7 @@ public sealed class RenderTargetBitmap : BitmapSource
     /// <summary>
     /// Copies the pixel data to an array.
     /// </summary>
-    public new void CopyPixels(Int32Rect sourceRect, byte[] pixels, int stride, int offset)
+    public override void CopyPixels(Int32Rect sourceRect, byte[] pixels, int stride, int offset)
     {
         if (pixels == null) throw new ArgumentNullException(nameof(pixels));
 
@@ -159,162 +159,9 @@ public sealed class RenderTargetBitmap : BitmapSource
 }
 
 /// <summary>
-/// Base class for bitmap sources.
-/// </summary>
-public abstract class BitmapSource : ImageSource
-{
-    /// <summary>
-    /// Gets the width of the bitmap in pixels.
-    /// </summary>
-    public virtual int PixelWidth => (int)Width;
-
-    /// <summary>
-    /// Gets the height of the bitmap in pixels.
-    /// </summary>
-    public virtual int PixelHeight => (int)Height;
-
-    /// <summary>
-    /// Gets the horizontal DPI of the bitmap.
-    /// </summary>
-    public virtual double DpiX => 96.0;
-
-    /// <summary>
-    /// Gets the vertical DPI of the bitmap.
-    /// </summary>
-    public virtual double DpiY => 96.0;
-
-    /// <summary>
-    /// Gets the pixel format of the bitmap.
-    /// </summary>
-    public virtual PixelFormat Format => PixelFormat.Bgra32;
-
-    /// <summary>
-    /// Gets the bitmap palette, or null if no palette is defined.
-    /// </summary>
-    public virtual Imaging.BitmapPalette? Palette => null;
-
-    /// <summary>
-    /// Copies pixels from the bitmap source to an array.
-    /// </summary>
-    public virtual void CopyPixels(byte[] pixels, int stride, int offset)
-    {
-        CopyPixels(new Int32Rect(0, 0, (int)Width, (int)Height), pixels, stride, offset);
-    }
-
-    /// <summary>
-    /// Copies pixels from a specific rectangle to an array.
-    /// </summary>
-    public virtual void CopyPixels(Int32Rect sourceRect, byte[] pixels, int stride, int offset)
-    {
-        // Default implementation - override in derived classes
-    }
-}
-
-/// <summary>
-/// Represents a rectangle with integer coordinates.
-/// </summary>
-public readonly struct Int32Rect : IEquatable<Int32Rect>
-{
-    /// <summary>
-    /// Gets an empty rectangle.
-    /// </summary>
-    public static Int32Rect Empty { get; } = new(0, 0, 0, 0);
-
-    /// <summary>
-    /// Gets the X coordinate.
-    /// </summary>
-    public int X { get; }
-
-    /// <summary>
-    /// Gets the Y coordinate.
-    /// </summary>
-    public int Y { get; }
-
-    /// <summary>
-    /// Gets the width.
-    /// </summary>
-    public int Width { get; }
-
-    /// <summary>
-    /// Gets the height.
-    /// </summary>
-    public int Height { get; }
-
-    /// <summary>
-    /// Gets whether the rectangle is empty.
-    /// </summary>
-    public bool IsEmpty => Width == 0 || Height == 0;
-
-    /// <summary>
-    /// Initializes a new Int32Rect.
-    /// </summary>
-    public Int32Rect(int x, int y, int width, int height)
-    {
-        X = x;
-        Y = y;
-        Width = width;
-        Height = height;
-    }
-
-    public bool Equals(Int32Rect other) =>
-        X == other.X && Y == other.Y && Width == other.Width && Height == other.Height;
-
-    public override bool Equals(object? obj) => obj is Int32Rect other && Equals(other);
-    public override int GetHashCode() => HashCode.Combine(X, Y, Width, Height);
-    public static bool operator ==(Int32Rect left, Int32Rect right) => left.Equals(right);
-    public static bool operator !=(Int32Rect left, Int32Rect right) => !left.Equals(right);
-}
-
-/// <summary>
-/// Specifies the pixel format of a bitmap.
-/// </summary>
-public enum PixelFormat
-{
-    /// <summary>
-    /// 32-bit BGRA format.
-    /// </summary>
-    Bgra32,
-
-    /// <summary>
-    /// 32-bit RGBA format.
-    /// </summary>
-    Rgba32,
-
-    /// <summary>
-    /// 32-bit RGB format (with alpha ignored).
-    /// </summary>
-    Rgb32,
-
-    /// <summary>
-    /// 24-bit BGR format.
-    /// </summary>
-    Bgr24,
-
-    /// <summary>
-    /// 24-bit RGB format.
-    /// </summary>
-    Rgb24,
-
-    /// <summary>
-    /// 8-bit grayscale.
-    /// </summary>
-    Gray8,
-
-    /// <summary>
-    /// 16-bit grayscale.
-    /// </summary>
-    Gray16,
-
-    /// <summary>
-    /// Pre-multiplied 32-bit BGRA format.
-    /// </summary>
-    Pbgra32
-}
-
-/// <summary>
 /// Drawing context for RenderTargetBitmap.
 /// </summary>
-internal sealed class RenderTargetDrawingContext : DrawingContext
+internal sealed class RenderTargetDrawingContext : DrawingContextAdapter
 {
     private readonly RenderTargetBitmap _target;
     private readonly Stack<Matrix> _transformStack = new();

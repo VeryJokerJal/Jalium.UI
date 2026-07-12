@@ -20,21 +20,21 @@ public class SystemColorsThemeTests
     }
 
     [Fact]
-    public void SystemColors_BrushProperties_ShouldUseApplicationThemeResources()
+    public void SystemColors_BrushProperties_ShouldUseCompatibleApplicationThemeResources()
     {
         ResetApplicationState();
         var app = new Application();
 
         try
         {
-            Assert.Same(app.Resources["SystemColorWindowColorBrush"], SystemColors.WindowBrush);
-            Assert.Same(app.Resources["SystemColorWindowTextColorBrush"], SystemColors.WindowTextBrush);
-            Assert.Same(app.Resources["SystemColorButtonFaceColorBrush"], SystemColors.ControlBrush);
-            Assert.Same(app.Resources["SystemColorButtonTextColorBrush"], SystemColors.ControlTextBrush);
-            Assert.Same(app.Resources["SystemColorHighlightColorBrush"], SystemColors.HighlightBrush);
-            Assert.Same(app.Resources["SystemColorHighlightTextColorBrush"], SystemColors.HighlightTextBrush);
-            Assert.Same(app.Resources["SystemColorHotlightColorBrush"], SystemColors.HotTrackBrush);
-            Assert.Same(app.Resources["SystemColorGrayTextColorBrush"], SystemColors.GrayTextBrush);
+            AssertThemeBrush(app, "SystemColorWindowColorBrush", "SystemColorWindowColor", SystemColors.WindowBrush);
+            AssertThemeBrush(app, "SystemColorWindowTextColorBrush", "SystemColorWindowTextColor", SystemColors.WindowTextBrush);
+            AssertThemeBrush(app, "SystemColorButtonFaceColorBrush", "SystemColorButtonFaceColor", SystemColors.ControlBrush);
+            AssertThemeBrush(app, "SystemColorButtonTextColorBrush", "SystemColorButtonTextColor", SystemColors.ControlTextBrush);
+            AssertThemeBrush(app, "SystemColorHighlightColorBrush", "SystemColorHighlightColor", SystemColors.HighlightBrush);
+            AssertThemeBrush(app, "SystemColorHighlightTextColorBrush", "SystemColorHighlightTextColor", SystemColors.HighlightTextBrush);
+            AssertThemeBrush(app, "SystemColorHotlightColorBrush", "SystemColorHotlightColor", SystemColors.HotTrackBrush);
+            AssertThemeBrush(app, "SystemColorGrayTextColorBrush", "SystemColorGrayTextColor", SystemColors.GrayTextBrush);
         }
         finally
         {
@@ -50,15 +50,37 @@ public class SystemColorsThemeTests
 
         try
         {
-            Assert.Equal(Assert.IsType<SolidColorBrush>(app.Resources["SystemColorWindowColorBrush"]).Color, SystemColors.WindowColor);
-            Assert.Equal(Assert.IsType<SolidColorBrush>(app.Resources["SystemColorWindowTextColorBrush"]).Color, SystemColors.WindowTextColor);
-            Assert.Equal(Assert.IsType<SolidColorBrush>(app.Resources["SystemColorHighlightColorBrush"]).Color, SystemColors.HighlightColor);
-            Assert.Equal(Assert.IsType<SolidColorBrush>(app.Resources["SystemColorHighlightTextColorBrush"]).Color, SystemColors.HighlightTextColor);
-            Assert.Equal(Assert.IsType<SolidColorBrush>(app.Resources["SystemColorGrayTextColorBrush"]).Color, SystemColors.GrayTextColor);
+            Assert.Equal(Assert.IsType<Color>(app.Resources["SystemColorWindowColor"]), SystemColors.WindowColor);
+            Assert.Equal(Assert.IsType<Color>(app.Resources["SystemColorWindowTextColor"]), SystemColors.WindowTextColor);
+            Assert.Equal(Assert.IsType<Color>(app.Resources["SystemColorHighlightColor"]), SystemColors.HighlightColor);
+            Assert.Equal(Assert.IsType<Color>(app.Resources["SystemColorHighlightTextColor"]), SystemColors.HighlightTextColor);
+            Assert.Equal(Assert.IsType<Color>(app.Resources["SystemColorGrayTextColor"]), SystemColors.GrayTextColor);
         }
         finally
         {
             ResetApplicationState();
+        }
+    }
+
+    private static void AssertThemeBrush(
+        Application app,
+        string brushResourceKey,
+        string colorResourceKey,
+        SolidColorBrush actual)
+    {
+        object? themedBrush = app.Resources[brushResourceKey];
+        Assert.NotNull(themedBrush);
+        Color themedColor = Assert.IsType<Color>(app.Resources[colorResourceKey]);
+
+        if (themedBrush is SolidColorBrush solidColorBrush)
+        {
+            Assert.Same(solidColorBrush, actual);
+        }
+        else
+        {
+            Assert.IsAssignableFrom<Brush>(themedBrush);
+            Assert.NotSame(themedBrush, actual);
+            Assert.Equal(themedColor, actual.Color);
         }
     }
 }

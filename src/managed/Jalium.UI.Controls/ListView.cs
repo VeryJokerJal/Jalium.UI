@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Reflection;
+using Jalium.UI.Automation.Peers;
 using Jalium.UI.Data;
 using Jalium.UI.Media;
 
@@ -11,10 +12,13 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ListView : ListBox
 {
+    private Jalium.UI.Automation.Peers.ListViewAutomationPeer? _listViewAutomationPeer;
+
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ListViewAutomationPeer(this);
+        _listViewAutomationPeer = new Jalium.UI.Automation.Peers.ListViewAutomationPeer(this);
+        return _listViewAutomationPeer;
     }
 
     private StackPanel? _columnHeadersHost;
@@ -64,7 +68,7 @@ public class ListView : ListBox
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item)
+    protected override bool IsItemItsOwnContainerOverride(object item)
     {
         return item is ListViewItem;
     }
@@ -92,9 +96,28 @@ public class ListView : ListBox
             // If using GridView, set up cells
             if (View is GridView gridView)
             {
+                gridView.PrepareItem(listViewItem);
                 listViewItem.SetupGridViewCells(gridView, item);
             }
         }
+    }
+
+    /// <inheritdoc />
+    protected override void ClearContainerForItem(FrameworkElement element, object item)
+    {
+        if (element is ListViewItem listViewItem)
+        {
+            View?.ClearItem(listViewItem);
+        }
+
+        base.ClearContainerForItem(element, item);
+    }
+
+    /// <inheritdoc />
+    protected override void OnItemsChanged(NotifyCollectionChangedEventArgs e)
+    {
+        base.OnItemsChanged(e);
+        _listViewAutomationPeer?.NotifyItemsChanged(e);
     }
 
     private void RefreshColumnHeaders()
@@ -113,11 +136,22 @@ public class ListView : ListBox
 
             foreach (var column in gridView.Columns)
             {
+                var headerTemplate = column.HeaderTemplate ?? gridView.ColumnHeaderTemplate;
+                var headerTemplateSelector = column.HeaderTemplateSelector ?? gridView.ColumnHeaderTemplateSelector;
                 var header = new GridViewColumnHeader
                 {
                     Column = column,
-                    Content = column.Header,
-                    Width = double.IsNaN(column.Width) ? 120 : column.Width
+                    Content = FormatHeaderContent(
+                        column.Header,
+                        column.HeaderStringFormat ?? gridView.ColumnHeaderStringFormat,
+                        headerTemplate,
+                        headerTemplateSelector),
+                    ContentTemplate = headerTemplate,
+                    ContentTemplateSelector = headerTemplateSelector,
+                    ContextMenu = gridView.ColumnHeaderContextMenu,
+                    ToolTip = gridView.ColumnHeaderToolTip,
+                    Style = column.HeaderContainerStyle ?? gridView.ColumnHeaderContainerStyle,
+                    Width = double.IsNaN(column.Width) ? Math.Max(120, column.ActualWidth) : column.Width
                 };
 
                 column.ActualWidth = header.Width;
@@ -135,17 +169,72 @@ public class ListView : ListBox
         }
     }
 
+    private static object? FormatHeaderContent(
+        object? header,
+        string? format,
+        DataTemplate? template,
+        DataTemplateSelector? templateSelector)
+    {
+        if (header == null || string.IsNullOrEmpty(format) || template != null || templateSelector != null)
+        {
+            return header;
+        }
+
+        try
+        {
+            return string.Format(System.Globalization.CultureInfo.CurrentCulture, format, header);
+        }
+        catch (FormatException)
+        {
+            return header;
+        }
+    }
+
     private static void OnViewChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var listView = (ListView)d;
         var oldView = (ViewBase?)e.OldValue;
         var newView = (ViewBase?)e.NewValue;
 
+        if (oldView is GridView oldGridView)
+        {
+            oldGridView.ViewChanged -= listView.OnGridViewChanged;
+        }
+
         oldView?.OnViewDetached(listView);
         newView?.OnViewAttached(listView);
 
+        if (listView._listViewAutomationPeer is { } automationPeer)
+        {
+            automationPeer.ViewAutomationPeer?.ViewDetached();
+            automationPeer.ViewAutomationPeer = newView?.GetAutomationPeer(listView);
+        }
+
+        if (newView is GridView newGridView)
+        {
+            newGridView.ViewChanged += listView.OnGridViewChanged;
+        }
+
         listView.RefreshColumnHeaders();
         listView.InvalidateMeasure();
+    }
+
+    private void OnGridViewChanged(object? sender, EventArgs e)
+    {
+        RefreshColumnHeaders();
+
+        if (View is GridView gridView && ItemsHost != null)
+        {
+            foreach (UIElement child in ItemsHost.Children)
+            {
+                if (child is ListViewItem listViewItem && listViewItem.Content != null)
+                {
+                    listViewItem.SetupGridViewCells(gridView, listViewItem.Content);
+                }
+            }
+        }
+
+        InvalidateMeasure();
     }
 }
 
@@ -272,6 +361,9 @@ public class ListViewItem : ListBoxItem
 /// </summary>
 public abstract class ViewBase : DependencyObject
 {
+    /// <summary>Creates the view-specific automation peer used by a parent ListView.</summary>
+    protected internal virtual IViewAutomationPeer? GetAutomationPeer(ListView parent) => null;
+
     /// <summary>
     /// Gets the default style key.
     /// </summary>
@@ -295,14 +387,54 @@ public abstract class ViewBase : DependencyObject
     protected internal virtual void OnViewDetached(DependencyObject listView)
     {
     }
+
+    /// <summary>
+    /// Applies view-specific state to a generated ListViewItem.
+    /// </summary>
+    protected internal virtual void PrepareItem(ListViewItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+    }
+
+    /// <summary>
+    /// Removes view-specific state from a recycled ListViewItem.
+    /// </summary>
+    protected internal virtual void ClearItem(ListViewItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+    }
 }
 
 /// <summary>
 /// Represents a view mode that displays data items in columns for a ListView control.
 /// </summary>
-public sealed class GridView : ViewBase
+[ContentProperty(nameof(Columns))]
+[StyleTypedProperty(Property = nameof(ColumnHeaderContainerStyle), StyleTargetType = typeof(GridViewColumnHeader))]
+public class GridView : ViewBase, Jalium.UI.Markup.IAddChild
 {
     private readonly GridViewColumnCollection _columns;
+    private readonly HashSet<GridViewColumn> _subscribedColumns = [];
+
+    /// <inheritdoc />
+    protected internal override IViewAutomationPeer GetAutomationPeer(ListView parent) =>
+        new GridViewAutomationPeer(this, parent);
+
+    private static readonly ResourceKey s_gridViewScrollViewerStyleKey =
+        new ComponentResourceKey(typeof(GridView), nameof(GridViewScrollViewerStyleKey));
+    private static readonly ResourceKey s_gridViewStyleKey =
+        new ComponentResourceKey(typeof(GridView), nameof(GridViewStyleKey));
+    private static readonly ResourceKey s_gridViewItemContainerStyleKey =
+        new ComponentResourceKey(typeof(GridView), nameof(GridViewItemContainerStyleKey));
+
+    /// <summary>
+    /// Identifies the ColumnCollection attached dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ColumnCollectionProperty =
+        DependencyProperty.RegisterAttached(
+            "ColumnCollection",
+            typeof(GridViewColumnCollection),
+            typeof(GridView),
+            new PropertyMetadata(null));
 
     /// <summary>
     /// Identifies the ColumnHeaderContainerStyle dependency property.
@@ -326,6 +458,14 @@ public sealed class GridView : ViewBase
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnHeaderTemplateSelectorProperty =
         DependencyProperty.Register(nameof(ColumnHeaderTemplateSelector), typeof(DataTemplateSelector), typeof(GridView),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Identifies the ColumnHeaderStringFormat dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty ColumnHeaderStringFormatProperty =
+        DependencyProperty.Register(nameof(ColumnHeaderStringFormat), typeof(string), typeof(GridView),
             new PropertyMetadata(null));
 
     /// <summary>
@@ -358,6 +498,21 @@ public sealed class GridView : ViewBase
     public GridViewColumnCollection Columns => _columns;
 
     /// <summary>
+    /// Gets the key for the ScrollViewer style used by a GridView.
+    /// </summary>
+    public static ResourceKey GridViewScrollViewerStyleKey => s_gridViewScrollViewerStyleKey;
+
+    /// <summary>
+    /// Gets the key for the default GridView ListView style.
+    /// </summary>
+    public static ResourceKey GridViewStyleKey => s_gridViewStyleKey;
+
+    /// <summary>
+    /// Gets the key for the default GridView item-container style.
+    /// </summary>
+    public static ResourceKey GridViewItemContainerStyleKey => s_gridViewItemContainerStyleKey;
+
+    /// <summary>
     /// Gets or sets the style to apply to column headers.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
@@ -385,6 +540,16 @@ public sealed class GridView : ViewBase
     {
         get => (DataTemplateSelector?)GetValue(ColumnHeaderTemplateSelectorProperty);
         set => SetValue(ColumnHeaderTemplateSelectorProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the composite format string used for textual column headers.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public string? ColumnHeaderStringFormat
+    {
+        get => (string?)GetValue(ColumnHeaderStringFormatProperty);
+        set => SetValue(ColumnHeaderStringFormatProperty, value);
     }
 
     /// <summary>
@@ -418,10 +583,12 @@ public sealed class GridView : ViewBase
     }
 
     /// <inheritdoc />
-    protected internal override object DefaultStyleKey => typeof(ListView);
+    protected internal override object DefaultStyleKey => GridViewStyleKey;
 
     /// <inheritdoc />
-    protected internal override object ItemContainerDefaultStyleKey => typeof(ListViewItem);
+    protected internal override object ItemContainerDefaultStyleKey => GridViewItemContainerStyleKey;
+
+    internal event EventHandler? ViewChanged;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="GridView"/> class.
@@ -429,14 +596,157 @@ public sealed class GridView : ViewBase
     public GridView()
     {
         _columns = new GridViewColumnCollection();
+        _columns.CollectionChanged += OnColumnsCollectionChanged;
     }
+
+    /// <summary>
+    /// Gets the GridView column collection attached to an element.
+    /// </summary>
+    public static GridViewColumnCollection? GetColumnCollection(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (GridViewColumnCollection?)element.GetValue(ColumnCollectionProperty);
+    }
+
+    /// <summary>
+    /// Attaches a GridView column collection to an element.
+    /// </summary>
+    public static void SetColumnCollection(DependencyObject element, GridViewColumnCollection? collection)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(ColumnCollectionProperty, collection);
+    }
+
+    /// <summary>
+    /// Determines whether the attached column collection should be serialized.
+    /// </summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public static bool ShouldSerializeColumnCollection(DependencyObject obj)
+    {
+        ArgumentNullException.ThrowIfNull(obj);
+
+        if (obj is ListViewItem { ParentListBox: ListView { View: GridView view } } item)
+        {
+            return !ReferenceEquals(item.ReadLocalValue(ColumnCollectionProperty), view.Columns);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Adds a GridViewColumn child declared in markup.
+    /// </summary>
+    protected virtual void AddChild(object column)
+    {
+        if (column is GridViewColumn gridViewColumn)
+        {
+            Columns.Add(gridViewColumn);
+            return;
+        }
+
+        throw new InvalidOperationException("Only GridViewColumn children can be added to a GridView.");
+    }
+
+    /// <summary>
+    /// Adds text content. GridView accepts only GridViewColumn children.
+    /// </summary>
+    protected virtual void AddText(string text) => AddChild(text);
+
+    void Jalium.UI.Markup.IAddChild.AddChild(object value) => AddChild(value);
+
+    void Jalium.UI.Markup.IAddChild.AddText(string text) => AddText(text);
+
+    /// <inheritdoc />
+    protected internal override void PrepareItem(ListViewItem item)
+    {
+        base.PrepareItem(item);
+        SetColumnCollection(item, Columns);
+    }
+
+    /// <inheritdoc />
+    protected internal override void ClearItem(ListViewItem item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        item.ClearValue(ColumnCollectionProperty);
+        base.ClearItem(item);
+    }
+
+    /// <inheritdoc />
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        ViewChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnColumnsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            foreach (var column in _subscribedColumns.ToArray())
+            {
+                UnsubscribeColumn(column);
+            }
+
+            foreach (var column in _columns)
+            {
+                SubscribeColumn(column);
+            }
+        }
+        else
+        {
+            if (e.OldItems != null)
+            {
+                foreach (GridViewColumn column in e.OldItems)
+                {
+                    UnsubscribeColumn(column);
+                }
+            }
+
+            if (e.NewItems != null)
+            {
+                foreach (GridViewColumn column in e.NewItems)
+                {
+                    SubscribeColumn(column);
+                }
+            }
+        }
+
+        ViewChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void SubscribeColumn(GridViewColumn column)
+    {
+        if (_subscribedColumns.Add(column))
+        {
+            ((System.ComponentModel.INotifyPropertyChanged)column).PropertyChanged += OnColumnPropertyChanged;
+        }
+    }
+
+    private void UnsubscribeColumn(GridViewColumn column)
+    {
+        if (_subscribedColumns.Remove(column))
+        {
+            ((System.ComponentModel.INotifyPropertyChanged)column).PropertyChanged -= OnColumnPropertyChanged;
+        }
+    }
+
+    private void OnColumnPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        ViewChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <inheritdoc />
+    public override string ToString() => $"{GetType()} Columns.Count:{Columns.Count}";
 }
 
 /// <summary>
 /// Represents a column that displays data in a GridView.
 /// </summary>
-public sealed class GridViewColumn : DependencyObject
+public class GridViewColumn : DependencyObject, System.ComponentModel.INotifyPropertyChanged
 {
+    private double _actualWidth;
+    private event System.ComponentModel.PropertyChangedEventHandler? PropertyChanged;
+
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
@@ -572,7 +882,20 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Gets the actual width of a GridViewColumn.
     /// </summary>
-    public double ActualWidth { get; internal set; }
+    public double ActualWidth
+    {
+        get => _actualWidth;
+        internal set
+        {
+            if (_actualWidth.Equals(value))
+            {
+                return;
+            }
+
+            _actualWidth = value;
+            OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs(nameof(ActualWidth)));
+        }
+    }
 
     /// <summary>
     /// Gets or sets the template to use to display the contents of a column cell.
@@ -603,6 +926,51 @@ public sealed class GridViewColumn : DependencyObject
         get => (BindingBase?)GetValue(DisplayMemberBindingProperty);
         set => SetValue(DisplayMemberBindingProperty, value);
     }
+
+    event System.ComponentModel.PropertyChangedEventHandler?
+        System.ComponentModel.INotifyPropertyChanged.PropertyChanged
+    {
+        add => PropertyChanged += value;
+        remove => PropertyChanged -= value;
+    }
+
+    /// <summary>
+    /// Called when the header string format changes.
+    /// </summary>
+    protected virtual void OnHeaderStringFormatChanged(
+        string? oldHeaderStringFormat,
+        string? newHeaderStringFormat)
+    {
+    }
+
+    /// <summary>
+    /// Raises the property changed notification.
+    /// </summary>
+    protected virtual void OnPropertyChanged(System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        PropertyChanged?.Invoke(this, e);
+    }
+
+    /// <inheritdoc />
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+
+        if (e.Property == HeaderStringFormatProperty)
+        {
+            OnHeaderStringFormatChanged(e.OldValue as string, e.NewValue as string);
+        }
+        else if (e.Property == WidthProperty && e.NewValue is double width && !double.IsNaN(width))
+        {
+            ActualWidth = Math.Max(0, width);
+        }
+
+        OnPropertyChanged(new System.ComponentModel.PropertyChangedEventArgs(e.Property.Name));
+    }
+
+    /// <inheritdoc />
+    public override string ToString() => Header?.ToString() ?? base.ToString()!;
 }
 
 /// <summary>
@@ -615,15 +983,32 @@ public sealed class GridViewColumnCollection : ObservableCollection<GridViewColu
 /// <summary>
 /// Represents the header for a GridViewColumn.
 /// </summary>
-public class GridViewColumnHeader : ContentControl
+public class GridViewColumnHeader : Primitives.ButtonBase
 {
+    private static readonly DependencyPropertyKey ColumnPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(Column),
+            typeof(GridViewColumn),
+            typeof(GridViewColumnHeader),
+            new PropertyMetadata(null));
+
+    private static readonly DependencyPropertyKey RolePropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(Role),
+            typeof(GridViewColumnHeaderRole),
+            typeof(GridViewColumnHeader),
+            new PropertyMetadata(GridViewColumnHeaderRole.Normal));
+
     /// <summary>
     /// Identifies the Column dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty ColumnProperty =
-        DependencyProperty.Register(nameof(Column), typeof(GridViewColumn), typeof(GridViewColumnHeader),
-            new PropertyMetadata(null));
+    public static readonly DependencyProperty ColumnProperty = ColumnPropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Identifies the read-only Role dependency property.
+    /// </summary>
+    public static readonly DependencyProperty RoleProperty = RolePropertyKey.DependencyProperty;
 
     /// <summary>
     /// Gets or sets the GridViewColumn that is associated with this header.
@@ -632,13 +1017,16 @@ public class GridViewColumnHeader : ContentControl
     public GridViewColumn? Column
     {
         get => (GridViewColumn?)GetValue(ColumnProperty);
-        set => SetValue(ColumnProperty, value);
+        internal set => SetValue(ColumnPropertyKey, value);
     }
 
     /// <summary>
     /// Gets the role of the column header.
     /// </summary>
-    public GridViewColumnHeaderRole Role { get; internal set; }
+    public GridViewColumnHeaderRole Role =>
+        (GridViewColumnHeaderRole)GetValue(RoleProperty)!;
+
+    internal void SetRole(GridViewColumnHeaderRole role) => SetValue(RolePropertyKey, role);
 
     /// <summary>
     /// Initializes a new instance of the <see cref="GridViewColumnHeader"/> class.
@@ -649,6 +1037,23 @@ public class GridViewColumnHeader : ContentControl
         // ContentPresenter handles displaying column header text
         UseTemplateContentManagement();
         Focusable = false;
+    }
+
+    /// <inheritdoc />
+    protected override void OnAccessKey(Jalium.UI.Input.AccessKeyEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        base.OnAccessKey(e);
+        OnClick();
+    }
+
+    /// <inheritdoc />
+    protected override void OnClick()
+    {
+        if (Role == GridViewColumnHeaderRole.Normal)
+        {
+            base.OnClick();
+        }
     }
 }
 

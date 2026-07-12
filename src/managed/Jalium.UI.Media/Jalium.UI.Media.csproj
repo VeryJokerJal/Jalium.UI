@@ -3,25 +3,23 @@
   <PropertyGroup>
     <RootNamespace>Jalium.UI.Media</RootNamespace>
     <AssemblyName>Jalium.UI.Media</AssemblyName>
-    <Description>Media types for Jalium.UI framework including Brush, Pen, Geometry, and DrawingContext.</Description>
+    <Description>Compatibility facade for Jalium.UI media types.</Description>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.Media</PackageId>
     <IsTrimmable>true</IsTrimmable>
     <IsAotCompatible>true</IsAotCompatible>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="TypeForwards.cs" />
+    <Compile Include="Animation\CoreAnimationTypeForwards.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="Jalium.UI.Interop" />
-    <InternalsVisibleTo Include="Jalium.UI.Tests" />
+    <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <ProjectReference Include="..\Jalium.UI.Managed\Jalium.UI.Managed.csproj" />
   </ItemGroup>
-
-  <!-- 音频与视频统一走 jalium.native.media:WAV/FLAC/MP3/OGG 由 vendored 单头库
-       (miniaudio/dr_wav/dr_flac/minimp3/stb_vorbis)在 native 层解码,AAC 走平台原生
-       (Windows MF / Android MediaCodec / Apple AudioToolbox / Linux GStreamer)。
-       2026-05 起完全自研,删除 SoundFlow + SoundFlow.Codecs.FFMpeg 包引用。 -->
 
 </Project>

@@ -53,19 +53,29 @@ public class PathShapeTests
         var path = CreatePath("M 0,4 A 4,4 0 0 1 8,0", 16, 8, ShapeStretch.Fill);
         var drawingContext = new RecordingDrawingContext();
 
+        var sourceGeometry = Assert.IsType<PathGeometry>(path.Data);
+        var sourceFigure = Assert.Single(sourceGeometry.Figures);
+        var sourceArc = Assert.IsType<ArcSegment>(Assert.Single(sourceFigure.Segments));
+        var stretchMatrix = path.GeometryTransform.Value;
+
         path.Render(drawingContext);
 
         var geometry = Assert.IsType<PathGeometry>(drawingContext.LastGeometry);
         var figure = Assert.Single(geometry.Figures);
         var arc = Assert.IsType<ArcSegment>(Assert.Single(figure.Segments));
 
-        Assert.Equal(new Point(0, 8), figure.StartPoint);
-        Assert.Equal(new Point(16, 0), arc.Point);
-        Assert.Equal(new Size(8, 8), arc.Size);
+        AssertPointClose(stretchMatrix.Transform(sourceFigure.StartPoint), figure.StartPoint);
+        AssertPointClose(stretchMatrix.Transform(sourceArc.Point), arc.Point);
+        AssertSizeClose(
+            new Size(
+                Math.Abs(sourceArc.Size.Width * stretchMatrix.M11),
+                Math.Abs(sourceArc.Size.Height * stretchMatrix.M22)),
+            arc.Size);
+        AssertRectClose(new Rect(0, 0, 16, 8), geometry.Bounds, tolerance: 1e-6);
     }
 
     [Fact]
-    public void Path_RenderTransform_ShouldPreserveArcSegments()
+    public void Path_DirectOnRender_ShouldPreserveArcSegments_WithoutRepeatingRenderTransform()
     {
         var path = CreatePath("M 0,4 A 4,4 0 0 1 8,0", 8, 8, ShapeStretch.None);
         path.RenderTransform = new RotateTransform { Angle = 90 };
@@ -77,8 +87,10 @@ public class PathShapeTests
         var figure = Assert.Single(geometry.Figures);
         Assert.IsType<ArcSegment>(Assert.Single(figure.Segments));
 
-        var transform = Assert.IsType<MatrixTransform>(drawingContext.LastTransform);
-        AssertMatrixClose(new Matrix(0, 1, -1, 0, 8, 0), transform.Matrix);
+        // TestPath.Render invokes OnRender directly. The visual parent applies an
+        // element's RenderTransform in the real render pipeline, so Path.OnRender
+        // must not push the same transform a second time.
+        Assert.Null(drawingContext.LastTransform);
     }
 
     [Fact]
@@ -87,6 +99,8 @@ public class PathShapeTests
         var path = CreatePath("M 0,0 L 8,8", 10, 10, ShapeStretch.Fill);
         path.Stroke = Brushes.Black;
         path.StrokeThickness = 2;
+        path.Measure(new Size(10, 10));
+        path.Arrange(new Rect(0, 0, 10, 10));
 
         var drawingContext = new RecordingDrawingContext();
         path.Render(drawingContext);
@@ -101,11 +115,13 @@ public class PathShapeTests
     }
 
     [Fact]
-    public void Path_OnRender_ShouldCenterHorizontalStrokeOnlyGlyph_WhenStretchIsNone()
+    public void Path_OnRender_ShouldPreserveHorizontalStrokeNaturalCoordinates_WhenStretchIsNone()
     {
         var path = CreatePath("M 0,0 L 10,0", 10, 10, ShapeStretch.None);
         path.Stroke = Brushes.Black;
         path.StrokeThickness = 1;
+        path.Measure(new Size(10, 10));
+        path.Arrange(new Rect(0, 0, 10, 10));
 
         var drawingContext = new RecordingDrawingContext();
         path.Render(drawingContext);
@@ -114,8 +130,8 @@ public class PathShapeTests
         var figure = Assert.Single(geometry.Figures);
         var line = Assert.IsType<LineSegment>(Assert.Single(figure.Segments));
 
-        Assert.Equal(new Point(0.5, 5), figure.StartPoint);
-        Assert.Equal(new Point(9.5, 5), line.Point);
+        Assert.Equal(new Point(0, 0), figure.StartPoint);
+        Assert.Equal(new Point(10, 0), line.Point);
     }
 
     [Fact]
@@ -139,26 +155,26 @@ public class PathShapeTests
     #region Property mutual exclusion tests
 
     [Fact]
-    public void Path_SetData_ShouldClearGeometry()
+    public void Path_DataAndGeometryAliasTheSameWpfProperty()
     {
         var path = new TestPath();
-        path.Geometry = Geometry.Parse("M 0,0 L 10,10");
-        Assert.NotNull(path.Geometry);
+        Geometry geometry = Geometry.Parse("M 0,0 L 5,5");
 
-        path.Data = "M 0,0 L 5,5";
+        path.Data = geometry;
 
-        Assert.Null(path.Geometry);
+        Assert.Same(geometry, path.Geometry);
+        Assert.Same(ShapePath.DataProperty, ShapePath.GeometryProperty);
     }
 
     [Fact]
-    public void Path_SetGeometry_ShouldClearData()
+    public void Path_SetGeometry_ShouldUpdateDataAlias()
     {
-        var path = new TestPath { Data = "M 0,0 L 10,10" };
-        Assert.NotNull(path.Data);
+        var path = new TestPath { Data = Geometry.Parse("M 0,0 L 10,10") };
+        Geometry replacement = Geometry.Parse("M 0,0 L 5,5");
 
-        path.Geometry = Geometry.Parse("M 0,0 L 5,5");
+        path.Geometry = replacement;
 
-        Assert.Null(path.Data);
+        Assert.Same(replacement, path.Data);
     }
 
     [Fact]
@@ -174,7 +190,7 @@ public class PathShapeTests
     }
 
     [Fact]
-    public void Path_SetGeometryToNull_ShouldClearDataAndRenderNothing()
+    public void Path_SetGeometryToNull_ShouldClearDataAliasAndRenderNothing()
     {
         var path = new TestPath { Geometry = Geometry.Parse("M 0,0 L 10,10") };
         path.Measure(new Size(10, 10));
@@ -193,19 +209,19 @@ public class PathShapeTests
     #region Invalid data tests
 
     [Fact]
-    public void Path_InvalidDataString_ShouldNotThrow()
+    public void Path_InvalidDataString_ShouldFailInGeometryParser()
     {
         var path = new TestPath();
-        path.Data = "this is not valid SVG";
+        Assert.Throws<FormatException>(() => path.Data = Geometry.Parse("this is not valid SVG"));
 
         // Should silently fail — no exception, geometry null
-        Assert.NotNull(path.Data);
+        Assert.Null(path.Data);
     }
 
     [Fact]
     public void Path_InvalidDataString_ShouldRenderNothing()
     {
-        var path = new TestPath { Data = "INVALID!!!", Width = 10, Height = 10 };
+        var path = new TestPath { Data = null, Width = 10, Height = 10 };
         path.Measure(new Size(10, 10));
         path.Arrange(new Rect(0, 0, 10, 10));
 
@@ -327,7 +343,7 @@ public class PathShapeTests
     {
         var path = new TestPath
         {
-            Data = data,
+            Data = Geometry.Parse(data),
             Width = width,
             Height = height,
             Stretch = stretch
@@ -356,7 +372,7 @@ public class PathShapeTests
         }
     }
 
-    private sealed class RecordingDrawingContext : DrawingContext
+    private sealed class RecordingDrawingContext : DrawingContextAdapter
     {
         public Geometry? LastGeometry { get; private set; }
         public Transform? LastTransform { get; private set; }
@@ -416,13 +432,27 @@ public class PathShapeTests
         }
     }
 
-    private static void AssertMatrixClose(Matrix expected, Matrix actual, double tolerance = 1e-9)
+    private static void AssertPointClose(Point expected, Point actual, double tolerance = 1e-9)
     {
-        Assert.True(Math.Abs(expected.M11 - actual.M11) <= tolerance, $"M11 expected {expected.M11}, got {actual.M11}");
-        Assert.True(Math.Abs(expected.M12 - actual.M12) <= tolerance, $"M12 expected {expected.M12}, got {actual.M12}");
-        Assert.True(Math.Abs(expected.M21 - actual.M21) <= tolerance, $"M21 expected {expected.M21}, got {actual.M21}");
-        Assert.True(Math.Abs(expected.M22 - actual.M22) <= tolerance, $"M22 expected {expected.M22}, got {actual.M22}");
-        Assert.True(Math.Abs(expected.OffsetX - actual.OffsetX) <= tolerance, $"OffsetX expected {expected.OffsetX}, got {actual.OffsetX}");
-        Assert.True(Math.Abs(expected.OffsetY - actual.OffsetY) <= tolerance, $"OffsetY expected {expected.OffsetY}, got {actual.OffsetY}");
+        Assert.True(Math.Abs(expected.X - actual.X) <= tolerance, $"X expected {expected.X}, got {actual.X}");
+        Assert.True(Math.Abs(expected.Y - actual.Y) <= tolerance, $"Y expected {expected.Y}, got {actual.Y}");
+    }
+
+    private static void AssertSizeClose(Size expected, Size actual, double tolerance = 1e-9)
+    {
+        Assert.True(Math.Abs(expected.Width - actual.Width) <= tolerance,
+            $"Width expected {expected.Width}, got {actual.Width}");
+        Assert.True(Math.Abs(expected.Height - actual.Height) <= tolerance,
+            $"Height expected {expected.Height}, got {actual.Height}");
+    }
+
+    private static void AssertRectClose(Rect expected, Rect actual, double tolerance = 1e-9)
+    {
+        Assert.True(Math.Abs(expected.X - actual.X) <= tolerance, $"X expected {expected.X}, got {actual.X}");
+        Assert.True(Math.Abs(expected.Y - actual.Y) <= tolerance, $"Y expected {expected.Y}, got {actual.Y}");
+        Assert.True(Math.Abs(expected.Width - actual.Width) <= tolerance,
+            $"Width expected {expected.Width}, got {actual.Width}");
+        Assert.True(Math.Abs(expected.Height - actual.Height) <= tolerance,
+            $"Height expected {expected.Height}, got {actual.Height}");
     }
 }

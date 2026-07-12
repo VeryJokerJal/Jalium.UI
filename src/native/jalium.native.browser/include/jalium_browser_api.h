@@ -74,6 +74,20 @@ JALIUM_BROWSER_API int jalium_webview2_set_callbacks(
 
 JALIUM_BROWSER_API int jalium_webview2_navigate(JaliumWebView2ControllerHandle* controller, const wchar_t* uri);
 JALIUM_BROWSER_API int jalium_webview2_navigate_to_string(JaliumWebView2ControllerHandle* controller, const wchar_t* html);
+JALIUM_BROWSER_API int jalium_webview2_navigate_with_web_resource_request(
+    JaliumWebView2ControllerHandle* controller,
+    const wchar_t* uri,
+    const wchar_t* method,
+    const uint8_t* post_data,
+    int post_data_length,
+    const wchar_t* additional_headers);
+JALIUM_BROWSER_API int jalium_webview2_add_host_object_to_script(
+    JaliumWebView2ControllerHandle* controller,
+    const wchar_t* name,
+    intptr_t dispatch);
+JALIUM_BROWSER_API int jalium_webview2_remove_host_object_from_script(
+    JaliumWebView2ControllerHandle* controller,
+    const wchar_t* name);
 JALIUM_BROWSER_API int jalium_webview2_reload(JaliumWebView2ControllerHandle* controller);
 JALIUM_BROWSER_API int jalium_webview2_stop(JaliumWebView2ControllerHandle* controller);
 JALIUM_BROWSER_API int jalium_webview2_go_back(JaliumWebView2ControllerHandle* controller);

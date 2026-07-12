@@ -1,4 +1,6 @@
+using System.Runtime.CompilerServices;
 using Jalium.UI;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -7,7 +9,18 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Grid : Panel
 {
+    private static readonly ConditionalWeakTable<UIElement, SharedSizeScopeState> s_sharedSizeScopes = new();
+    private static readonly Pen s_gridLinePen = new(new SolidColorBrush(Color.FromArgb(160, 96, 96, 96)), 1);
+    private SharedSizeScopeState? _sharedSizeState;
+    private RowDefinitionCollection? _rowDefinitions;
+    private ColumnDefinitionCollection? _columnDefinitions;
+
     #region Attached Properties
+
+    /// <summary>Identifies whether an element is the scope for shared row and column sizing.</summary>
+    public static readonly DependencyProperty IsSharedSizeScopeProperty =
+        DependencyProperty.RegisterAttached("IsSharedSizeScope", typeof(bool), typeof(Grid),
+            new PropertyMetadata(false, OnIsSharedSizeScopeChanged));
 
     /// <summary>
     /// Identifies the Row attached property.
@@ -40,6 +53,18 @@ public class Grid : Panel
     public static readonly DependencyProperty ColumnSpanProperty =
         DependencyProperty.RegisterAttached("ColumnSpan", typeof(int), typeof(Grid),
             new PropertyMetadata(1));
+
+    public static bool GetIsSharedSizeScope(UIElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (bool)(element.GetValue(IsSharedSizeScopeProperty) ?? false);
+    }
+
+    public static void SetIsSharedSizeScope(UIElement element, bool value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(IsSharedSizeScopeProperty, value);
+    }
 
     /// <summary>
     /// Gets the value of the Row attached property for a given element.
@@ -117,6 +142,11 @@ public class Grid : Panel
         DependencyProperty.Register(nameof(ColumnSpacing), typeof(double), typeof(Grid),
             new PropertyMetadata(0.0, OnLayoutPropertyChanged));
 
+    /// <summary>Identifies the debug grid-line visibility property.</summary>
+    public static readonly DependencyProperty ShowGridLinesProperty =
+        DependencyProperty.Register(nameof(ShowGridLines), typeof(bool), typeof(Grid),
+            new PropertyMetadata(false, OnShowGridLinesChanged));
+
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is Grid grid)
@@ -125,19 +155,80 @@ public class Grid : Panel
         }
     }
 
+    private static void OnShowGridLinesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((Grid)d).InvalidateVisual();
+
+    private static void OnIsSharedSizeScopeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element)
+        {
+            InvalidateSharedSizeDescendants(element);
+        }
+    }
+
     #endregion
 
     #region Properties
 
     /// <summary>
-    /// Gets the collection of row definitions.
+    /// Gets or sets the collection of row definitions.
     /// </summary>
-    public RowDefinitionCollection RowDefinitions { get; } = new();
+    public RowDefinitionCollection RowDefinitions
+    {
+        get => _rowDefinitions ??= new RowDefinitionCollection(this);
+        set
+        {
+            if (value?.Owner is not null)
+            {
+                if (ReferenceEquals(value.Owner, this))
+                    return;
+
+                throw new ArgumentException("The collection already belongs to another Grid.", nameof(value));
+            }
+
+            if (_rowDefinitions is not null)
+                _rowDefinitions.Owner = null;
+
+            _rowDefinitions = null;
+            if (value is not null)
+            {
+                value.Owner = this;
+                _rowDefinitions = value;
+            }
+
+            OnDefinitionChanged();
+        }
+    }
 
     /// <summary>
-    /// Gets the collection of column definitions.
+    /// Gets or sets the collection of column definitions.
     /// </summary>
-    public ColumnDefinitionCollection ColumnDefinitions { get; } = new();
+    public ColumnDefinitionCollection ColumnDefinitions
+    {
+        get => _columnDefinitions ??= new ColumnDefinitionCollection(this);
+        set
+        {
+            if (value?.Owner is not null)
+            {
+                if (ReferenceEquals(value.Owner, this))
+                    return;
+
+                throw new ArgumentException("The collection already belongs to another Grid.", nameof(value));
+            }
+
+            if (_columnDefinitions is not null)
+                _columnDefinitions.Owner = null;
+
+            _columnDefinitions = null;
+            if (value is not null)
+            {
+                value.Owner = this;
+                _columnDefinitions = value;
+            }
+
+            OnDefinitionChanged();
+        }
+    }
 
     /// <summary>
     /// Gets or sets the uniform distance in device-independent pixels between adjacent rows.
@@ -160,8 +251,34 @@ public class Grid : Panel
         set => SetValue(ColumnSpacingProperty, value);
     }
 
+    /// <summary>Gets or sets whether debugging lines are drawn between grid cells.</summary>
+    public bool ShowGridLines
+    {
+        get => (bool)(GetValue(ShowGridLinesProperty) ?? false);
+        set => SetValue(ShowGridLinesProperty, value);
+    }
+
+    public bool ShouldSerializeColumnDefinitions() => ColumnDefinitions.Count > 0;
+
+    public bool ShouldSerializeRowDefinitions() => RowDefinitions.Count > 0;
+
     private static double SanitizeSpacing(double value) =>
         (double.IsNaN(value) || double.IsInfinity(value) || value < 0) ? 0 : value;
+
+    private static bool IsSharedStar(RowDefinition definition) =>
+        definition.Height.IsStar && definition.SharedSizeGroup != null;
+
+    private static bool IsSharedStar(ColumnDefinition definition) =>
+        definition.Width.IsStar && definition.SharedSizeGroup != null;
+
+    internal void OnDefinitionChanged()
+    {
+        _sharedSizeState?.Remove(this);
+        _sharedSizeState = null;
+        InvalidateMeasure();
+        InvalidateArrange();
+        InvalidateVisual();
+    }
 
     #endregion
 
@@ -213,7 +330,7 @@ public class Grid : Panel
             {
                 rowHeights[i] = Math.Clamp(def.Height.Value, def.MinHeight, def.MaxHeight);
             }
-            else if (def.Height.IsStar)
+            else if (def.Height.IsStar && string.IsNullOrEmpty(def.SharedSizeGroup))
             {
                 rowStarValues[i] = def.Height.Value;
             }
@@ -226,14 +343,14 @@ public class Grid : Panel
             {
                 columnWidths[i] = Math.Clamp(def.Width.Value, def.MinWidth, def.MaxWidth);
             }
-            else if (def.Width.IsStar)
+            else if (def.Width.IsStar && string.IsNullOrEmpty(def.SharedSizeGroup))
             {
                 columnStarValues[i] = def.Width.Value;
             }
         }
 
         // Measure children in auto rows/columns
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             if (child is not FrameworkElement fe) continue;
 
@@ -247,11 +364,11 @@ public class Grid : Panel
             bool inAutoColumn = false;
             for (int i = row; i < row + rowSpan; i++)
             {
-                if (rowDefs[i].Height.IsAuto) inAutoRow = true;
+                if (rowDefs[i].Height.IsAuto || IsSharedStar(rowDefs[i])) inAutoRow = true;
             }
             for (int i = column; i < column + columnSpan; i++)
             {
-                if (columnDefs[i].Width.IsAuto) inAutoColumn = true;
+                if (columnDefs[i].Width.IsAuto || IsSharedStar(columnDefs[i])) inAutoColumn = true;
             }
 
             if (inAutoRow || inAutoColumn)
@@ -267,7 +384,7 @@ public class Grid : Panel
                 if (inAutoRow && rowSpan == 1)
                 {
                     var def = rowDefs[row];
-                    if (def.Height.IsAuto)
+                    if (def.Height.IsAuto || IsSharedStar(def))
                     {
                         rowHeights[row] = Math.Max(rowHeights[row],
                             Math.Clamp(fe.DesiredSize.Height, def.MinHeight, def.MaxHeight));
@@ -277,7 +394,7 @@ public class Grid : Panel
                 if (inAutoColumn && columnSpan == 1)
                 {
                     var def = columnDefs[column];
-                    if (def.Width.IsAuto)
+                    if (def.Width.IsAuto || IsSharedStar(def))
                     {
                         columnWidths[column] = Math.Max(columnWidths[column],
                             Math.Clamp(fe.DesiredSize.Width, def.MinWidth, def.MaxWidth));
@@ -306,7 +423,7 @@ public class Grid : Panel
             if (double.IsPositiveInfinity(availableRowSpace))
             {
                 // Treat star rows as Auto: measure children and use their desired height
-                foreach (var child in Children)
+                foreach (UIElement child in Children)
                 {
                     if (child is not FrameworkElement fe) continue;
                     var row = Math.Min(GetRow(child), rowCount - 1);
@@ -347,7 +464,7 @@ public class Grid : Panel
             if (double.IsPositiveInfinity(availableColumnSpace))
             {
                 // Treat star columns as Auto: measure children and use their desired width
-                foreach (var child in Children)
+                foreach (UIElement child in Children)
                 {
                     if (child is not FrameworkElement fe) continue;
                     var column = Math.Min(GetColumn(child), columnCount - 1);
@@ -389,7 +506,7 @@ public class Grid : Panel
         // Measure all children with their final available sizes.
         // A spanned cell owns the spacing between the tracks it crosses, so the available
         // size includes (span - 1) gap(s) along each axis.
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             if (child is not FrameworkElement fe) continue;
 
@@ -409,7 +526,23 @@ public class Grid : Panel
             cellWidth += Math.Max(0, columnSpan - 1) * columnSpacing;
             cellHeight += Math.Max(0, rowSpan - 1) * rowSpacing;
 
-            fe.Measure(new Size(cellWidth, cellHeight));
+            var needsUnconstrainedHeight = false;
+            for (var index = row; index < row + rowSpan; index++)
+            {
+                if (rowDefs[index].Height.IsAuto || IsSharedStar(rowDefs[index]) ||
+                    (treatStarRowsAsAuto && rowStarValues[index] > 0))
+                {
+                    needsUnconstrainedHeight = true;
+                    break;
+                }
+            }
+
+            // Once columns have their final constrained widths, auto-height content must be
+            // measured without the provisional row height. Wrapped text otherwise remains
+            // clipped to the one-line height discovered during the initial infinite-width pass.
+            fe.Measure(new Size(
+                cellWidth,
+                needsUnconstrainedHeight ? double.PositiveInfinity : cellHeight));
 
             // Capture content size for single-span children so star tracks can report a
             // content-based DesiredSize (see the rowContent/columnContent declaration). Spanned
@@ -424,7 +557,8 @@ public class Grid : Panel
             if (rowSpan == 1)
             {
                 var rowDef = rowDefs[row];
-                if (rowDef.Height.IsAuto || (treatStarRowsAsAuto && rowStarValues[row] > 0))
+                if (rowDef.Height.IsAuto || IsSharedStar(rowDef) ||
+                    (treatStarRowsAsAuto && rowStarValues[row] > 0))
                 {
                     rowHeights[row] = Math.Max(
                         rowHeights[row],
@@ -435,7 +569,8 @@ public class Grid : Panel
             if (columnSpan == 1)
             {
                 var columnDef = columnDefs[column];
-                if (columnDef.Width.IsAuto || (treatStarColumnsAsAuto && columnStarValues[column] > 0))
+                if (columnDef.Width.IsAuto || IsSharedStar(columnDef) ||
+                    (treatStarColumnsAsAuto && columnStarValues[column] > 0))
                 {
                     columnWidths[column] = Math.Max(
                         columnWidths[column],
@@ -444,15 +579,19 @@ public class Grid : Panel
             }
         }
 
+        ApplySharedSizes(rowDefs, columnDefs, rowHeights, columnWidths);
+
         // Store auto sizes (and star-as-auto sizes) in definitions so ArrangeOverride can read them
         for (int i = 0; i < rowCount; i++)
         {
-            if (rowDefs[i].Height.IsAuto || (treatStarRowsAsAuto && rowStarValues[i] > 0))
+            if (rowDefs[i].Height.IsAuto || (treatStarRowsAsAuto && rowStarValues[i] > 0) ||
+                !string.IsNullOrWhiteSpace(rowDefs[i].SharedSizeGroup))
                 rowDefs[i].ActualHeight = rowHeights[i];
         }
         for (int i = 0; i < columnCount; i++)
         {
-            if (columnDefs[i].Width.IsAuto || (treatStarColumnsAsAuto && columnStarValues[i] > 0))
+            if (columnDefs[i].Width.IsAuto || (treatStarColumnsAsAuto && columnStarValues[i] > 0) ||
+                !string.IsNullOrWhiteSpace(columnDefs[i].SharedSizeGroup))
                 columnDefs[i].ActualWidth = columnWidths[i];
         }
 
@@ -467,7 +606,7 @@ public class Grid : Panel
         for (int i = 0; i < columnCount; i++)
         {
             var def = columnDefs[i];
-            desiredWidth += (def.Width.IsStar && !treatStarColumnsAsAuto)
+            desiredWidth += (def.Width.IsStar && !treatStarColumnsAsAuto && string.IsNullOrWhiteSpace(def.SharedSizeGroup))
                 ? Math.Clamp(columnContent[i], def.MinWidth, def.MaxWidth)
                 : columnWidths[i];
         }
@@ -476,7 +615,7 @@ public class Grid : Panel
         for (int i = 0; i < rowCount; i++)
         {
             var def = rowDefs[i];
-            desiredHeight += (def.Height.IsStar && !treatStarRowsAsAuto)
+            desiredHeight += (def.Height.IsStar && !treatStarRowsAsAuto && string.IsNullOrWhiteSpace(def.SharedSizeGroup))
                 ? Math.Clamp(rowContent[i], def.MinHeight, def.MaxHeight)
                 : rowHeights[i];
         }
@@ -514,7 +653,12 @@ public class Grid : Panel
         for (int i = 0; i < rowCount; i++)
         {
             var def = rowDefs[i];
-            if (def.Height.IsAbsolute)
+            if (!string.IsNullOrWhiteSpace(def.SharedSizeGroup))
+            {
+                rowHeights[i] = Math.Max(def.ActualHeight, def.MinHeight);
+                fixedRowHeight += rowHeights[i];
+            }
+            else if (def.Height.IsAbsolute)
             {
                 rowHeights[i] = Math.Clamp(def.Height.Value, def.MinHeight, def.MaxHeight);
                 fixedRowHeight += rowHeights[i];
@@ -535,7 +679,12 @@ public class Grid : Panel
         for (int i = 0; i < columnCount; i++)
         {
             var def = columnDefs[i];
-            if (def.Width.IsAbsolute)
+            if (!string.IsNullOrWhiteSpace(def.SharedSizeGroup))
+            {
+                columnWidths[i] = Math.Max(def.ActualWidth, def.MinWidth);
+                fixedColumnWidth += columnWidths[i];
+            }
+            else if (def.Width.IsAbsolute)
             {
                 columnWidths[i] = Math.Clamp(def.Width.Value, def.MinWidth, def.MaxWidth);
                 fixedColumnWidth += columnWidths[i];
@@ -661,7 +810,7 @@ public class Grid : Panel
         }
 
         // Arrange children
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             if (child is not FrameworkElement fe) continue;
 
@@ -686,6 +835,148 @@ public class Grid : Panel
         return finalSize;
     }
 
+    protected override void OnPostRender(DrawingContext drawingContext)
+    {
+        base.OnPostRender(drawingContext);
+        if (!ShowGridLines)
+            return;
+
+        var rowSpacing = SanitizeSpacing(RowSpacing);
+        for (var index = 1; index < RowDefinitions.Count; index++)
+        {
+            var y = RowDefinitions[index].Offset - rowSpacing / 2;
+            drawingContext.DrawLine(s_gridLinePen, new Point(0, y), new Point(RenderSize.Width, y));
+        }
+
+        var columnSpacing = SanitizeSpacing(ColumnSpacing);
+        for (var index = 1; index < ColumnDefinitions.Count; index++)
+        {
+            var x = ColumnDefinitions[index].Offset - columnSpacing / 2;
+            drawingContext.DrawLine(s_gridLinePen, new Point(x, 0), new Point(x, RenderSize.Height));
+        }
+    }
+
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        _sharedSizeState?.Remove(this);
+        _sharedSizeState = null;
+        base.OnVisualParentChanged(oldParent);
+    }
+
+    private void ApplySharedSizes(
+        RowDefinition[] rowDefinitions,
+        ColumnDefinition[] columnDefinitions,
+        double[] rowHeights,
+        double[] columnWidths)
+    {
+        var scopeElement = FindSharedSizeScope();
+        if (scopeElement == null)
+        {
+            _sharedSizeState?.Remove(this);
+            _sharedSizeState = null;
+            return;
+        }
+
+        var state = s_sharedSizeScopes.GetValue(scopeElement, static _ => new SharedSizeScopeState());
+        if (!ReferenceEquals(state, _sharedSizeState))
+        {
+            _sharedSizeState?.Remove(this);
+            _sharedSizeState = state;
+        }
+
+        var contributions = new Dictionary<string, double>(StringComparer.Ordinal);
+        for (var index = 0; index < rowDefinitions.Length; index++)
+        {
+            var definition = rowDefinitions[index];
+            if (string.IsNullOrWhiteSpace(definition.SharedSizeGroup))
+                continue;
+
+            var contribution = rowHeights[index];
+            AddContribution(contributions, definition.SharedSizeGroup, contribution);
+        }
+
+        for (var index = 0; index < columnDefinitions.Length; index++)
+        {
+            var definition = columnDefinitions[index];
+            if (string.IsNullOrWhiteSpace(definition.SharedSizeGroup))
+                continue;
+
+            var contribution = columnWidths[index];
+            AddContribution(contributions, definition.SharedSizeGroup, contribution);
+        }
+
+        var maxima = state.Update(this, contributions);
+        for (var index = 0; index < rowDefinitions.Length; index++)
+        {
+            var definition = rowDefinitions[index];
+            if (!string.IsNullOrWhiteSpace(definition.SharedSizeGroup) &&
+                maxima.TryGetValue(definition.SharedSizeGroup, out var maximum))
+            {
+                rowHeights[index] = maximum;
+            }
+        }
+
+        for (var index = 0; index < columnDefinitions.Length; index++)
+        {
+            var definition = columnDefinitions[index];
+            if (!string.IsNullOrWhiteSpace(definition.SharedSizeGroup) &&
+                maxima.TryGetValue(definition.SharedSizeGroup, out var maximum))
+            {
+                columnWidths[index] = maximum;
+            }
+        }
+    }
+
+    private static void AddContribution(
+        Dictionary<string, double> contributions,
+        string key,
+        double value)
+    {
+        if (!double.IsFinite(value) || value < 0)
+            value = 0;
+
+        if (!contributions.TryGetValue(key, out var current) || value > current)
+            contributions[key] = value;
+    }
+
+    private UIElement? FindSharedSizeScope()
+    {
+        DependencyObject? current = this;
+        var visited = new HashSet<DependencyObject>();
+        while (current != null && visited.Add(current))
+        {
+            if (current is UIElement element && GetIsSharedSizeScope(element))
+                return element;
+
+            current = current switch
+            {
+                FrameworkElement frameworkElement =>
+                    frameworkElement.Parent ?? frameworkElement.TemplatedParent,
+                Visual visual => visual.VisualParent,
+                _ => null
+            };
+        }
+
+        return null;
+    }
+
+    private static void InvalidateSharedSizeDescendants(UIElement element)
+    {
+        if (element is Grid grid)
+        {
+            grid._sharedSizeState?.Remove(grid);
+            grid._sharedSizeState = null;
+            grid.InvalidateMeasure();
+            grid.InvalidateArrange();
+        }
+
+        for (var index = 0; index < element.VisualChildrenCount; index++)
+        {
+            if (element.GetVisualChild(index) is UIElement child)
+                InvalidateSharedSizeDescendants(child);
+        }
+    }
+
     private RowDefinition[] GetEffectiveRowDefinitions(int count)
     {
         var defs = new RowDefinition[count];
@@ -708,6 +999,68 @@ public class Grid : Panel
                 : new ColumnDefinition { Width = GridLength.Star };
         }
         return defs;
+    }
+
+    private sealed class SharedSizeScopeState
+    {
+        private readonly Dictionary<Grid, Dictionary<string, double>> _contributions = new();
+        private readonly Dictionary<string, double> _maxima = new(StringComparer.Ordinal);
+
+        public IReadOnlyDictionary<string, double> Update(
+            Grid grid,
+            Dictionary<string, double> contributions)
+        {
+            var affected = new HashSet<string>(contributions.Keys, StringComparer.Ordinal);
+            if (_contributions.TryGetValue(grid, out var previous))
+                affected.UnionWith(previous.Keys);
+
+            _contributions[grid] = contributions;
+            Recompute(affected, grid);
+            return _maxima;
+        }
+
+        public void Remove(Grid grid)
+        {
+            if (!_contributions.Remove(grid, out var previous))
+                return;
+
+            Recompute(previous.Keys, grid);
+        }
+
+        private void Recompute(IEnumerable<string> keys, Grid changedGrid)
+        {
+            foreach (var key in keys.Distinct())
+            {
+                _maxima.TryGetValue(key, out var previousMaximum);
+                var maximum = 0.0;
+                var hasContribution = false;
+                foreach (var gridContributions in _contributions.Values)
+                {
+                    if (gridContributions.TryGetValue(key, out var contribution))
+                    {
+                        maximum = Math.Max(maximum, contribution);
+                        hasContribution = true;
+                    }
+                }
+
+                if (hasContribution)
+                    _maxima[key] = maximum;
+                else
+                    _maxima.Remove(key);
+
+                if (Math.Abs(previousMaximum - maximum) <= 0.001)
+                    continue;
+
+                foreach (var participatingGrid in _contributions.Keys)
+                {
+                    if (!ReferenceEquals(participatingGrid, changedGrid))
+                    {
+                        participatingGrid.InvalidateMeasure();
+                        participatingGrid.InvalidateArrange();
+                    }
+                }
+            }
+        }
     }
 
     #endregion

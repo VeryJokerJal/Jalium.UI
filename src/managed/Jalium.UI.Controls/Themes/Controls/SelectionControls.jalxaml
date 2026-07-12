@@ -31,6 +31,8 @@
 								<ContentPresenter Name="PART_SelectionPresenter"
                                                   Content="{Binding SelectionBoxItem, RelativeSource={RelativeSource AncestorType=ComboBox}}"
                                                   ContentTemplate="{Binding SelectionBoxItemTemplate, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                  ContentTemplateSelector="{Binding ItemTemplateSelector, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                                  ContentStringFormat="{Binding SelectionBoxItemStringFormat, RelativeSource={RelativeSource AncestorType=ComboBox}}"
                                                   HorizontalAlignment="Left"
                                                   VerticalAlignment="Center">
 									<ContentPresenter.Resources>
@@ -47,6 +49,7 @@
 
 								<TextBox Name="PART_EditableTextBox"
                                          Text="{Binding Text, RelativeSource={RelativeSource AncestorType=ComboBox}}"
+                                         IsReadOnly="{TemplateBinding IsReadOnly}"
                                          PlaceholderText="{Binding PlaceholderText, RelativeSource={RelativeSource AncestorType=ComboBox}}"
                                          Background="Transparent"
                                          BorderThickness="0"

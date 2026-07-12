@@ -5,6 +5,8 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class ToolBarOverflowPanel : Panel
 {
+    internal Jalium.UI.Controls.ToolBar? ToolBarOwner { get; set; }
+
     #region Dependency Properties
 
     /// <summary>
@@ -34,6 +36,10 @@ public class ToolBarOverflowPanel : Panel
     #region Layout
 
     /// <inheritdoc />
+    protected override UIElementCollection CreateUIElementCollection(FrameworkElement logicalParent) =>
+        new(this, TemplatedParent == null ? logicalParent : null);
+
+    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
         var wrapWidth = double.IsNaN(WrapWidth) ? availableSize.Width : WrapWidth;
@@ -43,7 +49,7 @@ public class ToolBarOverflowPanel : Panel
         var totalHeight = 0.0;
         var maxWidth = 0.0;
 
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             child.Measure(availableSize);
 
@@ -81,7 +87,7 @@ public class ToolBarOverflowPanel : Panel
         var currentY = 0.0;
         var currentRowHeight = 0.0;
 
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             var childWidth = child.DesiredSize.Width;
             var childHeight = child.DesiredSize.Height;

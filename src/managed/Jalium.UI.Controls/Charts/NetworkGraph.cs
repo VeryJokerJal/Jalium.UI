@@ -313,9 +313,9 @@ public class NetworkGraph : ChartBase
     #region Automation
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.NetworkGraphAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.NetworkGraphAutomationPeer(this);
     }
 
     #endregion
@@ -665,7 +665,7 @@ public class NetworkGraph : ChartBase
         }
 
         // Draw nodes
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         int nodeIndex = 0;
         foreach (var node in nodes)
         {

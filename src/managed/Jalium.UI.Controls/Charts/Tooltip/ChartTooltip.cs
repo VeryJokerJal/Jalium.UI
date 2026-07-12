@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Interop;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Charts;
@@ -98,7 +98,7 @@ public class ChartTooltip : ContentControl
         var bgBrush = Background ?? s_defaultBackground;
         var borderBrush = BorderBrush ?? s_defaultBorder;
         var fgBrush = Foreground ?? s_defaultForeground;
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 12.0;
 
         var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
@@ -157,7 +157,7 @@ public class ChartTooltip : ContentControl
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 12.0;
 
         double maxWidth = 0;

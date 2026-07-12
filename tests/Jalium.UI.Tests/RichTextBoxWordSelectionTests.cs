@@ -31,7 +31,7 @@ public class RichTextBoxWordSelectionTests
 
         var selectionField = typeof(RichTextBox).GetField("_selection", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(selectionField);
-        var selection = Assert.IsType<TextRange>(selectionField!.GetValue(richTextBox));
+        var selection = Assert.IsType<TextSelection>(selectionField!.GetValue(richTextBox));
         Assert.Equal("two three", selection.Text);
     }
 

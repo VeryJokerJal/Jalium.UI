@@ -178,7 +178,7 @@ public sealed class ScrollContentState : CustomContentState
 
         if (element is Panel panel)
         {
-            foreach (var panelChild in panel.Children)
+            foreach (UIElement panelChild in panel.Children)
             {
                 if (panelChild is FrameworkElement fe)
                 {

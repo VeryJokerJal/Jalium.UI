@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls.Platform;
 
 namespace Jalium.UI.Controls;
 
@@ -7,6 +8,13 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public abstract class FileDialog
 {
+    /// <summary>
+    /// Gets whether the current Linux session exposes the desktop-neutral file chooser portal.
+    /// </summary>
+    public static bool IsPortalAvailable =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
+        LinuxDesktopPortal.IsInterfaceAvailable("org.freedesktop.portal.FileChooser");
+
     #region Properties
 
     /// <summary>
@@ -96,6 +104,16 @@ public abstract class FileDialog
     /// </summary>
     public IList<FileDialogCustomPlace> CustomPlaces { get; } = new List<FileDialogCustomPlace>();
 
+    /// <summary>
+    /// Gets or sets the maximum time to wait for a Linux desktop portal response.
+    /// </summary>
+    public TimeSpan PortalTimeout { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Gets or sets a token that can cancel a pending Linux desktop portal request.
+    /// </summary>
+    public CancellationToken CancellationToken { get; set; }
+
     #endregion
 
     #region Events
@@ -144,6 +162,8 @@ public abstract class FileDialog
         DereferenceLinks = true;
         RestoreDirectory = false;
         CustomPlaces.Clear();
+        PortalTimeout = TimeSpan.FromMinutes(2);
+        CancellationToken = default;
     }
 
     /// <summary>
@@ -215,8 +235,12 @@ public sealed class OpenFileDialog : FileDialog
             return ShowWindowsDialog(owner);
         }
 
-        // Fallback for non-Windows platforms
-        return ShowFallbackDialog();
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            return ShowLinuxDialog(owner);
+        }
+
+        return false;
     }
 
     private bool? ShowWindowsDialog(nint owner)
@@ -355,36 +379,43 @@ public sealed class OpenFileDialog : FileDialog
         return preferredPath;
     }
 
-    private bool? ShowFallbackDialog()
+    private bool? ShowLinuxDialog(nint owner)
     {
-        // Simple console-based fallback
-        Console.WriteLine($"Open File Dialog: {Title ?? (IsFolderPicker ? "Select Folder" : "Open")}");
-        Console.Write(IsFolderPicker ? "Enter folder path: " : "Enter file path: ");
-        var path = Console.ReadLine();
+        var currentFolder = InitialDirectory;
+        if (string.IsNullOrWhiteSpace(currentFolder) && !string.IsNullOrWhiteSpace(FileName))
+            currentFolder = Directory.Exists(FileName) ? FileName : Path.GetDirectoryName(FileName);
 
-        if (!string.IsNullOrEmpty(path))
-        {
-            if (IsFolderPicker)
-            {
-                if (CheckPathExists && !Directory.Exists(path))
-                {
-                    Console.WriteLine("Directory does not exist.");
-                    return false;
-                }
-            }
-            else if (CheckFileExists && !File.Exists(path))
-            {
-                Console.WriteLine("File does not exist.");
-                return false;
-            }
+        var response = LinuxDesktopPortal.ShowFileChooser(
+            owner,
+            new LinuxPortalFileChooserOptions(
+                Title ?? (IsFolderPicker ? "Select Folder" : "Open File"),
+                Save: false,
+                Multiple: Multiselect,
+                Directory: IsFolderPicker,
+                CurrentFolder: currentFolder,
+                CurrentName: null,
+                Filters: ParseFilter(),
+                FilterIndex: FilterIndex,
+                Timeout: PortalTimeout),
+            CancellationToken);
 
-            FileName = path;
-            FileNames = new[] { path };
-            OnFileOk();
-            return true;
-        }
+        if (response.Status != LinuxPortalResponseStatus.Success)
+            return false;
 
-        return false;
+        var selectedPaths = response.Values
+            .Where(path => IsFolderPicker
+                ? !CheckPathExists || Directory.Exists(path)
+                : !CheckFileExists || File.Exists(path))
+            .Take(Multiselect ? int.MaxValue : 1)
+            .ToArray();
+
+        if (selectedPaths.Length == 0)
+            return false;
+
+        FileNames = selectedPaths;
+        FileName = selectedPaths[0];
+        OnFileOk();
+        return true;
     }
 
     #region Dialog options
@@ -469,7 +500,12 @@ public sealed class SaveFileDialog : FileDialog
             return ShowWindowsDialog(owner);
         }
 
-        return ShowFallbackDialog();
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            return ShowLinuxDialog(owner);
+        }
+
+        return false;
     }
 
     private bool? ShowWindowsDialog(nint owner)
@@ -592,31 +628,45 @@ public sealed class SaveFileDialog : FileDialog
         return preferredPath;
     }
 
-    private bool? ShowFallbackDialog()
+    private bool? ShowLinuxDialog(nint owner)
     {
-        Console.WriteLine($"Save File Dialog: {Title ?? "Save As"}");
-        Console.Write("Enter file path: ");
-        var path = Console.ReadLine();
+        var currentFolder = InitialDirectory;
+        var currentName = string.IsNullOrWhiteSpace(FileName) ? null : Path.GetFileName(FileName);
+        if (string.IsNullOrWhiteSpace(currentFolder) && !string.IsNullOrWhiteSpace(FileName))
+            currentFolder = Directory.Exists(FileName) ? FileName : Path.GetDirectoryName(FileName);
 
-        if (!string.IsNullOrEmpty(path))
+        var response = LinuxDesktopPortal.ShowFileChooser(
+            owner,
+            new LinuxPortalFileChooserOptions(
+                Title ?? "Save File",
+                Save: true,
+                Multiple: false,
+                Directory: false,
+                CurrentFolder: currentFolder,
+                CurrentName: currentName,
+                Filters: ParseFilter(),
+                FilterIndex: FilterIndex,
+                Timeout: PortalTimeout),
+            CancellationToken);
+
+        if (response.Status != LinuxPortalResponseStatus.Success || response.Values.Count == 0)
+            return false;
+
+        var path = response.Values[0];
+        if (AddExtension && string.IsNullOrEmpty(Path.GetExtension(path)) &&
+            !string.IsNullOrWhiteSpace(DefaultExt))
         {
-            if (OverwritePrompt && File.Exists(path))
-            {
-                Console.Write($"File '{path}' already exists. Overwrite? (y/n): ");
-                var response = Console.ReadLine();
-                if (!response?.Equals("y", StringComparison.OrdinalIgnoreCase) ?? true)
-                {
-                    return false;
-                }
-            }
-
-            FileName = path;
-            FileNames = new[] { path };
-            OnFileOk();
-            return true;
+            path += "." + DefaultExt.TrimStart('.');
         }
 
-        return false;
+        var parent = Path.GetDirectoryName(path);
+        if (CheckPathExists && (string.IsNullOrWhiteSpace(parent) || !Directory.Exists(parent)))
+            return false;
+
+        FileName = path;
+        FileNames = [path];
+        OnFileOk();
+        return true;
     }
 
     #region Dialog options
@@ -1095,6 +1145,16 @@ public sealed class FolderBrowserDialog
     /// </summary>
     public string[] SelectedPaths { get; private set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Gets or sets the maximum time to wait for a Linux desktop portal response.
+    /// </summary>
+    public TimeSpan PortalTimeout { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Gets or sets a token that can cancel a pending Linux desktop portal request.
+    /// </summary>
+    public CancellationToken CancellationToken { get; set; }
+
     #endregion
 
     /// <summary>
@@ -1117,7 +1177,12 @@ public sealed class FolderBrowserDialog
             return ShowWindowsDialog(owner);
         }
 
-        return ShowFallbackDialog();
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            return ShowLinuxDialog(owner);
+        }
+
+        return false;
     }
 
     private bool? ShowWindowsDialog(IntPtr owner)
@@ -1147,26 +1212,35 @@ public sealed class FolderBrowserDialog
         return false;
     }
 
-    private bool? ShowFallbackDialog()
+    private bool? ShowLinuxDialog(nint owner)
     {
-        Console.WriteLine($"Folder Browser: {Title ?? Description ?? "Select Folder"}");
-        Console.Write("Enter folder path: ");
-        var path = Console.ReadLine();
+        var response = LinuxDesktopPortal.ShowFileChooser(
+            owner,
+            new LinuxPortalFileChooserOptions(
+                Title ?? Description ?? "Select Folder",
+                Save: false,
+                Multiple: Multiselect,
+                Directory: true,
+                CurrentFolder: InitialDirectory ?? SelectedPath,
+                CurrentName: null,
+                Filters: Array.Empty<(string Name, string Pattern)>(),
+                FilterIndex: 1,
+                Timeout: PortalTimeout),
+            CancellationToken);
 
-        if (!string.IsNullOrEmpty(path))
-        {
-            if (!Directory.Exists(path))
-            {
-                Console.WriteLine("Directory does not exist.");
-                return false;
-            }
+        if (response.Status != LinuxPortalResponseStatus.Success)
+            return false;
 
-            SelectedPath = path;
-            SelectedPaths = new[] { path };
-            return true;
-        }
+        var paths = response.Values
+            .Where(Directory.Exists)
+            .Take(Multiselect ? int.MaxValue : 1)
+            .ToArray();
+        if (paths.Length == 0)
+            return false;
 
-        return false;
+        SelectedPaths = paths;
+        SelectedPath = paths[0];
+        return true;
     }
 
     #region Native Methods

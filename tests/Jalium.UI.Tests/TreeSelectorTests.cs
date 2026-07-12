@@ -469,8 +469,8 @@ public class TreeSelectorTests
             object[]? capturedRemoved = null;
             selector.SelectionChanged += (_, e) =>
             {
-                capturedAdded = e.AddedItems.ToArray();
-                capturedRemoved = e.RemovedItems.ToArray();
+                capturedAdded = e.AddedItems.Cast<object>().ToArray();
+                capturedRemoved = e.RemovedItems.Cast<object>().ToArray();
             };
 
             selector.HandleItemActivated(a, isCtrlPressed: false, isShiftPressed: false);
@@ -502,7 +502,7 @@ public class TreeSelectorTests
             host.Measure(new Size(320, 200));
             host.Arrange(new Rect(0, 0, 320, 200));
 
-            var peer = new Jalium.UI.Controls.Automation.TreeSelectorItemAutomationPeer(item);
+            var peer = new Jalium.UI.Automation.Peers.TreeSelectorItemAutomationPeer(item);
             Assert.Equal(Jalium.UI.Automation.ExpandCollapseState.Collapsed, peer.ExpandCollapseState);
 
             peer.Expand();

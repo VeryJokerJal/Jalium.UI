@@ -39,6 +39,64 @@ public class HotReloadRuntimeFixTests
     }
 
     [Fact]
+    public void ContentControl_IncompatibleElementReplacement_ReleasesSourceOwnershipBeforeGraft()
+    {
+        var target = (UserControl)XamlReader.Parse(
+            $"""
+            <UserControl xmlns="{Pres}">
+                <Border />
+            </UserControl>
+            """);
+        var original = Assert.IsType<Border>(target.Content);
+        HotReloadRuntime.RegisterComponent(target);
+
+        var result = HotReloadRuntime.ApplyPatch(
+            typeof(UserControl).FullName!, "f.jalxaml",
+            $"""
+            <UserControl xmlns="{Pres}">
+                <TextBlock Text="replacement" />
+            </UserControl>
+            """);
+
+        Assert.Equal(0, result.FailedElements);
+        var replacement = Assert.IsType<TextBlock>(target.Content);
+        Assert.Equal("replacement", replacement.Text);
+        Assert.Same(target, replacement.Parent);
+        Assert.Null(original.Parent);
+    }
+
+    [Fact]
+    public void HeaderedContentControl_IncompatibleHeaderReplacement_ReleasesSourceOwnershipBeforeGraft()
+    {
+        var target = (GroupBox)XamlReader.Parse(
+            $"""
+            <GroupBox xmlns="{Pres}">
+                <GroupBox.Header>
+                    <Border />
+                </GroupBox.Header>
+            </GroupBox>
+            """);
+        var original = Assert.IsType<Border>(target.Header);
+        HotReloadRuntime.RegisterComponent(target);
+
+        var result = HotReloadRuntime.ApplyPatch(
+            typeof(GroupBox).FullName!, "f.jalxaml",
+            $"""
+            <GroupBox xmlns="{Pres}">
+                <GroupBox.Header>
+                    <TextBlock Text="replacement header" />
+                </GroupBox.Header>
+            </GroupBox>
+            """);
+
+        Assert.Equal(0, result.FailedElements);
+        var replacement = Assert.IsType<TextBlock>(target.Header);
+        Assert.Equal("replacement header", replacement.Text);
+        Assert.Same(target, replacement.Parent);
+        Assert.Null(original.Parent);
+    }
+
+    [Fact]
     public void F1_MultiInstance_EachInstanceKeepsOwnChildren_NoSteal()
     {
         // 两个同类实例，patch 做结构改动（加一个子级，走 fallback）。修复前同一棵 parsed 源树被复用，

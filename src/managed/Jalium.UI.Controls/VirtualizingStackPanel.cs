@@ -2,6 +2,8 @@ using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Virtualization;
 
+using Jalium.UI.Media;
+
 namespace Jalium.UI.Controls;
 
 /// <summary>
@@ -10,6 +12,10 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 {
+    protected internal override bool HasLogicalOrientation => true;
+
+    protected internal override Orientation LogicalOrientation => Orientation;
+
     #region Dependency Properties
 
     /// <summary>
@@ -142,6 +148,81 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     {
         get => GetScrollUnit(GetOwner());
         set => SetScrollUnit(this, value);
+    }
+
+    #endregion
+
+    #region Cleanup Routed Event
+
+    /// <summary>
+    /// Identifies the attached event raised before a realized item is virtualized away.
+    /// </summary>
+    public static readonly RoutedEvent CleanUpVirtualizedItemEvent =
+        EventManager.RegisterRoutedEvent(
+            "CleanUpVirtualizedItemEvent",
+            RoutingStrategy.Direct,
+            typeof(CleanUpVirtualizedItemEventHandler),
+            typeof(VirtualizingStackPanel));
+
+    /// <summary>Adds a handler for <see cref="CleanUpVirtualizedItemEvent"/>.</summary>
+    public static void AddCleanUpVirtualizedItemHandler(
+        DependencyObject element,
+        CleanUpVirtualizedItemEventHandler handler) =>
+        AddAttachedHandler(element, handler);
+
+    /// <summary>Removes a handler for <see cref="CleanUpVirtualizedItemEvent"/>.</summary>
+    public static void RemoveCleanUpVirtualizedItemHandler(
+        DependencyObject element,
+        CleanUpVirtualizedItemEventHandler handler) =>
+        RemoveAttachedHandler(element, handler);
+
+    private static void AddAttachedHandler(DependencyObject element, Delegate handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+
+        switch (element)
+        {
+            case UIElement uiElement:
+                uiElement.AddHandler(CleanUpVirtualizedItemEvent, handler);
+                break;
+            case ContentElement contentElement:
+                contentElement.AddHandler(CleanUpVirtualizedItemEvent, handler);
+                break;
+            case UIElement3D uiElement3D:
+                uiElement3D.AddHandler(CleanUpVirtualizedItemEvent, handler);
+                break;
+            default:
+                throw new ArgumentException("The element must support routed events.", nameof(element));
+        }
+    }
+
+    private static void RemoveAttachedHandler(DependencyObject element, Delegate handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+
+        switch (element)
+        {
+            case UIElement uiElement:
+                uiElement.RemoveHandler(CleanUpVirtualizedItemEvent, handler);
+                break;
+            case ContentElement contentElement:
+                contentElement.RemoveHandler(CleanUpVirtualizedItemEvent, handler);
+                break;
+            case UIElement3D uiElement3D:
+                uiElement3D.RemoveHandler(CleanUpVirtualizedItemEvent, handler);
+                break;
+            default:
+                throw new ArgumentException("The element must support routed events.", nameof(element));
+        }
+    }
+
+    /// <summary>Raises the cleanup event on the owning <see cref="ItemsControl"/>.</summary>
+    protected virtual void OnCleanUpVirtualizedItem(CleanUpVirtualizedItemEventArgs e)
+    {
+        var owner = ItemsOwner ?? ItemsControl.GetItemsOwner(this);
+        owner?.RaiseEvent(e);
     }
 
     #endregion
@@ -352,9 +433,9 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     /// </summary>
     public Rect MakeVisible(Visual visual, Rect rectangle)
     {
-        if (ItemContainerGenerator != null && visual is DependencyObject container)
+        if (Generator != null && visual is DependencyObject container)
         {
-            var index = ItemContainerGenerator.IndexFromContainer(container);
+            var index = Generator.IndexFromContainer(container);
             if (index >= 0)
             {
                 BringIndexIntoView(index);
@@ -367,6 +448,9 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     #endregion
 
     #region Layout
+
+    /// <inheritdoc />
+    protected override bool CanHierarchicallyScrollAndVirtualizeCore => true;
 
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
@@ -415,7 +499,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         var itemCount = GetItemCount();
         EnsureHeightIndex(itemCount);
 
-        _viewport = CoerceViewport(availableSize);
+        SetViewport(CoerceViewport(availableSize));
         var viewportAxisSize = GetAxisSize(_viewport);
 
         if (itemCount == 0)
@@ -435,7 +519,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 
         // Re-resolve the requested offset (which may be the +Infinity scroll-to-end sentinel) against
         // the live extent for this pass's window math, then commit it.
-        _computedOffset = CoerceOffset(_requestedOffset);
+        SetComputedOffset(CoerceOffset(_requestedOffset));
         var windowStartOffset = Math.Max(0, _computedOffset - cacheBefore);
         var windowEndOffset = _computedOffset + viewportAxisSize + cacheAfter;
 
@@ -507,8 +591,8 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
             return ArrangeNonVirtualized(finalSize);
         }
 
-        _viewport = CoerceViewport(finalSize);
-        _computedOffset = CoerceOffset(_computedOffset);
+        SetViewport(CoerceViewport(finalSize));
+        SetComputedOffset(CoerceOffset(_computedOffset));
 
         // SortedList iterates in key order — no allocation needed
         for (int i = 0; i < _realizedContainers.Count; i++)
@@ -594,7 +678,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     #region Virtualization Support
 
     /// <inheritdoc />
-    protected override void BringIndexIntoViewOverride(int index)
+    protected internal override void BringIndexIntoView(int index)
     {
         var itemCount = GetItemCount();
         if (index < 0 || index >= itemCount)
@@ -764,7 +848,70 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
                 break;
         }
 
-        InvalidateMeasure();
+        if (ShouldItemsChangeAffectLayoutCore(true, args))
+        {
+            InvalidateMeasure();
+        }
+        else
+        {
+            // WPF avoids a full layout pass for mutations strictly beyond a full realized
+            // viewport. Keep the scroll metrics current using the already-updated height index.
+            UpdateExtent(itemCount, _viewport);
+            CommitComputedOffset(_requestedOffset);
+            ScrollOwner?.InvalidateScrollInfo();
+        }
+    }
+
+    /// <inheritdoc />
+    protected override bool ShouldItemsChangeAffectLayoutCore(
+        bool areItemChangesLocal,
+        ItemsChangedEventArgs args)
+    {
+        if (!ShouldVirtualize() || !areItemChangesLocal || args == null ||
+            _currentWindow.IsEmpty || GetViewportAxisSize() <= 0 ||
+            GetSpacedExtent() <= GetViewportAxisSize() + 0.01)
+        {
+            return true;
+        }
+
+        int generatedEndExclusive = _currentWindow.EndIndex + 1;
+        int startIndex = ResolveChangeIndex(args.ItemIndex, args.Position);
+        if (startIndex < 0)
+        {
+            return true;
+        }
+
+        return args.Action switch
+        {
+            NotifyCollectionChangedAction.Remove =>
+                args.ItemUICount > 0 || startIndex < generatedEndExclusive,
+            NotifyCollectionChangedAction.Replace => args.ItemUICount > 0,
+            NotifyCollectionChangedAction.Add => startIndex < generatedEndExclusive,
+            NotifyCollectionChangedAction.Move =>
+                ShouldMoveAffectLayout(args, startIndex, generatedEndExclusive),
+            _ => true
+        };
+    }
+
+    private bool ShouldMoveAffectLayout(
+        ItemsChangedEventArgs args,
+        int startIndex,
+        int generatedEndExclusive)
+    {
+        int oldIndex = ResolveChangeIndex(args.OldItemIndex, args.OldPosition);
+        return oldIndex < 0 ||
+               startIndex < generatedEndExclusive ||
+               oldIndex < generatedEndExclusive;
+    }
+
+    private int ResolveChangeIndex(int absoluteIndex, GeneratorPosition position)
+    {
+        if (absoluteIndex >= 0)
+        {
+            return absoluteIndex;
+        }
+
+        return Generator?.IndexFromGeneratorPosition(position) ?? -1;
     }
 
     private void ResetVirtualizationState(int itemCount)
@@ -848,11 +995,29 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     }
 
     /// <inheritdoc />
-    internal override void OnClearChildren()
+    protected override void OnClearChildren()
     {
         base.OnClearChildren();
         _realizedContainers.Clear();
         _currentWindow = RealizationWindow.Empty;
+    }
+
+    /// <inheritdoc />
+    protected override double GetItemOffsetCore(UIElement child)
+    {
+        ArgumentNullException.ThrowIfNull(child);
+        int index = Generator?.IndexFromContainer(child) ?? -1;
+        return index >= 0 ? GetSpacedOffset(index) : 0;
+    }
+
+    /// <summary>Called after the viewport size data changes.</summary>
+    protected virtual void OnViewportSizeChanged(Size oldViewportSize, Size newViewportSize)
+    {
+    }
+
+    /// <summary>Called after the viewport offset data changes.</summary>
+    protected virtual void OnViewportOffsetChanged(Vector oldViewportOffset, Vector newViewportOffset)
+    {
     }
 
     #endregion
@@ -861,12 +1026,12 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 
     private bool ShouldVirtualize()
     {
-        return GetIsVirtualizing(GetOwner()) && ItemContainerGenerator != null;
+        return GetIsVirtualizing(GetOwner()) && Generator != null;
     }
 
     private int GetItemCount()
     {
-        return ItemContainerGenerator?.ItemCount ?? Children.Count;
+        return Generator?.ItemCount ?? Children.Count;
     }
 
     private void EnsureHeightIndex(int itemCount)
@@ -928,12 +1093,12 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
             return existing;
         }
 
-        if (ItemContainerGenerator == null)
+        if (Generator == null)
         {
             return null;
         }
 
-        var container = ItemContainerGenerator.GetOrCreateContainerForIndex(index, out var isNewlyRealized);
+        var container = Generator.GetOrCreateContainerForIndex(index, out var isNewlyRealized);
         if (container is not UIElement child)
         {
             return null;
@@ -941,7 +1106,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 
         if (isNewlyRealized)
         {
-            ItemContainerGenerator.PrepareItemContainer(container);
+            Generator.PrepareItemContainer(container);
         }
 
         _realizedContainers[index] = child;
@@ -1001,7 +1166,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         for (int i = 0; i < _realizedContainers.Count; i++)
         {
             var index = _realizedContainers.Keys[i];
-            if (!window.Contains(index) && GetIsContainerVirtualizable(_realizedContainers.Values[i]))
+            if (!window.Contains(index) && CanCleanUpContainer(_realizedContainers.Values[i]))
             {
                 _recycleBuffer.Add(index);
             }
@@ -1023,18 +1188,29 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 
             _realizedContainers.Remove(index);
 
-            if (ItemContainerGenerator != null)
+            if (Generator != null)
             {
                 if (isRecycling)
                 {
-                    ItemContainerGenerator.RecycleIndex(index);
+                    Generator.RecycleIndex(index);
                 }
                 else
                 {
-                    ItemContainerGenerator.RemoveIndex(index);
+                    Generator.RemoveIndex(index);
                 }
             }
         }
+    }
+
+    private bool CanCleanUpContainer(UIElement child)
+    {
+        var args = new CleanUpVirtualizedItemEventArgs(Generator?.ItemFromContainer(child)!, child)
+        {
+            Source = this
+        };
+        args.SetOriginalSource(this);
+        OnCleanUpVirtualizedItem(args);
+        return !args.Cancel && GetIsContainerVirtualizable(child);
     }
 
     private void ClearRealizedContainers(bool recycle)
@@ -1050,15 +1226,15 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         {
             var index = _realizedContainers.Keys[i];
 
-            if (ItemContainerGenerator != null)
+            if (Generator != null)
             {
                 if (isRecycling)
                 {
-                    ItemContainerGenerator.RecycleIndex(index);
+                    Generator.RecycleIndex(index);
                 }
                 else
                 {
-                    ItemContainerGenerator.RemoveIndex(index);
+                    Generator.RemoveIndex(index);
                 }
             }
         }
@@ -1102,10 +1278,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         // COMMIT synchronously so HorizontalOffset/VerticalOffset read back the coerced value in the
         // same call — this preserves Jalium's synchronous-pull ScrollViewer / smooth-scroll / inertia
         // / drag-coalesce contract (which all read the offset immediately after the setter).
-        if (Math.Abs(coerced - _computedOffset) > 0.01)
-        {
-            _computedOffset = coerced;
-        }
+        SetComputedOffset(coerced);
 
         InvalidateMeasure();
     }
@@ -1145,12 +1318,45 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     private void CommitComputedOffset(double requested)
     {
         var coerced = CoerceOffset(requested);
-        if (Math.Abs(coerced - _computedOffset) > 0.01)
+        if (SetComputedOffset(coerced))
         {
-            _computedOffset = coerced;
             ScrollOwner?.InvalidateScrollInfo();
         }
     }
+
+    private void SetViewport(Size viewport)
+    {
+        Size oldViewport = _viewport;
+        _viewport = viewport;
+        if (!AreClose(oldViewport.Width, viewport.Width) ||
+            !AreClose(oldViewport.Height, viewport.Height))
+        {
+            OnViewportSizeChanged(oldViewport, viewport);
+        }
+    }
+
+    private bool SetComputedOffset(double offset)
+    {
+        double oldOffset = _computedOffset;
+        _computedOffset = offset;
+        if (AreClose(oldOffset, offset))
+        {
+            return false;
+        }
+
+        OnViewportOffsetChanged(
+            GetViewportOffsetVector(oldOffset),
+            GetViewportOffsetVector(offset));
+        return true;
+    }
+
+    private Vector GetViewportOffsetVector(double axisOffset) =>
+        Orientation == Orientation.Vertical
+            ? new Vector(0, axisOffset)
+            : new Vector(axisOffset, 0);
+
+    private static bool AreClose(double left, double right) =>
+        Math.Abs(left - right) <= 0.01;
 
     private void UpdateExtent(int itemCount, Size availableSize)
     {
@@ -1257,14 +1463,14 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         if (Orientation == Orientation.Vertical)
         {
             _extent = new Size(cross, axis);
-            _viewport = CoerceViewport(availableSize);
-            _computedOffset = CoerceOffset(_requestedOffset);
+            SetViewport(CoerceViewport(availableSize));
+            SetComputedOffset(CoerceOffset(_requestedOffset));
             return new Size(cross, Math.Min(axis, availableSize.Height));
         }
 
         _extent = new Size(axis, cross);
-        _viewport = CoerceViewport(availableSize);
-        _computedOffset = CoerceOffset(_requestedOffset);
+        SetViewport(CoerceViewport(availableSize));
+        SetComputedOffset(CoerceOffset(_requestedOffset));
         return new Size(Math.Min(axis, availableSize.Width), cross);
     }
 
@@ -1308,134 +1514,4 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     #endregion
 }
 
-// VirtualizationMode and ScrollUnit enums are defined in VirtualizingPanel.cs
-
-#region Supporting Types
-
-/// <summary>
-/// Provides scroll information for panels.
-/// </summary>
-public interface IScrollInfo
-{
-    /// <summary>
-    /// Gets or sets whether the panel can scroll horizontally.
-    /// </summary>
-    bool CanHorizontallyScroll { get; set; }
-
-    /// <summary>
-    /// Gets or sets whether the panel can scroll vertically.
-    /// </summary>
-    bool CanVerticallyScroll { get; set; }
-
-    /// <summary>
-    /// Gets the horizontal extent.
-    /// </summary>
-    double ExtentWidth { get; }
-
-    /// <summary>
-    /// Gets the vertical extent.
-    /// </summary>
-    double ExtentHeight { get; }
-
-    /// <summary>
-    /// Gets the horizontal viewport size.
-    /// </summary>
-    double ViewportWidth { get; }
-
-    /// <summary>
-    /// Gets the vertical viewport size.
-    /// </summary>
-    double ViewportHeight { get; }
-
-    /// <summary>
-    /// Gets the horizontal offset.
-    /// </summary>
-    double HorizontalOffset { get; }
-
-    /// <summary>
-    /// Gets the vertical offset.
-    /// </summary>
-    double VerticalOffset { get; }
-
-    /// <summary>
-    /// Gets or sets the scroll owner.
-    /// </summary>
-    ScrollViewer? ScrollOwner { get; set; }
-
-    /// <summary>
-    /// Scrolls up by one line.
-    /// </summary>
-    void LineUp();
-
-    /// <summary>
-    /// Scrolls down by one line.
-    /// </summary>
-    void LineDown();
-
-    /// <summary>
-    /// Scrolls left by one line.
-    /// </summary>
-    void LineLeft();
-
-    /// <summary>
-    /// Scrolls right by one line.
-    /// </summary>
-    void LineRight();
-
-    /// <summary>
-    /// Scrolls up by one page.
-    /// </summary>
-    void PageUp();
-
-    /// <summary>
-    /// Scrolls down by one page.
-    /// </summary>
-    void PageDown();
-
-    /// <summary>
-    /// Scrolls left by one page.
-    /// </summary>
-    void PageLeft();
-
-    /// <summary>
-    /// Scrolls right by one page.
-    /// </summary>
-    void PageRight();
-
-    /// <summary>
-    /// Handles mouse wheel up.
-    /// </summary>
-    void MouseWheelUp();
-
-    /// <summary>
-    /// Handles mouse wheel down.
-    /// </summary>
-    void MouseWheelDown();
-
-    /// <summary>
-    /// Handles mouse wheel left.
-    /// </summary>
-    void MouseWheelLeft();
-
-    /// <summary>
-    /// Handles mouse wheel right.
-    /// </summary>
-    void MouseWheelRight();
-
-    /// <summary>
-    /// Sets the horizontal offset.
-    /// </summary>
-    void SetHorizontalOffset(double offset);
-
-    /// <summary>
-    /// Sets the vertical offset.
-    /// </summary>
-    void SetVerticalOffset(double offset);
-
-    /// <summary>
-    /// Makes a visual visible.
-    /// </summary>
-    Rect MakeVisible(Visual visual, Rect rectangle);
-}
-
-#endregion
+// VirtualizationMode and ScrollUnit enums are defined in VirtualizingPanel.cs.

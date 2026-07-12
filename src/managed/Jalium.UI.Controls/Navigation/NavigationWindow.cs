@@ -1,16 +1,20 @@
+using System.Collections;
+using Jalium.UI.Controls;
+using Jalium.UI.Markup;
 using Jalium.UI.Media;
 
-namespace Jalium.UI.Controls.Navigation;
+namespace Jalium.UI.Navigation;
 
 /// <summary>
 /// A Window that supports content navigation within a single window.
 /// </summary>
-public class NavigationWindow : Window
+public class NavigationWindow : Window, IUriContext
 {
+    private Uri? _baseUri;
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.NavigationWindowAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.NavigationWindowAutomationPeer(this);
     }
 
     private NavigationService? _navigationService;
@@ -41,6 +45,27 @@ public class NavigationWindow : Window
     public static readonly DependencyProperty SandboxExternalContentProperty =
         DependencyProperty.Register(nameof(SandboxExternalContent), typeof(bool), typeof(NavigationWindow),
             new PropertyMetadata(false));
+
+    private static readonly DependencyPropertyKey CanGoBackPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(CanGoBack), typeof(bool), typeof(NavigationWindow), new PropertyMetadata(false));
+
+    private static readonly DependencyPropertyKey CanGoForwardPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(CanGoForward), typeof(bool), typeof(NavigationWindow), new PropertyMetadata(false));
+
+    private static readonly DependencyPropertyKey BackStackPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(BackStack), typeof(IEnumerable), typeof(NavigationWindow), new PropertyMetadata(null));
+
+    private static readonly DependencyPropertyKey ForwardStackPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(ForwardStack), typeof(IEnumerable), typeof(NavigationWindow), new PropertyMetadata(null));
+
+    public static readonly DependencyProperty CanGoBackProperty = CanGoBackPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty CanGoForwardProperty = CanGoForwardPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty BackStackProperty = BackStackPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty ForwardStackProperty = ForwardStackPropertyKey.DependencyProperty;
 
     #endregion
 
@@ -84,27 +109,35 @@ public class NavigationWindow : Window
     /// <summary>
     /// Gets a value that indicates whether there is at least one entry in back navigation history.
     /// </summary>
-    public bool CanGoBack => NavigationService.CanGoBack;
+    public bool CanGoBack => (bool)(GetValue(CanGoBackProperty) ?? false);
 
     /// <summary>
     /// Gets a value that indicates whether there is at least one entry in forward navigation history.
     /// </summary>
-    public bool CanGoForward => NavigationService.CanGoForward;
+    public bool CanGoForward => (bool)(GetValue(CanGoForwardProperty) ?? false);
 
     /// <summary>
     /// Gets an IEnumerable that can be used to enumerate the entries in back navigation history.
     /// </summary>
-    public IEnumerable<JournalEntry> BackStack => NavigationService.BackStack;
+    public IEnumerable BackStack =>
+        (IEnumerable?)GetValue(BackStackProperty) ?? Array.Empty<JournalEntry>();
 
     /// <summary>
     /// Gets an IEnumerable that can be used to enumerate the entries in forward navigation history.
     /// </summary>
-    public IEnumerable<JournalEntry> ForwardStack => NavigationService.ForwardStack;
+    public IEnumerable ForwardStack =>
+        (IEnumerable?)GetValue(ForwardStackProperty) ?? Array.Empty<JournalEntry>();
 
     /// <summary>
     /// Gets the URI of the content that was last navigated to.
     /// </summary>
     public Uri? CurrentSource => NavigationService.CurrentSource;
+
+    Uri? IUriContext.BaseUri
+    {
+        get => _baseUri;
+        set => _baseUri = value;
+    }
 
     #endregion
 
@@ -122,6 +155,9 @@ public class NavigationWindow : Window
     {
         // Create internal frame for content hosting
         _frame = new Frame();
+
+        _navigationService = CreateNavigationService();
+        UpdateJournalProperties();
 
         // Set the frame as the window content
         base.Content = CreateNavigationChrome(_frame);
@@ -147,6 +183,25 @@ public class NavigationWindow : Window
         }
     }
 
+    /// <inheritdoc />
+    protected override void AddChild(object value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        Navigate(value);
+    }
+
+    /// <inheritdoc />
+    protected override void AddText(string text)
+    {
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            throw new ArgumentException("NavigationWindow cannot contain non-whitespace text.", nameof(text));
+        }
+    }
+
+    /// <inheritdoc />
+    public override bool ShouldSerializeContent() => Source is null && Content is not null;
+
     #endregion
 
     #region Navigation Methods
@@ -158,7 +213,9 @@ public class NavigationWindow : Window
     /// <returns>True if navigation is not canceled; otherwise, false.</returns>
     public bool Navigate(Uri source)
     {
-        return NavigationService.Navigate(source);
+        bool navigated = NavigationService.Navigate(source);
+        UpdateJournalProperties();
+        return navigated;
     }
 
     /// <summary>
@@ -169,7 +226,9 @@ public class NavigationWindow : Window
     /// <returns>True if navigation is not canceled; otherwise, false.</returns>
     public bool Navigate(Uri source, object? extraData)
     {
-        return NavigationService.Navigate(source, extraData);
+        bool navigated = NavigationService.Navigate(source, extraData);
+        UpdateJournalProperties();
+        return navigated;
     }
 
     /// <summary>
@@ -179,7 +238,9 @@ public class NavigationWindow : Window
     /// <returns>True if navigation is not canceled; otherwise, false.</returns>
     public bool Navigate(object content)
     {
-        return NavigationService.Navigate(content);
+        bool navigated = NavigationService.Navigate(content);
+        UpdateJournalProperties();
+        return navigated;
     }
 
     /// <summary>
@@ -190,7 +251,9 @@ public class NavigationWindow : Window
     /// <returns>True if navigation is not canceled; otherwise, false.</returns>
     public bool Navigate(object content, object? extraData)
     {
-        return NavigationService.Navigate(content, extraData);
+        bool navigated = NavigationService.Navigate(content, extraData);
+        UpdateJournalProperties();
+        return navigated;
     }
 
     /// <summary>
@@ -199,6 +262,7 @@ public class NavigationWindow : Window
     public void GoBack()
     {
         NavigationService.GoBack();
+        UpdateJournalProperties();
     }
 
     /// <summary>
@@ -207,6 +271,7 @@ public class NavigationWindow : Window
     public void GoForward()
     {
         NavigationService.GoForward();
+        UpdateJournalProperties();
     }
 
     /// <summary>
@@ -232,6 +297,7 @@ public class NavigationWindow : Window
     public void AddBackEntry(CustomContentState state)
     {
         NavigationService.AddBackEntry(state);
+        UpdateJournalProperties();
     }
 
     /// <summary>
@@ -240,7 +306,9 @@ public class NavigationWindow : Window
     /// <returns>The most recent JournalEntry in back navigation history.</returns>
     public JournalEntry? RemoveBackEntry()
     {
-        return NavigationService.RemoveBackEntry();
+        JournalEntry? entry = NavigationService.RemoveBackEntry();
+        UpdateJournalProperties();
+        return entry;
     }
 
     #endregion
@@ -250,7 +318,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Occurs when a new navigation is requested.
     /// </summary>
-    public event EventHandler<NavigatingCancelEventArgs>? Navigating
+    public event NavigatingCancelEventHandler? Navigating
     {
         add => NavigationService.Navigating += value;
         remove => NavigationService.Navigating -= value;
@@ -259,7 +327,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Occurs when the content that is being navigated to has been found.
     /// </summary>
-    public event EventHandler<NavigationEventArgs>? Navigated
+    public event NavigatedEventHandler? Navigated
     {
         add => NavigationService.Navigated += value;
         remove => NavigationService.Navigated -= value;
@@ -268,7 +336,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Occurs when an error is raised while navigating to the requested content.
     /// </summary>
-    public event EventHandler<NavigationFailedEventArgs>? NavigationFailed
+    public event NavigationFailedEventHandler? NavigationFailed
     {
         add => NavigationService.NavigationFailed += value;
         remove => NavigationService.NavigationFailed -= value;
@@ -277,7 +345,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Occurs when the content that was navigated to has been loaded.
     /// </summary>
-    public event EventHandler<NavigationEventArgs>? LoadCompleted
+    public event LoadCompletedEventHandler? LoadCompleted
     {
         add => NavigationService.LoadCompleted += value;
         remove => NavigationService.LoadCompleted -= value;
@@ -286,7 +354,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Occurs when the StopLoading method is called.
     /// </summary>
-    public event EventHandler<NavigationEventArgs>? NavigationStopped
+    public event NavigationStoppedEventHandler? NavigationStopped
     {
         add => NavigationService.NavigationStopped += value;
         remove => NavigationService.NavigationStopped -= value;
@@ -295,7 +363,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Occurs periodically during download of content.
     /// </summary>
-    public event EventHandler<NavigationProgressEventArgs>? NavigationProgress
+    public event NavigationProgressEventHandler? NavigationProgress
     {
         add => NavigationService.NavigationProgress += value;
         remove => NavigationService.NavigationProgress -= value;
@@ -304,7 +372,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Occurs when navigation to a content fragment begins.
     /// </summary>
-    public event EventHandler<FragmentNavigationEventArgs>? FragmentNavigation
+    public event FragmentNavigationEventHandler? FragmentNavigation
     {
         add => NavigationService.FragmentNavigation += value;
         remove => NavigationService.FragmentNavigation -= value;
@@ -320,12 +388,23 @@ public class NavigationWindow : Window
 
         // Wire up navigation events
         service.Navigated += OnNavigationServiceNavigated;
+        service.StateChanged += (_, _) => UpdateJournalProperties();
 
         return service;
     }
 
+    private void UpdateJournalProperties()
+    {
+        NavigationService service = NavigationService;
+        SetValue(CanGoBackPropertyKey, service.CanGoBack);
+        SetValue(CanGoForwardPropertyKey, service.CanGoForward);
+        SetValue(BackStackPropertyKey, service.BackStack);
+        SetValue(ForwardStackPropertyKey, service.ForwardStack);
+    }
+
     private void OnNavigationServiceNavigated(object? sender, NavigationEventArgs e)
     {
+        UpdateJournalProperties();
         // Update the frame content
         if (_frame != null)
         {
@@ -442,7 +521,7 @@ public class NavigationWindow : Window
     {
         if (d is NavigationWindow window && e.NewValue is Uri source)
         {
-            window.NavigationService.Navigate(source);
+            window.Navigate(source);
         }
     }
 

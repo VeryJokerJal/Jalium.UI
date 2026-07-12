@@ -1,229 +1,312 @@
-using Jalium.UI;
 using System.Diagnostics;
 
 namespace Jalium.UI.Media.Animation;
 
-/// <summary>
-/// Defines a segment of time over which output values are produced.
-/// </summary>
+/// <summary>Defines a timeline that produces animated values.</summary>
 public abstract class AnimationTimeline : Timeline, IAnimationTimeline
 {
-    /// <summary>
-    /// Gets the type of value that this animation produces.
-    /// </summary>
+    public static readonly DependencyProperty IsAdditiveProperty =
+        DependencyProperty.Register(
+            "IsAdditive",
+            typeof(bool),
+            typeof(AnimationTimeline),
+            new PropertyMetadata(false));
+
+    public static readonly DependencyProperty IsCumulativeProperty =
+        DependencyProperty.Register(
+            "IsCumulative",
+            typeof(bool),
+            typeof(AnimationTimeline),
+            new PropertyMetadata(false));
+
     public abstract Type TargetPropertyType { get; }
 
-    /// <summary>
-    /// Gets the fill behavior as the core interface type.
-    /// </summary>
+    public virtual bool IsDestinationDefault => false;
+
     AnimationFillBehavior IAnimationTimeline.AnimationFillBehavior =>
-        FillBehavior == FillBehavior.HoldEnd ? AnimationFillBehavior.HoldEnd : AnimationFillBehavior.Stop;
+        FillBehavior == FillBehavior.HoldEnd
+            ? AnimationFillBehavior.HoldEnd
+            : AnimationFillBehavior.Stop;
 
-    /// <summary>
-    /// Gets the current animated value.
-    /// </summary>
-    public abstract object GetCurrentValue(object defaultOriginValue, object defaultDestinationValue, AnimationClock animationClock);
-
-    /// <summary>
-    /// Gets the current animated value using the interface clock type.
-    /// </summary>
-    object IAnimationTimeline.GetCurrentValue(object defaultOriginValue, object defaultDestinationValue, IAnimationClock clock)
+    public virtual object GetCurrentValue(
+        object defaultOriginValue,
+        object defaultDestinationValue,
+        AnimationClock animationClock)
     {
-        if (clock is AnimationClock animClock)
+        ArgumentNullException.ThrowIfNull(defaultOriginValue);
+        ArgumentNullException.ThrowIfNull(defaultDestinationValue);
+        ArgumentNullException.ThrowIfNull(animationClock);
+        throw new NotSupportedException($"{GetType().Name} must override GetCurrentValue.");
+    }
+
+    object IAnimationTimeline.GetCurrentValue(
+        object defaultOriginValue,
+        object defaultDestinationValue,
+        IAnimationClock clock)
+    {
+        if (clock is not AnimationClock animationClock)
         {
-            return GetCurrentValue(defaultOriginValue, defaultDestinationValue, animClock);
+            throw new ArgumentException("Clock must be an AnimationClock.", nameof(clock));
         }
-        throw new ArgumentException("Clock must be an AnimationClock", nameof(clock));
+
+        return GetCurrentValue(defaultOriginValue, defaultDestinationValue, animationClock);
     }
 
+    public new AnimationClock CreateClock() =>
+        (AnimationClock)base.CreateClock(hasControllableRoot: false);
+
+    IAnimationClock IAnimationTimeline.CreateClock() => CreateClock();
+
+    public new AnimationTimeline Clone() => (AnimationTimeline)base.Clone();
+
     /// <summary>
-    /// Creates a clock for this timeline.
+    /// Replaces a child Freezable owned by a concrete animation while preserving
+    /// the inheritance-context, change-notification, and frozen-object rules.
     /// </summary>
-    public IAnimationClock CreateClock()
+    protected void ReplaceAnimationChild<TFreezable>(ref TFreezable storage, TFreezable value)
+        where TFreezable : Freezable
     {
-        return new AnimationClock(this);
+        ArgumentNullException.ThrowIfNull(value);
+        WritePreamble();
+        if (ReferenceEquals(storage, value))
+        {
+            return;
+        }
+
+        OnFreezablePropertyChanged(storage, value);
+        storage = value;
+        WritePostscript();
     }
 
-    /// <summary>
-    /// Gets whether this animation is additive.
-    /// </summary>
-    public virtual bool IsAdditive => false;
+    protected internal override Clock AllocateClock() => new AnimationClock(this);
 
-    /// <summary>
-    /// Gets whether this animation is cumulative.
-    /// </summary>
-    public virtual bool IsCumulative => false;
+    protected override Duration GetNaturalDurationCore(Clock clock) =>
+        new(TimeSpan.FromSeconds(1));
 }
 
-/// <summary>
-/// Provides a base class for animations that animate a specific type.
-/// </summary>
+/// <summary>Base class for strongly typed animation timelines.</summary>
 public abstract class AnimationTimeline<T> : AnimationTimeline
 {
-    /// <summary>
-    /// Gets the target property type.
-    /// </summary>
     public override Type TargetPropertyType => typeof(T);
 
-    /// <summary>
-    /// Gets the current animated value.
-    /// </summary>
-    public override object GetCurrentValue(object defaultOriginValue, object defaultDestinationValue, AnimationClock animationClock)
+    public override object GetCurrentValue(
+        object defaultOriginValue,
+        object defaultDestinationValue,
+        AnimationClock animationClock)
     {
-        var result = GetCurrentValueCore(
+        ArgumentNullException.ThrowIfNull(animationClock);
+        return GetCurrentValueCore(
             (T)defaultOriginValue,
             (T)defaultDestinationValue,
-            animationClock);
-        return result!;
+            animationClock)!;
     }
 
-    /// <summary>
-    /// Gets the current animated value of type T.
-    /// </summary>
-    protected abstract T GetCurrentValueCore(T defaultOriginValue, T defaultDestinationValue, AnimationClock animationClock);
+    protected abstract T GetCurrentValueCore(
+        T defaultOriginValue,
+        T defaultDestinationValue,
+        AnimationClock animationClock);
 }
 
-/// <summary>
-/// Represents a clock that controls an animation timeline.
-/// </summary>
-public sealed class AnimationClock : IAnimationClock
+/// <summary>Represents the runtime clock for an <see cref="AnimationTimeline"/>.</summary>
+public sealed class AnimationClock : Clock, IAnimationClock
 {
-    private readonly Timeline _timeline;
-    // High-resolution monotonic timestamps (Stopwatch ticks). DateTime.Now has only
-    // ~15.6ms resolution on Windows → animation time quantizes into 15.6ms steps →
-    // visible micro-stutter/judder regardless of frame rate. Stopwatch is sub-µs and
-    // monotonic (immune to wall-clock adjustments).
+    private readonly AnimationTimeline _animation;
     private long _startTime;
     private long _firstStartTime;
     private bool _isRunning;
     private double _currentProgress;
-    private bool _isReversing;
-    private int _repeatCount;
     private bool _isPaused;
     private long _pauseTimestamp;
-    // Completion is an independent terminal state rather than derived from
-    // !_isRunning: FillBehavior.Stop must freeze progress at 0 on the completion
-    // frame, and only an explicit flag lets Tick return before the tail
-    // progress recomputation overwrites it.
     private bool _isCompleted;
 
-    /// <summary>
-    /// Creates a new animation clock for the specified timeline.
-    /// </summary>
-    public AnimationClock(Timeline timeline)
+#pragma warning disable CS0628 // WPF exposes this protected-internal constructor on the sealed AnimationClock type.
+    protected internal AnimationClock(AnimationTimeline animation)
+        : base(animation ?? throw new ArgumentNullException(nameof(animation)))
     {
-        _timeline = timeline;
+        _animation = animation;
+    }
+#pragma warning restore CS0628
+
+    /// <summary>
+    /// Compatibility constructor for existing Jalium call sites whose static
+    /// type is <see cref="Timeline"/>. WPF's contract constructor above remains
+    /// the exact AnimationTimeline overload.
+    /// </summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public AnimationClock(Timeline timeline)
+        : this(timeline as AnimationTimeline
+            ?? throw new ArgumentException("An AnimationClock requires an AnimationTimeline.", nameof(timeline)))
+    {
     }
 
-    /// <summary>
-    /// Gets the timeline associated with this clock.
-    /// </summary>
-    public Timeline Timeline => _timeline;
+    public new AnimationTimeline Timeline => _animation;
 
-    /// <summary>
-    /// Gets the timeline as the interface type.
-    /// </summary>
-    IAnimationTimeline? IAnimationClock.Timeline => _timeline as IAnimationTimeline;
+    IAnimationTimeline IAnimationClock.Timeline => _animation;
 
-    /// <summary>
-    /// Gets the current progress of the animation (0.0 to 1.0).
-    /// </summary>
-    public double CurrentProgress => _currentProgress;
+    public new double CurrentProgress => _currentProgress;
 
-    /// <summary>
-    /// Gets the current time of the animation.
-    /// </summary>
-    public TimeSpan? CurrentTime { get; private set; }
-
-    /// <summary>
-    /// Gets whether this clock is currently running. Stays <see langword="false"/>
-    /// while paused (conservative compatibility with the previous implementation,
-    /// where Pause simply cleared the running flag).
-    /// </summary>
     public bool IsRunning => _isRunning;
 
-    /// <summary>
-    /// Gets or sets the controller for this clock.
-    /// </summary>
-    public ClockController? Controller { get; set; }
-
-    /// <summary>
-    /// Occurs when the animation completes.
-    /// </summary>
-    public event EventHandler? Completed;
-
-    /// <summary>
-    /// Gets whether the clock is paused.
-    /// </summary>
     bool IAnimationClock.IsPaused => _isPaused;
 
-    /// <summary>
-    /// Gets whether the clock has finished its active period. A clock that was
-    /// stopped externally (never to be ticked again) also reports completed so
-    /// frame drivers drop it; a paused or start-pending clock does not.
-    /// </summary>
     bool IAnimationClock.IsCompleted => _isCompleted || (!_isRunning && !_isPaused);
 
-    /// <summary>
-    /// Starts the animation using the unified frame timestamp when inside a
-    /// frame (all animations started in the same frame share one t0).
-    /// </summary>
-    public void Begin()
-    {
-        BeginAt(Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow);
-    }
+    public object GetCurrentValue(object defaultOriginValue, object defaultDestinationValue) =>
+        _animation.GetCurrentValue(defaultOriginValue, defaultDestinationValue, this);
+
+    public void Begin() => BeginAt(Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow);
 
     void IAnimationClock.BeginAt(long frameTimestamp) => BeginAt(frameTimestamp);
 
-    /// <summary>
-    /// Starts the animation at an explicit start timestamp (Stopwatch ticks).
-    /// </summary>
     internal void BeginAt(long timestamp)
     {
+        ClockState oldState = CurrentState;
         _startTime = timestamp;
-        if (_timeline.BeginTime.HasValue)
+        if (_animation.BeginTime.HasValue)
         {
-            // BeginTime delays the start: shift the start timestamp into the future so
-            // elapsed stays negative until the delay passes (same as old DateTime.Add).
-            _startTime += (long)(_timeline.BeginTime.Value.TotalSeconds * Stopwatch.Frequency);
+            _startTime += (long)(_animation.BeginTime.Value.TotalSeconds * Stopwatch.Frequency);
         }
+
         _firstStartTime = _startTime;
         _isRunning = true;
-        _currentProgress = 0;
-        _isReversing = false;
-        _repeatCount = 0;
+        _currentProgress = 0d;
+        base.CurrentProgress = 0d;
+        CurrentTime = null;
+        CurrentIteration = null;
+        IsPaused = false;
         _isPaused = false;
         _isCompleted = false;
+        CurrentState = ClockState.Stopped;
+
+        if (oldState != CurrentState)
+        {
+            RaiseCurrentStateInvalidated();
+        }
+        RaiseCurrentTimeInvalidated();
+        RaiseCurrentGlobalSpeedInvalidated();
     }
 
-    /// <summary>
-    /// Stops the animation.
-    /// </summary>
-    public void Stop()
+    public void Stop() => ControllerStop();
+
+    public void Pause() => ControllerPause();
+
+    public void Resume() => ControllerResume();
+
+    public void Seek(TimeSpan offset, TimeSeekOrigin origin) => SeekCore(offset, origin);
+
+    void IAnimationClock.Seek(TimeSpan offset, AnimationSeekOrigin origin) =>
+        SeekCore(
+            offset,
+            origin == AnimationSeekOrigin.Duration
+                ? TimeSeekOrigin.Duration
+                : TimeSeekOrigin.BeginTime);
+
+    public void Tick() => Tick(Stopwatch.GetTimestamp());
+
+    public void Tick(long frameTimestamp)
     {
-        _isRunning = false;
-        _isPaused = false;
+        if (!_isRunning || _isPaused || _isCompleted)
+        {
+            return;
+        }
+
+        if (frameTimestamp < _firstStartTime)
+        {
+            CurrentState = ClockState.Stopped;
+            CurrentTime = null;
+            CurrentIteration = null;
+            _currentProgress = 0d;
+            base.CurrentProgress = 0d;
+            return;
+        }
+
+        if (CurrentState != ClockState.Active)
+        {
+            CurrentState = ClockState.Active;
+            RaiseCurrentStateInvalidated();
+            RaiseCurrentGlobalSpeedInvalidated();
+        }
+
+        TimeSpan elapsed = Stopwatch.GetElapsedTime(_firstStartTime, frameTimestamp);
+        TimeSpan duration = _animation.Duration.HasTimeSpan
+            ? _animation.Duration.TimeSpan
+            : TimeSpan.FromSeconds(1);
+
+        double effectiveSpeed = Math.Max(0d, _animation.SpeedRatio * AppliedSpeedRatio);
+        double activeTicks = Math.Max(0d, elapsed.Ticks * effectiveSpeed);
+        double simpleTicks = duration.Ticks;
+        if (simpleTicks <= 0d)
+        {
+            CompleteAtProgress(_animation.AutoReverse ? 0d : 1d, TimeSpan.Zero, 1);
+            return;
+        }
+
+        double iterationTicks = simpleTicks * (_animation.AutoReverse ? 2d : 1d);
+        double activeDurationTicks = GetActiveDurationTicks(iterationTicks);
+        bool terminal = !double.IsPositiveInfinity(activeDurationTicks) && activeTicks >= activeDurationTicks;
+        double sampleTicks = terminal ? activeDurationTicks : activeTicks;
+
+        double iterationNumber = sampleTicks / iterationTicks;
+        int iterationIndex;
+        double withinIteration;
+        if (terminal && sampleTicks > 0d && IsWholeNumber(iterationNumber))
+        {
+            iterationIndex = Math.Max(0, (int)Math.Ceiling(iterationNumber) - 1);
+            withinIteration = iterationTicks;
+        }
+        else
+        {
+            iterationIndex = Math.Max(0, (int)Math.Floor(iterationNumber));
+            withinIteration = sampleTicks - iterationIndex * iterationTicks;
+        }
+
+        CurrentIteration = iterationIndex + 1;
+
+        double currentSimpleTicks;
+        if (_animation.AutoReverse && withinIteration > simpleTicks)
+        {
+            currentSimpleTicks = Math.Max(0d, iterationTicks - withinIteration);
+        }
+        else
+        {
+            currentSimpleTicks = Math.Min(simpleTicks, withinIteration);
+        }
+
+        CurrentTime = TimeSpan.FromTicks((long)Math.Round(currentSimpleTicks));
+        double simpleProgress = Math.Clamp(currentSimpleTicks / simpleTicks, 0d, 1d);
+        _currentProgress = ApplyAcceleration(simpleProgress);
+        base.CurrentProgress = _currentProgress;
+        RaiseCurrentTimeInvalidated();
+
+        if (terminal)
+        {
+            CompleteAtProgress(_currentProgress, CurrentTime ?? TimeSpan.Zero, CurrentIteration.Value);
+        }
     }
 
-    /// <summary>
-    /// Pauses the animation. The pause timestamp is recorded so Resume can shift
-    /// the start times by the paused duration and continue from the same point.
-    /// </summary>
-    public void Pause()
+    internal override void ControllerBegin() => Begin();
+
+    internal override void ControllerPause()
     {
-        if (_isPaused || _isCompleted) return;
+        if (_isPaused || _isCompleted || !_isRunning)
+        {
+            return;
+        }
 
         _isPaused = true;
         _isRunning = false;
         _pauseTimestamp = Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow;
+        IsPaused = true;
+        SpeedChanged();
+        RaiseCurrentGlobalSpeedInvalidated();
     }
 
-    /// <summary>
-    /// Resumes a paused animation, compensating for the time spent paused.
-    /// </summary>
-    public void Resume()
+    internal override void ControllerResume()
     {
-        if (!_isPaused) return;
+        if (!_isPaused)
+        {
+            return;
+        }
 
         long now = Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow;
         long delta = now - _pauseTimestamp;
@@ -231,133 +314,132 @@ public sealed class AnimationClock : IAnimationClock
         _firstStartTime += delta;
         _isPaused = false;
         _isRunning = true;
+        IsPaused = false;
+        SpeedChanged();
+        RaiseCurrentGlobalSpeedInvalidated();
     }
 
-    /// <summary>
-    /// Moves the clock to a new position in time by shifting its start timestamp,
-    /// then lets the next tick recompute progress from there. Re-arms a completed
-    /// or paused clock.
-    /// </summary>
-    /// <param name="offset">The seek offset.</param>
-    /// <param name="origin">Whether <paramref name="offset"/> is measured forward
-    /// from the begin time or backward from the end of the duration.</param>
-    public void Seek(TimeSpan offset, TimeSeekOrigin origin)
+    internal override void ControllerSeek(TimeSpan offset, TimeSeekOrigin origin, bool alignedToLastTick) =>
+        SeekCore(offset, origin);
+
+    internal override void ControllerStop()
     {
-        var duration = _timeline.Duration.HasTimeSpan
-            ? _timeline.Duration.TimeSpan
+        _isRunning = false;
+        _isPaused = false;
+        _isCompleted = true;
+        base.ControllerStop();
+    }
+
+    internal override void ControllerSkipToFill()
+    {
+        if (_isCompleted)
+        {
+            return;
+        }
+
+        TimeSpan duration = _animation.Duration.HasTimeSpan
+            ? _animation.Duration.TimeSpan
             : TimeSpan.FromSeconds(1);
+        CompleteAtProgress(_animation.AutoReverse ? 0d : 1d, duration, CurrentIteration ?? 1);
+    }
 
-        var target = origin == TimeSeekOrigin.Duration ? duration - offset : offset;
+    internal override void ControllerRemove()
+    {
+        ControllerStop();
+        RaiseRemoveRequested();
+    }
+
+    private void SeekCore(TimeSpan offset, TimeSeekOrigin origin)
+    {
+        if (!Enum.IsDefined(origin))
+        {
+            throw new ArgumentOutOfRangeException(nameof(origin));
+        }
+
+        TimeSpan duration = _animation.Duration.HasTimeSpan
+            ? _animation.Duration.TimeSpan
+            : TimeSpan.FromSeconds(1);
+        TimeSpan target = origin == TimeSeekOrigin.Duration ? duration - offset : offset;
         long now = Jalium.UI.Animation.AnimationManager.CurrentFrameTimestampOrNow;
-
-        // Timeline time runs at SpeedRatio × wall time, so the wall-clock offset
-        // that produces `target` timeline-time is target / SpeedRatio.
-        double speedRatio = Math.Max(_timeline.SpeedRatio, 1e-9);
+        double speedRatio = Math.Max(_animation.SpeedRatio * AppliedSpeedRatio, 1e-9);
         _startTime = now - (long)(target.TotalSeconds / speedRatio * Stopwatch.Frequency);
-        _isReversing = false;
-        _repeatCount = 0;
+        _firstStartTime = _startTime;
+        CurrentTime = null;
+        CurrentIteration = null;
+        _currentProgress = 0d;
+        base.CurrentProgress = 0d;
         _isCompleted = false;
         _isRunning = true;
         _isPaused = false;
+        IsPaused = false;
+        CurrentState = ClockState.Active;
+        DiscontinuousTimeMovement();
+        RaiseCurrentTimeInvalidated();
+        RaiseCurrentStateInvalidated();
+        RaiseCurrentGlobalSpeedInvalidated();
     }
 
-    void IAnimationClock.Seek(TimeSpan offset, AnimationSeekOrigin origin)
+    private double GetActiveDurationTicks(double iterationTicks)
     {
-        Seek(offset, origin == AnimationSeekOrigin.Duration
-            ? TimeSeekOrigin.Duration
-            : TimeSeekOrigin.BeginTime);
-    }
-
-    /// <summary>
-    /// Updates the animation progress from the current time. Prefer
-    /// <see cref="Tick(long)"/> with the unified frame timestamp.
-    /// </summary>
-    public void Tick()
-    {
-        Tick(Stopwatch.GetTimestamp());
-    }
-
-    /// <summary>
-    /// Updates the animation progress using the unified frame timestamp
-    /// (Stopwatch ticks) shared by every clock ticked in the same frame.
-    /// </summary>
-    public void Tick(long frameTimestamp)
-    {
-        if (!_isRunning || _isPaused || _isCompleted) return;
-
-        var elapsed = Stopwatch.GetElapsedTime(_startTime, frameTimestamp);
-        var duration = _timeline.Duration.HasTimeSpan
-            ? _timeline.Duration.TimeSpan
-            : TimeSpan.FromSeconds(1);
-
-        // Apply speed ratio
-        elapsed = TimeSpan.FromTicks((long)(elapsed.Ticks * _timeline.SpeedRatio));
-
-        CurrentTime = elapsed;
-
-        // Calculate progress
-        var rawProgress = elapsed.TotalMilliseconds / duration.TotalMilliseconds;
-
-        // Handle repeating
-        if (rawProgress >= 1.0)
+        RepeatBehavior repeatBehavior = _animation.RepeatBehavior;
+        if (repeatBehavior == RepeatBehavior.Forever)
         {
-            if (_timeline.AutoReverse && !_isReversing)
-            {
-                _isReversing = true;
-                _startTime = frameTimestamp;
-                rawProgress = 1.0;
-            }
-            else
-            {
-                var rb = _timeline.RepeatBehavior;
-                _repeatCount++;
-
-                bool shouldRepeat = false;
-                if (rb == RepeatBehavior.Forever)
-                {
-                    shouldRepeat = true;
-                }
-                else if (rb.HasCount)
-                {
-                    shouldRepeat = _repeatCount < rb.Count;
-                }
-                else if (rb.HasDuration)
-                {
-                    // Calculate total elapsed since first start
-                    shouldRepeat = Stopwatch.GetElapsedTime(_firstStartTime, frameTimestamp) < rb.Duration;
-                }
-
-                if (shouldRepeat)
-                {
-                    _startTime = frameTimestamp;
-                    _isReversing = false;
-                    rawProgress = 0;
-                }
-                else
-                {
-                    // Natural completion: set the terminal state and return before
-                    // the tail progress recomputation below — FillBehavior.Stop
-                    // must expose progress 0 on the completion frame (previously
-                    // dead code: the tail overwrote it back to 1.0).
-                    _isRunning = false;
-                    _isCompleted = true;
-                    _currentProgress = _timeline.FillBehavior == FillBehavior.Stop ? 0 : 1.0;
-                    Completed?.Invoke(this, EventArgs.Empty);
-                    return;
-                }
-            }
+            return double.PositiveInfinity;
         }
 
-        // Handle auto-reverse
-        if (_isReversing)
+        if (repeatBehavior.HasCount)
         {
-            _currentProgress = 1.0 - Math.Min(1.0, rawProgress);
+            return iterationTicks * repeatBehavior.Count;
         }
-        else
-        {
-            _currentProgress = Math.Min(1.0, rawProgress);
-        }
+
+        return repeatBehavior.HasDuration
+            ? repeatBehavior.Duration.Ticks
+            : iterationTicks;
     }
+
+    private double ApplyAcceleration(double progress)
+    {
+        double acceleration = _animation.AccelerationRatio;
+        double deceleration = _animation.DecelerationRatio;
+        if (acceleration == 0d && deceleration == 0d)
+        {
+            return progress;
+        }
+
+        double maximumRate = 2d / (2d - acceleration - deceleration);
+        if (acceleration > 0d && progress < acceleration)
+        {
+            return maximumRate * progress * progress / (2d * acceleration);
+        }
+
+        if (deceleration > 0d && progress > 1d - deceleration)
+        {
+            double remaining = 1d - progress;
+            return 1d - maximumRate * remaining * remaining / (2d * deceleration);
+        }
+
+        return maximumRate * (progress - acceleration / 2d);
+    }
+
+    private void CompleteAtProgress(double terminalProgress, TimeSpan terminalTime, int terminalIteration)
+    {
+        CurrentTime = terminalTime;
+        CurrentIteration = terminalIteration;
+        _isRunning = false;
+        _isPaused = false;
+        IsPaused = false;
+        _isCompleted = true;
+        CurrentState = _animation.FillBehavior == FillBehavior.HoldEnd
+            ? ClockState.Filling
+            : ClockState.Stopped;
+        _currentProgress = _animation.FillBehavior == FillBehavior.Stop ? 0d : terminalProgress;
+        base.CurrentProgress = _currentProgress;
+        RaiseCurrentTimeInvalidated();
+        RaiseCurrentStateInvalidated();
+        RaiseCurrentGlobalSpeedInvalidated();
+        RaiseCompleted();
+    }
+
+    private static bool IsWholeNumber(double value) =>
+        Math.Abs(value - Math.Round(value)) <= 1e-10;
 }
-
-// ClockController and TimeSeekOrigin are defined in Clock.cs

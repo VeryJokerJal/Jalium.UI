@@ -7,14 +7,18 @@ namespace Jalium.UI;
 /// The content is persisted as a DrawingGroup.
 /// This is a lightweight alternative to UIElement when layout/input/focus is not needed.
 /// </summary>
-public sealed class DrawingVisual : ContainerVisual
+public class DrawingVisual : ContainerVisual
 {
     private DrawingGroup? _content;
 
     /// <summary>
     /// Gets the drawing content of this DrawingVisual.
     /// </summary>
-    public Drawing? Drawing => _content;
+    public DrawingGroup? Drawing => _content;
+
+    internal override Rect ContentBoundsCore => _content?.Bounds ?? Rect.Empty;
+
+    internal override DrawingGroup? DrawingCore => _content;
 
     /// <summary>
     /// Opens the DrawingVisual for rendering. Returns a DrawingContext that can be used
@@ -56,5 +60,29 @@ public sealed class DrawingVisual : ContainerVisual
             }
         }
         return null;
+    }
+
+    /// <inheritdoc />
+    protected override HitTestResult? HitTestCore(PointHitTestParameters hitTestParameters)
+    {
+        ArgumentNullException.ThrowIfNull(hitTestParameters);
+        return _content?.Bounds.Contains(hitTestParameters.HitPoint) == true
+            ? new PointHitTestResult(this, hitTestParameters.HitPoint)
+            : null;
+    }
+
+    /// <inheritdoc />
+    protected override GeometryHitTestResult? HitTestCore(GeometryHitTestParameters hitTestParameters)
+    {
+        ArgumentNullException.ThrowIfNull(hitTestParameters);
+        if (_content is null || !_content.Bounds.IntersectsWith(hitTestParameters.HitGeometry.Bounds))
+        {
+            return null;
+        }
+
+        IntersectionDetail detail = hitTestParameters.HitGeometry.Bounds.Contains(_content.Bounds)
+            ? IntersectionDetail.FullyInside
+            : IntersectionDetail.Intersects;
+        return new GeometryHitTestResult(this, detail);
     }
 }
