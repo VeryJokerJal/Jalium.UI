@@ -3,6 +3,7 @@ using Jalium.UI.Diagnostics;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using RenderTargetDrawingContext = Jalium.UI.Interop.RenderTargetDrawingContext;
 
 namespace Jalium.UI.Controls.DevTools;
 

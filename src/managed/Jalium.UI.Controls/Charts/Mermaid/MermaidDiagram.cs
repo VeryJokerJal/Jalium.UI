@@ -105,7 +105,7 @@ public class MermaidDiagram : ContentControl
         return new TextBlock
         {
             Text = string.IsNullOrEmpty(Source) ? (_error ?? "Empty mermaid diagram.") : Source,
-            FontFamily = "Cascadia Code",
+            FontFamily = new FontFamily("Cascadia Code"),
             TextWrapping = TextWrapping.Wrap,
             Foreground = Foreground
         };

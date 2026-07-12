@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
+using Jalium.UI.Controls.Platform;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Printing;
@@ -6,7 +8,8 @@ namespace Jalium.UI.Controls.Printing;
 /// <summary>
 /// Exception thrown by PrintDialog operations.
 /// </summary>
-public sealed class PrintDialogException : Exception
+[Serializable]
+public class PrintDialogException : Exception
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="PrintDialogException"/> class.
@@ -26,6 +29,14 @@ public sealed class PrintDialogException : Exception
     /// <param name="message">The error message that explains the reason for the exception.</param>
     /// <param name="innerException">The exception that is the cause of the current exception.</param>
     public PrintDialogException(string message, Exception innerException) : base(message, innerException) { }
+
+    /// <summary>Initializes the exception from serialized data.</summary>
+#pragma warning disable SYSLIB0051 // Required by the WPF-compatible serialization contract.
+    protected PrintDialogException(SerializationInfo info, StreamingContext context)
+        : base(info, context)
+    {
+    }
+#pragma warning restore SYSLIB0051
 }
 
 /// <summary>
@@ -33,26 +44,42 @@ public sealed class PrintDialogException : Exception
 /// </summary>
 public sealed class PrintDialog
 {
-    private int _minPage = 1;
-    private int _maxPage = 9999;
-    private int _pageFrom = 1;
-    private int _pageTo = 9999;
+    private uint _minPage = 1;
+    private uint _maxPage = 9999;
+    private PageRange _pageRange;
+
+    /// <summary>
+    /// Gets whether this API can currently submit print jobs on the running platform.
+    /// </summary>
+    public static bool IsSupported => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+
+    /// <summary>
+    /// Gets whether the Linux desktop session exposes the xdg Print portal.
+    /// </summary>
+    /// <remarks>
+    /// The existing synchronous <see cref="PrintVisual(Visual, string)"/> API does not yet
+    /// produce and pass the document file descriptor required by the portal. This probe lets
+    /// applications capability-gate print UI without assuming a particular Linux desktop.
+    /// </remarks>
+    public static bool IsPortalPrintAvailable =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
+        LinuxDesktopPortal.IsInterfaceAvailable("org.freedesktop.portal.Print");
 
     #region Properties
 
     /// <summary>
     /// Gets or sets the minimum page number allowed in the dialog.
     /// </summary>
-    public int MinPage
+    public uint MinPage
     {
         get => _minPage;
-        set => _minPage = Math.Max(1, value);
+        set => _minPage = Math.Max(1u, value);
     }
 
     /// <summary>
     /// Gets or sets the maximum page number allowed in the dialog.
     /// </summary>
-    public int MaxPage
+    public uint MaxPage
     {
         get => _maxPage;
         set => _maxPage = Math.Max(_minPage, value);
@@ -63,8 +90,11 @@ public sealed class PrintDialog
     /// </summary>
     public int PageRangeFrom
     {
-        get => _pageFrom;
-        set => _pageFrom = Math.Clamp(value, _minPage, _maxPage);
+        get => _pageRange.PageFrom;
+        set => _pageRange.PageFrom = Math.Clamp(
+            value,
+            ToPageRangeValue(_minPage),
+            ToPageRangeValue(_maxPage));
     }
 
     /// <summary>
@@ -72,8 +102,41 @@ public sealed class PrintDialog
     /// </summary>
     public int PageRangeTo
     {
-        get => _pageTo;
-        set => _pageTo = Math.Clamp(value, _pageFrom, _maxPage);
+        get => _pageRange.PageTo;
+        set => _pageRange.PageTo = Math.Clamp(
+            value,
+            _pageRange.PageFrom,
+            ToPageRangeValue(_maxPage));
+    }
+
+    /// <summary>
+    /// Gets or sets the range used when <see cref="PageRangeSelection"/> is
+    /// <see cref="Jalium.UI.Controls.PageRangeSelection.UserPages"/>.
+    /// </summary>
+    /// <exception cref="ArgumentException">
+    /// Either endpoint is less than one.
+    /// </exception>
+    public PageRange PageRange
+    {
+        get => _pageRange;
+        set
+        {
+            if (value.PageFrom <= 0 || value.PageTo <= 0)
+            {
+                throw new ArgumentException(
+                    "The beginning and end of a page range must be greater than zero.",
+                    nameof(PageRange));
+            }
+
+            if (value.PageFrom > value.PageTo)
+            {
+                int page = value.PageFrom;
+                value.PageFrom = value.PageTo;
+                value.PageTo = page;
+            }
+
+            _pageRange = value;
+        }
     }
 
     /// <summary>
@@ -102,6 +165,11 @@ public sealed class PrintDialog
     public bool CurrentPageEnabled { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether the Selection option is enabled.
+    /// </summary>
+    public bool SelectedPagesEnabled { get; set; }
+
+    /// <summary>
     /// Gets or sets the current page number.
     /// </summary>
     public int CurrentPage { get; set; } = 1;
@@ -124,7 +192,7 @@ public sealed class PrintDialog
     /// Displays the print dialog.
     /// </summary>
     /// <returns>True if the user clicked Print; otherwise, false.</returns>
-    public bool ShowDialog()
+    public bool? ShowDialog()
     {
         return ShowDialogInternal(Jalium.UI.Application.Current?.MainWindow);
     }
@@ -136,6 +204,9 @@ public sealed class PrintDialog
     {
         return ShowDialogInternal(owner);
     }
+
+    private static int ToPageRangeValue(uint page) =>
+        page > int.MaxValue ? int.MaxValue : (int)page;
 
     /// <summary>
     /// Prints a visual element.
@@ -172,12 +243,25 @@ public sealed class PrintDialog
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            // The common print dialog is a Windows-only feature.
+            // A portal Print request needs a rendered document file descriptor;
+            // this legacy synchronous dialog has no document at this point.
             return false;
         }
 
         var ownerHandle = DialogOwnerResolver.Resolve(owner?.Handle ?? nint.Zero);
         return ShowWindowsPrintDialog(ownerHandle);
+    }
+
+    private static string GetUnsupportedPlatformMessage()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            return IsPortalPrintAvailable
+                ? "The xdg Print portal is available, but this PrintDialog API cannot yet submit the rendered document file descriptor; printing is disabled."
+                : "Printing is unavailable because the org.freedesktop.portal.Print portal is not present in this Linux desktop session.";
+        }
+
+        return "Printing is not supported on this platform.";
     }
 
     /// <summary>
@@ -190,7 +274,7 @@ public sealed class PrintDialog
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            throw new PrintDialogException("Printing is only supported on Windows.");
+            throw new PrintDialogException(GetUnsupportedPlatformMessage());
         }
 
         var printerName = ResolvePrinterName();
@@ -252,7 +336,7 @@ public sealed class PrintDialog
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            throw new PrintDialogException("Printing is only supported on Windows.");
+            throw new PrintDialogException(GetUnsupportedPlatformMessage());
         }
 
         var printerName = ResolvePrinterName();
@@ -341,8 +425,8 @@ public sealed class PrintDialog
             Flags = PrintingNativeMethods.PD_RETURNDC | PrintingNativeMethods.PD_HIDEPRINTTOFILE,
             nFromPage = (ushort)Math.Clamp(PageRangeFrom, 1, ushort.MaxValue),
             nToPage = (ushort)Math.Clamp(PageRangeTo, 1, ushort.MaxValue),
-            nMinPage = (ushort)Math.Clamp(MinPage, 1, ushort.MaxValue),
-            nMaxPage = (ushort)Math.Clamp(MaxPage, 1, ushort.MaxValue),
+            nMinPage = (ushort)Math.Clamp(MinPage, 1u, (uint)ushort.MaxValue),
+            nMaxPage = (ushort)Math.Clamp(MaxPage, 1u, (uint)ushort.MaxValue),
             nCopies = (ushort)Math.Clamp(PrintTicket?.CopyCount ?? 1, 1, ushort.MaxValue)
         };
 
@@ -356,9 +440,10 @@ public sealed class PrintDialog
             printDialog.Flags |= PrintingNativeMethods.PD_NOCURRENTPAGE;
         }
 
-        // The print dialog always disables "Selection" because the framework
-        // print path operates on visuals/documents rather than a selection.
-        printDialog.Flags |= PrintingNativeMethods.PD_NOSELECTION;
+        if (!SelectedPagesEnabled)
+        {
+            printDialog.Flags |= PrintingNativeMethods.PD_NOSELECTION;
+        }
 
         if (PageRangeSelection == PageRangeSelection.UserPages)
         {
@@ -367,6 +452,10 @@ public sealed class PrintDialog
         else if (PageRangeSelection == PageRangeSelection.CurrentPage && CurrentPageEnabled)
         {
             printDialog.Flags |= PrintingNativeMethods.PD_CURRENTPAGE;
+        }
+        else if (PageRangeSelection == PageRangeSelection.SelectedPages && SelectedPagesEnabled)
+        {
+            printDialog.Flags |= PrintingNativeMethods.PD_SELECTION;
         }
 
         if (!PrintingNativeMethods.PrintDlg(ref printDialog))
@@ -416,7 +505,11 @@ public sealed class PrintDialog
         PrintTicket ??= new PrintTicket();
         PrintTicket.CopyCount = copies;
 
-        if ((printDialog.Flags & PrintingNativeMethods.PD_PAGENUMS) != 0)
+        if ((printDialog.Flags & PrintingNativeMethods.PD_SELECTION) != 0)
+        {
+            PageRangeSelection = PageRangeSelection.SelectedPages;
+        }
+        else if ((printDialog.Flags & PrintingNativeMethods.PD_PAGENUMS) != 0)
         {
             PageRangeSelection = PageRangeSelection.UserPages;
             PageRangeFrom = printDialog.nFromPage;
@@ -660,9 +753,9 @@ public sealed class PrintDialog
             var destX = Math.Max(0, (printableWidth - destWidth) / 2);
             var destY = Math.Max(0, (printableHeight - destHeight) / 2);
 
-            var header = new PrintingNativeMethods.BITMAPINFOHEADER
+            var header = new BITMAPINFOHEADER
             {
-                biSize = (uint)Marshal.SizeOf<PrintingNativeMethods.BITMAPINFOHEADER>(),
+                biSize = (uint)Marshal.SizeOf<BITMAPINFOHEADER>(),
                 biWidth = bitmapWidth,
                 biHeight = bitmapHeight, // positive => bottom-up DIB
                 biPlanes = 1,
@@ -834,66 +927,6 @@ public sealed class PrintDialog
     }
 
     #endregion
-}
-
-/// <summary>
-/// Specifies the page range selection for printing.
-/// </summary>
-public enum PageRangeSelection
-{
-    /// <summary>
-    /// All pages.
-    /// </summary>
-    AllPages,
-
-    /// <summary>
-    /// User-selected page range.
-    /// </summary>
-    UserPages,
-
-    /// <summary>
-    /// Current page only.
-    /// </summary>
-    CurrentPage,
-
-    /// <summary>
-    /// Selected content.
-    /// </summary>
-    SelectedPages
-}
-
-/// <summary>
-/// Represents a range of pages.
-/// </summary>
-public struct PageRange
-{
-    /// <summary>
-    /// Gets or sets the first page in the range.
-    /// </summary>
-    public int PageFrom { get; set; }
-
-    /// <summary>
-    /// Gets or sets the last page in the range.
-    /// </summary>
-    public int PageTo { get; set; }
-
-    /// <summary>
-    /// Initializes a new instance of the PageRange struct.
-    /// </summary>
-    public PageRange(int pageFrom, int pageTo)
-    {
-        PageFrom = pageFrom;
-        PageTo = pageTo;
-    }
-
-    /// <summary>
-    /// Initializes a new instance of the PageRange struct for a single page.
-    /// </summary>
-    public PageRange(int page)
-    {
-        PageFrom = page;
-        PageTo = page;
-    }
 }
 
 /// <summary>
@@ -1513,7 +1546,7 @@ public enum PrintJobStatus
 /// <summary>
 /// Represents print settings and capabilities.
 /// </summary>
-public sealed class PrintTicket
+public class PrintTicket
 {
     /// <summary>
     /// Gets or sets the number of copies.

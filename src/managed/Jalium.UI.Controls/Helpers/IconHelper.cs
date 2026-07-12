@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
+using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 
 namespace Jalium.UI.Controls.Helpers;
 
@@ -298,14 +299,6 @@ internal static partial class IconHelper
     [LibraryImport("gdi32.dll")]
     private static partial nint CreateCompatibleDC(nint hdc);
 
-    [LibraryImport("gdi32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DeleteDC(nint hdc);
-
-    [LibraryImport("gdi32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool DeleteObject(nint ho);
-
     [StructLayout(LayoutKind.Sequential)]
     private struct ICONINFO
     {
@@ -326,22 +319,6 @@ internal static partial class IconHelper
         public ushort bmPlanes;
         public ushort bmBitsPixel;
         public nint bmBits;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BITMAPINFOHEADER
-    {
-        public uint biSize;
-        public int biWidth;
-        public int biHeight;
-        public ushort biPlanes;
-        public ushort biBitCount;
-        public uint biCompression;
-        public uint biSizeImage;
-        public int biXPelsPerMeter;
-        public int biYPelsPerMeter;
-        public uint biClrUsed;
-        public uint biClrImportant;
     }
 
     #endregion

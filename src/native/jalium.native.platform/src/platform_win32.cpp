@@ -15,6 +15,7 @@
 #include <imm.h>
 
 #include <atomic>
+#include <cstring>
 #include <mutex>
 #include <string>
 
@@ -24,6 +25,14 @@
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "imm32.lib")
+
+static_assert(sizeof(wchar_t) == sizeof(JaliumUtf16Char),
+              "Windows wchar_t must be a UTF-16 code unit");
+
+static const wchar_t* AsWideString(const JaliumUtf16Char* text)
+{
+    return reinterpret_cast<const wchar_t*>(text);
+}
 
 // ============================================================================
 // Win32 Window Implementation
@@ -518,7 +527,7 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     HWND hwnd = CreateWindowExW(
         dwExStyle,
         kWindowClassName,
-        params->title ? params->title : L"",
+        params->title ? AsWideString(params->title) : L"",
         dwStyle,
         x, y, w, h,
         parent,
@@ -558,10 +567,10 @@ void jalium_window_hide(JaliumPlatformWindow* window)
         ShowWindow(window->hwnd, SW_HIDE);
 }
 
-void jalium_window_set_title(JaliumPlatformWindow* window, const wchar_t* title)
+void jalium_window_set_title(JaliumPlatformWindow* window, const JaliumUtf16Char* title)
 {
     if (window && window->hwnd)
-        SetWindowTextW(window->hwnd, title ? title : L"");
+        SetWindowTextW(window->hwnd, title ? AsWideString(title) : L"");
 }
 
 void jalium_window_resize(JaliumPlatformWindow* window, int32_t width, int32_t height)
@@ -1003,7 +1012,7 @@ void jalium_input_get_cursor_pos(float* x, float* y)
 // Clipboard
 // ============================================================================
 
-JaliumResult jalium_clipboard_get_text(wchar_t** outText)
+JaliumResult jalium_clipboard_get_text(JaliumUtf16Char** outText)
 {
     if (!outText) return JALIUM_ERROR_INVALID_ARGUMENT;
     *outText = nullptr;
@@ -1018,9 +1027,10 @@ JaliumResult jalium_clipboard_get_text(wchar_t** outText)
         if (pText)
         {
             size_t len = wcslen(pText);
-            *outText = static_cast<wchar_t*>(malloc((len + 1) * sizeof(wchar_t)));
+            *outText = static_cast<JaliumUtf16Char*>(
+                malloc((len + 1) * sizeof(JaliumUtf16Char)));
             if (*outText)
-                wcscpy_s(*outText, len + 1, pText);
+                memcpy(*outText, pText, (len + 1) * sizeof(JaliumUtf16Char));
             GlobalUnlock(hData);
         }
     }
@@ -1029,7 +1039,7 @@ JaliumResult jalium_clipboard_get_text(wchar_t** outText)
     return JALIUM_OK;
 }
 
-JaliumResult jalium_clipboard_set_text(const wchar_t* text)
+JaliumResult jalium_clipboard_set_text(const JaliumUtf16Char* text)
 {
     if (!text) return JALIUM_ERROR_INVALID_ARGUMENT;
 
@@ -1038,15 +1048,16 @@ JaliumResult jalium_clipboard_set_text(const wchar_t* text)
 
     EmptyClipboard();
 
-    size_t len = wcslen(text);
-    size_t size = (len + 1) * sizeof(wchar_t);
+    const wchar_t* wideText = AsWideString(text);
+    size_t len = wcslen(wideText);
+    size_t size = (len + 1) * sizeof(JaliumUtf16Char);
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, size);
     if (hMem)
     {
         auto pDest = static_cast<wchar_t*>(GlobalLock(hMem));
         if (pDest)
         {
-            wcscpy_s(pDest, len + 1, text);
+            memcpy(pDest, wideText, size);
             GlobalUnlock(hMem);
             SetClipboardData(CF_UNICODETEXT, hMem);
         }
@@ -1054,6 +1065,19 @@ JaliumResult jalium_clipboard_set_text(const wchar_t* text)
 
     CloseClipboard();
     return JALIUM_OK;
+}
+
+// Windows desktop drag/drop continues to use the managed AOT-compatible OLE
+// IDataObject/IDropSource implementation. Export the cross-platform ABI so the
+// native platform library remains symbol-compatible without disturbing OLE.
+void jalium_drag_set_effect(JaliumPlatformWindow*, uint64_t, uint32_t) {}
+
+JaliumResult jalium_drag_begin(
+    JaliumPlatformWindow*, const JaliumDragDataItem*, uint32_t, uint32_t,
+    uint32_t* performedEffect)
+{
+    if (performedEffect) *performedEffect = JALIUM_DRAG_EFFECT_NONE;
+    return JALIUM_ERROR_NOT_SUPPORTED;
 }
 
 #endif // _WIN32

@@ -2,7 +2,7 @@ using System.Windows.Input;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI.Shell;
 
 /// <summary>
 /// Specifies the state of the taskbar progress indicator.
@@ -12,34 +12,37 @@ public enum TaskbarItemProgressState
     /// <summary>
     /// No progress indicator is shown.
     /// </summary>
-    None,
+    None = 0,
 
     /// <summary>
     /// A green progress indicator is shown.
     /// </summary>
-    Normal,
+    Indeterminate = 1,
 
     /// <summary>
     /// A pulsing green indicator is shown.
     /// </summary>
-    Indeterminate,
+    Normal = 2,
 
     /// <summary>
     /// A red progress indicator is shown.
     /// </summary>
-    Error,
+    Error = 3,
 
     /// <summary>
     /// A yellow progress indicator is shown.
     /// </summary>
-    Paused
+    Paused = 4
 }
 
 /// <summary>
 /// Represents information about how the taskbar thumbnail is displayed.
 /// </summary>
-public sealed class TaskbarItemInfo : DependencyObject
+public sealed class TaskbarItemInfo : Freezable
 {
+    /// <inheritdoc />
+    protected override Freezable CreateInstanceCore() => new TaskbarItemInfo();
+
     #region Dependency Properties
 
     /// <summary>
@@ -268,8 +271,13 @@ public sealed class TaskbarItemInfo : DependencyObject
 /// <summary>
 /// Represents information about a button in the taskbar thumbnail.
 /// </summary>
-public sealed class ThumbButtonInfo : DependencyObject
+public sealed class ThumbButtonInfo : Freezable, ICommandSource
 {
+    private bool _canExecute = true;
+
+    /// <inheritdoc />
+    protected override Freezable CreateInstanceCore() => new ThumbButtonInfo();
+
     #region Dependency Properties
 
     /// <summary>
@@ -286,7 +294,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty DescriptionProperty =
         DependencyProperty.Register(nameof(Description), typeof(string), typeof(ThumbButtonInfo),
-            new PropertyMetadata(string.Empty));
+            new PropertyMetadata(string.Empty, null, CoerceDescription));
 
     /// <summary>
     /// Identifies the IsEnabled dependency property.
@@ -294,7 +302,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsEnabledProperty =
         DependencyProperty.Register(nameof(IsEnabled), typeof(bool), typeof(ThumbButtonInfo),
-            new PropertyMetadata(true));
+            new PropertyMetadata(true, null, CoerceIsEnabled));
 
     /// <summary>
     /// Identifies the Visibility dependency property.
@@ -334,7 +342,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandProperty =
         DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(ThumbButtonInfo),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnCommandChanged));
 
     /// <summary>
     /// Identifies the CommandParameter dependency property.
@@ -342,7 +350,15 @@ public sealed class ThumbButtonInfo : DependencyObject
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandParameterProperty =
         DependencyProperty.Register(nameof(CommandParameter), typeof(object), typeof(ThumbButtonInfo),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnCommandContextChanged));
+
+    /// <summary>
+    /// Identifies the CommandTarget dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty CommandTargetProperty =
+        DependencyProperty.Register(nameof(CommandTarget), typeof(IInputElement), typeof(ThumbButtonInfo),
+            new PropertyMetadata(null, OnCommandContextChanged));
 
     #endregion
 
@@ -447,6 +463,16 @@ public sealed class ThumbButtonInfo : DependencyObject
         set => SetValue(CommandParameterProperty, value);
     }
 
+    /// <summary>
+    /// Gets or sets the input element on which a routed command is raised.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public IInputElement? CommandTarget
+    {
+        get => (IInputElement?)GetValue(CommandTargetProperty);
+        set => SetValue(CommandTargetProperty, value);
+    }
+
     #endregion
 
     #region Methods
@@ -458,10 +484,66 @@ public sealed class ThumbButtonInfo : DependencyObject
     {
         Click?.Invoke(this, EventArgs.Empty);
 
-        if (Command?.CanExecute(CommandParameter) == true)
+        ICommand? command = Command;
+        if (command is RoutedCommand routedCommand)
         {
-            Command.Execute(CommandParameter);
+            if (routedCommand.CanExecute(CommandParameter, CommandTarget))
+            {
+                routedCommand.Execute(CommandParameter, CommandTarget);
+            }
         }
+        else if (command?.CanExecute(CommandParameter) == true)
+        {
+            command.Execute(CommandParameter);
+        }
+    }
+
+    private static object? CoerceDescription(DependencyObject dependencyObject, object? value)
+    {
+        string? description = value as string;
+        return description?.Length >= 260 ? description[..259] : description;
+    }
+
+    private static object CoerceIsEnabled(DependencyObject dependencyObject, object? value) =>
+        (bool)(value ?? false) && ((ThumbButtonInfo)dependencyObject)._canExecute;
+
+    private static void OnCommandChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
+    {
+        var button = (ThumbButtonInfo)dependencyObject;
+        if (ReferenceEquals(e.OldValue, e.NewValue))
+        {
+            return;
+        }
+
+        if (e.OldValue is ICommand oldCommand)
+        {
+            CanExecuteChangedEventManager.RemoveHandler(oldCommand, button.OnCanExecuteChanged);
+        }
+
+        if (e.NewValue is ICommand newCommand)
+        {
+            CanExecuteChangedEventManager.AddHandler(newCommand, button.OnCanExecuteChanged);
+        }
+
+        button.UpdateCanExecute();
+    }
+
+    private static void OnCommandContextChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e) =>
+        ((ThumbButtonInfo)dependencyObject).UpdateCanExecute();
+
+    private void OnCanExecuteChanged(object? sender, EventArgs e) => UpdateCanExecute();
+
+    private void UpdateCanExecute()
+    {
+        ICommand? command = Command;
+        _canExecute = command switch
+        {
+            null => true,
+            RoutedCommand routedCommand => routedCommand.CanExecute(CommandParameter, CommandTarget),
+            _ => command.CanExecute(CommandParameter),
+        };
+
+        CoerceValue(IsEnabledProperty);
     }
 
     #endregion
@@ -470,7 +552,7 @@ public sealed class ThumbButtonInfo : DependencyObject
 /// <summary>
 /// A collection of ThumbButtonInfo objects.
 /// </summary>
-public sealed class ThumbButtonInfoCollection : System.Collections.ObjectModel.ObservableCollection<ThumbButtonInfo>
+public class ThumbButtonInfoCollection : FreezableCollection<ThumbButtonInfo>
 {
     /// <summary>
     /// Maximum number of buttons allowed (Windows limitation).
@@ -478,11 +560,5 @@ public sealed class ThumbButtonInfoCollection : System.Collections.ObjectModel.O
     public const int MaxButtons = 7;
 
     /// <inheritdoc />
-    protected override void InsertItem(int index, ThumbButtonInfo item)
-    {
-        if (Count >= MaxButtons)
-            throw new InvalidOperationException($"Cannot add more than {MaxButtons} thumb buttons.");
-
-        base.InsertItem(index, item);
-    }
+    protected override Freezable CreateInstanceCore() => new ThumbButtonInfoCollection();
 }

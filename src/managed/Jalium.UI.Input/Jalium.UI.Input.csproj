@@ -3,20 +3,23 @@
   <PropertyGroup>
     <RootNamespace>Jalium.UI.Input</RootNamespace>
     <AssemblyName>Jalium.UI.Input</AssemblyName>
-    <Description>Input handling for Jalium.UI framework including Mouse, Keyboard, and Touch.</Description>
+    <Description>Compatibility facade for Jalium.UI input types.</Description>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.Input</PackageId>
     <IsTrimmable>true</IsTrimmable>
     <IsAotCompatible>true</IsAotCompatible>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="TypeForwards.cs" />
+    <Compile Include="CoreInputTypeForwards.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <InternalsVisibleTo Include="Jalium.UI.Controls" />
-    <InternalsVisibleTo Include="Jalium.UI.Tests" />
+    <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <ProjectReference Include="..\Jalium.UI.Managed\Jalium.UI.Managed.csproj" />
   </ItemGroup>
 
 </Project>

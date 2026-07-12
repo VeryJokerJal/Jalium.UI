@@ -195,15 +195,9 @@
             <SolidColorBrush x:Key="SystemColorWindowColorBrush" Color="#FF202020" />
             <SolidColorBrush x:Key="SystemColorButtonFaceColorBrush" Color="#FF454545" />
             <SolidColorBrush x:Key="SystemColorButtonTextColorBrush" Color="#FFFFFFFF" />
-            <LinearGradientBrush x:Key="SystemColorHighlightColorBrush" StartPoint="0,0" EndPoint="1,0">
-                <GradientStop Offset="0" Color="#FF207245" />
-                <GradientStop Offset="1" Color="#FF1C8043" />
-            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemColorHighlightColorBrush" Color="#FF1E793F" />
             <SolidColorBrush x:Key="SystemColorHighlightTextColorBrush" Color="#FFFFFFFF" />
-            <LinearGradientBrush x:Key="SystemColorHotlightColorBrush" StartPoint="0,0" EndPoint="1,0">
-                <GradientStop Offset="0" Color="#FF278A52" />
-                <GradientStop Offset="1" Color="#FF22974F" />
-            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemColorHotlightColorBrush" Color="#FF278A52" />
             <SolidColorBrush x:Key="SystemColorGrayTextColorBrush" Color="#5DFFFFFF" />
             <LinearGradientBrush x:Key="ControlElevationBorderBrush" MappingMode="Absolute" StartPoint="0,0" EndPoint="0,3">
                 <LinearGradientBrush.GradientStops>
@@ -779,15 +773,9 @@
             <SolidColorBrush x:Key="SystemColorWindowColorBrush" Color="#FFF3F3F3" />
             <SolidColorBrush x:Key="SystemColorButtonFaceColorBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="SystemColorButtonTextColorBrush" Color="#E4000000" />
-            <LinearGradientBrush x:Key="SystemColorHighlightColorBrush" StartPoint="0,0" EndPoint="1,0">
-                <GradientStop Offset="0" Color="#FF207245" />
-                <GradientStop Offset="1" Color="#FF1C8043" />
-            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemColorHighlightColorBrush" Color="#FF1E793F" />
             <SolidColorBrush x:Key="SystemColorHighlightTextColorBrush" Color="#FFFFFFFF" />
-            <LinearGradientBrush x:Key="SystemColorHotlightColorBrush" StartPoint="0,0" EndPoint="1,0">
-                <GradientStop Offset="0" Color="#FF278A52" />
-                <GradientStop Offset="1" Color="#FF22974F" />
-            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemColorHotlightColorBrush" Color="#FF278A52" />
             <SolidColorBrush x:Key="SystemColorGrayTextColorBrush" Color="#5C000000" />
             <LinearGradientBrush x:Key="ControlElevationBorderBrush" MappingMode="Absolute" StartPoint="0,0" EndPoint="0,3">
                 <LinearGradientBrush.Transform>

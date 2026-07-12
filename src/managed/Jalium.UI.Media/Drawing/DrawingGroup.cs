@@ -1,11 +1,31 @@
 namespace Jalium.UI.Media;
 
+using Jalium.UI.Media.Effects;
+
+#pragma warning disable CS0618
+
 /// <summary>
 /// Represents a collection of drawings that can be operated upon as a single drawing.
 /// </summary>
 public sealed class DrawingGroup : Drawing
 {
-    private DrawingCollection? _children;
+    public static readonly DependencyProperty ChildrenProperty =
+        DependencyProperty.Register(nameof(Children), typeof(DrawingCollection), typeof(DrawingGroup), new PropertyMetadata(null));
+    public static readonly DependencyProperty TransformProperty =
+        DependencyProperty.Register(nameof(Transform), typeof(Transform), typeof(DrawingGroup), new PropertyMetadata(null));
+    public static readonly DependencyProperty ClipGeometryProperty =
+        DependencyProperty.Register(nameof(ClipGeometry), typeof(Geometry), typeof(DrawingGroup), new PropertyMetadata(null));
+    public static readonly DependencyProperty OpacityProperty =
+        DependencyProperty.Register(nameof(Opacity), typeof(double), typeof(DrawingGroup), new PropertyMetadata(1d));
+    public static readonly DependencyProperty OpacityMaskProperty =
+        DependencyProperty.Register(nameof(OpacityMask), typeof(Brush), typeof(DrawingGroup), new PropertyMetadata(null));
+    public static readonly DependencyProperty GuidelineSetProperty =
+        DependencyProperty.Register(nameof(GuidelineSet), typeof(GuidelineSet), typeof(DrawingGroup), new PropertyMetadata(null));
+    public static readonly DependencyProperty BitmapEffectProperty =
+        DependencyProperty.Register(nameof(BitmapEffect), typeof(BitmapEffect), typeof(DrawingGroup), new PropertyMetadata(null));
+    public static readonly DependencyProperty BitmapEffectInputProperty =
+        DependencyProperty.Register(nameof(BitmapEffectInput), typeof(BitmapEffectInput), typeof(DrawingGroup), new PropertyMetadata(null));
+
     private bool _isOpen;
 
     /// <summary>
@@ -13,6 +33,7 @@ public sealed class DrawingGroup : Drawing
     /// </summary>
     public DrawingGroup()
     {
+        Children = new DrawingCollection();
     }
 
     /// <summary>
@@ -20,46 +41,83 @@ public sealed class DrawingGroup : Drawing
     /// </summary>
     public DrawingCollection Children
     {
-        get => _children ??= new DrawingCollection();
-        set => _children = value;
+        get => (DrawingCollection?)GetValue(ChildrenProperty) ?? new DrawingCollection();
+        set => SetValue(ChildrenProperty, value ?? throw new ArgumentNullException(nameof(value)));
     }
 
     /// <summary>
     /// Gets or sets the Transform to apply to this DrawingGroup.
     /// </summary>
-    public Transform? Transform { get; set; }
+    public Transform? Transform
+    {
+        get => (Transform?)GetValue(TransformProperty);
+        set => SetValue(TransformProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the clip region of this DrawingGroup.
     /// </summary>
-    public Geometry? ClipGeometry { get; set; }
+    public Geometry? ClipGeometry
+    {
+        get => (Geometry?)GetValue(ClipGeometryProperty);
+        set => SetValue(ClipGeometryProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the opacity of this DrawingGroup.
     /// </summary>
-    public double Opacity { get; set; } = 1.0;
+    public double Opacity
+    {
+        get => (double)(GetValue(OpacityProperty) ?? 1d);
+        set => SetValue(OpacityProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the opacity mask of this DrawingGroup.
     /// </summary>
-    public Brush? OpacityMask { get; set; }
+    public Brush? OpacityMask
+    {
+        get => (Brush?)GetValue(OpacityMaskProperty);
+        set => SetValue(OpacityMaskProperty, value);
+    }
+
+    public GuidelineSet? GuidelineSet
+    {
+        get => (GuidelineSet?)GetValue(GuidelineSetProperty);
+        set => SetValue(GuidelineSetProperty, value);
+    }
+
+    [Obsolete("BitmapEffect is retained for WPF compatibility; use Effect instead.")]
+    public BitmapEffect? BitmapEffect
+    {
+        get => (BitmapEffect?)GetValue(BitmapEffectProperty);
+        set => SetValue(BitmapEffectProperty, value);
+    }
+
+    [Obsolete("BitmapEffectInput is retained for WPF compatibility.")]
+    public BitmapEffectInput? BitmapEffectInput
+    {
+        get => (BitmapEffectInput?)GetValue(BitmapEffectInputProperty);
+        set => SetValue(BitmapEffectInputProperty, value);
+    }
 
     /// <inheritdoc />
     public override Rect Bounds
     {
         get
         {
-            if (_children == null || _children.Count == 0)
+            DrawingCollection children = Children;
+            if (children.Count == 0)
             {
                 return Rect.Empty;
             }
 
             var bounds = Rect.Empty;
-            foreach (var child in _children)
+            foreach (var child in children)
             {
                 if (child != null)
                 {
-                    bounds = bounds.Union(child.Bounds);
+                    bounds = Rect.Union(bounds, child.Bounds);
                 }
             }
 
@@ -82,7 +140,7 @@ public sealed class DrawingGroup : Drawing
             // Apply clip if present
             if (ClipGeometry != null && !bounds.IsEmpty)
             {
-                bounds = bounds.Intersect(ClipGeometry.Bounds);
+                bounds = Rect.Intersect(bounds, ClipGeometry.Bounds);
             }
 
             return bounds;
@@ -101,7 +159,7 @@ public sealed class DrawingGroup : Drawing
         }
 
         _isOpen = true;
-        _children = new DrawingCollection();
+        Children = new DrawingCollection();
         return new DrawingGroupDrawingContext(this, append: false);
     }
 
@@ -117,7 +175,6 @@ public sealed class DrawingGroup : Drawing
         }
 
         _isOpen = true;
-        _children ??= new DrawingCollection();
         return new DrawingGroupDrawingContext(this, append: true);
     }
 
@@ -135,7 +192,7 @@ public sealed class DrawingGroup : Drawing
         }
         else
         {
-            _children = newChildren;
+            Children = newChildren;
         }
 
         _isOpen = false;
@@ -168,12 +225,9 @@ public sealed class DrawingGroup : Drawing
         }
 
         // Render children
-        if (_children != null)
+        foreach (var child in Children)
         {
-            foreach (var child in _children)
-            {
-                child?.RenderTo(context);
-            }
+            child?.RenderTo(context);
         }
 
         // Pop all pushed states
@@ -182,12 +236,45 @@ public sealed class DrawingGroup : Drawing
             context.Pop();
         }
     }
+
+    public new DrawingGroup Clone() => (DrawingGroup)base.Clone();
+    public new DrawingGroup CloneCurrentValue() => (DrawingGroup)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new DrawingGroup();
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, ChildrenProperty)
+            || ReferenceEquals(e.Property, TransformProperty)
+            || ReferenceEquals(e.Property, ClipGeometryProperty)
+            || ReferenceEquals(e.Property, OpacityMaskProperty)
+            || ReferenceEquals(e.Property, GuidelineSetProperty)
+            || ReferenceEquals(e.Property, BitmapEffectProperty)
+            || ReferenceEquals(e.Property, BitmapEffectInputProperty))
+        {
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, e.Property);
+        }
+
+        if (ReferenceEquals(e.Property, ChildrenProperty)
+            || ReferenceEquals(e.Property, TransformProperty)
+            || ReferenceEquals(e.Property, ClipGeometryProperty)
+            || ReferenceEquals(e.Property, OpacityProperty)
+            || ReferenceEquals(e.Property, OpacityMaskProperty)
+            || ReferenceEquals(e.Property, GuidelineSetProperty)
+            || ReferenceEquals(e.Property, BitmapEffectProperty)
+            || ReferenceEquals(e.Property, BitmapEffectInputProperty))
+        {
+            WritePostscript();
+        }
+    }
 }
+
+#pragma warning restore CS0618
 
 /// <summary>
 /// A DrawingContext that renders to a DrawingGroup.
 /// </summary>
-internal sealed class DrawingGroupDrawingContext : DrawingContext
+internal sealed class DrawingGroupDrawingContext : DrawingContextAdapter
 {
     private readonly DrawingGroup _owner;
     private readonly bool _append;
@@ -230,6 +317,12 @@ internal sealed class DrawingGroupDrawingContext : DrawingContext
         _drawings.Add(new GlyphRunDrawing(formattedText, origin));
     }
 
+    public override void DrawGlyphRun(Brush? foregroundBrush, GlyphRun glyphRun)
+    {
+        ArgumentNullException.ThrowIfNull(glyphRun);
+        _drawings.Add(new GlyphRunDrawing(foregroundBrush, glyphRun));
+    }
+
     public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
     {
         _drawings.Add(new GeometryDrawing(brush, pen, geometry));
@@ -238,6 +331,12 @@ internal sealed class DrawingGroupDrawingContext : DrawingContext
     public override void DrawImage(ImageSource imageSource, Rect rectangle)
     {
         _drawings.Add(new ImageDrawing(imageSource, rectangle));
+    }
+
+    public override void DrawVideo(MediaPlayer player, Rect rectangle)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+        _drawings.Add(new VideoDrawing(player, rectangle));
     }
 
     public override void DrawBackdropEffect(Rect rectangle, IBackdropEffect effect, CornerRadius cornerRadius)

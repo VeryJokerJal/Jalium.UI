@@ -1,0 +1,61 @@
+{
+  "prefixes": [
+    {
+      "from": "System.Windows.Shapes",
+      "to": "Jalium.UI.Controls.Shapes"
+    },
+    {
+      "from": "System.Windows",
+      "to": "Jalium.UI"
+    },
+    {
+      "from": "System.Xaml",
+      "to": "Jalium.UI.Xaml"
+    }
+  ],
+  "typeOverrides": {
+    "System.Windows.Baml2006.Baml2006Reader": "Jalium.UI.Markup.Baml2006Reader",
+    "System.Windows.ColorConvertedBitmapExtension": "Jalium.UI.Markup.ColorConvertedBitmapExtension",
+    "System.Windows.Controls.AlternationConverter": "Jalium.UI.Data.AlternationConverter",
+    "System.Windows.Controls.BooleanToVisibilityConverter": "Jalium.UI.Data.BooleanToVisibilityConverter",
+    "System.Windows.Controls.ClickMode": "Jalium.UI.Controls.Primitives.ClickMode",
+    "System.Windows.Controls.ControlTemplate": "Jalium.UI.ControlTemplate",
+    "System.Windows.Controls.Decorator": "Jalium.UI.Documents.Decorator",
+    "System.Windows.Controls.ItemsPresenter": "Jalium.UI.Controls.Primitives.ItemsPresenter",
+    "System.Windows.Controls.PrintDialog": "Jalium.UI.Controls.Printing.PrintDialog",
+    "System.Windows.Controls.PrintDialogException": "Jalium.UI.Controls.Printing.PrintDialogException",
+    "System.Windows.Controls.Primitives.StatusBar": "Jalium.UI.Controls.StatusBar",
+    "System.Windows.Controls.ScrollContentPresenter": "Jalium.UI.Controls.Primitives.ScrollContentPresenter",
+    "System.Windows.Controls.SelectionMode": "Jalium.UI.Controls.Primitives.SelectionMode",
+    "System.Windows.Controls.SelectiveScrollingOrientation": "Jalium.UI.Controls.Primitives.SelectiveScrollingOrientation",
+    "System.Windows.DynamicResourceExtension": "Jalium.UI.Markup.DynamicResourceExtension",
+    "System.Windows.Ink.GestureRecognizer": "Jalium.UI.Input.Gestures.GestureRecognizer",
+    "System.Windows.KeySplineConverter": "Jalium.UI.Media.Animation.KeySplineConverter",
+    "System.Windows.KeyTimeConverter": "Jalium.UI.Media.Animation.KeyTimeConverter",
+    "System.Windows.LocalizabilityAttribute": "Jalium.UI.Controls.LocalizabilityAttribute",
+    "System.Windows.Localization": "Jalium.UI.Controls.Localization",
+    "System.Windows.LocalizationCategory": "Jalium.UI.Controls.LocalizationCategory",
+    "System.Windows.MessageBox": "Jalium.UI.Controls.MessageBox",
+    "System.Windows.MessageBoxButton": "Jalium.UI.Controls.MessageBoxButton",
+    "System.Windows.MessageBoxImage": "Jalium.UI.Controls.MessageBoxImage",
+    "System.Windows.MessageBoxOptions": "Jalium.UI.Controls.MessageBoxOptions",
+    "System.Windows.MessageBoxResult": "Jalium.UI.Controls.MessageBoxResult",
+    "System.Windows.Media.ContainerVisual": "Jalium.UI.ContainerVisual",
+    "System.Windows.Media.DrawingVisual": "Jalium.UI.DrawingVisual",
+    "System.Windows.Media.Visual": "Jalium.UI.Visual",
+    "System.Windows.Media.VisualCollection": "Jalium.UI.VisualCollection",
+    "System.Windows.Media.VisualTreeHelper": "Jalium.UI.VisualTreeHelper",
+    "System.Windows.Modifiability": "Jalium.UI.Controls.Modifiability",
+    "System.Windows.Readability": "Jalium.UI.Controls.Readability",
+    "System.Windows.ResizeMode": "Jalium.UI.Controls.ResizeMode",
+    "System.Windows.ShutdownMode": "Jalium.UI.Controls.ShutdownMode",
+    "System.Windows.SplashScreen": "Jalium.UI.Controls.SplashScreen",
+    "System.Windows.StaticResourceExtension": "Jalium.UI.Markup.StaticResourceExtension",
+    "System.Windows.SystemCommands": "Jalium.UI.Controls.SystemCommands",
+    "System.Windows.ThemeDictionaryExtension": "Jalium.UI.Markup.ThemeDictionaryExtension",
+    "System.Windows.Window": "Jalium.UI.Controls.Window",
+    "System.Windows.WindowStartupLocation": "Jalium.UI.Controls.WindowStartupLocation",
+    "System.Windows.WindowState": "Jalium.UI.Controls.WindowState",
+    "System.Windows.WindowStyle": "Jalium.UI.Controls.WindowStyle"
+  }
+}

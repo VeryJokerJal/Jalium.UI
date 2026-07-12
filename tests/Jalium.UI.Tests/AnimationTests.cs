@@ -374,7 +374,11 @@ public class AnimationTests
             animation.To!,
             CreateAnimationClock(animation, 0.5));
 
-        Assert.Equal(Color.FromArgb(128, 30, 60, 90), result.Color);
+        var destination = Assert.IsType<SolidColorBrush>(animation.To).Color;
+        Assert.Equal(0.5f, result.Color.ScA);
+        Assert.Equal(destination.ScR, result.Color.ScR);
+        Assert.Equal(destination.ScG, result.Color.ScG);
+        Assert.Equal(destination.ScB, result.Color.ScB);
     }
 
     [Fact]

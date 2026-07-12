@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Interop;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -94,7 +94,7 @@ public class StatusBarItem : ContentControl
         if (Content is string text)
         {
             var fgBrush = Foreground ?? s_defaultFgBrush;
-            var formattedText = new FormattedText(text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
+            var formattedText = new FormattedText(text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
             {
                 Foreground = fgBrush
             };

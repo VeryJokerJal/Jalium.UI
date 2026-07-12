@@ -18,16 +18,6 @@ public enum EasingMode
 }
 
 /// <summary>
-/// Provides a mechanism for producing a value that varies non-linearly over the normalized
-/// progress of an animation.
-/// </summary>
-public interface IEasingFunction
-{
-    /// <summary>Transforms the normalized progress value (0..1) into an eased value.</summary>
-    double Ease(double normalizedTime);
-}
-
-/// <summary>
 /// Base class for all easing functions. Mirrors WPF's
 /// <c>System.Windows.Media.Animation.EasingFunctionBase</c>: a <see cref="Freezable"/> whose
 /// <see cref="EasingMode"/> (and each derived function's parameters) are dependency properties,

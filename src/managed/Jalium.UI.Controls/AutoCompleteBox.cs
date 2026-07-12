@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.ObjectModel;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
@@ -16,9 +16,9 @@ namespace Jalium.UI.Controls;
 public class AutoCompleteBox : TextBoxBase, IImeSupport
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.AutoCompleteBoxAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.AutoCompleteBoxAutomationPeer(this);
     }
 
     #region Static Brushes & Pens
@@ -171,14 +171,14 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the TextChanged routed event.
     /// </summary>
-    public static readonly RoutedEvent TextChangedEvent =
+    public new static readonly RoutedEvent TextChangedEvent =
         EventManager.RegisterRoutedEvent(nameof(TextChanged), RoutingStrategy.Bubble,
             typeof(RoutedEventHandler), typeof(AutoCompleteBox));
 
     /// <summary>
     /// Identifies the SelectionChanged routed event.
     /// </summary>
-    public static readonly RoutedEvent SelectionChangedEvent =
+    public new static readonly RoutedEvent SelectionChangedEvent =
         EventManager.RegisterRoutedEvent(nameof(SelectionChanged), RoutingStrategy.Bubble,
             typeof(EventHandler<SelectionChangedEventArgs>), typeof(AutoCompleteBox));
 
@@ -206,7 +206,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Occurs when the text changes.
     /// </summary>
-    public event RoutedEventHandler TextChanged
+    public new event RoutedEventHandler TextChanged
     {
         add => AddHandler(TextChangedEvent, value);
         remove => RemoveHandler(TextChangedEvent, value);
@@ -215,7 +215,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Occurs when the selection changes.
     /// </summary>
-    public event EventHandler<SelectionChangedEventArgs> SelectionChanged
+    public new event EventHandler<SelectionChangedEventArgs> SelectionChanged
     {
         add => AddHandler(SelectionChangedEvent, value);
         remove => RemoveHandler(SelectionChangedEvent, value);
@@ -400,7 +400,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     public AutoCompleteBox()
     {
         // Set IBeam cursor for text input
-        Cursor = Jalium.UI.Cursors.IBeam;
+        Cursor = Jalium.UI.Input.Cursors.IBeam;
 
         // Subscribe to IME events
         InputMethod.CompositionStarted += OnImeCompositionStarted;
@@ -446,7 +446,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
 
     private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             InputMethod.SetTarget(null);
         }
@@ -474,7 +474,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
 
     private void OnImeCompositionStarted(object? sender, EventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionStart();
         }
@@ -482,7 +482,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
 
     private void OnImeCompositionUpdated(object? sender, CompositionEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionUpdate(e.Text, e.CursorPosition);
         }
@@ -490,7 +490,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
 
     private void OnImeCompositionEnded(object? sender, CompositionResultEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionEnd(e.Result);
         }
@@ -512,7 +512,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
@@ -524,7 +524,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
 
         if (_cachedFontFamily != fontFamily || _cachedFontSize != fontSize)
@@ -1111,7 +1111,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         dc.PushClip(new RectangleGeometry(contentRect));
 
         // Draw selection background
-        if (_selectionLength > 0 && IsKeyboardFocused)
+        if (_selectionLength > 0 && (IsKeyboardFocused || IsInactiveSelectionHighlightEnabled))
         {
             DrawSelection(dc, contentRect, lineHeight);
         }
@@ -1119,7 +1119,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         // Draw text or placeholder
         if (string.IsNullOrEmpty(_text) && !string.IsNullOrEmpty(PlaceholderText))
         {
-            var watermarkText = new FormattedText(PlaceholderText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var watermarkText = new FormattedText(PlaceholderText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = ResolvePlaceholderBrush(),
                 MaxTextWidth = contentRect.Width,
@@ -1132,7 +1132,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         }
         else if (!string.IsNullOrEmpty(_text))
         {
-            var formattedText = new FormattedText(_text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var formattedText = new FormattedText(_text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = ResolveTextForegroundBrush(),
                 MaxTextWidth = contentRect.Width,
@@ -1151,7 +1151,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         }
 
         // Draw caret
-        if (IsFocused && !IsReadOnly)
+        if (IsFocused && (!IsReadOnly || IsReadOnlyCaretVisible))
         {
             DrawCaret(dc, contentRect, lineHeight);
         }
@@ -1190,7 +1190,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         var compositionWidth = MeasureTextWidth(_imeCompositionString);
         dc.DrawRectangle(s_compositionBgBrush, null, new Rect(x, textY, compositionWidth, lineHeight));
 
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
@@ -1266,7 +1266,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
 
             // Draw item text
             var itemText = GetItemText(FilteredItems[i]);
-            var formattedText = new FormattedText(itemText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 13)
+            var formattedText = new FormattedText(itemText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 13)
             {
                 Foreground = Foreground ?? s_whiteBrush
             };

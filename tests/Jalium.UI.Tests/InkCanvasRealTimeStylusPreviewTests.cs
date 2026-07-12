@@ -1,7 +1,7 @@
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
-using Jalium.UI.Controls.Ink;
+using Jalium.UI.Ink;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 
@@ -21,8 +21,8 @@ public class InkCanvasRealTimeStylusPreviewTests
     {
         var canvas = CreateInkCanvas();
 
-        Assert.NotEmpty(canvas.StylusPlugIns);
-        var first = canvas.StylusPlugIns[0];
+        Assert.NotEmpty(canvas.GetStylusPlugIns(createIfMissing: true)!);
+        var first = canvas.GetStylusPlugIns(createIfMissing: true)![0];
         Assert.IsType<RealTimeInkPreviewStylusPlugIn>(first);
         Assert.True(first.IsRealTimeCapable, "Real-time preview plug-in must run on the RTS thread");
     }
@@ -38,7 +38,8 @@ public class InkCanvasRealTimeStylusPreviewTests
         using var rts = new RealTimeStylus(canvas) { UseRealTimeThread = true };
         // Wrap the plug-in with a thread-capture probe inserted before it so
         // we can assert OnStylusDown actually ran off the UI thread.
-        canvas.StylusPlugIns.Insert(0, new ThreadProbe(t => capturedThread = t) { ForceRealTime = true });
+        canvas.GetStylusPlugIns(createIfMissing: true)!
+            .Insert(0, new ThreadProbe(t => capturedThread = t) { ForceRealTime = true });
 
         var result = rts.Process(
             pointerId: 100, target: canvas, action: StylusInputAction.Down,
@@ -139,6 +140,32 @@ public class InkCanvasRealTimeStylusPreviewTests
     }
 
     [Fact]
+    public void Unloaded_DropsInflightRealTimeAndDynamicPreviewSessions()
+    {
+        var canvas = CreateInkCanvas();
+        canvas.SetLoadedState(true);
+        var previewPlugIn = GetPreviewPlugIn(canvas);
+        var dynamicRenderer = Assert.IsType<DynamicRenderer>(
+            canvas.GetStylusPlugIns(createIfMissing: true)![1]);
+
+        using var rts = new RealTimeStylus(canvas) { UseRealTimeThread = true };
+        SendPacket(
+            rts,
+            canvas,
+            pointerId: 43,
+            action: StylusInputAction.Down,
+            new[] { new StylusPoint(0, 0), new StylusPoint(10, 10) });
+
+        Assert.True(previewPlugIn.HasActiveSessions);
+        Assert.NotNull(dynamicRenderer.CurrentPreviewStroke);
+
+        canvas.SetLoadedState(false);
+
+        Assert.False(previewPlugIn.HasActiveSessions);
+        Assert.Null(dynamicRenderer.CurrentPreviewStroke);
+    }
+
+    [Fact]
     public void EraseByPoint_FlagsSessionAsEraser_AndCommitsEraserStroke()
     {
         var canvas = CreateInkCanvas();
@@ -155,7 +182,7 @@ public class InkCanvasRealTimeStylusPreviewTests
         SendPacket(rts, canvas, pointerId: 1, action: StylusInputAction.Up, new[] { new StylusPoint(100, 100) });
         Assert.Single(canvas.Strokes);
         Assert.Same(
-            Jalium.UI.Controls.Ink.Shaders.EraserBrushShader.Instance,
+            Jalium.UI.Ink.Shaders.EraserBrushShader.Instance,
             canvas.Strokes[0].DrawingAttributes.BrushShader);
     }
 

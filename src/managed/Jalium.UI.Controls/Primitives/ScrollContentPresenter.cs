@@ -1,3 +1,5 @@
+using Jalium.UI.Documents;
+
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
@@ -6,6 +8,12 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class ScrollContentPresenter : ContentPresenter, IScrollInfo
 {
+    /// <summary>Identifies the <see cref="CanContentScroll"/> dependency property.</summary>
+    public static readonly DependencyProperty CanContentScrollProperty =
+        ScrollViewer.CanContentScrollProperty.AddOwner(
+            typeof(ScrollContentPresenter),
+            new PropertyMetadata(false, OnCanContentScrollChanged));
+
     private IScrollInfo? _scrollInfo;
     private bool _canHorizontallyScroll;
     private bool _canVerticallyScroll;
@@ -29,6 +37,17 @@ public class ScrollContentPresenter : ContentPresenter, IScrollInfo
             }
         }
     }
+
+    /// <summary>Gets or sets whether content supplies logical scrolling.</summary>
+    public bool CanContentScroll
+    {
+        get => (bool)(GetValue(CanContentScrollProperty) ?? false);
+        set => SetValue(CanContentScrollProperty, value);
+    }
+
+    /// <summary>Gets the nearest adorner layer associated with this presenter.</summary>
+    public AdornerLayer? AdornerLayer =>
+        Jalium.UI.Documents.AdornerLayer.GetAdornerLayer(this);
 
     #region IScrollInfo Implementation
 
@@ -211,12 +230,16 @@ public class ScrollContentPresenter : ContentPresenter, IScrollInfo
     {
         var content = Content as UIElement;
         if (content == null)
-            return Size.Empty;
+            return default(Size);
 
         // Check if content implements IScrollInfo
-        if (content is IScrollInfo scrollInfo && scrollInfo != _scrollInfo)
+        if (CanContentScroll && content is IScrollInfo scrollInfo && scrollInfo != _scrollInfo)
         {
             ScrollInfo = scrollInfo;
+        }
+        else if (!CanContentScroll && _scrollInfo != null)
+        {
+            ScrollInfo = null;
         }
 
         if (_scrollInfo == null)
@@ -284,4 +307,13 @@ public class ScrollContentPresenter : ContentPresenter, IScrollInfo
     }
 
     #endregion
+
+    private static void OnCanContentScrollChanged(
+        DependencyObject dependencyObject,
+        DependencyPropertyChangedEventArgs e)
+    {
+        var presenter = (ScrollContentPresenter)dependencyObject;
+        presenter.ScrollInfo = null;
+        presenter.InvalidateMeasure();
+    }
 }

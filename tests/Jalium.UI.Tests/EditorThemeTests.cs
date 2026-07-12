@@ -83,7 +83,7 @@ public class EditorThemeTests
             Assert.NotNull(editor.LineNumberForeground);
             Assert.NotNull(editor.CurrentLineBackground);
             Assert.NotNull(editor.GutterBackground);
-            Assert.Equal("Cascadia Code", editor.FontFamily);
+            Assert.Equal("Cascadia Code", editor.FontFamily.Source);
             Assert.Equal(14, editor.FontSize);
         }
         finally

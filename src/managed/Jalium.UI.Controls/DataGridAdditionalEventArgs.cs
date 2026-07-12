@@ -1,6 +1,11 @@
 namespace Jalium.UI.Controls;
 
 /// <summary>
+/// Represents the method that handles the <see cref="DataGrid.SelectedCellsChanged"/> event.
+/// </summary>
+public delegate void SelectedCellsChangedEventHandler(object sender, SelectedCellsChangedEventArgs e);
+
+/// <summary>
 /// Provides data for the <see cref="DataGrid.SelectedCellsChanged"/> event.
 /// </summary>
 public sealed class SelectedCellsChangedEventArgs : EventArgs
@@ -21,12 +26,12 @@ public sealed class SelectedCellsChangedEventArgs : EventArgs
 /// <summary>
 /// Provides data for the <see cref="DataGrid.RowDetailsVisibilityChanged"/> event.
 /// </summary>
-public sealed class DataGridRowDetailsEventArgs : EventArgs
+public class DataGridRowDetailsEventArgs : EventArgs
 {
-    public DataGridRowDetailsEventArgs(FrameworkElement detailsElement, DataGridRow row)
+    public DataGridRowDetailsEventArgs(DataGridRow row, FrameworkElement detailsElement)
     {
-        DetailsElement = detailsElement;
         Row = row;
+        DetailsElement = detailsElement;
     }
 
     /// <summary>Gets the details element for the row.</summary>
@@ -39,24 +44,21 @@ public sealed class DataGridRowDetailsEventArgs : EventArgs
 /// <summary>
 /// Provides data for the column reordering event.
 /// </summary>
-public sealed class DataGridColumnReorderingEventArgs : EventArgs
+public class DataGridColumnReorderingEventArgs : DataGridColumnEventArgs
 {
     public DataGridColumnReorderingEventArgs(DataGridColumn column)
+        : base(column)
     {
-        Column = column;
     }
-
-    /// <summary>Gets the column being reordered.</summary>
-    public DataGridColumn Column { get; }
 
     /// <summary>Gets or sets a value indicating whether the reorder should be canceled.</summary>
     public bool Cancel { get; set; }
 
     /// <summary>Gets or sets the drop location indicator column.</summary>
-    public DataGridColumn? DropLocationIndicator { get; set; }
+    public Control? DropLocationIndicator { get; set; }
 
     /// <summary>Gets or sets the drag indicator column.</summary>
-    public DataGridColumn? DragIndicator { get; set; }
+    public Control? DragIndicator { get; set; }
 }
 
 /// <summary>

@@ -52,6 +52,131 @@ public static class AutomationProperties
 
     #endregion
 
+    #region Set Metadata Properties
+
+    /// <summary>Identifies the heading-level attached property.</summary>
+    public static readonly DependencyProperty HeadingLevelProperty =
+        DependencyProperty.RegisterAttached(
+            "HeadingLevel",
+            typeof(AutomationHeadingLevel),
+            typeof(AutomationProperties),
+            new PropertyMetadata(AutomationHeadingLevel.None),
+            static value => value is AutomationHeadingLevel level && Enum.IsDefined(level));
+
+    public static AutomationHeadingLevel GetHeadingLevel(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (AutomationHeadingLevel)(element.GetValue(HeadingLevelProperty) ?? AutomationHeadingLevel.None);
+    }
+
+    public static void SetHeadingLevel(DependencyObject element, AutomationHeadingLevel value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(HeadingLevelProperty, value);
+    }
+
+    /// <summary>Identifies the position-in-set attached property.</summary>
+    public static readonly DependencyProperty PositionInSetProperty =
+        DependencyProperty.RegisterAttached(
+            "PositionInSet",
+            typeof(int),
+            typeof(AutomationProperties),
+            new PropertyMetadata(-1));
+
+    public static int GetPositionInSet(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (int)(element.GetValue(PositionInSetProperty) ?? -1);
+    }
+
+    public static void SetPositionInSet(DependencyObject element, int value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(PositionInSetProperty, value);
+    }
+
+    /// <summary>Identifies the size-of-set attached property.</summary>
+    public static readonly DependencyProperty SizeOfSetProperty =
+        DependencyProperty.RegisterAttached(
+            "SizeOfSet",
+            typeof(int),
+            typeof(AutomationProperties),
+            new PropertyMetadata(-1));
+
+    public static int GetSizeOfSet(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (int)(element.GetValue(SizeOfSetProperty) ?? -1);
+    }
+
+    public static void SetSizeOfSet(DependencyObject element, int value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(SizeOfSetProperty, value);
+    }
+
+    /// <summary>Identifies whether an element is a row header.</summary>
+    public static readonly DependencyProperty IsRowHeaderProperty =
+        DependencyProperty.RegisterAttached(
+            "IsRowHeader",
+            typeof(bool),
+            typeof(AutomationProperties),
+            new PropertyMetadata(false));
+
+    public static bool GetIsRowHeader(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (bool)(element.GetValue(IsRowHeaderProperty) ?? false);
+    }
+
+    public static void SetIsRowHeader(DependencyObject element, bool value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(IsRowHeaderProperty, value);
+    }
+
+    /// <summary>Identifies whether an element is a column header.</summary>
+    public static readonly DependencyProperty IsColumnHeaderProperty =
+        DependencyProperty.RegisterAttached(
+            "IsColumnHeader",
+            typeof(bool),
+            typeof(AutomationProperties),
+            new PropertyMetadata(false));
+
+    public static bool GetIsColumnHeader(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (bool)(element.GetValue(IsColumnHeaderProperty) ?? false);
+    }
+
+    public static void SetIsColumnHeader(DependencyObject element, bool value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(IsColumnHeaderProperty, value);
+    }
+
+    /// <summary>Identifies whether an element represents a dialog.</summary>
+    public static readonly DependencyProperty IsDialogProperty =
+        DependencyProperty.RegisterAttached(
+            "IsDialog",
+            typeof(bool),
+            typeof(AutomationProperties),
+            new PropertyMetadata(false));
+
+    public static bool GetIsDialog(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (bool)(element.GetValue(IsDialogProperty) ?? false);
+    }
+
+    public static void SetIsDialog(DependencyObject element, bool value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(IsDialogProperty, value);
+    }
+
+    #endregion
+
     #region AutomationId Property
 
     /// <summary>
@@ -436,6 +561,21 @@ public enum AutomationLiveSetting
     Assertive
 }
 
+/// <summary>Specifies the semantic heading level exposed to UI Automation.</summary>
+public enum AutomationHeadingLevel
+{
+    None = 0,
+    Level1 = 1,
+    Level2 = 2,
+    Level3 = 3,
+    Level4 = 4,
+    Level5 = 5,
+    Level6 = 6,
+    Level7 = 7,
+    Level8 = 8,
+    Level9 = 9,
+}
+
 /// <summary>
 /// Specifies how an element reports its offscreen behavior.
 /// </summary>
@@ -444,20 +584,20 @@ public enum IsOffscreenBehavior
     /// <summary>
     /// Use the default behavior.
     /// </summary>
-    Default,
-
-    /// <summary>
-    /// The element is offscreen if not visible.
-    /// </summary>
-    Offscreen,
+    Default = 0,
 
     /// <summary>
     /// The element is never considered offscreen.
     /// </summary>
-    Onscreen,
+    Onscreen = 1,
+
+    /// <summary>
+    /// The element is offscreen if not visible.
+    /// </summary>
+    Offscreen = 2,
 
     /// <summary>
     /// Use the parent's coordinates to determine offscreen.
     /// </summary>
-    FromClip
+    FromClip = 3
 }

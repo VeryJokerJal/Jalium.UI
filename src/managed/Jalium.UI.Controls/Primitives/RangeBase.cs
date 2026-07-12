@@ -142,8 +142,20 @@ public abstract class RangeBase : Control
     {
         if (d is RangeBase rangeBase)
         {
-            rangeBase.CoerceValueInternal();
-            rangeBase.OnMinimumChanged((double)(e.OldValue ?? 0.0), (double)(e.NewValue ?? 0.0));
+            var oldMinimum = (double)(e.OldValue ?? 0.0);
+            var newMinimum = (double)(e.NewValue ?? 0.0);
+            var oldMaximum = rangeBase.Maximum;
+            if (oldMaximum < newMinimum)
+            {
+                rangeBase.Maximum = newMinimum;
+            }
+
+            rangeBase.NotifyCoercedValueChanged(
+                oldMinimum,
+                oldMaximum,
+                newMinimum,
+                rangeBase.Maximum);
+            rangeBase.OnMinimumChanged(oldMinimum, newMinimum);
         }
     }
 
@@ -151,8 +163,20 @@ public abstract class RangeBase : Control
     {
         if (d is RangeBase rangeBase)
         {
-            rangeBase.CoerceValueInternal();
-            rangeBase.OnMaximumChanged((double)(e.OldValue ?? 1.0), (double)(e.NewValue ?? 1.0));
+            var oldMaximum = (double)(e.OldValue ?? 1.0);
+            var newMaximum = (double)(e.NewValue ?? 1.0);
+            if (newMaximum < rangeBase.Minimum)
+            {
+                rangeBase.Maximum = rangeBase.Minimum;
+                return;
+            }
+
+            rangeBase.NotifyCoercedValueChanged(
+                rangeBase.Minimum,
+                oldMaximum,
+                rangeBase.Minimum,
+                newMaximum);
+            rangeBase.OnMaximumChanged(oldMaximum, newMaximum);
         }
     }
 
@@ -191,14 +215,27 @@ public abstract class RangeBase : Control
         return value;
     }
 
-    private void CoerceValueInternal()
+    private void NotifyCoercedValueChanged(
+        double oldMinimum,
+        double oldMaximum,
+        double newMinimum,
+        double newMaximum)
     {
-        var currentValue = Value;
-        var coercedValue = (double)(CoerceValue(this, currentValue) ?? currentValue);
-        if (Math.Abs(coercedValue - currentValue) > double.Epsilon)
+        var (baseValue, _) = GetUncoercedBaseValueInternal(ValueProperty);
+        var rawValue = baseValue is double value ? value : Value;
+        var oldValue = CoerceToRange(rawValue, oldMinimum, oldMaximum);
+        var newValue = CoerceToRange(rawValue, newMinimum, newMaximum);
+
+        if (!oldValue.Equals(newValue))
         {
-            Value = coercedValue;
+            OnValueChanged(oldValue, newValue);
         }
+    }
+
+    private static double CoerceToRange(double value, double minimum, double maximum)
+    {
+        maximum = Math.Max(minimum, maximum);
+        return Math.Clamp(value, minimum, maximum);
     }
 
     #endregion

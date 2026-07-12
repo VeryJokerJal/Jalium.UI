@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Input;
+using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -9,9 +9,17 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class CalendarItem : Control
 {
+    private static readonly ComponentResourceKey s_dayTitleTemplateResourceKey =
+        new(typeof(CalendarItem), "DayTitleTemplate");
+
+    /// <summary>
+    /// Gets the resource key used to locate the day-title template.
+    /// </summary>
+    public static ComponentResourceKey DayTitleTemplateResourceKey => s_dayTitleTemplateResourceKey;
+
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Calendar);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Calendar);
 
     #region Static Brushes
 
@@ -140,7 +148,7 @@ public class CalendarItem : Control
     #region Visual Children
 
     /// <inheritdoc />
-    public override int VisualChildrenCount
+    protected override int VisualChildrenCount
     {
         get
         {
@@ -152,7 +160,7 @@ public class CalendarItem : Control
     }
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         return index switch
         {
@@ -229,7 +237,7 @@ public class CalendarItem : Control
 
         for (var i = 0; i < DaysPerWeek; i++)
         {
-            var formattedText = new FormattedText(dayNames[i], FontFamily ?? FrameworkElement.DefaultFontFamilyName, 12)
+            var formattedText = new FormattedText(dayNames[i], FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, 12)
             {
                 Foreground = fgBrush
             };
@@ -322,25 +330,4 @@ public class CalendarItem : Control
     }
 
     #endregion
-}
-
-/// <summary>
-/// Specifies the display mode of a Calendar.
-/// </summary>
-public enum CalendarMode
-{
-    /// <summary>
-    /// Display days of a month.
-    /// </summary>
-    Month,
-
-    /// <summary>
-    /// Display months of a year.
-    /// </summary>
-    Year,
-
-    /// <summary>
-    /// Display years of a decade.
-    /// </summary>
-    Decade
 }

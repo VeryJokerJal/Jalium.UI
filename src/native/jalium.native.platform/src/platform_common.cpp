@@ -1,6 +1,7 @@
 #include "jalium_platform.h"
 
 #include <atomic>
+#include <cstdlib>
 #include <mutex>
 
 // ============================================================================

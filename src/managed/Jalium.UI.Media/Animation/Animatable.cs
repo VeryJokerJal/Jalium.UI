@@ -16,6 +16,13 @@ public abstract class Animatable : Freezable, IAnimatable
     /// </summary>
     public bool HasAnimatedProperties => _animationClocks.Count > 0;
 
+    /// <summary>Creates a modifiable clone with the concrete Animatable return type.</summary>
+    public new Animatable Clone() => (Animatable)base.Clone();
+
+    /// <summary>Prevents the implementation-only stored weak reference from being serialized.</summary>
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
+    public static bool ShouldSerializeStoredWeakReference(DependencyObject target) => false;
+
     /// <summary>
     /// Applies an AnimationClock to the specified DependencyProperty, replacing existing animations.
     /// </summary>

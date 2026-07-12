@@ -197,7 +197,7 @@ public class SegmentedRadioHoverResidueTests
             if (withTransition)
             {
                 border.TransitionProperty = new TransitionPropertyCollection(new[] { "Background" });
-                border.SetValue(UIElement.TransitionDurationProperty, new Jalium.UI.Media.Animation.Duration(TimeSpan.FromMilliseconds(120)));
+                border.SetValue(UIElement.TransitionDurationProperty, new Duration(TimeSpan.FromMilliseconds(120)));
             }
             return border;
         });

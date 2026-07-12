@@ -95,9 +95,9 @@ public class IconElementThemeTests
             AddVisualChild(_child);
         }
 
-        public override int VisualChildrenCount => 1;
+        protected override int VisualChildrenCount => 1;
 
-        public override Visual? GetVisualChild(int index)
+        protected override Visual? GetVisualChild(int index)
         {
             return index == 0 ? _child : throw new ArgumentOutOfRangeException(nameof(index));
         }

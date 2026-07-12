@@ -324,7 +324,7 @@ internal static class SoftwareVectorRasterizer
     /// The software path fills with one flat color, so the weighted average reads closer
     /// to the gradient's overall tone than just the first stop did.
     /// </summary>
-    private static Color AverageGradient(IReadOnlyList<GradientStop> stops)
+    private static Color AverageGradient(IList<GradientStop> stops)
     {
         if (stops.Count == 1) return stops[0].Color;
 

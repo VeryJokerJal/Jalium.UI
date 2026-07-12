@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
@@ -13,8 +13,8 @@ namespace Jalium.UI.Controls;
 public class MenuBarItem : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.MenuBarItemAutomationPeer(this);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.MenuBarItemAutomationPeer(this);
 
     private static readonly SolidColorBrush s_fallbackHoverBrush = new(Color.FromRgb(61, 61, 61));
     private static readonly SolidColorBrush s_fallbackTextBrush = new(Color.FromRgb(255, 255, 255));
@@ -86,7 +86,7 @@ public class MenuBarItem : Control
         if (!string.IsNullOrEmpty(Title))
         {
             var formattedText = new Jalium.UI.Media.FormattedText(
-                Title, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize);
+                Title, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize);
             TextMeasurement.MeasureText(formattedText);
             textWidth = formattedText.Width;
         }
@@ -116,7 +116,7 @@ public class MenuBarItem : Control
             var fontSize = FontSize > 0 ? FontSize : 14;
             var textBrush = ResolveForegroundBrush();
             var textFormatted = new Jalium.UI.Media.FormattedText(
-                Title, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
+                Title, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
             TextMeasurement.MeasureText(textFormatted);
             dc.DrawText(textFormatted,
                 new Point((RenderSize.Width - textFormatted.Width) / 2,

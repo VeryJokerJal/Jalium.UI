@@ -1,7 +1,13 @@
 ﻿using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Automation;
+using Jalium.UI.Automation.Peers;
+using Jalium.UI.Markup;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Media.Imaging;
+using BitmapImage = Jalium.UI.Media.BitmapImage;
+using LegacyD3DImage = Jalium.UI.Media.D3DImage;
+using WriteableBitmap = Jalium.UI.Media.WriteableBitmap;
 using Jalium.UI.Media.Native;
 using Jalium.UI.Media.Pipeline;
 using Jalium.UI.Threading;
@@ -21,44 +27,11 @@ namespace Jalium.UI.Controls;
 
 public enum MediaState
 {
-    Manual,
-    Play,
-    Pause,
-    Stop,
-    Close
-}
-
-#endregion
-
-#region 事件参数
-
-public sealed class MediaFailedEventArgs : RoutedEventArgs
-{
-    public Exception Exception { get; }
-    public string ErrorMessage => Exception.Message;
-
-    public MediaFailedEventArgs(RoutedEvent routedEvent, object source, Exception exception)
-        : base(routedEvent, source)
-    {
-        Exception = exception;
-    }
-
-    public MediaFailedEventArgs(Exception exception)
-    {
-        Exception = exception;
-    }
-}
-
-public sealed class MediaScriptCommandEventArgs : EventArgs
-{
-    public string ParameterType { get; }
-    public string ParameterValue { get; }
-
-    public MediaScriptCommandEventArgs(string parameterType, string parameterValue)
-    {
-        ParameterType = parameterType;
-        ParameterValue = parameterValue;
-    }
+    Manual = 0,
+    Play = 1,
+    Close = 2,
+    Pause = 3,
+    Stop = 4
 }
 
 #endregion
@@ -153,7 +126,7 @@ public sealed class VideoFrame : IDisposable
     /// <summary>
     /// Stage 3+ 路径:DXVA / MediaCodec / VTDecompressionSession 等硬件解码器直接给一个
     /// GPU-resident surface。非 null 时 MediaElement 跳过 BGRA staging 路径,
-    /// 直接 bind <see cref="D3DImage"/> 让 framework 走 jalium_render_target_draw_video_surface。
+    /// 直接 bind <see cref="Jalium.UI.Media.D3DImage"/> 让 framework 走 jalium_render_target_draw_video_surface。
     /// 当前 stage 1+2 decoder 全部返 null,所以这个字段长期为 null;stage 3 真填后自动生效。
     /// </summary>
     public NativeVideoSurface? GpuSurface => _gpuSurface;
@@ -405,7 +378,7 @@ public sealed class AVSyncClock : IDisposable
 
 #region MediaElement 控件
 
-public class MediaElement : FrameworkElement, IDisposable
+public class MediaElement : FrameworkElement, IDisposable, IUriContext
 {
     #region 私有字段
 
@@ -440,6 +413,10 @@ public class MediaElement : FrameworkElement, IDisposable
     private AudioPlayer? _audioManager;
     private VideoFrameBuffer? _frameBuffer;
     private string? _mediaPath;
+    private MediaClock? _clock;
+    private Uri? _baseUri;
+    private double _downloadProgress;
+    private double _bufferingProgress;
     private TimeSpan _position;
     private TimeSpan _duration;
     private bool _isPlaying;
@@ -459,7 +436,7 @@ public class MediaElement : FrameworkElement, IDisposable
     // WriteableBitmap.BackBuffer copy hop. Falls back to _frameBitmap when
     // CreateVideoSurface returns null / throws (e.g. backend stub).
     private NativeVideoSurface? _videoSurface;
-    private D3DImage? _d3dImage;
+    private LegacyD3DImage? _d3dImage;
     private bool _videoSurfacePathUnsupported;  // sticky:once create fails, don't keep retrying
     private readonly SolidColorBrush _backgroundBrush = new(Color.FromRgb(0, 0, 0));
     private int _videoWidth;
@@ -506,7 +483,10 @@ public class MediaElement : FrameworkElement, IDisposable
 
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(Uri), typeof(MediaElement),
-            new PropertyMetadata(null, OnSourceChanged));
+            new FrameworkPropertyMetadata(
+                null,
+                FrameworkPropertyMetadataOptions.AffectsMeasure | FrameworkPropertyMetadataOptions.AffectsRender,
+                OnSourceChanged));
 
     public static readonly DependencyProperty VolumeProperty =
         DependencyProperty.Register(nameof(Volume), typeof(double), typeof(MediaElement),
@@ -558,7 +538,19 @@ public class MediaElement : FrameworkElement, IDisposable
 
     public static readonly RoutedEvent MediaFailedEvent =
         EventManager.RegisterRoutedEvent(nameof(MediaFailed), RoutingStrategy.Bubble,
-            typeof(EventHandler<MediaFailedEventArgs>), typeof(MediaElement));
+            typeof(EventHandler<ExceptionRoutedEventArgs>), typeof(MediaElement));
+
+    public static readonly RoutedEvent BufferingStartedEvent =
+        EventManager.RegisterRoutedEvent(nameof(BufferingStarted), RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler), typeof(MediaElement));
+
+    public static readonly RoutedEvent BufferingEndedEvent =
+        EventManager.RegisterRoutedEvent(nameof(BufferingEnded), RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler), typeof(MediaElement));
+
+    public static readonly RoutedEvent ScriptCommandEvent =
+        EventManager.RegisterRoutedEvent(nameof(ScriptCommand), RoutingStrategy.Bubble,
+            typeof(EventHandler<MediaScriptCommandRoutedEventArgs>), typeof(MediaElement));
 
     public event RoutedEventHandler? MediaOpened
     {
@@ -572,24 +564,56 @@ public class MediaElement : FrameworkElement, IDisposable
         remove => RemoveHandler(MediaEndedEvent, value!);
     }
 
-    public event EventHandler<MediaFailedEventArgs>? MediaFailed
+    public event EventHandler<ExceptionRoutedEventArgs>? MediaFailed
     {
         add => AddHandler(MediaFailedEvent, value!);
         remove => RemoveHandler(MediaFailedEvent, value!);
     }
 
-    public event RoutedEventHandler? BufferingStarted;
-    public event RoutedEventHandler? BufferingEnded;
-    public event EventHandler<MediaScriptCommandEventArgs>? ScriptCommand;
+    public event RoutedEventHandler? BufferingStarted
+    {
+        add => AddHandler(BufferingStartedEvent, value!);
+        remove => RemoveHandler(BufferingStartedEvent, value!);
+    }
+
+    public event RoutedEventHandler? BufferingEnded
+    {
+        add => AddHandler(BufferingEndedEvent, value!);
+        remove => RemoveHandler(BufferingEndedEvent, value!);
+    }
+
+    public event EventHandler<MediaScriptCommandRoutedEventArgs>? ScriptCommand
+    {
+        add => AddHandler(ScriptCommandEvent, value!);
+        remove => RemoveHandler(ScriptCommandEvent, value!);
+    }
 
     /// <summary>Raises the <see cref="BufferingStarted"/> event. For internal use by media backends.</summary>
-    protected virtual void OnBufferingStarted() => BufferingStarted?.Invoke(this, new RoutedEventArgs());
+    protected virtual void OnBufferingStarted()
+    {
+        IsBuffering = true;
+        Volatile.Write(ref _bufferingProgress, 0.0);
+        RaiseEvent(new RoutedEventArgs(BufferingStartedEvent, this));
+    }
 
     /// <summary>Raises the <see cref="BufferingEnded"/> event. For internal use by media backends.</summary>
-    protected virtual void OnBufferingEnded() => BufferingEnded?.Invoke(this, new RoutedEventArgs());
+    protected virtual void OnBufferingEnded()
+    {
+        IsBuffering = false;
+        Volatile.Write(ref _bufferingProgress, 1.0);
+        RaiseEvent(new RoutedEventArgs(BufferingEndedEvent, this));
+    }
 
     /// <summary>Raises the <see cref="ScriptCommand"/> event. For internal use by media backends.</summary>
-    protected virtual void OnScriptCommand(MediaScriptCommandEventArgs e) => ScriptCommand?.Invoke(this, e);
+    protected virtual void OnScriptCommand(MediaScriptCommandEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(new MediaScriptCommandRoutedEventArgs(
+            ScriptCommandEvent,
+            this,
+            e.ParameterType,
+            e.ParameterValue));
+    }
 
     #endregion
 
@@ -599,6 +623,19 @@ public class MediaElement : FrameworkElement, IDisposable
     {
         get => (Uri?)GetValue(SourceProperty);
         set => SetValue(SourceProperty, value);
+    }
+
+    /// <summary>Gets or sets the media clock that controls playback.</summary>
+    public MediaClock? Clock
+    {
+        get => _clock;
+        set => SetClock(value);
+    }
+
+    Uri? IUriContext.BaseUri
+    {
+        get => _baseUri;
+        set => SetBaseUri(value);
     }
 
     public double Volume
@@ -675,7 +712,8 @@ public class MediaElement : FrameworkElement, IDisposable
     public int NaturalVideoHeight => _videoHeight;
     public bool HasAudio => _hasAudio;
     public bool HasVideo => _hasVideo;
-    public double BufferingProgress => 0.0;
+    public double BufferingProgress => Volatile.Read(ref _bufferingProgress);
+    public double DownloadProgress => Volatile.Read(ref _downloadProgress);
     public bool IsBuffering { get; private set; }
     public bool CanPause { get; private set; } = true;
     public bool IsPlaying => _isPlaying;
@@ -691,6 +729,10 @@ public class MediaElement : FrameworkElement, IDisposable
         _audioManager = new AudioPlayer();
     }
 
+    /// <inheritdoc />
+    protected override AutomationPeer? OnCreateAutomationPeer() =>
+        new MediaElementAutomationPeer(this);
+
     ~MediaElement()
     {
         Dispose(false);
@@ -704,6 +746,8 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void Dispose(bool disposing)
     {
+        DetachClock(_clock);
+        _clock = null;
         StopPlayback();
         _syncClock?.Dispose();
         _videoDecoder?.Dispose();
@@ -932,17 +976,204 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void OnSourceChanged(Uri? oldSource, Uri? newSource)
     {
+        if (_clock != null)
+        {
+            throw new InvalidOperationException("Source cannot be changed while Clock is set.");
+        }
+
         if (newSource != null)
         {
-            var path = newSource.IsFile ? newSource.LocalPath : newSource.ToString();
-            _mediaPath = path;
-            OpenMedia(path);
+            OpenSource(newSource, _baseUri);
         }
         else
         {
             _mediaPath = null;
             CloseMedia();
         }
+    }
+
+    private void SetBaseUri(Uri? value)
+    {
+        if (Equals(_baseUri, value))
+        {
+            return;
+        }
+
+        _baseUri = value;
+
+        if (_clock?.Timeline.Source is { IsAbsoluteUri: false } clockSource)
+        {
+            var timelineBaseUri = ((IUriContext)_clock.Timeline).BaseUri;
+            if (timelineBaseUri == null)
+            {
+                OpenSource(clockSource, _baseUri);
+            }
+        }
+        else if (_clock == null && Source is { IsAbsoluteUri: false } source)
+        {
+            OpenSource(source, _baseUri);
+        }
+    }
+
+    private void SetClock(MediaClock? value)
+    {
+        if (ReferenceEquals(_clock, value))
+        {
+            return;
+        }
+
+        DetachClock(_clock);
+        CloseMedia();
+        _mediaPath = null;
+        _clock = value;
+        AttachClock(value);
+
+        if (value?.Timeline.Source is { } clockSource)
+        {
+            var timelineBaseUri = ((IUriContext)value.Timeline).BaseUri;
+            OpenSource(clockSource, timelineBaseUri ?? _baseUri);
+        }
+        else if (value == null && Source is { } source)
+        {
+            OpenSource(source, _baseUri);
+        }
+        else if (value != null)
+        {
+            ApplyClockState();
+        }
+    }
+
+    private void AttachClock(MediaClock? clock)
+    {
+        if (clock == null)
+        {
+            return;
+        }
+
+        clock.CurrentStateInvalidated += OnClockStateInvalidated;
+        clock.CurrentTimeInvalidated += OnClockTimeInvalidated;
+        clock.CurrentGlobalSpeedInvalidated += OnClockGlobalSpeedInvalidated;
+    }
+
+    private void DetachClock(MediaClock? clock)
+    {
+        if (clock == null)
+        {
+            return;
+        }
+
+        clock.CurrentStateInvalidated -= OnClockStateInvalidated;
+        clock.CurrentTimeInvalidated -= OnClockTimeInvalidated;
+        clock.CurrentGlobalSpeedInvalidated -= OnClockGlobalSpeedInvalidated;
+    }
+
+    private void OnClockStateInvalidated(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(sender, _clock))
+        {
+            DispatchClockUpdate(ApplyClockState);
+        }
+    }
+
+    private void OnClockTimeInvalidated(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(sender, _clock))
+        {
+            DispatchClockUpdate(ApplyClockTime);
+        }
+    }
+
+    private void OnClockGlobalSpeedInvalidated(object? sender, EventArgs e)
+    {
+        if (ReferenceEquals(sender, _clock))
+        {
+            DispatchClockUpdate(ApplyClockState);
+        }
+    }
+
+    private void DispatchClockUpdate(Action update)
+    {
+        if (CheckAccess())
+        {
+            update();
+        }
+        else
+        {
+            Dispatcher.BeginInvoke(update);
+        }
+    }
+
+    private void ApplyClockTime()
+    {
+        if (_clock?.CurrentTime is { } currentTime && currentTime != _position)
+        {
+            Position = currentTime;
+        }
+    }
+
+    private void ApplyClockState()
+    {
+        var clock = _clock;
+        if (clock == null)
+        {
+            return;
+        }
+
+        ApplyClockTime();
+        SpeedRatio = clock.Timeline.SpeedRatio;
+
+        switch (clock.CurrentState)
+        {
+            case ClockState.Active when clock.IsPaused:
+            case ClockState.Filling:
+                if (_isPlaying)
+                {
+                    Pause();
+                }
+                else
+                {
+                    _isPlaying = false;
+                    _isPaused = true;
+                }
+                break;
+            case ClockState.Active:
+                Play();
+                break;
+            case ClockState.Stopped:
+                Stop();
+                break;
+        }
+    }
+
+    private void OpenSource(Uri source, Uri? baseUri)
+    {
+        var resolvedSource = ResolveSourceUri(source, baseUri);
+        _mediaPath = resolvedSource.IsFile ? resolvedSource.LocalPath : resolvedSource.AbsoluteUri;
+        Volatile.Write(ref _downloadProgress, 0.0);
+        OpenMedia(_mediaPath);
+    }
+
+    internal static Uri ResolveSourceUri(Uri source, Uri? baseUri)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+
+        if (source.IsAbsoluteUri)
+        {
+            return source;
+        }
+
+        if (baseUri?.IsAbsoluteUri == true)
+        {
+            return new Uri(baseUri, source);
+        }
+
+        var path = source.OriginalString;
+        if (baseUri != null)
+        {
+            path = Path.Combine(baseUri.OriginalString, path);
+        }
+
+        return new Uri(Path.GetFullPath(path), UriKind.Absolute);
     }
 
     private static void OnVolumeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -1136,8 +1367,16 @@ public class MediaElement : FrameworkElement, IDisposable
                     InvalidateMeasure();
                 }
 
+                Volatile.Write(ref _downloadProgress, 1.0);
                 RaiseMediaOpened();
-                ApplyLoadedBehavior(LoadedBehavior);
+                if (_clock != null)
+                {
+                    ApplyClockState();
+                }
+                else
+                {
+                    ApplyLoadedBehavior(LoadedBehavior);
+                }
             });
         });
     }
@@ -1396,6 +1635,7 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void CloseMedia()
     {
+        ++_openMediaGeneration;
         StopPlayback();
 
         // _audioManager.Close 会停止 device 并 dispose stream — 100ms+，移到后台。
@@ -1413,6 +1653,8 @@ public class MediaElement : FrameworkElement, IDisposable
         DropPendingDisplayFrame();
 
         _frameBitmap = null;
+        _syncClock?.Dispose();
+        _syncClock = null;
         _position = TimeSpan.Zero;
         _duration = TimeSpan.Zero;
         _hasVideo = false;
@@ -1420,10 +1662,13 @@ public class MediaElement : FrameworkElement, IDisposable
         _videoWidth = 0;
         _videoHeight = 0;
         _isArranged = false;
-        _arrangedSize = Size.Empty;
+        _arrangedSize = default;
         _pendingPlay = false;
         _isPaused = false;
         _videoStartTimeMs = 0;
+        IsBuffering = false;
+        Volatile.Write(ref _bufferingProgress, 0.0);
+        Volatile.Write(ref _downloadProgress, 0.0);
 
         InvalidateMeasure();
         InvalidateVisual();
@@ -1735,7 +1980,7 @@ public class MediaElement : FrameworkElement, IDisposable
         if (frame.GpuSurface is { } gpu)
         {
             // 旧 NativeVideoSurface 退出 D3DImage 引用(下一次 dispose 时归还 decoder)。
-            _d3dImage ??= new D3DImage();
+            _d3dImage ??= new LegacyD3DImage();
             _d3dImage.SetBackBuffer(gpu);
             // 旧 BGRA staging surface 在 GPU 路径下用不上,释放 GPU 内存。
             if (_videoSurface is not null && !ReferenceEquals(_videoSurface, gpu))
@@ -1812,7 +2057,7 @@ public class MediaElement : FrameworkElement, IDisposable
             {
                 var ctx = RenderContext.GetOrCreateCurrent();
                 _videoSurface = NativeVideoSurface.CreateBgra8(ctx.Handle, width, height);
-                _d3dImage ??= new D3DImage();
+                _d3dImage ??= new LegacyD3DImage();
                 _d3dImage.SetBackBuffer(_videoSurface);
             }
             catch (NativeMediaException)
@@ -1935,6 +2180,12 @@ public class MediaElement : FrameworkElement, IDisposable
 
             dispatcher?.BeginInvoke(() =>
             {
+                if (_clock != null)
+                {
+                    ApplyClockState();
+                    return;
+                }
+
                 _isPlaying = true;
                 _isPaused = false;
                 StartPlaybackInternal();
@@ -2023,7 +2274,7 @@ public class MediaElement : FrameworkElement, IDisposable
     {
         _isPlaying = false;
         _isPaused = false;
-        RaiseEvent(new MediaFailedEventArgs(MediaFailedEvent, this, exception));
+        RaiseEvent(new ExceptionRoutedEventArgs(MediaFailedEvent, this, exception));
     }
 
     #endregion

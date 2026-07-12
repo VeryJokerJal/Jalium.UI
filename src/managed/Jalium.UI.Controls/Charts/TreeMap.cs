@@ -219,9 +219,9 @@ public class TreeMap : ChartBase
     #region Automation
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.TreeMapAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.TreeMapAutomationPeer(this);
     }
 
     #endregion
@@ -275,7 +275,7 @@ public class TreeMap : ChartBase
             _ => LayoutSquarified(validItems, bounds, totalValue)
         };
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var labelBrush = s_defaultLabelBrush;
         double padding = CellPadding;
         double cornerRadius = 2;

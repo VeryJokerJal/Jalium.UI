@@ -11,9 +11,9 @@ namespace Jalium.UI.Controls;
 public class NavigationViewItem : ContentControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.NavigationViewItemAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.NavigationViewItemAutomationPeer(this);
     }
 
     #region Constants
@@ -299,7 +299,7 @@ public class NavigationViewItem : ContentControl
 
     private NavigationView? FindParentNavigationView()
     {
-        Visual? current = VisualParent;
+        Visual? current = ParentVisual;
         while (current != null)
         {
             if (current is NavigationView nav)
@@ -592,7 +592,7 @@ public class NavigationViewItem : ContentControl
         }
 
         var children = new List<UIElement>();
-        foreach (var child in _childrenPanel.Children)
+        foreach (UIElement child in _childrenPanel.Children)
         {
             if (child is UIElement uiElement && uiElement.Visibility == Visibility.Visible)
             {
@@ -784,8 +784,8 @@ public class NavigationViewItemHeader : ContentControl
 public class NavigationViewItemSeparator : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Separator);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Separator);
 
     private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(60, 60, 60));
 

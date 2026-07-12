@@ -35,7 +35,7 @@ namespace Jalium.UI.Tests.RenderThread;
 /// a false mismatch.
 /// </para>
 /// </remarks>
-internal sealed class RecordingRenderSink : DrawingContext,
+internal sealed class RecordingRenderSink : DrawingContextAdapter,
     IOffsetDrawingContext, IClipBoundsDrawingContext,
     IOpacityDrawingContext, ITransformDrawingContext, IEffectDrawingContext
 {

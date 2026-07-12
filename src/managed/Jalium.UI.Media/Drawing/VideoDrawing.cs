@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Jalium.UI.Media.Animation;
 using Jalium.UI.Media.Imaging;
 using Jalium.UI.Media.Native;
 using Jalium.UI.Media.Pipeline;
@@ -10,6 +11,11 @@ namespace Jalium.UI.Media;
 /// </summary>
 public sealed class VideoDrawing : Drawing
 {
+    public static readonly DependencyProperty PlayerProperty =
+        DependencyProperty.Register(nameof(Player), typeof(MediaPlayer), typeof(VideoDrawing), new PropertyMetadata(null));
+    public static readonly DependencyProperty RectProperty =
+        DependencyProperty.Register(nameof(Rect), typeof(Rect), typeof(VideoDrawing), new PropertyMetadata(Rect.Empty));
+
     /// <summary>
     /// Initializes a new instance of the <see cref="VideoDrawing"/> class.
     /// </summary>
@@ -32,12 +38,38 @@ public sealed class VideoDrawing : Drawing
     /// <summary>
     /// Gets or sets the MediaPlayer that plays the video.
     /// </summary>
-    public MediaPlayer? Player { get; set; }
+    public MediaPlayer? Player
+    {
+        get => (MediaPlayer?)GetValue(PlayerProperty);
+        set => SetValue(PlayerProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the region in which to draw the video.
     /// </summary>
-    public Rect Rect { get; set; }
+    public Rect Rect
+    {
+        get => (Rect)(GetValue(RectProperty) ?? Rect.Empty);
+        set => SetValue(RectProperty, value);
+    }
+
+    public new VideoDrawing Clone() => (VideoDrawing)base.Clone();
+    public new VideoDrawing CloneCurrentValue() => (VideoDrawing)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new VideoDrawing();
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, PlayerProperty))
+        {
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, PlayerProperty);
+        }
+
+        if (ReferenceEquals(e.Property, PlayerProperty) || ReferenceEquals(e.Property, RectProperty))
+        {
+            WritePostscript();
+        }
+    }
 
     /// <inheritdoc />
     public override Rect Bounds => Rect;
@@ -48,19 +80,14 @@ public sealed class VideoDrawing : Drawing
         if (Player == null || Rect.IsEmpty)
             return;
 
-        var frame = Player.CurrentFrame;
-        if (frame != null)
-        {
-            context.DrawImage(frame, Rect);
-        }
+        context.DrawVideo(Player, Rect);
     }
 }
-
 /// <summary>
 /// 非视觉媒体播放器:视频解码走 <see cref="INativeVideoDecoder"/>(Windows MF / Android MediaCodec),
 /// 音频走 <see cref="AudioPlayer"/>(SoundFlow + MiniAudio + FFmpeg)。
 /// </summary>
-public sealed class MediaPlayer : IDisposable
+public sealed class MediaPlayer : Animatable, IDisposable
 {
     private static INativeVideoDecoderFactory? s_videoDecoderFactory;
     private static readonly object s_factoryLock = new();
@@ -103,6 +130,12 @@ public sealed class MediaPlayer : IDisposable
     private bool _isPlaying;
     private TimeSpan _position;
     private bool _disposed;
+    private bool _isBuffering;
+    private bool _scrubbingEnabled;
+    private double _bufferingProgress;
+    private double _downloadProgress;
+    private MediaClock? _clock;
+    private Uri? _source;
 
     private double _currentVolume = 0.5;
     private bool _isMuted;
@@ -112,7 +145,49 @@ public sealed class MediaPlayer : IDisposable
     private WriteableBitmap? _frameBitmap;
 
     /// <summary>Gets or sets the source URI for the media.</summary>
-    public Uri? Source { get; set; }
+    public Uri? Source => _source;
+
+    /// <summary>Gets whether the current media can be paused.</summary>
+    public bool CanPause => HasAudio || HasVideo;
+
+    /// <summary>Gets whether the player is currently buffering media data.</summary>
+    public bool IsBuffering => _isBuffering;
+
+    /// <summary>Gets the fraction of the media buffer that is available.</summary>
+    public double BufferingProgress => _bufferingProgress;
+
+    /// <summary>Gets the fraction of the media that has been downloaded.</summary>
+    public double DownloadProgress => _downloadProgress;
+
+    /// <summary>Gets or sets whether seeking immediately updates the displayed video frame.</summary>
+    public bool ScrubbingEnabled
+    {
+        get => _scrubbingEnabled;
+        set
+        {
+            WritePreamble();
+            _scrubbingEnabled = value;
+            WritePostscript();
+        }
+    }
+
+    /// <summary>Gets or sets the media clock that controls this player.</summary>
+    public MediaClock? Clock
+    {
+        get => _clock;
+        set
+        {
+            WritePreamble();
+            _clock = value;
+            WritePostscript();
+
+            var clockSource = value?.Timeline.Source;
+            if (clockSource is not null && !Equals(Source, clockSource))
+            {
+                Open(clockSource);
+            }
+        }
+    }
 
     /// <summary>Gets or sets the volume level (0.0 to 1.0).</summary>
     public double Volume
@@ -169,7 +244,7 @@ public sealed class MediaPlayer : IDisposable
     }
 
     /// <summary>Gets the natural duration of the media.</summary>
-    public TimeSpan? NaturalDuration { get; private set; }
+    public Duration NaturalDuration { get; private set; } = Duration.Automatic;
 
     /// <summary>Gets the natural width of the video.</summary>
     public int NaturalVideoWidth => _videoWidth;
@@ -198,13 +273,26 @@ public sealed class MediaPlayer : IDisposable
     /// <summary>Occurs when an error is encountered.</summary>
     public event EventHandler<ExceptionEventArgs>? MediaFailed;
 
+    /// <summary>Occurs when media buffering begins.</summary>
+    public event EventHandler? BufferingStarted;
+
+    /// <summary>Occurs when media buffering finishes.</summary>
+    public event EventHandler? BufferingEnded;
+
+    /// <summary>Occurs when the media stream reports a script command.</summary>
+    public event EventHandler<MediaScriptCommandEventArgs>? ScriptCommand;
+
     /// <summary>Occurs when a new video frame is available.</summary>
     public event EventHandler? FrameReady;
 
     /// <summary>Opens the specified URI for playback.</summary>
     public void Open(Uri source)
     {
-        Source = source;
+        ArgumentNullException.ThrowIfNull(source);
+        WritePreamble();
+        _source = source;
+        SetBufferingState(true, 0.0);
+        _downloadProgress = source.IsFile ? 1.0 : 0.0;
 
         try
         {
@@ -227,7 +315,7 @@ public sealed class MediaPlayer : IDisposable
                 if (decoder.Duration > TimeSpan.Zero)
                 {
                     _duration = decoder.Duration;
-                    NaturalDuration = _duration;
+                    NaturalDuration = new Duration(_duration);
                 }
 
                 _frameDelayMs = 1000.0 / _videoFps;
@@ -251,10 +339,10 @@ public sealed class MediaPlayer : IDisposable
                 _audioPlayer.IsMuted = _isMuted;
                 _audioPlayer.SpeedRatio = _speedRatio;
 
-                if (HasAudio && NaturalDuration is null && _audioPlayer.NaturalDuration is { } audioDur)
+                if (HasAudio && !NaturalDuration.HasTimeSpan && _audioPlayer.NaturalDuration is { } audioDur)
                 {
                     _duration = audioDur;
-                    NaturalDuration = _duration;
+                    NaturalDuration = new Duration(_duration);
                 }
             }
             catch (Exception audioEx)
@@ -263,10 +351,14 @@ public sealed class MediaPlayer : IDisposable
                 HasAudio = false;
             }
 
+            _downloadProgress = 1.0;
+            SetBufferingState(false, 1.0);
             MediaOpened?.Invoke(this, EventArgs.Empty);
+            WritePostscript();
         }
         catch (Exception ex)
         {
+            SetBufferingState(false, 0.0);
             MediaFailed?.Invoke(this, new ExceptionEventArgs(ex));
         }
     }
@@ -332,10 +424,14 @@ public sealed class MediaPlayer : IDisposable
         _videoHeight = 0;
         HasVideo = false;
         HasAudio = false;
-        NaturalDuration = null;
-        Source = null;
+        NaturalDuration = Duration.Automatic;
+        _source = null;
         CurrentFrame = null;
         _frameBitmap = null;
+        _clock = null;
+        _bufferingProgress = 0.0;
+        _downloadProgress = 0.0;
+        _isBuffering = false;
     }
 
     /// <inheritdoc />
@@ -348,6 +444,90 @@ public sealed class MediaPlayer : IDisposable
     }
 
     #region 内部实现
+
+    /// <summary>Creates a modifiable clone of this player.</summary>
+    public new MediaPlayer Clone() => (MediaPlayer)base.Clone();
+
+    /// <summary>Creates a modifiable clone using current property values.</summary>
+    public new MediaPlayer CloneCurrentValue() => (MediaPlayer)base.CloneCurrentValue();
+
+    /// <inheritdoc />
+    protected override Freezable CreateInstanceCore() => new MediaPlayer();
+
+    /// <inheritdoc />
+    protected override void CloneCore(Freezable sourceFreezable)
+    {
+        base.CloneCore(sourceFreezable);
+        CopyConfigurationFrom((MediaPlayer)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void CloneCurrentValueCore(Freezable sourceFreezable)
+    {
+        base.CloneCurrentValueCore(sourceFreezable);
+        CopyConfigurationFrom((MediaPlayer)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void GetAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetAsFrozenCore(sourceFreezable);
+        CopyConfigurationFrom((MediaPlayer)sourceFreezable);
+    }
+
+#pragma warning disable CS0628 // WPF redeclares these protected members on its sealed MediaPlayer.
+    /// <summary>Verifies that the player may be read on the current thread.</summary>
+    protected new void ReadPreamble() => base.ReadPreamble();
+
+    /// <summary>Verifies that the player may be changed on the current thread.</summary>
+    protected new void WritePreamble() => base.WritePreamble();
+#pragma warning restore CS0628
+
+    private void CopyConfigurationFrom(MediaPlayer source)
+    {
+        _source = source.Source;
+        _currentVolume = source._currentVolume;
+        _isMuted = source._isMuted;
+        _speedRatio = source._speedRatio;
+        _position = source._position;
+        _scrubbingEnabled = source._scrubbingEnabled;
+        _clock = source._clock;
+        NaturalDuration = source.NaturalDuration;
+        _duration = source._duration;
+        _videoWidth = source._videoWidth;
+        _videoHeight = source._videoHeight;
+        HasAudio = source.HasAudio;
+        HasVideo = source.HasVideo;
+        _bufferingProgress = source._bufferingProgress;
+        _downloadProgress = source._downloadProgress;
+        _audioPlayer.Volume = _currentVolume;
+        _audioPlayer.Balance = source.Balance;
+        _audioPlayer.IsMuted = _isMuted;
+        _audioPlayer.SpeedRatio = _speedRatio;
+    }
+
+    private void SetBufferingState(bool isBuffering, double progress)
+    {
+        var changed = _isBuffering != isBuffering;
+        _isBuffering = isBuffering;
+        _bufferingProgress = Math.Clamp(progress, 0.0, 1.0);
+        if (!changed)
+        {
+            return;
+        }
+
+        if (isBuffering)
+        {
+            BufferingStarted?.Invoke(this, EventArgs.Empty);
+        }
+        else
+        {
+            BufferingEnded?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    internal void RaiseScriptCommand(string parameterType, string parameterValue) =>
+        ScriptCommand?.Invoke(this, new MediaScriptCommandEventArgs(parameterType, parameterValue));
 
     private TimeSpan GetMediaTime()
     {
@@ -517,17 +697,4 @@ public sealed class MediaPlayer : IDisposable
     }
 
     #endregion
-}
-
-/// <summary>Provides data for media failure events.</summary>
-public sealed class ExceptionEventArgs : EventArgs
-{
-    /// <summary>Initializes a new instance of the <see cref="ExceptionEventArgs"/> class.</summary>
-    public ExceptionEventArgs(Exception exception)
-    {
-        ErrorException = exception;
-    }
-
-    /// <summary>Gets the exception that caused the failure.</summary>
-    public Exception ErrorException { get; }
 }

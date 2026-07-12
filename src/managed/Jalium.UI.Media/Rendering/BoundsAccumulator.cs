@@ -85,7 +85,7 @@ internal sealed class BoundsAccumulator
     {
         var worldClip = TransformBounds(_currentMatrix, clipGeometry.Bounds);
         var effective = _clipStack.Count > 0
-            ? worldClip.Intersect(_clipStack.Peek())
+            ? Rect.Intersect(worldClip, _clipStack.Peek())
             : worldClip;
         _clipStack.Push(effective);
         _pushKindStack.Push(PushKind.Clip);
@@ -135,7 +135,7 @@ internal sealed class BoundsAccumulator
         {
             return;
         }
-        if (localRect.IsEmpty)
+        if (localRect.IsEmpty || localRect.Width <= 0 || localRect.Height <= 0)
         {
             return;
         }
@@ -144,15 +144,15 @@ internal sealed class BoundsAccumulator
 
         if (_clipStack.Count > 0)
         {
-            world = world.Intersect(_clipStack.Peek());
-            if (world.IsEmpty)
+            world = Rect.Intersect(world, _clipStack.Peek());
+            if (world.IsEmpty || world.Width <= 0 || world.Height <= 0)
             {
                 return;
             }
         }
 
         _accumulated = _accumulated.HasValue
-            ? _accumulated.Value.Union(world)
+            ? Rect.Union(_accumulated.Value, world)
             : world;
     }
 

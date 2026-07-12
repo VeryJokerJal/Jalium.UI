@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <JaliumPlatform>linux</JaliumPlatform>
+    <RootNamespace>Jalium.UI</RootNamespace>
+    <AssemblyName>Jalium.UI.Linux</AssemblyName>
+    <Description>Jalium.UI Linux desktop entry package. References the cross-platform managed runtime and RID-specific Linux native assets.</Description>
+
+    <IsPackable>true</IsPackable>
+    <PackageId>Jalium.UI.Linux</PackageId>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
+    <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
+    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Input\Jalium.UI.Input.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Managed\Jalium.UI.Managed.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" SetTargetFramework="TargetFramework=net10.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" ReferenceOutputAssembly="false" PrivateAssets="none" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="none"
+                      UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;RuntimeIdentifier;RuntimeIdentifiers" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Jalium.UI.Build" Version="$(Version)" PrivateAssets="none" />
+  </ItemGroup>
+
+</Project>

@@ -8,7 +8,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control that can be used to present a collection of items.
 /// </summary>
-public class ItemsControl : Control
+public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild
 {
     private ItemsPresenter? _itemsPresenter;
     private Panel? _fallbackItemsHost;
@@ -20,9 +20,9 @@ public class ItemsControl : Control
         StringComparison.OrdinalIgnoreCase);
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ItemsControlAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.GenericItemsControlAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -143,7 +143,8 @@ public class ItemsControl : Control
     public ItemsControl()
     {
         Items = new ItemCollection(this);
-        Items.CollectionChanged += OnItemsCollectionChanged;
+        ((INotifyCollectionChanged)Items).CollectionChanged += OnItemsCollectionChanged;
+        InitializeWpfParityState();
     }
 
     private ItemContainerGenerator EnsureItemContainerGenerator()
@@ -219,22 +220,35 @@ public class ItemsControl : Control
     /// </summary>
     protected virtual FrameworkElement GetContainerForItem(object item)
     {
-        return new ContentPresenter();
+        if (GetContainerForItemOverride() is FrameworkElement container)
+        {
+            return container;
+        }
+
+        throw new InvalidOperationException("An item container must be a FrameworkElement.");
     }
 
     /// <summary>
     /// Determines if the specified item is (or is eligible to be) its own container.
     /// </summary>
-    protected virtual bool IsItemItsOwnContainer(object item)
+    public bool IsItemItsOwnContainer(object item)
     {
-        return item is UIElement;
+        ArgumentNullException.ThrowIfNull(item);
+        return IsItemItsOwnContainerOverride(item);
     }
+
+    /// <summary>
+    /// Determines whether an item is already its own generated container.
+    /// </summary>
+    protected virtual bool IsItemItsOwnContainerOverride(object item) => item is UIElement;
 
     /// <summary>
     /// Prepares the specified element to display the specified item.
     /// </summary>
     protected virtual void PrepareContainerForItem(FrameworkElement element, object item)
     {
+        ApplyItemContainerStyleAndBindingGroup(element, item);
+
         // Items that are already their own container must not be assigned back into
         // their own Content property, otherwise controls like DockItem/StatusBarItem
         // end up parenting themselves as content visuals.
@@ -249,6 +263,8 @@ public class ItemsControl : Control
         {
             template = ItemTemplateSelector.SelectTemplate(item, this);
         }
+
+        template ??= GetDisplayMemberTemplate();
 
         if (element is ContentPresenter presenter)
         {
@@ -267,6 +283,14 @@ public class ItemsControl : Control
     /// </summary>
     protected virtual void RefreshItems()
     {
+        if (_itemsControlInitializationDepth > 0)
+        {
+            _refreshItemsWhenInitializationCompletes = true;
+            return;
+        }
+
+        UpdateItemsControlState();
+
         // Get the panel (either from ItemsPresenter or fallback)
         var panel = ItemsHost;
 
@@ -371,7 +395,7 @@ public class ItemsControl : Control
     {
         if (panel is VirtualizingPanel virtualizingPanel)
         {
-            virtualizingPanel.ItemContainerGenerator = generator;
+            virtualizingPanel.SetItemContainerGenerator(generator);
         }
     }
 
@@ -383,15 +407,16 @@ public class ItemsControl : Control
         if (IsItemItsOwnContainer(item))
         {
             container = (FrameworkElement)item;
-            PrepareContainerForItem(container, item);
+            PrepareContainerForItemOverride(container, item);
         }
         else
         {
             container = GetContainerForItem(item);
-            PrepareContainerForItem(container, item);
+            PrepareContainerForItemOverride(container, item);
         }
 
         ItemsHost.Children.Add(container);
+        SetAlternationIndex(container, ItemsHost.Children.Count - 1);
     }
 
     #endregion
@@ -424,7 +449,7 @@ public class ItemsControl : Control
             return _fallbackItemsHost.DesiredSize;
         }
 
-        return Size.Empty;
+        return default(Size);
     }
 
     /// <inheritdoc />
@@ -446,7 +471,7 @@ public class ItemsControl : Control
     }
 
     /// <inheritdoc />
-    public override int VisualChildrenCount
+    protected override int VisualChildrenCount
     {
         get
         {
@@ -462,7 +487,7 @@ public class ItemsControl : Control
     }
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         // If we have a template, let Control handle it
         if (HasTemplate)
@@ -494,6 +519,8 @@ public class ItemsControl : Control
     {
         if (d is ItemsControl itemsControl)
         {
+            itemsControl.Items.SetItemsSource((IEnumerable?)e.NewValue);
+
             // Unsubscribe from old collection
             if (e.OldValue is INotifyCollectionChanged oldCollection)
             {
@@ -506,12 +533,18 @@ public class ItemsControl : Control
                 newCollection.CollectionChanged += itemsControl.OnSourceCollectionChanged;
             }
 
+            itemsControl.UpdateGroupingViewSubscription((IEnumerable?)e.NewValue);
+
             if (itemsControl._itemContainerGenerator != null)
             {
                 itemsControl._itemContainerGenerator.OnCollectionChanged(
                     new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
             }
 
+            itemsControl.OnItemsSourceChanged((IEnumerable?)e.OldValue, (IEnumerable?)e.NewValue);
+            itemsControl.OnItemsChanged(
+                new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+            itemsControl.UpdateItemsControlState();
             itemsControl.RefreshItems();
         }
     }
@@ -520,6 +553,7 @@ public class ItemsControl : Control
     {
         if (d is ItemsControl itemsControl)
         {
+            itemsControl.OnItemTemplateChanged((DataTemplate?)e.OldValue, (DataTemplate?)e.NewValue);
             itemsControl.RefreshItems();
         }
     }
@@ -528,6 +562,7 @@ public class ItemsControl : Control
     {
         if (d is ItemsControl ic)
         {
+            ic.OnItemTemplateSelectorChanged((DataTemplateSelector?)e.OldValue, (DataTemplateSelector?)e.NewValue);
             ic.RefreshItems();
         }
     }
@@ -536,10 +571,13 @@ public class ItemsControl : Control
     {
         if (d is ItemsControl itemsControl)
         {
+            itemsControl.OnItemsPanelChanged((ItemsPanelTemplate?)e.OldValue, (ItemsPanelTemplate?)e.NewValue);
             itemsControl._fallbackItemsHost = null;
             if (itemsControl._itemsPresenter != null)
             {
-                itemsControl._itemsPresenter.InvalidatePanel();
+                itemsControl._itemsPresenter.NotifyTemplateChanged(
+                    (ItemsPanelTemplate?)e.OldValue,
+                    (ItemsPanelTemplate?)e.NewValue);
             }
             itemsControl.RefreshItems();
         }
@@ -549,14 +587,19 @@ public class ItemsControl : Control
     {
         if (ItemsHost is VirtualizingPanel virtualizingPanel && ShouldUseVirtualizingPipeline(virtualizingPanel))
         {
-            virtualizingPanel.NotifyItemsChanged(sender, e);
-            virtualizingPanel.InvalidateMeasure();
-            InvalidateMeasure();
+            if (virtualizingPanel.NotifyItemsChanged(sender, e))
+            {
+                virtualizingPanel.InvalidateMeasure();
+                InvalidateMeasure();
+            }
         }
     }
 
     private void OnSourceCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        OnItemsChanged(e);
+        UpdateItemsControlState();
+
         // Notify the generator of the change
         _itemContainerGenerator?.OnCollectionChanged(e);
 
@@ -618,11 +661,15 @@ public class ItemsControl : Control
                 break;
         }
 
+        UpdateAlternationIndices();
         InvalidateMeasure();
     }
 
     private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        OnItemsChanged(e);
+        UpdateItemsControlState();
+
         if (ItemsSource == null)
         {
             _itemContainerGenerator?.OnCollectionChanged(e);
@@ -671,6 +718,7 @@ public class ItemsControl : Control
                     break;
             }
 
+            UpdateAlternationIndices();
             InvalidateMeasure();
         }
     }
@@ -699,7 +747,7 @@ public class ItemsControl : Control
     /// </summary>
     internal void PrepareContainerForItemInternal(FrameworkElement element, object item)
     {
-        PrepareContainerForItem(element, item);
+        PrepareContainerForItemOverride(element, item);
     }
 
     /// <summary>
@@ -720,7 +768,7 @@ public class ItemsControl : Control
     /// recycle choke point BEFORE this method runs, so overrides observe base values here. On top
     /// of that, the base implementation resets the visual-state DPs animations commonly leave a
     /// local value on (RenderTransform / Opacity / ClipToBounds / Visibility) via
-    /// <see cref="DependencyObject.ClearValue"/> only — never SetValue — so style/template values
+    /// <see cref="DependencyObject.ClearValue(DependencyProperty)"/> only — never SetValue — so style/template values
     /// keep working. These local values are the symmetric counterpart of what Prepare-time code
     /// sets; a custom container that legitimately holds one of them as a constructor-set local
     /// value must override this method and skip base (the Prepare/Clear symmetry contract:
@@ -736,6 +784,8 @@ public class ItemsControl : Control
             // Own-container item: we never set Content on it, so there is nothing to undo.
             return;
         }
+
+        ClearItemContainerStyleAndBindingGroup(element, item);
 
         switch (element)
         {
@@ -770,7 +820,7 @@ public class ItemsControl : Control
     /// </summary>
     internal void ClearContainerForItemInternal(FrameworkElement element, object item)
     {
-        ClearContainerForItem(element, item);
+        ClearContainerForItemOverride(element, item);
     }
 
     /// <summary>
@@ -811,6 +861,16 @@ public class ItemsControl : Control
         return null;
     }
 
+    /// <summary>
+    /// Provides the routed selection-change hook shared by selector-derived controls and
+    /// WPF-compatible item controls such as <see cref="DataGrid"/>.
+    /// </summary>
+    protected virtual void OnSelectionChanged(SelectionChangedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
     private void InsertItemToPanel(object item, int index)
     {
         if (ItemsHost == null) return;
@@ -819,12 +879,12 @@ public class ItemsControl : Control
         if (IsItemItsOwnContainer(item))
         {
             container = (FrameworkElement)item;
-            PrepareContainerForItem(container, item);
+            PrepareContainerForItemOverride(container, item);
         }
         else
         {
             container = GetContainerForItem(item);
-            PrepareContainerForItem(container, item);
+            PrepareContainerForItemOverride(container, item);
         }
 
         if (index >= 0 && index <= ItemsHost.Children.Count)
@@ -835,6 +895,8 @@ public class ItemsControl : Control
         {
             ItemsHost.Children.Add(container);
         }
+
+        UpdateAlternationIndices();
     }
 
     #endregion
@@ -843,19 +905,15 @@ public class ItemsControl : Control
 /// <summary>
 /// Represents a collection of items in an ItemsControl.
 /// </summary>
-public sealed class ItemCollection : IList<object>, INotifyCollectionChanged
+public sealed partial class ItemCollection : Jalium.UI.Data.CollectionView, IList<object>
 {
     private readonly List<object> _items = new();
     private readonly ItemsControl _owner;
 
-    /// <summary>
-    /// Occurs when the collection changes.
-    /// </summary>
-    public event NotifyCollectionChangedEventHandler? CollectionChanged;
-
     internal ItemCollection(ItemsControl owner)
     {
-        _owner = owner;
+        _owner = owner ?? throw new ArgumentNullException(nameof(owner));
+        InitializeCollectionView();
     }
 
     /// <summary>
@@ -863,12 +921,14 @@ public sealed class ItemCollection : IList<object>, INotifyCollectionChanged
     /// </summary>
     public object this[int index]
     {
-        get => _items[index];
+        get => GetItemAt(index);
         set
         {
-            var oldItem = _items[index];
-            _items[index] = value;
-            CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
+            VerifyWritable();
+            var sourceIndex = GetDirectSourceIndex(index);
+            var oldItem = _items[sourceIndex];
+            _items[sourceIndex] = value;
+            OnDirectItemsChanged(new NotifyCollectionChangedEventArgs(
                 NotifyCollectionChangedAction.Replace, value, oldItem, index));
         }
     }
@@ -876,87 +936,95 @@ public sealed class ItemCollection : IList<object>, INotifyCollectionChanged
     /// <summary>
     /// Gets the number of items in the collection.
     /// </summary>
-    public int Count => _items.Count;
+    public override int Count => GetViewCount();
 
     /// <summary>
     /// Gets a value indicating whether the collection is read-only.
     /// </summary>
-    public bool IsReadOnly => false;
+    public bool IsReadOnly => _owner.ItemsSource != null;
 
     /// <summary>
     /// Adds an item to the collection.
     /// </summary>
-    public void Add(object item)
+    public int Add(object item)
     {
+        VerifyWritable();
         _items.Add(item);
-        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
-            NotifyCollectionChangedAction.Add, item, _items.Count - 1));
+        var sourceIndex = _items.Count - 1;
+        OnDirectItemsChanged(new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Add, item, sourceIndex));
+        return sourceIndex;
     }
+
+    void ICollection<object>.Add(object item) => Add(item);
 
     /// <summary>
     /// Clears all items from the collection.
     /// </summary>
     public void Clear()
     {
+        VerifyWritable();
         _items.Clear();
-        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
+        OnDirectItemsChanged(new NotifyCollectionChangedEventArgs(
             NotifyCollectionChangedAction.Reset));
     }
 
     /// <summary>
     /// Determines whether the collection contains a specific item.
     /// </summary>
-    public bool Contains(object item) => _items.Contains(item);
+    public override bool Contains(object item) => ViewContains(item);
 
     /// <summary>
     /// Copies the collection to an array.
     /// </summary>
-    public void CopyTo(object[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
+    public void CopyTo(object[] array, int arrayIndex) => CopyViewTo(array, arrayIndex);
+
+    /// <summary>
+    /// Copies the effective view to the specified array.
+    /// </summary>
+    public void CopyTo(Array array, int index) => CopyViewTo(array, index);
 
     /// <summary>
     /// Returns an enumerator that iterates through the collection.
     /// </summary>
-    public IEnumerator<object> GetEnumerator() => _items.GetEnumerator();
+    IEnumerator<object> IEnumerable<object>.GetEnumerator() => GetTypedViewEnumerator();
 
     /// <summary>
     /// Determines the index of a specific item in the collection.
     /// </summary>
-    public int IndexOf(object item) => _items.IndexOf(item);
+    public override int IndexOf(object item) => ViewIndexOf(item);
 
     /// <summary>
     /// Inserts an item at the specified index.
     /// </summary>
     public void Insert(int index, object item)
     {
+        VerifyWritable();
         _items.Insert(index, item);
-        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
+        OnDirectItemsChanged(new NotifyCollectionChangedEventArgs(
             NotifyCollectionChangedAction.Add, item, index));
     }
 
     /// <summary>
     /// Removes the first occurrence of a specific item from the collection.
     /// </summary>
-    public bool Remove(object item)
+    public void Remove(object item)
     {
-        var index = _items.IndexOf(item);
-        if (index >= 0)
-        {
-            _items.RemoveAt(index);
-            CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
-                NotifyCollectionChangedAction.Remove, item, index));
-            return true;
-        }
-        return false;
+        RemoveDirectItem(item);
     }
+
+    bool ICollection<object>.Remove(object item) => RemoveDirectItem(item);
 
     /// <summary>
     /// Removes the item at the specified index.
     /// </summary>
     public void RemoveAt(int index)
     {
-        var item = _items[index];
-        _items.RemoveAt(index);
-        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
+        VerifyWritable();
+        var sourceIndex = GetDirectSourceIndex(index);
+        var item = _items[sourceIndex];
+        _items.RemoveAt(sourceIndex);
+        OnDirectItemsChanged(new NotifyCollectionChangedEventArgs(
             NotifyCollectionChangedAction.Remove, item, index));
     }
 
@@ -965,15 +1033,38 @@ public sealed class ItemCollection : IList<object>, INotifyCollectionChanged
     /// </summary>
     public void AddRange(IList<object> items)
     {
+        VerifyWritable();
         if (items.Count == 0)
         {
             return;
         }
 
         _items.AddRange(items);
-        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
+        OnDirectItemsChanged(new NotifyCollectionChangedEventArgs(
             NotifyCollectionChangedAction.Reset));
     }
 
-    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    private bool RemoveDirectItem(object item)
+    {
+        VerifyWritable();
+        var index = _items.IndexOf(item);
+        if (index < 0)
+        {
+            return false;
+        }
+
+        _items.RemoveAt(index);
+        OnDirectItemsChanged(new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Remove, item, index));
+        return true;
+    }
+
+    private void VerifyWritable()
+    {
+        if (_owner.ItemsSource != null)
+        {
+            throw new InvalidOperationException(
+                "Items cannot be changed while ItemsSource is in use.");
+        }
+    }
 }

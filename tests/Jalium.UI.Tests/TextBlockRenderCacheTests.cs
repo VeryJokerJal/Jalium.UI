@@ -133,7 +133,7 @@ public sealed class TextBlockRenderCacheTests
             narrowContext.DrawnTexts.Select(t => t.Text));
     }
 
-    private class TrackingDrawingContext : DrawingContext
+    private class TrackingDrawingContext : DrawingContextAdapter
     {
         public List<FormattedText> DrawnTexts { get; } = [];
 
@@ -214,7 +214,7 @@ public sealed class TextBlockRenderCacheTests
                 clipRect.Height);
 
             var current = _clipBounds.Count > 0 ? _clipBounds.Peek() : null;
-            _clipBounds.Push(current.HasValue ? current.Value.Intersect(clipRect) : clipRect);
+            _clipBounds.Push(current.HasValue ? Rect.Intersect(current.Value, clipRect) : clipRect);
         }
 
         public override void Pop()

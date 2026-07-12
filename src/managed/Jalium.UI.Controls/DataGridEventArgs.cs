@@ -1,18 +1,47 @@
 using System.Collections;
 using System.ComponentModel;
+using Jalium.UI.Data;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
+/// Represents the method that handles the <see cref="DataGrid.Sorting"/> event.
+/// </summary>
+public delegate void DataGridSortingEventHandler(object sender, DataGridSortingEventArgs e);
+
+/// <summary>
 /// Provides data for the <see cref="DataGrid.AutoGeneratingColumn"/> event.
 /// </summary>
-public sealed class DataGridAutoGeneratingColumnEventArgs : EventArgs
+public class DataGridAutoGeneratingColumnEventArgs : EventArgs
 {
+    private readonly object? _propertyDescriptor;
+
     public DataGridAutoGeneratingColumnEventArgs(string propertyName, Type propertyType, DataGridColumn column)
+        : this(column, propertyName, propertyType, null)
     {
-        PropertyName = propertyName;
-        PropertyType = propertyType;
-        Column = column;
+    }
+
+    public DataGridAutoGeneratingColumnEventArgs(
+        DataGridColumn column,
+        ItemPropertyInfo itemPropertyInfo)
+        : this(
+            column,
+            itemPropertyInfo?.Name ?? throw new ArgumentNullException(nameof(itemPropertyInfo)),
+            itemPropertyInfo?.PropertyType ?? throw new ArgumentNullException(nameof(itemPropertyInfo)),
+            itemPropertyInfo?.Descriptor)
+    {
+    }
+
+    public DataGridAutoGeneratingColumnEventArgs(
+        DataGridColumn column,
+        string propertyName,
+        Type propertyType,
+        object? propertyDescriptor)
+    {
+        Column = column ?? throw new ArgumentNullException(nameof(column));
+        PropertyName = propertyName ?? throw new ArgumentNullException(nameof(propertyName));
+        PropertyType = propertyType ?? throw new ArgumentNullException(nameof(propertyType));
+        _propertyDescriptor = propertyDescriptor;
     }
 
     /// <summary>Gets the name of the property bound to the generated column.</summary>
@@ -28,13 +57,13 @@ public sealed class DataGridAutoGeneratingColumnEventArgs : EventArgs
     public bool Cancel { get; set; }
 
     /// <summary>Gets the PropertyDescriptor for the property bound to the generated column.</summary>
-    public PropertyDescriptor? PropertyDescriptor { get; init; }
+    public object? PropertyDescriptor => _propertyDescriptor;
 }
 
 /// <summary>
 /// Provides data for the <see cref="DataGrid.RowEditEnding"/> event.
 /// </summary>
-public sealed class DataGridRowEditEndingEventArgs : EventArgs
+public class DataGridRowEditEndingEventArgs : EventArgs
 {
     public DataGridRowEditEndingEventArgs(DataGridRow row, DataGridEditAction editAction)
     {
@@ -55,7 +84,7 @@ public sealed class DataGridRowEditEndingEventArgs : EventArgs
 /// <summary>
 /// Provides data for the <see cref="DataGrid.ColumnDisplayIndexChanged"/> event.
 /// </summary>
-public sealed class DataGridColumnEventArgs : EventArgs
+public class DataGridColumnEventArgs : EventArgs
 {
     public DataGridColumnEventArgs(DataGridColumn column)
     {
@@ -69,7 +98,7 @@ public sealed class DataGridColumnEventArgs : EventArgs
 /// <summary>
 /// Provides data for <see cref="DataGrid"/> row-related events.
 /// </summary>
-public sealed class DataGridRowEventArgs : EventArgs
+public class DataGridRowEventArgs : EventArgs
 {
     public DataGridRowEventArgs(DataGridRow row)
     {
@@ -88,6 +117,7 @@ public readonly struct DataGridCellInfo : IEquatable<DataGridCellInfo>
     /// <summary>Initializes a new instance with the specified item and column.</summary>
     public DataGridCellInfo(object item, DataGridColumn column)
     {
+        ArgumentNullException.ThrowIfNull(column);
         Item = item;
         Column = column;
     }
@@ -95,9 +125,30 @@ public readonly struct DataGridCellInfo : IEquatable<DataGridCellInfo>
     /// <summary>Initializes a new instance from a DataGridCell.</summary>
     public DataGridCellInfo(DataGridCell cell)
     {
-        Item = cell.DataContext;
+        ArgumentNullException.ThrowIfNull(cell);
+
+        DataGridRow? row = null;
+        for (var parent = cell.VisualParent; parent != null; parent = parent.VisualParent)
+        {
+            if (parent is DataGridRow containingRow)
+            {
+                row = containingRow;
+                break;
+            }
+        }
+
+        Item = row?.DataItem ?? cell.DataContext;
         Column = cell.Column;
     }
+
+    internal DataGridCellInfo(object? item, DataGridColumn? column, bool allowPartial)
+    {
+        Item = item;
+        Column = column;
+    }
+
+    internal static DataGridCellInfo CreatePossiblyPartial(object? item, DataGridColumn? column) =>
+        new(item, column, allowPartial: true);
 
     /// <summary>Gets the data item for the row that contains the cell.</summary>
     public object? Item { get; }
@@ -106,7 +157,7 @@ public readonly struct DataGridCellInfo : IEquatable<DataGridCellInfo>
     public DataGridColumn? Column { get; }
 
     /// <summary>Gets a value indicating whether this instance is valid.</summary>
-    public bool IsValid => Column != null;
+    public bool IsValid => Item != null && Column != null;
 
     public bool Equals(DataGridCellInfo other) =>
         Equals(Item, other.Item) && Equals(Column, other.Column);
@@ -123,7 +174,7 @@ public readonly struct DataGridCellInfo : IEquatable<DataGridCellInfo>
 /// <summary>
 /// Represents the content of a cell for clipboard operations.
 /// </summary>
-public readonly struct DataGridClipboardCellContent
+public readonly struct DataGridClipboardCellContent : IEquatable<DataGridClipboardCellContent>
 {
     public DataGridClipboardCellContent(object item, DataGridColumn column, object? content)
     {
@@ -140,6 +191,24 @@ public readonly struct DataGridClipboardCellContent
 
     /// <summary>Gets the text content of the cell.</summary>
     public object? Content { get; }
+
+    public bool Equals(DataGridClipboardCellContent other) =>
+        Equals(Item, other.Item) && Equals(Column, other.Column) && Equals(Content, other.Content);
+
+    public override bool Equals(object? data) =>
+        data is DataGridClipboardCellContent other && Equals(other);
+
+    public override int GetHashCode() => HashCode.Combine(Item, Column, Content);
+
+    public static bool operator ==(
+        DataGridClipboardCellContent clipboardCellContent1,
+        DataGridClipboardCellContent clipboardCellContent2) =>
+        clipboardCellContent1.Equals(clipboardCellContent2);
+
+    public static bool operator !=(
+        DataGridClipboardCellContent clipboardCellContent1,
+        DataGridClipboardCellContent clipboardCellContent2) =>
+        !clipboardCellContent1.Equals(clipboardCellContent2);
 }
 
 /// <summary>
@@ -220,7 +289,7 @@ public sealed class DataGridRowClipboardEventArgs : EventArgs
     public bool IsColumnHeadersRow { get; }
 
     /// <summary>Gets the list of cell content for clipboard operations.</summary>
-    public IList<DataGridClipboardCellContent> ClipboardRowContent { get; }
+    public List<DataGridClipboardCellContent> ClipboardRowContent { get; }
 
     /// <summary>
     /// Formats the cell values into a string for the clipboard.
@@ -244,4 +313,9 @@ public sealed class InitializingNewItemEventArgs : EventArgs
     /// <summary>Gets the new item being initialized.</summary>
     public object NewItem { get; }
 }
+
+/// <summary>
+/// Represents the method that handles the <see cref="DataGrid.InitializingNewItem"/> event.
+/// </summary>
+public delegate void InitializingNewItemEventHandler(object sender, InitializingNewItemEventArgs e);
 

@@ -1,3 +1,5 @@
+using System.Collections.ObjectModel;
+
 namespace Jalium.UI.Media.Imaging;
 
 /// <summary>
@@ -5,12 +7,16 @@ namespace Jalium.UI.Media.Imaging;
 /// </summary>
 public abstract class BitmapEncoder
 {
-    private readonly List<BitmapFrame> _frames = new();
+    private IList<BitmapFrame> _frames = new List<BitmapFrame>();
 
     /// <summary>
     /// Gets the collection of frames in this encoder.
     /// </summary>
-    public IList<BitmapFrame> Frames => _frames;
+    public virtual IList<BitmapFrame> Frames
+    {
+        get => _frames;
+        set => _frames = value ?? throw new ArgumentNullException(nameof(value));
+    }
 
     /// <summary>
     /// Gets the codec info for this encoder.
@@ -20,7 +26,10 @@ public abstract class BitmapEncoder
     /// <summary>
     /// Gets or sets the color profile associated with this encoder.
     /// </summary>
-    public virtual ColorContext? ColorContexts { get; set; }
+    public virtual ReadOnlyCollection<ColorContext>? ColorContexts { get; set; }
+
+    /// <summary>Gets or sets container metadata.</summary>
+    public virtual BitmapMetadata? Metadata { get; set; }
 
     /// <summary>
     /// Gets or sets the bitmap palette.
@@ -44,6 +53,19 @@ public abstract class BitmapEncoder
     {
         ArgumentNullException.ThrowIfNull(stream);
         // Subclasses implement actual encoding
+    }
+
+    /// <summary>Creates an encoder for a WIC container format GUID.</summary>
+    public static BitmapEncoder Create(Guid containerFormat)
+    {
+        if (containerFormat == new Guid("1b7cfaf4-713f-473c-bbcd-6137425faeaf")) return new PngBitmapEncoder();
+        if (containerFormat == new Guid("19e4a5aa-5662-4fc5-a0c0-1758028e1057")) return new JpegBitmapEncoder();
+        if (containerFormat == new Guid("0af1d87e-fcfe-4188-bdeb-a7906471cbe3")) return new BmpBitmapEncoder();
+        if (containerFormat == new Guid("1f8a5601-7d4d-4cbd-9c82-1bc8d4eeb9a5")) return new GifBitmapEncoder();
+        if (containerFormat == new Guid("163bcc30-e2e9-4f0b-961d-a3e9fdb788a3")) return new TiffBitmapEncoder();
+        if (containerFormat == new Guid("57a37caa-367a-4540-916b-f183c5093a4b")) return new WmpBitmapEncoder();
+
+        throw new NotSupportedException($"No bitmap encoder is registered for container format '{containerFormat}'.");
     }
 }
 
@@ -123,6 +145,23 @@ public sealed class WmpBitmapEncoder : BitmapEncoder
     /// Gets or sets whether lossless encoding is used.
     /// </summary>
     public bool Lossless { get; set; }
+
+    public byte AlphaDataDiscardLevel { get; set; }
+    public byte AlphaQualityLevel { get; set; }
+    public bool CompressedDomainTranscode { get; set; }
+    public bool FlipHorizontal { get; set; }
+    public bool FlipVertical { get; set; }
+    public bool FrequencyOrder { get; set; }
+    public short HorizontalTileSlices { get; set; }
+    public bool IgnoreOverlap { get; set; }
+    public byte ImageDataDiscardLevel { get; set; }
+    public bool InterleavedAlpha { get; set; }
+    public byte OverlapLevel { get; set; }
+    public byte QualityLevel { get; set; }
+    public Rotation Rotation { get; set; }
+    public byte SubsamplingLevel { get; set; }
+    public bool UseCodecOptions { get; set; }
+    public short VerticalTileSlices { get; set; }
 }
 
 #region Enums

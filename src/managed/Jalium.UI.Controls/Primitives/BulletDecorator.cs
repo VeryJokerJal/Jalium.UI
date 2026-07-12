@@ -33,6 +33,11 @@ public class BulletDecorator : FrameworkElement
         DependencyProperty.Register(nameof(BulletAlignment), typeof(VerticalAlignment), typeof(BulletDecorator),
             new PropertyMetadata(VerticalAlignment.Top, OnLayoutPropertyChanged));
 
+    /// <summary>Identifies the brush used to paint the decorator background.</summary>
+    public static readonly DependencyProperty BackgroundProperty =
+        DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(BulletDecorator),
+            new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
+
     #endregion
 
     #region CLR Properties
@@ -67,6 +72,13 @@ public class BulletDecorator : FrameworkElement
         set => SetValue(BulletAlignmentProperty, value);
     }
 
+    /// <summary>Gets or sets the brush used to paint the decorator background.</summary>
+    public Brush? Background
+    {
+        get => (Brush?)GetValue(BackgroundProperty);
+        set => SetValue(BackgroundProperty, value);
+    }
+
     #endregion
 
     #region Private Fields
@@ -78,7 +90,7 @@ public class BulletDecorator : FrameworkElement
     #region Visual Children
 
     /// <inheritdoc />
-    public override int VisualChildrenCount
+    protected override int VisualChildrenCount
     {
         get
         {
@@ -90,7 +102,7 @@ public class BulletDecorator : FrameworkElement
     }
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index == 0)
         {
@@ -108,10 +120,20 @@ public class BulletDecorator : FrameworkElement
     #region Layout
 
     /// <inheritdoc />
+    protected override void OnRender(DrawingContext drawingContext)
+    {
+        base.OnRender(drawingContext);
+        if (Background != null && RenderSize.Width > 0 && RenderSize.Height > 0)
+        {
+            drawingContext.DrawRectangle(Background, null, new Rect(RenderSize));
+        }
+    }
+
+    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var bulletSize = Size.Empty;
-        var childSize = Size.Empty;
+        var bulletSize = default(Size);
+        var childSize = default(Size);
 
         if (Bullet != null)
         {
@@ -136,8 +158,8 @@ public class BulletDecorator : FrameworkElement
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var bulletSize = Bullet?.DesiredSize ?? Size.Empty;
-        var childSize = Child?.DesiredSize ?? Size.Empty;
+        var bulletSize = Bullet?.DesiredSize ?? default;
+        var childSize = Child?.DesiredSize ?? default;
 
         if (Bullet != null)
         {
@@ -173,10 +195,12 @@ public class BulletDecorator : FrameworkElement
             if (e.OldValue is UIElement oldBullet)
             {
                 decorator.RemoveVisualChild(oldBullet);
+                decorator.RemoveLogicalChild(oldBullet);
             }
 
             if (e.NewValue is UIElement newBullet)
             {
+                decorator.AddLogicalChild(newBullet);
                 decorator.AddVisualChild(newBullet);
             }
 
@@ -191,10 +215,12 @@ public class BulletDecorator : FrameworkElement
             if (e.OldValue is UIElement oldChild)
             {
                 decorator.RemoveVisualChild(oldChild);
+                decorator.RemoveLogicalChild(oldChild);
             }
 
             if (e.NewValue is UIElement newChild)
             {
+                decorator.AddLogicalChild(newChild);
                 decorator.AddVisualChild(newChild);
             }
 

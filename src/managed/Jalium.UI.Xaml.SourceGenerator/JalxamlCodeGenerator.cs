@@ -320,7 +320,7 @@ internal static class JalxamlCodeGenerator
             case "Jalium.UI.ControlTemplate":
             case "Jalium.UI.DataTemplate":
             case "Jalium.UI.HierarchicalDataTemplate":
-            case "Jalium.UI.ItemsPanelTemplate":
+            case "Jalium.UI.Controls.ItemsPanelTemplate":
             case "Jalium.UI.ItemContainerTemplate":
                 return true;
             default:
@@ -673,7 +673,10 @@ internal static class JalxamlCodeGenerator
                            "global::Jalium.UI.Setter", StringComparison.Ordinal) ||
              string.Equals(elementClrTypeName, "Jalium.UI.Setter", StringComparison.Ordinal));
 
-        if (!isSetterValueAttribute && TryMatchSimpleMarkupExtension(attr.Value, out var extKind, out var extKey))
+        if (TryMatchSimpleMarkupExtension(attr.Value, out var extKind, out var extKey) &&
+            (!isSetterValueAttribute ||
+             extKind == SimpleMarkupKind.ThemeResource ||
+             extKind == SimpleMarkupKind.DynamicResource))
         {
             switch (extKind)
             {
@@ -714,9 +717,9 @@ internal static class JalxamlCodeGenerator
             var property = ctx.Symbols.ResolveProperty(elementSymbol, attr.LocalName);
             if (property != null && !property.IsReadOnly && property.SetMethod != null && property.SetMethod.DeclaredAccessibility == Accessibility.Public)
             {
-                // Type-typed property + "prefix:LocalName" attribute value (typical:
-                // <Style TargetType="controls:Foo">). Resolve the prefix at compile time
-                // through XmlnsTypeResolver so we can emit a typed `typeof(...)` literal.
+                // Type-typed properties and DataTemplate.DataType can both carry an XML
+                // type token. Resolve the prefix at compile time so we can emit a typed
+                // `typeof(...)` literal.
                 // The runtime TypeTypeConverter cannot do this — it doesn't see the
                 // document's xmlns declarations and only consults the simple-name
                 // XamlTypeRegistry. Without this fast path, implicit-keyed Styles
@@ -724,9 +727,18 @@ internal static class JalxamlCodeGenerator
                 // get a null TargetType and AddChild silently drops them from the
                 // ResourceDictionary, so the templates never apply.
                 var propTypeName = property.Type.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
-                if ((propTypeName == "global::System.Type" || propTypeName == "System.Type") &&
-                    !string.IsNullOrEmpty(attr.Value) &&
-                    ctx.TryResolvePrefixedType(attr.Value, out var typeofName))
+                bool isDataTemplateDataType =
+                    string.Equals(attr.LocalName, "DataType", StringComparison.Ordinal)
+                    && IsDataTemplateType(elementSymbol, elementClrTypeName);
+                string? typeReference =
+                    (propTypeName == "global::System.Type"
+                        || propTypeName == "System.Type"
+                        || isDataTemplateDataType)
+                        ? GetXamlTypeReference(attr.Value)
+                        : null;
+
+                if (!string.IsNullOrEmpty(typeReference)
+                    && ctx.TryResolvePrefixedType(typeReference!, out var typeofName))
                 {
                     sb.AppendLine($"{pad}{varName}.{attr.LocalName} = typeof({typeofName});");
                     return;
@@ -846,6 +858,48 @@ internal static class JalxamlCodeGenerator
             default:
                 return false;
         }
+    }
+
+    private static bool IsDataTemplateType(INamedTypeSymbol? type, string? clrTypeName)
+    {
+        for (var current = type; current != null; current = current.BaseType)
+        {
+            if (SymbolTypeHelper.ToGlobalName(current) == "global::Jalium.UI.DataTemplate")
+            {
+                return true;
+            }
+        }
+
+        return clrTypeName == "Jalium.UI.DataTemplate"
+            || clrTypeName == "Jalium.UI.HierarchicalDataTemplate"
+            || clrTypeName == "Jalium.UI.Controls.ItemContainerTemplate";
+    }
+
+    private static string? GetXamlTypeReference(string value)
+    {
+        var trimmed = value.Trim();
+        if (trimmed.Length == 0 || trimmed[0] != '{')
+        {
+            return trimmed;
+        }
+
+        if (trimmed.StartsWith("{}", StringComparison.Ordinal)
+            || trimmed[trimmed.Length - 1] != '}')
+        {
+            return null;
+        }
+
+        var inner = trimmed.Substring(1, trimmed.Length - 2).Trim();
+        const string XTypeName = "x:Type";
+        if (!inner.StartsWith(XTypeName, StringComparison.OrdinalIgnoreCase)
+            || inner.Length <= XTypeName.Length
+            || !char.IsWhiteSpace(inner[XTypeName.Length]))
+        {
+            return null;
+        }
+
+        var typeReference = inner.Substring(XTypeName.Length).Trim();
+        return typeReference.Length > 0 ? typeReference : null;
     }
 
     private static void EmitAttached(StringBuilder sb, string targetVar, JalxamlAstAttribute attr, string pad)
@@ -976,7 +1030,7 @@ internal static class JalxamlCodeGenerator
     /// <summary>
     /// Extract the explicit x:Key (if any) from a node so the runtime ResourceDictionary
     /// can use it as the entry key. Returns null when the element has no x:Key (the runtime
-    /// falls back to Style.TargetType for keyed-style entries).
+    /// falls back to the child's DictionaryKeyProperty for implicit resource entries).
     /// </summary>
     private static string? ExtractResourceKey(JalxamlAstNode child)
     {
@@ -1073,7 +1127,7 @@ internal static class JalxamlCodeGenerator
     ///
     /// <para>
     /// ResourceDictionary entries always go through the runtime <c>AddChild</c> path —
-    /// that route honours the captured x:Key (or Style.TargetType implicit key) which
+    /// that route honours the captured x:Key (or DictionaryKeyProperty implicit key) which
     /// SG-emit cannot encode at the call site without re-parsing the streaming-parser
     /// resource-key state machine.
     /// </para>

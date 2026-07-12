@@ -26,7 +26,11 @@ internal sealed class MenuPopupScrollHost : Control
 
     public MenuPopupScrollHost()
     {
-        _itemsPanel = new StackPanel { Orientation = Orientation.Vertical };
+        _itemsPanel = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            PreserveExistingLogicalParents = true,
+        };
         _scrollViewer = new ScrollViewer
         {
             Content = _itemsPanel,
@@ -54,9 +58,9 @@ internal sealed class MenuPopupScrollHost : Control
     /// </summary>
     public StackPanel ItemsPanel => _itemsPanel;
 
-    public override int VisualChildrenCount => 3;
+    protected override int VisualChildrenCount => 3;
 
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         return index switch
         {
@@ -206,7 +210,7 @@ internal sealed class MenuPopupScrollHost : Control
         }
 
         button.Content = direction < 0 ? "\uE70E" : "\uE70D";
-        button.FontFamily = "Segoe MDL2 Assets";
+        button.FontFamily = new FontFamily("Segoe MDL2 Assets");
         button.FontSize = 10;
     }
 

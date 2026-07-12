@@ -356,9 +356,9 @@ public class GaugeChart : ChartBase
     #region Automation
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.GaugeChartAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.GaugeChartAutomationPeer(this);
     }
 
     #endregion
@@ -497,7 +497,7 @@ public class GaugeChart : ChartBase
         var tickBrush = s_defaultTickBrush;
         var majorPen = new Pen(tickBrush, 2);
         var minorPen = new Pen(tickBrush, 1);
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var labelBrush = Foreground ?? s_defaultLabelBrush;
 
         double outerRadius = radius + TrackThickness / 2.0;
@@ -610,7 +610,7 @@ public class GaugeChart : ChartBase
 
     private void DrawValueText(DrawingContext dc, Point center, double radius)
     {
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var valueBrush = Foreground ?? s_defaultValueBrush;
 
         var valueText = Value.ToString(ValueFormat);

@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls.Ink;
+namespace Jalium.UI.Ink;
 
 /// <summary>
 /// Destination blend mode for a brush's pixel-shader output.

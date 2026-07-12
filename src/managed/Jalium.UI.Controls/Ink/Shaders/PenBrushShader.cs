@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls.Ink.Shaders;
+namespace Jalium.UI.Ink.Shaders;
 
 /// <summary>
 /// Pen brush — uniform capsule like Round but always ignores pressure

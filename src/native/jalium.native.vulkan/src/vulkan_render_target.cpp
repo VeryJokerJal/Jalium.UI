@@ -2,6 +2,9 @@
 #include "jalium_internal.h"
 #include "jalium_path_stats.h"
 #include "jalium_text_options.h"  // JALIUM_TEXT_AA_* enum (TextRenderingMode mapping)
+#if defined(__linux__) && !defined(__ANDROID__)
+#include "jalium_platform.h"
+#endif
 #include "jalium_flatten.h"
 #include "jalium_triangulate.h"  // FlattenPathToContours / TriangulateCompoundPath / DispatchPathCommand
 #include "jalium_gradient_sample.h"  // SampleBrushGradient / FlattenGradientStops — in-order gradient squircle fill
@@ -576,6 +579,7 @@ public:
     PFN_vkCreateAndroidSurfaceKHR createAndroidSurface = nullptr;
 #elif defined(__linux__)
     PFN_vkCreateXlibSurfaceKHR createXlibSurface = nullptr;
+    PFN_vkCreateWaylandSurfaceKHR createWaylandSurface = nullptr;
 #endif
     PFN_vkDestroySurfaceKHR destroySurface = nullptr;
     PFN_vkCreateDevice createDevice = nullptr;
@@ -2269,6 +2273,28 @@ JaliumResult VulkanRenderTarget::EndDraw()
         return JALIUM_ERROR_DEVICE_LOST;
     }
 
+#if defined(__linux__) && !defined(__ANDROID__)
+    // VkSurfaceKHR/swapchain creation is legal before the initial xdg-shell
+    // configure, but vkQueuePresentKHR commits a Wayland buffer and is not.
+    // Return the same transient status as a dropped present so managed repaints
+    // without rebuilding a healthy render target while the event loop receives
+    // and acknowledges configure. Hidden/re-shown windows use the same gate for
+    // their new xdg_surface role handshake.
+    if (surface_.platform == JALIUM_PLATFORM_LINUX_WAYLAND &&
+        !jalium_wayland_surface_is_ready(surface_.handle1))
+    {
+        if (impellerEngine_) impellerEngine_->ClearBatches();
+        if (velloEngine_) velloEngine_->ClearBatches();
+        gpuReplayCommands_.clear();
+        if (impl_) impl_->readbackPending_ = false;
+        cpuRasterNeededLastFrame_ = cpuRasterNeeded_;
+        isDrawing_ = false;
+        dirtyRects_.clear();
+        fullInvalidation_ = false;
+        return JALIUM_ERROR_PRESENT_FAILED;
+    }
+#endif
+
     // Fold any engine batches still pending after the LAST replay command into
     // a tail span: path work at the very end of the frame — or a frame that is
     // engine-only — still renders, and output order for such frames is
@@ -2520,7 +2546,9 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         return false;
     }
 #elif defined(__linux__)
-    if (surfaceDescriptor.platform != JALIUM_PLATFORM_LINUX_X11 || surfaceDescriptor.handle0 == 0 || surfaceDescriptor.handle1 == 0) {
+    if ((surfaceDescriptor.platform != JALIUM_PLATFORM_LINUX_X11 &&
+         surfaceDescriptor.platform != JALIUM_PLATFORM_LINUX_WAYLAND) ||
+        surfaceDescriptor.handle0 == 0 || surfaceDescriptor.handle1 == 0) {
         VK_LOG("[Vulkan] Initialize failed: invalid Linux surface descriptor\n");
         return false;
     }
@@ -2554,6 +2582,10 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         "VK_KHR_win32_surface",
 #elif defined(__ANDROID__)
         "VK_KHR_android_surface",
+#elif defined(__linux__)
+        surfaceDescriptor.platform == JALIUM_PLATFORM_LINUX_WAYLAND
+            ? "VK_KHR_wayland_surface"
+            : "VK_KHR_xlib_surface",
 #else
         "VK_KHR_xlib_surface",
 #endif
@@ -2682,6 +2714,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     createAndroidSurface = LoadInstanceProc<PFN_vkCreateAndroidSurfaceKHR>(getInstanceProcAddr, instance, "vkCreateAndroidSurfaceKHR");
 #elif defined(__linux__)
     createXlibSurface = LoadInstanceProc<PFN_vkCreateXlibSurfaceKHR>(getInstanceProcAddr, instance, "vkCreateXlibSurfaceKHR");
+    createWaylandSurface = LoadInstanceProc<PFN_vkCreateWaylandSurfaceKHR>(getInstanceProcAddr, instance, "vkCreateWaylandSurfaceKHR");
 #endif
     destroySurface = LoadInstanceProc<PFN_vkDestroySurfaceKHR>(getInstanceProcAddr, instance, "vkDestroySurfaceKHR");
     createDevice = LoadInstanceProc<PFN_vkCreateDevice>(getInstanceProcAddr, instance, "vkCreateDevice");
@@ -2711,13 +2744,27 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         return false;
     }
 #elif defined(__linux__)
-    VkXlibSurfaceCreateInfoKHR surfaceInfo {};
-    surfaceInfo.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-    surfaceInfo.dpy = reinterpret_cast<Display*>(surfaceDescriptor.handle0);
-    surfaceInfo.window = static_cast<Window>(reinterpret_cast<uintptr_t>(surfaceDescriptor.handle1));
-    if (!createXlibSurface || createXlibSurface(instance, &surfaceInfo, nullptr, &surface) != VK_SUCCESS || surface == VK_NULL_HANDLE) {
-        VK_LOG("[Vulkan] Initialize failed: could not create Xlib surface\n");
-        return false;
+    if (surfaceDescriptor.platform == JALIUM_PLATFORM_LINUX_WAYLAND)
+    {
+        VkWaylandSurfaceCreateInfoKHR surfaceInfo {};
+        surfaceInfo.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
+        surfaceInfo.display = reinterpret_cast<struct wl_display*>(surfaceDescriptor.handle0);
+        surfaceInfo.surface = reinterpret_cast<struct wl_surface*>(surfaceDescriptor.handle1);
+        if (!createWaylandSurface || createWaylandSurface(instance, &surfaceInfo, nullptr, &surface) != VK_SUCCESS || surface == VK_NULL_HANDLE) {
+            VK_LOG("[Vulkan] Initialize failed: could not create Wayland surface\n");
+            return false;
+        }
+    }
+    else
+    {
+        VkXlibSurfaceCreateInfoKHR surfaceInfo {};
+        surfaceInfo.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
+        surfaceInfo.dpy = reinterpret_cast<Display*>(surfaceDescriptor.handle0);
+        surfaceInfo.window = static_cast<Window>(static_cast<uintptr_t>(surfaceDescriptor.handle1));
+        if (!createXlibSurface || createXlibSurface(instance, &surfaceInfo, nullptr, &surface) != VK_SUCCESS || surface == VK_NULL_HANDLE) {
+            VK_LOG("[Vulkan] Initialize failed: could not create Xlib surface\n");
+            return false;
+        }
     }
 #endif
 
@@ -10027,7 +10074,11 @@ VkPipeline VulkanRenderTarget::Impl::EnsureCustomShaderPipeline(uint64_t hash, c
         psSpirv = customShaderCompiler.Compile(hlslSource, "main", "ps_6_0", err);
         if (psSpirv.empty()) {
             VK_LOG("[Vulkan] custom shader PS compile failed: %s", err.c_str());
-            customShaderPipelines.emplace(hash, VK_NULL_HANDLE);  // cache failure → don't retry
+            // Preserve the Vulkan handle type through perfect forwarding. On
+            // older headers VK_NULL_HANDLE is the integer literal 0; once
+            // forwarded through unordered_map::emplace it is no longer a null
+            // pointer constant and GCC 9 cannot construct pointer-form handles.
+            customShaderPipelines.emplace(hash, VkPipeline{});  // cache failure → don't retry
             return VK_NULL_HANDLE;
         }
         psInfo.codeSize = psSpirv.size() * sizeof(uint32_t);
@@ -10035,7 +10086,7 @@ VkPipeline VulkanRenderTarget::Impl::EnsureCustomShaderPipeline(uint64_t hash, c
     }
     VkShaderModule psModule = VK_NULL_HANDLE;
     if (createShaderModule(device, &psInfo, nullptr, &psModule) != VK_SUCCESS) {
-        customShaderPipelines.emplace(hash, VK_NULL_HANDLE);
+        customShaderPipelines.emplace(hash, VkPipeline{});
         return VK_NULL_HANDLE;
     }
     customShaderPsModules.emplace(hash, psModule);
@@ -19021,43 +19072,45 @@ void VulkanRenderTarget::BuildSuperEllipsePolygon(float x, float y, float w, flo
     pts.clear();
     if (w <= 0.0f || h <= 0.0f) return;
 
-    // iOS squircle = ordinary rounded rectangle whose corner ARCS use a Lamé
-    // (continuous-curvature) curve instead of a circular one, with STRAIGHT
-    // edges in between. The earlier implementation drew a full-rect superellipse
-    // (|X/(w/2)|^n + |Y/(h/2)|^n = 1), which on a wide/short element (a nav bar,
-    // a card) collapses into a flattened oval — the "压扁 / squished" shape. Here
-    // each corner is a Lamé quarter of its OWN radius and the edges stay straight.
-    const float maxR = std::min(w, h) * 0.5f;
-    tl = std::clamp(tl, 0.0f, maxR);
-    tr = std::clamp(tr, 0.0f, maxR);
-    br = std::clamp(br, 0.0f, maxR);
-    bl = std::clamp(bl, 0.0f, maxR);
+    // Full-rect Lamé superellipse |X/(w/2)|^n + |Y/(h/2)|^n = 1 — the shape
+    // contract every other consumer of shapeType==1 implements: the D3D12 SDF
+    // (sdSuperEllipseRect in sdf_rect.ps.hlsl uses only halfSize + exponent and
+    // ignores cornerRadius entirely) and the managed layout clip
+    // (Border.CreateSuperEllipseGeometry Bezier-approximates the same curve).
+    // The per-corner radii are deliberately IGNORED for parity: an earlier
+    // Vulkan-only variant used them as per-corner Lamé arc radii, so the
+    // default CornerRadius(0) — the common case, since Shape=SuperEllipse
+    // derives its curvature from SuperEllipseN, not CornerRadius — degenerated
+    // every corner to a square point and Border rendered as a sharp-cornered
+    // rectangle on Vulkan while D3D12 showed the full squircle.
+    (void)tl; (void)tr; (void)br; (void)bl;
 
-    const float n = std::max(2.0f, currentShapeExponent_);  // 2 = circular, 4 = iOS squircle
+    const float a  = w * 0.5f;
+    const float b  = h * 0.5f;
+    const float cx = x + a;
+    const float cy = y + b;
+    const float n = std::max(2.0f, currentShapeExponent_);  // 2 = ellipse, 4 = iOS squircle
     const float e = 2.0f / n;
     constexpr float kPi = 3.14159265358979323846f;
-    constexpr int kSeg = 10;  // segments per corner arc
+    // Segments per quadrant, sized so the chord sagitta stays under ~1/4 px on
+    // the largest half-extent (sagitta ≈ R·θ²/8 with θ = π/(2·kSegQ)).
+    const int kSegQ = std::clamp(static_cast<int>(std::ceil(1.6f * std::sqrt(std::max(a, b)))), 8, 32);
+    const int total = kSegQ * 4;
 
-    // Quarter Lamé corner: centre (ccx,ccy) inset by r from the two edges; sweep
-    // angle a0→a1 (screen space, y down). r<=0 collapses to the square corner.
-    auto corner = [&](float ccx, float ccy, float r, float a0, float a1) {
-        if (r <= 0.01f) { pts.push_back(ccx); pts.push_back(ccy); return; }
-        for (int i = 0; i <= kSeg; ++i) {
-            const float t  = a0 + (a1 - a0) * (static_cast<float>(i) / static_cast<float>(kSeg));
-            const float ct = std::cos(t);
-            const float st = std::sin(t);
-            const float sx = (ct < 0.0f) ? -1.0f : 1.0f;
-            const float sy = (st < 0.0f) ? -1.0f : 1.0f;
-            pts.push_back(ccx + sx * std::pow(std::fabs(ct), e) * r);
-            pts.push_back(ccy + sy * std::pow(std::fabs(st), e) * r);
-        }
-    };
-
-    pts.reserve(static_cast<size_t>(kSeg + 1) * 4u * 2u);
-    corner(x + tl,     y + tl,     tl, kPi,        1.5f * kPi);  // top-left
-    corner(x + w - tr, y + tr,     tr, 1.5f * kPi, 2.0f * kPi);  // top-right
-    corner(x + w - br, y + h - br, br, 0.0f,       0.5f * kPi);  // bottom-right
-    corner(x + bl,     y + h - bl, bl, 0.5f * kPi, kPi);         // bottom-left
+    // Uniform angular sampling of the Lamé parameterisation
+    // (±a·|cos t|^(2/n), ±b·|sin t|^(2/n)); first point (cx + a, cy), implicit
+    // close — every consumer (gradient fan slicing, FilledPolygon, DrawPolygon
+    // closed=true, RasterizePolygon) wraps (i+1) % count.
+    pts.reserve(static_cast<size_t>(total) * 2u);
+    for (int i = 0; i < total; ++i) {
+        const float t  = (2.0f * kPi) * (static_cast<float>(i) / static_cast<float>(total));
+        const float ct = std::cos(t);
+        const float st = std::sin(t);
+        const float sx = (ct < 0.0f) ? -1.0f : 1.0f;
+        const float sy = (st < 0.0f) ? -1.0f : 1.0f;
+        pts.push_back(cx + sx * std::pow(std::fabs(ct), e) * a);
+        pts.push_back(cy + sy * std::pow(std::fabs(st), e) * b);
+    }
 }
 void VulkanRenderTarget::SetVSyncEnabled(bool enabled)
 {

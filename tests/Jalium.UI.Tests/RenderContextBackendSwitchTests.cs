@@ -92,10 +92,10 @@ public sealed class RenderContextBackendSwitchTests : IDisposable
     }
 
     /// <summary>
-    /// Disposes the current and any retired contexts so the shared static state
-    /// (<see cref="RenderContext.Current"/> + retired set) does not leak across
-    /// tests in the Application collection. Direct Dispose forces cleanup
-    /// regardless of pin counts.
+    /// Requests disposal of the current and any retired contexts so the shared
+    /// static state (<see cref="RenderContext.Current"/> + retired set) does not
+    /// leak across tests in the Application collection. Any still-pinned native
+    /// backend is reclaimed by its final resource release.
     /// </summary>
     private static void DrainAllContexts()
     {

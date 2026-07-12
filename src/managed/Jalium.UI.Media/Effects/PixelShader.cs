@@ -1,12 +1,13 @@
 using System.IO;
 using Jalium.UI;
+using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Media.Effects;
 
 /// <summary>
 /// Provides a managed wrapper for a High Level Shading Language (HLSL) pixel shader.
 /// </summary>
-public sealed class PixelShader : DependencyObject
+public sealed class PixelShader : Animatable
 {
     #region Dependency Properties
 
@@ -22,7 +23,11 @@ public sealed class PixelShader : DependencyObject
     /// </summary>
     public static readonly DependencyProperty ShaderRenderModeProperty =
         DependencyProperty.Register(nameof(ShaderRenderMode), typeof(ShaderRenderMode), typeof(PixelShader),
-            new PropertyMetadata(ShaderRenderMode.Auto));
+            new PropertyMetadata(ShaderRenderMode.Auto, OnShaderRenderModeChanged),
+            value => value is ShaderRenderMode mode &&
+                (mode == ShaderRenderMode.Auto ||
+                 mode == ShaderRenderMode.SoftwareOnly ||
+                 mode == ShaderRenderMode.HardwareOnly));
 
     #endregion
 
@@ -87,8 +92,21 @@ public sealed class PixelShader : DependencyObject
     /// </summary>
     public string? SourceHlsl
     {
-        get => _sourceHlsl;
-        set => _sourceHlsl = value;
+        get
+        {
+            ReadPreamble();
+            return _sourceHlsl;
+        }
+        set
+        {
+            WritePreamble();
+            if (!string.Equals(_sourceHlsl, value, StringComparison.Ordinal))
+            {
+                _sourceHlsl = value;
+                ShaderBytecodeChanged?.Invoke(this, EventArgs.Empty);
+                WritePostscript();
+            }
+        }
     }
 
     #endregion
@@ -134,8 +152,45 @@ public sealed class PixelShader : DependencyObject
     /// <param name="source">The stream containing the shader bytecode.</param>
     public void SetStreamSource(Stream source)
     {
+        ArgumentNullException.ThrowIfNull(source);
+        WritePreamble();
         LoadPixelShaderFromStreamIntoMemory(source);
+        WritePostscript();
     }
+
+    /// <summary>Creates a modifiable clone of this pixel shader.</summary>
+    public new PixelShader Clone() => (PixelShader)base.Clone();
+
+    /// <summary>Creates a modifiable clone using current property values.</summary>
+    public new PixelShader CloneCurrentValue() => (PixelShader)base.CloneCurrentValue();
+
+#pragma warning disable CS0628 // WPF exposes these Freezable overrides on this sealed type.
+    protected override void CloneCore(Freezable sourceFreezable)
+    {
+        base.CloneCore(sourceFreezable);
+        CopyCommon((PixelShader)sourceFreezable);
+    }
+
+    protected override void CloneCurrentValueCore(Freezable sourceFreezable)
+    {
+        base.CloneCurrentValueCore(sourceFreezable);
+        CopyCommon((PixelShader)sourceFreezable);
+    }
+
+    protected override void GetAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetAsFrozenCore(sourceFreezable);
+        CopyCommon((PixelShader)sourceFreezable);
+    }
+
+    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetCurrentValueAsFrozenCore(sourceFreezable);
+        CopyCommon((PixelShader)sourceFreezable);
+    }
+
+    protected override Freezable CreateInstanceCore() => new PixelShader();
+#pragma warning restore CS0628
 
     #endregion
 
@@ -146,6 +201,16 @@ public sealed class PixelShader : DependencyObject
         if (d is PixelShader shader)
         {
             shader.OnUriSourceChanged((Uri?)e.NewValue);
+            shader.WritePostscript();
+        }
+    }
+
+    private static void OnShaderRenderModeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is PixelShader shader)
+        {
+            shader.ShaderBytecodeChanged?.Invoke(shader, EventArgs.Empty);
+            shader.WritePostscript();
         }
     }
 
@@ -214,7 +279,7 @@ public sealed class PixelShader : DependencyObject
                 throw new InvalidOperationException("Shader bytecode size must be a multiple of 4.");
             }
 
-            using var br = new BinaryReader(source);
+            using var br = new BinaryReader(source, System.Text.Encoding.UTF8, leaveOpen: true);
             _shaderBytecode = br.ReadBytes(len);
 
             // DXBC compiled shader bytecode version token layout:
@@ -230,6 +295,14 @@ public sealed class PixelShader : DependencyObject
 
         // Notify listeners that bytecode changed
         ShaderBytecodeChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void CopyCommon(PixelShader source)
+    {
+        _shaderBytecode = source._shaderBytecode is null ? null : (byte[])source._shaderBytecode.Clone();
+        _shaderMajorVersion = source._shaderMajorVersion;
+        _shaderMinorVersion = source._shaderMinorVersion;
+        _sourceHlsl = source._sourceHlsl;
     }
 
     /// <summary>

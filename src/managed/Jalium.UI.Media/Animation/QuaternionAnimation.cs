@@ -1,3 +1,4 @@
+using System.Collections;
 using Jalium.UI.Media.Media3D;
 
 namespace Jalium.UI.Media.Animation;
@@ -6,7 +7,7 @@ namespace Jalium.UI.Media.Animation;
 /// Animates the value of a Quaternion property between two target values using SLERP interpolation.
 /// Used for smooth 3D rotation animations.
 /// </summary>
-public sealed class QuaternionAnimation : AnimationTimeline
+public sealed partial class QuaternionAnimation : QuaternionAnimationBase
 {
     #region Dependency Properties
 
@@ -98,11 +99,6 @@ public sealed class QuaternionAnimation : AnimationTimeline
     #endregion
 
     /// <summary>
-    /// Gets the type of value that this animation produces.
-    /// </summary>
-    public override Type TargetPropertyType => typeof(Quaternion);
-
-    /// <summary>
     /// Creates a new QuaternionAnimation.
     /// </summary>
     public QuaternionAnimation()
@@ -142,7 +138,10 @@ public sealed class QuaternionAnimation : AnimationTimeline
     /// <summary>
     /// Gets the current animated value.
     /// </summary>
-    public override object GetCurrentValue(object defaultOriginValue, object defaultDestinationValue, AnimationClock animationClock)
+    protected override Quaternion GetCurrentValueCore(
+        Quaternion defaultOriginValue,
+        Quaternion defaultDestinationValue,
+        AnimationClock animationClock)
     {
         var progress = animationClock.CurrentProgress;
 
@@ -152,106 +151,107 @@ public sealed class QuaternionAnimation : AnimationTimeline
             progress = EasingFunction.Ease(progress);
         }
 
-        var fromValue = From ?? (defaultOriginValue is Quaternion q ? q : Quaternion.Identity);
-        var toValue = To ?? (By.HasValue ? fromValue * By.Value : (defaultDestinationValue is Quaternion dq ? dq : Quaternion.Identity));
+        var fromValue = From ?? defaultOriginValue;
+        var toValue = To ?? (By.HasValue ? fromValue * By.Value : defaultDestinationValue);
 
-        // Use SLERP for smooth quaternion interpolation
-        if (UseShortestPath)
-        {
-            // Check if the quaternions point in opposite directions, flip if needed
-            var dot = fromValue.X * toValue.X + fromValue.Y * toValue.Y +
-                      fromValue.Z * toValue.Z + fromValue.W * toValue.W;
-            if (dot < 0)
-            {
-                toValue = new Quaternion(-toValue.X, -toValue.Y, -toValue.Z, -toValue.W);
-            }
-        }
-
-        return Quaternion.Slerp(fromValue, toValue, progress);
+        return Quaternion.Slerp(fromValue, toValue, progress, UseShortestPath);
     }
 }
 
 /// <summary>
 /// Animates the value of a Quaternion property using key frames.
 /// </summary>
-public sealed class QuaternionAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Quaternion>
+public partial class QuaternionAnimationUsingKeyFrames : QuaternionAnimationBase
 {
-    private readonly QuaternionKeyFrameCollection _keyFrames = new();
+    private QuaternionKeyFrameCollection _keyFrames = new();
 
     /// <summary>
     /// Gets the collection of keyframes.
     /// </summary>
-    public override KeyFrameCollection<Quaternion> KeyFrames => _keyFrames;
+    public QuaternionKeyFrameCollection KeyFrames
+    {
+        get => _keyFrames;
+        set => ReplaceAnimationChild(ref _keyFrames, value);
+    }
 }
-
-/// <summary>
-/// A collection of Quaternion keyframes.
-/// </summary>
-public sealed class QuaternionKeyFrameCollection : KeyFrameCollection<Quaternion> { }
 
 #region Quaternion KeyFrames
 
 /// <summary>
 /// A keyframe that defines a Quaternion value with discrete interpolation.
 /// </summary>
-public sealed class DiscreteQuaternionKeyFrame : KeyFrame<Quaternion>
+public class DiscreteQuaternionKeyFrame : QuaternionKeyFrame
 {
     public DiscreteQuaternionKeyFrame() { }
     public DiscreteQuaternionKeyFrame(Quaternion value) => TypedValue = value;
     public DiscreteQuaternionKeyFrame(Quaternion value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
 
-    public override Quaternion InterpolateValue(Quaternion baseValue, double keyFrameProgress)
+    protected override Quaternion InterpolateValueCore(Quaternion baseValue, double keyFrameProgress)
     {
         return keyFrameProgress >= 1.0 ? TypedValue : baseValue;
     }
+
+    protected override Freezable CreateInstanceCore() => new DiscreteQuaternionKeyFrame();
 }
 
 /// <summary>
 /// A keyframe that defines a Quaternion value with linear (SLERP) interpolation.
 /// </summary>
-public sealed class LinearQuaternionKeyFrame : KeyFrame<Quaternion>
+public class LinearQuaternionKeyFrame : QuaternionKeyFrame
 {
     /// <summary>
     /// Gets or sets whether to use the shortest path for interpolation.
     /// </summary>
-    public bool UseShortestPath { get; set; } = true;
+    public static readonly DependencyProperty UseShortestPathProperty =
+        DependencyProperty.Register(nameof(UseShortestPath), typeof(bool), typeof(LinearQuaternionKeyFrame),
+            new PropertyMetadata(true, static (d, _) => ((LinearQuaternionKeyFrame)d).WritePostscript()));
+
+    public bool UseShortestPath
+    {
+        get => (bool)(GetValue(UseShortestPathProperty) ?? true);
+        set => SetValue(UseShortestPathProperty, value);
+    }
 
     public LinearQuaternionKeyFrame() { }
     public LinearQuaternionKeyFrame(Quaternion value) => TypedValue = value;
     public LinearQuaternionKeyFrame(Quaternion value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
 
-    public override Quaternion InterpolateValue(Quaternion baseValue, double keyFrameProgress)
-    {
-        var target = TypedValue;
+    protected override Quaternion InterpolateValueCore(Quaternion baseValue, double keyFrameProgress) =>
+        Quaternion.Slerp(baseValue, TypedValue, keyFrameProgress, UseShortestPath);
 
-        if (UseShortestPath)
-        {
-            var dot = baseValue.X * target.X + baseValue.Y * target.Y +
-                      baseValue.Z * target.Z + baseValue.W * target.W;
-            if (dot < 0)
-            {
-                target = new Quaternion(-target.X, -target.Y, -target.Z, -target.W);
-            }
-        }
-
-        return Quaternion.Slerp(baseValue, target, keyFrameProgress);
-    }
+    protected override Freezable CreateInstanceCore() => new LinearQuaternionKeyFrame();
 }
 
 /// <summary>
 /// A keyframe that defines a Quaternion value with spline interpolation.
 /// </summary>
-public sealed class SplineQuaternionKeyFrame : KeyFrame<Quaternion>
+public class SplineQuaternionKeyFrame : QuaternionKeyFrame
 {
     /// <summary>
     /// Gets or sets the spline that controls the animation.
     /// </summary>
-    public KeySpline? KeySpline { get; set; }
+    public static readonly DependencyProperty KeySplineProperty =
+        DependencyProperty.Register(nameof(KeySpline), typeof(KeySpline), typeof(SplineQuaternionKeyFrame),
+            new PropertyMetadata(null, OnKeySplineChanged));
+
+    public static readonly DependencyProperty UseShortestPathProperty =
+        DependencyProperty.Register(nameof(UseShortestPath), typeof(bool), typeof(SplineQuaternionKeyFrame),
+            new PropertyMetadata(true, static (d, _) => ((SplineQuaternionKeyFrame)d).WritePostscript()));
+
+    public KeySpline? KeySpline
+    {
+        get => (KeySpline?)GetValue(KeySplineProperty);
+        set => SetValue(KeySplineProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets whether to use the shortest path for interpolation.
     /// </summary>
-    public bool UseShortestPath { get; set; } = true;
+    public bool UseShortestPath
+    {
+        get => (bool)(GetValue(UseShortestPathProperty) ?? true);
+        set => SetValue(UseShortestPathProperty, value);
+    }
 
     public SplineQuaternionKeyFrame() { }
     public SplineQuaternionKeyFrame(Quaternion value) => TypedValue = value;
@@ -263,39 +263,46 @@ public sealed class SplineQuaternionKeyFrame : KeyFrame<Quaternion>
         KeySpline = keySpline;
     }
 
-    public override Quaternion InterpolateValue(Quaternion baseValue, double keyFrameProgress)
+    protected override Quaternion InterpolateValueCore(Quaternion baseValue, double keyFrameProgress)
     {
         var splineProgress = KeySpline?.GetSplineProgress(keyFrameProgress) ?? keyFrameProgress;
-        var target = TypedValue;
-
-        if (UseShortestPath)
-        {
-            var dot = baseValue.X * target.X + baseValue.Y * target.Y +
-                      baseValue.Z * target.Z + baseValue.W * target.W;
-            if (dot < 0)
-            {
-                target = new Quaternion(-target.X, -target.Y, -target.Z, -target.W);
-            }
-        }
-
-        return Quaternion.Slerp(baseValue, target, splineProgress);
+        return Quaternion.Slerp(baseValue, TypedValue, splineProgress, UseShortestPath);
     }
+
+    protected override Freezable CreateInstanceCore() => new SplineQuaternionKeyFrame();
+
+    private static void OnKeySplineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((SplineQuaternionKeyFrame)d).OnFreezableChildPropertyChanged(e, KeySplineProperty);
 }
 
 /// <summary>
 /// A keyframe that uses an easing function for Quaternion animation.
 /// </summary>
-public sealed class EasingQuaternionKeyFrame : KeyFrame<Quaternion>
+public class EasingQuaternionKeyFrame : QuaternionKeyFrame
 {
-    /// <summary>
-    /// Gets or sets the easing function applied to this keyframe.
-    /// </summary>
-    public IEasingFunction? EasingFunction { get; set; }
+    public static readonly DependencyProperty EasingFunctionProperty =
+        DependencyProperty.Register(nameof(EasingFunction), typeof(IEasingFunction), typeof(EasingQuaternionKeyFrame),
+            new PropertyMetadata(null, OnEasingFunctionChanged));
+
+    public static readonly DependencyProperty UseShortestPathProperty =
+        DependencyProperty.Register(nameof(UseShortestPath), typeof(bool), typeof(EasingQuaternionKeyFrame),
+            new PropertyMetadata(true, static (d, _) => ((EasingQuaternionKeyFrame)d).WritePostscript()));
+
+    /// <summary>Gets or sets the easing function applied to this keyframe.</summary>
+    public IEasingFunction? EasingFunction
+    {
+        get => (IEasingFunction?)GetValue(EasingFunctionProperty);
+        set => SetValue(EasingFunctionProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets whether to use the shortest path for interpolation.
     /// </summary>
-    public bool UseShortestPath { get; set; } = true;
+    public bool UseShortestPath
+    {
+        get => (bool)(GetValue(UseShortestPathProperty) ?? true);
+        set => SetValue(UseShortestPathProperty, value);
+    }
 
     public EasingQuaternionKeyFrame() { }
     public EasingQuaternionKeyFrame(Quaternion value) => TypedValue = value;
@@ -307,23 +314,16 @@ public sealed class EasingQuaternionKeyFrame : KeyFrame<Quaternion>
         EasingFunction = easingFunction;
     }
 
-    public override Quaternion InterpolateValue(Quaternion baseValue, double keyFrameProgress)
+    protected override Quaternion InterpolateValueCore(Quaternion baseValue, double keyFrameProgress)
     {
         var easedProgress = EasingFunction?.Ease(keyFrameProgress) ?? keyFrameProgress;
-        var target = TypedValue;
-
-        if (UseShortestPath)
-        {
-            var dot = baseValue.X * target.X + baseValue.Y * target.Y +
-                      baseValue.Z * target.Z + baseValue.W * target.W;
-            if (dot < 0)
-            {
-                target = new Quaternion(-target.X, -target.Y, -target.Z, -target.W);
-            }
-        }
-
-        return Quaternion.Slerp(baseValue, target, easedProgress);
+        return Quaternion.Slerp(baseValue, TypedValue, easedProgress, UseShortestPath);
     }
+
+    protected override Freezable CreateInstanceCore() => new EasingQuaternionKeyFrame();
+
+    private static void OnEasingFunctionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((EasingQuaternionKeyFrame)d).OnFreezableChildPropertyChanged(e, EasingFunctionProperty);
 }
 
 #endregion

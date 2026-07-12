@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls.Ink.Shaders;
+namespace Jalium.UI.Ink.Shaders;
 
 /// <summary>
 /// Oil brush — thick paint strokes with directional bristle streaks.

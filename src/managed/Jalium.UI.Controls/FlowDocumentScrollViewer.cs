@@ -1,282 +1,561 @@
-﻿using Jalium.UI.Documents;
+using Jalium.UI.Documents;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
-/// Provides a control for viewing flow content in a continuous, scrolling mode.
+/// Displays a <see cref="FlowDocument"/> as a continuous scrolling text surface.
 /// </summary>
 [ContentProperty("Document")]
 public class FlowDocumentScrollViewer : Control
 {
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Document);
+    private readonly ScrollViewer _contentHost;
+    private readonly TextBlock _textView;
+    private readonly FlowDocumentSearchSession _search = new();
+    private FlowDocument? _attachedDocument;
+    private bool _isPrinting;
+    private int _pageNumber;
 
-    #region Dependency Properties
+    public FlowDocumentScrollViewer()
+    {
+        _textView = new TextBlock
+        {
+            TextWrapping = TextWrapping.Wrap,
+            IsTextSelectionEnabled = true,
+        };
+        _contentHost = new ScrollViewer { Content = _textView };
+        _contentHost.ScrollChanged += OnContentScrollChanged;
+        AddVisualChild(_contentHost);
+        RegisterCommands();
+        ApplyScrollBarVisibility();
+        ApplyDocumentVisual();
+        UpdateZoomState();
+    }
 
-    /// <summary>
-    /// Identifies the Document dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    #region Dependency properties
+
     public static readonly DependencyProperty DocumentProperty =
-        DependencyProperty.Register(nameof(Document), typeof(FlowDocument), typeof(FlowDocumentScrollViewer),
+        DependencyProperty.Register(
+            nameof(Document), typeof(FlowDocument), typeof(FlowDocumentScrollViewer),
             new PropertyMetadata(null, OnDocumentChanged));
 
-    /// <summary>
-    /// Identifies the Zoom dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomProperty =
-        DependencyProperty.Register(nameof(Zoom), typeof(double), typeof(FlowDocumentScrollViewer),
-            new PropertyMetadata(100.0));
+        FlowDocumentPageViewer.ZoomProperty.AddOwner(
+            typeof(FlowDocumentScrollViewer), new PropertyMetadata(100.0, OnZoomChanged, CoerceZoom));
 
-    /// <summary>
-    /// Identifies the MinZoom dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinZoomProperty =
-        DependencyProperty.Register(nameof(MinZoom), typeof(double), typeof(FlowDocumentScrollViewer),
-            new PropertyMetadata(80.0));
+        FlowDocumentPageViewer.MinZoomProperty.AddOwner(
+            typeof(FlowDocumentScrollViewer), new PropertyMetadata(80.0, OnMinZoomChanged));
 
-    /// <summary>
-    /// Identifies the MaxZoom dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxZoomProperty =
-        DependencyProperty.Register(nameof(MaxZoom), typeof(double), typeof(FlowDocumentScrollViewer),
-            new PropertyMetadata(200.0));
+        FlowDocumentPageViewer.MaxZoomProperty.AddOwner(
+            typeof(FlowDocumentScrollViewer), new PropertyMetadata(200.0, OnMaxZoomChanged, CoerceMaxZoom));
 
-    /// <summary>
-    /// Identifies the ZoomIncrement dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomIncrementProperty =
-        DependencyProperty.Register(nameof(ZoomIncrement), typeof(double), typeof(FlowDocumentScrollViewer),
-            new PropertyMetadata(10.0));
+        FlowDocumentPageViewer.ZoomIncrementProperty.AddOwner(typeof(FlowDocumentScrollViewer));
 
-    /// <summary>
-    /// Identifies the IsToolBarVisible dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsToolBarVisibleProperty =
-        DependencyProperty.Register(nameof(IsToolBarVisible), typeof(bool), typeof(FlowDocumentScrollViewer),
-            new PropertyMetadata(true));
+        DependencyProperty.Register(nameof(IsToolBarVisible), typeof(bool), typeof(FlowDocumentScrollViewer), new PropertyMetadata(false));
 
-    /// <summary>
-    /// Identifies the IsSelectionEnabled dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectionEnabledProperty =
-        DependencyProperty.Register(nameof(IsSelectionEnabled), typeof(bool), typeof(FlowDocumentScrollViewer),
-            new PropertyMetadata(true));
+        DependencyProperty.Register(
+            nameof(IsSelectionEnabled), typeof(bool), typeof(FlowDocumentScrollViewer),
+            new PropertyMetadata(true, OnIsSelectionEnabledChanged));
 
-    /// <summary>
-    /// Identifies the HorizontalScrollBarVisibility dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty =
-        DependencyProperty.Register(nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(FlowDocumentScrollViewer),
-            new PropertyMetadata(ScrollBarVisibility.Auto));
+        DependencyProperty.Register(
+            nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(FlowDocumentScrollViewer),
+            new PropertyMetadata(ScrollBarVisibility.Auto, OnScrollBarVisibilityChanged));
 
-    /// <summary>
-    /// Identifies the VerticalScrollBarVisibility dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
-        DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(FlowDocumentScrollViewer),
-            new PropertyMetadata(ScrollBarVisibility.Visible));
+        DependencyProperty.Register(
+            nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(FlowDocumentScrollViewer),
+            new PropertyMetadata(ScrollBarVisibility.Visible, OnScrollBarVisibilityChanged));
+
+    private static readonly DependencyPropertyKey CanIncreaseZoomPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(CanIncreaseZoom), typeof(bool), typeof(FlowDocumentScrollViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty CanIncreaseZoomProperty = CanIncreaseZoomPropertyKey.DependencyProperty;
+
+    private static readonly DependencyPropertyKey CanDecreaseZoomPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(CanDecreaseZoom), typeof(bool), typeof(FlowDocumentScrollViewer), new PropertyMetadata(true));
+
+    public static readonly DependencyProperty CanDecreaseZoomProperty = CanDecreaseZoomPropertyKey.DependencyProperty;
+
+    public static readonly DependencyProperty SelectionBrushProperty =
+        TextBoxBase.SelectionBrushProperty.AddOwner(
+            typeof(FlowDocumentScrollViewer), new PropertyMetadata(SystemColors.HighlightBrush, OnSelectionVisualChanged));
+
+    public static readonly DependencyProperty SelectionOpacityProperty =
+        TextBoxBase.SelectionOpacityProperty.AddOwner(
+            typeof(FlowDocumentScrollViewer), new PropertyMetadata(1.0, OnSelectionVisualChanged));
+
+    private static readonly DependencyPropertyKey IsSelectionActivePropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsSelectionActive), typeof(bool), typeof(FlowDocumentScrollViewer), new PropertyMetadata(false));
+
+    public static readonly DependencyProperty IsSelectionActiveProperty = IsSelectionActivePropertyKey.DependencyProperty;
+
+    public static readonly DependencyProperty IsInactiveSelectionHighlightEnabledProperty =
+        TextBoxBase.IsInactiveSelectionHighlightEnabledProperty.AddOwner(
+            typeof(FlowDocumentScrollViewer), new PropertyMetadata(false, OnSelectionVisualChanged));
 
     #endregion
 
     #region Properties
 
-    /// <summary>
-    /// Gets or sets the FlowDocument displayed by this viewer.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public FlowDocument? Document
     {
         get => (FlowDocument?)GetValue(DocumentProperty);
         set => SetValue(DocumentProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the current zoom level as a percentage.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double Zoom
     {
         get => (double)GetValue(ZoomProperty)!;
         set => SetValue(ZoomProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the minimum zoom level.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinZoom
     {
         get => (double)GetValue(MinZoomProperty)!;
         set => SetValue(MinZoomProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the maximum zoom level.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxZoom
     {
         get => (double)GetValue(MaxZoomProperty)!;
         set => SetValue(MaxZoomProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the zoom increment.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double ZoomIncrement
     {
         get => (double)GetValue(ZoomIncrementProperty)!;
         set => SetValue(ZoomIncrementProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets whether the toolbar is visible.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsToolBarVisible
     {
         get => (bool)GetValue(IsToolBarVisibleProperty)!;
         set => SetValue(IsToolBarVisibleProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets whether text selection is enabled.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelectionEnabled
     {
         get => (bool)GetValue(IsSelectionEnabledProperty)!;
         set => SetValue(IsSelectionEnabledProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the horizontal scrollbar visibility.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility HorizontalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(HorizontalScrollBarVisibilityProperty)!;
         set => SetValue(HorizontalScrollBarVisibilityProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the vertical scrollbar visibility.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility VerticalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty)!;
         set => SetValue(VerticalScrollBarVisibilityProperty, value);
     }
 
-    /// <summary>
-    /// Gets the selection object for this viewer.
-    /// </summary>
-    public TextSelection? Selection { get; private set; }
+    public bool CanIncreaseZoom => (bool)GetValue(CanIncreaseZoomProperty)!;
+
+    public bool CanDecreaseZoom => (bool)GetValue(CanDecreaseZoomProperty)!;
+
+    public Brush? SelectionBrush
+    {
+        get => (Brush?)GetValue(SelectionBrushProperty);
+        set => SetValue(SelectionBrushProperty, value);
+    }
+
+    public double SelectionOpacity
+    {
+        get => (double)GetValue(SelectionOpacityProperty)!;
+        set => SetValue(SelectionOpacityProperty, value);
+    }
+
+    public bool IsSelectionActive => (bool)GetValue(IsSelectionActiveProperty)!;
+
+    public bool IsInactiveSelectionHighlightEnabled
+    {
+        get => (bool)GetValue(IsInactiveSelectionHighlightEnabledProperty)!;
+        set => SetValue(IsInactiveSelectionHighlightEnabledProperty, value);
+    }
+
+    public TextSelection? Selection => _search.Selection;
+
+    public string SearchText { get; set; } = string.Empty;
+
+    public bool IsFindToolBarVisible { get; private set; }
+
+    internal int PageCountInternal => FlowDocumentViewerSupport.GetPageCount(Document);
+
+    internal int PageNumberInternal => _pageNumber;
 
     #endregion
 
-    #region Methods
+    #region Public operations
 
-    /// <summary>
-    /// Increases the zoom level.
-    /// </summary>
-    public void IncreaseZoom()
-    {
-        Zoom = Math.Min(MaxZoom, Zoom + ZoomIncrement);
-    }
+    public void IncreaseZoom() => OnIncreaseZoomCommand();
 
-    /// <summary>
-    /// Decreases the zoom level.
-    /// </summary>
-    public void DecreaseZoom()
-    {
-        Zoom = Math.Max(MinZoom, Zoom - ZoomIncrement);
-    }
+    public void DecreaseZoom() => OnDecreaseZoomCommand();
 
-    /// <summary>
-    /// Finds text in the document.
-    /// </summary>
+    public void Find() => OnFindCommand();
+
     public bool Find(string searchText)
     {
-        if (Document == null || string.IsNullOrEmpty(searchText))
+        SearchText = searchText ?? throw new ArgumentNullException(nameof(searchText));
+        if (!_search.Find(SearchText))
+        {
             return false;
+        }
 
-        var text = Document.GetText();
-        return text.Contains(searchText, StringComparison.OrdinalIgnoreCase);
+        ApplySelection(_search.Selection);
+        return true;
+    }
+
+    public void Print() => OnPrintCommand();
+
+    public void CancelPrint() => OnCancelPrintCommand();
+
+    #endregion
+
+    #region Protected command hooks
+
+    protected virtual void OnFindCommand()
+    {
+        if (Document == null)
+        {
+            return;
+        }
+
+        IsFindToolBarVisible = !IsFindToolBarVisible;
+        if (!string.IsNullOrWhiteSpace(SearchText) && _search.Find(SearchText))
+        {
+            ApplySelection(_search.Selection);
+        }
+    }
+
+    protected virtual void OnPrintCommand()
+    {
+        if (Document == null || _isPrinting)
+        {
+            return;
+        }
+
+        _isPrinting = true;
+        CommandManager.InvalidateRequerySuggested();
+        try
+        {
+            FlowDocumentViewerSupport.Print(Document.ViewerPaginator, Math.Max(1, _pageNumber));
+        }
+        finally
+        {
+            _isPrinting = false;
+            OnPrintCompleted();
+        }
+    }
+
+    protected virtual void OnCancelPrintCommand()
+    {
+        FlowDocumentViewerSupport.CancelPrint();
+        _isPrinting = false;
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    protected virtual void OnPrintCompleted()
+    {
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    protected virtual void OnIncreaseZoomCommand()
+    {
+        if (CanIncreaseZoom)
+        {
+            Zoom = Math.Min(MaxZoom, Zoom + ZoomIncrement);
+        }
+    }
+
+    protected virtual void OnDecreaseZoomCommand()
+    {
+        if (CanDecreaseZoom)
+        {
+            Zoom = Math.Max(MinZoom, Zoom - ZoomIncrement);
+        }
+    }
+
+    protected override void OnIsKeyboardFocusWithinChanged(bool isFocusWithin)
+    {
+        base.OnIsKeyboardFocusWithinChanged(isFocusWithin);
+        SetValue(IsSelectionActivePropertyKey, isFocusWithin);
+        ApplySelectionVisual();
+    }
+
+    #endregion
+
+    #region Layout
+
+    protected override int VisualChildrenCount => base.VisualChildrenCount + 1;
+
+    protected override Visual? GetVisualChild(int index)
+    {
+        var baseCount = base.VisualChildrenCount;
+        if (index < baseCount)
+        {
+            return base.GetVisualChild(index);
+        }
+
+        return index == baseCount ? _contentHost : throw new ArgumentOutOfRangeException(nameof(index));
+    }
+
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        _contentHost.Measure(availableSize);
+        return _contentHost.DesiredSize;
+    }
+
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        _contentHost.Arrange(new Rect(finalSize));
+        return finalSize;
+    }
+
+    #endregion
+
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer() =>
+        new Jalium.UI.Automation.Peers.FlowDocumentScrollViewerAutomationPeer(this);
+
+    internal void GoToPageInternal(int pageNumber)
+    {
+        if (Document == null || PageCountInternal == 0)
+        {
+            _pageNumber = 0;
+            _contentHost.ScrollToTop();
+            return;
+        }
+
+        _pageNumber = Math.Clamp(pageNumber, 1, PageCountInternal);
+        var pageHeight = Document.ViewerPaginator.PageSize.Height * (Zoom / 100.0);
+        _contentHost.ScrollToVerticalOffset(Math.Max(0.0, (_pageNumber - 1) * pageHeight));
+    }
+
+    internal void ApplySelection(TextSelection? selection)
+    {
+        if (!IsSelectionEnabled || (!IsSelectionActive && !IsInactiveSelectionHighlightEnabled) ||
+            Document == null || selection == null ||
+            !ReferenceEquals(selection.Start.Document, Document))
+        {
+            _textView.Select(0, 0);
+            return;
+        }
+
+        var start = Math.Clamp(selection.Start.DocumentOffset, 0, _textView.Text.Length);
+        var end = Math.Clamp(selection.End.DocumentOffset, start, _textView.Text.Length);
+        _textView.Select(start, end - start);
+        _pageNumber = FlowDocumentViewerSupport.GetPageNumberForOffset(Document, start);
+
+        var textBeforeSelection = _textView.Text.AsSpan(0, start);
+        var line = 0;
+        foreach (var character in textBeforeSelection)
+        {
+            if (character == '\n')
+            {
+                line++;
+            }
+        }
+        _contentHost.ScrollToVerticalOffset(line * Math.Max(1.0, _textView.FontSize * 1.35));
+    }
+
+    private void RegisterCommands()
+    {
+        AddCommandBinding(ApplicationCommands.Find, static viewer => viewer.OnFindCommand(), static viewer => viewer.Document != null);
+        AddCommandBinding(ApplicationCommands.Print, static viewer => viewer.OnPrintCommand(), static viewer => viewer.Document != null && !viewer._isPrinting);
+        AddCommandBinding(ApplicationCommands.CancelPrint, static viewer => viewer.OnCancelPrintCommand(), static viewer => viewer._isPrinting);
+        AddCommandBinding(NavigationCommands.IncreaseZoom, static viewer => viewer.OnIncreaseZoomCommand(), static viewer => viewer.CanIncreaseZoom);
+        AddCommandBinding(NavigationCommands.DecreaseZoom, static viewer => viewer.OnDecreaseZoomCommand(), static viewer => viewer.CanDecreaseZoom);
+        AddCommandBinding(NavigationCommands.FirstPage, static viewer => viewer.GoToPageInternal(1), static viewer => viewer.PageCountInternal > 0);
+        AddCommandBinding(NavigationCommands.LastPage, static viewer => viewer.GoToPageInternal(viewer.PageCountInternal), static viewer => viewer.PageCountInternal > 0);
+        AddCommandBinding(NavigationCommands.PreviousPage, static viewer => viewer.GoToPageInternal(viewer._pageNumber - 1), static viewer => viewer._pageNumber > 1);
+        AddCommandBinding(NavigationCommands.NextPage, static viewer => viewer.GoToPageInternal(viewer._pageNumber + 1), static viewer => viewer._pageNumber > 0 && viewer._pageNumber < viewer.PageCountInternal);
+        AddCommandBinding(ApplicationCommands.SelectAll, static viewer => viewer.SelectAll(), static viewer => viewer.Document != null && viewer.IsSelectionEnabled);
+    }
+
+    private void AddCommandBinding(RoutedUICommand command, Action<FlowDocumentScrollViewer> execute, Predicate<FlowDocumentScrollViewer> canExecute)
+    {
+        CommandBindings.Add(new CommandBinding(
+            command,
+            (_, _) => execute(this),
+            (_, args) => args.CanExecute = canExecute(this)));
+    }
+
+    private void SelectAll()
+    {
+        _search.SelectAll();
+        ApplySelection(_search.Selection);
+    }
+
+    private void AttachDocument(FlowDocument? document)
+    {
+        if (_attachedDocument != null)
+        {
+            _attachedDocument.ViewerPaginationChanged -= OnPaginationChanged;
+        }
+
+        _attachedDocument = document;
+        if (_attachedDocument != null)
+        {
+            _attachedDocument.ViewerPaginationChanged += OnPaginationChanged;
+        }
+
+        _search.Attach(document);
+        _pageNumber = document == null ? 0 : 1;
+        ApplyDocumentVisual();
+        _contentHost.ScrollToTop();
+        InvalidateMeasure();
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    private void ApplyDocumentVisual()
+    {
+        var document = Document;
+        _textView.Text = document?.GetText() ?? string.Empty;
+        _textView.FontFamily = document?.FontFamily ?? new FontFamily(FrameworkElement.DefaultFontFamilyName);
+        _textView.FontSize = Math.Max(1.0, (document?.FontSize ?? 14.0) * Zoom / 100.0);
+        _textView.Foreground = document?.Foreground ?? new SolidColorBrush(Color.Black);
+        _textView.Background = document?.Background;
+        _textView.Padding = document?.PagePadding ?? new Thickness(0);
+        _textView.IsTextSelectionEnabled = IsSelectionEnabled;
+        ApplySelectionVisual();
+        _textView.InvalidateMeasure();
+    }
+
+    private void ApplySelectionVisual()
+    {
+        _textView.SelectionBrush = CreateSelectionBrush(SelectionBrush, SelectionOpacity);
+        if (!IsSelectionEnabled || (!IsSelectionActive && !IsInactiveSelectionHighlightEnabled))
+        {
+            _textView.Select(0, 0);
+        }
+        else if (_search.Selection != null)
+        {
+            ApplySelection(_search.Selection);
+        }
+    }
+
+    private static Brush? CreateSelectionBrush(Brush? brush, double opacity)
+    {
+        if (brush is SolidColorBrush solidColorBrush)
+        {
+            return new SolidColorBrush(solidColorBrush.Color)
+            {
+                Opacity = solidColorBrush.Opacity * Math.Clamp(opacity, 0.0, 1.0),
+            };
+        }
+
+        return brush;
+    }
+
+    private void ApplyScrollBarVisibility()
+    {
+        _contentHost.HorizontalScrollBarVisibility = HorizontalScrollBarVisibility;
+        _contentHost.VerticalScrollBarVisibility = VerticalScrollBarVisibility;
+    }
+
+    private void UpdateZoomState()
+    {
+        SetValue(CanIncreaseZoomPropertyKey, Zoom < MaxZoom);
+        SetValue(CanDecreaseZoomPropertyKey, Zoom > MinZoom);
+        ApplyDocumentVisual();
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    private void OnPaginationChanged(object? sender, EventArgs e)
+    {
+        var pageNumber = _pageNumber;
+        ApplyDocumentVisual();
+        GoToPageInternal(PageCountInternal > 0 ? Math.Clamp(pageNumber, 1, PageCountInternal) : 0);
+    }
+
+    private void OnContentScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (Document == null || PageCountInternal == 0)
+        {
+            _pageNumber = 0;
+            return;
+        }
+
+        var pageHeight = Math.Max(1.0, Document.ViewerPaginator.PageSize.Height * (Zoom / 100.0));
+        _pageNumber = Math.Clamp((int)Math.Floor(_contentHost.VerticalOffset / pageHeight) + 1, 1, PageCountInternal);
     }
 
     private static void OnDocumentChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is FlowDocumentScrollViewer viewer)
         {
-            viewer.OnDocumentChanged((FlowDocument?)e.OldValue, (FlowDocument?)e.NewValue);
+            viewer.AttachDocument((FlowDocument?)e.NewValue);
         }
     }
 
-    /// <summary>
-    /// Called when the document changes.
-    /// </summary>
-    protected void OnDocumentChanged(FlowDocument? oldDocument, FlowDocument? newDocument)
+    private static void OnZoomChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        InvalidateArrange();
+        if (d is FlowDocumentScrollViewer viewer)
+        {
+            viewer.UpdateZoomState();
+        }
     }
 
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    private static void OnMinZoomChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        // Measure as a simple content presenter for the document
-        return base.MeasureOverride(availableSize);
+        if (d is FlowDocumentScrollViewer viewer)
+        {
+            viewer.CoerceValue(MaxZoomProperty);
+            viewer.CoerceValue(ZoomProperty);
+            viewer.UpdateZoomState();
+        }
     }
 
-    #endregion
-}
-
-/// <summary>
-/// Represents a text selection in a flow document viewer.
-/// </summary>
-public sealed class TextSelection
-{
-    /// <summary>
-    /// Gets the starting position of the selection.
-    /// </summary>
-    public int Start { get; internal set; }
-
-    /// <summary>
-    /// Gets the ending position of the selection.
-    /// </summary>
-    public int End { get; internal set; }
-
-    /// <summary>
-    /// Gets the selected text.
-    /// </summary>
-    public string Text { get; internal set; } = string.Empty;
-
-    /// <summary>
-    /// Gets a value indicating whether the selection is empty.
-    /// </summary>
-    public bool IsEmpty => Start == End;
-
-    /// <summary>
-    /// Selects all content in the document.
-    /// </summary>
-    public void SelectAll(string fullText)
+    private static void OnMaxZoomChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        Start = 0;
-        End = fullText.Length;
-        Text = fullText;
+        if (d is FlowDocumentScrollViewer viewer)
+        {
+            viewer.CoerceValue(ZoomProperty);
+            viewer.UpdateZoomState();
+        }
+    }
+
+    private static object? CoerceZoom(DependencyObject d, object? value) =>
+        d is FlowDocumentScrollViewer viewer && value is double zoom
+            ? FlowDocumentViewerSupport.CoerceZoom(zoom, viewer.MinZoom, viewer.MaxZoom)
+            : value;
+
+    private static object? CoerceMaxZoom(DependencyObject d, object? value) =>
+        d is FlowDocumentScrollViewer viewer && value is double maxZoom
+            ? Math.Max(viewer.MinZoom, maxZoom)
+            : value;
+
+    private static void OnScrollBarVisibilityChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is FlowDocumentScrollViewer viewer)
+        {
+            viewer.ApplyScrollBarVisibility();
+        }
+    }
+
+    private static void OnIsSelectionEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is FlowDocumentScrollViewer viewer)
+        {
+            viewer.ApplyDocumentVisual();
+        }
+    }
+
+    private static void OnSelectionVisualChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is FlowDocumentScrollViewer viewer)
+        {
+            viewer.ApplySelectionVisual();
+            viewer.InvalidateVisual();
+        }
     }
 }

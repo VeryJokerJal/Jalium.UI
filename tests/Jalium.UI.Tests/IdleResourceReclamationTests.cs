@@ -315,9 +315,9 @@ public class IdleResourceReclamationTests : IDisposable
         SetBitmapImagePrivate(bitmap, raw: new byte[64], encoded: new byte[8]);
         var image = new Image { Source = bitmap };
 
-        Assert.IsAssignableFrom<IReclaimableResource>(image);
+        Assert.IsNotAssignableFrom<IReclaimableResource>(image);
 
-        ((IReclaimableResource)image).ReclaimIdleResources();
+        image.ReclaimIdleResources();
 
         Assert.Null(bitmap.RawPixelData);
     }

@@ -12,9 +12,9 @@ namespace Jalium.UI.Controls;
 public class JsonTreeViewer : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.JsonTreeViewerAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.JsonTreeViewerAutomationPeer(this);
     }
 
     // Default type-indicator brushes
@@ -284,7 +284,7 @@ public class JsonTreeViewer : Control
     public JsonTreeNode? RootNode
     {
         get => (JsonTreeNode?)GetValue(RootNodeProperty);
-        private set => SetValue(RootNodePropertyKey.DependencyProperty, value);
+        private set => SetValue(RootNodePropertyKey, value);
     }
 
     /// <summary>
@@ -629,10 +629,10 @@ public class JsonTreeViewer : Control
     }
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => _treeView != null && Template == null ? 1 : base.VisualChildrenCount;
+    protected override int VisualChildrenCount => _treeView != null && Template == null ? 1 : base.VisualChildrenCount;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (_treeView != null && Template == null && index == 0) return _treeView;
         return base.GetVisualChild(index);

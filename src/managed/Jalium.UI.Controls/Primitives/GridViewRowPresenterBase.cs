@@ -1,12 +1,18 @@
-using System.Collections.ObjectModel;
+using System.Collections;
+using System.Collections.Specialized;
+using System.ComponentModel;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents the abstract base class for objects that present row data in a GridView.
 /// </summary>
-public abstract class GridViewRowPresenterBase : FrameworkElement
+public abstract class GridViewRowPresenterBase : FrameworkElement, IWeakEventListener
 {
+    private readonly List<UIElement> _presenterChildren = [];
+    private readonly HashSet<Controls.GridViewColumn> _subscribedColumns = [];
+
     #region Dependency Properties
 
     /// <summary>
@@ -14,7 +20,7 @@ public abstract class GridViewRowPresenterBase : FrameworkElement
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnsProperty =
-        DependencyProperty.Register(nameof(Columns), typeof(GridViewColumnCollection), typeof(GridViewRowPresenterBase),
+        DependencyProperty.Register(nameof(Columns), typeof(Controls.GridViewColumnCollection), typeof(GridViewRowPresenterBase),
             new PropertyMetadata(null, OnColumnsChanged));
 
     #endregion
@@ -25,9 +31,9 @@ public abstract class GridViewRowPresenterBase : FrameworkElement
     /// Gets or sets the collection of columns.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public GridViewColumnCollection? Columns
+    public Controls.GridViewColumnCollection? Columns
     {
-        get => (GridViewColumnCollection?)GetValue(ColumnsProperty);
+        get => (Controls.GridViewColumnCollection?)GetValue(ColumnsProperty);
         set => SetValue(ColumnsProperty, value);
     }
 
@@ -40,8 +46,8 @@ public abstract class GridViewRowPresenterBase : FrameworkElement
         if (d is GridViewRowPresenterBase presenter)
         {
             presenter.OnColumnsChanged(
-                e.OldValue as GridViewColumnCollection,
-                e.NewValue as GridViewColumnCollection);
+                e.OldValue as Controls.GridViewColumnCollection,
+                e.NewValue as Controls.GridViewColumnCollection);
         }
     }
 
@@ -50,7 +56,30 @@ public abstract class GridViewRowPresenterBase : FrameworkElement
     /// </summary>
     /// <param name="oldColumns">The old columns collection.</param>
     /// <param name="newColumns">The new columns collection.</param>
-    protected virtual void OnColumnsChanged(GridViewColumnCollection? oldColumns, GridViewColumnCollection? newColumns)
+    protected virtual void OnColumnsChanged(
+        Controls.GridViewColumnCollection? oldColumns,
+        Controls.GridViewColumnCollection? newColumns)
+    {
+        UnsubscribeColumns(oldColumns);
+        SubscribeColumns(newColumns);
+        InvalidateMeasure();
+    }
+
+    /// <summary>
+    /// Called after the assigned collection changes structurally.
+    /// </summary>
+    protected virtual void OnColumnCollectionChanged(NotifyCollectionChangedEventArgs e)
+    {
+        InvalidateMeasure();
+        InvalidateArrange();
+    }
+
+    /// <summary>
+    /// Called after a property on a participating column changes.
+    /// </summary>
+    protected virtual void OnColumnPropertyChanged(
+        Controls.GridViewColumn column,
+        string? propertyName)
     {
         InvalidateMeasure();
     }
@@ -70,7 +99,7 @@ public abstract class GridViewRowPresenterBase : FrameworkElement
         double total = 0;
         foreach (var column in Columns)
         {
-            total += column.ActualWidth;
+            total += GetColumnDisplayWidth(column);
         }
         return total;
     }
@@ -80,7 +109,7 @@ public abstract class GridViewRowPresenterBase : FrameworkElement
     /// </summary>
     /// <param name="x">The X position.</param>
     /// <returns>The column at the position, or null.</returns>
-    protected GridViewColumn? GetColumnAtPosition(double x)
+    protected Controls.GridViewColumn? GetColumnAtPosition(double x)
     {
         if (Columns == null)
             return null;
@@ -88,58 +117,190 @@ public abstract class GridViewRowPresenterBase : FrameworkElement
         double currentX = 0;
         foreach (var column in Columns)
         {
-            if (x >= currentX && x < currentX + column.ActualWidth)
+            var width = GetColumnDisplayWidth(column);
+            if (x >= currentX && x < currentX + width)
             {
                 return column;
             }
-            currentX += column.ActualWidth;
+            currentX += width;
         }
 
         return null;
     }
 
+    /// <summary>
+    /// Returns the current layout width for a column, including the framework's auto-width fallback.
+    /// </summary>
+    protected static double GetColumnDisplayWidth(Controls.GridViewColumn column)
+    {
+        if (!double.IsNaN(column.Width))
+        {
+            return Math.Max(0, column.Width);
+        }
+
+        return column.ActualWidth > 0 ? column.ActualWidth : 120;
+    }
+
+    /// <summary>
+    /// Updates an auto-sized column without overriding a specific Width value.
+    /// </summary>
+    protected static void EnsureAutoColumnWidth(Controls.GridViewColumn column, double desiredWidth)
+    {
+        if (double.IsNaN(column.Width) && double.IsFinite(desiredWidth) && desiredWidth > column.ActualWidth)
+        {
+            column.ActualWidth = desiredWidth;
+        }
+    }
+
+    /// <summary>
+    /// Gets the logical children generated by the presenter.
+    /// </summary>
+    protected internal override IEnumerator LogicalChildren => _presenterChildren.GetEnumerator();
+
+    /// <inheritdoc />
+    protected override int VisualChildrenCount => _presenterChildren.Count;
+
+    /// <inheritdoc />
+    protected override Visual? GetVisualChild(int index)
+    {
+        if ((uint)index >= (uint)_presenterChildren.Count)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
+
+        return _presenterChildren[index];
+    }
+
+    /// <summary>
+    /// Adds a generated visual/logical child owned by this presenter.
+    /// </summary>
+    protected void AddPresenterChild(UIElement child)
+    {
+        ArgumentNullException.ThrowIfNull(child);
+        _presenterChildren.Add(child);
+        AddVisualChild(child);
+    }
+
+    /// <summary>
+    /// Clears all generated children owned by this presenter.
+    /// </summary>
+    protected void ClearPresenterChildren()
+    {
+        foreach (var child in _presenterChildren)
+        {
+            RemoveVisualChild(child);
+        }
+
+        _presenterChildren.Clear();
+    }
+
+    private void SubscribeColumns(Controls.GridViewColumnCollection? columns)
+    {
+        if (columns == null)
+        {
+            return;
+        }
+
+        columns.CollectionChanged += OnCollectionChanged;
+        foreach (var column in columns)
+        {
+            SubscribeColumn(column);
+        }
+    }
+
+    private void UnsubscribeColumns(Controls.GridViewColumnCollection? columns)
+    {
+        if (columns != null)
+        {
+            columns.CollectionChanged -= OnCollectionChanged;
+        }
+
+        foreach (var column in _subscribedColumns.ToArray())
+        {
+            ((INotifyPropertyChanged)column).PropertyChanged -= OnColumnChanged;
+        }
+
+        _subscribedColumns.Clear();
+    }
+
+    private void SubscribeColumn(Controls.GridViewColumn column)
+    {
+        if (_subscribedColumns.Add(column))
+        {
+            ((INotifyPropertyChanged)column).PropertyChanged += OnColumnChanged;
+        }
+    }
+
+    private void OnCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.Action == NotifyCollectionChangedAction.Reset)
+        {
+            foreach (var column in _subscribedColumns.ToArray())
+            {
+                ((INotifyPropertyChanged)column).PropertyChanged -= OnColumnChanged;
+            }
+
+            _subscribedColumns.Clear();
+            if (sender is Controls.GridViewColumnCollection columns)
+            {
+                foreach (var column in columns)
+                {
+                    SubscribeColumn(column);
+                }
+            }
+        }
+        else
+        {
+            if (e.OldItems != null)
+            {
+                foreach (Controls.GridViewColumn column in e.OldItems)
+                {
+                    if (_subscribedColumns.Remove(column))
+                    {
+                        ((INotifyPropertyChanged)column).PropertyChanged -= OnColumnChanged;
+                    }
+                }
+            }
+
+            if (e.NewItems != null)
+            {
+                foreach (Controls.GridViewColumn column in e.NewItems)
+                {
+                    SubscribeColumn(column);
+                }
+            }
+        }
+
+        OnColumnCollectionChanged(e);
+    }
+
+    private void OnColumnChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (sender is Controls.GridViewColumn column)
+        {
+            OnColumnPropertyChanged(column, e.PropertyName);
+        }
+    }
+
+    bool IWeakEventListener.ReceiveWeakEvent(Type managerType, object sender, EventArgs e)
+    {
+        if (e is NotifyCollectionChangedEventArgs collectionChanged)
+        {
+            OnCollectionChanged(sender, collectionChanged);
+            return true;
+        }
+
+        if (e is PropertyChangedEventArgs propertyChanged)
+        {
+            OnColumnChanged(sender, propertyChanged);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <inheritdoc />
+    public override string ToString() => $"{GetType()} Columns.Count:{Columns?.Count ?? 0}";
+
     #endregion
-}
-
-/// <summary>
-/// Represents a collection of GridView columns.
-/// </summary>
-public sealed class GridViewColumnCollection : ObservableCollection<GridViewColumn>
-{
-}
-
-/// <summary>
-/// Represents a column in a GridView.
-/// </summary>
-public class GridViewColumn
-{
-    /// <summary>
-    /// Gets or sets the header content.
-    /// </summary>
-    public object? Header { get; set; }
-
-    /// <summary>
-    /// Gets or sets the width of the column.
-    /// </summary>
-    public double Width { get; set; } = double.NaN;
-
-    /// <summary>
-    /// Gets the actual width of the column.
-    /// </summary>
-    public double ActualWidth => double.IsNaN(Width) ? 100 : Width;
-
-    /// <summary>
-    /// Gets or sets the display member binding path.
-    /// </summary>
-    public string? DisplayMemberBinding { get; set; }
-
-    /// <summary>
-    /// Gets or sets the cell template.
-    /// </summary>
-    public DataTemplate? CellTemplate { get; set; }
-
-    /// <summary>
-    /// Gets or sets the header template.
-    /// </summary>
-    public DataTemplate? HeaderTemplate { get; set; }
 }

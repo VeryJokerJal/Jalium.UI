@@ -15,7 +15,7 @@
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="4" />
-        <Setter Property="FontFamily" Value="{ThemeResource MonospaceFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />

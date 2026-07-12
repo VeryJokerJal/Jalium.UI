@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 
@@ -35,7 +36,7 @@ public abstract class MultiSelector : Selector
     /// <summary>
     /// Gets the collection of selected items.
     /// </summary>
-    public ObservableCollection<object> SelectedItems { get; }
+    public IList SelectedItems => _selectedItems;
 
     /// <summary>
     /// Gets a value indicating whether a batch selection update is in progress.
@@ -47,6 +48,7 @@ public abstract class MultiSelector : Selector
     #region Private Fields
 
     private bool _isUpdatingSelectedItems;
+    private readonly ObservableCollection<object> _selectedItems = new();
     private readonly List<object> _pendingAdditions = new();
     private readonly List<object> _pendingRemovals = new();
 
@@ -59,8 +61,7 @@ public abstract class MultiSelector : Selector
     /// </summary>
     protected MultiSelector()
     {
-        SelectedItems = new ObservableCollection<object>();
-        SelectedItems.CollectionChanged += OnSelectedItemsCollectionChanged;
+        _selectedItems.CollectionChanged += OnSelectedItemsCollectionChanged;
     }
 
     #endregion
@@ -316,7 +317,7 @@ public abstract class MultiSelector : Selector
     /// <returns>An array of selected items.</returns>
     public object[] GetSelectedItems()
     {
-        return SelectedItems.ToArray();
+        return _selectedItems.ToArray();
     }
 
     #endregion

@@ -1,5 +1,7 @@
 using Jalium.UI.Controls.Primitives;
 
+using Jalium.UI.Media;
+
 namespace Jalium.UI.Controls;
 
 /// <summary>
@@ -185,6 +187,6 @@ internal sealed class OverlayLayer : Canvas
             child.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         }
 
-        return Size.Empty;
+        return default(Size);
     }
 }

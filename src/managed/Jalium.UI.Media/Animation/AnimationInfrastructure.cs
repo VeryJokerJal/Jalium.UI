@@ -12,6 +12,23 @@ public sealed class AnimationException : Exception
     public AnimationException() { }
     public AnimationException(string message) : base(message) { }
     public AnimationException(string message, Exception innerException) : base(message, innerException) { }
+
+    internal AnimationException(
+        AnimationClock clock,
+        DependencyProperty property,
+        IAnimatable target,
+        string message,
+        Exception innerException)
+        : base(message, innerException)
+    {
+        Clock = clock;
+        Property = property;
+        Target = target;
+    }
+
+    public AnimationClock Clock { get; } = null!;
+    public DependencyProperty Property { get; } = null!;
+    public IAnimatable Target { get; } = null!;
 }
 
 /// <summary>
@@ -38,7 +55,7 @@ public interface IClock
 /// </summary>
 public interface IKeyFrameAnimation
 {
-    IList KeyFrames { get; }
+    IList KeyFrames { get; set; }
 }
 
 /// <summary>
@@ -127,43 +144,6 @@ public sealed class KeyTimeConverter : TypeConverter
                 KeyTimeType.Percent => $"{kt.Percent * 100}%",
                 _ => kt.TimeSpan.ToString()
             };
-        }
-        return base.ConvertTo(context, culture, value, destinationType);
-    }
-}
-
-/// <summary>
-/// Converts Duration from/to string.
-/// </summary>
-public sealed class DurationConverter : TypeConverter
-{
-    public override bool CanConvertFrom(ITypeDescriptorContext? context, Type sourceType)
-        => sourceType == typeof(string) || base.CanConvertFrom(context, sourceType);
-
-    public override object? ConvertFrom(ITypeDescriptorContext? context, CultureInfo? culture, object value)
-    {
-        if (value is string s)
-        {
-            s = s.Trim();
-            if (s.Equals("Automatic", StringComparison.OrdinalIgnoreCase))
-                return Duration.Automatic;
-            if (s.Equals("Forever", StringComparison.OrdinalIgnoreCase))
-                return Duration.Forever;
-            return new Duration(TimeSpan.Parse(s, CultureInfo.InvariantCulture));
-        }
-        return base.ConvertFrom(context, culture, value);
-    }
-
-    public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType)
-        => destinationType == typeof(string) || base.CanConvertTo(context, destinationType);
-
-    public override object? ConvertTo(ITypeDescriptorContext? context, CultureInfo? culture, object? value, Type destinationType)
-    {
-        if (destinationType == typeof(string) && value is Duration d)
-        {
-            if (d == Duration.Automatic) return "Automatic";
-            if (d == Duration.Forever) return "Forever";
-            return d.TimeSpan.ToString();
         }
         return base.ConvertTo(context, culture, value, destinationType);
     }

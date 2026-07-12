@@ -6,12 +6,17 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Indicates the progress of an operation.
 /// </summary>
-public class ProgressBar : Control
+public class ProgressBar : Primitives.RangeBase
 {
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    static ProgressBar()
     {
-        return new Jalium.UI.Controls.Automation.ProgressBarAutomationPeer(this);
+        MaximumProperty.OverrideMetadata(typeof(ProgressBar), new FrameworkPropertyMetadata(100.0));
+    }
+
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Automation.Peers.ProgressBarAutomationPeer(this);
     }
 
     // Cached brushes for OnRender
@@ -21,30 +26,6 @@ public class ProgressBar : Control
     private static readonly CornerRadius s_defaultCornerRadius = new(4);
 
     #region Dependency Properties
-
-    /// <summary>
-    /// Identifies the Minimum dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty MinimumProperty =
-        DependencyProperty.Register(nameof(Minimum), typeof(double), typeof(ProgressBar),
-            new PropertyMetadata(0.0, OnRangePropertyChanged));
-
-    /// <summary>
-    /// Identifies the Maximum dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public static readonly DependencyProperty MaximumProperty =
-        DependencyProperty.Register(nameof(Maximum), typeof(double), typeof(ProgressBar),
-            new PropertyMetadata(100.0, OnRangePropertyChanged));
-
-    /// <summary>
-    /// Identifies the Value dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty ValueProperty =
-        DependencyProperty.Register(nameof(Value), typeof(double), typeof(ProgressBar),
-            new PropertyMetadata(0.0, OnValuePropertyChanged, CoerceValue));
 
     /// <summary>
     /// Identifies the IsIndeterminate dependency property.
@@ -72,57 +53,7 @@ public class ProgressBar : Control
 
     #endregion
 
-    #region Routed Events
-
-    /// <summary>
-    /// Identifies the ValueChanged routed event.
-    /// </summary>
-    public static readonly RoutedEvent ValueChangedEvent =
-        EventManager.RegisterRoutedEvent(nameof(ValueChanged), RoutingStrategy.Bubble,
-            typeof(RoutedPropertyChangedEventHandler<double>), typeof(ProgressBar));
-
-    /// <summary>
-    /// Occurs when the Value property changes.
-    /// </summary>
-    public event RoutedPropertyChangedEventHandler<double> ValueChanged
-    {
-        add => AddHandler(ValueChangedEvent, value);
-        remove => RemoveHandler(ValueChangedEvent, value);
-    }
-
-    #endregion
-
     #region CLR Properties
-
-    /// <summary>
-    /// Gets or sets the minimum value of the ProgressBar.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public double Minimum
-    {
-        get => (double)GetValue(MinimumProperty)!;
-        set => SetValue(MinimumProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the maximum value of the ProgressBar.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public double Maximum
-    {
-        get => (double)GetValue(MaximumProperty)!;
-        set => SetValue(MaximumProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the current value of the ProgressBar.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public double Value
-    {
-        get => (double)GetValue(ValueProperty)!;
-        set => SetValue(ValueProperty, value);
-    }
 
     /// <summary>
     /// Gets or sets whether the ProgressBar shows indeterminate progress.
@@ -390,6 +321,13 @@ public class ProgressBar : Control
     }
 
     /// <inheritdoc />
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        base.OnVisualParentChanged(oldParent);
+        UpdateIndeterminateAnimationState();
+    }
+
+    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
         // MUST measure template children (Grid with PART_Track + PART_Indicator)
@@ -572,30 +510,6 @@ public class ProgressBar : Control
 
     #region Property Changed Callbacks
 
-    private static void OnRangePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is ProgressBar progressBar)
-        {
-            // Re-coerce value to stay within new range by re-setting it
-            var currentValue = progressBar.Value;
-            var coercedValue = (double)(CoerceValue(progressBar, currentValue) ?? currentValue);
-            if (coercedValue != currentValue)
-            {
-                progressBar.Value = coercedValue;
-            }
-            progressBar.UpdateIndicator();
-            progressBar.InvalidateVisual();
-        }
-    }
-
-    private static void OnValuePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is ProgressBar progressBar)
-        {
-            progressBar.OnValueChanged((double)(e.OldValue ?? 0.0), (double)(e.NewValue ?? 0.0));
-        }
-    }
-
     private static void OnIsIndeterminateChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is ProgressBar progressBar)
@@ -671,55 +585,26 @@ public class ProgressBar : Control
         }
     }
 
-    private static object? CoerceValue(DependencyObject d, object? value)
+    protected override void OnMinimumChanged(double oldMinimum, double newMinimum)
     {
-        if (d is ProgressBar progressBar && value is double doubleValue)
-        {
-            return Math.Clamp(doubleValue, progressBar.Minimum, progressBar.Maximum);
-        }
-        return value;
-    }
-
-    /// <summary>
-    /// Called when the Value property changes.
-    /// </summary>
-    protected void OnValueChanged(double oldValue, double newValue)
-    {
+        base.OnMinimumChanged(oldMinimum, newMinimum);
         UpdateIndicator();
         InvalidateVisual();
-        RaiseEvent(new RoutedPropertyChangedEventArgs<double>(oldValue, newValue, ValueChangedEvent));
+    }
+
+    protected override void OnMaximumChanged(double oldMaximum, double newMaximum)
+    {
+        base.OnMaximumChanged(oldMaximum, newMaximum);
+        UpdateIndicator();
+        InvalidateVisual();
+    }
+
+    protected override void OnValueChanged(double oldValue, double newValue)
+    {
+        base.OnValueChanged(oldValue, newValue);
+        UpdateIndicator();
+        InvalidateVisual();
     }
 
     #endregion
 }
-
-/// <summary>
-/// Provides data for the ValueChanged event.
-/// </summary>
-public sealed class RoutedPropertyChangedEventArgs<T> : RoutedEventArgs
-{
-    /// <summary>
-    /// Gets the old value.
-    /// </summary>
-    public T OldValue { get; }
-
-    /// <summary>
-    /// Gets the new value.
-    /// </summary>
-    public T NewValue { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="RoutedPropertyChangedEventArgs{T}"/> class.
-    /// </summary>
-    public RoutedPropertyChangedEventArgs(T oldValue, T newValue, RoutedEvent routedEvent)
-        : base(routedEvent)
-    {
-        OldValue = oldValue;
-        NewValue = newValue;
-    }
-}
-
-/// <summary>
-/// Represents the method that handles value change events.
-/// </summary>
-public delegate void RoutedPropertyChangedEventHandler<T>(object sender, RoutedPropertyChangedEventArgs<T> e);

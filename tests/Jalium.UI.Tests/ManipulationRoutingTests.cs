@@ -42,7 +42,7 @@ public class ManipulationRoutingTests
         window.AddHandler(UIElement.PreviewManipulationStartingEvent, new RoutedEventHandler((_, e) =>
         {
             previewCount++;
-            ((ManipulationStartingEventArgs)e).Cancel = true;
+            Assert.True(((ManipulationStartingEventArgs)e).Cancel());
         }));
         window.AddHandler(UIElement.ManipulationStartingEvent, new RoutedEventHandler((_, _) => bubbleCount++));
 

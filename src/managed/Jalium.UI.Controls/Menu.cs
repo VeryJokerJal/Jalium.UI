@@ -1,5 +1,6 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
+using System.Windows.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -11,9 +12,9 @@ namespace Jalium.UI.Controls;
 public class Menu : ItemsControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.MenuAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.MenuAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -68,7 +69,7 @@ public class Menu : ItemsControl
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item)
+    protected override bool IsItemItsOwnContainerOverride(object item)
     {
         return item is MenuItem || item is Separator;
     }
@@ -118,9 +119,9 @@ public class Menu : ItemsControl
 public class MenuItem : HeaderedItemsControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.MenuItemAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.MenuItemAutomationPeer(this);
     }
 
     // Cached brushes for OnRender
@@ -128,6 +129,19 @@ public class MenuItem : HeaderedItemsControl
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_disabledBrush = new(Color.FromRgb(128, 128, 128));
     private static readonly SolidColorBrush s_gestureBrush = new(Color.FromRgb(160, 160, 160));
+    private static readonly ItemContainerTemplateSelector s_defaultItemContainerTemplateSelector =
+        new DefaultMenuItemContainerTemplateSelector();
+
+    private static readonly ResourceKey s_separatorStyleKey =
+        new ComponentResourceKey(typeof(MenuItem), nameof(SeparatorStyleKey));
+    private static readonly ResourceKey s_submenuHeaderTemplateKey =
+        new ComponentResourceKey(typeof(MenuItem), nameof(SubmenuHeaderTemplateKey));
+    private static readonly ResourceKey s_submenuItemTemplateKey =
+        new ComponentResourceKey(typeof(MenuItem), nameof(SubmenuItemTemplateKey));
+    private static readonly ResourceKey s_topLevelHeaderTemplateKey =
+        new ComponentResourceKey(typeof(MenuItem), nameof(TopLevelHeaderTemplateKey));
+    private static readonly ResourceKey s_topLevelItemTemplateKey =
+        new ComponentResourceKey(typeof(MenuItem), nameof(TopLevelItemTemplateKey));
 
     #region Dependency Properties
 
@@ -204,6 +218,67 @@ public class MenuItem : HeaderedItemsControl
     public static readonly DependencyProperty StaysOpenOnClickProperty =
         DependencyProperty.Register(nameof(StaysOpenOnClick), typeof(bool), typeof(MenuItem),
             new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the Command dependency property.
+    /// </summary>
+    public static readonly DependencyProperty CommandProperty =
+        ButtonBase.CommandProperty.AddOwner(typeof(MenuItem),
+            new PropertyMetadata(null, OnCommandChanged));
+
+    /// <summary>
+    /// Identifies the CommandParameter dependency property.
+    /// </summary>
+    public static readonly DependencyProperty CommandParameterProperty =
+        ButtonBase.CommandParameterProperty.AddOwner(typeof(MenuItem),
+            new PropertyMetadata(null, OnCommandStateChanged));
+
+    /// <summary>
+    /// Identifies the CommandTarget dependency property.
+    /// </summary>
+    public static readonly DependencyProperty CommandTargetProperty =
+        ButtonBase.CommandTargetProperty.AddOwner(typeof(MenuItem),
+            new PropertyMetadata(null, OnCommandStateChanged));
+
+    private static readonly DependencyPropertyKey IsHighlightedPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsHighlighted), typeof(bool), typeof(MenuItem),
+            new PropertyMetadata(false, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the IsHighlighted read-only dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsHighlightedProperty =
+        IsHighlightedPropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Identifies the IsPressed read-only dependency property.
+    /// </summary>
+    public new static readonly DependencyProperty IsPressedProperty =
+        UIElement.IsPressedProperty.AddOwner(typeof(MenuItem));
+
+    private static readonly DependencyPropertyKey IsSuspendingPopupAnimationPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsSuspendingPopupAnimation), typeof(bool), typeof(MenuItem),
+            new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the IsSuspendingPopupAnimation read-only dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsSuspendingPopupAnimationProperty =
+        IsSuspendingPopupAnimationPropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Identifies the ItemContainerTemplateSelector dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ItemContainerTemplateSelectorProperty =
+        DependencyProperty.Register(nameof(ItemContainerTemplateSelector),
+            typeof(ItemContainerTemplateSelector), typeof(MenuItem),
+            new PropertyMetadata(s_defaultItemContainerTemplateSelector));
+
+    /// <summary>
+    /// Identifies the UsesItemContainerTemplate dependency property.
+    /// </summary>
+    public static readonly DependencyProperty UsesItemContainerTemplateProperty =
+        MenuBase.UsesItemContainerTemplateProperty.AddOwner(typeof(MenuItem));
 
     #endregion
 
@@ -366,9 +441,98 @@ public class MenuItem : HeaderedItemsControl
     }
 
     /// <summary>
+    /// Gets or sets the command invoked when this menu item is clicked.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public ICommand? Command
+    {
+        get => (ICommand?)GetValue(CommandProperty);
+        set => SetValue(CommandProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the value passed to <see cref="Command"/>.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public object? CommandParameter
+    {
+        get => GetValue(CommandParameterProperty);
+        set => SetValue(CommandParameterProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the element on which a routed command is executed.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public IInputElement? CommandTarget
+    {
+        get => (IInputElement?)GetValue(CommandTargetProperty);
+        set => SetValue(CommandTargetProperty, value);
+    }
+
+    /// <summary>
+    /// Gets a value indicating whether this menu item is highlighted.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool IsHighlighted
+    {
+        get => (bool)GetValue(IsHighlightedProperty)!;
+        protected set => SetValue(IsHighlightedPropertyKey, value);
+    }
+
+    /// <summary>
+    /// Gets a value indicating whether this menu item is pressed.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public new bool IsPressed
+    {
+        get => base.IsPressed;
+        protected set => base.SetIsPressed(value);
+    }
+
+    /// <summary>
+    /// Gets a value indicating whether submenu popup animation is temporarily suspended.
+    /// </summary>
+    public bool IsSuspendingPopupAnimation =>
+        (bool)GetValue(IsSuspendingPopupAnimationProperty)!;
+
+    /// <summary>
+    /// Gets or sets the selector used to create submenu item containers.
+    /// </summary>
+    public ItemContainerTemplateSelector? ItemContainerTemplateSelector
+    {
+        get => (ItemContainerTemplateSelector?)GetValue(ItemContainerTemplateSelectorProperty);
+        set => SetValue(ItemContainerTemplateSelectorProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether submenu item containers are created from an item-container template.
+    /// </summary>
+    public bool UsesItemContainerTemplate
+    {
+        get => (bool)GetValue(UsesItemContainerTemplateProperty)!;
+        set => SetValue(UsesItemContainerTemplateProperty, value);
+    }
+
+    /// <summary>Gets the resource key for the default separator style.</summary>
+    public static ResourceKey SeparatorStyleKey => s_separatorStyleKey;
+
+    /// <summary>Gets the resource key for the submenu-header template.</summary>
+    public static ResourceKey SubmenuHeaderTemplateKey => s_submenuHeaderTemplateKey;
+
+    /// <summary>Gets the resource key for the submenu-item template.</summary>
+    public static ResourceKey SubmenuItemTemplateKey => s_submenuItemTemplateKey;
+
+    /// <summary>Gets the resource key for the top-level-header template.</summary>
+    public static ResourceKey TopLevelHeaderTemplateKey => s_topLevelHeaderTemplateKey;
+
+    /// <summary>Gets the resource key for the top-level-item template.</summary>
+    public static ResourceKey TopLevelItemTemplateKey => s_topLevelItemTemplateKey;
+
+    /// <summary>
     /// Gets a value indicating whether this menu item has sub-items.
     /// </summary>
-    public bool HasItems => Items.Count > 0;
+    public new bool HasItems => base.HasItems;
 
     #endregion
 
@@ -376,6 +540,8 @@ public class MenuItem : HeaderedItemsControl
 
     private bool _isPointerOverMenuItem;
     private bool _isUpdatingSubmenuOpen;
+    private bool _commandBaseIsEnabled = true;
+    private bool _isUpdatingCommandEnabled;
     private Popup? _submenuPopup;
     private Border? _submenuBorder;
     private MenuPopupScrollHost? _submenuScrollHost;
@@ -399,15 +565,17 @@ public class MenuItem : HeaderedItemsControl
     public MenuItem()
     {
         Focusable = true;
-        Items.CollectionChanged += OnItemsCollectionChanged;
+        ((System.Collections.Specialized.INotifyCollectionChanged)Items).CollectionChanged += OnItemsCollectionChanged;
 
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
         AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
         AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
         AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
         TouchHelper.SetIsRippleEnabled(this, true);
 
+        _commandBaseIsEnabled = IsEnabled;
         UpdateRole();
         UpdateIsSelected();
     }
@@ -434,8 +602,60 @@ public class MenuItem : HeaderedItemsControl
         {
             Source = this
         };
-        OnMouseDownHandler(this, synthetic);
+        try
+        {
+            OnMouseDownHandler(this, synthetic);
+        }
+        finally
+        {
+            IsPressed = false;
+        }
         e.Handled = true;
+    }
+
+    #endregion
+
+    #region Item Generation
+
+    /// <inheritdoc />
+    protected override FrameworkElement GetContainerForItem(object item)
+    {
+        if (UsesItemContainerTemplate)
+        {
+            var template = ItemContainerTemplateSelector?.SelectTemplate(item, this);
+            var generated = template?.LoadContent();
+            if (generated is MenuItem or Separator)
+            {
+                return generated;
+            }
+
+            if (generated != null)
+            {
+                throw new InvalidOperationException(
+                    "An item-container template for a MenuItem must create a MenuItem or Separator.");
+            }
+        }
+
+        return new MenuItem();
+    }
+
+    /// <inheritdoc />
+    protected override bool IsItemItsOwnContainerOverride(object item)
+    {
+        return item is MenuItem or Separator;
+    }
+
+    /// <inheritdoc />
+    protected override void PrepareContainerForItem(FrameworkElement element, object item)
+    {
+        base.PrepareContainerForItem(element, item);
+
+        if (element is MenuItem menuItem &&
+            !ReferenceEquals(menuItem, item) &&
+            menuItem.Header == null)
+        {
+            menuItem.Header = item;
+        }
     }
 
     #endregion
@@ -448,6 +668,7 @@ public class MenuItem : HeaderedItemsControl
 
         if (e.ChangedButton == MouseButton.Left)
         {
+            IsPressed = true;
             if (HasItems)
             {
                 if (IsTopLevelMenuItem)
@@ -477,6 +698,14 @@ public class MenuItem : HeaderedItemsControl
                 OnClick();
             }
             e.Handled = true;
+        }
+    }
+
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left)
+        {
+            IsPressed = false;
         }
     }
 
@@ -518,6 +747,7 @@ public class MenuItem : HeaderedItemsControl
     private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         _isPointerOverMenuItem = false;
+        IsPressed = false;
         UpdateIsSelected();
         // Don't close submenu here 闁?let sibling mouse enter or popup dismiss handle it.
         // This prevents the submenu from closing when the mouse moves from the
@@ -607,7 +837,7 @@ public class MenuItem : HeaderedItemsControl
         var panel = _submenuScrollHost?.ItemsPanel;
         if (panel == null) return;
 
-        foreach (var child in panel.Children)
+        foreach (UIElement child in panel.Children)
         {
             if (child is MenuItem item && item.IsEnabled)
             {
@@ -651,7 +881,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Called when the menu item is clicked.
     /// </summary>
-    protected void OnClick()
+    protected virtual void OnClick()
     {
         if (IsCheckable)
         {
@@ -659,10 +889,64 @@ public class MenuItem : HeaderedItemsControl
         }
 
         RaiseEvent(new RoutedEventArgs(ClickEvent, this));
+        ExecuteCommand();
 
         if (!StaysOpenOnClick)
         {
             CloseParentMenus();
+        }
+    }
+
+    /// <summary>
+    /// Raises the <see cref="Checked"/> routed event.
+    /// </summary>
+    protected virtual void OnChecked(RoutedEventArgs e)
+    {
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="Unchecked"/> routed event.
+    /// </summary>
+    protected virtual void OnUnchecked(RoutedEventArgs e)
+    {
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="SubmenuOpened"/> routed event.
+    /// </summary>
+    protected virtual void OnSubmenuOpened(RoutedEventArgs e)
+    {
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="SubmenuClosed"/> routed event.
+    /// </summary>
+    protected virtual void OnSubmenuClosed(RoutedEventArgs e)
+    {
+        RaiseEvent(e);
+    }
+
+    private void ExecuteCommand()
+    {
+        var command = Command;
+        if (command == null)
+            return;
+
+        var parameter = CommandParameter;
+        if (command is RoutedCommand routedCommand)
+        {
+            var target = CommandTarget ?? this;
+            if (routedCommand.CanExecute(parameter, target))
+            {
+                routedCommand.Execute(parameter, target);
+            }
+        }
+        else if (command.CanExecute(parameter))
+        {
+            command.Execute(parameter);
         }
     }
 
@@ -712,7 +996,7 @@ public class MenuItem : HeaderedItemsControl
     /// </summary>
     private MenuItem? FindParentMenuItem()
     {
-        Visual? parent = VisualParent;
+        Visual? parent = ParentVisual;
         while (parent != null)
         {
             if (parent is MenuItem menuItem)
@@ -758,10 +1042,10 @@ public class MenuItem : HeaderedItemsControl
     // prevents that panel from participating in rendering / hit-testing while the
     // Items collection is still available for PopulateSubmenuPopup().
     /// <inheritdoc />
-    public override int VisualChildrenCount => 0;
+    protected override int VisualChildrenCount => 0;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index) =>
+    protected override Visual? GetVisualChild(int index) =>
         throw new ArgumentOutOfRangeException(nameof(index));
 
     #endregion
@@ -786,7 +1070,7 @@ public class MenuItem : HeaderedItemsControl
             // Top-level: just header
             if (Header is string headerText)
             {
-                var formattedText = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+                var formattedText = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
                 TextMeasurement.MeasureText(formattedText);
                 width += formattedText.Width;
             }
@@ -798,7 +1082,7 @@ public class MenuItem : HeaderedItemsControl
 
             if (Header is string headerText)
             {
-                var formattedText = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+                var formattedText = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
                 TextMeasurement.MeasureText(formattedText);
                 width += formattedText.Width + MenuItemPadding * 2;
             }
@@ -871,7 +1155,7 @@ public class MenuItem : HeaderedItemsControl
             // Top-level menu item
             if (Header is string headerText)
             {
-                var formattedText = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+                var formattedText = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
                 {
                     Foreground = fgBrush
                 };
@@ -906,7 +1190,7 @@ public class MenuItem : HeaderedItemsControl
             // Draw header
             if (Header is string headerText)
             {
-                var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+                var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
                 {
                     Foreground = fgBrush
                 };
@@ -917,7 +1201,7 @@ public class MenuItem : HeaderedItemsControl
             // Draw input gesture text
             if (!string.IsNullOrEmpty(InputGestureText))
             {
-                var gestureFormatted = new FormattedText(InputGestureText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
+                var gestureFormatted = new FormattedText(InputGestureText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
                 {
                     Foreground = ResolveMenuBrush("TextSecondary", s_gestureBrush)
                 };
@@ -1054,16 +1338,27 @@ public class MenuItem : HeaderedItemsControl
 
         panel.Children.Clear();
 
-        // Detach items from the ItemsHost panel first (if they're in the visual tree)
+        // Preserve generated containers before detaching them from the inline ItemsHost.
+        // Data items have already passed through GetContainerForItem when they were added;
+        // re-running the selector here would create a second, unrelated container.
         var itemsHost = ItemsHost;
+        var existingContainers = new List<UIElement>();
         if (itemsHost != null)
         {
+            foreach (UIElement child in itemsHost.Children)
+            {
+                existingContainers.Add(child);
+            }
             itemsHost.Children.Clear();
         }
 
-        foreach (var item in Items)
+        for (var index = 0; index < Items.Count; index++)
         {
-            if (item is UIElement element)
+            var item = Items[index];
+            var element = index < existingContainers.Count
+                ? existingContainers[index]
+                : CreateSubmenuElement(item);
+            if (element != null)
             {
                 // Ensure the element is detached from any previous visual parent
                 if (element.VisualParent != null)
@@ -1072,11 +1367,27 @@ public class MenuItem : HeaderedItemsControl
                 }
                 panel.Children.Add(element);
             }
-            else if (item is string text)
+        }
+    }
+
+    private UIElement? CreateSubmenuElement(object item)
+    {
+        if (item is UIElement element)
+        {
+            return element;
+        }
+
+        if (UsesItemContainerTemplate)
+        {
+            var template = ItemContainerTemplateSelector?.SelectTemplate(item, this);
+            var generated = template?.LoadContent();
+            if (generated != null)
             {
-                panel.Children.Add(new MenuItem { Header = text });
+                return generated;
             }
         }
+
+        return new MenuItem { Header = item };
     }
 
     /// <summary>
@@ -1089,7 +1400,7 @@ public class MenuItem : HeaderedItemsControl
 
         // Collect items before clearing
         var items = new List<UIElement>();
-        foreach (var child in panel.Children)
+        foreach (UIElement child in panel.Children)
         {
             items.Add(child);
         }
@@ -1118,7 +1429,7 @@ public class MenuItem : HeaderedItemsControl
         var parent = VisualParent;
         if (parent is Panel panel)
         {
-            foreach (var child in panel.Children)
+            foreach (UIElement child in panel.Children)
             {
                 if (child is MenuItem sibling && sibling != this)
                 {
@@ -1145,7 +1456,7 @@ public class MenuItem : HeaderedItemsControl
             return false;
         }
 
-        foreach (var child in panel.Children)
+        foreach (UIElement child in panel.Children)
         {
             if (child is MenuItem sibling && sibling != this && sibling.IsSubmenuOpen)
             {
@@ -1180,6 +1491,74 @@ public class MenuItem : HeaderedItemsControl
 
     #region Property Changed Callbacks
 
+    private static void OnCommandChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not MenuItem menuItem)
+            return;
+
+        if (e.OldValue is ICommand oldCommand)
+        {
+            oldCommand.CanExecuteChanged -= menuItem.OnCanExecuteChanged;
+        }
+
+        if (e.OldValue is null && e.NewValue is ICommand)
+        {
+            menuItem._commandBaseIsEnabled = menuItem.IsEnabled;
+        }
+
+        if (e.NewValue is ICommand newCommand)
+        {
+            newCommand.CanExecuteChanged += menuItem.OnCanExecuteChanged;
+            menuItem.UpdateCanExecute();
+        }
+        else
+        {
+            menuItem.SetCommandEnabled(menuItem._commandBaseIsEnabled);
+        }
+    }
+
+    private static void OnCommandStateChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is MenuItem menuItem)
+        {
+            menuItem.UpdateCanExecute();
+        }
+    }
+
+    private void OnCanExecuteChanged(object? sender, EventArgs e)
+    {
+        UpdateCanExecute();
+    }
+
+    private void UpdateCanExecute()
+    {
+        var command = Command;
+        if (command == null)
+            return;
+
+        var canExecute = command is RoutedCommand routedCommand
+            ? routedCommand.CanExecute(CommandParameter, CommandTarget ?? this)
+            : command.CanExecute(CommandParameter);
+
+        SetCommandEnabled(_commandBaseIsEnabled && canExecute);
+    }
+
+    private void SetCommandEnabled(bool value)
+    {
+        if (IsEnabled == value)
+            return;
+
+        _isUpdatingCommandEnabled = true;
+        try
+        {
+            SetCurrentValue(UIElement.IsEnabledProperty, value);
+        }
+        finally
+        {
+            _isUpdatingCommandEnabled = false;
+        }
+    }
+
     private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is MenuItem menuItem)
@@ -1202,11 +1581,11 @@ public class MenuItem : HeaderedItemsControl
         {
             if ((bool)e.NewValue!)
             {
-                menuItem.RaiseEvent(new RoutedEventArgs(CheckedEvent, menuItem));
+                menuItem.OnChecked(new RoutedEventArgs(CheckedEvent, menuItem));
             }
             else
             {
-                menuItem.RaiseEvent(new RoutedEventArgs(UncheckedEvent, menuItem));
+                menuItem.OnUnchecked(new RoutedEventArgs(UncheckedEvent, menuItem));
             }
             menuItem.InvalidateVisual();
         }
@@ -1226,7 +1605,7 @@ public class MenuItem : HeaderedItemsControl
                     menuItem.EnsureSubmenuPopup();
                     menuItem.PopulateSubmenuPopup();
                     menuItem._submenuPopup!.IsOpen = true;
-                    menuItem.RaiseEvent(new RoutedEventArgs(SubmenuOpenedEvent, menuItem));
+                    menuItem.OnSubmenuOpened(new RoutedEventArgs(SubmenuOpenedEvent, menuItem));
                 }
                 else
                 {
@@ -1236,7 +1615,7 @@ public class MenuItem : HeaderedItemsControl
                         menuItem._submenuPopup.IsOpen = false;
                     }
                     menuItem.ReturnItemsFromPopup();
-                    menuItem.RaiseEvent(new RoutedEventArgs(SubmenuClosedEvent, menuItem));
+                    menuItem.OnSubmenuClosed(new RoutedEventArgs(SubmenuClosedEvent, menuItem));
                 }
 
                 menuItem.UpdateIsSelected();
@@ -1264,9 +1643,20 @@ public class MenuItem : HeaderedItemsControl
     protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
         base.OnIsEnabledChanged(oldValue, newValue);
+
+        if (!_isUpdatingCommandEnabled && Command != null)
+        {
+            _commandBaseIsEnabled = newValue;
+            if (newValue)
+            {
+                UpdateCanExecute();
+            }
+        }
+
         if (!newValue)
         {
             _isPointerOverMenuItem = false;
+            IsPressed = false;
         }
 
         UpdateIsSelected();
@@ -1274,8 +1664,10 @@ public class MenuItem : HeaderedItemsControl
 
     private void UpdateIsSelected()
     {
-        SetValue(IsSelectedPropertyKey.DependencyProperty,
-            IsEnabled && (_isPointerOverMenuItem || IsKeyboardFocused || IsSubmenuOpen));
+        var isHighlighted =
+            IsEnabled && (_isPointerOverMenuItem || IsKeyboardFocused || IsSubmenuOpen);
+        IsHighlighted = isHighlighted;
+        SetValue(IsSelectedPropertyKey, isHighlighted);
     }
 
     private void UpdateRole()
@@ -1284,12 +1676,24 @@ public class MenuItem : HeaderedItemsControl
             ? (HasItems ? MenuItemRole.TopLevelHeader : MenuItemRole.TopLevelItem)
             : (HasItems ? MenuItemRole.SubmenuHeader : MenuItemRole.SubmenuItem);
 
-        SetValue(RolePropertyKey.DependencyProperty, role);
+        SetValue(RolePropertyKey, role);
     }
 
     private void OnItemsCollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         UpdateRole();
+    }
+
+    private sealed class DefaultMenuItemContainerTemplateSelector : ItemContainerTemplateSelector
+    {
+        public override DataTemplate? SelectTemplate(object? item, ItemsControl parentItemsControl)
+        {
+            if (item == null)
+                return null;
+
+            return parentItemsControl.TryFindResource(new ItemContainerTemplateKey(item.GetType()))
+                as DataTemplate;
+        }
     }
 
     #endregion
@@ -1302,13 +1706,20 @@ public class HeaderedItemsControl : ItemsControl
 {
     #region Dependency Properties
 
+    private static readonly DependencyPropertyKey HasHeaderPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(HasHeader), typeof(bool), typeof(HeaderedItemsControl),
+            new PropertyMetadata(false));
+
+    /// <summary>Identifies the read-only <see cref="HasHeader"/> dependency property.</summary>
+    public static readonly DependencyProperty HasHeaderProperty = HasHeaderPropertyKey.DependencyProperty;
+
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(HeaderedItemsControl),
-            new PropertyMetadata(null, OnHeaderChanged));
+            new PropertyMetadata(null, OnHeaderPropertyChanged));
 
     /// <summary>
     /// Identifies the HeaderTemplate dependency property.
@@ -1316,7 +1727,17 @@ public class HeaderedItemsControl : ItemsControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderTemplateProperty =
         DependencyProperty.Register(nameof(HeaderTemplate), typeof(DataTemplate), typeof(HeaderedItemsControl),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnHeaderTemplatePropertyChanged));
+
+    /// <summary>Identifies the HeaderTemplateSelector dependency property.</summary>
+    public static readonly DependencyProperty HeaderTemplateSelectorProperty =
+        DependencyProperty.Register(nameof(HeaderTemplateSelector), typeof(DataTemplateSelector), typeof(HeaderedItemsControl),
+            new PropertyMetadata(null, OnHeaderTemplateSelectorPropertyChanged));
+
+    /// <summary>Identifies the HeaderStringFormat dependency property.</summary>
+    public static readonly DependencyProperty HeaderStringFormatProperty =
+        DependencyProperty.Register(nameof(HeaderStringFormat), typeof(string), typeof(HeaderedItemsControl),
+            new PropertyMetadata(null, OnHeaderStringFormatPropertyChanged));
 
     #endregion
 
@@ -1342,17 +1763,86 @@ public class HeaderedItemsControl : ItemsControl
         set => SetValue(HeaderTemplateProperty, value);
     }
 
+    /// <summary>Gets whether this control currently has non-null header content.</summary>
+    public bool HasHeader => (bool)(GetValue(HasHeaderProperty) ?? false);
+
+    /// <summary>Gets or sets the selector used to choose the header template.</summary>
+    public DataTemplateSelector? HeaderTemplateSelector
+    {
+        get => (DataTemplateSelector?)GetValue(HeaderTemplateSelectorProperty);
+        set => SetValue(HeaderTemplateSelectorProperty, value);
+    }
+
+    /// <summary>Gets or sets the composite format string used for header text.</summary>
+    public string? HeaderStringFormat
+    {
+        get => (string?)GetValue(HeaderStringFormatProperty);
+        set => SetValue(HeaderStringFormatProperty, value);
+    }
+
+    protected internal override System.Collections.IEnumerator LogicalChildren
+    {
+        get
+        {
+            var children = new List<object>();
+            if (Header != null)
+            {
+                children.Add(Header);
+            }
+
+            var baseChildren = base.LogicalChildren;
+            while (baseChildren.MoveNext())
+            {
+                if (baseChildren.Current != null && !ReferenceEquals(baseChildren.Current, Header))
+                {
+                    children.Add(baseChildren.Current);
+                }
+            }
+
+            return children.GetEnumerator();
+        }
+    }
+
     #endregion
 
     #region Property Changed Callbacks
 
-    private static void OnHeaderChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private static void OnHeaderPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is HeaderedItemsControl control)
-        {
-            control.InvalidateMeasure();
-        }
+        var control = (HeaderedItemsControl)d;
+        control.SetValue(HasHeaderPropertyKey, e.NewValue != null);
+        control.OnHeaderChanged(e.OldValue, e.NewValue);
     }
+
+    private static void OnHeaderTemplatePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((HeaderedItemsControl)d).OnHeaderTemplateChanged((DataTemplate?)e.OldValue, (DataTemplate?)e.NewValue);
+
+    private static void OnHeaderTemplateSelectorPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((HeaderedItemsControl)d).OnHeaderTemplateSelectorChanged(
+            (DataTemplateSelector?)e.OldValue,
+            (DataTemplateSelector?)e.NewValue);
+
+    private static void OnHeaderStringFormatPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((HeaderedItemsControl)d).OnHeaderStringFormatChanged((string?)e.OldValue, (string?)e.NewValue);
+
+    protected virtual void OnHeaderChanged(object? oldHeader, object? newHeader)
+    {
+        RemoveLogicalChild(oldHeader);
+        AddLogicalChild(newHeader);
+        InvalidateMeasure();
+    }
+
+    protected virtual void OnHeaderTemplateChanged(DataTemplate? oldHeaderTemplate, DataTemplate? newHeaderTemplate) =>
+        InvalidateMeasure();
+
+    protected virtual void OnHeaderTemplateSelectorChanged(
+        DataTemplateSelector? oldHeaderTemplateSelector,
+        DataTemplateSelector? newHeaderTemplateSelector) => InvalidateMeasure();
+
+    protected virtual void OnHeaderStringFormatChanged(string? oldHeaderStringFormat, string? newHeaderStringFormat) =>
+        InvalidateMeasure();
+
+    public override string ToString() => Header?.ToString() ?? base.ToString() ?? nameof(HeaderedItemsControl);
 
     #endregion
 }

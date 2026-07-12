@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls.Ink;
+namespace Jalium.UI.Ink;
 
 /// <summary>
 /// Specifies the shape of the stylus tip used for ink rendering.
@@ -6,12 +6,12 @@ namespace Jalium.UI.Controls.Ink;
 public enum StylusTip
 {
     /// <summary>
-    /// An elliptical tip shape.
-    /// </summary>
-    Ellipse,
-
-    /// <summary>
     /// A rectangular tip shape.
     /// </summary>
-    Rectangle
+    Rectangle = 0,
+
+    /// <summary>
+    /// An elliptical tip shape.
+    /// </summary>
+    Ellipse = 1,
 }

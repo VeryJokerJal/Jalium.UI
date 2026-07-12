@@ -40,12 +40,21 @@
                                 <StackPanel Name="PART_ColumnHeadersHost" Orientation="Horizontal" />
                             </ScrollViewer>
                         </Border>
+                        <!-- Separate overlay keeps the row-header corner out of the
+                             column-header items host, whose children are the stable
+                             per-column containers used by resize and drag logic. -->
+                        <Border Name="PART_RowHeaderCorner"
+                                Grid.Row="0"
+                                HorizontalAlignment="Left"
+                                Background="{ThemeResource ControlBackground}"
+                                BorderBrush="{ThemeResource ControlBorder}"
+                                BorderThickness="0,0,1,1" />
                         <!-- Data rows area -->
                         <ScrollViewer Name="PART_DataScrollViewer"
                                       Grid.Row="1"
                                       Focusable="False"
-                                      VerticalScrollBarVisibility="Auto"
-                                      HorizontalScrollBarVisibility="Auto">
+                                      VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}"
+                                      HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}">
                             <StackPanel Name="PART_RowsHost" />
                         </ScrollViewer>
                         <!-- Drag overlay for column reorder ghost and drop indicator -->

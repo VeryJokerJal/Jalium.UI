@@ -1,12 +1,15 @@
 using Jalium.UI.Media;
+using Jalium.UI.Markup;
+using Jalium.UI.Controls;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI.Documents;
 
 /// <summary>
 /// Provides a low-level element for displaying glyphs.
 /// </summary>
-public class Glyphs : FrameworkElement
+public sealed class Glyphs : FrameworkElement, IUriContext
 {
+    private Uri? _baseUri;
     #region Dependency Properties
 
     /// <summary>
@@ -72,6 +75,18 @@ public class Glyphs : FrameworkElement
     public static readonly DependencyProperty OriginYProperty =
         DependencyProperty.Register(nameof(OriginY), typeof(double), typeof(Glyphs),
             new PropertyMetadata(double.NaN));
+
+    public static readonly DependencyProperty CaretStopsProperty =
+        DependencyProperty.Register(nameof(CaretStops), typeof(string), typeof(Glyphs), new PropertyMetadata(string.Empty));
+
+    public static readonly DependencyProperty DeviceFontNameProperty =
+        DependencyProperty.Register(nameof(DeviceFontName), typeof(string), typeof(Glyphs), new PropertyMetadata(string.Empty));
+
+    public static readonly DependencyProperty IsSidewaysProperty =
+        DependencyProperty.Register(nameof(IsSideways), typeof(bool), typeof(Glyphs), new PropertyMetadata(false));
+
+    public static readonly DependencyProperty BidiLevelProperty =
+        DependencyProperty.Register(nameof(BidiLevel), typeof(int), typeof(Glyphs), new PropertyMetadata(0));
 
     #endregion
 
@@ -157,32 +172,82 @@ public class Glyphs : FrameworkElement
         set => SetValue(OriginYProperty, value);
     }
 
+    public string CaretStops
+    {
+        get => (string)(GetValue(CaretStopsProperty) ?? string.Empty);
+        set => SetValue(CaretStopsProperty, value);
+    }
+
+    public string DeviceFontName
+    {
+        get => (string)(GetValue(DeviceFontNameProperty) ?? string.Empty);
+        set => SetValue(DeviceFontNameProperty, value);
+    }
+
+    public bool IsSideways
+    {
+        get => (bool)(GetValue(IsSidewaysProperty) ?? false);
+        set => SetValue(IsSidewaysProperty, value);
+    }
+
+    public int BidiLevel
+    {
+        get => (int)(GetValue(BidiLevelProperty) ?? 0);
+        set => SetValue(BidiLevelProperty, value);
+    }
+
+    Uri? IUriContext.BaseUri
+    {
+        get => _baseUri;
+        set => _baseUri = value;
+    }
+
+    /// <summary>Builds a portable glyph run from the fixed-format glyph attributes.</summary>
+    public GlyphRun ToGlyphRun()
+    {
+        var characters = (UnicodeString ?? string.Empty).ToCharArray();
+        var glyphIndices = characters.Select(static character => (ushort)character).ToArray();
+        var advance = Math.Max(0.0, FontRenderingEmSize * 0.5);
+        var run = new GlyphRun
+        {
+            FontRenderingEmSize = FontRenderingEmSize,
+            BaselineOrigin = new Point(
+                double.IsNaN(OriginX) ? 0.0 : OriginX,
+                double.IsNaN(OriginY) ? 0.0 : OriginY),
+            GlyphIndices = glyphIndices,
+            AdvanceWidths = Enumerable.Repeat(advance, glyphIndices.Length).ToArray(),
+            Characters = characters,
+            DeviceFontName = DeviceFontName,
+            BidiLevel = BidiLevel,
+            IsSideways = IsSideways,
+            CaretStops = ParseCaretStops(CaretStops, characters.Length),
+        };
+
+        if (FontUri != null)
+        {
+            run.GlyphTypeface = new GlyphTypeface(FontUri);
+        }
+
+        return run;
+    }
+
+    private static IList<bool> ParseCaretStops(string? text, int length)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return Enumerable.Repeat(true, length + 1).ToArray();
+        }
+
+        var values = text
+            .Where(static character => character is '0' or '1')
+            .Select(static character => character == '1')
+            .ToList();
+        while (values.Count < length + 1)
+        {
+            values.Add(true);
+        }
+        return values;
+    }
+
     #endregion
-}
-
-/// <summary>
-/// Specifies style simulations for a font.
-/// </summary>
-[Flags]
-public enum StyleSimulations
-{
-    /// <summary>
-    /// No style simulation.
-    /// </summary>
-    None = 0,
-
-    /// <summary>
-    /// Bold simulation.
-    /// </summary>
-    BoldSimulation = 1,
-
-    /// <summary>
-    /// Italic simulation.
-    /// </summary>
-    ItalicSimulation = 2,
-
-    /// <summary>
-    /// Bold and italic simulation.
-    /// </summary>
-    BoldItalicSimulation = BoldSimulation | ItalicSimulation
 }

@@ -1,18 +1,19 @@
-﻿using Jalium.UI.Controls.Ink;
+using Jalium.UI.Controls;
+using Jalium.UI.Ink;
 using Jalium.UI.Input;
-using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Media;
 using InkStylusPoint = Jalium.UI.Input.StylusPoint;
 using InkStylusPointCollection = Jalium.UI.Input.StylusPointCollection;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI.Input.StylusPlugIns;
 
 /// <summary>
 /// Real-time stylus renderer that previews in-progress ink before stroke commit.
 /// </summary>
-public sealed class DynamicRenderer : StylusPlugIn
+public class DynamicRenderer : StylusPlugIn
 {
     private readonly DrawingVisual _previewVisual = new();
+    private DrawingAttributes _drawingAttributes = new();
     private InkStylusPointCollection? _previewPoints;
     private Stroke? _previewStroke;
     private InkPresenter? _inkPresenter;
@@ -26,7 +27,60 @@ public sealed class DynamicRenderer : StylusPlugIn
     /// <summary>
     /// Gets or sets the drawing attributes used for preview rendering.
     /// </summary>
-    public DrawingAttributes DrawingAttributes { get; set; } = new();
+    public DrawingAttributes DrawingAttributes
+    {
+        get => _drawingAttributes;
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (ReferenceEquals(_drawingAttributes, value))
+                return;
+            _drawingAttributes = value;
+            OnDrawingAttributesReplaced();
+        }
+    }
+
+    /// <summary>Gets the visual that contains the dynamic preview.</summary>
+    public Visual RootVisual => _previewVisual;
+
+    /// <summary>Gets the dispatcher that owns the renderer's visual state.</summary>
+    protected Jalium.UI.Threading.Dispatcher GetDispatcher() =>
+        Jalium.UI.Threading.Dispatcher.FromLegacy(
+            Element?.Dispatcher ?? Jalium.UI.Dispatcher.GetForCurrentThread());
+
+    /// <summary>Draws a generated ink geometry into the supplied drawing context.</summary>
+    protected virtual void OnDraw(
+        DrawingContext drawingContext,
+        InkStylusPointCollection stylusPoints,
+        Geometry geometry,
+        Brush fillBrush)
+    {
+        ArgumentNullException.ThrowIfNull(drawingContext);
+        ArgumentNullException.ThrowIfNull(stylusPoints);
+        ArgumentNullException.ThrowIfNull(geometry);
+        ArgumentNullException.ThrowIfNull(fillBrush);
+        drawingContext.DrawGeometry(fillBrush, null, geometry);
+    }
+
+    /// <summary>Rebuilds active preview state after drawing attributes are replaced.</summary>
+    protected virtual void OnDrawingAttributesReplaced()
+    {
+        if (_previewPoints is not null)
+            _previewStroke = new Stroke(_previewPoints, _drawingAttributes.Clone());
+        RedrawPreviewVisual();
+        Element?.InvalidateVisual();
+    }
+
+    /// <summary>Resets the preview to the points reported by a stylus device.</summary>
+    public virtual void Reset(StylusDevice stylusDevice, InkStylusPointCollection stylusPoints)
+    {
+        ArgumentNullException.ThrowIfNull(stylusDevice);
+        ArgumentNullException.ThrowIfNull(stylusPoints);
+        ClearPreview();
+        if (stylusPoints.Count != 0)
+            StartPreview(stylusPoints);
+        Element?.InvalidateVisual();
+    }
 
     /// <summary>
     /// The in-progress stylus stroke being previewed, or null when no
@@ -72,25 +126,25 @@ public sealed class DynamicRenderer : StylusPlugIn
     protected override void OnStylusDown(RawStylusInput rawStylusInput)
     {
         StartPreview(rawStylusInput.GetStylusPoints());
-        rawStylusInput.NotifyWhenProcessed(this);
+        rawStylusInput.NotifyWhenProcessed(rawStylusInput);
     }
 
     protected override void OnStylusMove(RawStylusInput rawStylusInput)
     {
         AppendPreview(rawStylusInput.GetStylusPoints());
-        rawStylusInput.NotifyWhenProcessed(this);
+        rawStylusInput.NotifyWhenProcessed(rawStylusInput);
     }
 
     protected override void OnStylusUp(RawStylusInput rawStylusInput)
     {
         AppendPreview(rawStylusInput.GetStylusPoints());
         ClearPreview();
-        rawStylusInput.NotifyWhenProcessed(this);
+        rawStylusInput.NotifyWhenProcessed(rawStylusInput);
     }
 
-    protected override void OnStylusDownProcessed(RawStylusInput rawStylusInput) => Element?.InvalidateVisual();
-    protected override void OnStylusMoveProcessed(RawStylusInput rawStylusInput) => Element?.InvalidateVisual();
-    protected override void OnStylusUpProcessed(RawStylusInput rawStylusInput) => Element?.InvalidateVisual();
+    protected override void OnStylusDownProcessed(object callbackData, bool targetVerified) => Element?.InvalidateVisual();
+    protected override void OnStylusMoveProcessed(object callbackData, bool targetVerified) => Element?.InvalidateVisual();
+    protected override void OnStylusUpProcessed(object callbackData, bool targetVerified) => Element?.InvalidateVisual();
 
     protected override void OnRemoved()
     {
@@ -139,7 +193,20 @@ public sealed class DynamicRenderer : StylusPlugIn
     private void RedrawPreviewVisual()
     {
         using var drawingContext = _previewVisual.RenderOpen();
-        _previewStroke?.Draw(drawingContext);
+        if (_previewStroke is null || _previewPoints is null)
+            return;
+
+        if (_previewStroke.TryGetDynamicRendererDrawing(out Geometry geometry, out Brush fillBrush))
+        {
+            OnDraw(drawingContext, _previewPoints, geometry, fillBrush);
+        }
+        else
+        {
+            // Jalium's particle-based brush extensions cannot be represented by
+            // WPF's single geometry/fill-brush callback contract. Retain their
+            // specialized renderer while using OnDraw for every WPF-shaped path.
+            _previewStroke.Draw(drawingContext);
+        }
     }
 
     private static InkStylusPointCollection ConvertToInkPoints(Jalium.UI.Input.StylusPointCollection inputPoints)

@@ -1,6 +1,7 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Media.Effects;
 using DrawingContext = Jalium.UI.Media.DrawingContext;
+using DrawingContextAdapter = Jalium.UI.Media.DrawingContextAdapter;
 using Pen = Jalium.UI.Media.Pen;
 using Brush = Jalium.UI.Media.Brush;
 using Geometry = Jalium.UI.Media.Geometry;
@@ -47,7 +48,7 @@ public class EffectCaptureBoundsTests
         Assert.Equal(begin, apply);
     }
 
-    private sealed class RecordingEffectContext : DrawingContext, IOffsetDrawingContext, IEffectDrawingContext
+    private sealed class RecordingEffectContext : DrawingContextAdapter, IOffsetDrawingContext, IEffectDrawingContext
     {
         public Point Offset { get; set; }
 

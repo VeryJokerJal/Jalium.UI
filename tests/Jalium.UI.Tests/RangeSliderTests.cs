@@ -216,7 +216,7 @@ public class RangeSliderTests
             RangeStart = 20,
             RangeEnd = 80
         };
-        var peer = new Jalium.UI.Controls.Automation.RangeSliderAutomationPeer(slider);
+        var peer = new Jalium.UI.Automation.Peers.RangeSliderAutomationPeer(slider);
 
         Assert.Equal("20..80", peer.Value);
 
@@ -235,7 +235,7 @@ public class RangeSliderTests
             RangeStart = 20,
             RangeEnd = 80
         };
-        var peer = new Jalium.UI.Controls.Automation.RangeSliderAutomationPeer(slider);
+        var peer = new Jalium.UI.Automation.Peers.RangeSliderAutomationPeer(slider);
 
         peer.SetValue("90..10");
 

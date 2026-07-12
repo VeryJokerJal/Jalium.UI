@@ -126,8 +126,8 @@ public class NumberBoxThemeTests
 
             Assert.Same(secondaryText, upPath.Stroke);
             Assert.Same(secondaryText, downPath.Stroke);
-            Assert.Same(Jalium.UI.Cursors.Arrow, upSpinButton.Cursor);
-            Assert.Same(Jalium.UI.Cursors.Arrow, downSpinButton.Cursor);
+            Assert.Same(Jalium.UI.Input.Cursors.Arrow, upSpinButton.Cursor);
+            Assert.Same(Jalium.UI.Input.Cursors.Arrow, downSpinButton.Cursor);
         }
         finally
         {
@@ -263,7 +263,7 @@ public class NumberBoxThemeTests
         return apexSegment.Point;
     }
 
-    private sealed class GeometryRecordingContext : DrawingContext
+    private sealed class GeometryRecordingContext : DrawingContextAdapter
     {
         public Geometry? LastGeometry { get; private set; }
 

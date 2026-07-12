@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
@@ -12,9 +12,9 @@ namespace Jalium.UI.Controls;
 public class InfoBar : ContentControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.InfoBarAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.InfoBarAutomationPeer(this);
     }
 
     // Cached brushes for OnRender (per-severity)
@@ -272,7 +272,7 @@ public class InfoBar : ContentControl
     {
         if (!IsOpen)
         {
-            return Size.Empty;
+            return default(Size);
         }
 
         var padding = Padding;
@@ -282,7 +282,7 @@ public class InfoBar : ContentControl
         // Calculate text heights
         if (!string.IsNullOrEmpty(Title))
         {
-            var titleFormatted = new FormattedText(Title, FontFamily ?? FrameworkElement.DefaultFontFamilyName, (FontSize > 0 ? FontSize : 14) + 2);
+            var titleFormatted = new FormattedText(Title, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, (FontSize > 0 ? FontSize : 14) + 2);
             titleFormatted.FontWeight = 600;
             Interop.TextMeasurement.MeasureText(titleFormatted);
             height = Math.Max(height, titleFormatted.Height + padding.TotalHeight);
@@ -290,7 +290,7 @@ public class InfoBar : ContentControl
 
         if (!string.IsNullOrEmpty(Message))
         {
-            var messageFormatted = new FormattedText(Message, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+            var messageFormatted = new FormattedText(Message, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
             Interop.TextMeasurement.MeasureText(messageFormatted);
 
             if (!string.IsNullOrEmpty(Title))
@@ -355,7 +355,7 @@ public class InfoBar : ContentControl
 
         if (!string.IsNullOrEmpty(Title))
         {
-            var titleFormatted = new FormattedText(Title, FontFamily ?? FrameworkElement.DefaultFontFamilyName, (FontSize > 0 ? FontSize : 14) + 2)
+            var titleFormatted = new FormattedText(Title, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, (FontSize > 0 ? FontSize : 14) + 2)
             {
                 Foreground = textBrush,
                 FontWeight = 600
@@ -367,7 +367,7 @@ public class InfoBar : ContentControl
 
         if (!string.IsNullOrEmpty(Message))
         {
-            var messageFormatted = new FormattedText(Message, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var messageFormatted = new FormattedText(Message, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = textBrush
             };

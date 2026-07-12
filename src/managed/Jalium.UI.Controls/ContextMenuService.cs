@@ -43,9 +43,8 @@ public static class ContextMenuService
         if (gestureArgs.SystemGesture != Input.SystemGesture.HoldEnter) return;
         // Only touch-driven holds should open the context menu; pen / mouse have
         // explicit right-click paths.
-        if (gestureArgs.StylusDevice is not Input.PointerStylusDevice ps) return;
         // Open at the device position relative to the window root.
-        var position = ps.GetPosition(null);
+        var position = gestureArgs.StylusDevice.GetPosition(null);
         if (TryOpen(owner, position))
         {
             e.Handled = true;
@@ -85,6 +84,11 @@ public static class ContextMenuService
     public static readonly DependencyProperty PlacementTargetProperty =
         DependencyProperty.RegisterAttached("PlacementTarget", typeof(UIElement), typeof(ContextMenuService),
             new PropertyMetadata(null));
+
+    /// <summary>Identifies the rectangle used by rectangle-based placement modes.</summary>
+    public static readonly DependencyProperty PlacementRectangleProperty =
+        DependencyProperty.RegisterAttached("PlacementRectangle", typeof(Rect), typeof(ContextMenuService),
+            new PropertyMetadata(Rect.Empty));
 
     /// <summary>
     /// Identifies the HorizontalOffset attached dependency property.
@@ -126,21 +130,13 @@ public static class ContextMenuService
     /// Identifies the ContextMenuOpening routed event.
     /// </summary>
     public static readonly RoutedEvent ContextMenuOpeningEvent =
-        EventManager.RegisterRoutedEvent(
-            "ContextMenuOpening",
-            RoutingStrategy.Bubble,
-            typeof(ContextMenuEventHandler),
-            typeof(ContextMenuService));
+        FrameworkElement.ContextMenuOpeningEvent.AddOwner(typeof(ContextMenuService));
 
     /// <summary>
     /// Identifies the ContextMenuClosing routed event.
     /// </summary>
     public static readonly RoutedEvent ContextMenuClosingEvent =
-        EventManager.RegisterRoutedEvent(
-            "ContextMenuClosing",
-            RoutingStrategy.Bubble,
-            typeof(ContextMenuEventHandler),
-            typeof(ContextMenuService));
+        FrameworkElement.ContextMenuClosingEvent.AddOwner(typeof(ContextMenuService));
 
     #endregion
 
@@ -224,6 +220,18 @@ public static class ContextMenuService
     {
         ArgumentNullException.ThrowIfNull(element);
         element.SetValue(PlacementTargetProperty, value);
+    }
+
+    public static Rect GetPlacementRectangle(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (Rect)(element.GetValue(PlacementRectangleProperty) ?? Rect.Empty);
+    }
+
+    public static void SetPlacementRectangle(DependencyObject element, Rect value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(PlacementRectangleProperty, value);
     }
 
     /// <summary>
@@ -519,6 +527,7 @@ public static class ContextMenuService
         }
 
         menu.Placement = placement;
+        menu.PlacementRectangle = GetPlacementRectangle(owner);
         menu.HorizontalOffset = GetHorizontalOffset(owner);
         menu.VerticalOffset = GetVerticalOffset(owner);
     }

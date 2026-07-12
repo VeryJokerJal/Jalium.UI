@@ -12,9 +12,9 @@ namespace Jalium.UI.Controls;
 public class RichTextBox : Control, IImeSupport
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.RichTextBoxAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.RichTextBoxAutomationPeer(this);
     }
 
     #region Static Brushes
@@ -34,7 +34,11 @@ public class RichTextBox : Control, IImeSupport
 
     private FlowDocument _document;
     private TextPointer? _caretPosition;
-    private TextRange? _selection;
+    private TextSelection? _selection;
+    private List<SpellingError> _spellingErrors = new();
+    private string? _spellCheckedText;
+    private readonly Dictionary<UIElement, bool> _documentElementEnabledStates =
+        new(ReferenceEqualityComparer.Instance);
 
     /// <summary>
     /// Whether the caret is currently visible (for blinking).
@@ -238,7 +242,12 @@ public class RichTextBox : Control, IImeSupport
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSpellCheckEnabledProperty =
         DependencyProperty.Register(nameof(IsSpellCheckEnabled), typeof(bool), typeof(RichTextBox),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnSpellCheckEnabledChanged));
+
+    /// <summary>Identifies the IsDocumentEnabled dependency property.</summary>
+    public static readonly DependencyProperty IsDocumentEnabledProperty =
+        DependencyProperty.Register(nameof(IsDocumentEnabled), typeof(bool), typeof(RichTextBox),
+            new PropertyMetadata(false, OnIsDocumentEnabledChanged));
 
     #endregion
 
@@ -334,6 +343,13 @@ public class RichTextBox : Control, IImeSupport
         set => SetValue(IsSpellCheckEnabledProperty, value);
     }
 
+    /// <summary>Gets or sets whether UI elements hosted in the document are enabled.</summary>
+    public bool IsDocumentEnabled
+    {
+        get => (bool)GetValue(IsDocumentEnabledProperty)!;
+        set => SetValue(IsDocumentEnabledProperty, value);
+    }
+
     /// <summary>
     /// Gets the FlowDocument that contains the content of this RichTextBox.
     /// </summary>
@@ -344,9 +360,12 @@ public class RichTextBox : Control, IImeSupport
         {
             if (_document != value)
             {
+                RestoreDocumentElementEnabledStates();
                 _document = value ?? new FlowDocument();
                 _caretPosition = _document.ContentStart;
-                _selection = new TextRange(_document.ContentStart, _document.ContentStart);
+                _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
+                _spellCheckedText = null;
+                ApplyDocumentEnabledState();
                 InvalidateLayout();
                 InvalidateVisual();
             }
@@ -375,11 +394,11 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets the current selection as a TextRange.
     /// </summary>
-    public TextRange Selection
+    public TextSelection Selection
     {
         get
         {
-            _selection ??= new TextRange(_document.ContentStart, _document.ContentStart);
+            _selection ??= new TextSelection(_document.ContentStart, _document.ContentStart);
             return _selection;
         }
     }
@@ -446,7 +465,7 @@ public class RichTextBox : Control, IImeSupport
     {
         _document = new FlowDocument();
         _caretPosition = _document.ContentStart;
-        _selection = new TextRange(_document.ContentStart, _document.ContentStart);
+        _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
 
         Focusable = true;
         Cursor = Cursors.IBeam;
@@ -484,7 +503,7 @@ public class RichTextBox : Control, IImeSupport
     /// </summary>
     public void SelectAll()
     {
-        _selection = new TextRange(_document.ContentStart, _document.ContentEnd);
+        _selection = new TextSelection(_document.ContentStart, _document.ContentEnd);
         _caretPosition = _document.ContentEnd;
         UpdateImeWindowIfComposing();
         InvalidateVisual();
@@ -498,7 +517,7 @@ public class RichTextBox : Control, IImeSupport
     {
         if (_caretPosition != null)
         {
-            _selection = new TextRange(_caretPosition, _caretPosition);
+            _selection = new TextSelection(_caretPosition, _caretPosition);
             UpdateImeWindowIfComposing();
             InvalidateVisual();
             OnSelectionChanged();
@@ -614,6 +633,56 @@ public class RichTextBox : Control, IImeSupport
         return _document.GetText();
     }
 
+    /// <summary>Returns the text position nearest to a point in control coordinates.</summary>
+    public TextPointer? GetPositionFromPoint(Point point, bool snapToText)
+    {
+        if (!snapToText && (!new Rect(RenderSize).Contains(point) || !IsPointOverDocumentText(point)))
+            return null;
+
+        return GetTextPositionFromPoint(point);
+    }
+
+    /// <summary>Gets the spelling error at a document position.</summary>
+    public SpellingError? GetSpellingError(TextPointer position)
+    {
+        ValidateDocumentPosition(position);
+        EnsureSpellingErrors();
+        var offset = position.DocumentOffset;
+        return _spellingErrors.FirstOrDefault(error =>
+            offset >= error.StartIndex && offset < error.StartIndex + error.Length);
+    }
+
+    /// <summary>Gets the range occupied by the spelling error at a document position.</summary>
+    public TextRange? GetSpellingErrorRange(TextPointer position)
+    {
+        var error = GetSpellingError(position);
+        if (error == null)
+            return null;
+
+        var start = _document.GetPositionAtOffset(error.StartIndex, LogicalDirection.Forward) ?? _document.ContentStart;
+        var end = _document.GetPositionAtOffset(error.StartIndex + error.Length, LogicalDirection.Backward) ?? _document.ContentEnd;
+        return new TextRange(start, end);
+    }
+
+    /// <summary>Returns the next spelling-error position in the requested direction.</summary>
+    public TextPointer? GetNextSpellingErrorPosition(TextPointer position, LogicalDirection direction)
+    {
+        ValidateDocumentPosition(position);
+        EnsureSpellingErrors();
+        var offset = position.DocumentOffset;
+        SpellingError? error = direction == LogicalDirection.Forward
+            ? _spellingErrors.Where(candidate => candidate.StartIndex >= offset)
+                .OrderBy(candidate => candidate.StartIndex).FirstOrDefault()
+            : _spellingErrors.Where(candidate => candidate.StartIndex < offset)
+                .OrderByDescending(candidate => candidate.StartIndex).FirstOrDefault();
+        return error == null
+            ? null
+            : _document.GetPositionAtOffset(error.StartIndex, direction);
+    }
+
+    /// <summary>Returns whether the current document contains serializable content.</summary>
+    public bool ShouldSerializeDocument() => _document.Blocks.Count > 0;
+
     /// <summary>
     /// Loads a text file as plain text, replacing the document. A byte-order
     /// mark, if present, decides the encoding; otherwise <paramref name="encoding"/>
@@ -637,12 +706,184 @@ public class RichTextBox : Control, IImeSupport
     public void SetText(string text)
     {
         PushUndo();
+        RestoreDocumentElementEnabledStates();
         _document = FlowDocument.FromText(text);
         _caretPosition = _document.ContentEnd;
-        _selection = new TextRange(_document.ContentStart, _document.ContentStart);
+        _selection = new TextSelection(_document.ContentStart, _document.ContentStart);
+        _spellCheckedText = null;
+        ApplyDocumentEnabledState();
         InvalidateLayout();
         UpdateImeWindowIfComposing();
         InvalidateVisual();
+    }
+
+    private void ValidateDocumentPosition(TextPointer position)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        if (!ReferenceEquals(position.Document, _document))
+            throw new ArgumentException("The text position does not belong to this RichTextBox document.", nameof(position));
+    }
+
+    private void EnsureSpellingErrors()
+    {
+        var text = GetText();
+        if (string.Equals(_spellCheckedText, text, StringComparison.Ordinal))
+            return;
+
+        _spellCheckedText = text;
+        if (!IsSpellCheckEnabled || SpellChecker.Default is not { IsAvailable: true } checker || text.Length == 0)
+        {
+            _spellingErrors.Clear();
+            return;
+        }
+
+        _spellingErrors = checker.Check(text)
+            .Select(error => error.WithHandlers(CorrectSpellingError, IgnoreSpellingError))
+            .ToList();
+    }
+
+    private void CorrectSpellingError(SpellingError error, string correctedText)
+    {
+        if (IsReadOnly)
+        {
+            return;
+        }
+
+        var start = _document.GetPositionAtOffset(error.StartIndex, LogicalDirection.Forward);
+        var end = _document.GetPositionAtOffset(
+            error.StartIndex + error.Length,
+            LogicalDirection.Backward);
+        if (start == null || end == null)
+        {
+            return;
+        }
+
+        new TextRange(start, end).Text = correctedText;
+        _spellCheckedText = null;
+        EnsureSpellingErrors();
+        InvalidateVisual();
+    }
+
+    private void IgnoreSpellingError(SpellingError error)
+    {
+        SpellChecker.Default?.IgnoreWord(error.Word);
+        _spellCheckedText = null;
+        EnsureSpellingErrors();
+        InvalidateVisual();
+    }
+
+    private static void OnSpellCheckEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var richTextBox = (RichTextBox)d;
+        richTextBox._spellCheckedText = null;
+        richTextBox._spellingErrors.Clear();
+        if (e.NewValue is true)
+        {
+            richTextBox.EnsureSpellingErrors();
+        }
+
+        richTextBox.InvalidateVisual();
+    }
+
+    private static void OnIsDocumentEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var richTextBox = (RichTextBox)d;
+        richTextBox.ApplyDocumentEnabledState();
+        richTextBox.InvalidateVisual();
+    }
+
+    private void ApplyDocumentEnabledState()
+    {
+        if (IsDocumentEnabled)
+        {
+            RestoreDocumentElementEnabledStates();
+            return;
+        }
+
+        foreach (var element in EnumerateDocumentElements(_document))
+        {
+            if (_documentElementEnabledStates.TryAdd(element, element.IsEnabled))
+            {
+                element.IsEnabled = false;
+            }
+        }
+    }
+
+    private void RestoreDocumentElementEnabledStates()
+    {
+        foreach (var entry in _documentElementEnabledStates)
+        {
+            entry.Key.IsEnabled = entry.Value;
+        }
+
+        _documentElementEnabledStates.Clear();
+    }
+
+    private static IEnumerable<UIElement> EnumerateDocumentElements(FlowDocument document)
+    {
+        foreach (var block in document.Blocks)
+        {
+            foreach (var element in EnumerateDocumentElements(block))
+                yield return element;
+        }
+    }
+
+    private static IEnumerable<UIElement> EnumerateDocumentElements(Block block)
+    {
+        switch (block)
+        {
+            case BlockUIContainer { Child: { } child }:
+                yield return child;
+                break;
+            case Paragraph paragraph:
+                foreach (var inline in paragraph.Inlines)
+                {
+                    foreach (var element in EnumerateDocumentElements(inline))
+                        yield return element;
+                }
+                break;
+            case Section section:
+                foreach (var nestedBlock in section.Blocks)
+                {
+                    foreach (var element in EnumerateDocumentElements(nestedBlock))
+                        yield return element;
+                }
+                break;
+            case Jalium.UI.Documents.List list:
+                foreach (var item in list.ListItems)
+                {
+                    foreach (var nestedBlock in item.Blocks)
+                    {
+                        foreach (var element in EnumerateDocumentElements(nestedBlock))
+                            yield return element;
+                    }
+                }
+                break;
+        }
+    }
+
+    private static IEnumerable<UIElement> EnumerateDocumentElements(Inline inline)
+    {
+        if (inline is InlineUIContainer { Child: { } child })
+            yield return child;
+
+        if (inline is AnchoredBlock anchoredBlock)
+        {
+            foreach (var nestedBlock in anchoredBlock.Blocks)
+            {
+                foreach (var element in EnumerateDocumentElements(nestedBlock))
+                    yield return element;
+            }
+        }
+
+        if (inline is Span span)
+        {
+            foreach (var nestedInline in span.Inlines)
+            {
+                foreach (var element in EnumerateDocumentElements(nestedInline))
+                    yield return element;
+            }
+        }
     }
 
     #endregion
@@ -735,7 +976,7 @@ public class RichTextBox : Control, IImeSupport
             return;
 
         PushUndo();
-        _selection.ApplyPropertyValue(TextElement.FontFamilyProperty, fontFamily);
+        _selection.ApplyPropertyValue(TextElement.FontFamilyProperty, new FontFamily(fontFamily));
         InvalidateLayout();
         InvalidateVisual();
     }
@@ -850,7 +1091,7 @@ public class RichTextBox : Control, IImeSupport
             // Move caret to the start of the new paragraph
             _caretPosition = _document.GetPositionAtOffset(
                 _caretPosition.DocumentOffset + 1, LogicalDirection.Forward) ?? _document.ContentEnd;
-            _selection = new TextRange(_caretPosition, _caretPosition);
+            _selection = new TextSelection(_caretPosition, _caretPosition);
         }
         else if (_caretPosition.Parent is Paragraph para)
         {
@@ -868,7 +1109,7 @@ public class RichTextBox : Control, IImeSupport
 
             _caretPosition = _document.GetPositionAtOffset(
                 _caretPosition.DocumentOffset + 1, LogicalDirection.Forward) ?? _document.ContentEnd;
-            _selection = new TextRange(_caretPosition, _caretPosition);
+            _selection = new TextSelection(_caretPosition, _caretPosition);
         }
         else
         {
@@ -982,7 +1223,7 @@ public class RichTextBox : Control, IImeSupport
         // Update selection to be empty at new caret position
         if (_caretPosition != null)
         {
-            _selection = new TextRange(_caretPosition, _caretPosition);
+            _selection = new TextSelection(_caretPosition, _caretPosition);
         }
     }
 
@@ -1010,7 +1251,7 @@ public class RichTextBox : Control, IImeSupport
 
         // Update caret to selection start
         _caretPosition = _selection.Start;
-        _selection = new TextRange(_caretPosition, _caretPosition);
+        _selection = new TextSelection(_caretPosition, _caretPosition);
 
         UpdateImeWindowIfComposing();
         OnSelectionChanged();
@@ -1061,7 +1302,7 @@ public class RichTextBox : Control, IImeSupport
         var end = _document.GetPositionAtOffset(state.SelectionEnd, LogicalDirection.Forward);
         if (start != null && end != null)
         {
-            _selection = new TextRange(start, end);
+            _selection = new TextSelection(start, end);
         }
     }
 
@@ -1160,6 +1401,7 @@ public class RichTextBox : Control, IImeSupport
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        ApplyDocumentEnabledState();
         base.OnRender(drawingContext);
 
         var dc = drawingContext;
@@ -1277,7 +1519,7 @@ public class RichTextBox : Control, IImeSupport
                 var foreground = runLayout.Run.Foreground
                     ?? _document.Foreground
                     ?? ResolveDocumentForegroundBrush();
-                var fontFamily = runLayout.Run.FontFamily
+                var fontFamily = runLayout.Run.FontFamily?.Source
                     ?? _document.FontFamily
                     ?? FrameworkElement.DefaultFontFamilyName;
                 var fontSize = runLayout.Run.FontSize;
@@ -1543,7 +1785,7 @@ public class RichTextBox : Control, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = run.FontFamily
+        var fontFamily = run.FontFamily?.Source
             ?? _document.FontFamily
             ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = run.FontSize;
@@ -1748,7 +1990,7 @@ public class RichTextBox : Control, IImeSupport
         if (inline is Run run)
         {
             var text = run.Text;
-            var fontFamily = run.FontFamily
+            var fontFamily = run.FontFamily?.Source
                 ?? _document.FontFamily
                 ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = run.FontSize;
@@ -2002,7 +2244,7 @@ public class RichTextBox : Control, IImeSupport
 
     private void OnImeCompositionStarted(object? sender, EventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionStart();
         }
@@ -2010,7 +2252,7 @@ public class RichTextBox : Control, IImeSupport
 
     private void OnImeCompositionUpdated(object? sender, CompositionEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionUpdate(e.Text, e.CursorPosition);
         }
@@ -2018,7 +2260,7 @@ public class RichTextBox : Control, IImeSupport
 
     private void OnImeCompositionEnded(object? sender, CompositionResultEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionEnd(e.Result);
         }
@@ -2075,7 +2317,7 @@ public class RichTextBox : Control, IImeSupport
 
                 if ((e.KeyboardModifiers & ModifierKeys.Shift) != 0 && _caretPosition != null && newCaretPosition != null)
                 {
-                    _selection = new TextRange(_caretPosition, newCaretPosition);
+                    _selection = new TextSelection(_caretPosition, newCaretPosition);
                 }
                 else
                 {
@@ -2083,7 +2325,7 @@ public class RichTextBox : Control, IImeSupport
                     _selectionAnchor = newCaretPosition;
                     if (newCaretPosition != null)
                     {
-                        _selection = new TextRange(newCaretPosition, newCaretPosition);
+                        _selection = new TextSelection(newCaretPosition, newCaretPosition);
                     }
                     _isWordSelecting = false;
                     _isSelecting = true;
@@ -2131,7 +2373,7 @@ public class RichTextBox : Control, IImeSupport
             }
             else if (_selectionAnchor != null)
             {
-                _selection = new TextRange(_selectionAnchor, newCaretPosition);
+                _selection = new TextSelection(_selectionAnchor, newCaretPosition);
                 _caretPosition = newCaretPosition;
             }
         }
@@ -2173,6 +2415,66 @@ public class RichTextBox : Control, IImeSupport
         }
 
         return _document.ContentEnd;
+    }
+
+    private bool IsPointOverDocumentText(Point point)
+    {
+        var contentBounds = new Rect(
+            BorderThickness.Left + Padding.Left,
+            BorderThickness.Top + Padding.Top,
+            Math.Max(0, RenderSize.Width - BorderThickness.Left - BorderThickness.Right - Padding.Left - Padding.Right),
+            Math.Max(0, RenderSize.Height - BorderThickness.Top - BorderThickness.Bottom - Padding.Top - Padding.Bottom));
+        if (!contentBounds.Contains(point))
+            return false;
+
+        var layout = EnsureLayout(contentBounds.Width);
+        if (layout == null)
+            return false;
+
+        var y = contentBounds.Top - _verticalOffset;
+        var targetX = point.X - contentBounds.Left + _horizontalOffset;
+        foreach (var blockLayout in layout.Blocks)
+        {
+            var overText = IsPointOverDocumentText(blockLayout, targetX, point.Y, ref y, out var verticalHit);
+            if (verticalHit)
+                return overText;
+        }
+
+        return false;
+    }
+
+    private static bool IsPointOverDocumentText(
+        BlockLayoutInfo blockLayout,
+        double targetX,
+        double targetY,
+        ref double y,
+        out bool verticalHit)
+    {
+        foreach (var lineLayout in blockLayout.Lines)
+        {
+            if (targetY >= y && targetY < y + lineLayout.Height)
+            {
+                verticalHit = true;
+                var x = blockLayout.Margin.Left;
+                return lineLayout.Runs.Any(runLayout =>
+                    runLayout.Width > 0 &&
+                    targetX >= x + runLayout.X &&
+                    targetX < x + runLayout.X + runLayout.Width);
+            }
+
+            y += lineLayout.Height;
+        }
+
+        foreach (var childLayout in blockLayout.ChildBlocks)
+        {
+            var overText = IsPointOverDocumentText(childLayout, targetX, targetY, ref y, out verticalHit);
+            if (verticalHit)
+                return overText;
+        }
+
+        y += blockLayout.Margin.Bottom;
+        verticalHit = false;
+        return false;
     }
 
     private TextPointer? FindPositionFromPoint(BlockLayoutInfo blockLayout, double targetX, double targetY, ref double y)
@@ -2218,7 +2520,7 @@ public class RichTextBox : Control, IImeSupport
     private int FindCharIndexFromX(Run run, double x)
     {
         var text = run.Text;
-        var fontFamily = run.FontFamily
+        var fontFamily = run.FontFamily?.Source
             ?? _document.FontFamily
             ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = run.FontSize;
@@ -2274,7 +2576,7 @@ public class RichTextBox : Control, IImeSupport
         else
         {
             StopCaretTimer();
-            if (InputMethod.Current == this)
+            if (InputMethod.CurrentTarget == this)
             {
                 InputMethod.SetTarget(null);
             }
@@ -2701,7 +3003,7 @@ public class RichTextBox : Control, IImeSupport
                 var range = new TextRange(prevPosition, _caretPosition);
                 range.Text = string.Empty;
                 _caretPosition = prevPosition;
-                _selection = new TextRange(prevPosition, prevPosition);
+                _selection = new TextSelection(prevPosition, prevPosition);
                 InvalidateLayout();
             }
         }
@@ -2730,7 +3032,7 @@ public class RichTextBox : Control, IImeSupport
                 PushUndo();
                 var range = new TextRange(_caretPosition, nextPosition);
                 range.Text = string.Empty;
-                _selection = new TextRange(_caretPosition, _caretPosition);
+                _selection = new TextSelection(_caretPosition, _caretPosition);
                 InvalidateLayout();
             }
         }
@@ -2745,7 +3047,7 @@ public class RichTextBox : Control, IImeSupport
 
         if (_selectionAnchor != null)
         {
-            _selection = new TextRange(_selectionAnchor, newPosition);
+            _selection = new TextSelection(_selectionAnchor, newPosition);
         }
         _caretPosition = newPosition;
 
@@ -2757,7 +3059,7 @@ public class RichTextBox : Control, IImeSupport
         var (start, end) = GetWordRangeAtOffset(position.DocumentOffset);
         var startPosition = _document.GetPositionAtOffset(start, LogicalDirection.Forward) ?? _document.ContentStart;
         var endPosition = _document.GetPositionAtOffset(end, LogicalDirection.Forward) ?? _document.ContentEnd;
-        _selection = new TextRange(startPosition, endPosition);
+        _selection = new TextSelection(startPosition, endPosition);
         _caretPosition = endPosition;
         _selectionAnchor = startPosition;
         UpdateImeWindowIfComposing();
@@ -2792,7 +3094,7 @@ public class RichTextBox : Control, IImeSupport
 
         var startPosition = _document.GetPositionAtOffset(selectionStart, LogicalDirection.Forward) ?? _document.ContentStart;
         var endPosition = _document.GetPositionAtOffset(selectionEnd, LogicalDirection.Forward) ?? _document.ContentEnd;
-        _selection = new TextRange(startPosition, endPosition);
+        _selection = new TextSelection(startPosition, endPosition);
         _caretPosition = _document.GetPositionAtOffset(caretOffset, LogicalDirection.Forward) ?? _document.ContentEnd;
         UpdateImeWindowIfComposing();
         OnSelectionChanged();
@@ -2986,7 +3288,9 @@ public class RichTextBox : Control, IImeSupport
     {
         if (position?.Parent is Run run)
         {
-            string fontFamily = !string.IsNullOrWhiteSpace(run.FontFamily) ? run.FontFamily : (_document.FontFamily ?? FrameworkElement.DefaultFontFamilyName);
+            string fontFamily = run.FontFamily?.Source is { } runFamily && !string.IsNullOrWhiteSpace(runFamily)
+                ? runFamily
+                : _document.FontFamily ?? FrameworkElement.DefaultFontFamilyName;
             double fontSize = run.FontSize > 0 ? run.FontSize : _document.FontSize;
             return (fontFamily, fontSize, run.FontWeight, run.FontStyle);
         }

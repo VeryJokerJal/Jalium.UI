@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
+using System.Threading;
 using Jalium.UI.Automation;
 
 namespace Jalium.UI.Controls.Automation.Uia;
@@ -8,8 +9,9 @@ namespace Jalium.UI.Controls.Automation.Uia;
 /// <summary>
 /// UIA provider wrapping an AutomationPeer, exposed to native UI Automation as a
 /// source-generated COM object (<see cref="GeneratedComClassAttribute"/>). Implements
-/// IRawElementProviderFragmentRoot (which inherits Fragment and Simple), so the
-/// StrategyBasedComWrappers CCW answers QueryInterface for all three IIDs.
+/// IRawElementProviderSimple, IRawElementProviderFragment, and
+/// IRawElementProviderFragmentRoot, so the StrategyBasedComWrappers CCW answers
+/// QueryInterface for all three sibling UIA provider IIDs.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -32,12 +34,16 @@ namespace Jalium.UI.Controls.Automation.Uia;
 /// </para>
 /// </remarks>
 [GeneratedComClass]
-internal sealed partial class AutomationPeerProvider : IRawElementProviderFragmentRoot
+internal sealed partial class AutomationPeerProvider :
+    IRawElementProviderSimple,
+    IRawElementProviderFragment,
+    IRawElementProviderFragmentRoot
 {
     private readonly AutomationPeer _peer;
-    private readonly nint _hwnd;
     private readonly bool _isRoot;
     private readonly int _runtimeId;
+    private nint _hwnd;
+    private nint _providerPointer;
 
     internal AutomationPeerProvider(AutomationPeer peer, nint hwnd)
     {
@@ -48,7 +54,51 @@ internal sealed partial class AutomationPeerProvider : IRawElementProviderFragme
     }
 
     internal AutomationPeer Peer => _peer;
+    internal nint Hwnd => Volatile.Read(ref _hwnd);
     internal int[] GetRuntimeIdArray() => [UiaConstants.AppendRuntimeId, _runtimeId];
+
+    internal void EnsureHwnd(nint hwnd)
+    {
+        if (hwnd == nint.Zero)
+            return;
+
+        _ = Interlocked.CompareExchange(ref _hwnd, hwnd, nint.Zero);
+    }
+
+    internal nint GetOrCreateProviderPointer()
+    {
+        var current = Volatile.Read(ref _providerPointer);
+        if (current != nint.Zero)
+        {
+            UiaTrace.Log($"ProviderPointer reuse peer={PeerLabel()} p=0x{FormatPointer(current)} hwnd=0x{FormatPointer(_hwnd)}");
+            return current;
+        }
+
+        var created = UiaComInterop.ProviderToPointer(this);
+        var prior = Interlocked.CompareExchange(ref _providerPointer, created, nint.Zero);
+        if (prior == nint.Zero)
+        {
+            UiaTrace.Log($"ProviderPointer create peer={PeerLabel()} p=0x{FormatPointer(created)} hwnd=0x{FormatPointer(_hwnd)}");
+            return created;
+        }
+
+        UiaComInterop.FreeProviderPointer(created);
+        UiaTrace.Log($"ProviderPointer lost-race peer={PeerLabel()} created=0x{FormatPointer(created)} existing=0x{FormatPointer(prior)}");
+        return prior;
+    }
+
+    internal void ReleaseProviderPointer()
+    {
+        var pointer = Interlocked.Exchange(ref _providerPointer, nint.Zero);
+        UiaTrace.Log($"ProviderPointer release peer={PeerLabel()} p=0x{FormatPointer(pointer)} hwnd=0x{FormatPointer(_hwnd)}");
+        UiaComInterop.FreeProviderPointer(pointer);
+    }
+
+    internal void ReleaseProviderPointerForWindow(nint hwnd)
+    {
+        ReleaseProviderPointer();
+        _ = Interlocked.CompareExchange(ref _hwnd, nint.Zero, hwnd);
+    }
 
     // ========================================================================
     // IRawElementProviderSimple
@@ -59,24 +109,144 @@ internal sealed partial class AutomationPeerProvider : IRawElementProviderFragme
     // first-chance NullReferenceException from the generated write-back. See IRawElementProviderSimple.
     public unsafe int get_ProviderOptions(ProviderOptions* pRetVal)
     {
-        if (pRetVal == null)
+        if (!IsWritableOutPointer(pRetVal, sizeof(ProviderOptions)))
+        {
+            UiaTrace.Log($"get_ProviderOptions E_POINTER peer={PeerLabel()} pRetVal=0x{FormatPointer(pRetVal)}");
             return unchecked((int)0x80004003); // E_POINTER
+        }
+
         *pRetVal = ProviderOptions.ServerSideProvider | ProviderOptions.UseComThreading;
+        UiaTrace.Log($"get_ProviderOptions S_OK peer={PeerLabel()} pRetVal=0x{FormatPointer(pRetVal)}");
         return 0; // S_OK
     }
 
-    public object? GetPatternProvider(int patternId)
+    public unsafe int GetPatternProvider(int patternId, nint* pRetVal)
     {
-        var patternInterface = UiaConstants.MapUiaPatternIdToPatternInterface(patternId);
-        if (patternInterface == null) return null;
+        if (!IsWritableOutPointer(pRetVal, sizeof(nint)))
+        {
+            UiaTrace.Log($"GetPatternProvider E_POINTER peer={PeerLabel()} pattern=0x{patternId:X8} pRetVal=0x{FormatPointer(pRetVal)}");
+            return unchecked((int)0x80004003); // E_POINTER
+        }
 
-        var pattern = _peer.GetPattern(patternInterface.Value);
-        if (pattern == null) return null;
+        *pRetVal = nint.Zero;
+        try
+        {
+            var patternInterface = UiaConstants.MapUiaPatternIdToPatternInterface(patternId);
+            if (patternInterface == null)
+            {
+                UiaTrace.Log($"GetPatternProvider S_OK unsupported-pattern peer={PeerLabel()} pattern=0x{patternId:X8}");
+                return 0;
+            }
 
-        return WrapPattern(patternId, pattern);
+            var pattern = _peer.GetPattern(patternInterface.Value);
+            if (pattern == null)
+            {
+                UiaTrace.Log($"GetPatternProvider S_OK no-provider peer={PeerLabel()} pattern={patternInterface.Value} id=0x{patternId:X8}");
+                return 0;
+            }
+
+            *pRetVal = WrapPatternToPointer(patternId, pattern);
+            UiaTrace.Log($"GetPatternProvider S_OK peer={PeerLabel()} pattern={patternInterface.Value} id=0x{patternId:X8} ret=0x{FormatPointer(*pRetVal)}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            *pRetVal = nint.Zero;
+            var hr = Marshal.GetHRForException(ex);
+            UiaTrace.Log($"GetPatternProvider HR=0x{hr:X8} peer={PeerLabel()} pattern=0x{patternId:X8} ex={ex.GetType().Name}: {ex.Message}");
+            return hr;
+        }
     }
 
-    public UiaVariant GetPropertyValue(int propertyId) => UiaVariant.From(GetPropertyValueCore(propertyId));
+    private static unsafe bool IsWritableOutPointer<T>(T* pointer, int byteCount) where T : unmanaged
+    {
+        if (pointer == null)
+            return false;
+
+        if (!OperatingSystem.IsWindows())
+            return true;
+
+        if (byteCount <= 0)
+            return false;
+
+        nuint current = (nuint)pointer;
+        nuint remaining = (nuint)byteCount;
+
+        while (remaining > 0)
+        {
+            if (UiaNativeMethods.VirtualQuery(
+                    (nint)current,
+                    out var info,
+                    (nuint)Marshal.SizeOf<UiaNativeMethods.MEMORY_BASIC_INFORMATION>()) == 0)
+            {
+                return false;
+            }
+
+            if (!IsWritableMemory(info))
+                return false;
+
+            nuint baseAddress = (nuint)info.BaseAddress;
+            nuint regionSize = info.RegionSize;
+            if (regionSize == 0 || current < baseAddress)
+                return false;
+
+            nuint offset = current - baseAddress;
+            if (offset >= regionSize)
+                return false;
+
+            nuint available = regionSize - offset;
+            if (available >= remaining)
+                return true;
+
+            if (available > nuint.MaxValue - current)
+                return false;
+
+            current += available;
+            remaining -= available;
+        }
+
+        return true;
+    }
+
+    private static bool IsWritableMemory(UiaNativeMethods.MEMORY_BASIC_INFORMATION info)
+    {
+        const uint MEM_COMMIT = 0x1000;
+        const uint PAGE_GUARD = 0x100;
+        const uint PAGE_READWRITE = 0x04;
+        const uint PAGE_WRITECOPY = 0x08;
+        const uint PAGE_EXECUTE_READWRITE = 0x40;
+        const uint PAGE_EXECUTE_WRITECOPY = 0x80;
+
+        if (info.State != MEM_COMMIT || (info.Protect & PAGE_GUARD) != 0)
+            return false;
+
+        return (info.Protect & 0xff) is PAGE_READWRITE or PAGE_WRITECOPY
+            or PAGE_EXECUTE_READWRITE or PAGE_EXECUTE_WRITECOPY;
+    }
+
+    public unsafe int GetPropertyValue(int propertyId, UiaVariant* pRetVal)
+    {
+        if (!IsWritableOutPointer(pRetVal, sizeof(UiaVariant)))
+        {
+            UiaTrace.Log($"GetPropertyValue E_POINTER peer={PeerLabel()} property=0x{propertyId:X8} pRetVal=0x{FormatPointer(pRetVal)}");
+            return unchecked((int)0x80004003); // E_POINTER
+        }
+
+        *pRetVal = default;
+        try
+        {
+            *pRetVal = UiaVariant.From(GetPropertyValueCore(propertyId));
+            UiaTrace.Log($"GetPropertyValue S_OK peer={PeerLabel()} property=0x{propertyId:X8} vt={pRetVal->vt}");
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            *pRetVal = default;
+            var hr = Marshal.GetHRForException(ex);
+            UiaTrace.Log($"GetPropertyValue HR=0x{hr:X8} peer={PeerLabel()} property=0x{propertyId:X8} ex={ex.GetType().Name}: {ex.Message}");
+            return hr;
+        }
+    }
 
     private object? GetPropertyValueCore(int propertyId) => propertyId switch
     {
@@ -91,29 +261,58 @@ internal sealed partial class AutomationPeerProvider : IRawElementProviderFragme
         UiaConstants.UIA_HasKeyboardFocusPropertyId => _peer.HasKeyboardFocus(),
         UiaConstants.UIA_IsContentElementPropertyId => _peer.IsContentElement(),
         UiaConstants.UIA_IsControlElementPropertyId => _peer.IsControlElement(),
-        UiaConstants.UIA_IsOffscreenPropertyId => _peer.IsOffscreen(),
+        UiaConstants.UIA_IsOffscreenPropertyId => IsActuallyOffscreen(),
         UiaConstants.UIA_ProcessIdPropertyId => Environment.ProcessId,
         UiaConstants.UIA_FrameworkIdPropertyId => "Jalium",
         UiaConstants.UIA_NativeWindowHandlePropertyId => _isRoot ? _hwnd.ToInt32() : 0,
         UiaConstants.UIA_ProviderDescriptionPropertyId => "Jalium.UI UIA Provider",
-        _ => null,
+        _ => GetPatternAvailability(propertyId),
     };
 
-    public IRawElementProviderSimple? get_HostRawElementProvider()
+    /// <summary>
+    /// Answers the boolean <c>IsXxxPatternAvailable</c> properties by asking the peer whether it
+    /// exposes the corresponding pattern. Returns <see langword="null"/> (VT_EMPTY) for property ids
+    /// that are not pattern-availability queries, so unrelated properties fall through unchanged.
+    /// Without this, a provider that returns a Text/Value/Toggle/... pattern from
+    /// <see cref="GetPatternProvider"/> still reported VT_EMPTY here, and UIA clients (Narrator, text
+    /// clients) that check availability first would treat the supported pattern as absent.
+    /// </summary>
+    private object? GetPatternAvailability(int propertyId)
     {
+        var patternInterface = UiaConstants.MapAvailabilityPropertyToPatternInterface(propertyId);
+        if (patternInterface == null)
+            return null;
+
+        return _peer.GetPattern(patternInterface.Value) != null;
+    }
+
+    public unsafe int get_HostRawElementProvider(nint* pRetVal)
+    {
+        if (!IsWritableOutPointer(pRetVal, sizeof(nint)))
+        {
+            UiaTrace.Log($"get_HostRawElementProvider E_POINTER peer={PeerLabel()} pRetVal=0x{FormatPointer(pRetVal)}");
+            return unchecked((int)0x80004003); // E_POINTER
+        }
+
+        *pRetVal = nint.Zero;
         if (_isRoot && _hwnd != nint.Zero)
         {
-            // Ask UIA for the HWND's default host provider, then wrap it as an RCW with the
-            // same marshalling instance the generated stubs use and release our own ref.
+            // UiaHostProviderFromHwnd returns an owned provider reference. Transfer it directly
+            // to the COM caller; do not wrap and release it through the managed marshaller.
             int hr = UiaNativeMethods.UiaHostProviderFromHwnd(_hwnd, out nint pHost);
             if (hr >= 0 && pHost != nint.Zero)
             {
-                var host = UiaComInterop.ProviderFromPointer(pHost);
-                Marshal.Release(pHost);
-                return host;
+                *pRetVal = pHost;
+                UiaTrace.Log($"get_HostRawElementProvider S_OK peer={PeerLabel()} host=0x{FormatPointer(pHost)}");
+                return 0;
             }
+
+            UiaTrace.Log($"get_HostRawElementProvider HR=0x{hr:X8} peer={PeerLabel()}");
+            return hr;
         }
-        return null;
+
+        UiaTrace.Log($"get_HostRawElementProvider S_OK null peer={PeerLabel()}");
+        return 0;
     }
 
     // ========================================================================
@@ -165,24 +364,53 @@ internal sealed partial class AutomationPeerProvider : IRawElementProviderFragme
     /// </summary>
     internal UiaRect LocalRectToScreen(Rect localBounds)
     {
-        if (_peer.Owner is FrameworkElement fe)
+        if (localBounds.IsEmpty)
+            return default;
+
+        if (_peer.Owner is UIElement element)
         {
-            var offset = fe.TransformToAncestor(null);
-            var window = FindOwnerWindow(fe);
+            var windowRect = element.MapLocalRectToScreen(localBounds);
+            var window = FindOwnerWindow(element);
             if (window != null)
+                return WindowDipRectToScreenPixels(window, windowRect);
+
+            return new UiaRect
             {
-                double dpi = window.DpiScale;
-                var pt = new UiaNativeMethods.POINT
-                {
-                    X = (int)((offset.X + localBounds.X) * dpi),
-                    Y = (int)((offset.Y + localBounds.Y) * dpi)
-                };
-                UiaNativeMethods.ClientToScreen(window.Handle, ref pt);
-                return new UiaRect { Left = pt.X, Top = pt.Y, Width = localBounds.Width * dpi, Height = localBounds.Height * dpi };
-            }
+                Left = windowRect.X,
+                Top = windowRect.Y,
+                Width = windowRect.Width,
+                Height = windowRect.Height
+            };
         }
 
         return new UiaRect { Left = localBounds.X, Top = localBounds.Y, Width = localBounds.Width, Height = localBounds.Height };
+    }
+
+    private bool IsActuallyOffscreen()
+    {
+        if (_peer.IsOffscreen())
+            return true;
+
+        if (_peer.Owner is not UIElement element)
+            return false;
+
+        var bounds = _peer.GetBoundingRectangle();
+        if (bounds.IsEmpty)
+            return true;
+
+        var window = FindOwnerWindow(element);
+        if (window == null)
+            return false;
+
+        var elementRect = element.MapLocalRectToScreen(new Rect(0, 0, bounds.Width, bounds.Height));
+        if (elementRect.IsEmpty)
+            return true;
+
+        var windowRect = new Rect(0, 0, window.ActualWidth, window.ActualHeight);
+        if (windowRect.IsEmpty)
+            return true;
+
+        return !elementRect.IntersectsWith(windowRect);
     }
 
     // MUST stay null. On the wire GetEmbeddedFragmentRoots is SAFEARRAY(VARIANT) (each VARIANT
@@ -286,7 +514,26 @@ internal sealed partial class AutomationPeerProvider : IRawElementProviderFragme
         return UiaAccessibilityBridge.GetOrCreateProvider(siblings[target], _hwnd);
     }
 
-    private static Window? FindOwnerWindow(FrameworkElement element)
+    private static UiaRect WindowDipRectToScreenPixels(Window window, Rect rect)
+    {
+        double dpi = window.DpiScale;
+        if (!double.IsFinite(dpi) || dpi <= 0)
+            dpi = 1.0;
+
+        var origin = new UiaNativeMethods.POINT();
+        if (window.Handle != nint.Zero)
+            UiaNativeMethods.ClientToScreen(window.Handle, ref origin);
+
+        return new UiaRect
+        {
+            Left = origin.X + rect.X * dpi,
+            Top = origin.Y + rect.Y * dpi,
+            Width = rect.Width * dpi,
+            Height = rect.Height * dpi
+        };
+    }
+
+    private static Window? FindOwnerWindow(UIElement element)
     {
         Visual? current = element;
         while (current != null)
@@ -297,20 +544,38 @@ internal sealed partial class AutomationPeerProvider : IRawElementProviderFragme
         return null;
     }
 
-    private object? WrapPattern(int patternId, object pattern) => patternId switch
+    private unsafe nint WrapPatternToPointer(int patternId, object pattern) => patternId switch
     {
-        UiaConstants.UIA_InvokePatternId when pattern is IInvokeProvider p => new UiaInvokeProviderWrapper(p),
-        UiaConstants.UIA_TogglePatternId when pattern is IToggleProvider p => new UiaToggleProviderWrapper(p),
-        UiaConstants.UIA_ValuePatternId when pattern is IValueProvider p => new UiaValueProviderWrapper(p),
-        UiaConstants.UIA_RangeValuePatternId when pattern is IRangeValueProvider p => new UiaRangeValueProviderWrapper(p),
-        UiaConstants.UIA_ExpandCollapsePatternId when pattern is IExpandCollapseProvider p => new UiaExpandCollapseProviderWrapper(p),
-        UiaConstants.UIA_SelectionPatternId when pattern is ISelectionProvider p => new UiaSelectionProviderWrapper(p),
-        UiaConstants.UIA_SelectionItemPatternId when pattern is ISelectionItemProvider p => new UiaSelectionItemProviderWrapper(p),
-        UiaConstants.UIA_ScrollPatternId when pattern is IScrollProvider p => new UiaScrollProviderWrapper(p),
-        UiaConstants.UIA_ScrollItemPatternId when pattern is IScrollItemProvider p => new UiaScrollItemProviderWrapper(p),
-        UiaConstants.UIA_TextPatternId when pattern is ITextProvider p => new UiaTextProviderWrapper(p, this),
-        _ => null,
+        UiaConstants.UIA_InvokePatternId when pattern is IInvokeProvider p
+            => (nint)ComInterfaceMarshaller<IUiaInvokeProvider>.ConvertToUnmanaged(new UiaInvokeProviderWrapper(p)),
+        UiaConstants.UIA_TogglePatternId when pattern is IToggleProvider p
+            => (nint)ComInterfaceMarshaller<IUiaToggleProvider>.ConvertToUnmanaged(new UiaToggleProviderWrapper(p)),
+        UiaConstants.UIA_ValuePatternId when pattern is IValueProvider p
+            => (nint)ComInterfaceMarshaller<IUiaValueProvider>.ConvertToUnmanaged(new UiaValueProviderWrapper(p)),
+        UiaConstants.UIA_RangeValuePatternId when pattern is IRangeValueProvider p
+            => (nint)ComInterfaceMarshaller<IUiaRangeValueProvider>.ConvertToUnmanaged(new UiaRangeValueProviderWrapper(p)),
+        UiaConstants.UIA_ExpandCollapsePatternId when pattern is IExpandCollapseProvider p
+            => (nint)ComInterfaceMarshaller<IUiaExpandCollapseProvider>.ConvertToUnmanaged(new UiaExpandCollapseProviderWrapper(p)),
+        UiaConstants.UIA_SelectionPatternId when pattern is ISelectionProvider p
+            => (nint)ComInterfaceMarshaller<IUiaSelectionProvider>.ConvertToUnmanaged(new UiaSelectionProviderWrapper(p)),
+        UiaConstants.UIA_SelectionItemPatternId when pattern is ISelectionItemProvider p
+            => (nint)ComInterfaceMarshaller<IUiaSelectionItemProvider>.ConvertToUnmanaged(new UiaSelectionItemProviderWrapper(p)),
+        UiaConstants.UIA_ScrollPatternId when pattern is IScrollProvider p
+            => (nint)ComInterfaceMarshaller<IUiaScrollProvider>.ConvertToUnmanaged(new UiaScrollProviderWrapper(p)),
+        UiaConstants.UIA_ScrollItemPatternId when pattern is IScrollItemProvider p
+            => (nint)ComInterfaceMarshaller<IUiaScrollItemProvider>.ConvertToUnmanaged(new UiaScrollItemProviderWrapper(p)),
+        UiaConstants.UIA_TextPatternId when pattern is ITextProvider p
+            => (nint)ComInterfaceMarshaller<IUiaTextProvider>.ConvertToUnmanaged(new UiaTextProviderWrapper(p, this)),
+        _ => nint.Zero,
     };
 
     private static string? NullIfEmpty(string? s) => string.IsNullOrEmpty(s) ? null : s;
+
+    private string PeerLabel() => $"{_peer.GetType().Name}/{_peer.GetAutomationControlType()}";
+
+    private static unsafe string FormatPointer<T>(T* pointer) where T : unmanaged
+        => ((nuint)pointer).ToString("X");
+
+    private static string FormatPointer(nint pointer)
+        => ((nuint)pointer).ToString("X");
 }

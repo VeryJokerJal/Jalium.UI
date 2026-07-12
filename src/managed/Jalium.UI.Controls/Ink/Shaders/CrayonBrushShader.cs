@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls.Ink.Shaders;
+namespace Jalium.UI.Ink.Shaders;
 
 /// <summary>
 /// Crayon brush — rough, chalky texture. Uses multi-octave hash noise

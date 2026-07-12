@@ -14,9 +14,9 @@ namespace Jalium.UI.Controls.Primitives;
 public class RepeatButton : ButtonBase
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.RepeatButtonAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.RepeatButtonAutomationPeer(this);
     }
 
     private const string ScrollBarArrowBrushKey = "ScrollBarArrow";

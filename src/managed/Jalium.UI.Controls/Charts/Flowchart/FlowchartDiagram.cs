@@ -843,7 +843,7 @@ public class FlowchartDiagram : ChartBase
     }
 
     private string ResolveFontFamily()
-        => string.IsNullOrWhiteSpace(FontFamily) ? FrameworkElement.DefaultFontFamilyName : FontFamily;
+        => string.IsNullOrWhiteSpace(FontFamily?.Source) ? FrameworkElement.DefaultFontFamilyName : FontFamily.Source;
 
     #endregion
 }

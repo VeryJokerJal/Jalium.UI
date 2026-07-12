@@ -4,6 +4,7 @@ using System.IO;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
+using BitmapImage = Jalium.UI.Media.BitmapImage;
 using Xunit;
 
 namespace Jalium.UI.Tests;

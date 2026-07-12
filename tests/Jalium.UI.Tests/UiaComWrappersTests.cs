@@ -9,7 +9,7 @@ namespace Jalium.UI.Tests;
 /// Self-consistency tests for the source-generated COM UIA providers. They build a real
 /// StrategyBasedComWrappers CCW for a provider and invoke it THROUGH its native vtable —
 /// exactly the way UIAutomationCore would — validating QueryInterface across the
-/// IRawElementProviderSimple/Fragment/FragmentRoot inheritance chain, the HRESULT method
+/// IRawElementProviderSimple/Fragment/FragmentRoot sibling interfaces, the HRESULT method
 /// shapes, the blittable <see cref="UiaVariant"/>, the custom SAFEARRAY marshaller, and a
 /// pattern-wrapper CCW.
 ///
@@ -24,7 +24,8 @@ public class UiaComWrappersTests
     private const int Slot_get_ProviderOptions = 3;
     private const int Slot_GetPatternProvider = 4;
     private const int Slot_GetPropertyValue = 5;
-    private const int Slot_GetRuntimeId = 8; // on the IRawElementProviderFragment vtable
+    private const int Slot_get_HostRawElementProvider = 6;
+    private const int Slot_Fragment_GetRuntimeId = 4;
 
     // IUiaTextProvider vtable slots (3..8 after IUnknown 0-2).
     private const int Slot_Text_GetSelection = 3;
@@ -48,7 +49,7 @@ public class UiaComWrappersTests
 
     private static nint QueryInterface(nint pUnk, Guid iid)
     {
-        int hr = Marshal.QueryInterface(pUnk, ref iid, out nint p);
+        int hr = Marshal.QueryInterface(pUnk, in iid, out nint p);
         Assert.True(hr == 0, $"QueryInterface({iid}) failed: 0x{hr:X8}");
         Assert.NotEqual(nint.Zero, p);
         return p;
@@ -64,7 +65,7 @@ public class UiaComWrappersTests
     }
 
     [Fact]
-    public void Ccw_ExposesProviderInterfaceChain_AndCoreVtableWorks()
+    public void Ccw_ExposesProviderInterfaces_AndCoreVtablesWork()
     {
         var button = new Button();
         var peer = button.GetAutomationPeer();
@@ -75,7 +76,7 @@ public class UiaComWrappersTests
         Assert.NotEqual(nint.Zero, pSimple);
         try
         {
-            // QueryInterface must succeed for every IID in the inheritance chain.
+            // QueryInterface must succeed for every sibling UIA provider IID.
             Marshal.Release(QueryInterface(pSimple, typeof(IRawElementProviderSimple).GUID));
             nint pFragment = QueryInterface(pSimple, typeof(IRawElementProviderFragment).GUID);
             Marshal.Release(QueryInterface(pSimple, typeof(IRawElementProviderFragmentRoot).GUID));
@@ -100,9 +101,16 @@ public class UiaComWrappersTests
             Assert.Equal("Button", Marshal.PtrToStringBSTR(vClass.bstrVal));
             vClass.Clear(); // we own the returned VARIANT's BSTR
 
-            // GetRuntimeId (Fragment slot 8) builds a real SAFEARRAY(VT_I4); read it back
+            hr = Slot<GetPtrOut>(pSimple, Slot_get_HostRawElementProvider)(pSimple, out nint pHost);
+            Assert.Equal(0, hr);
+            if (pHost != nint.Zero)
+                Marshal.Release(pHost);
+
+            // GetRuntimeId is Fragment slot 4 in UIAutomationCore.h: Fragment is a sibling
+            // interface, not Simple's derived interface.
+            // It builds a real SAFEARRAY(VT_I4); read it back
             // through the same custom marshaller. Expect [AppendRuntimeId, <hash>].
-            hr = Slot<GetPtrOut>(pFragment, Slot_GetRuntimeId)(pFragment, out nint pSafeArray);
+            hr = Slot<GetPtrOut>(pFragment, Slot_Fragment_GetRuntimeId)(pFragment, out nint pSafeArray);
             Assert.Equal(0, hr);
             Assert.NotEqual(nint.Zero, pSafeArray);
             int[]? runtimeId = SafeArrayInt32Marshaller.ConvertToManaged(pSafeArray);
@@ -116,6 +124,33 @@ public class UiaComWrappersTests
         finally
         {
             UiaComInterop.FreeProviderPointer(pSimple);
+        }
+    }
+
+    [Fact]
+    public void CachedProviderPointer_RemainsUsableAfterTemporaryReferenceRelease()
+    {
+        var button = new Button();
+        var peer = button.GetAutomationPeer();
+        Assert.NotNull(peer);
+        var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer!, nint.Zero);
+
+        nint pStable = provider.GetOrCreateProviderPointer();
+        try
+        {
+            Assert.NotEqual(nint.Zero, pStable);
+            Assert.Equal(pStable, provider.GetOrCreateProviderPointer());
+
+            nint pTemporary = UiaComInterop.ProviderToPointer(provider);
+            UiaComInterop.FreeProviderPointer(pTemporary);
+
+            int hr = Slot<GetIntOut>(pStable, Slot_get_ProviderOptions)(pStable, out int options);
+            Assert.Equal(0, hr);
+            Assert.Equal((int)(ProviderOptions.ServerSideProvider | ProviderOptions.UseComThreading), options);
+        }
+        finally
+        {
+            provider.ReleaseProviderPointer();
         }
     }
 
@@ -149,6 +184,54 @@ public class UiaComWrappersTests
         {
             UiaComInterop.FreeProviderPointer(pSimple);
         }
+    }
+
+    [Fact]
+    public void Ccw_GetPatternProvider_UnsupportedPattern_ReturnsNullPointer()
+    {
+        var button = new Button { Content = "Hi" };
+        var peer = button.GetAutomationPeer();
+        Assert.NotNull(peer);
+        var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer!, nint.Zero);
+
+        nint pSimple = UiaComInterop.ProviderToPointer(provider);
+        try
+        {
+            int hr = Slot<GetPatternProviderFn>(pSimple, Slot_GetPatternProvider)(
+                pSimple, UiaConstants.UIA_TextPatternId, out nint pPattern);
+            Assert.Equal(0, hr);
+            Assert.Equal(nint.Zero, pPattern);
+        }
+        finally
+        {
+            UiaComInterop.FreeProviderPointer(pSimple);
+        }
+    }
+
+    [Fact]
+    public unsafe void GetPatternProvider_InvalidOutPointer_ReturnsEPointer()
+    {
+        var button = new Button { Content = "Hi" };
+        var peer = button.GetAutomationPeer();
+        Assert.NotNull(peer);
+        var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer!, nint.Zero);
+
+        int hr = provider.GetPatternProvider(0x4717C4E8, (nint*)0x2492492492492493);
+
+        Assert.Equal(unchecked((int)0x80004003), hr);
+    }
+
+    [Fact]
+    public unsafe void GetPropertyValue_InvalidOutPointer_ReturnsEPointer()
+    {
+        var button = new Button { Content = "Hi" };
+        var peer = button.GetAutomationPeer();
+        Assert.NotNull(peer);
+        var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer!, nint.Zero);
+
+        int hr = provider.GetPropertyValue(UiaConstants.UIA_NamePropertyId, (UiaVariant*)0x2492492492492493);
+
+        Assert.Equal(unchecked((int)0x80004003), hr);
     }
 
     [Fact]
@@ -238,7 +321,7 @@ public class UiaComWrappersTests
         // Locks in ITextRangeProvider.FindText search direction (used by Narrator "find" and some
         // look-up tools): forward returns the first match, backward the last; a miss returns null.
         var textBox = new TextBox { Text = "ab ab ab" };
-        var peer = (Jalium.UI.Controls.Automation.TextBoxAutomationPeer)textBox.GetAutomationPeer()!;
+        var peer = (Jalium.UI.Automation.Peers.TextBoxAutomationPeer)textBox.GetAutomationPeer()!;
         var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer, nint.Zero);
         var textProvider = new UiaTextProviderWrapper((ITextProvider)peer, provider);
 
@@ -257,5 +340,80 @@ public class UiaComWrappersTests
 
         // A miss returns null rather than throwing across the COM boundary.
         Assert.Null(doc.FindText("zz", backward: 0, ignoreCase: 0));
+    }
+
+    [Theory]
+    [InlineData(30031, PatternInterface.Invoke)]
+    [InlineData(30037, PatternInterface.Selection)]
+    [InlineData(30043, PatternInterface.Value)]
+    [InlineData(30033, PatternInterface.RangeValue)]
+    [InlineData(30034, PatternInterface.Scroll)]
+    [InlineData(30035, PatternInterface.ScrollItem)]
+    [InlineData(30028, PatternInterface.ExpandCollapse)]
+    [InlineData(30041, PatternInterface.Toggle)]
+    [InlineData(30036, PatternInterface.SelectionItem)]
+    [InlineData(30040, PatternInterface.Text)]
+    public void MapAvailabilityProperty_KeysOnCanonicalSdkPropertyIds(int sdkPropertyId, PatternInterface expected)
+    {
+        // The IsXxxPatternAvailable ids are the Windows SDK values (UIAutomationClient.h). Passing the
+        // LITERAL SDK id here locks both the numeric constant and its pattern mapping in one shot: a
+        // swapped constant (e.g. Selection 30037 <-> SelectionItem 30036, or Scroll 30034 <-> ScrollItem
+        // 30035) makes the wrong PatternInterface come back and fails this test.
+        Assert.Equal(expected, UiaConstants.MapAvailabilityPropertyToPatternInterface(sdkPropertyId));
+    }
+
+    [Fact]
+    public void MapAvailabilityProperty_NonAvailabilityOrUnwrappableId_ReturnsNull()
+    {
+        // Not a pattern-availability property at all.
+        Assert.Null(UiaConstants.MapAvailabilityPropertyToPatternInterface(UiaConstants.UIA_NamePropertyId));
+
+        // Availability ids for patterns the provider cannot wrap (Dock=30027, MultipleView=30032,
+        // Table=30038, Transform=30042) must fall through to null -> VT_EMPTY, never map to some other
+        // pattern. This is the guard against the mislabeled-constant class of bug.
+        Assert.Null(UiaConstants.MapAvailabilityPropertyToPatternInterface(30027));
+        Assert.Null(UiaConstants.MapAvailabilityPropertyToPatternInterface(30032));
+        Assert.Null(UiaConstants.MapAvailabilityPropertyToPatternInterface(30038));
+        Assert.Null(UiaConstants.MapAvailabilityPropertyToPatternInterface(30042));
+    }
+
+    [Fact]
+    public void Ccw_GetPropertyValue_ReportsPatternAvailabilityAsVtBool()
+    {
+        // UIA clients gate on IsXxxPatternAvailable before calling GetPatternProvider, so these must
+        // answer VT_BOOL true/false through the real vtable slot — not VT_EMPTY. This is the end-to-end
+        // wiring the Codex suggestion asked for (Text pattern reported as available).
+        var textProvider = UiaAccessibilityBridge.GetOrCreateProvider(
+            new TextBox { Text = "hi" }.GetAutomationPeer()!, nint.Zero);
+        var buttonProvider = UiaAccessibilityBridge.GetOrCreateProvider(
+            new Button { Content = "hi" }.GetAutomationPeer()!, nint.Zero);
+
+        nint pText = UiaComInterop.ProviderToPointer(textProvider);
+        nint pButton = UiaComInterop.ProviderToPointer(buttonProvider);
+        try
+        {
+            var getText = Slot<GetPropertyValueFn>(pText, Slot_GetPropertyValue);
+            var getButton = Slot<GetPropertyValueFn>(pButton, Slot_GetPropertyValue);
+
+            // TextBox exposes the Text pattern -> IsTextPatternAvailable == VT_BOOL TRUE.
+            Assert.Equal(0, getText(pText, UiaConstants.UIA_IsTextPatternAvailablePropertyId, out UiaVariant vTextAvail));
+            Assert.Equal(UiaVariant.VT_BOOL, vTextAvail.vt);
+            Assert.Equal((short)-1, vTextAvail.boolVal);
+
+            // Button has no Text pattern -> IsTextPatternAvailable == VT_BOOL FALSE (definitive, not VT_EMPTY).
+            Assert.Equal(0, getButton(pButton, UiaConstants.UIA_IsTextPatternAvailablePropertyId, out UiaVariant vButtonText));
+            Assert.Equal(UiaVariant.VT_BOOL, vButtonText.vt);
+            Assert.Equal((short)0, vButtonText.boolVal);
+
+            // Button exposes the Invoke pattern -> IsInvokePatternAvailable == VT_BOOL TRUE.
+            Assert.Equal(0, getButton(pButton, UiaConstants.UIA_IsInvokePatternAvailablePropertyId, out UiaVariant vInvoke));
+            Assert.Equal(UiaVariant.VT_BOOL, vInvoke.vt);
+            Assert.Equal((short)-1, vInvoke.boolVal);
+        }
+        finally
+        {
+            UiaComInterop.FreeProviderPointer(pText);
+            UiaComInterop.FreeProviderPointer(pButton);
+        }
     }
 }

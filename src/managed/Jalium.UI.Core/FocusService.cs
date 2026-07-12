@@ -1,3 +1,5 @@
+using Jalium.UI.Input;
+
 namespace Jalium.UI;
 
 /// <summary>
@@ -27,7 +29,9 @@ public static class FocusService
     /// </summary>
     public static IInputElement? Focus(IInputElement? element)
     {
-        return _provider?.Focus(element);
+        var focused = _provider?.Focus(element);
+        Input.FocusManager.OnKeyboardFocusChanged(focused);
+        return focused;
     }
 
     /// <summary>
@@ -44,6 +48,15 @@ public static class FocusService
     public static bool MoveFocus(UIElement element, FocusNavigationDirection direction)
     {
         return _provider?.MoveFocus(element, direction) ?? false;
+    }
+
+    /// <summary>
+    /// Gets the element that would receive focus for a traversal request without
+    /// changing the current keyboard focus.
+    /// </summary>
+    public static DependencyObject? PredictFocus(UIElement element, FocusNavigationDirection direction)
+    {
+        return _provider?.PredictFocus(element, direction);
     }
 
     #region Routed Events
@@ -111,4 +124,7 @@ public interface IFocusProvider
     /// Moves focus from the specified element in the given direction.
     /// </summary>
     bool MoveFocus(UIElement element, FocusNavigationDirection direction);
+
+    /// <summary>Predicts the next focus target without moving focus.</summary>
+    DependencyObject? PredictFocus(UIElement element, FocusNavigationDirection direction) => null;
 }

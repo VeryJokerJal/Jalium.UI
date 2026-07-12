@@ -1,5 +1,10 @@
+using System.Collections;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
+using Jalium.UI.Automation.Peers;
 using Jalium.UI.Controls;
+using Jalium.UI.Markup;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Documents;
@@ -48,6 +53,12 @@ public sealed class FixedDocument : FrameworkContentElement, IDocumentPaginatorS
     {
         _pages = new PageContentCollection(this);
     }
+
+    /// <inheritdoc />
+    protected internal override IEnumerator LogicalChildren => _pages.GetEnumerator();
+
+    /// <inheritdoc />
+    protected override AutomationPeer? OnCreateAutomationPeer() => new DocumentAutomationPeer(this);
 }
 
 /// <summary>
@@ -94,6 +105,13 @@ public class PageContent : FrameworkElement
 {
     private FixedPage? _child;
     private Uri? _source;
+    private int _asyncRequestVersion;
+
+    /// <summary>Gets the named destinations exposed by this page.</summary>
+    public LinkTargetCollection LinkTargets { get; } = new();
+
+    /// <summary>Occurs when an asynchronous page-root request completes.</summary>
+    public event GetPageRootCompletedEventHandler? GetPageRootCompleted;
 
     /// <summary>
     /// Identifies the Source dependency property.
@@ -123,7 +141,15 @@ public class PageContent : FrameworkElement
         {
             if (_child != value)
             {
+                if (_child != null)
+                {
+                    RemoveLogicalChild(_child);
+                }
                 _child = value;
+                if (_child != null)
+                {
+                    AddLogicalChild(_child);
+                }
                 InvalidateMeasure();
             }
         }
@@ -141,6 +167,41 @@ public class PageContent : FrameworkElement
         return _child;
     }
 
+    /// <summary>Gets the page root and reports completion through <see cref="GetPageRootCompleted"/>.</summary>
+    public void GetPageRootAsync(bool forceReload)
+    {
+        var requestVersion = ++_asyncRequestVersion;
+        try
+        {
+            var result = GetPageRoot(forceReload);
+            if (requestVersion == _asyncRequestVersion)
+            {
+                GetPageRootCompleted?.Invoke(
+                    this,
+                    new GetPageRootCompletedEventArgs(result, null, cancelled: false, userState: null));
+            }
+        }
+        catch (Exception error)
+        {
+            if (requestVersion == _asyncRequestVersion)
+            {
+                GetPageRootCompleted?.Invoke(
+                    this,
+                    new GetPageRootCompletedEventArgs(null, error, cancelled: false, userState: null));
+            }
+        }
+    }
+
+    /// <summary>Cancels the currently outstanding asynchronous page-root request.</summary>
+    public void GetPageRootAsyncCancel() => _asyncRequestVersion++;
+
+    /// <summary>Reports whether an inline page child should be serialized.</summary>
+    public bool ShouldSerializeChild(XamlDesignerSerializationManager manager) => _child != null;
+
+    /// <inheritdoc />
+    protected internal override IEnumerator LogicalChildren =>
+        _child == null ? Array.Empty<object>().GetEnumerator() : new object[] { _child }.GetEnumerator();
+
     private static void OnSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var pageContent = (PageContent)d;
@@ -154,7 +215,7 @@ public class PageContent : FrameworkElement
 /// </summary>
 public class FixedPage : FrameworkElement
 {
-    private readonly List<UIElement> _children = new();
+    private readonly UIElementCollection _children;
 
     /// <summary>
     /// Identifies the PrintTicket dependency property.
@@ -220,10 +281,20 @@ public class FixedPage : FrameworkElement
         DependencyProperty.RegisterAttached("Bottom", typeof(double), typeof(FixedPage),
             new PropertyMetadata(double.NaN));
 
+    /// <summary>Identifies the navigation URI attached property.</summary>
+    public static readonly DependencyProperty NavigateUriProperty =
+        DependencyProperty.RegisterAttached("NavigateUri", typeof(Uri), typeof(FixedPage), new PropertyMetadata(null));
+
     /// <summary>
     /// Gets the collection of children.
     /// </summary>
-    public IList<UIElement> Children => _children;
+    public UIElementCollection Children => _children;
+
+    /// <summary>Initializes a new fixed-format page.</summary>
+    public FixedPage()
+    {
+        _children = new UIElementCollection(this, this);
+    }
 
     /// <summary>
     /// Gets or sets the print ticket.
@@ -312,6 +383,23 @@ public class FixedPage : FrameworkElement
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetBottom(UIElement element, double value) => element.SetValue(BottomProperty, value);
+
+    /// <summary>Gets the navigation URI associated with an element on the page.</summary>
+    public static Uri? GetNavigateUri(UIElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (Uri?)element.GetValue(NavigateUriProperty);
+    }
+
+    /// <summary>Associates a navigation URI with an element on the page.</summary>
+    public static void SetNavigateUri(UIElement element, Uri? uri)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(NavigateUriProperty, uri);
+    }
+
+    /// <inheritdoc />
+    protected internal override IEnumerator LogicalChildren => _children.GetEnumerator();
 }
 
 /// <summary>
@@ -357,6 +445,12 @@ public sealed class FixedDocumentSequence : FrameworkContentElement, IDocumentPa
     {
         _references = new DocumentReferenceCollection();
     }
+
+    /// <inheritdoc />
+    protected internal override IEnumerator LogicalChildren => _references.GetEnumerator();
+
+    /// <inheritdoc />
+    protected override AutomationPeer? OnCreateAutomationPeer() => new DocumentAutomationPeer(this);
 }
 
 /// <summary>
@@ -364,14 +458,59 @@ public sealed class FixedDocumentSequence : FrameworkContentElement, IDocumentPa
 /// </summary>
 public sealed class DocumentReferenceCollection : Collection<DocumentReference>
 {
+    /// <summary>
+    /// Occurs when the collection changes.
+    /// </summary>
+    public event NotifyCollectionChangedEventHandler? CollectionChanged;
+
+    /// <inheritdoc />
+    protected override void InsertItem(int index, DocumentReference item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        base.InsertItem(index, item);
+        CollectionChanged?.Invoke(
+            this,
+            new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, item, index));
+    }
+
+    /// <inheritdoc />
+    protected override void SetItem(int index, DocumentReference item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        var oldItem = this[index];
+        base.SetItem(index, item);
+        CollectionChanged?.Invoke(
+            this,
+            new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Replace, item, oldItem, index));
+    }
+
+    /// <inheritdoc />
+    protected override void RemoveItem(int index)
+    {
+        var item = this[index];
+        base.RemoveItem(index);
+        CollectionChanged?.Invoke(
+            this,
+            new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Remove, item, index));
+    }
+
+    /// <inheritdoc />
+    protected override void ClearItems()
+    {
+        base.ClearItems();
+        CollectionChanged?.Invoke(
+            this,
+            new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+    }
 }
 
 /// <summary>
 /// References a FixedDocument that is part of a FixedDocumentSequence.
 /// </summary>
-public class DocumentReference : FrameworkElement
+public class DocumentReference : FrameworkElement, IUriContext
 {
     private FixedDocument? _document;
+    private Uri? _baseUri;
 
     /// <summary>
     /// Identifies the Source dependency property.
@@ -389,6 +528,12 @@ public class DocumentReference : FrameworkElement
     {
         get => (Uri?)GetValue(SourceProperty);
         set => SetValue(SourceProperty, value);
+    }
+
+    Uri? IUriContext.BaseUri
+    {
+        get => _baseUri;
+        set => _baseUri = value;
     }
 
     /// <summary>
@@ -455,6 +600,14 @@ public abstract class DocumentPaginator
     public abstract DocumentPage GetPage(int pageNumber);
 
     /// <summary>
+    /// Gets the page asynchronously without an associated user state value.
+    /// </summary>
+    public virtual void GetPageAsync(int pageNumber)
+    {
+        GetPageAsync(pageNumber, null);
+    }
+
+    /// <summary>
     /// Gets the page asynchronously.
     /// </summary>
     public virtual void GetPageAsync(int pageNumber, object? userState)
@@ -478,12 +631,20 @@ public abstract class DocumentPaginator
     }
 
     /// <summary>
+    /// Computes the page count asynchronously without an associated user state value.
+    /// </summary>
+    public virtual void ComputePageCountAsync()
+    {
+        ComputePageCountAsync(null);
+    }
+
+    /// <summary>
     /// Computes the page count asynchronously.
     /// </summary>
     public virtual void ComputePageCountAsync(object? userState)
     {
         ComputePageCount();
-        OnComputePageCountCompleted(new AsyncCompletedEventArgs(null, false, userState));
+        OnComputePageCountCompleted(new System.ComponentModel.AsyncCompletedEventArgs(null, false, userState));
     }
 
     /// <summary>
@@ -494,12 +655,12 @@ public abstract class DocumentPaginator
     /// <summary>
     /// Occurs when ComputePageCountAsync completes.
     /// </summary>
-    public event AsyncCompletedEventHandler? ComputePageCountCompleted;
+    public event System.ComponentModel.AsyncCompletedEventHandler? ComputePageCountCompleted;
 
     /// <summary>
     /// Occurs when the page count changes.
     /// </summary>
-    public event EventHandler? PagesChanged;
+    public event PagesChangedEventHandler? PagesChanged;
 
     /// <summary>
     /// Raises the GetPageCompleted event.
@@ -512,7 +673,7 @@ public abstract class DocumentPaginator
     /// <summary>
     /// Raises the ComputePageCountCompleted event.
     /// </summary>
-    protected virtual void OnComputePageCountCompleted(AsyncCompletedEventArgs e)
+    protected virtual void OnComputePageCountCompleted(System.ComponentModel.AsyncCompletedEventArgs e)
     {
         ComputePageCountCompleted?.Invoke(this, e);
     }
@@ -520,7 +681,7 @@ public abstract class DocumentPaginator
     /// <summary>
     /// Raises the PagesChanged event.
     /// </summary>
-    protected virtual void OnPagesChanged(EventArgs e)
+    protected virtual void OnPagesChanged(PagesChangedEventArgs e)
     {
         PagesChanged?.Invoke(this, e);
     }
@@ -529,8 +690,14 @@ public abstract class DocumentPaginator
 /// <summary>
 /// Represents a page of a document.
 /// </summary>
-public sealed class DocumentPage
+public class DocumentPage : IDisposable
 {
+    private Visual? _visual;
+    private Size _size;
+    private Rect _bleedBox;
+    private Rect _contentBox;
+    private bool _isDisposed;
+
     /// <summary>
     /// A blank document page.
     /// </summary>
@@ -539,33 +706,36 @@ public sealed class DocumentPage
     /// <summary>
     /// Gets the visual representation of the page.
     /// </summary>
-    public Visual? Visual { get; }
+    public virtual Visual? Visual => _visual;
 
     /// <summary>
     /// Gets the size of the page.
     /// </summary>
-    public Size Size { get; }
+    public virtual Size Size => _size;
 
     /// <summary>
     /// Gets the bleed box of the page.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public Rect BleedBox { get; }
+    public virtual Rect BleedBox => _bleedBox;
 
     /// <summary>
     /// Gets the content box of the page.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public Rect ContentBox { get; }
+    public virtual Rect ContentBox => _contentBox;
+
+    /// <summary>Occurs when the page is released.</summary>
+    public event EventHandler? PageDestroyed;
 
     /// <summary>
     /// Creates a blank document page.
     /// </summary>
     public DocumentPage()
     {
-        Size = Size.Empty;
-        BleedBox = Rect.Empty;
-        ContentBox = Rect.Empty;
+        _size = Size.Empty;
+        _bleedBox = Rect.Empty;
+        _contentBox = Rect.Empty;
     }
 
     /// <summary>
@@ -573,10 +743,10 @@ public sealed class DocumentPage
     /// </summary>
     public DocumentPage(Visual visual)
     {
-        Visual = visual;
-        Size = Size.Empty;
-        BleedBox = Rect.Empty;
-        ContentBox = Rect.Empty;
+        _visual = visual;
+        _size = Size.Empty;
+        _bleedBox = Rect.Empty;
+        _contentBox = Rect.Empty;
     }
 
     /// <summary>
@@ -584,11 +754,38 @@ public sealed class DocumentPage
     /// </summary>
     public DocumentPage(Visual visual, Size pageSize, Rect bleedBox, Rect contentBox)
     {
-        Visual = visual;
-        Size = pageSize;
-        BleedBox = bleedBox;
-        ContentBox = contentBox;
+        _visual = visual;
+        _size = pageSize;
+        _bleedBox = bleedBox;
+        _contentBox = contentBox;
     }
+
+    /// <summary>Releases page resources and raises <see cref="PageDestroyed"/> once.</summary>
+    public virtual void Dispose()
+    {
+        if (_isDisposed)
+        {
+            return;
+        }
+
+        _isDisposed = true;
+        OnPageDestroyed(EventArgs.Empty);
+    }
+
+    /// <summary>Raises the <see cref="PageDestroyed"/> event.</summary>
+    protected void OnPageDestroyed(EventArgs e) => PageDestroyed?.Invoke(this, e);
+
+    /// <summary>Updates the page bleed box.</summary>
+    protected void SetBleedBox(Rect bleedBox) => _bleedBox = bleedBox;
+
+    /// <summary>Updates the page content box.</summary>
+    protected void SetContentBox(Rect contentBox) => _contentBox = contentBox;
+
+    /// <summary>Updates the page size.</summary>
+    protected void SetSize(Size size) => _size = size;
+
+    /// <summary>Updates the page visual.</summary>
+    protected void SetVisual(Visual visual) => _visual = visual;
 }
 
 /// <summary>
@@ -597,14 +794,9 @@ public sealed class DocumentPage
 public delegate void GetPageCompletedEventHandler(object sender, GetPageCompletedEventArgs e);
 
 /// <summary>
-/// Delegate for async completed events.
-/// </summary>
-public delegate void AsyncCompletedEventHandler(object sender, AsyncCompletedEventArgs e);
-
-/// <summary>
 /// Event args for GetPageCompleted event.
 /// </summary>
-public sealed class GetPageCompletedEventArgs : AsyncCompletedEventArgs
+public sealed class GetPageCompletedEventArgs : System.ComponentModel.AsyncCompletedEventArgs
 {
     /// <summary>
     /// Gets the document page.
@@ -624,37 +816,6 @@ public sealed class GetPageCompletedEventArgs : AsyncCompletedEventArgs
     {
         DocumentPage = page;
         PageNumber = pageNumber;
-    }
-}
-
-/// <summary>
-/// Event args for async completed events.
-/// </summary>
-public class AsyncCompletedEventArgs : EventArgs
-{
-    /// <summary>
-    /// Gets the error.
-    /// </summary>
-    public Exception? Error { get; }
-
-    /// <summary>
-    /// Gets whether the operation was cancelled.
-    /// </summary>
-    public bool Cancelled { get; }
-
-    /// <summary>
-    /// Gets the user state.
-    /// </summary>
-    public object? UserState { get; }
-
-    /// <summary>
-    /// Creates new AsyncCompletedEventArgs.
-    /// </summary>
-    public AsyncCompletedEventArgs(Exception? error, bool cancelled, object? userState)
-    {
-        Error = error;
-        Cancelled = cancelled;
-        UserState = userState;
     }
 }
 
@@ -758,18 +919,4 @@ internal sealed class FixedDocumentSequencePaginator : DocumentPaginator
         }
         return DocumentPage.Missing;
     }
-}
-
-/// <summary>
-/// Base class for content elements in a document.
-/// </summary>
-public class FrameworkContentElement : ContentElement
-{
-}
-
-/// <summary>
-/// Base class for content elements.
-/// </summary>
-public class ContentElement : DependencyObject
-{
 }

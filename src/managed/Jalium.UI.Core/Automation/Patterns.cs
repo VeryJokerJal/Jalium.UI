@@ -1,3 +1,5 @@
+using Jalium.UI.Automation.Peers;
+
 namespace Jalium.UI.Automation;
 
 /// <summary>

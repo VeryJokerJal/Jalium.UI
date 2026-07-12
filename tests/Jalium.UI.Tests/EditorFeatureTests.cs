@@ -374,8 +374,18 @@ public class EditorFeatureTests
         view.UpdateLayout("Segoe UI", 14);
 
         var line = doc.GetLineByNumber(1);
+        var lineText = doc.GetLineText(1);
         for (int column = 0; column <= line.Length; column++)
         {
+            // A caret cannot occupy the middle of one UTF-16 surrogate pair: DirectWrite maps
+            // both code units to the same glyph cluster boundary. Verify all valid caret stops.
+            if (column > 0
+                && column < lineText.Length
+                && char.IsSurrogatePair(lineText[column - 1], lineText[column]))
+            {
+                continue;
+            }
+
             int offset = line.Offset + column;
             Point p = view.GetPointFromOffset(offset, showLineNumbers: false);
             int roundTrip = view.GetOffsetFromPoint(p, showLineNumbers: false);

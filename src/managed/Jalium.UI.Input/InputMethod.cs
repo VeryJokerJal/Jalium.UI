@@ -3,199 +3,329 @@ using System.Runtime.CompilerServices;
 
 namespace Jalium.UI.Input;
 
-/// <summary>
-/// Provides input method editor (IME) services for text input.
-/// </summary>
-public static class InputMethod
+/// <summary>Provides dispatcher-local input method editor services.</summary>
+public partial class InputMethod : DispatcherObject
 {
-    private static IInputElement? _currentTarget;
-    private static bool _isComposing;
-    private static string _compositionString = string.Empty;
-    private static int _compositionCursor;
+    private static readonly ConditionalWeakTable<Dispatcher, InputMethod> Instances = new();
+    private static bool s_globallyEnabled = true;
 
-    #region Public Properties
+    private IInputElement? _currentTarget;
+    private bool _isComposing;
+    private string _compositionString = string.Empty;
+    private int _compositionCursor;
+    private InputMethodState _imeState = InputMethodState.Off;
+    private ImeConversionModeValues _imeConversionMode = ImeConversionModeValues.Alphanumeric;
+    private ImeSentenceModeValues _imeSentenceMode = ImeSentenceModeValues.None;
+    private InputMethodState _handwritingState = InputMethodState.Off;
+    private SpeechMode _speechMode = SpeechMode.Indeterminate;
+    private InputMethodState _microphoneState = InputMethodState.Off;
+    private InputMethodStateChangedEventHandler? _stateChanged;
 
-    /// <summary>
-    /// Gets the current IME target element.
-    /// </summary>
-    public static IInputElement? Current => _currentTarget;
-
-    /// <summary>
-    /// Gets whether IME composition is currently active.
-    /// </summary>
-    public static bool IsComposing => _isComposing;
-
-    /// <summary>
-    /// Gets the current composition string.
-    /// </summary>
-    public static string CompositionString => _compositionString;
-
-    /// <summary>
-    /// Gets the cursor position within the composition string.
-    /// </summary>
-    public static int CompositionCursor => _compositionCursor;
-
-    /// <summary>
-    /// Gets or sets whether IME is enabled for the current element.
-    /// </summary>
-    public static bool IsInputMethodEnabled { get; set; } = true;
-
-    #endregion
-
-    #region Public Methods
-
-    /// <summary>
-    /// Sets the IME target element.
-    /// </summary>
-    public static void SetTarget(IInputElement? element)
+    static InputMethod()
     {
-        if (_currentTarget != element)
+        InputMethodService.IsInputMethodEnabledResolver = static element =>
+            s_globallyEnabled &&
+            (element is not DependencyObject dependencyObject || GetIsInputMethodEnabled(dependencyObject));
+    }
+
+    private InputMethod()
+    {
+    }
+
+    /// <summary>Gets the input method associated with the current dispatcher.</summary>
+    public static InputMethod Current
+    {
+        get
         {
-            // End any active composition before switching targets
-            // to prevent stale composition state leaking to the new target
-            if (_isComposing)
-            {
-                EndComposition();
-            }
-            _currentTarget = element;
+            Dispatcher dispatcher = Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread();
+            return Instances.GetValue(dispatcher, static _ => new InputMethod());
         }
     }
 
-    /// <summary>
-    /// Starts IME composition.
-    /// </summary>
+    /// <summary>Gets the element currently receiving composition updates.</summary>
+    public static IInputElement? CurrentTarget => Current._currentTarget;
+    public static bool IsComposing => Current._isComposing;
+    public static string CompositionString => Current._compositionString;
+    public static int CompositionCursor => Current._compositionCursor;
+
+    /// <summary>Gets or sets the process-level input method switch used by native hosts.</summary>
+    public static bool IsInputMethodEnabled
+    {
+        get => s_globallyEnabled;
+        set
+        {
+            s_globallyEnabled = value;
+            if (!value && IsComposing)
+                CancelComposition();
+        }
+    }
+
+    public InputMethodState ImeState
+    {
+        get => _imeState;
+        set => SetState(ref _imeState, value, InputMethodStateType.ImeState);
+    }
+
+    public ImeConversionModeValues ImeConversionMode
+    {
+        get => _imeConversionMode;
+        set => SetState(ref _imeConversionMode, value, InputMethodStateType.ImeConversionMode);
+    }
+
+    public ImeSentenceModeValues ImeSentenceMode
+    {
+        get => _imeSentenceMode;
+        set => SetState(ref _imeSentenceMode, value, InputMethodStateType.ImeSentenceMode);
+    }
+
+    public InputMethodState HandwritingState
+    {
+        get => _handwritingState;
+        set => SetState(ref _handwritingState, value, InputMethodStateType.HandwritingState);
+    }
+
+    public SpeechMode SpeechMode
+    {
+        get => _speechMode;
+        set => SetState(ref _speechMode, value, InputMethodStateType.SpeechMode);
+    }
+
+    public InputMethodState MicrophoneState
+    {
+        get => _microphoneState;
+        set => SetState(ref _microphoneState, value, InputMethodStateType.MicrophoneState);
+    }
+
+    /// <summary>Native configuration UI is unavailable until a platform provider advertises it.</summary>
+    public bool CanShowConfigurationUI => false;
+    public bool CanShowRegisterWordUI => false;
+
+    public event InputMethodStateChangedEventHandler? StateChanged
+    {
+        add
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _stateChanged += value;
+        }
+        remove
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _stateChanged -= value;
+        }
+    }
+
+    public static event EventHandler? CompositionStarted;
+    public static event EventHandler<CompositionEventArgs>? CompositionUpdated;
+    public static event EventHandler<CompositionResultEventArgs>? CompositionEnded;
+
+    public static void SetTarget(IInputElement? element)
+    {
+        InputMethod inputMethod = Current;
+        if (ReferenceEquals(inputMethod._currentTarget, element))
+            return;
+        if (inputMethod._isComposing)
+            EndComposition();
+        inputMethod._currentTarget = element;
+        if (element is DependencyObject dependencyObject)
+            inputMethod.ApplyPreferredState(dependencyObject);
+    }
+
     public static void StartComposition()
     {
-        _isComposing = true;
-        _compositionString = string.Empty;
-        _compositionCursor = 0;
+        InputMethod inputMethod = Current;
+        if (!s_globallyEnabled ||
+            inputMethod._currentTarget is DependencyObject target &&
+            (!GetIsInputMethodEnabled(target) || GetIsInputMethodSuspended(target)))
+        {
+            return;
+        }
+        if (inputMethod._isComposing)
+            return;
+        inputMethod._isComposing = true;
+        inputMethod._compositionString = string.Empty;
+        inputMethod._compositionCursor = 0;
         CompositionStarted?.Invoke(null, EventArgs.Empty);
     }
 
-    /// <summary>
-    /// Updates the composition string.
-    /// </summary>
     public static void UpdateComposition(string text, int cursor)
     {
-        _compositionString = text;
-        _compositionCursor = cursor;
+        ArgumentNullException.ThrowIfNull(text);
+        if (cursor < 0 || cursor > text.Length)
+            throw new ArgumentOutOfRangeException(nameof(cursor));
+        InputMethod inputMethod = Current;
+        if (!inputMethod._isComposing)
+            StartComposition();
+        if (!inputMethod._isComposing)
+            return;
+        inputMethod._compositionString = text;
+        inputMethod._compositionCursor = cursor;
         CompositionUpdated?.Invoke(null, new CompositionEventArgs(text, cursor));
     }
 
-    /// <summary>
-    /// Ends IME composition with the final result.
-    /// </summary>
     public static void EndComposition(string? result = null)
     {
-        var wasComposing = _isComposing;
-        _isComposing = false;
-        _compositionString = string.Empty;
-        _compositionCursor = 0;
-
-        if (wasComposing)
-        {
-            CompositionEnded?.Invoke(null, new CompositionResultEventArgs(result));
-        }
+        InputMethod inputMethod = Current;
+        if (!inputMethod._isComposing)
+            return;
+        inputMethod._isComposing = false;
+        inputMethod._compositionString = string.Empty;
+        inputMethod._compositionCursor = 0;
+        CompositionEnded?.Invoke(null, new CompositionResultEventArgs(result));
     }
 
-    /// <summary>
-    /// Cancels the current IME composition.
-    /// </summary>
-    public static void CancelComposition()
+    public static void CancelComposition() => EndComposition(null);
+
+    public void ShowConfigureUI() => ShowConfigureUI(null!);
+    public void ShowConfigureUI(UIElement element)
     {
-        if (_isComposing)
-        {
-            EndComposition(null);
-        }
+        VerifyAccess();
+        // A platform provider may implement this in the future.  The capability property
+        // truthfully remains false and calling the WPF-compatible method is a no-op.
     }
 
-    #endregion
-
-    #region Events
-
-    /// <summary>
-    /// Occurs when IME composition starts.
-    /// </summary>
-    public static event EventHandler? CompositionStarted;
-
-    /// <summary>
-    /// Occurs when the composition string is updated.
-    /// </summary>
-    public static event EventHandler<CompositionEventArgs>? CompositionUpdated;
-
-    /// <summary>
-    /// Occurs when IME composition ends.
-    /// </summary>
-    public static event EventHandler<CompositionResultEventArgs>? CompositionEnded;
-
-    #endregion
-
-    #region Attached Properties
-
-    private sealed class InputMethodStateBag
+    public void ShowRegisterWordUI() => ShowRegisterWordUI(string.Empty);
+    public void ShowRegisterWordUI(string registeredText) => ShowRegisterWordUI(null!, registeredText);
+    public void ShowRegisterWordUI(UIElement element, string registeredText)
     {
-        public bool? IsInputMethodEnabled { get; set; }
-        public InputMethodState? PreferredImeState { get; set; }
-        public InputScope? InputScope { get; set; }
+        VerifyAccess();
     }
 
-    private static readonly ConditionalWeakTable<IInputElement, InputMethodStateBag> _stateByElement = new();
+    public static readonly DependencyProperty InputScopeProperty =
+        FrameworkElement.InputScopeProperty.AddOwner(typeof(InputMethod));
 
-    /// <summary>
-    /// Gets whether IME is enabled for the specified element.
-    /// </summary>
-    public static bool GetIsInputMethodEnabled(IInputElement element)
+    public static readonly DependencyProperty IsInputMethodEnabledProperty =
+        DependencyProperty.RegisterAttached(
+            "IsInputMethodEnabled",
+            typeof(bool),
+            typeof(InputMethod),
+            new PropertyMetadata(true));
+
+    public static readonly DependencyProperty IsInputMethodSuspendedProperty =
+        DependencyProperty.RegisterAttached(
+            "IsInputMethodSuspended",
+            typeof(bool),
+            typeof(InputMethod),
+            new PropertyMetadata(false));
+
+    public static readonly DependencyProperty PreferredImeStateProperty =
+        DependencyProperty.RegisterAttached(
+            "PreferredImeState",
+            typeof(InputMethodState),
+            typeof(InputMethod),
+            new PropertyMetadata(InputMethodState.DoNotCare));
+
+    public static readonly DependencyProperty PreferredImeConversionModeProperty =
+        DependencyProperty.RegisterAttached(
+            "PreferredImeConversionMode",
+            typeof(ImeConversionModeValues),
+            typeof(InputMethod),
+            new PropertyMetadata(ImeConversionModeValues.DoNotCare));
+
+    public static readonly DependencyProperty PreferredImeSentenceModeProperty =
+        DependencyProperty.RegisterAttached(
+            "PreferredImeSentenceMode",
+            typeof(ImeSentenceModeValues),
+            typeof(InputMethod),
+            new PropertyMetadata(ImeSentenceModeValues.DoNotCare));
+
+    public static bool GetIsInputMethodEnabled(DependencyObject target)
     {
-        return _stateByElement.TryGetValue(element, out var state) && state.IsInputMethodEnabled.HasValue
-            ? state.IsInputMethodEnabled.Value
-            : true;
+        ArgumentNullException.ThrowIfNull(target);
+        return target.GetValue(IsInputMethodEnabledProperty) is true;
     }
 
-    /// <summary>
-    /// Sets whether IME is enabled for the specified element.
-    /// </summary>
-    public static void SetIsInputMethodEnabled(IInputElement element, bool value)
+    public static void SetIsInputMethodEnabled(DependencyObject target, bool value)
     {
-        _stateByElement.GetOrCreateValue(element).IsInputMethodEnabled = value;
+        ArgumentNullException.ThrowIfNull(target);
+        target.SetValue(IsInputMethodEnabledProperty, value);
+        if (!value && ReferenceEquals(CurrentTarget, target) && IsComposing)
+            CancelComposition();
     }
 
-    /// <summary>
-    /// Gets the preferred IME state for the specified element.
-    /// </summary>
-    public static InputMethodState GetPreferredImeState(IInputElement element)
+    public static bool GetIsInputMethodSuspended(DependencyObject target)
     {
-        return _stateByElement.TryGetValue(element, out var state) && state.PreferredImeState.HasValue
-            ? state.PreferredImeState.Value
-            : InputMethodState.DoNotCare;
+        ArgumentNullException.ThrowIfNull(target);
+        return target.GetValue(IsInputMethodSuspendedProperty) is true;
     }
 
-    /// <summary>
-    /// Sets the preferred IME state for the specified element.
-    /// </summary>
-    public static void SetPreferredImeState(IInputElement element, InputMethodState value)
+    public static void SetIsInputMethodSuspended(DependencyObject target, bool value)
     {
-        _stateByElement.GetOrCreateValue(element).PreferredImeState = value;
+        ArgumentNullException.ThrowIfNull(target);
+        target.SetValue(IsInputMethodSuspendedProperty, value);
+        if (value && ReferenceEquals(CurrentTarget, target) && IsComposing)
+            CancelComposition();
     }
 
-    /// <summary>
-    /// Gets the input scope for the specified element.
-    /// </summary>
-    public static InputScope GetInputScope(IInputElement element)
+    public static InputMethodState GetPreferredImeState(DependencyObject target)
     {
-        return _stateByElement.TryGetValue(element, out var state) && state.InputScope != null
-            ? state.InputScope
-            : new InputScope();
+        ArgumentNullException.ThrowIfNull(target);
+        return (InputMethodState)target.GetValue(PreferredImeStateProperty)!;
     }
 
-    /// <summary>
-    /// Sets the input scope for the specified element.
-    /// </summary>
-    public static void SetInputScope(IInputElement element, InputScope value)
+    public static void SetPreferredImeState(DependencyObject target, InputMethodState value)
     {
-        _stateByElement.GetOrCreateValue(element).InputScope = value;
+        ArgumentNullException.ThrowIfNull(target);
+        target.SetValue(PreferredImeStateProperty, value);
     }
 
-    #endregion
+    public static ImeConversionModeValues GetPreferredImeConversionMode(DependencyObject target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        return (ImeConversionModeValues)target.GetValue(PreferredImeConversionModeProperty)!;
+    }
+
+    public static void SetPreferredImeConversionMode(DependencyObject target, ImeConversionModeValues value)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        target.SetValue(PreferredImeConversionModeProperty, value);
+    }
+
+    public static ImeSentenceModeValues GetPreferredImeSentenceMode(DependencyObject target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        return (ImeSentenceModeValues)target.GetValue(PreferredImeSentenceModeProperty)!;
+    }
+
+    public static void SetPreferredImeSentenceMode(DependencyObject target, ImeSentenceModeValues value)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        target.SetValue(PreferredImeSentenceModeProperty, value);
+    }
+
+    public static InputScope GetInputScope(DependencyObject target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        return (InputScope)target.GetValue(InputScopeProperty)!;
+    }
+
+    public static void SetInputScope(DependencyObject target, InputScope value)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(value);
+        target.SetValue(InputScopeProperty, value);
+    }
+
+    private void ApplyPreferredState(DependencyObject target)
+    {
+        InputMethodState preferredState = GetPreferredImeState(target);
+        if (preferredState != InputMethodState.DoNotCare)
+            ImeState = preferredState;
+        ImeConversionModeValues conversion = GetPreferredImeConversionMode(target);
+        if ((conversion & ImeConversionModeValues.DoNotCare) == 0)
+            ImeConversionMode = conversion;
+        ImeSentenceModeValues sentence = GetPreferredImeSentenceMode(target);
+        if ((sentence & ImeSentenceModeValues.DoNotCare) == 0)
+            ImeSentenceMode = sentence;
+    }
+
+    private void SetState<T>(ref T storage, T value, InputMethodStateType stateType) where T : struct, Enum
+    {
+        VerifyAccess();
+        if (EqualityComparer<T>.Default.Equals(storage, value))
+            return;
+        storage = value;
+        _stateChanged?.Invoke(this, new InputMethodStateChangedEventArgs(stateType));
+    }
 }
 
 /// <summary>
@@ -203,20 +333,9 @@ public static class InputMethod
 /// </summary>
 public enum InputMethodState
 {
-    /// <summary>
-    /// The IME state is not specified.
-    /// </summary>
-    DoNotCare,
-
-    /// <summary>
-    /// IME should be turned on.
-    /// </summary>
-    On,
-
-    /// <summary>
-    /// IME should be turned off.
-    /// </summary>
-    Off
+    Off = 0,
+    On = 1,
+    DoNotCare = 2,
 }
 
 /// <summary>

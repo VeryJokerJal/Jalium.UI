@@ -10,7 +10,7 @@ namespace Jalium.UI.Tests.TestHelpers;
 /// against extra interfaces (offset, clip bounds, etc.) miss by design,
 /// which keeps the visual tree on the legacy immediate-mode dispatch path.
 /// </summary>
-internal sealed class StubDrawingContext : DrawingContext
+internal sealed class StubDrawingContext : DrawingContextAdapter
 {
     public override void DrawLine(Pen pen, Point point0, Point point1) { }
     public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle) { }

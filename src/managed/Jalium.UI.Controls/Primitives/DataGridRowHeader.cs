@@ -65,7 +65,7 @@ public class DataGridRowHeader : ButtonBase
     public bool IsRowSelected
     {
         get => (bool)GetValue(IsRowSelectedProperty)!;
-        set => SetValue(IsRowSelectedProperty, value);
+        internal set => SetValue(IsRowSelectedProperty, value);
     }
 
     /// <summary>

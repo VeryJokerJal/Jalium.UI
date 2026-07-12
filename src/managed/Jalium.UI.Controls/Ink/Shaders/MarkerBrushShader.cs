@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls.Ink.Shaders;
+namespace Jalium.UI.Ink.Shaders;
 
 /// <summary>
 /// Marker brush — wide, flat, semi-transparent. Re-tracing the same

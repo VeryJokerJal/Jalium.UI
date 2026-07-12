@@ -20,6 +20,31 @@ public class DependencyObject : DispatcherObject
     private readonly Dictionary<DependencyProperty, BindingExpressionBase> _bindings = new();
     private readonly Dictionary<DependencyProperty, AnimatedPropertyValue> _animatedValues = new();
 
+    // Source-compatibility shims for Jalium's historical public Visual tree surface. They are
+    // deliberately fields (and a callable delegate field), so metadata verification sees only
+    // Visual's exact protected WPF properties/method while existing C# member syntax continues
+    // to work through the inherited members.
+    public Visual? VisualParent;
+
+    public int VisualChildrenCount;
+
+    public readonly Func<int, Visual?> GetVisualChild;
+
+    public DependencyObject()
+    {
+        GetVisualChild = GetVisualChildCompatibility;
+    }
+
+    private Visual? GetVisualChildCompatibility(int index)
+    {
+        if (this is not Visual visual)
+        {
+            throw new InvalidOperationException("The object is not a Visual.");
+        }
+
+        return visual.InternalGetVisualChild(index);
+    }
+
     /// <summary>
     /// Internal record to track animated property values.
     /// </summary>
@@ -80,6 +105,19 @@ public class DependencyObject : DispatcherObject
     private delegate bool ValueMutation();
 
     /// <summary>
+    /// Gets the cached dependency-object type descriptor for this instance.
+    /// </summary>
+    public DependencyObjectType DependencyObjectType
+        => Jalium.UI.DependencyObjectType.FromSystemType(GetType());
+
+    /// <summary>
+    /// Gets whether this dependency object can no longer be modified.
+    /// </summary>
+    public bool IsSealed => IsSealedCore;
+
+    private protected virtual bool IsSealedCore => false;
+
+    /// <summary>
     /// Gets the current effective value of a dependency property.
     /// Value precedence: Animation > Local > Binding > Default
     /// </summary>
@@ -107,12 +145,12 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     /// <param name="dp">The dependency property to read.</param>
     /// <returns>The local value, or DependencyProperty.UnsetValue if no local value is set.</returns>
-    public object ReadLocalValue(DependencyProperty dp)
+    public object? ReadLocalValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
         if (_localValues.TryGetValue(dp, out var value))
         {
-            return value ?? DependencyProperty.UnsetValue;
+            return value;
         }
         return DependencyProperty.UnsetValue;
     }
@@ -125,6 +163,12 @@ public class DependencyObject : DispatcherObject
     public void SetValue(DependencyProperty dp, object? value)
     {
         ArgumentNullException.ThrowIfNull(dp);
+        ThrowIfReadOnly(dp);
+        SetValueCore(dp, value);
+    }
+
+    private void SetValueCore(DependencyProperty dp, object? value)
+    {
         CheckSealedAccess();
         ValidateValueOrThrow(dp, value);
         MutateValue(
@@ -139,6 +183,15 @@ public class DependencyObject : DispatcherObject
     }
 
     /// <summary>
+    /// Sets a read-only dependency property through its registration key.
+    /// </summary>
+    public void SetValue(DependencyPropertyKey key, object? value)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        SetValueCore(key.DependencyProperty, value);
+    }
+
+    /// <summary>
     /// Sets the current value of a dependency property without forcing local-value precedence.
     /// </summary>
     /// <param name="dp">The dependency property to set.</param>
@@ -146,6 +199,7 @@ public class DependencyObject : DispatcherObject
     public void SetCurrentValue(DependencyProperty dp, object? value)
     {
         ArgumentNullException.ThrowIfNull(dp);
+        ThrowIfReadOnly(dp);
         CheckSealedAccess();
         ValidateValueOrThrow(dp, value);
 
@@ -174,6 +228,15 @@ public class DependencyObject : DispatcherObject
             throw new ArgumentException(
                 $"Value '{value ?? "<null>"}' is not valid for dependency property '{dp.OwnerType.Name}.{dp.Name}'.",
                 nameof(value));
+        }
+    }
+
+    private static void ThrowIfReadOnly(DependencyProperty dp)
+    {
+        if (dp.ReadOnly)
+        {
+            throw new InvalidOperationException(
+                $"'{dp.Name}' is read-only and can only be changed with its DependencyPropertyKey.");
         }
     }
 
@@ -374,12 +437,61 @@ public class DependencyObject : DispatcherObject
     public void ClearValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
+        ThrowIfReadOnly(dp);
+        ClearValueCore(dp);
+    }
+
+    private void ClearValueCore(DependencyProperty dp)
+    {
         CheckSealedAccess();
         MutateValue(
             dp,
             () => ClearLocalValueCore(dp),
             notifyBinding: false,
             allowAutoTransition: true);
+    }
+
+    /// <summary>
+    /// Clears a read-only dependency property through its registration key.
+    /// </summary>
+    public void ClearValue(DependencyPropertyKey key)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ClearValueCore(key.DependencyProperty);
+    }
+
+    /// <summary>
+    /// Returns a snapshot enumerator over locally set dependency properties.
+    /// </summary>
+    public LocalValueEnumerator GetLocalValueEnumerator()
+    {
+        var entries = _localValues
+            .Select(static pair => new LocalValueEntry(pair.Key, pair.Value))
+            .ToArray();
+        return new LocalValueEnumerator(entries);
+    }
+
+    /// <summary>
+    /// Re-evaluates a dependency property's binding and coercion.
+    /// </summary>
+    public void InvalidateProperty(DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        if (_bindings.TryGetValue(dp, out BindingExpressionBase? binding))
+        {
+            binding.UpdateTarget();
+        }
+
+        CoerceValue(dp);
+    }
+
+    /// <summary>
+    /// Determines whether a property currently has a locally serializable value.
+    /// </summary>
+    protected internal virtual bool ShouldSerializeProperty(DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        return _localValues.ContainsKey(dp);
     }
 
     /// <summary>
@@ -469,6 +581,12 @@ public class DependencyObject : DispatcherObject
                 parentForMeasure.InvalidateMeasure();
             if (fpm.AffectsParentArrange && element.VisualParent is UIElement parentForArrange)
                 parentForArrange.InvalidateArrange();
+
+            if ((fpm.AffectsParentMeasure || fpm.AffectsParentArrange)
+                && element.VisualParent is FrameworkElement frameworkParent)
+            {
+                frameworkParent.ParentLayoutInvalidated(element);
+            }
         }
 
         // Notify internal listeners (triggers, etc.)
@@ -677,7 +795,12 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
         var state = GetValueState(dp);
-        return new ValueSource(state.BaseValueSource, state.IsExpression, state.IsAnimated, state.IsCoerced);
+        return new ValueSource(
+            state.BaseValueSource,
+            state.IsExpression,
+            state.IsAnimated,
+            state.IsCoerced,
+            _currentValues.ContainsKey(dp));
     }
 
     internal bool HasValueAboveInherited(DependencyProperty dp)
@@ -806,8 +929,9 @@ public class DependencyObject : DispatcherObject
         bool isExpression = _bindings.ContainsKey(dp);
         object? effectiveValue = baseValue;
         bool isCoerced = false;
+        PropertyMetadata metadata = dp.GetMetadata(GetType());
 
-        if (dp.DefaultMetadata.CoerceValueCallback != null)
+        if (metadata.CoerceValueCallback != null)
         {
             var activeCoercions = t_activeCoercions ??= new HashSet<(DependencyObject owner, DependencyProperty property)>(CoercionKeyComparer.Instance);
             var coercionKey = (this, dp);
@@ -817,7 +941,7 @@ public class DependencyObject : DispatcherObject
             {
                 if (shouldInvokeCoerce)
                 {
-                    var coerced = dp.DefaultMetadata.CoerceValueCallback(this, effectiveValue);
+                    var coerced = metadata.CoerceValueCallback(this, effectiveValue);
                     if (forceCoerce || !Equals(coerced, effectiveValue))
                     {
                         effectiveValue = coerced;
@@ -1058,6 +1182,9 @@ public class DependencyObject : DispatcherObject
     // True 当该属性绑定了表达式（WPF 中表达式不可冻结、且 base 克隆需特殊复制）。
     internal bool HasBindingInternal(DependencyProperty dp) => _bindings.ContainsKey(dp);
 
+    internal IReadOnlyCollection<BindingExpressionBase> GetBindingExpressionsInternal() =>
+        _bindings.Values.ToArray();
+
     /// <summary>
     /// 值写入守卫钩子。基类不封闭；Freezable 冻结后重写为抛异常，使属性系统层面（而非
     /// 仅靠个别派生 setter 调用 WritePreamble）即可拒绝对冻结对象的任何写入 —— 对齐 WPF
@@ -1073,7 +1200,7 @@ public class DependencyObject : DispatcherObject
 /// <summary>
 /// Provides a static helper method for setting bindings.
 /// </summary>
-public static class BindingOperations
+internal static class LegacyBindingOperations
 {
     /// <summary>
     /// Sets a binding on a dependency property.

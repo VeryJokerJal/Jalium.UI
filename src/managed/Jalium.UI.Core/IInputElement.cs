@@ -1,3 +1,5 @@
+using Jalium.UI.Input;
+
 namespace Jalium.UI;
 
 /// <summary>
@@ -6,9 +8,24 @@ namespace Jalium.UI;
 public interface IInputElement
 {
     /// <summary>
+    /// Raises a routed event on this input element.
+    /// </summary>
+    void RaiseEvent(RoutedEventArgs e);
+
+    /// <summary>
+    /// Adds an instance handler for a routed event.
+    /// </summary>
+    void AddHandler(RoutedEvent routedEvent, Delegate handler);
+
+    /// <summary>
+    /// Removes an instance handler for a routed event.
+    /// </summary>
+    void RemoveHandler(RoutedEvent routedEvent, Delegate handler);
+
+    /// <summary>
     /// Gets a value indicating whether this element can receive focus.
     /// </summary>
-    bool Focusable { get; }
+    bool Focusable { get; set; }
 
     /// <summary>
     /// Gets a value indicating whether this element is enabled.
@@ -26,85 +43,109 @@ public interface IInputElement
     bool IsKeyboardFocusWithin { get; }
 
     /// <summary>
+    /// Gets a value indicating whether the mouse is over this element or one of its descendants.
+    /// </summary>
+    bool IsMouseOver { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether the mouse is directly over this element.
+    /// </summary>
+    bool IsMouseDirectlyOver { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether this element has mouse capture.
+    /// </summary>
+    bool IsMouseCaptured { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether the stylus is over this element or one of its descendants.
+    /// </summary>
+    bool IsStylusOver { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether the stylus is directly over this element.
+    /// </summary>
+    bool IsStylusDirectlyOver { get; }
+
+    /// <summary>
+    /// Gets a value indicating whether this element has stylus capture.
+    /// </summary>
+    bool IsStylusCaptured { get; }
+
+    /// <summary>
     /// Attempts to set focus to this element.
     /// </summary>
     /// <returns>True if focus was set; otherwise, false.</returns>
     bool Focus();
-}
-
-/// <summary>
-/// Specifies the direction of focus navigation.
-/// </summary>
-public enum FocusNavigationDirection
-{
-    /// <summary>
-    /// Move to the next element in the tab order.
-    /// </summary>
-    Next,
 
     /// <summary>
-    /// Move to the previous element in the tab order.
+    /// Captures the mouse to this element.
     /// </summary>
-    Previous,
+    bool CaptureMouse();
 
     /// <summary>
-    /// Move to the first element.
+    /// Releases mouse capture from this element.
     /// </summary>
-    First,
+    void ReleaseMouseCapture();
 
     /// <summary>
-    /// Move to the last element.
+    /// Captures the current stylus to this element.
     /// </summary>
-    Last,
+    bool CaptureStylus();
 
     /// <summary>
-    /// Move to the element on the left.
+    /// Releases stylus capture from this element.
     /// </summary>
-    Left,
+    void ReleaseStylusCapture();
 
-    /// <summary>
-    /// Move to the element on the right.
-    /// </summary>
-    Right,
+    event Input.MouseButtonEventHandler PreviewMouseLeftButtonDown;
+    event Input.MouseButtonEventHandler MouseLeftButtonDown;
+    event Input.MouseButtonEventHandler PreviewMouseLeftButtonUp;
+    event Input.MouseButtonEventHandler MouseLeftButtonUp;
+    event Input.MouseButtonEventHandler PreviewMouseRightButtonDown;
+    event Input.MouseButtonEventHandler MouseRightButtonDown;
+    event Input.MouseButtonEventHandler PreviewMouseRightButtonUp;
+    event Input.MouseButtonEventHandler MouseRightButtonUp;
+    event Input.MouseEventHandler PreviewMouseMove;
+    event Input.MouseEventHandler MouseMove;
+    event Input.MouseWheelEventHandler PreviewMouseWheel;
+    event Input.MouseWheelEventHandler MouseWheel;
+    event Input.MouseEventHandler MouseEnter;
+    event Input.MouseEventHandler MouseLeave;
+    event Input.MouseEventHandler GotMouseCapture;
+    event Input.MouseEventHandler LostMouseCapture;
 
-    /// <summary>
-    /// Move to the element above.
-    /// </summary>
-    Up,
+    event Input.KeyEventHandler PreviewKeyDown;
+    event Input.KeyEventHandler KeyDown;
+    event Input.KeyEventHandler PreviewKeyUp;
+    event Input.KeyEventHandler KeyUp;
+    event KeyboardFocusChangedEventHandler PreviewGotKeyboardFocus;
+    event KeyboardFocusChangedEventHandler GotKeyboardFocus;
+    event KeyboardFocusChangedEventHandler PreviewLostKeyboardFocus;
+    event KeyboardFocusChangedEventHandler LostKeyboardFocus;
 
-    /// <summary>
-    /// Move to the element below.
-    /// </summary>
-    Down
-}
-
-/// <summary>
-/// Delegate for keyboard focus changed event handlers.
-/// </summary>
-public delegate void KeyboardFocusChangedEventHandler(object sender, KeyboardFocusChangedEventArgs e);
-
-/// <summary>
-/// Provides data for keyboard focus changed events.
-/// </summary>
-public sealed class KeyboardFocusChangedEventArgs : RoutedEventArgs
-{
-    /// <summary>
-    /// Gets the element that previously had keyboard focus.
-    /// </summary>
-    public IInputElement? OldFocus { get; }
-
-    /// <summary>
-    /// Gets the element that now has keyboard focus.
-    /// </summary>
-    public IInputElement? NewFocus { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="KeyboardFocusChangedEventArgs"/> class.
-    /// </summary>
-    public KeyboardFocusChangedEventArgs(RoutedEvent routedEvent, IInputElement? oldFocus, IInputElement? newFocus)
-        : base(routedEvent)
-    {
-        OldFocus = oldFocus;
-        NewFocus = newFocus;
-    }
+    event StylusEventHandler GotStylusCapture;
+    event StylusEventHandler LostStylusCapture;
+    event StylusButtonEventHandler PreviewStylusButtonDown;
+    event StylusButtonEventHandler PreviewStylusButtonUp;
+    event StylusDownEventHandler PreviewStylusDown;
+    event StylusEventHandler PreviewStylusInAirMove;
+    event StylusEventHandler PreviewStylusInRange;
+    event StylusEventHandler PreviewStylusMove;
+    event StylusEventHandler PreviewStylusOutOfRange;
+    event StylusSystemGestureEventHandler PreviewStylusSystemGesture;
+    event StylusEventHandler PreviewStylusUp;
+    event TextCompositionEventHandler PreviewTextInput;
+    event StylusButtonEventHandler StylusButtonDown;
+    event StylusButtonEventHandler StylusButtonUp;
+    event StylusDownEventHandler StylusDown;
+    event StylusEventHandler StylusEnter;
+    event StylusEventHandler StylusInAirMove;
+    event StylusEventHandler StylusInRange;
+    event StylusEventHandler StylusLeave;
+    event StylusEventHandler StylusMove;
+    event StylusEventHandler StylusOutOfRange;
+    event StylusSystemGestureEventHandler StylusSystemGesture;
+    event StylusEventHandler StylusUp;
+    event TextCompositionEventHandler TextInput;
 }

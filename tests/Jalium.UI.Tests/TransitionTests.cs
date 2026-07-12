@@ -5,7 +5,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
-using AnimationDuration = Jalium.UI.Media.Animation.Duration;
+using AnimationDuration = Jalium.UI.Duration;
 
 namespace Jalium.UI.Tests;
 
@@ -366,6 +366,7 @@ public class TransitionTests
         {
             Width = 120,
             Height = 24,
+            Maximum = 100,
             TransitionProperty = "Value"
         };
 
@@ -391,6 +392,7 @@ public class TransitionTests
         {
             Width = 120,
             Height = 24,
+            Maximum = 100,
             TransitionProperty = "Value"
         };
 

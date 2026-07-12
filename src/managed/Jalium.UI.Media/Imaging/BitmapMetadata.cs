@@ -3,9 +3,11 @@ namespace Jalium.UI.Media.Imaging;
 /// <summary>
 /// Provides support for reading and writing metadata to and from a bitmap image.
 /// </summary>
-public class BitmapMetadata
+public class BitmapMetadata : BitmapMetadataBase, IEnumerable<string>
 {
     private readonly Dictionary<string, object?> _metadata = new();
+
+    internal IEnumerable<KeyValuePair<string, object?>> Queries => _metadata;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="BitmapMetadata"/> class.
@@ -32,9 +34,9 @@ public class BitmapMetadata
     /// <summary>
     /// Gets or sets the author of the image.
     /// </summary>
-    public IReadOnlyCollection<string>? Author
+    public System.Collections.ObjectModel.ReadOnlyCollection<string>? Author
     {
-        get => GetQuery("/app:Author") as IReadOnlyCollection<string>;
+        get => GetQuery("/app:Author") as System.Collections.ObjectModel.ReadOnlyCollection<string>;
         set => SetQuery("/app:Author", value);
     }
 
@@ -86,9 +88,9 @@ public class BitmapMetadata
     /// <summary>
     /// Gets or sets the keywords for the image.
     /// </summary>
-    public IReadOnlyCollection<string>? Keywords
+    public System.Collections.ObjectModel.ReadOnlyCollection<string>? Keywords
     {
-        get => GetQuery("/app:Keywords") as IReadOnlyCollection<string>;
+        get => GetQuery("/app:Keywords") as System.Collections.ObjectModel.ReadOnlyCollection<string>;
         set => SetQuery("/app:Keywords", value);
     }
 
@@ -122,20 +124,33 @@ public class BitmapMetadata
     /// <summary>
     /// Gets a value indicating whether the metadata is read-only.
     /// </summary>
-    public bool IsReadOnly => false;
+    public bool IsReadOnly => IsFrozen;
 
     /// <summary>
     /// Gets a value indicating whether the metadata is a fixed size.
     /// </summary>
     public bool IsFixedSize => false;
 
+    /// <summary>Gets the metadata query location represented by this object.</summary>
+    public string Location => GetQuery("/app:Location") as string ?? string.Empty;
+
     /// <summary>
     /// Gets a metadata query reader that can query metadata from the bitmap.
     /// </summary>
     public object? GetQuery(string query)
     {
+        ArgumentException.ThrowIfNullOrEmpty(query);
+        ReadPreamble();
         _metadata.TryGetValue(query, out var value);
         return value;
+    }
+
+    /// <summary>Determines whether a metadata query exists.</summary>
+    public bool ContainsQuery(string query)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(query);
+        ReadPreamble();
+        return _metadata.ContainsKey(query);
     }
 
     /// <summary>
@@ -143,7 +158,10 @@ public class BitmapMetadata
     /// </summary>
     public void SetQuery(string query, object? value)
     {
+        ArgumentException.ThrowIfNullOrEmpty(query);
+        WritePreamble();
         _metadata[query] = value;
+        WritePostscript();
     }
 
     /// <summary>
@@ -151,19 +169,72 @@ public class BitmapMetadata
     /// </summary>
     public void RemoveQuery(string query)
     {
-        _metadata.Remove(query);
+        ArgumentException.ThrowIfNullOrEmpty(query);
+        WritePreamble();
+        if (_metadata.Remove(query))
+        {
+            WritePostscript();
+        }
     }
 
     /// <summary>
     /// Returns a deep copy of this metadata.
     /// </summary>
-    public BitmapMetadata Clone()
+    public override BitmapMetadata Clone() => (BitmapMetadata)base.Clone();
+
+    /// <summary>Returns a modifiable deep copy using current property values.</summary>
+    public override BitmapMetadata CloneCurrentValue() => (BitmapMetadata)base.CloneCurrentValue();
+
+    /// <inheritdoc />
+    protected override Freezable CreateInstanceCore() => new BitmapMetadata(Format);
+
+    /// <inheritdoc />
+    protected override void CloneCore(Freezable sourceFreezable)
     {
-        var clone = new BitmapMetadata(Format);
-        foreach (var kvp in _metadata)
+        base.CloneCore(sourceFreezable);
+        CopyQueries((BitmapMetadata)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void CloneCurrentValueCore(Freezable sourceFreezable)
+    {
+        base.CloneCurrentValueCore(sourceFreezable);
+        CopyQueries((BitmapMetadata)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void GetAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetAsFrozenCore(sourceFreezable);
+        CopyQueries((BitmapMetadata)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetCurrentValueAsFrozenCore(sourceFreezable);
+        CopyQueries((BitmapMetadata)sourceFreezable);
+    }
+
+    IEnumerator<string> IEnumerable<string>.GetEnumerator()
+    {
+        ReadPreamble();
+        return _metadata.Keys.ToList().GetEnumerator();
+    }
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() =>
+        ((IEnumerable<string>)this).GetEnumerator();
+
+    private void CopyQueries(BitmapMetadata source)
+    {
+        _metadata.Clear();
+        foreach ((string query, object? value) in source._metadata)
         {
-            clone._metadata[kvp.Key] = kvp.Value;
+            _metadata[query] = value switch
+            {
+                ICloneable cloneable => cloneable.Clone(),
+                _ => value,
+            };
         }
-        return clone;
     }
 }

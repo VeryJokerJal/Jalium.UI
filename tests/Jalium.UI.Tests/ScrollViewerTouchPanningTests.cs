@@ -131,6 +131,8 @@ public class ScrollViewerTouchPanningTests
         SetPrivateField(viewer, "_viewportHeight", viewportHeight);
         SetPrivateField(viewer, "_horizontalOffset", horizontalOffset);
         SetPrivateField(viewer, "_verticalOffset", verticalOffset);
+        SetPrivateField(viewer, "_requestedHorizontalOffset", horizontalOffset);
+        SetPrivateField(viewer, "_requestedVerticalOffset", verticalOffset);
         SetPrivateField(viewer, "_smoothTargetX", horizontalOffset);
         SetPrivateField(viewer, "_smoothTargetY", verticalOffset);
         return viewer;

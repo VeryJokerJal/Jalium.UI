@@ -1,10 +1,38 @@
+using System.Collections.ObjectModel;
+using Jalium.UI.Input;
+
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Provides an abstract base class for document viewing controls.
 /// </summary>
-public abstract class DocumentViewerBase : Control
+public abstract class DocumentViewerBase : Control, Jalium.UI.Markup.IAddChild, IServiceProvider
 {
+    private ReadOnlyCollection<DocumentPageView> _pageViews = EmptyPageViews;
+
+    /// <summary>
+    /// Initializes the routed command surface shared by paginated viewers.
+    /// </summary>
+    protected DocumentViewerBase()
+    {
+        AddCommandBinding(NavigationCommands.FirstPage, static viewer => viewer.OnFirstPageCommand(), static viewer => viewer.PageCount > 0);
+        AddCommandBinding(NavigationCommands.LastPage, static viewer => viewer.OnLastPageCommand(), static viewer => viewer.PageCount > 0);
+        AddCommandBinding(NavigationCommands.PreviousPage, static viewer => viewer.OnPreviousPageCommand(), static viewer => viewer.CanGoToPreviousPage);
+        AddCommandBinding(NavigationCommands.NextPage, static viewer => viewer.OnNextPageCommand(), static viewer => viewer.CanGoToNextPage);
+        CommandBindings.Add(new CommandBinding(
+            NavigationCommands.GoToPage,
+            (_, args) =>
+            {
+                if (TryGetPageNumber(args.Parameter, out var pageNumber))
+                {
+                    OnGoToPageCommand(pageNumber);
+                }
+            },
+            (_, args) => args.CanExecute = TryGetPageNumber(args.Parameter, out var pageNumber) && CanGoToPage(pageNumber)));
+        AddCommandBinding(ApplicationCommands.Print, static viewer => viewer.OnPrintCommand(), static viewer => viewer.Document != null && viewer.PageCount > 0);
+        AddCommandBinding(ApplicationCommands.CancelPrint, static viewer => viewer.OnCancelPrintCommand(), static viewer => viewer.IsPrintInProgress);
+    }
+
     #region Dependency Properties
 
     /// <summary>
@@ -89,10 +117,19 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Identifies the MasterPageNumber dependency property.
     /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty MasterPageNumberProperty =
-        DependencyProperty.Register(nameof(MasterPageNumber), typeof(int), typeof(DocumentViewerBase),
+    protected static readonly DependencyPropertyKey MasterPageNumberPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(MasterPageNumber), typeof(int), typeof(DocumentViewerBase),
             new PropertyMetadata(0, OnMasterPageNumberChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    public static readonly DependencyProperty MasterPageNumberProperty = MasterPageNumberPropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Identifies the attached property used to designate the master page view.
+    /// </summary>
+    public static readonly DependencyProperty IsMasterPageProperty =
+        DependencyProperty.RegisterAttached("IsMasterPage", typeof(bool), typeof(DocumentViewerBase),
+            new PropertyMetadata(false));
 
     #endregion
 
@@ -152,13 +189,13 @@ public abstract class DocumentViewerBase : Control
     /// Gets a value indicating whether navigation to the next page is possible.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool CanGoToNextPage => (bool)GetValue(CanGoToNextPageProperty)!;
+    public virtual bool CanGoToNextPage => (bool)GetValue(CanGoToNextPageProperty)!;
 
     /// <summary>
     /// Gets a value indicating whether navigation to the previous page is possible.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool CanGoToPreviousPage => (bool)GetValue(CanGoToPreviousPageProperty)!;
+    public virtual bool CanGoToPreviousPage => (bool)GetValue(CanGoToPreviousPageProperty)!;
 
     /// <summary>
     /// Gets the total page count.
@@ -167,14 +204,18 @@ public abstract class DocumentViewerBase : Control
     public int PageCount => (int)GetValue(PageCountProperty)!;
 
     /// <summary>
-    /// Gets or sets the current master page number.
+    /// Gets the current master page number.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public int MasterPageNumber
-    {
-        get => (int)GetValue(MasterPageNumberProperty)!;
-        set => SetValue(MasterPageNumberProperty, value);
-    }
+    public virtual int MasterPageNumber => (int)GetValue(MasterPageNumberProperty)!;
+
+    /// <summary>
+    /// Gets the page views that currently participate in document presentation.
+    /// </summary>
+#pragma warning disable CS3021 // WPF exposes this attribute even when the containing assembly has no CLSCompliant attribute.
+    [CLSCompliant(false)]
+    public ReadOnlyCollection<DocumentPageView> PageViews => _pageViews;
+#pragma warning restore CS3021
 
     #endregion
 
@@ -183,56 +224,91 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Navigates to the first page.
     /// </summary>
-    public void FirstPage()
-    {
-        if (PageCount > 0)
-        {
-            MasterPageNumber = 1;
-        }
-    }
+    public void FirstPage() => OnFirstPageCommand();
 
     /// <summary>
     /// Navigates to the last page.
     /// </summary>
-    public void LastPage()
-    {
-        if (PageCount > 0)
-        {
-            MasterPageNumber = PageCount;
-        }
-    }
+    public void LastPage() => OnLastPageCommand();
 
     /// <summary>
     /// Navigates to the next page.
     /// </summary>
-    public void NextPage()
-    {
-        if (CanGoToNextPage)
-        {
-            MasterPageNumber++;
-        }
-    }
+    public void NextPage() => OnNextPageCommand();
 
     /// <summary>
     /// Navigates to the previous page.
     /// </summary>
-    public void PreviousPage()
-    {
-        if (CanGoToPreviousPage)
-        {
-            MasterPageNumber--;
-        }
-    }
+    public void PreviousPage() => OnPreviousPageCommand();
 
     /// <summary>
     /// Navigates to the specified page.
     /// </summary>
     /// <param name="pageNumber">The page number to navigate to.</param>
-    public void GoToPage(int pageNumber)
+    public void GoToPage(int pageNumber) => OnGoToPageCommand(pageNumber);
+
+    /// <summary>
+    /// Returns whether the one-based page number can be navigated to.
+    /// </summary>
+    public virtual bool CanGoToPage(int pageNumber)
     {
-        if (pageNumber >= 1 && pageNumber <= PageCount)
+        var paginator = Document?.DocumentPaginator;
+        return (pageNumber > 0 && pageNumber <= PageCount) ||
+            (paginator != null && pageNumber == PageCount + 1 && !paginator.IsPageCountValid);
+    }
+
+    /// <summary>
+    /// Invokes the print command.
+    /// </summary>
+    public void Print() => OnPrintCommand();
+
+    /// <summary>
+    /// Cancels the active print operation.
+    /// </summary>
+    public void CancelPrint() => OnCancelPrintCommand();
+
+    /// <summary>Handles the first-page command.</summary>
+    protected virtual void OnFirstPageCommand()
+    {
+        if (PageCount > 0)
         {
-            MasterPageNumber = pageNumber;
+            SetMasterPageNumber(1);
+        }
+    }
+
+    /// <summary>Handles the last-page command.</summary>
+    protected virtual void OnLastPageCommand()
+    {
+        if (PageCount > 0)
+        {
+            SetMasterPageNumber(PageCount);
+        }
+    }
+
+    /// <summary>Handles the next-page command.</summary>
+    protected virtual void OnNextPageCommand()
+    {
+        if (CanGoToNextPage)
+        {
+            SetMasterPageNumber(MasterPageNumber + 1);
+        }
+    }
+
+    /// <summary>Handles the previous-page command.</summary>
+    protected virtual void OnPreviousPageCommand()
+    {
+        if (CanGoToPreviousPage)
+        {
+            SetMasterPageNumber(MasterPageNumber - 1);
+        }
+    }
+
+    /// <summary>Handles a request to navigate to a one-based page number.</summary>
+    protected virtual void OnGoToPageCommand(int pageNumber)
+    {
+        if (CanGoToPage(pageNumber))
+        {
+            SetMasterPageNumber(pageNumber);
         }
     }
 
@@ -256,21 +332,6 @@ public abstract class DocumentViewerBase : Control
         Zoom = Math.Max(MinZoom, Zoom - ZoomIncrement);
     }
 
-    /// <summary>
-    /// Fits the document to the window width.
-    /// </summary>
-    public abstract void FitToWidth();
-
-    /// <summary>
-    /// Fits the document to the window height.
-    /// </summary>
-    public abstract void FitToHeight();
-
-    /// <summary>
-    /// Fits the maximum amount of the document in the view.
-    /// </summary>
-    public abstract void FitToMaxPagesAcross();
-
     #endregion
 
     #region Property Changed Callbacks
@@ -289,7 +350,9 @@ public abstract class DocumentViewerBase : Control
     protected virtual void OnDocumentChanged()
     {
         UpdatePageCount();
+        SetMasterPageNumber(PageCount > 0 ? Math.Clamp(MasterPageNumber, 1, PageCount) : 0);
         UpdateNavigationState();
+        InvalidatePageViews();
         InvalidateMeasure();
     }
 
@@ -327,17 +390,206 @@ public abstract class DocumentViewerBase : Control
         InvalidateVisual();
     }
 
+    /// <summary>
+    /// Raises <see cref="PageViewsChanged"/> after the active page-view collection changes.
+    /// </summary>
+    protected virtual void OnPageViewsChanged()
+    {
+        PageViewsChanged?.Invoke(this, EventArgs.Empty);
+        OnMasterPageNumberChanged();
+    }
+
+    /// <summary>
+    /// Performs the default print operation for the current paginator.
+    /// </summary>
+    protected virtual void OnPrintCommand()
+    {
+        if (Document == null || PageCount == 0 || IsPrintInProgress)
+        {
+            return;
+        }
+
+        IsPrintInProgress = true;
+        try
+        {
+            FlowDocumentViewerSupport.Print(Document.DocumentPaginator, Math.Max(1, MasterPageNumber));
+        }
+        finally
+        {
+            IsPrintInProgress = false;
+            CommandManager.InvalidateRequerySuggested();
+        }
+    }
+
+    /// <summary>
+    /// Cancels the active print operation when the platform print pipeline supports cancellation.
+    /// </summary>
+    protected virtual void OnCancelPrintCommand()
+    {
+        FlowDocumentViewerSupport.CancelPrint();
+        IsPrintInProgress = false;
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    /// <summary>
+    /// Handles a request to bring an element on the specified one-based page into view.
+    /// The base implementation navigates to that page.
+    /// </summary>
+    protected virtual void OnBringIntoView(DependencyObject element, Rect rect, int pageNumber)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        OnGoToPageCommand(pageNumber);
+    }
+
+    /// <summary>
+    /// Gets the page views currently displayed by the viewer.
+    /// </summary>
+    protected virtual ReadOnlyCollection<DocumentPageView> GetPageViewsCollection(out bool changed)
+    {
+        changed = false;
+        return EmptyPageViews;
+    }
+
+    /// <summary>
+    /// Re-evaluates and publishes the current page-view collection.
+    /// </summary>
+    protected void InvalidatePageViews()
+    {
+        var pageViews = GetPageViewsCollection(out var changed) ?? EmptyPageViews;
+        if (changed || !ReferenceEquals(pageViews, _pageViews))
+        {
+            _pageViews = pageViews;
+            var paginator = Document?.DocumentPaginator;
+            foreach (var pageView in _pageViews)
+            {
+                pageView.DocumentPaginator = paginator;
+            }
+            OnPageViewsChanged();
+        }
+
+        InvalidateMeasure();
+    }
+
+    /// <summary>
+    /// Returns the page view explicitly marked as master, or the first active page view.
+    /// </summary>
+    protected DocumentPageView? GetMasterPageView()
+    {
+        foreach (var pageView in _pageViews)
+        {
+            if (GetIsMasterPage(pageView))
+            {
+                return pageView;
+            }
+        }
+
+        return _pageViews.Count > 0 ? _pageViews[0] : null;
+    }
+
+    /// <summary>
+    /// Gets the attached master-page marker.
+    /// </summary>
+    public static bool GetIsMasterPage(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (bool)(element.GetValue(IsMasterPageProperty) ?? false);
+    }
+
+    /// <summary>
+    /// Sets the attached master-page marker.
+    /// </summary>
+    public static void SetIsMasterPage(DependencyObject element, bool value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(IsMasterPageProperty, value);
+    }
+
+    /// <summary>
+    /// Occurs when <see cref="PageViews"/> is replaced.
+    /// </summary>
+    public event EventHandler? PageViewsChanged;
+
+    /// <summary>
+    /// Updates the read-only master-page dependency property for derived viewers.
+    /// </summary>
+    protected void SetMasterPageNumber(int value) => SetValue(MasterPageNumberPropertyKey, value);
+
     private void UpdatePageCount()
     {
         var paginator = Document?.DocumentPaginator;
         var count = paginator?.PageCount ?? 0;
-        SetValue(PageCountPropertyKey.DependencyProperty, count);
+        SetValue(PageCountPropertyKey, count);
     }
 
     private void UpdateNavigationState()
     {
-        SetValue(CanGoToPreviousPagePropertyKey.DependencyProperty, MasterPageNumber > 1);
-        SetValue(CanGoToNextPagePropertyKey.DependencyProperty, MasterPageNumber < PageCount);
+        SetValue(CanGoToPreviousPagePropertyKey, MasterPageNumber > 1);
+        SetValue(CanGoToNextPagePropertyKey, MasterPageNumber < PageCount);
+    }
+
+    private static ReadOnlyCollection<DocumentPageView> EmptyPageViews { get; } =
+        new(Array.Empty<DocumentPageView>());
+
+    internal bool IsPrintInProgress { get; private set; }
+
+    private void AddCommandBinding(RoutedUICommand command, Action<DocumentViewerBase> execute, Predicate<DocumentViewerBase> canExecute)
+    {
+        CommandBindings.Add(new CommandBinding(
+            command,
+            (_, _) => execute(this),
+            (_, args) => args.CanExecute = canExecute(this)));
+    }
+
+    private static bool TryGetPageNumber(object? parameter, out int pageNumber)
+    {
+        if (parameter is int value)
+        {
+            pageNumber = value;
+            return true;
+        }
+
+        return int.TryParse(parameter?.ToString(), out pageNumber);
+    }
+
+    void Jalium.UI.Markup.IAddChild.AddChild(object value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (Document != null)
+        {
+            throw new ArgumentException("DocumentViewerBase accepts only one document child.", nameof(value));
+        }
+
+        if (value is not IDocumentPaginatorSource document)
+        {
+            throw new ArgumentException(
+                $"Document children must implement {nameof(IDocumentPaginatorSource)}.", nameof(value));
+        }
+
+        Document = document;
+    }
+
+    void Jalium.UI.Markup.IAddChild.AddText(string text)
+    {
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            throw new ArgumentException("DocumentViewerBase does not accept literal text children.", nameof(text));
+        }
+    }
+
+    object? IServiceProvider.GetService(Type serviceType)
+    {
+        ArgumentNullException.ThrowIfNull(serviceType);
+        if (serviceType == typeof(IDocumentPaginatorSource))
+        {
+            return Document;
+        }
+
+        if (serviceType == typeof(DocumentPaginator))
+        {
+            return Document?.DocumentPaginator;
+        }
+
+        return serviceType.IsInstanceOfType(this) ? this : null;
     }
 
     #endregion

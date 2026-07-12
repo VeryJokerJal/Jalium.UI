@@ -6,10 +6,12 @@ namespace Jalium.UI.Markup;
 internal static class GridDefinitionParser
 {
     public static RowDefinitionCollection ParseRowDefinitions(string value) =>
-        ParseDefinitions<RowDefinitionCollection, RowDefinition>(value, "Height", "Width");
+        ParseDefinitions<RowDefinitionCollection, RowDefinition>(
+            new RowDefinitionCollection(), value, "Height", "Width");
 
     public static ColumnDefinitionCollection ParseColumnDefinitions(string value) =>
-        ParseDefinitions<ColumnDefinitionCollection, ColumnDefinition>(value, "Width", "Height");
+        ParseDefinitions<ColumnDefinitionCollection, ColumnDefinition>(
+            new ColumnDefinitionCollection(), value, "Width", "Height");
 
     public static bool TryResolveRowReference(Grid grid, string reference, out int index) =>
         TryResolveReference(grid.RowDefinitions, reference, out index);
@@ -18,14 +20,13 @@ internal static class GridDefinitionParser
         TryResolveReference(grid.ColumnDefinitions, reference, out index);
 
     private static TCollection ParseDefinitions<TCollection, TDefinition>(
+        TCollection collection,
         string value,
         string primaryLengthProperty,
         string alternateLengthProperty)
-        where TCollection : IList<TDefinition>, new()
+        where TCollection : IList<TDefinition>
         where TDefinition : DefinitionBase, new()
     {
-        var collection = new TCollection();
-
         foreach (var entry in SplitDefinitions(value))
         {
             var definition = new TDefinition();
@@ -229,7 +230,7 @@ internal static class GridDefinitionParser
         }
     }
 
-    private static bool TryResolveReference<TDefinition>(IReadOnlyList<TDefinition> definitions, string reference, out int index)
+    private static bool TryResolveReference<TDefinition>(IList<TDefinition> definitions, string reference, out int index)
         where TDefinition : DefinitionBase
     {
         if (int.TryParse(reference, NumberStyles.Integer, CultureInfo.InvariantCulture, out index))

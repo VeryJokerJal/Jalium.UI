@@ -1,12 +1,12 @@
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Primitives;
 
-namespace Jalium.UI.Controls.Automation;
+namespace Jalium.UI.Automation.Peers;
 
 /// <summary>
 /// Exposes ToggleButton types to UI Automation.
 /// </summary>
-public class ToggleButtonAutomationPeer : ButtonBaseAutomationPeer, IToggleProvider
+public class ToggleButtonAutomationPeer : ButtonBaseAutomationPeer, Jalium.UI.Automation.Provider.IToggleProvider
 {
     /// <summary>
     /// Initializes a new instance of the ToggleButtonAutomationPeer class.
@@ -94,7 +94,7 @@ public class ToggleButtonAutomationPeer : ButtonBaseAutomationPeer, IToggleProvi
 /// <summary>
 /// Exposes CheckBox types to UI Automation.
 /// </summary>
-public sealed class CheckBoxAutomationPeer : ToggleButtonAutomationPeer
+public partial class CheckBoxAutomationPeer : ToggleButtonAutomationPeer
 {
     /// <summary>
     /// Initializes a new instance of the CheckBoxAutomationPeer class.

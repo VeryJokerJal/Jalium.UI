@@ -20,10 +20,11 @@ public sealed class CommandBindingCollection : IList<CommandBinding>, IList
     /// <summary>
     /// Initializes a new instance of the CommandBindingCollection class with the specified bindings.
     /// </summary>
-    /// <param name="bindings">The bindings to add to the collection.</param>
-    public CommandBindingCollection(IEnumerable<CommandBinding> bindings)
+    /// <param name="commandBindings">The bindings to add to the collection.</param>
+    public CommandBindingCollection(IList commandBindings)
     {
-        _bindings.AddRange(bindings);
+        ArgumentNullException.ThrowIfNull(commandBindings);
+        AddRange(commandBindings);
     }
 
     /// <summary>
@@ -62,7 +63,36 @@ public sealed class CommandBindingCollection : IList<CommandBinding>, IList
     /// <summary>
     /// Adds a binding to the collection.
     /// </summary>
-    public void Add(CommandBinding item) => _bindings.Add(item);
+    public int Add(CommandBinding commandBinding)
+    {
+        ArgumentNullException.ThrowIfNull(commandBinding);
+        _bindings.Add(commandBinding);
+        return _bindings.Count - 1;
+    }
+
+    void ICollection<CommandBinding>.Add(CommandBinding item) => Add(item);
+
+    /// <summary>
+    /// Adds the command bindings in <paramref name="collection"/> to the end of the collection.
+    /// </summary>
+    public void AddRange(ICollection collection)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+        if (collection.Count <= 0)
+        {
+            return;
+        }
+
+        foreach (object? item in collection)
+        {
+            if (item is not CommandBinding binding)
+            {
+                throw new NotSupportedException("Collection only accepts CommandBinding instances.");
+            }
+
+            _bindings.Add(binding);
+        }
+    }
 
     int IList.Add(object? value)
     {
@@ -94,8 +124,8 @@ public sealed class CommandBindingCollection : IList<CommandBinding>, IList
     /// <summary>
     /// Returns an enumerator that iterates through the collection.
     /// </summary>
-    public IEnumerator<CommandBinding> GetEnumerator() => _bindings.GetEnumerator();
-    IEnumerator IEnumerable.GetEnumerator() => _bindings.GetEnumerator();
+    public IEnumerator GetEnumerator() => _bindings.GetEnumerator();
+    IEnumerator<CommandBinding> IEnumerable<CommandBinding>.GetEnumerator() => _bindings.GetEnumerator();
 
     /// <summary>
     /// Returns the index of the specified binding.
@@ -116,7 +146,8 @@ public sealed class CommandBindingCollection : IList<CommandBinding>, IList
     /// <summary>
     /// Removes the specified binding from the collection.
     /// </summary>
-    public bool Remove(CommandBinding item) => _bindings.Remove(item);
+    public void Remove(CommandBinding commandBinding) => _bindings.Remove(commandBinding);
+    bool ICollection<CommandBinding>.Remove(CommandBinding item) => _bindings.Remove(item);
     void IList.Remove(object? value)
     {
         if (value is CommandBinding binding)

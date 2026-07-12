@@ -1,18 +1,28 @@
 project(jalium.native.vulkan)
 
-if(DEFINED ENV{JALIUM_SDK_ROOT} AND NOT "$ENV{JALIUM_SDK_ROOT}" STREQUAL "")
-    file(TO_CMAKE_PATH "$ENV{JALIUM_SDK_ROOT}" JALIUM_SDK_ROOT)
-else()
-    get_filename_component(JALIUM_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../Jalium.SDK" ABSOLUTE)
+# Keep Linux/Android builds hermetic: stb_image is vendored beside the other
+# native single-header dependencies. Windows still uses the repository-local
+# Vulkan SDK by default because its import library is linked explicitly below.
+set(JALIUM_STB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../thirdparty/stb")
+if(NOT EXISTS "${JALIUM_STB_ROOT}/stb_image.h")
+    message(FATAL_ERROR "Vendored stb_image.h is missing: ${JALIUM_STB_ROOT}")
 endif()
 
-if(DEFINED ENV{VULKAN_SDK} AND NOT "$ENV{VULKAN_SDK}" STREQUAL "")
-    file(TO_CMAKE_PATH "$ENV{VULKAN_SDK}" JALIUM_VULKAN_SDK_ROOT)
-else()
-    set(JALIUM_VULKAN_SDK_ROOT "${JALIUM_SDK_ROOT}/VulkanSDK/1.4.341.1")
-endif()
+set(JALIUM_VULKAN_INCLUDE_DIRS "")
+if(WIN32)
+    if(DEFINED ENV{JALIUM_SDK_ROOT} AND NOT "$ENV{JALIUM_SDK_ROOT}" STREQUAL "")
+        file(TO_CMAKE_PATH "$ENV{JALIUM_SDK_ROOT}" JALIUM_SDK_ROOT)
+    else()
+        get_filename_component(JALIUM_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../Jalium.SDK" ABSOLUTE)
+    endif()
 
-set(JALIUM_STB_ROOT "${JALIUM_SDK_ROOT}/stb")
+    if(DEFINED ENV{VULKAN_SDK} AND NOT "$ENV{VULKAN_SDK}" STREQUAL "")
+        file(TO_CMAKE_PATH "$ENV{VULKAN_SDK}" JALIUM_VULKAN_SDK_ROOT)
+    else()
+        set(JALIUM_VULKAN_SDK_ROOT "${JALIUM_SDK_ROOT}/VulkanSDK/1.4.341.1")
+    endif()
+    list(APPEND JALIUM_VULKAN_INCLUDE_DIRS "${JALIUM_VULKAN_SDK_ROOT}/Include")
+endif()
 
 set(HEADERS
     include/vulkan_backend.h
@@ -50,7 +60,7 @@ target_include_directories(${PROJECT_NAME}
         $<INSTALL_INTERFACE:include>
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include
-        ${JALIUM_VULKAN_SDK_ROOT}/Include
+        ${JALIUM_VULKAN_INCLUDE_DIRS}
         ${JALIUM_STB_ROOT}
 )
 
@@ -93,11 +103,13 @@ elseif(UNIX AND NOT APPLE)
     target_include_directories(${PROJECT_NAME}
         PRIVATE
             ${X11_INCLUDE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.platform/include
     )
     target_link_libraries(${PROJECT_NAME}
         PRIVATE
             vulkan
             ${X11_LIBRARIES}
+            jalium.native.platform
             dl
     )
 endif()

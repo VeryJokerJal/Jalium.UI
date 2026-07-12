@@ -3,7 +3,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
-using static Jalium.UI.Cursors;
+using static Jalium.UI.Input.Cursors;
 
 namespace Jalium.UI.Controls;
 
@@ -13,8 +13,8 @@ namespace Jalium.UI.Controls;
 public sealed class Split : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Pane);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Pane);
 
     private static readonly SolidColorBrush s_fallbackDraggingBrush = new(ThemeColors.Accent);
     private static readonly SolidColorBrush s_fallbackHoverBrush = new(ThemeColors.DockSplitterHover);

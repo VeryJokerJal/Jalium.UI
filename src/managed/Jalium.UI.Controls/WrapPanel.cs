@@ -155,7 +155,7 @@ public class WrapPanel : Panel
         int itemsOnLine = 0;
         int lineCount = 0;
 
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             if (child is not FrameworkElement fe) continue;
 
@@ -263,7 +263,7 @@ public class WrapPanel : Panel
         var lineInfo = new List<LineInfo>();
         var currentLine = new LineInfo();
 
-        foreach (var child in Children)
+        foreach (UIElement child in Children)
         {
             if (child is not FrameworkElement fe) continue;
 

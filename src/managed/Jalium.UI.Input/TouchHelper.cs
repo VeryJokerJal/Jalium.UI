@@ -12,7 +12,7 @@ public static class TouchHelper
     /// <summary>
     /// Identifies the <c>TouchHelper.IsRippleEnabled</c> attached property.
     /// Default: false. Controls (ButtonBase / ListBoxItem / MenuItem / Hyperlink etc.)
-    /// override the default via <see cref="DependencyProperty.OverrideMetadata"/> in
+    /// override the default via <see cref="DependencyProperty.OverrideMetadata(Type, PropertyMetadata)"/> in
     /// their static constructors so any new instance opts-in automatically.
     /// </summary>
     public static readonly DependencyProperty IsRippleEnabledProperty =

@@ -49,7 +49,9 @@ public sealed class DropShadowEffect : Effect
     /// </summary>
     public static readonly DependencyProperty RenderingBiasProperty =
         DependencyProperty.Register(nameof(RenderingBias), typeof(RenderingBias), typeof(DropShadowEffect),
-            new PropertyMetadata(RenderingBias.Performance, OnPropertyChanged));
+            new PropertyMetadata(RenderingBias.Performance, OnPropertyChanged),
+            value => value is RenderingBias bias &&
+                (bias == RenderingBias.Performance || bias == RenderingBias.Quality));
 
     #endregion
 
@@ -62,7 +64,7 @@ public sealed class DropShadowEffect : Effect
     public double BlurRadius
     {
         get => (double)GetValue(BlurRadiusProperty)!;
-        set => SetValue(BlurRadiusProperty, Math.Clamp(value, 0, 100));
+        set => SetValue(BlurRadiusProperty, value);
     }
 
     /// <summary>
@@ -83,7 +85,7 @@ public sealed class DropShadowEffect : Effect
     public double Direction
     {
         get => (double)GetValue(DirectionProperty)!;
-        set => SetValue(DirectionProperty, value % 360);
+        set => SetValue(DirectionProperty, value);
     }
 
     /// <summary>
@@ -93,7 +95,7 @@ public sealed class DropShadowEffect : Effect
     public double Opacity
     {
         get => (double)GetValue(OpacityProperty)!;
-        set => SetValue(OpacityProperty, Math.Clamp(value, 0, 1));
+        set => SetValue(OpacityProperty, value);
     }
 
     /// <summary>
@@ -103,7 +105,7 @@ public sealed class DropShadowEffect : Effect
     public double ShadowDepth
     {
         get => (double)GetValue(ShadowDepthProperty)!;
-        set => SetValue(ShadowDepthProperty, Math.Max(0, value));
+        set => SetValue(ShadowDepthProperty, value);
     }
 
     /// <summary>
@@ -171,6 +173,20 @@ public sealed class DropShadowEffect : Effect
             return -Math.Sin(radians) * ShadowDepth;
         }
     }
+
+    #endregion
+
+    #region Cloning
+
+    /// <summary>Creates a modifiable clone of this effect.</summary>
+    public new DropShadowEffect Clone() => (DropShadowEffect)base.Clone();
+
+    /// <summary>Creates a modifiable clone using current property values.</summary>
+    public new DropShadowEffect CloneCurrentValue() => (DropShadowEffect)base.CloneCurrentValue();
+
+#pragma warning disable CS0628 // WPF exposes the Freezable factory override on this sealed type.
+    protected override Freezable CreateInstanceCore() => new DropShadowEffect();
+#pragma warning restore CS0628
 
     #endregion
 

@@ -143,7 +143,6 @@ public class ContentDialog : ContentControl
     private TaskCompletionSource<ContentDialogResult>? _showTaskSource;
     private Task? _closeTask;
     private ContentDialogPlacement _activePlacement;
-    private Size _previousOverlayRenderSize;
     private readonly List<(UIElement Element, bool WasEnabled)> _disabledSiblings = new();
 
     public ContentDialog()
@@ -424,37 +423,18 @@ public class ContentDialog : ContentControl
             Math.Max(0, desiredHeight + marginHeight));
     }
 
-    protected override Size ArrangeCore(Rect finalRect)
+    protected override Size ArrangeOverride(Size finalSize)
     {
-        var margin = Margin;
-        var marginWidth = margin.Left + margin.Right;
-        var marginHeight = margin.Top + margin.Bottom;
+        // Width/Height and Min/Max on ContentDialog constrain PART_DialogCard; the
+        // ContentDialog itself remains the modal overlay and must cover the entire
+        // host viewport. FrameworkElement.ArrangeCore is intentionally sealed for
+        // WPF parity, so preserve the overlay-specific contract at this virtual hook.
+        var viewport = ResolveViewportSize();
+        var overlaySize = viewport.Width > 0 && viewport.Height > 0
+            ? viewport
+            : finalSize;
 
-        var overlaySize = new Size(
-            Math.Max(0, finalRect.Width - marginWidth),
-            Math.Max(0, finalRect.Height - marginHeight));
-
-        ArrangeOverride(overlaySize);
-
-        SetVisualBounds(new Rect(
-            SnapDialogLayoutValue(finalRect.X + margin.Left),
-            SnapDialogLayoutValue(finalRect.Y + margin.Top),
-            overlaySize.Width,
-            overlaySize.Height));
-
-        // Keep the overlay render size authoritative so popup sizing does not
-        // inherit card-level Width/Height constraints.
-        _renderSize = overlaySize;
-
-        if (overlaySize != _previousOverlayRenderSize)
-        {
-            var widthChanged = overlaySize.Width != _previousOverlayRenderSize.Width;
-            var heightChanged = overlaySize.Height != _previousOverlayRenderSize.Height;
-            var sizeInfo = new SizeChangedInfo(this, _previousOverlayRenderSize, widthChanged, heightChanged);
-            _previousOverlayRenderSize = overlaySize;
-            OnSizeChanged(sizeInfo);
-        }
-
+        base.ArrangeOverride(overlaySize);
         return overlaySize;
     }
 
@@ -978,10 +958,12 @@ public class ContentDialog : ContentControl
         {
             _dialogCard.MinHeight = MinHeight;
         }
-        if (HasExplicitMaximum(MaxWidth))
-        {
-            _dialogCard.MaxWidth = ClampMaximumToAvailable(MaxWidth, availableCardWidth);
-        }
+        // The template's 560px maximum is a compact default, not a hard cap:
+        // explicit dialog Width and naturally wider content may grow up to the
+        // host viewport. A caller-supplied MaxWidth remains authoritative.
+        _dialogCard.MaxWidth = HasExplicitMaximum(MaxWidth)
+            ? ClampMaximumToAvailable(MaxWidth, availableCardWidth)
+            : availableCardWidth;
         if (HasExplicitMaximum(MaxHeight))
         {
             _dialogCard.MaxHeight = ClampMaximumToAvailable(MaxHeight, availableCardHeight);
@@ -1361,9 +1343,16 @@ internal sealed class ContentDialogOverlayHost : FrameworkElement
                 return;
             }
 
-            if (_child != null)
+            var oldChild = _child;
+            if (oldChild != null)
             {
-                RemoveVisualChild(_child);
+                // Clear the authoritative child slot first. RemoveVisualChild updates
+                // DependencyObject's compatibility count from this override while it
+                // raises parent-change teardown; leaving _child set until afterwards
+                // publishes a stale count of one and later makes layout-manager cleanup
+                // call GetVisualChild(0) on an empty host.
+                _child = null;
+                RemoveVisualChild(oldChild);
             }
 
             _child = value;
@@ -1378,9 +1367,9 @@ internal sealed class ContentDialogOverlayHost : FrameworkElement
         }
     }
 
-    public override int VisualChildrenCount => _child != null ? 1 : 0;
+    protected override int VisualChildrenCount => _child != null ? 1 : 0;
 
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index != 0 || _child == null)
         {

@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Jalium.UI.Controls;
 
 /// <summary>
@@ -80,6 +82,14 @@ public enum Modifiability
 /// </summary>
 public static class Localization
 {
+    private sealed class LocalizationValue
+    {
+        public string Value { get; set; } = string.Empty;
+    }
+
+    private static readonly ConditionalWeakTable<object, LocalizationValue> CommentsOnObjects = new();
+    private static readonly ConditionalWeakTable<object, LocalizationValue> AttributesOnObjects = new();
+
     /// <summary>
     /// Identifies the Comments attached property.
     /// </summary>
@@ -100,35 +110,71 @@ public static class Localization
     /// Gets the localization comments for the specified element.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static string GetComments(DependencyObject element)
+    public static string GetComments(object element)
     {
-        return (string)(element.GetValue(CommentsProperty) ?? string.Empty);
+        ArgumentNullException.ThrowIfNull(element);
+        return GetValue(element, CommentsProperty, CommentsOnObjects);
     }
 
     /// <summary>
     /// Sets the localization comments for the specified element.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static void SetComments(DependencyObject element, string value)
+    public static void SetComments(object element, string comments)
     {
-        element.SetValue(CommentsProperty, value);
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(comments);
+        SetValue(element, CommentsProperty, CommentsOnObjects, comments);
     }
 
     /// <summary>
     /// Gets the localization attributes for the specified element.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static string GetAttributes(DependencyObject element)
+    public static string GetAttributes(object element)
     {
-        return (string)(element.GetValue(AttributesProperty) ?? string.Empty);
+        ArgumentNullException.ThrowIfNull(element);
+        return GetValue(element, AttributesProperty, AttributesOnObjects);
     }
 
     /// <summary>
     /// Sets the localization attributes for the specified element.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static void SetAttributes(DependencyObject element, string value)
+    public static void SetAttributes(object element, string attributes)
     {
-        element.SetValue(AttributesProperty, value);
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(attributes);
+        SetValue(element, AttributesProperty, AttributesOnObjects, attributes);
+    }
+
+    private static string GetValue(
+        object element,
+        DependencyProperty property,
+        ConditionalWeakTable<object, LocalizationValue> values)
+    {
+        if (element is DependencyObject dependencyObject)
+        {
+            return (string)(dependencyObject.GetValue(property) ?? string.Empty);
+        }
+
+        return values.TryGetValue(element, out LocalizationValue? value)
+            ? value.Value
+            : string.Empty;
+    }
+
+    private static void SetValue(
+        object element,
+        DependencyProperty property,
+        ConditionalWeakTable<object, LocalizationValue> values,
+        string value)
+    {
+        if (element is DependencyObject dependencyObject)
+        {
+            dependencyObject.SetValue(property, value);
+            return;
+        }
+
+        values.GetValue(element, static _ => new LocalizationValue()).Value = value;
     }
 }

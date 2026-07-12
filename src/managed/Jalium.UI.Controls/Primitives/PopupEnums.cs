@@ -52,6 +52,23 @@ public struct CustomPopupPlacement
 
     /// <summary>Gets or sets the primary axis along which the popup adjusts when obstructed.</summary>
     public PopupPrimaryAxis PrimaryAxis { get; set; }
+
+    public static bool operator ==(CustomPopupPlacement placement1, CustomPopupPlacement placement2) =>
+        placement1.Equals(placement2);
+
+    public static bool operator !=(CustomPopupPlacement placement1, CustomPopupPlacement placement2) =>
+        !placement1.Equals(placement2);
+
+    /// <inheritdoc />
+#pragma warning disable CS8765
+    public override bool Equals(object o) =>
+        o is CustomPopupPlacement other
+        && PrimaryAxis == other.PrimaryAxis
+        && Point == other.Point;
+#pragma warning restore CS8765
+
+    /// <inheritdoc />
+    public override int GetHashCode() => PrimaryAxis.GetHashCode() ^ Point.GetHashCode();
 }
 
 /// <summary>

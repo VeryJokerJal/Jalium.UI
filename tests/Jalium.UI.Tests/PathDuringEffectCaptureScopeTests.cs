@@ -1,6 +1,7 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Media.Effects;
 using DrawingContext = Jalium.UI.Media.DrawingContext;
+using DrawingContextAdapter = Jalium.UI.Media.DrawingContextAdapter;
 using Pen = Jalium.UI.Media.Pen;
 using Brush = Jalium.UI.Media.Brush;
 using Geometry = Jalium.UI.Media.Geometry;
@@ -104,7 +105,7 @@ public class PathDuringEffectCaptureScopeTests
 
     /// <summary>Recording context modeled on EffectCaptureBoundsTests; logs the
     /// ordered sequence of capture/draw/apply events instead of any bounds.</summary>
-    private sealed class RecordingEffectContext : DrawingContext, IOffsetDrawingContext, IEffectDrawingContext
+    private sealed class RecordingEffectContext : DrawingContextAdapter, IOffsetDrawingContext, IEffectDrawingContext
     {
         public Point Offset { get; set; }
 

@@ -1,3 +1,4 @@
+using System.Collections;
 using Jalium.UI.Controls;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -8,6 +9,29 @@ namespace Jalium.UI.Controls.Primitives;
 public abstract class Selector : ItemsControl
 {
     #region Dependency Properties
+
+    internal static readonly DependencyPropertyKey IsSelectionActivePropertyKey =
+        DependencyProperty.RegisterAttachedReadOnly(
+            "IsSelectionActive",
+            typeof(bool),
+            typeof(Selector),
+            new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.Inherits));
+
+    /// <summary>
+    /// Identifies the read-only attached property that reports whether selection is active.
+    /// </summary>
+    public static readonly DependencyProperty IsSelectionActiveProperty =
+        IsSelectionActivePropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Identifies the attached property that reports whether an item is selected.
+    /// </summary>
+    public static readonly DependencyProperty IsSelectedProperty =
+        DependencyProperty.RegisterAttached(
+            "IsSelected",
+            typeof(bool),
+            typeof(Selector),
+            new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.BindsTwoWayByDefault));
 
     /// <summary>
     /// Identifies the SelectedIndex dependency property.
@@ -49,9 +73,36 @@ public abstract class Selector : ItemsControl
         DependencyProperty.Register(nameof(IsSynchronizedWithCurrentItem), typeof(bool?), typeof(Selector),
             new PropertyMetadata(null));
 
+    private static readonly DependencyPropertyKey SelectedItemsPropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            "SelectedItems",
+            typeof(IList),
+            typeof(Selector),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Internal selected-items property shared by multi-select Selector implementations.
+    /// </summary>
+    internal static readonly DependencyProperty SelectedItemsImplProperty =
+        SelectedItemsPropertyKey.DependencyProperty;
+
     #endregion
 
     #region Routed Events
+
+    /// <summary>
+    /// Identifies the attached event raised when an item becomes selected.
+    /// </summary>
+    public static readonly RoutedEvent SelectedEvent =
+        EventManager.RegisterRoutedEvent("Selected", RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler), typeof(Selector));
+
+    /// <summary>
+    /// Identifies the attached event raised when an item becomes unselected.
+    /// </summary>
+    public static readonly RoutedEvent UnselectedEvent =
+        EventManager.RegisterRoutedEvent("Unselected", RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler), typeof(Selector));
 
     /// <summary>
     /// Identifies the SelectionChanged routed event.
@@ -67,6 +118,90 @@ public abstract class Selector : ItemsControl
     {
         add => AddHandler(SelectionChangedEvent, value);
         remove => RemoveHandler(SelectionChangedEvent, value);
+    }
+
+    #endregion
+
+    #region Attached Selection Members
+
+    /// <summary>Adds a handler for the attached <see cref="SelectedEvent"/> event.</summary>
+    public static void AddSelectedHandler(DependencyObject element, RoutedEventHandler handler) =>
+        AddAttachedHandler(element, SelectedEvent, handler);
+
+    /// <summary>Removes a handler for the attached <see cref="SelectedEvent"/> event.</summary>
+    public static void RemoveSelectedHandler(DependencyObject element, RoutedEventHandler handler) =>
+        RemoveAttachedHandler(element, SelectedEvent, handler);
+
+    /// <summary>Adds a handler for the attached <see cref="UnselectedEvent"/> event.</summary>
+    public static void AddUnselectedHandler(DependencyObject element, RoutedEventHandler handler) =>
+        AddAttachedHandler(element, UnselectedEvent, handler);
+
+    /// <summary>Removes a handler for the attached <see cref="UnselectedEvent"/> event.</summary>
+    public static void RemoveUnselectedHandler(DependencyObject element, RoutedEventHandler handler) =>
+        RemoveAttachedHandler(element, UnselectedEvent, handler);
+
+    /// <summary>Gets whether selection is active for an element.</summary>
+    public static bool GetIsSelectionActive(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (bool)(element.GetValue(IsSelectionActiveProperty) ?? false);
+    }
+
+    /// <summary>Gets whether an element is selected.</summary>
+    [AttachedPropertyBrowsableForChildren]
+    public static bool GetIsSelected(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (bool)(element.GetValue(IsSelectedProperty) ?? false);
+    }
+
+    /// <summary>Sets whether an element is selected.</summary>
+    public static void SetIsSelected(DependencyObject element, bool isSelected)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(IsSelectedProperty, isSelected);
+    }
+
+    private static void AddAttachedHandler(DependencyObject element, RoutedEvent routedEvent, Delegate handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+
+        switch (element)
+        {
+            case UIElement uiElement:
+                uiElement.AddHandler(routedEvent, handler);
+                break;
+            case ContentElement contentElement:
+                contentElement.AddHandler(routedEvent, handler);
+                break;
+            case UIElement3D uiElement3D:
+                uiElement3D.AddHandler(routedEvent, handler);
+                break;
+            default:
+                throw new ArgumentException("The element must support routed events.", nameof(element));
+        }
+    }
+
+    private static void RemoveAttachedHandler(DependencyObject element, RoutedEvent routedEvent, Delegate handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+
+        switch (element)
+        {
+            case UIElement uiElement:
+                uiElement.RemoveHandler(routedEvent, handler);
+                break;
+            case ContentElement contentElement:
+                contentElement.RemoveHandler(routedEvent, handler);
+                break;
+            case UIElement3D uiElement3D:
+                uiElement3D.RemoveHandler(routedEvent, handler);
+                break;
+            default:
+                throw new ArgumentException("The element must support routed events.", nameof(element));
+        }
     }
 
     #endregion
@@ -123,6 +258,11 @@ public abstract class Selector : ItemsControl
         set => SetValue(IsSynchronizedWithCurrentItemProperty, value);
     }
 
+    /// <summary>
+    /// Gets the live selected-items collection stored in the Selector read-only property.
+    /// </summary>
+    protected IList SelectedItemsImpl => (IList)GetValue(SelectedItemsImplProperty)!;
+
     #endregion
 
     #region Fields
@@ -139,6 +279,14 @@ public abstract class Selector : ItemsControl
     protected Selector()
     {
         Focusable = true;
+        SetValue(SelectedItemsPropertyKey, new List<object>());
+    }
+
+    /// <inheritdoc />
+    protected override void OnIsKeyboardFocusWithinChanged(bool isFocusWithin)
+    {
+        base.OnIsKeyboardFocusWithinChanged(isFocusWithin);
+        SetValue(IsSelectionActivePropertyKey, isFocusWithin);
     }
 
     #endregion
@@ -213,7 +361,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Called when the selection changes.
     /// </summary>
-    protected virtual void OnSelectionChanged(SelectionChangedEventArgs e)
+    protected new virtual void OnSelectionChanged(SelectionChangedEventArgs e)
     {
         RaiseEvent(e);
     }
@@ -227,6 +375,30 @@ public abstract class Selector : ItemsControl
         var addedItems = addedItem != null ? new[] { addedItem } : Array.Empty<object>();
         var args = new SelectionChangedEventArgs(SelectionChangedEvent, removedItems, addedItems);
         OnSelectionChanged(args);
+    }
+
+    /// <summary>
+    /// Updates the three scalar selection properties as one internal selection transaction,
+    /// without raising an additional single-item <see cref="SelectionChanged"/> event.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2026:RequiresUnreferencedCode",
+        Justification = "This is the multi-selection counterpart of the existing selection property callbacks. SelectedValuePath reflection remains an opt-in consumer responsibility through PropertyAccessorRegistry.")]
+    internal void UpdateSelectionPropertiesFromBatch(int selectedIndex, object? selectedItem)
+    {
+        _isUpdatingSelection = true;
+        try
+        {
+            SetCurrentValue(SelectedIndexProperty, selectedIndex);
+            SetCurrentValue(SelectedItemProperty, selectedItem);
+            UpdateSelectedValueFromSelection(selectedItem);
+            UpdateContainerSelection();
+        }
+        finally
+        {
+            _isUpdatingSelection = false;
+        }
     }
 
     /// <summary>
@@ -488,34 +660,3 @@ public enum SelectionMode
     /// </summary>
     Extended
 }
-
-/// <summary>
-/// Provides data for the SelectionChanged event.
-/// </summary>
-public class SelectionChangedEventArgs : RoutedEventArgs
-{
-    /// <summary>
-    /// Gets the items that were unselected.
-    /// </summary>
-    public IList<object> RemovedItems { get; }
-
-    /// <summary>
-    /// Gets the items that were selected.
-    /// </summary>
-    public IList<object> AddedItems { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="SelectionChangedEventArgs"/> class.
-    /// </summary>
-    public SelectionChangedEventArgs(RoutedEvent routedEvent, IList<object> removedItems, IList<object> addedItems)
-        : base(routedEvent)
-    {
-        RemovedItems = removedItems;
-        AddedItems = addedItems;
-    }
-}
-
-/// <summary>
-/// Represents the method that handles the SelectionChanged event.
-/// </summary>
-public delegate void SelectionChangedEventHandler(object sender, SelectionChangedEventArgs e);

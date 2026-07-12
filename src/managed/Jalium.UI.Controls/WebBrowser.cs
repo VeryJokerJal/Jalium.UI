@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -11,6 +13,7 @@ public class WebBrowser : FrameworkElement
 {
     private readonly WebView _webView;
     private bool _syncingSourceFromInner;
+    private object? _objectForScripting;
 
     /// <summary>
     /// Identifies the <see cref="Source"/> dependency property.
@@ -34,6 +37,26 @@ public class WebBrowser : FrameworkElement
     /// <summary>Gets a value indicating whether the browser can navigate forward.</summary>
     public bool CanGoForward { get; private set; }
 
+    /// <summary>Gets the native browser document object, or null before initialization.</summary>
+    public object? Document => _webView.CoreWebView2;
+
+    /// <summary>Gets or sets the COM-visible host object exposed to browser script.</summary>
+    public object? ObjectForScripting
+    {
+        get => _objectForScripting;
+        set
+        {
+            if (value != null && OperatingSystem.IsWindows() &&
+                !Marshal.IsTypeVisibleFromCom(value.GetType()))
+            {
+                throw new ArgumentException("The scripting object type must be visible to COM.", nameof(value));
+            }
+
+            _objectForScripting = value;
+            ApplyObjectForScripting();
+        }
+    }
+
     /// <summary>
     /// Initializes a new instance of the <see cref="WebBrowser"/> class.
     /// </summary>
@@ -43,16 +66,80 @@ public class WebBrowser : FrameworkElement
         _webView.NavigationStarting += OnInnerNavigationStarting;
         _webView.NavigationCompleted += OnInnerNavigationCompleted;
         _webView.SourceChanged += OnInnerSourceChanged;
+        _webView.CoreWebView2InitializationCompleted += OnInnerInitializationCompleted;
 
         AddVisualChild(_webView);
         UpdateNavigationState();
     }
 
     /// <summary>Navigates to the specified URI.</summary>
-    public void Navigate(Uri source) => Source = source;
+    public void Navigate(Uri source) => Navigate(source, null!, null!, null!);
 
     /// <summary>Navigates to the specified URI string.</summary>
     public void Navigate(string source) => Navigate(new Uri(source));
+
+    /// <summary>Navigates with optional target, POST data, and additional headers.</summary>
+    public void Navigate(Uri source, string targetFrameName, byte[] postData, string additionalHeaders)
+    {
+        if (source != null && !source.IsAbsoluteUri)
+        {
+            throw new ArgumentException("Only absolute URIs are supported.", nameof(source));
+        }
+
+        if (source == null)
+        {
+            Source = null;
+            _webView.NavigateToBlank();
+            return;
+        }
+
+        if ((postData != null || !string.IsNullOrEmpty(additionalHeaders)) &&
+            _webView.TryNavigateWithRequest(source, postData, additionalHeaders))
+        {
+            _syncingSourceFromInner = true;
+            try
+            {
+                SetValue(SourceProperty, source);
+            }
+            finally
+            {
+                _syncingSourceFromInner = false;
+            }
+            return;
+        }
+
+        Source = source;
+    }
+
+    /// <summary>Navigates with optional target, POST data, and additional headers.</summary>
+    public void Navigate(string source, string targetFrameName, byte[] postData, string additionalHeaders) =>
+        Navigate(new Uri(source), targetFrameName, postData, additionalHeaders);
+
+    /// <summary>Navigates to an HTML document read from a stream.</summary>
+    public void NavigateToStream(Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        using var reader = new StreamReader(
+            stream,
+            Encoding.UTF8,
+            detectEncodingFromByteOrderMarks: true,
+            bufferSize: 1024,
+            leaveOpen: true);
+        Source = null;
+        _webView.NavigateToString(reader.ReadToEnd());
+    }
+
+    /// <summary>Navigates to an HTML document supplied as text.</summary>
+    public void NavigateToString(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            throw new ArgumentNullException(nameof(text));
+        }
+
+        Source = null;
+        _webView.NavigateToString(text);
+    }
 
     /// <summary>Navigates to the previous page in the navigation history.</summary>
     public void GoBack()
@@ -75,13 +162,30 @@ public class WebBrowser : FrameworkElement
         UpdateNavigationState();
     }
 
+    /// <summary>Reloads the current page, requesting a complete refresh when possible.</summary>
+    public void Refresh(bool noCache)
+    {
+        if (!noCache || Source == null ||
+            !_webView.TryNavigateWithRequest(
+                Source,
+                postData: null,
+                additionalHeaders: "Cache-Control: no-cache\r\nPragma: no-cache"))
+        {
+            _webView.Refresh();
+        }
+        UpdateNavigationState();
+    }
+
+    /// <summary>Executes a script function defined in the currently loaded document.</summary>
+    public object? InvokeScript(string scriptName) => InvokeScript(scriptName, null!);
+
     /// <summary>Executes a script function defined in the currently loaded document.</summary>
     public object? InvokeScript(string scriptName, params object[] args)
     {
-        if (string.IsNullOrWhiteSpace(scriptName))
-            throw new ArgumentException("Script name cannot be null or empty.", nameof(scriptName));
+        if (string.IsNullOrEmpty(scriptName))
+            throw new ArgumentNullException(nameof(scriptName));
 
-        var script = BuildScriptInvocation(scriptName, args);
+        var script = BuildScriptInvocation(scriptName, args ?? []);
         var rawResult = _webView.ExecuteScriptAsync(script).GetAwaiter().GetResult();
         return ParseScriptResult(rawResult);
     }
@@ -95,9 +199,9 @@ public class WebBrowser : FrameworkElement
     /// <summary>Occurs when the document being navigated to has finished loading.</summary>
     public event EventHandler<WebBrowserNavigatedEventArgs>? LoadCompleted;
 
-    public override int VisualChildrenCount => 1;
+    protected override int VisualChildrenCount => 1;
 
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index != 0)
             throw new ArgumentOutOfRangeException(nameof(index));
@@ -127,6 +231,7 @@ public class WebBrowser : FrameworkElement
 
     private void OnInnerNavigationStarting(object? sender, WebViewNavigationStartingEventArgs e)
     {
+        ApplyObjectForScripting();
         var navigatingArgs = new WebBrowserNavigatingEventArgs { Uri = e.Uri };
         Navigating?.Invoke(this, navigatingArgs);
         e.Cancel = navigatingArgs.Cancel;
@@ -158,6 +263,32 @@ public class WebBrowser : FrameworkElement
         finally
         {
             _syncingSourceFromInner = false;
+        }
+    }
+
+    private void OnInnerInitializationCompleted(object? sender, EventArgs e) =>
+        ApplyObjectForScripting();
+
+    private void ApplyObjectForScripting()
+    {
+        var core = _webView.CoreWebView2;
+        if (core == null)
+        {
+            return;
+        }
+
+        try
+        {
+            core.RemoveHostObjectFromScript("external");
+        }
+        catch (COMException)
+        {
+            // No previous host object was registered.
+        }
+
+        if (_objectForScripting != null)
+        {
+            core.AddHostObjectToScript("external", _objectForScripting);
         }
     }
 

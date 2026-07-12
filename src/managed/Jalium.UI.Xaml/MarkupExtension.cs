@@ -1,42 +1,10 @@
 ﻿using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Data;
+using Jalium.UI.Diagnostics;
 using System.Reflection;
 
 namespace Jalium.UI.Markup;
-
-/// <summary>
-/// Base class for XAML markup extensions.
-/// </summary>
-public abstract class MarkupExtension
-{
-    /// <summary>
-    /// Returns the value to use for the target property. Implementations may use reflection
-    /// on user-supplied types (see <see cref="StaticExtension"/> and <see cref="ArrayExtension"/>);
-    /// marked accordingly so callers / overrides can declare AOT contracts.
-    /// </summary>
-    /// <param name="serviceProvider">A service provider that can provide services for the markup extension.</param>
-    /// <returns>The value to use for the property where the extension is applied.</returns>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Some extensions (e.g. x:Static) reflect on the resolved Type to read fields/properties.")]
-    [System.Diagnostics.CodeAnalysis.RequiresDynamicCode("Some extensions (e.g. x:Array) construct arrays of a runtime-supplied element Type.")]
-    public abstract object? ProvideValue(IServiceProvider serviceProvider);
-}
-
-/// <summary>
-/// Provides services for markup extensions during XAML parsing.
-/// </summary>
-public interface IProvideValueTarget
-{
-    /// <summary>
-    /// Gets the target object of the markup extension.
-    /// </summary>
-    object? TargetObject { get; }
-
-    /// <summary>
-    /// Gets the target property of the markup extension.
-    /// </summary>
-    object? TargetProperty { get; }
-}
 
 /// <summary>
 /// Implementation of IProvideValueTarget for XAML parsing.
@@ -244,7 +212,7 @@ public sealed class BindingExtension : MarkupExtension
 /// <summary>
 /// XAML markup extension for static resources.
 /// </summary>
-public sealed class StaticResourceExtension : MarkupExtension
+public sealed class StaticResourceExtension : MarkupExtension, IStyleResourceMarkupExtension
 {
     /// <summary>
     /// Gets or sets the resource key.
@@ -278,9 +246,29 @@ public sealed class StaticResourceExtension : MarkupExtension
         var ambientProvider = serviceProvider?.GetService(typeof(IAmbientResourceProvider)) as IAmbientResourceProvider;
         var provideValueTarget = serviceProvider?.GetService(typeof(IProvideValueTarget)) as IProvideValueTarget;
         var targetElement = provideValueTarget?.TargetObject as FrameworkElement;
+        ResourceDictionary? sourceDictionary = null;
 
         // First, check ambient resources (resources being parsed in current XAML context)
-        if (ambientProvider != null && ambientProvider.TryGetResource(ResourceKey, out var ambientValue))
+        object? ambientValue;
+        bool foundAmbient;
+        if (ambientProvider is XamlParserContext parserContext)
+        {
+            foundAmbient = parserContext.TryGetResource(
+                ResourceKey,
+                out ambientValue,
+                out sourceDictionary);
+        }
+        else if (ambientProvider is not null)
+        {
+            foundAmbient = ambientProvider.TryGetResource(ResourceKey, out ambientValue);
+        }
+        else
+        {
+            ambientValue = null;
+            foundAmbient = false;
+        }
+
+        if (foundAmbient)
         {
             var resolvedAmbientValue = ResolveDeferredResourceReference(
                 ambientValue,
@@ -288,20 +276,32 @@ public sealed class StaticResourceExtension : MarkupExtension
                 targetElement,
                 new HashSet<object>());
             if (resolvedAmbientValue != null)
+            {
+                NotifyResolved(provideValueTarget, sourceDictionary, ResourceKey);
                 return resolvedAmbientValue;
+            }
         }
 
         // Search for the resource in the visual tree
         if (targetElement != null)
         {
-            var result = ResourceLookup.FindResource(targetElement, ResourceKey);
+            var result = ResourceLookup.FindResource(
+                targetElement,
+                ResourceKey,
+                out sourceDictionary);
             if (result != null)
+            {
+                NotifyResolved(provideValueTarget, sourceDictionary, ResourceKey);
                 return result;
+            }
         }
 
         // Fall back to application resources
         if (Jalium.UI.Application.Current?.Resources != null &&
-            Jalium.UI.Application.Current.Resources.TryGetValue(ResourceKey, out var appValue))
+            Jalium.UI.Application.Current.Resources.TryGetValue(
+                ResourceKey,
+                out var appValue,
+                out sourceDictionary))
         {
             var resolvedAppValue = ResolveDeferredResourceReference(
                 appValue,
@@ -309,7 +309,10 @@ public sealed class StaticResourceExtension : MarkupExtension
                 targetElement,
                 new HashSet<object>());
             if (resolvedAppValue != null)
+            {
+                NotifyResolved(provideValueTarget, sourceDictionary, ResourceKey);
                 return resolvedAppValue;
+            }
         }
 
         // Resource not found — return null. The streaming parser used to throw in
@@ -325,6 +328,18 @@ public sealed class StaticResourceExtension : MarkupExtension
         // Match the Release behaviour (silent null) so DEBUG runs do not differ from
         // Release in failure mode for the SG path.
         return null;
+    }
+
+    private static void NotifyResolved(
+        IProvideValueTarget? provideValueTarget,
+        ResourceDictionary? sourceDictionary,
+        object resourceKey)
+    {
+        ResourceDictionaryDiagnosticsStore.NotifyStaticResourceResolved(
+            provideValueTarget?.TargetObject,
+            provideValueTarget?.TargetProperty,
+            sourceDictionary,
+            resourceKey);
     }
 
     private static object? ResolveDeferredResourceReference(
@@ -375,7 +390,8 @@ public sealed class StaticResourceExtension : MarkupExtension
 /// XAML markup extension for dynamic resources.
 /// Unlike StaticResource, DynamicResource updates when the resource changes.
 /// </summary>
-public sealed class DynamicResourceExtension : MarkupExtension
+[System.ComponentModel.TypeConverter(typeof(global::Jalium.UI.DynamicResourceExtensionConverter))]
+public sealed class DynamicResourceExtension : MarkupExtension, IStyleResourceMarkupExtension
 {
     /// <summary>
     /// Gets or sets the resource key.
@@ -452,7 +468,7 @@ public sealed class DynamicResourceReference : IDynamicResourceReference
 /// defined in <see cref="ResourceDictionary.ThemeDictionaries"/> that should
 /// automatically update when the current theme changes.
 /// </summary>
-public sealed class ThemeResourceExtension : MarkupExtension
+public sealed class ThemeResourceExtension : MarkupExtension, IStyleResourceMarkupExtension
 {
     /// <summary>
     /// Gets or sets the resource key.
@@ -607,9 +623,11 @@ public sealed class StaticExtension : MarkupExtension
 /// XAML markup extension for x:Array.
 /// Creates an array of the specified type.
 /// </summary>
-public sealed class ArrayExtension : MarkupExtension
+[ContentProperty(nameof(Items))]
+[MarkupExtensionReturnType(typeof(Array))]
+public sealed class ArrayExtension : MarkupExtension, IAddChild
 {
-    private readonly List<object?> _items = new();
+    private readonly System.Collections.ArrayList _items = new();
 
     /// <summary>
     /// Gets or sets the type of the array elements.
@@ -619,7 +637,7 @@ public sealed class ArrayExtension : MarkupExtension
     /// <summary>
     /// Gets the items collection.
     /// </summary>
-    public IList<object?> Items => _items;
+    public System.Collections.IList Items => _items;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ArrayExtension"/> class.
@@ -633,7 +651,17 @@ public sealed class ArrayExtension : MarkupExtension
     /// </summary>
     public ArrayExtension(Type type)
     {
-        Type = type;
+        Type = type ?? throw new ArgumentNullException(nameof(type));
+    }
+
+    /// <summary>
+    /// Initializes an array extension from an existing CLR array.
+    /// </summary>
+    public ArrayExtension(Array elements)
+    {
+        ArgumentNullException.ThrowIfNull(elements);
+        Type = elements.GetType().GetElementType();
+        _items.AddRange(elements);
     }
 
     /// <summary>
@@ -642,6 +670,13 @@ public sealed class ArrayExtension : MarkupExtension
     public void AddChild(object? item)
     {
         _items.Add(item);
+    }
+
+    /// <summary>Adds a text node as the next array item.</summary>
+    public void AddText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        _items.Add(text);
     }
 
     /// <inheritdoc />
@@ -695,7 +730,15 @@ public sealed class TypeExtension : MarkupExtension
     /// <param name="typeName">The type name.</param>
     public TypeExtension(string typeName)
     {
-        TypeName = typeName;
+        TypeName = typeName ?? throw new ArgumentNullException(nameof(typeName));
+    }
+
+    /// <summary>
+    /// Initializes a type extension from an already resolved CLR type.
+    /// </summary>
+    public TypeExtension(Type type)
+    {
+        Type = type ?? throw new ArgumentNullException(nameof(type));
     }
 
     /// <inheritdoc />
@@ -808,7 +851,7 @@ internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
     private DependencyProperty? _sourceProperty;
 
     public DeferredTemplateBindingExpression(DeferredTemplateBinding binding, DependencyObject target, DependencyProperty targetProperty)
-        : base(target, targetProperty)
+        : base(binding, target, targetProperty)
     {
         _binding = binding;
     }
@@ -910,7 +953,7 @@ internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
     {
         if (target is FrameworkElement fe)
         {
-            return fe.TemplatedParent;
+            return fe.TemplatedParent as FrameworkElement;
         }
         return null;
     }
@@ -1186,7 +1229,7 @@ internal static class MarkupExtensionParser
     /// <summary>
     /// Try to extract the resource key from a <c>{StaticResource X}</c> spec string.
     /// Used to record a deferred Converter lookup when parse-time resolution fails —
-    /// the key is later fed to <see cref="ResourceLookup.FindResource"/> against the
+    /// the key is later fed to <see cref="ResourceLookup.FindResource(FrameworkElement, object)"/> against the
     /// binding target's FE in <c>BindingExpression.Activate</c>.
     /// </summary>
     /// <remarks>

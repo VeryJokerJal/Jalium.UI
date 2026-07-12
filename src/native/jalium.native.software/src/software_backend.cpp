@@ -8,6 +8,11 @@
 #include <cstdlib>
 #include <memory>
 
+#ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
+#include "wayland_shm_present.h"
+#include <wayland-client.h>
+#endif
+
 #ifdef _WIN32
 #include <Windows.h>
 #include <wincodec.h>
@@ -843,7 +848,20 @@ JaliumResult SoftwareRenderTarget::EndDraw()
             ReleaseDC((HWND)hwnd_, hdc);
         }
     }
-#elif defined(JALIUM_SOFTWARE_X11_PRESENT)
+#else
+#ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
+    if (surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_WAYLAND &&
+        surfaceDescriptor_.handle0 != 0 && surfaceDescriptor_.handle1 != 0)
+    {
+        if (!waylandPresenter_)
+            return JALIUM_ERROR_BACKEND_NOT_AVAILABLE;
+        return waylandPresenter_->Present(
+            fb_.pixels.data(), width_, height_, width_ * 4)
+            ? JALIUM_OK
+            : JALIUM_ERROR_PRESENT_FAILED;
+    }
+#endif
+#ifdef JALIUM_SOFTWARE_X11_PRESENT
     // Present to X11 window via XPutImage
     if (surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_X11 &&
         surfaceDescriptor_.handle0 != 0 && surfaceDescriptor_.handle1 != 0)
@@ -864,7 +882,8 @@ JaliumResult SoftwareRenderTarget::EndDraw()
             XFlush(dpy);
         }
     }
-#elif defined(__ANDROID__)
+#endif
+#ifdef __ANDROID__
     // Present to Android ANativeWindow
     LOGI_SW("EndDraw: platform=%d, handle0=%p, fb=%dx%d",
             surfaceDescriptor_.platform, (void*)surfaceDescriptor_.handle0, width_, height_);
@@ -906,6 +925,7 @@ JaliumResult SoftwareRenderTarget::EndDraw()
             LOGE_SW("ANativeWindow_lock failed: %d", lockResult);
         }
     }
+#endif
 #endif
     return JALIUM_OK;
 }
@@ -3359,6 +3379,17 @@ RenderTarget* SoftwareBackend::CreateRenderTargetForSurface(
 #ifdef _WIN32
         if (surface->platform == JALIUM_PLATFORM_WINDOWS)
             rt->hwnd_ = reinterpret_cast<void*>(surface->handle0);
+#endif
+#ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
+        if (surface->platform == JALIUM_PLATFORM_LINUX_WAYLAND &&
+            surface->handle0 != 0 && surface->handle1 != 0 &&
+            surface->handle2 != 0)
+        {
+            rt->waylandPresenter_ = WaylandShmPresenter::Create(
+                reinterpret_cast<wl_display*>(surface->handle0),
+                reinterpret_cast<wl_surface*>(surface->handle1),
+                reinterpret_cast<wl_shm*>(surface->handle2));
+        }
 #endif
     }
     return rt;

@@ -1,5 +1,6 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
+using System.Globalization;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
@@ -12,9 +13,9 @@ namespace Jalium.UI.Controls;
 public class Calendar : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.CalendarAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.CalendarAutomationPeer(this);
     }
 
     #region Static Brushes & Pens
@@ -46,7 +47,7 @@ public class Calendar : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateProperty =
         DependencyProperty.Register(nameof(DisplayDate), typeof(DateTime), typeof(Calendar),
-            new PropertyMetadata(DateTime.Today, OnDisplayDateChanged));
+            new PropertyMetadata(DateTime.Today, OnDisplayDateChanged, CoerceDisplayDate));
 
     /// <summary>
     /// Identifies the DisplayDateStart dependency property.
@@ -54,7 +55,7 @@ public class Calendar : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateStartProperty =
         DependencyProperty.Register(nameof(DisplayDateStart), typeof(DateTime?), typeof(Calendar),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnDisplayDateStartChanged, CoerceDisplayDateStart));
 
     /// <summary>
     /// Identifies the DisplayDateEnd dependency property.
@@ -62,7 +63,7 @@ public class Calendar : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateEndProperty =
         DependencyProperty.Register(nameof(DisplayDateEnd), typeof(DateTime?), typeof(Calendar),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnDisplayDateEndChanged, CoerceDisplayDateEnd));
 
     /// <summary>
     /// Identifies the FirstDayOfWeek dependency property.
@@ -70,7 +71,8 @@ public class Calendar : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty FirstDayOfWeekProperty =
         DependencyProperty.Register(nameof(FirstDayOfWeek), typeof(DayOfWeek), typeof(Calendar),
-            new PropertyMetadata(DayOfWeek.Sunday, OnDisplayDateChanged));
+            new PropertyMetadata(CultureInfo.CurrentCulture.DateTimeFormat.FirstDayOfWeek, OnFirstDayOfWeekChanged),
+            IsValidFirstDayOfWeek);
 
     /// <summary>
     /// Identifies the IsTodayHighlighted dependency property.
@@ -86,7 +88,44 @@ public class Calendar : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectionModeProperty =
         DependencyProperty.Register(nameof(SelectionMode), typeof(CalendarSelectionMode), typeof(Calendar),
-            new PropertyMetadata(CalendarSelectionMode.SingleDate));
+            new PropertyMetadata(CalendarSelectionMode.SingleDate, OnSelectionModePropertyChanged),
+            IsValidSelectionMode);
+
+    /// <summary>
+    /// Identifies the DisplayMode dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty DisplayModeProperty =
+        DependencyProperty.Register(nameof(DisplayMode), typeof(CalendarMode), typeof(Calendar),
+            new FrameworkPropertyMetadata(
+                CalendarMode.Month,
+                FrameworkPropertyMetadataOptions.BindsTwoWayByDefault,
+                OnDisplayModePropertyChanged),
+            IsValidDisplayMode);
+
+    /// <summary>
+    /// Identifies the CalendarButtonStyle dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty CalendarButtonStyleProperty =
+        DependencyProperty.Register(nameof(CalendarButtonStyle), typeof(Style), typeof(Calendar),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the CalendarDayButtonStyle dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty CalendarDayButtonStyleProperty =
+        DependencyProperty.Register(nameof(CalendarDayButtonStyle), typeof(Style), typeof(Calendar),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the CalendarItemStyle dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty CalendarItemStyleProperty =
+        DependencyProperty.Register(nameof(CalendarItemStyle), typeof(Style), typeof(Calendar),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
 
     #endregion
 
@@ -107,6 +146,13 @@ public class Calendar : Control
             typeof(EventHandler<CalendarDateChangedEventArgs>), typeof(Calendar));
 
     /// <summary>
+    /// Identifies the SelectedDatesChanged routed event.
+    /// </summary>
+    public static readonly RoutedEvent SelectedDatesChangedEvent =
+        EventManager.RegisterRoutedEvent(nameof(SelectedDatesChanged), RoutingStrategy.Direct,
+            typeof(EventHandler<SelectionChangedEventArgs>), typeof(Calendar));
+
+    /// <summary>
     /// Occurs when the selected date changes.
     /// </summary>
     public event EventHandler<SelectionChangedEventArgs> SelectedDateChanged
@@ -124,6 +170,25 @@ public class Calendar : Control
         remove => RemoveHandler(DisplayDateChangedEvent, value);
     }
 
+    /// <summary>
+    /// Occurs when the SelectedDates collection changes.
+    /// </summary>
+    public event EventHandler<SelectionChangedEventArgs> SelectedDatesChanged
+    {
+        add => AddHandler(SelectedDatesChangedEvent, value);
+        remove => RemoveHandler(SelectedDatesChangedEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when DisplayMode changes.
+    /// </summary>
+    public event EventHandler<CalendarModeChangedEventArgs>? DisplayModeChanged;
+
+    /// <summary>
+    /// Occurs when SelectionMode changes.
+    /// </summary>
+    public event EventHandler<EventArgs>? SelectionModeChanged;
+
     #endregion
 
     #region CLR Properties
@@ -135,7 +200,24 @@ public class Calendar : Control
     public DateTime? SelectedDate
     {
         get => (DateTime?)GetValue(SelectedDateProperty);
-        set => SetValue(SelectedDateProperty, value);
+        set
+        {
+            if (value.HasValue)
+            {
+                if (SelectionMode == CalendarSelectionMode.None)
+                {
+                    throw new InvalidOperationException("A date cannot be selected when SelectionMode is None.");
+                }
+
+                if (!IsDateSelectableForSelection(value.Value))
+                {
+                    throw new ArgumentOutOfRangeException(nameof(value),
+                        "The date is outside the selectable range or is blacked out.");
+                }
+            }
+
+            SetValue(SelectedDateProperty, value);
+        }
     }
 
     /// <summary>
@@ -199,14 +281,54 @@ public class Calendar : Control
     }
 
     /// <summary>
+    /// Gets or sets whether the calendar displays a month, year, or decade.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public CalendarMode DisplayMode
+    {
+        get => (CalendarMode)GetValue(DisplayModeProperty)!;
+        set => SetValue(DisplayModeProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the style used by month and year buttons.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Style? CalendarButtonStyle
+    {
+        get => (Style?)GetValue(CalendarButtonStyleProperty);
+        set => SetValue(CalendarButtonStyleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the style used by day buttons.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Style? CalendarDayButtonStyle
+    {
+        get => (Style?)GetValue(CalendarDayButtonStyleProperty);
+        set => SetValue(CalendarDayButtonStyleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the style used by the calendar item container.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Style? CalendarItemStyle
+    {
+        get => (Style?)GetValue(CalendarItemStyleProperty);
+        set => SetValue(CalendarItemStyleProperty, value);
+    }
+
+    /// <summary>
     /// Gets the collection of selected dates.
     /// </summary>
-    public List<DateTime> SelectedDates { get; } = new();
+    public SelectedDatesCollection SelectedDates => _selectedDates;
 
     /// <summary>
     /// Gets the collection of blackout dates.
     /// </summary>
-    public List<DateTime> BlackoutDates { get; } = new();
+    public CalendarBlackoutDatesCollection BlackoutDates => _blackoutDates;
 
     #endregion
 
@@ -220,6 +342,7 @@ public class Calendar : Control
     private const int Columns = 7;
     private Rect[,] _dayCells = new Rect[Rows, Columns];
     private DateTime[,] _dayDates = new DateTime[Rows, Columns];
+    private bool[,] _dayDateIsValid = new bool[Rows, Columns];
     private Rect _prevButtonRect;
     private Rect _nextButtonRect;
     private Rect _monthYearRect;
@@ -227,6 +350,11 @@ public class Calendar : Control
     private int _hoveredCol = -1;
     private bool _isHoveringPrev;
     private bool _isHoveringNext;
+    private bool _isRevertingSelectedDate;
+    private bool _isSynchronizingSelectedDates;
+
+    private readonly CalendarBlackoutDatesCollection _blackoutDates;
+    private readonly SelectedDatesCollection _selectedDates;
 
     // Cached pens
     private Pen? _arrowPen;
@@ -243,6 +371,9 @@ public class Calendar : Control
     /// </summary>
     public Calendar()
     {
+        _blackoutDates = new CalendarBlackoutDatesCollection(this);
+        _selectedDates = new SelectedDatesCollection(this);
+
         Focusable = true;
 
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
@@ -265,16 +396,16 @@ public class Calendar : Control
         var totalX = args.TotalManipulation?.Translation.X ?? 0;
         if (Math.Abs(totalX) < CalendarSwipeThresholdDips) return;
 
-        int monthDelta = totalX < 0 ? +1 : -1; // swipe left ⇒ next month
-        try
+        if (totalX < 0)
         {
-            DisplayDate = DisplayDate.AddMonths(monthDelta);
-            e.Handled = true;
+            NavigateToNextPeriod();
         }
-        catch (ArgumentOutOfRangeException)
+        else
         {
-            // DateTime out of range — ignore.
+            NavigateToPreviousPeriod();
         }
+
+        e.Handled = true;
     }
 
     #endregion
@@ -298,34 +429,63 @@ public class Calendar : Control
             // Check navigation buttons
             if (_prevButtonRect.Contains(position))
             {
-                NavigateToPreviousMonth();
+                NavigateToPreviousPeriod();
                 e.Handled = true;
                 return;
             }
 
             if (_nextButtonRect.Contains(position))
             {
-                NavigateToNextMonth();
+                NavigateToNextPeriod();
                 e.Handled = true;
                 return;
             }
 
-            // Check day cells
-            for (int row = 0; row < Rows; row++)
+            if (_monthYearRect.Contains(position))
             {
-                for (int col = 0; col < Columns; col++)
+                DisplayMode = DisplayMode switch
                 {
-                    if (_dayCells[row, col].Contains(position))
+                    CalendarMode.Month => CalendarMode.Year,
+                    CalendarMode.Year => CalendarMode.Decade,
+                    _ => CalendarMode.Decade
+                };
+                e.Handled = true;
+                return;
+            }
+
+            int rowCount = DisplayMode == CalendarMode.Month ? Rows : 3;
+            int columnCount = DisplayMode == CalendarMode.Month ? Columns : 4;
+            for (int row = 0; row < rowCount; row++)
+            {
+                for (int col = 0; col < columnCount; col++)
+                {
+                    if (!_dayCells[row, col].Contains(position))
                     {
-                        var date = _dayDates[row, col];
-                        if (IsDateSelectable(date))
+                        continue;
+                    }
+
+                    DateTime date = _dayDates[row, col];
+                    if (DisplayMode == CalendarMode.Month)
+                    {
+                        if (_dayDateIsValid[row, col] && IsDateSelectableForInteraction(date))
                         {
                             SelectDate(date);
                             DateClicked?.Invoke(this, date);
                         }
-                        e.Handled = true;
-                        return;
                     }
+                    else if (DisplayMode == CalendarMode.Year)
+                    {
+                        DisplayDate = date;
+                        DisplayMode = CalendarMode.Month;
+                    }
+                    else
+                    {
+                        DisplayDate = date;
+                        DisplayMode = CalendarMode.Year;
+                    }
+
+                    e.Handled = true;
+                    return;
                 }
             }
         }
@@ -339,9 +499,11 @@ public class Calendar : Control
         var newRow = -1;
         var newCol = -1;
 
-        for (int row = 0; row < Rows; row++)
+        int rowCount = DisplayMode == CalendarMode.Month ? Rows : 3;
+        int columnCount = DisplayMode == CalendarMode.Month ? Columns : 4;
+        for (int row = 0; row < rowCount; row++)
         {
-            for (int col = 0; col < Columns; col++)
+            for (int col = 0; col < columnCount; col++)
             {
                 if (_dayCells[row, col].Contains(position))
                 {
@@ -407,11 +569,11 @@ public class Calendar : Control
                 e.Handled = true;
                 break;
             case Key.PageUp:
-                NavigateToPreviousMonth();
+                NavigateToPreviousPeriod();
                 e.Handled = true;
                 break;
             case Key.PageDown:
-                NavigateToNextMonth();
+                NavigateToNextPeriod();
                 e.Handled = true;
                 break;
             case Key.Home:
@@ -423,6 +585,19 @@ public class Calendar : Control
                     DateTime.DaysInMonth(currentDate.Year, currentDate.Month)));
                 e.Handled = true;
                 break;
+            case Key.Enter:
+            case Key.Space:
+                if (DisplayMode == CalendarMode.Decade)
+                {
+                    DisplayMode = CalendarMode.Year;
+                    e.Handled = true;
+                }
+                else if (DisplayMode == CalendarMode.Year)
+                {
+                    DisplayMode = CalendarMode.Month;
+                    e.Handled = true;
+                }
+                break;
         }
     }
 
@@ -430,19 +605,29 @@ public class Calendar : Control
 
     #region Navigation
 
-    private void NavigateToPreviousMonth()
+    private void NavigateToPreviousPeriod()
     {
-        DisplayDate = DisplayDate.AddMonths(-1);
+        DisplayDate = DisplayMode switch
+        {
+            CalendarMode.Month => AddMonthsOrBoundary(DisplayDate, -1),
+            CalendarMode.Year => AddYearsOrBoundary(DisplayDate, -1),
+            _ => AddYearsOrBoundary(DisplayDate, -10)
+        };
     }
 
-    private void NavigateToNextMonth()
+    private void NavigateToNextPeriod()
     {
-        DisplayDate = DisplayDate.AddMonths(1);
+        DisplayDate = DisplayMode switch
+        {
+            CalendarMode.Month => AddMonthsOrBoundary(DisplayDate, 1),
+            CalendarMode.Year => AddYearsOrBoundary(DisplayDate, 1),
+            _ => AddYearsOrBoundary(DisplayDate, 10)
+        };
     }
 
     private void SelectDate(DateTime date)
     {
-        if (!IsDateSelectable(date))
+        if (!IsDateSelectableForInteraction(date))
             return;
 
         // Update display date if needed
@@ -451,17 +636,30 @@ public class Calendar : Control
             DisplayDate = new DateTime(date.Year, date.Month, 1);
         }
 
-        var oldDate = SelectedDate;
-        SelectedDate = date;
-
-        if (SelectionMode == CalendarSelectionMode.SingleDate)
+        switch (SelectionMode)
         {
-            SelectedDates.Clear();
-            SelectedDates.Add(date);
+            case CalendarSelectionMode.SingleDate:
+            case CalendarSelectionMode.SingleRange:
+                SelectedDate = date;
+                break;
+            case CalendarSelectionMode.MultipleRange:
+                if (!SelectedDates.RemoveDay(date))
+                {
+                    SelectedDates.Add(date);
+                }
+                break;
+            case CalendarSelectionMode.None:
+                break;
         }
     }
 
-    private bool IsDateSelectable(DateTime date)
+    internal bool IsDateSelectableForSelection(DateTime date)
+    {
+        DateTime day = date.Date;
+        return !BlackoutDates.Contains(day);
+    }
+
+    private bool IsDateSelectableForInteraction(DateTime date)
     {
         if (DisplayDateStart.HasValue && date < DisplayDateStart.Value)
             return false;
@@ -469,10 +667,46 @@ public class Calendar : Control
         if (DisplayDateEnd.HasValue && date > DisplayDateEnd.Value)
             return false;
 
-        if (BlackoutDates.Contains(date.Date))
-            return false;
+        return IsDateSelectableForSelection(date);
+    }
 
-        return true;
+    private DateTime ClampDisplayDate(DateTime date)
+    {
+        if (DisplayDateStart.HasValue && date < DisplayDateStart.Value)
+        {
+            return DisplayDateStart.Value;
+        }
+
+        if (DisplayDateEnd.HasValue && date > DisplayDateEnd.Value)
+        {
+            return DisplayDateEnd.Value;
+        }
+
+        return date;
+    }
+
+    private static DateTime AddMonthsOrBoundary(DateTime date, int months)
+    {
+        try
+        {
+            return date.AddMonths(months);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return months < 0 ? DateTime.MinValue : DateTime.MaxValue;
+        }
+    }
+
+    private static DateTime AddYearsOrBoundary(DateTime date, int years)
+    {
+        try
+        {
+            return date.AddYears(years);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return years < 0 ? DateTime.MinValue : DateTime.MaxValue;
+        }
     }
 
     #endregion
@@ -482,23 +716,33 @@ public class Calendar : Control
     private void CalculateDayGrid()
     {
         var firstOfMonth = new DateTime(DisplayDate.Year, DisplayDate.Month, 1);
-        var daysInMonth = DateTime.DaysInMonth(DisplayDate.Year, DisplayDate.Month);
-
         // Calculate the day of week offset
         var firstDayOfWeek = (int)FirstDayOfWeek;
         var startDayOfWeek = (int)firstOfMonth.DayOfWeek;
         var offset = (startDayOfWeek - firstDayOfWeek + 7) % 7;
 
-        // Fill in dates
-        var currentDate = firstOfMonth.AddDays(-offset);
-
         for (int row = 0; row < Rows; row++)
         {
             for (int col = 0; col < Columns; col++)
             {
-                _dayDates[row, col] = currentDate;
-                currentDate = currentDate.AddDays(1);
+                int dayOffset = row * Columns + col - offset;
+                _dayDateIsValid[row, col] = TryAddDays(firstOfMonth, dayOffset, out DateTime date);
+                _dayDates[row, col] = date;
             }
+        }
+    }
+
+    private static bool TryAddDays(DateTime date, int days, out DateTime result)
+    {
+        try
+        {
+            result = date.AddDays(days);
+            return true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            result = days < 0 ? DateTime.MinValue : DateTime.MaxValue;
+            return false;
         }
     }
 
@@ -529,10 +773,13 @@ public class Calendar : Control
         var padding = Padding;
         var cornerRadius = CornerRadius;
 
-        // Draw background
-        if (Background != null)
+        // CalendarItemStyle is normally consumed by PART_CalendarItem. This control uses
+        // direct rendering, so consume the equivalent visual setters here.
+        Brush? calendarBackground = GetStyleSetterValue(CalendarItemStyle, Control.BackgroundProperty) as Brush
+            ?? Background;
+        if (calendarBackground != null)
         {
-            dc.DrawRoundedRectangle(Background, null, rect, cornerRadius);
+            dc.DrawRoundedRectangle(calendarBackground, null, rect, cornerRadius);
         }
 
         // Draw border
@@ -548,11 +795,15 @@ public class Calendar : Control
         // Draw header
         DrawHeader(dc, startX, startY);
 
-        // Draw day-of-week headers
-        DrawDayHeaders(dc, startX, startY + HeaderHeight);
-
-        // Draw day grid
-        DrawDayGrid(dc, startX, startY + HeaderHeight + DayHeaderHeight);
+        if (DisplayMode == CalendarMode.Month)
+        {
+            DrawDayHeaders(dc, startX, startY + HeaderHeight);
+            DrawDayGrid(dc, startX, startY + HeaderHeight + DayHeaderHeight);
+        }
+        else
+        {
+            DrawPeriodGrid(dc, startX, startY + HeaderHeight);
+        }
     }
 
     private void DrawHeader(DrawingContext dc, double x, double y)
@@ -561,7 +812,9 @@ public class Calendar : Control
         var headerRect = new Rect(x, y, width, HeaderHeight);
 
         // Draw header background
-        dc.DrawRectangle(ResolveCalendarBrush("ControlBackground", s_headerBgBrush), null, headerRect);
+        Brush headerBackground = GetStyleSetterValue(CalendarButtonStyle, Control.BackgroundProperty) as Brush
+            ?? ResolveCalendarBrush("ControlBackground", s_headerBgBrush);
+        dc.DrawRectangle(headerBackground, null, headerRect);
 
         // Draw previous button
         _prevButtonRect = new Rect(x + 4, y + 4, 28, 28);
@@ -572,10 +825,15 @@ public class Calendar : Control
         DrawNavigationButton(dc, _nextButtonRect, true, _isHoveringNext);
 
         // Draw month/year text
-        var monthYearText = DisplayDate.ToString("MMMM yyyy");
-        var formattedText = new FormattedText(monthYearText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+        string monthYearText = DisplayMode switch
         {
-            Foreground = ResolvePrimaryTextBrush(),
+            CalendarMode.Month => DisplayDate.ToString("MMMM yyyy"),
+            CalendarMode.Year => DisplayDate.ToString("yyyy"),
+            _ => GetDecadeHeader(DisplayDate.Year)
+        };
+        var formattedText = new FormattedText(monthYearText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+        {
+            Foreground = ResolveCalendarButtonForeground(),
             FontWeight = 600
         };
         TextMeasurement.MeasureText(formattedText);
@@ -584,12 +842,19 @@ public class Calendar : Control
         var textY = y + (HeaderHeight - formattedText.Height) / 2;
         dc.DrawText(formattedText, new Point(textX, textY));
 
-        _monthYearRect = new Rect(textX, textY, formattedText.Width, formattedText.Height);
+        _monthYearRect = new Rect(x + 32, y, Math.Max(0, width - 64), HeaderHeight);
     }
 
     // Chevron paths in 8×12 design space, cached once
-    private static readonly PathGeometry s_chevronRight = (PathGeometry)Geometry.Parse("M 0,0 L 4,6 L 0,12");
-    private static readonly PathGeometry s_chevronLeft = (PathGeometry)Geometry.Parse("M 4,0 L 0,6 L 4,12");
+    private static readonly PathGeometry s_chevronRight = CreateFrozenChevron("M 0,0 L 4,6 L 0,12");
+    private static readonly PathGeometry s_chevronLeft = CreateFrozenChevron("M 4,0 L 0,6 L 4,12");
+
+    private static PathGeometry CreateFrozenChevron(string pathData)
+    {
+        var geometry = (PathGeometry)Geometry.Parse(pathData);
+        geometry.Freeze();
+        return geometry;
+    }
 
     private void DrawNavigationButton(DrawingContext dc, Rect rect, bool isNext, bool isHovered)
     {
@@ -599,8 +864,9 @@ public class Calendar : Control
         }
 
         var arrowBrush = isHovered
-            ? ResolvePrimaryTextBrush()
-            : ResolveCalendarBrush("TextSecondary", s_arrowNormalBrush);
+            ? ResolveCalendarButtonForeground()
+            : GetStyleSetterValue(CalendarButtonStyle, Control.ForegroundProperty) as Brush
+                ?? ResolveCalendarBrush("TextSecondary", s_arrowNormalBrush);
         if (_arrowPen == null || _arrowPenBrush != arrowBrush)
         {
             _arrowPenBrush = arrowBrush;
@@ -641,7 +907,7 @@ public class Calendar : Control
             var dayIndex = (firstDayIndex + col) % 7;
             var dayName = dayNames[dayIndex];
 
-            var formattedText = new FormattedText(dayName, FontFamily ?? FrameworkElement.DefaultFontFamilyName, 11)
+            var formattedText = new FormattedText(dayName, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, 11)
             {
                 Foreground = ResolveCalendarBrush("TextSecondary", s_dayHeaderBrush)
             };
@@ -667,10 +933,14 @@ public class Calendar : Control
                 _dayCells[row, col] = cellRect;
 
                 var date = _dayDates[row, col];
+                if (!_dayDateIsValid[row, col])
+                {
+                    continue;
+                }
                 var isCurrentMonth = date.Month == DisplayDate.Month;
                 var isToday = date.Date == today;
                 var isSelected = SelectedDate.HasValue && date.Date == SelectedDate.Value.Date;
-                var isSelectable = IsDateSelectable(date);
+                var isSelectable = IsDateSelectableForInteraction(date);
 
                 var isHovered = row == _hoveredRow && col == _hoveredCol;
                 DrawDayCell(dc, cellRect, date.Day, isCurrentMonth, isToday, isSelected, isSelectable, isHovered);
@@ -680,6 +950,13 @@ public class Calendar : Control
 
     private void DrawDayCell(DrawingContext dc, Rect rect, int day, bool isCurrentMonth, bool isToday, bool isSelected, bool isSelectable, bool isHovered)
     {
+        if (!isSelected && GetStyleSetterValue(CalendarDayButtonStyle, Control.BackgroundProperty) is Brush dayBackground)
+        {
+            dc.DrawEllipse(dayBackground, null,
+                new Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2),
+                rect.Width / 2 - 2, rect.Height / 2 - 2);
+        }
+
         // Draw hover highlight
         if (isHovered && !isSelected && isSelectable)
         {
@@ -728,10 +1005,11 @@ public class Calendar : Control
         }
         else
         {
-            textBrush = ResolvePrimaryTextBrush();
+            textBrush = GetStyleSetterValue(CalendarDayButtonStyle, Control.ForegroundProperty) as Brush
+                ?? ResolvePrimaryTextBrush();
         }
 
-        var formattedText = new FormattedText(dayText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 13)
+        var formattedText = new FormattedText(dayText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 13)
         {
             Foreground = textBrush
         };
@@ -742,9 +1020,104 @@ public class Calendar : Control
         dc.DrawText(formattedText, new Point(textX, textY));
     }
 
-    private SolidColorBrush ResolveCalendarBrush(string resourceKey, SolidColorBrush fallback)
+    private void DrawPeriodGrid(DrawingContext dc, double x, double y)
     {
-        return TryFindResource(resourceKey) as SolidColorBrush ?? fallback;
+        const int periodRows = 3;
+        const int periodColumns = 4;
+        double cellWidth = Columns * CellWidth / periodColumns;
+        double cellHeight = Rows * CellHeight / periodRows;
+        int firstYear = GetFirstDecadeCellYear(DisplayDate.Year);
+
+        for (int row = 0; row < periodRows; row++)
+        {
+            for (int col = 0; col < periodColumns; col++)
+            {
+                int index = row * periodColumns + col;
+                DateTime date;
+                string label;
+                bool isInactive;
+
+                if (DisplayMode == CalendarMode.Year)
+                {
+                    int month = index + 1;
+                    date = new DateTime(DisplayDate.Year, month, 1);
+                    label = date.ToString("MMM");
+                    isInactive = false;
+                }
+                else
+                {
+                    int year = firstYear + index;
+                    date = new DateTime(year, 1, 1);
+                    label = year.ToString();
+                    int decadeStart = DisplayDate.Year - DisplayDate.Year % 10;
+                    isInactive = year < decadeStart || year > Math.Min(DateTime.MaxValue.Year, decadeStart + 9);
+                }
+
+                var rect = new Rect(x + col * cellWidth, y + row * cellHeight, cellWidth, cellHeight);
+                _dayCells[row, col] = rect;
+                _dayDates[row, col] = date;
+
+                bool isSelected = DisplayMode == CalendarMode.Year
+                    ? date.Year == DisplayDate.Year && date.Month == DisplayDate.Month
+                    : date.Year == DisplayDate.Year;
+                bool isHovered = row == _hoveredRow && col == _hoveredCol;
+                DrawPeriodCell(dc, rect, label, isSelected, isInactive, isHovered);
+            }
+        }
+    }
+
+    private void DrawPeriodCell(
+        DrawingContext dc,
+        Rect rect,
+        string label,
+        bool isSelected,
+        bool isInactive,
+        bool isHovered)
+    {
+        var highlightRect = new Rect(rect.X + 4, rect.Y + 8, rect.Width - 8, rect.Height - 16);
+        if (isSelected)
+        {
+            dc.DrawRoundedRectangle(ResolveCalendarBrush("AccentBrush", s_accentBrush), null,
+                highlightRect, new CornerRadius(6));
+        }
+        else if (isHovered)
+        {
+            dc.DrawRoundedRectangle(ResolveCalendarBrush("HighlightBackground", s_hoverBrush), null,
+                highlightRect, new CornerRadius(6));
+        }
+
+        Brush foreground = isSelected
+            ? ResolveSelectedTextBrush()
+            : isInactive
+                ? ResolveCalendarBrush("TextSecondary", s_otherMonthBrush)
+                : ResolvePrimaryTextBrush();
+        var text = new FormattedText(label, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName,
+            FontSize > 0 ? FontSize : 13)
+        {
+            Foreground = foreground
+        };
+        TextMeasurement.MeasureText(text);
+        dc.DrawText(text, new Point(
+            rect.X + (rect.Width - text.Width) / 2,
+            rect.Y + (rect.Height - text.Height) / 2));
+    }
+
+    private static string GetDecadeHeader(int year)
+    {
+        int start = Math.Max(DateTime.MinValue.Year, year - year % 10);
+        int end = Math.Min(DateTime.MaxValue.Year, start + 9);
+        return $"{start}-{end}";
+    }
+
+    private static int GetFirstDecadeCellYear(int year)
+    {
+        int decadeStart = year - year % 10;
+        return Math.Clamp(decadeStart - 1, DateTime.MinValue.Year, DateTime.MaxValue.Year - 11);
+    }
+
+    private Brush ResolveCalendarBrush(string resourceKey, Brush fallback)
+    {
+        return TryFindResource(resourceKey) as Brush ?? fallback;
     }
 
     private Brush ResolvePrimaryTextBrush()
@@ -754,12 +1127,84 @@ public class Calendar : Control
             return Foreground;
         }
 
-        return ResolveCalendarBrush("TextPrimary", s_whiteBrush);
+        return GetStyleSetterValue(CalendarItemStyle, Control.ForegroundProperty) as Brush
+            ?? ResolveCalendarBrush("TextPrimary", s_whiteBrush);
+    }
+
+    private Brush ResolveCalendarButtonForeground() =>
+        GetStyleSetterValue(CalendarButtonStyle, Control.ForegroundProperty) as Brush
+        ?? ResolvePrimaryTextBrush();
+
+    private static object? GetStyleSetterValue(Style? style, DependencyProperty property)
+    {
+        object? value = null;
+        var visited = new HashSet<Style>();
+
+        void Visit(Style? current)
+        {
+            if (current is null || !visited.Add(current))
+            {
+                return;
+            }
+
+            Visit(current.BasedOn);
+            foreach (SetterBase setterBase in current.Setters)
+            {
+                if (setterBase is Setter setter && setter.TargetName is null &&
+                    ReferenceEquals(setter.Property, property))
+                {
+                    value = setter.Value;
+                }
+            }
+        }
+
+        Visit(style);
+        return value;
     }
 
     private Brush ResolveSelectedTextBrush()
     {
         return ResolveCalendarBrush("TextOnAccent", s_whiteBrush);
+    }
+
+    #endregion
+
+    #region Protected Event Hooks
+
+    /// <summary>
+    /// Raises the DisplayDateChanged event.
+    /// </summary>
+    protected virtual void OnDisplayDateChanged(CalendarDateChangedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the DisplayModeChanged event.
+    /// </summary>
+    protected virtual void OnDisplayModeChanged(CalendarModeChangedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        DisplayModeChanged?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the SelectedDatesChanged event.
+    /// </summary>
+    protected virtual void OnSelectedDatesChanged(SelectionChangedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the SelectionModeChanged event.
+    /// </summary>
+    protected virtual void OnSelectionModeChanged(EventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        SelectionModeChanged?.Invoke(this, e);
     }
 
     #endregion
@@ -770,6 +1215,40 @@ public class Calendar : Control
     {
         if (d is Calendar calendar)
         {
+            if (calendar._isRevertingSelectedDate)
+            {
+                return;
+            }
+
+            DateTime? newDate = (DateTime?)e.NewValue;
+            if (newDate.HasValue &&
+                (calendar.SelectionMode == CalendarSelectionMode.None ||
+                 !calendar.IsDateSelectableForSelection(newDate.Value)))
+            {
+                calendar._isRevertingSelectedDate = true;
+                try
+                {
+                    calendar.SetCurrentValue(SelectedDateProperty, e.OldValue);
+                }
+                finally
+                {
+                    calendar._isRevertingSelectedDate = false;
+                }
+
+                if (calendar.SelectionMode == CalendarSelectionMode.None)
+                {
+                    throw new InvalidOperationException("A date cannot be selected when SelectionMode is None.");
+                }
+
+                throw new ArgumentOutOfRangeException(nameof(SelectedDate),
+                    "The date is outside the selectable range or is blacked out.");
+            }
+
+            if (!calendar._isSynchronizingSelectedDates)
+            {
+                calendar._selectedDates.ReplaceFromSelectedDate(newDate);
+            }
+
             calendar.InvalidateVisual();
 
             var args = new SelectionChangedEventArgs(SelectedDateChangedEvent,
@@ -787,8 +1266,105 @@ public class Calendar : Control
             calendar.InvalidateVisual();
 
             var args = new CalendarDateChangedEventArgs(DisplayDateChangedEvent,
-                e.OldValue as DateTime?, e.NewValue as DateTime?);
-            calendar.RaiseEvent(args);
+                (DateTime?)e.OldValue, (DateTime?)e.NewValue);
+            calendar.OnDisplayDateChanged(args);
+        }
+    }
+
+    private static object? CoerceDisplayDate(DependencyObject d, object? baseValue)
+    {
+        var calendar = (Calendar)d;
+        if (baseValue is not DateTime displayDate)
+        {
+            return baseValue;
+        }
+
+        return calendar.ClampDisplayDate(displayDate);
+    }
+
+    private static object? CoerceDisplayDateStart(DependencyObject d, object? baseValue)
+    {
+        var calendar = (Calendar)d;
+        DateTime? requestedStart = (DateTime?)baseValue;
+        DateTime? minimumSelectedDate = calendar.SelectedDates.MinimumDate;
+        if (requestedStart.HasValue && minimumSelectedDate.HasValue &&
+            requestedStart.Value > minimumSelectedDate.Value)
+        {
+            return minimumSelectedDate;
+        }
+
+        return requestedStart;
+    }
+
+    private static object? CoerceDisplayDateEnd(DependencyObject d, object? baseValue)
+    {
+        var calendar = (Calendar)d;
+        DateTime? requestedEnd = (DateTime?)baseValue;
+        if (!requestedEnd.HasValue)
+        {
+            return null;
+        }
+
+        if (calendar.DisplayDateStart.HasValue &&
+            requestedEnd.Value < calendar.DisplayDateStart.Value)
+        {
+            return calendar.DisplayDateStart;
+        }
+
+        DateTime? maximumSelectedDate = calendar.SelectedDates.MaximumDate;
+        if (maximumSelectedDate.HasValue && requestedEnd.Value < maximumSelectedDate.Value)
+        {
+            return maximumSelectedDate;
+        }
+
+        return requestedEnd;
+    }
+
+    private static void OnDisplayDateStartChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Calendar calendar)
+        {
+            calendar.CoerceValue(DisplayDateEndProperty);
+            calendar.CoerceValue(DisplayDateProperty);
+            calendar.RefreshCalendarView();
+        }
+    }
+
+    private static void OnDisplayDateEndChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Calendar calendar)
+        {
+            calendar.CoerceValue(DisplayDateProperty);
+            calendar.RefreshCalendarView();
+        }
+    }
+
+    private static void OnFirstDayOfWeekChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Calendar calendar)
+        {
+            calendar.RefreshCalendarView();
+        }
+    }
+
+    private static void OnDisplayModePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Calendar calendar)
+        {
+            calendar._hoveredRow = -1;
+            calendar._hoveredCol = -1;
+            calendar.InvalidateVisual();
+            calendar.OnDisplayModeChanged(new CalendarModeChangedEventArgs(
+                (CalendarMode)e.OldValue!, (CalendarMode)e.NewValue!));
+        }
+    }
+
+    private static void OnSelectionModePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Calendar calendar)
+        {
+            calendar.SelectedDates.Clear();
+            calendar.OnSelectionModeChanged(EventArgs.Empty);
         }
     }
 
@@ -800,9 +1376,54 @@ public class Calendar : Control
         }
     }
 
+    private static bool IsValidDisplayMode(object? value) =>
+        value is CalendarMode.Month or CalendarMode.Year or CalendarMode.Decade;
+
+    private static bool IsValidFirstDayOfWeek(object? value) =>
+        value is DayOfWeek.Sunday or DayOfWeek.Monday or DayOfWeek.Tuesday or DayOfWeek.Wednesday or
+            DayOfWeek.Thursday or DayOfWeek.Friday or DayOfWeek.Saturday;
+
+    private static bool IsValidSelectionMode(object? value) =>
+        value is CalendarSelectionMode.SingleDate or CalendarSelectionMode.SingleRange or
+            CalendarSelectionMode.MultipleRange or CalendarSelectionMode.None;
+
+    internal void OnSelectedDatesCollectionChanged(
+        IReadOnlyList<DateTime> removedDates,
+        IReadOnlyList<DateTime> addedDates)
+    {
+        DateTime? selectedDate = SelectedDates.Count == 0 ? null : SelectedDates[0];
+        _isSynchronizingSelectedDates = true;
+        try
+        {
+            SetCurrentValue(SelectedDateProperty, selectedDate);
+        }
+        finally
+        {
+            _isSynchronizingSelectedDates = false;
+        }
+
+        CoerceValue(DisplayDateStartProperty);
+        CoerceValue(DisplayDateEndProperty);
+        CoerceValue(DisplayDateProperty);
+
+        var removed = removedDates.Select(static date => (object)date).ToArray();
+        var added = addedDates.Select(static date => (object)date).ToArray();
+        OnSelectedDatesChanged(new SelectionChangedEventArgs(SelectedDatesChangedEvent, removed, added));
+        RefreshCalendarView();
+    }
+
+    internal void RefreshCalendarView()
+    {
+        if (DisplayMode == CalendarMode.Month)
+        {
+            CalculateDayGrid();
+        }
+
+        InvalidateVisual();
+    }
+
     #endregion
 }
-
 /// <summary>
 /// Specifies the selection mode for a Calendar.
 /// </summary>
@@ -854,5 +1475,3 @@ public sealed class CalendarDateChangedEventArgs : RoutedEventArgs
         AddedDate = addedDate;
     }
 }
-
-// Note: SelectionChangedEventArgs is defined in Selector.cs

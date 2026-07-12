@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls.Ink.Shaders;
+namespace Jalium.UI.Ink.Shaders;
 
 /// <summary>
 /// Calligraphy brush — elliptical nib whose effective width varies with

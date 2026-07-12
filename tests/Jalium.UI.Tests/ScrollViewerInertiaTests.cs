@@ -256,6 +256,8 @@ public class ScrollViewerInertiaTests
         SetPrivateField(viewer, "_viewportWidth", viewportWidth);
         SetPrivateField(viewer, "_verticalOffset", initialVerticalOffset);
         SetPrivateField(viewer, "_horizontalOffset", 0.0);
+        SetPrivateField(viewer, "_requestedVerticalOffset", initialVerticalOffset);
+        SetPrivateField(viewer, "_requestedHorizontalOffset", 0.0);
         SetPrivateField(viewer, "_smoothTargetX", 0.0);
         SetPrivateField(viewer, "_smoothTargetY", initialVerticalOffset);
 

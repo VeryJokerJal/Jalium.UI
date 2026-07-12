@@ -29,7 +29,7 @@ internal sealed class WindowInputDispatcher
     internal const uint MousePointerId = 1;
     private readonly Dictionary<uint, UIElement?> _activePointerTargets = [];
     private readonly Dictionary<uint, PointerPoint> _lastPointerPoints = [];
-    private readonly Dictionary<uint, PointerStylusDevice> _activeStylusDevices = [];
+    private readonly Dictionary<uint, StylusDevice> _activeStylusDevices = [];
     private readonly Dictionary<uint, PointerManipulationSession> _activeManipulationSessions = [];
     private readonly Dictionary<uint, UIElement> _lastTouchOverDirect = [];
     private uint? _primaryTouchPointerId;
@@ -82,7 +82,7 @@ internal sealed class WindowInputDispatcher
     internal MouseButton? SuppressMouseUpButton => _suppressMouseUpButton;
     internal Dictionary<uint, UIElement?> ActivePointerTargets => _activePointerTargets;
     internal Dictionary<uint, PointerPoint> LastPointerPoints => _lastPointerPoints;
-    internal Dictionary<uint, PointerStylusDevice> ActiveStylusDevices => _activeStylusDevices;
+    internal Dictionary<uint, StylusDevice> ActiveStylusDevices => _activeStylusDevices;
 
     // ══════════════════════════════════════════════════════════════
     //  Mouse Events
@@ -91,6 +91,8 @@ internal sealed class WindowInputDispatcher
     /// <summary>Handles mouse move from both Win32 and cross-platform paths.</summary>
     public void HandleMouseMove(Point position, MouseButtonStates buttons, ModifierKeys modifiers, int timestamp)
     {
+        Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
+
         // Allow subclass to intercept
         if (_host.OnPreviewWindowMouseMove(position))
             return;
@@ -105,9 +107,8 @@ internal sealed class WindowInputDispatcher
 
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
-        var captured = UIElement.MouseCapturedElement;
         UIElement? hitElement = _host.HitTestElement(position, "mouse-move");
-        if (captured == null && hitElement == _host.OverlayLayer && _host.OverlayLayer.HasLightDismissPopups)
+        if (Mouse.Captured is null && hitElement == _host.OverlayLayer && _host.OverlayLayer.HasLightDismissPopups)
         {
             var topLevelMenuItem = HitTopLevelMenuItemBehindOverlay(position);
             if (topLevelMenuItem != null)
@@ -118,7 +119,8 @@ internal sealed class WindowInputDispatcher
         // InputBlocked subtree (designer host etc.): redirect hit to the blocked ancestor itself,
         // so descendant controls never receive routed input events.
         hitElement = RedirectInputBlocked(hitElement);
-        var target = captured ?? hitElement ?? _host.Self;
+        Mouse.UpdateState(position, hitElement, buttons);
+        var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
         // Track mouse over state and raise MouseEnter/MouseLeave events
         var newMouseOverElement = hitElement;
@@ -129,6 +131,7 @@ internal sealed class WindowInputDispatcher
             if (newMouseOverElement != null)
                 RaiseMouseEnterChain(newMouseOverElement, _lastMouseOverElement, timestamp);
             _lastMouseOverElement = newMouseOverElement;
+            UIElement.SetMouseDirectlyOverElement(newMouseOverElement);
         }
 
         // Raise tunnel event (PreviewMouseMove)
@@ -169,12 +172,23 @@ internal sealed class WindowInputDispatcher
         // Update cursor based on hit element. A disabled element shows the
         // standard arrow — its Cursor (including any inherited cursor) must not
         // apply, mirroring how disabled controls drop hover/pressed visuals.
-        if (hitElement is FrameworkElement fe)
+        if (Mouse.OverrideCursor is { } overrideCursor)
+        {
+            Mouse.SetCursor(overrideCursor);
+            _host.SetPlatformCursor((int)overrideCursor.CursorType);
+        }
+        else if (hitElement is FrameworkElement fe)
         {
             if (!fe.IsEnabled)
-                _host.SetPlatformCursor((int)Jalium.UI.Cursors.Arrow.CursorType);
-            else if (fe.Cursor != null)
-                _host.SetPlatformCursor((int)fe.Cursor.CursorType);
+            {
+                Mouse.SetCursor(Jalium.UI.Input.Cursors.Arrow);
+                _host.SetPlatformCursor((int)Jalium.UI.Input.Cursors.Arrow.CursorType);
+            }
+            else if (FrameworkElement.ResolveEffectiveCursor(fe) is { } cursor)
+            {
+                Mouse.SetCursor(cursor);
+                _host.SetPlatformCursor((int)cursor.CursorType);
+            }
         }
     }
 
@@ -182,6 +196,8 @@ internal sealed class WindowInputDispatcher
     public void HandleMouseDown(MouseButton button, Point position, MouseButtonStates buttons,
         ModifierKeys modifiers, int clickCount, int timestamp)
     {
+        Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
+
         // Allow subclass to intercept
         if (_host.OnPreviewWindowMouseDown(button, position, clickCount))
             return;
@@ -225,11 +241,21 @@ internal sealed class WindowInputDispatcher
 
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
-        var captured = UIElement.MouseCapturedElement;
         var hitElement = topLevelMenuItemBehindOverlay ?? _host.HitTestElement(position, "mouse-down");
         hitElement = RedirectInputBlocked(hitElement);
         UpdateMouseOverState(hitElement, timestamp);
-        var target = captured ?? hitElement ?? _host.Self;
+        Mouse.UpdateState(position, hitElement, buttons);
+        Mouse.RaiseOutsideCapturedElementEvent(
+            true,
+            hitElement,
+            position,
+            button,
+            MouseButtonState.Pressed,
+            clickCount,
+            buttons,
+            modifiers,
+            timestamp);
+        var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
         if (button == MouseButton.Left)
         {
@@ -291,6 +317,8 @@ internal sealed class WindowInputDispatcher
     public void HandleMouseUp(MouseButton button, Point position, MouseButtonStates buttons,
         ModifierKeys modifiers, int timestamp)
     {
+        Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
+
         if (_suppressMouseUpButton == button)
         {
             _suppressMouseUpButton = null;
@@ -331,11 +359,21 @@ internal sealed class WindowInputDispatcher
             return;
         }
 
-        var captured = UIElement.MouseCapturedElement;
         var hitElement = _host.HitTestElement(position, "mouse-up");
         hitElement = RedirectInputBlocked(hitElement);
         UpdateMouseOverState(hitElement, timestamp);
-        var target = captured ?? hitElement ?? _host.Self;
+        Mouse.UpdateState(position, hitElement, buttons);
+        Mouse.RaiseOutsideCapturedElementEvent(
+            false,
+            hitElement,
+            position,
+            button,
+            MouseButtonState.Released,
+            1,
+            buttons,
+            modifiers,
+            timestamp);
+        var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
         var currentState = MouseButtonState.Released;
 
@@ -382,12 +420,15 @@ internal sealed class WindowInputDispatcher
     public void HandleMouseWheel(Point position, int delta, MouseButtonStates buttons,
         ModifierKeys modifiers, int timestamp)
     {
+        Mouse.UpdateState(position, UIElement.MouseDirectlyOverElement, buttons);
+
         // Allow subclass to intercept
         if (_host.OnPreviewWindowMouseWheel(delta, position))
             return;
 
-        var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? RedirectInputBlocked(_host.HitTestElement(position, "mouse-wheel")) ?? _host.Self;
+        var hitElement = RedirectInputBlocked(_host.HitTestElement(position, "mouse-wheel"));
+        Mouse.UpdateState(position, hitElement, buttons);
+        var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
         // Raise tunnel event (PreviewMouseWheel)
         MouseWheelEventArgs tunnelArgs = new(
@@ -427,6 +468,8 @@ internal sealed class WindowInputDispatcher
     /// <summary>Handles mouse leaving the window.</summary>
     public void HandleMouseLeave()
     {
+        Mouse.OnMouseLeaveWindow();
+
         if (_host.TitleBarStyle == WindowTitleBarStyle.Custom)
             ClearTitleBarInteractionState();
 
@@ -436,6 +479,7 @@ internal sealed class WindowInputDispatcher
         {
             RaiseMouseLeaveChain(_lastMouseOverElement, null, Environment.TickCount);
             _lastMouseOverElement = null;
+            UIElement.SetMouseDirectlyOverElement(null);
         }
     }
 
@@ -790,6 +834,7 @@ internal sealed class WindowInputDispatcher
             if (newMouseOverElement != null)
                 RaiseMouseEnterChain(newMouseOverElement, _lastMouseOverElement, timestamp);
             _lastMouseOverElement = newMouseOverElement;
+            UIElement.SetMouseDirectlyOverElement(newMouseOverElement);
         }
     }
 
@@ -1235,7 +1280,7 @@ internal sealed class WindowInputDispatcher
                 var touchDevice = Touch.GetDevice((int)pointerData.PointerId);
                 if (touchDevice != null)
                 {
-                    touchDevice.Deactivate();
+                    touchDevice.DeactivateForManager();
                     Touch.UnregisterTouchPoint((int)pointerData.PointerId);
                 }
                 _activeStylusDevices.Remove(pointerData.PointerId);
@@ -1275,7 +1320,7 @@ internal sealed class WindowInputDispatcher
 
         touchDevice.RetargetTo(effectiveTarget);
         touchDevice.UpdatePosition(pointerData.Position);
-        touchDevice.DirectlyOver = target; // raw hit, ignoring capture
+        touchDevice.SetDirectlyOver(target); // raw hit, ignoring capture
         touchDevice.RecordFrame(pointerData.StylusPoints, pointerData.Point.Properties.ContactRect, action, timestamp);
 
         // ── TouchEnter / TouchLeave routing (Direct, walking ancestor chains) ──
@@ -1327,7 +1372,7 @@ internal sealed class WindowInputDispatcher
                 _lastTouchOverDirect.Remove(pointerData.PointerId);
             }
 
-            touchDevice.Deactivate();
+            touchDevice.DeactivateForManager();
             Touch.UnregisterTouchPoint(touchId);
             _activeStylusDevices.Remove(pointerData.PointerId);
         }
@@ -1407,7 +1452,7 @@ internal sealed class WindowInputDispatcher
     {
         if (!_activeStylusDevices.TryGetValue(pointerData.PointerId, out var stylusDevice))
         {
-            stylusDevice = new PointerStylusDevice((int)pointerData.PointerId, $"Touch{pointerData.PointerId}");
+            stylusDevice = new StylusDevice((int)pointerData.PointerId, $"Touch{pointerData.PointerId}");
             _activeStylusDevices[pointerData.PointerId] = stylusDevice;
         }
 
@@ -1496,7 +1541,7 @@ internal sealed class WindowInputDispatcher
     {
         if (!_activeStylusDevices.TryGetValue(pointerData.PointerId, out var stylusDevice))
         {
-            stylusDevice = new PointerStylusDevice((int)pointerData.PointerId);
+            stylusDevice = new StylusDevice((int)pointerData.PointerId);
             _activeStylusDevices[pointerData.PointerId] = stylusDevice;
         }
 
@@ -1622,13 +1667,38 @@ internal sealed class WindowInputDispatcher
         target.RaiseEvent(args);
     }
 
+    private static void RaiseStylusSimpleEventPair(
+        UIElement target,
+        StylusDevice stylusDevice,
+        int timestamp,
+        RoutedEvent previewEvent,
+        RoutedEvent bubbleEvent)
+    {
+        var previewArgs = new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = previewEvent };
+        target.RaiseEvent(previewArgs);
+        if (!previewArgs.Handled)
+        {
+            target.RaiseEvent(new StylusEventArgs(stylusDevice, timestamp) { RoutedEvent = bubbleEvent });
+        }
+    }
+
     private static void RaiseStylusSystemGestureEvent(UIElement target, StylusDevice stylusDevice, int timestamp, SystemGesture gesture)
     {
-        var args = new StylusSystemGestureEventArgs(stylusDevice, timestamp, gesture)
+        var previewArgs = new StylusSystemGestureEventArgs(stylusDevice, timestamp, gesture)
+        {
+            RoutedEvent = UIElement.PreviewStylusSystemGestureEvent
+        };
+        target.RaiseEvent(previewArgs);
+        if (previewArgs.Handled)
+        {
+            return;
+        }
+
+        var bubbleArgs = new StylusSystemGestureEventArgs(stylusDevice, timestamp, gesture)
         {
             RoutedEvent = UIElement.StylusSystemGestureEvent
         };
-        target.RaiseEvent(args);
+        target.RaiseEvent(bubbleArgs);
     }
 
     // ── Touch-mode hit-test fallback ──
@@ -1753,13 +1823,22 @@ internal sealed class WindowInputDispatcher
         return true;
     }
 
-    private static void RaiseStylusButtonEvent(UIElement target, StylusDevice stylusDevice, int timestamp, RoutedEvent routedEvent)
+    private static void RaiseStylusButtonEvent(
+        UIElement target,
+        StylusDevice stylusDevice,
+        int timestamp,
+        RoutedEvent previewEvent,
+        RoutedEvent bubbleEvent)
     {
         StylusButton? button = GetBarrelButton(stylusDevice);
         if (button == null) return;
 
-        var args = new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = routedEvent };
-        target.RaiseEvent(args);
+        var previewArgs = new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = previewEvent };
+        target.RaiseEvent(previewArgs);
+        if (!previewArgs.Handled)
+        {
+            target.RaiseEvent(new StylusButtonEventArgs(stylusDevice, timestamp, button) { RoutedEvent = bubbleEvent });
+        }
     }
 
     private static void RaiseStylusExtendedEvents(
@@ -1774,21 +1853,26 @@ internal sealed class WindowInputDispatcher
 
         if (processResult.EnteredRange)
         {
-            RaiseStylusSimpleEvent(target, stylusDevice, timestamp, UIElement.StylusInRangeEvent);
+            RaiseStylusSimpleEventPair(target, stylusDevice, timestamp,
+                UIElement.PreviewStylusInRangeEvent, UIElement.StylusInRangeEvent);
             RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.HoverEnter);
         }
 
         if (processResult.ExitedRange)
         {
-            RaiseStylusSimpleEvent(processResult.PreviousTarget ?? target, stylusDevice, timestamp, UIElement.StylusOutOfRangeEvent);
-            RaiseStylusSystemGestureEvent(processResult.PreviousTarget ?? target, stylusDevice, timestamp, SystemGesture.HoverLeave);
+            UIElement rangeTarget = processResult.PreviousTarget ?? target;
+            RaiseStylusSimpleEventPair(rangeTarget, stylusDevice, timestamp,
+                UIElement.PreviewStylusOutOfRangeEvent, UIElement.StylusOutOfRangeEvent);
+            RaiseStylusSystemGestureEvent(rangeTarget, stylusDevice, timestamp, SystemGesture.HoverLeave);
         }
 
         if (processResult.BarrelButtonDown)
-            RaiseStylusButtonEvent(target, stylusDevice, timestamp, UIElement.StylusButtonDownEvent);
+            RaiseStylusButtonEvent(target, stylusDevice, timestamp,
+                UIElement.PreviewStylusButtonDownEvent, UIElement.StylusButtonDownEvent);
 
         if (processResult.BarrelButtonUp)
-            RaiseStylusButtonEvent(target, stylusDevice, timestamp, UIElement.StylusButtonUpEvent);
+            RaiseStylusButtonEvent(target, stylusDevice, timestamp,
+                UIElement.PreviewStylusButtonUpEvent, UIElement.StylusButtonUpEvent);
 
         switch (inputAction)
         {
@@ -1804,7 +1888,8 @@ internal sealed class WindowInputDispatcher
                         ? SystemGesture.RightDrag : SystemGesture.Drag);
                 break;
             case StylusInputAction.InAirMove:
-                RaiseStylusSimpleEvent(target, stylusDevice, timestamp, UIElement.StylusInAirMoveEvent);
+                RaiseStylusSimpleEventPair(target, stylusDevice, timestamp,
+                    UIElement.PreviewStylusInAirMoveEvent, UIElement.StylusInAirMoveEvent);
                 break;
             case StylusInputAction.Up:
                 RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.HoldLeave);
@@ -1848,7 +1933,7 @@ internal sealed class WindowInputDispatcher
             ManipulationStartingEventArgs? startingArgs = RaiseManipulationStartingPipeline(target);
             if (startingArgs == null) return;
 
-            UIElement container = startingArgs.ManipulationContainer ?? target;
+            UIElement container = startingArgs.ManipulationContainer as UIElement ?? target;
             var session = new PointerManipulationSession(
                 container,
                 pointerData.Point.Position,
@@ -1907,11 +1992,10 @@ internal sealed class WindowInputDispatcher
         {
             RoutedEvent = UIElement.PreviewManipulationStartingEvent,
             ManipulationContainer = target,
-            Mode = ManipulationModes.All,
-            Cancel = false
+            Mode = ManipulationModes.All
         };
         target.RaiseEvent(previewArgs);
-        if (previewArgs.Cancel) return null;
+        if (previewArgs.CancelRequested) return null;
 
         if (previewArgs.Handled)
             return previewArgs;
@@ -1922,11 +2006,10 @@ internal sealed class WindowInputDispatcher
             ManipulationContainer = previewArgs.ManipulationContainer ?? target,
             Mode = previewArgs.Mode,
             Pivot = previewArgs.Pivot,
-            IsSingleTouchEnabled = previewArgs.IsSingleTouchEnabled,
-            Cancel = false
+            IsSingleTouchEnabled = previewArgs.IsSingleTouchEnabled
         };
         target.RaiseEvent(bubbleArgs);
-        if (bubbleArgs.Cancel) return null;
+        if (bubbleArgs.CancelRequested) return null;
         return bubbleArgs;
     }
 
@@ -2220,7 +2303,7 @@ internal sealed class WindowInputDispatcher
         TouchDevice? touchDevice = Touch.GetDevice((int)pointerId);
         if (touchDevice != null)
         {
-            touchDevice.Deactivate();
+            touchDevice.DeactivateForManager();
             Touch.UnregisterTouchPoint((int)pointerId);
         }
     }

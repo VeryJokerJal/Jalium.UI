@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -8,10 +9,21 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ToolBar : HeaderedItemsControl
 {
+    private static readonly ResourceKey s_buttonStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(ButtonStyleKey));
+    private static readonly ResourceKey s_checkBoxStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(CheckBoxStyleKey));
+    private static readonly ResourceKey s_comboBoxStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(ComboBoxStyleKey));
+    private static readonly ResourceKey s_menuStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(MenuStyleKey));
+    private static readonly ResourceKey s_radioButtonStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(RadioButtonStyleKey));
+    private static readonly ResourceKey s_separatorStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(SeparatorStyleKey));
+    private static readonly ResourceKey s_textBoxStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(TextBoxStyleKey));
+    private static readonly ResourceKey s_toggleButtonStyleKey = new ComponentResourceKey(typeof(ToolBar), nameof(ToggleButtonStyleKey));
+    private readonly ToolBarOverflowPanel _overflowPanel;
+    private readonly List<UIElement> _containerOrder = new();
+
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ToolBarAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ToolBarAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -38,15 +50,22 @@ public class ToolBar : HeaderedItemsControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOverflowOpenProperty =
         DependencyProperty.Register(nameof(IsOverflowOpen), typeof(bool), typeof(ToolBar),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnIsOverflowOpenChanged));
 
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    private static readonly DependencyPropertyKey OrientationPropertyKey =
+        DependencyProperty.RegisterAttachedReadOnly(
+            nameof(Orientation),
+            typeof(Orientation),
+            typeof(ToolBar),
+            new PropertyMetadata(Orientation.Horizontal, OnOrientationChanged),
+            IsValidOrientation);
+
     public static readonly DependencyProperty OrientationProperty =
-        DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(ToolBar),
-            new PropertyMetadata(Orientation.Horizontal));
+        OrientationPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the OverflowMode attached property.
@@ -54,15 +73,26 @@ public class ToolBar : HeaderedItemsControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty OverflowModeProperty =
         DependencyProperty.RegisterAttached("OverflowMode", typeof(OverflowMode), typeof(ToolBar),
-            new PropertyMetadata(OverflowMode.AsNeeded));
+            new PropertyMetadata(OverflowMode.AsNeeded, OnOverflowModeChanged), IsValidOverflowMode);
 
     /// <summary>
     /// Identifies the IsOverflowItem attached property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsOverflowItemProperty =
-        DependencyProperty.RegisterAttached("IsOverflowItem", typeof(bool), typeof(ToolBar),
+    private static readonly DependencyPropertyKey IsOverflowItemPropertyKey =
+        DependencyProperty.RegisterAttachedReadOnly("IsOverflowItem", typeof(bool), typeof(ToolBar),
             new PropertyMetadata(false));
+
+    public static readonly DependencyProperty IsOverflowItemProperty =
+        IsOverflowItemPropertyKey.DependencyProperty;
+
+    private static readonly DependencyPropertyKey HasOverflowItemsPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(HasOverflowItems), typeof(bool), typeof(ToolBar),
+            new PropertyMetadata(false));
+
+    /// <summary>Identifies the read-only overflow state property.</summary>
+    public static readonly DependencyProperty HasOverflowItemsProperty =
+        HasOverflowItemsPropertyKey.DependencyProperty;
 
     #endregion
 
@@ -101,7 +131,7 @@ public class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Gets a value that indicates whether the toolbar has items that are not visible.
     /// </summary>
-    public bool HasOverflowItems { get; private set; }
+    public bool HasOverflowItems => (bool)(GetValue(HasOverflowItemsProperty) ?? false);
 
     /// <summary>
     /// Gets or sets the orientation of the ToolBar.
@@ -110,8 +140,16 @@ public class ToolBar : HeaderedItemsControl
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
-        set => SetValue(OrientationProperty, value);
     }
+
+    public static ResourceKey ButtonStyleKey => s_buttonStyleKey;
+    public static ResourceKey CheckBoxStyleKey => s_checkBoxStyleKey;
+    public static ResourceKey ComboBoxStyleKey => s_comboBoxStyleKey;
+    public static ResourceKey MenuStyleKey => s_menuStyleKey;
+    public static ResourceKey RadioButtonStyleKey => s_radioButtonStyleKey;
+    public static ResourceKey SeparatorStyleKey => s_separatorStyleKey;
+    public static ResourceKey TextBoxStyleKey => s_textBoxStyleKey;
+    public static ResourceKey ToggleButtonStyleKey => s_toggleButtonStyleKey;
 
     #endregion
 
@@ -123,6 +161,7 @@ public class ToolBar : HeaderedItemsControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static OverflowMode GetOverflowMode(DependencyObject element)
     {
+        ArgumentNullException.ThrowIfNull(element);
         return (OverflowMode)(element.GetValue(OverflowModeProperty) ?? OverflowMode.AsNeeded);
     }
 
@@ -132,6 +171,7 @@ public class ToolBar : HeaderedItemsControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetOverflowMode(DependencyObject element, OverflowMode mode)
     {
+        ArgumentNullException.ThrowIfNull(element);
         element.SetValue(OverflowModeProperty, mode);
     }
 
@@ -141,12 +181,13 @@ public class ToolBar : HeaderedItemsControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetIsOverflowItem(DependencyObject element)
     {
+        ArgumentNullException.ThrowIfNull(element);
         return (bool)(element.GetValue(IsOverflowItemProperty) ?? false);
     }
 
     internal static void SetIsOverflowItem(DependencyObject element, bool value)
     {
-        element.SetValue(IsOverflowItemProperty, value);
+        element.SetValue(IsOverflowItemPropertyKey, value);
     }
 
     #endregion
@@ -156,21 +197,309 @@ public class ToolBar : HeaderedItemsControl
     /// </summary>
     public ToolBar()
     {
+        _overflowPanel = new ToolBarOverflowPanel
+        {
+            ToolBarOwner = this,
+            Visibility = Visibility.Collapsed
+        };
+        AddVisualChild(_overflowPanel);
+    }
+
+    /// <inheritdoc />
+    protected override Panel CreateItemsPanel()
+    {
+        return new ToolBarPanel
+        {
+            ToolBarOwner = this,
+            Orientation = Orientation
+        };
+    }
+
+    /// <inheritdoc />
+    protected override void PrepareContainerForItem(FrameworkElement element, object item)
+    {
+        base.PrepareContainerForItem(element, item);
+        if (element.Style != null)
+        {
+            return;
+        }
+
+        ResourceKey? key = element switch
+        {
+            CheckBox => CheckBoxStyleKey,
+            RadioButton => RadioButtonStyleKey,
+            ToggleButton => ToggleButtonStyleKey,
+            Button => ButtonStyleKey,
+            ComboBox => ComboBoxStyleKey,
+            Menu => MenuStyleKey,
+            Separator => SeparatorStyleKey,
+            TextBox => TextBoxStyleKey,
+            _ => null
+        };
+
+        if (key != null && TryFindResource(key) is Style style)
+        {
+            element.Style = style;
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnItemsChanged(System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    {
+        RestoreAllItemsToMainPanel();
+        base.OnItemsChanged(e);
+    }
+
+    /// <inheritdoc />
+    protected override void RefreshItems()
+    {
+        RestoreAllItemsToMainPanel();
+        base.RefreshItems();
+        ConfigureMainPanel();
+    }
+
+    /// <inheritdoc />
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        if (Template != null)
+        {
+            var templatedSize = base.MeasureOverride(availableSize);
+            UpdateOverflowStateFromCurrentHost(availableSize);
+            return templatedSize;
+        }
+
+        if (ItemsHost == null)
+        {
+            RefreshItems();
+        }
+
+        UpdateOverflowStateFromCurrentHost(availableSize);
+        if (ItemsHost is not Panel mainPanel)
+        {
+            return default;
+        }
+
+        mainPanel.Measure(availableSize);
+        _overflowPanel.Measure(new Size(
+            double.IsFinite(availableSize.Width) ? Math.Max(availableSize.Width, 0) : 200,
+            double.PositiveInfinity));
+        return mainPanel.DesiredSize;
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var result = base.ArrangeOverride(finalSize);
-        UpdateOverflowItems();
-        return result;
+        if (Template != null)
+        {
+            var result = base.ArrangeOverride(finalSize);
+            UpdateOverflowPanelVisibility();
+            return result;
+        }
+
+        ItemsHost?.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
+        UpdateOverflowPanelVisibility();
+        if (_overflowPanel.Visibility == Visibility.Visible)
+        {
+            var overflowSize = _overflowPanel.DesiredSize;
+            var origin = Orientation == Orientation.Horizontal
+                ? new Point(0, finalSize.Height)
+                : new Point(finalSize.Width, 0);
+            _overflowPanel.Arrange(new Rect(origin.X, origin.Y, overflowSize.Width, overflowSize.Height));
+        }
+        else
+        {
+            _overflowPanel.Arrange(default);
+        }
+
+        return finalSize;
     }
 
-    private void UpdateOverflowItems()
+    /// <inheritdoc />
+    protected override int VisualChildrenCount
     {
-        // In a real implementation, this would move items to/from the overflow panel
-        // based on available space
-        HasOverflowItems = false;
+        get
+        {
+            if (Template != null)
+            {
+                return base.VisualChildrenCount;
+            }
+
+            return ItemsHost == null ? 0 : 2;
+        }
+    }
+
+    /// <inheritdoc />
+    protected override Visual? GetVisualChild(int index)
+    {
+        if (Template != null)
+        {
+            return base.GetVisualChild(index);
+        }
+
+        if (ItemsHost == null)
+        {
+            throw new ArgumentOutOfRangeException(nameof(index));
+        }
+
+        return index switch
+        {
+            0 => ItemsHost,
+            1 => _overflowPanel,
+            _ => throw new ArgumentOutOfRangeException(nameof(index))
+        };
+    }
+
+    internal ToolBarOverflowPanel OverflowPanel => _overflowPanel;
+
+    internal void SetOrientationFromTray(Orientation orientation) =>
+        SetValue(OrientationPropertyKey, orientation);
+
+    private void UpdateOverflowStateFromCurrentHost(Size availableSize)
+    {
+        RestoreAllItemsToMainPanel();
+        if (ItemsHost is not ToolBarPanel mainPanel)
+        {
+            SetValue(HasOverflowItemsPropertyKey, false);
+            return;
+        }
+
+        ConfigureMainPanel();
+        _containerOrder.Clear();
+        foreach (UIElement child in mainPanel.Children)
+        {
+            _containerOrder.Add(child);
+        }
+
+        var isHorizontal = Orientation == Orientation.Horizontal;
+        var childConstraint = isHorizontal
+            ? new Size(double.PositiveInfinity, availableSize.Height)
+            : new Size(availableSize.Width, double.PositiveInfinity);
+        foreach (var child in _containerOrder)
+        {
+            child.Measure(childConstraint);
+        }
+
+        var available = isHorizontal ? availableSize.Width : availableSize.Height;
+        var neverExtent = _containerOrder
+            .Where(child => GetOverflowMode(child) == OverflowMode.Never)
+            .Sum(child => GetMainExtent(child, isHorizontal));
+        var asNeededAvailable = double.IsFinite(available)
+            ? Math.Max(0, available - neverExtent)
+            : double.PositiveInfinity;
+        var asNeededUsed = 0.0;
+        var overflowItems = new List<UIElement>();
+        foreach (var child in _containerOrder)
+        {
+            var mode = GetOverflowMode(child);
+            var extent = GetMainExtent(child, isHorizontal);
+            var overflow = mode == OverflowMode.Always ||
+                (mode == OverflowMode.AsNeeded && asNeededUsed + extent > asNeededAvailable);
+            if (mode == OverflowMode.AsNeeded && !overflow)
+            {
+                asNeededUsed += extent;
+            }
+
+            SetIsOverflowItem(child, overflow);
+            if (overflow)
+            {
+                overflowItems.Add(child);
+            }
+        }
+
+        foreach (var child in overflowItems)
+        {
+            mainPanel.Children.Remove(child);
+            _overflowPanel.Children.Add(child);
+        }
+
+        mainPanel.SetOverflowItems(overflowItems);
+        SetValue(HasOverflowItemsPropertyKey, overflowItems.Count > 0);
+        if (overflowItems.Count == 0 && IsOverflowOpen)
+        {
+            SetCurrentValue(IsOverflowOpenProperty, false);
+        }
+
+        UpdateOverflowPanelVisibility();
+    }
+
+    private void RestoreAllItemsToMainPanel()
+    {
+        if (_overflowPanel.Children.Count == 0 || ItemsHost is not ToolBarPanel mainPanel)
+        {
+            return;
+        }
+
+        var ordered = _containerOrder.Count > 0
+            ? _containerOrder.ToArray()
+            : mainPanel.Children.Concat(_overflowPanel.Children).ToArray();
+        mainPanel.Children.Clear();
+        _overflowPanel.Children.Clear();
+        foreach (var child in ordered)
+        {
+            SetIsOverflowItem(child, false);
+            mainPanel.Children.Add(child);
+        }
+
+        mainPanel.SetOverflowItems(Array.Empty<UIElement>());
+    }
+
+    private void ConfigureMainPanel()
+    {
+        if (ItemsHost is ToolBarPanel panel)
+        {
+            panel.ToolBarOwner = this;
+            panel.Orientation = Orientation;
+        }
+
+        _overflowPanel.ToolBarOwner = this;
+    }
+
+    private void UpdateOverflowPanelVisibility()
+    {
+        _overflowPanel.Visibility = HasOverflowItems && IsOverflowOpen
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private static double GetMainExtent(UIElement element, bool horizontal) =>
+        horizontal ? element.DesiredSize.Width : element.DesiredSize.Height;
+
+    private static bool IsValidOverflowMode(object? value) =>
+        value is OverflowMode.AsNeeded or OverflowMode.Always or OverflowMode.Never;
+
+    private static bool IsValidOrientation(object? value) =>
+        value is Orientation.Horizontal or Orientation.Vertical;
+
+    private static void OnOverflowModeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        for (Visual? current = d as Visual; current != null; current = current.VisualParent)
+        {
+            if (current is ToolBarPanel { ToolBarOwner: { } owner })
+            {
+                owner.InvalidateMeasure();
+                return;
+            }
+
+            if (current is ToolBarOverflowPanel { ToolBarOwner: { } overflowOwner })
+            {
+                overflowOwner.InvalidateMeasure();
+                return;
+            }
+        }
+    }
+
+    private static void OnOrientationChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var toolBar = (ToolBar)d;
+        toolBar.ConfigureMainPanel();
+        toolBar.InvalidateMeasure();
+    }
+
+    private static void OnIsOverflowOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var toolBar = (ToolBar)d;
+        toolBar.UpdateOverflowPanelVisibility();
+        toolBar.InvalidateArrange();
     }
 }
 
@@ -180,6 +509,7 @@ public class ToolBar : HeaderedItemsControl
 public class ToolBarTray : FrameworkElement
 {
     private readonly ObservableCollection<ToolBar> _toolBars;
+    private readonly HashSet<ToolBar> _attachedToolBars = new();
 
     #region Dependency Properties
 
@@ -189,15 +519,18 @@ public class ToolBarTray : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(ToolBarTray),
-            new PropertyMetadata(Orientation.Horizontal));
+            new PropertyMetadata(Orientation.Horizontal, OnTrayOrientationChanged), IsValidTrayOrientation);
 
     /// <summary>
     /// Identifies the IsLocked dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsLockedProperty =
-        DependencyProperty.Register(nameof(IsLocked), typeof(bool), typeof(ToolBarTray),
-            new PropertyMetadata(false));
+        DependencyProperty.RegisterAttached(nameof(IsLocked), typeof(bool), typeof(ToolBarTray),
+            new FrameworkPropertyMetadata(
+                false,
+                FrameworkPropertyMetadataOptions.AffectsMeasure |
+                FrameworkPropertyMetadataOptions.Inherits));
 
     /// <summary>
     /// Identifies the Background dependency property.
@@ -236,6 +569,18 @@ public class ToolBarTray : FrameworkElement
         set => SetValue(IsLockedProperty, value);
     }
 
+    public static bool GetIsLocked(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (bool)(element.GetValue(IsLockedProperty) ?? false);
+    }
+
+    public static void SetIsLocked(DependencyObject element, bool value)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(IsLockedProperty, value);
+    }
+
     /// <summary>
     /// Gets or sets a brush to use for the background color of the ToolBarTray.
     /// </summary>
@@ -259,8 +604,40 @@ public class ToolBarTray : FrameworkElement
 
     private void OnToolBarsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
+        var current = new HashSet<ToolBar>(_toolBars);
+        foreach (var removed in _attachedToolBars.Where(toolBar => !current.Contains(toolBar)).ToArray())
+        {
+            RemoveVisualChild(removed);
+            RemoveLogicalChild(removed);
+            removed.SetOrientationFromTray(Orientation.Horizontal);
+            _attachedToolBars.Remove(removed);
+        }
+
+        foreach (var added in current.Where(toolBar => !_attachedToolBars.Contains(toolBar)))
+        {
+            AddVisualChild(added);
+            AddLogicalChild(added);
+            added.SetOrientationFromTray(Orientation);
+            _attachedToolBars.Add(added);
+        }
+
         InvalidateMeasure();
     }
+
+    private static void OnTrayOrientationChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var tray = (ToolBarTray)d;
+        var orientation = (Orientation)(e.NewValue ?? Orientation.Horizontal);
+        foreach (var toolBar in tray._toolBars)
+        {
+            toolBar.SetOrientationFromTray(orientation);
+        }
+
+        tray.InvalidateMeasure();
+    }
+
+    private static bool IsValidTrayOrientation(object? value) =>
+        value is Orientation.Horizontal or Orientation.Vertical;
 
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)

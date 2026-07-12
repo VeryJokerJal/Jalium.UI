@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
@@ -12,9 +12,9 @@ namespace Jalium.UI.Controls;
 public class ColorPicker : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ColorPickerAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ColorPickerAutomationPeer(this);
     }
 
     // Cached brushes and pens for OnRender
@@ -526,7 +526,7 @@ public class ColorPicker : Control
             if (IsHexInputVisible)
             {
                 var hexText = $"#{_alpha:X2}{Color.R:X2}{Color.G:X2}{Color.B:X2}";
-                var formattedText = new FormattedText(hexText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+                var formattedText = new FormattedText(hexText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
                 {
                     Foreground = ResolveForegroundBrush()
                 };

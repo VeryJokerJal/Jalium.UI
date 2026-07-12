@@ -11,9 +11,9 @@ namespace Jalium.UI.Controls;
 public class ListBox : Selector
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ListBoxAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ListBoxAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -26,17 +26,25 @@ public class ListBox : Selector
         DependencyProperty.Register(nameof(SelectionMode), typeof(SelectionMode), typeof(ListBox),
             new PropertyMetadata(SelectionMode.Single, OnSelectionModeChanged));
 
+    /// <summary>
+    /// Identifies the read-only <see cref="SelectedItems"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty SelectedItemsProperty =
+        Selector.SelectedItemsImplProperty;
+
     #endregion
 
     #region Fields
 
-    private readonly List<object> _selectedItems = new();
+    private readonly List<object> _selectedItems;
 
     /// <summary>
     /// The anchor index for Extended selection range operations.
     /// Set on regular click and Ctrl+Click; not changed on Shift+Click.
     /// </summary>
     private int _anchorIndex = -1;
+    private object? _anchorItem;
+    private bool _isApplyingSelectedItems;
 
     #endregion
 
@@ -59,6 +67,34 @@ public class ListBox : Selector
     /// </summary>
     public IList SelectedItems => _selectedItems;
 
+    /// <summary>
+    /// Gets or sets the anchor item used for extended range selection.
+    /// </summary>
+    protected object? AnchorItem
+    {
+        get => ResolveAnchorIndex() >= 0 ? _anchorItem : null;
+        set
+        {
+            if (value is null || ReferenceEquals(value, DependencyProperty.UnsetValue))
+            {
+                ClearAnchor();
+                return;
+            }
+
+            int index = GetIndexOf(value);
+            if (index < 0)
+            {
+                throw new InvalidOperationException("The anchor item must belong to this ListBox.");
+            }
+
+            _anchorIndex = index;
+            _anchorItem = GetItemAt(index);
+        }
+    }
+
+    /// <inheritdoc />
+    protected internal override bool HandlesScrolling => true;
+
     #endregion
 
     #region Constructor
@@ -68,6 +104,7 @@ public class ListBox : Selector
     /// </summary>
     public ListBox()
     {
+        _selectedItems = (List<object>)SelectedItemsImpl;
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
         if (ItemsPanel == null)
@@ -78,6 +115,41 @@ public class ListBox : Selector
         // Register input event handlers
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+    }
+
+    /// <summary>
+    /// Brings the specified item into the visible viewport.
+    /// </summary>
+    public void ScrollIntoView(object item)
+    {
+        if (item is null)
+        {
+            return;
+        }
+
+        int index = GetIndexOf(item);
+        if (index < 0)
+        {
+            return;
+        }
+
+        if (ItemContainerGenerator.ContainerFromIndex(index) is FrameworkElement realizedContainer)
+        {
+            realizedContainer.BringIntoView();
+            return;
+        }
+
+        if (ItemsHost is VirtualizingPanel virtualizingPanel)
+        {
+            virtualizingPanel.BringIndexIntoView(index);
+            return;
+        }
+
+        if (ItemsHost is { } itemsHost && index < itemsHost.Children.Count &&
+            itemsHost.Children[index] is FrameworkElement container)
+        {
+            container.BringIntoView();
+        }
     }
 
     #endregion
@@ -97,7 +169,7 @@ public class ListBox : Selector
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item)
+    protected override bool IsItemItsOwnContainerOverride(object item)
     {
         return item is ListBoxItem;
     }
@@ -154,6 +226,82 @@ public class ListBox : Selector
     #region Selection
 
     /// <summary>
+    /// Replaces the current selection with the supplied items as one atomic operation.
+    /// </summary>
+    /// <returns>
+    /// <see langword="true"/> when every requested item belongs to this ListBox and the
+    /// selection was applied; otherwise <see langword="false"/> and the old selection is retained.
+    /// </returns>
+    protected bool SetSelectedItems(IEnumerable selectedItems)
+    {
+        if (_isApplyingSelectedItems)
+        {
+            return false;
+        }
+
+        var resolvedItems = new List<(object SelectionValue, int Index, object Item)>();
+        if (selectedItems is not null)
+        {
+            foreach (object? requestedItem in selectedItems)
+            {
+                if (requestedItem is null ||
+                    !TryResolveSelectionItem(requestedItem, out object? selectionValue, out int index, out object? item))
+                {
+                    return false;
+                }
+
+                if (resolvedItems.Any(entry => Equals(entry.SelectionValue, selectionValue)))
+                {
+                    continue;
+                }
+
+                resolvedItems.Add((selectionValue!, index, item!));
+            }
+        }
+
+        if (SelectionMode == SelectionMode.Single && resolvedItems.Count > 1)
+        {
+            return false;
+        }
+
+        var oldSelectedItems = new List<object>(_selectedItems);
+        var newSelectedItems = resolvedItems.Select(entry => entry.SelectionValue).ToList();
+        var removedItems = oldSelectedItems.Where(item => !newSelectedItems.Contains(item)).ToList();
+        var addedItems = newSelectedItems.Where(item => !oldSelectedItems.Contains(item)).ToList();
+
+        _isApplyingSelectedItems = true;
+        try
+        {
+            _selectedItems.Clear();
+            _selectedItems.AddRange(newSelectedItems);
+
+            if (resolvedItems.Count == 0)
+            {
+                UpdateSelectionPropertiesFromBatch(-1, null);
+            }
+            else
+            {
+                var first = resolvedItems[0];
+                UpdateSelectionPropertiesFromBatch(first.Index, first.Item);
+            }
+
+            if (removedItems.Count > 0 || addedItems.Count > 0)
+            {
+                OnSelectionChanged(new SelectionChangedEventArgs(
+                    SelectionChangedEvent,
+                    removedItems,
+                    addedItems));
+            }
+
+            return true;
+        }
+        finally
+        {
+            _isApplyingSelectedItems = false;
+        }
+    }
+
+    /// <summary>
     /// Selects the specified item, respecting the current selection mode and modifier keys.
     /// </summary>
     /// <param name="item">The ListBoxItem to select.</param>
@@ -200,7 +348,7 @@ public class ListBox : Selector
         // Select the clicked item
         item.IsSelected = true;
         _selectedItems.Add(content);
-        _anchorIndex = GetItemIndex(item);
+        SetAnchorIndex(GetItemIndex(item));
 
         SelectedItem = content;
 
@@ -227,7 +375,7 @@ public class ListBox : Selector
 
             // Update SelectedItem to last selected or null
             SelectedItem = _selectedItems.Count > 0 ? _selectedItems[^1] : null;
-            _anchorIndex = clickedIndex;
+            SetAnchorIndex(clickedIndex);
 
             var args = new SelectionChangedEventArgs(SelectionChangedEvent, new object[] { content }, Array.Empty<object>());
             OnSelectionChanged(args);
@@ -237,7 +385,7 @@ public class ListBox : Selector
             // Select
             item.IsSelected = true;
             _selectedItems.Add(content);
-            _anchorIndex = clickedIndex;
+            SetAnchorIndex(clickedIndex);
 
             SelectedItem = content;
 
@@ -254,7 +402,8 @@ public class ListBox : Selector
         if (isShiftPressed)
         {
             // Shift+Click: select range from anchor to clicked item
-            var fromIndex = _anchorIndex >= 0 ? _anchorIndex : 0;
+            int anchorIndex = ResolveAnchorIndex();
+            var fromIndex = anchorIndex >= 0 ? anchorIndex : 0;
             var removedItems = new List<object>(_selectedItems);
 
             // If Ctrl is NOT held, clear existing selection first
@@ -299,7 +448,7 @@ public class ListBox : Selector
                 OnSelectionChanged(args);
             }
 
-            _anchorIndex = clickedIndex;
+            SetAnchorIndex(clickedIndex);
         }
         else
         {
@@ -384,7 +533,7 @@ public class ListBox : Selector
             yield break;
         }
 
-        foreach (var child in ItemsHost.Children)
+        foreach (UIElement child in ItemsHost.Children)
         {
             if (child is ListBoxItem item)
             {
@@ -407,6 +556,75 @@ public class ListBox : Selector
         }
 
         return item;
+    }
+
+    private bool TryResolveSelectionItem(
+        object requestedItem,
+        out object? selectionValue,
+        out int index,
+        out object? item)
+    {
+        int count = GetItemCount();
+        for (int i = 0; i < count; i++)
+        {
+            object? candidateItem = GetItemAt(i);
+            object? candidateValue = GetSelectionValueFromLogicalItem(candidateItem);
+            if ((Equals(candidateItem, requestedItem) || Equals(candidateValue, requestedItem)) &&
+                candidateItem is not null && candidateValue is not null)
+            {
+                selectionValue = candidateValue;
+                index = i;
+                item = candidateItem;
+                return true;
+            }
+        }
+
+        selectionValue = null;
+        index = -1;
+        item = null;
+        return false;
+    }
+
+    private void SetAnchorIndex(int index)
+    {
+        object? item = GetItemAt(index);
+        if (index < 0 || item is null)
+        {
+            ClearAnchor();
+            return;
+        }
+
+        _anchorIndex = index;
+        _anchorItem = item;
+    }
+
+    private int ResolveAnchorIndex()
+    {
+        if (_anchorItem is null)
+        {
+            _anchorIndex = -1;
+            return -1;
+        }
+
+        if (_anchorIndex >= 0 && _anchorIndex < GetItemCount() &&
+            Equals(GetItemAt(_anchorIndex), _anchorItem))
+        {
+            return _anchorIndex;
+        }
+
+        _anchorIndex = GetIndexOf(_anchorItem);
+        if (_anchorIndex < 0)
+        {
+            ClearAnchor();
+        }
+
+        return _anchorIndex;
+    }
+
+    private void ClearAnchor()
+    {
+        _anchorIndex = -1;
+        _anchorItem = null;
     }
 
     /// <summary>
@@ -542,7 +760,8 @@ public class ListBox : Selector
                                 UnselectAllContainers();
                                 _selectedItems.Clear();
                             }
-                            var fromIndex = _anchorIndex >= 0 ? _anchorIndex : SelectedIndex;
+                            int anchorIndex = ResolveAnchorIndex();
+                            var fromIndex = anchorIndex >= 0 ? anchorIndex : SelectedIndex;
                             var addedItems = SelectRange(0, fromIndex);
                             foreach (var added in addedItems) removedItems.Remove(added);
                             SelectedIndex = 0;
@@ -572,7 +791,8 @@ public class ListBox : Selector
                                 UnselectAllContainers();
                                 _selectedItems.Clear();
                             }
-                            var fromIndex = _anchorIndex >= 0 ? _anchorIndex : SelectedIndex;
+                            int anchorIndex = ResolveAnchorIndex();
+                            var fromIndex = anchorIndex >= 0 ? anchorIndex : SelectedIndex;
                             var addedItems = SelectRange(fromIndex, itemCount - 1);
                             foreach (var added in addedItems) removedItems.Remove(added);
                             SelectedIndex = itemCount - 1;
@@ -643,7 +863,8 @@ public class ListBox : Selector
                 if (isShift)
                 {
                     // Shift+Arrow: extend selection range from anchor
-                    var fromIndex = _anchorIndex >= 0 ? _anchorIndex : currentIndex;
+                    int anchorIndex = ResolveAnchorIndex();
+                    var fromIndex = anchorIndex >= 0 ? anchorIndex : currentIndex;
                     var removedItems = new List<object>(_selectedItems);
 
                     if (!isCtrl)
@@ -739,7 +960,7 @@ public class ListBox : Selector
                         var args = new SelectionChangedEventArgs(SelectionChangedEvent, Array.Empty<object>(), new object[] { value });
                         OnSelectionChanged(args);
                     }
-                    _anchorIndex = currentIndex;
+                    SetAnchorIndex(currentIndex);
                     return true;
                 }
                 break;
@@ -767,7 +988,7 @@ public class ListBox : Selector
         _selectedItems.Add(value);
         removedItems.Remove(value);
 
-        _anchorIndex = index;
+        SetAnchorIndex(index);
         SelectedIndex = index;
         SelectedItem = value;
 
@@ -810,7 +1031,8 @@ public class ListBox : Selector
 
             case SelectionMode.Extended:
                 // Extended drag: range-select from anchor to current item (like Shift+Click)
-                if (_anchorIndex >= 0)
+                int anchorIndex = ResolveAnchorIndex();
+                if (anchorIndex >= 0)
                 {
                     var clickedIndex = GetItemIndex(item);
                     if (clickedIndex < 0)
@@ -822,7 +1044,7 @@ public class ListBox : Selector
                     UnselectAllContainers();
                     _selectedItems.Clear();
 
-                    var addedItems = SelectRange(_anchorIndex, clickedIndex);
+                    var addedItems = SelectRange(anchorIndex, clickedIndex);
                     foreach (var added in addedItems) removedItems.Remove(added);
 
                     SelectedItem = GetSelectionValueAtIndex(clickedIndex) ?? item.Content;
@@ -854,7 +1076,7 @@ public class ListBox : Selector
             var currentItem = listBox.SelectedItem;
             listBox.UnselectAllContainers();
             listBox._selectedItems.Clear();
-            listBox._anchorIndex = -1;
+            listBox.ClearAnchor();
 
             if (currentItem != null)
             {
@@ -876,9 +1098,9 @@ public class ListBoxItem : ContentControl
     private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Themes.ThemeColors.SelectionBackground);
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ListBoxItemAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ListBoxItemAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -888,8 +1110,39 @@ public class ListBoxItem : ContentControl
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
-        DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(ListBoxItem),
-            new PropertyMetadata(false, OnIsSelectedChanged));
+        Selector.IsSelectedProperty.AddOwner(
+            typeof(ListBoxItem),
+            new FrameworkPropertyMetadata(
+                false,
+                FrameworkPropertyMetadataOptions.BindsTwoWayByDefault |
+                FrameworkPropertyMetadataOptions.Journal,
+                OnIsSelectedChanged));
+
+    #endregion
+
+    #region Routed Events
+
+    /// <summary>Identifies the Selected routed event.</summary>
+    public static readonly RoutedEvent SelectedEvent =
+        Selector.SelectedEvent.AddOwner(typeof(ListBoxItem));
+
+    /// <summary>Identifies the Unselected routed event.</summary>
+    public static readonly RoutedEvent UnselectedEvent =
+        Selector.UnselectedEvent.AddOwner(typeof(ListBoxItem));
+
+    /// <summary>Occurs when this item becomes selected.</summary>
+    public event RoutedEventHandler Selected
+    {
+        add => AddHandler(SelectedEvent, value);
+        remove => RemoveHandler(SelectedEvent, value);
+    }
+
+    /// <summary>Occurs when this item becomes unselected.</summary>
+    public event RoutedEventHandler Unselected
+    {
+        add => AddHandler(UnselectedEvent, value);
+        remove => RemoveHandler(UnselectedEvent, value);
+    }
 
     #endregion
 
@@ -1053,11 +1306,27 @@ public class ListBoxItem : ContentControl
     {
         if (d is ListBoxItem item)
         {
+            var selected = (bool)(e.NewValue ?? false);
+            if (selected)
+            {
+                item.OnSelected(new RoutedEventArgs(SelectedEvent, item));
+            }
+            else
+            {
+                item.OnUnselected(new RoutedEventArgs(UnselectedEvent, item));
+            }
+
             item.UpdateContainerVisualState();
         }
     }
 
     #endregion
+
+    /// <summary>Raises the <see cref="Selected"/> routed event.</summary>
+    protected virtual void OnSelected(RoutedEventArgs e) => RaiseEvent(e);
+
+    /// <summary>Raises the <see cref="Unselected"/> routed event.</summary>
+    protected virtual void OnUnselected(RoutedEventArgs e) => RaiseEvent(e);
 
     private void UpdateContainerVisualState()
     {

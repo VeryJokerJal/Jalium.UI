@@ -39,7 +39,7 @@ public abstract class IconElement : FrameworkElement
             return Foreground;
 
         // Walk up to find Foreground from a parent Control
-        Visual? current = VisualParent;
+        Visual? current = ParentVisual;
         while (current != null)
         {
             if (current is Control control && control.Foreground != null)

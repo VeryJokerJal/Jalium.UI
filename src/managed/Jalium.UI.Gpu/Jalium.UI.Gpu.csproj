@@ -12,6 +12,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <ProjectReference Include="..\Jalium.UI.Managed\Jalium.UI.Managed.csproj" />
     <ProjectReference Include="..\Jalium.UI.Media\Jalium.UI.Media.csproj" />
   </ItemGroup>
 

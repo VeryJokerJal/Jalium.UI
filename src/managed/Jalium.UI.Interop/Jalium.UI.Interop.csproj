@@ -1,9 +1,10 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Default to win-x64 to preserve existing CI behavior; override by setting
-         JaliumNativePackRid (e.g. dotnet pack -p:JaliumNativePackRid=win-arm64). -->
-    <JaliumNativePackRid Condition="'$(JaliumNativePackRid)' == ''">win-x64</JaliumNativePackRid>
+    <!-- By default pack every RID whose native output exists. Set
+         JaliumNativePackRid to build a single-RID package during CI. -->
+    <JaliumNativeConfiguration Condition="'$(JaliumNativeConfiguration)' == ''">$(Configuration)</JaliumNativeConfiguration>
+    <JaliumNativeOutputRoot Condition="'$(JaliumNativeOutputRoot)' == ''">$(MSBuildThisFileDirectory)../../native/bin/native</JaliumNativeOutputRoot>
     <RootNamespace>Jalium.UI.Interop</RootNamespace>
     <AssemblyName>Jalium.UI.Interop</AssemblyName>
     <Description>Native interop layer for Jalium.UI framework providing P/Invoke definitions and native libraries.</Description>
@@ -11,6 +12,33 @@
     <PackageId>Jalium.UI.Interop</PackageId>
     <IsTrimmable>true</IsTrimmable>
     <IsAotCompatible>true</IsAotCompatible>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <!-- Select only the current target's payload for project-reference builds.
+       NuGet packages still contain every available RID below. -->
+  <PropertyGroup>
+    <_JaliumNativeRequestedRuntimeRid Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)</_JaliumNativeRequestedRuntimeRid>
+    <_JaliumNativeRequestedRuntimeRid Condition="'$(_JaliumNativeRequestedRuntimeRid)' == ''">$(NETCoreSdkRuntimeIdentifier)</_JaliumNativeRequestedRuntimeRid>
+    <_JaliumNativeRidIsX64>$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').EndsWith('-x64'))</_JaliumNativeRidIsX64>
+    <_JaliumNativeRidIsArm64>$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').EndsWith('-arm64'))</_JaliumNativeRidIsArm64>
+    <_JaliumNativeRidIsMusl>$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('linux-musl'))</_JaliumNativeRidIsMusl>
+    <_JaliumNativeRidIsMusl Condition="$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('alpine'))">true</_JaliumNativeRidIsMusl>
+    <_JaliumNativeRidIsLinux>$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('linux'))</_JaliumNativeRidIsLinux>
+    <_JaliumNativeRidIsLinux Condition="$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('ubuntu'))">true</_JaliumNativeRidIsLinux>
+    <_JaliumNativeRidIsLinux Condition="$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('debian'))">true</_JaliumNativeRidIsLinux>
+    <_JaliumNativeRidIsLinux Condition="$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('fedora'))">true</_JaliumNativeRidIsLinux>
+    <_JaliumNativeRidIsLinux Condition="$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('rhel'))">true</_JaliumNativeRidIsLinux>
+    <_JaliumNativeRidIsLinux Condition="$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('centos'))">true</_JaliumNativeRidIsLinux>
+    <_JaliumNativeRidIsLinux Condition="$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('opensuse'))">true</_JaliumNativeRidIsLinux>
+    <_JaliumNativeRidIsLinux Condition="$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('sles'))">true</_JaliumNativeRidIsLinux>
+    <_JaliumNativeRidIsLinux Condition="$([System.String]::Copy('$(_JaliumNativeRequestedRuntimeRid)').StartsWith('alpine'))">true</_JaliumNativeRidIsLinux>
+    <_JaliumNativeRuntimeRid Condition="'$(_JaliumNativeRequestedRuntimeRid)' == 'win-x64'">win-x64</_JaliumNativeRuntimeRid>
+    <_JaliumNativeRuntimeRid Condition="'$(_JaliumNativeRequestedRuntimeRid)' == 'win-arm64'">win-arm64</_JaliumNativeRuntimeRid>
+    <_JaliumNativeRuntimeRid Condition="'$(_JaliumNativeRuntimeRid)' == '' and '$(_JaliumNativeRidIsMusl)' == 'true' and '$(_JaliumNativeRidIsX64)' == 'true'">linux-musl-x64</_JaliumNativeRuntimeRid>
+    <_JaliumNativeRuntimeRid Condition="'$(_JaliumNativeRuntimeRid)' == '' and '$(_JaliumNativeRidIsMusl)' == 'true' and '$(_JaliumNativeRidIsArm64)' == 'true'">linux-musl-arm64</_JaliumNativeRuntimeRid>
+    <_JaliumNativeRuntimeRid Condition="'$(_JaliumNativeRuntimeRid)' == '' and '$(_JaliumNativeRidIsLinux)' == 'true' and '$(_JaliumNativeRidIsX64)' == 'true'">linux-x64</_JaliumNativeRuntimeRid>
+    <_JaliumNativeRuntimeRid Condition="'$(_JaliumNativeRuntimeRid)' == '' and '$(_JaliumNativeRidIsLinux)' == 'true' and '$(_JaliumNativeRidIsArm64)' == 'true'">linux-arm64</_JaliumNativeRuntimeRid>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,53 +47,88 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="TypeForwards.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
     <ProjectReference Include="..\Jalium.UI.Media\Jalium.UI.Media.csproj" />
+    <ProjectReference Include="..\Jalium.UI.Managed\Jalium.UI.Managed.csproj" />
   </ItemGroup>
 
-  <!-- Native library references — Windows ships D3D12 + Vulkan + Software + Browser.
-       Suppressed only when consumers actually opt into static linkage with
-       <UseJaliumNativeAot>true</UseJaliumNativeAot>; in that case Jalium.UI.Build's
-       ConfigureJaliumNativeAot target wires the .static.lib archives instead and
-       copying the shared DLLs would defeat the "single self-contained exe" goal.
-       Note: gating on PublishAot alone would break vanilla NativeAOT consumers
-       (PublishAot=true without UseJaliumNativeAot) — they would get neither the
-       static-link wiring nor the dynamic DLLs and trip DllNotFoundException at
-       runtime. -->
-  <ItemGroup Condition="'$(Configuration)' == 'Debug' and '$(UseJaliumNativeAot)' != 'true'">
-    <Content Include="..\..\native\bin\native\Debug\jalium.native.core.dll" Link="jalium.native.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
-    <Content Include="..\..\native\bin\native\Debug\jalium.native.d3d12.dll" Link="jalium.native.d3d12.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
-    <Content Include="..\..\native\bin\native\Debug\jalium.native.vulkan.dll" Link="jalium.native.vulkan.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.vulkan.dll')" />
-    <Content Include="..\..\native\bin\native\Debug\jalium.native.software.dll" Link="jalium.native.software.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.software.dll')" />
-    <Content Include="..\..\native\bin\native\Debug\jalium.native.platform.dll" Link="jalium.native.platform.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.platform.dll')" />
-    <Content Include="..\..\native\bin\native\Debug\jalium.native.browser.dll" Link="jalium.native.browser.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
-    <!-- Media native (image/video/camera via Windows MF + WIC). NativeMediaInitializer
-         loads jalium.native.media.dll lazily on first BitmapImage/VideoElement/etc. use,
-         so missing the DLL turns into a runtime DllNotFoundException at the first
-         decoder construction (which BitmapImage hits while parsing the embedded
-         pane-header bitmap in the consumer's MainWindow ctor). Ship it alongside
-         the other backends so the failure mode is identical to the rest of them.
-         The .core companion is the cross-platform C-ABI layer that .windows links
-         against — it must be next to .dll on disk or LoadLibrary fails with
-         "or one of its dependencies" before reaching the real entry points. -->
-    <Content Include="..\..\native\bin\native\Debug\jalium.native.media.dll" Link="jalium.native.media.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.media.dll')" />
-    <Content Include="..\..\native\bin\native\Debug\jalium.native.media.core.dll" Link="jalium.native.media.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.media.core.dll')" />
-    <Content Include="..\..\native\jalium.native.browser\redist\$(JaliumNativePackRid)\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\jalium.native.browser\redist\$(JaliumNativePackRid)\WebView2Loader.dll')" />
+  <ItemGroup>
+    <_JaliumWindowsNativeLibrary Include="jalium.native.core.dll;jalium.native.platform.dll;jalium.native.d3d12.dll;jalium.native.software.dll;jalium.native.browser.dll;jalium.native.media.core.dll;jalium.native.media.dll" />
+    <_JaliumLinuxNativeLibrary Include="libjalium.native.core.so;libjalium.native.platform.so;libjalium.native.media.core.so;libjalium.native.media.so;libjalium.native.text.so;libjalium.native.vulkan.so;libjalium.native.software.so" />
   </ItemGroup>
 
-  <ItemGroup Condition="'$(Configuration)' == 'Release' and '$(UseJaliumNativeAot)' != 'true'">
-    <Content Include="..\..\native\bin\native\Release\jalium.native.core.dll" Link="jalium.native.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
-    <Content Include="..\..\native\bin\native\Release\jalium.native.d3d12.dll" Link="jalium.native.d3d12.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
-    <Content Include="..\..\native\bin\native\Release\jalium.native.vulkan.dll" Link="jalium.native.vulkan.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.vulkan.dll')" />
-    <Content Include="..\..\native\bin\native\Release\jalium.native.software.dll" Link="jalium.native.software.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.software.dll')" />
-    <Content Include="..\..\native\bin\native\Release\jalium.native.platform.dll" Link="jalium.native.platform.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.platform.dll')" />
-    <Content Include="..\..\native\bin\native\Release\jalium.native.browser.dll" Link="jalium.native.browser.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
-    <Content Include="..\..\native\bin\native\Release\jalium.native.media.dll" Link="jalium.native.media.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.media.dll')" />
-    <Content Include="..\..\native\bin\native\Release\jalium.native.media.core.dll" Link="jalium.native.media.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.media.core.dll')" />
-    <Content Include="..\..\native\jalium.native.browser\redist\$(JaliumNativePackRid)\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\jalium.native.browser\redist\$(JaliumNativePackRid)\WebView2Loader.dll')" />
+  <!-- Pack native assets using NuGet's standard runtimes/<rid>/native layout.
+       Shared assets are suppressed only for Jalium's explicit static-AOT mode. -->
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(JaliumNativePackRid)' == '' or '$(JaliumNativePackRid)' == 'win-x64') and Exists('$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)/.jalium-native-complete')">
+    <Content Include="@(_JaliumWindowsNativeLibrary->'$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)/%(Identity)')" Pack="true" PackagePath="runtimes/win-x64/native" Visible="false" />
+    <Content Include="$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)/jalium.native.vulkan.dll" Pack="true" PackagePath="runtimes/win-x64/native" Visible="false" Condition="Exists('$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)/jalium.native.vulkan.dll')" />
+    <Content Include="$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/win-x64/WebView2Loader.dll" Pack="true" PackagePath="runtimes/win-x64/native" Visible="false" Condition="Exists('$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/win-x64/WebView2Loader.dll')" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(JaliumNativePackRid)' == '' or '$(JaliumNativePackRid)' == 'win-arm64') and Exists('$(JaliumNativeOutputRoot)/win-arm64/$(JaliumNativeConfiguration)/.jalium-native-complete')">
+    <Content Include="@(_JaliumWindowsNativeLibrary->'$(JaliumNativeOutputRoot)/win-arm64/$(JaliumNativeConfiguration)/%(Identity)')" Pack="true" PackagePath="runtimes/win-arm64/native" Visible="false" />
+    <Content Include="$(JaliumNativeOutputRoot)/win-arm64/$(JaliumNativeConfiguration)/jalium.native.vulkan.dll" Pack="true" PackagePath="runtimes/win-arm64/native" Visible="false" Condition="Exists('$(JaliumNativeOutputRoot)/win-arm64/$(JaliumNativeConfiguration)/jalium.native.vulkan.dll')" />
+    <Content Include="$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/win-arm64/WebView2Loader.dll" Pack="true" PackagePath="runtimes/win-arm64/native" Visible="false" Condition="Exists('$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/win-arm64/WebView2Loader.dll')" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(JaliumNativePackRid)' == '' or '$(JaliumNativePackRid)' == 'linux-x64') and Exists('$(JaliumNativeOutputRoot)/linux-x64/$(JaliumNativeConfiguration)/.jalium-native-complete')">
+    <Content Include="@(_JaliumLinuxNativeLibrary->'$(JaliumNativeOutputRoot)/linux-x64/$(JaliumNativeConfiguration)/%(Identity)')" Pack="true" PackagePath="runtimes/linux-x64/native" Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(JaliumNativePackRid)' == '' or '$(JaliumNativePackRid)' == 'linux-arm64') and Exists('$(JaliumNativeOutputRoot)/linux-arm64/$(JaliumNativeConfiguration)/.jalium-native-complete')">
+    <Content Include="@(_JaliumLinuxNativeLibrary->'$(JaliumNativeOutputRoot)/linux-arm64/$(JaliumNativeConfiguration)/%(Identity)')" Pack="true" PackagePath="runtimes/linux-arm64/native" Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(JaliumNativePackRid)' == '' or '$(JaliumNativePackRid)' == 'linux-musl-x64') and Exists('$(JaliumNativeOutputRoot)/linux-musl-x64/$(JaliumNativeConfiguration)/.jalium-native-complete')">
+    <Content Include="@(_JaliumLinuxNativeLibrary->'$(JaliumNativeOutputRoot)/linux-musl-x64/$(JaliumNativeConfiguration)/%(Identity)')" Pack="true" PackagePath="runtimes/linux-musl-x64/native" Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(JaliumNativePackRid)' == '' or '$(JaliumNativePackRid)' == 'linux-musl-arm64') and Exists('$(JaliumNativeOutputRoot)/linux-musl-arm64/$(JaliumNativeConfiguration)/.jalium-native-complete')">
+    <Content Include="@(_JaliumLinuxNativeLibrary->'$(JaliumNativeOutputRoot)/linux-musl-arm64/$(JaliumNativeConfiguration)/%(Identity)')" Pack="true" PackagePath="runtimes/linux-musl-arm64/native" Visible="false" />
   </ItemGroup>
 
-  <!-- Ensure native DLLs are copied to output on package restore -->
+  <!-- Transitional Windows fallback: existing checkouts may still have the old
+       bin/native/<Config> layout until their next CMake build. It is DLL-only,
+       so Android/Linux .so files can never leak through this compatibility path. -->
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(JaliumNativePackRid)' == '' or '$(JaliumNativePackRid)' == 'win-x64') and !Exists('$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)/.jalium-native-complete')">
+    <Content Include="$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/*.dll" Pack="true" PackagePath="runtimes/win-x64/native" Visible="false" />
+    <Content Include="$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/win-x64/WebView2Loader.dll" Pack="true" PackagePath="runtimes/win-x64/native" Visible="false" Condition="Exists('$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/win-x64/WebView2Loader.dll') and Exists('$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/jalium.native.core.dll')" />
+  </ItemGroup>
+
+  <!-- Preserve native copy behavior when Interop is consumed as a project
+       reference. Only one effective RID is copied, avoiding same-name .so
+       collisions when a package contains all four Linux payloads. -->
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and '$(_JaliumNativeRuntimeRid)' != '' and (Exists('$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/.jalium-native-complete') or '$(JaliumNativePayloadValidated)' == 'true')">
+    <None Include="$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/*.dll;$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/*.so"
+          Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" Pack="false" Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and '$(_JaliumNativeRuntimeRid)' == 'win-x64' and !Exists('$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)/.jalium-native-complete')">
+    <None Include="$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/*.dll"
+          Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" Pack="false" Visible="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(_JaliumNativeRuntimeRid)' == 'win-x64' or '$(_JaliumNativeRuntimeRid)' == 'win-arm64')">
+    <None Include="$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/$(_JaliumNativeRuntimeRid)/WebView2Loader.dll"
+          Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" Pack="false" Visible="false"
+          Condition="Exists('$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/$(_JaliumNativeRuntimeRid)/WebView2Loader.dll') and (Exists('$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/.jalium-native-complete') or ('$(_JaliumNativeRuntimeRid)' == 'win-x64' and Exists('$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/jalium.native.core.dll')))" />
+  </ItemGroup>
+
+  <!-- A single-RID CI pack is an explicit release request; fail instead of
+       silently publishing a managed-only package when its native build is missing. -->
+  <Target Name="ValidateJaliumNativePackRid" BeforeTargets="_IntermediatePack"
+          Condition="'$(UseJaliumNativeAot)' != 'true' and '$(JaliumNativePackRid)' != ''">
+    <PropertyGroup>
+      <_JaliumNativePackStamp Condition="'$(JaliumNativePackRid)' == 'win-x64' or '$(JaliumNativePackRid)' == 'win-arm64' or '$(JaliumNativePackRid)' == 'linux-x64' or '$(JaliumNativePackRid)' == 'linux-arm64' or '$(JaliumNativePackRid)' == 'linux-musl-x64' or '$(JaliumNativePackRid)' == 'linux-musl-arm64'">$(JaliumNativeOutputRoot)/$(JaliumNativePackRid)/$(JaliumNativeConfiguration)/.jalium-native-complete</_JaliumNativePackStamp>
+    </PropertyGroup>
+    <Error Condition="'$(_JaliumNativePackStamp)' == ''"
+           Text="Unsupported JaliumNativePackRid '$(JaliumNativePackRid)'. Supported values: win-x64, win-arm64, linux-x64, linux-arm64, linux-musl-x64, linux-musl-arm64." />
+    <Error Condition="!Exists('$(_JaliumNativePackStamp)') and !('$(JaliumNativePackRid)' == 'win-x64' and Exists('$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/jalium.native.core.dll'))"
+           Text="A complete native payload for $(JaliumNativePackRid) was not found at '$(_JaliumNativePackStamp)'. Build that RID before packing." />
+  </Target>
+
+  <!-- Ensure RID-specific native assets are copied on package restore. -->
   <ItemGroup>
     <None Include="build\Jalium.UI.Interop.targets" Pack="true" PackagePath="build" />
     <None Include="buildTransitive\Jalium.UI.Interop.targets" Pack="true" PackagePath="buildTransitive" />

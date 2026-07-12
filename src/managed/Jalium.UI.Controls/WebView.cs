@@ -15,9 +15,9 @@ namespace Jalium.UI.Controls;
 public partial class WebView : FrameworkElement, IDisposable
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.WebViewAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.WebViewAutomationPeer(this);
     }
 
     private bool _isInitialized;
@@ -26,6 +26,10 @@ public partial class WebView : FrameworkElement, IDisposable
     private string _documentTitle = string.Empty;
     private bool _disposed;
     private string? _initError;
+    private string? _pendingHtmlContent;
+    private Uri? _pendingRequestSource;
+    private byte[]? _pendingRequestPostData;
+    private string? _pendingRequestAdditionalHeaders;
 
     private CoreWebView2Environment? _environment;
     private CoreWebView2Controller? _controller;
@@ -150,6 +154,10 @@ public partial class WebView : FrameworkElement, IDisposable
     public bool IsNavigating => _isNavigating;
     public CoreWebView2? CoreWebView2 => _coreWebView2;
     public string? InitializationError => _initError;
+    internal string? PendingHtmlContent => _pendingHtmlContent;
+    internal Uri? PendingRequestSource => _pendingRequestSource;
+    internal byte[]? PendingRequestPostData => _pendingRequestPostData;
+    internal string? PendingRequestAdditionalHeaders => _pendingRequestAdditionalHeaders;
 
     #endregion
 
@@ -165,11 +173,69 @@ public partial class WebView : FrameworkElement, IDisposable
 
     public void NavigateToString(string htmlContent)
     {
+        ArgumentNullException.ThrowIfNull(htmlContent);
+        ClearPendingRequest();
+        _pendingHtmlContent = htmlContent;
         if (_coreWebView2 != null)
         {
             _isNavigating = true;
             _coreWebView2.NavigateToString(htmlContent);
         }
+    }
+
+    internal void NavigateToBlank()
+    {
+        ClearPendingRequest();
+        _pendingHtmlContent = null;
+        SetValue(SourceProperty, null);
+        if (_coreWebView2 != null)
+        {
+            _isNavigating = true;
+            _coreWebView2.Navigate("about:blank");
+        }
+    }
+
+    internal bool TryNavigateWithRequest(Uri source, byte[]? postData, string? additionalHeaders)
+    {
+        _pendingHtmlContent = null;
+        _pendingRequestSource = source;
+        _pendingRequestPostData = postData?.ToArray();
+        _pendingRequestAdditionalHeaders = additionalHeaders;
+        SetValue(SourceProperty, source);
+
+        if (_coreWebView2 != null)
+        {
+            NavigatePendingRequest();
+        }
+
+        return true;
+    }
+
+    private void NavigatePendingRequest()
+    {
+        if (_coreWebView2 == null || _pendingRequestSource == null)
+        {
+            return;
+        }
+
+        var source = _pendingRequestSource;
+        var postData = _pendingRequestPostData;
+        var additionalHeaders = _pendingRequestAdditionalHeaders;
+        ClearPendingRequest();
+
+        _isNavigating = true;
+        _coreWebView2.NavigateWithWebResourceRequest(
+            source.AbsoluteUri,
+            postData == null ? "GET" : "POST",
+            postData,
+            additionalHeaders ?? string.Empty);
+    }
+
+    private void ClearPendingRequest()
+    {
+        _pendingRequestSource = null;
+        _pendingRequestPostData = null;
+        _pendingRequestAdditionalHeaders = null;
     }
 
     public void GoBack()
@@ -420,8 +486,17 @@ public partial class WebView : FrameworkElement, IDisposable
         UpdateHostWindowPosition(force: true);
 
 
-        // Navigate if Source was set before initialization
-        if (Source != null)
+        // Navigate content or Source that was supplied before initialization.
+        if (_pendingRequestSource != null)
+        {
+            NavigatePendingRequest();
+        }
+        else if (_pendingHtmlContent != null)
+        {
+            _isNavigating = true;
+            _coreWebView2.NavigateToString(_pendingHtmlContent);
+        }
+        else if (Source != null)
         {
             _coreWebView2.Navigate(Source.AbsoluteUri);
         }
@@ -581,7 +656,7 @@ public partial class WebView : FrameworkElement, IDisposable
                         origin.Y + clipRect.Y,
                         clipRect.Width,
                         clipRect.Height);
-                    visible = visible.Intersect(clipInParent);
+                    visible = Rect.Intersect(visible, clipInParent);
                     if (visible.IsEmpty)
                         return Rect.Empty;
                 }
@@ -599,7 +674,7 @@ public partial class WebView : FrameworkElement, IDisposable
             return Rect.Empty;
 
         var windowBounds = new Rect(0, 0, windowWidth, windowHeight);
-        return visible.Intersect(windowBounds);
+        return Rect.Intersect(visible, windowBounds);
     }
 
     private static bool TryGetLayoutClipRect(UIElement element, out Rect clipRect)
@@ -793,6 +868,17 @@ public partial class WebView : FrameworkElement, IDisposable
 
     private void OnSourceChanged(Uri? newSource)
     {
+        if (_pendingRequestSource != null && Equals(newSource, _pendingRequestSource))
+        {
+            return;
+        }
+
+        ClearPendingRequest();
+        if (newSource != null)
+        {
+            _pendingHtmlContent = null;
+        }
+
         if (newSource != null && _isInitialized && _coreWebView2 != null)
         {
             _isNavigating = true;
@@ -1100,8 +1186,8 @@ public partial class WebView : FrameworkElement, IDisposable
 
     private void UpdateNavigationState(bool canGoBack, bool canGoForward)
     {
-        SetValue(CanGoBackPropertyKey.DependencyProperty, canGoBack);
-        SetValue(CanGoForwardPropertyKey.DependencyProperty, canGoForward);
+        SetValue(CanGoBackPropertyKey, canGoBack);
+        SetValue(CanGoForwardPropertyKey, canGoForward);
     }
 
     #endregion

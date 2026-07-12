@@ -1,9 +1,8 @@
 using System.Collections.Specialized;
-using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI;
 
-public abstract partial class UIElement
+public partial class UIElement
 {
     private const string TransitionAllValue = "All";
     private const string TransitionNoneValue = "None";
@@ -91,6 +90,15 @@ public abstract partial class UIElement
     protected override void OnVisualParentChanged(Visual? oldParent)
     {
         base.OnVisualParentChanged(oldParent);
+    }
+
+    /// <summary>
+    /// Provides the WPF-compatible dependency-object parent-change hook while the
+    /// lower visual layer retains its strongly typed compatibility overload.
+    /// </summary>
+    protected internal override void OnVisualParentChanged(DependencyObject? oldParent)
+    {
+        UpdateIsVisibleFromTree();
 
         if (VisualParent != null)
         {
@@ -357,40 +365,8 @@ public abstract partial class UIElement
 
     private static Func<DependencyProperty, object?, object?, TimeSpan, TransitionTimingFunction, IAnimationTimeline?>? GetAutomaticTransitionAnimationFactory()
     {
-        if (AutomaticTransitionAnimationFactory != null)
-            return AutomaticTransitionAnimationFactory;
-
-        var animationFactoryType = Type.GetType(
-            "Jalium.UI.Media.Animation.AnimationFactory, Jalium.UI.Media",
-            throwOnError: false);
-
-        if (animationFactoryType == null)
-            return null;
-
-        var createTransitionMethod = animationFactoryType.GetMethod(
-            "CreateTransitionAnimation",
-            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
-            binder: null,
-            types:
-            [
-                typeof(DependencyProperty),
-                typeof(object),
-                typeof(object),
-                typeof(TimeSpan),
-                typeof(TransitionTimingFunction)
-            ],
-            modifiers: null);
-
-        if (createTransitionMethod == null)
-            return null;
-
-        AutomaticTransitionAnimationFactory =
-            (Func<DependencyProperty, object?, object?, TimeSpan, TransitionTimingFunction, IAnimationTimeline?>)
-            Delegate.CreateDelegate(
-                typeof(Func<DependencyProperty, object?, object?, TimeSpan, TransitionTimingFunction, IAnimationTimeline?>),
-                createTransitionMethod);
-
-        return AutomaticTransitionAnimationFactory;
+        return AutomaticTransitionAnimationFactory ??=
+            Jalium.UI.Media.Animation.AnimationFactory.CreateTransitionAnimation;
     }
 
     private void DisarmAutomaticTransitions()

@@ -775,9 +775,9 @@ public class ContentDialogTests
 
     private static void InvokeKeyDown(Window window, Key key, nint lParam)
     {
-        var method = typeof(Window).GetMethod("OnKeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
+        var method = typeof(Window).GetMethod("OnNativeKeyDown", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
-        method!.Invoke(window, new object[] { (nint)(int)key, lParam });
+        method!.Invoke(window, new object[] { (nint)KeyInterop.VirtualKeyFromKey(key), lParam });
     }
 
     private static nint PackPointToLParam(int x, int y)

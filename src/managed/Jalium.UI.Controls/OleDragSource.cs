@@ -3,6 +3,8 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
+using static Jalium.UI.Interop.Win32.Win32Constants;
+using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 
 namespace Jalium.UI;
 
@@ -534,7 +536,7 @@ internal static unsafe class OleDragSource
     {
         if (fEscapePressed != 0) return DRAGDROP_S_CANCEL;
         // Drop once the mouse buttons that could drive the drag are all released.
-        if ((grfKeyState & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) == 0) return DRAGDROP_S_DROP;
+        if ((grfKeyState & (uint)(MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) == 0) return DRAGDROP_S_DROP;
         return S_OK;
     }
 
@@ -589,7 +591,7 @@ internal static unsafe class OleDragSource
         finally
         {
             if (helper != nint.Zero) _ = ObjRelease(helper);
-            if (!ownershipTaken) _ = Win32.DeleteObject(hBitmap);
+            if (!ownershipTaken) _ = DeleteObject(hBitmap);
         }
     }
 
@@ -660,7 +662,7 @@ internal static unsafe class OleDragSource
         nint hbmp = Win32.CreateDIBSection(nint.Zero, &bmi, 0 /* DIB_RGB_COLORS */, out bits, nint.Zero, 0);
         if (hbmp == nint.Zero || bits == nint.Zero)
         {
-            if (hbmp != nint.Zero) _ = Win32.DeleteObject(hbmp);
+            if (hbmp != nint.Zero) _ = DeleteObject(hbmp);
             return nint.Zero;
         }
 
@@ -694,17 +696,17 @@ internal static unsafe class OleDragSource
     private static nint BuildUnicodeText(string text)
     {
         int bytes = (text.Length + 1) * 2; // + null terminator
-        nint h = Win32.GlobalAlloc(GHND, (nuint)bytes);
+        nint h = GlobalAlloc(GHND, (nuint)bytes);
         if (h == nint.Zero) return nint.Zero;
-        nint p = Win32.GlobalLock(h);
-        if (p == nint.Zero) { _ = Win32.GlobalFree(h); return nint.Zero; }
+        nint p = GlobalLock(h);
+        if (p == nint.Zero) { _ = GlobalFree(h); return nint.Zero; }
         try
         {
             for (int i = 0; i < text.Length; i++)
                 Marshal.WriteInt16(p + i * 2, (short)text[i]);
             Marshal.WriteInt16(p + text.Length * 2, 0);
         }
-        finally { _ = Win32.GlobalUnlock(h); }
+        finally { _ = GlobalUnlock(h); }
         return h;
     }
 
@@ -716,10 +718,10 @@ internal static unsafe class OleDragSource
         foreach (var f in files) chars += f.Length + 1;
         int total = header + chars * 2;
 
-        nint h = Win32.GlobalAlloc(GHND, (nuint)total);
+        nint h = GlobalAlloc(GHND, (nuint)total);
         if (h == nint.Zero) return nint.Zero;
-        nint p = Win32.GlobalLock(h);
-        if (p == nint.Zero) { _ = Win32.GlobalFree(h); return nint.Zero; }
+        nint p = GlobalLock(h);
+        if (p == nint.Zero) { _ = GlobalFree(h); return nint.Zero; }
         try
         {
             Marshal.WriteInt32(p + 0, header);   // pFiles = offset to the list
@@ -741,7 +743,7 @@ internal static unsafe class OleDragSource
             }
             Marshal.WriteInt16(cur, 0); // list terminator
         }
-        finally { _ = Win32.GlobalUnlock(h); }
+        finally { _ = GlobalUnlock(h); }
         return h;
     }
 
@@ -751,20 +753,20 @@ internal static unsafe class OleDragSource
         nuint size = Win32.GlobalSize(src);
         if (size == 0) return nint.Zero;
 
-        nint dst = Win32.GlobalAlloc(GHND, size);
+        nint dst = GlobalAlloc(GHND, size);
         if (dst == nint.Zero) return nint.Zero;
 
-        nint ps = Win32.GlobalLock(src);
-        nint pd = Win32.GlobalLock(dst);
+        nint ps = GlobalLock(src);
+        nint pd = GlobalLock(dst);
         if (ps == nint.Zero || pd == nint.Zero)
         {
-            if (ps != nint.Zero) _ = Win32.GlobalUnlock(src);
-            if (pd != nint.Zero) _ = Win32.GlobalUnlock(dst);
-            _ = Win32.GlobalFree(dst);
+            if (ps != nint.Zero) _ = GlobalUnlock(src);
+            if (pd != nint.Zero) _ = GlobalUnlock(dst);
+            _ = GlobalFree(dst);
             return nint.Zero;
         }
         try { Buffer.MemoryCopy((void*)ps, (void*)pd, (long)size, (long)size); }
-        finally { _ = Win32.GlobalUnlock(src); _ = Win32.GlobalUnlock(dst); }
+        finally { _ = GlobalUnlock(src); _ = GlobalUnlock(dst); }
         return dst;
     }
 
@@ -794,9 +796,6 @@ internal static unsafe class OleDragSource
     private const uint DATADIR_GET = 1;
     private const uint GHND = 0x0042; // GMEM_MOVEABLE | GMEM_ZEROINIT
     private const uint CLSCTX_INPROC_SERVER = 1;
-    private const uint MK_LBUTTON = 0x0001;
-    private const uint MK_RBUTTON = 0x0002;
-    private const uint MK_MBUTTON = 0x0010;
 
     private static readonly Guid IID_IUnknown = new("00000000-0000-0000-C000-000000000046");
     private static readonly Guid IID_IDataObject = new("0000010E-0000-0000-C000-000000000046");
@@ -804,24 +803,6 @@ internal static unsafe class OleDragSource
     private static readonly Guid IID_IEnumFORMATETC = new("00000103-0000-0000-C000-000000000046");
     private static readonly Guid IID_IDragSourceHelper = new("DE5BF786-477A-11D2-839D-00C04FD918D0");
     private static readonly Guid CLSID_DragDropHelper = new("4657278A-411B-11D2-839A-00C04FD918D0");
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct FORMATETC
-    {
-        public ushort cfFormat;
-        public nint ptd;
-        public uint dwAspect;
-        public int lindex;
-        public uint tymed;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct STGMEDIUM
-    {
-        public uint tymed;
-        public nint unionmember;
-        public nint pUnkForRelease;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct SHDRAGIMAGE
@@ -832,22 +813,6 @@ internal static unsafe class OleDragSource
         public int ptOffsetY;  // POINT.y
         public nint hbmpDragImage;
         public uint crColorKey;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BITMAPINFOHEADER
-    {
-        public int biSize;
-        public int biWidth;
-        public int biHeight;
-        public short biPlanes;
-        public short biBitCount;
-        public int biCompression;
-        public int biSizeImage;
-        public int biXPelsPerMeter;
-        public int biYPelsPerMeter;
-        public int biClrUsed;
-        public int biClrImportant;
     }
 
     private static class Win32
@@ -865,27 +830,10 @@ internal static unsafe class OleDragSource
         internal static extern nint OleDuplicateData(nint hSrc, ushort cfFormat, uint uiFlags);
 
         [DllImport("kernel32.dll")]
-        internal static extern nint GlobalAlloc(uint uFlags, nuint dwBytes);
-
-        [DllImport("kernel32.dll")]
-        internal static extern nint GlobalFree(nint hMem);
-
-        [DllImport("kernel32.dll")]
-        internal static extern nint GlobalLock(nint hMem);
-
-        [DllImport("kernel32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool GlobalUnlock(nint hMem);
-
-        [DllImport("kernel32.dll")]
         internal static extern nuint GlobalSize(nint hMem);
 
         [DllImport("gdi32.dll")]
         internal static extern nint CreateDIBSection(nint hdc, BITMAPINFOHEADER* pbmi, uint usage, out nint ppvBits, nint hSection, uint offset);
-
-        [DllImport("gdi32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool DeleteObject(nint ho);
     }
 
     #endregion

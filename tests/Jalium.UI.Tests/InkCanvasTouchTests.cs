@@ -1,6 +1,6 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
-using Jalium.UI.Controls.Ink;
+using Jalium.UI.Ink;
 using Jalium.UI.Data;
 using Jalium.UI.Input;
 

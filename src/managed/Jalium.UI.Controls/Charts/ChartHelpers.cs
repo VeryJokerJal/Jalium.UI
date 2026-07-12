@@ -22,6 +22,12 @@ public static class ChartHelpers
         double niceFraction;
         if (round)
         {
+            // Decimal-looking inputs such as 0.7 can scale to
+            // 6.999999999999999. Snap values within floating-point noise of a
+            // decision boundary so the documented 1/2/5/10 rule is stable.
+            fraction = SnapToBoundary(fraction, 1.5);
+            fraction = SnapToBoundary(fraction, 3.0);
+            fraction = SnapToBoundary(fraction, 7.0);
             niceFraction = fraction switch
             {
                 < 1.5 => 1.0,
@@ -42,6 +48,14 @@ public static class ChartHelpers
         }
 
         return niceFraction * Math.Pow(10, exponent);
+    }
+
+    private static double SnapToBoundary(double value, double boundary)
+    {
+        const double relativeTolerance = 1e-12;
+        return Math.Abs(value - boundary) <= relativeTolerance * Math.Max(1.0, Math.Abs(boundary))
+            ? boundary
+            : value;
     }
 
     /// <summary>

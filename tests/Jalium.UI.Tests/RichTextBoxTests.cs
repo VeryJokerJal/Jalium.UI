@@ -399,10 +399,10 @@ public class RichTextBoxTests
             Assert.NotNull(updateFocusMethod);
 
             updateFocusMethod!.Invoke(rtb, [true]);
-            Assert.Same(rtb, InputMethod.Current);
+            Assert.Same(rtb, InputMethod.CurrentTarget);
 
             updateFocusMethod.Invoke(rtb, [false]);
-            Assert.Null(InputMethod.Current);
+            Assert.Null(InputMethod.CurrentTarget);
         }
         finally
         {

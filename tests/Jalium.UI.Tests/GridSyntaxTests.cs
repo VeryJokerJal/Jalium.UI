@@ -1,7 +1,7 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Gpu;
 using Jalium.UI.Markup;
-using ControlGridLength = Jalium.UI.Controls.GridLength;
+using ControlGridLength = Jalium.UI.GridLength;
 
 namespace Jalium.UI.Tests;
 

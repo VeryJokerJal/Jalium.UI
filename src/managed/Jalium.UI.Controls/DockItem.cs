@@ -177,9 +177,9 @@ public partial class DockItem : HeaderedContentControl
         InvalidateMeasure();
     }
 
-    public override int VisualChildrenCount => 0;
+    protected override int VisualChildrenCount => 0;
 
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         throw new ArgumentOutOfRangeException(nameof(index));
     }
@@ -886,7 +886,7 @@ public partial class DockItem : HeaderedContentControl
         if (root is not DockSplitPanel splitPanel)
             return null;
 
-        foreach (var child in splitPanel.Children)
+        foreach (UIElement child in splitPanel.Children)
         {
             if (FindFirstDockTabPanel(child) is DockTabPanel found)
                 return found;
@@ -1061,7 +1061,7 @@ public partial class DockItem : HeaderedContentControl
     {
         var headerText = Header?.ToString() ?? "";
         var fontSize = FontSize > 0 ? FontSize : 12;
-        var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = !string.IsNullOrEmpty(FontFamily?.Source) ? FontFamily.Source : FrameworkElement.DefaultFontFamilyName;
         var formatted = new FormattedText(headerText, fontFamily, fontSize);
         TextMeasurement.MeasureText(formatted);
 
@@ -1253,7 +1253,7 @@ public partial class DockItem : HeaderedContentControl
             return null;
 
         var fontSize = FontSize > 0 ? FontSize : 12;
-        var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = !string.IsNullOrEmpty(FontFamily?.Source) ? FontFamily.Source : FrameworkElement.DefaultFontFamilyName;
         if (!ShouldConstrainHeaderTextWidth())
         {
             var naturalText = new FormattedText(headerText, fontFamily, fontSize)

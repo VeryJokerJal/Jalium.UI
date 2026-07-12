@@ -1,0 +1,68 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Jalium.UI.Managed</RootNamespace>
+    <AssemblyName>Jalium.UI.Managed</AssemblyName>
+    <Description>Unified managed implementation assembly for Jalium.UI.</Description>
+    <IsPackable>true</IsPackable>
+    <PackageId>Jalium.UI.Managed</PackageId>
+    <IsTrimmable>true</IsTrimmable>
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <DefineConstants>$(DefineConstants);JALIUM_UI_CORE</DefineConstants>
+    <EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+    <UseWindowsForms Condition="'$(JaliumPlatform)' == 'windows'">true</UseWindowsForms>
+    <NoWarn>$(NoWarn);NU1510</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(JaliumPlatform)' == 'windows'">
+    <Using Remove="System.Drawing" />
+    <Using Remove="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="..\Jalium.UI.Core\**\*.cs"
+             Exclude="..\Jalium.UI.Core\bin\**\*;..\Jalium.UI.Core\obj\**\*;..\Jalium.UI.Core\artifacts\**\*;..\Jalium.UI.Core\.tmp-build\**\*;..\Jalium.UI.Core\Properties\AssemblyInfo.cs;..\Jalium.UI.Core\**\*TypeForward*.cs"
+             Link="Core\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\Jalium.UI.Media\**\*.cs"
+             Exclude="..\Jalium.UI.Media\bin\**\*;..\Jalium.UI.Media\obj\**\*;..\Jalium.UI.Media\artifacts\**\*;..\Jalium.UI.Media\.tmp-build\**\*;..\Jalium.UI.Media\Properties\AssemblyInfo.cs;..\Jalium.UI.Media\**\*TypeForward*.cs"
+             Link="Media\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\Jalium.UI.Input\**\*.cs"
+             Exclude="..\Jalium.UI.Input\bin\**\*;..\Jalium.UI.Input\obj\**\*;..\Jalium.UI.Input\artifacts\**\*;..\Jalium.UI.Input\.tmp-build\**\*;..\Jalium.UI.Input\Properties\AssemblyInfo.cs;..\Jalium.UI.Input\**\*TypeForward*.cs"
+             Link="Input\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\Jalium.UI.Interop\**\*.cs"
+             Exclude="..\Jalium.UI.Interop\bin\**\*;..\Jalium.UI.Interop\obj\**\*;..\Jalium.UI.Interop\artifacts\**\*;..\Jalium.UI.Interop\.tmp-build\**\*;..\Jalium.UI.Interop\Properties\AssemblyInfo.cs;..\Jalium.UI.Interop\**\*TypeForward*.cs"
+             Link="Interop\%(RecursiveDir)%(Filename)%(Extension)" />
+    <Compile Include="..\Jalium.UI.Controls\**\*.cs"
+             Exclude="..\Jalium.UI.Controls\bin\**\*;..\Jalium.UI.Controls\obj\**\*;..\Jalium.UI.Controls\artifacts\**\*;..\Jalium.UI.Controls\.tmp-build\**\*;..\Jalium.UI.Controls\Properties\AssemblyInfo.cs;..\Jalium.UI.Controls\**\*TypeForward*.cs"
+             Link="Controls\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"
+                      PrivateAssets="all"
+                      UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;IsTrimmable;IsAotCompatible" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
+    <PackageReference Include="System.IO.Packaging" Version="10.0.9" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="ILLink.Descriptors.xml">
+      <LogicalName>ILLink.Descriptors.xml</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="..\Jalium.UI.Controls\Themes\**\*.jalxaml">
+      <JalxamlSourceRelativePath>Themes\%(RecursiveDir)%(Filename)%(Extension)</JalxamlSourceRelativePath>
+    </AdditionalFiles>
+  </ItemGroup>
+
+</Project>

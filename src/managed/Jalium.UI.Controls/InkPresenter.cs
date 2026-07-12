@@ -1,4 +1,4 @@
-using Jalium.UI.Controls.Ink;
+using Jalium.UI.Ink;
 using Jalium.UI.Documents;
 using Jalium.UI.Media;
 
@@ -30,10 +30,10 @@ public class InkPresenter : Decorator
     }
 
     /// <inheritdoc/>
-    public override int VisualChildrenCount => base.VisualChildrenCount + _attachedVisuals.Count;
+    protected override int VisualChildrenCount => base.VisualChildrenCount + _attachedVisuals.Count;
 
     /// <inheritdoc/>
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         int baseCount = base.VisualChildrenCount;
         if (index < baseCount)

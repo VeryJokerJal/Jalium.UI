@@ -1,5 +1,8 @@
 ﻿using System.Diagnostics.CodeAnalysis;
+using System.ComponentModel;
 using Jalium.UI.Data;
+using Jalium.UI.Input;
+using Jalium.UI.Markup;
 
 namespace Jalium.UI;
 
@@ -7,42 +10,112 @@ namespace Jalium.UI;
 /// Contains property setters that can be shared between instances of a type.
 /// </summary>
 [ContentProperty("Setters")]
-public sealed class Style
+public class Style : DispatcherObject, INameScope, Jalium.UI.Markup.INameScope, IQueryAmbient, Jalium.UI.Markup.IAddChild
 {
-    private readonly List<Setter> _setters = new();
-    private readonly List<EventSetter> _eventSetters = new();
-    private readonly List<TriggerBase> _triggers = new();
+    private readonly SetterBaseCollection _setters = new();
+    private IList<EventSetter>? _eventSetters;
+    private readonly TriggerCollection _triggers = new();
+    private readonly NameScope _nameScope = new();
+    private ResourceDictionary? _resources;
     private bool _isSealed;
 
     /// <summary>
     /// Gets or sets the type for which this style is intended.
     /// </summary>
+    [Ambient]
     public Type? TargetType { get; set; }
 
     /// <summary>
     /// Gets or sets a style that is the basis of the current style.
     /// </summary>
+    [Ambient]
     public Style? BasedOn { get; set; }
 
     /// <summary>
     /// Gets the collection of property setters.
     /// </summary>
-    public IList<Setter> Setters => _setters;
+    public SetterBaseCollection Setters => _setters;
 
     /// <summary>
     /// Gets the collection of event setters.
     /// </summary>
-    public IList<EventSetter> EventSetters => _eventSetters;
+    public IList<EventSetter> EventSetters
+        => _eventSetters ??= new SetterBaseCollectionView<EventSetter>(_setters);
 
     /// <summary>
     /// Gets the collection of triggers.
     /// </summary>
-    public IList<TriggerBase> Triggers => _triggers;
+    public TriggerCollection Triggers => _triggers;
 
     /// <summary>
     /// Gets a value that indicates whether the style is read-only.
     /// </summary>
     public bool IsSealed => _isSealed;
+
+    /// <summary>
+    /// Gets or sets resources scoped to this style.
+    /// </summary>
+    [Ambient]
+    public ResourceDictionary Resources
+    {
+        get => _resources ??= new ResourceDictionary();
+        set
+        {
+            if (_isSealed)
+            {
+                throw new InvalidOperationException("A sealed Style cannot be changed.");
+            }
+
+            _resources = value;
+            ResourceLookup.InvalidateResourceCache();
+        }
+    }
+
+    bool IQueryAmbient.IsAmbientPropertyAvailable(string propertyName)
+    {
+        // Match WPF: Resources and BasedOn participate only when their backing values
+        // already exist; all other ambient-property probes remain available.
+        return propertyName switch
+        {
+            nameof(Resources) => _resources != null,
+            nameof(BasedOn) => BasedOn != null,
+            _ => true
+        };
+    }
+
+    public void RegisterName(string name, object scopedElement)
+        => _nameScope.RegisterName(name, scopedElement);
+
+    public void UnregisterName(string name) => _nameScope.UnregisterName(name);
+
+    object? INameScope.FindName(string name) => _nameScope.FindName(name);
+
+    object? Jalium.UI.Markup.INameScope.FindName(string name) => _nameScope.FindName(name);
+
+    void Jalium.UI.Markup.INameScope.RegisterName(string name, object scopedElement) =>
+        _nameScope.RegisterName(name, scopedElement);
+
+    void Jalium.UI.Markup.INameScope.UnregisterName(string name) =>
+        _nameScope.UnregisterName(name);
+
+    void Jalium.UI.Markup.IAddChild.AddChild(object value)
+    {
+        if (value is not SetterBase setter)
+        {
+            throw new ArgumentException("Style content must derive from SetterBase.", nameof(value));
+        }
+
+        Setters.Add(setter);
+    }
+
+    void Jalium.UI.Markup.IAddChild.AddText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            throw new ArgumentException("Text is not valid Style content.", nameof(text));
+        }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Style"/> class.
@@ -76,6 +149,17 @@ public sealed class Style
     /// </summary>
     public void Seal()
     {
+        if (_isSealed)
+        {
+            return;
+        }
+
+        _setters.Seal();
+        foreach (var trigger in _triggers)
+        {
+            trigger.Seal();
+        }
+
         _isSealed = true;
     }
 
@@ -90,6 +174,10 @@ public sealed class Style
 
     private void Apply(FrameworkElement element, HashSet<Style>? visited)
     {
+        // WPF seals a Style on first application. Besides locking the declaration this is
+        // the point at which unresolved Trigger/Condition properties are rejected.
+        Seal();
+
         // Apply base style first (with cycle detection)
         if (BasedOn != null)
         {
@@ -99,16 +187,18 @@ public sealed class Style
             BasedOn.Apply(element, visited);
         }
 
-        // Apply setters
+        // Apply property and event setters in declaration order.
         foreach (var setter in _setters)
         {
-            setter.Apply(element);
-        }
-
-        // Apply event setters
-        foreach (var eventSetter in _eventSetters)
-        {
-            eventSetter.Apply(element);
+            switch (setter)
+            {
+                case Setter propertySetter:
+                    propertySetter.Apply(element);
+                    break;
+                case EventSetter eventSetter:
+                    eventSetter.Apply(element);
+                    break;
+            }
         }
 
         // Apply triggers
@@ -136,16 +226,18 @@ public sealed class Style
             trigger.Detach(element);
         }
 
-        // Remove event setters
-        foreach (var eventSetter in _eventSetters)
-        {
-            eventSetter.Remove(element);
-        }
-
-        // Remove setters (in reverse order)
+        // Remove property and event setters in reverse declaration order.
         for (int i = _setters.Count - 1; i >= 0; i--)
         {
-            _setters[i].Remove(element);
+            switch (_setters[i])
+            {
+                case Setter propertySetter:
+                    propertySetter.Remove(element);
+                    break;
+                case EventSetter eventSetter:
+                    eventSetter.Remove(element);
+                    break;
+            }
         }
 
         // Remove base style (with cycle detection)
@@ -172,22 +264,74 @@ public sealed class Style
 /// Represents a setter that sets a property value.
 /// </summary>
 [ContentProperty("Value")]
-public sealed class Setter
+[XamlSetMarkupExtension(nameof(ReceiveMarkupExtension))]
+[XamlSetTypeConverter(nameof(ReceiveTypeConverter))]
+public class Setter : SetterBase, ISupportInitialize
 {
+    private DependencyProperty? _property;
+    private object? _value;
+    private string? _targetName;
+    private string? _propertyName;
+    private bool _isInitializing;
+    private object? _unresolvedProperty;
+    private TypeConverter? _unresolvedPropertyConverter;
+    private ITypeDescriptorContext? _unresolvedPropertyContext;
+    private System.Globalization.CultureInfo? _unresolvedPropertyCulture;
+    private bool _hasUnresolvedProperty;
+    private object? _unresolvedValue;
+    private TypeConverter? _unresolvedValueConverter;
+    private ITypeDescriptorContext? _unresolvedValueContext;
+    private System.Globalization.CultureInfo? _unresolvedValueCulture;
+    private bool _hasUnresolvedValue;
+
     /// <summary>
     /// Gets or sets the property to set.
     /// </summary>
-    public DependencyProperty? Property { get; set; }
+    public DependencyProperty? Property
+    {
+        get => _property;
+        set
+        {
+            CheckSealed();
+            if (value?.ReadOnly == true)
+            {
+                throw new ArgumentException("A Setter cannot target a read-only DependencyProperty.", nameof(value));
+            }
+
+            _property = value;
+        }
+    }
 
     /// <summary>
     /// Gets or sets the value to set.
     /// </summary>
-    public object? Value { get; set; }
+    public object? Value
+    {
+        get => _value;
+        set
+        {
+            CheckSealed();
+            if (ReferenceEquals(value, DependencyProperty.UnsetValue))
+            {
+                throw new ArgumentException("DependencyProperty.UnsetValue is not a valid Setter value.", nameof(value));
+            }
+
+            _value = value;
+        }
+    }
 
     /// <summary>
     /// Gets or sets the name of the element to apply the setter to.
     /// </summary>
-    public string? TargetName { get; set; }
+    public string? TargetName
+    {
+        get => _targetName;
+        set
+        {
+            CheckSealed();
+            _targetName = value;
+        }
+    }
 
     /// <summary>
     /// Gets or sets the unresolved property name for deferred resolution.
@@ -195,7 +339,15 @@ public sealed class Setter
     /// the DependencyProperty cannot be resolved at parse time. The property name is stored here
     /// and resolved at runtime against the actual target element type.
     /// </summary>
-    public string? PropertyName { get; set; }
+    public string? PropertyName
+    {
+        get => _propertyName;
+        set
+        {
+            CheckSealed();
+            _propertyName = value;
+        }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Setter"/> class.
@@ -213,6 +365,188 @@ public sealed class Setter
     {
         Property = property;
         Value = value;
+    }
+
+    /// <summary>
+    /// Initializes a setter for a named template element.
+    /// </summary>
+    public Setter(DependencyProperty property, object? value, string? targetName)
+        : this(property, value)
+    {
+        TargetName = targetName;
+    }
+
+    void ISupportInitialize.BeginInit()
+    {
+        CheckSealed();
+        if (_isInitializing)
+        {
+            throw new InvalidOperationException("Setter initialization has already begun.");
+        }
+
+        _isInitializing = true;
+    }
+
+    void ISupportInitialize.EndInit()
+    {
+        CheckSealed();
+        if (!_isInitializing)
+        {
+            throw new InvalidOperationException("Setter initialization has not begun.");
+        }
+
+        if (_hasUnresolvedProperty)
+        {
+            object? resolvedProperty = ConvertDeferredValue(
+                _unresolvedPropertyConverter,
+                _unresolvedPropertyContext,
+                _unresolvedPropertyCulture,
+                _unresolvedProperty);
+
+            if (resolvedProperty is DependencyProperty dependencyProperty)
+            {
+                Property = dependencyProperty;
+            }
+            else if (resolvedProperty is string propertyName)
+            {
+                PropertyName = propertyName;
+            }
+            else
+            {
+                throw new InvalidOperationException("Setter.Property type conversion did not produce a DependencyProperty or property name.");
+            }
+
+            ClearDeferredProperty();
+        }
+
+        if (_hasUnresolvedValue)
+        {
+            Value = ConvertDeferredValue(
+                _unresolvedValueConverter,
+                _unresolvedValueContext,
+                _unresolvedValueCulture,
+                _unresolvedValue);
+            ClearDeferredValue();
+        }
+
+        if (_property != null && _value is string)
+        {
+            var converted = ConvertValueIfNeeded(_value, _property.PropertyType);
+            if (_property.IsValidType(converted))
+            {
+                _value = converted;
+            }
+        }
+
+        _isInitializing = false;
+    }
+
+    /// <summary>Receives resource and binding markup extensions used as Setter.Value.</summary>
+    public static void ReceiveMarkupExtension(object targetObject, XamlSetMarkupExtensionEventArgs eventArgs)
+    {
+        ArgumentNullException.ThrowIfNull(targetObject);
+        ArgumentNullException.ThrowIfNull(eventArgs);
+
+        if (targetObject is not Setter setter || eventArgs.Member.Name != nameof(Value))
+        {
+            return;
+        }
+
+        setter.CheckSealed();
+        MarkupExtension extension = eventArgs.MarkupExtension;
+        if (extension is BindingBase)
+        {
+            setter.Value = extension;
+            eventArgs.Handled = true;
+            return;
+        }
+
+        if (extension is IStyleResourceMarkupExtension)
+        {
+            setter.Value = ProvideStyleResourceValue(extension, eventArgs.ServiceProvider);
+            eventArgs.Handled = true;
+        }
+    }
+
+    /// <summary>Defers Setter.Property and Setter.Value conversion until EndInit.</summary>
+    public static void ReceiveTypeConverter(object targetObject, XamlSetTypeConverterEventArgs eventArgs)
+    {
+        if (targetObject is not Setter setter)
+        {
+            throw new ArgumentNullException(nameof(targetObject));
+        }
+
+        ArgumentNullException.ThrowIfNull(eventArgs);
+        setter.CheckSealed();
+
+        if (eventArgs.Member.Name == nameof(Property))
+        {
+            setter._unresolvedProperty = eventArgs.Value;
+            setter._unresolvedPropertyConverter = eventArgs.TypeConverter;
+            setter._unresolvedPropertyContext = eventArgs.ServiceProvider;
+            setter._unresolvedPropertyCulture = eventArgs.CultureInfo;
+            setter._hasUnresolvedProperty = true;
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.Member.Name == nameof(Value))
+        {
+            setter._unresolvedValue = eventArgs.Value;
+            setter._unresolvedValueConverter = eventArgs.TypeConverter;
+            setter._unresolvedValueContext = eventArgs.ServiceProvider;
+            setter._unresolvedValueCulture = eventArgs.CultureInfo;
+            setter._hasUnresolvedValue = true;
+            eventArgs.Handled = true;
+        }
+    }
+
+    private static object? ConvertDeferredValue(
+        TypeConverter? converter,
+        ITypeDescriptorContext? context,
+        System.Globalization.CultureInfo? culture,
+        object? value)
+        => converter is null ? value : converter.ConvertFrom(context, culture, value!);
+
+    [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "Only framework resource markup extensions, which do not reflect over user types, reach this helper.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050", Justification = "Framework resource markup extensions do not emit runtime code.")]
+    private static object? ProvideStyleResourceValue(MarkupExtension extension, IServiceProvider serviceProvider)
+        => extension.ProvideValue(serviceProvider);
+
+    private void ClearDeferredProperty()
+    {
+        _unresolvedProperty = null;
+        _unresolvedPropertyConverter = null;
+        _unresolvedPropertyContext = null;
+        _unresolvedPropertyCulture = null;
+        _hasUnresolvedProperty = false;
+    }
+
+    private void ClearDeferredValue()
+    {
+        _unresolvedValue = null;
+        _unresolvedValueConverter = null;
+        _unresolvedValueContext = null;
+        _unresolvedValueCulture = null;
+        _hasUnresolvedValue = false;
+    }
+
+    internal override void Seal()
+    {
+        if (IsSealed)
+        {
+            return;
+        }
+
+        if (_isInitializing)
+        {
+            throw new InvalidOperationException("A Setter cannot be sealed while it is being initialized.");
+        }
+
+        if (_property == null && string.IsNullOrWhiteSpace(_propertyName))
+        {
+            throw new InvalidOperationException("Setter.Property must be specified before the Setter is sealed.");
+        }
+
+        base.Seal();
     }
 
     /// <summary>
@@ -515,12 +849,32 @@ public sealed class Setter
 /// Base class for triggers that conditionally apply property values.
 /// </summary>
 [ContentProperty("Setters")]
-public abstract class TriggerBase
+public abstract class TriggerBase : DependencyObject
 {
+    private bool _isSealed;
+    private TriggerActionCollection? _enterActions;
+    private TriggerActionCollection? _exitActions;
+
     /// <summary>
     /// Gets the collection of setters to apply when the trigger is active.
     /// </summary>
-    public IList<Setter> Setters { get; } = new List<Setter>();
+    public SetterBaseCollection Setters { get; } = new();
+
+    /// <summary>Gets the actions invoked when this trigger becomes active.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Content)]
+    public TriggerActionCollection EnterActions
+        => _enterActions ??= CreateActionCollection();
+
+    /// <summary>Gets the actions invoked when this trigger becomes inactive.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Content)]
+    public TriggerActionCollection ExitActions
+        => _exitActions ??= CreateActionCollection();
+
+    internal bool HasEnterActions => _enterActions is { Count: > 0 };
+
+    internal bool HasExitActions => _exitActions is { Count: > 0 };
+
+    private protected override bool IsSealedCore => _isSealed;
 
     /// <summary>
     /// Tracks which properties this trigger has set for each element.
@@ -555,6 +909,69 @@ public abstract class TriggerBase
     internal abstract bool IsActiveForElement(FrameworkElement element);
 
     /// <summary>
+    /// Seals the setters owned by this trigger.
+    /// </summary>
+    internal virtual void Seal()
+    {
+        if (_isSealed)
+        {
+            return;
+        }
+
+        Setters.Seal();
+        _enterActions?.Seal(this);
+        _exitActions?.Seal(this);
+        _isSealed = true;
+    }
+
+    /// <summary>Throws when a sealed trigger is modified.</summary>
+    protected void CheckTriggerSealed()
+    {
+        if (_isSealed)
+        {
+            throw new InvalidOperationException("A sealed TriggerBase cannot be changed.");
+        }
+    }
+
+    /// <summary>Applies setters and then invokes enter actions for a state transition.</summary>
+    protected void EnterTrigger(FrameworkElement element)
+    {
+        ApplyTriggerSetters(element);
+        InvokeActions(_enterActions, element);
+    }
+
+    /// <summary>Removes setters and then invokes exit actions for a state transition.</summary>
+    protected void ExitTrigger(FrameworkElement element)
+    {
+        RemoveTriggerSetters(element);
+        InvokeActions(_exitActions, element);
+    }
+
+    private TriggerActionCollection CreateActionCollection()
+    {
+        var actions = new TriggerActionCollection(this);
+        if (_isSealed)
+        {
+            actions.Seal(this);
+        }
+
+        return actions;
+    }
+
+    private static void InvokeActions(TriggerActionCollection? actions, FrameworkElement element)
+    {
+        if (actions is null)
+        {
+            return;
+        }
+
+        foreach (TriggerAction action in actions)
+        {
+            action.Invoke(element);
+        }
+    }
+
+    /// <summary>
     /// Applies the trigger's setters. WPF semantics: trigger order in the declaring
     /// collection (Style.Triggers / ControlTemplate.Triggers) determines precedence —
     /// later triggers win over earlier ones for the same target property. We honor that
@@ -575,7 +992,7 @@ public abstract class TriggerBase
         // already wrote (or will write) its own value and must remain authoritative.
         var laterSiblingOwned = ComputeLaterSiblingOwnedKeys(element);
 
-        foreach (var setter in Setters)
+        foreach (var setter in Setters.OfType<Setter>())
         {
             var target = GetSetterTarget(element, setter.TargetName);
             if (target == null)
@@ -665,7 +1082,7 @@ public abstract class TriggerBase
             if (!later.IsActiveForElement(element))
                 continue;
 
-            foreach (var setter in later.Setters)
+            foreach (var setter in later.Setters.OfType<Setter>())
             {
                 var target = GetSetterTarget(element, setter.TargetName);
                 if (target == null) continue;
@@ -886,7 +1303,7 @@ public abstract class TriggerBase
         var ownSetters = new List<(FrameworkElement Target, DependencyProperty Property, Setter Setter)>();
         var ownKeys = new HashSet<(FrameworkElement, DependencyProperty)>();
 
-        foreach (var setter in Setters)
+        foreach (var setter in Setters.OfType<Setter>())
         {
             var target = GetSetterTarget(element, setter.TargetName);
             if (target == null) continue;
@@ -925,7 +1342,7 @@ public abstract class TriggerBase
                 if (sibling == this) continue;
                 if (!sibling.IsActiveForElement(element)) continue;
 
-                foreach (var setter in sibling.Setters)
+                foreach (var setter in sibling.Setters.OfType<Setter>())
                 {
                     var target = GetSetterTarget(element, setter.TargetName);
                     if (target == null) continue;
@@ -1064,7 +1481,8 @@ public abstract class TriggerBase
 /// <summary>
 /// Represents a trigger that applies property values when a property value equals a specified value.
 /// </summary>
-public sealed class Trigger : TriggerBase
+[XamlSetTypeConverter(nameof(ReceiveTypeConverter))]
+public sealed class Trigger : TriggerBase, ISupportInitialize
 {
     /// <summary>
     /// Tracks per-element state since a single trigger can be attached to multiple elements (shared styles).
@@ -1081,16 +1499,57 @@ public sealed class Trigger : TriggerBase
     }
 
     private readonly Dictionary<FrameworkElement, ElementState> _elementStates = new();
+    private DependencyProperty? _property;
+    private object? _value;
+    private string? _sourceName;
+    private bool _isInitializing;
+    private object? _unresolvedProperty;
+    private TypeConverter? _unresolvedPropertyConverter;
+    private ITypeDescriptorContext? _unresolvedPropertyContext;
+    private System.Globalization.CultureInfo? _unresolvedPropertyCulture;
+    private bool _hasUnresolvedProperty;
+    private object? _unresolvedValue;
+    private TypeConverter? _unresolvedValueConverter;
+    private ITypeDescriptorContext? _unresolvedValueContext;
+    private System.Globalization.CultureInfo? _unresolvedValueCulture;
+    private bool _hasUnresolvedValue;
 
     /// <summary>
     /// Gets or sets the property that activates the trigger.
     /// </summary>
-    public DependencyProperty? Property { get; set; }
+    public DependencyProperty? Property
+    {
+        get => _property;
+        set
+        {
+            CheckTriggerSealed();
+            _property = value;
+        }
+    }
+
+    /// <summary>
+    /// Retains an unresolved XAML property token until the enclosing Style is available for
+    /// validation. Runtime trigger evaluation continues to use <see cref="Property"/> only.
+    /// </summary>
+    internal string? UnresolvedPropertyName { get; set; }
 
     /// <summary>
     /// Gets or sets the value that activates the trigger.
     /// </summary>
-    public object? Value { get; set; }
+    public object? Value
+    {
+        get => _value;
+        set
+        {
+            CheckTriggerSealed();
+            if (value is MarkupExtension)
+            {
+                throw new ArgumentException("A Trigger.Value cannot be a markup extension.", nameof(value));
+            }
+
+            _value = value;
+        }
+    }
 
     /// <summary>
     /// 可选——监听具名模板部件而非 templated parent 本身的 <see cref="Property"/>。
@@ -1101,7 +1560,141 @@ public sealed class Trigger : TriggerBase
     /// parent 的 NameScope 里查找；ControlTemplate.Triggers 在模板应用之后才 Attach，命名部件
     /// 此刻已存在。SourceName 解不到（空模板 / 拼写错误）时 trigger 静默不挂——不抛、不崩。
     /// </summary>
-    public string? SourceName { get; set; }
+    public string? SourceName
+    {
+        get => _sourceName;
+        set
+        {
+            CheckTriggerSealed();
+            _sourceName = value;
+        }
+    }
+
+    void ISupportInitialize.BeginInit()
+    {
+        CheckTriggerSealed();
+        if (_isInitializing)
+        {
+            throw new InvalidOperationException("Trigger initialization has already begun.");
+        }
+
+        _isInitializing = true;
+    }
+
+    void ISupportInitialize.EndInit()
+    {
+        CheckTriggerSealed();
+        if (!_isInitializing)
+        {
+            throw new InvalidOperationException("Trigger initialization has not begun.");
+        }
+
+        if (_hasUnresolvedProperty)
+        {
+            object? resolved = ConvertDeferredValue(
+                _unresolvedPropertyConverter,
+                _unresolvedPropertyContext,
+                _unresolvedPropertyCulture,
+                _unresolvedProperty);
+            Property = resolved as DependencyProperty
+                ?? throw new InvalidOperationException("Trigger.Property type conversion did not produce a DependencyProperty.");
+            ClearDeferredProperty();
+        }
+
+        if (_hasUnresolvedValue)
+        {
+            object? resolved = ConvertDeferredValue(
+                _unresolvedValueConverter,
+                _unresolvedValueContext,
+                _unresolvedValueCulture,
+                _unresolvedValue);
+            Value = Property is null ? resolved : ConvertValueIfNeeded(resolved, Property.PropertyType);
+            ClearDeferredValue();
+        }
+
+        _isInitializing = false;
+    }
+
+    /// <summary>Defers Trigger.Property and Trigger.Value conversion until EndInit.</summary>
+    public static void ReceiveTypeConverter(object targetObject, XamlSetTypeConverterEventArgs eventArgs)
+    {
+        if (targetObject is not Trigger trigger)
+        {
+            throw new ArgumentNullException(nameof(targetObject));
+        }
+
+        ArgumentNullException.ThrowIfNull(eventArgs);
+        trigger.CheckTriggerSealed();
+
+        if (eventArgs.Member.Name == nameof(Property))
+        {
+            trigger._unresolvedProperty = eventArgs.Value;
+            trigger._unresolvedPropertyConverter = eventArgs.TypeConverter;
+            trigger._unresolvedPropertyContext = eventArgs.ServiceProvider;
+            trigger._unresolvedPropertyCulture = eventArgs.CultureInfo;
+            trigger._hasUnresolvedProperty = true;
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.Member.Name == nameof(Value))
+        {
+            trigger._unresolvedValue = eventArgs.Value;
+            trigger._unresolvedValueConverter = eventArgs.TypeConverter;
+            trigger._unresolvedValueContext = eventArgs.ServiceProvider;
+            trigger._unresolvedValueCulture = eventArgs.CultureInfo;
+            trigger._hasUnresolvedValue = true;
+            eventArgs.Handled = true;
+        }
+    }
+
+    internal override void Seal()
+    {
+        if (IsSealed)
+        {
+            return;
+        }
+
+        if (_isInitializing)
+        {
+            throw new InvalidOperationException("A Trigger cannot be sealed while it is being initialized.");
+        }
+
+        if (_property is null)
+        {
+            throw new InvalidOperationException("Property can not be null on Trigger.");
+        }
+
+        if (_property is not null && !_property.IsValidValue(_value))
+        {
+            throw new InvalidOperationException($"'{_value}' is not a valid value for dependency property '{_property.Name}'.");
+        }
+
+        base.Seal();
+    }
+
+    private static object? ConvertDeferredValue(
+        TypeConverter? converter,
+        ITypeDescriptorContext? context,
+        System.Globalization.CultureInfo? culture,
+        object? value)
+        => converter is null ? value : converter.ConvertFrom(context, culture, value!);
+
+    private void ClearDeferredProperty()
+    {
+        _unresolvedProperty = null;
+        _unresolvedPropertyConverter = null;
+        _unresolvedPropertyContext = null;
+        _unresolvedPropertyCulture = null;
+        _hasUnresolvedProperty = false;
+    }
+
+    private void ClearDeferredValue()
+    {
+        _unresolvedValue = null;
+        _unresolvedValueConverter = null;
+        _unresolvedValueContext = null;
+        _unresolvedValueCulture = null;
+        _hasUnresolvedValue = false;
+    }
 
     /// <inheritdoc />
     internal override void Attach(FrameworkElement element)
@@ -1181,11 +1774,11 @@ public sealed class Trigger : TriggerBase
 
             if (state.IsActive)
             {
-                ApplyTriggerSetters(element);
+                EnterTrigger(element);
             }
             else
             {
-                RemoveTriggerSetters(element);
+                ExitTrigger(element);
             }
         }
     }
@@ -1194,17 +1787,129 @@ public sealed class Trigger : TriggerBase
 /// <summary>
 /// Represents a condition for a MultiTrigger.
 /// </summary>
-public sealed class Condition
+[XamlSetMarkupExtension(nameof(ReceiveMarkupExtension))]
+[XamlSetTypeConverter(nameof(ReceiveTypeConverter))]
+public sealed class Condition : ISupportInitialize
 {
+    private DependencyProperty? _property;
+    private BindingBase? _binding;
+    private object? _value;
+    private string? _sourceName;
+    private bool _isSealed;
+    private bool _isInitializing;
+    private object? _unresolvedProperty;
+    private TypeConverter? _unresolvedPropertyConverter;
+    private ITypeDescriptorContext? _unresolvedPropertyContext;
+    private System.Globalization.CultureInfo? _unresolvedPropertyCulture;
+    private bool _hasUnresolvedProperty;
+    private object? _unresolvedValue;
+    private TypeConverter? _unresolvedValueConverter;
+    private ITypeDescriptorContext? _unresolvedValueContext;
+    private System.Globalization.CultureInfo? _unresolvedValueCulture;
+    private bool _hasUnresolvedValue;
+
+    /// <summary>
+    /// Initializes an empty condition.
+    /// </summary>
+    public Condition()
+    {
+    }
+
+    /// <summary>
+    /// Initializes a property condition.
+    /// </summary>
+    public Condition(DependencyProperty conditionProperty, object? conditionValue)
+        : this(conditionProperty, conditionValue, null)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a property condition that reads from a named source.
+    /// </summary>
+    public Condition(DependencyProperty conditionProperty, object? conditionValue, string? sourceName)
+    {
+        ArgumentNullException.ThrowIfNull(conditionProperty);
+        if (!conditionProperty.IsValidValue(conditionValue))
+        {
+            throw new ArgumentException(
+                $"'{conditionValue}' is not a valid value for dependency property '{conditionProperty.Name}'.",
+                nameof(conditionValue));
+        }
+
+        _property = conditionProperty;
+        Value = conditionValue;
+        _sourceName = sourceName;
+    }
+
+    /// <summary>
+    /// Initializes a data-binding condition.
+    /// </summary>
+    public Condition(BindingBase binding, object? conditionValue)
+    {
+        ArgumentNullException.ThrowIfNull(binding);
+        _binding = binding;
+        Value = conditionValue;
+    }
+
     /// <summary>
     /// Gets or sets the property to evaluate.
     /// </summary>
-    public DependencyProperty? Property { get; set; }
+    public DependencyProperty? Property
+    {
+        get => _property;
+        set
+        {
+            VerifyMutable();
+            if (_binding is not null)
+            {
+                throw new InvalidOperationException("A condition cannot use both Property and Binding.");
+            }
+
+            _property = value;
+        }
+    }
+
+    /// <summary>
+    /// Retains an unresolved XAML property token until the enclosing MultiTrigger is
+    /// post-processed. Runtime condition evaluation continues to use <see cref="Property"/> only.
+    /// </summary>
+    internal string? UnresolvedPropertyName { get; set; }
+
+    /// <summary>
+    /// Gets or sets the binding to evaluate.
+    /// </summary>
+    public BindingBase? Binding
+    {
+        get => _binding;
+        set
+        {
+            VerifyMutable();
+            if (_property is not null)
+            {
+                throw new InvalidOperationException("A condition cannot use both Property and Binding.");
+            }
+
+            _binding = value;
+        }
+    }
 
     /// <summary>
     /// Gets or sets the value that the property must equal for the condition to be true.
     /// </summary>
-    public object? Value { get; set; }
+    public object? Value
+    {
+        get => _value;
+        set
+        {
+            VerifyMutable();
+            if (value is MarkupExtension)
+            {
+                throw new ArgumentException("A Condition.Value cannot be a markup extension.", nameof(value));
+            }
+
+            _value = value;
+        }
+    }
 
     /// <summary>
     /// 可选——按命名模板部件取 <see cref="Property"/> 值（而非 templated parent 自身）。
@@ -1212,7 +1917,175 @@ public sealed class Condition
     /// 解析逻辑与 <see cref="Trigger.SourceName"/> 一致，由 <see cref="MultiTrigger.Attach"/>
     /// 在挂载时一次性缓存到 condition-source 数组。
     /// </summary>
-    public string? SourceName { get; set; }
+    public string? SourceName
+    {
+        get => _sourceName;
+        set
+        {
+            VerifyMutable();
+            _sourceName = value;
+        }
+    }
+
+    void ISupportInitialize.BeginInit()
+    {
+        VerifyMutable();
+        if (_isInitializing)
+        {
+            throw new InvalidOperationException("Condition initialization has already begun.");
+        }
+
+        _isInitializing = true;
+    }
+
+    void ISupportInitialize.EndInit()
+    {
+        VerifyMutable();
+        if (!_isInitializing)
+        {
+            throw new InvalidOperationException("Condition initialization has not begun.");
+        }
+
+        if (_hasUnresolvedProperty)
+        {
+            object? resolved = ConvertDeferredValue(
+                _unresolvedPropertyConverter,
+                _unresolvedPropertyContext,
+                _unresolvedPropertyCulture,
+                _unresolvedProperty);
+            Property = resolved as DependencyProperty
+                ?? throw new InvalidOperationException("Condition.Property type conversion did not produce a DependencyProperty.");
+            ClearDeferredProperty();
+        }
+
+        if (_hasUnresolvedValue)
+        {
+            Value = ConvertDeferredValue(
+                _unresolvedValueConverter,
+                _unresolvedValueContext,
+                _unresolvedValueCulture,
+                _unresolvedValue);
+            ClearDeferredValue();
+        }
+
+        _isInitializing = false;
+    }
+
+    /// <summary>Receives BindingBase markup extensions assigned to Condition.Binding.</summary>
+    public static void ReceiveMarkupExtension(object targetObject, XamlSetMarkupExtensionEventArgs eventArgs)
+    {
+        ArgumentNullException.ThrowIfNull(targetObject);
+        ArgumentNullException.ThrowIfNull(eventArgs);
+
+        if (targetObject is Condition condition &&
+            eventArgs.Member.Name == nameof(Binding) &&
+            eventArgs.MarkupExtension is BindingBase binding)
+        {
+            condition.VerifyMutable();
+            condition.Binding = binding;
+            eventArgs.Handled = true;
+        }
+    }
+
+    /// <summary>Defers Condition.Property and Condition.Value conversion until EndInit.</summary>
+    public static void ReceiveTypeConverter(object targetObject, XamlSetTypeConverterEventArgs eventArgs)
+    {
+        if (targetObject is not Condition condition)
+        {
+            throw new ArgumentNullException(nameof(targetObject));
+        }
+
+        ArgumentNullException.ThrowIfNull(eventArgs);
+        condition.VerifyMutable();
+
+        if (eventArgs.Member.Name == nameof(Property))
+        {
+            condition._unresolvedProperty = eventArgs.Value;
+            condition._unresolvedPropertyConverter = eventArgs.TypeConverter;
+            condition._unresolvedPropertyContext = eventArgs.ServiceProvider;
+            condition._unresolvedPropertyCulture = eventArgs.CultureInfo;
+            condition._hasUnresolvedProperty = true;
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.Member.Name == nameof(Value))
+        {
+            condition._unresolvedValue = eventArgs.Value;
+            condition._unresolvedValueConverter = eventArgs.TypeConverter;
+            condition._unresolvedValueContext = eventArgs.ServiceProvider;
+            condition._unresolvedValueCulture = eventArgs.CultureInfo;
+            condition._hasUnresolvedValue = true;
+            eventArgs.Handled = true;
+        }
+    }
+
+    internal void Seal(bool dataCondition)
+    {
+        if (_isSealed)
+        {
+            return;
+        }
+
+        if (dataCondition)
+        {
+            if (_binding is null)
+            {
+                throw new InvalidOperationException("A data-trigger condition requires a Binding.");
+            }
+
+            if (_sourceName is not null)
+            {
+                throw new InvalidOperationException("SourceName is not valid for a data-trigger condition.");
+            }
+        }
+        else
+        {
+            if (_property is null)
+            {
+                throw new InvalidOperationException("A property-trigger condition requires a Property.");
+            }
+
+            if (!_property.IsValidValue(_value))
+            {
+                throw new InvalidOperationException(
+                    $"'{_value}' is not a valid value for dependency property '{_property.Name}'.");
+            }
+        }
+
+        _isSealed = true;
+    }
+
+    private void VerifyMutable()
+    {
+        if (_isSealed)
+        {
+            throw new InvalidOperationException("A sealed Condition cannot be changed.");
+        }
+    }
+
+    private static object? ConvertDeferredValue(
+        TypeConverter? converter,
+        ITypeDescriptorContext? context,
+        System.Globalization.CultureInfo? culture,
+        object? value)
+        => converter is null ? value : converter.ConvertFrom(context, culture, value!);
+
+    private void ClearDeferredProperty()
+    {
+        _unresolvedProperty = null;
+        _unresolvedPropertyConverter = null;
+        _unresolvedPropertyContext = null;
+        _unresolvedPropertyCulture = null;
+        _hasUnresolvedProperty = false;
+    }
+
+    private void ClearDeferredValue()
+    {
+        _unresolvedValue = null;
+        _unresolvedValueConverter = null;
+        _unresolvedValueContext = null;
+        _unresolvedValueCulture = null;
+        _hasUnresolvedValue = false;
+    }
 }
 
 /// <summary>
@@ -1229,13 +2102,24 @@ public sealed class BindingCondition
     /// Gets or sets the value that the binding must equal for the condition to be true.
     /// </summary>
     public object? Value { get; set; }
+
+    /// <summary>
+    /// Converts the legacy Jalium binding-condition shape to the WPF-compatible Condition type.
+    /// </summary>
+    public static implicit operator Condition(BindingCondition condition)
+    {
+        ArgumentNullException.ThrowIfNull(condition);
+        return new Condition(
+            condition.Binding ?? throw new InvalidOperationException("BindingCondition requires a Binding."),
+            condition.Value);
+    }
 }
 
 /// <summary>
 /// Represents a trigger that applies property values when multiple conditions are all true.
 /// </summary>
 [ContentProperty("Setters")]
-public sealed class MultiTrigger : TriggerBase
+public sealed class MultiTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
 {
     /// <summary>
     /// Tracks per-element state since a single trigger can be attached to multiple elements (shared styles).
@@ -1257,7 +2141,39 @@ public sealed class MultiTrigger : TriggerBase
     /// <summary>
     /// Gets the collection of conditions that must all be true for the trigger to activate.
     /// </summary>
-    public IList<Condition> Conditions { get; } = new List<Condition>();
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Content)]
+    public ConditionCollection Conditions { get; } = new();
+
+    void Jalium.UI.Markup.IAddChild.AddChild(object value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value is not Setter setter)
+        {
+            throw new ArgumentException("MultiTrigger content must be a Setter.", nameof(value));
+        }
+
+        Setters.Add(setter);
+    }
+
+    void Jalium.UI.Markup.IAddChild.AddText(string text)
+    {
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            throw new ArgumentException("Text is not valid MultiTrigger content.", nameof(text));
+        }
+    }
+
+    /// <inheritdoc />
+    internal override void Seal()
+    {
+        // Match WPF's validation order: seal/validate setters first, then validate
+        // each condition as a dependency-property condition.
+        base.Seal();
+        if (Conditions.Count > 0)
+        {
+            Conditions.Seal(dataConditions: false);
+        }
+    }
 
     /// <inheritdoc />
     internal override void Attach(FrameworkElement element)
@@ -1390,11 +2306,11 @@ public sealed class MultiTrigger : TriggerBase
 
             if (state.IsActive)
             {
-                ApplyTriggerSetters(element);
+                EnterTrigger(element);
             }
             else
             {
-                RemoveTriggerSetters(element);
+                ExitTrigger(element);
             }
         }
     }
@@ -1403,6 +2319,7 @@ public sealed class MultiTrigger : TriggerBase
 /// <summary>
 /// Represents a trigger that applies property values when data equals a specified value.
 /// </summary>
+[XamlSetMarkupExtension(nameof(ReceiveMarkupExtension))]
 public sealed class DataTrigger : TriggerBase
 {
     /// <summary>
@@ -1416,6 +2333,8 @@ public sealed class DataTrigger : TriggerBase
     }
 
     private readonly Dictionary<FrameworkElement, ElementState> _elementStates = new();
+    private BindingBase? _binding;
+    private object? _value;
 
     // Shadow property for receiving binding updates. ONE UNIQUE attached property per DataTrigger
     // INSTANCE (lazily registered). A single property shared across all instances made two
@@ -1435,12 +2354,52 @@ public sealed class DataTrigger : TriggerBase
     /// <summary>
     /// Gets or sets the binding that produces the value to compare with Value.
     /// </summary>
-    public Binding? Binding { get; set; }
+    public BindingBase? Binding
+    {
+        get => _binding;
+        set
+        {
+            CheckTriggerSealed();
+            _binding = value;
+        }
+    }
 
     /// <summary>
     /// Gets or sets the value that activates the trigger.
     /// </summary>
-    public object? Value { get; set; }
+    public object? Value
+    {
+        get => _value;
+        set
+        {
+            CheckTriggerSealed();
+            if (value is MarkupExtension)
+            {
+                throw new ArgumentException("A DataTrigger.Value cannot be a markup extension.", nameof(value));
+            }
+
+            _value = value;
+        }
+    }
+
+    /// <summary>Receives BindingBase markup extensions assigned to DataTrigger.Binding.</summary>
+    public static void ReceiveMarkupExtension(object targetObject, XamlSetMarkupExtensionEventArgs eventArgs)
+    {
+        ArgumentNullException.ThrowIfNull(targetObject);
+        ArgumentNullException.ThrowIfNull(eventArgs);
+
+        if (targetObject is DataTrigger trigger &&
+            eventArgs.Member.Name == nameof(Binding) &&
+            eventArgs.MarkupExtension is BindingBase binding)
+        {
+            trigger.Binding = binding;
+            eventArgs.Handled = true;
+        }
+        else
+        {
+            eventArgs.CallBase();
+        }
+    }
 
     /// <inheritdoc />
     internal override void Attach(FrameworkElement element)
@@ -1527,11 +2486,11 @@ public sealed class DataTrigger : TriggerBase
 
             if (state.IsActive)
             {
-                ApplyTriggerSetters(element);
+                EnterTrigger(element);
             }
             else
             {
-                RemoveTriggerSetters(element);
+                ExitTrigger(element);
             }
         }
     }
@@ -1540,40 +2499,129 @@ public sealed class DataTrigger : TriggerBase
 /// <summary>
 /// Represents a trigger that applies property values when an event occurs.
 /// </summary>
-public sealed class EventTrigger : TriggerBase
+[ContentProperty(nameof(Actions))]
+public class EventTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
 {
     private FrameworkElement? _attachedElement;
+    private FrameworkElement? _eventSource;
+    private RoutedEvent? _routedEvent;
+    private string? _sourceName;
+    private TriggerActionCollection? _actions;
+
+    public EventTrigger()
+    {
+    }
+
+    public EventTrigger(RoutedEvent routedEvent)
+    {
+        RoutedEvent = routedEvent ?? throw new ArgumentNullException(nameof(routedEvent));
+    }
 
     /// <summary>
     /// Gets or sets the name of the event that activates the trigger.
     /// </summary>
-    public RoutedEvent? RoutedEvent { get; set; }
+    public RoutedEvent? RoutedEvent
+    {
+        get => _routedEvent;
+        set
+        {
+            CheckTriggerSealed();
+            _routedEvent = value ?? throw new ArgumentNullException(nameof(value));
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the name of the element whose routed event activates this trigger.
+    /// </summary>
+    public string? SourceName
+    {
+        get => _sourceName;
+        set
+        {
+            CheckTriggerSealed();
+            _sourceName = value;
+        }
+    }
 
     /// <summary>
     /// Gets the collection of actions to perform when the event occurs.
     /// </summary>
-    public IList<TriggerAction> Actions { get; } = new List<TriggerAction>();
+    public TriggerActionCollection Actions => _actions ??= new TriggerActionCollection(this);
+
+    /// <summary>Adds an action supplied through XAML child syntax.</summary>
+    protected virtual void AddChild(object value)
+    {
+        if (value is not TriggerAction action)
+        {
+            throw new ArgumentException("EventTrigger accepts only TriggerAction children.", nameof(value));
+        }
+
+        Actions.Add(action);
+    }
+
+    /// <summary>Accepts formatting whitespace and rejects text content.</summary>
+    protected virtual void AddText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            throw new ArgumentException("Text is not valid EventTrigger content.", nameof(text));
+        }
+    }
+
+    /// <summary>Returns whether the Actions collection should be serialized.</summary>
+    public bool ShouldSerializeActions() => _actions is { Count: > 0 };
+
+    void Jalium.UI.Markup.IAddChild.AddChild(object value) => AddChild(value);
+
+    void Jalium.UI.Markup.IAddChild.AddText(string text) => AddText(text);
+
+    /// <inheritdoc />
+    internal override void Seal()
+    {
+        if (IsSealed)
+        {
+            return;
+        }
+
+        if (Setters.Count > 0)
+        {
+            throw new InvalidOperationException("An EventTrigger cannot contain property setters.");
+        }
+
+        if (HasEnterActions || HasExitActions)
+        {
+            throw new InvalidOperationException("EnterActions and ExitActions are not valid on an EventTrigger.");
+        }
+
+        _actions?.Seal(this);
+        base.Seal();
+    }
 
     /// <inheritdoc />
     internal override void Attach(FrameworkElement element)
     {
         _attachedElement = element;
+        _eventSource = string.IsNullOrEmpty(SourceName)
+            ? element
+            : element.FindName(SourceName) as FrameworkElement;
 
-        if (RoutedEvent != null)
+        if (RoutedEvent != null && _eventSource != null)
         {
-            element.AddHandler(RoutedEvent, new RoutedEventHandler(OnEventRaised));
+            _eventSource.AddHandler(RoutedEvent, new RoutedEventHandler(OnEventRaised));
         }
     }
 
     /// <inheritdoc />
     internal override void Detach(FrameworkElement element)
     {
-        if (RoutedEvent != null)
+        if (RoutedEvent != null && _eventSource != null)
         {
-            element.RemoveHandler(RoutedEvent, new RoutedEventHandler(OnEventRaised));
+            _eventSource.RemoveHandler(RoutedEvent, new RoutedEventHandler(OnEventRaised));
         }
 
         _attachedElement = null;
+        _eventSource = null;
     }
 
     /// <inheritdoc />
@@ -1596,7 +2644,7 @@ public sealed class EventTrigger : TriggerBase
 /// Represents a trigger that applies property values when multiple data binding conditions are all true.
 /// </summary>
 [ContentProperty("Setters")]
-public sealed class MultiDataTrigger : TriggerBase
+public sealed class MultiDataTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
 {
     /// <summary>
     /// Tracks per-element state since a single trigger can be attached to multiple elements (shared styles).
@@ -1617,7 +2665,39 @@ public sealed class MultiDataTrigger : TriggerBase
     /// <summary>
     /// Gets the collection of binding conditions that must all be true for the trigger to activate.
     /// </summary>
-    public IList<BindingCondition> Conditions { get; } = new List<BindingCondition>();
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Content)]
+    public ConditionCollection Conditions { get; } = new();
+
+    void Jalium.UI.Markup.IAddChild.AddChild(object value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value is not Setter setter)
+        {
+            throw new ArgumentException("MultiDataTrigger content must be a Setter.", nameof(value));
+        }
+
+        Setters.Add(setter);
+    }
+
+    void Jalium.UI.Markup.IAddChild.AddText(string text)
+    {
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            throw new ArgumentException("Text is not valid MultiDataTrigger content.", nameof(text));
+        }
+    }
+
+    /// <inheritdoc />
+    internal override void Seal()
+    {
+        // Match WPF's validation order: seal/validate setters first, then validate
+        // each condition as a data-binding condition.
+        base.Seal();
+        if (Conditions.Count > 0)
+        {
+            Conditions.Seal(dataConditions: true);
+        }
+    }
 
     /// <inheritdoc />
     internal override void Attach(FrameworkElement element)
@@ -1737,11 +2817,11 @@ public sealed class MultiDataTrigger : TriggerBase
 
             if (state.IsActive)
             {
-                ApplyTriggerSetters(element);
+                EnterTrigger(element);
             }
             else
             {
-                RemoveTriggerSetters(element);
+                ExitTrigger(element);
             }
         }
     }
@@ -1750,19 +2830,80 @@ public sealed class MultiDataTrigger : TriggerBase
 /// <summary>
 /// Base class for actions that can be invoked by event triggers.
 /// </summary>
-public abstract class TriggerAction
+public abstract class TriggerAction : DependencyObject
 {
+    private TriggerBase? _containingTrigger;
+    private bool _isSealed;
+
+    private protected override bool IsSealedCore => _isSealed;
+
+    /// <summary>Gets the trigger that owns this action, when it has been attached.</summary>
+    internal TriggerBase? ContainingTrigger => _containingTrigger;
+
     /// <summary>
     /// Invokes the action on the specified element.
     /// </summary>
     internal abstract void Invoke(FrameworkElement? element);
+
+    internal void AttachOwner(TriggerBase? owner)
+    {
+        if (owner is null)
+        {
+            return;
+        }
+
+        if (_containingTrigger is not null && !ReferenceEquals(_containingTrigger, owner))
+        {
+            throw new InvalidOperationException("A TriggerAction can belong to only one trigger.");
+        }
+
+        _containingTrigger = owner;
+    }
+
+    internal void DetachOwner(TriggerBase? owner)
+    {
+        if (!_isSealed && owner is not null && ReferenceEquals(_containingTrigger, owner))
+        {
+            _containingTrigger = null;
+        }
+    }
+
+    internal void Seal(TriggerBase containingTrigger)
+    {
+        ArgumentNullException.ThrowIfNull(containingTrigger);
+        if (_isSealed)
+        {
+            if (!ReferenceEquals(_containingTrigger, containingTrigger))
+            {
+                throw new InvalidOperationException("A TriggerAction can belong to only one trigger.");
+            }
+
+            return;
+        }
+
+        AttachOwner(containingTrigger);
+        _isSealed = true;
+    }
+
+    /// <summary>Throws when a sealed action is changed by a derived implementation.</summary>
+    protected void CheckSealed()
+    {
+        if (_isSealed)
+        {
+            throw new InvalidOperationException("A sealed TriggerAction cannot be changed.");
+        }
+    }
 }
 
 /// <summary>
 /// Represents a setter that applies an event handler in a Style.
 /// </summary>
-public sealed class EventSetter
+public class EventSetter : SetterBase
 {
+    private RoutedEvent? _event;
+    private Delegate? _handler;
+    private bool _handledEventsToo;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="EventSetter"/> class.
     /// </summary>
@@ -1784,17 +2925,66 @@ public sealed class EventSetter
     /// <summary>
     /// Gets or sets the particular routed event that this EventSetter responds to.
     /// </summary>
-    public RoutedEvent? Event { get; set; }
+    public RoutedEvent? Event
+    {
+        get => _event;
+        set
+        {
+            CheckSealed();
+            _event = value;
+        }
+    }
 
     /// <summary>
     /// Gets or sets the handler to assign in this setter.
     /// </summary>
-    public Delegate? Handler { get; set; }
+    public Delegate? Handler
+    {
+        get => _handler;
+        set
+        {
+            CheckSealed();
+            _handler = value;
+        }
+    }
 
     /// <summary>
     /// Gets or sets whether the handler should be invoked even if the event is marked as handled.
     /// </summary>
-    public bool HandledEventsToo { get; set; }
+    public bool HandledEventsToo
+    {
+        get => _handledEventsToo;
+        set
+        {
+            CheckSealed();
+            _handledEventsToo = value;
+        }
+    }
+
+    internal override void Seal()
+    {
+        if (IsSealed)
+        {
+            return;
+        }
+
+        if (_event == null)
+        {
+            throw new InvalidOperationException("EventSetter.Event must be specified before the EventSetter is sealed.");
+        }
+
+        if (_handler == null)
+        {
+            throw new InvalidOperationException("EventSetter.Handler must be specified before the EventSetter is sealed.");
+        }
+
+        if (!_event.HandlerType.IsInstanceOfType(_handler))
+        {
+            throw new InvalidOperationException("EventSetter.Handler is not compatible with the routed event handler type.");
+        }
+
+        base.Seal();
+    }
 
     /// <summary>
     /// Applies this event setter to the specified element.

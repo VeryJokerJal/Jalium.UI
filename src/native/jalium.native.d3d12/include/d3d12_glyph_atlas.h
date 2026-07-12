@@ -201,6 +201,12 @@ public:
     /// Must be called before rendering text in a frame.
     void FlushToGpu(ID3D12GraphicsCommandList* cmdList);
 
+    /// Moves upload allocations referenced by the currently open command list
+    /// into the caller's frame-fence keepalive collection. FlushToGpu keeps the
+    /// resources locally until this drain occurs, so legacy callers that do not
+    /// provide a fence owner remain leak-safe rather than releasing too early.
+    void DrainRetiredUploadBuffers(std::vector<ComPtr<ID3D12Resource>>& destination);
+
     /// Gets the atlas SRV resource for binding.
     ID3D12Resource* GetAtlasResource() const { return atlasTexture_.Get(); }
 
@@ -271,6 +277,8 @@ public:
 private:
     bool RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry);
     bool AllocateAtlasRect(uint16_t w, uint16_t h, uint16_t& outX, uint16_t& outY);
+    bool EnsureUploadBuffer();
+    void QueueUploadBufferKeepaliveAfterCopy();
     // Grow atlasTexture_/uploadBuffer_/atlasBitmap_ to at least (reqW, reqH),
     // capped at kMaxAtlasDim.  Preserves all already-packed glyph pixels.
     // Safe to call only between frames or during batch-collect (before any
@@ -289,7 +297,21 @@ private:
     uint32_t atlasW_ = kInitialAtlasDim;
     uint32_t atlasH_ = kInitialAtlasDim;
     ComPtr<ID3D12Resource> atlasTexture_;
+    // One-shot staging resource for the next atlas copy.  It is never reused
+    // after CopyTextureRegion has referenced it: FlushToGpu moves it to the
+    // pending keepalive list, and DirectRenderer drains it into the current
+    // frame slot before a later dirty flush allocates a fresh buffer. A single
+    // persistent upload buffer is not safe here because
+    // the atlas is shared by all swap-chain slots while BeginFrame waits only
+    // the current slot's fence; the CPU could otherwise Map/overwrite bytes that
+    // another in-flight slot's GPU copy was still reading.
     ComPtr<ID3D12Resource> uploadBuffer_;
+    // One-shot upload allocations already referenced by an OPEN command list.
+    // They must not enter D3D12Backend's lastSubmitted+1 graveyard yet: a
+    // mid-frame auxiliary queue Signal can overtake that list and reclaim them
+    // before Close/Execute. DirectRenderer drains these into its current frame
+    // slot, whose actual submission fence owns their lifetime.
+    std::vector<ComPtr<ID3D12Resource>> pendingRetiredUploadBuffers_;
 
     // CPU-side atlas bitmap (RGBA — R,G,B = sub-pixel coverage, A = max coverage)
     std::vector<uint8_t> atlasBitmap_;

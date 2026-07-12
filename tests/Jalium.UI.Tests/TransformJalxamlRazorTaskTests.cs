@@ -36,7 +36,7 @@ public class TransformJalxamlRazorTaskTests
             var generated = File.ReadAllText(generatedPath);
 
             Assert.Contains("""RegisterTemplateEvaluator("Count|::""", generated);
-            Assert.Contains("""dynamic Count = __resolve("Count");""", generated);
+            Assert.Contains("""dynamic Count = __resolve("Count")!;""", generated);
             Assert.DoesNotContain("""dynamic computed = __resolve("computed");""", generated);
             Assert.DoesNotContain("""dynamic value = __resolve("value");""", generated);
             Assert.DoesNotContain("""dynamic var = __resolve("var");""", generated);

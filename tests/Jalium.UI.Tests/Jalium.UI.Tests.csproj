@@ -42,6 +42,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="TestAssets\**\*.jalxaml" />
+    <EmbeddedResource Include="TestAssets\ApplicationResource.txt" />
+    <EmbeddedResource Include="TestAssets\SplashScreen.bmp" />
   </ItemGroup>
 
 </Project>

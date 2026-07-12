@@ -36,7 +36,7 @@ public class ResourceMarkupExtensionTests
 
         var dictionary = Assert.IsType<ResourceDictionary>(XamlReader.Parse(xaml));
         var style = Assert.IsType<Style>(dictionary[typeof(Border)]);
-        var setter = Assert.Single(style.Setters);
+        var setter = Assert.IsType<Setter>(Assert.Single(style.Setters));
 
         var resolvedBrush = Assert.IsType<SolidColorBrush>(setter.Value);
         var sourceBrush = Assert.IsType<SolidColorBrush>(dictionary["StaticBrush"]);
@@ -115,6 +115,37 @@ public class ResourceMarkupExtensionTests
         {
             ResetApplicationState();
         }
+    }
+
+    [Fact]
+    public void CompiledThemeSetter_DynamicResource_ShouldRemainDeferred()
+    {
+        const string managedResourceName = "Jalium.UI.Managed.Themes.Controls.Button.jalxaml";
+        const string legacyResourceName = "Jalium.UI.Controls.Themes.Controls.Button.jalxaml";
+        ThemeLoader.Initialize();
+        Assert.True(XamlPrebuiltDictionaryRegistry.TryGet(managedResourceName, out var managedBuilder));
+        Assert.True(XamlPrebuiltDictionaryRegistry.TryGet(legacyResourceName, out var legacyBuilder));
+        Assert.NotNull(managedBuilder);
+        Assert.Same(managedBuilder, legacyBuilder);
+
+        var assembly = typeof(Button).Assembly;
+        var sourceUri = new Uri("resource:///Jalium.UI.Controls/Themes/Controls/Button.jalxaml");
+        var dictionary = new ResourceDictionary
+        {
+            Source = sourceUri,
+            BaseUri = sourceUri,
+            SourceAssembly = assembly
+        };
+        var context = XamlBuilder.BeginComponent(dictionary, sourceUri, assembly);
+        legacyBuilder!(dictionary, context);
+        XamlBuilder.EndComponent(dictionary, context);
+
+        var style = Assert.IsType<Style>(dictionary[typeof(Button)]);
+        var backgroundSetter = Assert.Single(
+            style.Setters.OfType<Setter>(),
+            setter => ReferenceEquals(setter.Property, Control.BackgroundProperty));
+        var reference = Assert.IsAssignableFrom<IDynamicResourceReference>(backgroundSetter.Value);
+        Assert.Equal("ControlBackground", reference.ResourceKey);
     }
 
     [Fact]

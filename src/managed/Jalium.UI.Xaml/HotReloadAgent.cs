@@ -94,7 +94,12 @@ public static class HotReloadAgent
 
                 var result = ApplyOnUiThread(request.XClass, request.FilePath, request.Content);
                 HotReloadProtocol.WriteResult(server, result);
-                try { server.WaitForPipeDrain(); } catch { }
+                // Unix named pipes do not expose the Windows drain operation;
+                // disposing the connected stream after the write is sufficient.
+                if (OperatingSystem.IsWindows())
+                {
+                    try { server.WaitForPipeDrain(); } catch { }
+                }
             }
             catch (Exception ex)
             {

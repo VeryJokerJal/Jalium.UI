@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using Jalium.UI.Controls.Platform;
 
 namespace Jalium.UI.Controls;
 
@@ -64,21 +65,10 @@ public sealed class PickIconDialog
 
     private bool ShowFallbackDialog()
     {
-        Console.Write($"Icon resource path [{IconPath}]: ");
-        var path = Console.ReadLine();
-        if (!string.IsNullOrWhiteSpace(path))
-        {
-            IconPath = path.Trim();
-        }
-
-        Console.Write($"Icon index [{IconIndex}]: ");
-        var indexInput = Console.ReadLine();
-        if (!string.IsNullOrWhiteSpace(indexInput) && int.TryParse(indexInput, out var parsedIndex))
-        {
-            IconIndex = parsedIndex;
-        }
-
-        return !string.IsNullOrWhiteSpace(IconPath);
+        // There is no desktop-neutral Linux icon-resource picker. Returning
+        // false is deterministic and, unlike the old console prompt, never
+        // blocks a graphical application waiting on stdin.
+        return false;
     }
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
@@ -174,6 +164,11 @@ public sealed class OpenWithDialog
             return ShowWindowsDialog(owner);
         }
 
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            return ShowLinuxDialog(owner);
+        }
+
         return ShowFallbackDialog();
     }
 
@@ -208,8 +203,15 @@ public sealed class OpenWithDialog
 
     private bool ShowFallbackDialog()
     {
-        Console.WriteLine($"Open With is only implemented on Windows. Target: {FileName ?? "(none)"}");
         return false;
+    }
+
+    private bool ShowLinuxDialog(nint owner)
+    {
+        if (!LinuxDesktopPortal.TryNormalizeOpenUriTarget(FileName, out var uri))
+            return false;
+
+        return LinuxDesktopPortal.OpenUri(owner, uri, ask: true);
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -328,7 +330,6 @@ public sealed class OpenPropertiesDialog
 
     private bool ShowFallbackDialog()
     {
-        Console.WriteLine($"Properties dialog is only implemented on Windows. Target: {ObjectName ?? string.Join(", ", ObjectNames)}");
         return false;
     }
 

@@ -24,7 +24,7 @@ public sealed class AdornerDecorator : Decorator
     /// <summary>
     /// Gets the number of visual children.
     /// </summary>
-    public override int VisualChildrenCount
+    protected override int VisualChildrenCount
     {
         get
         {
@@ -36,7 +36,7 @@ public sealed class AdornerDecorator : Decorator
     /// <summary>
     /// Gets the visual child at the specified index.
     /// </summary>
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (Child != null)
         {
@@ -56,7 +56,7 @@ public sealed class AdornerDecorator : Decorator
     /// </summary>
     protected override Size MeasureOverride(Size constraint)
     {
-        var desiredSize = Size.Empty;
+        var desiredSize = default(Size);
 
         if (Child != null)
         {
@@ -92,7 +92,7 @@ public sealed class AdornerDecorator : Decorator
 /// <summary>
 /// Base class for elements that apply effects around a single child element.
 /// </summary>
-public class Decorator : FrameworkElement
+public class Decorator : FrameworkElement, Jalium.UI.Markup.IAddChild
 {
     private UIElement? _child;
 
@@ -114,15 +114,44 @@ public class Decorator : FrameworkElement
         set => SetValue(ChildProperty, value);
     }
 
+    /// <inheritdoc />
+    protected internal override System.Collections.IEnumerator LogicalChildren =>
+        Child is null
+            ? Enumerable.Empty<object>().GetEnumerator()
+            : new object[] { Child }.GetEnumerator();
+
+    void Jalium.UI.Markup.IAddChild.AddChild(object value)
+    {
+        if (value is not UIElement child)
+        {
+            throw new ArgumentException("A Decorator child must be a UIElement.", nameof(value));
+        }
+
+        if (Child is not null)
+        {
+            throw new InvalidOperationException("A Decorator can contain only one child.");
+        }
+
+        Child = child;
+    }
+
+    void Jalium.UI.Markup.IAddChild.AddText(string text)
+    {
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            throw new ArgumentException("A Decorator does not accept text content.", nameof(text));
+        }
+    }
+
     /// <summary>
     /// Gets the number of visual children.
     /// </summary>
-    public override int VisualChildrenCount => _child != null ? 1 : 0;
+    protected override int VisualChildrenCount => _child != null ? 1 : 0;
 
     /// <summary>
     /// Gets the visual child at the specified index.
     /// </summary>
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (_child == null || index != 0)
             throw new ArgumentOutOfRangeException(nameof(index));
@@ -141,7 +170,7 @@ public class Decorator : FrameworkElement
             return _child.DesiredSize;
         }
 
-        return Size.Empty;
+        return default(Size);
     }
 
     /// <summary>

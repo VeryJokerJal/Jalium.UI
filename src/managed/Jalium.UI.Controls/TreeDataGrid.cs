@@ -20,8 +20,8 @@ namespace Jalium.UI.Controls;
 public class TreeDataGrid : Control, IColumnHeaderHost
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.DataGrid);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.DataGrid);
 
     bool IColumnHeaderHost.IsColumnDragging => _isColumnDragging;
     void IColumnHeaderHost.ResizeColumn(DataGridColumn column, double newWidth) => ResizeColumn(column, newWidth);
@@ -953,7 +953,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
                 Column = column
             };
 
-            var displayElement = column.GenerateElement(cell, node.Item);
+            var displayElement = column.BuildVisualTree(isEditing: false, node.Item, cell);
 
             if (colIndex == treeColIndex)
             {
@@ -1277,9 +1277,9 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
         column.SortDirection = newDirection;
 
-        if (column is DataGridBoundColumn boundColumn && boundColumn.Binding?.Path != null)
+        if (column is DataGridBoundColumn { Binding: Binding binding } && binding.Path != null)
         {
-            var path = boundColumn.Binding.Path.Path;
+            var path = binding.Path.Path;
             SortNodesRecursive(_rootNodes, path, newDirection);
         }
 

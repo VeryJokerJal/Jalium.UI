@@ -13,8 +13,8 @@ namespace Jalium.UI.Controls;
 public class DockTabPanel : Selector
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Tab);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Tab);
 
     private static readonly SolidColorBrush s_fallbackPanelBackgroundBrush = new(Color.FromRgb(0x1E, 0x1E, 0x2E));
     private static readonly SolidColorBrush s_fallbackTabStripBrush = new(Color.FromRgb(0x18, 0x18, 0x26));
@@ -270,7 +270,7 @@ public class DockTabPanel : Selector
         AddVisualChild(_tabStripScrollBar);
         AddHandler(PreviewMouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
 
-        Items.CollectionChanged += OnDockItemsChanged;
+        ((System.Collections.Specialized.INotifyCollectionChanged)Items).CollectionChanged += OnDockItemsChanged;
 
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnPanelMouseDown), true);
 
@@ -291,7 +291,7 @@ public class DockTabPanel : Selector
         };
     }
 
-    protected override bool IsItemItsOwnContainer(object item) => item is DockItem;
+    protected override bool IsItemItsOwnContainerOverride(object item) => item is DockItem;
 
     protected override FrameworkElement GetContainerForItem(object item) => new DockItem();
 
@@ -824,7 +824,7 @@ public class DockTabPanel : Selector
         }
         else
         {
-            _tabStripScrollBar.Measure(Size.Empty);
+            _tabStripScrollBar.Measure(default);
         }
 
         var contentWidth = Math.Max(0, availableSize.Width - (IsVerticalTabStrip ? stripThickness + 1 : 2));
@@ -886,7 +886,7 @@ public class DockTabPanel : Selector
         return finalSize;
     }
 
-    public override int VisualChildrenCount
+    protected override int VisualChildrenCount
     {
         get
         {
@@ -898,7 +898,7 @@ public class DockTabPanel : Selector
         }
     }
 
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         int current = 0;
         if (ItemsHost != null)
@@ -1393,7 +1393,7 @@ public class DockTabPanel : Selector
     internal void SetPanelFocusedInternal(bool focused)
     {
         if (IsPanelFocused == focused) return;
-        SetValue(IsPanelFocusedPropertyKey.DependencyProperty, focused);
+        SetValue(IsPanelFocusedPropertyKey, focused);
         _topBorderPen = null;
         _topBorderPenBrush = null;
         InvalidateVisual();

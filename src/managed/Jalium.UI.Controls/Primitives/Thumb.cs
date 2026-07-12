@@ -11,9 +11,9 @@ namespace Jalium.UI.Controls.Primitives;
 public class Thumb : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ThumbAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ThumbAutomationPeer(this);
     }
 
     #region Static Brushes & Pens
@@ -41,7 +41,7 @@ public class Thumb : Control
     /// </summary>
     private static readonly DependencyPropertyKey IsDraggingPropertyKey =
         DependencyProperty.RegisterReadOnly(nameof(IsDragging), typeof(bool), typeof(Thumb),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnIsDraggingPropertyChanged));
 
     /// <summary>
     /// Identifies the IsDragging dependency property.
@@ -117,7 +117,11 @@ public class Thumb : Control
     /// Gets a value indicating whether the thumb is currently being dragged.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsDragging => (bool)GetValue(IsDraggingProperty)!;
+    public bool IsDragging
+    {
+        get => (bool)GetValue(IsDraggingProperty)!;
+        protected set => SetValue(IsDraggingPropertyKey, value);
+    }
 
     /// <summary>
     /// Gets or sets whether grip lines are rendered by the default thumb renderer.
@@ -168,6 +172,21 @@ public class Thumb : Control
         {
             thumb.InvalidateVisual();
         }
+    }
+
+    private static void OnIsDraggingPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var thumb = (Thumb)d;
+        thumb.OnDraggingChanged(e);
+        thumb.InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Called when <see cref="IsDragging"/> changes.
+    /// </summary>
+    /// <param name="e">The property change data.</param>
+    protected virtual void OnDraggingChanged(DependencyPropertyChangedEventArgs e)
+    {
     }
 
     #endregion
@@ -289,7 +308,7 @@ public class Thumb : Control
 
     private void StartTouchDrag(Point position, Point windowPosition)
     {
-        SetValue(IsDraggingPropertyKey.DependencyProperty, true);
+        IsDragging = true;
 
         _dragStartPosition = position;
         _dragStartWindowPosition = windowPosition;
@@ -322,7 +341,7 @@ public class Thumb : Control
         var horizontalChange = _previousDragWindowPosition.X - _dragStartWindowPosition.X;
         var verticalChange = _previousDragWindowPosition.Y - _dragStartWindowPosition.Y;
 
-        SetValue(IsDraggingPropertyKey.DependencyProperty, false);
+        IsDragging = false;
 
         if (IsMouseCaptured)
         {

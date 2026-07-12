@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Collections.Specialized;
 using System.ComponentModel;
 
 namespace Jalium.UI;
@@ -25,6 +27,8 @@ public abstract class Freezable : DependencyObject
     /// Gets a value that indicates whether the object is currently modifiable.
     /// </summary>
     public bool IsFrozen => _isFrozen;
+
+    private protected override bool IsSealedCore => _isFrozen;
 
     /// <summary>
     /// Creates a modifiable clone of the Freezable, making deep copies of the object's values.
@@ -61,11 +65,30 @@ public abstract class Freezable : DependencyObject
         // WPF 语义：先用 CanFreeze(FreezeCore isChecking=true) 整图校验能否冻结，
         // 通过后再 FreezeCore(false) 真正递归冻结子 Freezable —— 避免半路失败时
         // 已经把一部分子对象冻住造成不一致状态。
-        if (!CanFreeze)
+        if (!Freeze(this, isChecking: true))
             throw new InvalidOperationException("This Freezable cannot be frozen.");
 
-        FreezeCore(false);
-        _isFrozen = true;
+        Freeze(this, isChecking: false);
+    }
+
+    /// <summary>
+    /// Tests or freezes an arbitrary Freezable through its virtual freeze hook.
+    /// </summary>
+    protected internal static bool Freeze(Freezable freezable, bool isChecking)
+    {
+        ArgumentNullException.ThrowIfNull(freezable);
+        if (freezable._isFrozen)
+        {
+            return true;
+        }
+
+        bool canFreeze = freezable.FreezeCore(isChecking);
+        if (!isChecking && canFreeze)
+        {
+            freezable._isFrozen = true;
+        }
+
+        return canFreeze;
     }
 
     /// <summary>
@@ -179,7 +202,7 @@ public abstract class Freezable : DependencyObject
     /// <summary>
     /// Called when the current Freezable object is modified.
     /// </summary>
-    protected void OnChanged()
+    protected virtual void OnChanged()
     {
         Changed?.Invoke(this, EventArgs.Empty);
     }
@@ -205,10 +228,34 @@ public abstract class Freezable : DependencyObject
     }
 
     /// <summary>
+    /// Updates a child Freezable relationship associated with a dependency property.
+    /// </summary>
+    protected void OnFreezablePropertyChanged(
+        DependencyObject? oldValue,
+        DependencyObject? newValue,
+        DependencyProperty property)
+    {
+        ArgumentNullException.ThrowIfNull(property);
+        OnFreezablePropertyChanged(oldValue, newValue);
+    }
+
+    /// <summary>
+    /// Verifies that the current thread may read this instance unless it is frozen.
+    /// </summary>
+    protected void ReadPreamble()
+    {
+        if (!_isFrozen)
+        {
+            VerifyAccess();
+        }
+    }
+
+    /// <summary>
     /// Verifies that the Freezable is not frozen and is being accessed from a valid thread context.
     /// </summary>
     protected void WritePreamble()
     {
+        VerifyAccess();
         if (_isFrozen)
             throw new InvalidOperationException("Cannot modify a frozen Freezable.");
     }
@@ -328,9 +375,62 @@ public abstract class Freezable : DependencyObject
 /// Represents a collection of Freezable objects.
 /// </summary>
 /// <typeparam name="T">The type of elements in the collection.</typeparam>
-public sealed class FreezableCollection<T> : Freezable, IList<T>, System.Collections.IList where T : DependencyObject
+public class FreezableCollection<T> : Media.Animation.Animatable, IList, IList<T>, INotifyCollectionChanged, INotifyPropertyChanged where T : DependencyObject
 {
-    private readonly List<T> _items = new();
+    private List<T> _items;
+    private readonly SimpleMonitor _monitor = new();
+    private uint _version;
+    private event NotifyCollectionChangedEventHandler? CollectionChanged;
+    private event PropertyChangedEventHandler? PrivatePropertyChanged;
+
+    /// <summary>
+    /// Initializes an empty collection.
+    /// </summary>
+    public FreezableCollection()
+    {
+        _items = new List<T>();
+    }
+
+    /// <summary>
+    /// Initializes an empty collection with the specified capacity.
+    /// </summary>
+    public FreezableCollection(int capacity)
+    {
+        _items = new List<T>(capacity);
+    }
+
+    /// <summary>
+    /// Initializes a collection with the elements from the specified sequence.
+    /// </summary>
+    public FreezableCollection(IEnumerable<T> collection)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+
+        _items = collection is ICollection<T> sourceCollection
+            ? new List<T>(sourceCollection.Count)
+            : new List<T>();
+
+        foreach (var item in collection)
+        {
+            if (item is null)
+            {
+                throw new ArgumentException("The collection cannot contain null items.");
+            }
+
+            OnFreezablePropertyChanged(null, item);
+            _items.Add(item);
+        }
+    }
+
+    /// <summary>
+    /// Creates a modifiable deep clone of this collection.
+    /// </summary>
+    public new FreezableCollection<T> Clone() => (FreezableCollection<T>)base.Clone();
+
+    /// <summary>
+    /// Creates a modifiable deep clone of this collection using current values.
+    /// </summary>
+    public new FreezableCollection<T> CloneCurrentValue() => (FreezableCollection<T>)base.CloneCurrentValue();
 
     /// <summary>
     /// Gets or sets the item at the specified index.
@@ -340,22 +440,32 @@ public sealed class FreezableCollection<T> : Freezable, IList<T>, System.Collect
         get => _items[index];
         set
         {
+            EnsureValidItem(value);
+            CheckReentrancy();
             WritePreamble();
+
             var oldItem = _items[index];
-            _items[index] = value;
-            OnFreezablePropertyChanged(oldItem, value);
+            bool isChanging = !ReferenceEquals(oldItem, value);
+            if (isChanging)
+            {
+                OnFreezablePropertyChanged(oldItem, value);
+                _items[index] = value;
+            }
+
+            ++_version;
             WritePostscript();
+
+            if (isChanging)
+            {
+                RaiseCollectionChanged(NotifyCollectionChangedAction.Replace, index, oldItem, index, value);
+            }
         }
     }
 
-    object? System.Collections.IList.this[int index]
+    object? IList.this[int index]
     {
-        get => _items[index];
-        set
-        {
-            if (value is T item)
-                this[index] = item;
-        }
+        get => this[index];
+        set => this[index] = Cast(value);
     }
 
     /// <summary>
@@ -363,34 +473,31 @@ public sealed class FreezableCollection<T> : Freezable, IList<T>, System.Collect
     /// </summary>
     public int Count => _items.Count;
 
-    /// <summary>
-    /// Gets a value indicating whether the collection is read-only.
-    /// </summary>
-    public bool IsReadOnly => IsFrozen;
-
-    bool System.Collections.IList.IsFixedSize => IsFrozen;
-    bool System.Collections.ICollection.IsSynchronized => false;
-    object System.Collections.ICollection.SyncRoot => ((System.Collections.ICollection)_items).SyncRoot;
+    bool ICollection<T>.IsReadOnly => IsFrozen;
+    bool IList.IsReadOnly => IsFrozen;
+    bool IList.IsFixedSize => IsFrozen;
+    bool ICollection.IsSynchronized => IsFrozen || Dispatcher is not null;
+    object ICollection.SyncRoot => this;
 
     /// <summary>
     /// Adds an item to the collection.
     /// </summary>
     public void Add(T item)
     {
-        WritePreamble();
-        _items.Add(item);
-        OnFreezablePropertyChanged(null, item);
+        CheckReentrancy();
+        int index = AddWithoutFiringPublicEvents(item);
         WritePostscript();
+        RaiseCollectionChanged(NotifyCollectionChangedAction.Add, 0, null, index - 1, item);
     }
 
-    int System.Collections.IList.Add(object? value)
+    int IList.Add(object? value)
     {
-        if (value is T item)
-        {
-            Add(item);
-            return _items.Count - 1;
-        }
-        return -1;
+        T item = Cast(value);
+        CheckReentrancy();
+        int index = AddWithoutFiringPublicEvents(item);
+        WritePostscript();
+        RaiseCollectionChanged(NotifyCollectionChangedAction.Add, 0, null, index - 1, item);
+        return index;
     }
 
     /// <summary>
@@ -398,55 +505,93 @@ public sealed class FreezableCollection<T> : Freezable, IList<T>, System.Collect
     /// </summary>
     public void Clear()
     {
+        CheckReentrancy();
         WritePreamble();
-        foreach (var item in _items)
+
+        for (int i = _items.Count - 1; i >= 0; i--)
         {
-            OnFreezablePropertyChanged(item, null);
+            OnFreezablePropertyChanged(_items[i], null);
         }
+
         _items.Clear();
+        ++_version;
         WritePostscript();
+        RaiseCollectionChanged(NotifyCollectionChangedAction.Reset, 0, null, 0, null);
     }
 
     /// <summary>
     /// Determines whether the collection contains a specific item.
     /// </summary>
     public bool Contains(T item) => _items.Contains(item);
-    bool System.Collections.IList.Contains(object? value) => value is T item && _items.Contains(item);
+    bool IList.Contains(object? value) => value is T item && Contains(item);
 
     /// <summary>
     /// Copies the items to an array.
     /// </summary>
-    public void CopyTo(T[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
-    void System.Collections.ICollection.CopyTo(Array array, int index) => ((System.Collections.ICollection)_items).CopyTo(array, index);
+    public void CopyTo(T[] array, int arrayIndex)
+    {
+        ArgumentNullException.ThrowIfNull(array);
+        ArgumentOutOfRangeException.ThrowIfNegative(arrayIndex);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(arrayIndex, array.Length - _items.Count);
+        _items.CopyTo(array, arrayIndex);
+    }
+
+    void ICollection.CopyTo(Array array, int index)
+    {
+        ArgumentNullException.ThrowIfNull(array);
+        ArgumentOutOfRangeException.ThrowIfNegative(index);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(index, array.Length - _items.Count);
+
+        if (array.Rank != 1)
+        {
+            throw new ArgumentException("The destination array must be one-dimensional.", nameof(array));
+        }
+
+        try
+        {
+            for (int i = 0; i < _items.Count; i++)
+            {
+                array.SetValue(_items[i], index + i);
+            }
+        }
+        catch (InvalidCastException exception)
+        {
+            throw new ArgumentException("The destination array type is not compatible with the collection item type.", nameof(array), exception);
+        }
+    }
 
     /// <summary>
     /// Returns an enumerator that iterates through the collection.
     /// </summary>
-    public IEnumerator<T> GetEnumerator() => _items.GetEnumerator();
-    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => _items.GetEnumerator();
+    public Enumerator GetEnumerator() => new(this);
+
+    IEnumerator<T> IEnumerable<T>.GetEnumerator() => GetEnumerator();
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
     /// <summary>
     /// Returns the index of the specified item.
     /// </summary>
     public int IndexOf(T item) => _items.IndexOf(item);
-    int System.Collections.IList.IndexOf(object? value) => value is T item ? _items.IndexOf(item) : -1;
+    int IList.IndexOf(object? value) => value is T item ? IndexOf(item) : -1;
 
     /// <summary>
     /// Inserts an item at the specified index.
     /// </summary>
     public void Insert(int index, T item)
     {
+        EnsureValidItem(item);
+        CheckReentrancy();
         WritePreamble();
-        _items.Insert(index, item);
+
         OnFreezablePropertyChanged(null, item);
+        _items.Insert(index, item);
+        ++_version;
         WritePostscript();
+        RaiseCollectionChanged(NotifyCollectionChangedAction.Add, 0, null, index, item);
     }
 
-    void System.Collections.IList.Insert(int index, object? value)
-    {
-        if (value is T item)
-            Insert(index, item);
-    }
+    void IList.Insert(int index, object? value) => Insert(index, Cast(value));
 
     /// <summary>
     /// Removes the specified item from the collection.
@@ -454,31 +599,51 @@ public sealed class FreezableCollection<T> : Freezable, IList<T>, System.Collect
     public bool Remove(T item)
     {
         WritePreamble();
-        var removed = _items.Remove(item);
-        if (removed)
+
+        int index = IndexOf(item);
+        if (index >= 0)
         {
-            OnFreezablePropertyChanged(item, null);
+            CheckReentrancy();
+            T oldItem = _items[index];
+            OnFreezablePropertyChanged(oldItem, null);
+            _items.RemoveAt(index);
+            ++_version;
             WritePostscript();
+            RaiseCollectionChanged(NotifyCollectionChangedAction.Remove, index, oldItem, 0, null);
+            return true;
         }
-        return removed;
+
+        return false;
     }
 
-    void System.Collections.IList.Remove(object? value)
-    {
-        if (value is T item)
-            Remove(item);
-    }
+    void IList.Remove(object? value) => Remove(value is T item ? item : null!);
 
     /// <summary>
     /// Removes the item at the specified index.
     /// </summary>
     public void RemoveAt(int index)
     {
+        T item = _items[index];
+        CheckReentrancy();
         WritePreamble();
-        var item = _items[index];
-        _items.RemoveAt(index);
+
         OnFreezablePropertyChanged(item, null);
+        _items.RemoveAt(index);
+        ++_version;
         WritePostscript();
+        RaiseCollectionChanged(NotifyCollectionChangedAction.Remove, index, item, 0, null);
+    }
+
+    event NotifyCollectionChangedEventHandler? INotifyCollectionChanged.CollectionChanged
+    {
+        add => CollectionChanged += value;
+        remove => CollectionChanged -= value;
+    }
+
+    event PropertyChangedEventHandler? INotifyPropertyChanged.PropertyChanged
+    {
+        add => PrivatePropertyChanged += value;
+        remove => PrivatePropertyChanged -= value;
     }
 
     /// <summary>
@@ -487,5 +652,277 @@ public sealed class FreezableCollection<T> : Freezable, IList<T>, System.Collect
     protected override Freezable CreateInstanceCore()
     {
         return new FreezableCollection<T>();
+    }
+
+    /// <inheritdoc />
+    protected override void CloneCore(Freezable sourceFreezable)
+    {
+        base.CloneCore(sourceFreezable);
+        CloneCommon((FreezableCollection<T>)sourceFreezable, CloneCommonType.Clone);
+    }
+
+    /// <inheritdoc />
+    protected override void CloneCurrentValueCore(Freezable sourceFreezable)
+    {
+        base.CloneCurrentValueCore(sourceFreezable);
+        CloneCommon((FreezableCollection<T>)sourceFreezable, CloneCommonType.CloneCurrentValue);
+    }
+
+    /// <inheritdoc />
+    protected override void GetAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetAsFrozenCore(sourceFreezable);
+        CloneCommon((FreezableCollection<T>)sourceFreezable, CloneCommonType.GetAsFrozen);
+    }
+
+    /// <inheritdoc />
+    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetCurrentValueAsFrozenCore(sourceFreezable);
+        CloneCommon((FreezableCollection<T>)sourceFreezable, CloneCommonType.GetCurrentValueAsFrozen);
+    }
+
+    /// <inheritdoc />
+    protected override bool FreezeCore(bool isChecking)
+    {
+        bool canFreeze = base.FreezeCore(isChecking);
+
+        for (int i = 0; i < _items.Count && canFreeze; i++)
+        {
+            T item = _items[i];
+            if (item is Freezable freezable)
+            {
+                if (isChecking)
+                {
+                    canFreeze = freezable.CanFreeze;
+                }
+                else
+                {
+                    freezable.Freeze();
+                }
+            }
+            else
+            {
+                canFreeze = item.Dispatcher is null;
+            }
+        }
+
+        return canFreeze;
+    }
+
+    private int AddWithoutFiringPublicEvents(T item)
+    {
+        EnsureValidItem(item);
+        WritePreamble();
+        OnFreezablePropertyChanged(null, item);
+        _items.Add(item);
+        ++_version;
+        return _items.Count;
+    }
+
+    private void CloneCommon(FreezableCollection<T> source, CloneCommonType cloneType)
+    {
+        int count = source._items.Count;
+        _items = new List<T>(count);
+
+        for (int i = 0; i < count; i++)
+        {
+            T item = source._items[i];
+            T newItem = item;
+            if (item is Freezable freezable)
+            {
+                Freezable clone = cloneType switch
+                {
+                    CloneCommonType.Clone => freezable.Clone(),
+                    CloneCommonType.CloneCurrentValue => freezable.CloneCurrentValue(),
+                    CloneCommonType.GetAsFrozen => freezable.GetAsFrozen(),
+                    CloneCommonType.GetCurrentValueAsFrozen => freezable.GetCurrentValueAsFrozen(),
+                    _ => throw new InvalidOperationException("Unexpected clone operation."),
+                };
+
+                if (clone is not T typedClone)
+                {
+                    throw new InvalidOperationException($"The cloned item is not assignable to {typeof(T).Name}.");
+                }
+
+                newItem = typedClone;
+            }
+
+            OnFreezablePropertyChanged(null, newItem);
+            _items.Add(newItem);
+        }
+    }
+
+    private static void EnsureValidItem(T item)
+    {
+        if (item is null)
+        {
+            throw new ArgumentException("The collection cannot contain null items.");
+        }
+    }
+
+    private static T Cast(object? value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        if (value is not T item)
+        {
+            throw new ArgumentException(
+                $"A value of type {value.GetType().Name} cannot be added to {typeof(FreezableCollection<T>).Name}.",
+                nameof(value));
+        }
+
+        return item;
+    }
+
+    private void RaiseCollectionChanged(
+        NotifyCollectionChangedAction action,
+        int oldIndex,
+        T? oldItem,
+        int newIndex,
+        T? newItem)
+    {
+        if (PrivatePropertyChanged is null && CollectionChanged is null)
+        {
+            return;
+        }
+
+        using (BlockReentrancy())
+        {
+            if (PrivatePropertyChanged is not null)
+            {
+                if (action is not NotifyCollectionChangedAction.Replace and not NotifyCollectionChangedAction.Move)
+                {
+                    PrivatePropertyChanged(this, new PropertyChangedEventArgs("Count"));
+                }
+
+                PrivatePropertyChanged(this, new PropertyChangedEventArgs("Item[]"));
+            }
+
+            if (CollectionChanged is not null)
+            {
+                NotifyCollectionChangedEventArgs args = action switch
+                {
+                    NotifyCollectionChangedAction.Reset => new NotifyCollectionChangedEventArgs(action),
+                    NotifyCollectionChangedAction.Add => new NotifyCollectionChangedEventArgs(action, newItem, newIndex),
+                    NotifyCollectionChangedAction.Remove => new NotifyCollectionChangedEventArgs(action, oldItem, oldIndex),
+                    NotifyCollectionChangedAction.Replace => new NotifyCollectionChangedEventArgs(action, newItem, oldItem, newIndex),
+                    _ => throw new InvalidOperationException("Unexpected collection change action."),
+                };
+
+                CollectionChanged(this, args);
+            }
+        }
+    }
+
+    private IDisposable BlockReentrancy()
+    {
+        _monitor.Enter();
+        return _monitor;
+    }
+
+    private void CheckReentrancy()
+    {
+        if (_monitor.Busy)
+        {
+            throw new InvalidOperationException("Cannot modify the collection while a change notification is being raised.");
+        }
+    }
+
+    private enum CloneCommonType
+    {
+        Clone,
+        CloneCurrentValue,
+        GetAsFrozen,
+        GetCurrentValueAsFrozen,
+    }
+
+    /// <summary>
+    /// Enumerates the elements of a <see cref="FreezableCollection{T}"/>.
+    /// </summary>
+    public struct Enumerator : IEnumerator<T>, IEnumerator
+    {
+        private readonly FreezableCollection<T> _list;
+        private readonly uint _version;
+        private int _index;
+        private T? _current;
+
+        internal Enumerator(FreezableCollection<T> list)
+        {
+            _list = list;
+            _version = list._version;
+            _index = -1;
+            _current = default;
+        }
+
+        /// <inheritdoc />
+        public T Current
+        {
+            get
+            {
+                if (_index >= 0)
+                {
+                    return _current!;
+                }
+
+                throw new InvalidOperationException(
+                    _index == -1
+                        ? "Enumeration has not started. Call MoveNext."
+                        : "Enumeration has already finished.");
+            }
+        }
+
+        object IEnumerator.Current => Current;
+
+        /// <inheritdoc />
+        public bool MoveNext()
+        {
+            VerifyVersion();
+
+            if (_index > -2 && _index < _list._items.Count - 1)
+            {
+                _current = _list._items[++_index];
+                return true;
+            }
+
+            _index = -2;
+            _current = default;
+            return false;
+        }
+
+        /// <inheritdoc />
+        public void Reset()
+        {
+            VerifyVersion();
+            _index = -1;
+            _current = default;
+        }
+
+        void IDisposable.Dispose()
+        {
+        }
+
+        private readonly void VerifyVersion()
+        {
+            if (_version != _list._version)
+            {
+                throw new InvalidOperationException("The collection was modified after the enumerator was created.");
+            }
+        }
+    }
+
+    private sealed class SimpleMonitor : IDisposable
+    {
+        private int _busyCount;
+
+        public bool Busy => _busyCount > 0;
+
+        public void Enter() => ++_busyCount;
+
+        public void Dispose()
+        {
+            --_busyCount;
+            GC.SuppressFinalize(this);
+        }
     }
 }

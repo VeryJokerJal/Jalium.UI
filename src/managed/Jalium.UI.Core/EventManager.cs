@@ -39,6 +39,30 @@ public static class EventManager
         }
     }
 
+    internal static void AddOwner(RoutedEvent routedEvent, Type ownerType)
+    {
+        ArgumentNullException.ThrowIfNull(routedEvent);
+        ArgumentNullException.ThrowIfNull(ownerType);
+
+        lock (_lock)
+        {
+            var key = (ownerType, routedEvent.Name);
+            if (_registeredEvents.TryGetValue(key, out var existing))
+            {
+                if (!ReferenceEquals(existing, routedEvent))
+                {
+                    throw new ArgumentException(
+                        $"A routed event named '{routedEvent.Name}' is already registered for '{ownerType}'.",
+                        nameof(ownerType));
+                }
+
+                return;
+            }
+
+            _registeredEvents[key] = routedEvent;
+        }
+    }
+
     /// <summary>
     /// Registers a class handler for a routed event.
     /// </summary>
@@ -111,6 +135,18 @@ public static class EventManager
             return _registeredEvents
                 .Where(kvp => kvp.Key.Item1 == ownerType)
                 .Select(kvp => kvp.Value)
+                .ToArray();
+        }
+    }
+
+    /// <summary>Gets a snapshot of every routed event currently registered.</summary>
+    public static RoutedEvent[] GetRoutedEvents()
+    {
+        lock (_lock)
+        {
+            return _registeredEvents.Values
+                .Distinct()
+                .OrderBy(static routedEvent => routedEvent.GlobalIndex)
                 .ToArray();
         }
     }

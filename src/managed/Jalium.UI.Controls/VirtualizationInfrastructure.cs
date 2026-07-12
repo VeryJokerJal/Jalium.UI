@@ -5,64 +5,6 @@ using System.Globalization;
 namespace Jalium.UI.Controls;
 
 /// <summary>
-/// Provides a way to store and retrieve values associated with items in a virtualized list.
-/// </summary>
-public interface IContainItemStorage
-{
-    /// <summary>Stores a value for a given item and dependency property.</summary>
-    void StoreItemValue(object item, DependencyProperty dp, object value);
-
-    /// <summary>Reads a value for a given item and dependency property.</summary>
-    object? ReadItemValue(object item, DependencyProperty dp);
-
-    /// <summary>Clears a stored value for a given item and dependency property.</summary>
-    void ClearItemValue(object item, DependencyProperty dp);
-
-    /// <summary>Clears all stored values for the specified dependency property.</summary>
-    void ClearValue(DependencyProperty dp);
-
-    /// <summary>Clears all stored values.</summary>
-    void Clear();
-}
-
-/// <summary>
-/// Provides properties through which a hierarchical data item reports information about
-/// its virtualization and scrolling state.
-/// </summary>
-public interface IHierarchicalVirtualizationAndScrollInfo
-{
-    /// <summary>Gets or sets the constraints for the virtualization.</summary>
-    HierarchicalVirtualizationConstraints Constraints { get; set; }
-
-    /// <summary>
-    /// Gets or sets the desired sizes of the header. The parent (hierarchical)
-    /// <see cref="VirtualizingStackPanel"/> writes this back during its measure pass, so it is
-    /// settable (matches WPF).
-    /// </summary>
-    HierarchicalVirtualizationHeaderDesiredSizes HeaderDesiredSizes { get; set; }
-
-    /// <summary>
-    /// Gets or sets the desired sizes of the items. The nested <see cref="VirtualizingStackPanel"/>
-    /// writes the eight-way (before/in/after viewport, logical and pixel) sizes back during its
-    /// measure pass, so it is settable (matches WPF).
-    /// </summary>
-    HierarchicalVirtualizationItemDesiredSizes ItemDesiredSizes { get; set; }
-
-    /// <summary>
-    /// Gets the panel that hosts the items for this control (the nested virtualizing panel).
-    /// Deliberate Jalium deviation: this is nullable (<c>Panel?</c>) because an ItemsControl's
-    /// items host does not exist until its template is applied; WPF declares it non-null.
-    /// </summary>
-    Panel? ItemsHost { get; }
-
-    /// <summary>Gets or sets a value indicating whether virtualization must be disabled.</summary>
-    bool MustDisableVirtualization { get; set; }
-
-    /// <summary>Gets or sets a value indicating whether the item is in a background layout pass.</summary>
-    bool InBackgroundLayout { get; set; }
-}
-
-/// <summary>
 /// Represents the constraints on the size of the viewport and the cache for a hierarchical virtualization scenario.
 /// </summary>
 public struct HierarchicalVirtualizationConstraints : IEquatable<HierarchicalVirtualizationConstraints>

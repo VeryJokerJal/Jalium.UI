@@ -7,12 +7,12 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control that displays a header and has a collapsible content area.
 /// </summary>
-public class Expander : ContentControl
+public class Expander : HeaderedContentControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.ExpanderAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.ExpanderAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -24,14 +24,6 @@ public class Expander : ContentControl
     public static readonly DependencyProperty IsExpandedProperty =
         DependencyProperty.Register(nameof(IsExpanded), typeof(bool), typeof(Expander),
             new PropertyMetadata(false, OnIsExpandedChanged));
-
-    /// <summary>
-    /// Identifies the Header dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty HeaderProperty =
-        DependencyProperty.Register(nameof(Header), typeof(object), typeof(Expander),
-            new PropertyMetadata(null, OnHeaderChanged));
 
     /// <summary>
     /// Identifies the ExpandDirection dependency property.
@@ -97,16 +89,6 @@ public class Expander : ContentControl
     {
         get => (bool)GetValue(IsExpandedProperty)!;
         set => SetValue(IsExpandedProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the header content.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public object? Header
-    {
-        get => GetValue(HeaderProperty);
-        set => SetValue(HeaderProperty, value);
     }
 
     /// <summary>
@@ -240,14 +222,6 @@ public class Expander : ContentControl
         }
     }
 
-    private static void OnHeaderChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is Expander expander)
-        {
-            expander.InvalidateMeasure();
-        }
-    }
-
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is Expander expander)
@@ -271,7 +245,20 @@ public class Expander : ContentControl
     {
         if (_contentBorder != null)
         {
-            if (newValue)
+            if (VisualParent == null)
+            {
+                _animationTimer?.Stop();
+                _animationTimer = null;
+                _contentBorder.Visibility = newValue ? Visibility.Visible : Visibility.Collapsed;
+                if (_chevron != null)
+                {
+                    var transform = _chevron.RenderTransform as RotateTransform ?? new RotateTransform();
+                    transform.Angle = newValue ? 90.0 : 0.0;
+                    _chevron.RenderTransformOrigin = new Point(0.5, 0.5);
+                    _chevron.RenderTransform = transform;
+                }
+            }
+            else if (newValue)
             {
                 _animationTimer = ExpandCollapseAnimator.AnimateExpand(
                     _contentBorder, _animationTimer, _chevron);
@@ -290,13 +277,21 @@ public class Expander : ContentControl
 
         if (newValue)
         {
-            RaiseEvent(new RoutedEventArgs(ExpandedEvent, this));
+            OnExpanded();
         }
         else
         {
-            RaiseEvent(new RoutedEventArgs(CollapsedEvent, this));
+            OnCollapsed();
         }
     }
+
+    /// <summary>Raises the <see cref="Expanded"/> event.</summary>
+    protected virtual void OnExpanded() =>
+        RaiseEvent(new RoutedEventArgs(ExpandedEvent, this));
+
+    /// <summary>Raises the <see cref="Collapsed"/> event.</summary>
+    protected virtual void OnCollapsed() =>
+        RaiseEvent(new RoutedEventArgs(CollapsedEvent, this));
 
     #endregion
 }

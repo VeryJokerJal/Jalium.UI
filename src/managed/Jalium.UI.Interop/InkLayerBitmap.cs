@@ -153,11 +153,14 @@ public sealed class InkLayerBitmap : IDisposable
     private nint _handle;
     private int _width;
     private int _height;
-    private bool _disposed;
+    private int _disposed;
     // 0 = the context dependent-resource reference is still held; 1 = released.
     // Interlocked-guarded so the pin is dropped exactly once across the
     // Dispose / finalizer / failed-construction paths.
-    private int _contextRefReleased;
+    // A finalizable object whose constructor throws is still finalized. Keep
+    // this in the released state until RegisterRenderTarget actually succeeds,
+    // so a failed registration cannot steal another resource's context pin.
+    private int _contextRefReleased = 1;
 
     /// <summary>Pixel width of the backing texture.</summary>
     public int Width => _width;
@@ -169,7 +172,9 @@ public sealed class InkLayerBitmap : IDisposable
     public nint Handle => _handle;
 
     /// <summary>True until <see cref="Dispose"/> is called.</summary>
-    public bool IsValid => _handle != nint.Zero && !_disposed;
+    public bool IsValid => _handle != nint.Zero && Volatile.Read(ref _disposed) == 0;
+
+    internal RenderContext OwnerContext => _context;
 
     /// <summary>
     /// Allocates a new offscreen RGBA8 render target owned by the given
@@ -199,6 +204,7 @@ public sealed class InkLayerBitmap : IDisposable
         // backend) from being torn down while we still reference it — see the
         // class remarks for the device-lost-recovery race this guards.
         context.RegisterRenderTarget();
+        Volatile.Write(ref _contextRefReleased, 0);
         try
         {
             _handle = _native.CreateInkLayerBitmap(context.Handle, width, height);
@@ -274,6 +280,8 @@ public sealed class InkLayerBitmap : IDisposable
         ThrowIfDisposed();
         if (shader is null || !shader.IsValid) return InkDispatchResult.InvalidArg;
         if (points.Length < 2) return InkDispatchResult.InvalidArg;
+        if (!ReferenceEquals(_context, shader.OwnerContext))
+            return InkDispatchResult.StaleContext;
 
         return _native.DispatchBrush(_handle, shader.Handle, points, in constants, extraParams);
     }
@@ -281,8 +289,7 @@ public sealed class InkLayerBitmap : IDisposable
     /// <inheritdoc/>
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
         // Order matters. Destroy the native bitmap through the (still-live)
         // backend FIRST, then release our context pin. Releasing the pin can
@@ -291,20 +298,31 @@ public sealed class InkLayerBitmap : IDisposable
         // TryDisposeRetiredContexts → jalium_context_destroy → delete backend).
         // Doing that before the native destroy would route the destroy to an
         // already-deleted backend — the original use-after-free.
-        if (_handle != nint.Zero)
+        var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+        try
         {
-            _native.DestroyInkLayerBitmap(_handle);
-            _handle = nint.Zero;
+            if (handle != nint.Zero)
+            {
+                _native.DestroyInkLayerBitmap(handle);
+            }
         }
-        ReleaseContextReference();
-        GC.SuppressFinalize(this);
+        finally
+        {
+            ReleaseContextReference();
+            GC.SuppressFinalize(this);
+        }
     }
 
-    ~InkLayerBitmap() => Dispose();
+    ~InkLayerBitmap()
+    {
+        try { Dispose(); }
+        catch { /* finalizers must never surface native cleanup failures */ }
+    }
 
     private void ThrowIfDisposed()
     {
-        if (_disposed) throw new ObjectDisposedException(nameof(InkLayerBitmap));
+        if (Volatile.Read(ref _disposed) != 0)
+            throw new ObjectDisposedException(nameof(InkLayerBitmap));
     }
 
     private void ReleaseContextReference()
@@ -335,7 +353,7 @@ public sealed class BrushShaderHandle : IDisposable
     private readonly RenderContext _context;
     private readonly IInkNativeOps _native;
     private nint _handle;
-    private bool _disposed;
+    private int _disposed;
     // See InkLayerBitmap._contextRefReleased — idempotent pin-release guard.
     private int _contextRefReleased;
 
@@ -343,19 +361,15 @@ public sealed class BrushShaderHandle : IDisposable
     public nint Handle => _handle;
 
     /// <summary>True until <see cref="Dispose"/> is called.</summary>
-    public bool IsValid => _handle != nint.Zero && !_disposed;
+    public bool IsValid => _handle != nint.Zero && Volatile.Read(ref _disposed) == 0;
+
+    internal RenderContext OwnerContext => _context;
 
     internal BrushShaderHandle(RenderContext context, nint handle, IInkNativeOps native)
     {
         _context = context;
         _native = native;
         _handle = handle;
-
-        // Pin the owning context for the handle's lifetime (same dependent-
-        // resource contract as InkLayerBitmap). The handle is only ever
-        // constructed with a non-null native handle (see Create), so the pin
-        // always corresponds to a live native resource.
-        context.RegisterRenderTarget();
     }
 
     /// <summary>
@@ -382,33 +396,69 @@ public sealed class BrushShaderHandle : IDisposable
         ArgumentNullException.ThrowIfNull(shaderKey);
         ArgumentNullException.ThrowIfNull(brushMainHlsl);
         ArgumentNullException.ThrowIfNull(native);
-        if (context.Handle == nint.Zero) return null;
+        if (!context.IsValid) return null;
 
-        nint h = native.CreateBrushShader(context.Handle, shaderKey, brushMainHlsl, blendMode);
-        if (h == nint.Zero) return null;
-        return new BrushShaderHandle(context, h, native);
+        // Pin before the native create.  RegisterRenderTarget shares the
+        // context lifecycle gate with Dispose, so the backend cannot be
+        // destroyed in the gap between reading Handle and allocating the
+        // shader.  Ownership of the pin transfers to the returned handle.
+        try
+        {
+            context.RegisterRenderTarget();
+        }
+        catch (ObjectDisposedException)
+        {
+            return null;
+        }
+
+        bool pinTransferred = false;
+        try
+        {
+            nint h = native.CreateBrushShader(context.Handle, shaderKey, brushMainHlsl, blendMode);
+            if (h == nint.Zero) return null;
+
+            var shader = new BrushShaderHandle(context, h, native);
+            pinTransferred = true;
+            return shader;
+        }
+        finally
+        {
+            if (!pinTransferred)
+            {
+                context.UnregisterRenderTarget();
+            }
+        }
     }
 
     /// <inheritdoc/>
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
 
         // Destroy through the still-live backend FIRST, then drop the context
         // pin (which may trigger the retired context's deferred disposal and
         // delete the backend). See InkLayerBitmap.Dispose for the full
         // rationale — reversing the order reintroduces the use-after-free.
-        if (_handle != nint.Zero)
+        var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+        try
         {
-            _native.DestroyBrushShader(_handle);
-            _handle = nint.Zero;
+            if (handle != nint.Zero)
+            {
+                _native.DestroyBrushShader(handle);
+            }
         }
-        ReleaseContextReference();
-        GC.SuppressFinalize(this);
+        finally
+        {
+            ReleaseContextReference();
+            GC.SuppressFinalize(this);
+        }
     }
 
-    ~BrushShaderHandle() => Dispose();
+    ~BrushShaderHandle()
+    {
+        try { Dispose(); }
+        catch { /* finalizers must never surface native cleanup failures */ }
+    }
 
     private void ReleaseContextReference()
     {

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 
 namespace Jalium.UI.Controls.Helpers;
 
@@ -69,12 +70,6 @@ internal static partial class FontEnumerationHelper
     private const int LF_FACESIZE = 32;
 
     private delegate int EnumFontFamExProcW(ref ENUMLOGFONTEXW lpelfe, nint lpntme, uint fontType, nint lParam);
-
-    [LibraryImport("user32.dll")]
-    private static partial nint GetDC(nint hWnd);
-
-    [LibraryImport("user32.dll")]
-    private static partial int ReleaseDC(nint hWnd, nint hDC);
 
     [DllImport("gdi32.dll", EntryPoint = "EnumFontFamiliesExW", CharSet = CharSet.Unicode, ExactSpelling = true)]
     private static extern int EnumFontFamiliesExW(nint hdc, ref LOGFONTW lpLogfont, EnumFontFamExProcW lpProc, nint lParam, uint dwFlags);

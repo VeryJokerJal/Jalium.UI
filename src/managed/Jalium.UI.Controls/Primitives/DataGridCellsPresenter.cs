@@ -1,93 +1,116 @@
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
-/// Represents a control that displays a row of cells in a DataGrid.
+/// Generates the cells for one <see cref="DataGridRow"/> and presents them through a
+/// <see cref="DataGridCellsPanel"/>.
 /// </summary>
-public class DataGridCellsPresenter : Panel
+public class DataGridCellsPresenter : ItemsControl
 {
-    #region Dependency Properties
-
-    /// <summary>
-    /// Identifies the Item dependency property.
-    /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ItemProperty =
         DependencyProperty.Register(nameof(Item), typeof(object), typeof(DataGridCellsPresenter),
-            new PropertyMetadata(null, OnItemChanged));
+            new PropertyMetadata(null, OnItemPropertyChanged));
 
-    #endregion
-
-    #region CLR Properties
-
-    /// <summary>
-    /// Gets or sets the data item for this row.
-    /// </summary>
+    /// <summary>Gets the data item represented by this row of cells.</summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public object? Item
+    public object Item
     {
-        get => GetValue(ItemProperty);
-        set => SetValue(ItemProperty, value);
+        get => GetValue(ItemProperty)!;
+        internal set => SetValue(ItemProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the DataGrid that owns this presenter.
-    /// </summary>
+    /// <summary>Gets or sets the grid that owns the presenter.</summary>
     public DataGrid? DataGridOwner { get; internal set; }
 
-    #endregion
-
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    public DataGridCellsPresenter()
     {
-        var totalWidth = 0.0;
-        var maxHeight = 0.0;
-
-        foreach (var child in Children)
-        {
-            child.Measure(availableSize);
-            totalWidth += child.DesiredSize.Width;
-            maxHeight = Math.Max(maxHeight, child.DesiredSize.Height);
-        }
-
-        return new Size(totalWidth, maxHeight);
+        var panelTemplate = new ItemsPanelTemplate { PanelType = typeof(DataGridCellsPanel) };
+        panelTemplate.Seal();
+        ItemsPanel = panelTemplate;
     }
 
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        var x = 0.0;
+    protected override bool IsItemItsOwnContainerOverride(object item) => item is DataGridCell;
 
-        foreach (var child in Children)
+    protected override DependencyObject GetContainerForItemOverride() => new DataGridCell();
+
+    protected override void PrepareContainerForItemOverride(DependencyObject element, object item)
+    {
+        base.PrepareContainerForItemOverride(element, item);
+        if (element is not DataGridCell cell)
         {
-            var width = child.DesiredSize.Width;
-            child.Arrange(new Rect(x, 0, width, finalSize.Height));
-            x += width;
+            return;
         }
 
-        return finalSize;
-    }
-
-    #endregion
-
-    #region Property Changed
-
-    private static void OnItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is DataGridCellsPresenter presenter)
+        var column = item as Jalium.UI.Controls.DataGridColumn;
+        if (column == null && DataGridOwner != null)
         {
-            presenter.OnItemChanged(e.OldValue, e.NewValue);
+            var index = ItemContainerGenerator.IndexFromContainer(cell);
+            if (index >= 0 && index < DataGridOwner.Columns.Count)
+            {
+                column = DataGridOwner.Columns[index];
+            }
+        }
+
+        if (column == null)
+        {
+            return;
+        }
+
+        cell.Column = column;
+        cell.DataContext = Item;
+        if (Item != null)
+        {
+            var elementContent = column.BuildVisualTree(isEditing: false, Item, cell);
+            elementContent.DataContext = Item;
+            cell.Content = elementContent;
         }
     }
 
-    /// <summary>
-    /// Called when the Item property changes.
-    /// </summary>
-    protected void OnItemChanged(object? oldItem, object? newItem)
+    protected override void ClearContainerForItemOverride(DependencyObject element, object item)
     {
+        if (element is DataGridCell cell)
+        {
+            cell.Content = null;
+            cell.DataContext = null;
+        }
+
+        base.ClearContainerForItemOverride(element, item);
+    }
+
+    /// <summary>Synchronizes the generated cell containers after the column collection changes.</summary>
+    protected internal virtual void OnColumnsChanged(
+        ObservableCollection<Jalium.UI.Controls.DataGridColumn> columns,
+        NotifyCollectionChangedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(columns);
+        ArgumentNullException.ThrowIfNull(e);
+
+        Items.Clear();
+        foreach (var column in columns)
+        {
+            Items.Add(column);
+        }
+
         InvalidateMeasure();
     }
 
-    #endregion
+    /// <summary>Refreshes realized cells after the represented data item changes.</summary>
+    protected virtual void OnItemChanged(object? oldItem, object? newItem)
+    {
+        for (var index = 0; index < Items.Count; index++)
+        {
+            if (ItemContainerGenerator.ContainerFromIndex(index) is DependencyObject container)
+            {
+                PrepareContainerForItemOverride(container, Items[index]);
+            }
+        }
+
+        InvalidateMeasure();
+    }
+
+    private static void OnItemPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
+        ((DataGridCellsPresenter)d).OnItemChanged(e.OldValue, e.NewValue);
 }

@@ -3,6 +3,7 @@ using System.Collections.Specialized;
 using System.ComponentModel.Design.Serialization;
 using System.Globalization;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Primitives;
 
 namespace Jalium.UI.Tests;
 
@@ -53,10 +54,10 @@ public class VirtualizationPipelineTests
     }
 
     [Fact]
-    public void VirtualizingPanel_HierarchicalSeams_DefaultToFlatBehavior()
+    public void VirtualizingPanel_HierarchicalSeams_VspEnablesHierarchicalVirtualization()
     {
         var panel = new VirtualizingStackPanel();
-        Assert.False(panel.CanHierarchicallyScrollAndVirtualize);
+        Assert.True(panel.CanHierarchicallyScrollAndVirtualize);
         Assert.Equal(0.0, panel.GetItemOffset(new VirtualizingStackPanel()));
         Assert.Throws<ArgumentNullException>(() => panel.GetItemOffset(null!));
     }
@@ -188,14 +189,15 @@ public class VirtualizationPipelineTests
     [Fact]
     public void IHierarchicalVirtualizationAndScrollInfo_ContractShape_Compiles()
     {
-        IHierarchicalVirtualizationAndScrollInfo stub = new HvasiStub();
+        var stubImplementation = new HvasiStub();
+        IHierarchicalVirtualizationAndScrollInfo stub = stubImplementation;
 
         var header = new HierarchicalVirtualizationHeaderDesiredSizes(new Size(1, 2), new Size(3, 4));
         var items = new HierarchicalVirtualizationItemDesiredSizes(
             new Size(1, 1), new Size(2, 2), new Size(3, 3), new Size(4, 4),
             new Size(5, 5), new Size(6, 6), new Size(7, 7), new Size(8, 8));
 
-        stub.HeaderDesiredSizes = header;
+        stubImplementation.HeaderDesiredSizes = header;
         stub.ItemDesiredSizes = items;
         stub.Constraints = new HierarchicalVirtualizationConstraints(new VirtualizationCacheLength(1), VirtualizationCacheLengthUnit.Pixel, new Rect(0, 0, 10, 10));
 
@@ -528,6 +530,57 @@ public class VirtualizationPipelineTests
         }
 
         Assert.Equal(51, gen.ItemCount); // 50 + 2 inserts - 1 remove
+    }
+
+    [Fact]
+    public void ReentrantHeadInsertDuringMeasure_RetryRealizesInsertedItem_NotStaleContainer()
+    {
+        // A reentrant structural mutation DURING the realize loop (the binding-side-effect scenario the
+        // OnItemsChanged _measureInProgress branch exists for): PrepareContainerForItem inserts a new
+        // item at the head while measure is in flight. The deferred retry must re-realize from the
+        // post-mutation generator. Before the reset-before-retry fix, the retry reused the pre-mutation
+        // _realizedContainers map (RealizeContainer returns a cached container without consulting the
+        // generator), so index 0 kept showing the stale "Item 0".
+        var items = new ObservableCollection<string>();
+        for (var i = 0; i < 50; i++)
+            items.Add($"Item {i}");
+
+        var listBox = new ReentrantHeadInsertListBox(items) { Width = 320, Height = 240, ItemsSource = items };
+        listBox.Measure(new Size(320, 240));
+        listBox.Arrange(new Rect(0, 0, 320, 240));
+
+        Assert.Equal(51, items.Count); // exactly one reentrant insert fired during measure
+        var gen = listBox.ItemContainerGenerator;
+
+        var slot0 = gen.ContainerFromIndex(0);
+        Assert.NotNull(slot0);
+        Assert.Equal("INSERTED", gen.ItemFromContainer(slot0!));
+
+        // The item formerly at index 0 shifted to index 1 — not overwritten or dropped.
+        var slot1 = gen.ContainerFromIndex(1);
+        Assert.NotNull(slot1);
+        Assert.Equal("Item 0", gen.ItemFromContainer(slot1!));
+    }
+
+    private sealed class ReentrantHeadInsertListBox : ListBox
+    {
+        private readonly ObservableCollection<string> _items;
+        private bool _mutated;
+
+        public ReentrantHeadInsertListBox(ObservableCollection<string> items) => _items = items;
+
+        protected override void PrepareContainerForItem(FrameworkElement element, object item)
+        {
+            base.PrepareContainerForItem(element, item);
+
+            // Fire exactly once, from inside the in-flight realize loop, so OnItemsChanged sees
+            // _measureInProgress and defers to MeasureOverride's bounded retry.
+            if (!_mutated)
+            {
+                _mutated = true;
+                _items.Insert(0, "INSERTED");
+            }
+        }
     }
 
     [Fact]

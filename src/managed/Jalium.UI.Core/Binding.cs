@@ -3,8 +3,11 @@ using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
+using System.Xml;
+using System.Xml.XPath;
 using Jalium.UI.Controls;
 using Jalium.UI.Diagnostics;
+using Jalium.UI.Markup;
 
 namespace Jalium.UI.Data;
 
@@ -16,27 +19,27 @@ public enum BindingMode
     /// <summary>
     /// Binding mode is automatically chosen based on the target property.
     /// </summary>
-    Default,
+    Default = 4,
 
     /// <summary>
     /// Updates the target when the source changes.
     /// </summary>
-    OneWay,
+    OneWay = 1,
 
     /// <summary>
     /// Updates both target and source when either changes.
     /// </summary>
-    TwoWay,
+    TwoWay = 0,
 
     /// <summary>
     /// Updates the target only once when the binding is created.
     /// </summary>
-    OneTime,
+    OneTime = 2,
 
     /// <summary>
     /// Updates the source when the target changes.
     /// </summary>
-    OneWayToSource
+    OneWayToSource = 3
 }
 
 /// <summary>
@@ -120,17 +123,44 @@ public interface IMultiValueConverter
 /// <summary>
 /// Abstract base class for binding classes.
 /// </summary>
-public abstract class BindingBase
+public abstract class BindingBase : MarkupExtension
 {
+    private object? _fallbackValue;
+    private object? _targetNullValue;
+    private bool _hasFallbackValue;
+    private bool _hasTargetNullValue;
+
     /// <summary>
     /// Gets or sets the value to use when the binding cannot return a value.
     /// </summary>
-    public object? FallbackValue { get; set; }
+    public object? FallbackValue
+    {
+        get => _fallbackValue;
+        set
+        {
+            _fallbackValue = value;
+            _hasFallbackValue = true;
+        }
+    }
 
     /// <summary>
     /// Gets or sets the value to use when the source value is null.
     /// </summary>
-    public object? TargetNullValue { get; set; }
+    public object? TargetNullValue
+    {
+        get => _targetNullValue;
+        set
+        {
+            _targetNullValue = value;
+            _hasTargetNullValue = true;
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the name of the binding group to which this binding belongs.
+    /// </summary>
+    [DefaultValue("")]
+    public string BindingGroupName { get; set; } = string.Empty;
 
     /// <summary>
     /// Gets or sets a string that specifies how to format the binding if it displays the bound value as a string.
@@ -142,10 +172,36 @@ public abstract class BindingBase
     /// </summary>
     public int Delay { get; set; }
 
+    /// <summary>Returns whether an explicitly assigned fallback value should be serialized.</summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public bool ShouldSerializeFallbackValue() => _hasFallbackValue;
+
+    /// <summary>Returns whether an explicitly assigned target-null value should be serialized.</summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public bool ShouldSerializeTargetNullValue() => _hasTargetNullValue;
+
     /// <summary>
     /// Creates a new binding expression for this binding.
     /// </summary>
     internal abstract BindingExpressionBase CreateBindingExpression(DependencyObject target, DependencyProperty targetProperty);
+
+    /// <summary>
+    /// Supplies either the binding expression for a dependency-property target or this
+    /// binding declaration when the XAML writer has not reached a bindable target yet.
+    /// </summary>
+    [RequiresUnreferencedCode("Override of a base member that is annotated with RequiresUnreferencedCode.")]
+    [RequiresDynamicCode("Override of a base member that is annotated with RequiresDynamicCode.")]
+    public sealed override object ProvideValue(IServiceProvider serviceProvider)
+    {
+        var target = serviceProvider?.GetService(typeof(IProvideValueTarget)) as IProvideValueTarget;
+        if (target?.TargetObject is DependencyObject targetObject &&
+            target.TargetProperty is DependencyProperty targetProperty)
+        {
+            return targetObject.SetBinding(targetProperty, this);
+        }
+
+        return this;
+    }
 }
 
 /// <summary>
@@ -153,6 +209,11 @@ public abstract class BindingBase
 /// </summary>
 public class Binding : BindingBase
 {
+    /// <summary>
+    /// The property-change name convention used for indexer notifications.
+    /// </summary>
+    public const string IndexerName = "Item[]";
+
     /// <summary>
     /// Used as a returned value to indicate that the binding engine should not perform any action.
     /// </summary>
@@ -172,13 +233,82 @@ public class Binding : BindingBase
     /// Occurs when a value is transferred from the binding source to the binding target.
     /// </summary>
     public static readonly RoutedEvent TargetUpdatedEvent =
-        new RoutedEvent("TargetUpdated", RoutingStrategy.Bubble, typeof(EventHandler<DataTransferEventArgs>), typeof(Binding));
+        EventManager.RegisterRoutedEvent(
+            "TargetUpdated",
+            RoutingStrategy.Bubble,
+            typeof(EventHandler<DataTransferEventArgs>),
+            typeof(Binding));
 
     /// <summary>
     /// Occurs when a value is transferred from the binding target to the binding source.
     /// </summary>
     public static readonly RoutedEvent SourceUpdatedEvent =
-        new RoutedEvent("SourceUpdated", RoutingStrategy.Bubble, typeof(EventHandler<DataTransferEventArgs>), typeof(Binding));
+        EventManager.RegisterRoutedEvent(
+            "SourceUpdated",
+            RoutingStrategy.Bubble,
+            typeof(EventHandler<DataTransferEventArgs>),
+            typeof(Binding));
+
+    /// <summary>
+    /// Identifies the attached XML namespace manager property used by XPath bindings.
+    /// </summary>
+    public static readonly DependencyProperty XmlNamespaceManagerProperty =
+        DependencyProperty.RegisterAttached(
+            "XmlNamespaceManager",
+            typeof(object),
+            typeof(Binding),
+            new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.Inherits),
+            static value => value == null || value is XmlNamespaceManager);
+
+    /// <summary>
+    /// Adds a routed source-updated handler to an input element.
+    /// </summary>
+    public static void AddSourceUpdatedHandler(
+        DependencyObject element,
+        EventHandler<DataTransferEventArgs> handler) =>
+        AddDataTransferHandler(element, SourceUpdatedEvent, handler);
+
+    /// <summary>
+    /// Removes a routed source-updated handler from an input element.
+    /// </summary>
+    public static void RemoveSourceUpdatedHandler(
+        DependencyObject element,
+        EventHandler<DataTransferEventArgs> handler) =>
+        RemoveDataTransferHandler(element, SourceUpdatedEvent, handler);
+
+    /// <summary>
+    /// Adds a routed target-updated handler to an input element.
+    /// </summary>
+    public static void AddTargetUpdatedHandler(
+        DependencyObject element,
+        EventHandler<DataTransferEventArgs> handler) =>
+        AddDataTransferHandler(element, TargetUpdatedEvent, handler);
+
+    /// <summary>
+    /// Removes a routed target-updated handler from an input element.
+    /// </summary>
+    public static void RemoveTargetUpdatedHandler(
+        DependencyObject element,
+        EventHandler<DataTransferEventArgs> handler) =>
+        RemoveDataTransferHandler(element, TargetUpdatedEvent, handler);
+
+    /// <summary>
+    /// Gets the XML namespace manager inherited by an XPath binding target.
+    /// </summary>
+    public static XmlNamespaceManager? GetXmlNamespaceManager(DependencyObject target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        return target.GetValue(XmlNamespaceManagerProperty) as XmlNamespaceManager;
+    }
+
+    /// <summary>
+    /// Sets the XML namespace manager used by XPath bindings on a target.
+    /// </summary>
+    public static void SetXmlNamespaceManager(DependencyObject target, XmlNamespaceManager? value)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        target.SetValue(XmlNamespaceManagerProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the path to the binding source property.
@@ -186,9 +316,33 @@ public class Binding : BindingBase
     public PropertyPath? Path { get; set; }
 
     /// <summary>
+    /// Gets or sets an XPath expression evaluated before the ordinary property path.
+    /// </summary>
+    [DefaultValue(null)]
+    public string? XPath { get; set; }
+
+    /// <summary>
     /// Gets or sets the source object to use for the binding.
     /// </summary>
     public object? Source { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether a <see cref="DataSourceProvider"/> is treated as the binding item itself.
+    /// </summary>
+    [DefaultValue(false)]
+    public bool BindsDirectlyToSource { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether source access may be performed asynchronously.
+    /// </summary>
+    [DefaultValue(false)]
+    public bool IsAsync { get; set; }
+
+    /// <summary>
+    /// Gets or sets opaque state associated with asynchronous source access.
+    /// </summary>
+    [DefaultValue(null)]
+    public object? AsyncState { get; set; }
 
     /// <summary>
     /// Gets or sets the binding source by specifying its location relative to the position of the binding target.
@@ -273,6 +427,30 @@ public class Binding : BindingBase
     public bool NotifyOnValidationError { get; set; }
 
     /// <summary>
+    /// Gets or sets a callback that transforms exceptions encountered while updating the source.
+    /// </summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public UpdateSourceExceptionFilterCallback? UpdateSourceExceptionFilter { get; set; }
+
+    /// <summary>
+    /// Returns whether the path was explicitly assigned and should be serialized.
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public bool ShouldSerializePath() => Path != null;
+
+    /// <summary>
+    /// Explicit sources are intentionally not serialized by the WPF designer contract.
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public bool ShouldSerializeSource() => false;
+
+    /// <summary>
+    /// Returns whether validation rules should be serialized.
+    /// </summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public bool ShouldSerializeValidationRules() => ValidationRules.Count > 0;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="Binding"/> class.
     /// </summary>
     public Binding()
@@ -293,17 +471,67 @@ public class Binding : BindingBase
     {
         return new BindingExpression(this, target, targetProperty);
     }
+
+    private static void AddDataTransferHandler(
+        DependencyObject element,
+        RoutedEvent routedEvent,
+        EventHandler<DataTransferEventArgs> handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (element is not IInputElement inputElement)
+        {
+            throw new ArgumentException("The element must implement IInputElement.", nameof(element));
+        }
+
+        inputElement.AddHandler(routedEvent, handler);
+    }
+
+    private static void RemoveDataTransferHandler(
+        DependencyObject element,
+        RoutedEvent routedEvent,
+        EventHandler<DataTransferEventArgs> handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (element is not IInputElement inputElement)
+        {
+            throw new ArgumentException("The element must implement IInputElement.", nameof(element));
+        }
+
+        inputElement.RemoveHandler(routedEvent, handler);
+    }
 }
 
 /// <summary>
 /// Describes the location of a binding source relative to the position of the binding target.
 /// </summary>
-public sealed class RelativeSource
+public class RelativeSource : MarkupExtension, ISupportInitialize
 {
+    private RelativeSourceMode _mode;
+    private bool _isInitializing;
+
     /// <summary>
     /// Gets the relative source mode.
     /// </summary>
-    public RelativeSourceMode Mode { get; }
+    [ConstructorArgument("mode")]
+    public RelativeSourceMode Mode
+    {
+        get => _mode;
+        set
+        {
+            if (!Enum.IsDefined(value))
+            {
+                throw new ArgumentOutOfRangeException(nameof(value));
+            }
+
+            _mode = value;
+            if (!_isInitializing)
+            {
+                ValidateState();
+            }
+        }
+    }
 
     /// <summary>
     /// Gets the type of ancestor to look for.
@@ -315,12 +543,31 @@ public sealed class RelativeSource
     /// </summary>
     public int AncestorLevel { get; set; } = 1;
 
+    /// <summary>Initializes a relative source whose mode can be supplied by a XAML object writer.</summary>
+    public RelativeSource()
+        : this(RelativeSourceMode.PreviousData)
+    {
+    }
+
     /// <summary>
     /// Initializes a new instance of the <see cref="RelativeSource"/> class.
     /// </summary>
     public RelativeSource(RelativeSourceMode mode)
     {
-        Mode = mode;
+        _mode = mode;
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
+    }
+
+    /// <summary>Initializes a relative source that searches for an ancestor.</summary>
+    public RelativeSource(RelativeSourceMode mode, Type ancestorType, int ancestorLevel)
+        : this(mode)
+    {
+        AncestorType = ancestorType ?? throw new ArgumentNullException(nameof(ancestorType));
+        AncestorLevel = ancestorLevel;
+        ValidateState();
     }
 
     /// <summary>
@@ -337,6 +584,48 @@ public sealed class RelativeSource
     /// Gets a static RelativeSource for PreviousData mode.
     /// </summary>
     public static RelativeSource PreviousData { get; } = new(RelativeSourceMode.PreviousData);
+
+    /// <inheritdoc />
+    [RequiresUnreferencedCode("Override of a base member that is annotated with RequiresUnreferencedCode.")]
+    [RequiresDynamicCode("Override of a base member that is annotated with RequiresDynamicCode.")]
+    public override object ProvideValue(IServiceProvider serviceProvider) => Mode switch
+    {
+        RelativeSourceMode.Self => Self,
+        RelativeSourceMode.TemplatedParent => TemplatedParent,
+        RelativeSourceMode.PreviousData => PreviousData,
+        _ => this,
+    };
+
+    /// <inheritdoc />
+    public void BeginInit() => _isInitializing = true;
+
+    /// <inheritdoc />
+    public void EndInit()
+    {
+        _isInitializing = false;
+        ValidateState();
+    }
+
+    /// <summary>Returns whether the ancestor level participates in serialization.</summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public bool ShouldSerializeAncestorLevel() => Mode == RelativeSourceMode.FindAncestor && AncestorLevel != 1;
+
+    /// <summary>Returns whether the ancestor type participates in serialization.</summary>
+    [EditorBrowsable(EditorBrowsableState.Never)]
+    public bool ShouldSerializeAncestorType() => Mode == RelativeSourceMode.FindAncestor && AncestorType != null;
+
+    private void ValidateState()
+    {
+        if (AncestorLevel < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(AncestorLevel));
+        }
+
+        if (Mode != RelativeSourceMode.FindAncestor && (AncestorType != null || AncestorLevel != 1))
+        {
+            throw new InvalidOperationException("AncestorType and AncestorLevel can only be used with FindAncestor mode.");
+        }
+    }
 }
 
 /// <summary>
@@ -368,8 +657,12 @@ public enum RelativeSourceMode
 /// <summary>
 /// Base class for binding expressions.
 /// </summary>
-public abstract class BindingExpressionBase
+public abstract class BindingExpressionBase : Expression, IWeakEventListener
 {
+    private bool _hasValidationError;
+    private readonly List<ValidationError> _validationErrors = new();
+    private BindingGroup? _attachedBindingGroup;
+
     /// <summary>
     /// Gets the target element.
     /// </summary>
@@ -390,11 +683,53 @@ public abstract class BindingExpressionBase
     /// </summary>
     public BindingStatus Status { get; protected set; }
 
+    /// <summary>Gets the binding declaration that created this expression.</summary>
+    public BindingBase ParentBindingBase { get; }
+
+    /// <summary>Gets the binding group selected for this expression's target.</summary>
+    public BindingGroup? BindingGroup
+    {
+        get
+        {
+            if (Target is not FrameworkElement element || element.BindingGroup is not { } group)
+            {
+                return null;
+            }
+
+            return string.IsNullOrEmpty(ParentBindingBase.BindingGroupName) ||
+                   string.Equals(group.Name, ParentBindingBase.BindingGroupName, StringComparison.Ordinal)
+                ? group
+                : null;
+        }
+    }
+
+    /// <summary>Gets whether the expression currently has any binding or validation error.</summary>
+    public virtual bool HasError => HasValidationError ||
+        Status is BindingStatus.PathError or BindingStatus.UpdateTargetError or BindingStatus.UpdateSourceError;
+
+    /// <summary>Gets whether the expression has an uncommitted proposed value.</summary>
+    public bool IsDirty => BindingGroup?.IsDirty ?? false;
+
+    /// <summary>
+    /// Gets a value that indicates whether this expression currently has a validation error.
+    /// </summary>
+    public virtual bool HasValidationError => _hasValidationError;
+
+    /// <summary>Gets the first validation error associated with this expression.</summary>
+    public virtual ValidationError? ValidationError => _validationErrors.Count == 0 ? null : _validationErrors[0];
+
+    /// <summary>Gets all validation errors associated with this expression.</summary>
+    public virtual ReadOnlyCollection<ValidationError> ValidationErrors => _validationErrors.AsReadOnly();
+
     /// <summary>
     /// Initializes a new instance of the <see cref="BindingExpressionBase"/> class.
     /// </summary>
-    protected BindingExpressionBase(DependencyObject target, DependencyProperty targetProperty)
+    protected BindingExpressionBase(
+        BindingBase parentBindingBase,
+        DependencyObject target,
+        DependencyProperty targetProperty)
     {
+        ParentBindingBase = parentBindingBase ?? throw new ArgumentNullException(nameof(parentBindingBase));
         Target = target;
         TargetProperty = targetProperty;
     }
@@ -418,6 +753,85 @@ public abstract class BindingExpressionBase
     /// Updates the target value.
     /// </summary>
     public abstract void UpdateTarget();
+
+    /// <summary>Runs this expression's validation rules without writing to the source.</summary>
+    public bool ValidateWithoutUpdate()
+    {
+        ClearValidationErrorState();
+        IEnumerable<ValidationRule> rules = ParentBindingBase switch
+        {
+            Binding binding => binding.ValidationRules,
+            MultiBinding multiBinding => multiBinding.ValidationRules,
+            _ => Array.Empty<ValidationRule>(),
+        };
+
+        object? value = Target.GetValue(TargetProperty);
+        foreach (ValidationRule rule in rules)
+        {
+            ValidationResult result = rule.Validate(value, CultureInfo.CurrentCulture, this);
+            if (!result.IsValid)
+            {
+                ValidationError error = new(rule, this, result.ErrorContent, null);
+                AddValidationErrorState(error);
+                Validation.MarkInvalid(this, error);
+            }
+        }
+
+        return !HasError;
+    }
+
+    bool IWeakEventListener.ReceiveWeakEvent(Type managerType, object sender, EventArgs e) =>
+        ReceiveWeakEvent(managerType, sender, e);
+
+    /// <summary>
+    /// Handles weak-event notifications used by binding expression implementations.
+    /// </summary>
+    protected virtual bool ReceiveWeakEvent(Type managerType, object sender, EventArgs e) => false;
+
+    /// <summary>
+    /// Updates the validation state maintained by this expression.
+    /// </summary>
+    internal void SetValidationErrorState(bool value)
+    {
+        _hasValidationError = value;
+        if (!value)
+        {
+            _validationErrors.Clear();
+        }
+    }
+
+    internal void AddValidationErrorState(ValidationError error)
+    {
+        _hasValidationError = true;
+        _validationErrors.Add(error);
+    }
+
+    internal void ClearValidationErrorState()
+    {
+        _hasValidationError = false;
+        _validationErrors.Clear();
+    }
+
+    /// <summary>Registers this expression with its current binding group.</summary>
+    protected void AttachToBindingGroup()
+    {
+        BindingGroup? group = BindingGroup;
+        if (ReferenceEquals(group, _attachedBindingGroup))
+        {
+            return;
+        }
+
+        _attachedBindingGroup?.RemoveBindingExpression(this);
+        _attachedBindingGroup = group;
+        _attachedBindingGroup?.AddBindingExpression(this);
+    }
+
+    /// <summary>Removes this expression from its current binding group.</summary>
+    protected void DetachFromBindingGroup()
+    {
+        _attachedBindingGroup?.RemoveBindingExpression(this);
+        _attachedBindingGroup = null;
+    }
 }
 
 /// <summary>
@@ -428,11 +842,13 @@ public sealed class BindingExpression : BindingExpressionBase
     private readonly Binding _binding;
     private INotifyPropertyChanged? _sourceNotify;
     private INotifyDataErrorInfo? _notifyDataErrorInfo;
+    private DataSourceProvider? _dataSourceProvider;
     private DependencyObject? _sourceDependencyObject;
     private PropertyInfo? _sourceProperty;
     private object? _effectiveSource;
     private bool _isUpdating;
     private bool _isLostFocusUpdate;
+    private bool _isAsyncUpdatePending;
     private List<(INotifyPropertyChanged Notify, string PropertyName)>? _intermediateSubscriptions;
 
     // Converter / ConverterParameter 自身的可变状态订阅。
@@ -469,15 +885,25 @@ public sealed class BindingExpression : BindingExpressionBase
     public Binding ParentBinding => _binding;
 
     /// <summary>
+    /// Gets the root data item used to evaluate this binding.
+    /// </summary>
+    public object? DataItem => ResolvedSource;
+
+    /// <summary>
     /// Gets the resolved data source.
     /// </summary>
     public object? ResolvedSource { get; private set; }
 
     /// <summary>
+    /// Gets the name of the source property that is updated by this binding.
+    /// </summary>
+    public string? ResolvedSourcePropertyName => _sourceProperty?.Name;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="BindingExpression"/> class.
     /// </summary>
     internal BindingExpression(Binding binding, DependencyObject target, DependencyProperty targetProperty)
-        : base(target, targetProperty)
+        : base(binding, target, targetProperty)
     {
         _binding = binding;
         // 方法组转换为 EventHandler<PropertyChangedEventArgs> —— 缓存稳定 delegate 实例
@@ -486,6 +912,21 @@ public sealed class BindingExpression : BindingExpressionBase
         _converterPcHandler = OnConverterPropertyChanged;
         _converterParamPcHandler = OnConverterParameterPropertyChanged;
         _intermediatePcHandler = OnIntermediatePropertyChanged;
+    }
+
+    /// <inheritdoc />
+    protected override bool ReceiveWeakEvent(Type managerType, object sender, EventArgs e)
+    {
+        if (managerType == typeof(DataChangedEventManager) && ReferenceEquals(sender, _dataSourceProvider))
+        {
+            UnsubscribeFromSource();
+            ResolveDataSource();
+            SubscribeToSource();
+            UpdateTarget();
+            return true;
+        }
+
+        return base.ReceiveWeakEvent(managerType, sender, e);
     }
 
     /// <inheritdoc />
@@ -531,6 +972,7 @@ public sealed class BindingExpression : BindingExpressionBase
 
         IsActive = true;
         Status = BindingStatus.Active;
+        AttachToBindingGroup();
         BindingDiagnostics.NotifyActivated(this);
 
         // Subscribe to source changes
@@ -630,6 +1072,7 @@ public sealed class BindingExpression : BindingExpressionBase
 
         IsActive = false;
         Status = BindingStatus.Inactive;
+        DetachFromBindingGroup();
 
         // Unsubscribe from source changes
         UnsubscribeFromSource();
@@ -662,6 +1105,7 @@ public sealed class BindingExpression : BindingExpressionBase
 
         BindingDiagnostics.NotifyUpdateSource(this);
 
+        var transferSucceeded = false;
         try
         {
             _isUpdating = true;
@@ -684,10 +1128,7 @@ public sealed class BindingExpression : BindingExpressionBase
             }
             catch (Exception ex)
             {
-                if (_binding.ValidatesOnExceptions)
-                {
-                    AddValidationError(new ValidationError(null, ResolvedSource, ex.Message, ex));
-                }
+                HandleUpdateSourceException(ex);
                 return;
             }
 
@@ -702,10 +1143,7 @@ public sealed class BindingExpression : BindingExpressionBase
             }
             catch (Exception ex)
             {
-                if (_binding.ValidatesOnExceptions)
-                {
-                    AddValidationError(new ValidationError(null, ResolvedSource, ex.Message, ex));
-                }
+                HandleUpdateSourceException(ex);
                 return;
             }
 
@@ -722,10 +1160,16 @@ public sealed class BindingExpression : BindingExpressionBase
 
             // Success - clear validation errors
             ClearValidationErrors();
+            transferSucceeded = true;
         }
         finally
         {
             _isUpdating = false;
+        }
+
+        if (transferSucceeded && _binding.NotifyOnSourceUpdated)
+        {
+            RaiseDataTransferEvent(Binding.SourceUpdatedEvent);
         }
     }
 
@@ -750,6 +1194,26 @@ public sealed class BindingExpression : BindingExpressionBase
         }
 
         return true;
+    }
+
+    private void HandleUpdateSourceException(Exception exception)
+    {
+        object? filtered = _binding.UpdateSourceExceptionFilter == null
+            ? exception
+            : _binding.UpdateSourceExceptionFilter(this, exception);
+
+        if (filtered is ValidationError validationError)
+        {
+            AddValidationError(validationError);
+        }
+        else if (filtered is Exception filteredException && _binding.ValidatesOnExceptions)
+        {
+            AddValidationError(new ValidationError(
+                null,
+                ResolvedSource,
+                filteredException.Message,
+                filteredException));
+        }
     }
 
     /// <summary>
@@ -800,6 +1264,7 @@ public sealed class BindingExpression : BindingExpressionBase
     /// </summary>
     private void AddValidationError(ValidationError error)
     {
+        AddValidationErrorState(error);
         Validation.MarkInvalid(Target, error);
         Status = BindingStatus.UpdateSourceError;
 
@@ -816,6 +1281,8 @@ public sealed class BindingExpression : BindingExpressionBase
     /// </summary>
     private void ClearValidationErrors()
     {
+        ClearValidationErrorState();
+
         if (Validation.GetHasError(Target))
         {
             var errors = Validation.GetErrors(Target);
@@ -850,6 +1317,28 @@ public sealed class BindingExpression : BindingExpressionBase
         if (!IsActive || _isUpdating)
             return;
 
+        if (_binding.IsAsync && !_isAsyncUpdatePending)
+        {
+            _isAsyncUpdatePending = true;
+            Status = BindingStatus.AsyncRequestPending;
+            Target.Dispatcher.BeginInvoke(() =>
+            {
+                try
+                {
+                    UpdateTarget();
+                }
+                finally
+                {
+                    _isAsyncUpdatePending = false;
+                    if (Status == BindingStatus.AsyncRequestPending)
+                    {
+                        Status = BindingStatus.Active;
+                    }
+                }
+            });
+            return;
+        }
+
         BindingDiagnostics.NotifyUpdateTarget(this);
 
         // Late-bind a deferred Converter resource if it's still pending. Activate's
@@ -875,12 +1364,13 @@ public sealed class BindingExpression : BindingExpressionBase
             return;
         }
 
+        var transferSucceeded = false;
         try
         {
             _isUpdating = true;
 
             var sourceValue = GetSourceValue();
-            var convertedValue = Convert(sourceValue);
+            var convertedValue = Convert(sourceValue, applyStringFormat: false);
 
             // Apply StringFormat if specified
             if (convertedValue != null && !string.IsNullOrEmpty(_binding.StringFormat))
@@ -915,15 +1405,40 @@ public sealed class BindingExpression : BindingExpressionBase
             {
                 ValidateDataErrorInfo();
             }
+
+            transferSucceeded = true;
         }
         finally
         {
             _isUpdating = false;
         }
+
+        if (transferSucceeded && _binding.NotifyOnTargetUpdated)
+        {
+            RaiseDataTransferEvent(Binding.TargetUpdatedEvent);
+        }
+    }
+
+    private void RaiseDataTransferEvent(RoutedEvent routedEvent)
+    {
+        if (Target is not UIElement targetElement)
+        {
+            return;
+        }
+
+        targetElement.RaiseEvent(new DataTransferEventArgs(Target, TargetProperty)
+        {
+            RoutedEvent = routedEvent,
+            Source = Target,
+            Item = ResolvedSource,
+        });
     }
 
     private void ResolveDataSource()
     {
+        _effectiveSource = null;
+        _sourceProperty = null;
+
         // Priority: explicit Source > ElementName > RelativeSource > DataContext
         if (_binding.Source != null)
         {
@@ -942,6 +1457,12 @@ public sealed class BindingExpression : BindingExpressionBase
         {
             // Use DataContext
             ResolvedSource = GetDataContext();
+        }
+
+        _dataSourceProvider = ResolvedSource as DataSourceProvider;
+        if (_dataSourceProvider != null && !_binding.BindsDirectlyToSource)
+        {
+            ResolvedSource = _dataSourceProvider.Data;
         }
 
         // Resolve property from path
@@ -1074,6 +1595,9 @@ public sealed class BindingExpression : BindingExpressionBase
         Justification = "PropertyAccessorRegistry.TryReadProperty/TryGetPropertyInfo are the binding engine's reflection fallback for unregistered user view-model types. Per their RUC message — \"Register typed accessors via Register() to opt out of reflection\" — preserving these properties is the documented consumer responsibility for trim/AOT (the SourceGenerator emits Register<T>()/DynamicDependency for jalxaml DataType bindings; see project_trim_view_model_binding). Suppressing here keeps the RUC contract declared at the PropertyAccessorRegistry surface rather than cascading it onto every DependencyObject.SetValue caller of the binding engine.")]
     private void ResolveSourceProperty()
     {
+        _effectiveSource = null;
+        _sourceProperty = null;
+
         if (ResolvedSource == null || _binding.Path == null)
             return;
 
@@ -1083,7 +1607,7 @@ public sealed class BindingExpression : BindingExpressionBase
 
         // Navigate to the object containing the final property using the
         // AOT-safe PropertyAccessorRegistry (with reflection fallback).
-        object? current = ResolvedSource;
+        object? current = EvaluateXPath(ResolvedSource);
         for (int i = 0; i < segments.Length - 1; i++)
         {
             if (current == null) return;
@@ -1106,11 +1630,15 @@ public sealed class BindingExpression : BindingExpressionBase
         if (ResolvedSource == null)
             return _binding.FallbackValue;
 
+        object? root = EvaluateXPath(ResolvedSource);
+        if (root == null)
+            return _binding.FallbackValue;
+
         if (_binding.Path == null || _binding.Path.PathSegments.Length == 0)
-            return ResolvedSource;
+            return root;
 
         // Navigate the path
-        object? current = ResolvedSource;
+        object? current = root;
         foreach (var segment in _binding.Path.PathSegments)
         {
             if (current == null)
@@ -1125,7 +1653,44 @@ public sealed class BindingExpression : BindingExpressionBase
         return current ?? _binding.TargetNullValue;
     }
 
-    private object? Convert(object? value)
+    private object? EvaluateXPath(object source)
+    {
+        var xpath = _binding.XPath;
+        if (string.IsNullOrEmpty(xpath))
+        {
+            return source;
+        }
+
+        var namespaceManager = Binding.GetXmlNamespaceManager(Target);
+        return source switch
+        {
+            XmlNode node => namespaceManager == null
+                ? node.SelectSingleNode(xpath)
+                : node.SelectSingleNode(xpath, namespaceManager),
+            XPathNavigator navigator => namespaceManager == null
+                ? navigator.SelectSingleNode(xpath)
+                : navigator.SelectSingleNode(xpath, namespaceManager),
+            IXPathNavigable navigable => SelectXPathNode(navigable.CreateNavigator(), xpath, namespaceManager),
+            _ => _binding.FallbackValue,
+        };
+    }
+
+    private static XPathNavigator? SelectXPathNode(
+        XPathNavigator? navigator,
+        string xpath,
+        XmlNamespaceManager? namespaceManager)
+    {
+        if (navigator == null)
+        {
+            return null;
+        }
+
+        return namespaceManager == null
+            ? navigator.SelectSingleNode(xpath)
+            : navigator.SelectSingleNode(xpath, namespaceManager);
+    }
+
+    private object? Convert(object? value, bool applyStringFormat)
     {
         if (_binding.Converter != null)
         {
@@ -1136,7 +1701,7 @@ public sealed class BindingExpression : BindingExpressionBase
                 _binding.ConverterCulture ?? System.Globalization.CultureInfo.CurrentCulture);
         }
 
-        if (value != null && !string.IsNullOrEmpty(_binding.StringFormat))
+        if (applyStringFormat && value != null && !string.IsNullOrEmpty(_binding.StringFormat))
         {
             try
             {
@@ -1167,6 +1732,12 @@ public sealed class BindingExpression : BindingExpressionBase
 
     private void SubscribeToSource()
     {
+        if (_dataSourceProvider != null && !_binding.BindsDirectlyToSource)
+        {
+            DataChangedEventManager.RemoveListener(_dataSourceProvider, this);
+            DataChangedEventManager.AddListener(_dataSourceProvider, this);
+        }
+
         // 全部 subscribe 都先 unsubscribe 防重 — 调用方（OnDataContextChanged、Activate 二次激活等）
         // 可能在没 UnsubscribeFromSource 的情况下调本方法，避免 handler 累积
         // 让 PropertyChanged 触发数倍数 UpdateTarget。
@@ -1197,7 +1768,7 @@ public sealed class BindingExpression : BindingExpressionBase
         // Subscribe to LostFocus for UpdateSourceTrigger.LostFocus
         if (_binding.UpdateSourceTrigger == UpdateSourceTrigger.LostFocus && Target is UIElement targetElement)
         {
-            targetElement.LostFocus += OnTargetLostFocus;
+            LostFocusEventManager.AddHandler(targetElement, OnTargetLostFocus);
         }
 
         // Subscribe to INotifyDataErrorInfo if enabled
@@ -1220,6 +1791,12 @@ public sealed class BindingExpression : BindingExpressionBase
 
     private void UnsubscribeFromSource()
     {
+        if (_dataSourceProvider != null)
+        {
+            DataChangedEventManager.RemoveListener(_dataSourceProvider, this);
+            _dataSourceProvider = null;
+        }
+
         if (_sourceNotify != null)
         {
             PropertyChangedEventManager.RemoveHandler(_sourceNotify, _sourcePcHandler, "");
@@ -1239,7 +1816,7 @@ public sealed class BindingExpression : BindingExpressionBase
 
         if (Target is UIElement targetElementUnsub)
         {
-            targetElementUnsub.LostFocus -= OnTargetLostFocus;
+            LostFocusEventManager.RemoveHandler(targetElementUnsub, OnTargetLostFocus);
         }
 
         if (_notifyDataErrorInfo != null)
@@ -1369,7 +1946,7 @@ public sealed class BindingExpression : BindingExpressionBase
 
         _intermediateSubscriptions = new();
 
-        object? current = ResolvedSource;
+        object? current = ResolvedSource == null ? null : EvaluateXPath(ResolvedSource);
         // Subscribe to intermediate objects (segments[0] through segments[Length-2]).
         // Segment 0's property changing on ResolvedSource is already handled by _sourceNotify,
         // but we still need to subscribe to the *value* of segment 0 (the intermediate object)
@@ -1483,7 +2060,7 @@ public sealed class BindingExpression : BindingExpressionBase
         }
     }
 
-    private void OnTargetLostFocus(object sender, RoutedEventArgs e)
+    private void OnTargetLostFocus(object? sender, RoutedEventArgs e)
     {
         _isLostFocusUpdate = true;
         try
@@ -1514,6 +2091,7 @@ public sealed class BindingExpression : BindingExpressionBase
         {
             IsActive = true;
             Status = BindingStatus.Active;
+            AttachToBindingGroup();
         }
         else
         {
@@ -1561,6 +2139,11 @@ public enum BindingStatus
     /// The binding is detached.
     /// </summary>
     Detached,
+
+    /// <summary>
+    /// The binding is waiting for an asynchronous request to complete.
+    /// </summary>
+    AsyncRequestPending,
 
     /// <summary>
     /// The binding encountered an error while resolving.

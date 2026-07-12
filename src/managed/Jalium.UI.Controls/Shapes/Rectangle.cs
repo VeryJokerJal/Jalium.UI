@@ -58,7 +58,7 @@ public class Rectangle : Shape
     {
         if (Stretch == Stretch.None)
         {
-            return Size.Empty;
+            return default(Size);
         }
 
         // Return available size, constrained by Width/Height if set

@@ -131,7 +131,8 @@ public class ContentPresenterAutoContentReproTests
         button.ApplyTemplate();
 
         Assert.NotNull(cp);
-        Assert.NotNull(cp!.GetBindingExpression(ContentPresenter.ContentProperty));
-        Assert.Equal("X", cp.Content);
+        // TemplateBinding uses an optimized template-value expression; its observable
+        // contract here is the value transferred from the templated parent.
+        Assert.Equal("X", cp!.Content);
     }
 }

@@ -1553,6 +1553,9 @@ internal static partial class NativeMethods
     [LibraryImport(PlatformLib, EntryPoint = "jalium_dispatcher_wake")]
     internal static partial void DispatcherWake(nint dispatcher);
 
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_dispatcher_set_callback")]
+    internal static partial void DispatcherSetCallback(nint dispatcher, nint callback, nint userData);
+
     // --- Timer ---
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_timer_create")]
@@ -1570,6 +1573,9 @@ internal static partial class NativeMethods
     [LibraryImport(PlatformLib, EntryPoint = "jalium_timer_disarm")]
     internal static partial void TimerDisarm(nint timer);
 
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_timer_set_callback")]
+    internal static partial void TimerSetCallback(nint timer, nint callback, nint userData);
+
     [LibraryImport(PlatformLib, EntryPoint = "jalium_timer_wait")]
     internal static partial int TimerWait(nint timer, uint timeoutMs);
 
@@ -1585,6 +1591,16 @@ internal static partial class NativeMethods
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_input_get_cursor_pos")]
     internal static partial void InputGetCursorPos(out float x, out float y);
+
+    // --- Drag and Drop ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_drag_set_effect")]
+    internal static partial void DragSetEffect(nint window, ulong sessionId, uint effect);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_drag_begin")]
+    internal static partial int DragBegin(
+        nint window, nint items, uint itemCount, uint allowedEffects,
+        out uint performedEffect);
 
     // --- Clipboard ---
 
@@ -1655,11 +1671,20 @@ internal static partial class NativeMethods
 [StructLayout(LayoutKind.Sequential)]
 internal struct NativePlatformWindowParams
 {
-    public nint Title;    // wchar_t*
+    public nint Title;    // const uint16_t* (null-terminated UTF-16)
     public int X;
     public int Y;
     public int Width;
     public int Height;
     public uint Style;
     public nint ParentHandle;
+}
+
+/// <summary>One UTF-8 MIME representation passed to the native drag source.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeDragDataItem
+{
+    public nint MimeType;
+    public nint Data;
+    public uint DataSize;
 }

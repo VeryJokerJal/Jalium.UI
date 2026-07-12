@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
@@ -19,22 +20,37 @@ public class D3DImageTests
     [Fact]
     public void D3DImage_SetBackBuffer_ShouldUpdateAvailabilityAndRaiseEvent()
     {
-        var image = new D3DImage();
-        var eventCount = 0;
-        image.IsFrontBufferAvailableChanged += (_, _) => eventCount++;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
-        image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, new IntPtr(1234), enableSoftwareFallback: true);
+        object comOwner = new();
+        var backBuffer = Marshal.GetIUnknownForObject(comOwner);
+        try
+        {
+            using var image = new D3DImage();
+            var eventCount = 0;
+            image.IsFrontBufferAvailableChanged += (_, _) => eventCount++;
 
-        Assert.True(image.IsFrontBufferAvailable);
-        Assert.True(image.IsSoftwareFallbackEnabled);
-        Assert.Equal(new IntPtr(1234), image.NativeHandle);
-        Assert.Equal(1, eventCount);
+            image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, backBuffer, enableSoftwareFallback: true);
 
-        image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, IntPtr.Zero);
+            Assert.True(image.IsFrontBufferAvailable);
+            Assert.True(image.IsSoftwareFallbackEnabled);
+            Assert.Equal(backBuffer, image.NativeHandle);
+            Assert.Equal(1, eventCount);
 
-        Assert.False(image.IsFrontBufferAvailable);
-        Assert.Equal(nint.Zero, image.NativeHandle);
-        Assert.Equal(2, eventCount);
+            image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, IntPtr.Zero);
+
+            Assert.False(image.IsFrontBufferAvailable);
+            Assert.Equal(nint.Zero, image.NativeHandle);
+            Assert.Equal(2, eventCount);
+        }
+        finally
+        {
+            Marshal.Release(backBuffer);
+            GC.KeepAlive(comOwner);
+        }
     }
 
     [Fact]

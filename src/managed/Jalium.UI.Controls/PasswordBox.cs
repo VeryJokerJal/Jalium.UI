@@ -1,5 +1,6 @@
-﻿using Jalium.UI.Automation;
+using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
@@ -150,15 +151,34 @@ public class PasswordBox : Control, IImeSupport
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
-        DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(PasswordBox),
+        TextBoxBase.SelectionBrushProperty.AddOwner(typeof(PasswordBox),
             new PropertyMetadata(new SolidColorBrush(Color.FromArgb(180, 0x1E, 0x79, 0x3F)), OnVisualPropertyChanged));
+
+    /// <summary>Identifies the SelectionTextBrush dependency property.</summary>
+    public static readonly DependencyProperty SelectionTextBrushProperty =
+        TextBoxBase.SelectionTextBrushProperty.AddOwner(typeof(PasswordBox),
+            new PropertyMetadata(new SolidColorBrush(Color.White), OnVisualPropertyChanged));
+
+    /// <summary>Identifies the SelectionOpacity dependency property.</summary>
+    public static readonly DependencyProperty SelectionOpacityProperty =
+        TextBoxBase.SelectionOpacityProperty.AddOwner(typeof(PasswordBox),
+            new PropertyMetadata(0.4, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the IsInactiveSelectionHighlightEnabled dependency property.</summary>
+    public static readonly DependencyProperty IsInactiveSelectionHighlightEnabledProperty =
+        TextBoxBase.IsInactiveSelectionHighlightEnabledProperty.AddOwner(typeof(PasswordBox),
+            new PropertyMetadata(false, OnVisualPropertyChanged));
+
+    /// <summary>Identifies the read-only IsSelectionActive dependency property.</summary>
+    public static readonly DependencyProperty IsSelectionActiveProperty =
+        AddIsSelectionActiveOwner();
 
     /// <summary>
     /// Identifies the CaretBrush dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CaretBrushProperty =
-        DependencyProperty.Register(nameof(CaretBrush), typeof(Brush), typeof(PasswordBox),
+        TextBoxBase.CaretBrushProperty.AddOwner(typeof(PasswordBox),
             new PropertyMetadata(new SolidColorBrush(Color.White), OnVisualPropertyChanged));
 
     /// <summary>
@@ -186,6 +206,12 @@ public class PasswordBox : Control, IImeSupport
             new PropertyMetadata(100));
 
     #endregion
+
+    private static DependencyProperty AddIsSelectionActiveOwner()
+    {
+        TextBoxBase.IsSelectionActivePropertyKey.OverrideMetadata(typeof(PasswordBox), new PropertyMetadata(false));
+        return TextBoxBase.IsSelectionActiveProperty.AddOwner(typeof(PasswordBox));
+    }
 
     #region Static Brushes & Pens
 
@@ -332,6 +358,30 @@ public class PasswordBox : Control, IImeSupport
         get => (Brush?)GetValue(SelectionBrushProperty);
         set => SetValue(SelectionBrushProperty, value);
     }
+
+    /// <summary>Gets or sets the brush used to draw selected password characters.</summary>
+    public Brush? SelectionTextBrush
+    {
+        get => (Brush?)GetValue(SelectionTextBrushProperty);
+        set => SetValue(SelectionTextBrushProperty, value);
+    }
+
+    /// <summary>Gets or sets the opacity of the selection highlight.</summary>
+    public double SelectionOpacity
+    {
+        get => (double)GetValue(SelectionOpacityProperty)!;
+        set => SetValue(SelectionOpacityProperty, value);
+    }
+
+    /// <summary>Gets or sets whether a selection remains highlighted while focus is inactive.</summary>
+    public bool IsInactiveSelectionHighlightEnabled
+    {
+        get => (bool)GetValue(IsInactiveSelectionHighlightEnabledProperty)!;
+        set => SetValue(IsInactiveSelectionHighlightEnabledProperty, value);
+    }
+
+    /// <summary>Gets whether the password selection is active.</summary>
+    public bool IsSelectionActive => (bool)GetValue(IsSelectionActiveProperty)!;
 
     /// <summary>
     /// Gets or sets the brush for the caret.
@@ -492,7 +542,7 @@ public class PasswordBox : Control, IImeSupport
         Focusable = true;
 
         // Set IBeam cursor for text input
-        Cursor = Jalium.UI.Cursors.IBeam;
+        Cursor = Jalium.UI.Input.Cursors.IBeam;
 
         _lastCaretBlink = DateTime.Now;
         _lastClickTime = DateTime.MinValue;
@@ -702,7 +752,7 @@ public class PasswordBox : Control, IImeSupport
         dc.PushClip(new RectangleGeometry(contentRect));
 
         // Draw selection background
-        if (_selectionLength > 0 && IsKeyboardFocused)
+        if (_selectionLength > 0 && (IsKeyboardFocused || IsInactiveSelectionHighlightEnabled))
         {
             DrawSelection(dc, contentRect, lineHeight);
         }
@@ -713,7 +763,7 @@ public class PasswordBox : Control, IImeSupport
             if (!string.IsNullOrEmpty(PlaceholderText))
             {
                 var placeholderBrush = ResolvePlaceholderBrush();
-                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
                 {
                     Foreground = placeholderBrush,
                     MaxTextWidth = contentRect.Width,
@@ -778,7 +828,7 @@ public class PasswordBox : Control, IImeSupport
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
 
         var displayText = IsPasswordRevealed ? _password : new string(PasswordChar, _password.Length);
-        var formattedText = new FormattedText(displayText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+        var formattedText = new FormattedText(displayText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = textBrush,
             MaxTextWidth = Math.Max(0, contentRect.Width + roundedHorizontalOffset),
@@ -790,6 +840,29 @@ public class PasswordBox : Control, IImeSupport
         var y = contentRect.Y;
 
         dc.DrawText(formattedText, new Point(x, y));
+
+        if (_selectionLength > 0 &&
+            (IsKeyboardFocused || IsInactiveSelectionHighlightEnabled) &&
+            SelectionTextBrush != null)
+        {
+            var start = Math.Clamp(_selectionStart, 0, displayText.Length);
+            var length = Math.Clamp(_selectionLength, 0, displayText.Length - start);
+            if (length > 0)
+            {
+                var before = displayText.Substring(0, start);
+                var selected = displayText.Substring(start, length);
+                var selectedText = new FormattedText(
+                    selected,
+                    FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName,
+                    FontSize)
+                {
+                    Foreground = SelectionTextBrush,
+                    MaxTextWidth = Math.Max(0, contentRect.Width),
+                    MaxTextHeight = lineHeight,
+                };
+                dc.DrawText(selectedText, new Point(x + MeasureDisplayTextWidth(before), y));
+            }
+        }
     }
 
     private void DrawSelection(DrawingContext dc, Rect contentRect, double lineHeight)
@@ -806,8 +879,17 @@ public class PasswordBox : Control, IImeSupport
         var startX = Math.Round(contentRect.X + MeasureDisplayTextWidth(textBefore) - roundedHorizontalOffset);
         var width = Math.Max(Math.Round(MeasureDisplayTextWidth(selectedText)), 1);
 
+        var selectionBrush = SelectionBrush;
+        if (selectionBrush is SolidColorBrush solidBrush)
+        {
+            var opacity = Math.Clamp(SelectionOpacity, 0.0, 1.0);
+            var color = solidBrush.Color;
+            selectionBrush = new SolidColorBrush(Color.FromArgb(
+                (byte)Math.Round(color.A * opacity), color.R, color.G, color.B));
+        }
+
         var selRect = new Rect(startX, contentRect.Y, width, lineHeight);
-        dc.DrawRectangle(SelectionBrush, null, selRect);
+        dc.DrawRectangle(selectionBrush, null, selRect);
     }
 
     private void DrawImeComposition(DrawingContext dc, Rect contentRect, double lineHeight)
@@ -826,7 +908,7 @@ public class PasswordBox : Control, IImeSupport
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, y, compositionWidth, lineHeight));
 
         // Draw composition text
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
@@ -1019,7 +1101,7 @@ public class PasswordBox : Control, IImeSupport
 
     private double GetLineHeight()
     {
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
@@ -1035,7 +1117,7 @@ public class PasswordBox : Control, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
 
         // Check if font settings changed, invalidate cache if so
@@ -1420,6 +1502,7 @@ public class PasswordBox : Control, IImeSupport
     protected override void OnIsKeyboardFocusedChanged(bool isFocused)
     {
         base.OnIsKeyboardFocusedChanged(isFocused);
+        SetValue(TextBoxBase.IsSelectionActivePropertyKey, isFocused);
 
         if (isFocused)
         {
@@ -1683,7 +1766,7 @@ public class PasswordBox : Control, IImeSupport
 
     private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             InputMethod.SetTarget(null);
         }
@@ -1691,7 +1774,7 @@ public class PasswordBox : Control, IImeSupport
 
     private void OnImeCompositionStarted(object? sender, EventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionStart();
         }
@@ -1699,7 +1782,7 @@ public class PasswordBox : Control, IImeSupport
 
     private void OnImeCompositionUpdated(object? sender, CompositionEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionUpdate(e.Text, e.CursorPosition);
         }
@@ -1707,7 +1790,7 @@ public class PasswordBox : Control, IImeSupport
 
     private void OnImeCompositionEnded(object? sender, CompositionResultEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionEnd(e.Result);
         }

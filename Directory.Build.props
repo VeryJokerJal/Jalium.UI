@@ -1,4 +1,23 @@
 <Project>
+  <!--
+    Opt-in isolated build root for cross-OS and CI builds.  A checkout mounted
+    into WSL can otherwise have its NuGet assets overwritten by a concurrent
+    Windows build (and vice versa), because both hosts share project-local
+    obj/bin directories but record incompatible absolute package paths.
+
+    Usage: dotnet build ... -p:JaliumBuildRoot=/tmp/jalium-build
+  -->
+  <PropertyGroup Condition="'$(JaliumBuildRoot)' != ''">
+    <JaliumBuildRoot>$([System.IO.Path]::GetFullPath('$(JaliumBuildRoot)'))</JaliumBuildRoot>
+    <!-- A RID-specific JaliumBuildRoot is selected by the publish/build entry
+         point.  All projects within that invocation must share one extensions
+         path because tool/analyzer ProjectReferences deliberately clear the
+         RuntimeIdentifier between restore and build. -->
+    <BaseIntermediateOutputPath>$(JaliumBuildRoot)/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
+    <MSBuildProjectExtensionsPath>$(BaseIntermediateOutputPath)</MSBuildProjectExtensionsPath>
+    <BaseOutputPath>$(JaliumBuildRoot)/bin/$(MSBuildProjectName)/</BaseOutputPath>
+  </PropertyGroup>
+
   <PropertyGroup>
     <!-- Common settings for all projects -->
     <!-- Multi-platform TFM: default cross-platform, platform entry packages set JaliumPlatform -->
@@ -28,7 +47,7 @@
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageTags>jalium;ui;xaml;wpf;windows;directx;gpu</PackageTags>
+    <PackageTags>jalium;ui;xaml;wpf;windows;linux;x11;wayland;directx;vulkan;gpu</PackageTags>
 
     <!-- Enable source link for better debugging -->
     <PublishRepositoryUrl>true</PublishRepositoryUrl>

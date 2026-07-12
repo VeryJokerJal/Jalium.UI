@@ -3,7 +3,8 @@ namespace Jalium.UI.Media.Media3D;
 /// <summary>
 /// Represents a point in 3-D space.
 /// </summary>
-public struct Point3D : IEquatable<Point3D>
+[System.ComponentModel.TypeConverter(typeof(Point3DConverter))]
+public partial struct Point3D : IEquatable<Point3D>, IFormattable
 {
     public Point3D(double x, double y, double z) { X = x; Y = y; Z = z; }
     public double X { get; set; }
@@ -18,18 +19,20 @@ public struct Point3D : IEquatable<Point3D>
     public void Offset(double offsetX, double offsetY, double offsetZ) { X += offsetX; Y += offsetY; Z += offsetZ; }
     public double DistanceTo(Point3D other) => (this - other).Length;
 
-    public bool Equals(Point3D other) => X == other.X && Y == other.Y && Z == other.Z;
+    public bool Equals(Point3D other) => X.Equals(other.X) && Y.Equals(other.Y) && Z.Equals(other.Z);
     public override bool Equals(object? obj) => obj is Point3D other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(X, Y, Z);
-    public override string ToString() => $"{X},{Y},{Z}";
-    public static bool operator ==(Point3D left, Point3D right) => left.Equals(right);
-    public static bool operator !=(Point3D left, Point3D right) => !left.Equals(right);
+    public override string ToString() => Media3DValueFormatter.Format(null, null, X, Y, Z);
+    public static bool operator ==(Point3D left, Point3D right) =>
+        left.X == right.X && left.Y == right.Y && left.Z == right.Z;
+    public static bool operator !=(Point3D left, Point3D right) => !(left == right);
 }
 
 /// <summary>
 /// Represents a displacement in 3-D space.
 /// </summary>
-public struct Vector3D : IEquatable<Vector3D>
+[System.ComponentModel.TypeConverter(typeof(Vector3DConverter))]
+public partial struct Vector3D : IEquatable<Vector3D>, IFormattable
 {
     public Vector3D(double x, double y, double z) { X = x; Y = y; Z = z; }
     public double X { get; set; }
@@ -42,7 +45,9 @@ public struct Vector3D : IEquatable<Vector3D>
     public void Normalize()
     {
         double len = Length;
-        if (len > 0) { X /= len; Y /= len; Z /= len; }
+        X /= len;
+        Y /= len;
+        Z /= len;
     }
 
     public void Negate() { X = -X; Y = -Y; Z = -Z; }
@@ -62,58 +67,152 @@ public struct Vector3D : IEquatable<Vector3D>
     public static double AngleBetween(Vector3D a, Vector3D b) =>
         Math.Acos(Math.Clamp(DotProduct(a, b) / (a.Length * b.Length), -1.0, 1.0)) * (180.0 / Math.PI);
 
-    public bool Equals(Vector3D other) => X == other.X && Y == other.Y && Z == other.Z;
+    public bool Equals(Vector3D other) => X.Equals(other.X) && Y.Equals(other.Y) && Z.Equals(other.Z);
     public override bool Equals(object? obj) => obj is Vector3D other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(X, Y, Z);
-    public override string ToString() => $"{X},{Y},{Z}";
-    public static bool operator ==(Vector3D left, Vector3D right) => left.Equals(right);
-    public static bool operator !=(Vector3D left, Vector3D right) => !left.Equals(right);
+    public override string ToString() => Media3DValueFormatter.Format(null, null, X, Y, Z);
+    public static bool operator ==(Vector3D left, Vector3D right) =>
+        left.X == right.X && left.Y == right.Y && left.Z == right.Z;
+    public static bool operator !=(Vector3D left, Vector3D right) => !(left == right);
 }
 
 /// <summary>
 /// Represents a 3-D size structure.
 /// </summary>
-public struct Size3D : IEquatable<Size3D>
+[System.ComponentModel.TypeConverter(typeof(Size3DConverter))]
+public partial struct Size3D : IEquatable<Size3D>, IFormattable
 {
-    public static Size3D Empty => new(0, 0, 0);
+    public static Size3D Empty => new(double.NegativeInfinity, double.NegativeInfinity, double.NegativeInfinity, true);
 
-    public Size3D(double x, double y, double z) { X = x; Y = y; Z = z; }
-    public double X { get; set; }
-    public double Y { get; set; }
-    public double Z { get; set; }
-    public bool IsEmpty => X == 0 && Y == 0 && Z == 0;
+    public Size3D(double x, double y, double z)
+    {
+        ValidateSize(x, nameof(x));
+        ValidateSize(y, nameof(y));
+        ValidateSize(z, nameof(z));
+        _x = x;
+        _y = y;
+        _z = z;
+    }
 
-    public bool Equals(Size3D other) => X == other.X && Y == other.Y && Z == other.Z;
+    public double X
+    {
+        get => _x;
+        set { VerifyNotEmpty(); ValidateSize(value, nameof(value)); _x = value; }
+    }
+
+    public double Y
+    {
+        get => _y;
+        set { VerifyNotEmpty(); ValidateSize(value, nameof(value)); _y = value; }
+    }
+
+    public double Z
+    {
+        get => _z;
+        set { VerifyNotEmpty(); ValidateSize(value, nameof(value)); _z = value; }
+    }
+
+    public readonly bool IsEmpty => _x < 0.0;
+
+    public bool Equals(Size3D other) => X.Equals(other.X) && Y.Equals(other.Y) && Z.Equals(other.Z);
     public override bool Equals(object? obj) => obj is Size3D other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(X, Y, Z);
-    public static bool operator ==(Size3D left, Size3D right) => left.Equals(right);
-    public static bool operator !=(Size3D left, Size3D right) => !left.Equals(right);
+    public static bool operator ==(Size3D left, Size3D right) =>
+        left.X == right.X && left.Y == right.Y && left.Z == right.Z;
+    public static bool operator !=(Size3D left, Size3D right) => !(left == right);
 }
 
 /// <summary>
 /// Represents an axis-aligned bounding box in 3-D space.
 /// </summary>
-public struct Rect3D : IEquatable<Rect3D>
+[System.ComponentModel.TypeConverter(typeof(Rect3DConverter))]
+public partial struct Rect3D : IEquatable<Rect3D>, IFormattable
 {
-    public static Rect3D Empty => new(0, 0, 0, 0, 0, 0);
+    public static Rect3D Empty => new(
+        double.PositiveInfinity,
+        double.PositiveInfinity,
+        double.PositiveInfinity,
+        double.NegativeInfinity,
+        double.NegativeInfinity,
+        double.NegativeInfinity,
+        true);
 
     public Rect3D(double x, double y, double z, double sizeX, double sizeY, double sizeZ)
     {
-        X = x; Y = y; Z = z; SizeX = sizeX; SizeY = sizeY; SizeZ = sizeZ;
+        ValidateSize(sizeX, nameof(sizeX));
+        ValidateSize(sizeY, nameof(sizeY));
+        ValidateSize(sizeZ, nameof(sizeZ));
+        _x = x;
+        _y = y;
+        _z = z;
+        _sizeX = sizeX;
+        _sizeY = sizeY;
+        _sizeZ = sizeZ;
     }
 
     public Rect3D(Point3D location, Size3D size)
         : this(location.X, location.Y, location.Z, size.X, size.Y, size.Z) { }
 
-    public double X { get; set; }
-    public double Y { get; set; }
-    public double Z { get; set; }
-    public double SizeX { get; set; }
-    public double SizeY { get; set; }
-    public double SizeZ { get; set; }
-    public Point3D Location => new(X, Y, Z);
-    public Size3D Size => new(SizeX, SizeY, SizeZ);
-    public bool IsEmpty => SizeX == 0 && SizeY == 0 && SizeZ == 0;
+    public double X
+    {
+        get => _x;
+        set { VerifyNotEmpty(); _x = value; }
+    }
+
+    public double Y
+    {
+        get => _y;
+        set { VerifyNotEmpty(); _y = value; }
+    }
+
+    public double Z
+    {
+        get => _z;
+        set { VerifyNotEmpty(); _z = value; }
+    }
+
+    public double SizeX
+    {
+        get => _sizeX;
+        set { VerifyNotEmpty(); ValidateSize(value, nameof(value)); _sizeX = value; }
+    }
+
+    public double SizeY
+    {
+        get => _sizeY;
+        set { VerifyNotEmpty(); ValidateSize(value, nameof(value)); _sizeY = value; }
+    }
+
+    public double SizeZ
+    {
+        get => _sizeZ;
+        set { VerifyNotEmpty(); ValidateSize(value, nameof(value)); _sizeZ = value; }
+    }
+
+    public Point3D Location
+    {
+        get => new(X, Y, Z);
+        set { VerifyNotEmpty(); _x = value.X; _y = value.Y; _z = value.Z; }
+    }
+
+    public Size3D Size
+    {
+        get => IsEmpty ? Size3D.Empty : new Size3D(SizeX, SizeY, SizeZ);
+        set
+        {
+            VerifyNotEmpty();
+            if (value.IsEmpty)
+            {
+                throw new ArgumentException("Size cannot be empty.", nameof(value));
+            }
+
+            _sizeX = value.X;
+            _sizeY = value.Y;
+            _sizeZ = value.Z;
+        }
+    }
+
+    public readonly bool IsEmpty => _sizeX < 0.0;
 
     public bool Contains(Point3D point) =>
         point.X >= X && point.X <= X + SizeX &&
@@ -122,53 +221,107 @@ public struct Rect3D : IEquatable<Rect3D>
 
     public void Union(Rect3D rect)
     {
-        double minX = Math.Min(X, rect.X), minY = Math.Min(Y, rect.Y), minZ = Math.Min(Z, rect.Z);
-        double maxX = Math.Max(X + SizeX, rect.X + rect.SizeX);
-        double maxY = Math.Max(Y + SizeY, rect.Y + rect.SizeY);
-        double maxZ = Math.Max(Z + SizeZ, rect.Z + rect.SizeZ);
-        X = minX; Y = minY; Z = minZ;
-        SizeX = maxX - minX; SizeY = maxY - minY; SizeZ = maxZ - minZ;
+        this = Union(this, rect);
     }
 
-    public bool Equals(Rect3D other) => X == other.X && Y == other.Y && Z == other.Z && SizeX == other.SizeX && SizeY == other.SizeY && SizeZ == other.SizeZ;
+    public bool Equals(Rect3D other) =>
+        X.Equals(other.X) && Y.Equals(other.Y) && Z.Equals(other.Z) &&
+        SizeX.Equals(other.SizeX) && SizeY.Equals(other.SizeY) && SizeZ.Equals(other.SizeZ);
     public override bool Equals(object? obj) => obj is Rect3D other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(X, Y, Z, SizeX, SizeY, SizeZ);
-    public static bool operator ==(Rect3D left, Rect3D right) => left.Equals(right);
-    public static bool operator !=(Rect3D left, Rect3D right) => !left.Equals(right);
+    public static bool operator ==(Rect3D left, Rect3D right) =>
+        left.X == right.X && left.Y == right.Y && left.Z == right.Z &&
+        left.SizeX == right.SizeX && left.SizeY == right.SizeY && left.SizeZ == right.SizeZ;
+    public static bool operator !=(Rect3D left, Rect3D right) => !(left == right);
 }
 
 /// <summary>
 /// Represents a 3-D quaternion for rotation.
 /// </summary>
-public struct Quaternion : IEquatable<Quaternion>
+[System.ComponentModel.TypeConverter(typeof(QuaternionConverter))]
+public partial struct Quaternion : IEquatable<Quaternion>, IFormattable
 {
-    public Quaternion(double x, double y, double z, double w) { X = x; Y = y; Z = z; W = w; }
+    public Quaternion(double x, double y, double z, double w)
+    {
+        _x = x;
+        _y = y;
+        _z = z;
+        _w = w;
+        _isNotDistinguishedIdentity = true;
+    }
 
     public Quaternion(Vector3D axisOfRotation, double angleInDegrees)
     {
+        double length = axisOfRotation.Length;
+        if (length == 0.0)
+        {
+            throw new InvalidOperationException("The axis of rotation cannot be zero.");
+        }
+
         double halfAngle = angleInDegrees * Math.PI / 360.0;
-        double sin = Math.Sin(halfAngle);
-        var axis = axisOfRotation;
-        double len = axis.Length;
-        if (len > 0) { axis = axis / len; }
-        X = axis.X * sin; Y = axis.Y * sin; Z = axis.Z * sin;
-        W = Math.Cos(halfAngle);
+        double scale = Math.Sin(halfAngle) / length;
+        _x = axisOfRotation.X * scale;
+        _y = axisOfRotation.Y * scale;
+        _z = axisOfRotation.Z * scale;
+        _w = Math.Cos(halfAngle);
+        _isNotDistinguishedIdentity = true;
     }
 
-    public double X { get; set; }
-    public double Y { get; set; }
-    public double Z { get; set; }
-    public double W { get; set; }
-    public Vector3D Axis => new(X, Y, Z);
-    public double Angle => 2.0 * Math.Acos(Math.Clamp(W, -1.0, 1.0)) * (180.0 / Math.PI);
+    public double X
+    {
+        get => _isNotDistinguishedIdentity ? _x : 0.0;
+        set { EnsureNotDistinguishedIdentity(); _x = value; }
+    }
+
+    public double Y
+    {
+        get => _isNotDistinguishedIdentity ? _y : 0.0;
+        set { EnsureNotDistinguishedIdentity(); _y = value; }
+    }
+
+    public double Z
+    {
+        get => _isNotDistinguishedIdentity ? _z : 0.0;
+        set { EnsureNotDistinguishedIdentity(); _z = value; }
+    }
+
+    public double W
+    {
+        get => _isNotDistinguishedIdentity ? _w : 1.0;
+        set { EnsureNotDistinguishedIdentity(); _w = value; }
+    }
+
+    public Vector3D Axis
+    {
+        get
+        {
+            double length = Math.Sqrt(X * X + Y * Y + Z * Z);
+            return length > 0.0 ? new Vector3D(X / length, Y / length, Z / length) : new Vector3D(0.0, 1.0, 0.0);
+        }
+    }
+
+    public double Angle
+    {
+        get
+        {
+            double length = Math.Sqrt(X * X + Y * Y + Z * Z + W * W);
+            return length > 0.0
+                ? 2.0 * Math.Acos(Math.Clamp(W / length, -1.0, 1.0)) * (180.0 / Math.PI)
+                : 0.0;
+        }
+    }
+
     public bool IsNormalized { get { double n = X * X + Y * Y + Z * Z + W * W; return Math.Abs(n - 1.0) < 1e-10; } }
     public bool IsIdentity => X == 0 && Y == 0 && Z == 0 && W == 1;
-    public static Quaternion Identity => new(0, 0, 0, 1);
+    public static Quaternion Identity => default;
 
     public void Normalize()
     {
         double n = Math.Sqrt(X * X + Y * Y + Z * Z + W * W);
-        if (n > 0) { X /= n; Y /= n; Z /= n; W /= n; }
+        X /= n;
+        Y /= n;
+        Z /= n;
+        W /= n;
     }
 
     public void Conjugate() { X = -X; Y = -Y; Z = -Z; }
@@ -180,55 +333,123 @@ public struct Quaternion : IEquatable<Quaternion>
         a.W * b.Z + a.X * b.Y - a.Y * b.X + a.Z * b.W,
         a.W * b.W - a.X * b.X - a.Y * b.Y - a.Z * b.Z);
 
-    public static Quaternion Slerp(Quaternion from, Quaternion to, double t)
+    public static Quaternion Slerp(Quaternion from, Quaternion to, double t) =>
+        Slerp(from, to, t, useShortestPath: true);
+
+    public static Quaternion Slerp(Quaternion from, Quaternion to, double t, bool useShortestPath)
     {
+        double lengthFrom = Math.Sqrt(from.X * from.X + from.Y * from.Y + from.Z * from.Z + from.W * from.W);
+        double lengthTo = Math.Sqrt(to.X * to.X + to.Y * to.Y + to.Z * to.Z + to.W * to.W);
+
+        // Jalium's compact Quaternion representation has no distinguished-identity bit;
+        // treat the all-zero default value as WPF treats its distinguished identity value.
+        if (lengthFrom == 0.0)
+        {
+            from = Identity;
+            lengthFrom = 1.0;
+        }
+        if (lengthTo == 0.0)
+        {
+            to = Identity;
+            lengthTo = 1.0;
+        }
+
+        from = new(from.X / lengthFrom, from.Y / lengthFrom, from.Z / lengthFrom, from.W / lengthFrom);
+        to = new(to.X / lengthTo, to.Y / lengthTo, to.Z / lengthTo, to.W / lengthTo);
+
         double cosOmega = from.X * to.X + from.Y * to.Y + from.Z * to.Z + from.W * to.W;
-        if (cosOmega < 0) { to = new(-to.X, -to.Y, -to.Z, -to.W); cosOmega = -cosOmega; }
-        double s0, s1;
-        if (cosOmega > 0.9999) { s0 = 1.0 - t; s1 = t; }
+        if (useShortestPath && cosOmega < 0.0)
+        {
+            cosOmega = -cosOmega;
+            to = new(-to.X, -to.Y, -to.Z, -to.W);
+        }
+
+        cosOmega = Math.Clamp(cosOmega, -1.0, 1.0);
+
+        double scaleFrom;
+        double scaleTo;
+        if (cosOmega > 1.0 - 1e-6)
+        {
+            scaleFrom = 1.0 - t;
+            scaleTo = t;
+        }
+        else if (cosOmega < 1e-10 - 1.0)
+        {
+            // Nearly antipodal quaternions have infinitely many great-circle paths.
+            // Match WPF by selecting a stable perpendicular quaternion.
+            to = new(-from.Y, from.X, -from.W, from.Z);
+            double theta = t * Math.PI;
+            scaleFrom = Math.Cos(theta);
+            scaleTo = Math.Sin(theta);
+        }
         else
         {
             double omega = Math.Acos(cosOmega);
-            double sinOmega = Math.Sin(omega);
-            s0 = Math.Sin((1.0 - t) * omega) / sinOmega;
-            s1 = Math.Sin(t * omega) / sinOmega;
+            double sinOmega = Math.Sqrt(1.0 - cosOmega * cosOmega);
+            scaleFrom = Math.Sin((1.0 - t) * omega) / sinOmega;
+            scaleTo = Math.Sin(t * omega) / sinOmega;
         }
-        return new(s0 * from.X + s1 * to.X, s0 * from.Y + s1 * to.Y, s0 * from.Z + s1 * to.Z, s0 * from.W + s1 * to.W);
+
+        double lengthOut = lengthFrom * Math.Pow(lengthTo / lengthFrom, t);
+        scaleFrom *= lengthOut;
+        scaleTo *= lengthOut;
+        return new(
+            scaleFrom * from.X + scaleTo * to.X,
+            scaleFrom * from.Y + scaleTo * to.Y,
+            scaleFrom * from.Z + scaleTo * to.Z,
+            scaleFrom * from.W + scaleTo * to.W);
     }
 
-    public bool Equals(Quaternion other) => X == other.X && Y == other.Y && Z == other.Z && W == other.W;
+    public bool Equals(Quaternion other) =>
+        X.Equals(other.X) && Y.Equals(other.Y) && Z.Equals(other.Z) && W.Equals(other.W);
     public override bool Equals(object? obj) => obj is Quaternion other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(X, Y, Z, W);
-    public static bool operator ==(Quaternion left, Quaternion right) => left.Equals(right);
-    public static bool operator !=(Quaternion left, Quaternion right) => !left.Equals(right);
+    public static bool operator ==(Quaternion left, Quaternion right) =>
+        left.X == right.X && left.Y == right.Y && left.Z == right.Z && left.W == right.W;
+    public static bool operator !=(Quaternion left, Quaternion right) => !(left == right);
 }
 
 /// <summary>
 /// Represents a 4x4 matrix used for 3-D transformations.
 /// </summary>
-public struct Matrix3D : IEquatable<Matrix3D>
+[System.ComponentModel.TypeConverter(typeof(Matrix3DConverter))]
+public partial struct Matrix3D : IEquatable<Matrix3D>, IFormattable
 {
-    public double M11, M12, M13, M14;
-    public double M21, M22, M23, M24;
-    public double M31, M32, M33, M34;
-    public double OffsetX, OffsetY, OffsetZ, M44;
+    public double M11 { get => _isNotDistinguishedIdentity ? _m11 : 1.0; set { EnsureNotDistinguishedIdentity(); _m11 = value; } }
+    public double M12 { get => _isNotDistinguishedIdentity ? _m12 : 0.0; set { EnsureNotDistinguishedIdentity(); _m12 = value; } }
+    public double M13 { get => _isNotDistinguishedIdentity ? _m13 : 0.0; set { EnsureNotDistinguishedIdentity(); _m13 = value; } }
+    public double M14 { get => _isNotDistinguishedIdentity ? _m14 : 0.0; set { EnsureNotDistinguishedIdentity(); _m14 = value; } }
+    public double M21 { get => _isNotDistinguishedIdentity ? _m21 : 0.0; set { EnsureNotDistinguishedIdentity(); _m21 = value; } }
+    public double M22 { get => _isNotDistinguishedIdentity ? _m22 : 1.0; set { EnsureNotDistinguishedIdentity(); _m22 = value; } }
+    public double M23 { get => _isNotDistinguishedIdentity ? _m23 : 0.0; set { EnsureNotDistinguishedIdentity(); _m23 = value; } }
+    public double M24 { get => _isNotDistinguishedIdentity ? _m24 : 0.0; set { EnsureNotDistinguishedIdentity(); _m24 = value; } }
+    public double M31 { get => _isNotDistinguishedIdentity ? _m31 : 0.0; set { EnsureNotDistinguishedIdentity(); _m31 = value; } }
+    public double M32 { get => _isNotDistinguishedIdentity ? _m32 : 0.0; set { EnsureNotDistinguishedIdentity(); _m32 = value; } }
+    public double M33 { get => _isNotDistinguishedIdentity ? _m33 : 1.0; set { EnsureNotDistinguishedIdentity(); _m33 = value; } }
+    public double M34 { get => _isNotDistinguishedIdentity ? _m34 : 0.0; set { EnsureNotDistinguishedIdentity(); _m34 = value; } }
+    public double OffsetX { get => _isNotDistinguishedIdentity ? _offsetX : 0.0; set { EnsureNotDistinguishedIdentity(); _offsetX = value; } }
+    public double OffsetY { get => _isNotDistinguishedIdentity ? _offsetY : 0.0; set { EnsureNotDistinguishedIdentity(); _offsetY = value; } }
+    public double OffsetZ { get => _isNotDistinguishedIdentity ? _offsetZ : 0.0; set { EnsureNotDistinguishedIdentity(); _offsetZ = value; } }
+    public double M44 { get => _isNotDistinguishedIdentity ? _m44 : 1.0; set { EnsureNotDistinguishedIdentity(); _m44 = value; } }
 
     public Matrix3D(double m11, double m12, double m13, double m14,
                     double m21, double m22, double m23, double m24,
                     double m31, double m32, double m33, double m34,
                     double offsetX, double offsetY, double offsetZ, double m44)
     {
-        M11 = m11; M12 = m12; M13 = m13; M14 = m14;
-        M21 = m21; M22 = m22; M23 = m23; M24 = m24;
-        M31 = m31; M32 = m32; M33 = m33; M34 = m34;
-        OffsetX = offsetX; OffsetY = offsetY; OffsetZ = offsetZ; M44 = m44;
+        _m11 = m11; _m12 = m12; _m13 = m13; _m14 = m14;
+        _m21 = m21; _m22 = m22; _m23 = m23; _m24 = m24;
+        _m31 = m31; _m32 = m32; _m33 = m33; _m34 = m34;
+        _offsetX = offsetX; _offsetY = offsetY; _offsetZ = offsetZ; _m44 = m44;
+        _isNotDistinguishedIdentity = true;
     }
 
-    public static Matrix3D Identity => new(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
+    public static Matrix3D Identity => default;
     public bool IsIdentity => M11 == 1 && M12 == 0 && M13 == 0 && M14 == 0 &&
                                M21 == 0 && M22 == 1 && M23 == 0 && M24 == 0 &&
                                M31 == 0 && M32 == 0 && M33 == 1 && M34 == 0 &&
                                OffsetX == 0 && OffsetY == 0 && OffsetZ == 0 && M44 == 1;
+    public bool IsAffine => M14 == 0.0 && M24 == 0.0 && M34 == 0.0 && M44 == 1.0;
     public bool HasInverse => Math.Abs(Determinant) > 1e-15;
     public double Determinant =>
         M11 * (M22 * (M33 * M44 - M34 * OffsetZ) - M23 * (M32 * M44 - M34 * OffsetY) + M24 * (M32 * OffsetZ - M33 * OffsetY)) -
@@ -295,7 +516,7 @@ public struct Matrix3D : IEquatable<Matrix3D>
         double y = point.X * M12 + point.Y * M22 + point.Z * M32 + OffsetY;
         double z = point.X * M13 + point.Y * M23 + point.Z * M33 + OffsetZ;
         double w = point.X * M14 + point.Y * M24 + point.Z * M34 + M44;
-        if (w != 1.0 && w != 0.0) { x /= w; y /= w; z /= w; }
+        if (w != 1.0) { x /= w; y /= w; z /= w; }
         return new(x, y, z);
     }
 
@@ -311,44 +532,18 @@ public struct Matrix3D : IEquatable<Matrix3D>
     public void Append(Matrix3D matrix) { this = this * matrix; }
 
     public bool Equals(Matrix3D other) =>
-        M11 == other.M11 && M12 == other.M12 && M13 == other.M13 && M14 == other.M14 &&
-        M21 == other.M21 && M22 == other.M22 && M23 == other.M23 && M24 == other.M24 &&
-        M31 == other.M31 && M32 == other.M32 && M33 == other.M33 && M34 == other.M34 &&
-        OffsetX == other.OffsetX && OffsetY == other.OffsetY && OffsetZ == other.OffsetZ && M44 == other.M44;
+        M11.Equals(other.M11) && M12.Equals(other.M12) && M13.Equals(other.M13) && M14.Equals(other.M14) &&
+        M21.Equals(other.M21) && M22.Equals(other.M22) && M23.Equals(other.M23) && M24.Equals(other.M24) &&
+        M31.Equals(other.M31) && M32.Equals(other.M32) && M33.Equals(other.M33) && M34.Equals(other.M34) &&
+        OffsetX.Equals(other.OffsetX) && OffsetY.Equals(other.OffsetY) && OffsetZ.Equals(other.OffsetZ) && M44.Equals(other.M44);
     public override bool Equals(object? obj) => obj is Matrix3D other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(M11, M22, M33, M44, OffsetX, OffsetY, OffsetZ);
-    public static bool operator ==(Matrix3D left, Matrix3D right) => left.Equals(right);
-    public static bool operator !=(Matrix3D left, Matrix3D right) => !left.Equals(right);
-}
-
-/// <summary>
-/// Represents a collection of Point3D values.
-/// </summary>
-public sealed class Point3DCollection : List<Point3D>
-{
-    public Point3DCollection() { }
-    public Point3DCollection(IEnumerable<Point3D> collection) : base(collection) { }
-    public Point3DCollection(int capacity) : base(capacity) { }
-}
-
-/// <summary>
-/// Represents a collection of Vector3D values.
-/// </summary>
-public sealed class Vector3DCollection : List<Vector3D>
-{
-    public Vector3DCollection() { }
-    public Vector3DCollection(IEnumerable<Vector3D> collection) : base(collection) { }
-    public Vector3DCollection(int capacity) : base(capacity) { }
-}
-
-/// <summary>
-/// Represents a collection of integer values used for mesh triangle indices.
-/// </summary>
-public sealed class Int32Collection : List<int>
-{
-    public Int32Collection() { }
-    public Int32Collection(IEnumerable<int> collection) : base(collection) { }
-    public Int32Collection(int capacity) : base(capacity) { }
+    public static bool operator ==(Matrix3D left, Matrix3D right) =>
+        left.M11 == right.M11 && left.M12 == right.M12 && left.M13 == right.M13 && left.M14 == right.M14 &&
+        left.M21 == right.M21 && left.M22 == right.M22 && left.M23 == right.M23 && left.M24 == right.M24 &&
+        left.M31 == right.M31 && left.M32 == right.M32 && left.M33 == right.M33 && left.M34 == right.M34 &&
+        left.OffsetX == right.OffsetX && left.OffsetY == right.OffsetY && left.OffsetZ == right.OffsetZ && left.M44 == right.M44;
+    public static bool operator !=(Matrix3D left, Matrix3D right) => !(left == right);
 }
 
 /// <summary>

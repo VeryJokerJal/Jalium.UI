@@ -4,6 +4,7 @@ using System.Text;
 using Jalium.UI.Diagnostics;
 using Jalium.UI.Interop.Win32;
 using Jalium.UI.Media;
+using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls.DevTools;
@@ -839,12 +840,6 @@ public partial class DevToolsWindow
     [StructLayout(LayoutKind.Sequential)]
     private struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
 
-    [DllImport("user32.dll")]
-    private static extern nint GetDC(nint hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern int ReleaseDC(nint hWnd, nint hDC);
-
     [DllImport("gdi32.dll")]
     private static extern uint GetPixel(nint hdc, int x, int y);
 
@@ -862,28 +857,6 @@ public partial class DevToolsWindow
 
     [DllImport("gdi32.dll")]
     private static extern nint SelectObject(nint hdc, nint obj);
-
-    [DllImport("gdi32.dll")]
-    private static extern bool DeleteObject(nint obj);
-
-    [DllImport("gdi32.dll")]
-    private static extern bool DeleteDC(nint hdc);
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct BITMAPINFOHEADER
-    {
-        public uint biSize;
-        public int biWidth;
-        public int biHeight;
-        public ushort biPlanes;
-        public ushort biBitCount;
-        public uint biCompression;
-        public uint biSizeImage;
-        public int biXPelsPerMeter;
-        public int biYPelsPerMeter;
-        public uint biClrUsed;
-        public uint biClrImportant;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct BITMAPINFO

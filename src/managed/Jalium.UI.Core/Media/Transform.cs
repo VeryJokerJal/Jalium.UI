@@ -9,7 +9,8 @@ using System.Globalization;
 /// owning elements can invalidate their composition without the user having
 /// to reassign the Transform reference.
 /// </summary>
-public abstract class Transform
+[System.ComponentModel.TypeConverter(typeof(TransformConverter))]
+public abstract partial class Transform : GeneralTransform
 {
     /// <summary>
     /// Gets the transform matrix.
@@ -22,24 +23,59 @@ public abstract class Transform
     public static Transform Identity => new MatrixTransform(Matrix.Identity);
 
     /// <summary>
-    /// Raised when any sub-property of this transform changes.
-    /// Used by <see cref="UIElement.RenderTransformProperty"/> to invalidate
-    /// composition on the owning element.
+    /// Gets the inverse transform, or <see langword="null"/> if this transform is singular.
     /// </summary>
-    public event EventHandler? Changed;
+    public override GeneralTransform? Inverse
+    {
+        get
+        {
+            Matrix matrix = Value;
+            if (!matrix.HasInverse)
+            {
+                return null;
+            }
+
+            matrix.Invert();
+            return new MatrixTransform(matrix);
+        }
+    }
+
+    /// <summary>Parses an affine transform from its matrix text representation.</summary>
+    public static Transform Parse(string source) => new MatrixTransform(Matrix.Parse(source));
+
+    /// <inheritdoc />
+    public override bool TryTransform(Point inPoint, out Point result)
+    {
+        result = Value.Transform(inPoint);
+        return true;
+    }
+
+    /// <inheritdoc />
+    public override Rect TransformBounds(Rect rect) => base.TransformBounds(rect);
+
+    /// <summary>Creates a modifiable copy of this transform.</summary>
+    public new Transform Clone() => (Transform)base.Clone();
+
+    /// <summary>Creates a modifiable copy using current animated values.</summary>
+    public new Transform CloneCurrentValue() => (Transform)base.CloneCurrentValue();
 
     /// <summary>
     /// Notifies subscribers that a sub-property of this transform has changed.
     /// </summary>
     protected void RaiseChanged()
     {
-        Changed?.Invoke(this, EventArgs.Empty);
+        WritePostscript();
     }
+
+    /// <inheritdoc />
+    public override string ToString() => Value.ToString(CultureInfo.CurrentCulture);
+    public new string ToString(IFormatProvider? provider) => Value.ToString(provider);
 }
 
 /// <summary>
 /// Represents a 3x2 affine transformation matrix.
 /// </summary>
+[System.ComponentModel.TypeConverter(typeof(MatrixConverter))]
 public struct Matrix : IFormattable, IEquatable<Matrix>
 {
     // 与 WPF 对齐：Matrix 是可变值类型，提供 Append/Prepend/Rotate/Scale/Skew/Translate 等
@@ -293,6 +329,9 @@ public struct Matrix : IFormattable, IEquatable<Matrix>
     /// <inheritdoc />
     public override readonly bool Equals(object? obj) => obj is Matrix other && Equals(other);
 
+    /// <summary>Determines whether two matrices contain identical values.</summary>
+    public static bool Equals(Matrix matrix1, Matrix matrix2) => matrix1.Equals(matrix2);
+
     /// <inheritdoc />
     public override readonly int GetHashCode() => HashCode.Combine(M11, M12, M21, M22, OffsetX, OffsetY);
 
@@ -350,24 +389,25 @@ public struct Matrix : IFormattable, IEquatable<Matrix>
 /// </summary>
 public sealed class MatrixTransform : Transform
 {
-    private Matrix _matrix = Matrix.Identity;
+    public static readonly DependencyProperty MatrixProperty =
+        DependencyProperty.Register(nameof(Matrix), typeof(Matrix), typeof(MatrixTransform), new PropertyMetadata(Matrix.Identity));
 
     /// <summary>
     /// Gets or sets the transform matrix.
     /// </summary>
     public Matrix Matrix
     {
-        get => _matrix;
+        get => (Matrix)(GetValue(MatrixProperty) ?? Matrix.Identity);
         set
         {
-            if (_matrix == value) return;
-            _matrix = value;
+            if (Matrix == value) return;
+            SetValue(MatrixProperty, value);
             RaiseChanged();
         }
     }
 
     /// <inheritdoc />
-    public override Matrix Value => _matrix;
+    public override Matrix Value => Matrix;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="MatrixTransform"/> class.
@@ -382,8 +422,17 @@ public sealed class MatrixTransform : Transform
     /// <param name="matrix">The transform matrix.</param>
     public MatrixTransform(Matrix matrix)
     {
-        _matrix = matrix;
+        Matrix = matrix;
     }
+
+    public MatrixTransform(double m11, double m12, double m21, double m22, double offsetX, double offsetY)
+        : this(new Matrix(m11, m12, m21, m22, offsetX, offsetY))
+    {
+    }
+
+    public new MatrixTransform Clone() => (MatrixTransform)base.Clone();
+    public new MatrixTransform CloneCurrentValue() => (MatrixTransform)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new MatrixTransform();
 }
 
 /// <summary>
@@ -391,25 +440,29 @@ public sealed class MatrixTransform : Transform
 /// </summary>
 public sealed class ScaleTransform : Transform
 {
-    private double _scaleX = 1;
-    private double _scaleY = 1;
-    private double _centerX;
-    private double _centerY;
+    public static readonly DependencyProperty ScaleXProperty =
+        DependencyProperty.Register(nameof(ScaleX), typeof(double), typeof(ScaleTransform), new PropertyMetadata(1d));
+    public static readonly DependencyProperty ScaleYProperty =
+        DependencyProperty.Register(nameof(ScaleY), typeof(double), typeof(ScaleTransform), new PropertyMetadata(1d));
+    public static readonly DependencyProperty CenterXProperty =
+        DependencyProperty.Register(nameof(CenterX), typeof(double), typeof(ScaleTransform), new PropertyMetadata(0d));
+    public static readonly DependencyProperty CenterYProperty =
+        DependencyProperty.Register(nameof(CenterY), typeof(double), typeof(ScaleTransform), new PropertyMetadata(0d));
 
     public ScaleTransform() { }
 
     public ScaleTransform(double scaleX, double scaleY)
     {
-        _scaleX = scaleX;
-        _scaleY = scaleY;
+        ScaleX = scaleX;
+        ScaleY = scaleY;
     }
 
     public ScaleTransform(double scaleX, double scaleY, double centerX, double centerY)
     {
-        _scaleX = scaleX;
-        _scaleY = scaleY;
-        _centerX = centerX;
-        _centerY = centerY;
+        ScaleX = scaleX;
+        ScaleY = scaleY;
+        CenterX = centerX;
+        CenterY = centerY;
     }
 
     /// <summary>
@@ -417,11 +470,11 @@ public sealed class ScaleTransform : Transform
     /// </summary>
     public double ScaleX
     {
-        get => _scaleX;
+        get => (double)(GetValue(ScaleXProperty) ?? 1d);
         set
         {
-            if (_scaleX == value) return;
-            _scaleX = value;
+            if (ScaleX == value) return;
+            SetValue(ScaleXProperty, value);
             RaiseChanged();
         }
     }
@@ -431,11 +484,11 @@ public sealed class ScaleTransform : Transform
     /// </summary>
     public double ScaleY
     {
-        get => _scaleY;
+        get => (double)(GetValue(ScaleYProperty) ?? 1d);
         set
         {
-            if (_scaleY == value) return;
-            _scaleY = value;
+            if (ScaleY == value) return;
+            SetValue(ScaleYProperty, value);
             RaiseChanged();
         }
     }
@@ -445,11 +498,11 @@ public sealed class ScaleTransform : Transform
     /// </summary>
     public double CenterX
     {
-        get => _centerX;
+        get => (double)(GetValue(CenterXProperty) ?? 0d);
         set
         {
-            if (_centerX == value) return;
-            _centerX = value;
+            if (CenterX == value) return;
+            SetValue(CenterXProperty, value);
             RaiseChanged();
         }
     }
@@ -459,11 +512,11 @@ public sealed class ScaleTransform : Transform
     /// </summary>
     public double CenterY
     {
-        get => _centerY;
+        get => (double)(GetValue(CenterYProperty) ?? 0d);
         set
         {
-            if (_centerY == value) return;
-            _centerY = value;
+            if (CenterY == value) return;
+            SetValue(CenterYProperty, value);
             RaiseChanged();
         }
     }
@@ -473,17 +526,25 @@ public sealed class ScaleTransform : Transform
     {
         get
         {
-            if (_centerX == 0 && _centerY == 0)
+            double scaleX = ScaleX;
+            double scaleY = ScaleY;
+            double centerX = CenterX;
+            double centerY = CenterY;
+            if (centerX == 0 && centerY == 0)
             {
-                return new Matrix(_scaleX, 0, 0, _scaleY, 0, 0);
+                return new Matrix(scaleX, 0, 0, scaleY, 0, 0);
             }
 
             return new Matrix(
-                _scaleX, 0, 0, _scaleY,
-                _centerX - _scaleX * _centerX,
-                _centerY - _scaleY * _centerY);
+                scaleX, 0, 0, scaleY,
+                centerX - scaleX * centerX,
+                centerY - scaleY * centerY);
         }
     }
+
+    public new ScaleTransform Clone() => (ScaleTransform)base.Clone();
+    public new ScaleTransform CloneCurrentValue() => (ScaleTransform)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new ScaleTransform();
 }
 
 /// <summary>
@@ -491,22 +552,25 @@ public sealed class ScaleTransform : Transform
 /// </summary>
 public sealed class RotateTransform : Transform
 {
-    private double _angle;
-    private double _centerX;
-    private double _centerY;
+    public static readonly DependencyProperty AngleProperty =
+        DependencyProperty.Register(nameof(Angle), typeof(double), typeof(RotateTransform), new PropertyMetadata(0d));
+    public static readonly DependencyProperty CenterXProperty =
+        DependencyProperty.Register(nameof(CenterX), typeof(double), typeof(RotateTransform), new PropertyMetadata(0d));
+    public static readonly DependencyProperty CenterYProperty =
+        DependencyProperty.Register(nameof(CenterY), typeof(double), typeof(RotateTransform), new PropertyMetadata(0d));
 
     public RotateTransform() { }
 
     public RotateTransform(double angle)
     {
-        _angle = angle;
+        Angle = angle;
     }
 
     public RotateTransform(double angle, double centerX, double centerY)
     {
-        _angle = angle;
-        _centerX = centerX;
-        _centerY = centerY;
+        Angle = angle;
+        CenterX = centerX;
+        CenterY = centerY;
     }
 
     /// <summary>
@@ -514,11 +578,11 @@ public sealed class RotateTransform : Transform
     /// </summary>
     public double Angle
     {
-        get => _angle;
+        get => (double)(GetValue(AngleProperty) ?? 0d);
         set
         {
-            if (_angle == value) return;
-            _angle = value;
+            if (Angle == value) return;
+            SetValue(AngleProperty, value);
             RaiseChanged();
         }
     }
@@ -528,11 +592,11 @@ public sealed class RotateTransform : Transform
     /// </summary>
     public double CenterX
     {
-        get => _centerX;
+        get => (double)(GetValue(CenterXProperty) ?? 0d);
         set
         {
-            if (_centerX == value) return;
-            _centerX = value;
+            if (CenterX == value) return;
+            SetValue(CenterXProperty, value);
             RaiseChanged();
         }
     }
@@ -542,11 +606,11 @@ public sealed class RotateTransform : Transform
     /// </summary>
     public double CenterY
     {
-        get => _centerY;
+        get => (double)(GetValue(CenterYProperty) ?? 0d);
         set
         {
-            if (_centerY == value) return;
-            _centerY = value;
+            if (CenterY == value) return;
+            SetValue(CenterYProperty, value);
             RaiseChanged();
         }
     }
@@ -556,21 +620,28 @@ public sealed class RotateTransform : Transform
     {
         get
         {
-            var radians = _angle * Math.PI / 180;
+            double angle = Angle;
+            double centerX = CenterX;
+            double centerY = CenterY;
+            var radians = angle * Math.PI / 180;
             var cos = Math.Cos(radians);
             var sin = Math.Sin(radians);
 
-            if (_centerX == 0 && _centerY == 0)
+            if (centerX == 0 && centerY == 0)
             {
                 return new Matrix(cos, sin, -sin, cos, 0, 0);
             }
 
             return new Matrix(
                 cos, sin, -sin, cos,
-                _centerX * (1 - cos) + _centerY * sin,
-                _centerY * (1 - cos) - _centerX * sin);
+                centerX * (1 - cos) + centerY * sin,
+                centerY * (1 - cos) - centerX * sin);
         }
     }
+
+    public new RotateTransform Clone() => (RotateTransform)base.Clone();
+    public new RotateTransform CloneCurrentValue() => (RotateTransform)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new RotateTransform();
 }
 
 /// <summary>
@@ -578,15 +649,17 @@ public sealed class RotateTransform : Transform
 /// </summary>
 public sealed class TranslateTransform : Transform
 {
-    private double _x;
-    private double _y;
+    public static readonly DependencyProperty XProperty =
+        DependencyProperty.Register(nameof(X), typeof(double), typeof(TranslateTransform), new PropertyMetadata(0d));
+    public static readonly DependencyProperty YProperty =
+        DependencyProperty.Register(nameof(Y), typeof(double), typeof(TranslateTransform), new PropertyMetadata(0d));
 
     public TranslateTransform() { }
 
     public TranslateTransform(double x, double y)
     {
-        _x = x;
-        _y = y;
+        X = x;
+        Y = y;
     }
 
     /// <summary>
@@ -594,11 +667,11 @@ public sealed class TranslateTransform : Transform
     /// </summary>
     public double X
     {
-        get => _x;
+        get => (double)(GetValue(XProperty) ?? 0d);
         set
         {
-            if (_x == value) return;
-            _x = value;
+            if (X == value) return;
+            SetValue(XProperty, value);
             RaiseChanged();
         }
     }
@@ -608,17 +681,21 @@ public sealed class TranslateTransform : Transform
     /// </summary>
     public double Y
     {
-        get => _y;
+        get => (double)(GetValue(YProperty) ?? 0d);
         set
         {
-            if (_y == value) return;
-            _y = value;
+            if (Y == value) return;
+            SetValue(YProperty, value);
             RaiseChanged();
         }
     }
 
     /// <inheritdoc />
-    public override Matrix Value => new Matrix(1, 0, 0, 1, _x, _y);
+    public override Matrix Value => new Matrix(1, 0, 0, 1, X, Y);
+
+    public new TranslateTransform Clone() => (TranslateTransform)base.Clone();
+    public new TranslateTransform CloneCurrentValue() => (TranslateTransform)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new TranslateTransform();
 }
 
 /// <summary>
@@ -626,21 +703,42 @@ public sealed class TranslateTransform : Transform
 /// </summary>
 public sealed class SkewTransform : Transform
 {
-    private double _angleX;
-    private double _angleY;
-    private double _centerX;
-    private double _centerY;
+    public static readonly DependencyProperty AngleXProperty =
+        DependencyProperty.Register(nameof(AngleX), typeof(double), typeof(SkewTransform), new PropertyMetadata(0d));
+    public static readonly DependencyProperty AngleYProperty =
+        DependencyProperty.Register(nameof(AngleY), typeof(double), typeof(SkewTransform), new PropertyMetadata(0d));
+    public static readonly DependencyProperty CenterXProperty =
+        DependencyProperty.Register(nameof(CenterX), typeof(double), typeof(SkewTransform), new PropertyMetadata(0d));
+    public static readonly DependencyProperty CenterYProperty =
+        DependencyProperty.Register(nameof(CenterY), typeof(double), typeof(SkewTransform), new PropertyMetadata(0d));
+
+    public SkewTransform()
+    {
+    }
+
+    public SkewTransform(double angleX, double angleY)
+    {
+        AngleX = angleX;
+        AngleY = angleY;
+    }
+
+    public SkewTransform(double angleX, double angleY, double centerX, double centerY)
+        : this(angleX, angleY)
+    {
+        CenterX = centerX;
+        CenterY = centerY;
+    }
 
     /// <summary>
     /// Gets or sets the X skew angle in degrees.
     /// </summary>
     public double AngleX
     {
-        get => _angleX;
+        get => (double)(GetValue(AngleXProperty) ?? 0d);
         set
         {
-            if (_angleX == value) return;
-            _angleX = value;
+            if (AngleX == value) return;
+            SetValue(AngleXProperty, value);
             RaiseChanged();
         }
     }
@@ -650,11 +748,11 @@ public sealed class SkewTransform : Transform
     /// </summary>
     public double AngleY
     {
-        get => _angleY;
+        get => (double)(GetValue(AngleYProperty) ?? 0d);
         set
         {
-            if (_angleY == value) return;
-            _angleY = value;
+            if (AngleY == value) return;
+            SetValue(AngleYProperty, value);
             RaiseChanged();
         }
     }
@@ -664,11 +762,11 @@ public sealed class SkewTransform : Transform
     /// </summary>
     public double CenterX
     {
-        get => _centerX;
+        get => (double)(GetValue(CenterXProperty) ?? 0d);
         set
         {
-            if (_centerX == value) return;
-            _centerX = value;
+            if (CenterX == value) return;
+            SetValue(CenterXProperty, value);
             RaiseChanged();
         }
     }
@@ -678,11 +776,11 @@ public sealed class SkewTransform : Transform
     /// </summary>
     public double CenterY
     {
-        get => _centerY;
+        get => (double)(GetValue(CenterYProperty) ?? 0d);
         set
         {
-            if (_centerY == value) return;
-            _centerY = value;
+            if (CenterY == value) return;
+            SetValue(CenterYProperty, value);
             RaiseChanged();
         }
     }
@@ -692,15 +790,23 @@ public sealed class SkewTransform : Transform
     {
         get
         {
-            var tanX = Math.Tan(_angleX * Math.PI / 180);
-            var tanY = Math.Tan(_angleY * Math.PI / 180);
+            double angleX = AngleX;
+            double angleY = AngleY;
+            double centerX = CenterX;
+            double centerY = CenterY;
+            var tanX = Math.Tan(angleX * Math.PI / 180);
+            var tanY = Math.Tan(angleY * Math.PI / 180);
 
             return new Matrix(
                 1, tanY, tanX, 1,
-                -_centerY * tanX,
-                -_centerX * tanY);
+                -centerY * tanX,
+                -centerX * tanY);
         }
     }
+
+    public new SkewTransform Clone() => (SkewTransform)base.Clone();
+    public new SkewTransform CloneCurrentValue() => (SkewTransform)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new SkewTransform();
 }
 
 /// <summary>
@@ -710,25 +816,41 @@ public sealed class SkewTransform : Transform
 /// </summary>
 public sealed class TransformGroup : Transform
 {
-    private readonly TransformChildCollection _children;
+    public static readonly DependencyProperty ChildrenProperty =
+        DependencyProperty.Register(nameof(Children), typeof(TransformCollection), typeof(TransformGroup), new PropertyMetadata(null));
 
     /// <summary>
     /// Gets the collection of child transforms.
     /// </summary>
-    public IList<Transform> Children => _children;
+    public TransformCollection Children
+    {
+        get => (TransformCollection?)GetValue(ChildrenProperty) ?? new TransformCollection();
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (ReferenceEquals(Children, value))
+            {
+                return;
+            }
+
+            SetValue(ChildrenProperty, value);
+            RaiseChanged();
+        }
+    }
 
     /// <inheritdoc />
     public override Matrix Value
     {
         get
         {
-            if (_children.Count == 0)
+            TransformCollection children = Children;
+            if (children.Count == 0)
                 return Matrix.Identity;
 
-            var result = _children[0].Value;
-            for (int i = 1; i < _children.Count; i++)
+            var result = children[0].Value;
+            for (int i = 1; i < children.Count; i++)
             {
-                result = Matrix.Multiply(result, _children[i].Value);
+                result = Matrix.Multiply(result, children[i].Value);
             }
             return result;
         }
@@ -739,7 +861,7 @@ public sealed class TransformGroup : Transform
     /// </summary>
     public TransformGroup()
     {
-        _children = new TransformChildCollection(this);
+        Children = new TransformCollection();
     }
 
     /// <summary>
@@ -750,7 +872,7 @@ public sealed class TransformGroup : Transform
         : this()
     {
         foreach (var t in transforms)
-            _children.Add(t);
+            Children.Add(t);
     }
 
     /// <summary>
@@ -760,7 +882,7 @@ public sealed class TransformGroup : Transform
     /// <returns>This TransformGroup for fluent chaining.</returns>
     public TransformGroup Add(Transform transform)
     {
-        _children.Add(transform);
+        Children.Add(transform);
         return this;
     }
 
@@ -771,7 +893,7 @@ public sealed class TransformGroup : Transform
     /// <returns>True if the transform was removed; otherwise, false.</returns>
     public bool Remove(Transform transform)
     {
-        return _children.Remove(transform);
+        return Children.Remove(transform);
     }
 
     /// <summary>
@@ -779,56 +901,19 @@ public sealed class TransformGroup : Transform
     /// </summary>
     public void Clear()
     {
-        _children.Clear();
+        Children.Clear();
     }
 
-    private sealed class TransformChildCollection : Collection<Transform>
+    public new TransformGroup Clone() => (TransformGroup)base.Clone();
+    public new TransformGroup CloneCurrentValue() => (TransformGroup)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new TransformGroup();
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
-        private readonly TransformGroup _owner;
-
-        public TransformChildCollection(TransformGroup owner)
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, ChildrenProperty))
         {
-            _owner = owner;
-        }
-
-        protected override void InsertItem(int index, Transform item)
-        {
-            base.InsertItem(index, item);
-            if (item is not null) item.Changed += OnChildChanged;
-            _owner.RaiseChanged();
-        }
-
-        protected override void RemoveItem(int index)
-        {
-            var removed = base[index];
-            if (removed is not null) removed.Changed -= OnChildChanged;
-            base.RemoveItem(index);
-            _owner.RaiseChanged();
-        }
-
-        protected override void ClearItems()
-        {
-            foreach (var child in this)
-            {
-                if (child is not null) child.Changed -= OnChildChanged;
-            }
-            base.ClearItems();
-            _owner.RaiseChanged();
-        }
-
-        protected override void SetItem(int index, Transform item)
-        {
-            var old = base[index];
-            if (ReferenceEquals(old, item)) return;
-            if (old is not null) old.Changed -= OnChildChanged;
-            base.SetItem(index, item);
-            if (item is not null) item.Changed += OnChildChanged;
-            _owner.RaiseChanged();
-        }
-
-        private void OnChildChanged(object? sender, EventArgs e)
-        {
-            _owner.RaiseChanged();
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, ChildrenProperty);
         }
     }
 }
@@ -986,5 +1071,46 @@ public sealed class CompositeTransform : Transform
 
             return result;
         }
+    }
+
+    public new CompositeTransform Clone() => (CompositeTransform)base.Clone();
+    public new CompositeTransform CloneCurrentValue() => (CompositeTransform)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new CompositeTransform();
+
+    protected override void CloneCore(Freezable source)
+    {
+        base.CloneCore(source);
+        CopyFrom((CompositeTransform)source);
+    }
+
+    protected override void CloneCurrentValueCore(Freezable source)
+    {
+        base.CloneCurrentValueCore(source);
+        CopyFrom((CompositeTransform)source);
+    }
+
+    protected override void GetAsFrozenCore(Freezable source)
+    {
+        base.GetAsFrozenCore(source);
+        CopyFrom((CompositeTransform)source);
+    }
+
+    protected override void GetCurrentValueAsFrozenCore(Freezable source)
+    {
+        base.GetCurrentValueAsFrozenCore(source);
+        CopyFrom((CompositeTransform)source);
+    }
+
+    private void CopyFrom(CompositeTransform source)
+    {
+        _centerX = source._centerX;
+        _centerY = source._centerY;
+        _rotation = source._rotation;
+        _scaleX = source._scaleX;
+        _scaleY = source._scaleY;
+        _skewX = source._skewX;
+        _skewY = source._skewY;
+        _translateX = source._translateX;
+        _translateY = source._translateY;
     }
 }

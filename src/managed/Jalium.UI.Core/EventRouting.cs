@@ -6,6 +6,7 @@ namespace Jalium.UI;
 public sealed class EventRoute
 {
     private readonly List<RouteItem> _routeItems = new();
+    private Stack<BranchNode>? _branchNodes;
 
     public EventRoute(RoutedEvent routedEvent)
     {
@@ -16,10 +17,33 @@ public sealed class EventRoute
 
     public void Add(object target, Delegate handler, bool handledEventsToo)
     {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(handler);
         _routeItems.Add(new RouteItem(target, handler, handledEventsToo));
     }
 
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Advanced)]
+    public void PushBranchNode(object node, object source)
+    {
+        _branchNodes ??= new Stack<BranchNode>(1);
+        _branchNodes.Push(new BranchNode(node, source));
+    }
+
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Advanced)]
+    public object? PopBranchNode() =>
+        _branchNodes is { Count: > 0 } ? _branchNodes.Pop().Node : null;
+
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Advanced)]
+    public object? PeekBranchNode() =>
+        _branchNodes is { Count: > 0 } ? _branchNodes.Peek().Node : null;
+
+    [System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Advanced)]
+    public object? PeekBranchSource() =>
+        _branchNodes is { Count: > 0 } ? _branchNodes.Peek().Source : null;
+
     internal IReadOnlyList<RouteItem> Items => _routeItems;
+
+    private readonly record struct BranchNode(object Node, object Source);
 }
 
 /// <summary>

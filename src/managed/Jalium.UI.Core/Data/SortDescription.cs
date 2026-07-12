@@ -85,6 +85,26 @@ public readonly struct SortDescription : IEquatable<SortDescription>
     {
         return HashCode.Combine(PropertyName, Direction);
     }
+
+    /// <summary>
+    /// Converts the legacy Jalium sort description to the canonical component-model contract.
+    /// </summary>
+    public static implicit operator System.ComponentModel.SortDescription(SortDescription value) =>
+        new(
+            value.PropertyName,
+            value.Direction == ListSortDirection.Descending
+                ? System.ComponentModel.ListSortDirection.Descending
+                : System.ComponentModel.ListSortDirection.Ascending);
+
+    /// <summary>
+    /// Converts the canonical component-model sort description to the legacy Jalium contract.
+    /// </summary>
+    public static implicit operator SortDescription(System.ComponentModel.SortDescription value) =>
+        new(
+            value.PropertyName ?? string.Empty,
+            value.Direction == System.ComponentModel.ListSortDirection.Descending
+                ? ListSortDirection.Descending
+                : ListSortDirection.Ascending);
 }
 
 /// <summary>

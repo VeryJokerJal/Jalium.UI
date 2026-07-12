@@ -1,0 +1,603 @@
+﻿tier,namespace,type,kind,wpf_base,ctors,props,methods,events,fields,enum_values,source
+1,System.Windows,AttachedPropertyBrowsableAttribute,class,System.Attribute,1,0,1,0,0,0,agent确认
+1,System.Windows,AttachedPropertyBrowsableForChildrenAttribute,class,System.Windows.AttachedPropertyBrowsableAttribute,1,1,3,0,0,0,agent确认
+1,System.Windows,AttachedPropertyBrowsableForTypeAttribute,class,System.Windows.AttachedPropertyBrowsableAttribute,1,2,3,0,0,0,agent确认
+1,System.Windows,AttachedPropertyBrowsableWhenAttributePresentAttribute,class,System.Windows.AttachedPropertyBrowsableAttribute,1,1,3,0,0,0,agent确认
+1,System.Windows,AutoResizedEventArgs,class,System.EventArgs,1,1,0,0,0,0,agent确认
+1,System.Windows,AutoResizedEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows,BaseCompatibilityPreferences,class,,0,4,0,0,0,3,agent确认
+1,System.Windows,ColumnSpaceDistribution,enum,,0,0,0,0,0,3,agent确认
+1,System.Windows,ConditionCollection,class,System.Collections.ObjectModel.Collection<System.Windows.Condition>,1,1,4,0,0,0,agent确认
+1,System.Windows,ContentOperations,class,,0,0,2,0,0,0,agent确认
+1,System.Windows,CoreCompatibilityPreferences,class,,0,2,0,0,0,0,agent确认
+1,System.Windows,CultureInfoIetfLanguageTagConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,DataFormat,class,,1,2,0,0,0,0,agent确认
+1,System.Windows,DataObjectCopyingEventArgs,class,System.Windows.DataObjectEventArgs,1,1,1,0,0,0,agent确认
+1,System.Windows,DataObjectCopyingEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows,DataObjectEventArgs,class,System.Windows.RoutedEventArgs,1,2,1,0,0,0,agent确认
+1,System.Windows,DataObjectExtensions,class,,0,0,4,0,0,0,agent确认
+1,System.Windows,DataObjectPastingEventArgs,class,System.Windows.DataObjectEventArgs,1,3,1,0,0,0,agent确认
+1,System.Windows,DataObjectPastingEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows,DataObjectSettingDataEventArgs,class,System.Windows.DataObjectEventArgs,1,2,1,0,0,0,agent确认
+1,System.Windows,DataObjectSettingDataEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows,DeferrableContent,class,,1,0,0,0,0,0,agent确认
+1,System.Windows,DeferrableContentConverter,class,System.ComponentModel.TypeConverter,1,0,2,0,0,0,agent确认
+1,System.Windows,DependencyPropertyChangedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+1,System.Windows,DialogResultConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,DynamicResourceExtensionConverter,class,System.ComponentModel.TypeConverter,1,0,2,0,0,0,agent确认
+1,System.Windows,EventPrivateKey,class,,1,0,0,0,0,0,agent确认
+1,System.Windows,ExitEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows,Expression,class,,1,0,0,0,0,0,agent确认
+1,System.Windows,ExpressionConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,FigureLengthConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,FontEastAsianLanguage,enum,,0,0,0,0,0,10,agent确认
+1,System.Windows,FontEastAsianWidths,enum,,0,0,0,0,0,6,agent确认
+1,System.Windows,FontFraction,enum,,0,0,0,0,0,3,agent确认
+1,System.Windows,FontSizeConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,FontStretchConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,FontStyleConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,FontWeightConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,FrameworkCompatibilityPreferences,class,,0,3,0,0,0,0,agent确认
+1,System.Windows,FrameworkElementFactory,class,,4,7,7,0,0,0,agent确认
+1,System.Windows,FrameworkTemplate,class,"System.Windows.Threading.DispatcherObject, System.Windows.Markup.INameScope, System.Windows.Markup.IQueryAmbient",1,5,10,0,0,0,agent确认
+1,System.Windows,HwndDpiChangedEventArgs,class,System.ComponentModel.HandledEventArgs,1,3,0,0,0,0,agent确认
+1,System.Windows,HwndDpiChangedEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows,IContentHost,interface,,0,1,3,0,0,0,agent确认
+1,System.Windows,IFrameworkInputElement,interface,System.Windows.IInputElement,0,1,0,0,0,0,agent确认
+1,System.Windows,ITypedDataObject,interface,System.Windows.IDataObject,0,0,4,0,0,0,agent确认
+1,System.Windows,InheritanceBehavior,enum,,0,0,0,0,0,7,agent确认
+1,System.Windows,Int32RectConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,LengthConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,LineBreakCondition,enum,,0,0,0,0,0,4,agent确认
+1,System.Windows,LineStackingStrategy,enum,,0,0,0,0,0,2,agent确认
+1,System.Windows,LostFocusEventManager,class,System.Windows.WeakEventManager,1,0,7,0,0,0,agent确认
+1,System.Windows,NullableBoolConverter,class,System.ComponentModel.NullableConverter,1,0,3,0,0,0,agent确认
+1,System.Windows,PowerLineStatus,enum,,0,0,0,0,0,3,agent确认
+1,System.Windows,PresentationSource,class,System.Windows.Threading.DispatcherObject,1,4,9,1,0,0,agent确认
+1,System.Windows,RectConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,ResourceDictionaryLocation,enum,,0,0,0,0,0,3,agent确认
+1,System.Windows,ResourceKey,class,System.Windows.Markup.MarkupExtension,1,1,1,0,0,0,agent确认
+1,System.Windows,ResourceReferenceKeyNotFoundException,class,System.InvalidOperationException,3,1,1,0,0,0,agent确认
+1,System.Windows,SessionEndingCancelEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows,SetterBase,class,,1,1,1,0,0,0,agent确认
+1,System.Windows,SetterBaseCollection,class,System.Collections.ObjectModel.Collection<System.Windows.SetterBase>,1,1,4,0,0,0,agent确认
+1,System.Windows,SourceChangedEventArgs,class,System.Windows.RoutedEventArgs,2,4,1,0,0,0,agent确认
+1,System.Windows,SourceChangedEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows,StartupEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows,StrokeCollectionConverter,class,System.ComponentModel.TypeConverter,1,0,5,0,0,0,agent确认
+1,System.Windows,StyleTypedPropertyAttribute,class,System.Attribute,1,2,0,0,0,0,agent确认
+1,System.Windows,TemplateBindingExpressionConverter,class,System.ComponentModel.TypeConverter,1,0,2,0,0,0,agent确认
+1,System.Windows,TemplateBindingExtensionConverter,class,System.ComponentModel.TypeConverter,1,0,2,0,0,0,agent确认
+1,System.Windows,TemplateContent,class,,1,0,0,0,0,0,agent确认
+1,System.Windows,TemplateContentLoader,class,System.Xaml.XamlDeferringLoader,1,0,2,0,0,0,agent确认
+1,System.Windows,TextDataFormat,enum,,0,0,0,0,0,6,agent确认
+1,System.Windows,TextDecorationCollectionConverter,class,System.ComponentModel.TypeConverter,1,0,5,0,0,0,agent确认
+1,System.Windows,ThemeInfoAttribute,class,System.Attribute,1,2,0,0,0,0,agent确认
+1,System.Windows,ThemeMode,struct,System.IEquatable<System.Windows.ThemeMode>,1,5,6,0,0,0,agent确认
+1,System.Windows,ThemeModeConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows,TriggerActionCollection,class,IList<System.Windows.TriggerAction> / ICollection / IList,2,7,16,0,0,0,agent确认
+1,System.Windows,TriggerCollection,class,System.Collections.ObjectModel.Collection<System.Windows.TriggerBase>,0,1,4,0,0,0,agent确认
+1,System.Windows,VisualStateChangedEventArgs,class,System.EventArgs,1,4,0,0,0,0,agent确认
+1,System.Windows,WindowCollection,class,"System.Collections.ICollection, System.Collections.IEnumerable",1,4,3,0,0,0,agent确认
+1,System.Windows.Controls,DataGridCellsPanel,class,System.Windows.Controls.VirtualizingPanel,1,0,6,0,0,0,agent确认
+1,System.Windows.Controls,DataGridLength,struct,System.IEquatable<System.Windows.Controls.DataGridLength>,3,12,7,0,0,0,agent确认
+1,System.Windows.Controls,DataGridLengthConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+1,System.Windows.Controls,DataGridLengthUnitType,enum,,0,0,0,0,0,5,agent确认
+1,System.Windows.Controls,DataGridSortingEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows.Controls,GroupStyleSelector,delegate,,,,,,,,agent确认
+1,System.Windows.Controls,InitializingNewItemEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows.Controls,InkCanvasGestureEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows.Controls,InkCanvasSelectionChangingEventArgs,class,System.ComponentModel.CancelEventArgs,1,0,4,0,0,0,agent确认
+1,System.Windows.Controls,InkCanvasSelectionChangingEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows.Controls,InkCanvasSelectionEditingEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows.Controls,InkCanvasStrokeCollectedEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows.Controls,InkCanvasStrokeErasingEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows.Controls,InkCanvasStrokesReplacedEventArgs,class,System.EventArgs,1,2,0,0,0,0,agent确认
+1,System.Windows.Controls,InkCanvasStrokesReplacedEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows.Controls,SelectedCellsChangedEventHandler,delegate,,,,,,,,agent确认
+1,System.Windows.Controls,StickyNoteControl,class,System.Windows.Controls.Control,1,12,4,0,15,0,agent确认
+1,System.Windows.Controls,StickyNoteType,enum,,0,0,0,0,0,2,agent确认
+2,System.ComponentModel,CurrentChangedEventManager,class,System.Windows.WeakEventManager,1,0,7,0,0,0,agent确认
+2,System.ComponentModel,CurrentChangingEventManager,class,System.Windows.WeakEventManager,1,0,7,0,0,0,agent确认
+2,System.ComponentModel,ErrorsChangedEventManager,class,System.Windows.WeakEventManager,1,0,5,0,0,0,agent确认
+2,System.ComponentModel,ICollectionViewFactory,interface,,0,0,1,0,0,0,agent确认
+2,System.ComponentModel,IItemProperties,interface,,0,1,0,0,0,0,agent确认
+2,System.ComponentModel,ItemPropertyInfo,class,,1,3,0,0,0,0,agent确认
+2,System.ComponentModel,PropertyFilterAttribute,class,System.Attribute,1,1,3,0,1,0,agent确认
+2,System.ComponentModel,PropertyFilterOptions,enum,,0,0,0,0,0,6,agent确认
+2,System.Windows.Data,GroupDescriptionSelectorCallback,delegate,,0,0,0,0,0,0,agent确认
+2,System.Windows.Documents,ContentPosition,class,,1,0,0,0,1,0,agent确认
+2,System.Windows.Documents,DynamicDocumentPaginator,class,System.Windows.Documents.DocumentPaginator,1,1,8,3,0,0,agent确认
+2,System.Windows.Documents,FrameworkRichTextComposition,class,System.Windows.Documents.FrameworkTextComposition,1,4,0,0,0,0,agent确认
+2,System.Windows.Documents,FrameworkTextComposition,class,System.Windows.Input.TextComposition,1,4,1,0,0,0,agent确认
+2,System.Windows.Documents,GetPageNumberCompletedEventArgs,class,System.ComponentModel.AsyncCompletedEventArgs,1,2,0,0,0,0,agent确认
+2,System.Windows.Documents,GetPageNumberCompletedEventHandler,delegate,System.MulticastDelegate,0,0,0,0,0,0,agent确认
+2,System.Windows.Documents,GetPageRootCompletedEventArgs,class,System.ComponentModel.AsyncCompletedEventArgs,1,1,0,0,0,0,agent确认
+2,System.Windows.Documents,GetPageRootCompletedEventHandler,delegate,System.MulticastDelegate,0,0,0,0,0,0,agent确认
+2,System.Windows.Documents,LinkTarget,class,System.Object,1,1,0,0,0,0,agent确认
+2,System.Windows.Documents,LinkTargetCollection,class,System.Collections.CollectionBase,1,1,6,0,0,0,agent确认
+2,System.Windows.Documents,PagesChangedEventArgs,class,System.EventArgs,1,2,0,0,0,0,agent确认
+2,System.Windows.Documents,PagesChangedEventHandler,delegate,System.MulticastDelegate,0,0,0,0,0,0,agent确认
+2,System.Windows.Documents,PaginationProgressEventHandler,delegate,System.MulticastDelegate,0,0,0,0,0,0,agent确认
+2,System.Windows.Documents,TextEffectResolver,class,,0,0,1,0,0,0,agent确认
+2,System.Windows.Documents,TextEffectTarget,class,,1,3,2,0,0,0,agent确认
+2,System.Windows.Documents,TextElementEditingBehaviorAttribute,class,System.Attribute,1,2,0,0,0,0,agent确认
+2,System.Windows.Documents,TextSelection,class,System.Windows.Documents.TextRange,0,0,0,0,0,0,agent确认
+2,System.Windows.Documents,ZoomPercentageConverter,class,System.Windows.Data.IValueConverter,1,0,2,0,0,0,agent确认
+2,System.Windows.Input,AccessKeyEventArgs,class,System.EventArgs,1,2,0,0,0,0,agent确认
+2,System.Windows.Input,CanExecuteChangedEventManager,class,System.Windows.WeakEventManager,1,0,5,0,0,0,agent确认
+2,System.Windows.Input,CommandConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Input,FocusManager,class,,0,0,9,0,4,0,agent确认
+2,System.Windows.Input,ICommandSource,interface,,0,3,0,0,0,0,agent确认
+2,System.Windows.Input,IInputLanguageSource,interface,,0,2,2,0,0,0,agent确认
+2,System.Windows.Input,IManipulator,interface,,0,1,2,1,0,0,agent确认
+2,System.Windows.Input,InputEventHandler,delegate,,,,,,,,agent确认
+2,System.Windows.Input,InputLanguageChangedEventArgs,class,System.Windows.Input.InputLanguageEventArgs,1,0,0,0,0,0,agent确认
+2,System.Windows.Input,InputLanguageChangingEventArgs,class,System.Windows.Input.InputLanguageEventArgs,1,1,0,0,0,0,agent确认
+2,System.Windows.Input,InputLanguageEventHandler,delegate,,,,,,,,agent确认
+2,System.Windows.Input,InputScopeNameConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Input,KeyGestureValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+2,System.Windows.Input,KeyValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+2,System.Windows.Input,KeyboardEventArgs,class,System.Windows.Input.InputEventArgs,1,1,1,0,0,0,agent确认
+2,System.Windows.Input,KeyboardEventHandler,delegate,,,,,,,,agent确认
+2,System.Windows.Input,KeyboardInputProviderAcquireFocusEventArgs,class,System.Windows.Input.KeyboardEventArgs,1,1,1,0,0,0,agent确认
+2,System.Windows.Input,KeyboardInputProviderAcquireFocusEventHandler,delegate,,,,,,,,agent确认
+2,System.Windows.Input,Manipulation,class,,0,0,12,0,0,0,agent确认
+2,System.Windows.Input,ModifierKeysValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+2,System.Windows.Input,MouseActionConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Input,MouseActionValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+2,System.Windows.Input,MouseGestureValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+2,System.Windows.Input,NotifyInputEventHandler,delegate,,,,,,,,agent确认
+2,System.Windows.Input,PreProcessInputEventHandler,delegate,,,,,,,,agent确认
+2,System.Windows.Input,ProcessInputEventHandler,delegate,,,,,,,,agent确认
+2,System.Windows.Input,SpeechMode,enum,,0,0,0,0,0,3,agent确认
+2,System.Windows.Input,StylusDeviceCollection,class,System.Collections.ObjectModel.ReadOnlyCollection<System.Windows.Input.StylusDevice>,1,0,0,0,0,0,agent确认
+2,System.Windows.Input,TraversalRequest,class,,1,2,0,0,0,0,agent确认
+2,System.Windows.Markup,AcceptedMarkupExtensionExpressionTypeAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,AmbientAttribute,class,System.Attribute,1,0,0,0,0,0,agent确认
+2,System.Windows.Markup,ComponentResourceKeyConverter,class,System.Windows.ExpressionConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Markup,ConstructorArgumentAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,ContentWrapperAttribute,class,System.Attribute,1,2,2,0,0,0,agent确认
+2,System.Windows.Markup,DateTimeValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+2,System.Windows.Markup,DependencyPropertyConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Markup,DependsOnAttribute,class,System.Attribute,1,2,0,0,0,0,agent确认
+2,System.Windows.Markup,DictionaryKeyPropertyAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,EventSetterHandlerConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Markup,IAddChildInternal,interface,IAddChild,0,0,0,0,0,0,agent确认
+2,System.Windows.Markup,INameScopeDictionary,interface,"ICollection<KeyValuePair<string,object>>, IDictionary<string,object>, IEnumerable<KeyValuePair<string,object>>, IEnumerable, System.Windows.Markup.INameScope",0,0,0,0,0,0,agent确认
+2,System.Windows.Markup,IQueryAmbient,interface,,0,0,1,0,0,0,agent确认
+2,System.Windows.Markup,IReceiveMarkupExtension,interface,,0,0,1,0,0,0,agent确认
+2,System.Windows.Markup,IXamlTypeResolver,interface,,0,0,1,0,0,0,agent确认
+2,System.Windows.Markup,InternalTypeHelper,class,,1,0,5,0,0,0,agent确认
+2,System.Windows.Markup,MarkupExtensionBracketCharactersAttribute,class,System.Attribute,1,2,0,0,0,0,agent确认
+2,System.Windows.Markup,MarkupExtensionReturnTypeAttribute,class,System.Attribute,3,2,0,0,0,0,agent确认
+2,System.Windows.Markup,MemberDefinition,class,,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,NameReferenceConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Markup,NameScopePropertyAttribute,class,System.Attribute,2,2,0,0,0,0,agent确认
+2,System.Windows.Markup,PropertyDefinition,class,System.Windows.Markup.MemberDefinition,1,4,0,0,0,0,agent确认
+2,System.Windows.Markup,Reference,class,System.Windows.Markup.MarkupExtension,2,1,1,0,0,0,agent确认
+2,System.Windows.Markup,ResourceReferenceExpressionConverter,class,System.Windows.ExpressionConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Markup,RootNamespaceAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,RoutedEventConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Markup,RuntimeNamePropertyAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,ServiceProviders,class,System.IServiceProvider,1,0,2,0,0,0,agent确认
+2,System.Windows.Markup,SetterTriggerConditionValueConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Markup,TemplateKeyConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Markup,TrimSurroundingWhitespaceAttribute,class,System.Attribute,1,0,0,0,0,0,agent确认
+2,System.Windows.Markup,UidPropertyAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,UsableDuringInitializationAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,WhitespaceSignificantCollectionAttribute,class,System.Attribute,1,0,0,0,0,0,agent确认
+2,System.Windows.Markup,XData,class,,1,2,0,0,0,0,agent确认
+2,System.Windows.Markup,XamlDeferLoadAttribute,class,System.Attribute,2,4,0,0,0,0,agent确认
+2,System.Windows.Markup,XamlInstanceCreator,class,,1,0,1,0,0,0,agent确认
+2,System.Windows.Markup,XamlSetMarkupExtensionAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,XamlSetMarkupExtensionEventArgs,class,System.Windows.Markup.XamlSetValueEventArgs,1,2,1,0,0,0,agent确认
+2,System.Windows.Markup,XamlSetTypeConverterAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,XamlSetTypeConverterEventArgs,class,System.Windows.Markup.XamlSetValueEventArgs,1,3,1,0,0,0,agent确认
+2,System.Windows.Markup,XamlSetValueEventArgs,class,System.EventArgs,1,3,1,0,0,0,agent确认
+2,System.Windows.Markup,XamlWriterState,enum,,0,0,0,0,0,2,agent确认
+2,System.Windows.Markup,XmlAttributeProperties,class,,1,0,8,0,4,0,agent确认
+2,System.Windows.Markup,XmlLangPropertyAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+2,System.Windows.Markup,XmlLanguage,class,,1,2,4,0,0,0,agent确认
+2,System.Windows.Markup,XmlLanguageConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Media,CacheModeConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Media,ClearTypeHint,enum,,0,0,0,0,0,2,agent确认
+2,System.Windows.Media,ColorInterpolationMode,enum,,0,0,0,0,0,2,agent确认
+2,System.Windows.Media,DisableDpiAwarenessAttribute,class,System.Attribute,1,0,0,0,0,0,agent确认
+2,System.Windows.Media,DoubleCollectionConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Media,FontEmbeddingManager,class,,1,1,2,0,0,0,agent确认
+2,System.Windows.Media,FontFamilyMap,class,,1,4,0,0,0,0,agent确认
+2,System.Windows.Media,FontFamilyMapCollection,class,,1,7,16,0,0,0,agent确认
+2,System.Windows.Media,GeneralTransformCollection,class,"System.Windows.Media.Animation.Animatable, IList<GeneralTransform>, ICollection, IList",3,10,28,0,0,0,agent确认
+2,System.Windows.Media,Int32CollectionConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Media,InvalidWmpVersionException,class,System.SystemException,4,0,0,0,0,0,agent确认
+2,System.Windows.Media,LanguageSpecificStringDictionary,class,"IDictionary<XmlLanguage,string>, ICollection<...>, IDictionary, ICollection, IEnumerable",1,11,16,0,0,0,agent确认
+2,System.Windows.Media,MatrixConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Media,MediaClock,class,System.Windows.Media.Animation.Clock,0,1,6,0,0,0,agent确认
+2,System.Windows.Media,PathFigureCollectionConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Media,PenDashCap,enum,,0,0,0,0,0,3,agent确认
+2,System.Windows.Media,PixelFormatChannelMask,struct,,0,1,5,0,0,0,agent确认
+2,System.Windows.Media,TransformConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Media,VectorCollection,class,System.Windows.Freezable,3,10,31,0,0,0,agent确认
+2,System.Windows.Media,VectorCollectionConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,BooleanAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,BooleanKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,BooleanKeyFrameCollection,class,"System.Windows.Freezable, System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,ByteAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,ByteAnimationUsingKeyFrames,class,"System.Windows.Media.Animation.ByteAnimationBase, System.Windows.Markup.IAddChild, System.Windows.Media.Animation.IKeyFrameAnimation",1,4,16,0,0,0,agent确认
+2,System.Windows.Media.Animation,ByteKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,ByteKeyFrameCollection,class,"System.Windows.Freezable, System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,CharAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,CharKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,CharKeyFrameCollection,class,"System.Windows.Freezable, System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,ColorAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,ColorKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,DecimalAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,DecimalAnimationUsingKeyFrames,class,"System.Windows.Media.Animation.DecimalAnimationBase, System.Windows.Markup.IAddChild, System.Windows.Media.Animation.IKeyFrameAnimation",1,4,16,0,0,0,agent确认
+2,System.Windows.Media.Animation,DecimalKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,DecimalKeyFrameCollection,class,"System.Windows.Freezable, System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,DiscreteByteKeyFrame,class,System.Windows.Media.Animation.ByteKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,DiscreteDecimalKeyFrame,class,System.Windows.Media.Animation.DecimalKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,DiscreteInt16KeyFrame,class,System.Windows.Media.Animation.Int16KeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,DiscreteInt32KeyFrame,class,System.Windows.Media.Animation.Int32KeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,DiscreteInt64KeyFrame,class,System.Windows.Media.Animation.Int64KeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,DiscreteMatrixKeyFrame,class,System.Windows.Media.Animation.MatrixKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,DiscreteRectKeyFrame,class,System.Windows.Media.Animation.RectKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,DiscreteSingleKeyFrame,class,System.Windows.Media.Animation.SingleKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,DiscreteSizeKeyFrame,class,System.Windows.Media.Animation.SizeKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,DiscreteVectorKeyFrame,class,System.Windows.Media.Animation.VectorKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,DoubleAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,DoubleKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,EasingByteKeyFrame,class,System.Windows.Media.Animation.ByteKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,EasingDecimalKeyFrame,class,System.Windows.Media.Animation.DecimalKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,EasingInt16KeyFrame,class,System.Windows.Media.Animation.Int16KeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,EasingInt32KeyFrame,class,System.Windows.Media.Animation.Int32KeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,EasingInt64KeyFrame,class,System.Windows.Media.Animation.Int64KeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,EasingRectKeyFrame,class,System.Windows.Media.Animation.RectKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,EasingSingleKeyFrame,class,System.Windows.Media.Animation.SingleKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,EasingSizeKeyFrame,class,System.Windows.Media.Animation.SizeKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,EasingThicknessKeyFrame,class,System.Windows.Media.Animation.ThicknessKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,EasingVectorKeyFrame,class,System.Windows.Media.Animation.VectorKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,Int16AnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,Int16AnimationUsingKeyFrames,class,"System.Windows.Media.Animation.Int16AnimationBase, System.Windows.Markup.IAddChild, System.Windows.Media.Animation.IKeyFrameAnimation",1,4,16,0,0,0,agent确认
+2,System.Windows.Media.Animation,Int16KeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,Int16KeyFrameCollection,class,"System.Windows.Freezable, System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,Int32AnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,Int32AnimationUsingKeyFrames,class,"System.Windows.Media.Animation.Int32AnimationBase, System.Windows.Markup.IAddChild, System.Windows.Media.Animation.IKeyFrameAnimation",1,4,16,0,0,0,agent确认
+2,System.Windows.Media.Animation,Int32KeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,Int32KeyFrameCollection,class,"System.Windows.Freezable, System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,Int64AnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,Int64AnimationUsingKeyFrames,class,"System.Windows.Media.Animation.Int64AnimationBase, System.Windows.Markup.IAddChild, System.Windows.Media.Animation.IKeyFrameAnimation",1,4,16,0,0,0,agent确认
+2,System.Windows.Media.Animation,Int64KeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,Int64KeyFrameCollection,class,"System.Windows.Freezable, System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,LinearByteKeyFrame,class,System.Windows.Media.Animation.ByteKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,LinearDecimalKeyFrame,class,System.Windows.Media.Animation.DecimalKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,LinearInt16KeyFrame,class,System.Windows.Media.Animation.Int16KeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,LinearInt32KeyFrame,class,System.Windows.Media.Animation.Int32KeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,LinearInt64KeyFrame,class,System.Windows.Media.Animation.Int64KeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,LinearRectKeyFrame,class,System.Windows.Media.Animation.RectKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,LinearSingleKeyFrame,class,System.Windows.Media.Animation.SingleKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,LinearSizeKeyFrame,class,System.Windows.Media.Animation.SizeKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,LinearVectorKeyFrame,class,System.Windows.Media.Animation.VectorKeyFrame,3,0,2,0,0,0,agent确认
+2,System.Windows.Media.Animation,MatrixAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,MatrixAnimationUsingKeyFrames,class,"System.Windows.Media.Animation.MatrixAnimationBase, System.Windows.Markup.IAddChild, System.Windows.Media.Animation.IKeyFrameAnimation",1,2,16,0,0,0,agent确认
+2,System.Windows.Media.Animation,MatrixKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,MatrixKeyFrameCollection,class,"System.Windows.Freezable, System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,ObjectAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,3,0,0,0,agent确认
+2,System.Windows.Media.Animation,ObjectKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,Point3DAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,Point3DKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,PointAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,PointKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,QuaternionAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,QuaternionKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,RectAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,RectAnimationUsingKeyFrames,class,"System.Windows.Media.Animation.RectAnimationBase, System.Windows.Markup.IAddChild, System.Windows.Media.Animation.IKeyFrameAnimation",1,4,16,0,0,0,agent确认
+2,System.Windows.Media.Animation,RectKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,RectKeyFrameCollection,class,"System.Windows.Freezable, System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,Rotation3DAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,Rotation3DKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,SingleAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,SingleAnimationUsingKeyFrames,class,System.Windows.Media.Animation.SingleAnimationBase,1,4,16,0,0,0,agent确认
+2,System.Windows.Media.Animation,SingleKeyFrame,class,System.Windows.Freezable,3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,SingleKeyFrameCollection,class,System.Windows.Freezable,1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,SizeAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,SizeAnimationUsingKeyFrames,class,System.Windows.Media.Animation.SizeAnimationBase,1,4,16,0,0,0,agent确认
+2,System.Windows.Media.Animation,SizeKeyFrame,class,System.Windows.Freezable,3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,SizeKeyFrameCollection,class,System.Windows.Freezable,1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,SplineByteKeyFrame,class,System.Windows.Media.Animation.ByteKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,SplineDecimalKeyFrame,class,System.Windows.Media.Animation.DecimalKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,SplineInt16KeyFrame,class,System.Windows.Media.Animation.Int16KeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,SplineInt32KeyFrame,class,System.Windows.Media.Animation.Int32KeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,SplineInt64KeyFrame,class,System.Windows.Media.Animation.Int64KeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,SplineRectKeyFrame,class,System.Windows.Media.Animation.RectKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,SplineSingleKeyFrame,class,System.Windows.Media.Animation.SingleKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,SplineSizeKeyFrame,class,System.Windows.Media.Animation.SizeKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,SplineVectorKeyFrame,class,System.Windows.Media.Animation.VectorKeyFrame,4,1,2,0,1,0,agent确认
+2,System.Windows.Media.Animation,StringAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,StringKeyFrame,class,System.Windows.Freezable (implements System.Windows.Media.Animation.IKeyFrame),3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,StringKeyFrameCollection,class,"System.Windows.Freezable (implements System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList)",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Animation,ThicknessAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,ThicknessKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,Vector3DAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,Vector3DKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,VectorAnimationBase,class,System.Windows.Media.Animation.AnimationTimeline,1,1,4,0,0,0,agent确认
+2,System.Windows.Media.Animation,VectorAnimationUsingKeyFrames,class,"System.Windows.Media.Animation.VectorAnimationBase, System.Windows.Markup.IAddChild, System.Windows.Media.Animation.IKeyFrameAnimation",1,4,16,0,0,0,agent确认
+2,System.Windows.Media.Animation,VectorKeyFrame,class,"System.Windows.Freezable, System.Windows.Media.Animation.IKeyFrame",3,3,2,0,2,0,agent确认
+2,System.Windows.Media.Animation,VectorKeyFrameCollection,class,"System.Windows.Freezable, System.Collections.ICollection, System.Collections.IEnumerable, System.Collections.IList",1,8,22,0,0,0,agent确认
+2,System.Windows.Media.Effects,BitmapEffectCollection,class,"System.Windows.Media.Animation.Animatable, IList<BitmapEffect>, ICollection<BitmapEffect>, IList, ICollection, IEnumerable",3,10,28,0,0,0,agent确认
+2,System.Windows.Media.Imaging,LateBoundBitmapDecoder,class,System.Windows.Media.Imaging.BitmapDecoder,1,8,0,0,0,0,agent确认
+2,System.Windows.Media.Imaging,WmpBitmapDecoder,class,System.Windows.Media.Imaging.BitmapDecoder,2,0,0,0,0,0,agent确认
+2,System.Windows.Media.TextFormatting,CharacterBufferRange,struct,System.IEquatable<System.Windows.Media.TextFormatting.CharacterBufferRange>,2,3,6,0,0,0,agent确认
+2,System.Windows.Media.TextFormatting,IndexedGlyphRun,class,,1,3,0,0,0,0,agent确认
+2,System.Windows.Media.TextFormatting,TextCollapsedRange,class,,1,3,0,0,0,0,agent确认
+2,System.Windows.Media.TextFormatting,TextEndOfSegment,class,System.Windows.Media.TextFormatting.TextRun,1,3,0,0,0,0,agent确认
+2,System.Windows.Media.TextFormatting,TextModifier,class,System.Windows.Media.TextFormatting.TextRun,1,3,1,0,0,0,agent确认
+2,System.Windows.Media.TextFormatting,TextRunCache,class,,1,0,2,0,0,0,agent确认
+2,System.Windows.Media.TextFormatting,TextRunTypographyProperties,class,,1,43,1,0,0,0,agent确认
+2,System.Windows.Media.TextFormatting,TextSimpleMarkerProperties,class,System.Windows.Media.TextFormatting.TextMarkerProperties,1,2,0,0,0,0,agent确认
+2,System.Windows.Threading,DispatcherEventArgs,class,System.EventArgs,1,1,0,0,0,0,agent确认
+2,System.Windows.Threading,DispatcherHookEventArgs,class,System.EventArgs,1,2,0,0,0,0,agent确认
+2,System.Windows.Threading,DispatcherHookEventHandler,delegate,System.MulticastDelegate,0,0,0,0,0,0,agent确认
+2,System.Windows.Threading,DispatcherOperation<TResult>,class,System.Windows.Threading.DispatcherOperation,0,2,2,0,0,0,agent确认
+2,System.Windows.Threading,DispatcherOperationCallback,delegate,System.MulticastDelegate,0,0,0,0,0,0,agent确认
+2,System.Xaml,AmbientPropertyValue,class,,1,2,0,0,0,0,agent确认
+2,System.Xaml,AttachableMemberIdentifier,class,System.IEquatable<System.Xaml.AttachableMemberIdentifier>,1,2,6,0,0,0,agent确认
+2,System.Xaml,AttachablePropertyServices,class,,0,0,6,0,0,0,agent确认
+2,System.Xaml,IAmbientProvider,interface,,0,0,5,0,0,0,agent确认
+2,System.Xaml,IAttachedPropertyStore,interface,,0,1,4,0,0,0,agent确认
+2,System.Xaml,IDestinationTypeProvider,interface,,0,0,1,0,0,0,agent确认
+2,System.Xaml,INamespacePrefixLookup,interface,,0,0,1,0,0,0,agent确认
+2,System.Xaml,IRootObjectProvider,interface,,0,1,0,0,0,0,agent确认
+2,System.Xaml,IXamlIndexingReader,interface,,0,2,0,0,0,0,agent确认
+2,System.Xaml,IXamlLineInfo,interface,,0,3,0,0,0,0,agent确认
+2,System.Xaml,IXamlLineInfoConsumer,interface,,0,1,1,0,0,0,agent确认
+2,System.Xaml,IXamlNameProvider,interface,,0,0,1,0,0,0,agent确认
+2,System.Xaml,IXamlNameResolver,interface,,0,1,5,1,0,0,agent确认
+2,System.Xaml,IXamlNamespaceResolver,interface,,0,0,2,0,0,0,agent确认
+2,System.Xaml,IXamlObjectWriterFactory,interface,,0,0,2,0,0,0,agent确认
+2,System.Xaml,IXamlSchemaContextProvider,interface,,0,1,0,0,0,0,agent确认
+2,System.Xaml,NamespaceDeclaration,class,,1,2,0,0,0,0,agent确认
+2,System.Xaml,XamlBackgroundReader,class,"System.Xaml.XamlReader, System.Xaml.IXamlLineInfo",1,10,4,0,0,0,agent确认
+2,System.Xaml,XamlDeferringLoader,class,,1,0,2,0,0,0,agent确认
+2,System.Xaml,XamlDirective,class,System.Xaml.XamlMember,2,1,20,0,0,0,agent确认
+2,System.Xaml,XamlDuplicateMemberException,class,System.Xaml.XamlException,5,2,1,0,0,0,agent确认
+2,System.Xaml,XamlException,class,System.Exception,5,3,1,0,0,0,agent确认
+2,System.Xaml,XamlInternalException,class,System.Xaml.XamlException,4,0,0,0,0,0,agent确认
+2,System.Xaml,XamlLanguage,class,,0,49,0,0,2,0,agent确认
+2,System.Xaml,XamlMember,class,System.IEquatable<System.Xaml.XamlMember>,9,23,26,0,0,0,agent确认
+2,System.Xaml,XamlNodeList,class,,2,2,2,0,0,0,agent确认
+2,System.Xaml,XamlNodeQueue,class,,1,4,0,0,0,0,agent确认
+2,System.Xaml,XamlNodeType,enum,byte,0,0,8,0,0,0,agent确认
+2,System.Xaml,XamlObjectEventArgs,class,System.EventArgs,1,4,0,0,0,0,agent确认
+2,System.Xaml,XamlObjectReader,class,System.Xaml.XamlReader,4,8,1,0,0,0,agent确认
+2,System.Xaml,XamlObjectReaderException,class,System.Xaml.XamlException,4,0,0,0,0,0,agent确认
+2,System.Xaml,XamlObjectReaderSettings,class,System.Xaml.XamlReaderSettings,1,1,0,0,0,0,agent确认
+2,System.Xaml,XamlObjectWriter,class,"System.Xaml.XamlWriter, System.Xaml.IXamlLineInfoConsumer",2,4,15,0,0,0,agent确认
+2,System.Xaml,XamlObjectWriterException,class,System.Xaml.XamlException,4,0,0,0,0,0,agent确认
+2,System.Xaml,XamlObjectWriterSettings,class,System.Xaml.XamlWriterSettings,2,14,0,0,0,0,agent确认
+2,System.Xaml,XamlParseException,class,System.Xaml.XamlException,4,0,0,0,0,0,agent确认
+2,System.Xaml,XamlReader,class,System.IDisposable,1,8,6,0,0,0,agent确认
+2,System.Xaml,XamlReaderSettings,class,,2,6,0,0,0,0,agent确认
+2,System.Xaml,XamlSchemaContext,class,,4,3,11,0,0,0,agent确认
+2,System.Xaml,XamlSchemaContextSettings,class,,2,2,0,0,0,0,agent确认
+2,System.Xaml,XamlSchemaException,class,System.Xaml.XamlException,4,0,0,0,0,0,agent确认
+2,System.Xaml,XamlServices,class,,0,0,14,0,0,0,agent确认
+2,System.Xaml,XamlType,class,System.IEquatable<System.Xaml.XamlType>,4,33,48,0,0,0,agent确认
+2,System.Xaml,XamlWriter,class,System.IDisposable,1,2,11,0,0,0,agent确认
+2,System.Xaml,XamlWriterSettings,class,,2,0,0,0,0,0,agent确认
+2,System.Xaml,XamlXmlReader,class,"System.Xaml.XamlReader, System.Xaml.IXamlLineInfo",16,10,1,0,0,0,agent确认
+2,System.Xaml,XamlXmlReaderSettings,class,System.Xaml.XamlReaderSettings,2,4,0,0,0,0,agent确认
+2,System.Xaml,XamlXmlWriter,class,System.Xaml.XamlWriter,6,2,9,0,0,0,agent确认
+2,System.Xaml,XamlXmlWriterException,class,System.Xaml.XamlException,4,0,0,0,0,0,agent确认
+2,System.Xaml,XamlXmlWriterSettings,class,System.Xaml.XamlWriterSettings,1,2,1,0,0,0,agent确认
+3,Microsoft.Win32,CommonDialog,class,,1,1,6,0,0,0,agent确认
+3,Microsoft.Win32,CommonItemDialog,class,Microsoft.Win32.CommonDialog,1,10,4,0,0,0,agent确认
+3,Microsoft.Win32,FileDialogCustomPlaces,class,,0,17,0,0,0,0,agent确认
+3,Microsoft.Win32,OpenFolderDialog,class,Microsoft.Win32.CommonItemDialog,1,5,3,1,0,0,agent确认
+3,System.Diagnostics,PresentationTraceLevel,enum,,0,0,0,0,0,4,agent确认
+3,System.Diagnostics,PresentationTraceSources,class,,0,11,3,0,1,0,agent确认
+3,System.IO.Packaging,CertificateEmbeddingOption,enum,,0,0,0,0,0,3,agent确认
+3,System.IO.Packaging,EncryptedPackageEnvelope,class,System.IDisposable,1,4,15,0,0,0,agent确认
+3,System.IO.Packaging,PackWebRequest,class,System.Net.WebRequest,1,12,3,0,0,0,agent确认
+3,System.IO.Packaging,PackWebRequestFactory,class,System.Net.IWebRequestCreate,1,0,1,0,0,0,agent确认
+3,System.IO.Packaging,PackWebResponse,class,System.Net.WebResponse,1,6,3,0,0,0,agent确认
+3,System.IO.Packaging,PackageDigitalSignature,class,,1,10,3,0,0,0,agent确认
+3,System.IO.Packaging,PackageDigitalSignatureManager,class,,1,10,13,1,0,0,agent确认
+3,System.IO.Packaging,PackageStore,class,,0,0,3,0,0,0,agent确认
+3,System.IO.Packaging,RightsManagementInformation,class,,1,1,6,0,0,0,agent确认
+3,System.IO.Packaging,SignatureVerificationEventArgs,class,System.EventArgs,1,2,0,0,0,0,agent确认
+3,System.IO.Packaging,StorageInfo,class,,1,1,11,0,0,0,agent确认
+3,System.IO.Packaging,StreamInfo,class,,1,3,3,0,0,0,agent确认
+3,System.IO.Packaging,VerifyResult,enum,,0,0,0,0,0,6,agent确认
+3,System.IO.Packaging,void,delegate,,,,,,,,agent确认
+3,System.Security.RightsManagement,AuthenticationType,enum,,0,0,0,0,0,4,agent确认
+3,System.Security.RightsManagement,ContentGrant,class,,2,4,0,0,0,0,agent确认
+3,System.Security.RightsManagement,ContentRight,enum,,0,0,0,0,0,13,agent确认
+3,System.Security.RightsManagement,ContentUser,class,,1,4,3,0,0,0,agent确认
+3,System.Security.RightsManagement,CryptoProvider,class,System.IDisposable,1,5,5,0,0,0,agent确认
+3,System.Security.RightsManagement,LocalizedNameDescriptionPair,class,,1,2,2,0,0,0,agent确认
+3,System.Security.RightsManagement,PublishLicense,class,,1,4,4,0,0,0,agent确认
+3,System.Security.RightsManagement,RightsManagementException,class,System.Exception,8,1,1,0,0,0,agent确认
+3,System.Security.RightsManagement,RightsManagementFailureCode,enum,,0,0,0,0,0,94,agent确认
+3,System.Security.RightsManagement,SecureEnvironment,class,System.IDisposable,1,2,7,0,0,0,agent确认
+3,System.Security.RightsManagement,UnsignedPublishLicense,class,,2,6,2,0,0,0,agent确认
+3,System.Security.RightsManagement,UseLicense,class,,1,3,4,0,0,0,agent确认
+3,System.Security.RightsManagement,UserActivationMode,enum,,0,0,0,0,0,2,agent确认
+3,System.Windows.Annotations,AnnotationAuthorChangedEventArgs,class,System.EventArgs,1,3,0,0,0,0,agent确认
+3,System.Windows.Annotations,AnnotationAuthorChangedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Annotations,AnnotationDocumentPaginator,class,System.Windows.Documents.DocumentPaginator,4,4,5,0,0,0,agent确认
+3,System.Windows.Annotations,AnnotationHelper,class,,0,0,7,0,0,0,agent确认
+3,System.Windows.Annotations,AnnotationResourceChangedEventArgs,class,System.EventArgs,1,3,0,0,0,0,agent确认
+3,System.Windows.Annotations,AnnotationResourceChangedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Annotations,ContentLocator,class,"System.Windows.Annotations.ContentLocatorBase, System.Xml.Serialization.IXmlSerializable",1,1,5,0,0,0,agent确认
+3,System.Windows.Annotations,ContentLocatorBase,class,System.ComponentModel.INotifyPropertyChanged,1,0,1,1,0,0,agent确认
+3,System.Windows.Annotations,ContentLocatorGroup,class,"System.Windows.Annotations.ContentLocatorBase, System.Xml.Serialization.IXmlSerializable",1,1,4,0,0,0,agent确认
+3,System.Windows.Annotations,ContentLocatorPart,class,System.ComponentModel.INotifyPropertyChanged,1,2,3,1,0,0,agent确认
+3,System.Windows.Annotations,IAnchorInfo,interface,,0,3,0,0,0,0,agent确认
+3,System.Windows.Annotations,TextAnchor,class,,1,2,2,0,0,0,agent确认
+3,System.Windows.Annotations.Storage,StoreContentAction,enum,,0,0,0,0,0,2,agent确认
+3,System.Windows.Annotations.Storage,StoreContentChangedEventArgs,class,System.EventArgs,1,2,0,0,0,0,agent确认
+3,System.Windows.Annotations.Storage,StoreContentChangedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Automation,AutomationHeadingLevel,enum,,0,0,0,0,0,10,agent确认
+3,System.Windows.Automation.Peers,AutomationOrientation,enum,,0,0,0,0,0,3,agent确认
+3,System.Windows.Automation.Peers,CalendarButtonAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,0,3,0,0,0,agent确认
+3,System.Windows.Automation.Peers,ContentTextAutomationPeer,class,System.Windows.Automation.Peers.FrameworkContentElementAutomationPeer,1,0,1,0,0,0,agent确认
+3,System.Windows.Automation.Peers,ContextMenuAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,0,3,0,0,0,agent确认
+3,System.Windows.Automation.Peers,DataGridColumnHeaderItemAutomationPeer,class,"System.Windows.Automation.Peers.ItemAutomationPeer, IInvokeProvider, IScrollItemProvider, ITransformProvider, IVirtualizedItemProvider",1,3,10,0,0,0,agent确认
+3,System.Windows.Automation.Peers,DataGridColumnHeadersPresenterAutomationPeer,class,"System.Windows.Automation.Peers.ItemsControlAutomationPeer, IItemContainerProvider",1,0,6,0,0,0,agent确认
+3,System.Windows.Automation.Peers,DataGridDetailsPresenterAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,0,1,0,0,0,agent确认
+3,System.Windows.Automation.Peers,DataGridItemAutomationPeer,class,"System.Windows.Automation.Peers.ItemAutomationPeer, IInvokeProvider, IItemContainerProvider, IScrollItemProvider, ISelectionItemProvider, ISelectionProvider",1,4,12,0,0,0,agent确认
+3,System.Windows.Automation.Peers,DataGridRowHeaderAutomationPeer,class,System.Windows.Automation.Peers.ButtonBaseAutomationPeer,1,0,3,0,0,0,agent确认
+3,System.Windows.Automation.Peers,DateTimeAutomationPeer,class,"System.Windows.Automation.Peers.AutomationPeer, IGridItemProvider, IInvokeProvider, ISelectionItemProvider, ITableItemProvider, IVirtualizedItemProvider",1,7,37,0,0,0,agent确认
+3,System.Windows.Automation.Peers,DocumentAutomationPeer,class,System.Windows.Automation.Peers.ContentTextAutomationPeer,1,0,8,0,0,0,agent确认
+3,System.Windows.Automation.Peers,DocumentPageViewAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,0,2,0,0,0,agent确认
+3,System.Windows.Automation.Peers,DocumentViewerBaseAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,0,4,0,0,0,agent确认
+3,System.Windows.Automation.Peers,FixedPageAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,0,2,0,0,0,agent确认
+3,System.Windows.Automation.Peers,FlowDocumentPageViewerAutomationPeer,class,System.Windows.Automation.Peers.DocumentViewerBaseAutomationPeer,1,0,2,0,0,0,agent确认
+3,System.Windows.Automation.Peers,FlowDocumentReaderAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,1,6,0,0,0,agent确认
+3,System.Windows.Automation.Peers,FlowDocumentScrollViewerAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,0,4,0,0,0,agent确认
+3,System.Windows.Automation.Peers,FrameworkContentElementAutomationPeer,class,System.Windows.Automation.Peers.ContentElementAutomationPeer,1,0,3,0,0,0,agent确认
+3,System.Windows.Automation.Peers,GridViewAutomationPeer,class,"object (implements IViewAutomationPeer, IGridProvider, ITableProvider)",1,3,9,0,0,0,agent确认
+3,System.Windows.Automation.Peers,GridViewCellAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,5,6,0,0,0,agent确认
+3,System.Windows.Automation.Peers,GridViewColumnHeaderAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,3,8,0,0,0,agent确认
+3,System.Windows.Automation.Peers,GridViewHeaderRowPresenterAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,0,4,0,0,0,agent确认
+3,System.Windows.Automation.Peers,GridViewItemAutomationPeer,class,System.Windows.Automation.Peers.ListBoxItemAutomationPeer,1,0,3,0,0,0,agent确认
+3,System.Windows.Automation.Peers,HostedWindowWrapper,class,,1,0,0,0,0,0,agent确认
+3,System.Windows.Automation.Peers,HyperlinkAutomationPeer,class,System.Windows.Automation.Peers.TextElementAutomationPeer,1,0,6,0,0,0,agent确认
+3,System.Windows.Automation.Peers,IViewAutomationPeer,interface,,0,0,6,0,0,0,agent确认
+3,System.Windows.Automation.Peers,InkPresenterAutomationPeer,class,System.Windows.Automation.Peers.FrameworkElementAutomationPeer,1,0,2,0,0,0,agent确认
+3,System.Windows.Automation.Peers,ItemAutomationPeer,class,System.Windows.Automation.Peers.AutomationPeer,1,2,28,0,0,0,agent确认
+3,System.Windows.Automation.Peers,ListBoxItemWrapperAutomationPeer,class,FrameworkElementAutomationPeer,1,0,2,0,0,0,agent确认
+3,System.Windows.Automation.Peers,MediaElementAutomationPeer,class,FrameworkElementAutomationPeer,1,0,2,0,0,0,agent确认
+3,System.Windows.Automation.Peers,RangeBaseAutomationPeer,class,"FrameworkElementAutomationPeer, IRangeValueProvider",1,6,2,0,0,0,agent确认
+3,System.Windows.Automation.Peers,SelectorAutomationPeer,class,"ItemsControlAutomationPeer, ISelectionProvider",1,2,3,0,0,0,agent确认
+3,System.Windows.Automation.Peers,SelectorItemAutomationPeer,class,"ItemAutomationPeer, ISelectionItemProvider",1,2,4,0,0,0,agent确认
+3,System.Windows.Automation.Peers,TabItemWrapperAutomationPeer,class,FrameworkElementAutomationPeer,1,0,0,0,0,0,agent确认
+3,System.Windows.Automation.Peers,TableAutomationPeer,class,"TextElementAutomationPeer, IGridProvider",1,2,5,0,0,0,agent确认
+3,System.Windows.Automation.Peers,TableCellAutomationPeer,class,"TextElementAutomationPeer, IGridItemProvider",1,5,5,0,0,0,agent确认
+3,System.Windows.Automation.Peers,TextAutomationPeer,class,FrameworkElementAutomationPeer,1,0,2,0,0,0,agent确认
+3,System.Windows.Automation.Peers,TextElementAutomationPeer,class,System.Windows.Automation.Peers.ContentTextAutomationPeer,1,0,4,0,0,0,agent确认
+3,System.Windows.Automation.Peers,TreeViewDataItemAutomationPeer,class,System.Windows.Automation.Peers.ItemAutomationPeer,1,4,9,0,0,0,agent确认
+3,System.Windows.Automation.Peers,UIElement3DAutomationPeer,class,System.Windows.Automation.Peers.AutomationPeer,1,1,31,0,0,0,agent确认
+3,System.Windows.Converters,Int32RectValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Converters,PointValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Converters,RectValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Converters,SizeValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Converters,VectorValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Diagnostics,BindingFailedEventArgs,class,,0,5,0,0,0,0,agent确认
+3,System.Windows.Diagnostics,ResourceDictionaryDiagnostics,class,,0,2,4,4,0,0,agent确认
+3,System.Windows.Diagnostics,ResourceDictionaryInfo,class,,1,4,0,0,0,0,agent确认
+3,System.Windows.Diagnostics,ResourceDictionaryLoadedEventArgs,class,System.EventArgs,1,1,0,0,0,0,agent确认
+3,System.Windows.Diagnostics,ResourceDictionaryUnloadedEventArgs,class,System.EventArgs,1,1,0,0,0,0,agent确认
+3,System.Windows.Diagnostics,StaticResourceResolvedEventArgs,class,System.EventArgs,1,4,0,0,0,0,agent确认
+3,System.Windows.Diagnostics,VisualDiagnostics,class,,0,0,3,1,0,0,agent确认
+3,System.Windows.Diagnostics,VisualTreeChangeEventArgs,class,System.EventArgs,1,4,0,0,0,0,agent确认
+3,System.Windows.Diagnostics,VisualTreeChangeType,enum,,0,0,0,0,0,2,agent确认
+3,System.Windows.Diagnostics,XamlSourceInfo,class,,1,3,0,0,0,0,agent确认
+3,System.Windows.Documents.Serialization,ISerializerFactory,interface,,0,4,1,0,0,0,agent确认
+3,System.Windows.Documents.Serialization,SerializerDescriptor,class,,1,10,3,0,0,0,agent确认
+3,System.Windows.Documents.Serialization,SerializerProvider,class,,1,1,3,0,0,0,agent确认
+3,System.Windows.Documents.Serialization,SerializerWriter,class,,1,0,33,4,0,0,agent确认
+3,System.Windows.Documents.Serialization,SerializerWriterCollator,class,,1,0,10,0,0,0,agent确认
+3,System.Windows.Documents.Serialization,WritingCancelledEventArgs,class,System.EventArgs,1,1,0,0,0,0,agent确认
+3,System.Windows.Documents.Serialization,WritingCancelledEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Documents.Serialization,WritingCompletedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Documents.Serialization,WritingPrintTicketRequiredEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Documents.Serialization,WritingProgressChangeLevel,enum,,0,0,0,0,0,4,agent确认
+3,System.Windows.Documents.Serialization,WritingProgressChangedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Ink,ApplicationGesture,enum,,0,0,0,0,0,44,agent确认
+3,System.Windows.Ink,DrawingAttributeIds,class,,0,0,0,0,7,0,agent确认
+3,System.Windows.Ink,DrawingAttributesReplacedEventArgs,class,System.EventArgs,1,2,0,0,0,0,agent确认
+3,System.Windows.Ink,DrawingAttributesReplacedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Ink,GestureRecognizer,class,"System.Windows.DependencyObject, System.IDisposable",2,1,4,0,0,0,agent确认
+3,System.Windows.Ink,PropertyDataChangedEventArgs,class,System.EventArgs,1,3,0,0,0,0,agent确认
+3,System.Windows.Ink,PropertyDataChangedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Ink,StrokeCollectionChangedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Ink,StylusPointsReplacedEventArgs,class,System.EventArgs,1,2,0,0,0,0,agent确认
+3,System.Windows.Ink,StylusPointsReplacedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Input.StylusWisp,WispTabletDeviceCollection,class,System.Windows.Input.TabletDeviceCollection,1,0,0,0,0,0,agent确认
+3,System.Windows.Interop,ActiveXHost,class,System.Windows.Interop.HwndHost,1,1,7,0,0,0,agent确认
+3,System.Windows.Interop,BrowserInteropHelper,class,,0,4,0,0,0,0,agent确认
+3,System.Windows.Interop,ComponentDispatcher,class,,0,2,4,5,0,0,agent确认
+3,System.Windows.Interop,CursorInteropHelper,class,,0,0,1,0,0,0,agent确认
+3,System.Windows.Interop,DynamicScriptObject,class,System.Dynamic.DynamicObject,1,0,7,0,0,0,agent确认
+3,System.Windows.Interop,HwndTarget,class,System.Windows.Media.CompositionTarget,1,6,1,0,0,0,agent确认
+3,System.Windows.Interop,IErrorPage,interface,,0,8,0,0,0,0,agent确认
+3,System.Windows.Interop,IKeyboardInputSink,interface,,0,1,6,0,0,0,agent确认
+3,System.Windows.Interop,IKeyboardInputSite,interface,,0,1,2,0,0,0,agent确认
+3,System.Windows.Interop,IProgressPage,interface,,0,5,1,0,0,0,agent确认
+3,System.Windows.Interop,IWin32Window,interface,,0,1,0,0,0,0,agent确认
+3,System.Windows.Interop,Imaging,class,,0,0,3,0,0,0,agent确认
+3,System.Windows.Interop,MSG,struct,,0,7,0,0,0,0,agent确认
+3,System.Windows.Interop,ThreadMessageEventHandler,delegate,System.MulticastDelegate,0,0,0,0,0,0,agent确认
+3,System.Windows.Markup.Primitives,MarkupObject,class,,1,4,1,0,0,0,agent确认
+3,System.Windows.Markup.Primitives,MarkupProperty,class,,1,15,0,0,0,0,agent确认
+3,System.Windows.Markup.Primitives,MarkupWriter,class,System.IDisposable,1,0,3,0,0,0,agent确认
+3,System.Windows.Media.Converters,BaseIListConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Converters,BoolIListConverter,class,System.Windows.Media.Converters.BaseIListConverter,1,0,0,0,0,0,agent确认
+3,System.Windows.Media.Converters,CacheModeValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Converters,CharIListConverter,class,System.Windows.Media.Converters.BaseIListConverter,1,0,0,0,0,0,agent确认
+3,System.Windows.Media.Converters,DoubleCollectionValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Converters,DoubleIListConverter,class,System.Windows.Media.Converters.BaseIListConverter,1,0,0,0,0,0,agent确认
+3,System.Windows.Media.Converters,Int32CollectionValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Converters,MatrixValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Converters,PathFigureCollectionValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Converters,PointCollectionValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Converters,PointIListConverter,class,System.Windows.Media.Converters.BaseIListConverter,1,0,0,0,0,0,agent确认
+3,System.Windows.Media.Converters,UShortIListConverter,class,System.Windows.Media.Converters.BaseIListConverter,1,0,0,0,0,0,agent确认
+3,System.Windows.Media.Converters,VectorCollectionValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D,AffineTransform3D,class,System.Windows.Media.Media3D.Transform3D,1,1,2,0,0,0,agent确认
+3,System.Windows.Media.Media3D,GeneralTransform2DTo3D,class,System.Windows.Freezable,1,0,7,0,0,0,agent确认
+3,System.Windows.Media.Media3D,GeneralTransform3DCollection,class,System.Windows.Media.Animation.Animatable (+ IList<GeneralTransform3D>/ICollection<GeneralTransform3D>/IList/ICollection/IEnumerable),3,10,28,0,0,0,agent确认
+3,System.Windows.Media.Media3D,GeneralTransform3DGroup,class,System.Windows.Media.Media3D.GeneralTransform3D,1,2,5,0,1,0,agent确认
+3,System.Windows.Media.Media3D,MaterialCollection,class,System.Windows.Media.Animation.Animatable (+ IList<Material>/ICollection<Material>/IList/ICollection/IEnumerable),3,10,28,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Matrix3DConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Model3DCollection,class,"System.Windows.Media.Animation.Animatable, IList<Model3D>, ICollection<Model3D>, IEnumerable<Model3D>, IList, ICollection, IEnumerable",3,10,28,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Point3DCollectionConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Point3DConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Point4D,struct,System.IFormattable,1,4,17,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Point4DConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D,PointLightBase,class,System.Windows.Media.Media3D.Light,1,5,2,0,5,0,agent确认
+3,System.Windows.Media.Media3D,ProjectionCamera,class,System.Windows.Media.Media3D.Camera,1,5,2,0,5,0,agent确认
+3,System.Windows.Media.Media3D,QuaternionConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D,RayHitTestResult,class,System.Windows.Media.HitTestResult,1,4,0,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Rect3DConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Size3DConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Transform3DCollection,class,System.Windows.Media.Animation.Animatable,3,10,28,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Vector3DCollectionConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Vector3DConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D,Visual3DCollection,class,"sealed collection; implements IList<Visual3D>, ICollection<Visual3D>, IEnumerable<Visual3D>, IList, ICollection, IEnumerable",1,10,20,0,0,0,agent确认
+3,System.Windows.Media.Media3D.Converters,Matrix3DValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D.Converters,Point3DCollectionValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D.Converters,Point3DValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D.Converters,Point4DValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D.Converters,QuaternionValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D.Converters,Rect3DValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D.Converters,Size3DValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D.Converters,Vector3DCollectionValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Media.Media3D.Converters,Vector3DValueSerializer,class,System.Windows.Markup.ValueSerializer,1,0,4,0,0,0,agent确认
+3,System.Windows.Navigation,BaseUriHelper,class,,0,0,1,0,1,0,agent确认
+3,System.Windows.Navigation,FragmentNavigationEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Navigation,JournalEntryListConverter,class,System.Windows.Data.IValueConverter,1,0,2,0,0,0,agent确认
+3,System.Windows.Navigation,JournalEntryPosition,enum,,0,0,0,0,0,3,agent确认
+3,System.Windows.Navigation,LoadCompletedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Navigation,NavigatedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Navigation,NavigatingCancelEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Navigation,NavigationFailedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Navigation,NavigationProgressEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Navigation,NavigationStoppedEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Navigation,PageFunctionBase,class,System.Windows.Controls.Page,1,1,1,0,0,0,agent确认
+3,System.Windows.Navigation,RequestNavigateEventHandler,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Navigation,ReturnEventHandler<T>,delegate,,0,0,0,0,0,0,agent确认
+3,System.Windows.Resources,AssemblyAssociatedContentFileAttribute,class,System.Attribute,1,1,0,0,0,0,agent确认
+3,System.Windows.Resources,ContentTypes,class,,1,0,0,0,1,0,agent确认
+3,System.Windows.Resources,StreamResourceInfo,class,,2,2,0,0,0,0,agent确认
+3,System.Xaml.Schema,AllowedMemberLocations,enum,,0,0,0,0,0,4,agent确认
+3,System.Xaml.Schema,ShouldSerializeResult,enum,,0,0,0,0,0,3,agent确认
+3,System.Xaml.Schema,XamlCollectionKind,enum,byte,0,0,4,0,0,0,agent确认
+3,System.Xaml.Schema,XamlMemberInvoker,class,,2,3,3,0,0,0,agent确认
+3,System.Xaml.Schema,XamlTypeInvoker,class,,2,3,6,0,0,0,agent确认
+3,System.Xaml.Schema,XamlTypeName,class,,4,3,7,0,0,0,agent确认
+3,System.Xaml.Schema,XamlTypeTypeConverter,class,System.ComponentModel.TypeConverter,1,0,4,0,0,0,agent确认
+3,System.Xaml.Schema,XamlValueConverter<TConverterBase>,class,System.IEquatable<System.Xaml.Schema.XamlValueConverter<TConverterBase>> where TConverterBase : class,2,4,7,0,0,0,agent确认

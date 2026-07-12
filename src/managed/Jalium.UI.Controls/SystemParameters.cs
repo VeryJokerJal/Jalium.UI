@@ -1,4 +1,7 @@
 using System.Runtime.Versioning;
+using System.ComponentModel;
+using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Media;
 using Microsoft.Win32;
 
 namespace Jalium.UI;
@@ -27,7 +30,7 @@ public enum SystemEnvironmentKind
 /// <summary>
 /// Contains properties that you can use to query system settings.
 /// </summary>
-public static class SystemParameters
+public static partial class SystemParameters
 {
     private const string BiosRegistryPath = @"HARDWARE\DESCRIPTION\System\BIOS";
     private const string HyperVGuestRegistryPath = @"SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters";
@@ -112,80 +115,84 @@ public static class SystemParameters
     /// </summary>
     public static bool IsVirtualMachine => HasEnvironment(SystemEnvironmentKind.VirtualMachine);
 
-    // Window metrics
-    public static double BorderWidth => 1.0;
-    public static double CaptionHeight => 22.0;
-    public static double CaptionWidth => 22.0;
-    public static Thickness WindowResizeBorderThickness => new Thickness(4);
-    public static Thickness WindowNonClientFrameThickness => new Thickness(8, 30, 8, 8);
+    // Window metrics. Win32 pixel measurements are normalized to device-independent pixels.
+    public static double BorderWidth => MetricDip(SM_CXBORDER, 1);
+    public static double CaptionHeight => MetricDip(SM_CYCAPTION, 22);
+    public static double CaptionWidth => MetricDip(SM_CXSIZE, 22);
+    public static Thickness WindowResizeBorderThickness
+    {
+        get
+        {
+            var horizontal = MetricDip(SM_CXFRAME, 4) + MetricDip(SM_CXPADDEDBORDER, 0);
+            var vertical = MetricDip(SM_CYFRAME, 4) + MetricDip(SM_CXPADDEDBORDER, 0);
+            return new Thickness(horizontal, vertical, horizontal, vertical);
+        }
+    }
 
-    // UI element sizes
-    public static double SmallIconWidth => 16.0;
-    public static double SmallIconHeight => 16.0;
-    public static double IconWidth => 32.0;
-    public static double IconHeight => 32.0;
-    public static double MenuBarHeight => 20.0;
-    public static double ScrollWidth => 17.0;
-    public static double ScrollHeight => 17.0;
-    public static double HorizontalScrollBarButtonWidth => 17.0;
-    public static double VerticalScrollBarButtonHeight => 17.0;
-    public static double HorizontalScrollBarHeight => 17.0;
-    public static double VerticalScrollBarWidth => 17.0;
-    public static double HorizontalScrollBarThumbWidth => 8.0;
-    public static double VerticalScrollBarThumbHeight => 8.0;
+    public static Thickness WindowNonClientFrameThickness
+    {
+        get
+        {
+            var resize = WindowResizeBorderThickness;
+            return new Thickness(resize.Left, resize.Top + CaptionHeight, resize.Right, resize.Bottom);
+        }
+    }
 
-    // Cursor sizes
-    public static double CursorWidth => 32.0;
-    public static double CursorHeight => 32.0;
+    // UI element sizes.
+    public static double SmallIconWidth => MetricDip(SM_CXSMICON, 16);
+    public static double SmallIconHeight => MetricDip(SM_CYSMICON, 16);
+    public static double IconWidth => MetricDip(SM_CXICON, 32);
+    public static double IconHeight => MetricDip(SM_CYICON, 32);
+    public static double MenuBarHeight => MetricDip(SM_CYMENU, 20);
+    public static double ScrollWidth => MetricDip(SM_CXVSCROLL, 17);
+    public static double ScrollHeight => MetricDip(SM_CYHSCROLL, 17);
+    public static double HorizontalScrollBarButtonWidth => MetricDip(SM_CXHSCROLL, 17);
+    public static double VerticalScrollBarButtonHeight => MetricDip(SM_CYVSCROLL, 17);
+    public static double HorizontalScrollBarHeight => MetricDip(SM_CYHSCROLL, 17);
+    public static double VerticalScrollBarWidth => MetricDip(SM_CXVSCROLL, 17);
+    public static double HorizontalScrollBarThumbWidth => MetricDip(SM_CXHTHUMB, 8);
+    public static double VerticalScrollBarThumbHeight => MetricDip(SM_CYVTHUMB, 8);
 
-    // Mouse settings
-    public static int DoubleClickTime => 500;
-    public static int MouseHoverTime => 400;
-    public static double MouseHoverWidth => 4.0;
-    public static double MouseHoverHeight => 4.0;
+    public static double CursorWidth => MetricDip(SM_CXCURSOR, 32);
+    public static double CursorHeight => MetricDip(SM_CYCURSOR, 32);
 
-    // Drag settings
-    public static double MinimumHorizontalDragDistance => 4.0;
-    public static double MinimumVerticalDragDistance => 4.0;
+    // Input settings.
+    public static int DoubleClickTime => GetDoubleClickTimeOrDefault();
+    public static TimeSpan MouseHoverTime => TimeSpan.FromMilliseconds(GetSpiUInt(SPI_GETMOUSEHOVERTIME, 400));
+    public static double MouseHoverWidth => PixelDip(GetSpiUInt(SPI_GETMOUSEHOVERWIDTH, 4));
+    public static double MouseHoverHeight => PixelDip(GetSpiUInt(SPI_GETMOUSEHOVERHEIGHT, 4));
+    public static double MinimumHorizontalDragDistance => Math.Max(1, MetricDip(SM_CXDRAG, 4));
+    public static double MinimumVerticalDragDistance => Math.Max(1, MetricDip(SM_CYDRAG, 4));
 
-    // Screen
-    public static double PrimaryScreenWidth => 1920.0;
-    public static double PrimaryScreenHeight => 1080.0;
-    public static double VirtualScreenWidth => 1920.0;
-    public static double VirtualScreenHeight => 1080.0;
-    public static double VirtualScreenLeft => 0.0;
-    public static double VirtualScreenTop => 0.0;
-    public static Rect WorkArea => new Rect(0, 0, 1920, 1040);
-    public static bool IsTabletPC => false;
+    // Screen information.
+    public static double PrimaryScreenWidth => MetricDip(SM_CXSCREEN, 1920);
+    public static double PrimaryScreenHeight => MetricDip(SM_CYSCREEN, 1080);
+    public static double VirtualScreenWidth => MetricDip(SM_CXVIRTUALSCREEN, 1920);
+    public static double VirtualScreenHeight => MetricDip(SM_CYVIRTUALSCREEN, 1080);
+    public static double VirtualScreenLeft => MetricDipAllowZero(SM_XVIRTUALSCREEN, 0);
+    public static double VirtualScreenTop => MetricDipAllowZero(SM_YVIRTUALSCREEN, 0);
+    public static Rect WorkArea => GetWorkArea();
+    public static bool IsTabletPC => GetMetricBool(SM_TABLETPC, false);
 
-    // Visual effects
-    public static bool ClientAreaAnimation => true;
-    public static bool DropShadow => true;
-    public static bool FlatMenu => true;
-    public static int ForegroundFlashCount => 3;
-    public static bool GradientCaptions => true;
-    public static bool HighContrast => false;
-    public static bool MenuAnimation => true;
-    public static bool MenuDropAlignment => false;
-    public static bool SelectionFade => true;
-    public static bool StylusHotTracking => true;
-    public static bool ToolTipAnimation => true;
-    public static bool UIEffects => true;
+    // Visual and accessibility effects.
+    public static bool ClientAreaAnimation => GetSpiBool(SPI_GETCLIENTAREAANIMATION, true);
+    public static bool DropShadow => GetSpiBool(SPI_GETDROPSHADOW, true);
+    public static bool FlatMenu => GetSpiBool(SPI_GETFLATMENU, true);
+    public static int ForegroundFlashCount => (int)GetSpiUInt(SPI_GETFOREGROUNDFLASHCOUNT, 3);
+    public static bool GradientCaptions => GetSpiBool(SPI_GETGRADIENTCAPTIONS, true);
+    public static bool HighContrast => GetHighContrast();
+    public static bool MenuAnimation => GetSpiBool(SPI_GETMENUANIMATION, true);
+    public static bool MenuDropAlignment => GetMetricBool(SM_MENUDROPALIGNMENT, false);
+    public static bool SelectionFade => GetSpiBool(SPI_GETSELECTIONFADE, true);
+    public static bool StylusHotTracking => HotTracking;
+    public static bool ToolTipAnimation => GetSpiBool(SPI_GETTOOLTIPANIMATION, true);
+    public static bool UIEffects => GetSpiBool(SPI_GETUIEFFECTS, true);
 
-    // Focus
-    public static int CaretWidth => 1;
-
-    // Theme info
-    public static bool IsGlassEnabled => true;
-
-    // Caret blink rate
-    public static int CaretBlinkTime => 530;
-
-    // Wheel scroll lines
-    public static int WheelScrollLines => 3;
-
-    // Power
-    public static bool PowerLineStatus => true; // AC power
+    public static double CaretWidth => PixelDip(GetSpiUInt(SPI_GETCARETWIDTH, 1));
+    public static bool IsGlassEnabled => GetIsGlassEnabled();
+    public static int CaretBlinkTime => GetCaretBlinkTimeOrDefault();
+    public static int WheelScrollLines => (int)Math.Min(int.MaxValue, GetSpiUInt(SPI_GETWHEELSCROLLLINES, 3));
+    public static PowerLineStatus PowerLineStatus => GetPowerLineStatus();
 
     private static bool HasEnvironment(SystemEnvironmentKind environment)
     {

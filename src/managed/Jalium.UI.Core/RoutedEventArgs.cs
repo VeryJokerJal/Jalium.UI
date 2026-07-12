@@ -71,7 +71,7 @@ public class RoutedEventArgs : EventArgs
     /// <summary>
     /// Invokes the event handler with the appropriate arguments.
     /// </summary>
-    internal virtual void InvokeEventHandler(Delegate handler, object target)
+    protected virtual void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is RoutedEventHandler routedHandler)
         {
@@ -82,6 +82,12 @@ public class RoutedEventArgs : EventArgs
             handler.DynamicInvoke(target, this);
         }
     }
+
+    /// <summary>
+    /// Invokes the overridable handler dispatch hook from the routed-event infrastructure.
+    /// </summary>
+    internal void InvokeHandler(Delegate handler, object target) =>
+        InvokeEventHandler(handler, target);
 }
 
 /// <summary>

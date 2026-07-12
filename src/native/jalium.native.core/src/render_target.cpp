@@ -821,7 +821,12 @@ JALIUM_API int32_t jalium_ink_layer_bitmap_dispatch_brush(
     if (!bitmap || !shader || !strokePoints || !constants || pointCount < 2) return -1;
     auto* bh = reinterpret_cast<BackendOwnedHandle*>(bitmap);
     auto* sh = reinterpret_cast<BackendOwnedHandle*>(shader);
-    if (!bh->backend || !bh->native || !sh->native) return -2;
+    if (!bh->backend || !bh->native || !sh->backend || !sh->native) return -2;
+    // Both opaque handles must have been created by the exact same backend
+    // instance. Matching only the backend kind is insufficient: two D3D12
+    // contexts own different devices, and passing a shader PSO from one into
+    // the other's command list is native type/device confusion.
+    if (bh->backend != sh->backend) return JALIUM_INK_DISPATCH_ERROR_STALE_CONTEXT;
     uint32_t extraSize = (extraParams && extraParamsSize > 0) ? (uint32_t)extraParamsSize : 0;
     return bh->backend->DispatchBrush(
         bh->native, sh->native, strokePoints, (uint32_t)pointCount, constants,

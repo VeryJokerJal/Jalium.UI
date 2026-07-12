@@ -14,11 +14,12 @@ namespace Jalium.UI.Input.StylusPlugIns;
 /// </summary>
 public sealed class RawStylusInput
 {
-    private readonly Queue<StylusPlugIn> _processedCallbacks = new();
+    private readonly Queue<ProcessedCallback> _processedCallbacks = new();
     private readonly HashSet<StylusPlugIn> _processedCallbackSet = new();
     private readonly object _processedCallbacksGate = new();
     private ConcurrentDictionary<Guid, object>? _customData;
     private StylusPointCollection _stylusPoints;
+    private StylusPlugIn? _invokingPlugIn;
 
     internal RawStylusInput(
         uint pointerId,
@@ -41,7 +42,12 @@ public sealed class RawStylusInput
         Inverted = inverted;
         IsBarrelButtonPressed = barrelButtonPressed;
         IsEraserPressed = eraserPressed;
-        _stylusPoints = new StylusPointCollection(stylusPoints ?? throw new ArgumentNullException(nameof(stylusPoints)));
+        // Native pointer identifiers are unsigned, while WPF's public stylus
+        // contract exposes a signed Int32. Preserve all identifier bits
+        // instead of rejecting a valid platform identifier above Int32.MaxValue.
+        StylusDeviceId = unchecked((int)pointerId);
+        TabletDeviceId = Tablet.CurrentTabletDevice?.Id ?? 0;
+        _stylusPoints = (stylusPoints ?? throw new ArgumentNullException(nameof(stylusPoints))).Clone();
     }
 
     public uint PointerId { get; }
@@ -53,6 +59,8 @@ public sealed class RawStylusInput
     public bool Inverted { get; }
     public bool IsBarrelButtonPressed { get; }
     public bool IsEraserPressed { get; }
+    public int StylusDeviceId { get; }
+    public int TabletDeviceId { get; }
 
     // Volatile because Cancel() may be called on the RTS background thread and
     // read on the UI thread immediately after the worker signals completion.
@@ -65,7 +73,7 @@ public sealed class RawStylusInput
     {
         lock (_processedCallbacksGate)
         {
-            return new(_stylusPoints);
+            return _stylusPoints.Clone();
         }
     }
 
@@ -74,26 +82,30 @@ public sealed class RawStylusInput
         ArgumentNullException.ThrowIfNull(stylusPoints);
         lock (_processedCallbacksGate)
         {
-            _stylusPoints = new StylusPointCollection(stylusPoints);
+            _stylusPoints = stylusPoints.Clone();
         }
     }
 
     public void Cancel() => _isCanceled = true;
 
     /// <summary>
-    /// Marks <paramref name="stylusPlugIn"/> so its <c>OnStylusXxxProcessed</c>
+    /// Requests a processed-stage callback for the currently executing plug-in.
     /// hook fires on the UI thread once the input-stage chain completes. Safe
     /// to call from the RTS background thread; duplicates are coalesced.
     /// </summary>
-    public void NotifyWhenProcessed(StylusPlugIn stylusPlugIn)
+    public void NotifyWhenProcessed(object callbackData)
     {
-        ArgumentNullException.ThrowIfNull(stylusPlugIn);
+        ArgumentNullException.ThrowIfNull(callbackData);
+        StylusPlugIn stylusPlugIn = _invokingPlugIn
+            ?? throw new InvalidOperationException(
+                "NotifyWhenProcessed must be called from a StylusPlugIn input callback.");
 
         lock (_processedCallbacksGate)
         {
             if (_processedCallbackSet.Add(stylusPlugIn))
             {
-                _processedCallbacks.Enqueue(stylusPlugIn);
+                _processedCallbacks.Enqueue(
+                    new ProcessedCallback(stylusPlugIn, Action, callbackData));
             }
         }
     }
@@ -125,16 +137,30 @@ public sealed class RawStylusInput
     public T? GetCustomData<T>(Guid id) where T : class
         => _customData != null && _customData.TryGetValue(id, out var v) ? v as T : null;
 
-    internal IReadOnlyList<StylusPlugIn> DrainProcessedCallbacks()
+    internal void BeginPlugInInvocation(StylusPlugIn stylusPlugIn)
+    {
+        ArgumentNullException.ThrowIfNull(stylusPlugIn);
+        if (_invokingPlugIn is not null)
+            throw new InvalidOperationException("A stylus plug-in callback is already active.");
+        _invokingPlugIn = stylusPlugIn;
+    }
+
+    internal void EndPlugInInvocation(StylusPlugIn stylusPlugIn)
+    {
+        if (ReferenceEquals(_invokingPlugIn, stylusPlugIn))
+            _invokingPlugIn = null;
+    }
+
+    internal IReadOnlyList<ProcessedCallback> DrainProcessedCallbacks()
     {
         lock (_processedCallbacksGate)
         {
             if (_processedCallbacks.Count == 0)
             {
-                return Array.Empty<StylusPlugIn>();
+                return Array.Empty<ProcessedCallback>();
             }
 
-            var result = new List<StylusPlugIn>(_processedCallbacks.Count);
+            var result = new List<ProcessedCallback>(_processedCallbacks.Count);
             while (_processedCallbacks.Count > 0)
             {
                 result.Add(_processedCallbacks.Dequeue());
@@ -144,4 +170,9 @@ public sealed class RawStylusInput
             return result;
         }
     }
+
+    internal readonly record struct ProcessedCallback(
+        StylusPlugIn PlugIn,
+        StylusInputAction Action,
+        object CallbackData);
 }

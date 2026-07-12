@@ -95,6 +95,7 @@ public static class BindingDiagnostics
 
     public static bool IsRecording => Volatile.Read(ref s_recording) != 0;
     public static event EventHandler? StateChanged;
+    public static event EventHandler<BindingFailedEventArgs>? BindingFailed;
 
     public static void StartRecording()
     {
@@ -169,6 +170,19 @@ public static class BindingDiagnostics
         counters.LastError = message;
         counters.LastUpdate = DateTime.Now;
         Push(new BindingEventEntry(expression, BindingEventKind.Error, message));
+
+        var eventArgs = new BindingFailedEventArgs(
+            global::System.Diagnostics.TraceEventType.Error,
+            0,
+            message,
+            expression,
+            expression.Target,
+            expression.TargetProperty);
+        BindingFailed?.Invoke(null, eventArgs);
+
+        var traceSource = global::System.Diagnostics.PresentationTraceSources.DataBindingSource;
+        traceSource.TraceEvent(eventArgs.EventType, eventArgs.Code, eventArgs.Message);
+        traceSource.Flush();
     }
 
     private static void Push(BindingEventEntry entry)

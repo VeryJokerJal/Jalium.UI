@@ -1,5 +1,6 @@
 ﻿using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
+using BitmapImage = Jalium.UI.Media.BitmapImage;
 using Jalium.UI.Media.Native;
 using Jalium.UI.Media.Pipeline;
 using Jalium.UI.Threading;

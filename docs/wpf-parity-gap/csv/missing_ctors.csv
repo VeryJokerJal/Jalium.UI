@@ -1,0 +1,226 @@
+﻿tier,namespace,type,wpf_ctor_sig
+1,System.Windows,ComponentResourceKey,public ComponentResourceKey()
+1,System.Windows,Condition,"public Condition(System.Windows.Data.BindingBase binding, object conditionValue)"
+1,System.Windows,Condition,"public Condition(System.Windows.DependencyProperty conditionProperty, object conditionValue)"
+1,System.Windows,Condition,"public Condition(System.Windows.DependencyProperty conditionProperty, object conditionValue, string sourceName)"
+1,System.Windows,ContentElement,public ContentElement()
+1,System.Windows,DataObject,"public DataObject(string format, object data, bool autoConvert)"
+1,System.Windows,DataObject,"public DataObject(System.Type format, object data)"
+1,System.Windows,DataTemplateKey,public DataTemplateKey()
+1,System.Windows,EventTrigger,public EventTrigger(System.Windows.RoutedEvent routedEvent)
+1,System.Windows,FrameworkPropertyMetadata,"public FrameworkPropertyMetadata(object defaultValue, System.Windows.FrameworkPropertyMetadataOptions flags, System.Windows.PropertyChangedCallback propertyChangedCallback, System.Windows.CoerceValueCallback coerceValueCallback, bool isAnimationProhibited, System.Windows.Data.UpdateSourceTrigger defaultUpdateSourceTrigger)"
+1,System.Windows,FrameworkPropertyMetadata,"public FrameworkPropertyMetadata(System.Windows.PropertyChangedCallback propertyChangedCallback, System.Windows.CoerceValueCallback coerceValueCallback)"
+1,System.Windows,FreezableCollection<T>,public FreezableCollection(System.Collections.Generic.IEnumerable<T> collection)
+1,System.Windows,FreezableCollection<T>,public FreezableCollection(int capacity)
+1,System.Windows,PropertyMetadata,public PropertyMetadata(System.Windows.PropertyChangedCallback propertyChangedCallback)
+1,System.Windows,Rect,"public Rect(System.Windows.Point point1, System.Windows.Point point2)"
+1,System.Windows,Rect,"public Rect(System.Windows.Point point, System.Windows.Vector vector)"
+1,System.Windows,RoutedPropertyChangedEventArgs<T>,"public RoutedPropertyChangedEventArgs(T oldValue, T newValue)"
+1,System.Windows,Setter,"public Setter(System.Windows.DependencyProperty property, object value, string targetName)"
+1,System.Windows,TemplateKey,protected TemplateKey(System.Windows.TemplateKey.TemplateType templateType)
+1,System.Windows,TemplateKey,"protected TemplateKey(System.Windows.TemplateKey.TemplateType templateType, object dataType)"
+1,System.Windows,TextDecoration,"public TextDecoration(System.Windows.TextDecorationLocation location, System.Windows.Media.Pen pen, double penOffset, System.Windows.TextDecorationUnit penOffsetUnit, System.Windows.TextDecorationUnit penThicknessUnit)"
+1,System.Windows,TextDecorationCollection,public TextDecorationCollection(int capacity)
+1,System.Windows,UIPropertyMetadata,public UIPropertyMetadata(System.Windows.PropertyChangedCallback propertyChangedCallback)
+1,System.Windows,VisualStateManager,public VisualStateManager()
+1,System.Windows.Controls,CalendarDateRange,public CalendarDateRange()
+1,System.Windows.Controls,DataGridBeginningEditEventArgs,"public DataGridBeginningEditEventArgs(System.Windows.Controls.DataGridColumn column, System.Windows.Controls.DataGridRow row, System.Windows.RoutedEventArgs editingEventArgs)"
+1,System.Windows.Controls,DataGridCellEditEndingEventArgs,"public DataGridCellEditEndingEventArgs(System.Windows.Controls.DataGridColumn column, System.Windows.Controls.DataGridRow row, System.Windows.FrameworkElement editingElement, System.Windows.Controls.DataGridEditAction editAction)"
+1,System.Windows.Controls,DataGridPreparingCellForEditEventArgs,"public DataGridPreparingCellForEditEventArgs(System.Windows.Controls.DataGridColumn column, System.Windows.Controls.DataGridRow row, System.Windows.RoutedEventArgs editingEventArgs, System.Windows.FrameworkElement editingElement)"
+1,System.Windows.Controls,DataGridSortingEventArgs,public DataGridSortingEventArgs(System.Windows.Controls.DataGridColumn column)
+1,System.Windows.Controls,ItemsPanelTemplate,public ItemsPanelTemplate(System.Windows.FrameworkElementFactory root)
+1,System.Windows.Controls,PrintDialogException,"protected PrintDialogException(System.Runtime.Serialization.SerializationInfo info, System.Runtime.Serialization.StreamingContext context)"
+1,System.Windows.Controls,TextBlock,public TextBlock(System.Windows.Documents.Inline inline)
+1,System.Windows.Controls,TextChangedEventArgs,"public TextChangedEventArgs(System.Windows.RoutedEvent id, System.Windows.Controls.UndoAction action)"
+1,System.Windows.Controls,TextChangedEventArgs,"public TextChangedEventArgs(System.Windows.RoutedEvent id, System.Windows.Controls.UndoAction action, System.Collections.Generic.ICollection<System.Windows.Controls.TextChange> changes)"
+1,System.Windows.Controls,ValidationError,"public ValidationError(System.Windows.Controls.ValidationRule ruleInError, object bindingInError)"
+1,System.Windows.Controls,ValidationRule,"protected ValidationRule(System.Windows.Controls.ValidationStep validationStep, bool validatesOnTargetUpdated)"
+2,System.Windows.Data,CompositeCollection,public CompositeCollection(int capacity)
+2,System.Windows.Data,RelativeSource,public RelativeSource()
+2,System.Windows.Data,RelativeSource,"public RelativeSource(System.Windows.Data.RelativeSourceMode mode, System.Type ancestorType, int ancestorLevel)"
+2,System.Windows.Data,ValueUnavailableException,"protected ValueUnavailableException(System.Runtime.Serialization.SerializationInfo info, System.Runtime.Serialization.StreamingContext context)"
+2,System.Windows.Documents,AnchoredBlock,"protected AnchoredBlock(System.Windows.Documents.Block block, System.Windows.Documents.TextPointer insertionPosition)"
+2,System.Windows.Documents,BlockUIContainer,public BlockUIContainer(System.Windows.UIElement uiElement)
+2,System.Windows.Documents,Bold,"public Bold(System.Windows.Documents.Inline childInline, System.Windows.Documents.TextPointer insertionPosition)"
+2,System.Windows.Documents,Bold,"public Bold(System.Windows.Documents.TextPointer start, System.Windows.Documents.TextPointer end)"
+2,System.Windows.Documents,Figure,"public Figure(System.Windows.Documents.Block childBlock, System.Windows.Documents.TextPointer insertionPosition)"
+2,System.Windows.Documents,Floater,"public Floater(System.Windows.Documents.Block childBlock, System.Windows.Documents.TextPointer insertionPosition)"
+2,System.Windows.Documents,Hyperlink,"public Hyperlink(System.Windows.Documents.Inline childInline, System.Windows.Documents.TextPointer insertionPosition)"
+2,System.Windows.Documents,Hyperlink,"public Hyperlink(System.Windows.Documents.TextPointer start, System.Windows.Documents.TextPointer end)"
+2,System.Windows.Documents,InlineUIContainer,public InlineUIContainer(System.Windows.UIElement childUIElement)
+2,System.Windows.Documents,InlineUIContainer,"public InlineUIContainer(System.Windows.UIElement childUIElement, System.Windows.Documents.TextPointer insertionPosition)"
+2,System.Windows.Documents,Italic,"public Italic(System.Windows.Documents.Inline childInline, System.Windows.Documents.TextPointer insertionPosition)"
+2,System.Windows.Documents,Italic,"public Italic(System.Windows.Documents.TextPointer start, System.Windows.Documents.TextPointer end)"
+2,System.Windows.Documents,LineBreak,public LineBreak(System.Windows.Documents.TextPointer insertionPosition)
+2,System.Windows.Documents,List,public List(System.Windows.Documents.ListItem listItem)
+2,System.Windows.Documents,PaginationProgressEventArgs,"public PaginationProgressEventArgs(int start, int count)"
+2,System.Windows.Documents,Run,"public Run(string text, System.Windows.Documents.TextPointer insertionPosition)"
+2,System.Windows.Documents,Section,public Section(System.Windows.Documents.Block block)
+2,System.Windows.Documents,Span,"public Span(System.Windows.Documents.Inline childInline, System.Windows.Documents.TextPointer insertionPosition)"
+2,System.Windows.Documents,Span,"public Span(System.Windows.Documents.TextPointer start, System.Windows.Documents.TextPointer end)"
+2,System.Windows.Documents,Underline,"public Underline(System.Windows.Documents.Inline childInline, System.Windows.Documents.TextPointer insertionPosition)"
+2,System.Windows.Documents,Underline,"public Underline(System.Windows.Documents.TextPointer start, System.Windows.Documents.TextPointer end)"
+2,System.Windows.Input,AccessKeyPressedEventArgs,public AccessKeyPressedEventArgs()
+2,System.Windows.Input,Cursor,public Cursor(System.IO.Stream cursorStream)
+2,System.Windows.Input,Cursor,"public Cursor(System.IO.Stream cursorStream, bool scaleWithDpi)"
+2,System.Windows.Input,Cursor,public Cursor(string cursorFile)
+2,System.Windows.Input,Cursor,"public Cursor(string cursorFile, bool scaleWithDpi)"
+2,System.Windows.Input,InputEventArgs,"public InputEventArgs(System.Windows.Input.InputDevice inputDevice, int timestamp)"
+2,System.Windows.Input,KeyEventArgs,"public KeyEventArgs(System.Windows.Input.KeyboardDevice keyboard, System.Windows.PresentationSource inputSource, int timestamp, System.Windows.Input.Key key)"
+2,System.Windows.Input,KeyboardDevice,protected KeyboardDevice(System.Windows.Input.InputManager inputManager)
+2,System.Windows.Input,KeyboardFocusChangedEventArgs,"public KeyboardFocusChangedEventArgs(System.Windows.Input.KeyboardDevice keyboard, int timestamp, System.Windows.IInputElement oldFocus, System.Windows.IInputElement newFocus)"
+2,System.Windows.Input,ManipulationDelta,"public ManipulationDelta(System.Windows.Vector translation, double rotation, System.Windows.Vector scale, System.Windows.Vector expansion)"
+2,System.Windows.Input,ManipulationVelocities,"public ManipulationVelocities(System.Windows.Vector linearVelocity, double angularVelocity, System.Windows.Vector expansionVelocity)"
+2,System.Windows.Input,MouseButtonEventArgs,"public MouseButtonEventArgs(MouseDevice mouse, int timestamp, MouseButton button)"
+2,System.Windows.Input,MouseButtonEventArgs,"public MouseButtonEventArgs(MouseDevice mouse, int timestamp, MouseButton button, StylusDevice stylusDevice)"
+2,System.Windows.Input,MouseEventArgs,"public MouseEventArgs(MouseDevice mouse, int timestamp)"
+2,System.Windows.Input,MouseEventArgs,"public MouseEventArgs(MouseDevice mouse, int timestamp, StylusDevice stylusDevice)"
+2,System.Windows.Input,MouseWheelEventArgs,"public MouseWheelEventArgs(MouseDevice mouse, int timestamp, int delta)"
+2,System.Windows.Input,QueryCursorEventArgs,"public QueryCursorEventArgs(MouseDevice mouse, int timestamp)"
+2,System.Windows.Input,QueryCursorEventArgs,"public QueryCursorEventArgs(MouseDevice mouse, int timestamp, StylusDevice stylusDevice)"
+2,System.Windows.Input,StylusPoint,"public StylusPoint(double x, double y, float pressureFactor, System.Windows.Input.StylusPointDescription stylusPointDescription, int[] additionalValues)"
+2,System.Windows.Input,StylusPointCollection,public StylusPointCollection(System.Windows.Input.StylusPointDescription stylusPointDescription)
+2,System.Windows.Input,StylusPointCollection,"public StylusPointCollection(System.Windows.Input.StylusPointDescription stylusPointDescription, int initialCapacity)"
+2,System.Windows.Input,StylusPointProperty,protected StylusPointProperty(System.Windows.Input.StylusPointProperty stylusPointProperty)
+2,System.Windows.Input,TextCompositionEventArgs,"public TextCompositionEventArgs(System.Windows.Input.InputDevice inputDevice, System.Windows.Input.TextComposition composition)"
+2,System.Windows.Input,TouchDevice,protected TouchDevice(int deviceId)
+2,System.Windows.Markup,ArrayExtension,public ArrayExtension(System.Array elements)
+2,System.Windows.Markup,ContentPropertyAttribute,public ContentPropertyAttribute()
+2,System.Windows.Markup,TypeExtension,public TypeExtension(System.Type type)
+2,System.Windows.Markup,XamlParseException,public XamlParseException() { }
+2,System.Windows.Markup,XamlParseException,"protected XamlParseException(System.Runtime.Serialization.SerializationInfo info, System.Runtime.Serialization.StreamingContext context) { }"
+2,System.Windows.Markup,XamlParseException,"public XamlParseException(string message, int lineNumber, int linePosition) { }"
+2,System.Windows.Markup,XamlParseException,"public XamlParseException(string message, int lineNumber, int linePosition, System.Exception innerException) { }"
+2,System.Windows.Markup,XamlReader,public XamlReader() { }
+2,System.Windows.Media,BitmapCacheBrush,public BitmapCacheBrush(System.Windows.Media.Visual visual)
+2,System.Windows.Media,DrawingCollection,public DrawingCollection(int capacity)
+2,System.Windows.Media,EllipseGeometry,"public EllipseGeometry(System.Windows.Point center, double radiusX, double radiusY)"
+2,System.Windows.Media,EllipseGeometry,"public EllipseGeometry(System.Windows.Point center, double radiusX, double radiusY, System.Windows.Media.Transform transform)"
+2,System.Windows.Media,EllipseGeometry,public EllipseGeometry(System.Windows.Rect rect)
+2,System.Windows.Media,FontFamily,"public FontFamily(System.Uri baseUri, string familyName)"
+2,System.Windows.Media,FormattedText,"public FormattedText(string textToFormat, System.Globalization.CultureInfo culture, System.Windows.FlowDirection flowDirection, System.Windows.Media.Typeface typeface, double emSize, System.Windows.Media.Brush foreground)"
+2,System.Windows.Media,FormattedText,"public FormattedText(string textToFormat, System.Globalization.CultureInfo culture, System.Windows.FlowDirection flowDirection, System.Windows.Media.Typeface typeface, double emSize, System.Windows.Media.Brush foreground, double pixelsPerDip)"
+2,System.Windows.Media,FormattedText,"public FormattedText(string textToFormat, System.Globalization.CultureInfo culture, System.Windows.FlowDirection flowDirection, System.Windows.Media.Typeface typeface, double emSize, System.Windows.Media.Brush foreground, System.Windows.Media.NumberSubstitution numberSubstitution)"
+2,System.Windows.Media,FormattedText,"public FormattedText(string textToFormat, System.Globalization.CultureInfo culture, System.Windows.FlowDirection flowDirection, System.Windows.Media.Typeface typeface, double emSize, System.Windows.Media.Brush foreground, System.Windows.Media.NumberSubstitution numberSubstitution, double pixelsPerDip)"
+2,System.Windows.Media,FormattedText,"public FormattedText(string textToFormat, System.Globalization.CultureInfo culture, System.Windows.FlowDirection flowDirection, System.Windows.Media.Typeface typeface, double emSize, System.Windows.Media.Brush foreground, System.Windows.Media.NumberSubstitution numberSubstitution, System.Windows.Media.TextFormattingMode textFormattingMode)"
+2,System.Windows.Media,FormattedText,"public FormattedText(string textToFormat, System.Globalization.CultureInfo culture, System.Windows.FlowDirection flowDirection, System.Windows.Media.Typeface typeface, double emSize, System.Windows.Media.Brush foreground, System.Windows.Media.NumberSubstitution numberSubstitution, System.Windows.Media.TextFormattingMode textFormattingMode, double pixelsPerDip)"
+2,System.Windows.Media,GeometryCollection,public GeometryCollection(int capacity)
+2,System.Windows.Media,GlyphRun,public GlyphRun(float pixelsPerDip)
+2,System.Windows.Media,GlyphRun,"public GlyphRun(System.Windows.Media.GlyphTypeface glyphTypeface, int bidiLevel, bool isSideways, double renderingEmSize, System.Collections.Generic.IList<ushort> glyphIndices, System.Windows.Point baselineOrigin, System.Collections.Generic.IList<double> advanceWidths, System.Collections.Generic.IList<System.Windows.Point> glyphOffsets, System.Collections.Generic.IList<char> characters, string deviceFontName, System.Collections.Generic.IList<ushort> clusterMap, System.Collections.Generic.IList<bool> caretStops, System.Windows.Markup.XmlLanguage language)"
+2,System.Windows.Media,GlyphRun,"public GlyphRun(System.Windows.Media.GlyphTypeface glyphTypeface, int bidiLevel, bool isSideways, double renderingEmSize, float pixelsPerDip, System.Collections.Generic.IList<ushort> glyphIndices, System.Windows.Point baselineOrigin, System.Collections.Generic.IList<double> advanceWidths, System.Collections.Generic.IList<System.Windows.Point> glyphOffsets, System.Collections.Generic.IList<char> characters, string deviceFontName, System.Collections.Generic.IList<ushort> clusterMap, System.Collections.Generic.IList<bool> caretStops, System.Windows.Markup.XmlLanguage language)"
+2,System.Windows.Media,GlyphTypeface,"public GlyphTypeface(System.Uri typefaceSource, System.Windows.Media.StyleSimulations styleSimulations)"
+2,System.Windows.Media,GradientBrush,protected GradientBrush(System.Windows.Media.GradientStopCollection gradientStopCollection)
+2,System.Windows.Media,GradientStopCollection,public GradientStopCollection(int capacity)
+2,System.Windows.Media,GuidelineSet,"public GuidelineSet(double[] guidelinesX, double[] guidelinesY)"
+2,System.Windows.Media,LineGeometry,"public LineGeometry(System.Windows.Point startPoint, System.Windows.Point endPoint, System.Windows.Media.Transform transform)"
+2,System.Windows.Media,LinearGradientBrush,"public LinearGradientBrush(System.Windows.Media.Color startColor, System.Windows.Media.Color endColor, System.Windows.Point startPoint, System.Windows.Point endPoint)"
+2,System.Windows.Media,LinearGradientBrush,public LinearGradientBrush(System.Windows.Media.GradientStopCollection gradientStopCollection)
+2,System.Windows.Media,LinearGradientBrush,"public LinearGradientBrush(System.Windows.Media.GradientStopCollection gradientStopCollection, double angle)"
+2,System.Windows.Media,LinearGradientBrush,"public LinearGradientBrush(System.Windows.Media.GradientStopCollection gradientStopCollection, System.Windows.Point startPoint, System.Windows.Point endPoint)"
+2,System.Windows.Media,MatrixTransform,"public MatrixTransform(double m11, double m12, double m21, double m22, double offsetX, double offsetY)"
+2,System.Windows.Media,MediaTimeline,public MediaTimeline(System.TimeSpan? beginTime)
+2,System.Windows.Media,MediaTimeline,"public MediaTimeline(System.TimeSpan? beginTime, System.Windows.Duration duration)"
+2,System.Windows.Media,MediaTimeline,"public MediaTimeline(System.TimeSpan? beginTime, System.Windows.Duration duration, System.Windows.Media.Animation.RepeatBehavior repeatBehavior)"
+2,System.Windows.Media,PathFigureCollection,public PathFigureCollection(int capacity)
+2,System.Windows.Media,PathGeometry,public PathGeometry(System.Collections.Generic.IEnumerable<System.Windows.Media.PathFigure> figures)
+2,System.Windows.Media,PathGeometry,"public PathGeometry(System.Collections.Generic.IEnumerable<System.Windows.Media.PathFigure> figures, System.Windows.Media.FillRule fillRule, System.Windows.Media.Transform transform)"
+2,System.Windows.Media,PathSegmentCollection,public PathSegmentCollection(int capacity)
+2,System.Windows.Media,RadialGradientBrush,"public RadialGradientBrush(System.Windows.Media.Color startColor, System.Windows.Media.Color endColor)"
+2,System.Windows.Media,RadialGradientBrush,public RadialGradientBrush(System.Windows.Media.GradientStopCollection gradientStopCollection)
+2,System.Windows.Media,RectangleGeometry,"public RectangleGeometry(System.Windows.Rect rect, double radiusX, double radiusY, System.Windows.Media.Transform transform)"
+2,System.Windows.Media,SkewTransform,"public SkewTransform(double angleX, double angleY)"
+2,System.Windows.Media,SkewTransform,"public SkewTransform(double angleX, double angleY, double centerX, double centerY)"
+2,System.Windows.Media,TextEffect,"public TextEffect(System.Windows.Media.Transform transform, System.Windows.Media.Brush foreground, System.Windows.Media.Geometry clip, int positionStart, int positionCount)"
+2,System.Windows.Media,TextEffectCollection,public TextEffectCollection(int capacity)
+2,System.Windows.Media,TransformCollection,public TransformCollection(System.Collections.Generic.IEnumerable<System.Windows.Media.Transform> collection)
+2,System.Windows.Media,TransformCollection,public TransformCollection(int capacity)
+2,System.Windows.Media.Animation,ByteAnimation,"public ByteAnimation(byte fromValue, byte toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,ByteAnimation,"public ByteAnimation(byte toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,ColorAnimation,"public ColorAnimation(System.Windows.Media.Color toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,ColorAnimation,"public ColorAnimation(System.Windows.Media.Color fromValue, System.Windows.Media.Color toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,DecimalAnimation,"public DecimalAnimation(decimal fromValue, decimal toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,DecimalAnimation,"public DecimalAnimation(decimal toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,DiscreteBooleanKeyFrame,public DiscreteBooleanKeyFrame(bool value)
+2,System.Windows.Media.Animation,DiscreteBooleanKeyFrame,"public DiscreteBooleanKeyFrame(bool value, System.Windows.Media.Animation.KeyTime keyTime)"
+2,System.Windows.Media.Animation,DiscreteCharKeyFrame,public DiscreteCharKeyFrame(char value)
+2,System.Windows.Media.Animation,DiscreteCharKeyFrame,"public DiscreteCharKeyFrame(char value, System.Windows.Media.Animation.KeyTime keyTime)"
+2,System.Windows.Media.Animation,DiscreteStringKeyFrame,public DiscreteStringKeyFrame(string value)
+2,System.Windows.Media.Animation,DiscreteStringKeyFrame,"public DiscreteStringKeyFrame(string value, System.Windows.Media.Animation.KeyTime keyTime)"
+2,System.Windows.Media.Animation,DoubleAnimation,"public DoubleAnimation(double fromValue, double toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,DoubleAnimation,"public DoubleAnimation(double toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,EasingColorKeyFrame,"public EasingColorKeyFrame(System.Windows.Media.Color value, System.Windows.Media.Animation.KeyTime keyTime, System.Windows.Media.Animation.IEasingFunction easingFunction)"
+2,System.Windows.Media.Animation,EasingPointKeyFrame,"public EasingPointKeyFrame(System.Windows.Point value, System.Windows.Media.Animation.KeyTime keyTime, System.Windows.Media.Animation.IEasingFunction easingFunction)"
+2,System.Windows.Media.Animation,Int16Animation,"public Int16Animation(short fromValue, short toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,Int16Animation,"public Int16Animation(short toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,Int32Animation,"public Int32Animation(int fromValue, int toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,Int32Animation,"public Int32Animation(int toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,Int64Animation,"public Int64Animation(long fromValue, long toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,Int64Animation,"public Int64Animation(long toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,ParallelTimeline,"public ParallelTimeline(System.TimeSpan? beginTime, System.Windows.Duration duration, System.Windows.Media.Animation.RepeatBehavior repeatBehavior)"
+2,System.Windows.Media.Animation,Point3DAnimation,"public Point3DAnimation(System.Windows.Media.Media3D.Point3D toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,Point3DAnimation,"public Point3DAnimation(System.Windows.Media.Media3D.Point3D fromValue, System.Windows.Media.Media3D.Point3D toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,PointAnimation,"public PointAnimation(System.Windows.Point toValue, System.Windows.Duration duration)"
+2,System.Windows.Media.Animation,PointAnimation,"public PointAnimation(System.Windows.Point toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,PointAnimation,"public PointAnimation(System.Windows.Point fromValue, System.Windows.Point toValue, System.Windows.Duration duration)"
+2,System.Windows.Media.Animation,PointAnimation,"public PointAnimation(System.Windows.Point fromValue, System.Windows.Point toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,QuaternionAnimation,"public QuaternionAnimation(System.Windows.Media.Media3D.Quaternion toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,QuaternionAnimation,"public QuaternionAnimation(System.Windows.Media.Media3D.Quaternion fromValue, System.Windows.Media.Media3D.Quaternion toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,RectAnimation,"public RectAnimation(System.Windows.Rect toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,RectAnimation,"public RectAnimation(System.Windows.Rect fromValue, System.Windows.Rect toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,Rotation3DAnimation,"public Rotation3DAnimation(System.Windows.Media.Media3D.Rotation3D toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,Rotation3DAnimation,"public Rotation3DAnimation(System.Windows.Media.Media3D.Rotation3D fromValue, System.Windows.Media.Media3D.Rotation3D toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,SingleAnimation,"public SingleAnimation(float toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,SingleAnimation,"public SingleAnimation(float fromValue, float toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,SizeAnimation,"public SizeAnimation(System.Windows.Size toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,SizeAnimation,"public SizeAnimation(System.Windows.Size fromValue, System.Windows.Size toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,SplinePointKeyFrame,"public SplinePointKeyFrame(System.Windows.Point value, System.Windows.Media.Animation.KeyTime keyTime, System.Windows.Media.Animation.KeySpline keySpline)"
+2,System.Windows.Media.Animation,SplineThicknessKeyFrame,"public SplineThicknessKeyFrame(System.Windows.Thickness value, System.Windows.Media.Animation.KeyTime keyTime, System.Windows.Media.Animation.KeySpline keySpline)"
+2,System.Windows.Media.Animation,ThicknessAnimation,"public ThicknessAnimation(System.Windows.Thickness toValue, System.Windows.Duration duration)"
+2,System.Windows.Media.Animation,ThicknessAnimation,"public ThicknessAnimation(System.Windows.Thickness toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,ThicknessAnimation,"public ThicknessAnimation(System.Windows.Thickness fromValue, System.Windows.Thickness toValue, System.Windows.Duration duration)"
+2,System.Windows.Media.Animation,ThicknessAnimation,"public ThicknessAnimation(System.Windows.Thickness fromValue, System.Windows.Thickness toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,Timeline,protected Timeline(System.TimeSpan? beginTime)
+2,System.Windows.Media.Animation,Timeline,"protected Timeline(System.TimeSpan? beginTime, System.Windows.Duration duration)"
+2,System.Windows.Media.Animation,Timeline,"protected Timeline(System.TimeSpan? beginTime, System.Windows.Duration duration, System.Windows.Media.Animation.RepeatBehavior repeatBehavior)"
+2,System.Windows.Media.Animation,TimelineCollection,public TimelineCollection(System.Collections.Generic.IEnumerable<System.Windows.Media.Animation.Timeline> collection)
+2,System.Windows.Media.Animation,TimelineCollection,public TimelineCollection(int capacity)
+2,System.Windows.Media.Animation,Vector3DAnimation,"public Vector3DAnimation(System.Windows.Media.Media3D.Vector3D toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,Vector3DAnimation,"public Vector3DAnimation(System.Windows.Media.Media3D.Vector3D fromValue, System.Windows.Media.Media3D.Vector3D toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,VectorAnimation,"public VectorAnimation(System.Windows.Vector toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Animation,VectorAnimation,"public VectorAnimation(System.Windows.Vector fromValue, System.Windows.Vector toValue, System.Windows.Duration duration, System.Windows.Media.Animation.FillBehavior fillBehavior)"
+2,System.Windows.Media.Effects,BitmapEffectInput,public BitmapEffectInput(System.Windows.Media.Imaging.BitmapSource input)
+2,System.Windows.Media.Imaging,BitmapImage,"public BitmapImage(System.Uri uriSource, System.Net.Cache.RequestCachePolicy uriCachePolicy)"
+2,System.Windows.Media.Imaging,BitmapPalette,"public BitmapPalette(System.Windows.Media.Imaging.BitmapSource bitmapSource, int maxColorCount)"
+2,System.Windows.Media.Imaging,BmpBitmapDecoder,"public BmpBitmapDecoder(System.Uri bitmapUri, System.Windows.Media.Imaging.BitmapCreateOptions createOptions, System.Windows.Media.Imaging.BitmapCacheOption cacheOption)"
+2,System.Windows.Media.Imaging,GifBitmapDecoder,"public GifBitmapDecoder(System.Uri bitmapUri, System.Windows.Media.Imaging.BitmapCreateOptions createOptions, System.Windows.Media.Imaging.BitmapCacheOption cacheOption)"
+2,System.Windows.Media.Imaging,TiffBitmapDecoder,"public TiffBitmapDecoder(System.Uri bitmapUri, System.Windows.Media.Imaging.BitmapCreateOptions createOptions, System.Windows.Media.Imaging.BitmapCacheOption cacheOption)"
+2,System.Windows.Media.TextFormatting,CharacterBufferReference,"public unsafe CharacterBufferReference(char* unsafeCharacterString, int characterLength)"
+2,System.Windows.Media.TextFormatting,CharacterBufferReference,"public CharacterBufferReference(char[] characterArray, int offsetToFirstChar)"
+2,System.Windows.Media.TextFormatting,TextCharacters,"public unsafe TextCharacters(char* unsafeCharacterString, int length, System.Windows.Media.TextFormatting.TextRunProperties textRunProperties)"
+2,System.Windows.Media.TextFormatting,TextCharacters,"public TextCharacters(char[] characterArray, int offsetToFirstChar, int length, System.Windows.Media.TextFormatting.TextRunProperties textRunProperties)"
+2,System.Windows.Media.TextFormatting,TextEndOfLine,"public TextEndOfLine(int length, System.Windows.Media.TextFormatting.TextRunProperties textRunProperties)"
+2,System.Windows.Media.TextFormatting,TextEndOfParagraph,"public TextEndOfParagraph(int length, System.Windows.Media.TextFormatting.TextRunProperties textRunProperties)"
+2,System.Windows.Media.TextFormatting,TextLine,protected TextLine(double pixelsPerDip)
+2,System.Windows.Threading,DispatcherSynchronizationContext,"public DispatcherSynchronizationContext(System.Windows.Threading.Dispatcher dispatcher, System.Windows.Threading.DispatcherPriority priority)"
+3,?,CombinedGeometry,"public CombinedGeometry(System.Windows.Media.Geometry geometry1, System.Windows.Media.Geometry geometry2)"
+3,?,CombinedGeometry,"public CombinedGeometry(System.Windows.Media.GeometryCombineMode geometryCombineMode, System.Windows.Media.Geometry geometry1, System.Windows.Media.Geometry geometry2)"
+3,?,CombinedGeometry,"public CombinedGeometry(System.Windows.Media.GeometryCombineMode geometryCombineMode, System.Windows.Media.Geometry geometry1, System.Windows.Media.Geometry geometry2, System.Windows.Media.Transform transform)"
+3,System.Windows.Annotations,Annotation,public Annotation()
+3,System.Windows.Annotations,AnnotationResource,public AnnotationResource(System.Guid id)
+3,System.Windows.Annotations,AnnotationService,public AnnotationService(System.Windows.Controls.FlowDocumentReader viewer)
+3,System.Windows.Annotations,AnnotationService,public AnnotationService(System.Windows.Controls.FlowDocumentScrollViewer viewer)
+3,System.Windows.Annotations,AnnotationService,public AnnotationService(System.Windows.Controls.Primitives.DocumentViewerBase viewer)
+3,System.Windows.Annotations.Storage,XmlStreamStore,"public XmlStreamStore(System.IO.Stream stream, System.Collections.Generic.IDictionary<System.Uri, System.Collections.Generic.IList<System.Uri>> knownNamespaces)"
+3,System.Windows.Automation.Peers,AutomationPeer,protected AutomationPeer()
+3,System.Windows.Automation.Peers,ContentElementAutomationPeer,public ContentElementAutomationPeer(System.Windows.ContentElement owner)
+3,System.Windows.Ink,StrokeCollection,public StrokeCollection(System.IO.Stream stream)
+3,System.Windows.Interop,D3DImage,"public D3DImage(double dpiX, double dpiY)"
+3,System.Windows.Interop,HwndSource,"public HwndSource(int classStyle, int style, int exStyle, int x, int y, int width, int height, string name, System.IntPtr parent, bool adjustSizingForNonClientArea)"
+3,System.Windows.Media.Media3D,ScaleTransform3D,public ScaleTransform3D(System.Windows.Media.Media3D.Vector3D scale)
+3,System.Windows.Media.Media3D,ScaleTransform3D,"public ScaleTransform3D(System.Windows.Media.Media3D.Vector3D scale, System.Windows.Media.Media3D.Point3D center)"
+3,System.Windows.Navigation,JournalEntry,"protected JournalEntry(System.Runtime.Serialization.SerializationInfo info, System.Runtime.Serialization.StreamingContext context)"
+3,System.Windows.Navigation,PageFunction<T>,public PageFunction()
+3,System.Windows.Navigation,RequestNavigateEventArgs,protected RequestNavigateEventArgs()
+3,System.Windows.Shell,JumpItemsRejectedEventArgs,public JumpItemsRejectedEventArgs()
+3,System.Windows.Shell,JumpItemsRemovedEventArgs,public JumpItemsRemovedEventArgs()
+3,System.Windows.Shell,JumpList,"public JumpList(System.Collections.Generic.IEnumerable<System.Windows.Shell.JumpItem> items, bool showFrequent, bool showRecent)"

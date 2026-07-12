@@ -15,11 +15,11 @@ public class RealTimeStylusTests
         var plugInB = new LifecyclePlugIn("B", lifecycle);
         var plugInC = new LifecyclePlugIn("C", lifecycle);
 
-        element.StylusPlugIns.Add(plugInA);
-        element.StylusPlugIns.Add(plugInB);
-        element.StylusPlugIns[1] = plugInC;
-        element.StylusPlugIns.Remove(plugInA);
-        element.StylusPlugIns.Clear();
+        element.GetStylusPlugIns(createIfMissing: true)!.Add(plugInA);
+        element.GetStylusPlugIns(createIfMissing: true)!.Add(plugInB);
+        element.GetStylusPlugIns(createIfMissing: true)![1] = plugInC;
+        element.GetStylusPlugIns(createIfMissing: true)!.Remove(plugInA);
+        element.GetStylusPlugIns(createIfMissing: true)!.Clear();
 
         Assert.Equal(
             new[]
@@ -48,10 +48,10 @@ public class RealTimeStylusTests
         var rewrite = new RewriteStylusPointsPlugIn(expected);
         var capture = new CaptureStylusPointsPlugIn();
 
-        root.StylusPlugIns.Add(rewrite);
-        child.StylusPlugIns.Add(capture);
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(rewrite);
+        child.GetStylusPlugIns(createIfMissing: true)!.Add(capture);
 
-        var rts = new RealTimeStylus(root);
+        using var rts = new RealTimeStylus(root);
         RealTimeStylusProcessResult result = rts.Process(
             pointerId: 7,
             target: child,
@@ -83,10 +83,10 @@ public class RealTimeStylusTests
     {
         var root = new TestElement();
         var processed = new List<string>();
-        root.StylusPlugIns.Add(new ProcessedTrackingPlugIn("A", processed));
-        root.StylusPlugIns.Add(new ProcessedTrackingPlugIn("B", processed));
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(new ProcessedTrackingPlugIn("A", processed));
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(new ProcessedTrackingPlugIn("B", processed));
 
-        var rts = new RealTimeStylus(root);
+        using var rts = new RealTimeStylus(root);
         RealTimeStylusProcessResult result = rts.Process(
             pointerId: 8,
             target: root,
@@ -112,9 +112,9 @@ public class RealTimeStylusTests
     public void Process_WhenPlugInThrows_ShouldCancelCurrentSession()
     {
         var root = new TestElement();
-        root.StylusPlugIns.Add(new ThrowingPlugIn());
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(new ThrowingPlugIn());
 
-        var rts = new RealTimeStylus(root);
+        using var rts = new RealTimeStylus(root);
         RealTimeStylusProcessResult result = rts.Process(
             pointerId: 9,
             target: root,
@@ -142,11 +142,11 @@ public class RealTimeStylusTests
         parent.AddChild(child);
 
         var order = new List<string>();
-        root.StylusPlugIns.Add(new OrderPlugIn("root", order));
-        parent.StylusPlugIns.Add(new OrderPlugIn("parent", order));
-        child.StylusPlugIns.Add(new OrderPlugIn("child", order));
+        root.GetStylusPlugIns(createIfMissing: true)!.Add(new OrderPlugIn("root", order));
+        parent.GetStylusPlugIns(createIfMissing: true)!.Add(new OrderPlugIn("parent", order));
+        child.GetStylusPlugIns(createIfMissing: true)!.Add(new OrderPlugIn("child", order));
 
-        var rts = new RealTimeStylus(root);
+        using var rts = new RealTimeStylus(root);
         _ = rts.Process(
             pointerId: 10,
             target: child,
@@ -172,7 +172,7 @@ public class RealTimeStylusTests
         root.AddChild(childA);
         root.AddChild(childB);
 
-        var rts = new RealTimeStylus(root);
+        using var rts = new RealTimeStylus(root);
 
         RealTimeStylusProcessResult first = rts.Process(
             pointerId: 11,
@@ -280,10 +280,10 @@ public class RealTimeStylusTests
     {
         protected override void OnStylusDown(RawStylusInput rawStylusInput)
         {
-            rawStylusInput.NotifyWhenProcessed(this);
+            rawStylusInput.NotifyWhenProcessed(rawStylusInput);
         }
 
-        protected override void OnStylusDownProcessed(RawStylusInput rawStylusInput)
+        protected override void OnStylusDownProcessed(object callbackData, bool targetVerified)
         {
             processed.Add(name);
         }

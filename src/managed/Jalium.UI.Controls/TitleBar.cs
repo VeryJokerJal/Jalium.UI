@@ -9,8 +9,8 @@ namespace Jalium.UI.Controls;
 public class TitleBar : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.TitleBarAutomationPeer(this);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.TitleBarAutomationPeer(this);
 
     #region Dependency Properties
 

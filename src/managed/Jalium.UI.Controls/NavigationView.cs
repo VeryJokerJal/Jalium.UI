@@ -12,9 +12,9 @@ namespace Jalium.UI.Controls;
 public class NavigationView : ContentControl
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.NavigationViewAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.NavigationViewAutomationPeer(this);
     }
 
     #region Fields
@@ -749,7 +749,7 @@ public class NavigationView : ContentControl
     {
         while (style != null)
         {
-            foreach (var setter in style.Setters)
+            foreach (var setter in style.Setters.OfType<Setter>())
             {
                 if (setter.Property == TemplateProperty && setter.Value is ControlTemplate controlTemplate)
                 {

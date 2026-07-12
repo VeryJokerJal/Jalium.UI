@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
@@ -14,9 +14,9 @@ namespace Jalium.UI.Controls;
 public class NumberBox : TextBoxBase, IImeSupport
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.NumberBoxAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.NumberBoxAutomationPeer(this);
     }
 
     #region Fields
@@ -344,7 +344,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
         // Set IBeam cursor for text input
-        Cursor = Jalium.UI.Cursors.IBeam;
+        Cursor = Jalium.UI.Input.Cursors.IBeam;
 
         // Subscribe to IME events
         InputMethod.CompositionStarted += OnImeCompositionStarted;
@@ -500,12 +500,12 @@ public class NumberBox : TextBoxBase, IImeSupport
         if (_upSpinButton != null)
         {
             _upSpinButton.Click += OnUpButtonClick;
-            _upSpinButton.Cursor = Jalium.UI.Cursors.Arrow;
+            _upSpinButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
         }
         if (_downSpinButton != null)
         {
             _downSpinButton.Click += OnDownButtonClick;
-            _downSpinButton.Cursor = Jalium.UI.Cursors.Arrow;
+            _downSpinButton.Cursor = Jalium.UI.Input.Cursors.Arrow;
         }
     }
 
@@ -577,7 +577,7 @@ public class NumberBox : TextBoxBase, IImeSupport
 
     private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             InputMethod.SetTarget(null);
         }
@@ -588,7 +588,7 @@ public class NumberBox : TextBoxBase, IImeSupport
 
     private void OnImeCompositionStarted(object? sender, EventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionStart();
         }
@@ -596,7 +596,7 @@ public class NumberBox : TextBoxBase, IImeSupport
 
     private void OnImeCompositionUpdated(object? sender, CompositionEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionUpdate(e.Text, e.CursorPosition);
         }
@@ -604,7 +604,7 @@ public class NumberBox : TextBoxBase, IImeSupport
 
     private void OnImeCompositionEnded(object? sender, CompositionResultEventArgs e)
     {
-        if (InputMethod.Current == this)
+        if (InputMethod.CurrentTarget == this)
         {
             OnImeCompositionEnd(e.Result);
         }
@@ -626,7 +626,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
@@ -638,7 +638,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
 
         if (_cachedFontFamily != fontFamily || _cachedFontSize != fontSize)
@@ -1064,7 +1064,7 @@ public class NumberBox : TextBoxBase, IImeSupport
 
         if (Header is string headerText)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+            var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
             TextMeasurement.MeasureText(headerFormatted);
             headerHeight = headerFormatted.Height + 4;
         }
@@ -1102,7 +1102,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         // Draw header (always draw, regardless of template mode)
         if (Header is string headerText && Foreground != null)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = Foreground
             };
@@ -1180,7 +1180,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         dc.PushClip(new RectangleGeometry(contentRect));
 
         // Draw selection background
-        if (_selectionLength > 0 && IsKeyboardFocused)
+        if (_selectionLength > 0 && (IsKeyboardFocused || IsInactiveSelectionHighlightEnabled))
         {
             DrawSelection(dc, contentRect, lineHeight);
         }
@@ -1189,7 +1189,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         var displayText = _text;
         if (string.IsNullOrEmpty(displayText) && !string.IsNullOrEmpty(PlaceholderText))
         {
-            var placeholderFormatted = new FormattedText(PlaceholderText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var placeholderFormatted = new FormattedText(PlaceholderText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = ResolvePlaceholderBrush(),
                 MaxTextWidth = Math.Max(0, contentRect.Width),
@@ -1202,7 +1202,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         }
         else if (!string.IsNullOrEmpty(displayText))
         {
-            var valueFormatted = new FormattedText(displayText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var valueFormatted = new FormattedText(displayText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = ResolveTextForegroundBrush(),
                 MaxTextWidth = Math.Max(0, contentRect.Width),
@@ -1221,7 +1221,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         }
 
         // Draw caret
-        if (IsFocused && !IsReadOnly)
+        if (IsFocused && (!IsReadOnly || IsReadOnlyCaretVisible))
         {
             DrawCaret(dc, contentRect, lineHeight);
         }
@@ -1261,7 +1261,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         var compositionBgBrush = s_compositionBgBrush;
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, textY, compositionWidth, lineHeight));
 
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,

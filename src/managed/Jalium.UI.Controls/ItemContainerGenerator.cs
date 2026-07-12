@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Specialized;
+using System.Collections.ObjectModel;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Virtualization;
 
@@ -14,6 +15,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 {
     private readonly ItemsControl _host;
     private readonly LogicalItemAccessor _itemAccessor;
+    private readonly ReadOnlyCollection<object> _items;
     private readonly Dictionary<int, ItemContainerMap> _realizedItems = new();
     private readonly Dictionary<DependencyObject, int> _containerToIndex = new(ReferenceEqualityComparer.Instance);
     private readonly ContainerRecyclePool _recyclePool = new();
@@ -22,6 +24,8 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     private int _generatorCurrentIndex;
     private GeneratorDirection _generatorDirection;
     private bool _isGenerating;
+    private bool _generationDone;
+    private bool _isGeneratingBatches;
     private bool _sortedIndexCacheDirty = true;
     private readonly List<int> _sortedIndices = new();
     private Type? _preferredContainerType;
@@ -33,6 +37,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     {
         _host = host;
         _itemAccessor = new LogicalItemAccessor(host);
+        _items = new ReadOnlyCollection<object>(new LogicalItemList(_itemAccessor));
     }
 
     #region Public Properties
@@ -57,6 +62,11 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// Gets the number of items in the host's items collection.
     /// </summary>
     public int ItemCount => _itemAccessor.Count;
+
+    /// <summary>
+    /// Gets a live, read-only view of the items associated with this generator.
+    /// </summary>
+    public ReadOnlyCollection<object> Items => _items;
 
     #endregion
 
@@ -118,12 +128,48 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// </summary>
     public int IndexFromContainer(DependencyObject container)
     {
+        return IndexFromContainer(container, returnLocalIndex: false);
+    }
+
+    /// <summary>
+    /// Returns the item index for a generated container, optionally limiting the search to this
+    /// generator's local item level.
+    /// </summary>
+    public int IndexFromContainer(DependencyObject container, bool returnLocalIndex)
+    {
+        ArgumentNullException.ThrowIfNull(container);
+
+        // The current Jalium generator maps one flat logical level. Consequently local and
+        // recursive searches have the same result. Keeping the mode explicit preserves WPF's
+        // contract for a future grouped generator, where false recursively searches child group
+        // generators while true stops at this map.
+        _ = returnLocalIndex;
         return _containerToIndex.TryGetValue(container, out var index) ? index : -1;
     }
 
     #endregion
 
     #region IItemContainerGenerator Implementation
+
+    /// <inheritdoc />
+    ItemContainerGenerator? IItemContainerGenerator.GetItemContainerGeneratorForPanel(Panel panel)
+    {
+        if (!panel.IsItemsHost)
+        {
+            throw new ArgumentException("The specified panel is not an items host.", nameof(panel));
+        }
+
+        // WPF obtains the presenter from Panel.TemplatedParent. Jalium's ItemsPresenter creates
+        // its panel directly, so the live panel is a visual child until template-parent stamping
+        // is available for ItemsPanelTemplate instances. Support both representations.
+        var presenter = panel.TemplatedParent as ItemsPresenter ?? panel.VisualParent as ItemsPresenter;
+        if (presenter != null)
+        {
+            return presenter.Owner?.ItemContainerGenerator;
+        }
+
+        return panel.TemplatedParent != null ? this : null;
+    }
 
     /// <inheritdoc />
     public GeneratorPosition GeneratorPositionFromIndex(int itemIndex)
@@ -179,8 +225,50 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         _generatorCurrentIndex = IndexFromGeneratorPosition(position);
         _generatorDirection = direction;
         _isGenerating = true;
+        _generationDone = false;
         Status = GeneratorStatus.GeneratingContainers;
         return new GeneratorSession(this);
+    }
+
+    /// <summary>
+    /// Begins a batch of container-generation sessions and keeps <see cref="Status"/> in the
+    /// generating state until the returned scope is disposed.
+    /// </summary>
+    public IDisposable GenerateBatches()
+    {
+        if (_isGeneratingBatches)
+        {
+            throw new InvalidOperationException("Container generation batching is already in progress.");
+        }
+
+        return new BatchGenerator(this);
+    }
+
+    /// <inheritdoc />
+    DependencyObject? IItemContainerGenerator.GenerateNext()
+    {
+        if (!_isGenerating)
+        {
+            throw new InvalidOperationException("Container generation is not in progress.");
+        }
+
+        if (_generationDone)
+        {
+            return null;
+        }
+
+        // The parameterless WPF overload is the panel-generation form: it generates unrealized
+        // items only and stops at the first container that is already realized. The out-parameter
+        // overload deliberately continues through realized containers.
+        if (_generatorCurrentIndex >= 0 &&
+            _generatorCurrentIndex < ItemCount &&
+            _realizedItems.ContainsKey(_generatorCurrentIndex))
+        {
+            _generationDone = true;
+            return null;
+        }
+
+        return GenerateNext(out _);
     }
 
     /// <inheritdoc />
@@ -188,8 +276,12 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     {
         isNewlyRealized = false;
 
-        if (!_isGenerating || _generatorCurrentIndex < 0 || _generatorCurrentIndex >= ItemCount)
+        if (!_isGenerating ||
+            _generationDone ||
+            _generatorCurrentIndex < 0 ||
+            _generatorCurrentIndex >= ItemCount)
         {
+            _generationDone = _isGenerating;
             return null;
         }
 
@@ -541,7 +633,10 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     private void EndGeneration()
     {
         _isGenerating = false;
-        Status = GeneratorStatus.ContainersGenerated;
+        if (!_isGeneratingBatches)
+        {
+            Status = GeneratorStatus.ContainersGenerated;
+        }
     }
 
     private void MapContainer(int index, object item, DependencyObject container, bool isOwnContainer)
@@ -653,6 +748,126 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         {
             _generator.EndGeneration();
         }
+    }
+
+    /// <summary>
+    /// Disposable scope used by <see cref="GenerateBatches"/>.
+    /// </summary>
+    private sealed class BatchGenerator : IDisposable
+    {
+        private ItemContainerGenerator? _generator;
+
+        public BatchGenerator(ItemContainerGenerator generator)
+        {
+            _generator = generator;
+            generator._isGeneratingBatches = true;
+            generator.Status = GeneratorStatus.GeneratingContainers;
+        }
+
+        public void Dispose()
+        {
+            var generator = _generator;
+            if (generator == null)
+            {
+                return;
+            }
+
+            _generator = null;
+            generator._isGeneratingBatches = false;
+            generator.Status = GeneratorStatus.ContainersGenerated;
+        }
+    }
+
+    /// <summary>
+    /// Generic, read-only adapter over the generator's dynamic logical item source.
+    /// </summary>
+    private sealed class LogicalItemList : IList<object>
+    {
+        private readonly LogicalItemAccessor _accessor;
+
+        public LogicalItemList(LogicalItemAccessor accessor)
+        {
+            _accessor = accessor;
+        }
+
+        public int Count => _accessor.Count;
+
+        public bool IsReadOnly => true;
+
+        public object this[int index]
+        {
+            get
+            {
+                if ((uint)index >= (uint)Count)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(index));
+                }
+
+                return _accessor.GetItemAt(index)!;
+            }
+            set => ThrowReadOnly();
+        }
+
+        public int IndexOf(object item)
+        {
+            for (var index = 0; index < Count; index++)
+            {
+                if (Equals(this[index], item))
+                {
+                    return index;
+                }
+            }
+
+            return -1;
+        }
+
+        public bool Contains(object item) => IndexOf(item) >= 0;
+
+        public void CopyTo(object[] array, int arrayIndex)
+        {
+            ArgumentNullException.ThrowIfNull(array);
+            if ((uint)arrayIndex > (uint)array.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(arrayIndex));
+            }
+
+            if (array.Length - arrayIndex < Count)
+            {
+                throw new ArgumentException("The destination array does not have enough space.", nameof(array));
+            }
+
+            for (var index = 0; index < Count; index++)
+            {
+                array[arrayIndex + index] = this[index];
+            }
+        }
+
+        public IEnumerator<object> GetEnumerator()
+        {
+            for (var index = 0; index < Count; index++)
+            {
+                yield return this[index];
+            }
+        }
+
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+        public void Add(object item) => ThrowReadOnly();
+
+        public void Clear() => ThrowReadOnly();
+
+        public void Insert(int index, object item) => ThrowReadOnly();
+
+        public bool Remove(object item)
+        {
+            ThrowReadOnly();
+            return false;
+        }
+
+        public void RemoveAt(int index) => ThrowReadOnly();
+
+        private static void ThrowReadOnly() =>
+            throw new NotSupportedException("The generator item view is read-only.");
     }
 
     #endregion

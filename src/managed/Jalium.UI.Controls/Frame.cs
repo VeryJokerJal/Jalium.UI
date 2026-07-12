@@ -1,313 +1,309 @@
-using Jalium.UI.Media;
+using System.Collections;
+using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
+using Jalium.UI.Navigation;
 
 namespace Jalium.UI.Controls;
 
-/// <summary>
-/// A control that supports navigation to and from pages.
-/// </summary>
+/// <summary>A content control with URI, object, and typed-page navigation.</summary>
 public class Frame : ContentControl
 {
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    private static readonly DependencyPropertyKey BackStackPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(BackStack), typeof(IEnumerable), typeof(Frame), new PropertyMetadata(null));
+    private static readonly DependencyPropertyKey ForwardStackPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(ForwardStack), typeof(IEnumerable), typeof(Frame), new PropertyMetadata(null));
+    private static readonly DependencyPropertyKey CanGoBackPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(CanGoBack), typeof(bool), typeof(Frame), new PropertyMetadata(false));
+    private static readonly DependencyPropertyKey CanGoForwardPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(CanGoForward), typeof(bool), typeof(Frame), new PropertyMetadata(false));
+
+    public static readonly DependencyProperty BackStackProperty = BackStackPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty ForwardStackProperty = ForwardStackPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty CanGoBackProperty = CanGoBackPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty CanGoForwardProperty = CanGoForwardPropertyKey.DependencyProperty;
+
+    public static readonly DependencyProperty SourceProperty =
+        DependencyProperty.Register(
+            nameof(Source),
+            typeof(Uri),
+            typeof(Frame),
+            new PropertyMetadata(null, OnSourceChanged));
+
+    public static readonly DependencyProperty SandboxExternalContentProperty =
+        DependencyProperty.Register(
+            nameof(SandboxExternalContent),
+            typeof(bool),
+            typeof(Frame),
+            new PropertyMetadata(false));
+
+    public static readonly DependencyProperty JournalOwnershipProperty =
+        DependencyProperty.Register(
+            nameof(JournalOwnership),
+            typeof(JournalOwnership),
+            typeof(Frame),
+            new PropertyMetadata(JournalOwnership.Automatic));
+
+    public static readonly DependencyProperty NavigationUIVisibilityProperty =
+        DependencyProperty.Register(
+            nameof(NavigationUIVisibility),
+            typeof(NavigationUIVisibility),
+            typeof(Frame),
+            new PropertyMetadata(NavigationUIVisibility.Automatic));
+
+    public static readonly DependencyProperty SourcePageTypeProperty =
+        DependencyProperty.Register(
+            nameof(SourcePageType),
+            typeof(Type),
+            typeof(Frame),
+            new PropertyMetadata(null, OnSourcePageTypeChanged));
+
+    private readonly Dictionary<Type, Page> _pageCache = new();
+    private readonly NavigationService _navigationService;
+    private bool _updatingNavigationProperties;
+    private Uri? _baseUri;
+
+    public Frame()
     {
-        return new Jalium.UI.Controls.Automation.FrameAutomationPeer(this);
+        _navigationService = new NavigationService(this);
+        _navigationService.StateChanged += OnNavigationStateChanged;
+        UpdateNavigationState();
     }
 
-    #region Fields
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.FrameAutomationPeer(this);
 
-    private readonly Stack<PageStackEntry> _backStack = new();
-    private readonly Stack<PageStackEntry> _forwardStack = new();
-    private readonly Dictionary<Type, Page> _pageCache = new();
-    private Page? _currentPage;
+    [Bindable(true)]
+    public Uri? Source
+    {
+        get => (Uri?)GetValue(SourceProperty);
+        set => SetValue(SourceProperty, value);
+    }
 
-    #endregion
+    public Uri? CurrentSource => _navigationService.CurrentSource;
 
-    #region Dependency Properties
+    public NavigationService NavigationService => _navigationService;
 
-    /// <summary>
-    /// Identifies the SourcePageType dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty SourcePageTypeProperty =
-        DependencyProperty.Register(nameof(SourcePageType), typeof(Type), typeof(Frame),
-            new PropertyMetadata(null));
+    public IEnumerable BackStack => _navigationService.BackStack;
 
-    #endregion
+    public IEnumerable ForwardStack => _navigationService.ForwardStack;
 
-    #region CLR Properties
+    public bool CanGoBack => _navigationService.CanGoBack;
 
-    /// <summary>
-    /// Gets or sets the type of the current source page.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public bool CanGoForward => _navigationService.CanGoForward;
+
+    public JournalOwnership JournalOwnership
+    {
+        get => (JournalOwnership)(GetValue(JournalOwnershipProperty) ?? JournalOwnership.Automatic);
+        set => SetValue(JournalOwnershipProperty, value);
+    }
+
+    public NavigationUIVisibility NavigationUIVisibility
+    {
+        get => (NavigationUIVisibility)(GetValue(NavigationUIVisibilityProperty) ?? NavigationUIVisibility.Automatic);
+        set => SetValue(NavigationUIVisibilityProperty, value);
+    }
+
+    public bool SandboxExternalContent
+    {
+        get => (bool)(GetValue(SandboxExternalContentProperty) ?? false);
+        set => SetValue(SandboxExternalContentProperty, value);
+    }
+
+    protected virtual Uri? BaseUri
+    {
+        get => _baseUri;
+        set => _baseUri = value;
+    }
+
     public Type? SourcePageType
     {
-        get => GetValue(SourcePageTypeProperty) as Type;
+        get => (Type?)GetValue(SourcePageTypeProperty);
         set => SetValue(SourcePageTypeProperty, value);
     }
 
-    /// <summary>
-    /// Gets a value indicating whether there is at least one entry in back navigation history.
-    /// </summary>
-    public bool CanGoBack => _backStack.Count > 0;
+    public int BackStackDepth => _navigationService.BackStack.Count();
 
-    /// <summary>
-    /// Gets a value indicating whether there is at least one entry in forward navigation history.
-    /// </summary>
-    public bool CanGoForward => _forwardStack.Count > 0;
+    public Page? CurrentPage => _navigationService.Content as Page;
 
-    /// <summary>
-    /// Gets the number of entries in the back stack.
-    /// </summary>
-    public int BackStackDepth => _backStack.Count;
-
-    /// <summary>
-    /// Gets the current page.
-    /// </summary>
-    public Page? CurrentPage => _currentPage;
-
-    /// <summary>
-    /// Gets or sets the cache size (number of pages to keep in cache).
-    /// </summary>
     public int CacheSize { get; set; } = 10;
 
-    #endregion
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="Frame"/> class.
-    /// </summary>
-    public Frame()
+    public Func<Uri, object?>? ContentLoader
     {
+        get => _navigationService.ContentLoader;
+        set => _navigationService.ContentLoader = value;
     }
 
-    #region Navigation Methods
+    public bool Navigate(Uri source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return _navigationService.Navigate(ResolveSource(source));
+    }
 
-    /// <summary>
-    /// Navigates to the specified page type.
-    /// </summary>
-    /// <param name="sourcePageType">The type of page to navigate to.</param>
-    /// <returns>True if navigation was successful; otherwise, false.</returns>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Constructs the page type via Activator.CreateInstance/DI — caller must keep the page type's constructor reachable (typically via typeof literals or source-generated factories).")]
+    public bool Navigate(Uri source, object? extraData)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        return _navigationService.Navigate(ResolveSource(source), extraData);
+    }
+
+    public bool Navigate(object content)
+        => _navigationService.Navigate(content);
+
+    public bool Navigate(object content, object? extraData)
+        => _navigationService.Navigate(content, extraData);
+
+    [RequiresUnreferencedCode("Constructs the page type using DI or Activator.CreateInstance.")]
     public bool Navigate(Type sourcePageType)
-    {
-        return Navigate(sourcePageType, null);
-    }
+        => Navigate(sourcePageType, null);
 
-    /// <summary>
-    /// Navigates to the specified page type with a parameter.
-    /// </summary>
-    /// <param name="sourcePageType">The type of page to navigate to.</param>
-    /// <param name="parameter">The navigation parameter.</param>
-    /// <returns>True if navigation was successful; otherwise, false.</returns>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Constructs the page type via Activator.CreateInstance/DI — caller must keep the page type's constructor reachable (typically via typeof literals or source-generated factories).")]
+    [RequiresUnreferencedCode("Constructs the page type using DI or Activator.CreateInstance.")]
     public bool Navigate(Type sourcePageType, object? parameter)
     {
-        if (sourcePageType == null || !typeof(Page).IsAssignableFrom(sourcePageType))
+        ArgumentNullException.ThrowIfNull(sourcePageType);
+        if (!typeof(Page).IsAssignableFrom(sourcePageType))
         {
             return false;
         }
 
-        // Check if navigation can proceed
-        if (_currentPage != null)
-        {
-            var cancelArgs = new NavigatingCancelEventArgs(parameter, NavigationMode.New, sourcePageType);
-            _currentPage.OnNavigatingFrom(cancelArgs);
-            Navigating?.Invoke(this, cancelArgs);
-
-            if (cancelArgs.Cancel)
-            {
-                return false;
-            }
-        }
-
-        // Save current page to back stack
-        if (_currentPage != null)
-        {
-            _backStack.Push(new PageStackEntry(_currentPage.GetType(), _currentPage.NavigationParameter));
-            _currentPage.OnNavigatedFrom(new NavigationEventArgs(_currentPage, parameter, NavigationMode.New, sourcePageType));
-        }
-
-        // Clear forward stack on new navigation
-        _forwardStack.Clear();
-
-        // Get or create the page
         var page = GetOrCreatePage(sourcePageType);
-        if (page == null)
-        {
-            return false;
-        }
-
-        // Set up the new page
-        page.Frame = this;
-        page.NavigationParameter = parameter;
-        _currentPage = page;
-        Content = page;
-        SourcePageType = sourcePageType;
-
-        // Notify the page
-        page.OnNavigatedTo(new NavigationEventArgs(page, parameter, NavigationMode.New, sourcePageType));
-        Navigated?.Invoke(this, new NavigationEventArgs(page, parameter, NavigationMode.New, sourcePageType));
-
-        return true;
+        return page != null && _navigationService.Navigate(page, parameter);
     }
 
-    /// <summary>
-    /// Navigates to the most recent entry in the back navigation history.
-    /// </summary>
-    /// <returns>True if navigation was successful; otherwise, false.</returns>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Re-instantiates a page type popped from the back stack via reflection.")]
-    public bool GoBack()
+    public void GoBack() => _navigationService.GoBack();
+
+    public void GoForward() => _navigationService.GoForward();
+
+    public void Refresh() => _navigationService.Refresh();
+
+    public void StopLoading() => _navigationService.StopLoading();
+
+    public void AddBackEntry(CustomContentState state) => _navigationService.AddBackEntry(state);
+
+    public JournalEntry? RemoveBackEntry() => _navigationService.RemoveBackEntry();
+
+    public event NavigatingCancelEventHandler Navigating
     {
-        if (!CanGoBack)
-        {
-            return false;
-        }
-
-        var entry = _backStack.Pop();
-
-        // Check if navigation can proceed
-        if (_currentPage != null)
-        {
-            var cancelArgs = new NavigatingCancelEventArgs(entry.Parameter, NavigationMode.Back, entry.SourcePageType);
-            _currentPage.OnNavigatingFrom(cancelArgs);
-            Navigating?.Invoke(this, cancelArgs);
-
-            if (cancelArgs.Cancel)
-            {
-                _backStack.Push(entry);
-                return false;
-            }
-        }
-
-        // Save current page to forward stack
-        if (_currentPage != null)
-        {
-            _forwardStack.Push(new PageStackEntry(_currentPage.GetType(), _currentPage.NavigationParameter));
-            _currentPage.OnNavigatedFrom(new NavigationEventArgs(_currentPage, entry.Parameter, NavigationMode.Back, entry.SourcePageType));
-        }
-
-        // Get or create the page
-        var page = GetOrCreatePage(entry.SourcePageType);
-        if (page == null)
-        {
-            return false;
-        }
-
-        // Set up the page
-        page.Frame = this;
-        page.NavigationParameter = entry.Parameter;
-        _currentPage = page;
-        Content = page;
-        SourcePageType = entry.SourcePageType;
-
-        // Notify the page
-        page.OnNavigatedTo(new NavigationEventArgs(page, entry.Parameter, NavigationMode.Back, entry.SourcePageType));
-        Navigated?.Invoke(this, new NavigationEventArgs(page, entry.Parameter, NavigationMode.Back, entry.SourcePageType));
-
-        return true;
+        add => _navigationService.Navigating += value;
+        remove => _navigationService.Navigating -= value;
     }
 
-    /// <summary>
-    /// Navigates to the most recent entry in the forward navigation history.
-    /// </summary>
-    /// <returns>True if navigation was successful; otherwise, false.</returns>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Re-instantiates a page type popped from the forward stack via reflection.")]
-    public bool GoForward()
+    public event NavigatedEventHandler Navigated
     {
-        if (!CanGoForward)
-        {
-            return false;
-        }
-
-        var entry = _forwardStack.Pop();
-
-        // Check if navigation can proceed
-        if (_currentPage != null)
-        {
-            var cancelArgs = new NavigatingCancelEventArgs(entry.Parameter, NavigationMode.Forward, entry.SourcePageType);
-            _currentPage.OnNavigatingFrom(cancelArgs);
-            Navigating?.Invoke(this, cancelArgs);
-
-            if (cancelArgs.Cancel)
-            {
-                _forwardStack.Push(entry);
-                return false;
-            }
-        }
-
-        // Save current page to back stack
-        if (_currentPage != null)
-        {
-            _backStack.Push(new PageStackEntry(_currentPage.GetType(), _currentPage.NavigationParameter));
-            _currentPage.OnNavigatedFrom(new NavigationEventArgs(_currentPage, entry.Parameter, NavigationMode.Forward, entry.SourcePageType));
-        }
-
-        // Get or create the page
-        var page = GetOrCreatePage(entry.SourcePageType);
-        if (page == null)
-        {
-            return false;
-        }
-
-        // Set up the page
-        page.Frame = this;
-        page.NavigationParameter = entry.Parameter;
-        _currentPage = page;
-        Content = page;
-        SourcePageType = entry.SourcePageType;
-
-        // Notify the page
-        page.OnNavigatedTo(new NavigationEventArgs(page, entry.Parameter, NavigationMode.Forward, entry.SourcePageType));
-        Navigated?.Invoke(this, new NavigationEventArgs(page, entry.Parameter, NavigationMode.Forward, entry.SourcePageType));
-
-        return true;
+        add => _navigationService.Navigated += value;
+        remove => _navigationService.Navigated -= value;
     }
 
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Activates a Page type via Activator.CreateInstance — caller must keep the page type's constructor reachable (typically via DI / source-generated factories).")]
+    public event NavigationFailedEventHandler NavigationFailed
+    {
+        add => _navigationService.NavigationFailed += value;
+        remove => _navigationService.NavigationFailed -= value;
+    }
+
+    public event NavigationProgressEventHandler NavigationProgress
+    {
+        add => _navigationService.NavigationProgress += value;
+        remove => _navigationService.NavigationProgress -= value;
+    }
+
+    public event LoadCompletedEventHandler LoadCompleted
+    {
+        add => _navigationService.LoadCompleted += value;
+        remove => _navigationService.LoadCompleted -= value;
+    }
+
+    public event NavigationStoppedEventHandler NavigationStopped
+    {
+        add => _navigationService.NavigationStopped += value;
+        remove => _navigationService.NavigationStopped -= value;
+    }
+
+    public event FragmentNavigationEventHandler FragmentNavigation
+    {
+        add => _navigationService.FragmentNavigation += value;
+        remove => _navigationService.FragmentNavigation -= value;
+    }
+
+    public event EventHandler? ContentRendered;
+
+    protected virtual void OnContentRendered(EventArgs args)
+        => ContentRendered?.Invoke(this, args);
+
+    internal void SetNavigationContent(object? content, Uri? source, object? extraData)
+    {
+        _updatingNavigationProperties = true;
+        try
+        {
+            base.Content = content;
+            SetValue(SourceProperty, source);
+            SetValue(SourcePageTypeProperty, content is Page ? content.GetType() : null);
+        }
+        finally
+        {
+            _updatingNavigationProperties = false;
+        }
+
+        OnContentRendered(EventArgs.Empty);
+        UpdateNavigationState();
+    }
+
+    private static void OnSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var frame = (Frame)d;
+        if (!frame._updatingNavigationProperties && e.NewValue is Uri source)
+        {
+            frame.Navigate(source);
+        }
+    }
+
+    [UnconditionalSuppressMessage(
+        "Trimming",
+        "IL2026:RequiresUnreferencedCode",
+        Justification = "SourcePageType is an explicit runtime navigation contract; applications must preserve constructors for types assigned to it.")]
+    private static void OnSourcePageTypeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var frame = (Frame)d;
+        if (!frame._updatingNavigationProperties && e.NewValue is Type pageType)
+        {
+            frame.Navigate(pageType);
+        }
+    }
+
+    private void OnNavigationStateChanged(object? sender, EventArgs e) => UpdateNavigationState();
+
+    private void UpdateNavigationState()
+    {
+        SetValue(BackStackPropertyKey, _navigationService.BackStack);
+        SetValue(ForwardStackPropertyKey, _navigationService.ForwardStack);
+        SetValue(CanGoBackPropertyKey, _navigationService.CanGoBack);
+        SetValue(CanGoForwardPropertyKey, _navigationService.CanGoForward);
+    }
+
+    private Uri ResolveSource(Uri source)
+    {
+        if (source.IsAbsoluteUri || BaseUri == null)
+        {
+            return source;
+        }
+
+        return new Uri(BaseUri, source);
+    }
+
+    [RequiresUnreferencedCode("Constructs the page type using DI or Activator.CreateInstance.")]
     private Page? GetOrCreatePage(Type pageType)
     {
-        // Check cache first
         if (_pageCache.TryGetValue(pageType, out var cachedPage))
         {
             return cachedPage;
         }
 
-        // Create new instance
         try
         {
-            Page? page = null;
-
-            // Prefer DI when an IViewFactory is registered with the Application.
-            // The factory also wires up DataContext from a registered ViewModel
-            // (see AddView<TView, TViewModel>()).
             var factory = Application.Current?.Services is { } services
-                ? services.GetService(typeof(Jalium.UI.Hosting.IViewFactory)) as Jalium.UI.Hosting.IViewFactory
+                ? services.GetService(typeof(Hosting.IViewFactory)) as Hosting.IViewFactory
                 : null;
-
-            if (factory != null)
-            {
-                page = factory.CreateView(pageType) as Page;
-            }
-
-            // Fallback for apps that don't use AppBuilder / DI.
-            page ??= Activator.CreateInstance(pageType) as Page;
-
+            var page = factory?.CreateView(pageType) as Page ?? Activator.CreateInstance(pageType) as Page;
             if (page != null && page.NavigationCacheMode != NavigationCacheMode.Disabled)
             {
-                // Manage cache size
-                while (_pageCache.Count >= CacheSize)
-                {
-                    var oldest = _pageCache.First();
-                    if (oldest.Value.NavigationCacheMode != NavigationCacheMode.Required)
-                    {
-                        _pageCache.Remove(oldest.Key);
-                    }
-                    else
-                    {
-                        break;
-                    }
-                }
-
+                TrimCache();
                 _pageCache[pageType] = page;
             }
 
@@ -319,36 +315,17 @@ public class Frame : ContentControl
         }
     }
 
-    #endregion
-
-    #region Events
-
-    /// <summary>
-    /// Occurs when navigation is about to occur.
-    /// </summary>
-    public event EventHandler<NavigatingCancelEventArgs>? Navigating;
-
-    /// <summary>
-    /// Occurs when navigation has completed.
-    /// </summary>
-    public event EventHandler<NavigationEventArgs>? Navigated;
-
-    #endregion
-
-    #region Nested Types
-
-    private readonly struct PageStackEntry
+    private void TrimCache()
     {
-        [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-        public Type SourcePageType { get; }
-        public object? Parameter { get; }
-
-        public PageStackEntry(Type sourcePageType, object? parameter)
+        while (_pageCache.Count >= Math.Max(1, CacheSize))
         {
-            SourcePageType = sourcePageType;
-            Parameter = parameter;
+            var candidate = _pageCache.FirstOrDefault(static pair => pair.Value.NavigationCacheMode != NavigationCacheMode.Required);
+            if (candidate.Value == null)
+            {
+                return;
+            }
+
+            _pageCache.Remove(candidate.Key);
         }
     }
-
-    #endregion
 }

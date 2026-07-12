@@ -191,7 +191,7 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
         if (VisualParent is not Panel panel)
             return;
 
-        foreach (var child in panel.Children)
+        foreach (UIElement child in panel.Children)
         {
             if (child is MenuFlyoutSubItem sibling && !ReferenceEquals(sibling, this))
             {

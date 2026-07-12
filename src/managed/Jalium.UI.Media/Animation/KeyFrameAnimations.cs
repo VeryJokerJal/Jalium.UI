@@ -1,82 +1,42 @@
+using System.Collections;
+
 namespace Jalium.UI.Media.Animation;
 
 /// <summary>
 /// Animates the value of a String property using key frames.
 /// </summary>
-public sealed class StringAnimationUsingKeyFrames : Timeline
+public partial class StringAnimationUsingKeyFrames : StringAnimationBase
 {
+    private StringKeyFrameCollection _keyFrames = new();
+
     /// <summary>
     /// Gets the collection of key frames.
     /// </summary>
-    public List<DiscreteStringKeyFrame> KeyFrames { get; } = new();
+    public StringKeyFrameCollection KeyFrames
+    {
+        get => _keyFrames;
+        set => ReplaceAnimationChild(ref _keyFrames, value);
+    }
 }
-
 /// <summary>
 /// A discrete key frame for string animation.
 /// </summary>
-public sealed class DiscreteStringKeyFrame
+public class DiscreteStringKeyFrame : StringKeyFrame
 {
-    /// <summary>
-    /// Gets or sets the key time.
-    /// </summary>
-    public KeyTime KeyTime { get; set; }
+    public DiscreteStringKeyFrame()
+    {
+    }
 
-    /// <summary>
-    /// Gets or sets the target value.
-    /// </summary>
-    public string Value { get; set; } = string.Empty;
-}
+    public DiscreteStringKeyFrame(string value) => Value = value;
 
-/// <summary>
-/// Animates the value of a Boolean property using key frames.
-/// </summary>
-public sealed class BooleanAnimationUsingKeyFrames : Timeline
-{
-    /// <summary>
-    /// Gets the collection of key frames.
-    /// </summary>
-    public List<DiscreteBooleanKeyFrame> KeyFrames { get; } = new();
-}
+    public DiscreteStringKeyFrame(string value, KeyTime keyTime)
+    {
+        Value = value;
+        KeyTime = keyTime;
+    }
 
-/// <summary>
-/// A discrete key frame for boolean animation.
-/// </summary>
-public sealed class DiscreteBooleanKeyFrame
-{
-    /// <summary>
-    /// Gets or sets the key time.
-    /// </summary>
-    public KeyTime KeyTime { get; set; }
+    protected override string InterpolateValueCore(string baseValue, double keyFrameProgress) =>
+        keyFrameProgress >= 1.0 ? Value : baseValue;
 
-    /// <summary>
-    /// Gets or sets the target value.
-    /// </summary>
-    public bool Value { get; set; }
-}
-
-/// <summary>
-/// Animates the value of a Char property using key frames.
-/// </summary>
-public sealed class CharAnimationUsingKeyFrames : Timeline
-{
-    /// <summary>
-    /// Gets the collection of key frames.
-    /// </summary>
-    public List<DiscreteCharKeyFrame> KeyFrames { get; } = new();
-}
-
-/// <summary>
-/// A discrete key frame for char animation.
-/// </summary>
-public sealed class DiscreteCharKeyFrame
-{
-    /// <summary>
-    /// Gets or sets the key time.
-    /// </summary>
-    public KeyTime KeyTime { get; set; }
-
-    /// <summary>
-    /// Gets or sets the target value.
-    /// </summary>
-    public char Value { get; set; }
+    protected override Freezable CreateInstanceCore() => new DiscreteStringKeyFrame();
 }

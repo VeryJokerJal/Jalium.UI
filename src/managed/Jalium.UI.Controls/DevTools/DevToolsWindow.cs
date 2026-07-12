@@ -1303,7 +1303,7 @@ public partial class DevToolsWindow : Window
 
                     AddSection("Typography");
                     AddNum("FontSize", control.FontSize, "F1", v => control.FontSize = v);
-                    AddFontFamily("FontFamily", control.FontFamily, control);
+                    AddFontFamily("FontFamily", control.FontFamily.Source, control);
                     AddFontWeight("FontWeight", control.FontWeight);
                     AddEnum("HorizContentAlign", control.HorizontalContentAlignment);
                     AddEnum("VertContentAlign", control.VerticalContentAlignment);
@@ -1321,7 +1321,7 @@ public partial class DevToolsWindow : Window
                     AddSection("Typography");
                     AddBrush("Foreground", tb.Foreground, v => ForceSetValue(tb, TextBlock.ForegroundProperty, v));
                     AddNum("FontSize", tb.FontSize, "F1", v => ForceSetValue(tb, TextBlock.FontSizeProperty, (double)v));
-                    AddFontFamily("FontFamily", tb.FontFamily, tb);
+                    AddFontFamily("FontFamily", tb.FontFamily.Source, tb);
                     AddFontWeight("FontWeight", tb.FontWeight);
                 }
 
@@ -2396,7 +2396,8 @@ public partial class DevToolsWindow : Window
         {
             for (int i = 0; i < style.Setters.Count; i++)
             {
-                var setter = style.Setters[i];
+                if (style.Setters[i] is not Setter setter)
+                    continue;
                 var propName = setter.Property?.Name ?? "?";
                 var row = Row($"  {propName}");
 
@@ -3160,7 +3161,7 @@ public partial class DevToolsWindow : Window
                 Text = $"\"{display}\"",
                 Foreground = BrushString,
                 FontSize = 11,
-                FontFamily = fontFamily ?? FrameworkElement.DefaultFontFamilyName
+                FontFamily = new FontFamily(fontFamily ?? FrameworkElement.DefaultFontFamilyName)
             });
             return;
         }
@@ -3176,7 +3177,7 @@ public partial class DevToolsWindow : Window
             BorderThickness = new Thickness(1),
             Padding = new Thickness(3, 1, 3, 1),
             MinWidth = 140,
-            FontFamily = fontFamily ?? FrameworkElement.DefaultFontFamilyName
+            FontFamily = new FontFamily(fontFamily ?? FrameworkElement.DefaultFontFamilyName)
         };
         editor.TextChanged += (_, _) => SetTargetFontFamily(target, editor.Text);
         row.Children.Add(editor);
@@ -3209,10 +3210,10 @@ public partial class DevToolsWindow : Window
             switch (target)
             {
                 case TextBlock tb:
-                    ForceSetValue(tb, TextBlock.FontFamilyProperty, value);
+                    ForceSetValue(tb, TextBlock.FontFamilyProperty, new FontFamily(value));
                     break;
                 case Control c:
-                    ForceSetValue(c, Control.FontFamilyProperty, value);
+                    ForceSetValue(c, Control.FontFamilyProperty, new FontFamily(value));
                     break;
             }
         }
@@ -3255,13 +3256,13 @@ public partial class DevToolsWindow : Window
             switch (target)
             {
                 case TextBlock tb:
-                    if (!string.IsNullOrEmpty(family)) ForceSetValue(tb, TextBlock.FontFamilyProperty, family);
+                    if (!string.IsNullOrEmpty(family)) ForceSetValue(tb, TextBlock.FontFamilyProperty, new FontFamily(family));
                     ForceSetValue(tb, TextBlock.FontSizeProperty, dialog.FontSize);
                     ForceSetValue(tb, TextBlock.FontWeightProperty, dialog.FontWeight);
                     ForceSetValue(tb, TextBlock.FontStyleProperty, dialog.FontStyle);
                     break;
                 case Control c:
-                    if (!string.IsNullOrEmpty(family)) ForceSetValue(c, Control.FontFamilyProperty, family);
+                    if (!string.IsNullOrEmpty(family)) ForceSetValue(c, Control.FontFamilyProperty, new FontFamily(family));
                     ForceSetValue(c, Control.FontSizeProperty, dialog.FontSize);
                     ForceSetValue(c, Control.FontWeightProperty, dialog.FontWeight);
                     ForceSetValue(c, Control.FontStyleProperty, dialog.FontStyle);

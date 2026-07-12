@@ -1,177 +1,187 @@
 using Jalium.UI.Data;
 
-namespace Jalium.UI;
-
-/// <summary>
-/// Provides a way to choose a DataTemplate based on the data object and the data-bound element.
-/// </summary>
-public class DataTemplateSelector
+namespace Jalium.UI.Controls
 {
     /// <summary>
-    /// Initializes a new instance of the <see cref="DataTemplateSelector"/> class.
+    /// Provides a way to choose a <see cref="DataTemplate"/> based on the data object
+    /// and the data-bound element.
     /// </summary>
-    public DataTemplateSelector()
+    public class DataTemplateSelector
     {
-    }
-
-    /// <summary>
-    /// When overridden in a derived class, returns a DataTemplate based on custom logic.
-    /// </summary>
-    /// <param name="item">The data object for which to select the template.</param>
-    /// <param name="container">The data-bound object.</param>
-    /// <returns>Returns a DataTemplate or null.</returns>
-    public virtual DataTemplate? SelectTemplate(object? item, DependencyObject container)
-    {
-        return null;
-    }
-}
-
-/// <summary>
-/// Represents a DataTemplate that supports HeaderedItemsControl, such as TreeViewItem.
-/// </summary>
-public sealed class HierarchicalDataTemplate : DataTemplate
-{
-    /// <summary>
-    /// Gets or sets the binding to use to get the collection to use for the next level in the data hierarchy.
-    /// </summary>
-    public BindingBase? ItemsSource { get; set; }
-
-    /// <summary>
-    /// Gets or sets the DataTemplate to apply to the ItemTemplate property on a generated HeaderedItemsControl.
-    /// </summary>
-    public DataTemplate? ItemTemplate { get; set; }
-
-    /// <summary>
-    /// Gets or sets the DataTemplateSelector to apply to the ItemTemplateSelector property on a generated HeaderedItemsControl.
-    /// </summary>
-    public DataTemplateSelector? ItemTemplateSelector { get; set; }
-
-    /// <summary>
-    /// Gets or sets the style to apply to the ItemContainerStyle property.
-    /// </summary>
-    public Style? ItemContainerStyle { get; set; }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="HierarchicalDataTemplate"/> class.
-    /// </summary>
-    public HierarchicalDataTemplate()
-    {
-    }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="HierarchicalDataTemplate"/> class for the specified type.
-    /// </summary>
-    /// <param name="dataType">The type for which this template is intended.</param>
-    public HierarchicalDataTemplate(Type dataType) : base(dataType)
-    {
-    }
-}
-
-/// <summary>
-/// Represents a template for items panels.
-/// </summary>
-public sealed class ItemsPanelTemplate
-{
-    private Func<FrameworkElement>? _visualTree;
-    private bool _isSealed;
-
-    /// <summary>
-    /// Gets a value indicating whether this template is read-only.
-    /// </summary>
-    public bool IsSealed => _isSealed;
-
-    /// <summary>
-    /// Gets or sets the raw XAML content for this template.
-    /// </summary>
-    internal string? VisualTreeXaml { get; set; }
-
-    /// <summary>
-    /// Gets or sets the assembly context for parsing the XAML content.
-    /// </summary>
-    internal System.Reflection.Assembly? SourceAssembly { get; set; }
-
-    /// <summary>
-    /// 模板被 XAML 解析器扫描到时的祖先 ResourceDictionary 快照。
-    /// LoadContent() 时通过 <see cref="TemplateAmbientResourceContext"/> 桥接给延迟解析器。
-    /// </summary>
-    internal IReadOnlyList<ResourceDictionary>? AmbientResourceDictionaries { get; set; }
-
-    /// <summary>
-    /// Gets or sets a callback used by LoadContent to parse XAML.
-    /// </summary>
-    public static Func<string, System.Reflection.Assembly?, FrameworkElement?>? XamlParser { get; set; }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ItemsPanelTemplate"/> class.
-    /// </summary>
-    public ItemsPanelTemplate()
-    {
-    }
-
-    /// <summary>
-    /// Sets the visual tree factory for this template.
-    /// </summary>
-    /// <param name="visualTreeFactory">A function that creates the visual tree.</param>
-    public void SetVisualTree(Func<FrameworkElement> visualTreeFactory)
-    {
-        if (_isSealed)
-            throw new InvalidOperationException("Cannot modify a sealed ItemsPanelTemplate.");
-
-        _visualTree = visualTreeFactory;
-    }
-
-    /// <summary>
-    /// Seals the template so that it can no longer be modified.
-    /// </summary>
-    public void Seal()
-    {
-        _isSealed = true;
-    }
-
-    /// <summary>
-    /// Gets or sets the type of panel to create.
-    /// When set, <see cref="CreatePanel"/> will instantiate this type directly
-    /// without going through the XAML parser.
-    /// </summary>
-    [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
-    public Type? PanelType { get; set; }
-
-    /// <summary>
-    /// Creates an instance of the panel specified by <see cref="PanelType"/>.
-    /// Falls back to <see cref="LoadContent"/> when <see cref="PanelType"/> is not set.
-    /// </summary>
-    /// <returns>A new panel instance, or null if no panel type or visual tree is configured.</returns>
-    public FrameworkElement? CreatePanel()
-    {
-        if (PanelType != null)
+        /// <summary>
+        /// Initializes a new instance of the <see cref="DataTemplateSelector"/> class.
+        /// </summary>
+        public DataTemplateSelector()
         {
-            return Activator.CreateInstance(PanelType) as FrameworkElement;
         }
 
-        // Fall back to LoadContent if no explicit PanelType is set
-        return LoadContent();
+        /// <summary>
+        /// When overridden in a derived class, returns a template based on custom logic.
+        /// </summary>
+        public virtual DataTemplate? SelectTemplate(object? item, DependencyObject container)
+        {
+            return null;
+        }
     }
 
     /// <summary>
-    /// Creates the visual tree defined by this template.
+    /// Represents a template for the panel used by an items control.
     /// </summary>
-    /// <returns>The root element of the visual tree.</returns>
-    public FrameworkElement? LoadContent()
+    public class ItemsPanelTemplate : FrameworkTemplate
     {
-        if (_visualTree != null)
+        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
+            System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
+        private Type? _panelType;
+
+        /// <summary>
+        /// Gets or sets the callback used to parse deferred XAML content.
+        /// </summary>
+        public static Func<string, System.Reflection.Assembly?, FrameworkElement?>? XamlParser { get; set; }
+
+        /// <summary>
+        /// Initializes a new instance of the <see cref="ItemsPanelTemplate"/> class.
+        /// </summary>
+        public ItemsPanelTemplate()
         {
-            return _visualTree.Invoke();
         }
 
-        if (!string.IsNullOrEmpty(VisualTreeXaml) && XamlParser != null)
+        /// <summary>Initializes a panel template from a legacy factory root.</summary>
+#pragma warning disable CS0618 // WPF compatibility requires accepting the obsolete factory type.
+        public ItemsPanelTemplate(FrameworkElementFactory root)
         {
-            // 与 DataTemplate 同样的祖先资源透传机制。
-            using (TemplateAmbientResourceContext.Push(AmbientResourceDictionaries))
+            ArgumentNullException.ThrowIfNull(root);
+            PanelType = root.Type;
+        }
+#pragma warning restore CS0618
+
+        /// <summary>
+        /// Gets or sets the panel type created by this template.
+        /// </summary>
+        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
+            System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
+        public Type? PanelType
+        {
+            get => _panelType;
+            set
             {
-                return XamlParser(VisualTreeXaml, SourceAssembly);
+                CheckSealed();
+                if (value != null && !typeof(FrameworkElement).IsAssignableFrom(value))
+                {
+                    throw new ArgumentException(
+                        $"ItemsPanelTemplate panel type '{value}' must derive from FrameworkElement.",
+                        nameof(value));
+                }
+
+                _panelType = value;
             }
         }
 
-        return null;
+        /// <summary>
+        /// Sets the visual-tree factory for this template.
+        /// </summary>
+        public void SetVisualTree(Func<FrameworkElement> visualTreeFactory)
+        {
+            ArgumentNullException.ThrowIfNull(visualTreeFactory);
+            SetVisualTreeFactory(visualTreeFactory);
+        }
+
+        /// <summary>
+        /// Creates the panel represented by this template.
+        /// </summary>
+        public FrameworkElement? CreatePanel()
+        {
+            if (_panelType != null)
+            {
+                return Activator.CreateInstance(_panelType) as FrameworkElement;
+            }
+
+            return LoadContent();
+        }
+
+        /// <summary>
+        /// Creates the visual tree represented by this template.
+        /// </summary>
+        public new FrameworkElement? LoadContent() => base.LoadContent() as FrameworkElement;
+
+        /// <inheritdoc />
+        protected override Func<string, System.Reflection.Assembly?, FrameworkElement?>? DeferredXamlParser => XamlParser;
+
+        /// <inheritdoc />
+        protected override void ValidateTemplatedParent(FrameworkElement templatedParent)
+        {
+            ArgumentNullException.ThrowIfNull(templatedParent);
+        }
+    }
+}
+
+namespace Jalium.UI
+{
+    /// <summary>
+    /// Compatibility name for the former Jalium namespace. New code should use
+    /// <see cref="Controls.DataTemplateSelector"/>, matching WPF.
+    /// </summary>
+    public class DataTemplateSelector : Controls.DataTemplateSelector
+    {
+        public DataTemplateSelector()
+        {
+        }
+    }
+
+    /// <summary>
+    /// Represents a DataTemplate that supports a hierarchy of generated items controls.
+    /// </summary>
+    public class HierarchicalDataTemplate : DataTemplate
+    {
+        /// <summary>
+        /// Gets or sets the alternation cycle applied to generated child containers.
+        /// </summary>
+        public int AlternationCount { get; set; }
+
+        public BindingBase? ItemsSource { get; set; }
+
+        /// <summary>
+        /// Gets or sets the binding group applied to generated child containers.
+        /// </summary>
+        public BindingGroup? ItemBindingGroup { get; set; }
+
+        public DataTemplate? ItemTemplate { get; set; }
+
+        public Controls.DataTemplateSelector? ItemTemplateSelector { get; set; }
+
+        public Style? ItemContainerStyle { get; set; }
+
+        /// <summary>
+        /// Gets or sets the selector used to choose styles for generated child containers.
+        /// </summary>
+        public Controls.StyleSelector? ItemContainerStyleSelector { get; set; }
+
+        /// <summary>
+        /// Gets or sets the composite format string used for generated child item content.
+        /// </summary>
+        public string? ItemStringFormat { get; set; }
+
+        public HierarchicalDataTemplate()
+        {
+        }
+
+        public HierarchicalDataTemplate(object dataType) : base(dataType)
+        {
+        }
+
+        public HierarchicalDataTemplate(Type dataType) : base(dataType)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Compatibility name for the former Jalium namespace. It derives from the
+    /// WPF-compatible <see cref="Controls.ItemsPanelTemplate"/> type so existing source
+    /// values remain assignable to control properties.
+    /// </summary>
+    public sealed class ItemsPanelTemplate : Controls.ItemsPanelTemplate
+    {
+        public ItemsPanelTemplate()
+        {
+        }
     }
 }

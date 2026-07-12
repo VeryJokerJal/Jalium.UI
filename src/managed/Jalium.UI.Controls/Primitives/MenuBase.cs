@@ -7,15 +7,37 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public abstract class MenuBase : ItemsControl
 {
+    static MenuBase()
+    {
+        EventManager.RegisterClassHandler(
+            typeof(MenuBase),
+            UIElement.MouseDownEvent,
+            new MouseButtonEventHandler(OnMouseButton));
+        EventManager.RegisterClassHandler(
+            typeof(MenuBase),
+            UIElement.MouseUpEvent,
+            new MouseButtonEventHandler(OnMouseButton));
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the ItemContainerStyle dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty ItemContainerStyleProperty =
-        DependencyProperty.Register(nameof(ItemContainerStyle), typeof(Style), typeof(MenuBase),
-            new PropertyMetadata(null));
+    public new static readonly DependencyProperty ItemContainerStyleProperty =
+        ItemsControl.ItemContainerStyleProperty;
+
+    /// <summary>
+    /// Identifies the ItemContainerTemplateSelector dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    public static readonly DependencyProperty ItemContainerTemplateSelectorProperty =
+        DependencyProperty.Register(
+            nameof(ItemContainerTemplateSelector),
+            typeof(ItemContainerTemplateSelector),
+            typeof(MenuBase),
+            new FrameworkPropertyMetadata(new DefaultItemContainerTemplateSelector()));
 
     /// <summary>
     /// Identifies the UsesItemContainerTemplate dependency property.
@@ -53,10 +75,20 @@ public abstract class MenuBase : ItemsControl
     /// Gets or sets the style applied to menu item containers.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public Style? ItemContainerStyle
+    public new Style? ItemContainerStyle
     {
         get => (Style?)GetValue(ItemContainerStyleProperty);
         set => SetValue(ItemContainerStyleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the selector used to choose a template for generated menu item containers.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    public ItemContainerTemplateSelector? ItemContainerTemplateSelector
+    {
+        get => (ItemContainerTemplateSelector?)GetValue(ItemContainerTemplateSelectorProperty);
+        set => SetValue(ItemContainerTemplateSelectorProperty, value);
     }
 
     /// <summary>
@@ -107,11 +139,27 @@ public abstract class MenuBase : ItemsControl
     /// <inheritdoc />
     protected override FrameworkElement GetContainerForItem(object item)
     {
+        if (UsesItemContainerTemplate)
+        {
+            var template = ItemContainerTemplateSelector?.SelectTemplate(item, this);
+            if (template != null)
+            {
+                var generated = template.LoadContent();
+                if (generated is MenuItem or Separator)
+                {
+                    return (FrameworkElement)generated;
+                }
+
+                throw new InvalidOperationException(
+                    "An item-container template for a MenuBase must create a MenuItem or Separator.");
+            }
+        }
+
         return new MenuItem();
     }
 
     /// <inheritdoc />
-    protected override bool IsItemItsOwnContainer(object item)
+    protected override bool IsItemItsOwnContainerOverride(object item)
     {
         return item is MenuItem || item is Separator;
     }
@@ -276,6 +324,19 @@ public abstract class MenuBase : ItemsControl
 
     #region Event Handlers
 
+    private static void OnMouseButton(object sender, MouseButtonEventArgs e)
+    {
+        ((MenuBase)sender).HandleMouseButton(e);
+    }
+
+    /// <summary>
+    /// Called when a mouse button is pressed or released within the menu subtree.
+    /// </summary>
+    /// <param name="e">The mouse button event data.</param>
+    protected virtual void HandleMouseButton(MouseButtonEventArgs e)
+    {
+    }
+
     private void OnMenuItemClick(object sender, RoutedEventArgs e)
     {
         // Bubble up the click event
@@ -305,4 +366,25 @@ public abstract class MenuBase : ItemsControl
     }
 
     #endregion
+
+    private sealed class DefaultItemContainerTemplateSelector : ItemContainerTemplateSelector
+    {
+        public override DataTemplate? SelectTemplate(object? item, ItemsControl parentItemsControl)
+        {
+            if (item == null || item is UIElement)
+            {
+                return null;
+            }
+
+            for (Type? itemType = item.GetType(); itemType != null && itemType != typeof(object); itemType = itemType.BaseType)
+            {
+                if (parentItemsControl.TryFindResource(new ItemContainerTemplateKey(itemType)) is DataTemplate template)
+                {
+                    return template;
+                }
+            }
+
+            return null;
+        }
+    }
 }

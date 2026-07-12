@@ -3,7 +3,8 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Shapes;
 using Jalium.UI.Media;
-using AnimationDuration = Jalium.UI.Media.Animation.Duration;
+using AnimationDuration = Jalium.UI.Duration;
+using ShapePointCollection = Jalium.UI.Controls.Shapes.PointCollection;
 
 namespace Jalium.UI.Markup;
 
@@ -489,7 +490,7 @@ public sealed class PointCollectionConverter : TypeConverter
     public override object? ConvertFrom(object? value)
     {
         if (value is not string str) return null;
-        return PointCollection.Parse(str);
+        return ShapePointCollection.Parse(str);
     }
 }
 
@@ -547,13 +548,7 @@ public sealed class SizeConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
-        if (value is not string str) return null;
-        var parts = str.Split(new[] { ',', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length != 2)
-            throw new FormatException($"Size requires exactly two components (got '{str}').");
-        var w = double.Parse(parts[0], CultureInfo.InvariantCulture);
-        var h = double.Parse(parts[1], CultureInfo.InvariantCulture);
-        return new Size(w, h);
+        return value is string source ? Size.Parse(source) : null;
     }
 }
 
@@ -580,7 +575,7 @@ public static class TypeConverterRegistry
         [typeof(Uri)] = new UriValueConverter(),
         [typeof(Type)] = new TypeTypeConverter(),
         [typeof(IconElement)] = new IconElementConverter(),
-        [typeof(PointCollection)] = new PointCollectionConverter(),
+        [typeof(ShapePointCollection)] = new PointCollectionConverter(),
         [typeof(Point)] = new PointConverter(),
         [typeof(Vector)] = new VectorConverter(),
         [typeof(Size)] = new SizeConverter(),
@@ -624,6 +619,9 @@ public static class TypeConverterRegistry
     {
         if (targetType == typeof(string) || targetType == typeof(object))
             return value;
+
+        if (targetType == typeof(FontFamily))
+            return new FontFamily(value);
 
         if (targetType == typeof(double))
         {

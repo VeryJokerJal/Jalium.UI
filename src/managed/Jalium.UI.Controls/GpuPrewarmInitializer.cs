@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Jalium.UI.Interop;
 
@@ -6,7 +5,7 @@ namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Kicks off render-context (D3D12 / Vulkan device + DXGI factory) creation on a
-/// background thread the instant Jalium.UI.Controls is loaded.  The first render
+/// background thread when the first <see cref="Application"/> is constructed. The first render
 /// context construction is dominated by ~200–400 ms of native device init that
 /// does not depend on the HWND, so doing it eagerly in parallel with
 /// <c>AppBuilder.Build</c>, the user's <c>Application</c> subclass construction,
@@ -20,9 +19,6 @@ namespace Jalium.UI.Controls;
 /// </summary>
 internal static class GpuPrewarmInitializer
 {
-    [ModuleInitializer]
-    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2255:The 'ModuleInitializer' attribute should not be used in libraries",
-        Justification = "The whole point is to start native GPU device init in parallel the instant the control library loads, before the consumer's Application/Window construction reaches the UI thread; an explicit init call would run too late to overlap. Failures are swallowed and retried on the synchronous UI-thread path.")]
     public static void Prewarm()
     {
         _ = Task.Run(static () =>

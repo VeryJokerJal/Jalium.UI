@@ -14,6 +14,7 @@
         <Setter Property="Padding" Value="8,6,8,6" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="MinHeight" Value="32" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextWrapping" Value="NoWrap" />

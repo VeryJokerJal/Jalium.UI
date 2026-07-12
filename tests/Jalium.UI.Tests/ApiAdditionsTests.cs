@@ -348,6 +348,11 @@ public class ApiAdditionsTests
         var clock = new AnimationClock(timeline);
         clock.Begin();
 
+        // Strongly typed WPF animation bases return the destination value while
+        // a clock is stopped. Begin is start-pending until the first tick, so
+        // activate this deterministic sample clock before overriding progress.
+        clock.Controller.Seek(TimeSpan.Zero, TimeSeekOrigin.BeginTime);
+
         var progressField = typeof(AnimationClock).GetField(
             "_currentProgress",
             BindingFlags.Instance | BindingFlags.NonPublic);

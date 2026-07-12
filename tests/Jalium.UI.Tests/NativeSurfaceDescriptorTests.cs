@@ -55,6 +55,22 @@ public sealed class NativeSurfaceDescriptorTests
     }
 
     [Fact]
+    public void ForLinuxWayland_RequiresDisplayAndSurfaceHandles()
+    {
+        var display = new nint(0x3000);
+        var surface = new nint(0x4000);
+
+        var validSurface = NativeSurfaceDescriptor.ForLinuxWayland(display, surface);
+        var invalidSurface = NativeSurfaceDescriptor.ForLinuxWayland(display, nint.Zero);
+
+        Assert.Equal(NativePlatform.LinuxWayland, validSurface.Platform);
+        Assert.Equal(display, validSurface.Handle0);
+        Assert.Equal(surface, validSurface.Handle1);
+        Assert.True(validSurface.IsValid);
+        Assert.False(invalidSurface.IsValid);
+    }
+
+    [Fact]
     public void AdditionalPlatformFactories_PopulateExpectedHandles()
     {
         var androidWindow = new nint(0x3000);

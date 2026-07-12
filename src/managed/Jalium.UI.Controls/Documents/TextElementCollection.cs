@@ -8,9 +8,13 @@ namespace Jalium.UI.Documents;
 /// collection change notifications and maintains parent-child relationships.
 /// </summary>
 /// <typeparam name="T">The type of elements in the collection. Must be a class type.</typeparam>
-public sealed class TextElementCollection<T> : IList<T>, IList, INotifyCollectionChanged where T : class
+public class TextElementCollection<T> : IList<T>, IList, INotifyCollectionChanged where T : TextElement
 {
     private readonly List<T> _items = new();
+
+    internal TextElementCollection()
+    {
+    }
 
     /// <summary>
     /// Occurs when an item is added, removed, changed, moved, or the entire list is refreshed.
@@ -27,10 +31,7 @@ public sealed class TextElementCollection<T> : IList<T>, IList, INotifyCollectio
         get => _items[index];
         set
         {
-            var old = _items[index];
-            _items[index] = value;
-            CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
-                NotifyCollectionChangedAction.Replace, value, old, index));
+            SetItem(index, value);
         }
     }
 
@@ -64,9 +65,7 @@ public sealed class TextElementCollection<T> : IList<T>, IList, INotifyCollectio
     /// <param name="item">The item to add.</param>
     public void Add(T item)
     {
-        _items.Add(item);
-        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
-            NotifyCollectionChangedAction.Add, item, _items.Count - 1));
+        InsertItem(_items.Count, item);
     }
 
     /// <inheritdoc />
@@ -81,9 +80,7 @@ public sealed class TextElementCollection<T> : IList<T>, IList, INotifyCollectio
     /// </summary>
     public void Clear()
     {
-        _items.Clear();
-        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
-            NotifyCollectionChangedAction.Reset));
+        ClearItems();
     }
 
     /// <summary>
@@ -104,7 +101,7 @@ public sealed class TextElementCollection<T> : IList<T>, IList, INotifyCollectio
     public void CopyTo(T[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
 
     /// <inheritdoc />
-    void ICollection.CopyTo(Array array, int index) => ((ICollection)_items).CopyTo(array, index);
+    public void CopyTo(Array array, int index) => ((ICollection)_items).CopyTo(array, index);
 
     /// <summary>
     /// Returns an enumerator that iterates through the collection.
@@ -132,9 +129,7 @@ public sealed class TextElementCollection<T> : IList<T>, IList, INotifyCollectio
     /// <param name="item">The item to insert.</param>
     public void Insert(int index, T item)
     {
-        _items.Insert(index, item);
-        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
-            NotifyCollectionChangedAction.Add, item, index));
+        InsertItem(index, item);
     }
 
     /// <inheritdoc />
@@ -149,9 +144,7 @@ public sealed class TextElementCollection<T> : IList<T>, IList, INotifyCollectio
     {
         var index = _items.IndexOf(item);
         if (index < 0) return false;
-        _items.RemoveAt(index);
-        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
-            NotifyCollectionChangedAction.Remove, item, index));
+        RemoveItem(index);
         return true;
     }
 
@@ -164,10 +157,7 @@ public sealed class TextElementCollection<T> : IList<T>, IList, INotifyCollectio
     /// <param name="index">The zero-based index of the item to remove.</param>
     public void RemoveAt(int index)
     {
-        var item = _items[index];
-        _items.RemoveAt(index);
-        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
-            NotifyCollectionChangedAction.Remove, item, index));
+        RemoveItem(index);
     }
 
     /// <summary>
@@ -198,9 +188,52 @@ public sealed class TextElementCollection<T> : IList<T>, IList, INotifyCollectio
     /// Adds a range of items to the end of the collection.
     /// </summary>
     /// <param name="range">The items to add.</param>
-    public void AddRange(IEnumerable<T> range)
+    public void AddRange(IEnumerable range)
     {
+        ArgumentNullException.ThrowIfNull(range);
         foreach (var item in range)
-            Add(item);
+        {
+            Add(item as T ?? throw new ArgumentException(
+                $"Every item must be assignable to {typeof(T).FullName}.", nameof(range)));
+        }
+    }
+
+    /// <summary>
+    /// Inserts an element into the backing collection. Derived document collections use
+    /// this hook to keep their logical-parent and sibling metadata synchronized.
+    /// </summary>
+    protected virtual void InsertItem(int index, T item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        _items.Insert(index, item);
+        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Add, item, index));
+    }
+
+    /// <summary>Replaces an element in the backing collection.</summary>
+    protected virtual void SetItem(int index, T item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        var old = _items[index];
+        _items[index] = item;
+        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Replace, item, old, index));
+    }
+
+    /// <summary>Removes an element from the backing collection.</summary>
+    protected virtual void RemoveItem(int index)
+    {
+        var item = _items[index];
+        _items.RemoveAt(index);
+        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Remove, item, index));
+    }
+
+    /// <summary>Clears the backing collection.</summary>
+    protected virtual void ClearItems()
+    {
+        _items.Clear();
+        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Reset));
     }
 }

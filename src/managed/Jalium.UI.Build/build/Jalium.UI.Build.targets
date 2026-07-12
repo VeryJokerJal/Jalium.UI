@@ -9,8 +9,19 @@
 
   <!-- Default task and compiler paths. -->
   <PropertyGroup>
-    <_JalxamlTasksPath Condition="'$(_JalxamlTasksPath)' == ''">$(MSBuildThisFileDirectory)..\tasks\net10.0\Jalium.UI.Build.dll</_JalxamlTasksPath>
-    <JalxamlCompilerPath Condition="'$(JalxamlCompilerPath)' == ''">$(MSBuildThisFileDirectory)..\tools\jalxamlc.exe</JalxamlCompilerPath>
+    <_JalxamlPackagedTasksPath>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../tasks/net10.0/Jalium.UI.Build.dll'))</_JalxamlPackagedTasksPath>
+    <_JalxamlSourceBuildProjectPath>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../Jalium.UI.Build.csproj'))</_JalxamlSourceBuildProjectPath>
+    <_JalxamlSourceTasksPath Condition="'$(JaliumBuildRoot)' != ''">$([System.IO.Path]::GetFullPath('$(JaliumBuildRoot)/bin/Jalium.UI.Build/$(Configuration)/net10.0/Jalium.UI.Build.dll'))</_JalxamlSourceTasksPath>
+    <_JalxamlSourceTasksPath Condition="'$(_JalxamlSourceTasksPath)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../bin/$(Configuration)/net10.0/Jalium.UI.Build.dll'))</_JalxamlSourceTasksPath>
+    <_JalxamlTasksPath Condition="'$(_JalxamlTasksPath)' == '' and Exists('$(_JalxamlSourceBuildProjectPath)')">$(_JalxamlSourceTasksPath)</_JalxamlTasksPath>
+    <_JalxamlTasksPath Condition="'$(_JalxamlTasksPath)' == ''">$(_JalxamlPackagedTasksPath)</_JalxamlTasksPath>
+    <_JalxamlPortableCompilerPath>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../tools/net10.0/jalxamlc.dll'))</_JalxamlPortableCompilerPath>
+    <_JalxamlSourceCompilerProjectPath>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../Jalium.UI.Compiler/Jalium.UI.Compiler.csproj'))</_JalxamlSourceCompilerProjectPath>
+    <_JalxamlSourceCompilerPath Condition="'$(JaliumBuildRoot)' != ''">$([System.IO.Path]::GetFullPath('$(JaliumBuildRoot)/bin/Jalium.UI.Compiler/$(Configuration)/net10.0/jalxamlc.dll'))</_JalxamlSourceCompilerPath>
+    <_JalxamlSourceCompilerPath Condition="'$(_JalxamlSourceCompilerPath)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../Jalium.UI.Compiler/bin/$(Configuration)/net10.0/jalxamlc.dll'))</_JalxamlSourceCompilerPath>
+    <JalxamlCompilerPath Condition="'$(JalxamlCompilerPath)' == '' and Exists('$(_JalxamlPortableCompilerPath)')">$(_JalxamlPortableCompilerPath)</JalxamlCompilerPath>
+    <JalxamlCompilerPath Condition="'$(JalxamlCompilerPath)' == '' and Exists('$(_JalxamlSourceCompilerProjectPath)')">$(_JalxamlSourceCompilerPath)</JalxamlCompilerPath>
+    <JalxamlCompilerPath Condition="'$(JalxamlCompilerPath)' == ''">$(_JalxamlPortableCompilerPath)</JalxamlCompilerPath>
     <EnableJalxamlOptimization Condition="'$(EnableJalxamlOptimization)' == ''">true</EnableJalxamlOptimization>
     <JalxamlDebugInfo Condition="'$(JalxamlDebugInfo)' == ''">false</JalxamlDebugInfo>
     <_JalxamlResolvedOutputConfigurationSegment Condition="'$(Configuration)' != ''">$(Configuration)\</_JalxamlResolvedOutputConfigurationSegment>
@@ -51,6 +62,30 @@
   <UsingTask TaskName="Jalium.UI.Build.TransformJalxamlRazorTask" AssemblyFile="$(_JalxamlTasksPath)" />
   <UsingTask TaskName="Jalium.UI.Build.CompileHlslShadersTask" AssemblyFile="$(_JalxamlTasksPath)" />
   <UsingTask TaskName="Jalium.UI.Build.ExtractHlslShadersTask" AssemblyFile="$(_JalxamlTasksPath)" />
+
+  <!--
+    A package already carries tasks/net10.0 and tools/net10.0. When this targets
+    file is imported directly from a source checkout, build those portable
+    assemblies on demand instead of relying on the tracked legacy Windows EXE.
+    UsingTask assemblies are loaded lazily, so the built-in MSBuild task can
+    produce Jalium.UI.Build.dll before the first custom task is instantiated.
+  -->
+  <Target Name="EnsureJalxamlBuildToolchainFromSource"
+          BeforeTargets="TransformJalxamlRazor;GenerateJalxamlCodeBehind;CompileJalxaml"
+          Condition="Exists('$(_JalxamlSourceBuildProjectPath)')">
+    <MSBuild Projects="$(_JalxamlSourceBuildProjectPath)"
+             Targets="Restore;Build"
+             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false;GeneratePackageOnBuild=false;BuildJaliumNativeProjects=false;BuildJaliumNativeStaticProjects=false"
+             Condition="'$(_JalxamlTasksPath)' == '$(_JalxamlSourceTasksPath)' and !Exists('$(_JalxamlSourceTasksPath)')" />
+    <MSBuild Projects="$(_JalxamlSourceCompilerProjectPath)"
+             Targets="Restore;Build"
+             Properties="Configuration=$(Configuration);Platform=AnyCPU;RuntimeIdentifier=;SelfContained=false;UseAppHost=false;PublishAot=false;PublishTrimmed=false;PublishSingleFile=false;PublishReadyToRun=false"
+             Condition="'$(JalxamlCompilerPath)' == '$(_JalxamlSourceCompilerPath)' and !Exists('$(_JalxamlSourceCompilerPath)')" />
+    <Error Condition="'$(_JalxamlTasksPath)' == '$(_JalxamlSourceTasksPath)' and !Exists('$(_JalxamlSourceTasksPath)')"
+           Text="Failed to build the portable Jalium.UI.Build task assembly from '$(_JalxamlSourceBuildProjectPath)'." />
+    <Error Condition="'$(JalxamlCompilerPath)' == '$(_JalxamlSourceCompilerPath)' and !Exists('$(_JalxamlSourceCompilerPath)')"
+           Text="Failed to build the portable JALXAML compiler from '$(_JalxamlSourceCompilerProjectPath)'." />
+  </Target>
 
   <!-- Remove duplicate source generator analyzers when a local ProjectReference is also present. -->
   <Target Name="DeduplicateJalxamlSourceGenerator"
@@ -520,6 +555,13 @@
            Default off — most Windows AOT consumers ship D3D12-only and don't want
            a hard dependency on the Vulkan SDK at link time. -->
       <JaliumIncludeVulkanAot Condition="'$(JaliumIncludeVulkanAot)' == ''">false</JaliumIncludeVulkanAot>
+      <!-- Resolve the Vulkan SDK Lib directory (holds vulkan-1.lib, the loader
+           import library). The Vulkan SDK does NOT put its Lib folder on the
+           default MSVC/link.exe LIB search path, so the ILC link step can't find
+           vulkan-1.lib by bare name unless we hand it an explicit /LIBPATH. This
+           mirrors AdditionalLibraryDirectories=$(VulkanSdkRoot)\Lib in the dynamic
+           jalium.native.vulkan.vcxproj. -->
+      <_JaliumVulkanSdkLibDir Condition="'$(JaliumIncludeVulkanAot)' == 'true' and '$(VULKAN_SDK)' != ''">$([System.IO.Path]::GetFullPath('$(VULKAN_SDK)\Lib'))</_JaliumVulkanSdkLibDir>
 
       <!-- WebView2LoaderStatic.lib resolution: prefer the copy shipped inside
            Jalium.UI.Build's package, fall back to the source-tree third_party
@@ -541,6 +583,8 @@
            Text="Missing jalium.native.aot.static.lib at '$(_JaliumNativeAotAssetDirectory)'. The package is older than the AOT-aware Jalium.UI.Build — bump Jalium.UI.Build to a version that ships the aggregator archive." />
     <Error Condition="'$(JaliumIncludeVulkanAot)' == 'true' and !Exists('$(_JaliumNativeAotAssetDirectory)jalium.native.vulkan.static.lib')"
            Text="JaliumIncludeVulkanAot=true requires jalium.native.vulkan.static.lib at '$(_JaliumNativeAotAssetDirectory)'. Build the Vulkan static archive (samples\build-native-static.ps1) or restore a Jalium.UI.Build package that ships it." />
+    <Error Condition="'$(JaliumIncludeVulkanAot)' == 'true' and ('$(_JaliumVulkanSdkLibDir)' == '' or !Exists('$(_JaliumVulkanSdkLibDir)\vulkan-1.lib'))"
+           Text="JaliumIncludeVulkanAot=true requires vulkan-1.lib (the Vulkan loader import library), but it was not found. Set the VULKAN_SDK environment variable to your LunarG Vulkan SDK install root so its \Lib\vulkan-1.lib can be linked into the AOT image. Looked in '$(_JaliumVulkanSdkLibDir)'." />
 
     <ItemGroup>
       <!-- Managed-side P/Invoke hooks. The strings here MUST match the DLL
@@ -626,8 +670,11 @@
       <NativeLibrary Include="mfuuid.lib" />
       <NativeLibrary Include="shlwapi.lib" />
       <!-- Vulkan loader (vulkan-1.dll) import library. Ships with the LunarG Vulkan SDK
-           or VS Vulkan workload; consumers enabling JaliumIncludeVulkanAot must have
-           it on the linker's lib search path. -->
+           or VS Vulkan workload. The accompanying /LIBPATH LinkerArg puts the SDK's
+           Lib folder on link.exe's search path (it is not there by default), so the
+           bare-name reference resolves during the ILC link step. -->
+      <LinkerArg Include="/LIBPATH:$(_JaliumVulkanSdkLibDir)"
+                 Condition="'$(JaliumIncludeVulkanAot)' == 'true' and '$(_JaliumVulkanSdkLibDir)' != ''" />
       <NativeLibrary Include="vulkan-1.lib" Condition="'$(JaliumIncludeVulkanAot)' == 'true'" />
     </ItemGroup>
   </Target>

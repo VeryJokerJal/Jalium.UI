@@ -155,7 +155,7 @@ internal static class DrawInputSnapshotter
             DashCap = pen.DashCap,
             LineJoin = pen.LineJoin,
             MiterLimit = pen.MiterLimit,
-            DashStyle = pen.DashStyle is { } ds ? new DashStyle(ds.Dashes, ds.Offset) : null,
+            DashStyle = pen.DashStyle is { } ds ? new DashStyle(ds.Dashes, ds.Offset) : DashStyles.Solid,
         };
     }
 

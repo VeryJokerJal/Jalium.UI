@@ -37,7 +37,6 @@ public class CompositionTargetInvalidationBatchTests
             CompositionTarget.Rendering -= handler;
         }
 
-        Assert.Equal(1, host.TrackVisualInvalidationCount);
         Assert.Equal(1, host.AddDirtyElementCount);
         Assert.Equal(1, host.InvalidateWindowCount);
     }
@@ -45,26 +44,27 @@ public class CompositionTargetInvalidationBatchTests
     private sealed class CountingWindowHost : Decorator, IWindowHost, ILayoutManagerHost
     {
         private readonly LayoutManager _layoutManager = new();
+        private readonly HashSet<UIElement> _dirtyElements = [];
+        private bool _windowInvalidated;
 
         public int AddDirtyElementCount { get; private set; }
         public int InvalidateWindowCount { get; private set; }
-        public int TrackVisualInvalidationCount { get; private set; }
 
         LayoutManager ILayoutManagerHost.LayoutManager => _layoutManager;
 
         public void AddDirtyElement(UIElement element)
         {
-            AddDirtyElementCount++;
-        }
-
-        public void TrackVisualInvalidation(UIElement element)
-        {
-            TrackVisualInvalidationCount++;
+            if (_dirtyElements.Add(element))
+                AddDirtyElementCount++;
         }
 
         public void InvalidateWindow()
         {
-            InvalidateWindowCount++;
+            if (!_windowInvalidated)
+            {
+                _windowInvalidated = true;
+                InvalidateWindowCount++;
+            }
         }
 
         public void RequestFullInvalidation()
@@ -83,7 +83,8 @@ public class CompositionTargetInvalidationBatchTests
         {
             AddDirtyElementCount = 0;
             InvalidateWindowCount = 0;
-            TrackVisualInvalidationCount = 0;
+            _dirtyElements.Clear();
+            _windowInvalidated = false;
         }
     }
 }

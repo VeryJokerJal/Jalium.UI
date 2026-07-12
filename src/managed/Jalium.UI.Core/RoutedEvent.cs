@@ -8,17 +8,17 @@ public enum RoutingStrategy
     /// <summary>
     /// The event is raised only on the source element.
     /// </summary>
-    Direct,
+    Direct = 2,
 
     /// <summary>
     /// The event is raised on the source element and then bubbles up the visual tree.
     /// </summary>
-    Bubble,
+    Bubble = 1,
 
     /// <summary>
     /// The event tunnels down the visual tree from the root to the source element.
     /// </summary>
-    Tunnel
+    Tunnel = 0,
 }
 
 /// <summary>
@@ -69,8 +69,8 @@ public sealed class RoutedEvent
     /// <returns>This routed event instance.</returns>
     public RoutedEvent AddOwner(Type ownerType)
     {
-        // In WPF, AddOwner registers the event with the EventManager for the new owner type
-        // For simplicity, we just return this event - the event is already usable by any type
+        ArgumentNullException.ThrowIfNull(ownerType);
+        EventManager.AddOwner(this, ownerType);
         return this;
     }
 

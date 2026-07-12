@@ -32,7 +32,7 @@ public class AnimationVirtualizationTests
     {
         public int ClearNotifications;
 
-        internal override void OnClearChildren()
+        protected override void OnClearChildren()
         {
             ClearNotifications++;
             base.OnClearChildren();

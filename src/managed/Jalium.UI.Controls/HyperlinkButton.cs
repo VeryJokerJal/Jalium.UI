@@ -1,10 +1,10 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
-using static Jalium.UI.Cursors;
+using static Jalium.UI.Input.Cursors;
 
 namespace Jalium.UI.Controls;
 
@@ -14,9 +14,9 @@ namespace Jalium.UI.Controls;
 public class HyperlinkButton : ButtonBase
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.HyperlinkButtonAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.HyperlinkButtonAutomationPeer(this);
     }
 
     // Cached brushes for OnRender
@@ -173,7 +173,7 @@ public class HyperlinkButton : ButtonBase
 
         if (Content is string text)
         {
-            var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+            var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = FontSize > 0 ? FontSize : 14;
             var formattedText = new FormattedText(text, fontFamily, fontSize);
             TextMeasurement.MeasureText(formattedText);
@@ -240,7 +240,7 @@ public class HyperlinkButton : ButtonBase
         // Draw content
         if (Content is string text && fgBrush != null)
         {
-            var formattedText = new FormattedText(text, FontFamily, FontSize)
+            var formattedText = new FormattedText(text, FontFamily.Source, FontSize)
             {
                 Foreground = fgBrush
             };

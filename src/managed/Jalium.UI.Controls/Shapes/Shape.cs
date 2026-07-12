@@ -78,7 +78,7 @@ public abstract class Shape : FrameworkElement
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty StrokeDashArrayProperty =
-        DependencyProperty.Register(nameof(StrokeDashArray), typeof(List<double>), typeof(Shape),
+        DependencyProperty.Register(nameof(StrokeDashArray), typeof(DoubleCollection), typeof(Shape),
             new PropertyMetadata(null, OnPenChanged));
 
     /// <summary>
@@ -185,9 +185,9 @@ public abstract class Shape : FrameworkElement
     /// Gets or sets the dash pattern for the stroke.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public List<double>? StrokeDashArray
+    public DoubleCollection? StrokeDashArray
     {
-        get => (List<double>?)GetValue(StrokeDashArrayProperty);
+        get => (DoubleCollection?)GetValue(StrokeDashArrayProperty);
         set => SetValue(StrokeDashArrayProperty, value);
     }
 
@@ -291,10 +291,30 @@ public abstract class Shape : FrameworkElement
     {
         if (d is Shape shape)
         {
+            if (ReferenceEquals(e.Property, StrokeDashArrayProperty))
+            {
+                if (e.OldValue is DoubleCollection oldDashArray)
+                {
+                    oldDashArray.Changed -= shape.OnStrokeDashArrayChanged;
+                }
+
+                if (e.NewValue is DoubleCollection newDashArray)
+                {
+                    newDashArray.Changed += shape.OnStrokeDashArrayChanged;
+                }
+            }
+
             shape._pen = null;
             shape.InvalidateMeasure();
             shape.InvalidateVisual();
         }
+    }
+
+    private void OnStrokeDashArrayChanged(object? sender, EventArgs e)
+    {
+        _pen = null;
+        InvalidateMeasure();
+        InvalidateVisual();
     }
 
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

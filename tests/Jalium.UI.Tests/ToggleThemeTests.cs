@@ -53,7 +53,7 @@ public class ToggleThemeTests
 
             Assert.NotNull(checkMark);
             Assert.NotNull(radioDot);
-            Assert.Same(accentText, checkMark.Stroke);
+            Assert.Same(accentText, checkMark.Fill);
             Assert.Same(accentText, radioDot.Fill);
         }
         finally
@@ -116,7 +116,8 @@ public class ToggleThemeTests
         try
         {
             var uncheckedBorder = Assert.IsType<SolidColorBrush>(app.Resources["ToggleUncheckedBorder"]);
-            var checkedBorder = Assert.IsType<SolidColorBrush>(app.Resources["ToggleCheckedBorder"]);
+            var checkedBorder = Assert.IsType<LinearGradientBrush>(app.Resources["ToggleCheckedBorder"]);
+            var checkedBorderFallback = Assert.IsType<Color>(app.Resources["SystemColorHighlightColor"]);
             var disabledBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleDisabledBackground"]);
             var disabledBorder = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleDisabledBorder"]);
 
@@ -142,7 +143,8 @@ public class ToggleThemeTests
             Assert.NotNull(disabledBorderMethod);
 
             Assert.Equal(uncheckedBorder.Color, (Color)getOffBorderColorMethod!.Invoke(toggleSwitch, null)!);
-            Assert.Equal(checkedBorder.Color, (Color)getOnBorderColorMethod!.Invoke(toggleSwitch, null)!);
+            Assert.Equal(2, checkedBorder.GradientStops.Count);
+            Assert.Equal(checkedBorderFallback, (Color)getOnBorderColorMethod!.Invoke(toggleSwitch, null)!);
             Assert.Same(disabledBackground, disabledBackgroundMethod!.Invoke(toggleSwitch, null));
             Assert.Same(disabledBorder, disabledBorderMethod!.Invoke(toggleSwitch, null));
 

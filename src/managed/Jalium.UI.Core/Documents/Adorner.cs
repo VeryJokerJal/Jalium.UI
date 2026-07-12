@@ -33,7 +33,7 @@ public abstract class Adorner : FrameworkElement
     /// </summary>
     /// <param name="transform">The transform that is currently applied to the adorned element.</param>
     /// <returns>A transform to apply to the adorner.</returns>
-    public virtual GeneralTransform? GetDesiredTransform(GeneralTransform? transform)
+    public virtual Jalium.UI.Media.GeneralTransform? GetDesiredTransform(Jalium.UI.Media.GeneralTransform? transform)
     {
         return transform;
     }

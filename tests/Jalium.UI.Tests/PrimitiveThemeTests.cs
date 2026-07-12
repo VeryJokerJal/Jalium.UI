@@ -98,23 +98,15 @@ public class PrimitiveThemeTests
             host.Measure(new Size(320, 80));
             host.Arrange(new Rect(0, 0, 320, 80));
 
-            var backgroundBorder = Assert.IsType<Border>(button.FindName("BackgroundBorder"));
-            var hoverOverlay = Assert.IsType<Border>(button.FindName("HoverOverlay"));
-            var pressedOverlay = Assert.IsType<Border>(button.FindName("PressedOverlay"));
+            var rootBorder = Assert.IsType<Border>(button.FindName("RootBorder"));
             var newBrush = new SolidColorBrush(Color.FromRgb(12, 34, 56));
 
             button.Background = newBrush;
 
             Assert.Equal("None", button.TransitionProperty);
-            Assert.Equal("None", backgroundBorder.TransitionProperty);
-            Assert.Equal("Opacity", hoverOverlay.TransitionProperty);
-            Assert.Equal("Opacity", pressedOverlay.TransitionProperty);
-            Assert.False(backgroundBorder.HasAutomaticTransition(Border.BackgroundProperty));
-            Assert.Same(newBrush, backgroundBorder.Background);
-            Assert.Same(app.Resources["ControlBackgroundHover"], hoverOverlay.Background);
-            Assert.Same(app.Resources["ButtonBackgroundPressed"], pressedOverlay.Background);
-            Assert.Equal(0.0, hoverOverlay.Opacity);
-            Assert.Equal(0.0, pressedOverlay.Opacity);
+            Assert.Equal("None", rootBorder.TransitionProperty);
+            Assert.False(rootBorder.HasAutomaticTransition(Border.BackgroundProperty));
+            Assert.Same(newBrush, rootBorder.Background);
         }
         finally
         {
@@ -149,18 +141,16 @@ public class PrimitiveThemeTests
             host.Arrange(new Rect(0, 0, 360, 320));
 
             var listBoxItem = FindDescendant<ListBoxItem>(listBox);
-
-            Assert.NotNull(button.FindName("FocusOuter"));
-            Assert.NotNull(button.FindName("FocusInner"));
-            Assert.NotNull(checkBox.FindName("FocusOuter"));
-            Assert.NotNull(checkBox.FindName("FocusInner"));
-            Assert.NotNull(comboBox.FindName("FocusOuter"));
-            Assert.NotNull(comboBox.FindName("FocusInner"));
-            Assert.NotNull(toggleSwitch.FindName("FocusOuter"));
-            Assert.NotNull(toggleSwitch.FindName("FocusInner"));
             Assert.NotNull(listBoxItem);
-            Assert.NotNull(listBoxItem!.FindName("FocusOuter"));
-            Assert.NotNull(listBoxItem.FindName("FocusInner"));
+
+            var sharedFocusStyle = Assert.IsType<Style>(
+                app.Resources[FrameworkElement.DefaultFocusVisualStyleKey]);
+
+            Assert.Same(sharedFocusStyle, button.ResolveFocusVisualStyle());
+            Assert.Same(sharedFocusStyle, checkBox.ResolveFocusVisualStyle());
+            Assert.Same(sharedFocusStyle, comboBox.ResolveFocusVisualStyle());
+            Assert.Same(sharedFocusStyle, toggleSwitch.ResolveFocusVisualStyle());
+            Assert.Same(sharedFocusStyle, listBoxItem!.ResolveFocusVisualStyle());
         }
         finally
         {
@@ -189,6 +179,32 @@ public class PrimitiveThemeTests
             Assert.False(slider.HasLocalValue(FrameworkElement.HeightProperty));
             Assert.Equal(24, slider.Height);
             Assert.True(slider.RenderSize.Height >= 24);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void Slider_FirstMeasureSmallerThanThumb_ShouldNotCreateNegativeTemplateSize()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var slider = new Slider { Value = 100 };
+            var host = new Grid { Width = 8, Height = 8 };
+            host.Children.Add(slider);
+
+            host.Measure(new Size(8, 8));
+            host.Arrange(new Rect(0, 0, 8, 8));
+            host.Measure(new Size(8, 8));
+
+            var selectionRange = Assert.IsType<Border>(slider.FindName("PART_SelectionRange"));
+            Assert.True(selectionRange.Width >= 0);
+            Assert.True(selectionRange.Height >= 0 || double.IsNaN(selectionRange.Height));
         }
         finally
         {
@@ -587,7 +603,7 @@ public class PrimitiveThemeTests
         }
     }
 
-    private sealed class RecordingDrawingContext : DrawingContext
+    private sealed class RecordingDrawingContext : DrawingContextAdapter
     {
         public Pen? LastPen { get; private set; }
         public Brush? LastBackgroundBrush { get; private set; }
@@ -651,7 +667,7 @@ public class PrimitiveThemeTests
         }
     }
 
-    private sealed class TextRecordingDrawingContext : DrawingContext
+    private sealed class TextRecordingDrawingContext : DrawingContextAdapter
     {
         public FormattedText? LastFormattedText { get; private set; }
 

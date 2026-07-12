@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Interop;
+using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
@@ -279,7 +279,7 @@ public sealed class CalendarDayButton : Button
                 fgBrush = ResolveDefaultForegroundBrush();
             }
 
-            var formattedText = new FormattedText(text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var formattedText = new FormattedText(text, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = fgBrush
             };

@@ -1,12 +1,15 @@
 using Jalium.UI.Media;
 
-namespace Jalium.UI.Controls.Shell;
+namespace Jalium.UI.Shell;
 
 /// <summary>
 /// Represents an object that describes the customizations to the non-client area of a window.
 /// </summary>
-public sealed class WindowChrome : DependencyObject
+public class WindowChrome : Freezable
 {
+    /// <inheritdoc />
+    protected override Freezable CreateInstanceCore() => new WindowChrome();
+
     #region Dependency Properties
 
     /// <summary>
@@ -367,51 +370,51 @@ public enum ResizeGripDirection
     /// <summary>
     /// No resize grip.
     /// </summary>
-    None,
+    None = 0,
 
     /// <summary>
     /// Resize from the top-left corner.
     /// </summary>
-    TopLeft,
+    TopLeft = 1,
 
     /// <summary>
     /// Resize from the top edge.
     /// </summary>
-    Top,
+    Top = 2,
 
     /// <summary>
     /// Resize from the top-right corner.
     /// </summary>
-    TopRight,
-
-    /// <summary>
-    /// Resize from the left edge.
-    /// </summary>
-    Left,
+    TopRight = 3,
 
     /// <summary>
     /// Resize from the right edge.
     /// </summary>
-    Right,
-
-    /// <summary>
-    /// Resize from the bottom-left corner.
-    /// </summary>
-    BottomLeft,
-
-    /// <summary>
-    /// Resize from the bottom edge.
-    /// </summary>
-    Bottom,
+    Right = 4,
 
     /// <summary>
     /// Resize from the bottom-right corner.
     /// </summary>
-    BottomRight,
+    BottomRight = 5,
+
+    /// <summary>
+    /// Resize from the bottom edge.
+    /// </summary>
+    Bottom = 6,
+
+    /// <summary>
+    /// Resize from the bottom-left corner.
+    /// </summary>
+    BottomLeft = 7,
+
+    /// <summary>
+    /// Resize from the left edge.
+    /// </summary>
+    Left = 8,
 
     /// <summary>
     /// Move the window (caption area).
     /// </summary>
-    Caption
+    Caption = 9
 }
 

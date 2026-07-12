@@ -53,7 +53,7 @@ partial class TextEffectPresenter
             return;
         }
 
-        var fontFamily = FontFamily;
+        var fontFamily = FontFamily.Source;
         var fontSize = FontSize > 0 ? FontSize : 14.0;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
@@ -498,7 +498,7 @@ partial class TextEffectPresenter
     /// Scans every live and exiting cell to find the largest blur radius
     /// requested this frame AND the union bounds of cells that will render
     /// in the blurry pass. Caller uses both to size the offscreen capture
-    /// for <see cref="DrawingContext.PushEffect"/>.
+    /// for <see cref="DrawingContext.PushEffect(Jalium.UI.IEffect, Rect)"/>.
     /// </summary>
     private (double maxBlur, Rect blurryBounds) ScanBlurryCells()
     {
@@ -744,7 +744,7 @@ partial class TextEffectPresenter
         // invalidate the cache via _formattedCacheSignature.
         if (!_formattedCache.TryGetValue(text, out var cached))
         {
-            cached = new FormattedText(text, FontFamily, FontSize > 0 ? FontSize : 14.0)
+            cached = new FormattedText(text, FontFamily.Source, FontSize > 0 ? FontSize : 14.0)
             {
                 FontWeight = FontWeight.ToOpenTypeWeight(),
                 FontStyle = FontStyle.ToOpenTypeStyle(),
@@ -760,7 +760,7 @@ partial class TextEffectPresenter
     private string BuildFontSignature()
     {
         return string.Concat(
-            FontFamily,
+            FontFamily.Source,
             "|",
             FontSize.ToString("R", System.Globalization.CultureInfo.InvariantCulture),
             "|",

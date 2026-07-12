@@ -19,10 +19,11 @@ public sealed class InputBindingCollection : IList<InputBinding>, IList
     /// <summary>
     /// Initializes a new instance of the InputBindingCollection class with the specified bindings.
     /// </summary>
-    /// <param name="bindings">The bindings to add to the collection.</param>
-    public InputBindingCollection(IEnumerable<InputBinding> bindings)
+    /// <param name="inputBindings">The bindings to add to the collection.</param>
+    public InputBindingCollection(IList inputBindings)
     {
-        _bindings.AddRange(bindings);
+        ArgumentNullException.ThrowIfNull(inputBindings);
+        AddRange(inputBindings);
     }
 
     /// <summary>
@@ -61,7 +62,36 @@ public sealed class InputBindingCollection : IList<InputBinding>, IList
     /// <summary>
     /// Adds a binding to the collection.
     /// </summary>
-    public void Add(InputBinding item) => _bindings.Add(item);
+    public int Add(InputBinding inputBinding)
+    {
+        ArgumentNullException.ThrowIfNull(inputBinding);
+        _bindings.Add(inputBinding);
+        return _bindings.Count - 1;
+    }
+
+    void ICollection<InputBinding>.Add(InputBinding item) => Add(item);
+
+    /// <summary>
+    /// Adds the input bindings in <paramref name="collection"/> to the end of the collection.
+    /// </summary>
+    public void AddRange(ICollection collection)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+        if (collection.Count <= 0)
+        {
+            return;
+        }
+
+        foreach (object? item in collection)
+        {
+            if (item is not InputBinding binding)
+            {
+                throw new NotSupportedException("Collection only accepts InputBinding instances.");
+            }
+
+            _bindings.Add(binding);
+        }
+    }
 
     int IList.Add(object? value)
     {
@@ -93,8 +123,8 @@ public sealed class InputBindingCollection : IList<InputBinding>, IList
     /// <summary>
     /// Returns an enumerator that iterates through the collection.
     /// </summary>
-    public IEnumerator<InputBinding> GetEnumerator() => _bindings.GetEnumerator();
-    IEnumerator IEnumerable.GetEnumerator() => _bindings.GetEnumerator();
+    public IEnumerator GetEnumerator() => _bindings.GetEnumerator();
+    IEnumerator<InputBinding> IEnumerable<InputBinding>.GetEnumerator() => _bindings.GetEnumerator();
 
     /// <summary>
     /// Returns the index of the specified binding.
@@ -115,7 +145,8 @@ public sealed class InputBindingCollection : IList<InputBinding>, IList
     /// <summary>
     /// Removes the specified binding from the collection.
     /// </summary>
-    public bool Remove(InputBinding item) => _bindings.Remove(item);
+    public void Remove(InputBinding inputBinding) => _bindings.Remove(inputBinding);
+    bool ICollection<InputBinding>.Remove(InputBinding item) => _bindings.Remove(item);
     void IList.Remove(object? value)
     {
         if (value is InputBinding binding)

@@ -303,9 +303,9 @@ public class Sparkline : Control
     #region Automation
 
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.SparklineAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.SparklineAutomationPeer(this);
     }
 
     #endregion

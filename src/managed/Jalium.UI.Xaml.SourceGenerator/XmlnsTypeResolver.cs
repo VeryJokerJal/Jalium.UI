@@ -36,6 +36,14 @@ internal sealed class XmlnsTypeResolver
     private const string XmlnsCompatibleWithAttributeName = "Jalium.UI.Markup.XmlnsCompatibleWithAttribute";
     private const string ClrNamespacePrefix = "clr-namespace:";
     private const string XamlLanguageNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+    private static readonly HashSet<string> LegacyManagedFacadeAssemblyNames = new(StringComparer.Ordinal)
+    {
+        "Jalium.UI.Core",
+        "Jalium.UI.Media",
+        "Jalium.UI.Input",
+        "Jalium.UI.Interop",
+        "Jalium.UI.Controls",
+    };
 
     /// <summary>
     /// XAML language built-in element types. <c>&lt;x:String&gt;</c> resolves to
@@ -260,7 +268,9 @@ internal sealed class XmlnsTypeResolver
             return null;
 
         if (!string.IsNullOrEmpty(assemblyName) &&
-            !string.Equals(typeSymbol.ContainingAssembly?.Identity.Name, assemblyName, StringComparison.Ordinal))
+            !string.Equals(typeSymbol.ContainingAssembly?.Identity.Name, assemblyName, StringComparison.Ordinal) &&
+            !(string.Equals(typeSymbol.ContainingAssembly?.Identity.Name, "Jalium.UI.Managed", StringComparison.Ordinal) &&
+              LegacyManagedFacadeAssemblyNames.Contains(assemblyName!)))
         {
             return null;
         }

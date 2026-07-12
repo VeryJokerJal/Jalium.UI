@@ -11,9 +11,9 @@ namespace Jalium.UI.Controls;
 public class GeographicHeatmap : FrameworkElement
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.GeographicHeatmapAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.GeographicHeatmapAutomationPeer(this);
     }
 
     // Cached brushes

@@ -1,678 +1,472 @@
-namespace Jalium.UI.Automation;
+using Jalium.UI.Automation.Provider;
 
-/// <summary>
-/// Provides a base class that exposes an automation element to UI Automation.
-/// </summary>
-public abstract class AutomationPeer
+namespace Jalium.UI.Automation.Peers;
+
+/// <summary>Exposes a framework element to accessibility clients.</summary>
+public abstract class AutomationPeer : DispatcherObject
 {
-    private readonly UIElement _owner;
-    private AutomationPeer? _eventsSource;
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<AutomationPeer, AutomationPeerRawProvider>
+        s_rawProviders = new();
+    private List<AutomationPeer>? _childrenCache;
 
-    /// <summary>
-    /// Initializes a new instance of the AutomationPeer class.
-    /// </summary>
-    /// <param name="owner">The UI element that is associated with this peer.</param>
-    protected AutomationPeer(UIElement owner)
+    /// <summary>Initializes an automation peer.</summary>
+    protected AutomationPeer()
     {
-        ArgumentNullException.ThrowIfNull(owner);
-        _owner = owner;
     }
 
-    /// <summary>
-    /// Gets the UI element that is associated with this peer.
-    /// </summary>
-    protected internal UIElement Owner => _owner;
+    /// <summary>Gets or sets the peer that is used as the source for events raised by this peer.</summary>
+    public AutomationPeer? EventsSource { get; set; }
 
-    /// <summary>
-    /// Gets or sets the AutomationPeer that is the source of automation events for this peer.
-    /// </summary>
-    public AutomationPeer? EventsSource
-    {
-        get => _eventsSource;
-        set => _eventsSource = value;
-    }
+    /// <summary>Gets the dependency object represented by this peer for framework accessibility bridges.</summary>
+    internal DependencyObject? Owner => GetAutomationOwnerCore();
 
-    #region Core Methods
+    /// <summary>Gets the provider for a control pattern.</summary>
+    public abstract object? GetPattern(PatternInterface patternInterface);
 
-    /// <summary>
-    /// Gets the control type for the element that is associated with this peer.
-    /// </summary>
-    /// <returns>The control type.</returns>
-    public AutomationControlType GetAutomationControlType()
-    {
-        return GetAutomationControlTypeCore();
-    }
+    public AutomationControlType GetAutomationControlType() => GetAutomationControlTypeCore();
+    public string GetClassName() => GetClassNameCore() ?? string.Empty;
 
-    /// <summary>
-    /// Gets the class name of the element that is associated with this peer.
-    /// </summary>
-    /// <returns>The class name.</returns>
-    public string GetClassName()
-    {
-        return GetClassNameCore();
-    }
-
-    /// <summary>
-    /// Gets the name of the element that is associated with this peer.
-    /// </summary>
-    /// <returns>The name of the element.</returns>
     public string GetName()
     {
-        // First check AutomationProperties.Name
-        var name = AutomationProperties.GetName(_owner);
-        if (!string.IsNullOrEmpty(name))
-            return name;
+        DependencyObject? owner = GetAutomationOwnerCore();
+        if (owner is not null)
+        {
+            string value = AutomationProperties.GetName(owner);
+            if (!string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+        }
 
-        // Then call the core implementation
-        return GetNameCore();
+        return GetNameCore() ?? string.Empty;
     }
 
-    /// <summary>
-    /// Gets the automation ID for the element that is associated with this peer.
-    /// </summary>
-    /// <returns>The automation ID.</returns>
     public string GetAutomationId()
     {
-        var id = AutomationProperties.GetAutomationId(_owner);
-        if (!string.IsNullOrEmpty(id))
-            return id;
+        DependencyObject? owner = GetAutomationOwnerCore();
+        if (owner is not null)
+        {
+            string value = AutomationProperties.GetAutomationId(owner);
+            if (!string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+        }
 
-        return GetAutomationIdCore();
+        return GetAutomationIdCore() ?? string.Empty;
     }
 
-    /// <summary>
-    /// Gets help text for the element that is associated with this peer.
-    /// </summary>
-    /// <returns>The help text.</returns>
     public string GetHelpText()
     {
-        var helpText = AutomationProperties.GetHelpText(_owner);
-        if (!string.IsNullOrEmpty(helpText))
-            return helpText;
+        DependencyObject? owner = GetAutomationOwnerCore();
+        if (owner is not null)
+        {
+            string value = AutomationProperties.GetHelpText(owner);
+            if (!string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+        }
 
-        return GetHelpTextCore();
+        return GetHelpTextCore() ?? string.Empty;
     }
 
-    /// <summary>
-    /// Gets a human-readable localized string that represents the control type.
-    /// </summary>
-    /// <returns>The localized control type name.</returns>
-    public string GetLocalizedControlType()
+    public string GetAcceleratorKey()
     {
-        return GetLocalizedControlTypeCore();
+        DependencyObject? owner = GetAutomationOwnerCore();
+        if (owner is not null)
+        {
+            string value = AutomationProperties.GetAcceleratorKey(owner);
+            if (!string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+        }
+
+        return GetAcceleratorKeyCore() ?? string.Empty;
     }
 
-    /// <summary>
-    /// Gets the bounding rectangle of the element.
-    /// </summary>
-    /// <returns>The bounding rectangle.</returns>
-    public Rect GetBoundingRectangle()
+    public string GetAccessKey()
     {
-        return GetBoundingRectangleCore();
+        DependencyObject? owner = GetAutomationOwnerCore();
+        if (owner is not null)
+        {
+            string value = AutomationProperties.GetAccessKey(owner);
+            if (!string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+        }
+
+        return GetAccessKeyCore() ?? string.Empty;
     }
 
-    /// <summary>
-    /// Gets a value indicating whether the element is enabled.
-    /// </summary>
-    /// <returns>True if enabled; otherwise, false.</returns>
-    public bool IsEnabled()
+    public string GetItemStatus()
     {
-        return IsEnabledCore();
+        DependencyObject? owner = GetAutomationOwnerCore();
+        if (owner is not null)
+        {
+            string value = AutomationProperties.GetItemStatus(owner);
+            if (!string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+        }
+
+        return GetItemStatusCore() ?? string.Empty;
     }
 
-    /// <summary>
-    /// Gets a value indicating whether the element is a keyboard focusable element.
-    /// </summary>
-    /// <returns>True if focusable; otherwise, false.</returns>
-    public bool IsKeyboardFocusable()
+    public string GetItemType()
     {
-        return IsKeyboardFocusableCore();
+        DependencyObject? owner = GetAutomationOwnerCore();
+        if (owner is not null)
+        {
+            string value = AutomationProperties.GetItemType(owner);
+            if (!string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+        }
+
+        return GetItemTypeCore() ?? string.Empty;
     }
 
-    /// <summary>
-    /// Gets a value indicating whether the element has keyboard focus.
-    /// </summary>
-    /// <returns>True if the element has keyboard focus; otherwise, false.</returns>
-    public bool HasKeyboardFocus()
-    {
-        return HasKeyboardFocusCore();
-    }
+    public string GetLocalizedControlType() => GetLocalizedControlTypeCore() ?? string.Empty;
+    public Rect GetBoundingRectangle() => GetBoundingRectangleCore();
+    public Point GetClickablePoint() => GetClickablePointCore();
+    public AutomationOrientation GetOrientation() => GetOrientationCore();
+    public bool IsEnabled() => IsEnabledCore();
+    public bool IsKeyboardFocusable() => IsKeyboardFocusableCore();
+    public bool HasKeyboardFocus() => HasKeyboardFocusCore();
+    public bool IsOffscreen() => IsOffscreenCore();
+    public bool IsContentElement() => IsContentElementCore();
+    public bool IsControlElement() => IsControlElementCore();
+    public bool IsPassword() => IsPasswordCore();
+    public bool IsRequiredForForm() => IsRequiredForFormCore();
+    public bool IsDialog() => IsDialogCore();
+    public int GetPositionInSet() => GetPositionInSetCore();
+    public int GetSizeOfSet() => GetSizeOfSetCore();
+    public AutomationHeadingLevel GetHeadingLevel() => GetHeadingLevelCore();
+    public AutomationLiveSetting GetLiveSetting() => GetLiveSettingCore();
+    public AutomationPeer? GetLabeledBy() => GetLabeledByCore();
+    public List<AutomationPeer> GetControlledPeers() => GetControlledPeersCore() ?? [];
+    public AutomationPeer? GetParent() => GetParentCore();
 
-    /// <summary>
-    /// Sets keyboard focus to the element.
-    /// </summary>
-    public void SetFocus()
-    {
-        SetFocusCore();
-    }
-
-    /// <summary>
-    /// Gets a value indicating whether the element is visible.
-    /// </summary>
-    /// <returns>True if visible; otherwise, false.</returns>
-    public bool IsOffscreen()
-    {
-        return IsOffscreenCore();
-    }
-
-    /// <summary>
-    /// Gets a value indicating whether the element is a content element.
-    /// </summary>
-    /// <returns>True if content element; otherwise, false.</returns>
-    public bool IsContentElement()
-    {
-        return IsContentElementCore();
-    }
-
-    /// <summary>
-    /// Gets a value indicating whether the element is a control element.
-    /// </summary>
-    /// <returns>True if control element; otherwise, false.</returns>
-    public bool IsControlElement()
-    {
-        return IsControlElementCore();
-    }
-
-    #endregion
-
-    #region Pattern Support
-
-    /// <summary>
-    /// Gets the control pattern that is associated with the specified pattern interface.
-    /// </summary>
-    /// <param name="patternInterface">The pattern interface.</param>
-    /// <returns>The pattern provider, or null if the pattern is not supported.</returns>
-    public object? GetPattern(PatternInterface patternInterface)
-    {
-        return GetPatternCore(patternInterface);
-    }
-
-    #endregion
-
-    #region Navigation
-
-    /// <summary>
-    /// Gets the parent peer.
-    /// </summary>
-    /// <returns>The parent automation peer, or null.</returns>
-    public AutomationPeer? GetParent()
-    {
-        return GetParentCore();
-    }
-
-    /// <summary>
-    /// Gets the child peers.
-    /// </summary>
-    /// <returns>A list of child automation peers.</returns>
     public List<AutomationPeer> GetChildren()
     {
-        return GetChildrenCore();
+        if (_childrenCache is null)
+        {
+            _childrenCache = GetChildrenCore() ?? [];
+        }
+
+        return _childrenCache;
     }
 
-    #endregion
+    public AutomationPeer? GetPeerFromPoint(Point point) => GetPeerFromPointCore(point);
 
-    #region Events
+    public void SetFocus() => SetFocusCore();
 
-    /// <summary>
-    /// Raises an automation event.
-    /// </summary>
-    /// <param name="eventId">The event to raise.</param>
     public void RaiseAutomationEvent(AutomationEvents eventId)
     {
         OnAutomationEvent(eventId);
-        EventSink?.OnAutomationEventRaised(this, eventId);
+        AutomationPeer effectiveSource = EventsSource ?? this;
+        Automation.IAutomationEventSink? sink = Automation.EventSinkRegistry.Sink;
+        sink?.OnAutomationEventRaised(effectiveSource, eventId);
     }
 
-    /// <summary>
-    /// Raises a property changed event.
-    /// </summary>
-    /// <param name="property">The property that changed.</param>
-    /// <param name="oldValue">The old value.</param>
-    /// <param name="newValue">The new value.</param>
     public void RaisePropertyChangedEvent(AutomationProperty property, object? oldValue, object? newValue)
     {
+        ArgumentNullException.ThrowIfNull(property);
         OnPropertyChanged(property, oldValue, newValue);
-        EventSink?.OnPropertyChangedRaised(this, property, oldValue, newValue);
+        AutomationPeer effectiveSource = EventsSource ?? this;
+        Automation.EventSinkRegistry.Sink?.OnPropertyChangedRaised(effectiveSource, property, oldValue, newValue);
     }
 
-    /// <summary>
-    /// Called when an automation event is raised.
-    /// </summary>
-    /// <param name="eventId">The event ID.</param>
+    public void RaiseAsyncContentLoadedEvent(AsyncContentLoadedEventArgs args)
+    {
+        ArgumentNullException.ThrowIfNull(args);
+        OnAutomationEvent(AutomationEvents.AsyncContentLoaded);
+        AutomationPeer effectiveSource = EventsSource ?? this;
+        Automation.EventSinkRegistry.Sink?.OnAsyncContentLoadedRaised(effectiveSource, args);
+    }
+
+    public void RaiseNotificationEvent(
+        AutomationNotificationKind notificationKind,
+        AutomationNotificationProcessing notificationProcessing,
+        string displayString,
+        string activityId)
+    {
+        ArgumentNullException.ThrowIfNull(displayString);
+        ArgumentNullException.ThrowIfNull(activityId);
+        OnAutomationEvent(AutomationEvents.Notification);
+        AutomationPeer effectiveSource = EventsSource ?? this;
+        Automation.EventSinkRegistry.Sink?.OnNotificationRaised(
+            effectiveSource,
+            notificationKind,
+            notificationProcessing,
+            displayString,
+            activityId);
+    }
+
+    public static bool ListenerExists(AutomationEvents eventId) => Automation.EventSinkRegistry.Sink is not null;
+
+    /// <summary>Compatibility overload retained for existing Jalium call sites.</summary>
+    public static bool ListenerExists() => Automation.EventSinkRegistry.Sink is not null;
+
+    internal static Automation.IAutomationEventSink? EventSink
+    {
+        get => Automation.EventSinkRegistry.Sink;
+        set => Automation.EventSinkRegistry.Sink = value;
+    }
+
+    public void InvalidatePeer()
+    {
+        ResetChildrenCache();
+        Automation.EventSinkRegistry.Sink?.OnFocusChanged(EventsSource ?? this);
+    }
+
+    public void ResetChildrenCache() => _childrenCache = null;
+
+    protected internal virtual bool IsHwndHost => false;
+
+    protected internal IRawElementProviderSimple ProviderFromPeer(AutomationPeer peer)
+    {
+        ArgumentNullException.ThrowIfNull(peer);
+        return s_rawProviders.GetValue(peer, static value => new AutomationPeerRawProvider(value));
+    }
+
+    protected AutomationPeer PeerFromProvider(IRawElementProviderSimple provider)
+    {
+        ArgumentNullException.ThrowIfNull(provider);
+        return provider is IAutomationPeerRawProvider peerProvider ? peerProvider.Peer : null!;
+    }
+
+    protected virtual DependencyObject? GetAutomationOwnerCore() => null;
+    protected virtual HostedWindowWrapper? GetHostRawElementProviderCore() => null;
+    protected virtual AutomationPeer? GetPeerFromPointCore(Point point) => HitTestPeer(this, point);
+    protected virtual bool IsDialogCore() => false;
+    protected virtual int GetPositionInSetCore() => -1;
+    protected virtual int GetSizeOfSetCore() => -1;
+    protected virtual AutomationHeadingLevel GetHeadingLevelCore() => AutomationHeadingLevel.None;
+    protected virtual AutomationLiveSetting GetLiveSettingCore() => AutomationLiveSetting.Off;
+    protected virtual List<AutomationPeer> GetControlledPeersCore() => [];
+
+    protected abstract AutomationControlType GetAutomationControlTypeCore();
+    protected abstract string GetClassNameCore();
+    protected abstract string GetNameCore();
+    protected abstract string GetAutomationIdCore();
+    protected abstract string GetHelpTextCore();
+    protected abstract string GetAcceleratorKeyCore();
+    protected abstract string GetAccessKeyCore();
+    protected abstract string GetItemStatusCore();
+    protected abstract string GetItemTypeCore();
+    protected abstract string GetLocalizedControlTypeCore();
+    protected abstract Rect GetBoundingRectangleCore();
+    protected abstract Point GetClickablePointCore();
+    protected abstract AutomationOrientation GetOrientationCore();
+    protected abstract bool IsEnabledCore();
+    protected abstract bool IsKeyboardFocusableCore();
+    protected abstract bool HasKeyboardFocusCore();
+    protected abstract bool IsOffscreenCore();
+    protected abstract bool IsContentElementCore();
+    protected abstract bool IsControlElementCore();
+    protected abstract bool IsPasswordCore();
+    protected abstract bool IsRequiredForFormCore();
+    protected abstract AutomationPeer? GetLabeledByCore();
+    protected abstract AutomationPeer? GetParentCore();
+    protected abstract List<AutomationPeer> GetChildrenCore();
+    protected abstract void SetFocusCore();
+
     protected virtual void OnAutomationEvent(AutomationEvents eventId)
     {
     }
 
-    /// <summary>
-    /// Called when a property changes.
-    /// </summary>
-    /// <param name="property">The property that changed.</param>
-    /// <param name="oldValue">The old value.</param>
-    /// <param name="newValue">The new value.</param>
     protected virtual void OnPropertyChanged(AutomationProperty property, object? oldValue, object? newValue)
     {
     }
 
-    #endregion
-
-    #region Core Implementation Methods
-
-    /// <summary>
-    /// When overridden in a derived class, returns the control type for the element.
-    /// </summary>
-    protected abstract AutomationControlType GetAutomationControlTypeCore();
-
-    /// <summary>
-    /// When overridden in a derived class, returns the class name.
-    /// </summary>
-    protected abstract string GetClassNameCore();
-
-    /// <summary>
-    /// When overridden in a derived class, returns the name of the element.
-    /// </summary>
-    protected virtual string GetNameCore() => string.Empty;
-
-    /// <summary>
-    /// When overridden in a derived class, returns the automation ID.
-    /// </summary>
-    protected virtual string GetAutomationIdCore() => Owner.GetHashCode().ToString();
-
-    /// <summary>
-    /// When overridden in a derived class, returns the help text.
-    /// </summary>
-    protected virtual string GetHelpTextCore() => string.Empty;
-
-    /// <summary>
-    /// When overridden in a derived class, returns the localized control type.
-    /// </summary>
-    protected virtual string GetLocalizedControlTypeCore()
+    private static AutomationPeer? HitTestPeer(AutomationPeer peer, Point point)
     {
-        return GetAutomationControlTypeCore().ToString();
-    }
-
-    /// <summary>
-    /// When overridden in a derived class, returns the bounding rectangle.
-    /// </summary>
-    protected virtual Rect GetBoundingRectangleCore()
-    {
-        // Try to get the element's position in screen coordinates
-        var renderSize = Owner.RenderSize;
-        return new Rect(0, 0, renderSize.Width, renderSize.Height);
-    }
-
-    /// <summary>
-    /// When overridden in a derived class, returns whether the element is enabled.
-    /// </summary>
-    protected virtual bool IsEnabledCore()
-    {
-        return Owner.IsEnabled;
-    }
-
-    /// <summary>
-    /// When overridden in a derived class, returns whether the element is keyboard focusable.
-    /// </summary>
-    protected virtual bool IsKeyboardFocusableCore()
-    {
-        return Owner.Focusable && Owner.IsEnabled && Owner.Visibility == Visibility.Visible;
-    }
-
-    /// <summary>
-    /// When overridden in a derived class, returns whether the element has keyboard focus.
-    /// </summary>
-    protected virtual bool HasKeyboardFocusCore()
-    {
-        return Owner.IsKeyboardFocused;
-    }
-
-    /// <summary>
-    /// When overridden in a derived class, sets focus to the element.
-    /// </summary>
-    protected virtual void SetFocusCore()
-    {
-        Owner.Focus();
-    }
-
-    /// <summary>
-    /// When overridden in a derived class, returns whether the element is off screen.
-    /// </summary>
-    protected virtual bool IsOffscreenCore()
-    {
-        return Owner.Visibility != Visibility.Visible;
-    }
-
-    /// <summary>
-    /// When overridden in a derived class, returns whether the element is a content element.
-    /// </summary>
-    protected virtual bool IsContentElementCore() => true;
-
-    /// <summary>
-    /// When overridden in a derived class, returns whether the element is a control element.
-    /// </summary>
-    protected virtual bool IsControlElementCore() => true;
-
-    /// <summary>
-    /// When overridden in a derived class, returns the pattern provider for the specified interface.
-    /// </summary>
-    protected virtual object? GetPatternCore(PatternInterface patternInterface) => null;
-
-    /// <summary>
-    /// When overridden in a derived class, returns the parent peer.
-    /// Walks up the visual tree to find the nearest ancestor with a peer,
-    /// skipping intermediate elements (e.g., layout panels) that have no peer.
-    /// </summary>
-    protected virtual AutomationPeer? GetParentCore()
-    {
-        var current = Owner.VisualParent;
-        while (current != null)
+        List<AutomationPeer> children = peer.GetChildren();
+        for (int index = children.Count - 1; index >= 0; index--)
         {
-            if (current is UIElement ue)
+            AutomationPeer? hit = HitTestPeer(children[index], point);
+            if (hit is not null)
             {
-                var peer = ue.GetAutomationPeer();
-                if (peer != null)
-                    return peer;
+                return hit;
             }
+        }
+
+        Rect bounds = peer.GetBoundingRectangle();
+        return !bounds.IsEmpty && bounds.Contains(point) ? peer : null;
+    }
+}
+
+/// <summary>Exposes a <see cref="UIElement"/> to accessibility clients.</summary>
+public class UIElementAutomationPeer : AutomationPeer
+{
+    public UIElementAutomationPeer(UIElement owner)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        Owner = owner;
+    }
+
+    public new UIElement Owner { get; }
+
+    public static AutomationPeer? CreatePeerForElement(UIElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return element.GetAutomationPeer();
+    }
+
+    public static AutomationPeer? FromElement(UIElement element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return element.GetExistingAutomationPeer();
+    }
+
+    public override object? GetPattern(PatternInterface patternInterface) => GetPatternCore(patternInterface);
+
+    protected virtual object? GetPatternCore(PatternInterface patternInterface) => null;
+    protected override DependencyObject GetAutomationOwnerCore() => Owner;
+    protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Custom;
+    protected override string GetClassNameCore() => Owner.GetType().Name;
+    protected override string GetNameCore() => string.Empty;
+    protected override string GetAutomationIdCore() => string.Empty;
+    protected override string GetHelpTextCore() => string.Empty;
+    protected override string GetAcceleratorKeyCore() => string.Empty;
+    protected override string GetAccessKeyCore() => string.Empty;
+    protected override string GetItemStatusCore() => string.Empty;
+    protected override string GetItemTypeCore() => string.Empty;
+    protected override string GetLocalizedControlTypeCore() => GetAutomationControlTypeCore().ToString();
+    protected override Rect GetBoundingRectangleCore() => Owner.MapLocalRectToScreen(new Rect(0, 0, Owner.RenderSize.Width, Owner.RenderSize.Height));
+
+    protected override Point GetClickablePointCore()
+    {
+        Rect bounds = GetBoundingRectangleCore();
+        return bounds.IsEmpty || IsOffscreenCore()
+            ? new Point(double.NaN, double.NaN)
+            : new Point(bounds.X + (bounds.Width / 2), bounds.Y + (bounds.Height / 2));
+    }
+
+    protected override AutomationOrientation GetOrientationCore() => AutomationOrientation.None;
+    protected override bool IsEnabledCore() => Owner.IsEnabled;
+    protected override bool IsKeyboardFocusableCore() => Owner.Focusable && Owner.IsEnabled && Owner.Visibility == Visibility.Visible;
+    protected override bool HasKeyboardFocusCore() => Owner.IsKeyboardFocused;
+    protected override bool IsOffscreenCore() => Owner.Visibility != Visibility.Visible;
+    protected override bool IsContentElementCore() => true;
+    protected override bool IsControlElementCore() => true;
+    protected override bool IsPasswordCore() => false;
+    protected override bool IsRequiredForFormCore() => AutomationProperties.GetIsRequiredForForm(Owner);
+    protected override bool IsDialogCore() => AutomationProperties.GetIsDialog(Owner);
+    protected override int GetPositionInSetCore() => AutomationProperties.GetPositionInSet(Owner);
+    protected override int GetSizeOfSetCore() => AutomationProperties.GetSizeOfSet(Owner);
+    protected override AutomationHeadingLevel GetHeadingLevelCore() => AutomationProperties.GetHeadingLevel(Owner);
+    protected override AutomationLiveSetting GetLiveSettingCore() => AutomationProperties.GetLiveSetting(Owner);
+
+    protected override AutomationPeer? GetLabeledByCore()
+    {
+        UIElement? labeledBy = AutomationProperties.GetLabeledBy(Owner);
+        return labeledBy is null ? null : CreatePeerForElement(labeledBy);
+    }
+
+    protected override AutomationPeer? GetParentCore()
+    {
+        Visual? current = Owner.VisualParent;
+        while (current is not null)
+        {
+            if (current is UIElement element && element.GetAutomationPeer() is AutomationPeer peer)
+            {
+                return peer;
+            }
+
             current = current.VisualParent;
         }
+
         return null;
     }
 
-    /// <summary>
-    /// When overridden in a derived class, returns the child peers.
-    /// Recursively walks the visual tree: if a direct child has a peer, adds it;
-    /// otherwise descends into that child's subtree to collect deeper peers.
-    /// This ensures layout containers (Grid, Border, etc.) without peers
-    /// are transparent and their descendant controls remain visible to UIA.
-    /// </summary>
-    protected virtual List<AutomationPeer> GetChildrenCore()
+    protected override List<AutomationPeer> GetChildrenCore()
     {
-        var children = new List<AutomationPeer>();
-        CollectChildPeers(Owner, children);
-        return children;
+        List<AutomationPeer> peers = [];
+        CollectChildPeers(Owner, peers);
+        return peers;
     }
 
-    /// <summary>
-    /// Recursively collects automation peers from the visual subtree.
-    /// </summary>
+    protected override void SetFocusCore() => Owner.Focus();
+
     private static void CollectChildPeers(UIElement parent, List<AutomationPeer> result)
     {
-        var childCount = parent.VisualChildrenCount;
-        for (int i = 0; i < childCount; i++)
+        for (int index = 0; index < parent.VisualChildrenCount; index++)
         {
-            if (parent.GetVisualChild(i) is not UIElement child)
-                continue;
-
-            var peer = child.GetAutomationPeer();
-            if (peer != null)
+            if (parent.GetVisualChild(index) is not UIElement child)
             {
-                result.Add(peer);
+                continue;
+            }
+
+            AutomationPeer? childPeer = child.GetAutomationPeer();
+            if (childPeer is not null)
+            {
+                result.Add(childPeer);
             }
             else
             {
-                // No peer on this child — descend into its subtree
                 CollectChildPeers(child, result);
             }
         }
     }
-
-    #endregion
-
-    #region Helper Methods
-
-    /// <summary>
-    /// Gets or sets the event sink that forwards automation events to the platform
-    /// accessibility system (e.g., Windows UI Automation).
-    /// </summary>
-    internal static IAutomationEventSink? EventSink { get; set; }
-
-    /// <summary>
-    /// Returns whether a platform accessibility client has attached, so callers can cheaply skip
-    /// building peers or raising automation events when nobody is listening. The sink is armed the
-    /// first time a UI Automation client requests the window's provider (see the Windows UIA bridge).
-    /// </summary>
-    public static bool ListenerExists() => EventSink != null;
-
-    /// <summary>
-    /// Invalidates the peer, causing it to be rebuilt.
-    /// </summary>
-    public void InvalidatePeer()
-    {
-        // Notify UIA of structure change
-        EventSink?.OnFocusChanged(this);
-    }
-
-    /// <summary>
-    /// Returns a peer for the specified element if one exists; otherwise creates one.
-    /// </summary>
-    /// <param name="element">The element.</param>
-    /// <returns>The automation peer, or null.</returns>
-    public static AutomationPeer? FromElement(UIElement? element)
-    {
-        return element?.GetAutomationPeer();
-    }
-
-    #endregion
 }
 
-/// <summary>
-/// Represents an automation property identifier.
-/// </summary>
-public sealed class AutomationProperty
+/// <summary>Exposes a <see cref="FrameworkElement"/> to accessibility clients.</summary>
+public class FrameworkElementAutomationPeer : UIElementAutomationPeer
 {
-    private readonly string _name;
-    private readonly int _id;
-
-    private AutomationProperty(string name, int id)
-    {
-        _name = name;
-        _id = id;
-    }
-
-    /// <summary>
-    /// Gets the property name.
-    /// </summary>
-    public string Name => _name;
-
-    /// <summary>
-    /// Gets the property ID.
-    /// </summary>
-    public int Id => _id;
-
-    private static int _nextId = 1;
-    private static readonly Dictionary<string, AutomationProperty> _properties = new();
-
-    /// <summary>
-    /// Registers an automation property.
-    /// </summary>
-    public static AutomationProperty Register(string name)
-    {
-        if (_properties.TryGetValue(name, out var existing))
-            return existing;
-
-        var property = new AutomationProperty(name, _nextId++);
-        _properties[name] = property;
-        return property;
-    }
-
-    /// <summary>
-    /// The Name property.
-    /// </summary>
-    public static AutomationProperty NameProperty { get; } = Register("Name");
-
-    /// <summary>
-    /// The AutomationId property.
-    /// </summary>
-    public static AutomationProperty AutomationIdProperty { get; } = Register("AutomationId");
-
-    /// <summary>
-    /// The IsEnabled property.
-    /// </summary>
-    public static AutomationProperty IsEnabledProperty { get; } = Register("IsEnabled");
-
-    /// <summary>
-    /// The HasKeyboardFocus property.
-    /// </summary>
-    public static AutomationProperty HasKeyboardFocusProperty { get; } = Register("HasKeyboardFocus");
-
-    /// <summary>
-    /// The BoundingRectangle property.
-    /// </summary>
-    public static AutomationProperty BoundingRectangleProperty { get; } = Register("BoundingRectangle");
-
-    /// <summary>
-    /// The IsOffscreen property.
-    /// </summary>
-    public static AutomationProperty IsOffscreenProperty { get; } = Register("IsOffscreen");
-
-    /// <summary>
-    /// The ToggleState property.
-    /// </summary>
-    public static AutomationProperty ToggleStateProperty { get; } = Register("ToggleState");
-
-    /// <summary>
-    /// The Value property.
-    /// </summary>
-    public static AutomationProperty ValueProperty { get; } = Register("Value");
-
-    /// <summary>
-    /// The RangeValue property.
-    /// </summary>
-    public static AutomationProperty RangeValueProperty { get; } = Register("RangeValue");
-
-    /// <summary>
-    /// The ExpandCollapseState property.
-    /// </summary>
-    public static AutomationProperty ExpandCollapseStateProperty { get; } = Register("ExpandCollapseState");
-}
-
-/// <summary>
-/// Provides a base class for framework element automation peers.
-/// </summary>
-public class FrameworkElementAutomationPeer : AutomationPeer
-{
-    /// <summary>
-    /// Initializes a new instance of the FrameworkElementAutomationPeer class.
-    /// </summary>
-    /// <param name="owner">The framework element.</param>
-    public FrameworkElementAutomationPeer(FrameworkElement owner) : base(owner)
+    public FrameworkElementAutomationPeer(FrameworkElement owner)
+        : base(owner)
     {
     }
 
-    /// <summary>
-    /// Gets the framework element owner.
-    /// </summary>
-    protected internal new FrameworkElement Owner => (FrameworkElement)base.Owner;
-
-    /// <inheritdoc />
-    protected override AutomationControlType GetAutomationControlTypeCore()
-    {
-        return AutomationControlType.Custom;
-    }
-
-    /// <inheritdoc />
-    protected override string GetClassNameCore()
-    {
-        return Owner.GetType().Name;
-    }
-
-    /// <inheritdoc />
     protected override string GetNameCore()
     {
-        // For FrameworkElement, we might look at Name property
-        var name = Owner.Name;
-        if (!string.IsNullOrEmpty(name))
-            return name;
-
-        return base.GetNameCore();
+        FrameworkElement owner = (FrameworkElement)Owner;
+        return owner.Name ?? string.Empty;
     }
 
-    /// <inheritdoc />
     protected override string GetAutomationIdCore()
     {
-        // Use the element's Name property if set
-        var name = Owner.Name;
-        if (!string.IsNullOrEmpty(name))
-            return name;
-
-        return base.GetAutomationIdCore();
+        FrameworkElement owner = (FrameworkElement)Owner;
+        return owner.Name ?? string.Empty;
     }
 }
 
-/// <summary>
-/// Exposes UIElement types to UI Automation.
-/// </summary>
-public sealed class UIElementAutomationPeer : AutomationPeer
+/// <summary>A root peer used for accessibility hit testing.</summary>
+public partial class GenericRootAutomationPeer : UIElementAutomationPeer
 {
-    public UIElementAutomationPeer(UIElement owner) : base(owner) { }
-
-    /// <summary>
-    /// Creates a peer for the specified UIElement.
-    /// </summary>
-    public static AutomationPeer? CreatePeerForElement(UIElement element)
+    public GenericRootAutomationPeer(UIElement owner)
+        : base(owner)
     {
-        return element.GetAutomationPeer();
     }
-
-    /// <summary>
-    /// Gets the existing peer for the specified element, or creates a new one.
-    /// </summary>
-    public new static AutomationPeer? FromElement(UIElement element)
-    {
-        return CreatePeerForElement(element);
-    }
-
-    protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Custom;
-    protected override string GetClassNameCore() => Owner.GetType().Name;
-}
-
-/// <summary>
-/// Exposes ContentElement types to UI Automation.
-/// </summary>
-public sealed class ContentElementAutomationPeer : AutomationPeer
-{
-    private readonly DependencyObject _contentElement;
-
-    public ContentElementAutomationPeer(UIElement hostElement, DependencyObject contentElement) : base(hostElement)
-    {
-        _contentElement = contentElement;
-    }
-
-    /// <summary>Gets the content element associated with this peer.</summary>
-    public DependencyObject ContentElement => _contentElement;
-
-    protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Custom;
-    protected override string GetClassNameCore() => _contentElement.GetType().Name;
-}
-
-/// <summary>
-/// Represents an automation peer used as the root for hit testing.
-/// </summary>
-public sealed class GenericRootAutomationPeer : AutomationPeer
-{
-    public GenericRootAutomationPeer(UIElement owner) : base(owner) { }
 
     protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Window;
     protected override string GetClassNameCore() => "Pane";
     protected override string GetNameCore() => "Desktop";
+    protected override Rect GetBoundingRectangleCore() => base.GetBoundingRectangleCore();
 }
 
-/// <summary>
-/// Interface for forwarding automation events to the platform accessibility system.
-/// Implemented by the Windows UIA bridge in Jalium.UI.Controls.
-/// </summary>
-internal interface IAutomationEventSink
+/// <summary>Identifies the orientation of an automation element.</summary>
+public enum AutomationOrientation
 {
-    /// <summary>
-    /// Called when an automation event is raised on a peer.
-    /// </summary>
-    void OnAutomationEventRaised(AutomationPeer peer, AutomationEvents eventId);
+    None = 0,
+    Horizontal = 1,
+    Vertical = 2,
+}
 
-    /// <summary>
-    /// Called when an automation property changes on a peer.
-    /// </summary>
-    void OnPropertyChangedRaised(AutomationPeer peer, AutomationProperty property, object? oldValue, object? newValue);
+/// <summary>Wraps a native hosted window handle for an automation peer.</summary>
+public sealed class HostedWindowWrapper
+{
+    public HostedWindowWrapper(nint handle)
+    {
+        Handle = handle;
+    }
 
-    /// <summary>
-    /// Called when keyboard focus changes to a peer.
-    /// </summary>
-    void OnFocusChanged(AutomationPeer peer);
+    public nint Handle { get; }
 }

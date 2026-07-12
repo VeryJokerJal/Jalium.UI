@@ -1,4 +1,4 @@
-namespace Jalium.UI.Automation;
+namespace Jalium.UI.Automation.Peers;
 
 /// <summary>
 /// Specifies the type of UI element that a control is exposing for automation.

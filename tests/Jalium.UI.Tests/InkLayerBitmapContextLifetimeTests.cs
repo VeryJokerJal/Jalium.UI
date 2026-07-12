@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Jalium.UI.Interop;
 
 namespace Jalium.UI.Tests;
@@ -58,6 +59,160 @@ public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
     }
 
     /// <summary>
+    /// Explicit context disposal must make an owned target unusable immediately,
+    /// without deleting the native backend out from underneath that target. The
+    /// target first destroys its own native handle, then its final unpin permits
+    /// the deferred context teardown.
+    /// </summary>
+    [Fact]
+    public void DisposeContext_WithLiveRenderTarget_DefersNativeBackendUntilTargetRelease()
+    {
+        var context = new RenderContext(RenderBackend.Software);
+        var native = new RenderTargetTestNative();
+        bool backendAliveAtTargetDestroy = false;
+        native.OnDestroy = () => backendAliveAtTargetDestroy = context.Handle != nint.Zero;
+
+        var target = new RenderTarget(
+            backend: context.Backend,
+            contextHandle: context.Handle,
+            surface: NativeSurfaceDescriptor.ForWindowsHwnd(new nint(0x3301)),
+            width: 32,
+            height: 24,
+            useComposition: false,
+            native: native,
+            ownerContext: context);
+
+        var nativeContextHandle = context.Handle;
+        Assert.NotEqual(nint.Zero, nativeContextHandle);
+        Assert.True(target.IsValid);
+
+        context.Dispose();
+
+        Assert.False(context.IsValid);
+        Assert.Equal(nativeContextHandle, context.Handle);
+        Assert.False(target.IsValid);
+        Assert.Throws<ObjectDisposedException>(() => target.TryBeginDraw());
+        Assert.Equal(0, native.BeginDrawCalls);
+
+        target.Dispose();
+
+        Assert.Equal(1, native.DestroyCalls);
+        Assert.True(backendAliveAtTargetDestroy);
+        Assert.Equal(nint.Zero, context.Handle);
+    }
+
+    [Fact]
+    public void RenderTarget_RegisterFailure_FinalizerDoesNotReleaseAnotherTargetsPin()
+    {
+        var context = new RenderContext(RenderBackend.Software);
+        var survivor = new RenderTarget(
+            backend: context.Backend,
+            contextHandle: context.Handle,
+            surface: NativeSurfaceDescriptor.ForWindowsHwnd(new nint(0x3302)),
+            width: 32,
+            height: 24,
+            useComposition: false,
+            native: new RenderTargetTestNative(),
+            ownerContext: context);
+
+        var nativeContextHandle = context.Handle;
+        context.Dispose();
+        Assert.Equal(nativeContextHandle, context.Handle);
+
+        Assert.Throws<ObjectDisposedException>(() =>
+            ConstructRenderTargetAgainstDisposedContext(context));
+
+        ForceFinalizers();
+
+        // The failed target never acquired a pin. Its finalizer must not steal
+        // the survivor's pin and physically tear the context down.
+        Assert.Equal(nativeContextHandle, context.Handle);
+
+        survivor.Dispose();
+        Assert.Equal(nint.Zero, context.Handle);
+    }
+
+    [Fact]
+    public void InkLayer_RegisterFailure_FinalizerDoesNotReleaseAnotherTargetsPin()
+    {
+        var context = new RenderContext(RenderBackend.Software);
+        var survivor = new RenderTarget(
+            backend: context.Backend,
+            contextHandle: context.Handle,
+            surface: NativeSurfaceDescriptor.ForWindowsHwnd(new nint(0x3303)),
+            width: 32,
+            height: 24,
+            useComposition: false,
+            native: new RenderTargetTestNative(),
+            ownerContext: context);
+
+        var nativeContextHandle = context.Handle;
+        context.Dispose();
+        Assert.Equal(nativeContextHandle, context.Handle);
+
+        Assert.Throws<ObjectDisposedException>(() =>
+            ConstructInkLayerAgainstDisposedContext(context));
+
+        ForceFinalizers();
+
+        Assert.Equal(nativeContextHandle, context.Handle);
+
+        survivor.Dispose();
+        Assert.Equal(nint.Zero, context.Handle);
+    }
+
+    [Fact]
+    public void RenderTarget_PostCreateFailure_DestroysHandleBeforeReleasingOwnerPin()
+    {
+        using var context = new RenderContext(RenderBackend.Software);
+        var native = new RenderTargetTestNative
+        {
+            ThrowOnSupportsPartialPresentation = true
+        };
+        bool backendAliveAtDestroy = false;
+        native.OnDestroy = () => backendAliveAtDestroy = context.Handle != nint.Zero;
+
+        Assert.Throws<InvalidOperationException>(() => new RenderTarget(
+            backend: context.Backend,
+            contextHandle: context.Handle,
+            surface: NativeSurfaceDescriptor.ForWindowsHwnd(new nint(0x3304)),
+            width: 32,
+            height: 24,
+            useComposition: false,
+            native: native,
+            ownerContext: context));
+
+        Assert.Equal(1, native.DestroyCalls);
+        Assert.True(backendAliveAtDestroy);
+    }
+
+    [Fact]
+    public void FinalizedNonCurrentContext_LeavesBackendAliveForLegacyWrapper()
+    {
+        // Keep a different context current so the temporary context below is
+        // not rooted by RenderContext.Current and can genuinely be finalized.
+        using var current = RenderContext.GetOrCreateCurrent(RenderBackend.Software);
+        var (format, weakContext, nativeContextHandle) =
+            CreateLegacyWrapperOnTemporaryContext();
+
+        ForceFinalizers();
+
+        Assert.False(weakContext.TryGetTarget(out _));
+
+        // NativeTextFormat intentionally does not retain/pin RenderContext. Its
+        // native DWrite/backend state must remain usable after the context's
+        // leak-safe finalizer; explicit context disposal is the deterministic
+        // teardown path until every legacy wrapper participates in pinning.
+        _ = format.GetFontMetrics();
+        format.Dispose();
+
+        // The finalizer deliberately detached (rather than destroyed) this
+        // native context. Reclaim it explicitly so the regression itself does
+        // not leak process resources in the test host.
+        NativeMethods.ContextDestroy(nativeContextHandle);
+    }
+
+    /// <summary>
     /// A live <see cref="InkLayerBitmap"/> must keep its retired context (and
     /// backend) alive across a forced context replacement, and its native
     /// destroy must run while the backend is still alive. Pre-fix the
@@ -109,6 +264,53 @@ public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
         Assert.Equal(1, fake.ShaderDestroys);
         Assert.True(backendAliveAtDestroy);
         Assert.False(first.IsValid);
+    }
+
+    [Fact]
+    public void BrushShaderHandle_DestroyFailureStillReleasesContextPinExactlyOnce()
+    {
+        var context = new RenderContext(RenderBackend.Software);
+        var fake = new FakeInkNativeOps { ThrowOnShaderDestroy = true };
+        var shader = BrushShaderHandle.Create(context, "throwing-destroy", "brush-main", 0, fake);
+        Assert.NotNull(shader);
+
+        var nativeContextHandle = context.Handle;
+        context.Dispose();
+        Assert.Equal(nativeContextHandle, context.Handle);
+
+        Assert.Throws<InvalidOperationException>(() => shader!.Dispose());
+
+        Assert.Equal(1, fake.ShaderDestroys);
+        Assert.Equal(nint.Zero, context.Handle);
+
+        // The failed native destroy detached the handle and released the pin;
+        // repeated Dispose must neither retry destroy nor underflow the count.
+        shader!.Dispose();
+        Assert.Equal(1, fake.ShaderDestroys);
+    }
+
+    [Fact]
+    public void DispatchBrush_WithShaderFromDifferentContext_ReturnsStaleWithoutNativeDispatch()
+    {
+        using var bitmapContext = new RenderContext(RenderBackend.Software);
+        using var shaderContext = new RenderContext(RenderBackend.Software);
+        var fake = new FakeInkNativeOps();
+        using var bitmap = new InkLayerBitmap(bitmapContext, 16, 16, fake);
+        using var shader = BrushShaderHandle.Create(
+            shaderContext, "foreign-context", "brush-main", 0, fake);
+        Assert.NotNull(shader);
+
+        BrushStrokePoint[] points =
+        [
+            new() { X = 0, Y = 0, Pressure = 1 },
+            new() { X = 1, Y = 1, Pressure = 1 }
+        ];
+        var constants = new BrushConstantsNative();
+
+        var result = bitmap.DispatchBrush(shader!, points, in constants);
+
+        Assert.Equal(InkDispatchResult.StaleContext, result);
+        Assert.Equal(0, fake.DispatchCalls);
     }
 
     /// <summary>
@@ -168,7 +370,9 @@ public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
         public int InkDestroys;
         public int ShaderCreates;
         public int ShaderDestroys;
+        public int DispatchCalls;
         public bool FailCreate;
+        public bool ThrowOnShaderDestroy;
         public Action? OnDestroy;
 
         public FakeInkNativeOps(nint firstHandle = 0x4000) => _next = firstHandle;
@@ -195,6 +399,8 @@ public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
         {
             ShaderDestroys++;
             OnDestroy?.Invoke();
+            if (ThrowOnShaderDestroy)
+                throw new InvalidOperationException("Injected shader-destroy failure.");
         }
 
         // These lifetime tests never resize/clear/dispatch — default no-ops keep
@@ -207,14 +413,52 @@ public sealed class InkLayerBitmapContextLifetimeTests : IDisposable
             nint bitmap, nint shader,
             ReadOnlySpan<BrushStrokePoint> points,
             in BrushConstantsNative constants,
-            ReadOnlySpan<byte> extraParams) => 0;
+            ReadOnlySpan<byte> extraParams)
+        {
+            DispatchCalls++;
+            return 0;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ConstructRenderTargetAgainstDisposedContext(RenderContext context)
+    {
+        _ = new RenderTarget(
+            backend: context.Backend,
+            contextHandle: context.Handle,
+            surface: NativeSurfaceDescriptor.ForWindowsHwnd(new nint(0x33FF)),
+            width: 8,
+            height: 8,
+            useComposition: false,
+            native: new RenderTargetTestNative(),
+            ownerContext: context);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void ConstructInkLayerAgainstDisposedContext(RenderContext context)
+        => _ = new InkLayerBitmap(context, 8, 8, new FakeInkNativeOps());
+
+    private static void ForceFinalizers()
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (NativeTextFormat Format, WeakReference<RenderContext> Context, nint NativeHandle)
+        CreateLegacyWrapperOnTemporaryContext()
+    {
+        var context = new RenderContext(RenderBackend.Software);
+        var format = context.CreateTextFormat("Segoe UI", 12f);
+        return (format, new WeakReference<RenderContext>(context), context.Handle);
     }
 
     /// <summary>
-    /// Disposes the current and any retired contexts so the shared static state
-    /// (<see cref="RenderContext.Current"/> + retired set) does not leak across
-    /// tests in the Application collection. Uses direct Dispose to force cleanup
-    /// regardless of pin counts.
+    /// Requests disposal of the current and any retired contexts so the shared
+    /// static state (<see cref="RenderContext.Current"/> + retired set) does not
+    /// leak across tests in the Application collection. Every test releases its
+    /// pins; disposal deliberately cannot force-delete a still-pinned backend.
     /// </summary>
     private static void DrainAllContexts()
     {

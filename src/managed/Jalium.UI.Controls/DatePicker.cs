@@ -1,5 +1,6 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
+using System.Globalization;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
@@ -12,9 +13,9 @@ namespace Jalium.UI.Controls;
 public class DatePicker : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.DatePickerAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.DatePickerAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -27,17 +28,17 @@ public class DatePicker : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateProperty =
         DependencyProperty.Register(nameof(DisplayDate), typeof(DateTime), typeof(DatePicker),
-            new PropertyMetadata(DateTime.Today));
+            new PropertyMetadata(DateTime.Today, OnDisplayDateChanged, CoerceDisplayDate));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateStartProperty =
         DependencyProperty.Register(nameof(DisplayDateStart), typeof(DateTime?), typeof(DatePicker),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnDisplayDateStartChanged, CoerceDisplayDateStart));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateEndProperty =
         DependencyProperty.Register(nameof(DisplayDateEnd), typeof(DateTime?), typeof(DatePicker),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnDisplayDateEndChanged, CoerceDisplayDateEnd));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDropDownOpenProperty =
@@ -57,19 +58,40 @@ public class DatePicker : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DateFormatProperty =
         DependencyProperty.Register(nameof(DateFormat), typeof(string), typeof(DatePicker),
-            new PropertyMetadata("d", OnVisualPropertyChanged));
+            new PropertyMetadata("d", OnDateFormatChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedDateFormatProperty =
         DependencyProperty.Register(nameof(SelectedDateFormat), typeof(DatePickerFormat), typeof(DatePicker),
-            new PropertyMetadata(DatePickerFormat.Short, OnVisualPropertyChanged));
+            new PropertyMetadata(DatePickerFormat.Long, OnSelectedDateFormatChanged), IsValidSelectedDateFormat);
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty CalendarStyleProperty =
+        DependencyProperty.Register(nameof(CalendarStyle), typeof(Style), typeof(DatePicker),
+            new PropertyMetadata(null, OnCalendarStyleChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    public static readonly DependencyProperty FirstDayOfWeekProperty =
+        DependencyProperty.Register(nameof(FirstDayOfWeek), typeof(DayOfWeek), typeof(DatePicker),
+            new PropertyMetadata(CultureInfo.CurrentCulture.DateTimeFormat.FirstDayOfWeek,
+                OnCalendarConfigurationChanged), IsValidFirstDayOfWeek);
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty IsTodayHighlightedProperty =
+        DependencyProperty.Register(nameof(IsTodayHighlighted), typeof(bool), typeof(DatePicker),
+            new PropertyMetadata(true, OnCalendarConfigurationChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public static readonly DependencyProperty TextProperty =
+        DependencyProperty.Register(nameof(Text), typeof(string), typeof(DatePicker),
+            new PropertyMetadata(string.Empty, OnTextChanged));
 
     #endregion
 
     #region Routed Events
 
     public static readonly RoutedEvent SelectedDateChangedEvent =
-        EventManager.RegisterRoutedEvent(nameof(SelectedDateChanged), RoutingStrategy.Bubble,
+        EventManager.RegisterRoutedEvent(nameof(SelectedDateChanged), RoutingStrategy.Direct,
             typeof(EventHandler<SelectionChangedEventArgs>), typeof(DatePicker));
 
     public static readonly RoutedEvent CalendarOpenedEvent =
@@ -98,6 +120,11 @@ public class DatePicker : Control
         remove => RemoveHandler(CalendarClosedEvent, value);
     }
 
+    /// <summary>
+    /// Occurs when Text cannot be parsed or represents a date that cannot be selected.
+    /// </summary>
+    public event EventHandler<DatePickerDateValidationErrorEventArgs>? DateValidationError;
+
     #endregion
 
     #region CLR Properties
@@ -106,7 +133,11 @@ public class DatePicker : Control
     public DateTime? SelectedDate
     {
         get => (DateTime?)GetValue(SelectedDateProperty);
-        set => SetValue(SelectedDateProperty, value);
+        set
+        {
+            ValidateSelectedDate(value);
+            SetValue(SelectedDateProperty, value);
+        }
     }
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
@@ -165,6 +196,51 @@ public class DatePicker : Control
         set => SetValue(SelectedDateFormatProperty, value);
     }
 
+    /// <summary>
+    /// Gets the dates that cannot be selected.
+    /// </summary>
+    public CalendarBlackoutDatesCollection BlackoutDates => _calendar.BlackoutDates;
+
+    /// <summary>
+    /// Gets or sets the style applied to the drop-down calendar.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Style? CalendarStyle
+    {
+        get => (Style?)GetValue(CalendarStyleProperty);
+        set => SetValue(CalendarStyleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the first day displayed in each calendar week.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    public DayOfWeek FirstDayOfWeek
+    {
+        get => (DayOfWeek)GetValue(FirstDayOfWeekProperty)!;
+        set => SetValue(FirstDayOfWeekProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether today's date is highlighted.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool IsTodayHighlighted
+    {
+        get => (bool)GetValue(IsTodayHighlightedProperty)!;
+        set => SetValue(IsTodayHighlightedProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the text displayed by the DatePicker.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public string Text
+    {
+        get => (string?)GetValue(TextProperty) ?? string.Empty;
+        set => SetValue(TextProperty, value);
+    }
+
     #endregion
 
     #region Static Brushes & Pens
@@ -184,10 +260,14 @@ public class DatePicker : Control
 
     // Popup & Calendar
     private Popup? _popup;
-    private Calendar? _calendar;
+    private readonly Calendar _calendar = new();
     private Border? _calendarBorder;
     private bool _isCloseAnimating;
     private bool _isOpen;
+    private bool _isSynchronizingCalendar;
+    private bool _isCoercingCalendarValue;
+    private bool _isSynchronizingText;
+    private bool _isRevertingSelectedDate;
 
     #endregion
 
@@ -195,6 +275,11 @@ public class DatePicker : Control
 
     public DatePicker()
     {
+        _calendar.SelectedDatesChanged += OnCalendarSelectedDateChanged;
+        _calendar.DisplayDateChanged += OnCalendarDisplayDateChanged;
+        _calendar.DateClicked += OnCalendarDateClicked;
+        SynchronizeCalendarConfiguration();
+
         Focusable = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
@@ -209,10 +294,6 @@ public class DatePicker : Control
     private void EnsurePopup()
     {
         if (_popup != null) return;
-
-        _calendar = new Calendar();
-        _calendar.SelectedDateChanged += OnCalendarSelectedDateChanged;
-        _calendar.DateClicked += OnCalendarDateClicked;
 
         _calendarBorder = new Border
         {
@@ -252,24 +333,26 @@ public class DatePicker : Control
 
         EnsurePopup();
 
-        // Sync calendar state
-        if (SelectedDate.HasValue)
+        _isSynchronizingCalendar = true;
+        try
         {
-            _calendar!.SelectedDate = SelectedDate;
-            _calendar.DisplayDate = SelectedDate.Value;
+            SynchronizeCalendarConfiguration();
+            _calendar.DisplayDateStart = DisplayDateStart;
+            _calendar.DisplayDateEnd = DisplayDateEnd;
+            _calendar.DisplayDate = SelectedDate ?? DisplayDate;
+            _calendar.SelectedDate = SelectedDate;
+            _calendar.DisplayMode = CalendarMode.Month;
         }
-        else
+        finally
         {
-            _calendar!.DisplayDate = DisplayDate;
+            _isSynchronizingCalendar = false;
         }
-        _calendar.DisplayDateStart = DisplayDateStart;
-        _calendar.DisplayDateEnd = DisplayDateEnd;
 
         _popup!.IsOpen = true;
         _isOpen = true;
 
         AnimateOpen();
-        RaiseEvent(new RoutedEventArgs(CalendarOpenedEvent, this));
+        OnCalendarOpened(new RoutedEventArgs(CalendarOpenedEvent, this));
     }
 
     private void CloseDropDown()
@@ -278,17 +361,50 @@ public class DatePicker : Control
         _isOpen = false;
 
         AnimateClose();
-        RaiseEvent(new RoutedEventArgs(CalendarClosedEvent, this));
+        OnCalendarClosed(new RoutedEventArgs(CalendarClosedEvent, this));
     }
 
     private void OnCalendarSelectedDateChanged(object? sender, SelectionChangedEventArgs e)
     {
-        // Sync but don't close 閳?DateClicked will close
+        if (_isSynchronizingCalendar)
+        {
+            return;
+        }
+
+        DateTime? selectedDate = e.AddedItems.Count > 0
+            ? (DateTime?)e.AddedItems[0]
+            : null;
+        _isSynchronizingCalendar = true;
+        try
+        {
+            SetCurrentValue(SelectedDateProperty, selectedDate);
+        }
+        finally
+        {
+            _isSynchronizingCalendar = false;
+        }
+    }
+
+    private void OnCalendarDisplayDateChanged(object? sender, CalendarDateChangedEventArgs e)
+    {
+        if (_isSynchronizingCalendar || _isCoercingCalendarValue || !e.AddedDate.HasValue)
+        {
+            return;
+        }
+
+        _isSynchronizingCalendar = true;
+        try
+        {
+            SetCurrentValue(DisplayDateProperty, e.AddedDate.Value);
+        }
+        finally
+        {
+            _isSynchronizingCalendar = false;
+        }
     }
 
     private void OnCalendarDateClicked(object? sender, DateTime date)
     {
-        SelectedDate = date;
         IsDropDownOpen = false;
     }
 
@@ -302,7 +418,8 @@ public class DatePicker : Control
             _calendarBorder.Opacity = 1;
             _calendarBorder.RenderOffset = default;
         }
-        SetValue(IsDropDownOpenProperty, false);
+        SetCurrentValue(IsDropDownOpenProperty, false);
+        OnCalendarClosed(new RoutedEventArgs(CalendarClosedEvent, this));
     }
 
     #endregion
@@ -383,7 +500,7 @@ public class DatePicker : Control
 
         if (Header is string headerText)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+            var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
             TextMeasurement.MeasureText(headerFormatted);
             headerHeight = headerFormatted.Height + 4;
         }
@@ -410,7 +527,7 @@ public class DatePicker : Control
         // Draw header
         if (Header is string headerText && Foreground != null)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = Foreground
             };
@@ -444,10 +561,9 @@ public class DatePicker : Control
         string displayText;
         Brush textBrush;
 
-        if (SelectedDate.HasValue)
+        if (!string.IsNullOrEmpty(Text))
         {
-            var format = SelectedDateFormat == DatePickerFormat.Long ? "D" : "d";
-            displayText = SelectedDate.Value.ToString(format);
+            displayText = Text;
             textBrush = Foreground ?? s_whiteBrush;
         }
         else
@@ -456,7 +572,7 @@ public class DatePicker : Control
             textBrush = ResolvePlaceholderBrush();
         }
 
-        var textFormatted = new FormattedText(displayText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+        var textFormatted = new FormattedText(displayText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
         {
             Foreground = textBrush
         };
@@ -507,18 +623,340 @@ public class DatePicker : Control
 
     #endregion
 
+    #region Protected Event Hooks
+
+    /// <summary>
+    /// Raises the CalendarClosed event.
+    /// </summary>
+    protected virtual void OnCalendarClosed(RoutedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the CalendarOpened event.
+    /// </summary>
+    protected virtual void OnCalendarOpened(RoutedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Raises the DateValidationError event.
+    /// </summary>
+    protected virtual void OnDateValidationError(DatePickerDateValidationErrorEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        DateValidationError?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the SelectedDateChanged event.
+    /// </summary>
+    protected virtual void OnSelectedDateChanged(SelectionChangedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        RaiseEvent(e);
+    }
+
+    #endregion
+
+    #region Calendar and Text Synchronization
+
+    private void SynchronizeCalendarConfiguration()
+    {
+        _calendar.Style = CalendarStyle;
+        _calendar.FirstDayOfWeek = FirstDayOfWeek;
+        _calendar.IsTodayHighlighted = IsTodayHighlighted;
+        _calendar.DisplayDateStart = DisplayDateStart;
+        _calendar.DisplayDateEnd = DisplayDateEnd;
+    }
+
+    private void ValidateSelectedDate(DateTime? date)
+    {
+        if (date.HasValue && !_calendar.IsDateSelectableForSelection(date.Value))
+        {
+            throw new ArgumentOutOfRangeException(nameof(date),
+                "The date is outside the selectable range or is blacked out.");
+        }
+    }
+
+    private void CommitText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            if (SelectedDate.HasValue)
+            {
+                SetCurrentValue(SelectedDateProperty, null);
+            }
+            return;
+        }
+
+        if (SelectedDate.HasValue && string.Equals(text, FormatDate(SelectedDate.Value), StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        DateTime parsedDate;
+        try
+        {
+            parsedDate = DateTime.Parse(text, CultureInfo.CurrentCulture, DateTimeStyles.AllowWhiteSpaces);
+        }
+        catch (FormatException exception)
+        {
+            ReportValidationError(exception, text);
+            return;
+        }
+
+        if (!_calendar.IsDateSelectableForSelection(parsedDate))
+        {
+            ReportValidationError(
+                new ArgumentOutOfRangeException(nameof(text), "The parsed date cannot be selected."),
+                text);
+            return;
+        }
+
+        SetCurrentValue(SelectedDateProperty, parsedDate);
+    }
+
+    private void ReportValidationError(Exception exception, string text)
+    {
+        var args = new DatePickerDateValidationErrorEventArgs(exception, text);
+        OnDateValidationError(args);
+        UpdateTextFromSelectedDate();
+        if (args.ThrowException)
+        {
+            throw args.Exception;
+        }
+    }
+
+    private void UpdateTextFromSelectedDate()
+    {
+        SetTextWithoutParsing(SelectedDate.HasValue ? FormatDate(SelectedDate.Value) : string.Empty);
+        InvalidateVisual();
+    }
+
+    private void SetTextWithoutParsing(string text)
+    {
+        if (string.Equals(Text, text, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _isSynchronizingText = true;
+        try
+        {
+            SetCurrentValue(TextProperty, text);
+        }
+        finally
+        {
+            _isSynchronizingText = false;
+        }
+    }
+
+    private string FormatDate(DateTime date)
+    {
+        string format = HasLocalValue(DateFormatProperty) && !string.IsNullOrWhiteSpace(DateFormat)
+            ? DateFormat
+            : SelectedDateFormat == DatePickerFormat.Long ? "D" : "d";
+        return date.ToString(format, CultureInfo.CurrentCulture);
+    }
+
+    #endregion
+
     #region Property Changed Callbacks
 
     private static void OnSelectedDateChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is DatePicker datePicker)
         {
+            if (datePicker._isRevertingSelectedDate)
+            {
+                return;
+            }
+
+            DateTime? newDate = (DateTime?)e.NewValue;
+            try
+            {
+                datePicker.ValidateSelectedDate(newDate);
+            }
+            catch
+            {
+                datePicker._isRevertingSelectedDate = true;
+                try
+                {
+                    datePicker.SetCurrentValue(SelectedDateProperty, e.OldValue);
+                }
+                finally
+                {
+                    datePicker._isRevertingSelectedDate = false;
+                }
+                throw;
+            }
+
+            if (!datePicker._isSynchronizingCalendar)
+            {
+                datePicker._isSynchronizingCalendar = true;
+                try
+                {
+                    datePicker._calendar.SelectedDate = newDate;
+                    if (newDate.HasValue &&
+                        (newDate.Value.Month != datePicker.DisplayDate.Month ||
+                         newDate.Value.Year != datePicker.DisplayDate.Year))
+                    {
+                        datePicker.SetCurrentValue(DisplayDateProperty, newDate.Value);
+                        datePicker._calendar.DisplayDate = newDate.Value;
+                    }
+                }
+                finally
+                {
+                    datePicker._isSynchronizingCalendar = false;
+                }
+            }
+
+            datePicker.CoerceValue(DisplayDateStartProperty);
+            datePicker.CoerceValue(DisplayDateEndProperty);
+            datePicker.CoerceValue(DisplayDateProperty);
+
+            datePicker.UpdateTextFromSelectedDate();
             datePicker.InvalidateVisual();
 
             var args = new SelectionChangedEventArgs(SelectedDateChangedEvent,
                 e.OldValue != null ? new[] { e.OldValue } : Array.Empty<object>(),
                 e.NewValue != null ? new[] { e.NewValue } : Array.Empty<object>());
-            datePicker.RaiseEvent(args);
+            datePicker.OnSelectedDateChanged(args);
+        }
+    }
+
+    private static void OnDisplayDateChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is DatePicker datePicker)
+        {
+            datePicker.InvalidateVisual();
+        }
+    }
+
+    private static object? CoerceDisplayDate(DependencyObject d, object? baseValue)
+    {
+        var datePicker = (DatePicker)d;
+        if (datePicker._calendar is null || baseValue is not DateTime displayDate)
+        {
+            return baseValue;
+        }
+
+        datePicker._isCoercingCalendarValue = true;
+        try
+        {
+            datePicker._calendar.DisplayDate = displayDate;
+            return datePicker._calendar.DisplayDate;
+        }
+        finally
+        {
+            datePicker._isCoercingCalendarValue = false;
+        }
+    }
+
+    private static object? CoerceDisplayDateStart(DependencyObject d, object? baseValue)
+    {
+        var datePicker = (DatePicker)d;
+        if (datePicker._calendar is null)
+        {
+            return baseValue;
+        }
+
+        datePicker._isCoercingCalendarValue = true;
+        try
+        {
+            datePicker._calendar.DisplayDateStart = (DateTime?)baseValue;
+            return datePicker._calendar.DisplayDateStart;
+        }
+        finally
+        {
+            datePicker._isCoercingCalendarValue = false;
+        }
+    }
+
+    private static object? CoerceDisplayDateEnd(DependencyObject d, object? baseValue)
+    {
+        var datePicker = (DatePicker)d;
+        if (datePicker._calendar is null)
+        {
+            return baseValue;
+        }
+
+        datePicker._isCoercingCalendarValue = true;
+        try
+        {
+            datePicker._calendar.DisplayDateEnd = (DateTime?)baseValue;
+            return datePicker._calendar.DisplayDateEnd;
+        }
+        finally
+        {
+            datePicker._isCoercingCalendarValue = false;
+        }
+    }
+
+    private static void OnDisplayDateStartChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is DatePicker datePicker)
+        {
+            datePicker.CoerceValue(DisplayDateEndProperty);
+            datePicker.CoerceValue(DisplayDateProperty);
+        }
+    }
+
+    private static void OnDisplayDateEndChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is DatePicker datePicker)
+        {
+            datePicker.CoerceValue(DisplayDateProperty);
+        }
+    }
+
+    private static void OnCalendarStyleChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is DatePicker datePicker)
+        {
+            datePicker._calendar.Style = (Style?)e.NewValue;
+        }
+    }
+
+    private static void OnCalendarConfigurationChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is DatePicker datePicker)
+        {
+            datePicker._calendar.FirstDayOfWeek = datePicker.FirstDayOfWeek;
+            datePicker._calendar.IsTodayHighlighted = datePicker.IsTodayHighlighted;
+        }
+    }
+
+    private static void OnTextChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is DatePicker datePicker)
+        {
+            if (!datePicker._isSynchronizingText)
+            {
+                datePicker.CommitText((string?)e.NewValue ?? string.Empty);
+            }
+            datePicker.InvalidateVisual();
+        }
+    }
+
+    private static void OnSelectedDateFormatChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is DatePicker datePicker)
+        {
+            datePicker.UpdateTextFromSelectedDate();
+        }
+    }
+
+    private static void OnDateFormatChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is DatePicker datePicker)
+        {
+            datePicker.UpdateTextFromSelectedDate();
         }
     }
 
@@ -549,6 +987,13 @@ public class DatePicker : Control
         }
     }
 
+    private static bool IsValidFirstDayOfWeek(object? value) =>
+        value is DayOfWeek.Sunday or DayOfWeek.Monday or DayOfWeek.Tuesday or DayOfWeek.Wednesday or
+            DayOfWeek.Thursday or DayOfWeek.Friday or DayOfWeek.Saturday;
+
+    private static bool IsValidSelectedDateFormat(object? value) =>
+        value is DatePickerFormat.Long or DatePickerFormat.Short;
+
     #endregion
 }
 
@@ -560,10 +1005,10 @@ public enum DatePickerFormat
     /// <summary>
     /// Short date format (e.g., "2/15/2026").
     /// </summary>
-    Short,
+    Short = 1,
 
     /// <summary>
     /// Long date format (e.g., "Sunday, February 15, 2026").
     /// </summary>
-    Long
+    Long = 0
 }

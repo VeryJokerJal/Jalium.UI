@@ -34,12 +34,12 @@ public class DockIndicatorThemeTests
             AssertBrushMatches(app.Resources["DockIndicatorChromeBorder"], InvokeStaticBrushResolver("ResolveChromeBorderBrush"));
             AssertBrushMatches(app.Resources["DockIndicatorButtonBackground"], InvokeStaticBrushResolver("ResolveButtonBackgroundBrush", false));
             AssertBrushMatches(app.Resources["DockIndicatorButtonHoverBackground"], InvokeStaticBrushResolver("ResolveButtonBackgroundBrush", true));
-            AssertBrushMatches(app.Resources["DockIndicatorButtonBorder"], InvokeStaticBrushResolver("ResolveButtonBorderBrush", false));
-            AssertBrushMatches(app.Resources["DockIndicatorButtonHoverBackground"], InvokeStaticBrushResolver("ResolveButtonBorderBrush", true));
+            AssertPenMatches(app.Resources["DockIndicatorButtonBorder"], InvokeStaticPenResolver("ResolveButtonBorderPen", false), 1);
+            AssertPenMatches(app.Resources["DockIndicatorButtonHoverBackground"], InvokeStaticPenResolver("ResolveButtonBorderPen", true), 1);
             Assert.Equal(((SolidColorBrush)app.Resources["DockIndicatorIconForeground"]!).Color, InvokeStaticColorResolver("ResolveIconColor", false));
             Assert.Equal(((SolidColorBrush)app.Resources["DockIndicatorIconHoverForeground"]!).Color, InvokeStaticColorResolver("ResolveIconColor", true));
             AssertBrushMatches(app.Resources["DockIndicatorPreviewBackground"], InvokeStaticBrushResolver("ResolvePreviewBackgroundBrush"));
-            AssertBrushMatches(app.Resources["DockIndicatorPreviewBorder"], InvokeStaticBrushResolver("ResolvePreviewBorderBrush"));
+            AssertPenMatches(app.Resources["DockIndicatorPreviewBorder"], InvokeStaticPenResolver("ResolvePreviewBorderPen"), 2);
         }
         finally
         {
@@ -61,6 +61,13 @@ public class DockIndicatorThemeTests
         return Assert.IsType<Color>(method!.Invoke(null, args)!);
     }
 
+    private static Pen InvokeStaticPenResolver(string methodName, params object[] args)
+    {
+        var method = typeof(DockIndicator).GetMethod(methodName, BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return Assert.IsType<Pen>(method!.Invoke(null, args));
+    }
+
     private static void AssertBrushMatches(object? expectedObj, Brush actual)
     {
         var expected = Assert.IsAssignableFrom<Brush>(expectedObj);
@@ -72,5 +79,11 @@ public class DockIndicatorThemeTests
         }
 
         Assert.Same(expected, actual);
+    }
+
+    private static void AssertPenMatches(object? expectedObj, Pen actual, double expectedThickness)
+    {
+        AssertBrushMatches(expectedObj, Assert.IsAssignableFrom<Brush>(actual.Brush));
+        Assert.Equal(expectedThickness, actual.Thickness);
     }
 }

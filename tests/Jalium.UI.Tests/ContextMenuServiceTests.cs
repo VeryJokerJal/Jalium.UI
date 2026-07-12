@@ -66,7 +66,9 @@ public sealed class ContextMenuServiceTests
     {
         var owner = new Border();
         var menu = new ContextMenu();
+        var placementRectangle = new Rect(1, 2, 30, 40);
         ContextMenuService.SetPlacement(owner, PlacementMode.Right);
+        ContextMenuService.SetPlacementRectangle(owner, placementRectangle);
         ContextMenuService.SetHorizontalOffset(owner, 6);
         ContextMenuService.SetVerticalOffset(owner, 9);
 
@@ -75,8 +77,25 @@ public sealed class ContextMenuServiceTests
         Assert.True(menu.IsOpen);
         Assert.Same(owner, menu.PlacementTarget);
         Assert.Equal(PlacementMode.Right, menu.Placement);
+        Assert.Equal(placementRectangle, menu.PlacementRectangle);
         Assert.Equal(6, menu.HorizontalOffset);
         Assert.Equal(9, menu.VerticalOffset);
+    }
+
+    [Fact]
+    public void PlacementRectangle_ShouldExposeWpfAttachedPropertyContract()
+    {
+        var owner = new Border();
+        var value = new Rect(4, 5, 60, 70);
+
+        Assert.Equal(typeof(Rect), ContextMenuService.PlacementRectangleProperty.PropertyType);
+        Assert.Equal(Rect.Empty, ContextMenuService.GetPlacementRectangle(owner));
+
+        ContextMenuService.SetPlacementRectangle(owner, value);
+
+        Assert.Equal(value, ContextMenuService.GetPlacementRectangle(owner));
+        Assert.Throws<ArgumentNullException>(() => ContextMenuService.GetPlacementRectangle(null!));
+        Assert.Throws<ArgumentNullException>(() => ContextMenuService.SetPlacementRectangle(null!, value));
     }
 
     [Fact]

@@ -29,6 +29,9 @@ namespace Jalium.UI.Media;
 /// </remarks>
 public sealed class D3DImage : ImageSource, IDisposable
 {
+    /// <inheritdoc />
+    public override ImageMetadata? Metadata => null;
+
     private double _pixelWidth;
     private double _pixelHeight;
     private bool _isFrontBufferAvailable;

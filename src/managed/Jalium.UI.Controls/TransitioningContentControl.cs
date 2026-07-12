@@ -2,6 +2,7 @@
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Threading;
+using RenderTargetDrawingContext = Jalium.UI.Interop.RenderTargetDrawingContext;
 
 namespace Jalium.UI.Controls;
 
@@ -156,7 +157,9 @@ public class TransitioningContentControl : ContentControl, TransitionHost
                 this,
                 null, // oldSnapshot not used in element-based approach
                 newElement,
-                RenderSize.IsEmpty ? new Size(ActualWidth, ActualHeight) : RenderSize,
+                RenderSize.IsEmpty || (RenderSize.Width == 0 && RenderSize.Height == 0)
+                    ? new Size(ActualWidth, ActualHeight)
+                    : RenderSize,
                 OnTransitionCompleted);
 
             InvalidateVisual();
@@ -174,7 +177,7 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     #region Visual Children
 
     /// <inheritdoc />
-    public override int VisualChildrenCount
+    protected override int VisualChildrenCount
     {
         get
         {
@@ -188,7 +191,7 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     }
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (_isTransitioning)
             throw new ArgumentOutOfRangeException(nameof(index));
@@ -586,7 +589,9 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     }
 
     private Size GetTransitionBounds() =>
-        RenderSize.IsEmpty ? new Size(ActualWidth, ActualHeight) : RenderSize;
+        RenderSize.IsEmpty || (RenderSize.Width == 0 && RenderSize.Height == 0)
+            ? new Size(ActualWidth, ActualHeight)
+            : RenderSize;
 
     Size TransitionHost.TransitionBounds => GetTransitionBounds();
 

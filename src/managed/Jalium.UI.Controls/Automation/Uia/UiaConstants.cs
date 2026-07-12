@@ -36,16 +36,23 @@ internal static class UiaConstants
     internal const int UIA_NativeWindowHandlePropertyId = 30020;
     internal const int UIA_ProviderDescriptionPropertyId = 30107;
 
-    // Pattern availability properties
+    // Pattern availability properties. These MUST equal the canonical UI Automation property ids
+    // from the Windows SDK (UIAutomationClient.h) — real clients (Narrator, Inspect.exe, FlaUI)
+    // query by these exact numbers, and both MapAvailabilityPropertyToPatternInterface (inbound
+    // GetPropertyValue) and MapAutomationProperty (outbound property-changed events) key on them.
+    // They form a contiguous block: Dock=30027, ExpandCollapse=30028, GridItem=30029, Grid=30030,
+    // Invoke=30031, MultipleView=30032, RangeValue=30033, Scroll=30034, ScrollItem=30035,
+    // SelectionItem=30036, Selection=30037, Table=30038, TableItem=30039, Text=30040, Toggle=30041,
+    // Transform=30042, Value=30043.
     internal const int UIA_IsInvokePatternAvailablePropertyId = 30031;
-    internal const int UIA_IsSelectionPatternAvailablePropertyId = 30036;
+    internal const int UIA_IsSelectionPatternAvailablePropertyId = 30037;
     internal const int UIA_IsValuePatternAvailablePropertyId = 30043;
-    internal const int UIA_IsRangeValuePatternAvailablePropertyId = 30032;
-    internal const int UIA_IsScrollPatternAvailablePropertyId = 30035;
-    internal const int UIA_IsExpandCollapsePatternAvailablePropertyId = 30027;
+    internal const int UIA_IsRangeValuePatternAvailablePropertyId = 30033;
+    internal const int UIA_IsScrollPatternAvailablePropertyId = 30034;
+    internal const int UIA_IsExpandCollapsePatternAvailablePropertyId = 30028;
     internal const int UIA_IsTogglePatternAvailablePropertyId = 30041;
-    internal const int UIA_IsSelectionItemPatternAvailablePropertyId = 30037;
-    internal const int UIA_IsScrollItemPatternAvailablePropertyId = 30038;
+    internal const int UIA_IsSelectionItemPatternAvailablePropertyId = 30036;
+    internal const int UIA_IsScrollItemPatternAvailablePropertyId = 30035;
     internal const int UIA_IsTextPatternAvailablePropertyId = 30040;
 
     // ========================================================================
@@ -253,6 +260,28 @@ internal static class UiaConstants
         UIA_ItemContainerPatternId => PatternInterface.ItemContainer,
         UIA_VirtualizedItemPatternId => PatternInterface.VirtualizedItem,
         UIA_SynchronizedInputPatternId => PatternInterface.SynchronizedInput,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Maps a UIA <c>IsXxxPatternAvailable</c> property id to the pattern interface whose presence
+    /// it reports, or <see langword="null"/> for any other property id. A provider answers the
+    /// availability property with <c>GetPattern(interface) != null</c>, so clients that gate on the
+    /// availability property before calling GetPatternProvider can still discover the pattern.
+    /// Covers exactly the patterns the provider is able to wrap.
+    /// </summary>
+    internal static PatternInterface? MapAvailabilityPropertyToPatternInterface(int propertyId) => propertyId switch
+    {
+        UIA_IsInvokePatternAvailablePropertyId => PatternInterface.Invoke,
+        UIA_IsSelectionPatternAvailablePropertyId => PatternInterface.Selection,
+        UIA_IsValuePatternAvailablePropertyId => PatternInterface.Value,
+        UIA_IsRangeValuePatternAvailablePropertyId => PatternInterface.RangeValue,
+        UIA_IsScrollPatternAvailablePropertyId => PatternInterface.Scroll,
+        UIA_IsScrollItemPatternAvailablePropertyId => PatternInterface.ScrollItem,
+        UIA_IsExpandCollapsePatternAvailablePropertyId => PatternInterface.ExpandCollapse,
+        UIA_IsTogglePatternAvailablePropertyId => PatternInterface.Toggle,
+        UIA_IsSelectionItemPatternAvailablePropertyId => PatternInterface.SelectionItem,
+        UIA_IsTextPatternAvailablePropertyId => PatternInterface.Text,
         _ => null,
     };
 

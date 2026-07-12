@@ -158,7 +158,7 @@ public class DockTabPanelLayoutTests
 
         protected override Size MeasureOverride(Size availableSize)
         {
-            foreach (var child in Children)
+            foreach (UIElement child in Children)
             {
                 if (child.Visibility != Visibility.Collapsed)
                     child.Measure(availableSize);
@@ -169,7 +169,7 @@ public class DockTabPanelLayoutTests
 
         protected override Size ArrangeOverride(Size finalSize)
         {
-            foreach (var child in Children)
+            foreach (UIElement child in Children)
             {
                 if (child.Visibility != Visibility.Collapsed)
                     child.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));

@@ -5,7 +5,7 @@ namespace Jalium.UI;
 /// <summary>
 /// Implements base support for the INameScope interface, with a dictionary store of name-object mappings.
 /// </summary>
-public sealed class NameScope : INameScope, IEnumerable<KeyValuePair<string, object>>
+public sealed class NameScope : INameScope, IDictionary<string, object>
 {
     private readonly Dictionary<string, object> _nameMap = new();
 
@@ -49,6 +49,45 @@ public sealed class NameScope : INameScope, IEnumerable<KeyValuePair<string, obj
     }
 
     public int Count => _nameMap.Count;
+
+    public bool IsReadOnly => false;
+
+    public ICollection<string> Keys => _nameMap.Keys;
+
+    public ICollection<object> Values => _nameMap.Values;
+
+    public object this[string key]
+    {
+        get => _nameMap[key];
+        set
+        {
+            ArgumentNullException.ThrowIfNull(key);
+            ArgumentNullException.ThrowIfNull(value);
+            _nameMap[key] = value;
+        }
+    }
+
+    public void Add(string key, object value) => RegisterName(key, value);
+
+    public void Add(KeyValuePair<string, object> item) => Add(item.Key, item.Value);
+
+    public void Clear() => _nameMap.Clear();
+
+    public bool Contains(KeyValuePair<string, object> item)
+        => ((ICollection<KeyValuePair<string, object>>)_nameMap).Contains(item);
+
+    public bool ContainsKey(string key) => _nameMap.ContainsKey(key);
+
+    public void CopyTo(KeyValuePair<string, object>[] array, int arrayIndex)
+        => ((ICollection<KeyValuePair<string, object>>)_nameMap).CopyTo(array, arrayIndex);
+
+    public bool Remove(string key) => _nameMap.Remove(key);
+
+    public bool Remove(KeyValuePair<string, object> item)
+        => ((ICollection<KeyValuePair<string, object>>)_nameMap).Remove(item);
+
+    public bool TryGetValue(string key, out object value)
+        => _nameMap.TryGetValue(key, out value!);
 
     public IEnumerator<KeyValuePair<string, object>> GetEnumerator() => _nameMap.GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();

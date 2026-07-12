@@ -41,8 +41,11 @@
 // Progress and assertions are written to stdout as "## MARKER ..." lines that
 // the xunit runner matches.
 
+using System.Diagnostics;
 using System.Reflection;
+using System.Reflection.PortableExecutable;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Interop;
@@ -171,6 +174,11 @@ internal static class Program
                 Console.WriteLine($"## RESULT SKIP requested {BackendName} but got {ctx.Backend} — backend unavailable here");
                 return ExitSkip;
             }
+
+            if (!ReportAndVerifyLoadedBackendModule())
+            {
+                return ExitFail;
+            }
         }
         catch (Exception ex)
         {
@@ -223,6 +231,54 @@ internal static class Program
         // the message loop means the window closed underneath the scenario.
         Console.WriteLine("## RESULT FAIL window closed before the scenario completed");
         return ExitFail;
+    }
+
+    private static bool ReportAndVerifyLoadedBackendModule()
+    {
+        string moduleName = Backend switch
+        {
+            RenderBackend.D3D12 => "jalium.native.d3d12.dll",
+            RenderBackend.Vulkan => "jalium.native.vulkan.dll",
+            _ => string.Empty,
+        };
+        if (moduleName.Length == 0)
+        {
+            return true;
+        }
+
+        string expectedPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, moduleName));
+        using var process = Process.GetCurrentProcess();
+        ProcessModule? module = process.Modules.Cast<ProcessModule>().FirstOrDefault(
+            candidate => string.Equals(
+                Path.GetFileName(candidate.FileName),
+                moduleName,
+                StringComparison.OrdinalIgnoreCase));
+        if (module == null)
+        {
+            Console.WriteLine($"## RESULT FAIL loaded backend module '{moduleName}' was not found");
+            return false;
+        }
+
+        string loadedPath = Path.GetFullPath(module.FileName);
+        using var stream = File.OpenRead(loadedPath);
+        using var peReader = new PEReader(stream, PEStreamOptions.LeaveOpen);
+        int timestamp = peReader.PEHeaders.CoffHeader.TimeDateStamp;
+        int imageSize = peReader.PEHeaders.PEHeader?.SizeOfImage ?? 0;
+        stream.Position = 0;
+        string hash = Convert.ToHexString(SHA256.HashData(stream));
+        Marker(
+            $"NATIVE_MODULE path={loadedPath} timestamp=0x{timestamp:X8} " +
+            $"imageSize=0x{imageSize:X} sha256={hash}");
+
+        if (!string.Equals(loadedPath, expectedPath, StringComparison.OrdinalIgnoreCase))
+        {
+            Console.WriteLine(
+                $"## RESULT FAIL loaded backend module path '{loadedPath}' " +
+                $"does not match harness payload '{expectedPath}'");
+            return false;
+        }
+
+        return true;
     }
 
     private static void OnPumpTick(object? sender, EventArgs e)
@@ -1019,6 +1075,17 @@ internal static class Program
             scene.Animated.Opacity = 0.85 + 0.1 * Math.Abs(Math.Sin(i * 0.4));
             window.ForceRenderFrame();
             yield return null;
+
+            var current = window.RenderTarget;
+            if (!ReferenceEquals(current, rt))
+            {
+                Marker(
+                    $"UNEXPECTED_RECOVERY frame={i + 1}/{frames} " +
+                    $"failures={GetIntField(window, "_consecutiveRecoverableRenderFailures")} " +
+                    $"marshalPending={GetIntField(window, "_recoveryMarshalPending")} " +
+                    $"old=0x{rt?.Handle.ToInt64():x} new=0x{current?.Handle.ToInt64():x}");
+                break;
+            }
         }
         AssertTrue(ReferenceEquals(window.RenderTarget, rt),
             $"no unexpected recovery during {frames} stability frames");

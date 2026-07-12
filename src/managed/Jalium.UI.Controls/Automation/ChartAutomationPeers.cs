@@ -1,7 +1,7 @@
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Charts;
 
-namespace Jalium.UI.Controls.Automation;
+namespace Jalium.UI.Automation.Peers;
 
 #region LineChart
 

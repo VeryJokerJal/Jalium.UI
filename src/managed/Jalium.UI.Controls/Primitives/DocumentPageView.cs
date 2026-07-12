@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a view that displays a single page of a document.
 /// </summary>
-public class DocumentPageView : FrameworkElement
+public class DocumentPageView : FrameworkElement, IServiceProvider, IDisposable
 {
     #region Static Brushes & Pens
 
@@ -20,6 +20,10 @@ public class DocumentPageView : FrameworkElement
     private Pen? _borderPen;
     private Brush? _borderPenBrush;
     private double _borderPenThickness;
+
+    private DocumentPage? _documentPage;
+    private bool _newPageConnected;
+    private bool _disposed;
 
     private const string PlaceholderBrushKey = "ControlBackground";
     private const string PlaceholderSecondaryBrushKey = "ControlFillColorTertiaryBrush";
@@ -87,7 +91,7 @@ public class DocumentPageView : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchDirectionProperty =
         DependencyProperty.Register(nameof(StretchDirection), typeof(StretchDirection), typeof(DocumentPageView),
-            new PropertyMetadata(StretchDirection.Both, OnLayoutPropertyChanged));
+            new PropertyMetadata(StretchDirection.DownOnly, OnLayoutPropertyChanged));
 
     #endregion
 
@@ -130,7 +134,11 @@ public class DocumentPageView : FrameworkElement
     public DocumentPaginator? DocumentPaginator
     {
         get => (DocumentPaginator?)GetValue(DocumentPaginatorProperty);
-        set => SetValue(DocumentPaginatorProperty, value);
+        set
+        {
+            CheckDisposed();
+            SetValue(DocumentPaginatorProperty, value);
+        }
     }
 
     /// <summary>
@@ -166,7 +174,21 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Gets the current document page.
     /// </summary>
-    public DocumentPage? DocumentPage { get; private set; }
+    public DocumentPage DocumentPage => _documentPage ?? Primitives.DocumentPage.Missing;
+
+    #endregion
+
+    #region Events
+
+    /// <summary>
+    /// Occurs after the current document page has been connected during arrange.
+    /// </summary>
+    public event EventHandler? PageConnected;
+
+    /// <summary>
+    /// Occurs after the current document page has been disconnected.
+    /// </summary>
+    public event EventHandler? PageDisconnected;
 
     #endregion
 
@@ -175,14 +197,19 @@ public class DocumentPageView : FrameworkElement
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        CheckDisposed();
         LoadPage();
 
-        if (DocumentPage == null || DocumentPage == Primitives.DocumentPage.Missing)
+        if (_documentPage == null || _documentPage == Primitives.DocumentPage.Missing)
         {
-            return Size.Empty;
+            return default(Size);
         }
 
-        var pageSize = DocumentPage.Size;
+        var pageSize = _documentPage.Size;
+        if (pageSize.IsEmpty)
+        {
+            return default(Size);
+        }
 
         // Calculate stretched size
         var scale = CalculateScale(availableSize, pageSize);
@@ -193,7 +220,14 @@ public class DocumentPageView : FrameworkElement
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        // Page visual is rendered in OnRender
+        CheckDisposed();
+
+        if (_newPageConnected)
+        {
+            OnPageConnected();
+        }
+
+        // Page visual is rendered in OnRender.
         return finalSize;
     }
 
@@ -247,19 +281,25 @@ public class DocumentPageView : FrameworkElement
 
     private void LoadPage()
     {
-        if (DocumentPaginator == null || PageNumber < 0)
+        if (_documentPage != null)
         {
-            DocumentPage = null;
             return;
         }
 
-        if (PageNumber >= DocumentPaginator.PageCount)
+        var paginator = DocumentPaginator;
+        if (paginator == null)
         {
-            DocumentPage = Primitives.DocumentPage.Missing;
             return;
         }
 
-        DocumentPage = DocumentPaginator.GetPage(PageNumber);
+        if (PageNumber < 0)
+        {
+            _documentPage = Primitives.DocumentPage.Missing;
+            return;
+        }
+
+        _documentPage = paginator.GetPage(PageNumber) ?? Primitives.DocumentPage.Missing;
+        _newPageConnected = true;
     }
 
     #endregion
@@ -271,15 +311,12 @@ public class DocumentPageView : FrameworkElement
     {
         var dc = drawingContext;
 
-        if (DocumentPage?.Visual == null)
+        if (_documentPage?.Visual == null)
         {
             // Draw placeholder
             dc.DrawRectangle(ResolvePlaceholderBrush(), null, new Rect(RenderSize));
             return;
         }
-
-        // The actual page visual would be rendered here
-        // For now, draw a representation
 
         // Draw shadow
         var shadowRect = new Rect(2, 2, RenderSize.Width, RenderSize.Height);
@@ -288,6 +325,15 @@ public class DocumentPageView : FrameworkElement
         // Draw page
         var pageRect = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
         dc.DrawRectangle(ResolvePageBrush(), null, pageRect);
+
+        // Composite the paginator's actual visual into the page surface.  A VisualBrush keeps
+        // the source visual live, so text/selection invalidation is reflected without replacing
+        // the DocumentPageView or rasterizing the document into a stale bitmap.
+        var documentVisualBrush = new VisualBrush(_documentPage.Visual)
+        {
+            Stretch = Stretch.Fill,
+        };
+        dc.DrawRectangle(documentVisualBrush, null, pageRect);
 
         // Draw border
         dc.DrawRectangle(null, ResolveBorderPen(), pageRect);
@@ -358,12 +404,88 @@ public class DocumentPageView : FrameworkElement
 
     #endregion
 
+    #region Lifetime and Services
+
+    /// <summary>
+    /// Gets whether this instance has been disposed.
+    /// </summary>
+    protected bool IsDisposed => _disposed;
+
+    /// <summary>
+    /// Releases the current page and paginator association.
+    /// </summary>
+    protected void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        DisposeCurrentPage();
+        SetValue(DocumentPaginatorProperty, null);
+    }
+
+    /// <summary>
+    /// Returns a text service supplied by the current document paginator.
+    /// </summary>
+    protected object? GetService(Type serviceType)
+    {
+        ArgumentNullException.ThrowIfNull(serviceType);
+        CheckDisposed();
+
+        if (serviceType == typeof(Jalium.UI.Documents.ITextContainer) &&
+            DocumentPaginator is IServiceProvider serviceProvider)
+        {
+            return serviceProvider.GetService(serviceType);
+        }
+
+        return null;
+    }
+
+    private void DisposeCurrentPage()
+    {
+        if (_documentPage == null)
+        {
+            return;
+        }
+
+        _documentPage = null;
+        _newPageConnected = false;
+        InvalidateVisual();
+        PageDisconnected?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnPageConnected()
+    {
+        _newPageConnected = false;
+        if (_documentPage != null)
+        {
+            PageConnected?.Invoke(this, EventArgs.Empty);
+        }
+    }
+
+    private void CheckDisposed()
+    {
+        if (_disposed)
+        {
+            throw new ObjectDisposedException(GetType().FullName);
+        }
+    }
+
+    object? IServiceProvider.GetService(Type serviceType) => GetService(serviceType);
+
+    void IDisposable.Dispose() => Dispose();
+
+    #endregion
+
     #region Property Changed Callbacks
 
     private static void OnDocumentPaginatorChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is DocumentPageView view)
         {
+            view.DisposeCurrentPage();
             view.InvalidateMeasure();
         }
     }
@@ -372,6 +494,7 @@ public class DocumentPageView : FrameworkElement
     {
         if (d is DocumentPageView view)
         {
+            view.DisposeCurrentPage();
             view.InvalidateMeasure();
         }
     }

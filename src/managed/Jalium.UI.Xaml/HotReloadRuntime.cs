@@ -117,6 +117,7 @@ public static class HotReloadRuntime
         var fallback = 0;
         var failed = 0;
         var patchedRoots = new List<FrameworkElement>(activeInstances.Count);
+        var failureMessages = new List<string>();
 
         for (var i = 0; i < activeInstances.Count; i++)
         {
@@ -130,9 +131,10 @@ public static class HotReloadRuntime
             {
                 incomingRoot = (FrameworkElement)XamlReader.ParseForHotReload(content, targetRoot);
             }
-            catch
+            catch (Exception ex)
             {
                 failed++;
+                failureMessages.Add($"ParseForHotReload failed for '{targetRoot.GetType().FullName}': {ex.Message}");
                 continue;
             }
 
@@ -147,9 +149,10 @@ public static class HotReloadRuntime
                 failed += counters.FailedElements;
                 patchedRoots.Add(targetRoot);
             }
-            catch
+            catch (Exception ex)
             {
                 failed++;
+                failureMessages.Add($"Patch failed for '{targetRoot.GetType().FullName}': {ex.Message}");
             }
         }
 
@@ -164,7 +167,9 @@ public static class HotReloadRuntime
             InvalidatePatchedRoot(root);
         }
 
-        var message = failed > 0 ? $"{failed} element(s)/instance(s) could not be patched in place." : string.Empty;
+        var message = failed > 0
+            ? $"{failed} element(s)/instance(s) could not be patched in place. {string.Join(" | ", failureMessages)}".TrimEnd()
+            : string.Empty;
         return new HotReloadPatchResult(updated, fallback, failed, message);
     }
 
@@ -343,6 +348,7 @@ public static class HotReloadRuntime
         var sourceChildren = sourcePanel.Children.ToList();
         var used = new HashSet<UIElement>();
         var merged = new List<UIElement>(sourceChildren.Count);
+        var grafted = new HashSet<UIElement>();
 
         for (var i = 0; i < sourceChildren.Count; i++)
         {
@@ -352,6 +358,7 @@ public static class HotReloadRuntime
             if (matched == null)
             {
                 merged.Add(sourceChild);
+                grafted.Add(sourceChild);
                 counters.FallbackReplacements++;
                 continue;
             }
@@ -365,6 +372,7 @@ public static class HotReloadRuntime
             else
             {
                 merged.Add(sourceChild);
+                grafted.Add(sourceChild);
                 counters.FallbackReplacements++;
             }
         }
@@ -378,9 +386,16 @@ public static class HotReloadRuntime
             return;
         }
 
-        // Children.Add auto-reparents incoming source elements (Jalium's UIElementCollection detaches
-        // a differently-parented child on Add); per-instance re-parsing in ApplyPatch guarantees these
-        // source objects are not shared with another live instance, so the move is safe.
+        // A visual detach alone is insufficient: sourcePanel.Children also owns the logical-parent
+        // relationship, and adding such an element to targetPanel would throw "logical child already
+        // has a parent". Remove only the source elements selected for grafting from their disposable
+        // source collection before rebuilding the live target collection.
+        foreach (var child in grafted)
+        {
+            sourcePanel.Children.Remove(child);
+            ReleaseSourceElementForGraft(child);
+        }
+
         targetPanel.Children.Clear();
         foreach (var child in merged)
         {
@@ -453,6 +468,7 @@ public static class HotReloadRuntime
 
         var used = new HashSet<object>(ReferenceEqualityComparer.Instance);
         var merged = new List<object>(sourceItems.Count);
+        var grafted = new HashSet<object>(ReferenceEqualityComparer.Instance);
 
         for (var i = 0; i < sourceItems.Count; i++)
         {
@@ -462,6 +478,7 @@ public static class HotReloadRuntime
             if (matched == null)
             {
                 merged.Add(sourceItem);
+                grafted.Add(sourceItem);
                 counters.FallbackReplacements++;
                 continue;
             }
@@ -476,6 +493,7 @@ public static class HotReloadRuntime
             {
                 // Non-element item (data object / string): no in-place patch possible — take source.
                 merged.Add(sourceItem);
+                grafted.Add(sourceItem);
                 counters.FallbackReplacements++;
             }
         }
@@ -486,6 +504,18 @@ public static class HotReloadRuntime
             && merged.Where((item, idx) => !ReferenceEquals(item, existingItems[idx])).Count() == 0)
         {
             return;
+        }
+
+        // Inline UIElement items acquire the source ItemsControl as their logical parent during
+        // parsing. Release the disposable source collection's ownership before grafting them into
+        // the live target; otherwise collection-change realization reports a parent conflict.
+        foreach (var item in grafted)
+        {
+            sourceList.Remove(item);
+            if (item is UIElement sourceElement)
+            {
+                ReleaseSourceElementForGraft(sourceElement);
+            }
         }
 
         targetList.Clear();
@@ -533,7 +563,12 @@ public static class HotReloadRuntime
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Recurses into ApplyElementPatch which mirrors DPs/CLR properties via reflection.")]
     private static void PatchContentControl(ContentControl target, ContentControl source, PatchCounters counters)
     {
-        PatchObjectContent(target.Content, source.Content, value => target.Content = value, counters);
+        PatchObjectContent(
+            target.Content,
+            source.Content,
+            value => target.Content = value,
+            () => source.Content = null,
+            counters);
 
         // ContentControl-derived controls carry a second element-bearing surface beyond Content:
         PatchHeaderIfPresent(target, source, counters);
@@ -551,6 +586,7 @@ public static class HotReloadRuntime
                 targetInfoBar.ActionButton,
                 sourceInfoBar.ActionButton,
                 value => targetInfoBar.ActionButton = value as ButtonBase,
+                () => sourceInfoBar.ActionButton = null,
                 counters);
         }
     }
@@ -559,10 +595,17 @@ public static class HotReloadRuntime
     /// Patches an object-typed content slot (ContentControl.Content, *.Header, …) in place: element
     /// content is recursed when type-compatible, otherwise the source element is detached from its
     /// per-instance source tree and grafted; non-element content (string / view-model) is assigned
-    /// directly. The <paramref name="setContent"/> setter abstracts the concrete slot.
+    /// directly. The <paramref name="setContent"/> setter abstracts the target slot, while
+    /// <paramref name="clearSourceContent"/> releases the disposable source owner's normal
+    /// visual/logical ownership before the element is grafted.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Recurses into ApplyElementPatch which mirrors DPs/CLR properties via reflection.")]
-    private static void PatchObjectContent(object? targetContent, object? sourceContent, Action<object?> setContent, PatchCounters counters)
+    private static void PatchObjectContent(
+        object? targetContent,
+        object? sourceContent,
+        Action<object?> setContent,
+        Action clearSourceContent,
+        PatchCounters counters)
     {
         if (sourceContent is not UIElement sourceElement)
         {
@@ -578,10 +621,10 @@ public static class HotReloadRuntime
             return;
         }
 
-        // Single-child / Header setters use AddVisualChild directly, which THROWS on a differently-
-        // parented child instead of auto-detaching. Detach from the (per-instance, disposable) source
-        // tree first so the graft does not throw.
-        sourceElement.DetachFromVisualParent();
+        // Clear the owning source slot first so its normal property callback removes both logical
+        // and visual ownership. The fallback cleanup covers slots whose setter manages only one
+        // tree (or whose visual was realized under an internal presenter).
+        ReleaseSourceElementForGraft(sourceElement, clearSourceContent);
         setContent(sourceElement);
         counters.FallbackReplacements++;
     }
@@ -612,7 +655,12 @@ public static class HotReloadRuntime
             return;
         }
 
-        PatchObjectContent(targetHeader, sourceHeader, value => headerProperty.SetValue(target, value), counters);
+        PatchObjectContent(
+            targetHeader,
+            sourceHeader,
+            value => headerProperty.SetValue(target, value),
+            () => headerProperty.SetValue(source, null),
+            counters);
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Recurses into ApplyElementPatch which mirrors DPs/CLR properties via reflection.")]
@@ -641,9 +689,28 @@ public static class HotReloadRuntime
 
         // Detach from the source tree before grafting — Border/Viewbox single-child setters throw
         // on an already-parented child (no auto-detach, unlike Panel.Children.Add).
-        sourceChild.DetachFromVisualParent();
+        ReleaseSourceElementForGraft(sourceChild, () => setChild(source, null));
         setChild(target, sourceChild);
         counters.FallbackReplacements++;
+    }
+
+    /// <summary>
+    /// Releases an element from the disposable parse tree before grafting it into a live tree.
+    /// Clearing the owning property/collection is the primary path because it preserves owner
+    /// invariants; the explicit cleanup is a backstop for controls that manage only one tree.
+    /// </summary>
+    private static void ReleaseSourceElementForGraft(UIElement sourceElement, Action? clearSourceSlot = null)
+    {
+        clearSourceSlot?.Invoke();
+
+        sourceElement.DetachFromVisualParent();
+
+        // Once the visual parent is gone, FrameworkElement.Parent exposes only a remaining logical
+        // parent. RemoveLogicalChild is internal to Core and intentionally available to Xaml via IVT.
+        if (sourceElement is FrameworkElement { Parent: FrameworkElement logicalParent } frameworkElement)
+        {
+            logicalParent.RemoveLogicalChild(frameworkElement);
+        }
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Hot-reload mirrors DependencyProperty static fields between matched types via reflection.")]

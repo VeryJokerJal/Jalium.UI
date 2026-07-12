@@ -77,6 +77,10 @@ internal struct PlatformEvent
     // Character
     public uint Codepoint;
 
+    // IME composition (native text is copied before the callback returns)
+    public string? CompositionText;
+    public int CompositionCursor;
+
     // Pointer
     public uint PointerId;
     public float PointerX, PointerY;
@@ -96,6 +100,14 @@ internal struct PlatformEvent
 
     // Orientation (0=portrait, 1=landscape, 2=portrait-reverse, 3=landscape-reverse)
     public int Orientation;
+
+    // Drag/drop. Native callback-owned buffers are copied before dispatch.
+    public ulong DragSessionId;
+    public uint DragKeyStates;
+    public uint DragAllowedEffects;
+    public string[]? DragMimeTypes;
+    public string? DragDataMimeType;
+    public byte[]? DragData;
 }
 
 internal enum PlatformEventType
@@ -125,6 +137,9 @@ internal enum PlatformEventType
     KeyDown = 40,
     KeyUp = 41,
     CharInput = 42,
+    CompositionStart = 43,
+    CompositionUpdate = 44,
+    CompositionEnd = 45,
 
     PointerDown = 50,
     PointerUp = 51,
@@ -140,5 +155,12 @@ internal enum PlatformEventType
     OrientationChanged = 66,
 
     DispatcherWake = 70,
+
+    DragEnter = 80,
+    DragOver = 81,
+    DragLeave = 82,
+    Drop = 83,
+    DragFinished = 84,
+
     Quit = 99,
 }

@@ -379,44 +379,6 @@ internal static class PrintingNativeMethods
     [DllImport("gdi32.dll", SetLastError = true)]
     internal static extern int AbortDoc(nint hdc);
 
-    /// <summary>The Win32 <c>BITMAPINFOHEADER</c> structure describing a DIB.</summary>
-    [StructLayout(LayoutKind.Sequential)]
-    internal struct BITMAPINFOHEADER
-    {
-        /// <summary>The number of bytes required by the structure.</summary>
-        public uint biSize;
-
-        /// <summary>The width of the bitmap, in pixels.</summary>
-        public int biWidth;
-
-        /// <summary>The height of the bitmap, in pixels. Negative for a top-down DIB.</summary>
-        public int biHeight;
-
-        /// <summary>The number of planes for the target device; must be 1.</summary>
-        public ushort biPlanes;
-
-        /// <summary>The number of bits per pixel.</summary>
-        public ushort biBitCount;
-
-        /// <summary>The type of compression for a compressed bottom-up bitmap.</summary>
-        public uint biCompression;
-
-        /// <summary>The size, in bytes, of the image.</summary>
-        public uint biSizeImage;
-
-        /// <summary>The horizontal resolution, in pixels per meter, of the target device.</summary>
-        public int biXPelsPerMeter;
-
-        /// <summary>The vertical resolution, in pixels per meter, of the target device.</summary>
-        public int biYPelsPerMeter;
-
-        /// <summary>The number of color indexes in the color table that are actually used.</summary>
-        public uint biClrUsed;
-
-        /// <summary>The number of color indexes that are required for displaying the bitmap.</summary>
-        public uint biClrImportant;
-    }
-
     /// <summary>Uncompressed RGB device-independent bitmap (BI_RGB).</summary>
     internal const uint BI_RGB = 0;
 

@@ -19,6 +19,18 @@ public interface IDynamicResourceReference
 /// </summary>
 internal static class DynamicResourceBindingOperations
 {
+    private sealed class DynamicResourceTargetRegistration
+    {
+        public DynamicResourceTargetRegistration(FrameworkElement target)
+        {
+            Target = new WeakReference<FrameworkElement>(target);
+        }
+
+        public WeakReference<FrameworkElement> Target { get; }
+
+        public volatile bool IsActive = true;
+    }
+
     private sealed class DynamicResourceSubscription
     {
         public required object ResourceKey { get; init; }
@@ -27,6 +39,10 @@ internal static class DynamicResourceBindingOperations
     }
 
     private static readonly ConditionalWeakTable<FrameworkElement, Dictionary<DependencyProperty, DynamicResourceSubscription>> Subscriptions = new();
+    private static readonly ConditionalWeakTable<FrameworkElement, DynamicResourceTargetRegistration> TargetRegistrations = new();
+    private static readonly List<DynamicResourceTargetRegistration> RegisteredTargets = [];
+    private static readonly object RegistryGate = new();
+    private static int _inactiveTargetCount;
 
     // Binary compatibility overload for callers compiled against the historical
     // 3-parameter signature (e.g. older Jalium.UI.Xaml binaries).
@@ -47,10 +63,31 @@ internal static class DynamicResourceBindingOperations
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(property);
         ArgumentNullException.ThrowIfNull(resourceKey);
-        ClearDynamicResource(target, property);
 
         var subscriptions = Subscriptions.GetOrCreateValue(target);
-        EventHandler handler = (_, _) => RefreshDynamicResource(target, property);
+        if (subscriptions.TryGetValue(property, out var existingSubscription))
+        {
+            if (Equals(existingSubscription.ResourceKey, resourceKey) &&
+                existingSubscription.LayerSource == layerSource)
+            {
+                RefreshDynamicResource(target, property);
+                return;
+            }
+
+            target.ResourcesChanged -= existingSubscription.Handler;
+            subscriptions.Remove(property);
+        }
+
+        // The event source is the target itself, so use the sender instead of closing over
+        // the target. This keeps the subscription value free of an unnecessary strong edge
+        // back to the ConditionalWeakTable key.
+        EventHandler handler = (sender, _) =>
+        {
+            if (sender is FrameworkElement element)
+            {
+                RefreshDynamicResource(element, property);
+            }
+        };
         subscriptions[property] = new DynamicResourceSubscription
         {
             ResourceKey = resourceKey,
@@ -59,6 +96,7 @@ internal static class DynamicResourceBindingOperations
         };
 
         target.ResourcesChanged += handler;
+        EnsureTargetRegistered(target);
         RefreshDynamicResource(target, property);
     }
 
@@ -92,6 +130,12 @@ internal static class DynamicResourceBindingOperations
 
         target.ResourcesChanged -= subscription.Handler;
         subscriptions.Remove(property);
+
+        if (subscriptions.Count == 0)
+        {
+            Subscriptions.Remove(target);
+            UnregisterTarget(target);
+        }
     }
 
     internal static void PromoteDynamicResourcesToLayer(
@@ -152,19 +196,30 @@ internal static class DynamicResourceBindingOperations
     /// </summary>
     internal static void RefreshForKeys(IReadOnlySet<object>? changedKeys)
     {
-        foreach (var entry in Subscriptions)
+        // Never enumerate ConditionalWeakTable directly here. Refreshing a resource can
+        // instantiate a template, and template construction can register more dynamic
+        // resources. A live table enumeration can therefore keep discovering work created
+        // by the same sweep. A weak snapshot makes each sweep finite and does not root all
+        // registered element graphs for the duration of the operation.
+        var registrations = SnapshotLiveRegistrations();
+        foreach (var registration in registrations)
         {
-            var target = entry.Key;
-            if (target == null)
+            if (!registration.IsActive || !registration.Target.TryGetTarget(out var target))
                 continue;
 
-            var properties = entry.Value.Keys.ToArray();
+            if (!Subscriptions.TryGetValue(target, out var subscriptions) || subscriptions.Count == 0)
+            {
+                UnregisterTarget(target);
+                continue;
+            }
+
+            var properties = subscriptions.Keys.ToArray();
             foreach (var property in properties)
             {
                 if (changedKeys != null)
                 {
                     // Only refresh if this subscription's key was actually changed
-                    if (!entry.Value.TryGetValue(property, out var sub) ||
+                    if (!subscriptions.TryGetValue(property, out var sub) ||
                         !changedKeys.Contains(sub.ResourceKey))
                         continue;
                 }
@@ -172,6 +227,168 @@ internal static class DynamicResourceBindingOperations
                 RefreshDynamicResource(target, property);
             }
         }
+    }
+
+    /// <summary>
+    /// Returns registry counts for diagnostics and regression tests. Taking the snapshot
+    /// also removes inactive and collected weak entries from the global index.
+    /// </summary>
+    internal static (int LiveTargets, int LiveSubscriptions, int RegistrySlots) GetRegistryDiagnostics()
+    {
+        var registrations = SnapshotLiveRegistrations();
+        var liveTargets = 0;
+        var liveSubscriptions = 0;
+
+        foreach (var registration in registrations)
+        {
+            if (!registration.IsActive || !registration.Target.TryGetTarget(out var target))
+                continue;
+
+            if (!Subscriptions.TryGetValue(target, out var subscriptions) || subscriptions.Count == 0)
+            {
+                UnregisterTarget(target);
+                continue;
+            }
+
+            liveTargets++;
+            liveSubscriptions += subscriptions.Count;
+        }
+
+        lock (RegistryGate)
+        {
+            CompactRegistryNoLock();
+            return (liveTargets, liveSubscriptions, RegisteredTargets.Count);
+        }
+    }
+
+    /// <summary>
+    /// Clears all process-wide dynamic-resource subscriptions between isolated test scopes.
+    /// Normal theme changes must use <see cref="RefreshAll"/> and never call this method.
+    /// </summary>
+    internal static void ResetRegistryForTesting()
+    {
+        DynamicResourceTargetRegistration[] registrations;
+        lock (RegistryGate)
+        {
+            registrations = RegisteredTargets.ToArray();
+            foreach (var registration in registrations)
+            {
+                registration.IsActive = false;
+            }
+
+            RegisteredTargets.Clear();
+            TargetRegistrations.Clear();
+            _inactiveTargetCount = 0;
+        }
+
+        foreach (var registration in registrations)
+        {
+            if (!registration.Target.TryGetTarget(out var target) ||
+                !Subscriptions.TryGetValue(target, out var subscriptions))
+            {
+                continue;
+            }
+
+            foreach (var subscription in subscriptions.Values.ToArray())
+            {
+                target.ResourcesChanged -= subscription.Handler;
+            }
+
+            subscriptions.Clear();
+        }
+
+        Subscriptions.Clear();
+
+        // Non-visual subscriptions hang their handler on a FrameworkElement host, so they
+        // must be explicitly detached as well; clearing only their CWT would leave those
+        // host event lists carrying stale delegates into the next test scope.
+        foreach (var entry in NonVisualSubscriptions.ToArray())
+        {
+            foreach (var subscription in entry.Value.Values.ToArray())
+            {
+                subscription.Host.ResourcesChanged -= subscription.Handler;
+            }
+
+            entry.Value.Clear();
+        }
+
+        NonVisualSubscriptions.Clear();
+    }
+
+    private static void EnsureTargetRegistered(FrameworkElement target)
+    {
+        lock (RegistryGate)
+        {
+            if (TargetRegistrations.TryGetValue(target, out var existingRegistration))
+            {
+                if (existingRegistration.IsActive)
+                    return;
+
+                TargetRegistrations.Remove(target);
+            }
+
+            var registration = new DynamicResourceTargetRegistration(target);
+            TargetRegistrations.Add(target, registration);
+            RegisteredTargets.Add(registration);
+
+            if (_inactiveTargetCount >= 64 && _inactiveTargetCount * 2 >= RegisteredTargets.Count)
+            {
+                CompactRegistryNoLock();
+            }
+        }
+    }
+
+    private static void UnregisterTarget(FrameworkElement target)
+    {
+        lock (RegistryGate)
+        {
+            if (!TargetRegistrations.TryGetValue(target, out var registration))
+                return;
+
+            TargetRegistrations.Remove(target);
+            if (registration.IsActive)
+            {
+                registration.IsActive = false;
+                _inactiveTargetCount++;
+            }
+
+            if (_inactiveTargetCount >= 64 && _inactiveTargetCount * 2 >= RegisteredTargets.Count)
+            {
+                CompactRegistryNoLock();
+            }
+        }
+    }
+
+    private static DynamicResourceTargetRegistration[] SnapshotLiveRegistrations()
+    {
+        lock (RegistryGate)
+        {
+            CompactRegistryNoLock();
+            return RegisteredTargets.ToArray();
+        }
+    }
+
+    private static void CompactRegistryNoLock()
+    {
+        var writeIndex = 0;
+        for (var readIndex = 0; readIndex < RegisteredTargets.Count; readIndex++)
+        {
+            var registration = RegisteredTargets[readIndex];
+            if (!registration.IsActive || !registration.Target.TryGetTarget(out _))
+            {
+                registration.IsActive = false;
+                continue;
+            }
+
+            RegisteredTargets[writeIndex++] = registration;
+        }
+
+        if (writeIndex < RegisteredTargets.Count)
+        {
+            RegisteredTargets.RemoveRange(writeIndex, RegisteredTargets.Count - writeIndex);
+        }
+
+        _inactiveTargetCount = 0;
     }
 
     private static void RefreshDynamicResource(FrameworkElement target, DependencyProperty property)

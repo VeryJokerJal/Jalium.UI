@@ -595,6 +595,73 @@ public class RazorSyntaxTests
     }
 
     [Fact]
+    public void RazorAdjacentExecutionGroup_ShouldExecuteEachConstructOnce()
+    {
+        RazorExpressionRegistry.RegisterNamespaceType(
+            nameof(RazorExecutionProbe),
+            typeof(RazorExecutionProbe));
+        RazorExecutionProbe.Reset();
+
+        try
+        {
+            const string xaml = """
+                <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+                  @{
+                    RazorExecutionProbe.Increment();
+                    <TextBlock Text="Once" />
+                  }
+
+                  @while(false) {
+                    <TextBlock Text="Never" />
+                  }
+                </StackPanel>
+                """;
+
+            var panel = (StackPanel)XamlReader.Parse(xaml);
+
+            Assert.Single(panel.Children);
+            Assert.Equal("Once", ((TextBlock)panel.Children[0]).Text);
+            Assert.Equal(1, RazorExecutionProbe.Count);
+        }
+        finally
+        {
+            RazorExecutionProbe.Reset();
+        }
+    }
+
+    [Fact]
+    public void RazorAdjacentExecutionGroup_WithMultipleDirectives_ShouldShareScope()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @{ var stage = 0; }
+
+              @while(stage == 0) {
+                <TextBlock Text="A" />
+                @{ stage++; }
+              }
+
+              @while(stage == 1) {
+                <TextBlock Text="B" />
+                @{ stage++; }
+              }
+
+              @while(stage == 2) {
+                <TextBlock Text="C" />
+                @{ stage++; }
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+
+        Assert.Equal(3, panel.Children.Count);
+        Assert.Equal("A", ((TextBlock)panel.Children[0]).Text);
+        Assert.Equal("B", ((TextBlock)panel.Children[1]).Text);
+        Assert.Equal("C", ((TextBlock)panel.Children[2]).Text);
+    }
+
+    [Fact]
     public void RazorSwitch_ShouldExpandMatchingCase()
     {
         const string xaml = """
@@ -788,6 +855,17 @@ public class RazorSyntaxTests
     private static void LoadComponent(object component, string resourceName)
     {
         XamlReader.LoadComponent(component, resourceName, typeof(RazorSyntaxTests).Assembly);
+    }
+
+    private static class RazorExecutionProbe
+    {
+        private static int s_count;
+
+        public static int Count => Volatile.Read(ref s_count);
+
+        public static int Increment() => Interlocked.Increment(ref s_count);
+
+        public static void Reset() => Volatile.Write(ref s_count, 0);
     }
 
     private sealed class NameNotifyModel : INotifyPropertyChanged

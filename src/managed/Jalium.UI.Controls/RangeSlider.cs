@@ -11,9 +11,9 @@ namespace Jalium.UI.Controls;
 public class RangeSlider : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.RangeSliderAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.RangeSliderAutomationPeer(this);
     }
 
     // Cached brushes/pens for the no-template render fallback.

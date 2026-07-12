@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
+using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 
 namespace Jalium.UI;
 
@@ -102,14 +103,37 @@ internal static unsafe class OleDropTarget
     }
 
     internal static void RevokeWindow(Window window)
+        => RevokeWindow(window.Handle, nativeWindowAlive: true);
+
+    /// <summary>
+    /// Releases the registration keyed by the original HWND. The Window may
+    /// already have cleared its public Handle (or Win32 may already have sent
+    /// WM_DESTROY), but the managed GCHandle/HGlobal state must still be
+    /// reclaimed exactly once.
+    /// </summary>
+    internal static void RevokeWindow(nint hwnd, bool nativeWindowAlive)
     {
-        if (!_states.Remove(window.Handle, out var state))
+        if (hwnd == nint.Zero || !_states.Remove(hwnd, out var state))
             return;
 
-        Win32.RevokeDragDrop(window.Handle);
-        ReleaseNativeData(state);
-        state.SelfHandle.Free();
-        Marshal.FreeHGlobal(state.ComObject);
+        try
+        {
+            if (nativeWindowAlive)
+            {
+                _ = Win32.RevokeDragDrop(hwnd);
+            }
+        }
+        finally
+        {
+            ReleaseNativeData(state);
+            if (state.SelfHandle.IsAllocated)
+                state.SelfHandle.Free();
+            if (state.ComObject != nint.Zero)
+            {
+                Marshal.FreeHGlobal(state.ComObject);
+                state.ComObject = nint.Zero;
+            }
+        }
     }
 
     private static void EnsureVtable()
@@ -176,12 +200,9 @@ internal static unsafe class OleDropTarget
 
             if (s.CurrentTarget != null)
             {
-                var args = new DragEventArgs(DragDrop.DragEnterEvent, s.CurrentData, keys, allowed, pos)
-                {
-                    DropDescriptionSetter = MakeDropDescriptionSetter(s),
-                };
-                s.CurrentTarget.RaiseEvent(args);
-                *pdwEffect = MapEffectsBack(args.Effects);
+                *pdwEffect = MapEffectsBack(RaiseDragEvent(
+                    s, s.CurrentTarget, DragDrop.PreviewDragEnterEvent, DragDrop.DragEnterEvent,
+                    s.CurrentData, keys, allowed, pos));
             }
             else
             {
@@ -214,31 +235,22 @@ internal static unsafe class OleDropTarget
             {
                 if (s.CurrentTarget != null)
                 {
-                    var leave = new DragEventArgs(DragDrop.DragLeaveEvent, s.CurrentData, keys, allowed, pos)
-                    {
-                        DropDescriptionSetter = MakeDropDescriptionSetter(s),
-                    };
-                    s.CurrentTarget.RaiseEvent(leave);
+                    RaiseDragEvent(s, s.CurrentTarget, DragDrop.PreviewDragLeaveEvent, DragDrop.DragLeaveEvent,
+                        s.CurrentData, keys, allowed, pos);
                 }
                 s.CurrentTarget = newTarget;
                 if (s.CurrentTarget != null)
                 {
-                    var enter = new DragEventArgs(DragDrop.DragEnterEvent, s.CurrentData, keys, allowed, pos)
-                    {
-                        DropDescriptionSetter = MakeDropDescriptionSetter(s),
-                    };
-                    s.CurrentTarget.RaiseEvent(enter);
+                    RaiseDragEvent(s, s.CurrentTarget, DragDrop.PreviewDragEnterEvent, DragDrop.DragEnterEvent,
+                        s.CurrentData, keys, allowed, pos);
                 }
             }
 
             if (s.CurrentTarget != null)
             {
-                var args = new DragEventArgs(DragDrop.DragOverEvent, s.CurrentData, keys, allowed, pos)
-                {
-                    DropDescriptionSetter = MakeDropDescriptionSetter(s),
-                };
-                s.CurrentTarget.RaiseEvent(args);
-                *pdwEffect = MapEffectsBack(args.Effects);
+                *pdwEffect = MapEffectsBack(RaiseDragEvent(
+                    s, s.CurrentTarget, DragDrop.PreviewDragOverEvent, DragDrop.DragOverEvent,
+                    s.CurrentData, keys, allowed, pos));
             }
             else
             {
@@ -260,8 +272,8 @@ internal static unsafe class OleDropTarget
             var s = GetState(pThis);
             if (s.CurrentTarget != null && s.CurrentData != null)
             {
-                var args = new DragEventArgs(DragDrop.DragLeaveEvent, s.CurrentData, DragDropKeyStates.None, DragDropEffects.None, default);
-                s.CurrentTarget.RaiseEvent(args);
+                RaiseDragEvent(s, s.CurrentTarget, DragDrop.PreviewDragLeaveEvent, DragDrop.DragLeaveEvent,
+                    s.CurrentData, DragDropKeyStates.None, DragDropEffects.None, default);
             }
 
             ShellHelperDragLeave();
@@ -291,12 +303,9 @@ internal static unsafe class OleDropTarget
 
             if (target != null)
             {
-                var args = new DragEventArgs(DragDrop.DropEvent, data, keys, allowed, pos)
-                {
-                    DropDescriptionSetter = MakeDropDescriptionSetter(s),
-                };
-                target.RaiseEvent(args);
-                *pdwEffect = MapEffectsBack(args.Effects);
+                *pdwEffect = MapEffectsBack(RaiseDragEvent(
+                    s, target, DragDrop.PreviewDropEvent, DragDrop.DropEvent,
+                    data, keys, allowed, pos));
             }
             else
             {
@@ -312,6 +321,36 @@ internal static unsafe class OleDropTarget
         }
         catch { *pdwEffect = 0; }
         return 0;
+    }
+
+    /// <summary>
+    /// Raises an external/OLE drag notification through the same preview-then-bubble
+    /// sequence the in-app managed drag path (<see cref="DragDropPlatform"/>) uses: the
+    /// tunneling <c>Preview*</c> event first, and — only if no handler marked it
+    /// <see cref="RoutedEventArgs.Handled"/> — the bubbling event afterwards. The resolved
+    /// <see cref="DragEventArgs.Effects"/> is taken from whichever leg ran last, so a preview
+    /// handler that sets an effect and marks the event handled is honored instead of being
+    /// overridden by an (unreached) bubble leg. Both legs carry the Shell drop-description
+    /// setter so a preview handler can annotate the drag too.
+    /// </summary>
+    private static DragDropEffects RaiseDragEvent(
+        DropTargetState s, UIElement target, RoutedEvent previewEvent, RoutedEvent bubbleEvent,
+        DataObject data, DragDropKeyStates keys, DragDropEffects allowed, Point pos)
+    {
+        var preview = new DragEventArgs(previewEvent, data, keys, allowed, pos)
+        {
+            DropDescriptionSetter = MakeDropDescriptionSetter(s),
+        };
+        target.RaiseEvent(preview);
+        if (preview.Handled)
+            return preview.Effects;
+
+        var bubble = new DragEventArgs(bubbleEvent, data, keys, allowed, pos)
+        {
+            DropDescriptionSetter = MakeDropDescriptionSetter(s),
+        };
+        target.RaiseEvent(bubble);
+        return bubble.Effects;
     }
 
     #endregion
@@ -428,18 +467,18 @@ internal static unsafe class OleDropTarget
         const int MaxPath = 260;
         int size = sizeof(int) + (MaxPath * 2) + (MaxPath * 2);
 
-        nint hMem = Win32.GlobalAlloc(GHND, (nuint)size);
+        nint hMem = GlobalAlloc(GHND, (nuint)size);
         if (hMem == nint.Zero) return;
 
-        nint ptr = Win32.GlobalLock(hMem);
-        if (ptr == nint.Zero) { _ = Win32.GlobalFree(hMem); return; }
+        nint ptr = GlobalLock(hMem);
+        if (ptr == nint.Zero) { _ = GlobalFree(hMem); return; }
         try
         {
             Marshal.WriteInt32(ptr, (int)type);
             WriteFixedString(ptr + sizeof(int), message, MaxPath);
             WriteFixedString(ptr + sizeof(int) + (MaxPath * 2), insert, MaxPath);
         }
-        finally { _ = Win32.GlobalUnlock(hMem); }
+        finally { _ = GlobalUnlock(hMem); }
 
         var fmt = new FORMATETC { cfFormat = (ushort)cf, ptd = nint.Zero, dwAspect = 1, lindex = -1, tymed = 1 };
         var medium = new STGMEDIUM { tymed = 1, unionmember = hMem, pUnkForRelease = nint.Zero };
@@ -448,7 +487,7 @@ internal static unsafe class OleDropTarget
         if (hr != 0)
         {
             // SetData failed → ownership was not transferred; free our block.
-            _ = Win32.GlobalFree(hMem);
+            _ = GlobalFree(hMem);
         }
     }
 
@@ -603,11 +642,11 @@ internal static unsafe class OleDropTarget
 
         try
         {
-            var ptr = Win32.GlobalLock(medium.unionmember);
+            var ptr = GlobalLock(medium.unionmember);
             if (ptr != nint.Zero)
             {
                 var text = Marshal.PtrToStringUni(ptr);
-                Win32.GlobalUnlock(medium.unionmember);
+                GlobalUnlock(medium.unionmember);
                 if (!string.IsNullOrEmpty(text))
                 {
                     data.SetData(DataFormats.UnicodeText, text);
@@ -655,24 +694,6 @@ internal static unsafe class OleDropTarget
     #region Native Structs & P/Invoke
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct FORMATETC
-    {
-        public ushort cfFormat;
-        public nint ptd;
-        public uint dwAspect;
-        public int lindex;
-        public uint tymed;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct STGMEDIUM
-    {
-        public uint tymed;
-        public nint unionmember;
-        public nint pUnkForRelease;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int X, Y; }
 
     private static class Win32
@@ -695,21 +716,8 @@ internal static unsafe class OleDropTarget
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         internal static extern uint RegisterClipboardFormatW(string lpszFormat);
 
-        [DllImport("kernel32.dll")]
-        internal static extern nint GlobalAlloc(uint uFlags, nuint dwBytes);
-
-        [DllImport("kernel32.dll")]
-        internal static extern nint GlobalFree(nint hMem);
-
         [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
         internal static extern uint DragQueryFileW(nint hDrop, uint iFile, char[]? lpszFile, uint cch);
-
-        [DllImport("kernel32.dll")]
-        internal static extern nint GlobalLock(nint hMem);
-
-        [DllImport("kernel32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool GlobalUnlock(nint hMem);
 
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]

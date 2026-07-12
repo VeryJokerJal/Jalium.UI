@@ -34,7 +34,7 @@ public sealed class MouseGesture : InputGesture
     /// <summary>
     /// Initializes a new instance of the MouseGesture class.
     /// </summary>
-    public MouseGesture() : this(MouseAction.None, 0)
+    public MouseGesture() : this(MouseAction.None, ModifierKeys.None)
     {
     }
 
@@ -42,7 +42,7 @@ public sealed class MouseGesture : InputGesture
     /// Initializes a new instance of the MouseGesture class with the specified mouse action.
     /// </summary>
     /// <param name="mouseAction">The action associated with this gesture.</param>
-    public MouseGesture(MouseAction mouseAction) : this(mouseAction, 0)
+    public MouseGesture(MouseAction mouseAction) : this(mouseAction, ModifierKeys.None)
     {
     }
 
@@ -50,11 +50,19 @@ public sealed class MouseGesture : InputGesture
     /// Initializes a new instance of the MouseGesture class with the specified action and modifiers.
     /// </summary>
     /// <param name="mouseAction">The action associated with this gesture.</param>
-    /// <param name="modifiers">The modifier keys associated with this gesture (as flags).</param>
-    public MouseGesture(MouseAction mouseAction, int modifiers)
+    /// <param name="modifiers">The modifier keys associated with this gesture.</param>
+    public MouseGesture(MouseAction mouseAction, ModifierKeys modifiers)
     {
         MouseAction = mouseAction;
         Modifiers = modifiers;
+    }
+
+    /// <summary>
+    /// Initializes a compatibility instance from a numeric modifier value.
+    /// </summary>
+    public MouseGesture(MouseAction mouseAction, int modifiers)
+        : this(mouseAction, (ModifierKeys)modifiers)
+    {
     }
 
     /// <summary>
@@ -63,9 +71,9 @@ public sealed class MouseGesture : InputGesture
     public MouseAction MouseAction { get; set; }
 
     /// <summary>
-    /// Gets or sets the modifier keys associated with this gesture (as flags).
+    /// Gets or sets the modifier keys associated with this gesture.
     /// </summary>
-    public int Modifiers { get; set; }
+    public ModifierKeys Modifiers { get; set; }
 
     /// <summary>
     /// Determines whether this MouseGesture matches the input event.
@@ -75,8 +83,39 @@ public sealed class MouseGesture : InputGesture
     /// <returns>true if the event data matches this MouseGesture; otherwise, false.</returns>
     public override bool Matches(object targetElement, InputEventArgs inputEventArgs)
     {
-        // Simplified implementation - full matching requires integration with the Input system
-        return false;
+        if (inputEventArgs is not MouseEventArgs mouseEventArgs)
+        {
+            return false;
+        }
+
+        MouseAction action = GetMouseAction(inputEventArgs);
+        return action != MouseAction.None
+            && MouseAction == action
+            && Modifiers == mouseEventArgs.KeyboardModifiers;
+    }
+
+    private static MouseAction GetMouseAction(InputEventArgs inputEventArgs)
+    {
+        if (inputEventArgs is MouseWheelEventArgs)
+        {
+            return MouseAction.WheelClick;
+        }
+
+        if (inputEventArgs is not MouseButtonEventArgs buttonEventArgs)
+        {
+            return MouseAction.None;
+        }
+
+        return (buttonEventArgs.ChangedButton, buttonEventArgs.ClickCount) switch
+        {
+            (MouseButton.Left, 1) => MouseAction.LeftClick,
+            (MouseButton.Left, 2) => MouseAction.LeftDoubleClick,
+            (MouseButton.Right, 1) => MouseAction.RightClick,
+            (MouseButton.Right, 2) => MouseAction.RightDoubleClick,
+            (MouseButton.Middle, 1) => MouseAction.MiddleClick,
+            (MouseButton.Middle, 2) => MouseAction.MiddleDoubleClick,
+            _ => MouseAction.None,
+        };
     }
 }
 
@@ -105,10 +144,47 @@ public sealed class MouseGestureConverter : TypeConverter
         return base.ConvertFrom(context, culture, value);
     }
 
+    /// <inheritdoc />
+    public override bool CanConvertTo(ITypeDescriptorContext? context, Type? destinationType)
+    {
+        return destinationType == typeof(string);
+    }
+
+    /// <inheritdoc />
+    public override object? ConvertTo(
+        ITypeDescriptorContext? context,
+        System.Globalization.CultureInfo? culture,
+        object? value,
+        Type destinationType)
+    {
+        ArgumentNullException.ThrowIfNull(destinationType);
+
+        if (destinationType == typeof(string))
+        {
+            if (value is null)
+            {
+                return string.Empty;
+            }
+
+            if (value is MouseGesture gesture)
+            {
+                var parts = new List<string>(5);
+                if ((gesture.Modifiers & ModifierKeys.Control) != 0) parts.Add("Ctrl");
+                if ((gesture.Modifiers & ModifierKeys.Alt) != 0) parts.Add("Alt");
+                if ((gesture.Modifiers & ModifierKeys.Shift) != 0) parts.Add("Shift");
+                if ((gesture.Modifiers & ModifierKeys.Windows) != 0) parts.Add("Win");
+                parts.Add(gesture.MouseAction.ToString());
+                return string.Join('+', parts);
+            }
+        }
+
+        throw GetConvertToException(value, destinationType);
+    }
+
     private static MouseGesture ParseMouseGesture(string input)
     {
         var parts = input.Split('+', StringSplitOptions.TrimEntries);
-        var modifiers = 0;
+        var modifiers = ModifierKeys.None;
         var action = MouseAction.None;
 
         foreach (var part in parts)
@@ -118,22 +194,26 @@ public sealed class MouseGestureConverter : TypeConverter
             {
                 case "CTRL":
                 case "CONTROL":
-                    modifiers |= 2;
+                    modifiers |= ModifierKeys.Control;
                     break;
                 case "ALT":
-                    modifiers |= 1;
+                    modifiers |= ModifierKeys.Alt;
                     break;
                 case "SHIFT":
-                    modifiers |= 4;
+                    modifiers |= ModifierKeys.Shift;
                     break;
                 case "WIN":
                 case "WINDOWS":
-                    modifiers |= 8;
+                    modifiers |= ModifierKeys.Windows;
                     break;
                 default:
                     if (Enum.TryParse<MouseAction>(part, true, out var parsedAction))
                     {
                         action = parsedAction;
+                    }
+                    else if (part.Length != 0)
+                    {
+                        throw new NotSupportedException($"Mouse action '{part}' is not supported.");
                     }
                     break;
             }

@@ -1,8 +1,9 @@
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
+using Jalium.UI.Controls;
 using InkStylusPoint = Jalium.UI.Input.StylusPoint;
 
-namespace Jalium.UI.Controls.Ink;
+namespace Jalium.UI.Ink;
 
 /// <summary>
 /// Real-time stylus preview pipeline for <see cref="InkCanvas"/>. Runs on the
@@ -66,10 +67,13 @@ internal sealed class RealTimeInkPreviewStylusPlugIn : StylusPlugIn
     /// Only handle the editing modes that produce a continuous stroke; the
     /// whole-stroke-erase path is owned by <c>InkCollectionStylusPlugIn</c>.
     /// </summary>
-    protected override bool IsActiveForInput(RawStylusInput rawStylusInput)
+    protected override bool IsActiveForInputCore(RawStylusInput rawStylusInput)
     {
-        var mode = _owner.EditingMode;
-        return mode is InkCanvasEditingMode.Ink or InkCanvasEditingMode.EraseByPoint;
+        var mode = _owner.ActiveEditingMode;
+        return mode is InkCanvasEditingMode.Ink
+            or InkCanvasEditingMode.GestureOnly
+            or InkCanvasEditingMode.InkAndGesture
+            or InkCanvasEditingMode.EraseByPoint;
     }
 
     // ── RTS background thread ──────────────────────────────────────────────
@@ -79,7 +83,7 @@ internal sealed class RealTimeInkPreviewStylusPlugIn : StylusPlugIn
         var session = new RealTimePreviewSession(rawStylusInput.PointerId);
         session.AppendFromInput(rawStylusInput.GetStylusPoints());
         lock (_gate) _sessions[rawStylusInput.PointerId] = session;
-        rawStylusInput.NotifyWhenProcessed(this);
+        rawStylusInput.NotifyWhenProcessed(rawStylusInput);
     }
 
     protected override void OnStylusMove(RawStylusInput rawStylusInput)
@@ -93,7 +97,7 @@ internal sealed class RealTimeInkPreviewStylusPlugIn : StylusPlugIn
             return;
         }
         session.AppendFromInput(rawStylusInput.GetStylusPoints());
-        rawStylusInput.NotifyWhenProcessed(this);
+        rawStylusInput.NotifyWhenProcessed(rawStylusInput);
     }
 
     protected override void OnStylusUp(RawStylusInput rawStylusInput)
@@ -103,13 +107,14 @@ internal sealed class RealTimeInkPreviewStylusPlugIn : StylusPlugIn
         if (session is null) return;
         session.AppendFromInput(rawStylusInput.GetStylusPoints());
         session.MarkComplete();
-        rawStylusInput.NotifyWhenProcessed(this);
+        rawStylusInput.NotifyWhenProcessed(rawStylusInput);
     }
 
     // ── UI thread (Processed) ──────────────────────────────────────────────
 
-    protected override void OnStylusDownProcessed(RawStylusInput rawStylusInput)
+    protected override void OnStylusDownProcessed(object callbackData, bool targetVerified)
     {
+        if (callbackData is not RawStylusInput rawStylusInput) return;
         RealTimePreviewSession? session;
         lock (_gate) _sessions.TryGetValue(rawStylusInput.PointerId, out session);
         if (session is null) return;
@@ -118,7 +123,7 @@ internal sealed class RealTimeInkPreviewStylusPlugIn : StylusPlugIn
         // UI thread (DP reads aren't safe on the RTS thread).
         if (session.Attributes is null)
         {
-            session.IsEraser = _owner.EditingMode == InkCanvasEditingMode.EraseByPoint;
+            session.IsEraser = _owner.ActiveEditingMode == InkCanvasEditingMode.EraseByPoint;
             session.Attributes = session.IsEraser
                 ? _owner.BuildEraserAttributesForRtsPreview()
                 : _owner.BuildInkAttributesForRtsPreview();
@@ -126,16 +131,18 @@ internal sealed class RealTimeInkPreviewStylusPlugIn : StylusPlugIn
         _owner.NotifyRealTimePreviewInvalidate(session);
     }
 
-    protected override void OnStylusMoveProcessed(RawStylusInput rawStylusInput)
+    protected override void OnStylusMoveProcessed(object callbackData, bool targetVerified)
     {
+        if (callbackData is not RawStylusInput rawStylusInput) return;
         RealTimePreviewSession? session;
         lock (_gate) _sessions.TryGetValue(rawStylusInput.PointerId, out session);
         if (session is null) return;
         _owner.NotifyRealTimePreviewInvalidate(session);
     }
 
-    protected override void OnStylusUpProcessed(RawStylusInput rawStylusInput)
+    protected override void OnStylusUpProcessed(object callbackData, bool targetVerified)
     {
+        if (callbackData is not RawStylusInput rawStylusInput) return;
         RealTimePreviewSession? session;
         lock (_gate)
         {
@@ -200,7 +207,7 @@ internal sealed class RealTimePreviewSession
                 if (_bounds.IsEmpty)
                     _bounds = new Rect(sp.X, sp.Y, 0, 0);
                 else
-                    _bounds = _bounds.Union(new Rect(sp.X, sp.Y, 0, 0));
+                    _bounds = Rect.Union(_bounds, new Rect(sp.X, sp.Y, 0, 0));
             }
         }
     }

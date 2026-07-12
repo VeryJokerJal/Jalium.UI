@@ -162,14 +162,16 @@ public class MenuFlyoutItemInteractionTests
         ResetApplicationState();
         ResetInputState();
         _ = new Application();
+        MenuBarItem? editItem = null;
+        MenuFlyoutSubItem? refactorSubItem = null;
 
         try
         {
             var leafCommand = new MenuFlyoutItem { Text = "Rename" };
-            var refactorSubItem = new MenuFlyoutSubItem { Text = "Refactor" };
+            refactorSubItem = new MenuFlyoutSubItem { Text = "Refactor" };
             refactorSubItem.Items.Add(leafCommand);
 
-            var editItem = new MenuBarItem { Title = "Edit" };
+            editItem = new MenuBarItem { Title = "Edit" };
             editItem.Items.Add(refactorSubItem);
 
             var menuBar = new MenuBar();
@@ -198,6 +200,8 @@ public class MenuFlyoutItemInteractionTests
         }
         finally
         {
+            refactorSubItem?.HideSubMenu();
+            editItem?.CloseMenu();
             ResetInputState();
             ResetApplicationState();
         }

@@ -6,7 +6,7 @@ namespace Jalium.UI.Threading;
 /// <summary>
 /// Represents an operation that has been posted to the <see cref="Dispatcher"/> queue.
 /// </summary>
-public sealed class DispatcherOperation
+public class DispatcherOperation
 {
     private readonly Action _action;
     private readonly bool _critical;
@@ -14,14 +14,21 @@ public sealed class DispatcherOperation
     private Exception? _exception;
     private ManualResetEventSlim? _completedEvent;
     private DispatcherPriority _priority;
+    private readonly TaskCompletionSource _taskSource =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     // 当前在调度队列链表中的节点（用于 O(1) 中止移除）；出队后置 null。
     internal LinkedListNode<DispatcherOperation>? Node { get; set; }
 
-    internal DispatcherOperation(Dispatcher dispatcher, DispatcherPriority priority, Action action, bool critical, bool observed)
+    internal DispatcherOperation(
+        Jalium.UI.Dispatcher dispatcher,
+        Jalium.UI.DispatcherPriority priority,
+        Action action,
+        bool critical,
+        bool observed)
     {
-        Dispatcher = dispatcher;
-        _priority = priority;
+        Dispatcher = Jalium.UI.Threading.Dispatcher.FromLegacy(dispatcher);
+        _priority = Jalium.UI.Threading.Dispatcher.FromLegacyPriority(priority);
         _action = action;
         _critical = critical;
         _observed = observed;
@@ -37,6 +44,7 @@ public sealed class DispatcherOperation
         get => _priority;
         set
         {
+            Jalium.UI.Threading.Dispatcher.ValidatePriority(value, nameof(value));
             if (_priority != value)
             {
                 _priority = value;
@@ -51,6 +59,9 @@ public sealed class DispatcherOperation
     /// <summary>Gets the result of the operation after it has completed.</summary>
     public object? Result { get; private set; }
 
+    /// <summary>Gets the task representing this operation's completion.</summary>
+    public Task Task => _taskSource.Task;
+
     /// <summary>Occurs when the operation is aborted.</summary>
     public event EventHandler? Aborted;
 
@@ -61,31 +72,7 @@ public sealed class DispatcherOperation
     internal bool IsCritical => _critical;
 
     /// <summary>Gets an awaiter so the operation can be <see langword="await"/>ed.</summary>
-    public TaskAwaiter GetAwaiter() => ToTask().GetAwaiter();
-
-    private Task ToTask()
-    {
-        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        switch (Status)
-        {
-            case DispatcherOperationStatus.Completed:
-                if (_exception != null) tcs.TrySetException(_exception);
-                else tcs.TrySetResult();
-                break;
-            case DispatcherOperationStatus.Aborted:
-                tcs.TrySetCanceled();
-                break;
-            default:
-                Completed += (_, _) =>
-                {
-                    if (_exception != null) tcs.TrySetException(_exception);
-                    else tcs.TrySetResult();
-                };
-                Aborted += (_, _) => tcs.TrySetCanceled();
-                break;
-        }
-        return tcs.Task;
-    }
+    public TaskAwaiter GetAwaiter() => Task.GetAwaiter();
 
     /// <summary>
     /// Aborts the operation if it has not yet started executing.
@@ -106,8 +93,9 @@ public sealed class DispatcherOperation
         Status = DispatcherOperationStatus.Aborted;
         Dispatcher.RemoveOperation(this);
         _completedEvent?.Set();
+        _taskSource.TrySetCanceled();
         Aborted?.Invoke(this, EventArgs.Empty);
-        Dispatcher.HooksInternal?.RaiseOperationAborted(this, EventArgs.Empty);
+        Dispatcher.HooksInternal?.RaiseOperationAborted(Dispatcher.LegacyDispatcher, this);
     }
 
     /// <summary>Waits indefinitely for the operation to complete.</summary>
@@ -129,7 +117,7 @@ public sealed class DispatcherOperation
                     void Done(object? s, EventArgs e) => frame.Continue = false;
                     Completed += Done;
                     Aborted += Done;
-                    try { Dispatcher.PushFrame(frame); }
+                    try { Jalium.UI.Threading.Dispatcher.PushFrame(frame); }
                     finally { Completed -= Done; Aborted -= Done; }
                 }
             }
@@ -169,11 +157,12 @@ public sealed class DispatcherOperation
         Status = DispatcherOperationStatus.Executing;
         try
         {
-            _action();
+            Result = InvokeDelegateCore();
             Status = DispatcherOperationStatus.Completed;
             _completedEvent?.Set();
+            _taskSource.TrySetResult();
             Completed?.Invoke(this, EventArgs.Empty);
-            Dispatcher.HooksInternal?.RaiseOperationCompleted(this, EventArgs.Empty);
+            Dispatcher.HooksInternal?.RaiseOperationCompleted(Dispatcher.LegacyDispatcher, this);
         }
         catch (Exception ex)
         {
@@ -182,14 +171,66 @@ public sealed class DispatcherOperation
             // OperationException via their Completed handler.
             Status = DispatcherOperationStatus.Completed;
             _completedEvent?.Set();
+            _taskSource.TrySetException(ex);
             Completed?.Invoke(this, EventArgs.Empty);
-            Dispatcher.HooksInternal?.RaiseOperationCompleted(this, EventArgs.Empty);
+            Dispatcher.HooksInternal?.RaiseOperationCompleted(Dispatcher.LegacyDispatcher, this);
 
             // Fire-and-forget (and critical) operations have no observer to surface the error to,
             // so propagate to the dispatcher pump (critical => crash; otherwise UnhandledException).
             if (_critical || !_observed)
                 throw;
         }
+    }
+
+    /// <summary>
+    /// Invokes the delegate represented by this operation and returns its result.
+    /// </summary>
+    protected virtual object? InvokeDelegateCore()
+    {
+        _action();
+        return null;
+    }
+}
+
+/// <summary>
+/// Represents a dispatcher operation whose callback produces a strongly typed result.
+/// </summary>
+public class DispatcherOperation<TResult> : DispatcherOperation
+{
+    private readonly Func<TResult> _callback;
+    private readonly Task<TResult> _typedTask;
+
+    internal DispatcherOperation(
+        Jalium.UI.Dispatcher dispatcher,
+        Jalium.UI.DispatcherPriority priority,
+        Func<TResult> callback)
+        : base(
+            dispatcher,
+            priority,
+            static () => { },
+            critical: false,
+            observed: true)
+    {
+        _callback = callback ?? throw new ArgumentNullException(nameof(callback));
+        _typedTask = AwaitResultAsync(this);
+    }
+
+    /// <summary>Gets the result after the operation completes.</summary>
+    public new TResult Result => (TResult)base.Result!;
+
+    /// <summary>Gets the task representing this operation.</summary>
+    public new Task<TResult> Task => _typedTask;
+
+    /// <summary>Gets an awaiter for the typed operation.</summary>
+    public new TaskAwaiter<TResult> GetAwaiter() => Task.GetAwaiter();
+
+    /// <inheritdoc />
+    protected override object? InvokeDelegateCore() => _callback();
+
+    private static async Task<TResult> AwaitResultAsync(DispatcherOperation<TResult> operation)
+    {
+        await ((DispatcherOperation)operation).Task.ConfigureAwait(false);
+        return operation.Result;
     }
 }
 
@@ -216,9 +257,9 @@ public enum DispatcherOperationStatus
 /// </summary>
 public struct DispatcherProcessingDisabled : IDisposable
 {
-    private Dispatcher? _dispatcher;
+    private Jalium.UI.Dispatcher? _dispatcher;
 
-    internal DispatcherProcessingDisabled(Dispatcher dispatcher)
+    internal DispatcherProcessingDisabled(Jalium.UI.Dispatcher dispatcher)
     {
         _dispatcher = dispatcher;
     }
@@ -230,6 +271,19 @@ public struct DispatcherProcessingDisabled : IDisposable
         _dispatcher = null;
         dispatcher?.EnableProcessing();
     }
+
+    public override bool Equals(object? obj) =>
+        obj is DispatcherProcessingDisabled other && ReferenceEquals(_dispatcher, other._dispatcher);
+
+    public override int GetHashCode() => _dispatcher?.GetHashCode() ?? 0;
+
+    public static bool operator ==(
+        DispatcherProcessingDisabled left,
+        DispatcherProcessingDisabled right) => left.Equals(right);
+
+    public static bool operator !=(
+        DispatcherProcessingDisabled left,
+        DispatcherProcessingDisabled right) => !left.Equals(right);
 }
 
 /// <summary>
@@ -238,10 +292,12 @@ public struct DispatcherProcessingDisabled : IDisposable
 /// </summary>
 public readonly struct DispatcherPriorityAwaitable
 {
-    private readonly Dispatcher _dispatcher;
-    private readonly DispatcherPriority _priority;
+    private readonly Jalium.UI.Dispatcher _dispatcher;
+    private readonly Jalium.UI.DispatcherPriority _priority;
 
-    internal DispatcherPriorityAwaitable(Dispatcher dispatcher, DispatcherPriority priority)
+    internal DispatcherPriorityAwaitable(
+        Jalium.UI.Dispatcher dispatcher,
+        Jalium.UI.DispatcherPriority priority)
     {
         _dispatcher = dispatcher;
         _priority = priority;
@@ -256,10 +312,12 @@ public readonly struct DispatcherPriorityAwaitable
 /// </summary>
 public readonly struct DispatcherPriorityAwaiter : INotifyCompletion
 {
-    private readonly Dispatcher _dispatcher;
-    private readonly DispatcherPriority _priority;
+    private readonly Jalium.UI.Dispatcher _dispatcher;
+    private readonly Jalium.UI.DispatcherPriority _priority;
 
-    internal DispatcherPriorityAwaiter(Dispatcher dispatcher, DispatcherPriority priority)
+    internal DispatcherPriorityAwaiter(
+        Jalium.UI.Dispatcher dispatcher,
+        Jalium.UI.DispatcherPriority priority)
     {
         _dispatcher = dispatcher;
         _priority = priority;
@@ -291,6 +349,13 @@ public sealed class DispatcherUnhandledExceptionEventArgs : EventArgs
         Exception = exception;
     }
 
+    internal DispatcherUnhandledExceptionEventArgs(
+        Jalium.UI.Dispatcher dispatcher,
+        Exception exception)
+        : this(Jalium.UI.Threading.Dispatcher.FromLegacy(dispatcher), exception)
+    {
+    }
+
     /// <summary>Gets the dispatcher that caught the exception.</summary>
     public Dispatcher Dispatcher { get; }
 
@@ -313,6 +378,13 @@ public sealed class DispatcherUnhandledExceptionFilterEventArgs : EventArgs
         Exception = exception;
     }
 
+    internal DispatcherUnhandledExceptionFilterEventArgs(
+        Jalium.UI.Dispatcher dispatcher,
+        Exception exception)
+        : this(Jalium.UI.Threading.Dispatcher.FromLegacy(dispatcher), exception)
+    {
+    }
+
     /// <summary>Gets the dispatcher that caught the exception.</summary>
     public Dispatcher Dispatcher { get; }
 
@@ -322,3 +394,17 @@ public sealed class DispatcherUnhandledExceptionFilterEventArgs : EventArgs
     /// <summary>Gets or sets whether the exception should be caught and routed to <see cref="Dispatcher.UnhandledException"/>.</summary>
     public bool RequestCatch { get; set; } = true;
 }
+
+/// <summary>
+/// Represents the method that handles <see cref="Dispatcher.UnhandledException"/>.
+/// </summary>
+public delegate void DispatcherUnhandledExceptionEventHandler(
+    object sender,
+    DispatcherUnhandledExceptionEventArgs e);
+
+/// <summary>
+/// Represents the method that handles <see cref="Dispatcher.UnhandledExceptionFilter"/>.
+/// </summary>
+public delegate void DispatcherUnhandledExceptionFilterEventHandler(
+    object sender,
+    DispatcherUnhandledExceptionFilterEventArgs e);

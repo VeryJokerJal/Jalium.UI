@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -10,8 +10,8 @@ namespace Jalium.UI.Controls.Charts;
 public class ChartLegend : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
-        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Pane);
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Pane);
 
     private static readonly SolidColorBrush s_defaultForeground = new(Color.FromRgb(220, 220, 220));
 
@@ -68,7 +68,7 @@ public class ChartLegend : Control
         if (items == null)
             return;
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 12.0;
         var foreground = Foreground ?? s_defaultForeground;
 
@@ -117,7 +117,7 @@ public class ChartLegend : Control
         if (items == null)
             return new Size(0, 0);
 
-        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 12.0;
 
         const double markerSize = 12;

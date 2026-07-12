@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using Jalium.UI.Data;
 using Jalium.UI.Media;
 
@@ -34,6 +35,16 @@ public class ContentPresenter : FrameworkElement
     public static readonly DependencyProperty ContentTemplateSelectorProperty =
         DependencyProperty.Register(nameof(ContentTemplateSelector), typeof(DataTemplateSelector), typeof(ContentPresenter),
             new PropertyMetadata(null, OnContentTemplateSelectorChanged));
+
+    /// <summary>Identifies the <see cref="ContentStringFormat"/> dependency property.</summary>
+    public static readonly DependencyProperty ContentStringFormatProperty =
+        DependencyProperty.Register(nameof(ContentStringFormat), typeof(string), typeof(ContentPresenter),
+            new PropertyMetadata(null, OnContentStringFormatPropertyChanged));
+
+    /// <summary>Identifies the <see cref="RecognizesAccessKey"/> dependency property.</summary>
+    public static readonly DependencyProperty RecognizesAccessKeyProperty =
+        DependencyProperty.Register(nameof(RecognizesAccessKey), typeof(bool), typeof(ContentPresenter),
+            new PropertyMetadata(false, OnRecognizesAccessKeyChanged));
 
     /// <summary>
     /// Identifies the ContentSource dependency property.
@@ -75,6 +86,20 @@ public class ContentPresenter : FrameworkElement
     {
         get => (DataTemplateSelector?)GetValue(ContentTemplateSelectorProperty);
         set => SetValue(ContentTemplateSelectorProperty, value);
+    }
+
+    /// <summary>Gets or sets the composite format string used for textual content.</summary>
+    public string? ContentStringFormat
+    {
+        get => (string?)GetValue(ContentStringFormatProperty);
+        set => SetValue(ContentStringFormatProperty, value);
+    }
+
+    /// <summary>Gets or sets whether underscore access-key markers are recognized.</summary>
+    public bool RecognizesAccessKey
+    {
+        get => (bool)(GetValue(RecognizesAccessKeyProperty) ?? false);
+        set => SetValue(RecognizesAccessKeyProperty, value);
     }
 
     /// <summary>
@@ -177,6 +202,10 @@ public class ContentPresenter : FrameworkElement
     {
         if (d is ContentPresenter presenter)
         {
+            var oldTemplate = (DataTemplate?)e.OldValue;
+            var newTemplate = (DataTemplate?)e.NewValue;
+            presenter.OnContentTemplateChanged(oldTemplate, newTemplate);
+            presenter.OnTemplateChanged(oldTemplate, newTemplate);
             // Force re-create content with new template
             presenter.OnContentChanged(presenter.Content, presenter.Content, forceRecreate: true);
         }
@@ -186,9 +215,25 @@ public class ContentPresenter : FrameworkElement
     {
         if (d is ContentPresenter presenter)
         {
+            presenter.OnContentTemplateSelectorChanged(
+                (DataTemplateSelector?)e.OldValue,
+                (DataTemplateSelector?)e.NewValue);
             // Force re-create content with new selector
             presenter.OnContentChanged(presenter.Content, presenter.Content, forceRecreate: true);
         }
+    }
+
+    private static void OnContentStringFormatPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var presenter = (ContentPresenter)d;
+        presenter.OnContentStringFormatChanged((string?)e.OldValue, (string?)e.NewValue);
+        presenter.OnContentChanged(presenter.Content, presenter.Content, forceRecreate: true);
+    }
+
+    private static void OnRecognizesAccessKeyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var presenter = (ContentPresenter)d;
+        presenter.OnContentChanged(presenter.Content, presenter.Content, forceRecreate: true);
     }
 
     private FrameworkElement? CreateContentElement(object content)
@@ -207,44 +252,18 @@ public class ContentPresenter : FrameworkElement
             return fe;
         }
 
-        // If we have a template, use it
-        if (ContentTemplate != null)
+        var template = ChooseTemplate();
+        if (template != null)
         {
-            var templateContent = ContentTemplate.LoadContent();
+            var templateContent = template.LoadContent();
             if (templateContent != null)
             {
                 templateContent.DataContext = content;
-                _generatedFromTemplate = ContentTemplate;
+                if (ReferenceEquals(template, ContentTemplate))
+                {
+                    _generatedFromTemplate = template;
+                }
                 return templateContent;
-            }
-        }
-
-        // If we have a template selector, use it
-        if (ContentTemplateSelector != null)
-        {
-            var selectedTemplate = ContentTemplateSelector.SelectTemplate(content, this);
-            if (selectedTemplate != null)
-            {
-                var templateContent = selectedTemplate.LoadContent();
-                if (templateContent != null)
-                {
-                    templateContent.DataContext = content;
-                    return templateContent;
-                }
-            }
-        }
-
-        // Try implicit DataTemplate lookup (matching by DataType in resources)
-        if (content is not string)
-        {
-            if (ResourceLookup.FindImplicitDataTemplate(this, content.GetType()) is DataTemplate implicitTemplate)
-            {
-                var templateContent = implicitTemplate.LoadContent();
-                if (templateContent != null)
-                {
-                    templateContent.DataContext = content;
-                    return templateContent;
-                }
             }
         }
 
@@ -255,17 +274,67 @@ public class ContentPresenter : FrameworkElement
         var foreground = FindForegroundBrush();
 
         // Default: create a TextBlock for string content
-        if (content is string text)
+        var formattedText = FormatContent(content);
+        if (content is string && RecognizesAccessKey)
         {
-            var tb = new TextBlock { Text = text };
-            ApplyTextBlockFormatting(tb, foreground);
-            return tb;
+            var accessText = new AccessText { Text = formattedText, Foreground = foreground };
+            ApplyAccessTextFormatting(accessText);
+            return accessText;
         }
 
-        // For other objects, use ToString()
-        var otherTb = new TextBlock { Text = content.ToString() ?? string.Empty };
+        var otherTb = new TextBlock { Text = formattedText };
         ApplyTextBlockFormatting(otherTb, foreground);
         return otherTb;
+    }
+
+    /// <summary>Chooses the explicit, selected, or implicit template for the current content.</summary>
+    protected virtual DataTemplate? ChooseTemplate()
+    {
+        if (ContentTemplate != null)
+        {
+            return ContentTemplate;
+        }
+
+        var content = Content;
+        var selected = ContentTemplateSelector?.SelectTemplate(content, this);
+        if (selected != null || content == null || content.GetType() == typeof(object))
+        {
+            return selected;
+        }
+
+        return ResourceLookup.FindImplicitDataTemplate(this, content.GetType()) as DataTemplate;
+    }
+
+    /// <summary>Called when <see cref="ContentStringFormat"/> changes.</summary>
+    protected virtual void OnContentStringFormatChanged(string? oldContentStringFormat, string? newContentStringFormat)
+    {
+    }
+
+    /// <summary>Called when <see cref="ContentTemplate"/> changes.</summary>
+    protected virtual void OnContentTemplateChanged(DataTemplate? oldContentTemplate, DataTemplate? newContentTemplate)
+    {
+    }
+
+    /// <summary>Called when <see cref="ContentTemplateSelector"/> changes.</summary>
+    protected virtual void OnContentTemplateSelectorChanged(
+        DataTemplateSelector? oldContentTemplateSelector,
+        DataTemplateSelector? newContentTemplateSelector)
+    {
+    }
+
+    /// <summary>Called when the selected template changes.</summary>
+    protected virtual void OnTemplateChanged(DataTemplate? oldTemplate, DataTemplate? newTemplate)
+    {
+    }
+
+    /// <summary>Returns whether the selector has a local value that should be serialized.</summary>
+    public bool ShouldSerializeContentTemplateSelector() => HasLocalValue(ContentTemplateSelectorProperty);
+
+    private string FormatContent(object content)
+    {
+        return string.IsNullOrEmpty(ContentStringFormat)
+            ? content.ToString() ?? string.Empty
+            : string.Format(CultureInfo.CurrentCulture, ContentStringFormat, content);
     }
 
     /// <summary>
@@ -278,7 +347,7 @@ public class ContentPresenter : FrameworkElement
             return templatedControl.Foreground;
 
         // Fall back to walking the visual parent chain
-        Visual? current = VisualParent;
+        Visual? current = ParentVisual;
         while (current != null)
         {
             if (current is Control control)
@@ -320,22 +389,28 @@ public class ContentPresenter : FrameworkElement
         {
             ApplyTextBlockFormatting(textBlock, FindForegroundBrush());
         }
+        else if (_contentElement is AccessText accessText)
+        {
+            ApplyAccessTextFormatting(accessText);
+        }
     }
 
     private void OnTemplatedParentPropertyChanged(DependencyProperty dp, object? oldValue, object? newValue)
     {
-        if (_contentElement is not TextBlock tb)
-        {
-            return;
-        }
-
         if (dp == Control.ForegroundProperty ||
             dp == Control.FontFamilyProperty ||
             dp == Control.FontSizeProperty ||
             dp == Control.FontStyleProperty ||
             dp == Control.FontWeightProperty)
         {
-            ApplyTextBlockFormatting(tb, FindForegroundBrush());
+            if (_contentElement is TextBlock textBlock)
+            {
+                ApplyTextBlockFormatting(textBlock, FindForegroundBrush());
+            }
+            else if (_contentElement is AccessText accessText)
+            {
+                ApplyAccessTextFormatting(accessText);
+            }
         }
     }
 
@@ -355,7 +430,7 @@ public class ContentPresenter : FrameworkElement
             return;
         }
 
-        Visual? current = VisualParent;
+        Visual? current = ParentVisual;
         while (current != null)
         {
             if (current is Control control)
@@ -368,6 +443,18 @@ public class ContentPresenter : FrameworkElement
             }
 
             current = current.VisualParent;
+        }
+    }
+
+    private void ApplyAccessTextFormatting(AccessText accessText)
+    {
+        if (TemplatedParent is Control templatedControl)
+        {
+            accessText.FontFamily = templatedControl.FontFamily;
+            accessText.FontSize = templatedControl.FontSize;
+            accessText.FontStyle = templatedControl.FontStyle;
+            accessText.FontWeight = templatedControl.FontWeight;
+            accessText.Foreground = templatedControl.Foreground;
         }
     }
 
@@ -387,7 +474,7 @@ public class ContentPresenter : FrameworkElement
         var parentType = TemplatedParent.GetType();
 
         // Use the AOT-safe DependencyProperty registry instead of GetField reflection.
-        if (!HasLocalValue(ContentProperty) && GetBindingExpression(ContentProperty) == null)
+        if (!HasLocalValue(ContentProperty) && BindingOperations.GetBindingExpressionBase(this, ContentProperty) == null)
         {
             var contentDp = DependencyProperty.FromName(parentType, contentSource);
             if (contentDp != null)
@@ -396,22 +483,29 @@ public class ContentPresenter : FrameworkElement
             }
         }
 
-        if (!HasLocalValue(ContentTemplateProperty) && GetBindingExpression(ContentTemplateProperty) == null)
+        if (!HasLocalValue(ContentTemplateProperty) && BindingOperations.GetBindingExpressionBase(this, ContentTemplateProperty) == null)
         {
             var templateDp = DependencyProperty.FromName(parentType, $"{contentSource}Template");
             if (templateDp != null)
                 this.SetTemplateBinding(ContentTemplateProperty, templateDp);
         }
 
-        if (!HasLocalValue(ContentTemplateSelectorProperty) && GetBindingExpression(ContentTemplateSelectorProperty) == null)
+        if (!HasLocalValue(ContentTemplateSelectorProperty) && BindingOperations.GetBindingExpressionBase(this, ContentTemplateSelectorProperty) == null)
         {
             var selectorDp = DependencyProperty.FromName(parentType, $"{contentSource}TemplateSelector");
             if (selectorDp != null)
                 this.SetTemplateBinding(ContentTemplateSelectorProperty, selectorDp);
         }
 
+        if (!HasLocalValue(ContentStringFormatProperty) && BindingOperations.GetBindingExpressionBase(this, ContentStringFormatProperty) == null)
+        {
+            var stringFormatDp = DependencyProperty.FromName(parentType, $"{contentSource}StringFormat");
+            if (stringFormatDp != null)
+                this.SetTemplateBinding(ContentStringFormatProperty, stringFormatDp);
+        }
+
         // Bind HorizontalContentAlignment -> HorizontalAlignment
-        if (!HasLocalValue(HorizontalAlignmentProperty) && GetBindingExpression(HorizontalAlignmentProperty) == null)
+        if (!HasLocalValue(HorizontalAlignmentProperty) && BindingOperations.GetBindingExpressionBase(this, HorizontalAlignmentProperty) == null)
         {
             var hcaDp = DependencyProperty.FromName(parentType, "HorizontalContentAlignment");
             if (hcaDp != null)
@@ -419,7 +513,7 @@ public class ContentPresenter : FrameworkElement
         }
 
         // Bind VerticalContentAlignment -> VerticalAlignment
-        if (!HasLocalValue(VerticalAlignmentProperty) && GetBindingExpression(VerticalAlignmentProperty) == null)
+        if (!HasLocalValue(VerticalAlignmentProperty) && BindingOperations.GetBindingExpressionBase(this, VerticalAlignmentProperty) == null)
         {
             var vcaDp = DependencyProperty.FromName(parentType, "VerticalContentAlignment");
             if (vcaDp != null)
@@ -432,10 +526,10 @@ public class ContentPresenter : FrameworkElement
     #region Layout
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => _contentElement != null ? 1 : 0;
+    protected override int VisualChildrenCount => _contentElement != null ? 1 : 0;
 
     /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    protected override Visual? GetVisualChild(int index)
     {
         if (index != 0 || _contentElement == null)
             throw new ArgumentOutOfRangeException(nameof(index));
@@ -447,7 +541,7 @@ public class ContentPresenter : FrameworkElement
     protected override Size MeasureOverride(Size availableSize)
     {
         if (_contentElement == null)
-            return Size.Empty;
+            return default(Size);
 
         _contentElement.Measure(availableSize);
         return _contentElement.DesiredSize;

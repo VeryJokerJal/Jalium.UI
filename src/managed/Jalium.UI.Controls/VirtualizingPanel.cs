@@ -8,10 +8,25 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public abstract class VirtualizingPanel : Panel
 {
+    private ItemContainerGenerator? _itemContainerGenerator;
+
     /// <summary>
     /// Gets the ItemContainerGenerator associated with this panel.
     /// </summary>
-    public ItemContainerGenerator? ItemContainerGenerator { get; internal set; }
+    public IItemContainerGenerator? ItemContainerGenerator => _itemContainerGenerator;
+
+    /// <summary>
+    /// Gets the framework generator used by built-in virtualizing panels.
+    /// </summary>
+    private protected ItemContainerGenerator? Generator => _itemContainerGenerator;
+
+    /// <summary>
+    /// Associates the panel with its owning items generator.
+    /// </summary>
+    internal void SetItemContainerGenerator(ItemContainerGenerator? generator)
+    {
+        _itemContainerGenerator = generator;
+    }
 
     /// <summary>
     /// The owning <see cref="ItemsControl"/> for a templated items host. Stamped unconditionally by
@@ -308,9 +323,10 @@ public abstract class VirtualizingPanel : Panel
     {
     }
 
-    internal void NotifyItemsChanged(object sender, ItemsChangedEventArgs args)
+    internal bool NotifyItemsChanged(object sender, ItemsChangedEventArgs args)
     {
         OnItemsChanged(sender, args);
+        return ShouldItemsChangeAffectLayout(true, args);
     }
 
     /// <summary>
@@ -319,8 +335,17 @@ public abstract class VirtualizingPanel : Panel
     /// Implementations must be idempotent: the panel's own ClearRealizedContainers also funnels
     /// through Children.Clear().
     /// </summary>
-    internal virtual void OnClearChildren()
+    protected virtual void OnClearChildren()
     {
+    }
+
+    /// <summary>
+    /// Framework bridge used by <see cref="UIElementCollection"/> after it clears the panel's
+    /// visual children.
+    /// </summary>
+    internal void OnClearChildrenInternal()
+    {
+        OnClearChildren();
     }
 
     #endregion
@@ -357,26 +382,35 @@ public abstract class VirtualizingPanel : Panel
     protected virtual double GetItemOffsetCore(UIElement child) => 0;
 
     /// <summary>
-    /// Gets whether a change to the items collection should affect the panel's layout. The base
-    /// implementation returns <c>true</c>; hierarchical/grouping panels may veto for off-screen
-    /// subtrees.
+    /// Returns whether an items change should invalidate this panel's layout.
     /// </summary>
-    internal virtual bool ShouldItemsChangeAffectLayout => true;
+    public bool ShouldItemsChangeAffectLayout(bool areItemChangesLocal, ItemsChangedEventArgs args)
+    {
+        return ShouldItemsChangeAffectLayoutCore(areItemChangesLocal, args);
+    }
+
+    /// <summary>
+    /// When overridden, determines whether an items change affects layout. The base
+    /// implementation returns <c>true</c>.
+    /// </summary>
+    protected virtual bool ShouldItemsChangeAffectLayoutCore(
+        bool areItemChangesLocal,
+        ItemsChangedEventArgs args) => true;
 
     #endregion
 
     /// <summary>
     /// Brings the item at the specified index into view.
     /// </summary>
-    public void BringIndexIntoView(int index)
+    public void BringIndexIntoViewPublic(int index)
     {
-        BringIndexIntoViewOverride(index);
+        BringIndexIntoView(index);
     }
 
     /// <summary>
     /// When overridden in a derived class, generates items and brings the specified index into view.
     /// </summary>
-    protected virtual void BringIndexIntoViewOverride(int index)
+    protected internal virtual void BringIndexIntoView(int index)
     {
     }
 }

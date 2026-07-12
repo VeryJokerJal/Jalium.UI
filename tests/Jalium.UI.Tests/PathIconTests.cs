@@ -36,7 +36,7 @@ public class PathIconTests
     }
 
     [Fact]
-    public void PathIcon_RenderTransform_ShouldComposeWithFitTransform()
+    public void PathIcon_OnRender_ShouldApplyOnlyFitTransform()
     {
         var icon = CreateIcon("M 0,0 L 8,0 L 8,4 L 0,4 Z", 20, 20);
         icon.RenderTransform = new RotateTransform { Angle = 90 };
@@ -45,7 +45,9 @@ public class PathIconTests
         icon.Render(drawingContext);
 
         var transform = Assert.IsType<MatrixTransform>(drawingContext.LastTransform);
-        AssertMatrixClose(new Matrix(0, 2.5, -2.5, 0, 15, 0), transform.Matrix);
+        // RenderTransform belongs to Visual.RenderDirect's outer scope. Calling
+        // OnRender directly must only expose PathIcon's local fit transform.
+        AssertMatrixClose(new Matrix(2.5, 0, 0, 2.5, 0, 5), transform.Matrix);
     }
 
     private static TestPathIcon CreateIcon(string data, double width, double height)
@@ -70,7 +72,7 @@ public class PathIconTests
         }
     }
 
-    private sealed class RecordingDrawingContext : DrawingContext
+    private sealed class RecordingDrawingContext : DrawingContextAdapter
     {
         public Brush? LastBrush { get; private set; }
         public Geometry? LastGeometry { get; private set; }

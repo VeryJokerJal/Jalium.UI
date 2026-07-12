@@ -389,6 +389,7 @@ bool D3D12GlyphAtlas::Initialize()
             D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
             IID_PPV_ARGS(&uploadBuffer_))))
         return false;
+    uploadBuffer_->SetName(L"JaliumGlyphAtlasUpload");
 
     // Create GDI-compatible bitmap render target for glyph rasterization
     ComPtr<IDWriteGdiInterop> gdiInterop;
@@ -435,6 +436,49 @@ bool D3D12GlyphAtlas::Initialize()
 
     initialized_ = true;
     return true;
+}
+
+bool D3D12GlyphAtlas::EnsureUploadBuffer()
+{
+    if (uploadBuffer_) return true;
+
+    const UINT rowPitch = (atlasW_ * 4 + 255) & ~255u;
+    const UINT64 uploadSize = static_cast<UINT64>(rowPitch) * atlasH_;
+    auto uploadHeap = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
+    auto uploadDesc = MakeBufferDesc(uploadSize);
+    if (FAILED(device_->CreateCommittedResource(
+            &uploadHeap, D3D12_HEAP_FLAG_NONE, &uploadDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&uploadBuffer_)))) {
+        return false;
+    }
+
+    uploadBuffer_->SetName(L"JaliumGlyphAtlasUpload");
+    return true;
+}
+
+void D3D12GlyphAtlas::QueueUploadBufferKeepaliveAfterCopy()
+{
+    if (!uploadBuffer_) return;
+
+    // The current main command list is still OPEN. D3D12Backend's graveyard is
+    // keyed from lastSubmittedFenceValue+1, but a later effect-resource grow can
+    // issue an auxiliary Signal/Reclaim before this list is submitted. Parking
+    // here lets DirectRenderer transfer the resource to the exact frame slot
+    // whose real submission fence covers the CopyTextureRegion.
+    pendingRetiredUploadBuffers_.push_back(std::move(uploadBuffer_));
+}
+
+void D3D12GlyphAtlas::DrainRetiredUploadBuffers(
+    std::vector<ComPtr<ID3D12Resource>>& destination)
+{
+    if (pendingRetiredUploadBuffers_.empty()) return;
+
+    destination.reserve(destination.size() + pendingRetiredUploadBuffers_.size());
+    for (auto& resource : pendingRetiredUploadBuffers_) {
+        destination.push_back(std::move(resource));
+    }
+    pendingRetiredUploadBuffers_.clear();
 }
 
 // ============================================================================
@@ -525,6 +569,7 @@ bool D3D12GlyphAtlas::GrowAtlas(uint32_t reqW, uint32_t reqH)
             IID_PPV_ARGS(&newUpload)))) {
         return false;
     }
+    newUpload->SetName(L"JaliumGlyphAtlasUpload");
 
     // Hand the old atlas / upload buffers to the backend's fence-tracked
     // graveyard before swapping in the new ones. The previous-frame GPU
@@ -1793,6 +1838,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
 void D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
 {
     if (!dirty_ || !cmdList) return;
+    if (!atlasTexture_ || !EnsureUploadBuffer()) return;
 
     // Transition atlas to copy dest
     if (atlasState_ != D3D12_RESOURCE_STATE_COPY_DEST) {
@@ -1854,6 +1900,11 @@ void D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
     srcBox.back = 1;
 
     cmdList->CopyTextureRegion(&dst, 0, uploadMinY, 0, &src, &srcBox);
+
+    // The command list now owns a GPU read of this exact staging allocation.
+    // Never Map it again: park it for the caller's current-frame fence
+    // keepalive before any later FlushToGpu uploads newly-rasterized glyphs.
+    QueueUploadBufferKeepaliveAfterCopy();
 
     // Transition back to shader resource
     {

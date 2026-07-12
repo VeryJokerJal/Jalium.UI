@@ -3,8 +3,12 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Provides logical and directional navigation between focusable elements.
 /// </summary>
-public static class KeyboardNavigation
+public sealed partial class KeyboardNavigation
 {
+    internal KeyboardNavigation()
+    {
+    }
+
     #region Attached Properties
 
     /// <summary>
@@ -38,6 +42,50 @@ public static class KeyboardNavigation
     public static readonly DependencyProperty DirectionalNavigationProperty =
         DependencyProperty.RegisterAttached("DirectionalNavigation", typeof(KeyboardNavigationMode), typeof(KeyboardNavigation),
             new PropertyMetadata(KeyboardNavigationMode.Continue));
+
+    /// <summary>Identifies whether a control accepts Return during navigation.</summary>
+    public static readonly DependencyProperty AcceptsReturnProperty =
+        DependencyProperty.RegisterAttached(
+            "AcceptsReturn",
+            typeof(bool),
+            typeof(KeyboardNavigation),
+            new PropertyMetadata(false));
+
+    /// <summary>Identifies navigation behavior for Control+Tab traversal.</summary>
+    public static readonly DependencyProperty ControlTabNavigationProperty =
+        DependencyProperty.RegisterAttached(
+            "ControlTabNavigation",
+            typeof(KeyboardNavigationMode),
+            typeof(KeyboardNavigation),
+            new PropertyMetadata(KeyboardNavigationMode.Continue));
+
+    public static bool GetAcceptsReturn(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (bool)(element.GetValue(AcceptsReturnProperty) ?? false);
+    }
+
+    public static void SetAcceptsReturn(DependencyObject element, bool enabled)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        element.SetValue(AcceptsReturnProperty, enabled);
+    }
+
+    public static KeyboardNavigationMode GetControlTabNavigation(DependencyObject element)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        return (KeyboardNavigationMode)(
+            element.GetValue(ControlTabNavigationProperty) ?? KeyboardNavigationMode.Continue);
+    }
+
+    public static void SetControlTabNavigation(DependencyObject element, KeyboardNavigationMode mode)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        if (!Enum.IsDefined(mode))
+            throw new System.ComponentModel.InvalidEnumArgumentException(
+                nameof(mode), (int)mode, typeof(KeyboardNavigationMode));
+        element.SetValue(ControlTabNavigationProperty, mode);
+    }
 
     /// <summary>
     /// Gets the tab index for the specified element.
@@ -171,19 +219,75 @@ public static class KeyboardNavigation
     public static bool MoveFocus(UIElement currentElement, FocusNavigationDirection direction)
     {
         ArgumentNullException.ThrowIfNull(currentElement);
+        var candidate = PredictFocus(currentElement, direction);
+        return candidate != null && FocusElement(candidate);
+    }
+
+    /// <summary>
+    /// Returns the next focus target without changing keyboard focus.
+    /// </summary>
+    public static UIElement? PredictFocus(UIElement currentElement, FocusNavigationDirection direction)
+    {
+        ArgumentNullException.ThrowIfNull(currentElement);
 
         return direction switch
         {
-            FocusNavigationDirection.Next => MoveFocus(currentElement, reverse: false),
-            FocusNavigationDirection.Previous => MoveFocus(currentElement, reverse: true),
-            FocusNavigationDirection.First => MoveFocusToFirst(currentElement),
-            FocusNavigationDirection.Last => MoveFocusToLast(currentElement),
+            FocusNavigationDirection.Next => PredictTabFocus(currentElement, reverse: false),
+            FocusNavigationDirection.Previous => PredictTabFocus(currentElement, reverse: true),
+            FocusNavigationDirection.First => PredictFirstOrLastFocus(currentElement, first: true),
+            FocusNavigationDirection.Last => PredictFirstOrLastFocus(currentElement, first: false),
             FocusNavigationDirection.Left or
             FocusNavigationDirection.Right or
             FocusNavigationDirection.Up or
-            FocusNavigationDirection.Down => MoveFocusDirectional(currentElement, direction),
-            _ => false
+            FocusNavigationDirection.Down => PredictDirectionalFocus(currentElement, direction),
+            _ => null,
         };
+    }
+
+    private static UIElement? PredictTabFocus(UIElement currentElement, bool reverse)
+    {
+        if (!TryGetTabNavigationContext(currentElement, out var context))
+        {
+            return null;
+        }
+
+        var focusableElements = GetOrderedFocusableElements(context.ScopeRoot, NavigationPropertyKind.Tab);
+        if (focusableElements.Count == 0)
+        {
+            return null;
+        }
+
+        var currentIndex = focusableElements.IndexOf(currentElement);
+        if (currentIndex < 0)
+        {
+            return reverse ? focusableElements[^1] : focusableElements[0];
+        }
+
+        var nextIndex = currentIndex + (reverse ? -1 : 1);
+        if (nextIndex < 0 || nextIndex >= focusableElements.Count)
+        {
+            if (!context.Wraps)
+            {
+                return null;
+            }
+
+            nextIndex = reverse ? focusableElements.Count - 1 : 0;
+        }
+
+        return nextIndex == currentIndex ? null : focusableElements[nextIndex];
+    }
+
+    private static UIElement? PredictFirstOrLastFocus(UIElement currentElement, bool first)
+    {
+        if (!TryGetTabNavigationContext(currentElement, out var context))
+        {
+            return null;
+        }
+
+        var focusableElements = GetOrderedFocusableElements(context.ScopeRoot, NavigationPropertyKind.Tab);
+        return focusableElements.Count == 0
+            ? null
+            : first ? focusableElements[0] : focusableElements[^1];
     }
 
     private static bool MoveFocusToFirst(UIElement currentElement)
@@ -218,17 +322,17 @@ public static class KeyboardNavigation
         return FocusElement(focusableElements[^1]);
     }
 
-    private static bool MoveFocusDirectional(UIElement currentElement, FocusNavigationDirection direction)
+    private static UIElement? PredictDirectionalFocus(UIElement currentElement, FocusNavigationDirection direction)
     {
         if (!TryGetDirectionalNavigationContext(currentElement, out var context))
         {
-            return false;
+            return null;
         }
 
         var focusableElements = GetOrderedFocusableElements(context.ScopeRoot, NavigationPropertyKind.Directional);
         if (focusableElements.Count <= 1)
         {
-            return false;
+            return null;
         }
 
         // Get current element bounds
@@ -285,16 +389,15 @@ public static class KeyboardNavigation
 
         if (bestCandidate != null)
         {
-            return FocusElement(bestCandidate);
+            return bestCandidate;
         }
 
         if (!context.Wraps)
         {
-            return false;
+            return null;
         }
 
-        var wrappedCandidate = GetWrappedDirectionalCandidate(currentElement, direction, focusableElements);
-        return wrappedCandidate != null && FocusElement(wrappedCandidate);
+        return GetWrappedDirectionalCandidate(currentElement, direction, focusableElements);
     }
 
     private static UIElement? GetVisualRoot(UIElement element)
@@ -513,32 +616,32 @@ public enum KeyboardNavigationMode
     /// <summary>
     /// Tab navigation continues to the next element.
     /// </summary>
-    Continue,
+    Continue = 0,
 
     /// <summary>
     /// Tab navigation cycles within the container.
     /// </summary>
-    Cycle,
+    Cycle = 2,
 
     /// <summary>
     /// Tab navigation stops when reaching the last element.
     /// </summary>
-    Once,
+    Once = 1,
 
     /// <summary>
     /// Tab navigation is contained within the element.
     /// </summary>
-    Contained,
+    Contained = 4,
 
     /// <summary>
     /// Tab navigation is locally contained.
     /// </summary>
-    Local,
+    Local = 5,
 
     /// <summary>
     /// No tab navigation.
     /// </summary>
-    None
+    None = 3,
 }
 
 // FocusNavigationDirection enum is defined in Jalium.UI.Core

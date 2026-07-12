@@ -24,10 +24,13 @@ public enum TitleBarButtonKind
 /// </summary>
 public class TitleBarButton : ButtonBase
 {
+    private static readonly SolidColorBrush s_transparentBrush = new(Colors.Transparent);
+    private static readonly SolidColorBrush s_glyphBrush = new(Colors.White);
+
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.TitleBarButtonAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.TitleBarButtonAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -81,6 +84,21 @@ public class TitleBarButton : ButtonBase
     {
         Focusable = false;
     }
+
+    private Brush ResolveHoverBackgroundBrush() =>
+        TryFindResource("TitleBarButtonHover") as Brush ?? s_transparentBrush;
+
+    private Brush ResolvePressedBackgroundBrush() =>
+        TryFindResource("TitleBarButtonPressed") as Brush ?? s_transparentBrush;
+
+    private Brush ResolveCloseHoverBackgroundBrush() =>
+        TryFindResource("TitleBarCloseButtonHover") as Brush ?? s_transparentBrush;
+
+    private Brush ResolveClosePressedBackgroundBrush() =>
+        TryFindResource("TitleBarCloseButtonPressed") as Brush ?? s_transparentBrush;
+
+    private Brush ResolveGlyphBrush() =>
+        TryFindResource("TitleBarGlyph") as Brush ?? s_glyphBrush;
 
     #region Layout
 

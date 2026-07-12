@@ -1,81 +1,77 @@
 namespace Jalium.UI.Controls.Primitives;
 
-/// <summary>
-/// Represents a control that displays the column headers in a DataGrid.
-/// </summary>
-public class DataGridColumnHeadersPresenter : Panel
+/// <summary>Generates a <see cref="DataGridColumnHeader"/> for each grid column.</summary>
+public class DataGridColumnHeadersPresenter : ItemsControl
 {
-    #region CLR Properties
-
-    /// <summary>
-    /// Gets or sets the DataGrid that owns this presenter.
-    /// </summary>
     public DataGrid? DataGridOwner { get; internal set; }
 
-    #endregion
-
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    public DataGridColumnHeadersPresenter()
     {
-        var totalWidth = 0.0;
-        var maxHeight = 0.0;
-
-        foreach (var child in Children)
-        {
-            child.Measure(availableSize);
-            totalWidth += child.DesiredSize.Width;
-            maxHeight = Math.Max(maxHeight, child.DesiredSize.Height);
-        }
-
-        return new Size(totalWidth, maxHeight);
+        var panelTemplate = new ItemsPanelTemplate { PanelType = typeof(DataGridCellsPanel) };
+        panelTemplate.Seal();
+        ItemsPanel = panelTemplate;
     }
 
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        var x = 0.0;
+    protected override bool IsItemItsOwnContainerOverride(object item) => item is DataGridColumnHeader;
 
-        foreach (var child in Children)
+    protected override DependencyObject GetContainerForItemOverride() => new DataGridColumnHeader();
+
+    protected override void PrepareContainerForItemOverride(DependencyObject element, object item)
+    {
+        base.PrepareContainerForItemOverride(element, item);
+        if (element is not DataGridColumnHeader header)
         {
-            var width = child.DesiredSize.Width;
-            child.Arrange(new Rect(x, 0, width, finalSize.Height));
-            x += width;
+            return;
         }
 
-        return finalSize;
-    }
-
-    #endregion
-
-    #region Column Header Management
-
-    /// <summary>
-    /// Creates a header for the specified column.
-    /// </summary>
-    /// <param name="column">The column to create a header for.</param>
-    /// <returns>The created column header.</returns>
-    internal DataGridColumnHeader CreateHeader(DataGridColumn column)
-    {
-        var header = new DataGridColumnHeader
+        var column = item as Jalium.UI.Controls.DataGridColumn ?? header.Column;
+        if (column == null)
         {
-            Column = column,
-            Content = column.Header,
-            Width = column.Width
+            return;
+        }
+
+        header.Column = column;
+        header.Content = column.Header;
+        var width = column.ActualWidth;
+        if (!(width > 0))
+        {
+            width = column.Width.DisplayValue;
+        }
+        header.Width = double.IsFinite(width) && width >= 0 ? width : 100;
+        header.SortDirection = column.SortDirection switch
+        {
+            Jalium.UI.Data.ListSortDirection.Ascending => System.ComponentModel.ListSortDirection.Ascending,
+            Jalium.UI.Data.ListSortDirection.Descending => System.ComponentModel.ListSortDirection.Descending,
+            _ => null
         };
+        header.CanUserSort = column.CanUserSort;
+        header.DisplayIndex = column.DisplayIndex;
+        header.IsFrozen = column.IsFrozen;
+        if (column.HeaderStyle != null)
+        {
+            header.Style = column.HeaderStyle;
+        }
+    }
 
-        Children.Add(header);
+    protected override void ClearContainerForItemOverride(DependencyObject element, object item)
+    {
+        if (element is DataGridColumnHeader header)
+        {
+            header.Content = null;
+            header.Column = null;
+        }
+
+        base.ClearContainerForItemOverride(element, item);
+    }
+
+    internal DataGridColumnHeader CreateHeader(Jalium.UI.Controls.DataGridColumn column)
+    {
+        ArgumentNullException.ThrowIfNull(column);
+        var header = new DataGridColumnHeader { Column = column };
+        PrepareContainerForItemOverride(header, column);
+        Items.Add(header);
         return header;
     }
 
-    /// <summary>
-    /// Clears all column headers.
-    /// </summary>
-    internal void ClearHeaders()
-    {
-        Children.Clear();
-    }
-
-    #endregion
+    internal void ClearHeaders() => Items.Clear();
 }

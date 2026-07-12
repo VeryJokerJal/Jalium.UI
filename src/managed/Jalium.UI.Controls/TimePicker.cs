@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
@@ -12,9 +12,9 @@ namespace Jalium.UI.Controls;
 public class TimePicker : Control
 {
     /// <inheritdoc />
-    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Controls.Automation.TimePickerAutomationPeer(this);
+        return new Jalium.UI.Automation.Peers.TimePickerAutomationPeer(this);
     }
 
     #region Dependency Properties
@@ -587,7 +587,7 @@ public class TimePicker : Control
 
         if (Header is string headerText)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
+            var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
             TextMeasurement.MeasureText(headerFormatted);
             headerHeight = headerFormatted.Height + 4;
         }
@@ -614,7 +614,7 @@ public class TimePicker : Control
         // Draw header
         if (Header is string headerText && Foreground != null)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var headerFormatted = new FormattedText(headerText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = Foreground
             };
@@ -659,7 +659,7 @@ public class TimePicker : Control
             textBrush = ResolvePlaceholderBrush();
         }
 
-        var textFormatted = new FormattedText(displayText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+        var textFormatted = new FormattedText(displayText, FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
         {
             Foreground = textBrush
         };

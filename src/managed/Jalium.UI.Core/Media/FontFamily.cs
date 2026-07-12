@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.ObjectModel;
+using Jalium.UI.Markup;
 
 namespace Jalium.UI.Media;
 
@@ -9,12 +10,15 @@ namespace Jalium.UI.Media;
 public sealed class FontFamily
 {
     private readonly string _source;
+    private readonly Uri? _baseUri;
     private readonly FamilyTypefaceCollection _typefaces;
+    private readonly FontFamilyMapCollection _familyMaps;
+    private readonly LanguageSpecificStringDictionary _familyNames;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="FontFamily"/> class using the default font family.
     /// </summary>
-    public FontFamily() : this(Jalium.UI.FrameworkElement.DefaultFontFamilyName)
+    public FontFamily() : this(null, string.Empty)
     {
     }
 
@@ -23,17 +27,37 @@ public sealed class FontFamily
     /// </summary>
     /// <param name="familyName">The font family name or names.</param>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="familyName"/> is null.</exception>
-    public FontFamily(string familyName)
+    public FontFamily(string? familyName)
+        : this(null, familyName)
     {
-        ArgumentNullException.ThrowIfNull(familyName);
-        _source = familyName;
+    }
+
+    /// <summary>
+    /// Initializes a font family relative to an absolute base URI.
+    /// </summary>
+    /// <param name="baseUri">The absolute URI used to resolve relative font references, or <see langword="null"/>.</param>
+    /// <param name="familyName">The font family name or names.</param>
+    public FontFamily(Uri? baseUri, string? familyName)
+    {
+        if (baseUri is not null && !baseUri.IsAbsoluteUri)
+        {
+            throw new ArgumentException("The font family base URI must be absolute.", nameof(baseUri));
+        }
+
+        _source = familyName ?? string.Empty;
+        _baseUri = baseUri;
         _typefaces = new FamilyTypefaceCollection();
+        _familyMaps = new FontFamilyMapCollection();
+        _familyNames = new LanguageSpecificStringDictionary();
     }
 
     /// <summary>
     /// Gets the string used to construct the <see cref="FontFamily"/> object.
     /// </summary>
     public string Source => _source;
+
+    /// <summary>Gets the base URI used to resolve relative font references.</summary>
+    public Uri? BaseUri => _baseUri;
 
     /// <summary>
     /// Gets the distance from the baseline to the top of the character cell for the font family.
@@ -42,7 +66,7 @@ public sealed class FontFamily
     /// The baseline value is expressed as a proportion of the font em size.
     /// A typical value for Western fonts is approximately 0.8.
     /// </remarks>
-    public double Baseline { get; init; } = 0.8;
+    public double Baseline { get; set; } = 0.8;
 
     /// <summary>
     /// Gets the line spacing value for the <see cref="FontFamily"/> object.
@@ -51,12 +75,30 @@ public sealed class FontFamily
     /// The line spacing is the recommended baseline-to-baseline distance for the text in this font,
     /// expressed as a proportion of the font em size.
     /// </remarks>
-    public double LineSpacing { get; init; } = 1.2;
+    public double LineSpacing { get; set; } = 1.2;
 
     /// <summary>
     /// Gets the collection of typefaces that make up this font family.
     /// </summary>
     public FamilyTypefaceCollection FamilyTypefaces => _typefaces;
+
+    /// <summary>Gets the composite-font mappings associated with this family.</summary>
+    public FontFamilyMapCollection FamilyMaps => _familyMaps;
+
+    /// <summary>Gets the localized names associated with this family.</summary>
+    public LanguageSpecificStringDictionary FamilyNames => _familyNames;
+
+    /// <summary>Returns the typefaces represented by <see cref="FamilyTypefaces"/>.</summary>
+    public ICollection<Typeface> GetTypefaces()
+    {
+        var result = new List<Typeface>(_typefaces.Count);
+        foreach (FamilyTypeface familyTypeface in _typefaces)
+        {
+            result.Add(new Typeface(this, familyTypeface.Style, familyTypeface.Weight, familyTypeface.Stretch));
+        }
+
+        return result;
+    }
 
     /// <summary>
     /// Returns a string representation of the font family.
@@ -95,8 +137,11 @@ public sealed class FontFamily
 /// <summary>
 /// Represents a typeface supported by a <see cref="FontFamily"/>.
 /// </summary>
-public sealed class FamilyTypeface
+public partial class FamilyTypeface
 {
+    private readonly Dictionary<XmlLanguage, string> _adjustedFaceNames = new();
+    private readonly CharacterMetricsDictionary _deviceFontCharacterMetrics = new();
+
     /// <summary>
     /// Initializes a new instance of the <see cref="FamilyTypeface"/> class.
     /// </summary>
@@ -105,6 +150,7 @@ public sealed class FamilyTypeface
         Weight = FontWeights.Normal;
         Style = FontStyles.Normal;
         Stretch = FontStretches.Normal;
+        _adjustedFaceNames[XmlLanguage.GetLanguage("en-us")] = "Regular";
     }
 
     /// <summary>
@@ -125,12 +171,48 @@ public sealed class FamilyTypeface
     /// <summary>
     /// Gets or sets the adjusted face names for the typeface.
     /// </summary>
-    public IDictionary<string, string>? AdjustedFaceNames { get; set; }
+    public IDictionary<XmlLanguage, string> AdjustedFaceNames => _adjustedFaceNames;
+
+    /// <summary>Gets or sets the height of capital letters relative to the em size.</summary>
+    public double CapsHeight { get; set; }
+
+    /// <summary>Gets device-font character metrics keyed by Unicode scalar value.</summary>
+    public CharacterMetricsDictionary DeviceFontCharacterMetrics => _deviceFontCharacterMetrics;
 
     /// <summary>
     /// Gets or sets the device font name.
     /// </summary>
     public string? DeviceFontName { get; set; }
+
+    public double StrikethroughPosition { get; set; }
+
+    public double StrikethroughThickness { get; set; }
+
+    public double UnderlinePosition { get; set; }
+
+    public double UnderlineThickness { get; set; }
+
+    public double XHeight { get; set; }
+
+    public bool Equals(FamilyTypeface? typeface)
+    {
+        if (ReferenceEquals(this, typeface))
+        {
+            return true;
+        }
+
+        return typeface is not null
+            && Weight == typeface.Weight
+            && Style == typeface.Style
+            && Stretch == typeface.Stretch;
+    }
+
+    public override bool Equals(object? o) => o is FamilyTypeface typeface && Equals(typeface);
+
+    public override int GetHashCode()
+    {
+        return HashCode.Combine(Weight, Style, Stretch);
+    }
 
     /// <summary>
     /// Returns a string representation of this typeface.
@@ -143,6 +225,9 @@ public sealed class FamilyTypeface
 /// </summary>
 public sealed class FamilyTypefaceCollection : Collection<FamilyTypeface>
 {
+    /// <summary>Gets whether the collection is read-only.</summary>
+    public bool IsReadOnly => false;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="FamilyTypefaceCollection"/> class.
     /// </summary>

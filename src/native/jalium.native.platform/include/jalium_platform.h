@@ -31,6 +31,13 @@ typedef struct JaliumPlatformWindow JaliumPlatformWindow;
 typedef struct JaliumDispatcher JaliumDispatcher;
 typedef struct JaliumTimer JaliumTimer;
 
+/// A single UTF-16 code unit used by the platform C ABI.
+///
+/// Do not use wchar_t at this boundary: wchar_t is 16-bit on Windows but
+/// 32-bit on Linux. Managed strings are UTF-16 on every supported runtime, so
+/// a fixed-width type keeps the same ABI on every host.
+typedef uint16_t JaliumUtf16Char;
+
 // ============================================================================
 // Enumerations
 // ============================================================================
@@ -88,6 +95,9 @@ typedef enum JaliumEventType {
     JALIUM_EVENT_KEY_DOWN         = 40,
     JALIUM_EVENT_KEY_UP           = 41,
     JALIUM_EVENT_CHAR_INPUT       = 42,
+    JALIUM_EVENT_COMPOSITION_START = 43,
+    JALIUM_EVENT_COMPOSITION_UPDATE = 44,
+    JALIUM_EVENT_COMPOSITION_END   = 45,
 
     // Pointer (touch/pen)
     JALIUM_EVENT_POINTER_DOWN     = 50,
@@ -107,9 +117,26 @@ typedef enum JaliumEventType {
     // Dispatcher
     JALIUM_EVENT_DISPATCHER_WAKE  = 70,
 
+    // Drag and drop. String/data pointers in these events are valid only for
+    // the duration of the synchronous window callback.
+    JALIUM_EVENT_DRAG_ENTER       = 80,
+    JALIUM_EVENT_DRAG_OVER        = 81,
+    JALIUM_EVENT_DRAG_LEAVE       = 82,
+    JALIUM_EVENT_DROP             = 83,
+    JALIUM_EVENT_DRAG_FINISHED    = 84,
+
     // Application
     JALIUM_EVENT_QUIT             = 99,
 } JaliumEventType;
+
+/// Drag operation effects (combined with OR). Values intentionally match
+/// Jalium.UI DragDropEffects and the common X11/Wayland action mapping.
+typedef enum JaliumDragEffect {
+    JALIUM_DRAG_EFFECT_NONE = 0,
+    JALIUM_DRAG_EFFECT_COPY = 1 << 0,
+    JALIUM_DRAG_EFFECT_MOVE = 1 << 1,
+    JALIUM_DRAG_EFFECT_LINK = 1 << 2,
+} JaliumDragEffect;
 
 /// Mouse button identifiers.
 typedef enum JaliumMouseButton {
@@ -160,7 +187,7 @@ typedef enum JaliumCursorShape {
 
 /// Window creation parameters.
 typedef struct JaliumWindowParams {
-    const wchar_t*  title;
+    const JaliumUtf16Char* title;    ///< Null-terminated UTF-16 title.
     int32_t         x;              ///< Initial X position (JALIUM_DEFAULT_POS = -1 for system default)
     int32_t         y;              ///< Initial Y position
     int32_t         width;
@@ -235,6 +262,13 @@ typedef struct JaliumPlatformEvent {
             uint32_t codepoint; ///< Unicode code point
         } character;
 
+        // JALIUM_EVENT_COMPOSITION_START / UPDATE / END. The UTF-8 pointer is
+        // valid only for the duration of the synchronous event callback.
+        struct {
+            const char* utf8Text;
+            int32_t cursor;
+        } composition;
+
         // JALIUM_EVENT_POINTER_DOWN / UP / MOVE / CANCEL
         struct {
             uint32_t pointerId;
@@ -266,8 +300,34 @@ typedef struct JaliumPlatformEvent {
         struct {
             int32_t orientation; ///< 0=portrait, 1=landscape, 2=portrait-reverse, 3=landscape-reverse
         } orientationChanged;
+
+        // JALIUM_EVENT_DRAG_ENTER / OVER / LEAVE / DROP / FINISHED.
+        // mimeTypes is a newline-delimited list. data/dataMimeType are present
+        // for DROP and point at the selected representation. sessionId remains
+        // stable from ENTER through DROP/LEAVE and lets callers reject stale
+        // effect responses.
+        struct {
+            float x;
+            float y;
+            uint32_t keyStates;
+            uint32_t allowedEffects;
+            uint64_t sessionId;
+            const char* mimeTypes;
+            const char* dataMimeType;
+            const uint8_t* data;
+            uint32_t dataSize;
+        } drag;
     };
 } JaliumPlatformEvent;
+
+/// One representation supplied by a native drag source. The native backend
+/// copies both MIME names and bytes before this call returns or enters a nested
+/// protocol loop; callers retain ownership of every pointer.
+typedef struct JaliumDragDataItem {
+    const char* mimeType;
+    const uint8_t* data;
+    uint32_t dataSize;
+} JaliumDragDataItem;
 
 /// Event callback type.
 typedef void (*JaliumEventCallback)(const JaliumPlatformEvent* event, void* userData);
@@ -315,7 +375,7 @@ JALIUM_PLATFORM_API void jalium_window_hide(JaliumPlatformWindow* window);
 /// Sets the window title.
 JALIUM_PLATFORM_API void jalium_window_set_title(
     JaliumPlatformWindow* window,
-    const wchar_t* title);
+    const JaliumUtf16Char* title);
 
 /// Resizes the client area of the window.
 JALIUM_PLATFORM_API void jalium_window_resize(
@@ -347,6 +407,15 @@ JALIUM_PLATFORM_API intptr_t jalium_window_get_native_handle(
 /// render targets. The caller does not own the returned data.
 JALIUM_PLATFORM_API JaliumSurfaceDescriptor jalium_window_get_surface(
     JaliumPlatformWindow* window);
+
+/// Returns whether a Wayland surface owned by this platform backend may have
+/// its first buffer committed. xdg-shell requires the initial configure to be
+/// acknowledged before wl_surface.attach or vkQueuePresentKHR maps a buffer.
+///
+/// Unknown/external surfaces return 1 because their xdg role and configure
+/// handshake are owned by the embedder. A null surface returns 0.
+JALIUM_PLATFORM_API int32_t jalium_wayland_surface_is_ready(
+    intptr_t waylandSurface);
 
 /// Sets the event callback for a window. Only one callback per window.
 /// Pass NULL to remove the callback.
@@ -484,6 +553,29 @@ JALIUM_PLATFORM_API int16_t jalium_input_get_key_state(int32_t jaliumVirtualKey)
 JALIUM_PLATFORM_API void jalium_input_get_cursor_pos(float* x, float* y);
 
 // ============================================================================
+// Drag and Drop
+// ============================================================================
+
+/// Sets the target-selected effect for the drag event currently being
+/// dispatched. A stale sessionId is ignored. Call synchronously from the
+/// window event callback handling ENTER/OVER/DROP.
+JALIUM_PLATFORM_API void jalium_drag_set_effect(
+    JaliumPlatformWindow* window,
+    uint64_t sessionId,
+    uint32_t effect);
+
+/// Starts an OS drag from window. Text and URI-list sources should offer the
+/// standard UTF-8 MIME types (text/plain;charset=utf-8 and text/uri-list).
+/// Blocks in the platform drag loop until the drag is dropped or cancelled.
+/// @param performedEffect Receives JALIUM_DRAG_EFFECT_NONE on cancellation.
+JALIUM_PLATFORM_API JaliumResult jalium_drag_begin(
+    JaliumPlatformWindow* window,
+    const JaliumDragDataItem* items,
+    uint32_t itemCount,
+    uint32_t allowedEffects,
+    uint32_t* performedEffect);
+
+// ============================================================================
 // Clipboard
 // ============================================================================
 
@@ -491,12 +583,12 @@ JALIUM_PLATFORM_API void jalium_input_get_cursor_pos(float* x, float* y);
 /// freed by the caller using jalium_platform_free().
 /// @param outText Receives a pointer to the text, or NULL if empty.
 /// @return JALIUM_OK on success.
-JALIUM_PLATFORM_API JaliumResult jalium_clipboard_get_text(wchar_t** outText);
+JALIUM_PLATFORM_API JaliumResult jalium_clipboard_get_text(JaliumUtf16Char** outText);
 
 /// Sets the clipboard text content.
 /// @param text UTF-16 text to place on the clipboard.
 /// @return JALIUM_OK on success.
-JALIUM_PLATFORM_API JaliumResult jalium_clipboard_set_text(const wchar_t* text);
+JALIUM_PLATFORM_API JaliumResult jalium_clipboard_set_text(const JaliumUtf16Char* text);
 
 /// Frees memory allocated by platform API calls (e.g. jalium_clipboard_get_text).
 JALIUM_PLATFORM_API void jalium_platform_free(void* ptr);

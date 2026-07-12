@@ -1,25 +1,76 @@
+using System.Globalization;
+using Jalium.UI.Media.Animation;
+
 namespace Jalium.UI.Media;
 
 /// <summary>
 /// Base class for all brushes that describe how an area is painted.
 /// </summary>
-public abstract class Brush
+public abstract partial class Brush : Animatable, IFormattable
 {
-    private double _opacity = 1.0;
+    private static readonly Transform s_identityTransform = CreateIdentityTransform();
+
+    public static readonly DependencyProperty OpacityProperty =
+        DependencyProperty.Register(nameof(Opacity), typeof(double), typeof(Brush), new PropertyMetadata(1d));
+    public static readonly DependencyProperty TransformProperty =
+        DependencyProperty.Register(nameof(Transform), typeof(Transform), typeof(Brush), new PropertyMetadata(s_identityTransform));
+    public static readonly DependencyProperty RelativeTransformProperty =
+        DependencyProperty.Register(nameof(RelativeTransform), typeof(Transform), typeof(Brush), new PropertyMetadata(s_identityTransform));
 
     /// <summary>
     /// Gets or sets the opacity of the brush (0.0 - 1.0).
     /// </summary>
     public double Opacity
     {
-        get => _opacity;
-        set => _opacity = Math.Clamp(value, 0.0, 1.0);
+        get => (double)(GetValue(OpacityProperty) ?? 1d);
+        set => SetValue(OpacityProperty, value);
     }
 
     /// <summary>
     /// Gets or sets the transform applied to the brush.
     /// </summary>
-    public Transform? Transform { get; set; }
+    public Transform? Transform
+    {
+        get => (Transform?)GetValue(TransformProperty);
+        set => SetValue(TransformProperty, value);
+    }
+
+    /// <summary>Gets or sets the transform applied relative to the brush output bounds.</summary>
+    public Transform? RelativeTransform
+    {
+        get => (Transform?)GetValue(RelativeTransformProperty);
+        set => SetValue(RelativeTransformProperty, value);
+    }
+
+    public new Brush Clone() => (Brush)base.Clone();
+    public new Brush CloneCurrentValue() => (Brush)base.CloneCurrentValue();
+
+    public override string ToString() => ToString(CultureInfo.CurrentCulture);
+    public string ToString(IFormatProvider? provider) => GetType().Name;
+    string IFormattable.ToString(string? format, IFormatProvider? provider) => ToString(provider);
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, TransformProperty) || ReferenceEquals(e.Property, RelativeTransformProperty))
+        {
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, e.Property);
+        }
+
+        if (ReferenceEquals(e.Property, OpacityProperty)
+            || ReferenceEquals(e.Property, TransformProperty)
+            || ReferenceEquals(e.Property, RelativeTransformProperty))
+        {
+            WritePostscript();
+        }
+    }
+
+    private static Transform CreateIdentityTransform()
+    {
+        var identity = new MatrixTransform(Matrix.Identity);
+        identity.Freeze();
+        return identity;
+    }
 }
 
 /// <summary>
@@ -27,10 +78,17 @@ public abstract class Brush
 /// </summary>
 public sealed class SolidColorBrush : Brush
 {
+    public static readonly DependencyProperty ColorProperty =
+        DependencyProperty.Register(nameof(Color), typeof(Color), typeof(SolidColorBrush), new PropertyMetadata(Color.Transparent));
+
     /// <summary>
     /// Gets or sets the color of the brush.
     /// </summary>
-    public Color Color { get; set; }
+    public Color Color
+    {
+        get => (Color)(GetValue(ColorProperty) ?? Color.Transparent);
+        set => SetValue(ColorProperty, value);
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SolidColorBrush"/> class.
@@ -49,8 +107,28 @@ public sealed class SolidColorBrush : Brush
         Color = color;
     }
 
+    public new SolidColorBrush Clone() => (SolidColorBrush)base.Clone();
+    public new SolidColorBrush CloneCurrentValue() => (SolidColorBrush)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new SolidColorBrush();
+
+    public static object DeserializeFrom(BinaryReader reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        return new SolidColorBrush(Color.FromArgb(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte()));
+    }
+
     /// <inheritdoc />
     public override string ToString() => $"SolidColorBrush({Color})";
+    public new string ToString(IFormatProvider? provider) => Color.ToString(provider);
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, ColorProperty))
+        {
+            WritePostscript();
+        }
+    }
 }
 
 /// <summary>
@@ -59,6 +137,20 @@ public sealed class SolidColorBrush : Brush
 [ContentProperty("GradientStops")]
 public abstract class GradientBrush : Brush
 {
+    /// <summary>Identifies the <see cref="ColorInterpolationMode"/> property.</summary>
+    public static readonly DependencyProperty ColorInterpolationModeProperty =
+        DependencyProperty.Register(
+            nameof(ColorInterpolationMode),
+            typeof(ColorInterpolationMode),
+            typeof(GradientBrush),
+            new PropertyMetadata(ColorInterpolationMode.SRgbLinearInterpolation));
+    public static readonly DependencyProperty GradientStopsProperty =
+        DependencyProperty.Register(nameof(GradientStops), typeof(GradientStopCollection), typeof(GradientBrush), new PropertyMetadata(null));
+    public static readonly DependencyProperty MappingModeProperty =
+        DependencyProperty.Register(nameof(MappingMode), typeof(BrushMappingMode), typeof(GradientBrush), new PropertyMetadata(BrushMappingMode.RelativeToBoundingBox));
+    public static readonly DependencyProperty SpreadMethodProperty =
+        DependencyProperty.Register(nameof(SpreadMethod), typeof(GradientSpreadMethod), typeof(GradientBrush), new PropertyMetadata(GradientSpreadMethod.Pad));
+
     /// <summary>
     /// Gets the collection of gradient stops.
     /// </summary>
@@ -68,16 +160,33 @@ public abstract class GradientBrush : Brush
     /// removing or recolouring a stop now automatically invalidates the cached content hash —
     /// the render backend rebuilds the native brush without the caller having to signal it.
     /// </remarks>
-    public GradientStopCollection GradientStops { get; }
+    public GradientStopCollection GradientStops
+    {
+        get => (GradientStopCollection?)GetValue(GradientStopsProperty) ?? new GradientStopCollection();
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            if (ReferenceEquals(GradientStops, value))
+            {
+                return;
+            }
+            SetValue(GradientStopsProperty, value);
+        }
+    }
 
     /// <summary>
     /// Initializes the gradient-stop collection and subscribes to its change notifications so
     /// that stop mutations invalidate the cached content hash.
     /// </summary>
     protected GradientBrush()
+        : this(new GradientStopCollection())
     {
-        GradientStops = new GradientStopCollection();
-        GradientStops.Changed += OnGradientStopsChanged;
+    }
+
+    protected GradientBrush(GradientStopCollection gradientStopCollection)
+    {
+        ArgumentNullException.ThrowIfNull(gradientStopCollection);
+        GradientStops = gradientStopCollection;
     }
 
     private void OnGradientStopsChanged(object? sender, EventArgs e) => InvalidateContentHash();
@@ -85,12 +194,56 @@ public abstract class GradientBrush : Brush
     /// <summary>
     /// Gets or sets how the gradient is drawn outside the [0, 1] range.
     /// </summary>
-    public GradientSpreadMethod SpreadMethod { get; set; } = GradientSpreadMethod.Pad;
+    public GradientSpreadMethod SpreadMethod
+    {
+        get => (GradientSpreadMethod)(GetValue(SpreadMethodProperty) ?? GradientSpreadMethod.Pad);
+        set => SetValue(SpreadMethodProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the mapping mode for the gradient.
     /// </summary>
-    public BrushMappingMode MappingMode { get; set; } = BrushMappingMode.RelativeToBoundingBox;
+    public BrushMappingMode MappingMode
+    {
+        get => (BrushMappingMode)(GetValue(MappingModeProperty) ?? BrushMappingMode.RelativeToBoundingBox);
+        set => SetValue(MappingModeProperty, value);
+    }
+
+    /// <summary>Gets or sets the color space used to interpolate gradient stops.</summary>
+    public ColorInterpolationMode ColorInterpolationMode
+    {
+        get => (ColorInterpolationMode)(GetValue(ColorInterpolationModeProperty) ?? ColorInterpolationMode.SRgbLinearInterpolation);
+        set => SetValue(ColorInterpolationModeProperty, value);
+    }
+
+    public new GradientBrush Clone() => (GradientBrush)base.Clone();
+    public new GradientBrush CloneCurrentValue() => (GradientBrush)base.CloneCurrentValue();
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, GradientStopsProperty))
+        {
+            if (e.OldValue is GradientStopCollection oldStops)
+            {
+                oldStops.Changed -= OnGradientStopsChanged;
+            }
+            if (e.NewValue is GradientStopCollection newStops)
+            {
+                newStops.Changed += OnGradientStopsChanged;
+            }
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, GradientStopsProperty);
+        }
+
+        if (ReferenceEquals(e.Property, GradientStopsProperty)
+            || ReferenceEquals(e.Property, SpreadMethodProperty)
+            || ReferenceEquals(e.Property, MappingModeProperty)
+            || ReferenceEquals(e.Property, ColorInterpolationModeProperty))
+        {
+            InvalidateContentHash();
+            WritePostscript();
+        }
+    }
 
     // 缓存的 content hash —— 第一次 ComputeContentHash 计算后存到 _cachedContentHash，
     // 后续直接读，把每帧 O(stops 数) 的 FNV 折叠压成 O(1)。失效来源有两类：
@@ -159,6 +312,7 @@ public abstract class GradientBrush : Brush
         long hash = FnvOffsetBasis;
         hash = unchecked((hash ^ (long)SpreadMethod) * FnvPrime);
         hash = unchecked((hash ^ (long)MappingMode) * FnvPrime);
+        hash = unchecked((hash ^ (long)ColorInterpolationMode) * FnvPrime);
         hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(Opacity)) * FnvPrime);
 
         var stops = GradientStops;
@@ -184,21 +338,60 @@ public abstract class GradientBrush : Brush
 /// </summary>
 public sealed class LinearGradientBrush : GradientBrush
 {
+    public static readonly DependencyProperty StartPointProperty =
+        DependencyProperty.Register(nameof(StartPoint), typeof(Point), typeof(LinearGradientBrush), new PropertyMetadata(new Point(0, 0)));
+    public static readonly DependencyProperty EndPointProperty =
+        DependencyProperty.Register(nameof(EndPoint), typeof(Point), typeof(LinearGradientBrush), new PropertyMetadata(new Point(1, 1)));
+
     /// <summary>
     /// Gets or sets the starting point of the gradient.
     /// </summary>
-    public Point StartPoint { get; set; } = new(0, 0);
+    public Point StartPoint
+    {
+        get => (Point)(GetValue(StartPointProperty) ?? new Point(0, 0));
+        set => SetValue(StartPointProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the ending point of the gradient.
     /// </summary>
-    public Point EndPoint { get; set; } = new(1, 1);
+    public Point EndPoint
+    {
+        get => (Point)(GetValue(EndPointProperty) ?? new Point(1, 1));
+        set => SetValue(EndPointProperty, value);
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="LinearGradientBrush"/> class.
     /// </summary>
     public LinearGradientBrush()
     {
+    }
+
+    public LinearGradientBrush(Color startColor, Color endColor, Point startPoint, Point endPoint)
+    {
+        GradientStops.Add(new GradientStop(startColor, 0));
+        GradientStops.Add(new GradientStop(endColor, 1));
+        StartPoint = startPoint;
+        EndPoint = endPoint;
+    }
+
+    public LinearGradientBrush(GradientStopCollection gradientStopCollection)
+        : base(gradientStopCollection)
+    {
+    }
+
+    public LinearGradientBrush(GradientStopCollection gradientStopCollection, double angle)
+        : base(gradientStopCollection)
+    {
+        SetAngle(angle);
+    }
+
+    public LinearGradientBrush(GradientStopCollection gradientStopCollection, Point startPoint, Point endPoint)
+        : base(gradientStopCollection)
+    {
+        StartPoint = startPoint;
+        EndPoint = endPoint;
     }
 
     /// <summary>
@@ -212,13 +405,31 @@ public sealed class LinearGradientBrush : GradientBrush
         GradientStops.Add(new GradientStop(startColor, 0));
         GradientStops.Add(new GradientStop(endColor, 1));
 
-        // Calculate start and end points based on angle
+        SetAngle(angle);
+    }
+
+    private void SetAngle(double angle)
+    {
         var radians = angle * Math.PI / 180;
         var cos = Math.Cos(radians);
         var sin = Math.Sin(radians);
 
         StartPoint = new Point(0.5 - cos * 0.5, 0.5 - sin * 0.5);
         EndPoint = new Point(0.5 + cos * 0.5, 0.5 + sin * 0.5);
+    }
+
+    public new LinearGradientBrush Clone() => (LinearGradientBrush)base.Clone();
+    public new LinearGradientBrush CloneCurrentValue() => (LinearGradientBrush)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new LinearGradientBrush();
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, StartPointProperty) || ReferenceEquals(e.Property, EndPointProperty))
+        {
+            InvalidateContentHash();
+            WritePostscript();
+        }
     }
 
     /// <inheritdoc />
@@ -239,26 +450,44 @@ public sealed class LinearGradientBrush : GradientBrush
 /// </summary>
 public sealed class RadialGradientBrush : GradientBrush
 {
+    public static readonly DependencyProperty CenterProperty =
+        DependencyProperty.Register(nameof(Center), typeof(Point), typeof(RadialGradientBrush), new PropertyMetadata(new Point(0.5, 0.5)));
+    public static readonly DependencyProperty GradientOriginProperty =
+        DependencyProperty.Register(nameof(GradientOrigin), typeof(Point), typeof(RadialGradientBrush), new PropertyMetadata(new Point(0.5, 0.5)));
+    public static readonly DependencyProperty RadiusXProperty =
+        DependencyProperty.Register(nameof(RadiusX), typeof(double), typeof(RadialGradientBrush), new PropertyMetadata(0.5d));
+    public static readonly DependencyProperty RadiusYProperty =
+        DependencyProperty.Register(nameof(RadiusY), typeof(double), typeof(RadialGradientBrush), new PropertyMetadata(0.5d));
+
     /// <summary>
     /// Gets or sets the center of the gradient.
     /// </summary>
-    public Point Center { get; set; } = new(0.5, 0.5);
+    public Point Center
+    {
+        get => (Point)(GetValue(CenterProperty) ?? new Point(0.5, 0.5));
+        set => SetValue(CenterProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the location of the gradient origin.
     /// </summary>
-    public Point GradientOrigin { get; set; } = new(0.5, 0.5);
-
-    private double _radiusX = 0.5;
-    private double _radiusY = 0.5;
+    public Point GradientOrigin
+    {
+        get => (Point)(GetValue(GradientOriginProperty) ?? new Point(0.5, 0.5));
+        set => SetValue(GradientOriginProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the horizontal radius of the gradient. Must be non-negative.
     /// </summary>
     public double RadiusX
     {
-        get => _radiusX;
-        set => _radiusX = Math.Max(0, value);
+        get => (double)(GetValue(RadiusXProperty) ?? 0.5d);
+        set
+        {
+            double coerced = Math.Max(0, value);
+            SetValue(RadiusXProperty, coerced);
+        }
     }
 
     /// <summary>
@@ -266,8 +495,44 @@ public sealed class RadialGradientBrush : GradientBrush
     /// </summary>
     public double RadiusY
     {
-        get => _radiusY;
-        set => _radiusY = Math.Max(0, value);
+        get => (double)(GetValue(RadiusYProperty) ?? 0.5d);
+        set
+        {
+            double coerced = Math.Max(0, value);
+            SetValue(RadiusYProperty, coerced);
+        }
+    }
+
+    public RadialGradientBrush()
+    {
+    }
+
+    public RadialGradientBrush(Color startColor, Color endColor)
+    {
+        GradientStops.Add(new GradientStop(startColor, 0));
+        GradientStops.Add(new GradientStop(endColor, 1));
+    }
+
+    public RadialGradientBrush(GradientStopCollection gradientStopCollection)
+        : base(gradientStopCollection)
+    {
+    }
+
+    public new RadialGradientBrush Clone() => (RadialGradientBrush)base.Clone();
+    public new RadialGradientBrush CloneCurrentValue() => (RadialGradientBrush)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new RadialGradientBrush();
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, CenterProperty)
+            || ReferenceEquals(e.Property, GradientOriginProperty)
+            || ReferenceEquals(e.Property, RadiusXProperty)
+            || ReferenceEquals(e.Property, RadiusYProperty))
+        {
+            InvalidateContentHash();
+            WritePostscript();
+        }
     }
 
     /// <inheritdoc />
@@ -279,8 +544,8 @@ public sealed class RadialGradientBrush : GradientBrush
         hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(Center.Y)) * FnvPrime);
         hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(GradientOrigin.X)) * FnvPrime);
         hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(GradientOrigin.Y)) * FnvPrime);
-        hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(_radiusX)) * FnvPrime);
-        hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(_radiusY)) * FnvPrime);
+        hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(RadiusX)) * FnvPrime);
+        hash = unchecked((hash ^ BitConverter.DoubleToInt64Bits(RadiusY)) * FnvPrime);
         return hash;
     }
 }
@@ -288,7 +553,7 @@ public sealed class RadialGradientBrush : GradientBrush
 /// <summary>
 /// Describes a single color and its position in a gradient.
 /// </summary>
-public sealed class GradientStop : DependencyObject
+public sealed class GradientStop : Animatable, IFormattable
 {
     /// <summary>
     /// Identifies the <see cref="Color"/> dependency property.
@@ -319,7 +584,7 @@ public sealed class GradientStop : DependencyObject
     public double Offset
     {
         get => (double)GetValue(OffsetProperty)!;
-        set => SetValue(OffsetProperty, Math.Clamp(value, 0.0, 1.0));
+        set => SetValue(OffsetProperty, value);
     }
 
     /// <summary>
@@ -339,6 +604,20 @@ public sealed class GradientStop : DependencyObject
         Color = color;
         Offset = offset;
     }
+
+    public new GradientStop Clone() => (GradientStop)base.Clone();
+
+    public new GradientStop CloneCurrentValue() => (GradientStop)base.CloneCurrentValue();
+
+    protected override Freezable CreateInstanceCore() => new GradientStop();
+
+    public override string ToString() => ToString(CultureInfo.CurrentCulture);
+
+    public string ToString(IFormatProvider? provider)
+        => $"{Color.ToString(provider)},{Offset.ToString(provider)}";
+
+    string IFormattable.ToString(string? format, IFormatProvider? provider)
+        => ToString(provider);
 }
 
 /// <summary>
@@ -383,45 +662,115 @@ public enum BrushMappingMode
 /// </summary>
 public abstract class TileBrush : Brush
 {
+    public static readonly DependencyProperty AlignmentXProperty =
+        DependencyProperty.Register(nameof(AlignmentX), typeof(AlignmentX), typeof(TileBrush), new PropertyMetadata(AlignmentX.Center));
+    public static readonly DependencyProperty AlignmentYProperty =
+        DependencyProperty.Register(nameof(AlignmentY), typeof(AlignmentY), typeof(TileBrush), new PropertyMetadata(AlignmentY.Center));
+    public static readonly DependencyProperty StretchProperty =
+        DependencyProperty.Register(nameof(Stretch), typeof(Stretch), typeof(TileBrush), new PropertyMetadata(Stretch.Fill));
+    public static readonly DependencyProperty TileModeProperty =
+        DependencyProperty.Register(nameof(TileMode), typeof(TileMode), typeof(TileBrush), new PropertyMetadata(TileMode.None));
+    public static readonly DependencyProperty ViewportProperty =
+        DependencyProperty.Register(nameof(Viewport), typeof(Rect), typeof(TileBrush), new PropertyMetadata(new Rect(0, 0, 1, 1)));
+    public static readonly DependencyProperty ViewportUnitsProperty =
+        DependencyProperty.Register(nameof(ViewportUnits), typeof(BrushMappingMode), typeof(TileBrush), new PropertyMetadata(BrushMappingMode.RelativeToBoundingBox));
+    public static readonly DependencyProperty ViewboxProperty =
+        DependencyProperty.Register(nameof(Viewbox), typeof(Rect), typeof(TileBrush), new PropertyMetadata(new Rect(0, 0, 1, 1)));
+    public static readonly DependencyProperty ViewboxUnitsProperty =
+        DependencyProperty.Register(nameof(ViewboxUnits), typeof(BrushMappingMode), typeof(TileBrush), new PropertyMetadata(BrushMappingMode.RelativeToBoundingBox));
+
     /// <summary>
     /// Gets or sets the horizontal alignment of the content within the brush.
     /// </summary>
-    public AlignmentX AlignmentX { get; set; } = AlignmentX.Center;
+    public AlignmentX AlignmentX
+    {
+        get => (AlignmentX)(GetValue(AlignmentXProperty) ?? AlignmentX.Center);
+        set => SetValue(AlignmentXProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the vertical alignment of the content within the brush.
     /// </summary>
-    public AlignmentY AlignmentY { get; set; } = AlignmentY.Center;
+    public AlignmentY AlignmentY
+    {
+        get => (AlignmentY)(GetValue(AlignmentYProperty) ?? AlignmentY.Center);
+        set => SetValue(AlignmentYProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets how the content is stretched to fill the output area.
     /// </summary>
-    public Stretch Stretch { get; set; } = Stretch.Fill;
+    public Stretch Stretch
+    {
+        get => (Stretch)(GetValue(StretchProperty) ?? Stretch.Fill);
+        set => SetValue(StretchProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets how the content is tiled when it is smaller than the output area.
     /// </summary>
-    public TileMode TileMode { get; set; } = TileMode.None;
+    public TileMode TileMode
+    {
+        get => (TileMode)(GetValue(TileModeProperty) ?? TileMode.None);
+        set => SetValue(TileModeProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the position of the brush's viewport.
     /// </summary>
-    public Rect Viewport { get; set; } = new Rect(0, 0, 1, 1);
+    public Rect Viewport
+    {
+        get => (Rect)(GetValue(ViewportProperty) ?? new Rect(0, 0, 1, 1));
+        set => SetValue(ViewportProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the coordinate system for the Viewport property.
     /// </summary>
-    public BrushMappingMode ViewportUnits { get; set; } = BrushMappingMode.RelativeToBoundingBox;
+    public BrushMappingMode ViewportUnits
+    {
+        get => (BrushMappingMode)(GetValue(ViewportUnitsProperty) ?? BrushMappingMode.RelativeToBoundingBox);
+        set => SetValue(ViewportUnitsProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the position of the content within the tile.
     /// </summary>
-    public Rect Viewbox { get; set; } = new Rect(0, 0, 1, 1);
+    public Rect Viewbox
+    {
+        get => (Rect)(GetValue(ViewboxProperty) ?? new Rect(0, 0, 1, 1));
+        set => SetValue(ViewboxProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the coordinate system for the Viewbox property.
     /// </summary>
-    public BrushMappingMode ViewboxUnits { get; set; } = BrushMappingMode.RelativeToBoundingBox;
+    public BrushMappingMode ViewboxUnits
+    {
+        get => (BrushMappingMode)(GetValue(ViewboxUnitsProperty) ?? BrushMappingMode.RelativeToBoundingBox);
+        set => SetValue(ViewboxUnitsProperty, value);
+    }
+
+    public new TileBrush Clone() => (TileBrush)base.Clone();
+    public new TileBrush CloneCurrentValue() => (TileBrush)base.CloneCurrentValue();
+
+    protected abstract void GetContentBounds(out Rect contentBounds);
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, AlignmentXProperty)
+            || ReferenceEquals(e.Property, AlignmentYProperty)
+            || ReferenceEquals(e.Property, StretchProperty)
+            || ReferenceEquals(e.Property, TileModeProperty)
+            || ReferenceEquals(e.Property, ViewportProperty)
+            || ReferenceEquals(e.Property, ViewportUnitsProperty)
+            || ReferenceEquals(e.Property, ViewboxProperty)
+            || ReferenceEquals(e.Property, ViewboxUnitsProperty))
+        {
+            WritePostscript();
+        }
+    }
 }
 
 /// <summary>
@@ -429,10 +778,17 @@ public abstract class TileBrush : Brush
 /// </summary>
 public sealed class ImageBrush : TileBrush
 {
+    public static readonly DependencyProperty ImageSourceProperty =
+        DependencyProperty.Register(nameof(ImageSource), typeof(ImageSource), typeof(ImageBrush), new PropertyMetadata(null));
+
     /// <summary>
     /// Gets or sets the image source.
     /// </summary>
-    public ImageSource? ImageSource { get; set; }
+    public ImageSource? ImageSource
+    {
+        get => (ImageSource?)GetValue(ImageSourceProperty);
+        set => SetValue(ImageSourceProperty, value);
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ImageBrush"/> class.
@@ -450,8 +806,29 @@ public sealed class ImageBrush : TileBrush
         ImageSource = imageSource;
     }
 
+    public new ImageBrush Clone() => (ImageBrush)base.Clone();
+    public new ImageBrush CloneCurrentValue() => (ImageBrush)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new ImageBrush();
+
+    protected override void GetContentBounds(out Rect contentBounds)
+    {
+        ImageSource? source = ImageSource;
+        contentBounds = source is null ? Rect.Empty : new Rect(0, 0, source.Width, source.Height);
+    }
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, ImageSourceProperty))
+        {
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, ImageSourceProperty);
+            WritePostscript();
+        }
+    }
+
     /// <inheritdoc />
     public override string ToString() => $"ImageBrush({ImageSource})";
+    public new string ToString(IFormatProvider? provider) => ToString();
 }
 
 /// <summary>
@@ -459,10 +836,17 @@ public sealed class ImageBrush : TileBrush
 /// </summary>
 public sealed class DrawingBrush : TileBrush
 {
+    public static readonly DependencyProperty DrawingProperty =
+        DependencyProperty.Register(nameof(Drawing), typeof(Drawing), typeof(DrawingBrush), new PropertyMetadata(null));
+
     /// <summary>
     /// Gets or sets the Drawing that defines the content of this brush.
     /// </summary>
-    public Drawing? Drawing { get; set; }
+    public Drawing? Drawing
+    {
+        get => (Drawing?)GetValue(DrawingProperty);
+        set => SetValue(DrawingProperty, value);
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="DrawingBrush"/> class.
@@ -480,8 +864,24 @@ public sealed class DrawingBrush : TileBrush
         Drawing = drawing;
     }
 
+    public new DrawingBrush Clone() => (DrawingBrush)base.Clone();
+    public new DrawingBrush CloneCurrentValue() => (DrawingBrush)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new DrawingBrush();
+    protected override void GetContentBounds(out Rect contentBounds) => contentBounds = Drawing?.Bounds ?? Rect.Empty;
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, DrawingProperty))
+        {
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, DrawingProperty);
+            WritePostscript();
+        }
+    }
+
     /// <inheritdoc />
     public override string ToString() => $"DrawingBrush({Drawing})";
+    public new string ToString(IFormatProvider? provider) => ToString();
 }
 
 /// <summary>
@@ -489,15 +889,28 @@ public sealed class DrawingBrush : TileBrush
 /// </summary>
 public sealed class VisualBrush : TileBrush
 {
+    public static readonly DependencyProperty VisualProperty =
+        DependencyProperty.Register(nameof(Visual), typeof(Jalium.UI.Visual), typeof(VisualBrush), new PropertyMetadata(null));
+    public static readonly DependencyProperty AutoLayoutContentProperty =
+        DependencyProperty.Register(nameof(AutoLayoutContent), typeof(bool), typeof(VisualBrush), new PropertyMetadata(true));
+
     /// <summary>
     /// Gets or sets the visual that provides the content for the brush.
     /// </summary>
-    public object? Visual { get; set; }
+    public Jalium.UI.Visual? Visual
+    {
+        get => (Jalium.UI.Visual?)GetValue(VisualProperty);
+        set => SetValue(VisualProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets a value indicating whether content is laid out automatically.
     /// </summary>
-    public bool AutoLayoutContent { get; set; } = true;
+    public bool AutoLayoutContent
+    {
+        get => (bool)(GetValue(AutoLayoutContentProperty) ?? true);
+        set => SetValue(AutoLayoutContentProperty, value);
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="VisualBrush"/> class.
@@ -510,13 +923,39 @@ public sealed class VisualBrush : TileBrush
     /// Initializes a new instance of the <see cref="VisualBrush"/> class with the specified visual.
     /// </summary>
     /// <param name="visual">The visual to use.</param>
-    public VisualBrush(object visual)
+    public VisualBrush(Jalium.UI.Visual visual)
     {
         Visual = visual;
     }
 
+    public new VisualBrush Clone() => (VisualBrush)base.Clone();
+    public new VisualBrush CloneCurrentValue() => (VisualBrush)base.CloneCurrentValue();
+    protected override Freezable CreateInstanceCore() => new VisualBrush();
+
+    protected override void GetContentBounds(out Rect contentBounds)
+    {
+        contentBounds = Visual is UIElement element
+            ? new Rect(0, 0, element.RenderSize.Width, element.RenderSize.Height)
+            : Rect.Empty;
+    }
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (ReferenceEquals(e.Property, VisualProperty))
+        {
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, VisualProperty);
+        }
+
+        if (ReferenceEquals(e.Property, VisualProperty) || ReferenceEquals(e.Property, AutoLayoutContentProperty))
+        {
+            WritePostscript();
+        }
+    }
+
     /// <inheritdoc />
     public override string ToString() => $"VisualBrush({Visual})";
+    public new string ToString(IFormatProvider? provider) => ToString();
 }
 
 /// <summary>
@@ -596,25 +1035,25 @@ public enum TileMode
     /// <summary>
     /// The content is not tiled.
     /// </summary>
-    None,
+    None = 0,
 
     /// <summary>
     /// The content is tiled.
     /// </summary>
-    Tile,
+    Tile = 4,
 
     /// <summary>
     /// The content is flipped horizontally on alternate columns.
     /// </summary>
-    FlipX,
+    FlipX = 1,
 
     /// <summary>
     /// The content is flipped vertically on alternate rows.
     /// </summary>
-    FlipY,
+    FlipY = 2,
 
     /// <summary>
     /// The content is flipped both horizontally and vertically on alternating tiles.
     /// </summary>
-    FlipXY
+    FlipXY = 3
 }

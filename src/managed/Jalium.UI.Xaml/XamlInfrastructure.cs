@@ -1,24 +1,8 @@
 using System.Collections;
+using System.Reflection;
 using System.Xml;
 
 namespace Jalium.UI.Markup;
-
-/// <summary>
-/// XAML writer modes for values that are of type Expression.
-/// </summary>
-public enum XamlWriterMode
-{
-    /// <summary>
-    /// Serialize the expression itself (e.g., *Bind(...)).
-    /// </summary>
-    Expression,
-
-    /// <summary>
-    /// Evaluated value of the expression will be serialized.
-    /// Used when a snapshot of the tree is needed without evaluating references.
-    /// </summary>
-    Value,
-}
 
 /// <summary>
 /// Represents a mapping between an XML namespace, a CLR namespace, and the assembly that contains the relevant types.
@@ -93,230 +77,135 @@ public interface IStyleConnector
 /// <summary>
 /// A dictionary that controls XML prefix-to-namespace URI mappings.
 /// </summary>
-public class XmlnsDictionary : IDictionary<string, string>, IDictionary
+public class XmlnsDictionary : IDictionary, Jalium.UI.Xaml.IXamlNamespaceResolver
 {
-    private readonly Dictionary<string, string> _dict = new();
-#pragma warning disable CS0169
-    private readonly Stack<Dictionary<string, string>>? _scopeStack;
-#pragma warning restore CS0169
-    private int _scopeCount;
+    private readonly Dictionary<string, string> _values = new(StringComparer.Ordinal);
+    private readonly Stack<Dictionary<string, string>> _scopes = new();
+    private bool _sealed;
 
-    /// <summary>
-    /// Default constructor.
-    /// </summary>
-    public XmlnsDictionary()
+    public XmlnsDictionary() { }
+
+    public XmlnsDictionary(XmlnsDictionary xmlnsDictionary)
     {
+        ArgumentNullException.ThrowIfNull(xmlnsDictionary);
+        foreach ((string prefix, string xmlNamespace) in xmlnsDictionary._values)
+            _values.Add(prefix, xmlNamespace);
     }
 
-    /// <summary>
-    /// Copy constructor.
-    /// </summary>
-    /// <param name="other">The XmlnsDictionary to copy from.</param>
-    public XmlnsDictionary(XmlnsDictionary other)
+    public int Count => _values.Count;
+    public bool IsFixedSize => _sealed;
+    public bool IsReadOnly => _sealed;
+    public bool IsSynchronized => false;
+    public object SyncRoot => ((ICollection)_values).SyncRoot;
+    public ICollection Keys => _values.Keys;
+    public ICollection Values => _values.Values;
+    public bool Sealed => _sealed;
+
+    public object? this[object prefix]
     {
-        ArgumentNullException.ThrowIfNull(other);
-        foreach (var kvp in other._dict)
+        get => prefix is string text ? this[text] : null;
+        set
         {
-            _dict[kvp.Key] = kvp.Value;
+            if (prefix is not string text) throw new ArgumentException("The XML namespace prefix must be a string.", nameof(prefix));
+            this[text] = value as string ?? throw new ArgumentException("The XML namespace must be a string.", nameof(value));
         }
     }
 
-    /// <summary>
-    /// Gets or sets the namespace URI for the specified prefix.
-    /// </summary>
-    public string this[string key]
+    public string? this[string prefix]
     {
-        get => _dict[key];
-        set => _dict[key] = value;
+        get
+        {
+            ArgumentNullException.ThrowIfNull(prefix);
+            return _values.GetValueOrDefault(prefix);
+        }
+        set
+        {
+            EnsureMutable();
+            ArgumentNullException.ThrowIfNull(prefix);
+            ArgumentNullException.ThrowIfNull(value);
+            _values[prefix] = value;
+        }
     }
 
-    /// <summary>
-    /// Gets the number of prefix-namespace mappings.
-    /// </summary>
-    public int Count => _dict.Count;
+    public void Add(object prefix, object? xmlNamespace)
+    {
+        if (prefix is not string prefixText) throw new ArgumentException("The XML namespace prefix must be a string.", nameof(prefix));
+        if (xmlNamespace is not string namespaceText) throw new ArgumentException("The XML namespace must be a string.", nameof(xmlNamespace));
+        Add(prefixText, namespaceText);
+    }
 
-    /// <summary>
-    /// Gets whether the dictionary is read-only.
-    /// </summary>
-    public bool IsReadOnly => false;
+    public void Add(string prefix, string xmlNamespace)
+    {
+        EnsureMutable();
+        ArgumentNullException.ThrowIfNull(prefix);
+        ArgumentNullException.ThrowIfNull(xmlNamespace);
+        _values.Add(prefix, xmlNamespace);
+    }
 
-    /// <summary>
-    /// Gets the collection of prefix keys.
-    /// </summary>
-    public ICollection<string> Keys => _dict.Keys;
+    public void Clear() { EnsureMutable(); _values.Clear(); }
+    public bool Contains(object key) => key is string prefix && _values.ContainsKey(prefix);
+    public void Remove(object prefix) { if (prefix is string text) Remove(text); }
+    public void Remove(string prefix) { EnsureMutable(); ArgumentNullException.ThrowIfNull(prefix); _values.Remove(prefix); }
 
-    /// <summary>
-    /// Gets the collection of namespace URI values.
-    /// </summary>
-    public ICollection<string> Values => _dict.Values;
-
-    /// <summary>
-    /// Adds a prefix-namespace mapping.
-    /// </summary>
-    public void Add(string key, string value) => _dict.Add(key, value);
-
-    /// <summary>
-    /// Removes all prefix-namespace mappings.
-    /// </summary>
-    public void Clear() => _dict.Clear();
-
-    /// <summary>
-    /// Determines whether the dictionary contains the specified prefix.
-    /// </summary>
-    public bool ContainsKey(string key) => _dict.ContainsKey(key);
-
-    /// <summary>
-    /// Removes the mapping with the specified prefix.
-    /// </summary>
-    public bool Remove(string key) => _dict.Remove(key);
-
-    /// <summary>
-    /// Tries to get the namespace URI for the specified prefix.
-    /// </summary>
-    public bool TryGetValue(string key, out string value) => _dict.TryGetValue(key, out value!);
-
-    /// <summary>
-    /// Looks up the namespace URI for a given prefix.
-    /// </summary>
-    /// <param name="prefix">The prefix to look up.</param>
-    /// <returns>The namespace URI, or null if not found.</returns>
+    public string? DefaultNamespace() => GetNamespace(string.Empty);
+    public string? GetNamespace(string prefix) => LookupNamespace(prefix);
     public string? LookupNamespace(string prefix)
     {
-        return _dict.TryGetValue(prefix, out var ns) ? ns : null;
+        ArgumentNullException.ThrowIfNull(prefix);
+        return _values.GetValueOrDefault(prefix);
     }
 
-    /// <summary>
-    /// Looks up the prefix for a given namespace URI.
-    /// </summary>
-    /// <param name="xmlNamespace">The namespace URI to look up.</param>
-    /// <returns>The prefix, or null if not found.</returns>
     public string? LookupPrefix(string xmlNamespace)
     {
-        foreach (var kvp in _dict)
-        {
-            if (kvp.Value == xmlNamespace)
-                return kvp.Key;
-        }
+        ArgumentNullException.ThrowIfNull(xmlNamespace);
+        foreach ((string prefix, string candidate) in _values)
+            if (string.Equals(candidate, xmlNamespace, StringComparison.Ordinal)) return prefix;
         return null;
     }
 
-    /// <summary>
-    /// Pushes a new scope onto the namespace stack.
-    /// </summary>
+    public IEnumerable<Jalium.UI.Xaml.NamespaceDeclaration> GetNamespacePrefixes()
+        => _values.Select(static item => new Jalium.UI.Xaml.NamespaceDeclaration(item.Value, item.Key)).ToArray();
+
     public void PushScope()
     {
-        _scopeCount++;
+        EnsureMutable();
+        _scopes.Push(new Dictionary<string, string>(_values, StringComparer.Ordinal));
     }
 
-    /// <summary>
-    /// Pops the current scope from the namespace stack.
-    /// </summary>
     public void PopScope()
     {
-        if (_scopeCount > 0)
-            _scopeCount--;
+        EnsureMutable();
+        if (_scopes.Count == 0) throw new InvalidOperationException("No XML namespace scope is active.");
+        Dictionary<string, string> previous = _scopes.Pop();
+        _values.Clear();
+        foreach ((string prefix, string xmlNamespace) in previous) _values.Add(prefix, xmlNamespace);
     }
 
-    void ICollection<KeyValuePair<string, string>>.Add(KeyValuePair<string, string> item) =>
-        ((ICollection<KeyValuePair<string, string>>)_dict).Add(item);
+    public void Seal() => _sealed = true;
 
-    bool ICollection<KeyValuePair<string, string>>.Contains(KeyValuePair<string, string> item) =>
-        ((ICollection<KeyValuePair<string, string>>)_dict).Contains(item);
+    public void CopyTo(Array array, int index)
+    {
+        ArgumentNullException.ThrowIfNull(array);
+        if (array is DictionaryEntry[] entries) { CopyTo(entries, index); return; }
+        ((ICollection)_values.Select(static item => new DictionaryEntry(item.Key, item.Value)).ToArray()).CopyTo(array, index);
+    }
 
-    void ICollection<KeyValuePair<string, string>>.CopyTo(KeyValuePair<string, string>[] array, int arrayIndex) =>
-        ((ICollection<KeyValuePair<string, string>>)_dict).CopyTo(array, arrayIndex);
+    public void CopyTo(DictionaryEntry[] array, int index)
+    {
+        ArgumentNullException.ThrowIfNull(array);
+        if (index < 0 || index + Count > array.Length) throw new ArgumentOutOfRangeException(nameof(index));
+        foreach ((string prefix, string xmlNamespace) in _values)
+            array[index++] = new DictionaryEntry(prefix, xmlNamespace);
+    }
 
-    bool ICollection<KeyValuePair<string, string>>.Remove(KeyValuePair<string, string> item) =>
-        ((ICollection<KeyValuePair<string, string>>)_dict).Remove(item);
-
-    /// <summary>
-    /// Returns an enumerator that iterates through the prefix-namespace mappings.
-    /// </summary>
-    public IEnumerator<KeyValuePair<string, string>> GetEnumerator() => _dict.GetEnumerator();
-
+    protected IDictionaryEnumerator GetDictionaryEnumerator() => ((IDictionary)_values).GetEnumerator();
+    protected IEnumerator GetEnumerator() => GetDictionaryEnumerator();
+    IDictionaryEnumerator IDictionary.GetEnumerator() => GetDictionaryEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
-    #region IDictionary explicit implementation
-
-    bool IDictionary.IsFixedSize => false;
-    bool IDictionary.IsReadOnly => false;
-    ICollection IDictionary.Keys => _dict.Keys;
-    ICollection IDictionary.Values => _dict.Values;
-    int ICollection.Count => Count;
-    object ICollection.SyncRoot => ((ICollection)_dict).SyncRoot;
-    bool ICollection.IsSynchronized => false;
-
-    object? IDictionary.this[object key]
+    private void EnsureMutable()
     {
-        get => key is string s ? (_dict.TryGetValue(s, out var v) ? v : null) : null;
-        set { if (key is string s && value is string v) _dict[s] = v; }
-    }
-
-    bool IDictionary.Contains(object key) => key is string s && _dict.ContainsKey(s);
-
-    void IDictionary.Add(object key, object? value)
-    {
-        if (key is string s && value is string v) _dict.Add(s, v);
-    }
-
-    void IDictionary.Remove(object key)
-    {
-        if (key is string s) _dict.Remove(s);
-    }
-
-    IDictionaryEnumerator IDictionary.GetEnumerator() => ((IDictionary)_dict).GetEnumerator();
-
-    void ICollection.CopyTo(Array array, int index) => ((ICollection)_dict).CopyTo(array, index);
-
-    #endregion
-}
-
-/// <summary>
-/// Manages the serialization context for XAML writing, including the serialization mode for Expression types.
-/// </summary>
-public class XamlDesignerSerializationManager : IServiceProvider
-{
-    private XamlWriterMode _xamlWriterMode = XamlWriterMode.Value;
-    private readonly XmlWriter? _xmlWriter;
-    private readonly Dictionary<Type, object> _services = new();
-
-    /// <summary>
-    /// Constructs a XamlDesignerSerializationManager with the specified XmlWriter.
-    /// </summary>
-    /// <param name="xmlWriter">The XmlWriter to use for serialization.</param>
-    public XamlDesignerSerializationManager(XmlWriter xmlWriter)
-    {
-        _xmlWriter = xmlWriter;
-    }
-
-    /// <summary>
-    /// Gets or sets the mode of serialization for all Expressions.
-    /// </summary>
-    public XamlWriterMode XamlWriterMode
-    {
-        get => _xamlWriterMode;
-        set
-        {
-            if (value != XamlWriterMode.Expression && value != XamlWriterMode.Value)
-                throw new ArgumentException($"Invalid XamlWriterMode value: {value}", nameof(value));
-            _xamlWriterMode = value;
-        }
-    }
-
-    /// <summary>
-    /// Adds a service to the service provider.
-    /// </summary>
-    /// <param name="serviceType">The type of service to add.</param>
-    /// <param name="service">The service instance.</param>
-    public void AddService(Type serviceType, object service)
-    {
-        _services[serviceType] = service;
-    }
-
-    /// <inheritdoc />
-    public object? GetService(Type serviceType)
-    {
-        return _services.GetValueOrDefault(serviceType);
+        if (_sealed) throw new InvalidOperationException("The XML namespace dictionary is sealed.");
     }
 }
 
@@ -329,6 +218,7 @@ public class ParserContext
     private Uri? _baseUri;
     private string _xmlLang = string.Empty;
     private string _xmlSpace = string.Empty;
+    private XamlTypeMapper? _xamlTypeMapper;
 
     /// <summary>
     /// Default constructor.
@@ -406,6 +296,12 @@ public class ParserContext
         set => _baseUri = value;
     }
 
+    public XamlTypeMapper? XamlTypeMapper
+    {
+        get => _xamlTypeMapper;
+        set => _xamlTypeMapper = value;
+    }
+
     /// <summary>
     /// Converts a ParserContext to an XmlParserContext.
     /// </summary>
@@ -427,9 +323,9 @@ public class ParserContext
 
         if (parserContext._xmlnsDictionary != null)
         {
-            foreach (var kvp in parserContext._xmlnsDictionary)
+            foreach (DictionaryEntry entry in parserContext._xmlnsDictionary)
             {
-                xmlnsMgr.AddNamespace(kvp.Key, kvp.Value);
+                xmlnsMgr.AddNamespace((string)entry.Key, (string)entry.Value!);
             }
         }
 
@@ -464,6 +360,9 @@ public class XamlTypeMapper
 {
     private readonly string[] _assemblyNames;
     private readonly NamespaceMapEntry[]? _namespaceMaps;
+    private readonly Dictionary<string, string> _assemblyPaths = new(StringComparer.OrdinalIgnoreCase);
+
+    public static XamlTypeMapper DefaultMapper { get; } = new XamlTypeMapper([]);
 
     /// <summary>
     /// Constructs a XamlTypeMapper with the specified assembly names.
@@ -494,10 +393,41 @@ public class XamlTypeMapper
     /// <param name="xmlNamespace">The XML namespace URI of the tag.</param>
     /// <param name="localName">The local name of the tag.</param>
     /// <returns>The CLR Type for the object, or null if no type was found.</returns>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage(
+        "Trimming", "IL2026",
+        Justification = "The compatibility mapper searches explicitly supplied assemblies; trimmed applications should register XAML types in XamlTypeRegistry.")]
     public Type? GetType(string xmlNamespace, string localName)
     {
-        // Delegate to the Jalium.UI type registry
-        return XamlTypeRegistry.GetType(localName);
+        ArgumentNullException.ThrowIfNull(xmlNamespace);
+        ArgumentNullException.ThrowIfNull(localName);
+
+        Type? registered = XamlTypeRegistry.GetType(localName);
+        if (registered is not null && (registered.IsPublic || registered.IsNestedPublic || AllowInternalType(registered)))
+        {
+            return registered;
+        }
+
+        foreach (string assemblyName in _assemblyNames)
+        {
+            try
+            {
+                Assembly assembly = _assemblyPaths.TryGetValue(assemblyName, out string? path)
+                    ? Assembly.LoadFrom(path)
+                    : Assembly.Load(new AssemblyName(assemblyName));
+                Type? candidate = assembly.GetTypes().FirstOrDefault(type =>
+                    string.Equals(type.Name, localName, StringComparison.Ordinal)
+                    && (type.IsPublic || type.IsNestedPublic || AllowInternalType(type)));
+                if (candidate is not null)
+                {
+                    return candidate;
+                }
+            }
+            catch (Exception exception) when (exception is FileNotFoundException or FileLoadException or BadImageFormatException or ReflectionTypeLoadException)
+            {
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -512,6 +442,15 @@ public class XamlTypeMapper
         // This method is provided for WPF API compatibility.
     }
 
+    public void SetAssemblyPath(string assemblyName, string assemblyPath)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(assemblyName);
+        ArgumentException.ThrowIfNullOrEmpty(assemblyPath);
+        _assemblyPaths[assemblyName] = Path.GetFullPath(assemblyPath);
+    }
+
+    protected virtual bool AllowInternalType(Type type) => false;
+
     /// <summary>
     /// Sets a subclass mapping for the specified XML namespace.
     /// </summary>
@@ -521,17 +460,6 @@ public class XamlTypeMapper
     {
         // Stub for WPF API compatibility
     }
-}
-
-/// <summary>
-/// Interface for providing the base URI context in XAML.
-/// </summary>
-public interface IUriContext
-{
-    /// <summary>
-    /// Gets or sets the base URI of the current context.
-    /// </summary>
-    Uri? BaseUri { get; set; }
 }
 
 /// <summary>

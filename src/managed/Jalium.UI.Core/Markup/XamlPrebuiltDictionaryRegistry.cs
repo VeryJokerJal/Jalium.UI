@@ -22,6 +22,9 @@ namespace Jalium.UI.Markup;
 /// </summary>
 public static class XamlPrebuiltDictionaryRegistry
 {
+    private const string LegacyControlsResourcePrefix = "Jalium.UI.Controls.";
+    private const string ManagedResourcePrefix = "Jalium.UI.Managed.";
+
     /// <summary>
     /// Builder delegate signature. The runtime supplies an empty dictionary and a build
     /// context whose parent stack already includes the dictionary. The builder populates
@@ -81,7 +84,13 @@ public static class XamlPrebuiltDictionaryRegistry
     /// </summary>
     public static bool TryGet(string resourceName, out DictionaryBuilder? builder)
     {
-        return _builders.TryGetValue(resourceName, out builder);
+        if (_builders.TryGetValue(resourceName, out builder))
+        {
+            return true;
+        }
+
+        return TryMapLegacyControlsResource(resourceName, out string managedName)
+            && _builders.TryGetValue(managedName, out builder);
     }
 
     /// <summary>
@@ -91,7 +100,25 @@ public static class XamlPrebuiltDictionaryRegistry
     /// </summary>
     public static bool TryGetFactory(string resourceName, out DictionaryFactory? factory)
     {
-        return _factories.TryGetValue(resourceName, out factory);
+        if (_factories.TryGetValue(resourceName, out factory))
+        {
+            return true;
+        }
+
+        return TryMapLegacyControlsResource(resourceName, out string managedName)
+            && _factories.TryGetValue(managedName, out factory);
+    }
+
+    private static bool TryMapLegacyControlsResource(string resourceName, out string managedName)
+    {
+        if (resourceName.StartsWith(LegacyControlsResourcePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            managedName = ManagedResourcePrefix + resourceName[LegacyControlsResourcePrefix.Length..];
+            return true;
+        }
+
+        managedName = string.Empty;
+        return false;
     }
 
     /// <summary>

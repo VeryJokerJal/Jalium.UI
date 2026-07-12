@@ -5,6 +5,8 @@ namespace Jalium.UI.Media.Imaging;
 /// </summary>
 public sealed class BitmapMetadataBlob
 {
+    private readonly byte[] _blob;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="BitmapMetadataBlob"/> class.
     /// </summary>
@@ -13,18 +15,21 @@ public sealed class BitmapMetadataBlob
     public BitmapMetadataBlob(byte[] blob)
     {
         ArgumentNullException.ThrowIfNull(blob);
-        InternalGetBlobValue = blob;
+        _blob = (byte[])blob.Clone();
     }
 
     /// <summary>
     /// Gets the raw byte array that represents this metadata blob.
     /// </summary>
-    public byte[] InternalGetBlobValue { get; }
+    public byte[] InternalGetBlobValue => GetBlobValue();
+
+    /// <summary>Returns a copy of the raw metadata bytes.</summary>
+    public byte[] GetBlobValue() => (byte[])_blob.Clone();
 
     /// <summary>
     /// Gets the size of the blob in bytes.
     /// </summary>
-    public int Size => InternalGetBlobValue.Length;
+    public int Size => _blob.Length;
 }
 
 /// <summary>
@@ -54,4 +59,28 @@ public sealed class InPlaceBitmapMetadataWriter : BitmapMetadata
         // Return true to indicate that the metadata state is consistent and persisted.
         return true;
     }
+
+    /// <summary>Creates a modifiable copy of this writer.</summary>
+    public new InPlaceBitmapMetadataWriter Clone() => (InPlaceBitmapMetadataWriter)base.Clone();
+
+    /// <summary>Creates a modifiable copy using current values.</summary>
+    public new InPlaceBitmapMetadataWriter CloneCurrentValue() =>
+        (InPlaceBitmapMetadataWriter)base.CloneCurrentValue();
+
+    /// <inheritdoc />
+    protected override Freezable CreateInstanceCore() => new InPlaceBitmapMetadataWriter();
+
+    /// <inheritdoc />
+    protected override void CloneCore(Freezable sourceFreezable) => base.CloneCore(sourceFreezable);
+
+    /// <inheritdoc />
+    protected override void CloneCurrentValueCore(Freezable sourceFreezable) =>
+        base.CloneCurrentValueCore(sourceFreezable);
+
+    /// <inheritdoc />
+    protected override void GetAsFrozenCore(Freezable sourceFreezable) => base.GetAsFrozenCore(sourceFreezable);
+
+    /// <inheritdoc />
+    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable) =>
+        base.GetCurrentValueAsFrozenCore(sourceFreezable);
 }
