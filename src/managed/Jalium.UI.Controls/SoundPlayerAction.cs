@@ -15,6 +15,7 @@ public sealed class SoundPlayerAction : TriggerAction, IDisposable
     private static extern bool PlaySound(string? pszSound, IntPtr hmod, uint fdwSound);
 
     private bool _disposed;
+    private Jalium.UI.Media.AudioPlayer? _player;
 
     /// <summary>Identifies the Source dependency property.</summary>
     public static readonly DependencyProperty SourceProperty =
@@ -41,8 +42,21 @@ public sealed class SoundPlayerAction : TriggerAction, IDisposable
 
         try
         {
-            var path = Source.IsAbsoluteUri ? Source.LocalPath : Source.OriginalString;
-            PlaySound(path, IntPtr.Zero, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+            if (OperatingSystem.IsWindows())
+            {
+                var path = Source.IsAbsoluteUri ? Source.LocalPath : Source.OriginalString;
+                PlaySound(path, IntPtr.Zero, SND_FILENAME | SND_ASYNC | SND_NODEFAULT);
+                return;
+            }
+
+            // Non-Windows: winmm does not exist (this used to throw
+            // DllNotFoundException into the silent catch below — no sound,
+            // no error). Route through the framework audio stack instead:
+            // software WAV/FLAC/MP3/OGG decode + miniaudio output.
+            _player?.Dispose();
+            _player = new Jalium.UI.Media.AudioPlayer();
+            _player.Open(Source);
+            _player.Play();
         }
         catch
         {
@@ -69,6 +83,20 @@ public sealed class SoundPlayerAction : TriggerAction, IDisposable
             {
                 // Playback cleanup is best effort.
             }
+        }
+        else
+        {
+            try
+            {
+                _player?.Stop();
+                _player?.Dispose();
+            }
+            catch
+            {
+                // Playback cleanup is best effort.
+            }
+
+            _player = null;
         }
 
         GC.SuppressFinalize(this);

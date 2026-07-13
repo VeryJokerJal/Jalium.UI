@@ -31,6 +31,12 @@
 struct DynamicPadContext {
     GstElement* target = nullptr;
     const char* media_prefix = nullptr;
+    // Filled by BuildUriDecodePipeline so the no-more-pads handler can unblock
+    // the appsink when the file has no stream of the requested kind (probing a
+    // video decoder against an audio-only file used to stall the 15 s
+    // first-sample timeout instead of failing immediately).
+    GstElement* sink_element = nullptr;
+    std::atomic<bool> no_matching_pad{false};
 };
 
 struct jalium_video_decoder {
@@ -130,6 +136,30 @@ void LinkDecodedPad(GstElement*, GstPad* pad, gpointer user_data)
         if (sink_pad) gst_object_unref(sink_pad);
     }
     if (caps) gst_caps_unref(caps);
+}
+
+void HandleNoMorePads(GstElement*, gpointer user_data)
+{
+    auto* context = static_cast<DynamicPadContext*>(user_data);
+    if (!context || !context->target) return;
+
+    GstPad* sink_pad = gst_element_get_static_pad(context->target, "sink");
+    const bool linked = sink_pad && gst_pad_is_linked(sink_pad);
+    if (sink_pad) gst_object_unref(sink_pad);
+    if (linked) return;
+
+    // uridecodebin exposed every stream and none matched media_prefix: the
+    // appsink will never see data or EOS on its own, so inject EOS to release
+    // the first-sample wait right away.
+    context->no_matching_pad.store(true, std::memory_order_release);
+    if (context->sink_element) {
+        GstPad* appsink_pad =
+            gst_element_get_static_pad(context->sink_element, "sink");
+        if (appsink_pad) {
+            (void)gst_pad_send_event(appsink_pad, gst_event_new_eos());
+            gst_object_unref(appsink_pad);
+        }
+    }
 }
 
 jalium_media_status_t PipelineError(GstElement* pipeline,
@@ -479,7 +509,11 @@ jalium_media_status_t BuildUriDecodePipeline(
 
     link_context.target = queue;
     link_context.media_prefix = media_prefix;
+    link_context.sink_element = sink_element;
+    link_context.no_matching_pad.store(false, std::memory_order_release);
     g_signal_connect(decoder, "pad-added", G_CALLBACK(LinkDecodedPad),
+                     &link_context);
+    g_signal_connect(decoder, "no-more-pads", G_CALLBACK(HandleNoMorePads),
                      &link_context);
     if (gst_element_set_state(pipeline, GST_STATE_PLAYING) ==
         GST_STATE_CHANGE_FAILURE) {
@@ -737,8 +771,10 @@ jalium::audio::audio_decoder_impl* OpenGstAacFile(
 
     GstSample* first = gst_app_sink_try_pull_sample(decoder->sink, 15 * GST_SECOND);
     if (!first) {
-        out_status = PipelineError(
-            decoder->pipeline, JALIUM_MEDIA_E_UNSUPPORTED_CODEC);
+        out_status =
+            decoder->link_context.no_matching_pad.load(std::memory_order_acquire)
+                ? JALIUM_MEDIA_E_UNSUPPORTED_FORMAT // no audio stream in the file
+                : PipelineError(decoder->pipeline, JALIUM_MEDIA_E_UNSUPPORTED_CODEC);
         delete decoder;
         return nullptr;
     }
@@ -923,8 +959,10 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_open_file(
     decoder->pending_sample = gst_app_sink_try_pull_sample(
         decoder->sink, 15 * GST_SECOND);
     if (!decoder->pending_sample) {
-        const auto pull_status = PipelineError(
-            decoder->pipeline, JALIUM_MEDIA_E_UNSUPPORTED_CODEC);
+        const auto pull_status =
+            decoder->link_context.no_matching_pad.load(std::memory_order_acquire)
+                ? JALIUM_MEDIA_E_UNSUPPORTED_FORMAT // no video stream in the file
+                : PipelineError(decoder->pipeline, JALIUM_MEDIA_E_UNSUPPORTED_CODEC);
         gst_element_set_state(decoder->pipeline, GST_STATE_NULL);
         gst_object_unref(decoder->pipeline);
         delete decoder;
