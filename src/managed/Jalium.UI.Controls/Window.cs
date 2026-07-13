@@ -75,6 +75,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private bool _softKeyboardVisible;
     private double _softKeyboardHeight;
     private DeviceOrientation _deviceOrientation;
+    // SurfaceHolder.surfaceDestroyed is a hard ownership boundary on Android:
+    // once it returns no frame may touch the old ANativeWindow.  This flag is
+    // checked at both render-target creation and frame entry so already-queued
+    // render work becomes harmless while the Activity swaps surfaces.
+    private volatile bool _androidSurfaceAvailable = true;
     // Render state machine — all flags packed into a single int for atomic access.
     // Prevents race conditions where multiple threads check-then-set individual bools.
     private int _renderState; // Bitfield of RenderStateFlags, accessed via Interlocked
@@ -3454,6 +3459,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Connect platform event handler for input/resize/paint routing
         _platformWindow.SetEventHandler(OnPlatformEvent);
 
+        if (PlatformFactory.IsAndroid)
+        {
+            _androidSurfaceAvailable = AndroidActivityBridge.NativeWindow != nint.Zero;
+        }
+
         // On Android/Linux the native window (OS surface) determines the actual size.
         // Always use the native surface dimensions on these platforms — any default
         // Window Width/Height (e.g. 800×600) is meaningless on a full-screen device.
@@ -3803,6 +3813,99 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 break;
             }
         }
+    }
+
+    /// <summary>
+    /// Stops all rendering against the current Android Surface and releases the
+    /// render target before SurfaceHolder.surfaceDestroyed is allowed to return.
+    /// Must run synchronously on the Jalium UI dispatcher.
+    /// </summary>
+    internal void DetachAndroidSurface()
+    {
+        if (!PlatformFactory.IsAndroid)
+        {
+            return;
+        }
+
+        _dispatcher?.VerifyAccess();
+
+        lock (_renderLifecycleGate)
+        {
+            _androidSurfaceAvailable = false;
+            unchecked { _renderLifecycleGeneration++; }
+        }
+
+        _hasPendingResize = false;
+        lock (_rtChannelLock) { _rtPendingFrame = null; }
+
+        // Android currently renders inline, but retain a hard join boundary in
+        // case a platform render worker is enabled later.  Returning while that
+        // worker is still in Present would violate SurfaceHolder.Callback's
+        // ownership contract.
+        if (!StopRenderThread() && _renderThread is { } stalledRenderThread &&
+            stalledRenderThread != Thread.CurrentThread)
+        {
+            stalledRenderThread.Join();
+            _ = Interlocked.CompareExchange(ref _renderThread, null, stalledRenderThread);
+            lock (_rtChannelLock) { _rtPendingFrame = null; }
+        }
+
+        try
+        {
+            // Retained backend handles must be retired while the old target is
+            // still alive; the drawing context is then closed before RT.Dispose.
+            Visual.ReleaseRetainedLayersRecursive(this);
+        }
+        finally
+        {
+            ReleaseRenderResourcesAfterRenderThreadStopped();
+        }
+    }
+
+    /// <summary>
+    /// Marks a replacement Android Surface usable before the native RESIZE event
+    /// attempts to create its render target.
+    /// </summary>
+    internal void PrepareAndroidSurfaceAttach()
+    {
+        if (!PlatformFactory.IsAndroid)
+        {
+            return;
+        }
+
+        _dispatcher?.VerifyAccess();
+        lock (_renderLifecycleGate)
+        {
+            _androidSurfaceAvailable = true;
+            unchecked { _renderLifecycleGeneration++; }
+        }
+    }
+
+    /// <summary>
+    /// Recreates any target that the native resize callback could not create and
+    /// schedules a full repaint on the replacement Android Surface.
+    /// </summary>
+    internal void CompleteAndroidSurfaceAttach()
+    {
+        if (!PlatformFactory.IsAndroid || !_androidSurfaceAvailable || Handle == nint.Zero)
+        {
+            return;
+        }
+
+        _dispatcher?.VerifyAccess();
+        try
+        {
+            EnsureRenderTarget();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[AndroidSurface] RenderTarget recreation failed: {ex.Message}");
+            ScheduleRenderRecoveryRetry();
+        }
+
+        RequestFullInvalidation();
+        InvalidateMeasure();
+        InvalidateWindow();
     }
 
     private static MouseButton MapPlatformMouseButton(int button) => button switch
@@ -4575,6 +4678,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        if (PlatformFactory.IsAndroid && !_androidSurfaceAvailable)
+        {
+            return;
+        }
+
         // Swap chain uses physical pixel dimensions — bail if the window hasn't
         // been sized yet (0×0 swap chains are rejected by DXGI).
         int physicalWidth = (int)(Width * _dpiScale);
@@ -4590,41 +4698,43 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             : RenderBackend.Auto;
 
         var context = RenderContext.GetOrCreateCurrent(requestedBackend, forceReplace: forceNewContext);
+        bool retriedWithDefaultGpu = context.GpuPreference == GpuPreference.Auto;
 
-        try
+        while (true)
         {
-            if (_platformWindow != null)
+            try
             {
-                // Cross-platform path: use surface descriptor from platform window
-                var surface = _platformWindow.GetSurface();
-                RenderTarget = context.CreateRenderTarget(surface, physicalWidth, physicalHeight);
+                RenderTarget = CreateRenderTargetForPlatform(context, physicalWidth, physicalHeight);
+                break;
             }
-            else
+            catch (Exception ex)
             {
-                // Win32 path: use HWND-based render target
-                bool useComposition = ShouldUseCompositionRenderTarget();
-                if (useComposition)
+                if (!retriedWithDefaultGpu && context.GpuPreference != GpuPreference.Auto)
                 {
-                    RenderTarget = context.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
+                    retriedWithDefaultGpu = true;
+                    Console.Error.WriteLine($"[EnsureRenderTarget] GPU fallback: {ex.Message}");
+                    context = RenderContext.GetOrCreateCurrent(
+                        context.Backend, GpuPreference.Auto, forceReplace: true);
+                    continue;
                 }
-                else
+
+                // RenderBackend.Auto is a request, not the backend that actually
+                // won selection.  On Android it commonly resolves to Vulkan; if
+                // Vulkan context creation succeeds but VkSurface/swapchain creation
+                // fails on a device, advance from the *actual* context backend to
+                // Software instead of testing requestedBackend (which is Auto).
+                RenderBackend failedBackend = context.Backend;
+                if (!TryAdvanceRenderBackendFallback(failedBackend))
                 {
-                    RenderTarget = context.CreateRenderTarget(Handle, physicalWidth, physicalHeight);
+                    throw;
                 }
+
+                Console.Error.WriteLine(
+                    $"[EnsureRenderTarget] backend fallback {failedBackend} -> {_renderBackendOverride}: {ex.Message}");
+                context = RenderContext.GetOrCreateCurrent(
+                    _renderBackendOverride, GpuPreference.Auto, forceReplace: true);
+                retriedWithDefaultGpu = true;
             }
-        }
-        catch (Exception ex) when (context.GpuPreference != GpuPreference.Auto)
-        {
-            Console.Error.WriteLine($"[EnsureRenderTarget] GPU fallback: {ex.Message}");
-            // The preferred GPU couldn't create a render target. Fall back to default GPU.
-            context = RenderContext.GetOrCreateCurrent(requestedBackend, GpuPreference.Auto, forceReplace: true);
-            RenderTarget = CreateRenderTargetForPlatform(context, physicalWidth, physicalHeight);
-        }
-        catch (Exception ex) when (requestedBackend != RenderBackend.Auto && TryAdvanceRenderBackendFallback(requestedBackend))
-        {
-            Console.Error.WriteLine($"[EnsureRenderTarget] backend fallback: {ex.Message}");
-            var fallbackContext = RenderContext.GetOrCreateCurrent(_renderBackendOverride, GpuPreference.Auto, forceReplace: true);
-            RenderTarget = CreateRenderTargetForPlatform(fallbackContext, physicalWidth, physicalHeight);
         }
 
         // Set D2D DPI so DIP coordinates map correctly to physical pixels
@@ -8282,6 +8392,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Close/WM_DESTROY both invalidate the lifecycle through
             // _managedTeardownStarted, so that is the authoritative teardown gate.
             if (_managedTeardownStarted || _isClosing) return;
+            if (PlatformFactory.IsAndroid && !_androidSurfaceAvailable) return;
             if (HasRenderFlag(RenderFlag_Rendering)) return;
             // A swap-chain resize is mid-flight (native ResizeBuffers can pump a
             // reentrant WM_PAINT through the kernel callback). Beginning a frame now
@@ -10222,6 +10333,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void UpdateImeCompositionWindow()
     {
+        // imm32 exists only on Windows. Linux composition (XIM / text-input-v3)
+        // raises the same managed composition events, and EditControl calls this
+        // on every caret move while composing — an unguarded ImmGetContext threw
+        // DllNotFoundException from inside the native event callback.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         var target = Keyboard.FocusedElement as UIElement;
         if (target == null || target is not IImeSupport imeSupport)
         {
@@ -11481,7 +11601,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     #endregion
 
     #region Win32 Interop
-    private static Func<int, short> s_getKeyStateProvider = GetKeyState;
+    // user32!GetKeyState only exists on Windows; every other platform routes
+    // through the jalium.native.platform key-state ABI (Win32-compatible bit
+    // semantics). Binding the provider per-platform up front keeps every
+    // IsVirtualKeyDown caller (escape suppression, modifier queries) safe on
+    // Linux instead of leaving a DllNotFoundException landmine.
+    private static Func<int, short> s_getKeyStateProvider = OperatingSystem.IsWindows()
+        ? GetKeyState
+        : static vk => Jalium.UI.Interop.NativeMethods.InputGetKeyState(vk);
     #endregion
 
     #region IInputDispatcherHost
@@ -11590,7 +11717,164 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     void IInputDispatcherHost.SetPlatformCursor(int cursorType)
     {
-        _platformWindow?.SetCursor(cursorType);
+        _platformWindow?.SetCursor(MapCursorTypeToPlatformShape((CursorType)cursorType));
+    }
+
+    /// <summary>
+    /// Translates the managed <see cref="CursorType"/> enum (28 WPF-parity values)
+    /// into the native JaliumCursorShape ABI enum (12 values, jalium_platform.h).
+    /// The two enums share no numbering — passing the raw managed value shows the
+    /// wrong cursor for nearly every shape (Arrow renders as IBeam, SizeWE hides
+    /// the cursor, ...), so every platform-window cursor update must go through
+    /// this mapping.
+    /// </summary>
+    internal static int MapCursorTypeToPlatformShape(CursorType cursorType) => cursorType switch
+    {
+        CursorType.None => 11,                 // JALIUM_CURSOR_HIDDEN
+        CursorType.No => 9,                    // JALIUM_CURSOR_NOT_ALLOWED
+        CursorType.AppStarting => 10,          // JALIUM_CURSOR_WAIT (closest match)
+        CursorType.Cross => 3,                 // JALIUM_CURSOR_CROSSHAIR
+        CursorType.IBeam => 2,                 // JALIUM_CURSOR_IBEAM
+        CursorType.SizeAll => 8,               // JALIUM_CURSOR_RESIZE_ALL
+        CursorType.SizeNESW => 6,              // JALIUM_CURSOR_RESIZE_NESW
+        CursorType.SizeNS => 4,                // JALIUM_CURSOR_RESIZE_NS
+        CursorType.SizeNWSE => 7,              // JALIUM_CURSOR_RESIZE_NWSE
+        CursorType.SizeWE => 5,                // JALIUM_CURSOR_RESIZE_EW
+        CursorType.Wait => 10,                 // JALIUM_CURSOR_WAIT
+        CursorType.Hand => 1,                  // JALIUM_CURSOR_HAND
+        CursorType.Pen => 3,                   // JALIUM_CURSOR_CROSSHAIR (closest match)
+        CursorType.ScrollNS or CursorType.ScrollN or CursorType.ScrollS => 4,
+        CursorType.ScrollWE or CursorType.ScrollW or CursorType.ScrollE => 5,
+        CursorType.ScrollNW or CursorType.ScrollSE => 7,
+        CursorType.ScrollNE or CursorType.ScrollSW => 6,
+        CursorType.ScrollAll => 8,             // JALIUM_CURSOR_RESIZE_ALL
+        // Arrow, AppStarting fallback, Help, UpArrow, ArrowCD and anything new.
+        _ => 0,                                // JALIUM_CURSOR_ARROW
+    };
+
+    /// <summary>
+    /// Gets the pointer position in screen coordinates (physical pixels) with a
+    /// platform dispatch: user32 on Windows, the jalium.native.platform input
+    /// ABI elsewhere. Callers must not assume user32 is reachable — docking and
+    /// popup code paths run on Linux where that P/Invoke throws.
+    /// </summary>
+    internal static bool TryGetCursorScreenPoint(out Point screenPoint)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (Jalium.UI.Interop.Win32.Win32Methods.GetCursorPos(out var winPoint))
+            {
+                screenPoint = new Point(winPoint.X, winPoint.Y);
+                return true;
+            }
+
+            screenPoint = default;
+            return false;
+        }
+
+        try
+        {
+            Interop.NativeMethods.InputGetCursorPos(out var x, out var y);
+            screenPoint = new Point(x, y);
+            return true;
+        }
+        catch (DllNotFoundException)
+        {
+            screenPoint = default;
+            return false;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            screenPoint = default;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Gets this window's rectangle in screen coordinates (physical pixels).
+    /// Windows reports the outer frame rect; platform windows report the client
+    /// origin plus client size — self-consistent within a platform, which is
+    /// what drag-delta math needs.
+    /// </summary>
+    internal bool TryGetWindowScreenRect(out Rect physicalRect)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (Handle != nint.Zero &&
+                Jalium.UI.Interop.Win32.Win32Methods.GetWindowRect(Handle, out var rc))
+            {
+                physicalRect = new Rect(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
+                return true;
+            }
+        }
+        else if (_platformWindow != null)
+        {
+            _platformWindow.GetPosition(out var x, out var y);
+            var width = _platformWindow.GetWidth();
+            var height = _platformWindow.GetHeight();
+            if (width > 0 && height > 0)
+            {
+                physicalRect = new Rect(x, y, width, height);
+                return true;
+            }
+        }
+
+        physicalRect = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Gets the screen position (physical pixels) of this window's client-area
+    /// origin. Used to translate element rects into screen space.
+    /// </summary>
+    internal bool TryGetClientOriginOnScreen(out Point screenOrigin)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (Handle != nint.Zero)
+            {
+                var origin = new Jalium.UI.Interop.Win32.POINT { X = 0, Y = 0 };
+                if (Jalium.UI.Interop.Win32.Win32Methods.ClientToScreen(Handle, ref origin))
+                {
+                    screenOrigin = new Point(origin.X, origin.Y);
+                    return true;
+                }
+            }
+        }
+        else if (_platformWindow != null)
+        {
+            _platformWindow.GetPosition(out var x, out var y);
+            screenOrigin = new Point(x, y);
+            return true;
+        }
+
+        screenOrigin = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Moves this window so its origin lands on the given screen point
+    /// (physical pixels), without resizing or activating it.
+    /// </summary>
+    internal bool TryMoveWindowToScreenPoint(int physicalX, int physicalY)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (Handle == nint.Zero)
+                return false;
+
+            // SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+            return Jalium.UI.Interop.Win32.Win32Methods.SetWindowPos(
+                Handle, nint.Zero, physicalX, physicalY, 0, 0, 0x0001 | 0x0004 | 0x0010);
+        }
+
+        if (_platformWindow != null)
+        {
+            _platformWindow.Move(physicalX, physicalY);
+            return true;
+        }
+
+        return false;
     }
 
     void IInputDispatcherHost.UpdateInputMethodAssociation() => UpdateInputMethodAssociation();

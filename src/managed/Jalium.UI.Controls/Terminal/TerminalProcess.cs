@@ -13,9 +13,9 @@ internal class TerminalProcess : IDisposable
     #region Fields
 
     /// <summary>
-    /// ConPTY session (Windows only).
+    /// Active pty session: ConPTY on Windows, POSIX pty on Linux/Unix.
     /// </summary>
-    private ConPty.PseudoConsoleSession? _session;
+    private IPtySession? _session;
 
     /// <summary>
     /// Whether the process is currently running.
@@ -111,15 +111,31 @@ internal class TerminalProcess : IDisposable
         if (string.IsNullOrEmpty(workDir))
             workDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
-        // Build command line
-        string commandLine = string.IsNullOrEmpty(arguments)
-            ? shell
-            : $"\"{shell}\" {arguments}";
+        if (OperatingSystem.IsWindows())
+        {
+            // Build command line
+            string commandLine = string.IsNullOrEmpty(arguments)
+                ? shell
+                : $"\"{shell}\" {arguments}";
 
-        _session = ConPty.Create(commandLine, workDir, (short)columns, (short)rows);
+            var conPty = ConPty.Create(commandLine, workDir, (short)columns, (short)rows);
+            if (conPty == null)
+                throw new InvalidOperationException("Failed to create ConPTY pseudo console. Ensure Windows 10 1809 or later.");
 
-        if (_session == null)
-            throw new InvalidOperationException("Failed to create ConPTY pseudo console. Ensure Windows 10 1809 or later.");
+            _session = new ConPtySessionAdapter(conPty);
+        }
+        else if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || OperatingSystem.IsFreeBSD())
+        {
+            _session = UnixPty.Create(shell, arguments, workDir!, environment, columns, rows)
+                ?? throw new InvalidOperationException(
+                    $"Failed to create a POSIX pseudo terminal for '{shell}'. " +
+                    "Verify the shell exists and /dev/pts is mounted.");
+        }
+        else
+        {
+            throw new PlatformNotSupportedException(
+                "The Terminal control requires ConPTY (Windows) or a POSIX pty (Linux/Unix).");
+        }
 
         _isRunning = true;
         _cts = new CancellationTokenSource();
@@ -177,7 +193,7 @@ internal class TerminalProcess : IDisposable
         try
         {
             byte[] bytes = _encoding.GetBytes(data);
-            ConPty.WriteInput(_session.InputWriteHandle, bytes);
+            _session.Write(bytes);
         }
         catch
         {
@@ -194,7 +210,7 @@ internal class TerminalProcess : IDisposable
 
         try
         {
-            ConPty.WriteInput(_session.InputWriteHandle, data);
+            _session.Write(data);
         }
         catch
         {
@@ -215,8 +231,7 @@ internal class TerminalProcess : IDisposable
     /// </summary>
     public void NotifyResize(int columns, int rows)
     {
-        if (_session == null || _session.ConsoleHandle == nint.Zero) return;
-        ConPty.Resize(_session.ConsoleHandle, (short)columns, (short)rows);
+        _session?.Resize(columns, rows);
     }
 
     #endregion
@@ -231,7 +246,7 @@ internal class TerminalProcess : IDisposable
         {
             while (!ct.IsCancellationRequested && _session != null)
             {
-                byte[]? data = ConPty.ReadOutput(_session.OutputReadHandle);
+                byte[]? data = _session.Read();
                 if (data == null) break; // Pipe closed
                 if (data.Length == 0) continue;
 

@@ -918,13 +918,29 @@ public partial class Popup : FrameworkElement
             case PlacementMode.MousePoint:
                 if (_parentWindow != null && _parentWindow.Handle != nint.Zero)
                 {
-                    GetCursorPos(out var cursorPt);
-                    var clientPt = new POINT { X = cursorPt.X, Y = cursorPt.Y };
-                    ScreenToClient(_parentWindow.Handle, ref clientPt);
-                    // ScreenToClient returns physical pixels, convert to DIPs
-                    var dpiScale = _parentWindow.DpiScale;
-                    x = clientPt.X / dpiScale;
-                    y = clientPt.Y / dpiScale;
+                    if (OperatingSystem.IsWindows())
+                    {
+                        GetCursorPos(out var cursorPt);
+                        var clientPt = new POINT { X = cursorPt.X, Y = cursorPt.Y };
+                        ScreenToClient(_parentWindow.Handle, ref clientPt);
+                        // ScreenToClient returns physical pixels, convert to DIPs
+                        var dpiScale = _parentWindow.DpiScale;
+                        x = clientPt.X / dpiScale;
+                        y = clientPt.Y / dpiScale;
+                    }
+                    else
+                    {
+                        // user32 is unavailable and Window.Handle is a platform
+                        // handle here (never zero), so this branch must not be
+                        // treated as Windows-only by the handle check. The input
+                        // pipeline already records the pointer position of the
+                        // window that received the triggering event in
+                        // window-local DIPs — exactly the coordinate space this
+                        // method returns.
+                        var mousePos = Jalium.UI.Input.Mouse.Position;
+                        x = mousePos.X;
+                        y = mousePos.Y;
+                    }
                 }
                 break;
 
@@ -1100,6 +1116,32 @@ public partial class Popup : FrameworkElement
 
     private Rect GetWorkingArea()
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            // No monitor-enumeration ABI on Linux/Android yet, and popups are
+            // hosted in the in-process overlay there, so the parent window's
+            // client area *is* the usable area. Return it in the same physical
+            // coordinate space WindowLocalToScreen degrades to (window origin =
+            // screen origin) so overflow math stays consistent.
+            var window = _parentWindow;
+            if (window is null)
+                return new Rect(0, 0, 1920, 1080);
+
+            var dpiScale = window.DpiScale;
+            if (double.IsNaN(dpiScale) || double.IsInfinity(dpiScale) || dpiScale <= 0)
+                dpiScale = 1.0;
+
+            var width = window.ActualWidth > 0 ? window.ActualWidth : window.Width;
+            var height = window.ActualHeight > 0 ? window.ActualHeight : window.Height;
+            if (double.IsNaN(width) || double.IsInfinity(width) || width <= 0 ||
+                double.IsNaN(height) || double.IsInfinity(height) || height <= 0)
+            {
+                return new Rect(0, 0, 1920, 1080);
+            }
+
+            return new Rect(0, 0, width * dpiScale, height * dpiScale);
+        }
+
         var monitor = MonitorFromWindow(_parentWindow!.Handle, MONITOR_DEFAULTTONEAREST);
         MONITORINFO info = new() { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
         if (GetMonitorInfo(monitor, ref info))
@@ -1114,9 +1156,17 @@ public partial class Popup : FrameworkElement
 
     private Point WindowLocalToScreen(Point windowLocal)
     {
-        // Input is DIPs 閳?convert to physical pixels before ClientToScreen
+        // Input is DIPs — convert to physical pixels before ClientToScreen
         var dpiScale = _parentWindow!.DpiScale;
         var pt = new POINT { X = (int)(windowLocal.X * dpiScale), Y = (int)(windowLocal.Y * dpiScale) };
+        if (!OperatingSystem.IsWindows())
+        {
+            // Degraded model matching GetWorkingArea above: treat the window
+            // origin as the screen origin (physical pixels). Popups stay in the
+            // overlay on these platforms, so window-relative math is sufficient.
+            return new Point(pt.X, pt.Y);
+        }
+
         ClientToScreen(_parentWindow!.Handle, ref pt);
         return new Point(pt.X, pt.Y);
     }

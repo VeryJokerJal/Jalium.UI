@@ -33,6 +33,7 @@
   <ItemGroup>
     <Compile Include="..\Jalium.UI.Tests\LinuxDesktopPortalTests.cs" Link="LinuxDesktopPortalTests.cs" />
     <Compile Include="..\Jalium.UI.Tests\LinuxDragDropTests.cs" Link="LinuxDragDropTests.cs" />
+    <Compile Include="..\Jalium.UI.Tests\LinuxPtyTests.cs" Link="LinuxPtyTests.cs" />
     <Compile Include="..\Jalium.UI.Tests\NativePlatformAbiTests.cs" Link="NativePlatformAbiTests.cs" />
     <Compile Include="..\Jalium.UI.Tests\NativeSurfaceDescriptorTests.cs" Link="NativeSurfaceDescriptorTests.cs" />
     <Compile Include="..\Jalium.UI.Tests\RenderTargetTestNative.cs" Link="RenderTargetTestNative.cs" />

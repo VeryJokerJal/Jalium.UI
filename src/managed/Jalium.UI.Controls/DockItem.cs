@@ -137,8 +137,11 @@ public partial class DockItem : HeaderedContentControl
     // Floating window drag state (used when dragging a tab in a floating window)
     private bool _isDraggingFloatingWindow;
     private Window? _floatingDragWindow;
-    private POINT _floatingDragStartCursor;
-    private RECT _floatingDragStartWindowRect;
+    // Screen-space drag anchors in physical pixels. Managed types (not POINT/
+    // RECT) because these are fed by the platform-dispatched helpers on
+    // Window — user32 is not reachable on Linux.
+    private Point _floatingDragStartCursor;
+    private Rect _floatingDragStartWindowRect;
     private FloatingRestoreContext? _floatingRestoreContext;
     private Window? _floatingWindowOwner;
     private EventHandler<System.ComponentModel.CancelEventArgs>? _floatingWindowClosingHandler;
@@ -302,21 +305,21 @@ public partial class DockItem : HeaderedContentControl
 
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        // Floating window drag 閳?move the window and update dock highlights
+        // Floating window drag — move the window and update dock highlights
         if (_isDraggingFloatingWindow && _floatingDragWindow != null)
         {
-            GetCursorPos(out var cursor);
+            if (!Window.TryGetCursorScreenPoint(out var cursor))
+                return;
 
             var dx = cursor.X - _floatingDragStartCursor.X;
             var dy = cursor.Y - _floatingDragStartCursor.Y;
 
-            SetWindowPos(_floatingDragWindow.Handle, nint.Zero,
-                _floatingDragStartWindowRect.left + dx,
-                _floatingDragStartWindowRect.top + dy,
-                0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            _floatingDragWindow.TryMoveWindowToScreenPoint(
+                (int)(_floatingDragStartWindowRect.X + dx),
+                (int)(_floatingDragStartWindowRect.Y + dy));
 
             // Update dock target highlight
-            DockManager.UpdateHighlight(cursor.X, cursor.Y, OwnerPanel);
+            DockManager.UpdateHighlight((int)cursor.X, (int)cursor.Y, OwnerPanel);
 
             e.Handled = true;
             return;
@@ -577,8 +580,12 @@ public partial class DockItem : HeaderedContentControl
         CaptureMouse();
         _isDraggingFloatingWindow = true;
 
-        GetCursorPos(out _floatingDragStartCursor);
-        GetWindowRect(_floatingDragWindow.Handle, out _floatingDragStartWindowRect);
+        if (!Window.TryGetCursorScreenPoint(out _floatingDragStartCursor) ||
+            !_floatingDragWindow.TryGetWindowScreenRect(out _floatingDragStartWindowRect))
+        {
+            _isDraggingFloatingWindow = false;
+            ReleaseMouseCapture();
+        }
     }
 
     /// <summary>
@@ -594,8 +601,14 @@ public partial class DockItem : HeaderedContentControl
 
         // Capture initial positions before CaptureMouse(), which may trigger
         // re-entrant mouse events that clear _floatingDragWindow.
-        GetCursorPos(out _floatingDragStartCursor);
-        GetWindowRect(floatingWindow.Handle, out _floatingDragStartWindowRect);
+        if (!Window.TryGetCursorScreenPoint(out _floatingDragStartCursor) ||
+            !floatingWindow.TryGetWindowScreenRect(out _floatingDragStartWindowRect))
+        {
+            _isDraggingFloatingWindow = false;
+            _floatingDragWindow = null;
+            return;
+        }
+
         CaptureMouse();
     }
 
@@ -611,8 +624,8 @@ public partial class DockItem : HeaderedContentControl
         // Final position update with the actual cursor location at release time,
         // so a stale _currentDockPosition from an earlier mousemove doesn't cause
         // an unintended dock when the cursor has since moved off the indicator button.
-        GetCursorPos(out var finalCursor);
-        DockManager.UpdateHighlight(finalCursor.X, finalCursor.Y, OwnerPanel);
+        if (Window.TryGetCursorScreenPoint(out var finalCursor))
+            DockManager.UpdateHighlight((int)finalCursor.X, (int)finalCursor.Y, OwnerPanel);
 
         var (targetPanel, targetLayout, dockPosition) = DockManager.FinishHighlight();
 
@@ -820,8 +833,10 @@ public partial class DockItem : HeaderedContentControl
         // Remove this DockItem from the panel
         panel.CloseItem(this);
 
-        // Get screen cursor position for window placement
-        GetCursorPos(out var cursorPt);
+        // Get screen cursor position for window placement; fall back to a fixed
+        // offset when the platform cannot report it (headless, early startup).
+        if (!Window.TryGetCursorScreenPoint(out var cursorPt))
+            cursorPt = new Point(100, 100);
 
         // Create floating window
         var floatingWindow = new Window
@@ -854,11 +869,20 @@ public partial class DockItem : HeaderedContentControl
 
             var physX = (int)(cursorPt.X - tabMidX * dpi);
             var physY = (int)(cursorPt.Y - tabStripMidY * dpi);
-            var physW = (int)(400 * dpi);
-            var physH = (int)(300 * dpi);
-            SetWindowPos(floatingWindow.Handle, nint.Zero,
-                physX, physY, physW, physH,
-                SWP_NOZORDER | SWP_NOACTIVATE);
+            if (OperatingSystem.IsWindows())
+            {
+                var physW = (int)(400 * dpi);
+                var physH = (int)(300 * dpi);
+                SetWindowPos(floatingWindow.Handle, nint.Zero,
+                    physX, physY, physW, physH,
+                    SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            else
+            {
+                // Platform windows are created at the requested DIP size; only
+                // the origin needs adjusting here.
+                floatingWindow.TryMoveWindowToScreenPoint(physX, physY);
+            }
         }
 
         // Immediately start floating drag on the new DockItem so user can

@@ -110,8 +110,9 @@ internal static partial class DockManager
     {
         if (window == null || window.Handle == nint.Zero) return null;
 
-        var clientOrigin = new POINT { X = 0, Y = 0 };
-        if (!ClientToScreen(window.Handle, ref clientOrigin))
+        // Platform-dispatched: ClientToScreen on Windows, the native window
+        // position ABI elsewhere (user32 is unreachable on Linux).
+        if (!window.TryGetClientOriginOnScreen(out var clientOrigin))
             return null;
 
         var dpi = window.DpiScale;

@@ -155,6 +155,18 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         return h;
     }
 
+    public void GetPosition(out int x, out int y)
+    {
+        if (_handle == nint.Zero)
+        {
+            x = 0;
+            y = 0;
+            return;
+        }
+
+        NativeMethods.WindowGetPosition(_handle, out x, out y);
+    }
+
     public void SetState(WindowState state)
     {
         if (_handle != nint.Zero)

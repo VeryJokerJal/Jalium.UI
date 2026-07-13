@@ -152,4 +152,82 @@ public sealed class LinuxDesktopPortalTests
         Assert.Equal(LinuxPortalResponseStatus.Unavailable, response.Status);
         Assert.NotNull(response.Error);
     }
+
+    [Fact]
+    public void FileChooserOptions_ProduceStructurallyBalancedGVariantText()
+    {
+        // Substring assertions cannot catch container-nesting mistakes such as
+        // "<[…>]" (which once shipped and broke every filtered dialog on Linux
+        // because g_variant_parse rejects the whole options dictionary), so we
+        // validate the full text structurally.
+        var options = new LinuxPortalFileChooserOptions(
+            "Open",
+            Save: false,
+            Multiple: true,
+            Directory: false,
+            CurrentFolder: "/tmp/data",
+            CurrentName: null,
+            Filters:
+            [
+                ("Images", "*.png;*.jpg"),
+                ("All files", "*")
+            ],
+            FilterIndex: 1);
+
+        var value = LinuxDesktopPortal.BuildFileChooserOptions(options, "jalium_balanced");
+
+        AssertBalancedGVariantText(value);
+        Assert.Contains(
+            "'filters': <[('Images', [(uint32 0, '*.png'), (uint32 0, '*.jpg')]), " +
+            "('All files', [(uint32 0, '*')])]>",
+            value,
+            StringComparison.Ordinal);
+    }
+
+    private static void AssertBalancedGVariantText(string text)
+    {
+        var stack = new Stack<char>();
+        var inString = false;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (inString)
+            {
+                if (c == '\\')
+                {
+                    i++;
+                    continue;
+                }
+
+                if (c == '\'')
+                    inString = false;
+                continue;
+            }
+
+            switch (c)
+            {
+                case '\'':
+                    inString = true;
+                    break;
+                case '<' or '[' or '(' or '{':
+                    stack.Push(c);
+                    break;
+                case '>':
+                    Assert.True(stack.Count > 0 && stack.Pop() == '<', $"unbalanced '>' at index {i} in: {text}");
+                    break;
+                case ']':
+                    Assert.True(stack.Count > 0 && stack.Pop() == '[', $"unbalanced ']' at index {i} in: {text}");
+                    break;
+                case ')':
+                    Assert.True(stack.Count > 0 && stack.Pop() == '(', $"unbalanced ')' at index {i} in: {text}");
+                    break;
+                case '}':
+                    Assert.True(stack.Count > 0 && stack.Pop() == '{', $"unbalanced '}}' at index {i} in: {text}");
+                    break;
+            }
+        }
+
+        Assert.False(inString, "unterminated string literal in GVariant text");
+        Assert.True(stack.Count == 0, $"unclosed containers remain: {string.Join(", ", stack)}");
+    }
 }

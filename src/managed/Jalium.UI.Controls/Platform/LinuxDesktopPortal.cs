@@ -253,7 +253,7 @@ internal static partial class LinuxDesktopPortal
         var filters = BuildFilters(options.Filters);
         if (filters.Count > 0)
         {
-            entries.Add($"'filters': <[{string.Join(", ", filters)}>]");
+            entries.Add($"'filters': <[{string.Join(", ", filters)}]>");
             var selectedIndex = Math.Clamp(options.FilterIndex - 1, 0, filters.Count - 1);
             entries.Add($"'current_filter': <{filters[selectedIndex]}>");
         }

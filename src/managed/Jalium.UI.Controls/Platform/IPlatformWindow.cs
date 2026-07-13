@@ -25,6 +25,9 @@ internal interface IPlatformWindow : IDisposable
     int GetWidth();
     int GetHeight();
 
+    /// <summary>Gets the window origin in screen coordinates (physical pixels).</summary>
+    void GetPosition(out int x, out int y);
+
     void SetState(WindowState state);
     WindowState GetState();
 

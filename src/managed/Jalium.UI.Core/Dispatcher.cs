@@ -793,9 +793,15 @@ public sealed partial class Dispatcher : IDisposable
             }
             else
             {
-                // Cross-platform: drain dispatcher work then block until more arrives.
+                // Cross-platform: keep the window system serviced while this
+                // frame spins. Without polling, X11/Wayland input, resize,
+                // paint and IME events freeze for the entire nested wait
+                // (modal-style loops, DispatcherOperation.Wait).
                 while (frame.Continue)
                 {
+                    // Fully qualified: the unified Jalium.UI.Managed assembly compiles
+                    // this file alongside types that shadow the `Platform` prefix.
+                    Jalium.UI.Core.Platform.NativePlatformEventPump.PollEvents();
                     ProcessQueue();
                     if (!frame.Continue)
                         break;

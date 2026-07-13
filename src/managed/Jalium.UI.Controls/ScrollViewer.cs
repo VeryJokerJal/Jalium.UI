@@ -2797,8 +2797,15 @@ public partial class ScrollViewer : Control
 
     private static uint GetSystemWheelScrollLines()
     {
-        if (SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, out uint lines, 0))
+        // user32 is only reachable on Windows; Linux/Android wheel events flow
+        // through the same code path, so an unguarded P/Invoke here turned the
+        // first wheel tick on Linux into a DllNotFoundException.
+        if (OperatingSystem.IsWindows() &&
+            SystemParametersInfo(SPI_GETWHEELSCROLLLINES, 0, out uint lines, 0))
+        {
             return lines;
+        }
+
         return 3;
     }
 
