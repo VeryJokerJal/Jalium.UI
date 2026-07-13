@@ -19,14 +19,15 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if [ "$JALIUM_INSTALL_DOTNET" = 1 ]; then \
-      apt-get update; \
-      apt-get install -y --no-install-recommends clang curl zlib1g-dev; \
-      curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh; \
+      apt-get update && \
+      apt-get install -y --no-install-recommends clang curl ca-certificates zlib1g-dev libicu66 && \
+      curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh && \
       bash /tmp/dotnet-install.sh \
         --version "$JALIUM_DOTNET_SDK_VERSION" \
         --install-dir /usr/share/dotnet \
-        --no-path; \
-      ln -s /usr/share/dotnet/dotnet /usr/local/bin/dotnet; \
-      rm -f /tmp/dotnet-install.sh; \
+        --no-path && \
+      ln -sf /usr/share/dotnet/dotnet /usr/local/bin/dotnet && \
+      /usr/share/dotnet/dotnet --list-sdks && \
+      rm -f /tmp/dotnet-install.sh && \
       rm -rf /var/lib/apt/lists/*; \
     fi

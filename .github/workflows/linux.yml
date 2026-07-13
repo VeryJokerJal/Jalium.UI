@@ -2,7 +2,7 @@ name: Linux
 
 on:
   push:
-    branches: [main, preview-26.10.7]
+    branches: [master, preview-26.10.7]
   pull_request:
   workflow_dispatch:
 
@@ -160,7 +160,7 @@ jobs:
                 libx11-dev libxext-dev libxrandr-dev \
                 wayland-dev wayland-protocols xkeyboard-config-dev libxkbcommon-dev \
                 vulkan-loader-dev mesa-dri-gallium fontconfig-dev \
-                gstreamer-dev gst-plugins-base-dev \
+                gstreamer-dev gst-plugins-base-dev gst-plugins-good \
                 xvfb-run weston weston-backend-headless weston-shell-desktop
               bash eng/linux/build-native.sh "${{ matrix.rid }}" Release
               payload="src/native/bin/native/${{ matrix.rid }}/Release"
