@@ -589,6 +589,189 @@ internal static partial class LinuxDesktopPortal
     private static readonly GioNative.SignalCallback s_responseCallback = OnPortalResponse;
     private static readonly GioNative.DestroyNotify s_destroySignalState = DestroyPortalSignalState;
 
+    #region org.freedesktop.portal.Settings (system color scheme)
+
+    private static readonly object s_settingsGate = new();
+    private static readonly GioNative.SignalCallback s_settingChangedCallback = OnSettingChanged;
+    private static Action<uint>? s_colorSchemeChanged;
+    private static nint s_settingsConnection;
+    private static Thread? s_settingsPump;
+    private static volatile bool s_settingsPumpStop;
+
+    /// <summary>
+    /// Reads the desktop color-scheme preference through
+    /// org.freedesktop.portal.Settings: 0 = no preference, 1 = prefer dark,
+    /// 2 = prefer light. Returns null when the portal (or the key) is
+    /// unavailable.
+    /// </summary>
+    public static uint? TryReadColorScheme()
+    {
+        if (!OperatingSystem.IsLinux() || !GioNative.IsAvailable)
+            return null;
+
+        nint connection = 0;
+        nint parameters = 0;
+        nint reply = 0;
+        nint error = 0;
+        try
+        {
+            connection = GioNative.OpenSessionBus(out error);
+            if (connection == 0)
+                return null;
+            GioNative.FreeError(ref error);
+
+            const string parameterText = "('org.freedesktop.appearance', 'color-scheme')";
+            parameters = GioNative.ParseVariant(parameterText, out error);
+            if (parameters == 0)
+                return null;
+
+            reply = GioNative.CallSync(
+                connection, PortalDestination, PortalObjectPath,
+                "org.freedesktop.portal.Settings", "ReadOne",
+                parameters, timeoutMilliseconds: 3000, out error);
+            if (reply == 0)
+            {
+                // Older portals (< 1.16) only implement Read, which wraps the
+                // value in one more variant layer; the numeric parse below
+                // handles both shapes.
+                GioNative.FreeError(ref error);
+                parameters = GioNative.ParseVariant(parameterText, out error);
+                if (parameters == 0)
+                    return null;
+                reply = GioNative.CallSync(
+                    connection, PortalDestination, PortalObjectPath,
+                    "org.freedesktop.portal.Settings", "Read",
+                    parameters, timeoutMilliseconds: 3000, out error);
+                if (reply == 0)
+                    return null;
+            }
+
+            return ParseColorSchemeValue(GioNative.PrintVariant(reply));
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return null;
+        }
+        finally
+        {
+            GioNative.FreeError(ref error);
+            GioNative.UnrefVariant(ref reply);
+            GioNative.UnrefVariant(ref parameters);
+            GioNative.UnrefObject(ref connection);
+        }
+    }
+
+    /// <summary>
+    /// Subscribes to color-scheme changes (Settings.SettingChanged). The
+    /// callback runs on a background pump thread — marshal to the UI thread
+    /// before touching UI state. Returns false when the portal transport is
+    /// unavailable.
+    /// </summary>
+    public static bool TrySubscribeColorSchemeChanged(Action<uint> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        if (!OperatingSystem.IsLinux() || !GioNative.IsAvailable)
+            return false;
+
+        lock (s_settingsGate)
+        {
+            s_colorSchemeChanged += callback;
+            if (s_settingsConnection != 0)
+                return true;
+
+            nint error = 0;
+            try
+            {
+                var connection = GioNative.OpenSessionBus(out error);
+                if (connection == 0)
+                    return false;
+
+                _ = GioNative.SubscribeSettingChanged(connection);
+                s_settingsConnection = connection;
+
+                s_settingsPumpStop = false;
+                s_settingsPump = new Thread(static () =>
+                {
+                    // Non-blocking iteration so the pump coexists with the
+                    // request-scoped iteration inside RunRequest.
+                    while (!s_settingsPumpStop)
+                    {
+                        try
+                        {
+                            while (GioNative.IterateMainContext())
+                            {
+                            }
+                        }
+                        catch (Exception ex)
+                            when (ex is DllNotFoundException or EntryPointNotFoundException)
+                        {
+                            return;
+                        }
+
+                        Thread.Sleep(100);
+                    }
+                })
+                {
+                    IsBackground = true,
+                    Name = "Jalium.PortalSettingsPump",
+                };
+                s_settingsPump.Start();
+                return true;
+            }
+            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+            {
+                return false;
+            }
+            finally
+            {
+                GioNative.FreeError(ref error);
+            }
+        }
+    }
+
+    private static void OnSettingChanged(
+        nint connection,
+        nint senderName,
+        nint objectPath,
+        nint interfaceName,
+        nint signalName,
+        nint parameters,
+        nint userData)
+    {
+        try
+        {
+            var printed = GioNative.PrintVariant(parameters);
+            if (!printed.Contains("'org.freedesktop.appearance'", StringComparison.Ordinal) ||
+                !printed.Contains("'color-scheme'", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (ParseColorSchemeValue(printed) is { } scheme)
+                s_colorSchemeChanged?.Invoke(scheme);
+        }
+        catch
+        {
+            // Never allow an exception to cross the unmanaged callback boundary.
+        }
+    }
+
+    /// <summary>
+    /// Extracts the uint32 payload from a printed Settings value. Accepts every
+    /// wrapping the portal produces: "(uint32 1,)", "(&lt;uint32 1&gt;,)",
+    /// "(&lt;&lt;uint32 1&gt;&gt;,)" and the SettingChanged triple.
+    /// </summary>
+    internal static uint? ParseColorSchemeValue(string printedVariant)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(
+            printedVariant, @"uint32 (\d+)");
+        return match.Success && uint.TryParse(match.Groups[1].Value, out var value)
+            ? value
+            : null;
+    }
+
+    #endregion
+
     private static void DestroyPortalSignalState(nint userData)
     {
         try
@@ -713,6 +896,19 @@ internal static partial class LinuxDesktopPortal
                 s_responseCallback,
                 userData,
                 s_destroySignalState);
+
+        internal static uint SubscribeSettingChanged(nint connection) =>
+            g_dbus_connection_signal_subscribe(
+                connection,
+                PortalDestination,
+                "org.freedesktop.portal.Settings",
+                "SettingChanged",
+                PortalObjectPath,
+                null,
+                0,
+                s_settingChangedCallback,
+                nint.Zero,
+                null!);
 
         internal static void Unsubscribe(nint connection, uint subscription) =>
             g_dbus_connection_signal_unsubscribe(connection, subscription);

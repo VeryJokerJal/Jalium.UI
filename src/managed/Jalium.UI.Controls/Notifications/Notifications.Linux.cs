@@ -12,9 +12,48 @@ internal sealed class LinuxNotificationBackend : INotificationBackend
     private bool _initialized;
     private bool _daemonAvailable;
     private string? _initializationError;
-    private bool _disposed;
+    private volatile bool _disposed;
     private readonly Dictionary<uint, NotificationHandle> _activeNotifications = new();
     private uint _nextId;
+    private Thread? _glibPump;
+
+    /// <summary>
+    /// libnotify delivers action/closed signals through the default GLib main
+    /// context; without anyone iterating it the daemon shows the buttons but
+    /// clicks never reach the app. A background thread polls non-blockingly
+    /// (50 ms) so it can coexist with LinuxDesktopPortal, which temporarily
+    /// iterates the same context during a file-dialog request.
+    /// </summary>
+    private void EnsureGlibPump()
+    {
+        if (_glibPump != null)
+            return;
+
+        var pump = new Thread(() =>
+        {
+            while (!_disposed)
+            {
+                try
+                {
+                    while (LibNotify.g_main_context_iteration(0, 0) != 0)
+                    {
+                    }
+                }
+                catch (DllNotFoundException)
+                {
+                    return;
+                }
+
+                Thread.Sleep(50);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "Jalium.LibNotifyPump",
+        };
+        _glibPump = pump;
+        pump.Start();
+    }
 
     public bool IsSupported
     {
@@ -140,6 +179,12 @@ internal sealed class LinuxNotificationBackend : INotificationBackend
             PlatformId = id
         };
         _activeNotifications[id] = handle;
+
+        // Route daemon signals (action clicks, dismissal) back to this handle
+        // and make sure someone is pumping the GLib context they arrive on.
+        LibNotify.LiveNotifications[notification] = handle;
+        LibNotify.ConnectClosedSignal(notification);
+        EnsureGlibPump();
         return handle;
     }
 
@@ -153,6 +198,7 @@ internal sealed class LinuxNotificationBackend : INotificationBackend
         if (errorPtr != 0)
             LibNotify.g_error_free(errorPtr);
 
+        LibNotify.LiveNotifications.TryRemove(handle.NativeHandle, out _);
         _activeNotifications.Remove(handle.PlatformId);
     }
 
@@ -197,10 +243,16 @@ internal sealed class LinuxNotificationBackend : INotificationBackend
         if (_disposed) return;
         _disposed = true;
 
+        _glibPump?.Join(TimeSpan.FromMilliseconds(200));
+        _glibPump = null;
+
         foreach (var kv in _activeNotifications)
         {
             if (kv.Value.NativeHandle != 0)
+            {
+                LibNotify.LiveNotifications.TryRemove(kv.Value.NativeHandle, out _);
                 LibNotify.g_object_unref(kv.Value.NativeHandle);
+            }
         }
         _activeNotifications.Clear();
 
@@ -408,15 +460,67 @@ internal static class LibNotify
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void NotifyActionCallback(nint notification, nint action, nint userData);
 
-    // Keep a static delegate to prevent GC
+    // Closed signal: void (*)(NotifyNotification*, gpointer)
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void NotifyClosedCallback(nint notification, nint userData);
+
+    /// <summary>
+    /// Live notifications by NotifyNotification pointer. Callbacks arrive on
+    /// the GLib pump thread and route to the managed handle's events.
+    /// </summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<nint, NotificationHandle>
+        LiveNotifications = new();
+
+    // Keep static delegates to prevent GC
     public static readonly NotifyActionCallback ActionCallbackDelegate = OnActionCallback;
+    public static readonly NotifyClosedCallback ClosedCallbackDelegate = OnClosedCallback;
 
     private static void OnActionCallback(nint notification, nint action, nint userData)
     {
-        // Action callbacks are delivered on the GLib main loop thread.
-        // For now, the callback is a no-op placeholder; advanced routing
-        // can be added via a concurrent dictionary keyed by notification pointer.
+        if (!LiveNotifications.TryGetValue(notification, out var handle))
+            return;
+
+        var actionId = action != 0 ? Marshal.PtrToStringUTF8(action) : null;
+        // "default" is the freedesktop body-click action; surface it as a
+        // body activation (null ActionId) like the Windows toast backend.
+        if (string.Equals(actionId, "default", StringComparison.Ordinal))
+            actionId = null;
+
+        handle.RaiseActivated(new NotificationActivatedEventArgs { ActionId = actionId });
     }
+
+    private static void OnClosedCallback(nint notification, nint userData)
+    {
+        if (!LiveNotifications.TryRemove(notification, out var handle))
+            return;
+
+        // The backend keeps the sole reference (released in Hide/Dispose);
+        // this callback must not unref.
+        handle.RaiseDismissed(new NotificationDismissedEventArgs
+        {
+            Reason = NotificationDismissReason.UserCanceled,
+        });
+    }
+
+    public static void ConnectClosedSignal(nint notification)
+    {
+        _ = g_signal_connect_data(
+            notification, "closed",
+            Marshal.GetFunctionPointerForDelegate(ClosedCallbackDelegate),
+            nint.Zero, nint.Zero, 0);
+    }
+
+    [DllImport("libgobject-2.0.so.0", CallingConvention = CallingConvention.Cdecl)]
+    private static extern nuint g_signal_connect_data(
+        nint instance,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string detailedSignal,
+        nint callback,
+        nint data,
+        nint destroyData,
+        int connectFlags);
+
+    [DllImport("libglib-2.0.so.0", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int g_main_context_iteration(nint context, int mayBlock);
 
     [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
     public static extern void notify_notification_add_action(

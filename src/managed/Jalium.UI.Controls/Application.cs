@@ -410,6 +410,38 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         // without this right-click/press-and-hold menus silently never open.
         System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(ContextMenuService).TypeHandle);
 
+        // Follow the desktop light/dark preference on Linux
+        // (org.freedesktop.portal.Settings). Off the UI thread: the portal read
+        // is a D-Bus round-trip with a 3s ceiling and must not stall startup.
+        if (PlatformFactory.IsLinux)
+        {
+            var dispatcher = Dispatcher;
+            void ApplySystemScheme(uint scheme)
+            {
+                // Explicit ThemeMode (Light/Dark) pins the theme; only the
+                // default "None" follows the system.
+                if (_themeMode != ThemeMode.None || scheme is not (1 or 2))
+                    return;
+
+                var variant = scheme == 1 ? ThemeVariant.Dark : ThemeVariant.Light;
+                dispatcher?.BeginInvoke(() => ThemeManager.ApplyTheme(variant));
+            }
+
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    if (LinuxDesktopPortal.TryReadColorScheme() is { } scheme)
+                        ApplySystemScheme(scheme);
+                    _ = LinuxDesktopPortal.TrySubscribeColorSchemeChanged(ApplySystemScheme);
+                }
+                catch
+                {
+                    // Theme following is best-effort; never take down startup.
+                }
+            });
+        }
+
         // Optional ultra-low visible memory mode (off by default).
         _workingSetTrimController = WorkingSetTrimController.TryCreateFromEnvironment();
 
@@ -766,7 +798,22 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         if (PlatformFactory.IsWindows)
             PostQuitMessage(exitCode);
         else
+        {
+            if (PlatformFactory.IsAndroid)
+            {
+                // Close the Android Surface/Window transaction while this UI
+                // dispatcher is still alive. Once PlatformQuit returns the
+                // native loop may stop pumping immediately, so lifecycle calls
+                // must already see Stopping and must not Invoke this dispatcher.
+                if (!AndroidActivityBridge.MarkUiThreadStopping())
+                {
+                    Console.Error.WriteLine(
+                        "[Application] Android shutdown was deferred because Surface/Window teardown did not complete.");
+                    return;
+                }
+            }
             PlatformFactory.QuitMessageLoop(exitCode);
+        }
     }
 
     /// <summary>
