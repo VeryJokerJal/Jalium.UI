@@ -1,4 +1,5 @@
 using Jalium.UI.Automation;
+using Jalium.UI.Automation.Peers;
 using Jalium.UI.Controls.Automation.AtSpi;
 using Jalium.UI.Controls.Automation;
 

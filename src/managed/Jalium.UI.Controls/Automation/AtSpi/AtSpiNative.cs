@@ -285,6 +285,8 @@ internal static class AtSpiNative
 
     internal static int GetDirectInt32(nint value) => value == 0 ? 0 : g_variant_get_int32(value);
 
+    internal static double GetDirectDouble(nint value) => value == 0 ? 0 : g_variant_get_double(value);
+
     internal static bool GetBoolean(nint tuple, int index)
     {
         nint child = g_variant_get_child_value(tuple, (nuint)index);
@@ -609,6 +611,9 @@ internal static class AtSpiNative
 
     [DllImport(Glib, CallingConvention = CallingConvention.Cdecl)]
     private static extern int g_variant_get_int32(nint value);
+
+    [DllImport(Glib, CallingConvention = CallingConvention.Cdecl)]
+    private static extern double g_variant_get_double(nint value);
 
     [DllImport(Glib, CallingConvention = CallingConvention.Cdecl)]
     private static extern uint g_variant_get_uint32(nint value);

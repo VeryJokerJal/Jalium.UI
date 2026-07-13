@@ -17,6 +17,8 @@ internal static class AtSpiAccessibilityBridge
     private const string ComponentInterface = "org.a11y.atspi.Component";
     private const string ActionInterface = "org.a11y.atspi.Action";
     private const string TextInterface = "org.a11y.atspi.Text";
+    private const string ValueInterface = "org.a11y.atspi.Value";
+    private const string EditableTextInterface = "org.a11y.atspi.EditableText";
     private const string ApplicationInterface = "org.a11y.atspi.Application";
     private const string ObjectEventInterface = "org.a11y.atspi.Event.Object";
     private const string WindowEventInterface = "org.a11y.atspi.Event.Window";
@@ -159,6 +161,7 @@ internal static class AtSpiAccessibilityBridge
             ComponentInterface => HandleComponentMethod(node, methodName, parameters),
             ActionInterface => HandleActionMethod(node, methodName, parameters),
             TextInterface => HandleTextMethod(node, methodName, parameters),
+            EditableTextInterface => HandleEditableTextMethod(node, methodName, parameters),
             ApplicationInterface => HandleApplicationMethod(methodName),
             _ => throw new NotSupportedException($"Unsupported AT-SPI interface '{interfaceName}'."),
         };
@@ -173,6 +176,7 @@ internal static class AtSpiAccessibilityBridge
             AccessibleInterface => GetAccessibleProperty(node, propertyName),
             ActionInterface => GetActionProperty(node, propertyName),
             TextInterface => GetTextProperty(node, propertyName),
+            ValueInterface => GetValueProperty(node, propertyName),
             ApplicationInterface => GetApplicationProperty(propertyName),
             ComponentInterface when propertyName == "version" => "uint32 1",
             _ => throw new NotSupportedException($"Unsupported AT-SPI property '{interfaceName}.{propertyName}'."),
@@ -192,7 +196,111 @@ internal static class AtSpiAccessibilityBridge
             return true;
         }
 
+        if (interfaceName == ValueInterface && propertyName == "CurrentValue")
+        {
+            var node = NodeFromUserData(userData);
+            var newValue = AtSpiNative.GetDirectDouble(value);
+            return node.TryInvoke(peer =>
+            {
+                if (peer.GetPattern(PatternInterface.RangeValue) is
+                        IRangeValueProvider { IsReadOnly: false } provider)
+                {
+                    provider.SetValue(newValue);
+                }
+            });
+        }
+
         return false;
+    }
+
+    private static string GetValueProperty(AtSpiNode node, string property)
+    {
+        if (property == "version")
+            return "uint32 1";
+
+        var (minimum, maximum, current, increment) = node.Invoke(() =>
+            node.Peer!.GetPattern(PatternInterface.RangeValue) is IRangeValueProvider provider
+                ? (provider.Minimum, provider.Maximum, provider.Value, provider.SmallChange)
+                : (0.0, 0.0, 0.0, 0.0));
+
+        static string Format(double value) =>
+            double.IsFinite(value)
+                ? value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)
+                : "0";
+
+        return property switch
+        {
+            "MinimumValue" => $"double {Format(minimum)}",
+            "MaximumValue" => $"double {Format(maximum)}",
+            "CurrentValue" => $"double {Format(current)}",
+            "MinimumIncrement" => $"double {Format(increment)}",
+            _ => throw new NotSupportedException($"Unsupported Value property '{property}'."),
+        };
+    }
+
+    private static string HandleEditableTextMethod(AtSpiNode node, string method, nint parameters)
+    {
+        bool Apply(Func<string, string?> transform)
+        {
+            return node.TryInvoke(peer =>
+            {
+                if (peer.GetPattern(PatternInterface.Value) is not
+                        IValueProvider { IsReadOnly: false } provider)
+                {
+                    return;
+                }
+
+                if (transform(provider.Value ?? string.Empty) is { } updated)
+                    provider.SetValue(updated);
+            });
+        }
+
+        switch (method)
+        {
+            case "SetTextContents":
+            {
+                string text = AtSpiNative.GetString(parameters, 0);
+                return $"({Bool(Apply(_ => text))},)";
+            }
+
+            case "InsertText":
+            {
+                int position = AtSpiNative.GetInt32(parameters, 0);
+                string text = AtSpiNative.GetString(parameters, 1);
+                int length = AtSpiNative.GetInt32(parameters, 2);
+                if (length >= 0 && length < text.Length)
+                    text = text[..length];
+                bool ok = Apply(current =>
+                {
+                    var offset = Math.Clamp(position, 0, current.Length);
+                    return current.Insert(offset, text);
+                });
+                return $"({Bool(ok)},)";
+            }
+
+            case "DeleteText":
+            {
+                int start = AtSpiNative.GetInt32(parameters, 0);
+                int end = AtSpiNative.GetInt32(parameters, 1);
+                bool ok = Apply(current =>
+                {
+                    var from = Math.Clamp(Math.Min(start, end), 0, current.Length);
+                    var to = Math.Clamp(Math.Max(start, end), 0, current.Length);
+                    return current.Remove(from, to - from);
+                });
+                return $"({Bool(ok)},)";
+            }
+
+            case "CopyText":
+            case "CutText":
+            case "PasteText":
+                // Clipboard-coupled operations are not implemented yet; AT can
+                // fall back to SetTextContents/InsertText/DeleteText.
+                return "(false,)";
+
+            default:
+                throw new NotSupportedException($"Unsupported EditableText method '{method}'.");
+        }
     }
 
     private static bool EnsureStarted()
@@ -303,6 +411,8 @@ internal static class AtSpiAccessibilityBridge
         var interfaces = new List<string> { AccessibleInterface, ComponentInterface };
         if (descriptor.HasAction) interfaces.Add(ActionInterface);
         if (descriptor.HasText) interfaces.Add(TextInterface);
+        if (descriptor.HasValue) interfaces.Add(ValueInterface);
+        if (descriptor.HasEditableText) interfaces.Add(EditableTextInterface);
 
         if (!RegisterNodeLocked(node, interfaces, out var error))
             throw new InvalidOperationException(error ?? $"Unable to register AT-SPI object {path}.");
@@ -319,7 +429,13 @@ internal static class AtSpiAccessibilityBridge
         bool hasText = peer.GetPattern(PatternInterface.Text) is ITextProvider ||
                        peer.GetPattern(PatternInterface.Value) is IValueProvider ||
                        role is AtSpiRole.Label or AtSpiRole.Text or AtSpiRole.Entry or AtSpiRole.PasswordText;
-        return new AtSpiNodeDescriptor(role, hasAction, hasText);
+        // org.a11y.atspi.Value: sliders, progress bars, scroll bars, spinners.
+        bool hasValue = peer.GetPattern(PatternInterface.RangeValue) is IRangeValueProvider;
+        // org.a11y.atspi.EditableText: writable Value pattern on a text role
+        // lets assistive tech type into TextBox/RichTextBox.
+        bool hasEditableText = hasText &&
+            peer.GetPattern(PatternInterface.Value) is IValueProvider { IsReadOnly: false };
+        return new AtSpiNodeDescriptor(role, hasAction, hasText, hasValue, hasEditableText);
     }
 
     private static bool RegisterNodeLocked(
@@ -1121,7 +1237,9 @@ internal static class AtSpiAccessibilityBridge
     private readonly record struct AtSpiNodeDescriptor(
         AtSpiRole Role,
         bool HasAction,
-        bool HasText);
+        bool HasText,
+        bool HasValue,
+        bool HasEditableText);
 
     private enum AtSpiActionKind
     {
@@ -1216,6 +1334,22 @@ internal static class AtSpiAccessibilityBridge
             <method name="GetDefaultAttributeSet"><arg direction="out" type="a{ss}"/></method>
             <method name="ScrollSubstringTo"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="in" type="u"/><arg direction="out" type="b"/></method>
             <method name="ScrollSubstringToPoint"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="in" type="u"/><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+          </interface>
+          <interface name="org.a11y.atspi.Value">
+            <property name="version" type="u" access="read"/>
+            <property name="MinimumValue" type="d" access="read"/>
+            <property name="MaximumValue" type="d" access="read"/>
+            <property name="MinimumIncrement" type="d" access="read"/>
+            <property name="CurrentValue" type="d" access="readwrite"/>
+          </interface>
+          <interface name="org.a11y.atspi.EditableText">
+            <property name="version" type="u" access="read"/>
+            <method name="SetTextContents"><arg direction="in" type="s"/><arg direction="out" type="b"/></method>
+            <method name="InsertText"><arg direction="in" type="i"/><arg direction="in" type="s"/><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="CopyText"><arg direction="in" type="i"/><arg direction="in" type="i"/></method>
+            <method name="CutText"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="DeleteText"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="PasteText"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
           </interface>
           <interface name="org.a11y.atspi.Application">
             <property name="ToolkitName" type="s" access="read"/>

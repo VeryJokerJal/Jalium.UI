@@ -31,6 +31,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Compile Include="..\Jalium.UI.Tests\AtSpiModelTests.cs" Link="AtSpiModelTests.cs" />
     <Compile Include="..\Jalium.UI.Tests\LinuxDesktopPortalTests.cs" Link="LinuxDesktopPortalTests.cs" />
     <Compile Include="..\Jalium.UI.Tests\LinuxDragDropTests.cs" Link="LinuxDragDropTests.cs" />
     <Compile Include="..\Jalium.UI.Tests\LinuxPtyTests.cs" Link="LinuxPtyTests.cs" />
