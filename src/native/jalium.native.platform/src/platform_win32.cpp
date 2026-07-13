@@ -1080,4 +1080,40 @@ JaliumResult jalium_drag_begin(
     return JALIUM_ERROR_NOT_SUPPORTED;
 }
 
+// Window-management extensions: the Windows managed layer talks to Win32
+// directly (HWND path, PlatformFactory returns no native window there), so
+// these exist for symbol compatibility only.
+int32_t jalium_platform_get_monitor_count(void) { return 0; }
+
+int32_t jalium_platform_get_monitor_info(int32_t, JaliumMonitorInfo* info)
+{
+    if (info) *info = JaliumMonitorInfo{};
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_min_max_size(JaliumPlatformWindow*, int32_t, int32_t, int32_t, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_begin_move_drag(JaliumPlatformWindow*)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_begin_resize_drag(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_icon(JaliumPlatformWindow*, const uint32_t*, int32_t, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_topmost(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
 #endif // _WIN32

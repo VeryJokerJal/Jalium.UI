@@ -167,6 +167,34 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         NativeMethods.WindowGetPosition(_handle, out x, out y);
     }
 
+    public void SetMinMaxSize(int minWidth, int minHeight, int maxWidth, int maxHeight)
+    {
+        if (_handle != nint.Zero)
+            _ = NativeMethods.WindowSetMinMaxSize(_handle, minWidth, minHeight, maxWidth, maxHeight);
+    }
+
+    public bool BeginMoveDrag()
+    {
+        return _handle != nint.Zero && NativeMethods.WindowBeginMoveDrag(_handle) == 0;
+    }
+
+    public bool BeginResizeDrag(int edge)
+    {
+        return _handle != nint.Zero && NativeMethods.WindowBeginResizeDrag(_handle, edge) == 0;
+    }
+
+    public bool SetIcon(uint[]? bgraPixels, int width, int height)
+    {
+        return _handle != nint.Zero &&
+               NativeMethods.WindowSetIcon(_handle, bgraPixels, width, height) == 0;
+    }
+
+    public bool SetTopmost(bool topmost)
+    {
+        return _handle != nint.Zero &&
+               NativeMethods.WindowSetTopmost(_handle, topmost ? 1 : 0) == 0;
+    }
+
     public void SetState(WindowState state)
     {
         if (_handle != nint.Zero)
@@ -241,13 +269,15 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
         if (eventPtr == nint.Zero || userData == nint.Zero)
             return;
 
-        var handle = GCHandle.FromIntPtr(userData);
-        if (!handle.IsAllocated)
-            return;
+        try
+        {
+            var handle = GCHandle.FromIntPtr(userData);
+            if (!handle.IsAllocated)
+                return;
 
-        var window = handle.Target as NativePlatformWindow;
-        if (window == null || window._eventHandler == null)
-            return;
+            var window = handle.Target as NativePlatformWindow;
+            if (window == null || window._eventHandler == null)
+                return;
 
         // Marshal the native event
         var nativeEvt = Marshal.PtrToStructure<NativePlatformEvent>(eventPtr);
@@ -393,7 +423,16 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
             }
         }
 
-        window._eventHandler(evt);
+            window._eventHandler(evt);
+        }
+        catch (Exception ex)
+        {
+            // Exceptions must never cross a reverse P/Invoke callback boundary:
+            // on Android that terminates the process instead of behaving like a
+            // normal managed dispatcher exception. Keep the native loop alive
+            // and surface enough context in logcat for diagnosis.
+            Console.Error.WriteLine($"[NativePlatformWindow] event callback failed: {ex}");
+        }
     }
 
     // ========================================================================

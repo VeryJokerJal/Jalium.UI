@@ -1531,6 +1531,48 @@ internal static partial class NativeMethods
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_monitor_refresh_rate")]
     internal static partial int WindowGetMonitorRefreshRate(nint window);
 
+    // --- Window management extensions ---
+
+    /// <summary>Mirror of the native JaliumMonitorInfo struct (jalium_platform.h).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeMonitorInfo
+    {
+        public int X;
+        public int Y;
+        public int Width;
+        public int Height;
+        public int WorkX;
+        public int WorkY;
+        public int WorkWidth;
+        public int WorkHeight;
+        public float Scale;
+        public int RefreshRate;
+        public int IsPrimary;
+    }
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_get_monitor_count")]
+    internal static partial int PlatformGetMonitorCount();
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_get_monitor_info")]
+    internal static partial int PlatformGetMonitorInfo(int index, out NativeMonitorInfo info);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_min_max_size")]
+    internal static partial int WindowSetMinMaxSize(
+        nint window, int minWidth, int minHeight, int maxWidth, int maxHeight);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_begin_move_drag")]
+    internal static partial int WindowBeginMoveDrag(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_begin_resize_drag")]
+    internal static partial int WindowBeginResizeDrag(nint window, int edge);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_icon")]
+    internal static partial int WindowSetIcon(
+        nint window, [In] uint[]? bgraPixels, int width, int height);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_topmost")]
+    internal static partial int WindowSetTopmost(nint window, int topmost);
+
     // --- Event Loop ---
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_run_message_loop")]

@@ -540,6 +540,83 @@ JALIUM_PLATFORM_API float jalium_window_get_dpi_scale(
 JALIUM_PLATFORM_API int32_t jalium_window_get_monitor_refresh_rate(
     JaliumPlatformWindow* window);
 
+/// Describes one attached monitor. Coordinates are physical pixels in the
+/// global desktop space (X11 root / Win32 virtual screen). Wayland has no
+/// global positions; outputs report their advertised logical geometry there.
+typedef struct JaliumMonitorInfo {
+    int32_t x;
+    int32_t y;
+    int32_t width;
+    int32_t height;
+    int32_t workX;
+    int32_t workY;
+    int32_t workWidth;
+    int32_t workHeight;
+    float   scale;
+    int32_t refreshRate;
+    int32_t isPrimary;
+} JaliumMonitorInfo;
+
+/// Returns the number of attached monitors (0 when enumeration is unavailable).
+JALIUM_PLATFORM_API int32_t jalium_platform_get_monitor_count(void);
+
+/// Fills info for the monitor at index (0-based). Returns JALIUM_OK, or
+/// JALIUM_ERROR_INVALID_ARGUMENT for an out-of-range index / null info.
+JALIUM_PLATFORM_API int32_t jalium_platform_get_monitor_info(
+    int32_t index,
+    JaliumMonitorInfo* info);
+
+// ============================================================================
+// Window management extensions
+// ============================================================================
+
+/// Sets the window's minimum and maximum client size in physical pixels.
+/// Pass 0 for any bound to leave it unconstrained.
+JALIUM_PLATFORM_API int32_t jalium_window_set_min_max_size(
+    JaliumPlatformWindow* window,
+    int32_t minWidth,
+    int32_t minHeight,
+    int32_t maxWidth,
+    int32_t maxHeight);
+
+/// Starts an interactive, window-system-driven move of the window. Must be
+/// called from the handler of a mouse button press (the last press provides
+/// the pointer serial/coordinates handed to the window manager).
+JALIUM_PLATFORM_API int32_t jalium_window_begin_move_drag(
+    JaliumPlatformWindow* window);
+
+/// Edges for jalium_window_begin_resize_drag, matching xdg_toplevel and
+/// _NET_WM_MOVERESIZE directions.
+typedef enum JaliumResizeEdge {
+    JALIUM_RESIZE_EDGE_TOP          = 1,
+    JALIUM_RESIZE_EDGE_BOTTOM      = 2,
+    JALIUM_RESIZE_EDGE_LEFT        = 4,
+    JALIUM_RESIZE_EDGE_TOP_LEFT    = 5,
+    JALIUM_RESIZE_EDGE_BOTTOM_LEFT = 6,
+    JALIUM_RESIZE_EDGE_RIGHT       = 8,
+    JALIUM_RESIZE_EDGE_TOP_RIGHT   = 9,
+    JALIUM_RESIZE_EDGE_BOTTOM_RIGHT = 10,
+} JaliumResizeEdge;
+
+/// Starts an interactive, window-system-driven resize from the given edge.
+JALIUM_PLATFORM_API int32_t jalium_window_begin_resize_drag(
+    JaliumPlatformWindow* window,
+    int32_t edge);
+
+/// Sets the window icon from 32-bit BGRA pixels (row-major, premultiplication
+/// not required). Pass NULL/0 to clear. No-op on window systems without a
+/// per-window icon concept (Wayland).
+JALIUM_PLATFORM_API int32_t jalium_window_set_icon(
+    JaliumPlatformWindow* window,
+    const uint32_t* bgraPixels,
+    int32_t width,
+    int32_t height);
+
+/// Toggles always-on-top for the window where the window system supports it.
+JALIUM_PLATFORM_API int32_t jalium_window_set_topmost(
+    JaliumPlatformWindow* window,
+    int32_t topmost);
+
 // ============================================================================
 // Input State Polling
 // ============================================================================

@@ -164,11 +164,16 @@ public static partial class SystemParameters
     public static double MinimumHorizontalDragDistance => Math.Max(1, MetricDip(SM_CXDRAG, 4));
     public static double MinimumVerticalDragDistance => Math.Max(1, MetricDip(SM_CYDRAG, 4));
 
-    // Screen information.
-    public static double PrimaryScreenWidth => MetricDip(SM_CXSCREEN, 1920);
-    public static double PrimaryScreenHeight => MetricDip(SM_CYSCREEN, 1080);
-    public static double VirtualScreenWidth => MetricDip(SM_CXVIRTUALSCREEN, 1920);
-    public static double VirtualScreenHeight => MetricDip(SM_CYVIRTUALSCREEN, 1080);
+    // Screen information. Non-Windows platforms answer through the
+    // jalium.native.platform monitor ABI (XRandR / wl_output).
+    public static double PrimaryScreenWidth => GetPrimaryScreenDimensionDip(width: true, 1920);
+    public static double PrimaryScreenHeight => GetPrimaryScreenDimensionDip(width: false, 1080);
+    public static double VirtualScreenWidth => OperatingSystem.IsWindows()
+        ? MetricDip(SM_CXVIRTUALSCREEN, 1920)
+        : GetPrimaryScreenDimensionDip(width: true, 1920);
+    public static double VirtualScreenHeight => OperatingSystem.IsWindows()
+        ? MetricDip(SM_CYVIRTUALSCREEN, 1080)
+        : GetPrimaryScreenDimensionDip(width: false, 1080);
     public static double VirtualScreenLeft => MetricDipAllowZero(SM_XVIRTUALSCREEN, 0);
     public static double VirtualScreenTop => MetricDipAllowZero(SM_YVIRTUALSCREEN, 0);
     public static Rect WorkArea => GetWorkArea();

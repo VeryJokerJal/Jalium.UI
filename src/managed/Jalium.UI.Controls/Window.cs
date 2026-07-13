@@ -22,6 +22,20 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, IInputDispatcherHost, IAdornerLayerHost
 {
+    static Window()
+    {
+        // Platform windows (Linux/Android) enforce Min/Max size in the window
+        // system (WM_NORMAL_HINTS / xdg_toplevel hints); re-push whenever the
+        // constraint properties change. Win32 windows enforce these in
+        // WM_GETMINMAXINFO and ignore this path.
+        var pushConstraints = new PropertyChangedCallback(
+            static (d, _) => (d as Window)?.UpdatePlatformSizeConstraints());
+        MinWidthProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
+        MinHeightProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
+        MaxWidthProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
+        MaxHeightProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
+    }
+
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
     private static readonly bool DebugRender = IsEnvironmentSwitchEnabled("JALIUM_DEBUG_RENDER");
 
@@ -2726,8 +2740,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (_platformWindow != null)
         {
-            // Cross-platform: drag not directly supported by native platform lib yet
-            // TODO: Implement platform-specific drag move
+            // Window-system-driven move: _NET_WM_MOVERESIZE on X11,
+            // xdg_toplevel.move on Wayland. Must run while the triggering
+            // button press is still active — exactly the DragMove contract.
+            _ = _platformWindow.BeginMoveDrag();
             return;
         }
 
@@ -2924,6 +2940,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         CompleteManagedTeardown(nativeHandle: Handle, nativeDestroyed: false);
+    }
+
+    /// <summary>
+    /// Completes an Android process-level Activity shutdown without allowing a
+    /// user Closing handler to cancel native Window/GCHandle teardown. Surface
+    /// rendering must already have been detached before calling this method.
+    /// </summary>
+    internal bool CloseForAndroidShutdown()
+    {
+        if (!PlatformFactory.IsAndroid)
+            return false;
+        if (_managedTeardownCompleted)
+            return Handle == nint.Zero && _platformWindow == null;
+
+        _isClosing = true;
+        _isModal = false;
+        CompositionTarget.FrameStarting -= OnFrameStarting;
+        UpdateRenderableRegistration();
+        CompleteManagedTeardown(nativeHandle: Handle, nativeDestroyed: false);
+        return _managedTeardownCompleted && Handle == nint.Zero && _platformWindow == null;
     }
 
     /// <summary>
@@ -3186,11 +3222,46 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        // Cross-platform: skip Win32 monitor-based positioning
+        // Cross-platform positioning via the platform monitor ABI. Wayland has
+        // no client positioning (the native move is a no-op there and the
+        // compositor places windows); X11 honors it.
         if (_platformWindow != null)
         {
-            // On Linux/Android, startup location is handled by the window manager
-            // or defaults to (0,0). No monitor info APIs available.
+            switch (WindowStartupLocation)
+            {
+                case WindowStartupLocation.CenterScreen:
+                {
+                    if (Interop.NativeMethods.PlatformGetMonitorCount() > 0 &&
+                        Interop.NativeMethods.PlatformGetMonitorInfo(0, out var monitor) == 0 &&
+                        monitor.WorkWidth > 0 && monitor.WorkHeight > 0)
+                    {
+                        int winW = (int)(Width * _dpiScale);
+                        int winH = (int)(Height * _dpiScale);
+                        int x = monitor.WorkX + Math.Max(0, (monitor.WorkWidth - winW) / 2);
+                        int y = monitor.WorkY + Math.Max(0, (monitor.WorkHeight - winH) / 2);
+                        _platformWindow.Move(x, y);
+                    }
+
+                    break;
+                }
+
+                case WindowStartupLocation.CenterOwner:
+                {
+                    if (Owner is { } owner &&
+                        owner.TryGetWindowScreenRect(out var ownerRect) &&
+                        ownerRect.Width > 0 && ownerRect.Height > 0)
+                    {
+                        int winW = (int)(Width * _dpiScale);
+                        int winH = (int)(Height * _dpiScale);
+                        int x = (int)(ownerRect.X + (ownerRect.Width - winW) / 2);
+                        int y = (int)(ownerRect.Y + (ownerRect.Height - winH) / 2);
+                        _platformWindow.Move(x, y);
+                    }
+
+                    break;
+                }
+            }
+
             return;
         }
 
@@ -3509,7 +3580,37 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ScheduleRenderRecoveryRetry();
         }
 
+        UpdatePlatformSizeConstraints();
+
         OnSourceInitialized(EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Pushes Min/Max Width/Height down to the platform window as WM-enforced
+    /// size hints (WM_NORMAL_HINTS on X11, xdg_toplevel min/max on Wayland).
+    /// Windows enforces these in the WM_GETMINMAXINFO handler instead.
+    /// </summary>
+    internal void UpdatePlatformSizeConstraints()
+    {
+        if (_platformWindow == null)
+            return;
+
+        var scale = _dpiScale;
+        if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0)
+            scale = 1.0;
+
+        static int ToPhysical(double dip, double scale)
+        {
+            if (double.IsNaN(dip) || double.IsInfinity(dip) || dip <= 0)
+                return 0;
+            return Math.Max(1, (int)Math.Round(dip * scale));
+        }
+
+        _platformWindow.SetMinMaxSize(
+            ToPhysical(MinWidth, scale),
+            ToPhysical(MinHeight, scale),
+            ToPhysical(MaxWidth, scale),
+            ToPhysical(MaxHeight, scale));
     }
 
     /// <summary>
@@ -3820,14 +3921,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// render target before SurfaceHolder.surfaceDestroyed is allowed to return.
     /// Must run synchronously on the Jalium UI dispatcher.
     /// </summary>
-    internal void DetachAndroidSurface()
+    internal bool DetachAndroidSurface()
     {
         if (!PlatformFactory.IsAndroid)
         {
-            return;
+            return true;
         }
 
-        _dispatcher?.VerifyAccess();
+        try
+        {
+            _dispatcher?.VerifyAccess();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[AndroidSurface] Detach dispatcher check failed: {ex.Message}");
+            return false;
+        }
 
         lock (_renderLifecycleGate)
         {
@@ -3842,24 +3951,76 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // case a platform render worker is enabled later.  Returning while that
         // worker is still in Present would violate SurfaceHolder.Callback's
         // ownership contract.
-        if (!StopRenderThread() && _renderThread is { } stalledRenderThread &&
-            stalledRenderThread != Thread.CurrentThread)
+        if (!StopRenderThread())
         {
-            stalledRenderThread.Join();
-            _ = Interlocked.CompareExchange(ref _renderThread, null, stalledRenderThread);
-            lock (_rtChannelLock) { _rtPendingFrame = null; }
+            if (_renderThread is not { } stalledRenderThread ||
+                stalledRenderThread == Thread.CurrentThread)
+            {
+                return false;
+            }
+
+            try
+            {
+                stalledRenderThread.Join();
+                _ = Interlocked.CompareExchange(ref _renderThread, null, stalledRenderThread);
+                lock (_rtChannelLock) { _rtPendingFrame = null; }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[AndroidSurface] Render worker drain failed: {ex.Message}");
+                return false;
+            }
         }
 
+        bool detached = true;
         try
         {
             // Retained backend handles must be retired while the old target is
             // still alive; the drawing context is then closed before RT.Dispose.
             Visual.ReleaseRetainedLayersRecursive(this);
         }
-        finally
+        catch (Exception ex)
         {
-            ReleaseRenderResourcesAfterRenderThreadStopped();
+            detached = false;
+            Console.Error.WriteLine($"[AndroidSurface] Retained resource release failed: {ex.Message}");
         }
+
+        try { ReleaseDrawingContextBeforeRenderTargetDisposal(clearAllCaches: false); }
+        catch (Exception ex)
+        {
+            detached = false;
+            Console.Error.WriteLine($"[AndroidSurface] Drawing context release failed: {ex.Message}");
+        }
+
+        try { StopFramePacer(); }
+        catch (Exception ex)
+        {
+            detached = false;
+            Console.Error.WriteLine($"[AndroidSurface] Frame pacer stop failed: {ex.Message}");
+        }
+
+        try { StopExternalPresentPacing(); }
+        catch (Exception ex)
+        {
+            detached = false;
+            Console.Error.WriteLine($"[AndroidSurface] Present pacing stop failed: {ex.Message}");
+        }
+
+        var renderTarget = RenderTarget;
+        RenderTarget = null;
+        try { renderTarget?.Dispose(); }
+        catch (Exception ex)
+        {
+            // Retain the failed target so a later lifecycle retry cannot report
+            // success merely because the first attempt dropped the only handle.
+            RenderTarget = renderTarget;
+            detached = false;
+            Console.Error.WriteLine($"[AndroidSurface] RenderTarget disposal failed: {ex.Message}");
+        }
+
+        // Only a fully drained render worker and successful resource teardown
+        // authorizes AndroidActivityBridge to release the ANativeWindow ref.
+        return detached && (_renderThread == null || !_renderThread.IsAlive);
     }
 
     /// <summary>
@@ -5105,8 +5266,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (d is Window window && window.Handle != nint.Zero)
         {
-            // SetWindowPos with HWND_TOPMOST / HWND_NOTOPMOST
             bool topmost = e.NewValue is bool b && b;
+
+            if (window._platformWindow != null)
+            {
+                // X11 toggles _NET_WM_STATE_ABOVE; Wayland has no stacking
+                // control (compositor-owned) and reports unsupported.
+                _ = window._platformWindow.SetTopmost(topmost);
+                return;
+            }
+
+            // SetWindowPos with HWND_TOPMOST / HWND_NOTOPMOST
             nint insertAfter = topmost ? HWND_TOPMOST : HWND_NOTOPMOST;
             _ = SetWindowPos(window.Handle, insertAfter, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -8522,7 +8692,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // D3D12 now uses retained-mode dirty rects by default.
             // If a specific driver shows stale-buffer artifacts, the old behavior can be
             // restored with JALIUM_D3D12_FORCE_FULL_REPLAY=1.
-            bool requiresFullReplay = frameRenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12;
+            bool supportsPartialPresentation = frameRenderTarget.SupportsPartialPresentation;
+            bool requiresFullReplay = !supportsPartialPresentation ||
+                (frameRenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12);
+            if (!supportsPartialPresentation)
+            {
+                // A target that cannot preserve/seed its presented contents must
+                // never consume a flush assembled from dirty-history only.  Any
+                // stale flush armed by the previous render target is invalid too.
+                _partialPresentsToFlush = 0;
+            }
             // _rtActive 只在 UI 线程翻转（Start/StopRenderThread），帧首读入局部对本帧
             // 稳定；swap 条件与后面的分支必须用同一个值，防止中途翻转把捕获集晾在
             // render-thread 路径上。
@@ -9327,6 +9506,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void HandlePresentedFrameFlush(bool isFlushFrame)
     {
+        if (RenderTarget?.SupportsPartialPresentation != true)
+        {
+            _partialPresentsToFlush = 0;
+            return;
+        }
+
         if (isFlushFrame)
         {
             if (_partialPresentsToFlush > 0) _partialPresentsToFlush--;

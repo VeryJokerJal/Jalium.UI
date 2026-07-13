@@ -151,6 +151,28 @@ static bool g_pendingWaylandCommitSet = false;
 static zwp_text_input_manager_v1* g_waylandTextInputManagerV1 = nullptr;
 static zwp_text_input_v1* g_waylandTextInputV1 = nullptr;
 static uint32_t g_waylandTextInputSerialV1 = 0;
+
+// Attached wl_output tracking: feeds monitor enumeration and per-surface
+// HiDPI scale (wl_surface.enter tells us which output a window occupies).
+struct WaylandOutputInfo {
+    wl_output* output = nullptr;
+    uint32_t   registryName = 0;
+    int32_t    x = 0;
+    int32_t    y = 0;
+    int32_t    width = 0;        // current mode, physical px
+    int32_t    height = 0;
+    int32_t    scale = 1;
+    int32_t    refreshMilliHz = 0;
+};
+static std::vector<WaylandOutputInfo*> g_waylandOutputs;
+
+// Themed pointer cursors (wayland-cursor). wl_pointer.set_cursor only accepts
+// the serial of the latest pointer.enter, tracked separately from the general
+// input serial (button presses overwrite that one).
+static wl_cursor_theme* g_waylandCursorTheme = nullptr;
+static int g_waylandCursorThemeScale = 0;
+static wl_surface* g_waylandCursorSurface = nullptr;
+static uint32_t g_waylandPointerEnterSerial = 0;
 static int32_t g_waylandTextInputCursorV1 = 0;
 static bool g_waylandTextInputV1Active = false;
 #endif
@@ -214,6 +236,13 @@ struct JaliumPlatformWindow {
     uint64_t            dragSessionId = 0;
     uint32_t            dragSelectedEffect = JALIUM_DRAG_EFFECT_NONE;
 
+    // Anchor of the most recent mouse button press, used by the interactive
+    // move/resize ABI (_NET_WM_MOVERESIZE wants the press's root position and
+    // button; xdg_toplevel.move wants the press serial, kept globally).
+    int32_t             lastPressRootX = 0;
+    int32_t             lastPressRootY = 0;
+    uint32_t            lastPressButton = 0;
+
     // X11 XDND target state. These members stay inert for Wayland windows.
     Window              xdndSource = 0;
     uint32_t            xdndVersion = 0;
@@ -234,6 +263,17 @@ struct JaliumPlatformWindow {
     std::atomic<bool>   waylandPaintPending{false};
     std::atomic<bool>   waylandDispatchingPaint{false};
     bool                waylandActivated = false;
+
+    // Integer output scale of the wl_output this surface currently occupies.
+    // Window width/height (and every pointer coordinate we dispatch) are kept
+    // in physical pixels = compositor-logical * waylandScale, with
+    // wl_surface_set_buffer_scale telling the compositor buffers match. On a
+    // scale-1 compositor everything multiplies by 1 and behavior is identical
+    // to the pre-HiDPI code.
+    int32_t             waylandScale = 1;
+    // Compositor-logical size from the last xdg configure (0 until told).
+    int32_t             waylandLogicalWidth = 0;
+    int32_t             waylandLogicalHeight = 0;
 #endif
 
     void DispatchEvent(const JaliumPlatformEvent& evt)
@@ -1465,6 +1505,72 @@ static int32_t DispatchPendingWaylandPaints()
     return static_cast<int32_t>(pending.size());
 }
 
+static void ApplyWaylandScale(JaliumPlatformWindow* window, int32_t newScale)
+{
+    if (!window || newScale <= 0 || newScale == window->waylandScale)
+        return;
+
+    window->waylandScale = newScale;
+    window->dpiScale = static_cast<float>(newScale);
+    if (window->waylandSurface)
+        wl_surface_set_buffer_scale(window->waylandSurface, newScale);
+
+    JaliumPlatformEvent event{};
+    event.type = JALIUM_EVENT_DPI_CHANGED;
+    event.window = window;
+    event.dpiChanged.dpiX = 96.0f * static_cast<float>(newScale);
+    event.dpiChanged.dpiY = 96.0f * static_cast<float>(newScale);
+    window->DispatchEvent(event);
+
+    // Physical size = logical * scale; the logical size the compositor gave
+    // us is unchanged, but every physical-pixel consumer must re-size.
+    if (window->waylandLogicalWidth == 0 || window->waylandLogicalHeight == 0)
+    {
+        // Not configured yet: the seeded width/height were scale-1 physical,
+        // i.e. equal to logical.
+        window->waylandLogicalWidth = window->width;
+        window->waylandLogicalHeight = window->height;
+    }
+
+    const int32_t physicalWidth = window->waylandLogicalWidth * newScale;
+    const int32_t physicalHeight = window->waylandLogicalHeight * newScale;
+    if (physicalWidth != window->width || physicalHeight != window->height)
+    {
+        window->width = physicalWidth;
+        window->height = physicalHeight;
+        event = {};
+        event.type = JALIUM_EVENT_RESIZE;
+        event.window = window;
+        event.resize.width = physicalWidth;
+        event.resize.height = physicalHeight;
+        window->DispatchEvent(event);
+    }
+
+    DispatchWaylandPaint(window);
+}
+
+static void HandleSurfaceEnter(void* data, wl_surface*, wl_output* output)
+{
+    auto* window = static_cast<JaliumPlatformWindow*>(data);
+    for (WaylandOutputInfo* info : g_waylandOutputs)
+    {
+        if (info->output == output)
+        {
+            ApplyWaylandScale(window, info->scale);
+            break;
+        }
+    }
+}
+
+static void HandleSurfaceLeave(void*, wl_surface*, wl_output*) {}
+
+// v6 members (preferred_buffer_scale/transform) intentionally stay null via
+// aggregate initialization on newer headers.
+static const wl_surface_listener g_surfaceListener = {
+    HandleSurfaceEnter,
+    HandleSurfaceLeave,
+};
+
 static void HandleXdgSurfaceConfigure(void* data, xdg_surface* surface, uint32_t serial)
 {
     auto* window = static_cast<JaliumPlatformWindow*>(data);
@@ -1512,16 +1618,25 @@ static void HandleXdgToplevelConfigure(
         event.window = window;
         window->DispatchEvent(event);
     }
-    if (width > 0 && height > 0 && (width != window->width || height != window->height))
+    if (width > 0 && height > 0)
     {
-        window->width = width;
-        window->height = height;
-        JaliumPlatformEvent event{};
-        event.type = JALIUM_EVENT_RESIZE;
-        event.window = window;
-        event.resize.width = width;
-        event.resize.height = height;
-        window->DispatchEvent(event);
+        // xdg configure reports compositor-logical size; the window (and every
+        // consumer above native) works in physical pixels = logical * scale.
+        window->waylandLogicalWidth = width;
+        window->waylandLogicalHeight = height;
+        const int32_t physicalWidth = width * window->waylandScale;
+        const int32_t physicalHeight = height * window->waylandScale;
+        if (physicalWidth != window->width || physicalHeight != window->height)
+        {
+            window->width = physicalWidth;
+            window->height = physicalHeight;
+            JaliumPlatformEvent event{};
+            event.type = JALIUM_EVENT_RESIZE;
+            event.window = window;
+            event.resize.width = physicalWidth;
+            event.resize.height = physicalHeight;
+            window->DispatchEvent(event);
+        }
     }
 }
 
@@ -1736,8 +1851,10 @@ static void HandleDataDeviceEnter(void*, wl_data_device*, uint32_t serial,
     const auto iterator = g_waylandOffers.find(offer);
     g_waylandDragOffer = iterator == g_waylandOffers.end() ? nullptr : iterator->second;
     if (!g_waylandDragWindow || !g_waylandDragOffer) return;
-    g_waylandDragWindow->xdndX = static_cast<float>(wl_fixed_to_double(x));
-    g_waylandDragWindow->xdndY = static_cast<float>(wl_fixed_to_double(y));
+    g_waylandDragWindow->xdndX = static_cast<float>(wl_fixed_to_double(x)) *
+        static_cast<float>(g_waylandDragWindow->waylandScale);
+    g_waylandDragWindow->xdndY = static_cast<float>(wl_fixed_to_double(y)) *
+        static_cast<float>(g_waylandDragWindow->waylandScale);
     g_waylandDragWindow->dragSessionId =
         g_dragSessionCounter.fetch_add(1, std::memory_order_relaxed);
     g_waylandDragWindow->xdndAllowedEffects =
@@ -1773,8 +1890,10 @@ static void HandleDataDeviceMotion(void*, wl_data_device*, uint32_t,
                                    wl_fixed_t x, wl_fixed_t y)
 {
     if (!g_waylandDragWindow) return;
-    g_waylandDragWindow->xdndX = static_cast<float>(wl_fixed_to_double(x));
-    g_waylandDragWindow->xdndY = static_cast<float>(wl_fixed_to_double(y));
+    g_waylandDragWindow->xdndX = static_cast<float>(wl_fixed_to_double(x)) *
+        static_cast<float>(g_waylandDragWindow->waylandScale);
+    g_waylandDragWindow->xdndY = static_cast<float>(wl_fixed_to_double(y)) *
+        static_cast<float>(g_waylandDragWindow->waylandScale);
     g_waylandDragWindow->dragSelectedEffect = JALIUM_DRAG_EFFECT_NONE;
     DispatchWaylandDragEvent(JALIUM_EVENT_DRAG_OVER);
     ApplyWaylandTargetEffect();
@@ -2222,9 +2341,15 @@ static void HandlePointerEnter(void*, wl_pointer*, uint32_t serial, wl_surface* 
 {
     g_waylandInputSerial = serial;
     g_waylandPointerSerial = serial;
+    g_waylandPointerEnterSerial = serial;
     g_pointerFocus = WaylandWindowFromSurface(surface);
-    g_pointerX = static_cast<float>(wl_fixed_to_double(x));
-    g_pointerY = static_cast<float>(wl_fixed_to_double(y));
+    // Pointer coordinates arrive compositor-logical; everything above native
+    // works in physical pixels (= logical * per-surface buffer scale).
+    const float enterScale = g_pointerFocus
+        ? static_cast<float>(g_pointerFocus->waylandScale)
+        : 1.0f;
+    g_pointerX = static_cast<float>(wl_fixed_to_double(x)) * enterScale;
+    g_pointerY = static_cast<float>(wl_fixed_to_double(y)) * enterScale;
     if (!g_pointerFocus) return;
     JaliumPlatformEvent event{};
     event.type = JALIUM_EVENT_MOUSE_ENTER;
@@ -2246,8 +2371,11 @@ static void HandlePointerLeave(void*, wl_pointer*, uint32_t, wl_surface*)
 
 static void HandlePointerMotion(void*, wl_pointer*, uint32_t, wl_fixed_t x, wl_fixed_t y)
 {
-    g_pointerX = static_cast<float>(wl_fixed_to_double(x));
-    g_pointerY = static_cast<float>(wl_fixed_to_double(y));
+    const float motionScale = g_pointerFocus
+        ? static_cast<float>(g_pointerFocus->waylandScale)
+        : 1.0f;
+    g_pointerX = static_cast<float>(wl_fixed_to_double(x)) * motionScale;
+    g_pointerY = static_cast<float>(wl_fixed_to_double(y)) * motionScale;
     if (!g_pointerFocus) return;
     JaliumPlatformEvent event{};
     event.type = JALIUM_EVENT_MOUSE_MOVE;
@@ -2591,6 +2719,43 @@ static void HandleSeatCapabilities(void*, wl_seat* seat, uint32_t capabilities)
 static void HandleSeatName(void*, wl_seat*, const char*) {}
 static const wl_seat_listener g_seatListener = { HandleSeatCapabilities, HandleSeatName };
 
+static void HandleOutputGeometry(void* data, wl_output*, int32_t x, int32_t y,
+                                 int32_t /*physW*/, int32_t /*physH*/, int32_t /*subpixel*/,
+                                 const char*, const char*, int32_t /*transform*/)
+{
+    auto* info = static_cast<WaylandOutputInfo*>(data);
+    info->x = x;
+    info->y = y;
+}
+
+static void HandleOutputMode(void* data, wl_output*, uint32_t flags,
+                             int32_t width, int32_t height, int32_t refresh)
+{
+    if ((flags & WL_OUTPUT_MODE_CURRENT) == 0)
+        return;
+    auto* info = static_cast<WaylandOutputInfo*>(data);
+    info->width = width;
+    info->height = height;
+    info->refreshMilliHz = refresh;
+}
+
+static void HandleOutputDone(void*, wl_output*) {}
+
+static void HandleOutputScale(void* data, wl_output*, int32_t factor)
+{
+    auto* info = static_cast<WaylandOutputInfo*>(data);
+    info->scale = factor > 0 ? factor : 1;
+}
+
+// Trailing name/description members (wl_output v4 headers) stay null via
+// aggregate initialization, which older v3 headers simply don't have.
+static const wl_output_listener g_outputListener = {
+    HandleOutputGeometry,
+    HandleOutputMode,
+    HandleOutputDone,
+    HandleOutputScale,
+};
+
 static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
                                  const char* interface, uint32_t version)
 {
@@ -2642,9 +2807,30 @@ static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
         EnsureWaylandTextInputV1();
     }
 #endif
+    else if (strcmp(interface, wl_output_interface.name) == 0)
+    {
+        auto* info = new WaylandOutputInfo();
+        info->registryName = name;
+        info->output = static_cast<wl_output*>(
+            wl_registry_bind(registry, name, &wl_output_interface, std::min(version, 3u)));
+        wl_output_add_listener(info->output, &g_outputListener, info);
+        g_waylandOutputs.push_back(info);
+    }
 }
 
-static void HandleRegistryRemove(void*, wl_registry*, uint32_t) {}
+static void HandleRegistryRemove(void*, wl_registry*, uint32_t name)
+{
+    for (size_t i = 0; i < g_waylandOutputs.size(); ++i)
+    {
+        if (g_waylandOutputs[i]->registryName == name)
+        {
+            wl_output_destroy(g_waylandOutputs[i]->output);
+            delete g_waylandOutputs[i];
+            g_waylandOutputs.erase(g_waylandOutputs.begin() + static_cast<ptrdiff_t>(i));
+            return;
+        }
+    }
+}
 static const wl_registry_listener g_registryListener = { HandleRegistryGlobal, HandleRegistryRemove };
 
 static void ShutdownWayland()
@@ -2655,6 +2841,24 @@ static void ShutdownWayland()
     g_waylandDragWindow = nullptr;
     g_waylandDropPending = false;
     g_waylandDragMime.clear();
+    for (WaylandOutputInfo* info : g_waylandOutputs)
+    {
+        wl_output_destroy(info->output);
+        delete info;
+    }
+    g_waylandOutputs.clear();
+    if (g_waylandCursorSurface)
+    {
+        wl_surface_destroy(g_waylandCursorSurface);
+        g_waylandCursorSurface = nullptr;
+    }
+    if (g_waylandCursorTheme)
+    {
+        wl_cursor_theme_destroy(g_waylandCursorTheme);
+        g_waylandCursorTheme = nullptr;
+        g_waylandCursorThemeScale = 0;
+    }
+    g_waylandPointerEnterSerial = 0;
     StopWaylandRepeat();
     if (g_waylandRepeatFd >= 0)
     {
@@ -3047,6 +3251,8 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
             return nullptr;
         }
         wl_surface_set_user_data(win->waylandSurface, win);
+        // enter/leave drive per-output HiDPI scale; listener data == user data.
+        wl_surface_add_listener(win->waylandSurface, &g_surfaceListener, win);
         if (!CreateWaylandRole(win))
         {
             wl_surface_destroy(win->waylandSurface);
@@ -3072,7 +3278,8 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     swa.event_mask = ExposureMask | KeyPressMask | KeyReleaseMask |
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask |
                      StructureNotifyMask | FocusChangeMask |
-                     EnterWindowMask | LeaveWindowMask;
+                     EnterWindowMask | LeaveWindowMask |
+                     PropertyChangeMask; // _NET_WM_STATE changes → STATE_CHANGED
     swa.background_pixel = BlackPixel(g_display, g_screen);
 
     unsigned long valueMask = CWEventMask | CWBackPixel;
@@ -3298,6 +3505,10 @@ void jalium_window_resize(JaliumPlatformWindow* window, int32_t width, int32_t h
 #ifdef JALIUM_HAS_WAYLAND
     if (window && window->waylandSurface && width > 0 && height > 0)
     {
+        // Requested size is physical pixels; keep the logical mirror in sync
+        // so a later scale change re-derives the right physical size.
+        window->waylandLogicalWidth = width / window->waylandScale;
+        window->waylandLogicalHeight = height / window->waylandScale;
         if (window->width != width || window->height != height)
         {
             window->width = width;
@@ -3419,7 +3630,58 @@ JaliumWindowState jalium_window_get_state(JaliumPlatformWindow* window)
 #ifdef JALIUM_HAS_WAYLAND
     if (window && window->waylandSurface) return window->state;
 #endif
-    // TODO: Query _NET_WM_STATE atoms
+    if (!window || !g_display || !window->xwindow)
+        return JALIUM_WINDOW_STATE_NORMAL;
+
+    Atom netWmState = XInternAtom(g_display, "_NET_WM_STATE", False);
+    Atom netMaxH = XInternAtom(g_display, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+    Atom netMaxV = XInternAtom(g_display, "_NET_WM_STATE_MAXIMIZED_VERT", False);
+    Atom netFullscreen = XInternAtom(g_display, "_NET_WM_STATE_FULLSCREEN", False);
+    Atom netHidden = XInternAtom(g_display, "_NET_WM_STATE_HIDDEN", False);
+
+    bool maximizedH = false, maximizedV = false, fullscreen = false, hidden = false;
+
+    Atom actualType = None;
+    int actualFormat = 0;
+    unsigned long itemCount = 0, bytesAfter = 0;
+    unsigned char* data = nullptr;
+    if (XGetWindowProperty(g_display, window->xwindow, netWmState, 0, 64, False,
+                           XA_ATOM, &actualType, &actualFormat, &itemCount,
+                           &bytesAfter, &data) == Success && data)
+    {
+        const Atom* atoms = reinterpret_cast<const Atom*>(data);
+        for (unsigned long i = 0; i < itemCount; ++i)
+        {
+            if (atoms[i] == netMaxH) maximizedH = true;
+            else if (atoms[i] == netMaxV) maximizedV = true;
+            else if (atoms[i] == netFullscreen) fullscreen = true;
+            else if (atoms[i] == netHidden) hidden = true;
+        }
+        XFree(data);
+    }
+
+    // WM_STATE IconicState covers WMs that iconify without _NET_WM_STATE_HIDDEN.
+    if (!hidden)
+    {
+        Atom wmState = XInternAtom(g_display, "WM_STATE", False);
+        if (XGetWindowProperty(g_display, window->xwindow, wmState, 0, 2, False,
+                               wmState, &actualType, &actualFormat, &itemCount,
+                               &bytesAfter, &data) == Success && data)
+        {
+            if (itemCount >= 1)
+            {
+                constexpr long kIconicState = 3;
+                const long* stateData = reinterpret_cast<const long*>(data);
+                if (stateData[0] == kIconicState)
+                    hidden = true;
+            }
+            XFree(data);
+        }
+    }
+
+    if (hidden) return JALIUM_WINDOW_STATE_MINIMIZED;
+    if (fullscreen) return JALIUM_WINDOW_STATE_FULLSCREEN;
+    if (maximizedH && maximizedV) return JALIUM_WINDOW_STATE_MAXIMIZED;
     return JALIUM_WINDOW_STATE_NORMAL;
 }
 
@@ -3510,10 +3772,82 @@ void jalium_window_set_cursor(JaliumPlatformWindow* window, JaliumCursorShape cu
 #ifdef JALIUM_HAS_WAYLAND
     if (window && window->waylandSurface)
     {
-        // Cursor themes are compositor/scale dependent. Pointer delivery is
-        // complete; themed cursor surfaces are added by the desktop-integration
-        // layer without changing this window ABI.
-        (void)cursor;
+        if (!g_waylandPointer || !g_waylandCompositor || !g_waylandShm)
+            return;
+
+        if (cursor == JALIUM_CURSOR_HIDDEN)
+        {
+            wl_pointer_set_cursor(g_waylandPointer, g_waylandPointerEnterSerial,
+                                  nullptr, 0, 0);
+            wl_display_flush(g_waylandDisplay);
+            return;
+        }
+
+        const int scale = window->waylandScale > 0 ? window->waylandScale : 1;
+        if (!g_waylandCursorTheme || g_waylandCursorThemeScale != scale)
+        {
+            if (g_waylandCursorTheme)
+                wl_cursor_theme_destroy(g_waylandCursorTheme);
+            const char* themeName = getenv("XCURSOR_THEME");
+            int themeSize = 24;
+            if (const char* sizeEnv = getenv("XCURSOR_SIZE"))
+            {
+                const int parsed = atoi(sizeEnv);
+                if (parsed > 0) themeSize = parsed;
+            }
+            g_waylandCursorTheme =
+                wl_cursor_theme_load(themeName, themeSize * scale, g_waylandShm);
+            g_waylandCursorThemeScale = scale;
+        }
+        if (!g_waylandCursorTheme)
+            return;
+
+        // Try the XDG cursor-spec name first, then the legacy X11 name.
+        const char* primary = "default";
+        const char* fallback = "left_ptr";
+        switch (cursor)
+        {
+        case JALIUM_CURSOR_ARROW:       primary = "default";     fallback = "left_ptr"; break;
+        case JALIUM_CURSOR_HAND:        primary = "pointer";     fallback = "hand2"; break;
+        case JALIUM_CURSOR_IBEAM:       primary = "text";        fallback = "xterm"; break;
+        case JALIUM_CURSOR_CROSSHAIR:   primary = "crosshair";   fallback = "cross"; break;
+        case JALIUM_CURSOR_RESIZE_NS:   primary = "ns-resize";   fallback = "sb_v_double_arrow"; break;
+        case JALIUM_CURSOR_RESIZE_EW:   primary = "ew-resize";   fallback = "sb_h_double_arrow"; break;
+        case JALIUM_CURSOR_RESIZE_NESW: primary = "nesw-resize"; fallback = "fd_double_arrow"; break;
+        case JALIUM_CURSOR_RESIZE_NWSE: primary = "nwse-resize"; fallback = "bd_double_arrow"; break;
+        case JALIUM_CURSOR_RESIZE_ALL:  primary = "move";        fallback = "fleur"; break;
+        case JALIUM_CURSOR_NOT_ALLOWED: primary = "not-allowed"; fallback = "crossed_circle"; break;
+        case JALIUM_CURSOR_WAIT:        primary = "wait";        fallback = "watch"; break;
+        default: break;
+        }
+
+        wl_cursor* themed = wl_cursor_theme_get_cursor(g_waylandCursorTheme, primary);
+        if (!themed) themed = wl_cursor_theme_get_cursor(g_waylandCursorTheme, fallback);
+        if (!themed) themed = wl_cursor_theme_get_cursor(g_waylandCursorTheme, "left_ptr");
+        if (!themed || themed->image_count == 0)
+            return;
+
+        wl_cursor_image* image = themed->images[0];
+        wl_buffer* buffer = wl_cursor_image_get_buffer(image);
+        if (!buffer)
+            return;
+
+        if (!g_waylandCursorSurface)
+            g_waylandCursorSurface = wl_compositor_create_surface(g_waylandCompositor);
+        if (!g_waylandCursorSurface)
+            return;
+
+        wl_surface_set_buffer_scale(g_waylandCursorSurface, scale);
+        wl_surface_attach(g_waylandCursorSurface, buffer, 0, 0);
+        wl_surface_damage(g_waylandCursorSurface, 0, 0,
+                          static_cast<int32_t>(image->width),
+                          static_cast<int32_t>(image->height));
+        wl_surface_commit(g_waylandCursorSurface);
+        wl_pointer_set_cursor(g_waylandPointer, g_waylandPointerEnterSerial,
+                              g_waylandCursorSurface,
+                              static_cast<int32_t>(image->hotspot_x) / scale,
+                              static_cast<int32_t>(image->hotspot_y) / scale);
+        wl_display_flush(g_waylandDisplay);
         return;
     }
 #endif
@@ -3629,6 +3963,43 @@ static void ProcessXEvent(XEvent& xev)
             evt.resize.height = win->height;
             win->DispatchEvent(evt);
         }
+        {
+            // Synthetic ConfigureNotify (the WM's move notification) carries
+            // root coordinates directly; real events are parent-relative and
+            // need a translation round-trip.
+            int rootX = xev.xconfigure.x;
+            int rootY = xev.xconfigure.y;
+            if (!xev.xconfigure.send_event)
+            {
+                Window child = 0;
+                XTranslateCoordinates(g_display, win->xwindow, g_rootWindow,
+                                      0, 0, &rootX, &rootY, &child);
+            }
+
+            if (rootX != win->x || rootY != win->y)
+            {
+                win->x = rootX;
+                win->y = rootY;
+                evt.type = JALIUM_EVENT_MOVE;
+                evt.move.x = rootX;
+                evt.move.y = rootY;
+                win->DispatchEvent(evt);
+            }
+        }
+        break;
+
+    case PropertyNotify:
+        if (xev.xproperty.atom == XInternAtom(g_display, "_NET_WM_STATE", False))
+        {
+            JaliumWindowState queried = jalium_window_get_state(win);
+            if (queried != win->state)
+            {
+                win->state = queried;
+                evt.type = JALIUM_EVENT_STATE_CHANGED;
+                evt.stateChanged.newState = queried;
+                win->DispatchEvent(evt);
+            }
+        }
         break;
 
     case ClientMessage:
@@ -3677,6 +4048,10 @@ static void ProcessXEvent(XEvent& xev)
         }
         else
         {
+            win->lastPressRootX = xev.xbutton.x_root;
+            win->lastPressRootY = xev.xbutton.y_root;
+            win->lastPressButton = xev.xbutton.button;
+
             evt.type = JALIUM_EVENT_MOUSE_DOWN;
             evt.mouse.x = static_cast<float>(xev.xbutton.x);
             evt.mouse.y = static_cast<float>(xev.xbutton.y);
@@ -4104,7 +4479,17 @@ int32_t jalium_timer_wait(JaliumTimer* timer, uint32_t timeoutMs)
 float jalium_platform_get_system_dpi_scale(void)
 {
 #ifdef JALIUM_HAS_WAYLAND
-    if (g_windowSystem == LinuxWindowSystem::Wayland) return 1.0f;
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+    {
+        // Best effort before any surface exists: the first output's scale.
+        // Per-window scale is authoritative once wl_surface.enter fires.
+        for (const WaylandOutputInfo* info : g_waylandOutputs)
+        {
+            if (info->scale > 0)
+                return static_cast<float>(info->scale);
+        }
+        return 1.0f;
+    }
 #endif
     return DetectDpiScale();
 }
@@ -4944,6 +5329,388 @@ JaliumResult jalium_drag_begin(
     if (g_windowSystem == LinuxWindowSystem::XServer)
         return BeginX11Drag(window, std::move(copied), allowedEffects, performedEffect);
     return JALIUM_ERROR_INVALID_STATE;
+}
+
+// ============================================================================
+// Window management extensions (monitors, size limits, interactive move/
+// resize, icon, topmost)
+// ============================================================================
+
+namespace {
+
+#ifndef JALIUM_HAS_WAYLAND
+struct WaylandOutputInfo; // keep the signatures below uniform
+#endif
+
+bool GetX11WorkArea(int32_t* x, int32_t* y, int32_t* width, int32_t* height)
+{
+    if (!g_display) return false;
+    Atom workAreaAtom = XInternAtom(g_display, "_NET_WORKAREA", False);
+    Atom actualType = None;
+    int actualFormat = 0;
+    unsigned long itemCount = 0, bytesAfter = 0;
+    unsigned char* data = nullptr;
+    bool ok = false;
+    if (XGetWindowProperty(g_display, g_rootWindow, workAreaAtom, 0, 4, False,
+                           XA_CARDINAL, &actualType, &actualFormat, &itemCount,
+                           &bytesAfter, &data) == Success && data)
+    {
+        if (itemCount >= 4)
+        {
+            const long* values = reinterpret_cast<const long*>(data);
+            *x = static_cast<int32_t>(values[0]);
+            *y = static_cast<int32_t>(values[1]);
+            *width = static_cast<int32_t>(values[2]);
+            *height = static_cast<int32_t>(values[3]);
+            ok = *width > 0 && *height > 0;
+        }
+        XFree(data);
+    }
+    return ok;
+}
+
+} // namespace
+
+int32_t jalium_platform_get_monitor_count(void)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+        return static_cast<int32_t>(g_waylandOutputs.size());
+#endif
+    if (g_windowSystem != LinuxWindowSystem::XServer || !g_display)
+        return 0;
+#ifdef JALIUM_HAS_XRANDR
+    int monitorCount = 0;
+    XRRMonitorInfo* monitors =
+        XRRGetMonitors(g_display, g_rootWindow, True, &monitorCount);
+    if (monitors)
+    {
+        XRRFreeMonitors(monitors);
+        if (monitorCount > 0)
+            return monitorCount;
+    }
+#endif
+    return 1;
+}
+
+int32_t jalium_platform_get_monitor_info(int32_t index, JaliumMonitorInfo* info)
+{
+    if (!info || index < 0)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    *info = JaliumMonitorInfo{};
+    info->scale = 1.0f;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+    {
+        if (static_cast<size_t>(index) >= g_waylandOutputs.size())
+            return JALIUM_ERROR_INVALID_ARGUMENT;
+        const WaylandOutputInfo* output = g_waylandOutputs[static_cast<size_t>(index)];
+        info->x = output->x;
+        info->y = output->y;
+        info->width = output->width;
+        info->height = output->height;
+        info->workX = output->x;
+        info->workY = output->y;
+        info->workWidth = output->width;
+        info->workHeight = output->height;
+        info->scale = static_cast<float>(output->scale > 0 ? output->scale : 1);
+        info->refreshRate = output->refreshMilliHz > 0
+            ? (output->refreshMilliHz + 500) / 1000
+            : 0;
+        info->isPrimary = index == 0 ? 1 : 0;
+        return JALIUM_OK;
+    }
+#endif
+    if (g_windowSystem != LinuxWindowSystem::XServer || !g_display)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    int32_t workX = 0, workY = 0, workWidth = 0, workHeight = 0;
+    const bool hasWorkArea = GetX11WorkArea(&workX, &workY, &workWidth, &workHeight);
+    const float scale = DetectDpiScale();
+
+#ifdef JALIUM_HAS_XRANDR
+    int monitorCount = 0;
+    XRRMonitorInfo* monitors =
+        XRRGetMonitors(g_display, g_rootWindow, True, &monitorCount);
+    if (monitors && index < monitorCount)
+    {
+        const XRRMonitorInfo& monitor = monitors[index];
+        info->x = monitor.x;
+        info->y = monitor.y;
+        info->width = monitor.width;
+        info->height = monitor.height;
+        info->isPrimary = monitor.primary ? 1 : 0;
+        info->scale = scale;
+        info->refreshRate = jalium_window_get_monitor_refresh_rate(nullptr);
+
+        // _NET_WORKAREA is desktop-global; intersect it with this monitor.
+        if (hasWorkArea)
+        {
+            const int32_t left = std::max(info->x, workX);
+            const int32_t top = std::max(info->y, workY);
+            const int32_t right = std::min(info->x + info->width, workX + workWidth);
+            const int32_t bottom = std::min(info->y + info->height, workY + workHeight);
+            if (right > left && bottom > top)
+            {
+                info->workX = left;
+                info->workY = top;
+                info->workWidth = right - left;
+                info->workHeight = bottom - top;
+            }
+        }
+        if (info->workWidth <= 0 || info->workHeight <= 0)
+        {
+            info->workX = info->x;
+            info->workY = info->y;
+            info->workWidth = info->width;
+            info->workHeight = info->height;
+        }
+        XRRFreeMonitors(monitors);
+        return JALIUM_OK;
+    }
+    if (monitors)
+        XRRFreeMonitors(monitors);
+#endif
+
+    if (index != 0)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    info->x = 0;
+    info->y = 0;
+    info->width = DisplayWidth(g_display, g_screen);
+    info->height = DisplayHeight(g_display, g_screen);
+    info->scale = scale;
+    info->refreshRate = jalium_window_get_monitor_refresh_rate(nullptr);
+    info->isPrimary = 1;
+    if (hasWorkArea)
+    {
+        info->workX = workX;
+        info->workY = workY;
+        info->workWidth = workWidth;
+        info->workHeight = workHeight;
+    }
+    else
+    {
+        info->workX = info->x;
+        info->workY = info->y;
+        info->workWidth = info->width;
+        info->workHeight = info->height;
+    }
+    return JALIUM_OK;
+}
+
+int32_t jalium_window_set_min_max_size(
+    JaliumPlatformWindow* window,
+    int32_t minWidth, int32_t minHeight,
+    int32_t maxWidth, int32_t maxHeight)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        if (!window->xdgToplevel && !CreateWaylandRole(window))
+            return JALIUM_ERROR_INVALID_STATE;
+        // xdg_toplevel speaks compositor-logical units.
+        const int32_t scale = window->waylandScale > 0 ? window->waylandScale : 1;
+        xdg_toplevel_set_min_size(window->xdgToplevel,
+                                  minWidth > 0 ? minWidth / scale : 0,
+                                  minHeight > 0 ? minHeight / scale : 0);
+        xdg_toplevel_set_max_size(window->xdgToplevel,
+                                  maxWidth > 0 ? maxWidth / scale : 0,
+                                  maxHeight > 0 ? maxHeight / scale : 0);
+        wl_surface_commit(window->waylandSurface);
+        wl_display_flush(g_waylandDisplay);
+        return JALIUM_OK;
+    }
+#endif
+    if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    XSizeHints hints{};
+    long supplied = 0;
+    XGetWMNormalHints(g_display, window->xwindow, &hints, &supplied);
+    hints.flags &= ~(PMinSize | PMaxSize);
+    if (minWidth > 0 || minHeight > 0)
+    {
+        hints.flags |= PMinSize;
+        hints.min_width = minWidth > 0 ? minWidth : 0;
+        hints.min_height = minHeight > 0 ? minHeight : 0;
+    }
+    if (maxWidth > 0 || maxHeight > 0)
+    {
+        hints.flags |= PMaxSize;
+        hints.max_width = maxWidth > 0 ? maxWidth : INT32_MAX;
+        hints.max_height = maxHeight > 0 ? maxHeight : INT32_MAX;
+    }
+    XSetWMNormalHints(g_display, window->xwindow, &hints);
+    XFlush(g_display);
+    return JALIUM_OK;
+}
+
+namespace {
+
+// _NET_WM_MOVERESIZE directions.
+constexpr long kNetWmMoveResizeMove = 8;
+
+int32_t BeginX11MoveResize(JaliumPlatformWindow* window, long direction)
+{
+    if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    // The pointer grab from the triggering press blocks the WM from taking
+    // over; hand it back before delegating.
+    XUngrabPointer(g_display, CurrentTime);
+
+    Atom moveResizeAtom = XInternAtom(g_display, "_NET_WM_MOVERESIZE", False);
+    XEvent ev{};
+    ev.type = ClientMessage;
+    ev.xclient.window = window->xwindow;
+    ev.xclient.message_type = moveResizeAtom;
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = window->lastPressRootX;
+    ev.xclient.data.l[1] = window->lastPressRootY;
+    ev.xclient.data.l[2] = direction;
+    ev.xclient.data.l[3] = static_cast<long>(
+        window->lastPressButton > 0 ? window->lastPressButton : Button1);
+    ev.xclient.data.l[4] = 1; // source: normal application
+    XSendEvent(g_display, g_rootWindow, False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    XFlush(g_display);
+    return JALIUM_OK;
+}
+
+} // namespace
+
+int32_t jalium_window_begin_move_drag(JaliumPlatformWindow* window)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        if (!window->xdgToplevel || !g_waylandSeat)
+            return JALIUM_ERROR_INVALID_STATE;
+        xdg_toplevel_move(window->xdgToplevel, g_waylandSeat, g_waylandPointerSerial);
+        wl_display_flush(g_waylandDisplay);
+        return JALIUM_OK;
+    }
+#endif
+    return BeginX11MoveResize(window, kNetWmMoveResizeMove);
+}
+
+int32_t jalium_window_begin_resize_drag(JaliumPlatformWindow* window, int32_t edge)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        if (!window->xdgToplevel || !g_waylandSeat)
+            return JALIUM_ERROR_INVALID_STATE;
+        // JaliumResizeEdge deliberately mirrors xdg_toplevel_resize_edge.
+        xdg_toplevel_resize(window->xdgToplevel, g_waylandSeat,
+                            g_waylandPointerSerial,
+                            static_cast<uint32_t>(edge));
+        wl_display_flush(g_waylandDisplay);
+        return JALIUM_OK;
+    }
+#endif
+    // Map xdg-style edges onto _NET_WM_MOVERESIZE directions.
+    long direction;
+    switch (edge)
+    {
+    case JALIUM_RESIZE_EDGE_TOP:          direction = 1; break;
+    case JALIUM_RESIZE_EDGE_TOP_RIGHT:    direction = 2; break;
+    case JALIUM_RESIZE_EDGE_RIGHT:        direction = 3; break;
+    case JALIUM_RESIZE_EDGE_BOTTOM_RIGHT: direction = 4; break;
+    case JALIUM_RESIZE_EDGE_BOTTOM:       direction = 5; break;
+    case JALIUM_RESIZE_EDGE_BOTTOM_LEFT:  direction = 6; break;
+    case JALIUM_RESIZE_EDGE_LEFT:         direction = 7; break;
+    case JALIUM_RESIZE_EDGE_TOP_LEFT:     direction = 0; break;
+    default: return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+    return BeginX11MoveResize(window, direction);
+}
+
+int32_t jalium_window_set_icon(
+    JaliumPlatformWindow* window,
+    const uint32_t* bgraPixels,
+    int32_t width,
+    int32_t height)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        // Wayland has no core per-window icon; desktop entries provide icons.
+        (void)bgraPixels; (void)width; (void)height;
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+#endif
+    if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    Atom iconAtom = XInternAtom(g_display, "_NET_WM_ICON", False);
+    if (!bgraPixels || width <= 0 || height <= 0)
+    {
+        XDeleteProperty(g_display, window->xwindow, iconAtom);
+        XFlush(g_display);
+        return JALIUM_OK;
+    }
+
+    // _NET_WM_ICON: CARDINAL[] of {width, height, ARGB pixels...}. BGRA bytes
+    // little-endian *are* 0xAARRGGBB values, so pixels copy through unchanged;
+    // the property array itself is `long`-sized.
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+    std::vector<unsigned long> propertyData(2 + pixelCount);
+    propertyData[0] = static_cast<unsigned long>(width);
+    propertyData[1] = static_cast<unsigned long>(height);
+    for (size_t i = 0; i < pixelCount; ++i)
+        propertyData[2 + i] = bgraPixels[i];
+
+    XChangeProperty(g_display, window->xwindow, iconAtom, XA_CARDINAL, 32,
+                    PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(propertyData.data()),
+                    static_cast<int>(propertyData.size()));
+    XFlush(g_display);
+    return JALIUM_OK;
+}
+
+int32_t jalium_window_set_topmost(JaliumPlatformWindow* window, int32_t topmost)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        // No always-on-top in xdg-shell; compositors own stacking.
+        (void)topmost;
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+#endif
+    if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    Atom netWmState = XInternAtom(g_display, "_NET_WM_STATE", False);
+    Atom aboveAtom = XInternAtom(g_display, "_NET_WM_STATE_ABOVE", False);
+    XEvent ev{};
+    ev.type = ClientMessage;
+    ev.xclient.window = window->xwindow;
+    ev.xclient.message_type = netWmState;
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = topmost ? 1 : 0; // _NET_WM_STATE_ADD / _REMOVE
+    ev.xclient.data.l[1] = static_cast<long>(aboveAtom);
+    XSendEvent(g_display, g_rootWindow, False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    XFlush(g_display);
+    return JALIUM_OK;
 }
 
 #endif // __linux__ && !__ANDROID__

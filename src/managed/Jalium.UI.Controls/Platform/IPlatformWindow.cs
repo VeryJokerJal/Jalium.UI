@@ -28,6 +28,21 @@ internal interface IPlatformWindow : IDisposable
     /// <summary>Gets the window origin in screen coordinates (physical pixels).</summary>
     void GetPosition(out int x, out int y);
 
+    /// <summary>Applies min/max client-size constraints in physical pixels (0 = unbounded).</summary>
+    void SetMinMaxSize(int minWidth, int minHeight, int maxWidth, int maxHeight);
+
+    /// <summary>Starts a window-system-driven interactive move (call from a mouse press handler).</summary>
+    bool BeginMoveDrag();
+
+    /// <summary>Starts a window-system-driven interactive resize from the given edge.</summary>
+    bool BeginResizeDrag(int edge);
+
+    /// <summary>Sets the taskbar/window icon from BGRA pixels; null clears. Returns false when unsupported.</summary>
+    bool SetIcon(uint[]? bgraPixels, int width, int height);
+
+    /// <summary>Toggles always-on-top. Returns false when the window system does not support it.</summary>
+    bool SetTopmost(bool topmost);
+
     void SetState(WindowState state);
     WindowState GetState();
 

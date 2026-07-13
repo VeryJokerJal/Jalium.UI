@@ -114,6 +114,73 @@ public static partial class SystemParameters
     public static Brush WindowGlassBrush => s_windowGlassBrush.Value;
     public static Color WindowGlassColor => s_windowGlassColor.Value;
 
+    /// <summary>
+    /// Queries the primary monitor through the jalium.native.platform monitor
+    /// ABI (XRandR on X11, wl_output on Wayland). Returns false on Windows
+    /// (user32 paths own those values), before platform init, or headless.
+    /// </summary>
+    internal static bool TryGetPrimaryPlatformMonitor(
+        out Jalium.UI.Interop.NativeMethods.NativeMonitorInfo monitor)
+    {
+        monitor = default;
+        if (OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
+        try
+        {
+            var count = Jalium.UI.Interop.NativeMethods.PlatformGetMonitorCount();
+            var haveFirst = false;
+            for (var i = 0; i < count; i++)
+            {
+                if (Jalium.UI.Interop.NativeMethods.PlatformGetMonitorInfo(i, out var candidate) != 0 ||
+                    candidate.Width <= 0 || candidate.Height <= 0)
+                {
+                    continue;
+                }
+
+                if (candidate.IsPrimary != 0)
+                {
+                    monitor = candidate;
+                    return true;
+                }
+
+                if (!haveFirst)
+                {
+                    monitor = candidate;
+                    haveFirst = true;
+                }
+            }
+
+            return haveFirst;
+        }
+        catch (DllNotFoundException)
+        {
+            return false;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    private static double PlatformScreenDip(bool width, double fallback)
+    {
+        if (TryGetPrimaryPlatformMonitor(out var monitor))
+        {
+            var scale = monitor.Scale > 0 ? monitor.Scale : 1.0f;
+            return (width ? monitor.Width : monitor.Height) / scale;
+        }
+
+        return fallback;
+    }
+
+    internal static double GetPrimaryScreenDimensionDip(bool width, double fallback)
+        => OperatingSystem.IsWindows()
+            ? MetricDip(width ? SM_CXSCREEN : SM_CYSCREEN, (int)fallback)
+            : PlatformScreenDip(width, fallback);
+
     private static double MetricDip(int metric, int fallback)
     {
         if (!OperatingSystem.IsWindows())
@@ -261,6 +328,17 @@ public static partial class SystemParameters
             catch (Exception) when (!System.Diagnostics.Debugger.IsAttached)
             {
             }
+        }
+
+        if (TryGetPrimaryPlatformMonitor(out var monitor) &&
+            monitor.WorkWidth > 0 && monitor.WorkHeight > 0)
+        {
+            var scale = monitor.Scale > 0 ? monitor.Scale : 1.0f;
+            return new Rect(
+                monitor.WorkX / scale,
+                monitor.WorkY / scale,
+                monitor.WorkWidth / scale,
+                monitor.WorkHeight / scale);
         }
 
         return new Rect(0, 0, PrimaryScreenWidth, Math.Max(0, PrimaryScreenHeight - 40));

@@ -20,7 +20,6 @@
 
 #include <atomic>
 #include <mutex>
-#include <vector>
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "JaliumPlatform", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "JaliumPlatform", __VA_ARGS__)
@@ -29,15 +28,25 @@
 // Global State
 // ============================================================================
 
-static ALooper*         g_looper = nullptr;
 static std::atomic<bool> g_quitRequested{false};
 static std::atomic<int32_t> g_exitCode{0};
 static float            g_density = 1.0f;  // DisplayMetrics density
 static int32_t          g_refreshRate = 60;
 
-// JNI state for clipboard and other system services
-static JavaVM*          g_javaVM = nullptr;
-static jobject          g_activityObj = nullptr;  // Global ref to Activity
+// Platform initialization can run on Android's main thread while the Jalium
+// message loop runs on a dedicated thread. Never cache a borrowed main-thread
+// looper. The published run looper owns an acquired reference and exists only
+// so cross-thread quit can wake the loop that is currently pumping.
+static ALooper*         g_runLooper = nullptr;
+static std::mutex       g_looperMutex;
+
+// JNI state for clipboard and other system services. JavaVM is process-stable;
+// the Activity global ref is protected by a mutex. Callers never borrow the
+// global directly: while holding the same mutex they create a thread-local ref,
+// which remains valid after an Activity replacement deletes the old global.
+static std::atomic<JavaVM*> g_javaVM{nullptr};
+static jobject              g_activityObj = nullptr;
+static std::mutex           g_activityObjMutex;
 
 // Looper callback IDs
 enum {
@@ -73,6 +82,25 @@ static JaliumPlatformWindow* g_mainWindow = nullptr;
 // Store it here so jalium_window_create() can pick it up.
 static ANativeWindow* g_pendingNativeWindow = nullptr;
 
+// ANativeWindow_fromSurface() returns an acquired reference owned by the
+// managed Activity.  The platform layer keeps its own reference so the
+// Surface descriptor remains valid until the Jalium UI thread has torn down
+// every render target that can still touch it.
+static void ReplaceOwnedNativeWindow(ANativeWindow*& slot, ANativeWindow* next)
+{
+    if (slot == next)
+        return;
+
+    if (next)
+        ANativeWindow_acquire(next);
+
+    ANativeWindow* previous = slot;
+    slot = next;
+
+    if (previous)
+        ANativeWindow_release(previous);
+}
+
 // Tracked globally so the message loop can re-register it with the correct looper.
 static JaliumDispatcher* g_dispatcher = nullptr;
 
@@ -84,6 +112,9 @@ struct JaliumDispatcher {
     int                     eventFd = -1;
     JaliumDispatcherCallback callback = nullptr;
     void*                   userData = nullptr;
+    // Acquired reference to the exact looper on which eventFd was registered.
+    // It is never inferred from the process-wide current run-loop slot.
+    ALooper*                registeredLooper = nullptr;
 };
 
 // ============================================================================
@@ -105,25 +136,53 @@ struct JaliumTimer {
 JaliumResult jalium_platform_init_impl()
 {
     LOGI("jalium_platform_init_impl called");
-    g_looper = ALooper_forThread();
-    if (!g_looper)
-    {
-        g_looper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
-    }
-
-    if (!g_looper)
-    {
-        LOGE("jalium_platform_init_impl: failed to get/prepare ALooper");
-        return JALIUM_ERROR_INITIALIZATION_FAILED;
-    }
-
-    LOGI("jalium_platform_init_impl: looper=%p", g_looper);
+    // The message-loop thread owns looper creation/registration. Preparing a
+    // looper here would bind platform state to whichever Android callback
+    // happened to initialize the process (normally the Java main thread).
     return JALIUM_OK;
 }
 
 void jalium_platform_shutdown_impl()
 {
-    g_looper = nullptr;
+    // A surface can arrive before the managed Window is constructed.  If the
+    // application shuts down in that interval, release the pending ownership
+    // here rather than leaking it for the lifetime of the process.
+    ReplaceOwnedNativeWindow(g_pendingNativeWindow, nullptr);
+
+    JavaVM* vm = g_javaVM.load(std::memory_order_acquire);
+    JNIEnv* env = nullptr;
+    if (vm)
+    {
+        int status = vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+        if (status == JNI_EDETACHED &&
+            vm->AttachCurrentThread(&env, nullptr) != JNI_OK)
+        {
+            env = nullptr;
+        }
+    }
+
+    if (env)
+    {
+        std::lock_guard<std::mutex> lock(g_activityObjMutex);
+        if (g_activityObj)
+        {
+            env->DeleteGlobalRef(g_activityObj);
+            g_activityObj = nullptr;
+        }
+    }
+    g_javaVM.store(nullptr, std::memory_order_release);
+
+    ALooper* runLooper = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_looperMutex);
+        runLooper = g_runLooper;
+        g_runLooper = nullptr;
+    }
+    if (runLooper)
+    {
+        ALooper_wake(runLooper);
+        ALooper_release(runLooper);
+    }
 }
 
 JaliumPlatform jalium_platform_get_current_impl()
@@ -154,6 +213,8 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     // Pick up any ANativeWindow that arrived before this window was created
     if (g_pendingNativeWindow)
     {
+        // Transfer (do not acquire/release) the platform-owned pending
+        // reference into the newly-created window wrapper.
         win->nativeWindow = g_pendingNativeWindow;
         if (win->width == 0)  win->width  = ANativeWindow_getWidth(g_pendingNativeWindow);
         if (win->height == 0) win->height = ANativeWindow_getHeight(g_pendingNativeWindow);
@@ -171,6 +232,7 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
 {
     if (!window) return;
     if (g_mainWindow == window) g_mainWindow = nullptr;
+    ReplaceOwnedNativeWindow(window->nativeWindow, nullptr);
     delete window;
 }
 
@@ -305,35 +367,77 @@ void jalium_window_get_position(JaliumPlatformWindow* window, int32_t* x, int32_
 /// the JavaVM and Activity references needed for system services (clipboard, etc.).
 extern "C" void jalium_android_set_jni_env(JavaVM* vm, jobject activity)
 {
-    g_javaVM = vm;
-    if (g_activityObj)
+    if (!vm)
+        return;
+
+    // The setter is normally called from Android's main thread, but tolerate a
+    // future call serialized onto JaliumUI by attaching that thread first.
+    JNIEnv* env = nullptr;
+    int status = vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    if (status == JNI_EDETACHED &&
+        vm->AttachCurrentThread(&env, nullptr) != JNI_OK)
     {
-        JNIEnv* env = nullptr;
-        if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK)
-            env->DeleteGlobalRef(g_activityObj);
-        g_activityObj = nullptr;
+        return;
     }
-    if (vm && activity)
+
+    g_javaVM.store(vm, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(g_activityObjMutex);
+    jobject replacement = activity ? env->NewGlobalRef(activity) : nullptr;
+    if (activity && !replacement)
+        return;
+
+    jobject previous = g_activityObj;
+    g_activityObj = replacement;
+    if (previous)
     {
-        JNIEnv* env = nullptr;
-        if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) == JNI_OK)
-            g_activityObj = env->NewGlobalRef(activity);
+        // Every consumer creates its local ref while holding this mutex, so an
+        // in-flight JNI operation no longer depends on this global reference.
+        env->DeleteGlobalRef(previous);
     }
 }
 
 /// Helper: Attach current thread and get JNIEnv.
 static JNIEnv* GetJNIEnv()
 {
-    if (!g_javaVM) return nullptr;
+    JavaVM* vm = g_javaVM.load(std::memory_order_acquire);
+    if (!vm) return nullptr;
     JNIEnv* env = nullptr;
-    int status = g_javaVM->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
+    int status = vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6);
     if (status == JNI_EDETACHED)
     {
-        if (g_javaVM->AttachCurrentThread(&env, nullptr) != JNI_OK)
+        if (vm->AttachCurrentThread(&env, nullptr) != JNI_OK)
             return nullptr;
     }
     return env;
 }
+
+/// Creates a local Activity reference for the calling JNI thread. The local
+/// reference has its own lifetime, so config replacement may safely swap and
+/// delete the old global immediately after this function releases the mutex.
+static jobject BorrowActivityLocalRef(JNIEnv* env)
+{
+    if (!env) return nullptr;
+    std::lock_guard<std::mutex> lock(g_activityObjMutex);
+    return g_activityObj ? env->NewLocalRef(g_activityObj) : nullptr;
+}
+
+class ScopedJniLocalRef
+{
+public:
+    ScopedJniLocalRef(JNIEnv* env, jobject value) : env_(env), value_(value) {}
+    ~ScopedJniLocalRef()
+    {
+        if (env_ && value_)
+            env_->DeleteLocalRef(value_);
+    }
+
+    ScopedJniLocalRef(const ScopedJniLocalRef&) = delete;
+    ScopedJniLocalRef& operator=(const ScopedJniLocalRef&) = delete;
+
+private:
+    JNIEnv* env_;
+    jobject value_;
+};
 
 /// Public C ABI: returns the JNIEnv for the calling thread, attaching it to
 /// the JavaVM if necessary. Returns nullptr if the platform was never bound
@@ -344,17 +448,20 @@ extern "C" JNIEnv* jalium_android_get_jni_env(void)
     return GetJNIEnv();
 }
 
-/// Public C ABI: returns the global Activity reference cached by
-/// jalium_android_set_jni_env. Returns nullptr when not bound.
+/// Public C ABI: returns a NEW LOCAL Activity reference for the calling JNI
+/// thread. The caller owns that local reference and must DeleteLocalRef it when
+/// finished. Returning a local rather than the cached global makes config
+/// replacement safe even when the caller continues using the old Activity.
 extern "C" jobject jalium_android_get_activity(void)
 {
-    return g_activityObj;
+    JNIEnv* env = GetJNIEnv();
+    return BorrowActivityLocalRef(env);
 }
 
 /// Public C ABI: returns the cached JavaVM pointer (or nullptr).
 extern "C" JavaVM* jalium_android_get_java_vm(void)
 {
-    return g_javaVM;
+    return g_javaVM.load(std::memory_order_acquire);
 }
 
 // ============================================================================
@@ -372,7 +479,7 @@ extern "C" void jalium_android_set_native_window(ANativeWindow* nativeWindow, in
 
     if (g_mainWindow)
     {
-        g_mainWindow->nativeWindow = nativeWindow;
+        ReplaceOwnedNativeWindow(g_mainWindow->nativeWindow, nativeWindow);
         if (nativeWindow)
         {
             // Prefer the authoritative dimensions plumbed from
@@ -401,7 +508,7 @@ extern "C" void jalium_android_set_native_window(ANativeWindow* nativeWindow, in
         // cold-start size resolves via ANativeWindow_getWidth/Height inside
         // jalium_window_create (reliable for the initial, non-rotated orientation).
         LOGI("jalium_android_set_native_window: storing as pendingNativeWindow");
-        g_pendingNativeWindow = nativeWindow;
+        ReplaceOwnedNativeWindow(g_pendingNativeWindow, nativeWindow);
     }
 }
 
@@ -1037,16 +1144,18 @@ JaliumResult jalium_clipboard_get_text(JaliumUtf16Char** outText)
     *outText = nullptr;
 
     JNIEnv* env = GetJNIEnv();
-    if (!env || !g_activityObj) return JALIUM_ERROR_NOT_SUPPORTED;
+    jobject activity = BorrowActivityLocalRef(env);
+    ScopedJniLocalRef activityRef(env, activity);
+    if (!env || !activity) return JALIUM_ERROR_NOT_SUPPORTED;
 
     // Context.getSystemService("clipboard") -> ClipboardManager
-    jclass contextClass = env->GetObjectClass(g_activityObj);
+    jclass contextClass = env->GetObjectClass(activity);
     if (!contextClass) return JALIUM_ERROR_UNKNOWN;
 
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService",
         "(Ljava/lang/String;)Ljava/lang/Object;");
     jstring clipboardStr = env->NewStringUTF("clipboard");
-    jobject clipManager = env->CallObjectMethod(g_activityObj, getSystemService, clipboardStr);
+    jobject clipManager = env->CallObjectMethod(activity, getSystemService, clipboardStr);
     env->DeleteLocalRef(clipboardStr);
     env->DeleteLocalRef(contextClass);
 
@@ -1132,7 +1241,9 @@ JaliumResult jalium_clipboard_set_text(const JaliumUtf16Char* text)
     if (!text) return JALIUM_ERROR_INVALID_ARGUMENT;
 
     JNIEnv* env = GetJNIEnv();
-    if (!env || !g_activityObj) return JALIUM_ERROR_NOT_SUPPORTED;
+    jobject activity = BorrowActivityLocalRef(env);
+    ScopedJniLocalRef activityRef(env, activity);
+    if (!env || !activity) return JALIUM_ERROR_NOT_SUPPORTED;
 
     // JaliumUtf16Char and jchar are both fixed-width UTF-16 code units.
     size_t len = 0;
@@ -1143,11 +1254,11 @@ JaliumResult jalium_clipboard_set_text(const JaliumUtf16Char* text)
     if (!jstr) return JALIUM_ERROR_UNKNOWN;
 
     // Context.getSystemService("clipboard") -> ClipboardManager
-    jclass contextClass = env->GetObjectClass(g_activityObj);
+    jclass contextClass = env->GetObjectClass(activity);
     jmethodID getSystemService = env->GetMethodID(contextClass, "getSystemService",
         "(Ljava/lang/String;)Ljava/lang/Object;");
     jstring clipboardStr = env->NewStringUTF("clipboard");
-    jobject clipManager = env->CallObjectMethod(g_activityObj, getSystemService, clipboardStr);
+    jobject clipManager = env->CallObjectMethod(activity, getSystemService, clipboardStr);
     env->DeleteLocalRef(clipboardStr);
     env->DeleteLocalRef(contextClass);
 
@@ -1199,6 +1310,41 @@ JaliumResult jalium_drag_begin(
     uint32_t* performedEffect)
 {
     if (performedEffect) *performedEffect = JALIUM_DRAG_EFFECT_NONE;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+// Window-management extensions do not apply to the single-activity Android
+// surface; exported for symbol compatibility with the shared ABI header.
+int32_t jalium_platform_get_monitor_count(void) { return 0; }
+
+int32_t jalium_platform_get_monitor_info(int32_t, JaliumMonitorInfo* info)
+{
+    if (info) *info = JaliumMonitorInfo{};
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_min_max_size(JaliumPlatformWindow*, int32_t, int32_t, int32_t, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_begin_move_drag(JaliumPlatformWindow*)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_begin_resize_drag(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_icon(JaliumPlatformWindow*, const uint32_t*, int32_t, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_topmost(JaliumPlatformWindow*, int32_t)
+{
     return JALIUM_ERROR_NOT_SUPPORTED;
 }
 
