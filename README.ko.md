@@ -62,7 +62,7 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 | `jalium.native.metal` | macOS | Metal 렌더 백엔드 |
 | `jalium.native.software` | 전체 | CPU 기반 소프트웨어 렌더링 폴백 |
 | `jalium.native.platform` | 전체 | 플랫폼 추상화 (윈도우, 입력, 이벤트) |
-| `jalium.native.text` | Linux, Android, macOS | 크로스 플랫폼 텍스트 엔진 (FreeType + HarfBuzz) |
+| `jalium.native.text` | Linux, Android, macOS | 자체 개발 텍스트 엔진 (sfnt/cmap/glyf/CFF + OT shaper; Linux에서는 fontconfig를 폰트 검색에만 사용) |
 | `jalium.native.browser` | Windows | WebView2 브라우저 통합 |
 | `jalium.native.media.core` | 전체 | 크로스 플랫폼 미디어 C ABI + 공유 오디오 (miniaudio / dr_libs / minimp3 / stb_vorbis) |
 | `jalium.native.media.windows` | Windows | Media Foundation 비디오 / 카메라 / AAC 디코더 + WIC 이미징 |
@@ -75,6 +75,7 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 | --- | --- |
 | `Jalium.UI.Desktop` | `net10.0-windows` — RID별 네이티브 DLL을 포함한 데스크톱 배포판 (win-x64 / win-arm64) |
 | `Jalium.UI.Android` | `net10.0-android` — 네이티브 .so 라이브러리를 포함한 Android 배포판 |
+| `Jalium.UI.Linux` | `net10.0` — Linux 데스크톱 배포판 (Wayland/X11, Vulkan + 소프트웨어 렌더링; linux-x64 / arm64 / musl RID) |
 
 ## 기능 개요
 
@@ -121,7 +122,7 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 
 - 듀얼 소스 블렌딩(dual-source blending)을 갖춘 ClearType 서브픽셀 텍스트 렌더링.
 - CPU 래스터화 폴백 경로.
-- FreeType + HarfBuzz를 통한 크로스 플랫폼 텍스트 셰이핑 (Linux/Android).
+- 자체 개발 OpenType 엔진을 통한 크로스 플랫폼 텍스트 셰이핑 (Linux/Android) — FreeType/HarfBuzz 런타임 의존성 없음; fontconfig는 폰트 검색에만 사용.
 - 요소별 `TextOptions.{TextRenderingMode, TextFormattingMode, TextHintingMode}`
   상속 가능 첨부 속성(attached property) — 값이 `FormattedText` → 네이티브
   `JaliumTextFormat`을 거쳐 래스터라이저까지 전달됩니다:
@@ -266,6 +267,9 @@ dotnet add package Jalium.UI.Desktop
 
 # Android
 dotnet add package Jalium.UI.Android
+
+# Linux 데스크톱
+dotnet add package Jalium.UI.Linux
 ```
 
 ### 세분화된 설치 (고급)
@@ -353,8 +357,11 @@ dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release
 # 네이티브 모듈 빌드 (VS 개발자 명령 프롬프트에서)
 msbuild src/native/Jalium.Native.sln /m /p:Configuration=Release /p:Platform=x64
 
+# Linux 네이티브 모듈 빌드 (glibc / musl 호스트)
+bash eng/linux/build-native.sh linux-x64 Release
+
 # Android용 빌드
-bash src/native/build-android-deps.sh  # FreeType + HarfBuzz
+bash src/native/build-android-deps.sh  # Android 네이티브 의존성
 bash src/native/build-android.sh       # 네이티브 라이브러리
 ```
 
@@ -389,7 +396,7 @@ Jalium.UI/
       jalium.native.metal/     # Metal 백엔드 (macOS)
       jalium.native.software/  # CPU 소프트웨어 렌더러
       jalium.native.platform/  # 플랫폼 추상화 레이어
-      jalium.native.text/      # FreeType + HarfBuzz 텍스트 엔진 (비 Windows)
+      jalium.native.text/      # 자체 개발 텍스트 엔진 (비 Windows)
       jalium.native.browser/   # WebView2 통합
       jalium.native.media.core/     # 크로스 플랫폼 미디어 C ABI + 공유 오디오
       jalium.native.media.windows/  # Media Foundation 비디오 / 카메라 + WIC
@@ -423,6 +430,8 @@ Jalium.UI/
 | [`docs/razor-syntax.md`](docs/razor-syntax.md) | JALXAML용 Razor 구문 레퍼런스 |
 | [`docs/drawing-api.md`](docs/drawing-api.md) | 드로잉 API (DrawingContext, GPU 효과, 렌더링) |
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | 수동 빌드 구성 가이드 |
+| [`docs/linux.md`](docs/linux.md) | Linux 데스크톱 가이드 (런타임 의존성, 윈도우 시스템, 패키징) |
+| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | Linux 지원 상태 매트릭스 및 로드맵 |
 | [`docs/render-thread-design.md`](docs/render-thread-design.md) | 렌더 스레드 아키텍처 |
 | [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | Present 페이싱 / 프레임 스케줄링 |
 | [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | 셸 드래그 앤 드롭 통합 |

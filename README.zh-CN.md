@@ -62,7 +62,7 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 | `jalium.native.metal` | macOS | Metal 渲染后端 |
 | `jalium.native.software` | 全部 | 基于 CPU 的软件渲染回退 |
 | `jalium.native.platform` | 全部 | 平台抽象（窗口、输入、事件） |
-| `jalium.native.text` | Linux、Android、macOS | 跨平台文本引擎（FreeType + HarfBuzz） |
+| `jalium.native.text` | Linux、Android、macOS | 自研文本引擎（sfnt/cmap/glyf/CFF + OT shaper；Linux 上仅用 fontconfig 做字体发现） |
 | `jalium.native.browser` | Windows | WebView2 浏览器集成 |
 | `jalium.native.media.core` | 全部 | 跨平台媒体 C ABI + 共享音频（miniaudio / dr_libs / minimp3 / stb_vorbis） |
 | `jalium.native.media.windows` | Windows | Media Foundation 视频 / 摄像头 / AAC 解码器 + WIC 图像处理 |
@@ -75,6 +75,7 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 | --- | --- |
 | `Jalium.UI.Desktop` | `net10.0-windows` —— 携带按 RID 划分原生 DLL（win-x64 / win-arm64）的桌面发行版 |
 | `Jalium.UI.Android` | `net10.0-android` —— 携带原生 .so 库的 Android 发行版 |
+| `Jalium.UI.Linux` | `net10.0` —— Linux 桌面发行版（Wayland/X11，Vulkan + 软件渲染；linux-x64 / arm64 / musl RID） |
 
 ## 能力概览
 
@@ -121,7 +122,7 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 
 - ClearType 亚像素文本渲染，采用双源混合（dual-source blending）。
 - CPU 光栅化回退路径。
-- 通过 FreeType + HarfBuzz 实现跨平台文本整形（shaping）（Linux/Android）。
+- 通过自研 OpenType 引擎实现跨平台文本整形（shaping）（Linux/Android）——无 FreeType/HarfBuzz 运行时依赖；fontconfig 仅用于字体发现。
 - 按元素设置的 `TextOptions.{TextRenderingMode, TextFormattingMode, TextHintingMode}`
   可继承附加属性 —— 取值经由 `FormattedText` → 原生
   `JaliumTextFormat` 流转并抵达光栅器：
@@ -265,6 +266,9 @@ dotnet add package Jalium.UI.Desktop
 
 # Android
 dotnet add package Jalium.UI.Android
+
+# Linux 桌面
+dotnet add package Jalium.UI.Linux
 ```
 
 ### 细粒度安装（进阶）
@@ -352,8 +356,11 @@ dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release
 # 构建原生模块（在 VS 开发人员命令提示符中）
 msbuild src/native/Jalium.Native.sln /m /p:Configuration=Release /p:Platform=x64
 
+# 构建 Linux 原生模块（glibc 或 musl 主机）
+bash eng/linux/build-native.sh linux-x64 Release
+
 # 为 Android 构建
-bash src/native/build-android-deps.sh  # FreeType + HarfBuzz
+bash src/native/build-android-deps.sh  # Android 原生依赖
 bash src/native/build-android.sh       # 原生库
 ```
 
@@ -388,7 +395,7 @@ Jalium.UI/
       jalium.native.metal/     # Metal 后端（macOS）
       jalium.native.software/  # CPU 软件渲染器
       jalium.native.platform/  # 平台抽象层
-      jalium.native.text/      # FreeType + HarfBuzz 文本引擎（非 Windows）
+      jalium.native.text/      # 自研文本引擎（非 Windows）
       jalium.native.browser/   # WebView2 集成
       jalium.native.media.core/     # 跨平台媒体 C ABI + 共享音频
       jalium.native.media.windows/  # Media Foundation 视频 / 摄像头 + WIC
@@ -422,6 +429,8 @@ Jalium.UI/
 | [`docs/razor-syntax.md`](docs/razor-syntax.md) | JALXAML 的 Razor 语法参考 |
 | [`docs/drawing-api.md`](docs/drawing-api.md) | 绘图 API（DrawingContext、GPU 特效、渲染） |
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | 手动构建配置指南 |
+| [`docs/linux.md`](docs/linux.md) | Linux 桌面指南（运行时依赖、窗口系统、打包） |
+| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | Linux 支持状态矩阵与路线图 |
 | [`docs/render-thread-design.md`](docs/render-thread-design.md) | 渲染线程架构 |
 | [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | 呈现节奏 / 帧调度 |
 | [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | Shell 拖放集成 |

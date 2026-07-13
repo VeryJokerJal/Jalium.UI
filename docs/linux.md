@@ -180,3 +180,59 @@ The command reports OS/RID/architecture, display selection, renderer override,
 file presence and actual `dlopen` status for every native library, plus portal,
 notification-daemon, and AT-SPI2 bridge status. It returns nonzero when the
 native payload is incomplete or unloadable.
+
+## Distribution matrix
+
+Package names for the runtime dependencies listed above, per family. "Runtime"
+is what end-user machines need; "-dev" packages are only needed to build the
+native payload from source.
+
+| Capability | Debian/Ubuntu | Fedora/RHEL | Arch | Alpine (musl) | openSUSE |
+| --- | --- | --- | --- | --- | --- |
+| X11 client | `libx11-6 libxext6 libxrandr2` | `libX11 libXext libXrandr` | `libx11 libxext libxrandr` | `libx11 libxext libxrandr` | `libX11-6 libXext6 libXrandr2` |
+| Wayland client | `libwayland-client0` | `wayland` | `wayland` | `wayland-libs-client` | `libwayland-client0` |
+| Keyboard maps | `libxkbcommon0` | `libxkbcommon` | `libxkbcommon` | `libxkbcommon` | `libxkbcommon0` |
+| Font discovery | `libfontconfig1` | `fontconfig` | `fontconfig` | `fontconfig` | `fontconfig` |
+| Vulkan loader | `libvulkan1` (+ `mesa-vulkan-drivers`) | `vulkan-loader` (+ `mesa-vulkan-drivers`) | `vulkan-icd-loader` (+ `vulkan-swrast`) | `vulkan-loader` (+ `mesa-vulkan-swrast`) | `libvulkan1` |
+| Media (optional) | `gstreamer1.0-plugins-base/-good` | `gstreamer1-plugins-base/-good` | `gst-plugins-base/-good` | `gst-plugins-base/-good` | `gstreamer-plugins-base/-good` |
+| Portals (dialogs) | `xdg-desktop-portal` + backend | `xdg-desktop-portal` + backend | `xdg-desktop-portal` + backend | `xdg-desktop-portal` + backend | `xdg-desktop-portal` + backend |
+| Notifications | `libnotify4` | `libnotify` | `libnotify` | `libnotify` | `libnotify4` |
+| CJK text | `fonts-noto-cjk` | `google-noto-sans-cjk-fonts` | `noto-fonts-cjk` | `font-noto-cjk` | `noto-sans-cjk-fonts` |
+
+A CJK font is required for CJK glyphs — the self-hosted text engine falls back
+per-codepoint through fontconfig, but it cannot draw glyphs no installed font
+provides.
+
+## Troubleshooting
+
+**Window opens but stays black.** The software present path reports
+`BACKEND_NOT_AVAILABLE` when the native payload was built without
+X11/Wayland present support; rebuild with `libx11-dev`/`libwayland-dev`
+installed, or check `--diagnostics-only` output for which `.so` failed to load.
+
+**`DllNotFoundException: libjalium.native.*`.** The RID-specific native
+payload is not next to the app. For NuGet consumers, publish or run with an
+explicit `-r linux-x64` (or arm64/musl) so `runtimes/<rid>/native` assets are
+materialized; for repo builds run `bash eng/linux/build-native.sh` first.
+
+**No file dialog appears.** Portal dialogs need `xdg-desktop-portal` plus a
+desktop backend (`-gtk`, `-kde`, `-wlr`, …) on the session bus. Check
+`FileDialog.IsPortalAvailable`; without a portal the call returns `false`
+rather than opening a fallback dialog.
+
+**Vulkan fails in a VM/container.** Install the Mesa software rasterizer
+(`mesa-vulkan-drivers` / `vulkan-swrast`) or force
+`JALIUM_RENDER_BACKEND=software`. The renderer falls back to software
+automatically when Vulkan initialization fails.
+
+**Blurry on a HiDPI Wayland monitor.** Fixed by per-surface buffer scale;
+if you run an older payload, update — the compositor was upscaling a
+scale-1 buffer.
+
+**IME does not compose (X11).** XIM requires a UTF-8 locale; in minimal
+environments set e.g. `LANG=C.UTF-8`. On Wayland, text-input-v3 (or v1 on
+WSLg) is negotiated automatically; check the diagnostics output for the
+selected IME path.
+
+**Which window system was picked?** Set `JALIUM_WINDOW_SYSTEM=x11|wayland`
+to force one; default `auto` prefers Wayland when `WAYLAND_DISPLAY` is set.

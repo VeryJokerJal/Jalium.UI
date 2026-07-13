@@ -62,7 +62,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 | `jalium.native.metal` | macOS | Metal render backend |
 | `jalium.native.software` | All | CPU-based software rendering fallback |
 | `jalium.native.platform` | All | Platform abstraction (window, input, events) |
-| `jalium.native.text` | Linux, Android, macOS | Cross-platform text engine (FreeType + HarfBuzz) |
+| `jalium.native.text` | Linux, Android, macOS | Self-hosted text engine (sfnt/cmap/glyf/CFF + OT shaper; fontconfig for discovery on Linux) |
 | `jalium.native.browser` | Windows | WebView2 browser integration |
 | `jalium.native.media.core` | All | Cross-platform media C ABI + shared audio (miniaudio / dr_libs / minimp3 / stb_vorbis) |
 | `jalium.native.media.windows` | Windows | Media Foundation video / camera / AAC decoder + WIC imaging |
@@ -75,6 +75,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 | --- | --- |
 | `Jalium.UI.Desktop` | `net10.0-windows` — Desktop distribution with per-RID native DLLs (win-x64 / win-arm64) |
 | `Jalium.UI.Android` | `net10.0-android` — Android distribution with native .so libraries |
+| `Jalium.UI.Linux` | `net10.0` — Linux desktop distribution (Wayland/X11, Vulkan + software rendering; linux-x64 / arm64 / musl RIDs) |
 
 ## Capability Overview
 
@@ -121,7 +122,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 - ClearType sub-pixel text rendering with dual-source blending.
 - CPU rasterization fallback path.
-- Cross-platform text shaping via FreeType + HarfBuzz (Linux/Android).
+- Cross-platform text shaping via the self-hosted OpenType engine (Linux/Android) — no FreeType/HarfBuzz runtime dependency; fontconfig is used for font discovery only.
 - Per-element `TextOptions.{TextRenderingMode, TextFormattingMode, TextHintingMode}`
   inheritable attached properties — values flow through `FormattedText` → native
   `JaliumTextFormat` and reach the rasterizer:
@@ -266,6 +267,9 @@ dotnet add package Jalium.UI.Desktop
 
 # Android
 dotnet add package Jalium.UI.Android
+
+# Linux desktop
+dotnet add package Jalium.UI.Linux
 ```
 
 ### Granular install (advanced)
@@ -353,8 +357,11 @@ dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release
 # Build native modules (in VS Developer Command Prompt)
 msbuild src/native/Jalium.Native.sln /m /p:Configuration=Release /p:Platform=x64
 
+# Build native modules for Linux (glibc or musl host)
+bash eng/linux/build-native.sh linux-x64 Release
+
 # Build for Android
-bash src/native/build-android-deps.sh  # FreeType + HarfBuzz
+bash src/native/build-android-deps.sh  # Android native dependencies
 bash src/native/build-android.sh       # Native libraries
 ```
 
@@ -389,7 +396,7 @@ Jalium.UI/
       jalium.native.metal/     # Metal backend (macOS)
       jalium.native.software/  # CPU software renderer
       jalium.native.platform/  # Platform abstraction layer
-      jalium.native.text/      # FreeType + HarfBuzz text engine (non-Windows)
+      jalium.native.text/      # Self-hosted text engine (non-Windows)
       jalium.native.browser/   # WebView2 integration
       jalium.native.media.core/     # Cross-platform media C ABI + shared audio
       jalium.native.media.windows/  # Media Foundation video / camera + WIC
@@ -399,9 +406,10 @@ Jalium.UI/
       Jalium.UI/               # Main metapackage
       Jalium.UI.Desktop/       # Windows desktop package (win-x64 / win-arm64)
       Jalium.UI.Android/       # Android package
+      Jalium.UI.Linux/         # Linux desktop package (linux-x64/arm64, musl)
   samples/                     # Gallery, DesktopDemo, AndroidDemo, HostingDemo,
                                #   MillionScroll, AotWindowDemo, BorderlessDemo,
-                               #   TransparentBackdropDemo
+                               #   TransparentBackdropDemo, LinuxDemo
   tools/
     Jalium.UI.HotReload.Watcher/  # Standalone JALXAML hot-reload file watcher
   tests/
@@ -423,6 +431,8 @@ Jalium.UI/
 | [`docs/razor-syntax.md`](docs/razor-syntax.md) | Razor syntax reference for JALXAML |
 | [`docs/drawing-api.md`](docs/drawing-api.md) | Drawing API (DrawingContext, GPU effects, rendering) |
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | Manual build configuration guide |
+| [`docs/linux.md`](docs/linux.md) | Linux desktop guide (runtime dependencies, window systems, packaging) |
+| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | Linux support status matrix and roadmap |
 | [`docs/render-thread-design.md`](docs/render-thread-design.md) | Render thread architecture |
 | [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | Present pacing / frame scheduling |
 | [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | Shell drag & drop integration |
