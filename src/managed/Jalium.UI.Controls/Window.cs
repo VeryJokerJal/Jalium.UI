@@ -3581,8 +3581,43 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         UpdatePlatformSizeConstraints();
+        UpdatePlatformWindowIcon();
 
         OnSourceInitialized(EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Pushes WindowIcon pixels to the platform window (_NET_WM_ICON on X11 —
+    /// task bar / Alt-Tab). Wayland has no per-window icon and reports
+    /// unsupported; the custom title bar still draws the icon there.
+    /// </summary>
+    internal void UpdatePlatformWindowIcon()
+    {
+        if (_platformWindow == null)
+            return;
+
+        if (WindowIcon is not Jalium.UI.Media.Imaging.BitmapSource bitmap ||
+            bitmap.PixelWidth <= 0 || bitmap.PixelHeight <= 0)
+        {
+            _ = _platformWindow.SetIcon(null, 0, 0);
+            return;
+        }
+
+        try
+        {
+            var width = bitmap.PixelWidth;
+            var height = bitmap.PixelHeight;
+            var bytes = new byte[checked(width * height * 4)];
+            bitmap.CopyPixels(new Int32Rect(0, 0, width, height), bytes, width * 4, 0);
+            var pixels = new uint[width * height];
+            Buffer.BlockCopy(bytes, 0, pixels, 0, bytes.Length);
+            _ = _platformWindow.SetIcon(pixels, width, height);
+        }
+        catch (Exception)
+        {
+            // The window icon is cosmetic; never let icon extraction break
+            // window creation or an icon property change.
+        }
     }
 
     /// <summary>
@@ -5293,6 +5328,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (e.Property == WindowIconProperty && e.NewValue == null)
         {
             window._attemptedAutoWindowIcon = false;
+        }
+
+        if (e.Property == WindowIconProperty)
+        {
+            window.UpdatePlatformWindowIcon();
         }
 
         window.ApplyTitleBarPresentation();

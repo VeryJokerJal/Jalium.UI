@@ -43,7 +43,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build pkg-config \
-            libx11-dev libxext-dev libxrandr-dev xvfb xclip \
+            libx11-dev libxext-dev libxrandr-dev xvfb xclip xdotool \
             libwayland-dev wayland-protocols libxkbcommon-dev wl-clipboard weston \
             libvulkan-dev mesa-vulkan-drivers vulkan-tools \
             libfontconfig1-dev \
@@ -87,6 +87,36 @@ jobs:
             if ldd "$library" | grep -F 'not found'; then exit 1; fi
           done
 
+      - name: Vulkan-on-Wayland presentation smoke
+        run: |
+          runtime="${{ runner.temp }}/weston-vk"
+          mkdir -p "$runtime"
+          chmod 700 "$runtime"
+          XDG_RUNTIME_DIR="$runtime" weston \
+            --backend=headless-backend.so \
+            --socket=wayland-vk \
+            --idle-time=0 \
+            --log="$runtime/weston.log" &
+          weston_pid=$!
+          trap "kill $weston_pid 2>/dev/null || true" EXIT
+          for _ in $(seq 1 50); do
+            test -S "$runtime/wayland-vk" && break
+            sleep 0.1
+          done
+          test -S "$runtime/wayland-vk"
+          payload="src/native/bin/native/${{ matrix.rid }}/Release"
+          XDG_RUNTIME_DIR="$runtime" \
+            WAYLAND_DISPLAY=wayland-vk \
+            JALIUM_WINDOW_SYSTEM=wayland \
+            LD_LIBRARY_PATH="$payload" \
+            "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
+
+      - name: Clipboard interop smoke (X11 xclip + Wayland wl-clipboard)
+        run: xvfb-run -a bash eng/linux/test-input-clipboard.sh Release
+
+      - name: Wayland drag-and-drop smoke
+        run: xvfb-run -a bash eng/linux/test-wayland-dnd.sh ${{ matrix.rid }} Release
+
       - name: Restore managed tests
         run: >
           dotnet restore tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj
@@ -100,6 +130,35 @@ jobs:
           -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed"
           -p:GeneratePackageOnBuild=false
           --logger "trx;LogFileName=linux-${{ matrix.arch }}.trx"
+
+      - name: Build Linux sample (keeps the app-facing path from rotting)
+        run: >
+          dotnet build samples/Jalium.UI.LinuxDemo/Jalium.UI.LinuxDemo.csproj
+          -c Release -m:1
+          -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed"
+          -p:JaliumNativeConfiguration=Release
+          -p:GeneratePackageOnBuild=false
+
+      - name: Run Linux sample headless (X11 + Wayland)
+        run: |
+          demo="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.LinuxDemo/Release/net10.0/Jalium.UI.LinuxDemo.dll"
+          test -f "$demo"
+          # X11: the app must create a window, render and stay alive for 8s.
+          timeout 20 xvfb-run -a env JALIUM_WINDOW_SYSTEM=x11 JALIUM_DEMO_AUTOCLOSE_MS=8000 \
+            dotnet "$demo" | tee "${{ runner.temp }}/demo-x11.log"
+          grep -q "\[demo\] ready" "${{ runner.temp }}/demo-x11.log"
+          # Wayland: same under headless weston.
+          runtime="${{ runner.temp }}/weston-demo"
+          mkdir -p "$runtime"; chmod 700 "$runtime"
+          XDG_RUNTIME_DIR="$runtime" weston --backend=headless-backend.so \
+            --socket=wayland-demo --idle-time=0 --log="$runtime/weston.log" &
+          weston_pid=$!
+          trap "kill $weston_pid 2>/dev/null || true" EXIT
+          for _ in $(seq 1 50); do test -S "$runtime/wayland-demo" && break; sleep 0.1; done
+          timeout 20 env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-demo \
+            JALIUM_WINDOW_SYSTEM=wayland JALIUM_DEMO_AUTOCLOSE_MS=8000 \
+            dotnet "$demo" | tee "${{ runner.temp }}/demo-wayland.log"
+          grep -q "\[demo\] ready" "${{ runner.temp }}/demo-wayland.log"
 
       - name: Pack managed implementation and RID-specific interop
         run: |

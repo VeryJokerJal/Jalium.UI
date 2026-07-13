@@ -393,8 +393,10 @@ FodyWeavers.xsd
 # Android bugreport
 bugreport-*.zip
 
-# Sample projects
-samples/
+# Sample-local publish output (sources under samples/ are tracked; a blanket
+# "samples/" rule silently swallowed every new sample file).
+samples/**/publish-aot*/
+samples/**/publish/
 
 # Native build output
 src/native/build-*/
