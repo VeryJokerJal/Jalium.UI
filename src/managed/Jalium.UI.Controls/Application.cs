@@ -404,6 +404,12 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         // Force ToolTip static constructor to register show/hide delegates early
         System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(ToolTip).TypeHandle);
 
+        // ContextMenuService opens context menus from class handlers registered
+        // in its static constructor. Nothing in a code-only app ever touches the
+        // type (FrameworkElement.ContextMenu is the property's real owner), so
+        // without this right-click/press-and-hold menus silently never open.
+        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(ContextMenuService).TypeHandle);
+
         // Optional ultra-low visible memory mode (off by default).
         _workingSetTrimController = WorkingSetTrimController.TryCreateFromEnvironment();
 
