@@ -874,13 +874,14 @@ JaliumResult SoftwareRenderTarget::EndDraw()
             DefaultDepth(dpy, screen), ZPixmap, 0,
             reinterpret_cast<char*>(fb_.pixels.data()),
             width_, height_, 32, width_ * 4);
-        if (image) {
-            GC gc = DefaultGC(dpy, screen);
-            XPutImage(dpy, xwin, gc, image, 0, 0, 0, 0, width_, height_);
-            image->data = nullptr; // Don't let XDestroyImage free our buffer
-            XDestroyImage(image);
-            XFlush(dpy);
-        }
+        if (!image)
+            return JALIUM_ERROR_PRESENT_FAILED;
+        GC gc = DefaultGC(dpy, screen);
+        XPutImage(dpy, xwin, gc, image, 0, 0, 0, 0, width_, height_);
+        image->data = nullptr; // Don't let XDestroyImage free our buffer
+        XDestroyImage(image);
+        XFlush(dpy);
+        return JALIUM_OK;
     }
 #endif
 #ifdef __ANDROID__
@@ -925,6 +926,16 @@ JaliumResult SoftwareRenderTarget::EndDraw()
             LOGE_SW("ANativeWindow_lock failed: %d", lockResult);
         }
     }
+#endif
+#if !defined(__ANDROID__)
+    // Reaching here with a Linux desktop surface means the matching present
+    // path was compiled out (libX11/wayland-client dev packages missing at
+    // build time) or its handles were invalid. Reporting JALIUM_OK used to
+    // leave the window permanently black with zero diagnostics — surface the
+    // failure instead.
+    if (surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_X11 ||
+        surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_WAYLAND)
+        return JALIUM_ERROR_BACKEND_NOT_AVAILABLE;
 #endif
 #endif
     return JALIUM_OK;

@@ -63,15 +63,16 @@ target_link_libraries(${PROJECT_NAME}
 # Fontconfig (Linux desktop only) — font DISCOVERY, not rendering. Android reads
 # /system/fonts + fonts.xml directly; the self-hosted engine parses the resolved
 # file bytes itself, so no FreeType/HarfBuzz dependency remains.
+#
+# REQUIRED, not optional: font_provider_fontconfig.cpp is compiled
+# unconditionally on Linux desktop and #includes <fontconfig/fontconfig.h>, so
+# a missing dev package failed later with a confusing compile error (or a
+# quiet link break in cross builds). Fail at configure time with the fix.
 if(UNIX AND NOT APPLE AND NOT ANDROID)
-    find_package(PkgConfig)
-    if(PkgConfig_FOUND)
-        pkg_check_modules(FONTCONFIG fontconfig)
-        if(FONTCONFIG_FOUND)
-            target_include_directories(${PROJECT_NAME} PRIVATE ${FONTCONFIG_INCLUDE_DIRS})
-            target_link_libraries(${PROJECT_NAME} PRIVATE ${FONTCONFIG_LIBRARIES})
-        endif()
-    endif()
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(FONTCONFIG REQUIRED fontconfig)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${FONTCONFIG_INCLUDE_DIRS})
+    target_link_libraries(${PROJECT_NAME} PRIVATE ${FONTCONFIG_LIBRARIES})
 endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES

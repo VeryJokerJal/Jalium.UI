@@ -30,13 +30,39 @@ bool FontProviderFontconfig::FindFont(
     if (!familyName || !fcConfig_)
         return false;
 
-    // Convert wchar_t to UTF-8
-    size_t wlen = wcslen(familyName);
-    size_t bufSize = wlen * 4 + 1;
+    // Explicit UTF-32 → UTF-8 conversion. wcstombs converts through the
+    // process locale: under "C"/POSIX (containers, minimal sessions) it fails
+    // on any non-ASCII family name — and its return value was discarded, so
+    // fontconfig received uninitialized stack bytes for names like "思源黑体".
     char utf8Name[512];
-    if (bufSize > sizeof(utf8Name)) bufSize = sizeof(utf8Name);
-    wcstombs(utf8Name, familyName, bufSize);
-    utf8Name[sizeof(utf8Name) - 1] = '\0';
+    size_t out = 0;
+    for (const wchar_t* p = familyName; *p != L'\0' && out + 4 < sizeof(utf8Name); ++p)
+    {
+        const uint32_t cp = static_cast<uint32_t>(*p);
+        if (cp < 0x80)
+        {
+            utf8Name[out++] = static_cast<char>(cp);
+        }
+        else if (cp < 0x800)
+        {
+            utf8Name[out++] = static_cast<char>(0xC0 | (cp >> 6));
+            utf8Name[out++] = static_cast<char>(0x80 | (cp & 0x3F));
+        }
+        else if (cp < 0x10000)
+        {
+            utf8Name[out++] = static_cast<char>(0xE0 | (cp >> 12));
+            utf8Name[out++] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            utf8Name[out++] = static_cast<char>(0x80 | (cp & 0x3F));
+        }
+        else if (cp <= 0x10FFFF)
+        {
+            utf8Name[out++] = static_cast<char>(0xF0 | (cp >> 18));
+            utf8Name[out++] = static_cast<char>(0x80 | ((cp >> 12) & 0x3F));
+            utf8Name[out++] = static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+            utf8Name[out++] = static_cast<char>(0x80 | (cp & 0x3F));
+        }
+    }
+    utf8Name[out] = '\0';
 
     // Create fontconfig pattern
     FcPattern* pattern = FcPatternCreate();

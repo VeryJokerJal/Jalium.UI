@@ -94,9 +94,12 @@ elseif(UNIX AND NOT APPLE)
         message(STATUS "Wayland development stack incomplete; building X11-only platform backend")
     endif()
 elseif(APPLE)
-    set(PLATFORM_SOURCES
-        src/platform_macos.mm
-    )
+    # No macOS backend exists yet. Referencing a nonexistent
+    # src/platform_macos.mm made every Apple configure fail with a
+    # misleading missing-file error; fail honestly instead.
+    message(FATAL_ERROR
+        "jalium.native.platform has no macOS backend yet. "
+        "Supported window systems: Win32, X11/Wayland, Android.")
 endif()
 
 set(SOURCES
