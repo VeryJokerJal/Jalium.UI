@@ -49,6 +49,14 @@ public static class ThemeManager
     private static bool _suppressRefresh;
 
     /// <summary>
+    /// Per-type cache for <see cref="ResolveThemeStyle"/>. Style-stack re-evaluation runs
+    /// for every element on tree attach and resource changes, so the resolver must be cheap;
+    /// entries are invalidated whenever the generic theme dictionary instance is replaced.
+    /// Guarded by itself — resolution happens on the UI thread, but tests may reset in parallel.
+    /// </summary>
+    private static readonly Dictionary<Type, Style?> _themeStyleCache = new();
+
+    /// <summary>
     /// Default brand primary accent (forest emerald, midpoint of the
     /// #207245 -> #1C8043 gradient used for AccentBrush).
     /// </summary>
@@ -63,6 +71,53 @@ public static class ThemeManager
     /// The resource name of the Generic theme file.
     /// </summary>
     public const string GenericThemeResourceName = "Jalium.UI.Controls.Themes.Generic.jalxaml";
+
+    static ThemeManager()
+    {
+        // Give Core a way to resolve theme default styles (the bottom layer of every
+        // element's style stack) without referencing the theme dictionaries directly.
+        // Registered in the static constructor so it is in place before any element
+        // evaluates its style stack; while no theme is loaded it just returns null.
+        FrameworkElement.ThemeStyleResolver = ResolveThemeStyle;
+    }
+
+    /// <summary>
+    /// Resolves the theme default style for an exact element type from the generic
+    /// theme dictionary (the base-type walk happens in FrameworkElement).
+    /// </summary>
+    private static Style? ResolveThemeStyle(Type type)
+    {
+        var dictionary = _genericThemeDictionary;
+        if (dictionary == null)
+            return null;
+
+        lock (_themeStyleCache)
+        {
+            if (_themeStyleCache.TryGetValue(type, out var cached))
+                return cached;
+        }
+
+        var style = dictionary.TryGetValue(type, out var value) ? value as Style : null;
+
+        lock (_themeStyleCache)
+        {
+            _themeStyleCache[type] = style;
+        }
+
+        return style;
+    }
+
+    /// <summary>
+    /// Drops all cached theme-style resolutions. Must be called whenever the generic
+    /// theme dictionary instance changes (theme swap, refresh, test reset).
+    /// </summary>
+    private static void InvalidateThemeStyleCache()
+    {
+        lock (_themeStyleCache)
+        {
+            _themeStyleCache.Clear();
+        }
+    }
 
     /// <summary>
     /// Delegate for loading XAML content from a stream.
@@ -181,6 +236,7 @@ public static class ThemeManager
         }
 
         _genericThemeDictionary = LoadGenericTheme();
+        InvalidateThemeStyleCache();
         if (_genericThemeDictionary != null)
         {
             Jalium.UI.Diagnostics.ResourceDictionaryDiagnostics.RegisterGenericResourceDictionary(
@@ -240,6 +296,7 @@ public static class ThemeManager
                 Jalium.UI.Diagnostics.ResourceDictionaryDiagnostics.RegisterGenericResourceDictionary(
                     refreshedGeneric);
                 ReplaceManagedDictionary(ref _genericThemeDictionary, refreshedGeneric);
+                InvalidateThemeStyleCache();
             }
 
             // Accent derived resources depend on current theme (notably disabled variants).
@@ -417,6 +474,7 @@ public static class ThemeManager
         _typographyDictionary = null;
         _themeVersion = 0;
         _suppressRefresh = false;
+        InvalidateThemeStyleCache();
 
         CurrentTheme = ThemeVariant.Dark;
         CurrentAccentColor = DefaultPrimaryAccentColor;

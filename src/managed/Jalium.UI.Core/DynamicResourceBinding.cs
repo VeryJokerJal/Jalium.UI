@@ -138,6 +138,34 @@ internal static class DynamicResourceBindingOperations
         }
     }
 
+    /// <summary>
+    /// Clears the dynamic-resource subscription on the property only when it belongs to the
+    /// given layer. Used when a higher-priority style setter writes a plain value: a lower
+    /// style layer (theme default style) may hold a live subscription on the same DP whose
+    /// next refresh would overwrite that value. Subscriptions from other layers (e.g. a
+    /// local SetDynamicResource) are left untouched.
+    /// </summary>
+    internal static void ClearDynamicResource(
+        FrameworkElement target,
+        DependencyProperty property,
+        DependencyObject.LayerValueSource layerSource)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(property);
+
+        if (!Subscriptions.TryGetValue(target, out var subscriptions))
+            return;
+
+        if (!subscriptions.TryGetValue(property, out var subscription))
+            return;
+
+        if (subscription.LayerSource != layerSource)
+            return;
+
+        target.ResourcesChanged -= subscription.Handler;
+        subscriptions.Remove(property);
+    }
+
     internal static void PromoteDynamicResourcesToLayer(
         FrameworkElement target,
         DependencyObject.LayerValueSource layerSource)

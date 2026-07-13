@@ -363,9 +363,28 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     internal readonly Dictionary<(FrameworkElement, DependencyProperty), (object? OriginalValue, int ActiveCount, object? SuspendedDynamicResourceKey)> _triggerOriginalValues = new();
 
     /// <summary>
-    /// The implicit style applied to this element based on its type.
+    /// The implicit style applied to this element based on its type. Never references
+    /// the theme default style — that lives in <see cref="_themeStyle"/> so an explicit
+    /// or implicit user style layers ON TOP of the theme defaults instead of replacing them.
     /// </summary>
     private Style? _implicitStyle;
+
+    /// <summary>
+    /// The theme default style (from the framework theme dictionary) currently applied
+    /// as the bottom layer of this element's style stack. WPF parity: an explicit
+    /// <see cref="Style"/> only overrides the properties it sets; everything else —
+    /// most critically the control Template — still comes from the theme default style.
+    /// </summary>
+    private Style? _themeStyle;
+
+    /// <summary>
+    /// Resolves the theme default style for a concrete element type. Injected by
+    /// Jalium.UI.Controls' ThemeManager (Core cannot reference the theme dictionaries
+    /// directly). Returns null when no theme is loaded or the type has no default style.
+    /// The FrameworkElement side walks the base-type chain; the resolver only needs to
+    /// answer for the exact type it is given.
+    /// </summary>
+    internal static Func<Type, Style?>? ThemeStyleResolver { get; set; }
 
     /// <summary>
     /// The element that owns the template in which this element is defined.
@@ -871,10 +890,9 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
                 current.ResourcesChanged.Invoke(current, EventArgs.Empty);
             }
 
-            if (current.Style == null)
-            {
-                current.ReEvaluateImplicitStyle();
-            }
+            // Elements with an explicit Style still carry a theme-default bottom layer,
+            // so they must re-evaluate too (theme swaps replace the theme dictionary).
+            current.ReEvaluateImplicitStyle();
 
             var childCount = current.VisualChildrenCount;
             for (int i = 0; i < childCount; i++)
@@ -1499,29 +1517,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             var oldStyle = e.OldValue as Style;
             var newStyle = e.NewValue as Style;
 
-            // Remove implicit style if explicit style is being set
-            if (e.NewValue != null && element._implicitStyle != null)
-            {
-                element._implicitStyle.Remove(element);
-                element._implicitStyle = null;
-            }
-
-            // Remove old style
-            if (oldStyle != null)
-            {
-                oldStyle.Remove(element);
-            }
-
-            // Apply new style
-            if (newStyle != null)
-            {
-                newStyle.Apply(element);
-            }
-            else
-            {
-                // If explicit style is cleared, try to apply implicit style
-                element.ApplyImplicitStyleIfNeeded();
-            }
+            element.UpdateStyleStack(oldStyle, newStyle);
 
             element.OnStyleChanged(oldStyle, newStyle);
         }
@@ -1706,65 +1702,121 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
 
     /// <summary>
-    /// Applies an implicit style to this element if no explicit style is set.
+    /// Applies the style stack to this element if it hasn't been initialized yet.
     /// Called from OnVisualParentChanged and also by Window.Show() to handle
     /// elements created before the theme was loaded.
     /// </summary>
     internal void ApplyImplicitStyleIfNeeded()
     {
-        // Explicit style set — nothing to do.
-        if (Style != null)
+        // Fast path: the style stack was already initialized once. Re-evaluation
+        // after tree/resource changes is handled by ReEvaluateImplicitStyle().
+        if (_themeStyle != null || _implicitStyle != null)
             return;
 
-        // Already have an implicit style — skip first-time application.
-        // Re-evaluation after tree changes is handled by ReEvaluateImplicitStyle().
-        if (_implicitStyle != null)
-            return;
-
-        var implicitStyle = LookupImplicitStyle();
-        if (implicitStyle != null)
-        {
-            _implicitStyle = implicitStyle;
-            implicitStyle.Apply(this);
-            InvalidateVisual();
-        }
+        UpdateStyleStack(Style, Style);
     }
 
     /// <summary>
-    /// Re-evaluates the implicit style for this element after a tree change.
+    /// Re-evaluates the style stack for this element after a tree or resource change.
     /// If a closer-scope implicit style is now available (e.g., user-defined style
-    /// in Window.Resources after the subtree was connected), it replaces the
-    /// previously applied style (e.g., theme style from Application.Resources).
+    /// in Window.Resources after the subtree was connected), it replaces the previous
+    /// top-layer style; the theme default style is re-resolved as the bottom layer.
     /// </summary>
     private void ReEvaluateImplicitStyle()
     {
-        if (Style != null)
-            return;
+        UpdateStyleStack(Style, Style);
+    }
 
-        var newImplicit = LookupImplicitStyle();
-        if (newImplicit == null)
+    /// <summary>
+    /// Recomputes and re-applies this element's two-layer style stack:
+    /// theme default style (bottom) + explicit-or-implicit style (top).
+    /// The top layer is applied last so its setters win for the properties it sets,
+    /// while everything else (most critically the control Template) still falls back
+    /// to the theme default style — WPF's Style/ThemeStyle split.
+    /// </summary>
+    /// <param name="oldExplicit">The explicit Style before this update (for Style changes).</param>
+    /// <param name="newExplicit">The explicit Style after this update. For non-Style-change
+    /// re-evaluation both parameters are the current explicit Style.</param>
+    private void UpdateStyleStack(Style? oldExplicit, Style? newExplicit)
+    {
+        var newTheme = LookupThemeStyle();
+
+        // The implicit style only participates when no explicit style is set (WPF parity),
+        // and never duplicates the theme layer (LookupImplicitStyle can surface the theme
+        // style itself via the application resource chain).
+        Style? newImplicit = null;
+        if (newExplicit == null)
         {
-            if (_implicitStyle != null)
-            {
-                _implicitStyle.Remove(this);
-                _implicitStyle = null;
-                InvalidateVisual();
-            }
-            return;
+            var found = LookupImplicitStyle();
+            newImplicit = ReferenceEquals(found, newTheme) ? null : found;
         }
 
-        if (ReferenceEquals(_implicitStyle, newImplicit))
-            return; // Same style — no change needed.
+        // An explicit Style can literally be the theme style object (e.g. captured via
+        // a typed StaticResource). The theme layer already applies it — applying the
+        // same Style twice would double-attach its triggers and leak their handlers.
+        // Normalize both the old and new top the same way so the unchanged-check and
+        // the unwind below see what was actually applied.
+        var oldTop = oldExplicit ?? _implicitStyle;
+        if (ReferenceEquals(oldTop, _themeStyle))
+            oldTop = null;
 
-        // Different (closer-scope) implicit style found — swap.
-        if (_implicitStyle != null)
+        var newTop = newExplicit ?? newImplicit;
+        if (ReferenceEquals(newTop, newTheme))
+            newTop = null;
+
+        if (ReferenceEquals(_themeStyle, newTheme) && ReferenceEquals(oldTop, newTop))
+            return; // Stack unchanged.
+
+        // Unwind in LIFO order. Both layers write the same StyleSetter value layer, so
+        // removing the top style also clears any overlapping properties the theme style
+        // set — the theme layer must be re-applied afterwards, not just left in place.
+        oldTop?.Remove(this);
+        if (!ReferenceEquals(_themeStyle, oldTop))
         {
-            _implicitStyle.Remove(this);
+            _themeStyle?.Remove(this);
         }
 
+        _themeStyle = newTheme;
         _implicitStyle = newImplicit;
-        newImplicit.Apply(this);
+
+        newTheme?.Apply(this);
+        newTop?.Apply(this);
+
         InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Looks up the theme default style for this element through the injected
+    /// <see cref="ThemeStyleResolver"/> — first by <see cref="DefaultStyleKey"/>
+    /// (WPF's ThemeStyle lookup key when it is a type), then by walking up the
+    /// type hierarchy. <see cref="OverridesDefaultStyle"/> opts out entirely,
+    /// mirroring WPF.
+    /// </summary>
+    private Style? LookupThemeStyle()
+    {
+        var resolver = ThemeStyleResolver;
+        if (resolver == null)
+            return null;
+
+        if (OverridesDefaultStyle)
+            return null;
+
+        if (DefaultStyleKey is Type keyType)
+        {
+            var keyed = resolver(keyType);
+            if (keyed != null && IsStyleApplicable(keyed))
+                return keyed;
+        }
+
+        var currentType = GetType();
+        while (currentType != null && currentType != typeof(FrameworkElement))
+        {
+            var style = resolver(currentType);
+            if (style != null && IsStyleApplicable(style))
+                return style;
+            currentType = currentType.BaseType;
+        }
+        return null;
     }
 
     /// <summary>

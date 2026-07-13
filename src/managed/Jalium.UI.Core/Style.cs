@@ -589,6 +589,14 @@ public class Setter : SetterBase, ISupportInitialize
             return;
         }
 
+        // 走到这里说明本 setter 要写"非 dynamic-resource"的值。下层样式（典型为主题默认
+        // 样式，它与本样式共用 StyleSetter 层）可能已在同一 DP 上建立 {ThemeResource}
+        // 订阅——不清掉的话，下一次资源刷新会把主题值重新灌进层里，覆盖我们即将写入的值。
+        // 订阅若来自 local SetDynamicResource 则层不匹配、不受影响（且 local 值存在时
+        // 上面的 HasLocalValue 早已短路）。
+        DynamicResourceBindingOperations.ClearDynamicResource(
+            target, actualProperty, DependencyObject.LayerValueSource.StyleSetter);
+
         // Setter.Value 可以是一个 BindingBase（典型场景：jalxaml 里写
         // <Setter Property="Foo" Value="{TemplateBinding Bar}" /> 或 RelativeSource Binding）。
         // 之前会把整个 BindingBase 当成属性值塞进 layer，OnRender 时强转成 Brush 等
