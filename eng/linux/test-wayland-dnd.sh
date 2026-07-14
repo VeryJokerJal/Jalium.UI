@@ -4,7 +4,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 rid="${1:-linux-x64}"
 configuration="${2:-Release}"
-native_dir="$root/src/native/bin/native/$rid/$configuration"
+native_dir="${JALIUM_NATIVE_DIR:-$root/src/native/bin/native/$rid/$configuration}"
 test_binary="$native_dir/jalium.native.platform.tests"
 
 if [[ ! -x "$test_binary" ]]; then
@@ -20,6 +20,10 @@ chmod 700 "$runtime_dir"
 weston_log="$runtime_dir/weston.log"
 socket_name="jalium-wayland-dnd-$$"
 weston_pid=""
+weston_renderer=(--renderer=pixman)
+if weston --help 2>&1 | grep -q -- '--use-pixman'; then
+    weston_renderer=(--use-pixman)
+fi
 
 cleanup() {
     if [[ -n "$weston_pid" ]] && kill -0 "$weston_pid" 2>/dev/null; then
@@ -31,8 +35,8 @@ cleanup() {
 trap cleanup EXIT
 
 XDG_RUNTIME_DIR="$runtime_dir" weston \
-    --backend=x11 \
-    --renderer=pixman \
+    --backend=x11-backend.so \
+    "${weston_renderer[@]}" \
     --socket="$socket_name" \
     --width=800 \
     --height=600 \

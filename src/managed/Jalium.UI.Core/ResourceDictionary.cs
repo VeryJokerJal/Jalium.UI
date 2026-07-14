@@ -11,7 +11,7 @@ namespace Jalium.UI;
 /// Provides a hash table/dictionary implementation that contains resources
 /// used by components and other elements of a UI application.
 /// </summary>
-public class ResourceDictionary : IDictionary<object, object?>, IDictionary, ISupportInitialize, INameScope
+public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Markup.INameScope, Jalium.UI.Markup.IUriContext
 {
     private sealed class NotificationDeferralScope : IDisposable
     {
@@ -186,6 +186,12 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary, ISu
     /// </summary>
     internal Uri? BaseUri { get; set; }
 
+    Uri? Jalium.UI.Markup.IUriContext.BaseUri
+    {
+        get => BaseUri;
+        set => BaseUri = value;
+    }
+
     /// <summary>
     /// Gets or sets the assembly used for loading embedded resources.
     /// This is typically set by the XAML parser during loading.
@@ -312,14 +318,19 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary, ISu
     public bool IsReadOnly => false;
 
     /// <summary>
+    /// Gets a value indicating whether the dictionary has a fixed size.
+    /// </summary>
+    public bool IsFixedSize => false;
+
+    /// <summary>
     /// Gets a collection containing the keys.
     /// </summary>
-    public ICollection<object> Keys => _innerDictionary.Keys;
+    public ICollection Keys => _innerDictionary.Keys;
 
     /// <summary>
     /// Gets a collection containing the values.
     /// </summary>
-    public ICollection<object?> Values => new ResourceValuesCollection(this);
+    public ICollection Values => new ResourceValuesCollection(this);
 
     /// <summary>
     /// Gets or sets the element with the specified key.
@@ -454,15 +465,12 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary, ISu
     /// <summary>
     /// Removes the resource with the specified key.
     /// </summary>
-    public bool Remove(object key)
+    public void Remove(object key)
     {
         if (_innerDictionary.Remove(key))
         {
             OnChangedForKey(key);
-            return true;
         }
-
-        return false;
     }
 
     /// <summary>
@@ -477,90 +485,21 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary, ISu
         OnChanged();
     }
 
-    #region ICollection<KeyValuePair<object, object?>>
-
-    public void Add(KeyValuePair<object, object?> item)
+    /// <summary>
+    /// Returns an enumerator over the local dictionary entries.
+    /// </summary>
+    public IDictionaryEnumerator GetEnumerator()
     {
-        _innerDictionary.Add(item.Key, item.Value);
-        OnChanged();
+        return new ResourceDictionaryEnumerator(CreateEntryEnumerator());
     }
 
-    public bool Contains(KeyValuePair<object, object?> item)
-    {
-        return TryGetLocalValue(item.Key, out object? value) &&
-               EqualityComparer<object?>.Default.Equals(value, item.Value);
-    }
-
-    public void CopyTo(KeyValuePair<object, object?>[] array, int arrayIndex)
-    {
-        ArgumentNullException.ThrowIfNull(array);
-        ValidateCopyToArguments(array.Length, arrayIndex);
-
-        int destinationIndex = arrayIndex;
-        foreach (var entry in SnapshotEntries())
-        {
-            object? value = GetValueForRead(entry.Key, entry.Value);
-            array[destinationIndex++] = new KeyValuePair<object, object?>(entry.Key, value);
-        }
-    }
-
-    public bool Remove(KeyValuePair<object, object?> item)
-    {
-        if (Contains(item))
-        {
-            var removed = _innerDictionary.Remove(item.Key);
-            if (removed)
-                OnChanged();
-            return removed;
-        }
-
-        return false;
-    }
-
-    public IEnumerator<KeyValuePair<object, object?>> GetEnumerator()
-    {
-        return new ResourceEnumerator(this, SnapshotEntries());
-    }
-
-    IEnumerator IEnumerable.GetEnumerator()
-    {
-        return GetEnumerator();
-    }
-
-    #endregion
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
     #region IDictionary
-
-    bool IDictionary.IsFixedSize => false;
-
-    ICollection IDictionary.Keys => _innerDictionary.Keys;
-
-    ICollection IDictionary.Values => new ResourceValuesCollection(this);
 
     bool ICollection.IsSynchronized => false;
 
     object ICollection.SyncRoot => ((ICollection)_innerDictionary).SyncRoot;
-
-    object? IDictionary.this[object key]
-    {
-        get => this[key];
-        set => this[key] = value;
-    }
-
-    void IDictionary.Add(object key, object? value)
-    {
-        Add(key, value);
-    }
-
-    void IDictionary.Remove(object key)
-    {
-        Remove(key);
-    }
-
-    IDictionaryEnumerator IDictionary.GetEnumerator()
-    {
-        return new ResourceDictionaryEnumerator(GetEnumerator());
-    }
 
     void ICollection.CopyTo(Array array, int index)
     {
@@ -574,7 +513,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary, ISu
 
         if (array is KeyValuePair<object, object?>[] keyValuePairs)
         {
-            CopyTo(keyValuePairs, index);
+            CopyEntriesTo(keyValuePairs, index);
             return;
         }
 
@@ -594,6 +533,19 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary, ISu
         {
             object? value = GetValueForRead(entry.Key, entry.Value);
             array[destinationIndex++] = new DictionaryEntry(entry.Key, value);
+        }
+    }
+
+    private void CopyEntriesTo(KeyValuePair<object, object?>[] array, int arrayIndex)
+    {
+        ArgumentNullException.ThrowIfNull(array);
+        ValidateCopyToArguments(array.Length, arrayIndex);
+
+        int destinationIndex = arrayIndex;
+        foreach (var entry in SnapshotEntries())
+        {
+            object? value = GetValueForRead(entry.Key, entry.Value);
+            array[destinationIndex++] = new KeyValuePair<object, object?>(entry.Key, value);
         }
     }
 
@@ -648,6 +600,11 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary, ISu
         var entries = new KeyValuePair<object, object?>[_innerDictionary.Count];
         ((ICollection<KeyValuePair<object, object?>>)_innerDictionary).CopyTo(entries, 0);
         return entries;
+    }
+
+    private IEnumerator<KeyValuePair<object, object?>> CreateEntryEnumerator()
+    {
+        return new ResourceEnumerator(this, SnapshotEntries());
     }
 
     private void ValidateCopyToArguments(int arrayLength, int arrayIndex)
@@ -943,7 +900,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary, ISu
 
         public IEnumerator<object?> GetEnumerator()
         {
-            return new ResourceValueEnumerator(_owner.GetEnumerator());
+            return new ResourceValueEnumerator(_owner.CreateEntryEnumerator());
         }
 
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();

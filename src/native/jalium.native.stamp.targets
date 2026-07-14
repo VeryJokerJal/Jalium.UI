@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    Writes the .jalium-native-complete provenance stamp (head=<sha>, dirty=<0|1>)
+    next to the build output whenever one of the checked-in *.static.vcxproj
+    projects builds. The NuGet pack guard (eng/msbuild/JaliumStaleNativeGuard
+    .targets) reads the stamp to verify which commit the packed .lib files were
+    produced from — the vcxproj path previously wrote no stamp at all.
+
+    A failure here must never fail the native build itself (ContinueOnError):
+    it only leaves the stamp absent/imprecise, which the pack guard then
+    reports at pack time. Parallel project builds may race on the shared stamp
+    file; the content is identical, so a lost write is harmless.
+  -->
+  <Target Name="JaliumWriteNativeStamp" AfterTargets="Build" Condition="'$(DesignTimeBuild)' != 'true'">
+    <PropertyGroup>
+      <_JaliumStampRepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../..'))</_JaliumStampRepoRoot>
+      <_JaliumStampFile>$(OutDir).jalium-native-complete</_JaliumStampFile>
+    </PropertyGroup>
+    <!-- 2>nul keeps git's stderr chatter (CRLF warnings, advice) out of
+         ConsoleToMSBuild, which merges stderr into ConsoleOutput and would
+         otherwise corrupt head= or fake dirty=1 on a clean tree. The regex
+         guard below catches anything that still is not a bare commit sha.
+         The untracked mode is forced so status.showUntrackedFiles=no cannot
+         hide new not-yet-added sources. -->
+    <Exec Command="git -C &quot;$(_JaliumStampRepoRoot)&quot; rev-parse HEAD 2&gt;nul"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" EchoOff="true"
+          StandardOutputImportance="low" StandardErrorImportance="low"
+          ContinueOnError="WarnAndContinue">
+      <Output TaskParameter="ConsoleOutput" ItemName="_JaliumStampHeadLine" />
+      <Output TaskParameter="ExitCode" PropertyName="_JaliumStampHeadExit" />
+    </Exec>
+    <Exec Command="git -C &quot;$(_JaliumStampRepoRoot)&quot; status --porcelain --untracked-files=normal -- src/native 2&gt;nul"
+          ConsoleToMSBuild="true" IgnoreExitCode="true" EchoOff="true"
+          StandardOutputImportance="low" StandardErrorImportance="low"
+          ContinueOnError="WarnAndContinue">
+      <Output TaskParameter="ConsoleOutput" ItemName="_JaliumStampDirtyLine" />
+      <Output TaskParameter="ExitCode" PropertyName="_JaliumStampDirtyExit" />
+    </Exec>
+    <PropertyGroup>
+      <_JaliumStampHead>@(_JaliumStampHeadLine)</_JaliumStampHead>
+      <_JaliumStampHead Condition="'$(_JaliumStampHeadExit)' != '0' or '$(_JaliumStampHead)' == ''">unknown</_JaliumStampHead>
+      <_JaliumStampHead Condition="!$([System.Text.RegularExpressions.Regex]::IsMatch('$(_JaliumStampHead)', '^[0-9a-fA-F]{40,64}$'))">unknown</_JaliumStampHead>
+      <_JaliumStampDirty Condition="'@(_JaliumStampDirtyLine)' == ''">0</_JaliumStampDirty>
+      <_JaliumStampDirty Condition="'@(_JaliumStampDirtyLine)' != ''">1</_JaliumStampDirty>
+      <_JaliumStampDirty Condition="'$(_JaliumStampDirtyExit)' != '0' or '$(_JaliumStampHead)' == 'unknown'">unknown</_JaliumStampDirty>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_JaliumStampFile)"
+                      Lines="head=$(_JaliumStampHead);dirty=$(_JaliumStampDirty);configuration=$(Configuration);source=vcxproj"
+                      Overwrite="true"
+                      ContinueOnError="WarnAndContinue" />
+    <Message Text="Jalium native stamp: $(_JaliumStampFile) (head=$(_JaliumStampHead), dirty=$(_JaliumStampDirty))" Importance="low" />
+  </Target>
+</Project>

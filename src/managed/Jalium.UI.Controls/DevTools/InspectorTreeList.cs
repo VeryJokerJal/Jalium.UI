@@ -6,7 +6,7 @@ using System.ComponentModel;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
-using ShapePath = Jalium.UI.Controls.Shapes.Path;
+using ShapePath = Jalium.UI.Shapes.Path;
 
 namespace Jalium.UI.Controls.DevTools;
 

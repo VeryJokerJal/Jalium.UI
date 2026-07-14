@@ -1,8 +1,9 @@
 using Jalium.UI;
-using Jalium.UI.Controls.Shapes;
+using Jalium.UI.Shapes;
 using Jalium.UI.Media;
-using ShapePath = Jalium.UI.Controls.Shapes.Path;
+using ShapePath = Jalium.UI.Shapes.Path;
 using ShapeStretch = Jalium.UI.Media.Stretch;
+using TestPath = Jalium.UI.Shapes.Path;
 
 namespace Jalium.UI.Tests;
 
@@ -155,24 +156,24 @@ public class PathShapeTests
     #region Property mutual exclusion tests
 
     [Fact]
-    public void Path_DataAndGeometryAliasTheSameWpfProperty()
+    public void Path_DataUsesTheCanonicalWpfProperty()
     {
         var path = new TestPath();
         Geometry geometry = Geometry.Parse("M 0,0 L 5,5");
 
         path.Data = geometry;
 
-        Assert.Same(geometry, path.Geometry);
-        Assert.Same(ShapePath.DataProperty, ShapePath.GeometryProperty);
+        Assert.Same(geometry, path.Data);
+        Assert.Equal("Data", ShapePath.DataProperty.Name);
     }
 
     [Fact]
-    public void Path_SetGeometry_ShouldUpdateDataAlias()
+    public void Path_SetData_ShouldReplaceExistingGeometry()
     {
         var path = new TestPath { Data = Geometry.Parse("M 0,0 L 10,10") };
         Geometry replacement = Geometry.Parse("M 0,0 L 5,5");
 
-        path.Geometry = replacement;
+        path.Data = replacement;
 
         Assert.Same(replacement, path.Data);
     }
@@ -190,13 +191,13 @@ public class PathShapeTests
     }
 
     [Fact]
-    public void Path_SetGeometryToNull_ShouldClearDataAliasAndRenderNothing()
+    public void Path_SetDataToNull_ShouldClearExistingGeometryAndRenderNothing()
     {
-        var path = new TestPath { Geometry = Geometry.Parse("M 0,0 L 10,10") };
+        var path = new TestPath { Data = Geometry.Parse("M 0,0 L 10,10") };
         path.Measure(new Size(10, 10));
         path.Arrange(new Rect(0, 0, 10, 10));
 
-        path.Geometry = null;
+        path.Data = null;
 
         var dc = new RecordingDrawingContext();
         path.Render(dc);
@@ -242,11 +243,11 @@ public class PathShapeTests
     public void Path_MeasureOverride_ShouldReturnConsistentSize(string data)
     {
         var path = CreatePath(data, 20, 20, ShapeStretch.None);
-        var measured1 = path.MeasureResult;
+        var measured1 = path.DesiredSize;
 
         // Re-measure should produce the same result
         path.Measure(new Size(20, 20));
-        var measured2 = path.MeasureResult;
+        var measured2 = path.DesiredSize;
 
         Assert.Equal(measured1, measured2);
     }
@@ -261,8 +262,8 @@ public class PathShapeTests
         };
         path.Measure(new Size(100, 100));
 
-        Assert.Equal(0, path.MeasureResult.Width);
-        Assert.Equal(0, path.MeasureResult.Height);
+        Assert.Equal(0, path.DesiredSize.Width);
+        Assert.Equal(0, path.DesiredSize.Height);
     }
 
     [Fact]
@@ -355,23 +356,6 @@ public class PathShapeTests
         return path;
     }
 
-    private sealed class TestPath : ShapePath
-    {
-        public Size MeasureResult { get; private set; }
-
-        public new void Render(DrawingContext drawingContext)
-        {
-            OnRender(drawingContext);
-        }
-
-        protected override Size MeasureOverride(Size availableSize)
-        {
-            var result = base.MeasureOverride(availableSize);
-            MeasureResult = result;
-            return result;
-        }
-    }
-
     private sealed class RecordingDrawingContext : DrawingContextAdapter
     {
         public Geometry? LastGeometry { get; private set; }
@@ -454,5 +438,15 @@ public class PathShapeTests
             $"Width expected {expected.Width}, got {actual.Width}");
         Assert.True(Math.Abs(expected.Height - actual.Height) <= tolerance,
             $"Height expected {expected.Height}, got {actual.Height}");
+    }
+}
+
+internal static class PathTestExtensions
+{
+    public static void Render(this ShapePath path, DrawingContext drawingContext)
+    {
+        typeof(ShapePath)
+            .GetMethod("OnRender", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .Invoke(path, new object[] { drawingContext });
     }
 }

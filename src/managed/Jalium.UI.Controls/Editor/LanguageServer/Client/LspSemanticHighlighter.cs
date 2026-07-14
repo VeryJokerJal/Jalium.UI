@@ -56,7 +56,7 @@ internal sealed class LspSemanticHighlighter : IReactiveSyntaxHighlighter
         _ = RefreshTokensAsync();
     }
 
-    public void NotifyDocumentChanged(TextChangeEventArgs change)
+    public void NotifyDocumentChanged(DocumentChangeEventArgs change)
     {
         // Debounce: cancel previous refresh
         _refreshCts?.Cancel();

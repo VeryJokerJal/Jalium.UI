@@ -70,7 +70,7 @@ public class DataGridThemeTests
             var controlBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackground"]);
 
             var row = new DataGridRow { IsSelected = true };
-            var header = new Jalium.UI.Controls.DataGridColumnHeader { Content = "Name" };
+            var header = new PrimitiveDataGridColumnHeader { Content = "Name" };
             var host = new StackPanel { Width = 400, Height = 120 };
             host.Children.Add(row);
             host.Children.Add(header);
@@ -134,7 +134,7 @@ public class DataGridThemeTests
 
         try
         {
-            var header = new Jalium.UI.Controls.DataGridColumnHeader
+            var header = new PrimitiveDataGridColumnHeader
             {
                 Content = "Name",
                 Width = 120,
@@ -199,14 +199,14 @@ public class DataGridThemeTests
             host.Arrange(new Rect(0, 0, 400, 240));
 
             var headersHost = Assert.IsType<StackPanel>(dataGrid.FindName("PART_ColumnHeadersHost"));
-            var originalHeader = Assert.IsType<Jalium.UI.Controls.DataGridColumnHeader>(headersHost.Children[0]);
+            var originalHeader = Assert.IsType<PrimitiveDataGridColumnHeader>(headersHost.Children[0]);
             var resizedColumn = dataGrid.Columns[0];
 
             dataGrid.ResizeColumn(resizedColumn, 180);
 
             Assert.Same(originalHeader, headersHost.Children[0]);
             Assert.Equal(180, resizedColumn.Width);
-            Assert.Equal(180, ((Jalium.UI.Controls.DataGridColumnHeader)headersHost.Children[0]).Width);
+            Assert.Equal(180, ((PrimitiveDataGridColumnHeader)headersHost.Children[0]).Width);
         }
         finally
         {

@@ -7,6 +7,7 @@ namespace System.ComponentModel;
 /// </summary>
 public static class DesignerProperties
 {
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsInDesignModeProperty =
         DependencyProperty.RegisterAttached(
             "IsInDesignMode",
@@ -18,12 +19,14 @@ public static class DesignerProperties
                 FrameworkPropertyMetadataOptions.OverridesInheritanceBehavior));
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetIsInDesignMode(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
         return (bool)(element.GetValue(IsInDesignModeProperty) ?? false);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static void SetIsInDesignMode(DependencyObject element, bool value)
     {
         ArgumentNullException.ThrowIfNull(element);

@@ -116,7 +116,7 @@ internal sealed class TouchRippleAdorner : Adorner
             TimeSpan.FromMilliseconds(16),
             DispatcherPriority.Render,
             OnTick,
-            Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread())
+            Dispatcher.CurrentDispatcher)
         {
             IsEnabled = false
         };

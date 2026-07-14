@@ -4,12 +4,14 @@
 #include "glyph_rasterizer.h"
 #include "glyph_atlas.h"
 #include "font_face.h"
+#include "jalium_text_options.h"
 
 #include <cstring>
 #include <cwchar>
 #include <cmath>
 #include <algorithm>
 #include <functional>
+#include <sstream>
 
 namespace jalium {
 
@@ -133,35 +135,110 @@ static uint32_t DecodeCodepoint(
     }
 }
 
-void JaliumTextFormat::EnsureFallbackFace()
+static bool IsFallbackIgnorable(uint32_t cp)
 {
-    if (fallbackAttempted_) return;
-    fallbackAttempted_ = true;
-
-    if (!engine_ || !engine_->GetFontProvider()) return;
-    const wchar_t* fb = engine_->GetFontProvider()->GetFallbackFontFamily();
-    if (!fb || fontFamily_ == fb) return; // no fallback, or primary already is it
-
-    fallbackFace_ = engine_->GetFontProvider()->CreateFace(
-        fb, fontWeight_, fontStyle_);
-    if (fallbackFace_)
-        fallbackFontId_ = ComputeFontId(fb, fontWeight_, fontStyle_);
+    return cp == 0 || cp == 0x200Cu || cp == 0x200Du ||
+           (cp >= 0xFE00u && cp <= 0xFE0Fu) ||
+           (cp >= 0xE0100u && cp <= 0xE01EFu);
 }
 
-FontFace* JaliumTextFormat::ChooseFaceForCodepoint(uint32_t cp, uint64_t& outFontId) const
+static bool FaceCoversCluster(FontFace* face, const std::vector<uint32_t>& codepoints)
 {
-    if (face_ && cp != 0 && face_->GetGlyphIndex(cp) != 0)
-    {
+    if (!face) return false;
+    bool sawRenderable = false;
+    for (uint32_t cp : codepoints) {
+        if (IsFallbackIgnorable(cp) || cp < 0x20u) continue;
+        sawRenderable = true;
+        if (!face->HasGlyph(cp)) return false;
+    }
+    return sawRenderable;
+}
+
+static std::string ClusterKey(const std::vector<uint32_t>& codepoints)
+{
+    std::string key;
+    key.reserve(codepoints.size() * sizeof(uint32_t));
+    for (uint32_t cp : codepoints)
+        for (int shift = 0; shift < 32; shift += 8)
+            key.push_back(static_cast<char>((cp >> shift) & 0xffu));
+    return key;
+}
+
+FontFace* JaliumTextFormat::ChooseFaceForCluster(
+    const std::vector<uint32_t>& codepoints,
+    uint64_t& outFontId)
+{
+    if (FaceCoversCluster(face_.get(), codepoints)) {
         outFontId = fontId_;
         return face_.get();
     }
-    if (fallbackFace_ && cp != 0 && fallbackFace_->GetGlyphIndex(cp) != 0)
-    {
-        outFontId = fallbackFontId_;
-        return fallbackFace_.get();
+
+    const std::string clusterKey = ClusterKey(codepoints);
+    auto cached = clusterFaceCache_.find(clusterKey);
+    if (cached != clusterFaceCache_.end()) {
+        if (cached->second >= 0 && static_cast<size_t>(cached->second) < fallbackFaces_.size()) {
+            auto& entry = fallbackFaces_[static_cast<size_t>(cached->second)];
+            outFontId = entry.fontId;
+            return entry.face.get();
+        }
+        outFontId = fontId_;
+        return face_.get();
     }
+
+    FontProvider* provider = engine_ ? engine_->GetFontProvider() : nullptr;
+    if (provider) {
+        auto matches = provider->FindFallbackFonts(
+            codepoints, fontFamily_.c_str(), fontWeight_, fontStyle_);
+        for (const auto& match : matches) {
+            const std::string matchKey = match.path + "#" + std::to_string(match.faceIndex);
+            int32_t index = -1;
+            auto known = fallbackMatchCache_.find(matchKey);
+            if (known != fallbackMatchCache_.end()) {
+                index = known->second;
+            } else {
+                auto candidate = provider->CreateFace(match);
+                if (candidate) {
+                    FallbackFaceEntry entry;
+                    entry.face = std::move(candidate);
+                    entry.matchKey = matchKey;
+                    entry.fontId = ComputeFontId(
+                        std::wstring(matchKey.begin(), matchKey.end()).c_str(),
+                        fontWeight_, fontStyle_);
+                    index = static_cast<int32_t>(fallbackFaces_.size());
+                    fallbackFaces_.push_back(std::move(entry));
+                }
+                fallbackMatchCache_[matchKey] = index;
+            }
+            if (index >= 0 && FaceCoversCluster(fallbackFaces_[static_cast<size_t>(index)].face.get(), codepoints)) {
+                clusterFaceCache_[clusterKey] = index;
+                auto& entry = fallbackFaces_[static_cast<size_t>(index)];
+                outFontId = entry.fontId;
+                return entry.face.get();
+            }
+        }
+    }
+
+    clusterFaceCache_[clusterKey] = -1;
     outFontId = fontId_;
     return face_.get(); // renders .notdef; GenerateGlyphQuads skips glyph index 0
+}
+
+static bool IsClusterExtender(uint32_t cp)
+{
+    return (cp >= 0x0300u && cp <= 0x036Fu) ||
+           (cp >= 0x1AB0u && cp <= 0x1AFFu) ||
+           (cp >= 0x1DC0u && cp <= 0x1DFFu) ||
+           (cp >= 0x20D0u && cp <= 0x20FFu) ||
+           (cp >= 0xFE20u && cp <= 0xFE2Fu) ||
+           (cp >= 0xFE00u && cp <= 0xFE0Fu) ||
+           (cp >= 0xE0100u && cp <= 0xE01EFu) ||
+           (cp >= 0x1F3FBu && cp <= 0x1F3FFu) ||
+           (cp >= 0xE0020u && cp <= 0xE007Fu);
+}
+
+static bool IsRegionalIndicator(uint32_t cp)
+{
+    return cp >= 0x1F1E6u && cp <= 0x1F1FFu;
 }
 
 ShapedRun JaliumTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t textLength)
@@ -188,9 +265,37 @@ ShapedRun JaliumTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t text
     if (!needsFallback)
         return shaper_.Shape(face_.get(), fontId_, text, textLength, fontSizePx_);
 
-    EnsureFallbackFace();
-    if (!fallbackFace_) // platform has no fallback font installed
-        return shaper_.Shape(face_.get(), fontId_, text, textLength, fontSizePx_);
+    // Decode into grapheme-like clusters, then split into maximal runs sharing
+    // a font. This is deliberately a compact subset of UAX #29 covering the
+    // sequences that affect font fallback: combining marks, variation
+    // selectors, emoji modifiers, RI flags and chained ZWJ emoji.
+    struct Unit { uint32_t cp, start, end; };
+    std::vector<Unit> units;
+    for (uint32_t p = 0; p < textLength; ) {
+        uint32_t count = 0;
+        const uint32_t cp = DecodeCodepoint(text, textLength, p, count);
+        if (count == 0) count = 1;
+        units.push_back({cp, p, p + count});
+        p += count;
+    }
+    struct Cluster { uint32_t start, end; FontFace* face; uint64_t fontId; };
+    std::vector<Cluster> clusters;
+    for (size_t u = 0; u < units.size(); ) {
+        const size_t begin = u++;
+        if (IsRegionalIndicator(units[begin].cp) && u < units.size() && IsRegionalIndicator(units[u].cp)) ++u;
+        while (u < units.size() && IsClusterExtender(units[u].cp)) ++u;
+        while (u < units.size() && units[u].cp == 0x200Du) {
+            ++u; // include joiner
+            if (u < units.size()) ++u; // and the joined base
+            while (u < units.size() && IsClusterExtender(units[u].cp)) ++u;
+        }
+        std::vector<uint32_t> clusterCodepoints;
+        clusterCodepoints.reserve(u - begin);
+        for (size_t j = begin; j < u; ++j) clusterCodepoints.push_back(units[j].cp);
+        uint64_t selectedId = fontId_;
+        FontFace* selected = ChooseFaceForCluster(clusterCodepoints, selectedId);
+        clusters.push_back({units[begin].start, units[u - 1].end, selected, selectedId});
+    }
 
     // Split into maximal runs that share a face, shape each with its own face
     // (so advances/metrics are correct), concatenate with absolute clusters.
@@ -200,34 +305,25 @@ ShapedRun JaliumTextFormat::ShapeWithFallback(const wchar_t* text, uint32_t text
     combined.fontSize = fontSizePx_;
     combined.isRtl = false;
 
-    uint32_t i = 0;
-    while (i < textLength)
+    size_t ci = 0;
+    while (ci < clusters.size())
     {
-        uint32_t units = 0;
-        uint32_t cp = DecodeCodepoint(text, textLength, i, units);
-        if (units == 0) units = 1;
-        uint64_t runFontId = fontId_;
-        FontFace* runFace = ChooseFaceForCodepoint(cp, runFontId);
-
-        uint32_t runStart = i;
-        i += units;
-        while (i < textLength)
-        {
-            uint32_t u2 = 0;
-            uint32_t cp2 = DecodeCodepoint(text, textLength, i, u2);
-            if (u2 == 0) u2 = 1;
-            uint64_t id2 = fontId_;
-            if (ChooseFaceForCodepoint(cp2, id2) != runFace) break;
-            i += u2;
-        }
+        const uint32_t runStart = clusters[ci].start;
+        FontFace* runFace = clusters[ci].face;
+        const uint64_t runFontId = clusters[ci].fontId;
+        size_t endCluster = ci + 1;
+        while (endCluster < clusters.size() && clusters[endCluster].face == runFace)
+            ++endCluster;
+        const uint32_t runEnd = clusters[endCluster - 1].end;
 
         ShapedRun part = shaper_.Shape(
-            runFace, runFontId, text + runStart, i - runStart, fontSizePx_);
+            runFace, runFontId, text + runStart, runEnd - runStart, fontSizePx_);
         for (auto& g : part.glyphs)
         {
             g.cluster += runStart; // run-relative -> absolute into full text
             combined.glyphs.push_back(g);
         }
+        ci = endCluster;
     }
     return combined;
 }
@@ -699,6 +795,20 @@ void JaliumTextFormat::GenerateGlyphQuads(
     std::vector<TextGlyphQuad>& outQuads,
     float renderScale)
 {
+    GenerateGlyphQuads(text, textLength, maxWidth, maxHeight,
+        colorR, colorG, colorB, colorA, originX, originY,
+        outQuads, renderScale, -1);
+}
+
+void JaliumTextFormat::GenerateGlyphQuads(
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight,
+    float colorR, float colorG, float colorB, float colorA,
+    float originX, float originY,
+    std::vector<TextGlyphQuad>& outQuads,
+    float renderScale,
+    int32_t renderingModeOverride)
+{
     if (!face_ || !engine_ || !text || textLength == 0)
         return;
 
@@ -725,8 +835,21 @@ void JaliumTextFormat::GenerateGlyphQuads(
 
     GlyphAtlas* atlas = engine_->GetGlyphAtlas();
     GlyphRasterizer* rasterizer = engine_->GetGlyphRasterizer();
-    if (!atlas || !rasterizer)
+    if (!atlas || !rasterizer) {
+        if (renderScale != 1.0f) {
+            fontSizePx_ = savedFontSize; ascent_ = savedAscent; descent_ = savedDescent;
+            lineGap_ = savedLineGap; lineHeight_ = savedLineHeight;
+        }
         return;
+    }
+
+    const int32_t resolvedMode = renderingModeOverride >= 0
+        ? jalium::text_options::ResolveMode(renderingModeOverride)
+        : ResolveEffectiveTextRenderingMode();
+    const GlyphAntialiasMode glyphAaMode =
+        resolvedMode == JALIUM_TEXT_AA_ALIASED ? GlyphAntialiasMode::Aliased :
+        resolvedMode == JALIUM_TEXT_AA_CLEARTYPE ? GlyphAntialiasMode::HorizontalLcd :
+                                                   GlyphAntialiasMode::Grayscale;
 
     float invAtlasW = 1.0f / static_cast<float>(atlas->GetWidth());
     float invAtlasH = 1.0f / static_cast<float>(atlas->GetHeight());
@@ -783,7 +906,8 @@ void JaliumTextFormat::GenerateGlyphQuads(
                 // fractional, so a truncated raster size desyncs glyph ink width
                 // from the advance and skews spacing at fractional (high-DPI/scaled) sizes.
                 static_cast<uint16_t>(std::lround(fontSizePx_)),
-                subpixelX);
+                subpixelX,
+                glyphAaMode);
 
             if (entry.valid && entry.w > 0 && entry.h > 0)
             {
@@ -800,6 +924,7 @@ void JaliumTextFormat::GenerateGlyphQuads(
                 quad.colorG = colorG;
                 quad.colorB = colorB;
                 quad.colorA = colorA;
+                quad.flags = entry.flags;
                 outQuads.push_back(quad);
             }
 

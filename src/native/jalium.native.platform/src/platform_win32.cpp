@@ -14,10 +14,12 @@
 #include <windowsx.h>
 #include <imm.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
@@ -397,28 +399,69 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
             evt.pointer.pointerId = pointerId;
             evt.pointer.x = static_cast<float>(pt.x);
             evt.pointer.y = static_cast<float>(pt.y);
-            evt.pointer.pressure = 0.5f;
+            evt.pointer.pressure =
+                (pi.pointerFlags & POINTER_FLAG_INCONTACT) != 0 ? 1.0f : 0.0f;
             evt.pointer.tiltX = 0.0f;
             evt.pointer.tiltY = 0.0f;
             evt.pointer.twist = 0.0f;
             evt.pointer.modifiers = GetModifiers();
+            evt.pointer.flags = JALIUM_POINTER_FLAG_NONE;
+            if ((pi.pointerFlags & POINTER_FLAG_INRANGE) != 0)
+                evt.pointer.flags |= JALIUM_POINTER_FLAG_IN_RANGE;
+            if ((pi.pointerFlags & POINTER_FLAG_INCONTACT) != 0)
+                evt.pointer.flags |= JALIUM_POINTER_FLAG_IN_CONTACT;
+            if ((pi.pointerFlags & POINTER_FLAG_PRIMARY) != 0)
+                evt.pointer.flags |= JALIUM_POINTER_FLAG_PRIMARY;
+            evt.pointer.buttons = JALIUM_POINTER_BUTTON_NONE;
+            if ((pi.pointerFlags & POINTER_FLAG_FIRSTBUTTON) != 0)
+                evt.pointer.buttons |= JALIUM_POINTER_BUTTON_PRIMARY;
+            if ((pi.pointerFlags & POINTER_FLAG_SECONDBUTTON) != 0)
+                evt.pointer.buttons |= JALIUM_POINTER_BUTTON_SECONDARY;
+            if ((pi.pointerFlags & POINTER_FLAG_THIRDBUTTON) != 0)
+                evt.pointer.buttons |= JALIUM_POINTER_BUTTON_TERTIARY;
+            evt.pointer.toolType = JALIUM_POINTER_TOOL_UNKNOWN;
 
             if (pi.pointerType == PT_TOUCH)
                 evt.pointer.pointerType = JALIUM_POINTER_TOUCH;
             else if (pi.pointerType == PT_PEN)
             {
                 evt.pointer.pointerType = JALIUM_POINTER_PEN;
+                evt.pointer.toolType = JALIUM_POINTER_TOOL_PEN;
                 POINTER_PEN_INFO penInfo{};
                 if (GetPointerPenInfo(pointerId, &penInfo))
                 {
-                    evt.pointer.pressure = static_cast<float>(penInfo.pressure) / 1024.0f;
-                    evt.pointer.tiltX = static_cast<float>(penInfo.tiltX);
-                    evt.pointer.tiltY = static_cast<float>(penInfo.tiltY);
-                    evt.pointer.twist = static_cast<float>(penInfo.rotation);
+                    if ((penInfo.penMask & PEN_MASK_PRESSURE) != 0 &&
+                        (evt.pointer.flags & JALIUM_POINTER_FLAG_IN_CONTACT) != 0)
+                        evt.pointer.pressure = std::clamp(
+                            static_cast<float>(penInfo.pressure) / 1024.0f,
+                            0.0f, 1.0f);
+                    else
+                        evt.pointer.pressure = 0.0f;
+                    if ((penInfo.penMask & PEN_MASK_TILT_X) != 0)
+                        evt.pointer.tiltX = static_cast<float>(penInfo.tiltX);
+                    if ((penInfo.penMask & PEN_MASK_TILT_Y) != 0)
+                        evt.pointer.tiltY = static_cast<float>(penInfo.tiltY);
+                    if ((penInfo.penMask & PEN_MASK_ROTATION) != 0)
+                        evt.pointer.twist = static_cast<float>(penInfo.rotation);
+                    if ((penInfo.penFlags & PEN_FLAG_ERASER) != 0)
+                    {
+                        evt.pointer.flags |= JALIUM_POINTER_FLAG_ERASER;
+                        evt.pointer.toolType = JALIUM_POINTER_TOOL_ERASER;
+                    }
+                    if ((penInfo.penFlags & PEN_FLAG_INVERTED) != 0)
+                        evt.pointer.flags |= JALIUM_POINTER_FLAG_INVERTED;
+                    if ((penInfo.penFlags & PEN_FLAG_BARREL) != 0)
+                    {
+                        evt.pointer.flags |= JALIUM_POINTER_FLAG_BARREL;
+                        evt.pointer.buttons |= JALIUM_POINTER_BUTTON_BARREL;
+                    }
                 }
             }
             else
+            {
                 evt.pointer.pointerType = JALIUM_POINTER_MOUSE;
+                evt.pointer.toolType = JALIUM_POINTER_TOOL_MOUSE;
+            }
 
             win->DispatchEvent(evt);
         }
@@ -641,6 +684,18 @@ JaliumSurfaceDescriptor jalium_window_get_surface(JaliumPlatformWindow* window)
         desc.handle0 = reinterpret_cast<intptr_t>(window->hwnd);
     }
     return desc;
+}
+
+uint32_t jalium_window_get_portal_parent_handle(
+    JaliumPlatformWindow*, char*, uint32_t)
+{
+    return 0;
+}
+
+uint32_t jalium_window_get_portal_parent_handle_for_native_handle(
+    intptr_t, char*, uint32_t)
+{
+    return 0;
 }
 
 void jalium_window_set_event_callback(JaliumPlatformWindow* window,
@@ -1000,12 +1055,39 @@ int16_t jalium_input_get_key_state(int32_t jaliumVirtualKey)
     return result;
 }
 
-void jalium_input_get_cursor_pos(float* x, float* y)
+JaliumResult jalium_input_get_touch_capabilities(
+    int32_t* touchPresent, int32_t* maxContacts)
 {
-    POINT pt;
-    GetCursorPos(&pt);
-    if (x) *x = static_cast<float>(pt.x);
-    if (y) *y = static_cast<float>(pt.y);
+    if (!touchPresent || !maxContacts)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    const int digitizer = GetSystemMetrics(SM_DIGITIZER);
+    const int touchMask =
+        NID_READY | NID_INTEGRATED_TOUCH | NID_EXTERNAL_TOUCH;
+    *touchPresent = (digitizer & touchMask) != 0 ? 1 : 0;
+    *maxContacts = *touchPresent != 0
+        ? std::max(GetSystemMetrics(SM_MAXIMUMTOUCHES), 0)
+        : 0;
+    return JALIUM_OK;
+}
+
+JaliumResult jalium_platform_set_double_click_settings(uint32_t, float)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+JaliumResult jalium_input_get_cursor_pos(float* x, float* y)
+{
+    if (!x || !y) return JALIUM_ERROR_INVALID_ARGUMENT;
+    POINT pt{};
+    if (!GetCursorPos(&pt))
+    {
+        *x = 0.0f;
+        *y = 0.0f;
+        return JALIUM_ERROR_INVALID_STATE;
+    }
+    *x = static_cast<float>(pt.x);
+    *y = static_cast<float>(pt.y);
+    return JALIUM_OK;
 }
 
 // ============================================================================
@@ -1067,6 +1149,90 @@ JaliumResult jalium_clipboard_set_text(const JaliumUtf16Char* text)
     return JALIUM_OK;
 }
 
+JaliumResult jalium_clipboard_get_formats(char** outMimeTypes)
+{
+    if (!outMimeTypes) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *outMimeTypes = nullptr;
+    const char* formats = IsClipboardFormatAvailable(CF_UNICODETEXT)
+        ? "text/plain;charset=utf-8\ntext/plain\nUTF8_STRING" : "";
+    const size_t length = strlen(formats);
+    auto* result = static_cast<char*>(malloc(length + 1));
+    if (!result) return JALIUM_ERROR_OUT_OF_MEMORY;
+    memcpy(result, formats, length + 1);
+    *outMimeTypes = result;
+    return JALIUM_OK;
+}
+
+JaliumResult jalium_clipboard_get_data(
+    const char* mimeType, uint8_t** outData, uint32_t* outDataSize)
+{
+    if (!mimeType || !outData || !outDataSize)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    *outData = nullptr;
+    *outDataSize = 0;
+    const bool text = strcmp(mimeType, "text/plain;charset=utf-8") == 0 ||
+                      strcmp(mimeType, "text/plain") == 0 ||
+                      strcmp(mimeType, "UTF8_STRING") == 0;
+    if (!text) return JALIUM_OK;
+    JaliumUtf16Char* utf16 = nullptr;
+    const JaliumResult result = jalium_clipboard_get_text(&utf16);
+    if (result != JALIUM_OK || !utf16) return result;
+    const wchar_t* wide = AsWideString(utf16);
+    const int wideLength = static_cast<int>(wcslen(wide));
+    const int size = WideCharToMultiByte(
+        CP_UTF8, 0, wide, wideLength, nullptr, 0, nullptr, nullptr);
+    if (size < 0) { free(utf16); return JALIUM_ERROR_UNKNOWN; }
+    auto* bytes = static_cast<uint8_t*>(malloc(static_cast<size_t>(size > 0 ? size : 1)));
+    if (!bytes) { free(utf16); return JALIUM_ERROR_OUT_OF_MEMORY; }
+    if (size > 0)
+        WideCharToMultiByte(
+            CP_UTF8, 0, wide, wideLength, reinterpret_cast<char*>(bytes),
+            size, nullptr, nullptr);
+    free(utf16);
+    *outData = bytes;
+    *outDataSize = static_cast<uint32_t>(size);
+    return JALIUM_OK;
+}
+
+JaliumResult jalium_clipboard_set_data(
+    const JaliumClipboardDataItem* items, uint32_t itemCount)
+{
+    if (itemCount == 0) return jalium_clipboard_clear();
+    if (!items) return JALIUM_ERROR_INVALID_ARGUMENT;
+    for (uint32_t index = 0; index < itemCount; ++index)
+    {
+        if (!items[index].mimeType ||
+            (!items[index].data && items[index].dataSize != 0))
+            return JALIUM_ERROR_INVALID_ARGUMENT;
+        if (strcmp(items[index].mimeType, "text/plain;charset=utf-8") != 0 &&
+            strcmp(items[index].mimeType, "text/plain") != 0 &&
+            strcmp(items[index].mimeType, "UTF8_STRING") != 0)
+            continue;
+        const int wideLength = MultiByteToWideChar(
+            CP_UTF8, MB_ERR_INVALID_CHARS,
+            reinterpret_cast<const char*>(items[index].data),
+            static_cast<int>(items[index].dataSize), nullptr, 0);
+        if (wideLength < 0) return JALIUM_ERROR_INVALID_ARGUMENT;
+        std::vector<JaliumUtf16Char> wide(static_cast<size_t>(wideLength) + 1);
+        if (wideLength != 0)
+            MultiByteToWideChar(
+                CP_UTF8, MB_ERR_INVALID_CHARS,
+                reinterpret_cast<const char*>(items[index].data),
+                static_cast<int>(items[index].dataSize),
+                reinterpret_cast<wchar_t*>(wide.data()), wideLength);
+        return jalium_clipboard_set_text(wide.data());
+    }
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+JaliumResult jalium_clipboard_clear(void)
+{
+    if (!OpenClipboard(nullptr)) return JALIUM_ERROR_INVALID_STATE;
+    const bool cleared = EmptyClipboard() != FALSE;
+    CloseClipboard();
+    return cleared ? JALIUM_OK : JALIUM_ERROR_UNKNOWN;
+}
+
 // Windows desktop drag/drop continues to use the managed AOT-compatible OLE
 // IDataObject/IDropSource implementation. Export the cross-platform ABI so the
 // native platform library remains symbol-compatible without disturbing OLE.
@@ -1078,6 +1244,28 @@ JaliumResult jalium_drag_begin(
 {
     if (performedEffect) *performedEffect = JALIUM_DRAG_EFFECT_NONE;
     return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+JaliumResult jalium_drag_begin_ex(
+    JaliumPlatformWindow* window, const JaliumDragDataItem* items,
+    uint32_t itemCount, uint32_t allowedEffects,
+    JaliumDragFeedbackCallback, JaliumDragQueryContinueCallback, void*,
+    uint32_t* performedEffect)
+{
+    return jalium_drag_begin(
+        window, items, itemCount, allowedEffects, performedEffect);
+}
+
+JaliumResult jalium_drag_begin_with_image(
+    JaliumPlatformWindow* window, const JaliumDragDataItem* items,
+    uint32_t itemCount, uint32_t allowedEffects,
+    JaliumDragFeedbackCallback feedbackCallback,
+    JaliumDragQueryContinueCallback queryContinueCallback, void* userData,
+    const JaliumDragImage*, uint32_t* performedEffect)
+{
+    return jalium_drag_begin_ex(
+        window, items, itemCount, allowedEffects,
+        feedbackCallback, queryContinueCallback, userData, performedEffect);
 }
 
 // Window-management extensions: the Windows managed layer talks to Win32
@@ -1114,6 +1302,54 @@ int32_t jalium_window_set_icon(JaliumPlatformWindow*, const uint32_t*, int32_t, 
 int32_t jalium_window_set_topmost(JaliumPlatformWindow*, int32_t)
 {
     return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_enabled(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_opacity(JaliumPlatformWindow*, double)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_show_in_taskbar(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_resizable(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_decorated(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_owner(JaliumPlatformWindow*, intptr_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_activate(JaliumPlatformWindow*)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_show_system_menu(
+    JaliumPlatformWindow* window, int32_t, int32_t)
+{
+    return window ? JALIUM_ERROR_NOT_SUPPORTED : JALIUM_ERROR_INVALID_ARGUMENT;
+}
+
+int32_t jalium_window_update_ime_context(
+    JaliumPlatformWindow* window, int32_t, const char*, int32_t, int32_t,
+    int32_t, int32_t, int32_t, int32_t)
+{
+    return window ? JALIUM_ERROR_NOT_SUPPORTED : JALIUM_ERROR_INVALID_ARGUMENT;
 }
 
 #endif // _WIN32

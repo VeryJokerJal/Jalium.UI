@@ -1,11 +1,11 @@
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
-using Jalium.UI.Controls.Shapes;
+using Jalium.UI.Shapes;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Xunit;
-using Path = Jalium.UI.Controls.Shapes.Path;
+using Path = Jalium.UI.Shapes.Path;
 
 namespace Jalium.UI.Tests;
 
@@ -80,10 +80,10 @@ public class ComboBoxArrowRotationTests
             Assert.NotNull(arrow);
 
             ApplyAngle(combo, 0);
-            var b0 = (arrow!.Geometry as PathGeometry)!.Bounds;
+            var b0 = (arrow!.Data as PathGeometry)!.Bounds;
 
             ApplyAngle(combo, 180);
-            var b180 = (arrow.Geometry as PathGeometry)!.Bounds;
+            var b180 = (arrow.Data as PathGeometry)!.Bounds;
 
             // 旋转保尺寸 + bbox 中心不变。
             Assert.Equal(b0.Width, b180.Width, 1);
@@ -93,7 +93,7 @@ public class ComboBoxArrowRotationTests
 
             // 90° → bbox 宽高互换，证明是真旋转（而非原地不动）。
             ApplyAngle(combo, 90);
-            var b90 = (arrow.Geometry as PathGeometry)!.Bounds;
+            var b90 = (arrow.Data as PathGeometry)!.Bounds;
             Assert.Equal(b0.Width, b90.Height, 1);
             Assert.Equal(b0.Height, b90.Width, 1);
         }

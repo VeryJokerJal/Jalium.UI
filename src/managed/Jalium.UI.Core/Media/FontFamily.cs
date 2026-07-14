@@ -223,17 +223,71 @@ public partial class FamilyTypeface
 /// <summary>
 /// Represents a collection of <see cref="FamilyTypeface"/> objects.
 /// </summary>
-public sealed class FamilyTypefaceCollection : Collection<FamilyTypeface>
+public sealed class FamilyTypefaceCollection : IList<FamilyTypeface>, IList
 {
+    private readonly List<FamilyTypeface> _items = new();
+
+    /// <summary>Gets the number of typefaces in the collection.</summary>
+    public int Count => _items.Count;
+
     /// <summary>Gets whether the collection is read-only.</summary>
     public bool IsReadOnly => false;
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="FamilyTypefaceCollection"/> class.
-    /// </summary>
-    public FamilyTypefaceCollection()
+    internal FamilyTypefaceCollection()
     {
     }
+
+    internal FamilyTypefaceCollection(IEnumerable<FamilyTypeface> typefaces)
+    {
+        ArgumentNullException.ThrowIfNull(typefaces);
+        _items.AddRange(typefaces);
+    }
+
+    /// <summary>Gets or replaces the typeface at the specified index.</summary>
+    public FamilyTypeface this[int index]
+    {
+        get => _items[index];
+        set
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            _items[index] = value;
+        }
+    }
+
+    /// <summary>Adds a typeface.</summary>
+    public void Add(FamilyTypeface item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        _items.Add(item);
+    }
+
+    /// <summary>Removes every typeface.</summary>
+    public void Clear() => _items.Clear();
+
+    /// <summary>Determines whether the collection contains a typeface.</summary>
+    public bool Contains(FamilyTypeface item) => _items.Contains(item);
+
+    /// <summary>Copies the typefaces to an array.</summary>
+    public void CopyTo(FamilyTypeface[] array, int index) => _items.CopyTo(array, index);
+
+    /// <summary>Returns an enumerator over the typefaces.</summary>
+    public IEnumerator<FamilyTypeface> GetEnumerator() => _items.GetEnumerator();
+
+    /// <summary>Returns the index of a typeface.</summary>
+    public int IndexOf(FamilyTypeface item) => _items.IndexOf(item);
+
+    /// <summary>Inserts a typeface at the specified index.</summary>
+    public void Insert(int index, FamilyTypeface item)
+    {
+        ArgumentNullException.ThrowIfNull(item);
+        _items.Insert(index, item);
+    }
+
+    /// <summary>Removes the first occurrence of a typeface.</summary>
+    public bool Remove(FamilyTypeface item) => _items.Remove(item);
+
+    /// <summary>Removes the typeface at the specified index.</summary>
+    public void RemoveAt(int index) => _items.RemoveAt(index);
 
     /// <summary>
     /// Finds a typeface matching the specified weight, style, and stretch.
@@ -242,7 +296,7 @@ public sealed class FamilyTypefaceCollection : Collection<FamilyTypeface>
     /// <param name="style">The desired font style.</param>
     /// <param name="stretch">The desired font stretch.</param>
     /// <returns>The matching typeface, or null if not found.</returns>
-    public FamilyTypeface? Find(FontWeight weight, FontStyle style, FontStretch stretch)
+    internal FamilyTypeface? Find(FontWeight weight, FontStyle style, FontStretch stretch)
     {
         foreach (var typeface in this)
         {
@@ -252,5 +306,42 @@ public sealed class FamilyTypefaceCollection : Collection<FamilyTypeface>
             }
         }
         return null;
+    }
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    bool IList.IsFixedSize => false;
+    bool IList.IsReadOnly => false;
+    bool ICollection.IsSynchronized => false;
+    object ICollection.SyncRoot => ((ICollection)_items).SyncRoot;
+
+    object? IList.this[int index]
+    {
+        get => this[index];
+        set => this[index] = ValidateValue(value);
+    }
+
+    int IList.Add(object? value)
+    {
+        Add(ValidateValue(value));
+        return Count - 1;
+    }
+
+    bool IList.Contains(object? value) => value is FamilyTypeface typeface && Contains(typeface);
+    int IList.IndexOf(object? value) => value is FamilyTypeface typeface ? IndexOf(typeface) : -1;
+    void IList.Insert(int index, object? value) => Insert(index, ValidateValue(value));
+    void IList.Remove(object? value)
+    {
+        if (value is FamilyTypeface typeface)
+            Remove(typeface);
+    }
+
+    void ICollection.CopyTo(Array array, int index) => ((ICollection)_items).CopyTo(array, index);
+
+    private static FamilyTypeface ValidateValue(object? value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return value as FamilyTypeface
+            ?? throw new ArgumentException($"Value must be a {nameof(FamilyTypeface)}.", nameof(value));
     }
 }

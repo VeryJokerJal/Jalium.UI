@@ -3,6 +3,8 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
+using BitmapSource = Jalium.UI.Media.Imaging.BitmapSource;
+using BitmapImage = Jalium.UI.Media.Imaging.BitmapImage;
 using static Jalium.UI.Interop.Win32.Win32Constants;
 using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 

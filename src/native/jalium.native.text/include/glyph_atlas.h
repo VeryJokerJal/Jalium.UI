@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyph_rasterizer.h"
+#include "jalium_text_api.h"
 
 #include <cstdint>
 #include <unordered_map>
@@ -8,6 +9,12 @@
 #include <mutex>
 
 namespace jalium {
+
+enum AtlasGlyphFlags : uint8_t {
+    ATLAS_GLYPH_NONE = 0,
+    ATLAS_GLYPH_LCD = 1u << 0,
+    ATLAS_GLYPH_COLOR = 1u << 1,
+};
 
 class FontFace;
 
@@ -29,6 +36,7 @@ struct AtlasGlyphEntry {
     uint16_t w, h;          ///< Glyph bitmap size (pixels)
     int16_t  bearingX;       ///< Horizontal bearing
     int16_t  bearingY;       ///< Vertical bearing (positive = up)
+    uint8_t  flags = ATLAS_GLYPH_NONE;
     bool     valid = false;
 };
 
@@ -38,12 +46,14 @@ struct AtlasGlyphKey {
     uint16_t glyphIndex;     ///< Shaped glyph index
     uint16_t fontSize;       ///< Physical pixel size
     uint8_t  subpixelX;     ///< 1/8 pixel quantization (0..7)
+    uint8_t  antialiasMode; ///< GlyphAntialiasMode; part of cache identity
 
     bool operator==(const AtlasGlyphKey& other) const {
         return fontId == other.fontId &&
                glyphIndex == other.glyphIndex &&
                fontSize == other.fontSize &&
-               subpixelX == other.subpixelX;
+               subpixelX == other.subpixelX &&
+               antialiasMode == other.antialiasMode;
     }
 };
 
@@ -52,10 +62,12 @@ struct AtlasGlyphKeyHash {
         size_t h = std::hash<uint64_t>{}(k.fontId);
         // Pack non-overlapping in a uint64: subpixelX needs 3 bits now (0..7,
         // 1/8-pixel buckets), so widen past the old uint32 layout where it would
-        // collide with fontSize. [0..2] subpixelX | [3..18] fontSize | [19..34] glyphIndex.
+        // collide with fontSize. [0..2] subpixelX | [3..4] AA mode |
+        // [5..20] fontSize | [21..36] glyphIndex.
         uint64_t packed = ((uint64_t)(k.subpixelX & 0x7))
-                        | ((uint64_t)k.fontSize   << 3)
-                        | ((uint64_t)k.glyphIndex << 19);
+                        | ((uint64_t)(k.antialiasMode & 0x3) << 3)
+                        | ((uint64_t)k.fontSize   << 5)
+                        | ((uint64_t)k.glyphIndex << 21);
         h ^= std::hash<uint64_t>{}(packed) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
     }
@@ -67,16 +79,25 @@ struct TextGlyphQuad {
     float sizeX, sizeY;        ///< Quad size
     float uvMinX, uvMinY;      ///< Atlas UV top-left
     float uvMaxX, uvMaxY;      ///< Atlas UV bottom-right
-    float colorR, colorG, colorB, colorA; ///< Premultiplied RGBA
+    float colorR, colorG, colorB;
+    // The original 48-byte C++ ABI ended with colorA. Self-hosted consumers
+    // never sampled per-quad color (they already own the run brush), so reuse
+    // those four bytes as metadata without changing vector stride across .so
+    // rebuild boundaries. Legacy consumers see a meaningless colorA but keep
+    // correct geometry/UVs; current consumers read AtlasGlyphFlags.
+    union {
+        float colorA;
+        uint32_t flags;
+    };
 };
-static_assert(sizeof(TextGlyphQuad) == 48, "TextGlyphQuad must be 48 bytes");
+static_assert(sizeof(TextGlyphQuad) == 48, "TextGlyphQuad must preserve its backend ABI");
 
 /// Dirty rectangle for tracking atlas regions that need GPU upload.
 struct AtlasDirtyRect {
     uint32_t x, y, width, height;
 };
 
-class GlyphAtlas {
+class JALIUM_TEXT_API GlyphAtlas {
 public:
     GlyphAtlas();
     ~GlyphAtlas();
@@ -95,7 +116,8 @@ public:
         uint64_t fontId,
         uint16_t glyphIndex,
         uint16_t fontSizePx,
-        uint8_t subpixelX);
+        uint8_t subpixelX,
+        GlyphAntialiasMode antialiasMode);
 
     /// Gets the raw atlas pixel data (RGBA8, 4096x4096).
     const uint8_t* GetPixelData() const { return atlasPixels_.data(); }

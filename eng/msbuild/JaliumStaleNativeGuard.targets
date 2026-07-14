@@ -1,0 +1,110 @@
+<Project>
+
+  <!--
+    Stale-native pack guard.
+
+    `dotnet pack` never rebuilds src/native: every native Content group in the
+    packaging projects is gated only on Exists(), so whatever binary happens to
+    sit on disk is what ships. This guard fails the pack when the binaries on
+    disk are provably not the product of the commit being packed:
+
+      [JALSTALE01] src/native has uncommitted changes (tracked or new files),
+      [JALSTALE02] a packed binary's mtime is older than the last commit that
+                   touched the sources compiled into it (module map below),
+      [JALSTALE03] the payload's .jalium-native-complete stamp is missing or
+                   carries no provenance (head=... written by current builds),
+      [JALSTALE04] the stamp's commit differs from HEAD by commits that touch
+                   src/native (managed-only commits are fine),
+      [JALSTALE05] the stamp records that the payload was built from a dirty
+                   native tree,
+      [JALSTALE06] a binary cannot be mapped to source directories,
+      [JALSTALE07] git itself is unavailable, so nothing can be verified,
+      [JALSTALE08] the stamp's rid/abi/configuration does not match the
+                   directory it sits in (payload copied across RIDs/configs).
+
+    Escape hatch: -p:JaliumAllowStaleNative=true downgrades every finding to a
+    warning and lets the pack proceed.
+
+    The guard runs UNCONDITIONALLY in the pack pipeline: producing a .nupkg —
+    via dotnet pack, msbuild -t:Pack, the VS Pack menu, or a build with
+    GeneratePackageOnBuild=true — always runs the checks. Plain builds never
+    enter the pack pipeline, so they stay quiet. (None of the guarded projects
+    set GeneratePackageOnBuild anymore; opting into it re-enables implicit
+    packing and therefore per-build validation, which is intentional.)
+
+    Imported explicitly by Jalium.UI.Interop.csproj, Jalium.UI.Build.csproj
+    and Jalium.UI.Android.csproj. Projects can append project-specific build
+    inputs via $(JaliumNativeGuardExtraPathSpec) (e.g. build scripts and
+    Dockerfiles that pin toolchains) and set
+    $(JaliumNativeGuardWarnIfEmpty)=true to warn when a pack unexpectedly
+    contains no native payload at all.
+  -->
+
+  <PropertyGroup>
+    <JaliumStaleGuardRepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../..'))</JaliumStaleGuardRepoRoot>
+    <JaliumAllowStaleNative Condition="'$(JaliumAllowStaleNative)' == ''">false</JaliumAllowStaleNative>
+    <!-- Build-system files whose changes invalidate every native binary. -->
+    <JaliumNativeGuardSharedPathSpec>src/native/CMakeLists.txt;src/native/CMakePresets.json;src/native/cmake;src/native/Jalium.Native.sln</JaliumNativeGuardSharedPathSpec>
+    <!-- Test-only commits do not change shipped binaries (git glob magic;
+         a bare * in a plain pathspec would not match here). -->
+    <JaliumNativeGuardTestsExclude>:(exclude,glob)src/native/jalium.native.*/tests/**</JaliumNativeGuardTestsExclude>
+  </PropertyGroup>
+
+  <!--
+    Maps a binary base name (lib prefix, extension, and .static suffix
+    stripped) to the git pathspecs of the sources compiled into it, including
+    cross-module public headers (core/include is consumed by platform, d3d12,
+    vulkan, software, text, metal, aot — but NOT by browser or media.*).
+
+    jalium.native.media is the platform-specific aggregate: the
+    media.windows / media.linux / media.android targets all publish under
+    this single name and additionally compile the audio TUs that live in
+    media.core/src/audio plus the vendored decoders in thirdparty/, so its
+    pathspec is the union. Over-inclusion here is deliberate: a false
+    "stale" costs one rebuild, a false "fresh" ships a broken package.
+  -->
+  <ItemGroup>
+    <JaliumNativeModuleMap Include="jalium.native.core" PathSpec="src/native/jalium.native.core" />
+    <JaliumNativeModuleMap Include="jalium.native.platform" PathSpec="src/native/jalium.native.platform;src/native/jalium.native.core/include" />
+    <JaliumNativeModuleMap Include="jalium.native.d3d12" PathSpec="src/native/jalium.native.d3d12;src/native/jalium.native.core/include" />
+    <JaliumNativeModuleMap Include="jalium.native.software" PathSpec="src/native/jalium.native.software;src/native/jalium.native.core/include;src/native/jalium.native.text/include;src/native/jalium.native.platform/include;src/native/thirdparty/stb" />
+    <JaliumNativeModuleMap Include="jalium.native.browser" PathSpec="src/native/jalium.native.browser" />
+    <JaliumNativeModuleMap Include="jalium.native.media.core" PathSpec="src/native/jalium.native.media.core" />
+    <JaliumNativeModuleMap Include="jalium.native.media" PathSpec="src/native/jalium.native.media.windows;src/native/jalium.native.media.linux;src/native/jalium.native.media.android;src/native/jalium.native.media.core;src/native/thirdparty" />
+    <JaliumNativeModuleMap Include="jalium.native.media.windows" PathSpec="src/native/jalium.native.media.windows;src/native/jalium.native.media.core" />
+    <JaliumNativeModuleMap Include="jalium.native.media.linux" PathSpec="src/native/jalium.native.media.linux;src/native/jalium.native.media.core;src/native/thirdparty" />
+    <JaliumNativeModuleMap Include="jalium.native.media.android" PathSpec="src/native/jalium.native.media.android;src/native/jalium.native.media.core;src/native/thirdparty" />
+    <JaliumNativeModuleMap Include="jalium.native.text" PathSpec="src/native/jalium.native.text;src/native/jalium.native.core/include;src/native/thirdparty/stb" />
+    <JaliumNativeModuleMap Include="jalium.native.vulkan" PathSpec="src/native/jalium.native.vulkan;src/native/jalium.native.core/include;src/native/jalium.native.text/include;src/native/jalium.native.platform/include;src/native/thirdparty/stb" />
+    <JaliumNativeModuleMap Include="jalium.native.aot" PathSpec="src/native/jalium.native.aot;src/native/jalium.native.core/include" />
+    <JaliumNativeModuleMap Include="jalium.native.metal" PathSpec="src/native/jalium.native.metal;src/native/jalium.native.core/include" />
+  </ItemGroup>
+
+  <UsingTask TaskName="JaliumValidateStaleNative"
+             TaskFactory="RoslynCodeTaskFactory"
+             AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+    <Task>
+      <Code Type="Class" Language="cs" Source="$(MSBuildThisFileDirectory)JaliumValidateStaleNative.cs" />
+    </Task>
+  </UsingTask>
+
+  <Target Name="JaliumGuardStaleNativePack"
+          BeforeTargets="_IntermediatePack">
+    <ItemGroup>
+      <_JaliumStaleGuardCandidate Remove="@(_JaliumStaleGuardCandidate)" />
+      <_JaliumStaleGuardCandidate Include="@(Content)" Condition="'%(Content.Pack)' != 'false'" />
+      <_JaliumStaleGuardCandidate Include="@(AndroidNativeLibrary)" />
+    </ItemGroup>
+    <JaliumValidateStaleNative
+        RepoRoot="$(JaliumStaleGuardRepoRoot)"
+        Binaries="@(_JaliumStaleGuardCandidate)"
+        ModuleMap="@(JaliumNativeModuleMap)"
+        SharedPathSpec="$(JaliumNativeGuardSharedPathSpec)"
+        ExtraPathSpec="$(JaliumNativeGuardExtraPathSpec)"
+        TestsExcludePathSpec="$(JaliumNativeGuardTestsExclude)"
+        AllowStale="$(JaliumAllowStaleNative)"
+        WarnIfEmpty="$([MSBuild]::ValueOrDefault('$(JaliumNativeGuardWarnIfEmpty)', 'false'))"
+        StampFileName=".jalium-native-complete" />
+  </Target>
+
+</Project>

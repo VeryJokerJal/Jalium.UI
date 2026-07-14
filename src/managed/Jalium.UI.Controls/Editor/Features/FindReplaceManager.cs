@@ -258,7 +258,7 @@ public sealed class FindReplaceManager
 
     private static bool IsWordChar(char c) => char.IsLetterOrDigit(c) || c == '_';
 
-    private void OnDocumentChanged(object? sender, TextChangeEventArgs e)
+    private void OnDocumentChanged(object? sender, DocumentChangeEventArgs e)
     {
         _results.Clear();
         _currentIndex = -1;

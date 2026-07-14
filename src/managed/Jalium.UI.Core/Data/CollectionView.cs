@@ -3,13 +3,14 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Globalization;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Data;
 
 /// <summary>
 /// Represents a view for grouping, sorting, filtering, and navigating a data collection.
 /// </summary>
-public class CollectionView : DispatcherObject, ICollectionView, System.ComponentModel.ICollectionView, INotifyPropertyChanged
+public class CollectionView : DispatcherObject, ICollectionView, INotifyPropertyChanged
 {
     private static readonly object NullGroupName = new();
     private static readonly object NewItemPlaceholderValue = new NewItemPlaceholderMarker();

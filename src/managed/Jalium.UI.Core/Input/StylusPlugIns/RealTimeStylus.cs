@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Input.StylusPlugIns;
 

@@ -39,7 +39,7 @@ public class TreeAndNavigationExpandStateTests
 
             var itemsHost = GetPrivateField<FrameworkElement>(item, "_itemsHost");
             var expanderBorder = GetPrivateField<Border>(item, "_expanderBorder");
-            var expanderArrow = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(item, "_expanderArrow");
+            var expanderArrow = GetPrivateField<Jalium.UI.Shapes.Path>(item, "_expanderArrow");
 
             Assert.NotNull(itemsHost);
             Assert.NotNull(expanderBorder);
@@ -71,7 +71,7 @@ public class TreeAndNavigationExpandStateTests
 
             var itemsHost = GetPrivateField<FrameworkElement>(item, "_itemsHost");
             var expanderBorder = GetPrivateField<Border>(item, "_expanderBorder");
-            var expanderArrow = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(item, "_expanderArrow");
+            var expanderArrow = GetPrivateField<Jalium.UI.Shapes.Path>(item, "_expanderArrow");
 
             Assert.NotNull(itemsHost);
             Assert.NotNull(expanderBorder);
@@ -109,7 +109,7 @@ public class TreeAndNavigationExpandStateTests
             item.IsExpanded = true;
 
             var itemsHost = GetPrivateField<FrameworkElement>(item, "_itemsHost");
-            var expanderArrow = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(item, "_expanderArrow");
+            var expanderArrow = GetPrivateField<Jalium.UI.Shapes.Path>(item, "_expanderArrow");
             var expandAnimTimer = GetPrivateField<Jalium.UI.Threading.DispatcherTimer>(item, "_expandAnimTimer");
 
             Assert.NotNull(expandAnimTimer);
@@ -142,7 +142,7 @@ public class TreeAndNavigationExpandStateTests
             nav.UpdateMenuItems();
 
             var childrenPanel = GetPrivateField<StackPanel>(item, "_childrenPanel");
-            var chevron = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(item, "_chevron");
+            var chevron = GetPrivateField<Jalium.UI.Shapes.Path>(item, "_chevron");
 
             Assert.NotNull(childrenPanel);
             Assert.NotNull(chevron);
@@ -180,7 +180,7 @@ public class TreeAndNavigationExpandStateTests
             item.IsExpanded = true;
 
             var childrenPanel = GetPrivateField<StackPanel>(item, "_childrenPanel");
-            var chevron = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(item, "_chevron");
+            var chevron = GetPrivateField<Jalium.UI.Shapes.Path>(item, "_chevron");
             var expandAnimTimer = GetPrivateField<Jalium.UI.Threading.DispatcherTimer>(item, "_expandAnimTimer");
 
             Assert.NotNull(childrenPanel);
@@ -217,7 +217,7 @@ public class TreeAndNavigationExpandStateTests
             root.MenuItems.Add(new NavigationViewItem { Content = "Child" });
             nav.UpdateMenuItems();
 
-            var chevron = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(root, "_chevron");
+            var chevron = GetPrivateField<Jalium.UI.Shapes.Path>(root, "_chevron");
 
             Assert.NotNull(chevron);
             Assert.Equal(Visibility.Visible, chevron!.Visibility);
@@ -361,7 +361,7 @@ public class TreeAndNavigationExpandStateTests
         {
             var expander = new Expander();
             var contentBorder = new Border();
-            var chevron = new Jalium.UI.Controls.Shapes.Path();
+            var chevron = new Jalium.UI.Shapes.Path();
 
             SetPrivateField(expander, "_contentBorder", contentBorder);
             SetPrivateField(expander, "_chevron", chevron);
@@ -768,7 +768,7 @@ public class TreeAndNavigationExpandStateTests
         field!.SetValue(instance, value);
     }
 
-    private static double GetAngle(Jalium.UI.Controls.Shapes.Path path)
+    private static double GetAngle(Jalium.UI.Shapes.Path path)
     {
         return path.RenderTransform is RotateTransform rotate ? rotate.Angle : 0;
     }

@@ -1,3 +1,5 @@
+using Jalium.UI.Threading;
+
 namespace Jalium.UI.Media;
 
 /// <summary>
@@ -133,7 +135,7 @@ public sealed class StreamGeometry : Geometry
         _composedCommands = null;
         _composedLength = 0;
         _multiFigureNoCompose = false;
-        return new StreamGeometryContext(this);
+        return new StreamGeometryContextImplementation(this);
     }
 
     /// <summary>
@@ -542,13 +544,67 @@ public sealed class StreamGeometry : Geometry
 /// Describes a geometry using drawing commands. This class is used with a StreamGeometry
 /// object to create a lightweight geometry that does not support data binding, animation, or modification.
 /// </summary>
-public sealed class StreamGeometryContext : IDisposable
+public abstract class StreamGeometryContext : DispatcherObject, IDisposable
+{
+    internal StreamGeometryContext()
+    {
+    }
+
+    public abstract void BeginFigure(Point startPoint, bool isFilled, bool isClosed);
+
+    public abstract void LineTo(Point point, bool isStroked, bool isSmoothJoin);
+
+    public abstract void PolyLineTo(IList<Point> points, bool isStroked, bool isSmoothJoin);
+
+    public abstract void BezierTo(
+        Point point1,
+        Point point2,
+        Point point3,
+        bool isStroked,
+        bool isSmoothJoin);
+
+    public abstract void PolyBezierTo(IList<Point> points, bool isStroked, bool isSmoothJoin);
+
+    public abstract void QuadraticBezierTo(
+        Point point1,
+        Point point2,
+        bool isStroked,
+        bool isSmoothJoin);
+
+    public abstract void PolyQuadraticBezierTo(
+        IList<Point> points,
+        bool isStroked,
+        bool isSmoothJoin);
+
+    public abstract void ArcTo(
+        Point point,
+        Size size,
+        double rotationAngle,
+        bool isLargeArc,
+        SweepDirection sweepDirection,
+        bool isStroked,
+        bool isSmoothJoin);
+
+    public virtual void Close() => DisposeCore();
+
+    void IDisposable.Dispose() => DisposeCore();
+
+    internal virtual void DisposeCore() => SetClosedState();
+
+    internal abstract void SetClosedState();
+}
+
+/// <summary>
+/// Stores the mutable command-building state behind the public WPF-compatible
+/// <see cref="StreamGeometryContext"/> contract.
+/// </summary>
+internal sealed class StreamGeometryContextImplementation : StreamGeometryContext
 {
     private readonly StreamGeometry _owner;
     private PathFigure? _currentFigure;
     private bool _isClosed;
 
-    internal StreamGeometryContext(StreamGeometry owner)
+    internal StreamGeometryContextImplementation(StreamGeometry owner)
     {
         _owner = owner;
     }
@@ -559,7 +615,7 @@ public sealed class StreamGeometryContext : IDisposable
     /// <param name="startPoint">The starting point for the new figure.</param>
     /// <param name="isFilled">true if the figure should be filled; otherwise, false.</param>
     /// <param name="isClosed">true if the figure should be closed; otherwise, false.</param>
-    public void BeginFigure(Point startPoint, bool isFilled, bool isClosed)
+    public override void BeginFigure(Point startPoint, bool isFilled, bool isClosed)
     {
         ThrowIfClosed();
 
@@ -583,7 +639,7 @@ public sealed class StreamGeometryContext : IDisposable
     /// <param name="point">The destination point.</param>
     /// <param name="isStroked">true if the line should be stroked; otherwise, false.</param>
     /// <param name="isSmoothJoin">true if the join should be smooth; otherwise, false.</param>
-    public void LineTo(Point point, bool isStroked, bool isSmoothJoin)
+    public override void LineTo(Point point, bool isStroked, bool isSmoothJoin)
     {
         ThrowIfClosed();
         ThrowIfNoFigure();
@@ -592,21 +648,12 @@ public sealed class StreamGeometryContext : IDisposable
     }
 
     /// <summary>
-    /// Draws a stroked straight line to the specified point.
-    /// </summary>
-    /// <param name="point">The destination point.</param>
-    public void LineTo(Point point)
-    {
-        LineTo(point, true, false);
-    }
-
-    /// <summary>
     /// Draws one or more connected straight lines.
     /// </summary>
     /// <param name="points">The collection of points that specify the lines to draw.</param>
     /// <param name="isStroked">true if the lines should be stroked; otherwise, false.</param>
     /// <param name="isSmoothJoin">true if the joins should be smooth; otherwise, false.</param>
-    public void PolyLineTo(IList<Point> points, bool isStroked, bool isSmoothJoin)
+    public override void PolyLineTo(IList<Point> points, bool isStroked, bool isSmoothJoin)
     {
         ThrowIfClosed();
         ThrowIfNoFigure();
@@ -622,7 +669,7 @@ public sealed class StreamGeometryContext : IDisposable
     /// <param name="point3">The destination point.</param>
     /// <param name="isStroked">true if the curve should be stroked; otherwise, false.</param>
     /// <param name="isSmoothJoin">true if the join should be smooth; otherwise, false.</param>
-    public void BezierTo(Point point1, Point point2, Point point3, bool isStroked, bool isSmoothJoin)
+    public override void BezierTo(Point point1, Point point2, Point point3, bool isStroked, bool isSmoothJoin)
     {
         ThrowIfClosed();
         ThrowIfNoFigure();
@@ -636,13 +683,14 @@ public sealed class StreamGeometryContext : IDisposable
     /// <param name="points">The collection of points (in groups of three) that specify the curves.</param>
     /// <param name="isStroked">true if the curves should be stroked; otherwise, false.</param>
     /// <param name="isSmoothJoin">true if the joins should be smooth; otherwise, false.</param>
-    public void PolyBezierTo(IList<Point> points, bool isStroked, bool isSmoothJoin)
+    public override void PolyBezierTo(IList<Point> points, bool isStroked, bool isSmoothJoin)
     {
         ThrowIfClosed();
         ThrowIfNoFigure();
 
         var segment = new PolyBezierSegment { IsStroked = isStroked };
-        segment.Points.AddRange(points);
+        foreach (Point point in points)
+            segment.Points.Add(point);
         _currentFigure!.Segments.Add(segment);
     }
 
@@ -653,7 +701,7 @@ public sealed class StreamGeometryContext : IDisposable
     /// <param name="point2">The destination point.</param>
     /// <param name="isStroked">true if the curve should be stroked; otherwise, false.</param>
     /// <param name="isSmoothJoin">true if the join should be smooth; otherwise, false.</param>
-    public void QuadraticBezierTo(Point point1, Point point2, bool isStroked, bool isSmoothJoin)
+    public override void QuadraticBezierTo(Point point1, Point point2, bool isStroked, bool isSmoothJoin)
     {
         ThrowIfClosed();
         ThrowIfNoFigure();
@@ -667,13 +715,14 @@ public sealed class StreamGeometryContext : IDisposable
     /// <param name="points">The collection of points (in groups of two) that specify the curves.</param>
     /// <param name="isStroked">true if the curves should be stroked; otherwise, false.</param>
     /// <param name="isSmoothJoin">true if the joins should be smooth; otherwise, false.</param>
-    public void PolyQuadraticBezierTo(IList<Point> points, bool isStroked, bool isSmoothJoin)
+    public override void PolyQuadraticBezierTo(IList<Point> points, bool isStroked, bool isSmoothJoin)
     {
         ThrowIfClosed();
         ThrowIfNoFigure();
 
         var segment = new PolyQuadraticBezierSegment { IsStroked = isStroked };
-        segment.Points.AddRange(points);
+        foreach (Point point in points)
+            segment.Points.Add(point);
         _currentFigure!.Segments.Add(segment);
     }
 
@@ -687,7 +736,7 @@ public sealed class StreamGeometryContext : IDisposable
     /// <param name="sweepDirection">The direction to draw the arc.</param>
     /// <param name="isStroked">true if the arc should be stroked; otherwise, false.</param>
     /// <param name="isSmoothJoin">true if the join should be smooth; otherwise, false.</param>
-    public void ArcTo(Point point, Size size, double rotationAngle, bool isLargeArc, SweepDirection sweepDirection, bool isStroked, bool isSmoothJoin)
+    public override void ArcTo(Point point, Size size, double rotationAngle, bool isLargeArc, SweepDirection sweepDirection, bool isStroked, bool isSmoothJoin)
     {
         ThrowIfClosed();
         ThrowIfNoFigure();
@@ -698,18 +747,12 @@ public sealed class StreamGeometryContext : IDisposable
     /// <summary>
     /// Closes the StreamGeometryContext and flushes its content so it can be rendered.
     /// </summary>
-    public void Close()
+    internal override void SetClosedState()
     {
         if (_isClosed) return;
 
         _isClosed = true;
         _owner.Close(_currentFigure);
-    }
-
-    /// <inheritdoc />
-    public void Dispose()
-    {
-        Close();
     }
 
     private void ThrowIfClosed()

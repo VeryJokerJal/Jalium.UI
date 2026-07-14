@@ -1,6 +1,6 @@
 ﻿using Jalium.UI.Media;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Media;
 
 /// <summary>
 /// DrawingVisual is a visual object that can be used to render vector graphics.

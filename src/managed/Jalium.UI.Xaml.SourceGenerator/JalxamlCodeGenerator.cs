@@ -317,11 +317,11 @@ internal static class JalxamlCodeGenerator
         // a small fixed set.
         switch (clrTypeName)
         {
-            case "Jalium.UI.ControlTemplate":
+            case "Jalium.UI.Controls.ControlTemplate":
             case "Jalium.UI.DataTemplate":
             case "Jalium.UI.HierarchicalDataTemplate":
             case "Jalium.UI.Controls.ItemsPanelTemplate":
-            case "Jalium.UI.ItemContainerTemplate":
+            case "Jalium.UI.Controls.ItemContainerTemplate":
                 return true;
             default:
                 return false;
@@ -458,7 +458,7 @@ internal static class JalxamlCodeGenerator
     /// <summary>
     /// Emit the visual-tree root of a template as a <c>SetVisualTree(() =&gt; ...)</c>
     /// lambda. Each invocation of <c>LoadContent</c> re-runs the lambda and produces a
-    /// fresh visual tree, matching the factory semantics of <see cref="Jalium.UI.ControlTemplate"/>
+    /// fresh visual tree, matching the factory semantics of <see cref="Jalium.UI.Controls.ControlTemplate"/>
     /// / <see cref="Jalium.UI.DataTemplate"/>.
     /// </summary>
     /// <remarks>
@@ -1203,7 +1203,7 @@ internal static class JalxamlCodeGenerator
                         case "global::Jalium.UI.Controls.ContentControl":
                             sb.AppendLine($"{innerPad}{parentVar}.Content = {childVar};");
                             return;
-                        case "global::Jalium.UI.Controls.Window":
+                        case "global::Jalium.UI.Window":
                             // Window inherits from ContentControl in Jalium.UI but may sit
                             // under different roots in custom assemblies; explicit case keeps
                             // the dispatch order honest if a third-party Window forks the
@@ -1231,7 +1231,7 @@ internal static class JalxamlCodeGenerator
             foreach (var attr in current.GetAttributes())
             {
                 var attrName = attr.AttributeClass?.ToDisplayString();
-                if (attrName == "Jalium.UI.ContentPropertyAttribute" || attr.AttributeClass?.Name == "ContentPropertyAttribute")
+                if (attr.AttributeClass?.Name == "ContentPropertyAttribute")
                 {
                     if (attr.ConstructorArguments.Length > 0
                         && attr.ConstructorArguments[0].Value is string name

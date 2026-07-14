@@ -1,61 +1,179 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Ribbon;
 
 /// <summary>
 /// Represents the Application Menu (backstage view) for a Ribbon control.
 /// </summary>
-[ContentProperty("Items")]
-public class RibbonApplicationMenu : ItemsControl
+[Jalium.UI.Markup.ContentProperty("Items")]
+public class RibbonApplicationMenu : RibbonMenuButton
 {
-    /// <summary>
-    /// Gets or sets the small image source for the application button.
-    /// </summary>
-    public ImageSource? SmallImageSource { get; set; }
+    public static readonly DependencyProperty AuxiliaryPaneContentProperty =
+        DependencyProperty.Register(nameof(AuxiliaryPaneContent), typeof(object), typeof(RibbonApplicationMenu),
+            new PropertyMetadata(null));
 
-    /// <summary>
-    /// Gets or sets the key tip text.
-    /// </summary>
-    public string? KeyTip { get; set; }
+    public static readonly DependencyProperty AuxiliaryPaneContentTemplateProperty =
+        DependencyProperty.Register(nameof(AuxiliaryPaneContentTemplate), typeof(DataTemplate), typeof(RibbonApplicationMenu),
+            new PropertyMetadata(null));
 
-    /// <summary>
-    /// Gets or sets the footer content.
-    /// </summary>
-    public object? FooterPaneContent { get; set; }
+    public static readonly DependencyProperty AuxiliaryPaneContentTemplateSelectorProperty =
+        DependencyProperty.Register(nameof(AuxiliaryPaneContentTemplateSelector), typeof(DataTemplateSelector), typeof(RibbonApplicationMenu),
+            new PropertyMetadata(null));
 
-    /// <summary>
-    /// Gets or sets the auxiliary pane content.
-    /// </summary>
-    public object? AuxiliaryPaneContent { get; set; }
+    public static readonly DependencyProperty FooterPaneContentProperty =
+        DependencyProperty.Register(nameof(FooterPaneContent), typeof(object), typeof(RibbonApplicationMenu),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty FooterPaneContentTemplateProperty =
+        DependencyProperty.Register(nameof(FooterPaneContentTemplate), typeof(DataTemplate), typeof(RibbonApplicationMenu),
+            new PropertyMetadata(null));
+
+    public static readonly DependencyProperty FooterPaneContentTemplateSelectorProperty =
+        DependencyProperty.Register(nameof(FooterPaneContentTemplateSelector), typeof(DataTemplateSelector), typeof(RibbonApplicationMenu),
+            new PropertyMetadata(null));
+
+    public RibbonApplicationMenu()
+    {
+        CanAddToQuickAccessToolBarDirectly = false;
+        CanUserResizeHorizontally = false;
+        CanUserResizeVertically = false;
+    }
+
+    public object? AuxiliaryPaneContent
+    {
+        get => GetValue(AuxiliaryPaneContentProperty);
+        set => SetValue(AuxiliaryPaneContentProperty, value);
+    }
+
+    public DataTemplate? AuxiliaryPaneContentTemplate
+    {
+        get => (DataTemplate?)GetValue(AuxiliaryPaneContentTemplateProperty);
+        set => SetValue(AuxiliaryPaneContentTemplateProperty, value);
+    }
+
+    public DataTemplateSelector? AuxiliaryPaneContentTemplateSelector
+    {
+        get => (DataTemplateSelector?)GetValue(AuxiliaryPaneContentTemplateSelectorProperty);
+        set => SetValue(AuxiliaryPaneContentTemplateSelectorProperty, value);
+    }
+
+    public object? FooterPaneContent
+    {
+        get => GetValue(FooterPaneContentProperty);
+        set => SetValue(FooterPaneContentProperty, value);
+    }
+
+    public DataTemplate? FooterPaneContentTemplate
+    {
+        get => (DataTemplate?)GetValue(FooterPaneContentTemplateProperty);
+        set => SetValue(FooterPaneContentTemplateProperty, value);
+    }
+
+    public DataTemplateSelector? FooterPaneContentTemplateSelector
+    {
+        get => (DataTemplateSelector?)GetValue(FooterPaneContentTemplateSelectorProperty);
+        set => SetValue(FooterPaneContentTemplateSelectorProperty, value);
+    }
+
+    protected override FrameworkElement GetContainerForItem(object item) => new RibbonApplicationMenuItem();
+
+    protected override bool IsItemItsOwnContainerOverride(object item) =>
+        item is RibbonApplicationMenuItem or RibbonApplicationSplitMenuItem or RibbonSeparator or RibbonGallery;
+
+    protected override void PrepareContainerForItem(FrameworkElement element, object item)
+    {
+        base.PrepareContainerForItem(element, item);
+        SetApplicationMenuLevel(element, RibbonApplicationMenuItemLevel.Top);
+    }
+
+    internal static void SetApplicationMenuLevel(FrameworkElement element, RibbonApplicationMenuItemLevel level)
+    {
+        switch (element)
+        {
+            case RibbonApplicationMenuItem menuItem:
+                menuItem.Level = level;
+                break;
+            case RibbonApplicationSplitMenuItem splitMenuItem:
+                splitMenuItem.Level = level;
+                break;
+        }
+    }
 }
 
 /// <summary>
 /// Represents a menu item in the RibbonApplicationMenu.
 /// </summary>
-public sealed class RibbonApplicationMenuItem : RibbonMenuButton
+public class RibbonApplicationMenuItem : RibbonMenuItem
 {
-    /// <summary>
-    /// Gets or sets the tooltip footer.
-    /// </summary>
-    public string? ToolTipFooterTitle { get; set; }
+    private static readonly DependencyPropertyKey LevelPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(Level), typeof(RibbonApplicationMenuItemLevel),
+            typeof(RibbonApplicationMenuItem), new PropertyMetadata(RibbonApplicationMenuItemLevel.Top));
+
+    public static readonly DependencyProperty LevelProperty = LevelPropertyKey.DependencyProperty;
 
     /// <summary>
-    /// Gets or sets the tooltip footer description.
+    /// Gets the visual level of this application-menu item.
     /// </summary>
-    public string? ToolTipFooterDescription { get; set; }
+    public RibbonApplicationMenuItemLevel Level
+    {
+        get => (RibbonApplicationMenuItemLevel)(GetValue(LevelProperty) ?? RibbonApplicationMenuItemLevel.Top);
+        internal set => SetValue(LevelPropertyKey, value);
+    }
+
+    protected override FrameworkElement GetContainerForItem(object item) => new RibbonApplicationMenuItem();
+
+    protected override bool IsItemItsOwnContainerOverride(object item) =>
+        item is RibbonApplicationMenuItem or RibbonApplicationSplitMenuItem or RibbonSeparator or RibbonGallery;
+
+    protected override void PrepareContainerForItem(FrameworkElement element, object item)
+    {
+        base.PrepareContainerForItem(element, item);
+        RibbonApplicationMenu.SetApplicationMenuLevel(element,
+            Level == RibbonApplicationMenuItemLevel.Top
+                ? RibbonApplicationMenuItemLevel.Middle
+                : RibbonApplicationMenuItemLevel.Sub);
+    }
 }
 
 /// <summary>
 /// Represents a split menu item in the RibbonApplicationMenu.
 /// </summary>
-public sealed class RibbonApplicationSplitMenuItem : RibbonSplitButton
+public class RibbonApplicationSplitMenuItem : RibbonSplitMenuItem
 {
+    private static readonly DependencyPropertyKey LevelPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(Level), typeof(RibbonApplicationMenuItemLevel),
+            typeof(RibbonApplicationSplitMenuItem), new PropertyMetadata(RibbonApplicationMenuItemLevel.Top));
+
+    public static readonly DependencyProperty LevelProperty = LevelPropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Gets the visual level of this application-menu item.
+    /// </summary>
+    public RibbonApplicationMenuItemLevel Level
+    {
+        get => (RibbonApplicationMenuItemLevel)(GetValue(LevelProperty) ?? RibbonApplicationMenuItemLevel.Top);
+        internal set => SetValue(LevelPropertyKey, value);
+    }
+
+    protected override FrameworkElement GetContainerForItem(object item) => new RibbonApplicationMenuItem();
+
+    protected override bool IsItemItsOwnContainerOverride(object item) =>
+        item is RibbonApplicationMenuItem or RibbonApplicationSplitMenuItem or RibbonSeparator or RibbonGallery;
+
+    protected override void PrepareContainerForItem(FrameworkElement element, object item)
+    {
+        base.PrepareContainerForItem(element, item);
+        RibbonApplicationMenu.SetApplicationMenuLevel(element,
+            Level == RibbonApplicationMenuItemLevel.Top
+                ? RibbonApplicationMenuItemLevel.Middle
+                : RibbonApplicationMenuItemLevel.Sub);
+    }
 }
 
 /// <summary>
 /// Represents the Quick Access Toolbar for a Ribbon.
 /// </summary>
-[ContentProperty("Items")]
+[Jalium.UI.Markup.ContentProperty("Items")]
 public class RibbonQuickAccessToolBar : ItemsControl
 {
     /// <summary>

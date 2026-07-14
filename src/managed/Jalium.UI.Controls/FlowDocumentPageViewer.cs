@@ -3,15 +3,13 @@ using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
-using PrimitiveDocumentPaginator = Jalium.UI.Controls.Primitives.DocumentPaginator;
-using PrimitiveDocumentPaginatorSource = Jalium.UI.Controls.Primitives.IDocumentPaginatorSource;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Displays a <see cref="FlowDocument"/> one page at a time.
 /// </summary>
-[ContentProperty("Document")]
+[Jalium.UI.Markup.ContentProperty("Document")]
 public class FlowDocumentPageViewer : DocumentViewerBase
 {
     private static readonly ReadOnlyCollection<DocumentPageView> s_emptyPageViews =
@@ -501,26 +499,12 @@ public class FlowDocumentPageViewer : DocumentViewerBase
     {
         if (d is FlowDocumentPageViewer viewer)
         {
-            viewer.SetDocumentPaginatorSource(e.NewValue is FlowDocument document
-                ? new FlowDocumentPaginatorSource(document)
-                : null);
+            viewer.SetDocumentPaginatorSource(e.NewValue as FlowDocument);
         }
     }
 
-    private void SetDocumentPaginatorSource(PrimitiveDocumentPaginatorSource? source) =>
+    private void SetDocumentPaginatorSource(IDocumentPaginatorSource? source) =>
         base.Document = source;
-
-    internal sealed class FlowDocumentPaginatorSource : PrimitiveDocumentPaginatorSource
-    {
-        private readonly FlowDocument _document;
-
-        public FlowDocumentPaginatorSource(FlowDocument document)
-        {
-            _document = document;
-        }
-
-        public PrimitiveDocumentPaginator DocumentPaginator => _document.ViewerPaginator;
-    }
 
     private static void OnZoomChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {

@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Text;
+using Jalium.UI.Interop;
 using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 
 namespace Jalium.UI.Controls.Helpers;
@@ -12,10 +14,59 @@ internal static partial class FontEnumerationHelper
     {
         if (!OperatingSystem.IsWindows())
         {
-            return null;
+            return OperatingSystem.IsLinux()
+                ? EnumerateSystemFontFamiliesLinux()
+                : null;
         }
 
         return EnumerateSystemFontFamiliesWindows();
+    }
+
+    private static unsafe string[]? EnumerateSystemFontFamiliesLinux()
+    {
+        try
+        {
+            int count = NativeMethods.TextGetSystemFontFamilyCount();
+            if (count is <= 0 or > 100_000)
+                return null;
+
+            var fontNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int index = 0; index < count; index++)
+            {
+                int required = NativeMethods.TextCopySystemFontFamily(index, null, 0);
+                if (required is <= 1 or > 64 * 1024)
+                    continue;
+
+                var buffer = new byte[required];
+                fixed (byte* pointer = buffer)
+                {
+                    int copied = NativeMethods.TextCopySystemFontFamily(index, pointer, buffer.Length);
+                    if (copied != required || buffer[^1] != 0)
+                        continue;
+                }
+
+                string name = Encoding.UTF8.GetString(buffer, 0, buffer.Length - 1);
+                if (!string.IsNullOrWhiteSpace(name))
+                    fontNames.Add(name);
+            }
+
+            if (fontNames.Count == 0)
+                return null;
+
+            var result = fontNames.ToArray();
+            Array.Sort(result, StringComparer.CurrentCultureIgnoreCase);
+            return result;
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or
+                                          EntryPointNotFoundException or
+                                          BadImageFormatException or
+                                          MarshalDirectiveException)
+        {
+            // A managed-only/minimal deployment may intentionally omit the
+            // native text payload (and therefore Fontconfig). Callers retain a
+            // small deterministic fallback instead of failing type init.
+            return null;
+        }
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]

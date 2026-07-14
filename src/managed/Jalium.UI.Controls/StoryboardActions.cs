@@ -8,7 +8,7 @@ namespace Jalium.UI.Media.Animation;
 /// Begins a storyboard when its owning trigger is invoked.
 /// </summary>
 [RuntimeNameProperty(nameof(Name))]
-[ContentProperty(nameof(Storyboard))]
+[Jalium.UI.Markup.ContentProperty(nameof(Storyboard))]
 public sealed class BeginStoryboard : TriggerAction
 {
     private HandoffBehavior _handoffBehavior = HandoffBehavior.SnapshotAndReplace;

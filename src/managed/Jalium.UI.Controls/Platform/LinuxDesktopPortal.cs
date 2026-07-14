@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using Jalium.UI.Interop;
 
 namespace Jalium.UI.Controls.Platform;
 
@@ -18,7 +19,8 @@ internal enum LinuxPortalResponseStatus
 internal sealed record LinuxPortalResponse(
     LinuxPortalResponseStatus Status,
     IReadOnlyList<string> Values,
-    string? Error = null)
+    string? Error = null,
+    string? RawResponse = null)
 {
     internal static LinuxPortalResponse Unavailable(string error) =>
         new(LinuxPortalResponseStatus.Unavailable, Array.Empty<string>(), error);
@@ -37,6 +39,14 @@ internal sealed record LinuxPortalFileChooserOptions(
     IReadOnlyList<(string Name, string Pattern)> Filters,
     int FilterIndex = 1,
     TimeSpan? Timeout = null);
+
+internal sealed record LinuxPortalPrintPreparation(
+    LinuxPortalResponseStatus Status,
+    uint Token = 0,
+    string? Error = null)
+{
+    internal bool IsSuccess => Status == LinuxPortalResponseStatus.Success;
+}
 
 /// <summary>
 /// Desktop-neutral Linux integration through xdg-desktop-portal.
@@ -181,6 +191,108 @@ internal static partial class LinuxDesktopPortal
         return response.Status == LinuxPortalResponseStatus.Success;
     }
 
+    /// <summary>
+    /// Opens the desktop-neutral print settings dialog and returns the token
+    /// required by the subsequent Print request.
+    /// </summary>
+    internal static LinuxPortalPrintPreparation PreparePrint(
+        nint owner,
+        string title,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            return new LinuxPortalPrintPreparation(
+                LinuxPortalResponseStatus.Unavailable,
+                Error: "The xdg Print portal is only available on Linux.");
+        }
+
+        if (!IsInterfaceAvailable("org.freedesktop.portal.Print"))
+        {
+            return new LinuxPortalPrintPreparation(
+                LinuxPortalResponseStatus.Unavailable,
+                Error: "The org.freedesktop.portal.Print portal or libgio is unavailable.");
+        }
+
+        var token = CreateHandleToken();
+        var response = RunRequest(
+            "org.freedesktop.portal.Print",
+            "PreparePrint",
+            BuildPreparePrintParameters(owner, title, token),
+            token,
+            timeout ?? DefaultRequestTimeout,
+            cancellationToken);
+
+        if (response.Status != LinuxPortalResponseStatus.Success)
+            return new LinuxPortalPrintPreparation(response.Status, Error: response.Error);
+
+        return TryParsePrintToken(response.RawResponse ?? string.Empty, out var printToken)
+            ? new LinuxPortalPrintPreparation(LinuxPortalResponseStatus.Success, printToken)
+            : new LinuxPortalPrintPreparation(
+                LinuxPortalResponseStatus.Failed,
+                Error: "The print portal response did not contain a print token.");
+    }
+
+    /// <summary>
+    /// Submits an already rendered PDF file descriptor to the desktop print
+    /// portal. The descriptor remains owned by the caller.
+    /// </summary>
+    internal static LinuxPortalResponse SubmitPrint(
+        nint owner,
+        string title,
+        int pdfFileDescriptor,
+        uint printToken,
+        TimeSpan? timeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!OperatingSystem.IsLinux())
+            return LinuxPortalResponse.Unavailable("The xdg Print portal is only available on Linux.");
+        if (pdfFileDescriptor < 0)
+            return LinuxPortalResponse.Failed("The PDF file descriptor is invalid.");
+        if (!IsInterfaceAvailable("org.freedesktop.portal.Print"))
+        {
+            return LinuxPortalResponse.Unavailable(
+                "The org.freedesktop.portal.Print portal or libgio is unavailable.");
+        }
+
+        var token = CreateHandleToken();
+        return RunRequest(
+            "org.freedesktop.portal.Print",
+            "Print",
+            BuildSubmitPrintParameters(owner, title, token, printToken),
+            token,
+            timeout ?? DefaultRequestTimeout,
+            cancellationToken,
+            pdfFileDescriptor);
+    }
+
+    internal static string BuildPreparePrintParameters(nint owner, string title, string handleToken)
+    {
+        var options = "{" +
+                      $"'handle_token': <'{EscapeGVariantString(handleToken)}'>, " +
+                      "'modal': <true>" +
+                      "}";
+        return $"('{EscapeGVariantString(BuildParentWindow(owner))}', " +
+               $"'{EscapeGVariantString(string.IsNullOrWhiteSpace(title) ? "Print" : title)}', " +
+               $"@a{{sv}} {{}}, @a{{sv}} {{}}, {options})";
+    }
+
+    internal static string BuildSubmitPrintParameters(
+        nint owner,
+        string title,
+        string handleToken,
+        uint printToken)
+    {
+        var options = "{" +
+                      $"'handle_token': <'{EscapeGVariantString(handleToken)}'>, " +
+                      $"'token': <uint32 {printToken.ToString(CultureInfo.InvariantCulture)}>" +
+                      "}";
+        return $"('{EscapeGVariantString(BuildParentWindow(owner))}', " +
+               $"'{EscapeGVariantString(string.IsNullOrWhiteSpace(title) ? "Jalium.UI Document" : title)}', " +
+               $"@h 0, {options})";
+    }
+
     internal static bool TryNormalizeOpenUriTarget(string? target, out string uri)
     {
         uri = string.Empty;
@@ -213,6 +325,18 @@ internal static partial class LinuxDesktopPortal
         if (owner == 0)
             return string.Empty;
 
+        // A Wayland portal parent is an xdg-foreign export token, never a raw
+        // wl_surface pointer.  Ask the platform window registry first so the
+        // native backend can return either that token or the canonical X11
+        // window identifier.  Keeping the X11 formatting fallback below lets
+        // applications continue to work with an older native payload.
+        if (OperatingSystem.IsLinux())
+        {
+            string? nativeParent = TryGetNativePortalParentWindow(owner);
+            if (!string.IsNullOrEmpty(nativeParent))
+                return nativeParent;
+        }
+
         var sessionType = Environment.GetEnvironmentVariable("XDG_SESSION_TYPE");
         if (string.Equals(sessionType, "x11", StringComparison.OrdinalIgnoreCase) ||
             (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("WAYLAND_DISPLAY")) &&
@@ -222,6 +346,41 @@ internal static partial class LinuxDesktopPortal
         }
 
         return string.Empty;
+    }
+
+    private static string? TryGetNativePortalParentWindow(nint owner)
+    {
+        const uint MaximumPortalHandleBytes = 16 * 1024;
+        try
+        {
+            uint required = NativeMethods.WindowGetPortalParentHandleForNativeHandle(owner, 0, 0);
+            if (required <= 1 || required > MaximumPortalHandleBytes)
+                return null;
+
+            nint buffer = Marshal.AllocHGlobal(checked((int)required));
+            try
+            {
+                uint written = NativeMethods.WindowGetPortalParentHandleForNativeHandle(
+                    owner, buffer, required);
+                return written == required ? Marshal.PtrToStringUTF8(buffer) : null;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        catch (DllNotFoundException)
+        {
+            return null;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return null;
+        }
+        catch (BadImageFormatException)
+        {
+            return null;
+        }
     }
 
     internal static string BuildFileChooserOptions(
@@ -332,7 +491,7 @@ internal static partial class LinuxDesktopPortal
         if (code == 1)
         {
             response = new LinuxPortalResponse(
-                LinuxPortalResponseStatus.Cancelled, Array.Empty<string>());
+                LinuxPortalResponseStatus.Cancelled, Array.Empty<string>(), RawResponse: message);
             return true;
         }
 
@@ -344,8 +503,19 @@ internal static partial class LinuxDesktopPortal
 
         response = new LinuxPortalResponse(
             LinuxPortalResponseStatus.Success,
-            ExtractUriValues(message));
+            ExtractUriValues(message),
+            RawResponse: message);
         return true;
+    }
+
+    internal static bool TryParsePrintToken(string message, out uint token)
+    {
+        var match = PrintTokenRegex().Match(message ?? string.Empty);
+        return uint.TryParse(
+            match.Success ? match.Groups[1].Value : string.Empty,
+            NumberStyles.None,
+            CultureInfo.InvariantCulture,
+            out token);
     }
 
     internal static IReadOnlyList<string> ConvertFileUrisToPaths(IEnumerable<string> uris)
@@ -430,7 +600,8 @@ internal static partial class LinuxDesktopPortal
         string parameterText,
         string handleToken,
         TimeSpan timeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        int unixFileDescriptor = -1)
     {
         nint connection = 0;
         nint parameters = 0;
@@ -470,15 +641,27 @@ internal static partial class LinuxDesktopPortal
                     $"Unable to encode the portal request: {GioNative.ReadError(error)}");
             }
 
-            reply = GioNative.CallSync(
-                connection,
-                PortalDestination,
-                PortalObjectPath,
-                interfaceName,
-                methodName,
-                parameters,
-                timeoutMilliseconds: (int)Math.Clamp(timeout.TotalMilliseconds, 1, 15000),
-                out error);
+            var callTimeout = (int)Math.Clamp(timeout.TotalMilliseconds, 1, 15000);
+            reply = unixFileDescriptor >= 0
+                ? GioNative.CallSyncWithUnixFileDescriptor(
+                    connection,
+                    PortalDestination,
+                    PortalObjectPath,
+                    interfaceName,
+                    methodName,
+                    parameters,
+                    unixFileDescriptor,
+                    callTimeout,
+                    out error)
+                : GioNative.CallSync(
+                    connection,
+                    PortalDestination,
+                    PortalObjectPath,
+                    interfaceName,
+                    methodName,
+                    parameters,
+                    callTimeout,
+                    out error);
             if (reply == 0)
             {
                 return LinuxPortalResponse.Failed(
@@ -594,6 +777,7 @@ internal static partial class LinuxDesktopPortal
     private static readonly object s_settingsGate = new();
     private static readonly GioNative.SignalCallback s_settingChangedCallback = OnSettingChanged;
     private static Action<uint>? s_colorSchemeChanged;
+    private static Action<string, string, uint?>? s_settingChanged;
     private static nint s_settingsConnection;
     private static Thread? s_settingsPump;
     private static volatile bool s_settingsPumpStop;
@@ -605,8 +789,21 @@ internal static partial class LinuxDesktopPortal
     /// unavailable.
     /// </summary>
     public static uint? TryReadColorScheme()
+        => TryReadUIntSetting("org.freedesktop.appearance", "color-scheme");
+
+    /// <summary>Reads the standardized high-contrast preference.</summary>
+    internal static uint? TryReadContrast() =>
+        TryReadUIntSetting("org.freedesktop.appearance", "contrast");
+
+    /// <summary>Reads the standardized reduced-motion preference.</summary>
+    internal static uint? TryReadReducedMotion() =>
+        TryReadUIntSetting("org.freedesktop.appearance", "reduced-motion");
+
+    internal static uint? TryReadUIntSetting(string settingsNamespace, string key)
     {
         if (!OperatingSystem.IsLinux() || !GioNative.IsAvailable)
+            return null;
+        if (string.IsNullOrWhiteSpace(settingsNamespace) || string.IsNullOrWhiteSpace(key))
             return null;
 
         nint connection = 0;
@@ -620,7 +817,8 @@ internal static partial class LinuxDesktopPortal
                 return null;
             GioNative.FreeError(ref error);
 
-            const string parameterText = "('org.freedesktop.appearance', 'color-scheme')";
+            var parameterText =
+                $"('{EscapeGVariantString(settingsNamespace)}', '{EscapeGVariantString(key)}')";
             parameters = GioNative.ParseVariant(parameterText, out error);
             if (parameters == 0)
                 return null;
@@ -646,7 +844,7 @@ internal static partial class LinuxDesktopPortal
                     return null;
             }
 
-            return ParseColorSchemeValue(GioNative.PrintVariant(reply));
+            return ParseUnsignedSettingValue(GioNative.PrintVariant(reply));
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
@@ -676,56 +874,80 @@ internal static partial class LinuxDesktopPortal
         lock (s_settingsGate)
         {
             s_colorSchemeChanged += callback;
-            if (s_settingsConnection != 0)
-                return true;
+            return EnsureSettingsSubscriptionLocked();
+        }
+    }
 
-            nint error = 0;
-            try
-            {
-                var connection = GioNative.OpenSessionBus(out error);
-                if (connection == 0)
-                    return false;
+    /// <summary>
+    /// Subscribes to every standardized portal Settings change. The callback
+    /// receives namespace, key, and a uint payload when the value is numeric.
+    /// This is used by SystemParameters for contrast and reduced-motion while
+    /// retaining the public color-scheme-specific API above.
+    /// </summary>
+    internal static bool TrySubscribeSettingChanged(Action<string, string, uint?> callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        if (!OperatingSystem.IsLinux() || !GioNative.IsAvailable)
+            return false;
 
-                _ = GioNative.SubscribeSettingChanged(connection);
-                s_settingsConnection = connection;
+        lock (s_settingsGate)
+        {
+            s_settingChanged += callback;
+            return EnsureSettingsSubscriptionLocked();
+        }
+    }
 
-                s_settingsPumpStop = false;
-                s_settingsPump = new Thread(static () =>
-                {
-                    // Non-blocking iteration so the pump coexists with the
-                    // request-scoped iteration inside RunRequest.
-                    while (!s_settingsPumpStop)
-                    {
-                        try
-                        {
-                            while (GioNative.IterateMainContext())
-                            {
-                            }
-                        }
-                        catch (Exception ex)
-                            when (ex is DllNotFoundException or EntryPointNotFoundException)
-                        {
-                            return;
-                        }
+    private static bool EnsureSettingsSubscriptionLocked()
+    {
+        if (s_settingsConnection != 0)
+            return true;
 
-                        Thread.Sleep(100);
-                    }
-                })
-                {
-                    IsBackground = true,
-                    Name = "Jalium.PortalSettingsPump",
-                };
-                s_settingsPump.Start();
-                return true;
-            }
-            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
-            {
+        nint error = 0;
+        try
+        {
+            var connection = GioNative.OpenSessionBus(out error);
+            if (connection == 0)
                 return false;
-            }
-            finally
+
+            _ = GioNative.SubscribeSettingChanged(connection);
+            s_settingsConnection = connection;
+
+            s_settingsPumpStop = false;
+            s_settingsPump = new Thread(static () =>
             {
-                GioNative.FreeError(ref error);
-            }
+                // Non-blocking iteration so the pump coexists with the
+                // request-scoped iteration inside RunRequest.
+                while (!s_settingsPumpStop)
+                {
+                    try
+                    {
+                        while (GioNative.IterateMainContext())
+                        {
+                        }
+                    }
+                    catch (Exception ex)
+                        when (ex is DllNotFoundException or EntryPointNotFoundException)
+                    {
+                        return;
+                    }
+
+                    Thread.Sleep(100);
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "Jalium.PortalSettingsPump",
+            };
+            s_settingsPump.Start();
+            return true;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return false;
+        }
+        finally
+        {
+            GioNative.FreeError(ref error);
         }
     }
 
@@ -741,14 +963,15 @@ internal static partial class LinuxDesktopPortal
         try
         {
             var printed = GioNative.PrintVariant(parameters);
-            if (!printed.Contains("'org.freedesktop.appearance'", StringComparison.Ordinal) ||
-                !printed.Contains("'color-scheme'", StringComparison.Ordinal))
-            {
+            if (!TryParseSettingChanged(printed, out string settingsNamespace, out string key, out uint? value))
                 return;
-            }
 
-            if (ParseColorSchemeValue(printed) is { } scheme)
+            s_settingChanged?.Invoke(settingsNamespace, key, value);
+            if (settingsNamespace == "org.freedesktop.appearance" &&
+                key == "color-scheme" && value is { } scheme)
+            {
                 s_colorSchemeChanged?.Invoke(scheme);
+            }
         }
         catch
         {
@@ -762,6 +985,34 @@ internal static partial class LinuxDesktopPortal
     /// "(&lt;&lt;uint32 1&gt;&gt;,)" and the SettingChanged triple.
     /// </summary>
     internal static uint? ParseColorSchemeValue(string printedVariant)
+        => ParseUnsignedSettingValue(printedVariant);
+
+    internal static bool TryParseSettingChanged(
+        string printedVariant,
+        out string settingsNamespace,
+        out string key,
+        out uint? value)
+    {
+        settingsNamespace = string.Empty;
+        key = string.Empty;
+        value = null;
+        if (string.IsNullOrWhiteSpace(printedVariant))
+            return false;
+
+        var match = System.Text.RegularExpressions.Regex.Match(
+            printedVariant,
+            @"^\s*\(\s*'(?<namespace>[^']+)'\s*,\s*'(?<key>[^']+)'\s*,",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        if (!match.Success)
+            return false;
+
+        settingsNamespace = match.Groups["namespace"].Value;
+        key = match.Groups["key"].Value;
+        value = ParseUnsignedSettingValue(printedVariant);
+        return settingsNamespace.Length > 0 && key.Length > 0;
+    }
+
+    internal static uint? ParseUnsignedSettingValue(string printedVariant)
     {
         var match = System.Text.RegularExpressions.Regex.Match(
             printedVariant, @"uint32 (\d+)");
@@ -824,6 +1075,10 @@ internal static partial class LinuxDesktopPortal
         RegexOptions.CultureInvariant)]
     private static partial Regex ResponseCodeRegex();
 
+    [GeneratedRegex("""['"]token['"]\s*:\s*<\s*uint32\s+(\d+)""",
+        RegexOptions.CultureInvariant)]
+    private static partial Regex PrintTokenRegex();
+
     private static class GioNative
     {
         private const string Gio = "libgio-2.0.so.0";
@@ -883,6 +1138,50 @@ internal static partial class LinuxDesktopPortal
             g_dbus_connection_call_sync(
                 connection, busName, objectPath, interfaceName, methodName,
                 parameters, 0, 0, timeoutMilliseconds, 0, out error);
+
+        internal static nint CallSyncWithUnixFileDescriptor(
+            nint connection,
+            string busName,
+            string objectPath,
+            string interfaceName,
+            string methodName,
+            nint parameters,
+            int fileDescriptor,
+            int timeoutMilliseconds,
+            out nint error)
+        {
+            error = 0;
+            nint fdList = 0;
+            nint returnedFdList = 0;
+            try
+            {
+                fdList = g_unix_fd_list_new_from_array(ref fileDescriptor, 1);
+                if (fdList == 0)
+                    return 0;
+
+                return g_dbus_connection_call_with_unix_fd_list_sync(
+                    connection,
+                    busName,
+                    objectPath,
+                    interfaceName,
+                    methodName,
+                    parameters,
+                    0,
+                    0,
+                    timeoutMilliseconds,
+                    fdList,
+                    out returnedFdList,
+                    0,
+                    out error);
+            }
+            finally
+            {
+                if (returnedFdList != 0)
+                    g_object_unref(returnedFdList);
+                if (fdList != 0)
+                    g_object_unref(fdList);
+            }
+        }
 
         internal static uint SubscribeResponse(nint connection, string requestPath, nint userData) =>
             g_dbus_connection_signal_subscribe(
@@ -982,6 +1281,25 @@ internal static partial class LinuxDesktopPortal
             nint replyType,
             int flags,
             int timeoutMilliseconds,
+            nint cancellable,
+            out nint error);
+
+        [DllImport(Gio, CallingConvention = CallingConvention.Cdecl)]
+        private static extern nint g_unix_fd_list_new_from_array(ref int fileDescriptors, int length);
+
+        [DllImport(Gio, CallingConvention = CallingConvention.Cdecl)]
+        private static extern nint g_dbus_connection_call_with_unix_fd_list_sync(
+            nint connection,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string busName,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string objectPath,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string interfaceName,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string methodName,
+            nint parameters,
+            nint replyType,
+            int flags,
+            int timeoutMilliseconds,
+            nint fdList,
+            out nint outFdList,
             nint cancellable,
             out nint error);
 

@@ -23,7 +23,7 @@ namespace Jalium.UI.Media.Rendering;
 /// In parallel with command recording the recorder drives a
 /// <see cref="BoundsAccumulator"/> that computes the world-space bounding
 /// box of everything drawn. The bounds are stored on the committed
-/// <see cref="Drawing"/> and used by <see cref="DrawingReplayer"/> to
+/// <see cref="RecordedDrawing"/> and used by <see cref="DrawingReplayer"/> to
 /// short-circuit replay when the cached bounds don't intersect the target
 /// context's current clip — mostly useful for oversized custom canvases
 /// (Jalium.One's NodeCanvas / BlockCanvas) that draw content far outside
@@ -90,10 +90,10 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
 
     /// <summary>
     /// Finalizes the current recording and returns an immutable
-    /// <see cref="Drawing"/> with its bounds populated (or null when the
+    /// <see cref="RecordedDrawing"/> with its bounds populated (or null when the
     /// recording contains content whose extent could not be bounded).
     /// </summary>
-    public Drawing Commit()
+    public RecordedDrawing Commit()
     {
         // Close the whole-frame recordability scope (no-op for per-visual mode)
         // and learn whether any un-recordable content was seen this frame.
@@ -108,8 +108,8 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
             // An empty-but-unrecordable capture must still force a fallback, so
             // don't return the shared (fully-recordable) Empty in that case.
             return fullyRecordable
-                ? Drawing.Empty
-                : new Drawing(System.Array.Empty<DrawCommand>(), 0, null, fullyRecordable: false);
+                ? RecordedDrawing.Empty
+                : new RecordedDrawing(System.Array.Empty<DrawCommand>(), 0, null, fullyRecordable: false);
         }
 
         var arr = _commands.ToArray();
@@ -123,7 +123,7 @@ internal sealed class DrawingRecorder : DrawingContextAdapter,
         _offsetProxy = null;
         _wholeFrame = false;
 
-        return new Drawing(arr, arr.Length, drawingBounds, fullyRecordable);
+        return new RecordedDrawing(arr, arr.Length, drawingBounds, fullyRecordable);
     }
 
     /// <summary>

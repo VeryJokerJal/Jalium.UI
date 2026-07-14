@@ -1,17 +1,18 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Documents;
 using System.Collections.ObjectModel;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Displays text content.
 /// </summary>
-[ContentProperty(nameof(Inlines))]
+[Jalium.UI.Markup.ContentProperty(nameof(Inlines))]
 public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContentHost
 {
     /// <inheritdoc />
@@ -827,7 +828,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     {
         if (!string.IsNullOrEmpty(SelectedText))
         {
-            Clipboard.SetText(SelectedText);
+            WpfClipboard.SetText(SelectedText);
         }
     }
 

@@ -1,5 +1,7 @@
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
+using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
@@ -2149,8 +2151,7 @@ internal sealed class WindowInputDispatcher
             session.Target.RaiseEvent(bubbleArgs);
         }
 
-        if (previewArgs.CancelRequested || bubbleArgs.CancelRequested
-            || previewArgs.CompleteRequested || bubbleArgs.CompleteRequested)
+        if (previewArgs.CancelRequested || bubbleArgs.CancelRequested)
         {
             TerminateManipulationSession(session, isInertial: false, timestamp);
             return;
@@ -2165,7 +2166,7 @@ internal sealed class WindowInputDispatcher
             Scale = session.CumulativeScale
         };
 
-        Dispatcher dispatcher = Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread();
+        Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
         var processor = new ManipulationInertiaProcessor(session.Target, session.Origin, cumulative, dispatcher);
         if (!processor.Start(
             session.LastLinearVelocity,

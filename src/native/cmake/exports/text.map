@@ -1,0 +1,15 @@
+JALIUM_TEXT_CXX_ABI_1 {
+    global:
+        jalium_text_get_system_font_family_count;
+        jalium_text_copy_system_font_family;
+        _ZN6jalium*;
+        _ZNK6jalium*;
+        _ZTI*6jalium*;
+        _ZTS*6jalium*;
+        _ZTV*6jalium*;
+        _ZTT*6jalium*;
+        _ZTh*6jalium*;
+        _ZTv*6jalium*;
+    local:
+        *;
+};

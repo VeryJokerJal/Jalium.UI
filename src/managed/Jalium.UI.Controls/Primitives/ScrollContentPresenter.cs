@@ -1,12 +1,14 @@
 using Jalium.UI.Documents;
+using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Media;
 
-namespace Jalium.UI.Controls.Primitives;
+namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Displays the content of a ScrollViewer control. Acts as a proxy for IScrollInfo
 /// when the content implements it.
 /// </summary>
-public class ScrollContentPresenter : ContentPresenter, IScrollInfo
+public sealed class ScrollContentPresenter : ContentPresenter, IScrollInfo
 {
     /// <summary>Identifies the <see cref="CanContentScroll"/> dependency property.</summary>
     public static readonly DependencyProperty CanContentScrollProperty =

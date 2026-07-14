@@ -2,18 +2,5 @@
   <!-- Preserve ThemeManager and theme infrastructure so styles load under trimming/AOT -->
   <assembly fullname="Jalium.UI.Controls">
     <type fullname="Jalium.UI.Controls.Themes.ThemeManager" preserve="all" />
-    <!-- UIA COM-marshalled interfaces invoked through native uiautomationcore.dll vtables -->
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IRawElementProviderSimple" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IRawElementProviderFragment" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IRawElementProviderFragmentRoot" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaInvokeProvider" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaToggleProvider" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaValueProvider" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaRangeValueProvider" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaExpandCollapseProvider" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaSelectionProvider" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaSelectionItemProvider" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaScrollProvider" preserve="all" />
-    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaScrollItemProvider" preserve="all" />
   </assembly>
 </linker>

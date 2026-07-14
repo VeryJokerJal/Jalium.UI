@@ -975,6 +975,15 @@ internal sealed class EditorView
         if (length <= 0 || relativeX <= 0)
             return 0;
 
+        // Native hit testing reports a hit on the last glyph cluster when the
+        // point lies exactly on the line's trailing edge.  For multi-code-unit
+        // clusters (for example an emoji surrogate pair), adding one to that
+        // cluster start is not the UTF-16 line end.  Clamp the geometric right
+        // boundary before asking the native backend to resolve interior hits.
+        double lineWidth = GetPrefixWidth(cachedLine, lineText, length);
+        if (relativeX >= lineWidth)
+            return length;
+
         // Use DirectWrite's native hit testing for accurate character mapping
         string fontFamily = GetMeasurementFontFamily();
         double fontSize = GetMeasurementFontSize();
@@ -982,15 +991,11 @@ internal sealed class EditorView
         {
             int column = (int)hitResult.TextPosition;
             if (hitResult.IsTrailingHit != 0)
-                column++;
+                column = GraphemeClusters.NextBoundary(lineText, column);
             return Math.Clamp(column, 0, length);
         }
 
         // Fallback: binary search using prefix width measurement
-        double lineWidth = GetPrefixWidth(cachedLine, lineText, length);
-        if (relativeX >= lineWidth)
-            return length;
-
         int low = 0;
         int high = length;
         while (low < high)

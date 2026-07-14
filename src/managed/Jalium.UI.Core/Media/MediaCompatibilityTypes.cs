@@ -2,6 +2,7 @@ using System.Collections;
 using System.Globalization;
 using System.Runtime.Serialization;
 using Jalium.UI.Markup;
+using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Media;
 
@@ -263,48 +264,76 @@ public sealed class LanguageSpecificStringDictionary : IDictionary<XmlLanguage, 
 }
 
 /// <summary>Represents an animatable collection of general transforms.</summary>
-public sealed class GeneralTransformCollection : AnimatableCollection<GeneralTransform>
+public sealed class GeneralTransformCollection : Animatable, IList<GeneralTransform>, IList
 {
-    public GeneralTransformCollection()
-    {
-    }
+    private readonly AnimatableListStorage<GeneralTransform> _items;
 
-    public GeneralTransformCollection(int capacity)
-        : base(capacity)
-    {
-    }
+    public GeneralTransformCollection() => _items = CreateStorage();
+
+    public GeneralTransformCollection(int capacity) => _items = CreateStorage(capacity);
 
     public GeneralTransformCollection(IEnumerable<GeneralTransform> collection)
-        : base(collection)
     {
+        ArgumentNullException.ThrowIfNull(collection);
+        _items = CreateStorage(collection is ICollection<GeneralTransform> source ? source.Count : 0);
+        _items.AddRange(collection);
     }
+
+    public GeneralTransform this[int index] { get => _items[index]; set => _items[index] = value; }
+    object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<GeneralTransform>.Cast(value); }
+    public int Count => _items.Count;
+    bool ICollection<GeneralTransform>.IsReadOnly => _items.IsReadOnly;
+    bool IList.IsReadOnly => _items.IsReadOnly;
+    bool IList.IsFixedSize => _items.IsReadOnly;
+    bool ICollection.IsSynchronized => _items.IsSynchronized;
+    object ICollection.SyncRoot => this;
+    public void Add(GeneralTransform value) => _items.Add(value);
+    int IList.Add(object? value) { Add(AnimatableListStorage<GeneralTransform>.Cast(value)); return Count - 1; }
+    public void Clear() => _items.Clear();
+    public bool Contains(GeneralTransform value) => _items.Contains(value);
+    bool IList.Contains(object? value) => value is GeneralTransform transform && Contains(transform);
+    public void CopyTo(GeneralTransform[] array, int index) => _items.CopyTo(array, index);
+    void ICollection.CopyTo(Array array, int index) => _items.CopyTo(array, index);
+    public Enumerator GetEnumerator() => new(_items.GetEnumerator());
+    IEnumerator<GeneralTransform> IEnumerable<GeneralTransform>.GetEnumerator() => GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    public int IndexOf(GeneralTransform value) => _items.IndexOf(value);
+    int IList.IndexOf(object? value) => value is GeneralTransform transform ? IndexOf(transform) : -1;
+    public void Insert(int index, GeneralTransform value) => _items.Insert(index, value);
+    void IList.Insert(int index, object? value) => Insert(index, AnimatableListStorage<GeneralTransform>.Cast(value));
+    public bool Remove(GeneralTransform value) => _items.Remove(value);
+    void IList.Remove(object? value) { if (value is GeneralTransform transform) Remove(transform); }
+    public void RemoveAt(int index) => _items.RemoveAt(index);
 
     public new GeneralTransformCollection Clone() => (GeneralTransformCollection)base.Clone();
     public new GeneralTransformCollection CloneCurrentValue() => (GeneralTransformCollection)base.CloneCurrentValue();
-    public new Enumerator GetEnumerator() => new(this);
-
     protected override Freezable CreateInstanceCore() => new GeneralTransformCollection();
+    protected override bool FreezeCore(bool isChecking) => base.FreezeCore(isChecking) && _items.Freeze(isChecking);
+    protected override void CloneCore(Freezable source) { base.CloneCore(source); _items.CopyFrom(((GeneralTransformCollection)source)._items, AnimatableListCloneMode.Clone); }
+    protected override void CloneCurrentValueCore(Freezable source) { base.CloneCurrentValueCore(source); _items.CopyFrom(((GeneralTransformCollection)source)._items, AnimatableListCloneMode.CloneCurrentValue); }
+    protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((GeneralTransformCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
+    protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((GeneralTransformCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
+
+    private AnimatableListStorage<GeneralTransform> CreateStorage(int capacity = 0) => new(
+        () => ReadPreamble(),
+        () => WritePreamble(),
+        () => WritePostscript(),
+        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
+        () => IsFrozen,
+        capacity);
 
     public struct Enumerator : IEnumerator<GeneralTransform>
     {
-        private IEnumerator<GeneralTransform>? _inner;
+        private List<GeneralTransform>.Enumerator _inner;
 
-        internal Enumerator(GeneralTransformCollection collection)
-        {
-            _inner = ((IEnumerable<GeneralTransform>)collection).GetEnumerator();
-        }
+        internal Enumerator(List<GeneralTransform>.Enumerator inner) => _inner = inner;
 
-        public GeneralTransform Current =>
-            _inner?.Current ?? throw new InvalidOperationException("The enumerator is not positioned on an item.");
+        public GeneralTransform Current => _inner.Current;
 
         object IEnumerator.Current => Current;
-        public bool MoveNext() => _inner?.MoveNext() ?? false;
-        public void Reset() => _inner?.Reset();
-        public void Dispose()
-        {
-            _inner?.Dispose();
-            _inner = null;
-        }
+        public bool MoveNext() => _inner.MoveNext();
+        public void Reset() => ((IEnumerator)_inner).Reset();
+        public void Dispose() => _inner.Dispose();
     }
 }
 

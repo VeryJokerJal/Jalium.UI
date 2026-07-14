@@ -12,7 +12,7 @@ using Jalium.UI.Threading;
 
 namespace Jalium.UI.Tests;
 
-[Collection(nameof(WpfParityFoundationBehaviorCollection))]
+[Collection(nameof(ParityFoundationBehaviorCollection))]
 public sealed class DataRefreshedParityTests
 {
     [Fact]

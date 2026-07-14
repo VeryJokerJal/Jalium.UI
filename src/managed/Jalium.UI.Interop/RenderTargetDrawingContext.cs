@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Linq;
 using Jalium.UI;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 using Jalium.UI.Rendering;
 
 namespace Jalium.UI.Interop;
@@ -78,6 +79,25 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     // (so the whole subtree is captured), not the window dirty-region clip. When
     // set, CurrentClipBounds returns this verbatim.
     private Rect? _layerCaptureClipBounds;
+    // Depth of open effect captures (BeginEffectCapture..EndEffectCapture).
+    // While > 0, CurrentClipBounds returns the innermost entry of
+    // _effectCaptureCullOverrideStack instead of the window dirty-region /
+    // ancestor-viewport clip — see the stack and the getter for why.
+    private int _effectCaptureCullSuspendDepth;
+    // One SURFACE-space capture rect per open BeginEffectCapture scope, mapped
+    // through the same TransformRectAabb path PushClipBounds applies, so the
+    // CurrentClipBounds getter can map it back into the drawing space at ANY
+    // transform depth reached inside the capture. While a capture is open this
+    // REPLACES the dirty-region / viewport clip as the cull source: the capture
+    // texture is rebuilt from scratch every frame (no "kept from last frame"
+    // pixels), so culling against the damage rect would punch holes into the
+    // content the effect samples — but content outside the capture rect can
+    // never reach the offscreen texture at all, so culling against the rect
+    // keeps the capture complete WITHOUT re-emitting an entire long subtree
+    // under an effect on every small-dirty-rect animation frame (the managed
+    // emit cost was O(whole subtree) per frame while culling was suspended
+    // outright). Kept in lockstep with _effectCaptureCullSuspendDepth.
+    private readonly Stack<Rect> _effectCaptureCullOverrideStack = new();
 
     // Scoped opt-out for effects that deliberately deform their content with
     // the active matrix. Liquid glass drag uses this so text follows the same
@@ -257,6 +277,48 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             if (_layerCaptureClipBounds.HasValue)
                 return _layerCaptureClipBounds;
 
+            // While capturing an element for an effect (BeginEffectCapture..
+            // EndEffectCapture), cull against the CAPTURE RECT instead of the
+            // window dirty-region / ancestor-viewport clip: the capture
+            // texture is rebuilt from scratch every frame with no "pixels
+            // outside the dirty rect kept from last frame" fallback, so
+            // dirty-region culling (ShouldRenderChild / DrawingReplayer's
+            // AABB short-cut) would punch real holes into the content the
+            // effect samples — a glow then renders a truncated silhouette
+            // with a hard seam at the damage-rect edge. Content outside the
+            // capture rect is different: it can never land in the offscreen
+            // texture (the rect IS the texture's bounds), so culling it is
+            // free — and keeps a long non-virtualized subtree under an
+            // effect from re-emitting in full on every small-dirty-rect
+            // frame. The override entry was stored in SURFACE space by
+            // BeginEffectCapture (the exact PushClipBounds mapping), so map
+            // it back through the current inverse matrix exactly like the
+            // regular stack path below. (Same reasoning as
+            // _layerCaptureClipBounds above; the surface-space round-trip is
+            // what makes the rect comparable across nested transform depths.)
+            if (_effectCaptureCullSuspendDepth > 0)
+            {
+                // Defensive only — Begin pushes an entry whenever it bumps the
+                // depth. No entry → keep the legacy "no cull" (never wrong).
+                if (_effectCaptureCullOverrideStack.Count == 0)
+                    return null;
+
+                var capture = _effectCaptureCullOverrideStack.Peek();
+                if (_nativeTransformDepth <= 0)
+                    return capture;
+
+                var cm = new Jalium.UI.Media.Matrix(
+                    _currentNativeMatrix[0], _currentNativeMatrix[1],
+                    _currentNativeMatrix[2], _currentNativeMatrix[3],
+                    _currentNativeMatrix[4], _currentNativeMatrix[5]);
+                if (!cm.TryInvert(out var captureInv))
+                    return null; // non-invertible → no cull, never under-cull
+
+                return TransformRectAabb(capture,
+                    captureInv.M11, captureInv.M12, captureInv.M21, captureInv.M22,
+                    captureInv.OffsetX, captureInv.OffsetY);
+            }
+
             if (_clipBoundsStack.Count == 0)
                 return null;
 
@@ -416,6 +478,16 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// </summary>
     internal void DrainPendingRetainedLayers()
     {
+        // Per-frame self-heal for the effect-capture cull override: if a render
+        // exception unwound past an open BeginEffectCapture (Visual.RenderDirect
+        // has no try/finally and the window's catch-all keeps the process alive),
+        // the counter would stay pinned > 0 on this POOLED context and clamp
+        // clip-bounds culling to a stale capture rect for every subsequent frame
+        // — an invisible, permanent correctness/performance cliff. A frame can
+        // never legitimately start with an open capture, so zero both here (the
+        // native side has the symmetric guard in ResetGpuReplay).
+        _effectCaptureCullSuspendDepth = 0;
+        _effectCaptureCullOverrideStack.Clear();
         if (_renderTarget == null || _renderTarget.Handle == nint.Zero) return;
         while (Visual.TryDequeuePendingLayerDestroy(out nint h))
         {
@@ -1035,7 +1107,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             if (format == null) return;
 
             var x = (float)mx;
-            var y = (float)my; // pixel snapping disabled: baseline Y passes through
+            var y = (float)my; // pixel snapping disabled: the line-box top Y passes through unrounded
             _renderTarget.DrawText(formattedText.Text, format, x, y, width, height, brush);
             return;
         }
@@ -1050,9 +1122,10 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             formattedText.TextHintingMode);
         if (scaledFormat == null) return;
 
-        // Screen-space origin = current matrix applied to (mx, my).
-        // Pixel snapping is disabled: baseline Y is NOT rounded so vertical text
-        // animation under a scale transform stays smooth.
+        // Screen-space origin = current matrix applied to (mx, my). The origin
+        // is the text layout box's top-left (native backends place the first
+        // baseline at y + ascent). Pixel snapping is disabled: Y is NOT rounded
+        // so vertical text animation under a scale transform stays smooth.
         var screenX = (float)(nm11 * mx + nm21 * my + ndx);
         var screenY = (float)(nm12 * mx + nm22 * my + ndy);
 
@@ -2284,10 +2357,10 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // dispatch straight to jalium_render_target_draw_video_surface so the
         // GPU samples the staged texture in-place. Stage 1 wires this; stage 2
         // backends (Software done, D3D12 / Vulkan pending) make it visible.
-        if (imageSource is Jalium.UI.Media.D3DImage d3dImage)
+        if (imageSource is Jalium.UI.Interop.D3DImage d3dImage)
         {
             if (!d3dImage.IsFrontBufferAvailable || d3dImage.NativeHandle == nint.Zero) return;
-            if (d3dImage.ResourceType == Jalium.UI.Media.D3DResourceType.NativeVideoSurface)
+            if (d3dImage.ResourceType == Jalium.UI.Interop.D3DResourceType.NativeVideoSurface)
             {
                 var rx = (float)(rectangle.X + Offset.X);
                 var ry = (float)(rectangle.Y + Offset.Y);
@@ -3154,6 +3227,25 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public void BeginEffectCapture(float x, float y, float w, float h)
     {
         if (_closed) return;
+        // Swap the cull source from the dirty-region/viewport clip to the
+        // capture rect for the capture's duration — see CurrentClipBounds.
+        // Stored in SURFACE space (the exact PushClipBounds mapping) so it
+        // survives transform pushes inside the capture; grown by the same
+        // sub-pixel epsilon as the dirty-region cull clip so float round-trip
+        // error can never cull content flush against the capture edge.
+        // Balanced in EndEffectCapture.
+        var captureRect = new Rect(
+            x - ClipCullEpsilon,
+            y - ClipCullEpsilon,
+            w + 2 * ClipCullEpsilon,
+            h + 2 * ClipCullEpsilon);
+        _effectCaptureCullOverrideStack.Push(_nativeTransformDepth > 0
+            ? TransformRectAabb(captureRect,
+                _currentNativeMatrix[0], _currentNativeMatrix[1],
+                _currentNativeMatrix[2], _currentNativeMatrix[3],
+                _currentNativeMatrix[4], _currentNativeMatrix[5])
+            : captureRect);
+        _effectCaptureCullSuspendDepth++;
         _renderTarget.BeginEffectCapture(x, y, w, h);
     }
 
@@ -3163,6 +3255,10 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     public void EndEffectCapture()
     {
         if (_closed) return;
+        if (_effectCaptureCullSuspendDepth > 0)
+            _effectCaptureCullSuspendDepth--;
+        if (_effectCaptureCullOverrideStack.Count > 0)
+            _effectCaptureCullOverrideStack.Pop();
         _renderTarget.EndEffectCapture();
     }
 
@@ -3944,12 +4040,12 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // For mutable sources we need to validate the cached upload against the
         // current content revision — a rewritten WriteableBitmap shares the
         // same instance, so reference identity alone isn't enough.
-        uint currentRevision = imageSource is Jalium.UI.Media.WriteableBitmap wb
+        uint currentRevision = imageSource is WriteableBitmap wb
             ? wb.ContentRevision : 0u;
 
         if (_bitmapCache.TryGetValue(imageSource, out var cached))
         {
-            bool stale = imageSource is Jalium.UI.Media.WriteableBitmap &&
+            bool stale = imageSource is WriteableBitmap &&
                          cached.ContentRevision != currentRevision;
 
             if (!stale && cached.Bitmap.IsValid)
@@ -3965,7 +4061,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // Vulkan just rewrites the staging pixel buffer. This is what keeps the
             // swap chain stable when video streams 1080p frames at 30+fps.
             if (cached.Bitmap.IsValid &&
-                imageSource is Jalium.UI.Media.WriteableBitmap writeableUpdate &&
+                imageSource is WriteableBitmap writeableUpdate &&
                 cached.Bitmap.Width == (uint)writeableUpdate.PixelWidth &&
                 cached.Bitmap.Height == (uint)writeableUpdate.PixelHeight &&
                 cached.Bitmap.TryUpdatePixels(
@@ -4017,7 +4113,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 System.Diagnostics.Debug.WriteLine($"[RenderTargetDrawingContext] Failed to create bitmap: {ex.Message}");
             }
         }
-        else if (imageSource is Jalium.UI.Media.WriteableBitmap writeable &&
+        else if (imageSource is WriteableBitmap writeable &&
                  writeable.PixelWidth > 0 && writeable.PixelHeight > 0)
         {
             // WriteableBitmap defaults to straight (non-premultiplied) Bgra32, and

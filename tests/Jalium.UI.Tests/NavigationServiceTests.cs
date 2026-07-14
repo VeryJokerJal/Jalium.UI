@@ -1,5 +1,5 @@
 using Jalium.UI.Controls;
-using Jalium.UI.Controls.Navigation;
+using Jalium.UI.Navigation;
 
 namespace Jalium.UI.Tests;
 
@@ -110,9 +110,9 @@ public class NavigationServiceTests
 
         public override string JournalEntryName => "ReplayTrackingState";
 
-        public override void Replay(object content, NavigationMode mode)
+        public override void Replay(NavigationService navigationService, NavigationMode mode)
         {
-            LastReplayContent = content;
+            LastReplayContent = navigationService.Content;
             LastReplayMode = mode;
         }
     }

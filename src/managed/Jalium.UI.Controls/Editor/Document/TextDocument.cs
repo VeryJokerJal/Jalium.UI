@@ -11,7 +11,7 @@ public sealed class TextDocument
     private readonly DocumentLineTree _lineTree = new();
     private int _version;
     private int _updateLevel;
-    private List<TextChange>? _batchChanges;
+    private List<DocumentChange>? _batchChanges;
     private int _batchStartLineCount;
 
     /// <summary>
@@ -48,20 +48,20 @@ public sealed class TextDocument
             _lineTree.Rebuild(_rope);
             _version++;
             UndoStack.Clear();
-            Changed?.Invoke(this, new TextChangeEventArgs(
-                new TextChange(0, oldText, value ?? string.Empty)));
+            Changed?.Invoke(this, new DocumentChangeEventArgs(
+                new DocumentChange(0, oldText, value ?? string.Empty)));
         }
     }
 
     /// <summary>
     /// Occurs before a text change is applied.
     /// </summary>
-    public event EventHandler<TextChangeEventArgs>? Changing;
+    public event EventHandler<DocumentChangeEventArgs>? Changing;
 
     /// <summary>
     /// Occurs after a text change is applied.
     /// </summary>
-    public event EventHandler<TextChangeEventArgs>? Changed;
+    public event EventHandler<DocumentChangeEventArgs>? Changed;
 
     /// <summary>
     /// Occurs when the line count changes.
@@ -142,7 +142,7 @@ public sealed class TextDocument
             throw new ArgumentOutOfRangeException();
 
         var removedText = length > 0 ? _rope.ToString(offset, length) : string.Empty;
-        var change = new TextChange(offset, removedText, newText);
+        var change = new DocumentChange(offset, removedText, newText);
 
         ApplyChange(change, pushToUndo: true);
     }
@@ -177,7 +177,7 @@ public sealed class TextDocument
 
         if (_batchChanges is { Count: > 0 } batchChanges)
         {
-            Changed?.Invoke(this, new TextChangeEventArgs(CreateBatchChange(batchChanges)));
+            Changed?.Invoke(this, new DocumentChangeEventArgs(CreateBatchChange(batchChanges)));
         }
 
         if (LineCount != _batchStartLineCount)
@@ -195,11 +195,11 @@ public sealed class TextDocument
         return new TextDocumentSnapshot(_rope, _lineTree.CreateSnapshot(), _version);
     }
 
-    private void ApplyChange(TextChange change, bool pushToUndo)
+    private void ApplyChange(DocumentChange change, bool pushToUndo)
     {
         int oldLineCount = LineCount;
 
-        Changing?.Invoke(this, new TextChangeEventArgs(change));
+        Changing?.Invoke(this, new DocumentChangeEventArgs(change));
 
         // Apply to rope
         if (change.RemovalLength > 0)
@@ -223,7 +223,7 @@ public sealed class TextDocument
             return;
         }
 
-        Changed?.Invoke(this, new TextChangeEventArgs(change));
+        Changed?.Invoke(this, new DocumentChangeEventArgs(change));
 
         if (LineCount != oldLineCount)
             LineCountChanged?.Invoke(this, EventArgs.Empty);
@@ -232,12 +232,12 @@ public sealed class TextDocument
     /// <summary>
     /// Applies a change without pushing to undo stack (used by UndoStack.Undo/Redo).
     /// </summary>
-    internal void ApplyChangeInternal(TextChange change)
+    internal void ApplyChangeInternal(DocumentChange change)
     {
         ApplyChange(change, pushToUndo: false);
     }
 
-    private static TextChange CreateBatchChange(IReadOnlyList<TextChange> batchChanges)
+    private static DocumentChange CreateBatchChange(IReadOnlyList<DocumentChange> batchChanges)
     {
         if (batchChanges.Count == 1)
             return batchChanges[0];
@@ -256,6 +256,6 @@ public sealed class TextDocument
             insertedBuilder.Append(change.InsertedText);
         }
 
-        return new TextChange(offset, removedBuilder.ToString(), insertedBuilder.ToString());
+        return new DocumentChange(offset, removedBuilder.ToString(), insertedBuilder.ToString());
     }
 }

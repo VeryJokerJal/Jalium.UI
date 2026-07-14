@@ -74,7 +74,7 @@ public class RealTimeStylusAsyncTests
             });
 
         // Pump dispatcher until the continuation runs.
-        var dispatcher = Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread();
+        var dispatcher = Dispatcher.CurrentDispatcher;
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
         while (!done.IsSet && DateTime.UtcNow < deadline)
         {
@@ -113,7 +113,7 @@ public class RealTimeStylusAsyncTests
                 done.Set();
             });
 
-        var dispatcher = Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread();
+        var dispatcher = Dispatcher.CurrentDispatcher;
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(2);
         while (!done.IsSet && DateTime.UtcNow < deadline)
         {

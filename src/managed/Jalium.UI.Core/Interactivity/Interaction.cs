@@ -23,7 +23,7 @@ public static class Interaction
     public static readonly DependencyProperty TriggersProperty =
         DependencyProperty.RegisterAttached(
             "ShadowTriggers",
-            typeof(TriggerCollection),
+            typeof(BehaviorTriggerCollection),
             typeof(Interaction),
             new PropertyMetadata(null, OnTriggersChanged));
 
@@ -51,16 +51,16 @@ public static class Interaction
     /// Gets the collection of triggers associated with the specified object.
     /// </summary>
     /// <param name="obj">The object from which to retrieve the triggers.</param>
-    /// <returns>A TriggerCollection containing the triggers associated with the specified object.</returns>
+    /// <returns>A BehaviorTriggerCollection containing the triggers associated with the specified object.</returns>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public static TriggerCollection GetTriggers(DependencyObject obj)
+    public static BehaviorTriggerCollection GetTriggers(DependencyObject obj)
     {
         ArgumentNullException.ThrowIfNull(obj);
 
-        var triggers = (TriggerCollection?)obj.GetValue(TriggersProperty);
+        var triggers = (BehaviorTriggerCollection?)obj.GetValue(TriggersProperty);
         if (triggers == null)
         {
-            triggers = new TriggerCollection();
+            triggers = new BehaviorTriggerCollection();
             obj.SetValue(TriggersProperty, triggers);
         }
 
@@ -82,12 +82,12 @@ public static class Interaction
 
     private static void OnTriggersChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (e.OldValue is TriggerCollection oldTriggers)
+        if (e.OldValue is BehaviorTriggerCollection oldTriggers)
         {
             oldTriggers.Detach();
         }
 
-        if (e.NewValue is TriggerCollection newTriggers)
+        if (e.NewValue is BehaviorTriggerCollection newTriggers)
         {
             newTriggers.Attach(d);
         }

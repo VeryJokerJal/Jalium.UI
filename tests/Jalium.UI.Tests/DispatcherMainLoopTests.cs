@@ -106,7 +106,7 @@ public partial class DispatcherMainLoopTests
             var dispatcher = Dispatcher.GetForCurrentThread();
             using (dispatcher.DisableProcessing())
             {
-                Assert.Throws<InvalidOperationException>(() => dispatcher.Run());
+                Assert.Throws<InvalidOperationException>(Dispatcher.Run);
             }
         });
     }

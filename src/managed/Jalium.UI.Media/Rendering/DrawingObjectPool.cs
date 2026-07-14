@@ -7,7 +7,7 @@ namespace Jalium.UI.Media.Rendering;
 /// Canonicalizes the "value-typed" media primitives captured during draw
 /// recording — solid-color brushes, simple pens, and formatted text layouts —
 /// so that logically-equal user allocations collapse to a single shared
-/// instance inside recorded <see cref="Drawing"/> command lists.
+/// instance inside recorded <see cref="RecordedDrawing"/> command lists.
 /// </summary>
 /// <remarks>
 /// <para>

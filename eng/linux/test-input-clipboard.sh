@@ -2,15 +2,26 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-configuration="${1:-Release}"
-native_dir="$repo_root/src/native/bin/native/linux-x64/$configuration"
+rid="${1:-linux-x64}"
+configuration="${2:-Release}"
+
+case "$rid" in
+    linux-x64|linux-arm64)
+        ;;
+    *)
+        echo "Unsupported clipboard smoke RID '$rid'. Expected linux-x64 or linux-arm64." >&2
+        exit 2
+        ;;
+esac
+
+native_dir="${JALIUM_NATIVE_DIR:-$repo_root/src/native/bin/native/$rid/$configuration}"
 test_binary="$native_dir/jalium.native.platform.tests"
 
 if [[ ! -x "$test_binary" ]]; then
-    echo "Missing $test_binary; build the linux-x64 native target first." >&2
+    echo "Missing $test_binary; build the $rid native target first." >&2
     exit 2
 fi
-for command in xclip wl-copy wl-paste weston xdotool; do
+for command in xclip wl-copy wl-paste weston xdotool xwininfo; do
     command -v "$command" >/dev/null || {
         echo "Missing smoke-test dependency: $command" >&2
         exit 2
@@ -38,7 +49,11 @@ cleanup() {
         kill "$weston_pid" 2>/dev/null || true
         wait "$weston_pid" 2>/dev/null || true
     fi
-    rm -rf "$runtime_dir"
+    case "$runtime_dir" in
+        /tmp/tmp.*|"${RUNNER_TEMP:-/nonexistent}"/tmp.*)
+            rm -rf -- "$runtime_dir"
+            ;;
+    esac
 }
 trap cleanup EXIT
 

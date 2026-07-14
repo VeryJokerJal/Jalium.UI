@@ -9,6 +9,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Managed\Jalium.UI.Managed.csproj"
+                      AdditionalProperties="BuildJaliumNativeProjects=false;BuildJaliumNativeStaticProjects=false" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Media\Jalium.UI.Media.csproj"
                       AdditionalProperties="BuildJaliumNativeProjects=false;BuildJaliumNativeStaticProjects=false" />
   </ItemGroup>

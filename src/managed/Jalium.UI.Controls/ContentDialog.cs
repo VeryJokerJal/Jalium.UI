@@ -35,7 +35,7 @@ public enum ContentDialogPlacement
 [TemplatePart(Name = "PART_PrimaryButton", Type = typeof(Button))]
 [TemplatePart(Name = "PART_SecondaryButton", Type = typeof(Button))]
 [TemplatePart(Name = "PART_CloseButton", Type = typeof(Button))]
-[ContentProperty("Content")]
+[Jalium.UI.Markup.ContentProperty("Content")]
 public class ContentDialog : ContentControl
 {
     private const double DefaultDialogMargin = 24.0;
@@ -152,7 +152,7 @@ public class ContentDialog : ContentControl
         Focusable = true;
         HorizontalAlignment = HorizontalAlignment.Stretch;
         VerticalAlignment = VerticalAlignment.Stretch;
-        BackdropEffect = new BlurEffect(18f);
+        BackdropEffect = new BackdropBlurEffect(18f);
         KeyboardNavigation.SetTabNavigation(this, KeyboardNavigationMode.Cycle);
         KeyboardNavigation.SetDirectionalNavigation(this, KeyboardNavigationMode.Cycle);
         AddHandler(KeyDownEvent, new KeyEventHandler(OnDialogKeyDown), handledEventsToo: true);

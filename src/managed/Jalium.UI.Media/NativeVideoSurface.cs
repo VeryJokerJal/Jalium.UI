@@ -16,7 +16,7 @@ namespace Jalium.UI.Media;
 ///   implemented the corresponding <c>WrapExternalVideoSurface</c> branch yet.</item>
 ///   <item><see cref="CreateBgra8"/> throws <see cref="NativeMediaException"/>
 ///   when the backend doesn't implement <c>CreateVideoSurface</c> yet — caller
-///   catches and falls back to <see cref="WriteableBitmap"/>.</item>
+///   catches and falls back to <see cref="Imaging.WriteableBitmap"/>.</item>
 /// </list>
 /// </para>
 /// <para><b>Lifecycle</b>: single-threaded ownership. Lock / Unlock must be called
@@ -103,9 +103,56 @@ public sealed class NativeVideoSurface : IDisposable
             Handle0 = handle0,
             Handle1 = handle1,
             FormatHint = (uint)formatHint,
+            AcquireFenceFd = -1,
         };
         var nh = NativeVideoSurfaceInterop.WrapExternal(context, in desc);
         return nh == nint.Zero ? null : new NativeVideoSurface(nh, width, height, kind);
+    }
+
+    internal static NativeVideoSurface? TryWrapExternal(
+        nint context,
+        in NativeMediaInterop.NativeVideoDecoderGpuDescriptor source)
+    {
+        if (context == nint.Zero || source.Width == 0 || source.Height == 0)
+            return null;
+
+        static NativeVideoSurfaceInterop.NativeVideoSurfacePlaneDescriptor Convert(
+            NativeMediaInterop.NativeVideoPlaneDescriptor plane) => new()
+            {
+                Fd = plane.Fd,
+                StrideBytes = plane.StrideBytes,
+                OffsetBytes = plane.OffsetBytes,
+                Modifier = plane.Modifier,
+                SizeBytes = plane.SizeBytes,
+            };
+
+        var desc = new NativeVideoSurfaceInterop.NativeVideoSurfaceDescriptor
+        {
+            Kind = source.Kind,
+            Width = source.Width,
+            Height = source.Height,
+            Handle0 = source.Handle0,
+            Handle1 = source.Handle1,
+            FormatHint = source.FormatHint,
+            PlaneCount = source.PlaneCount,
+            DrmFourcc = source.DrmFourcc,
+            DescriptorFlags = source.DescriptorFlags,
+            ColorSpace = source.ColorSpace,
+            Plane0 = Convert(source.Plane0),
+            Plane1 = Convert(source.Plane1),
+            Plane2 = Convert(source.Plane2),
+            Plane3 = Convert(source.Plane3),
+            AcquireFenceFd = source.AcquireFenceFd,
+            LifetimeContext = source.LifetimeContext,
+            LifetimeRetainCallback = source.LifetimeRetainCallback,
+            LifetimeReleaseCallback = source.LifetimeReleaseCallback,
+        };
+        var handle = NativeVideoSurfaceInterop.WrapExternal(context, in desc);
+        return handle == nint.Zero
+            ? null
+            : new NativeVideoSurface(
+                handle, (int)source.Width, (int)source.Height,
+                (NativeVideoSurfaceKind)source.Kind);
     }
 
     /// <summary>

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using Jalium.UI;
 using Jalium.UI.Controls;
 using LegacyFileDialog = Jalium.UI.Controls.FileDialog;
 using LegacyOpenFileDialog = Jalium.UI.Controls.OpenFileDialog;
@@ -202,6 +203,11 @@ public abstract class FileDialog : CommonItemDialog
         Initialize();
     }
 
+    /// <summary>
+    /// Gets whether the current Linux session exposes the desktop-neutral file chooser portal.
+    /// </summary>
+    public static bool IsPortalAvailable => LegacyFileDialog.IsPortalAvailable;
+
     public string SafeFileName => Path.GetFileName(CriticalItemName) ?? string.Empty;
 
     public string[] SafeFileNames => CloneItemNames()
@@ -257,6 +263,27 @@ public abstract class FileDialog : CommonItemDialog
 
     public bool RestoreDirectory { get; set; }
 
+    /// <summary>
+    /// Gets or sets the maximum time to wait for a Linux desktop portal response.
+    /// </summary>
+    public TimeSpan PortalTimeout { get; set; }
+
+    /// <summary>
+    /// Gets or sets a token that can cancel a pending Linux desktop portal request.
+    /// </summary>
+    public CancellationToken CancellationToken { get; set; }
+
+    /// <summary>
+    /// Shows the file dialog with the specified native owner handle.
+    /// </summary>
+    /// <param name="owner">The owner window handle.</param>
+    /// <returns><see langword="true"/> if the user selected a file; otherwise <see langword="false"/>.</returns>
+    public bool? ShowDialog(IntPtr owner)
+    {
+        CheckPermissionsToShowDialog();
+        return RunDialog(owner);
+    }
+
     public event CancelEventHandler? FileOk;
 
     public override void Reset()
@@ -280,6 +307,8 @@ public abstract class FileDialog : CommonItemDialog
         dialog.Filter = Filter;
         dialog.FilterIndex = FilterIndex;
         dialog.RestoreDirectory = RestoreDirectory;
+        dialog.PortalTimeout = PortalTimeout;
+        dialog.CancellationToken = CancellationToken;
     }
 
     private protected void CaptureFileResults(LegacyFileDialog dialog)
@@ -299,6 +328,8 @@ public abstract class FileDialog : CommonItemDialog
         _filter = null;
         _filterIndex = 1;
         RestoreDirectory = false;
+        PortalTimeout = TimeSpan.FromMinutes(2);
+        CancellationToken = default;
     }
 }
 

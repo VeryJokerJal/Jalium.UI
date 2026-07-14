@@ -76,3 +76,12 @@ public interface INativeAudioDecoderFactory
     /// <summary>创建一个未打开的解码器实例。</summary>
     INativeAudioDecoder Create();
 }
+
+/// <summary>
+/// Optional decoder contract for containers with more than one audio stream.
+/// Set the zero-based index before calling <see cref="INativeAudioDecoder.Open"/>.
+/// </summary>
+public interface INativeAudioTrackSelector
+{
+    int AudioTrackIndex { get; set; }
+}

@@ -16,7 +16,7 @@ namespace Jalium.UI.Controls;
 /// <see langword="nint"/> and released with <see cref="Marshal.Release(nint)"/> — never
 /// <see cref="Marshal.ReleaseComObject"/>, which is a silent no-op under AOT.
 /// </remarks>
-public sealed class SpellChecker : IDisposable
+internal sealed class SpellChecker : IDisposable
 {
     // The native ISpellChecker held as a raw COM pointer (0 when spell-check is unavailable),
     // released exactly once with Marshal.Release in Dispose.

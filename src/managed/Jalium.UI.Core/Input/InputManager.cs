@@ -1,9 +1,11 @@
+using Jalium.UI.Threading;
+
 namespace Jalium.UI.Input;
 
 /// <summary>
 /// Manages the input systems associated with the application.
 /// </summary>
-public sealed class InputManager
+public sealed class InputManager : DispatcherObject
 {
     private static readonly Lazy<InputManager> _current = new(() => new InputManager());
     private readonly System.Collections.ArrayList _inputProviders = [];
@@ -414,9 +416,23 @@ public sealed class StagingAreaInputItem
 public sealed class ManipulationStartingEventArgs : InputEventArgs
 {
     private bool _cancelRequested;
+    private ManipulationModes _mode = ManipulationModes.All;
+
+    internal ManipulationStartingEventArgs()
+    {
+    }
 
     /// <summary>Gets or sets the manipulation mode.</summary>
-    public ManipulationModes Mode { get; set; } = ManipulationModes.All;
+    public ManipulationModes Mode
+    {
+        get => _mode;
+        set
+        {
+            if ((value & ~ManipulationModes.All) != 0)
+                throw new ArgumentException("The manipulation mode contains an unsupported value.", nameof(value));
+            _mode = value;
+        }
+    }
 
     /// <summary>Gets or sets the manipulation container.</summary>
     public IInputElement? ManipulationContainer { get; set; }
@@ -427,9 +443,8 @@ public sealed class ManipulationStartingEventArgs : InputEventArgs
     /// <summary>Cancels the manipulation before it starts.</summary>
     public bool Cancel()
     {
-        bool accepted = !_cancelRequested;
         _cancelRequested = true;
-        return accepted;
+        return true;
     }
 
     internal bool CancelRequested => _cancelRequested;
@@ -479,11 +494,15 @@ public sealed class ManipulationStartingEventArgs : InputEventArgs
 /// </summary>
 public sealed class ManipulationBoundaryFeedbackEventArgs : InputEventArgs
 {
+    internal ManipulationBoundaryFeedbackEventArgs()
+    {
+    }
+
     /// <summary>Gets the boundary feedback.</summary>
-    public ManipulationDelta? BoundaryFeedback { get; init; }
+    public ManipulationDelta BoundaryFeedback { get; internal init; } = null!;
 
     /// <summary>Gets the manipulation container.</summary>
-    public IInputElement? ManipulationContainer { get; init; }
+    public IInputElement ManipulationContainer { get; internal init; } = null!;
 
     /// <summary>Gets the input contacts participating in the manipulation.</summary>
     public IEnumerable<IManipulator> Manipulators =>
@@ -510,9 +529,9 @@ public sealed class ManipulationBoundaryFeedbackEventArgs : InputEventArgs
 /// <summary>
 /// Represents a manipulation delta (translation, scale, rotation).
 /// </summary>
-public sealed class ManipulationDelta
+public class ManipulationDelta
 {
-    public ManipulationDelta()
+    internal ManipulationDelta()
     {
     }
 
@@ -525,16 +544,16 @@ public sealed class ManipulationDelta
     }
 
     /// <summary>Gets the translation component.</summary>
-    public Vector Translation { get; init; }
+    public Vector Translation { get; internal init; }
 
     /// <summary>Gets the rotation component in degrees.</summary>
-    public double Rotation { get; init; }
+    public double Rotation { get; internal init; }
 
     /// <summary>Gets the scale component.</summary>
-    public Vector Scale { get; init; } = new Vector(1.0, 1.0);
+    public Vector Scale { get; internal init; } = new Vector(1.0, 1.0);
 
     /// <summary>Gets the expansion component.</summary>
-    public Vector Expansion { get; init; }
+    public Vector Expansion { get; internal init; }
 }
 
 /// <summary>
@@ -568,7 +587,7 @@ public enum ManipulationModes
 /// <summary>
 /// Represents the pivot for a manipulation.
 /// </summary>
-public sealed class ManipulationPivot
+public class ManipulationPivot
 {
     /// <summary>
     /// Initializes a new instance of the ManipulationPivot class.

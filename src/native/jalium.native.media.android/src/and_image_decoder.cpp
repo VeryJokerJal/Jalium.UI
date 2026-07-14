@@ -4,20 +4,85 @@
 
 #include <android/imagedecoder.h>
 #include <android/log.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <unistd.h>
 
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 #define ANDLOG_TAG "jalium.native.media.image"
 #define ANDLOGW(...) __android_log_print(ANDROID_LOG_WARN, ANDLOG_TAG, __VA_ARGS__)
+#define ANDLOGE(...) __android_log_print(ANDROID_LOG_ERROR, ANDLOG_TAG, __VA_ARGS__)
 
 namespace jalium::media::android {
 
 namespace {
 
 constexpr int API_LEVEL_AIMAGEDECODER = 30;
+
+// AImageDecoder is API 30+, while Jalium.UI supports API 24. Direct calls add
+// unresolved API-30 imports to the ELF and make the complete media library
+// unloadable on Android 7-10, even when the call site is runtime-gated.
+struct AImageDecoderApi {
+    void* library = nullptr;
+    int (*createFromBuffer)(const void*, size_t, AImageDecoder**) = nullptr;
+    int (*createFromFd)(int, AImageDecoder**) = nullptr;
+    void (*destroy)(AImageDecoder*) = nullptr;
+    int (*setAndroidBitmapFormat)(AImageDecoder*, int32_t) = nullptr;
+    int (*setUnpremultipliedRequired)(AImageDecoder*, bool) = nullptr;
+    const AImageDecoderHeaderInfo* (*getHeaderInfo)(const AImageDecoder*) = nullptr;
+    int32_t (*getWidth)(const AImageDecoderHeaderInfo*) = nullptr;
+    int32_t (*getHeight)(const AImageDecoderHeaderInfo*) = nullptr;
+    size_t (*getMinimumStride)(AImageDecoder*) = nullptr;
+    int (*decodeImage)(AImageDecoder*, void*, size_t, size_t) = nullptr;
+};
+
+template <typename T>
+bool LoadSymbol(void* library, const char* name, T& symbol)
+{
+    symbol = reinterpret_cast<T>(dlsym(library, name));
+    if (!symbol) {
+        ANDLOGE("Missing runtime symbol %s: %s", name, dlerror());
+        return false;
+    }
+    return true;
+}
+
+const AImageDecoderApi* GetAImageDecoderApi()
+{
+    if (GetApiLevel() < API_LEVEL_AIMAGEDECODER) return nullptr;
+
+    static AImageDecoderApi api;
+    static bool available = false;
+    static std::once_flag once;
+    std::call_once(once, [] {
+        api.library = dlopen("libjnigraphics.so", RTLD_NOW | RTLD_LOCAL);
+        if (!api.library) {
+            ANDLOGE("Unable to load libjnigraphics.so: %s", dlerror());
+            return;
+        }
+
+        available =
+            LoadSymbol(api.library, "AImageDecoder_createFromBuffer", api.createFromBuffer) &&
+            LoadSymbol(api.library, "AImageDecoder_createFromFd", api.createFromFd) &&
+            LoadSymbol(api.library, "AImageDecoder_delete", api.destroy) &&
+            LoadSymbol(api.library, "AImageDecoder_setAndroidBitmapFormat", api.setAndroidBitmapFormat) &&
+            LoadSymbol(api.library, "AImageDecoder_setUnpremultipliedRequired", api.setUnpremultipliedRequired) &&
+            LoadSymbol(api.library, "AImageDecoder_getHeaderInfo", api.getHeaderInfo) &&
+            LoadSymbol(api.library, "AImageDecoderHeaderInfo_getWidth", api.getWidth) &&
+            LoadSymbol(api.library, "AImageDecoderHeaderInfo_getHeight", api.getHeight) &&
+            LoadSymbol(api.library, "AImageDecoder_getMinimumStride", api.getMinimumStride) &&
+            LoadSymbol(api.library, "AImageDecoder_decodeImage", api.decodeImage);
+
+        if (!available) {
+            dlclose(api.library);
+            api = {};
+        }
+    });
+    return available ? &api : nullptr;
+}
 
 // Convert RGBA -> BGRA in place using the shared helper.
 void MaybeSwapToBgra(uint8_t* pixels, uint32_t width, uint32_t height, uint32_t stride,
@@ -48,11 +113,12 @@ jalium_media_status_t TranslateDecoderResult(int code)
 }
 
 jalium_media_status_t DecodeWithDecoder(
+    const AImageDecoderApi& api,
     AImageDecoder*        decoder,
     jalium_pixel_format_t requested_format,
     jalium_image_t*       out_image)
 {
-    int rc = AImageDecoder_setAndroidBitmapFormat(decoder, ANDROID_BITMAP_FORMAT_RGBA_8888);
+    int rc = api.setAndroidBitmapFormat(decoder, ANDROID_BITMAP_FORMAT_RGBA_8888);
     if (rc != ANDROID_IMAGE_DECODER_SUCCESS) {
         return TranslateDecoderResult(rc);
     }
@@ -66,19 +132,19 @@ jalium_media_status_t DecodeWithDecoder(
     // crushing their anti-aliased edges. This matches the WIC/stb decoders, which
     // already emit straight alpha. (setUnpremultipliedRequired is API 30+, the same
     // level that already gates this whole AImageDecoder path.)
-    rc = AImageDecoder_setUnpremultipliedRequired(decoder, true);
+    rc = api.setUnpremultipliedRequired(decoder, true);
     if (rc != ANDROID_IMAGE_DECODER_SUCCESS) {
         return TranslateDecoderResult(rc);
     }
 
-    const AImageDecoderHeaderInfo* header = AImageDecoder_getHeaderInfo(decoder);
-    int32_t width  = AImageDecoderHeaderInfo_getWidth(header);
-    int32_t height = AImageDecoderHeaderInfo_getHeight(header);
+    const AImageDecoderHeaderInfo* header = api.getHeaderInfo(decoder);
+    int32_t width  = api.getWidth(header);
+    int32_t height = api.getHeight(header);
     if (width <= 0 || height <= 0) {
         return JALIUM_MEDIA_E_DECODE_FAILED;
     }
 
-    size_t stride = AImageDecoder_getMinimumStride(decoder);
+    size_t stride = api.getMinimumStride(decoder);
     if (stride < static_cast<size_t>(width) * 4u) {
         stride = static_cast<size_t>(width) * 4u;
     }
@@ -87,7 +153,7 @@ jalium_media_status_t DecodeWithDecoder(
     auto* pixels = static_cast<uint8_t*>(jalium_media_aligned_alloc(buffer_size));
     if (!pixels) return JALIUM_MEDIA_E_OUT_OF_MEMORY;
 
-    rc = AImageDecoder_decodeImage(decoder, pixels, stride, buffer_size);
+    rc = api.decodeImage(decoder, pixels, stride, buffer_size);
     if (rc != ANDROID_IMAGE_DECODER_SUCCESS) {
         jalium_media_aligned_free(pixels);
         return TranslateDecoderResult(rc);
@@ -117,18 +183,19 @@ jalium_media_status_t DecodeImageMemory(
     if (!data || size == 0 || !out_image) return JALIUM_MEDIA_E_INVALID_ARG;
     *out_image = {};
 
-    if (GetApiLevel() < API_LEVEL_AIMAGEDECODER) {
+    const AImageDecoderApi* api = GetAImageDecoderApi();
+    if (!api) {
         // API 24-29 → JNI BitmapFactory fallback.
         return DecodeImageMemoryViaJni(data, size, requested_format, out_image);
     }
 
     AImageDecoder* decoder = nullptr;
-    int rc = AImageDecoder_createFromBuffer(data, size, &decoder);
+    int rc = api->createFromBuffer(data, size, &decoder);
     if (rc != ANDROID_IMAGE_DECODER_SUCCESS) {
         return TranslateDecoderResult(rc);
     }
-    auto status = DecodeWithDecoder(decoder, requested_format, out_image);
-    AImageDecoder_delete(decoder);
+    auto status = DecodeWithDecoder(*api, decoder, requested_format, out_image);
+    api->destroy(decoder);
     return status;
 }
 
@@ -144,7 +211,8 @@ jalium_media_status_t DecodeImageFile(
     int fd = open(utf8_path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return JALIUM_MEDIA_E_IO;
 
-    if (GetApiLevel() < API_LEVEL_AIMAGEDECODER) {
+    const AImageDecoderApi* api = GetAImageDecoderApi();
+    if (!api) {
         // API 24-29 → JNI BitmapFactory fallback expects a memory blob.
         // Read the file into memory and dispatch.
         off_t size = lseek(fd, 0, SEEK_END);
@@ -168,14 +236,16 @@ jalium_media_status_t DecodeImageFile(
     }
 
     AImageDecoder* decoder = nullptr;
-    int rc = AImageDecoder_createFromFd(fd, &decoder);
-    // AImageDecoder takes ownership of the fd on success.
+    int rc = api->createFromFd(fd, &decoder);
     if (rc != ANDROID_IMAGE_DECODER_SUCCESS) {
         close(fd);
         return TranslateDecoderResult(rc);
     }
-    auto status = DecodeWithDecoder(decoder, requested_format, out_image);
-    AImageDecoder_delete(decoder);
+    auto status = DecodeWithDecoder(*api, decoder, requested_format, out_image);
+    api->destroy(decoder);
+    // AImageDecoder does not own the descriptor; it may be closed after the
+    // decoder is deleted.
+    close(fd);
     return status;
 }
 
@@ -191,7 +261,8 @@ jalium_media_status_t ReadImageDimensions(
     *out_width = 0;
     *out_height = 0;
 
-    if (GetApiLevel() < API_LEVEL_AIMAGEDECODER) {
+    const AImageDecoderApi* api = GetAImageDecoderApi();
+    if (!api) {
         // For API < 30 we bounce via the JNI path (BitmapFactory.Options.inJustDecodeBounds
         // would be more efficient — left for a follow-up commit).
         jalium_image_t image{};
@@ -205,14 +276,14 @@ jalium_media_status_t ReadImageDimensions(
     }
 
     AImageDecoder* decoder = nullptr;
-    int rc = AImageDecoder_createFromBuffer(data, size, &decoder);
+    int rc = api->createFromBuffer(data, size, &decoder);
     if (rc != ANDROID_IMAGE_DECODER_SUCCESS) {
         return TranslateDecoderResult(rc);
     }
-    const AImageDecoderHeaderInfo* header = AImageDecoder_getHeaderInfo(decoder);
-    int32_t w = AImageDecoderHeaderInfo_getWidth(header);
-    int32_t h = AImageDecoderHeaderInfo_getHeight(header);
-    AImageDecoder_delete(decoder);
+    const AImageDecoderHeaderInfo* header = api->getHeaderInfo(decoder);
+    int32_t w = api->getWidth(header);
+    int32_t h = api->getHeight(header);
+    api->destroy(decoder);
 
     if (w <= 0 || h <= 0) return JALIUM_MEDIA_E_DECODE_FAILED;
     *out_width = static_cast<uint32_t>(w);

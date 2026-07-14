@@ -1,4 +1,5 @@
 using Jalium.UI;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 

@@ -1,0 +1,6 @@
+abi=x86_64
+rid=android-x64
+configuration=Release
+android_api=24
+ndk=27.2.12479018
+page_alignment=16384

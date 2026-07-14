@@ -1,10 +1,20 @@
 using System.Runtime.InteropServices.Marshalling;
 using Jalium.UI.Automation;
+using RawProvider = Jalium.UI.Automation.Provider;
+using IExpandCollapseProvider = Jalium.UI.Automation.Provider.IExpandCollapseProvider;
+using IInvokeProvider = Jalium.UI.Automation.Provider.IInvokeProvider;
+using IRangeValueProvider = Jalium.UI.Automation.Provider.IRangeValueProvider;
+using IScrollItemProvider = Jalium.UI.Automation.Provider.IScrollItemProvider;
+using IScrollProvider = Jalium.UI.Automation.Provider.IScrollProvider;
+using ISelectionItemProvider = Jalium.UI.Automation.Provider.ISelectionItemProvider;
+using ISelectionProvider = Jalium.UI.Automation.Provider.ISelectionProvider;
+using IToggleProvider = Jalium.UI.Automation.Provider.IToggleProvider;
+using IValueProvider = Jalium.UI.Automation.Provider.IValueProvider;
 
 namespace Jalium.UI.Controls.Automation.Uia;
 
 // Source-generated COM wrappers ([GeneratedComClass]) that adapt the framework-neutral
-// pattern providers (Jalium.UI.Automation.I*Provider) to the native UIA pattern COM
+// canonical pattern providers (Jalium.UI.Automation.Provider.I*Provider) to the native UIA pattern COM
 // interfaces (IUia*Provider). UIA obtains one of these from
 // IRawElementProviderSimple.GetPatternProvider and QIs it for the pattern IID.
 // Win32 BOOL properties are surfaced as `int` (0/1) to match UIA's 4-byte BOOL exactly.
@@ -68,12 +78,18 @@ internal sealed partial class UiaSelectionProviderWrapper : IUiaSelectionProvide
 
     public IRawElementProviderSimple[]? GetSelection()
     {
-        var peers = _inner.GetSelection();
-        if (peers == null || peers.Length == 0) return null;
-        var result = new IRawElementProviderSimple[peers.Length];
-        for (int i = 0; i < peers.Length; i++)
-            result[i] = UiaAccessibilityBridge.GetOrCreateProvider(peers[i], nint.Zero);
-        return result;
+        RawProvider.IRawElementProviderSimple[] providers = _inner.GetSelection();
+        if (providers.Length == 0)
+            return null;
+
+        var result = new List<IRawElementProviderSimple>(providers.Length);
+        foreach (RawProvider.IRawElementProviderSimple provider in providers)
+        {
+            if (provider is RawProvider.IAutomationPeerRawProvider peerProvider)
+                result.Add(UiaAccessibilityBridge.GetOrCreateProvider(peerProvider.Peer, nint.Zero));
+        }
+
+        return result.Count == 0 ? null : result.ToArray();
     }
 
     public int get_CanSelectMultiple() => _inner.CanSelectMultiple ? 1 : 0;
@@ -92,8 +108,9 @@ internal sealed partial class UiaSelectionItemProviderWrapper : IUiaSelectionIte
 
     public IRawElementProviderSimple? get_SelectionContainer()
     {
-        var peer = _inner.SelectionContainer;
-        return peer != null ? UiaAccessibilityBridge.GetOrCreateProvider(peer, nint.Zero) : null;
+        return _inner.SelectionContainer is RawProvider.IAutomationPeerRawProvider peerProvider
+            ? UiaAccessibilityBridge.GetOrCreateProvider(peerProvider.Peer, nint.Zero)
+            : null;
     }
 }
 

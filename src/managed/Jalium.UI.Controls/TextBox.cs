@@ -131,23 +131,15 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Identifies the PlaceholderText dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty PlaceholderTextProperty =
+    internal static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(TextBox),
             new PropertyMetadata(string.Empty, OnVisualPropertyChanged));
-
-    /// <summary>
-    /// Identifies the IsSpellCheckEnabled dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsSpellCheckEnabledProperty =
-        DependencyProperty.Register(nameof(IsSpellCheckEnabled), typeof(bool), typeof(TextBox),
-            new PropertyMetadata(false, OnSpellCheckEnabledChanged));
 
     /// <summary>
     /// Identifies the SpellCheckLanguage dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty SpellCheckLanguageProperty =
+    internal static readonly DependencyProperty SpellCheckLanguageProperty =
         DependencyProperty.Register(nameof(SpellCheckLanguage), typeof(string), typeof(TextBox),
             new PropertyMetadata("en-US", OnSpellCheckConfigurationChanged));
 
@@ -155,7 +147,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Identifies the IsAutoCorrectEnabled dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsAutoCorrectEnabledProperty =
+    internal static readonly DependencyProperty IsAutoCorrectEnabledProperty =
         DependencyProperty.Register(nameof(IsAutoCorrectEnabled), typeof(bool), typeof(TextBox),
             new PropertyMetadata(false));
 
@@ -163,7 +155,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Identifies the IsAutoCapitalizationEnabled dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsAutoCapitalizationEnabledProperty =
+    internal static readonly DependencyProperty IsAutoCapitalizationEnabledProperty =
         DependencyProperty.Register(nameof(IsAutoCapitalizationEnabled), typeof(bool), typeof(TextBox),
             new PropertyMetadata(false));
 
@@ -171,7 +163,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Identifies the DetectUrls dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty DetectUrlsProperty =
+    internal static readonly DependencyProperty DetectUrlsProperty =
         DependencyProperty.Register(nameof(DetectUrls), typeof(bool), typeof(TextBox),
             new PropertyMetadata(false, OnFormatDetectionChanged));
 
@@ -213,20 +205,48 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         set => SetValue(TextProperty, value);
     }
 
+    /// <summary>Gets or sets the insertion position of the caret.</summary>
+    public int CaretIndex
+    {
+        get => CaretIndexCore;
+        set => CaretIndexCore = value;
+    }
+
+    /// <summary>Gets or sets the starting position of the current selection.</summary>
+    public int SelectionStart
+    {
+        get => SelectionStartCore;
+        set => SelectionStartCore = value;
+    }
+
+    /// <summary>Gets or sets the number of characters in the current selection.</summary>
+    public int SelectionLength
+    {
+        get => SelectionLengthCore;
+        set => SelectionLengthCore = value;
+    }
+
+    /// <summary>Gets or replaces the currently selected text.</summary>
+    public string SelectedText
+    {
+        get => SelectedTextCore;
+        set => SelectedTextCore = value;
+    }
+
     /// <summary>
     /// Replaces <see cref="Text"/> with the contents of a text file. A byte-order
     /// mark, if present, decides the encoding; otherwise <paramref name="encoding"/>
     /// is used — UTF-8 when it is <see langword="null"/>. Legacy code pages such as
     /// <c>Encoding.GetEncoding(936)</c> (GBK) are supported.
     /// </summary>
-    public void LoadFromFile(string path, System.Text.Encoding? encoding = null)
+    internal void LoadFromFile(string path, System.Text.Encoding? encoding = null)
         => Text = TextFile.ReadAllText(path, encoding);
 
     /// <summary>
     /// Writes <see cref="Text"/> to a file using <paramref name="encoding"/> —
     /// UTF-8 when it is <see langword="null"/>.
     /// </summary>
-    public void SaveToFile(string path, System.Text.Encoding? encoding = null)
+    internal void SaveToFile(string path, System.Text.Encoding? encoding = null)
         => TextFile.WriteAllText(path, Text, encoding);
 
     /// <summary>
@@ -263,7 +283,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Gets or sets the placeholder text shown when the text box is empty.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public string PlaceholderText
+    internal string PlaceholderText
     {
         get => (string)(GetValue(PlaceholderTextProperty) ?? string.Empty);
         set => SetValue(PlaceholderTextProperty, value);
@@ -273,17 +293,17 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Gets or sets whether spell checking is enabled.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsSpellCheckEnabled
+    internal bool IsSpellCheckEnabled
     {
-        get => (bool)GetValue(IsSpellCheckEnabledProperty)!;
-        set => SetValue(IsSpellCheckEnabledProperty, value);
+        get => Jalium.UI.Controls.SpellCheck.GetIsEnabled(this);
+        set => Jalium.UI.Controls.SpellCheck.SetIsEnabled(this, value);
     }
 
     /// <summary>
     /// Gets or sets the spell check language (e.g., "en-US", "zh-CN").
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public string SpellCheckLanguage
+    internal string SpellCheckLanguage
     {
         get => (string)(GetValue(SpellCheckLanguageProperty) ?? "en-US");
         set => SetValue(SpellCheckLanguageProperty, value);
@@ -292,13 +312,13 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// <summary>
     /// Gets the current spelling errors.
     /// </summary>
-    public IReadOnlyList<SpellingError> SpellingErrors => _spellingErrors;
+    internal IReadOnlyList<SpellingError> SpellingErrors => _spellingErrors;
 
     /// <summary>
     /// Gets or sets whether auto-correction is enabled.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsAutoCorrectEnabled
+    internal bool IsAutoCorrectEnabled
     {
         get => (bool)GetValue(IsAutoCorrectEnabledProperty)!;
         set => SetValue(IsAutoCorrectEnabledProperty, value);
@@ -308,7 +328,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Gets or sets whether auto-capitalization is enabled.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsAutoCapitalizationEnabled
+    internal bool IsAutoCapitalizationEnabled
     {
         get => (bool)GetValue(IsAutoCapitalizationEnabledProperty)!;
         set => SetValue(IsAutoCapitalizationEnabledProperty, value);
@@ -318,7 +338,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Gets or sets whether URL detection is enabled.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public bool DetectUrls
+    internal bool DetectUrls
     {
         get => (bool)GetValue(DetectUrlsProperty)!;
         set => SetValue(DetectUrlsProperty, value);
@@ -364,7 +384,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// <summary>
     /// Gets the detected formatted regions (URLs, emails, etc.).
     /// </summary>
-    public IReadOnlyList<FormattedRegion> FormattedRegions => _formattedRegions;
+    internal IReadOnlyList<FormattedRegion> FormattedRegions => _formattedRegions;
 
     /// <summary>
     /// Gets the number of lines.
@@ -904,7 +924,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         {
             int column = (int)hit.TextPosition;
             if (hit.IsTrailingHit != 0)
-                column++;
+                column = GraphemeClusters.NextBoundary(lineText, column);
             return targetLine.StartIndex + Math.Clamp(column, 0, targetLine.Length);
         }
 
@@ -947,6 +967,9 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     #region Public Methods
 
+    /// <summary>Selects a range of text.</summary>
+    public void Select(int start, int length) => SelectCore(start, length);
+
     /// <summary>
     /// Gets the text of a specific line.
     /// </summary>
@@ -985,11 +1008,11 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         if (TextWrapping != TextWrapping.NoWrap)
         {
             EnsureVisualLineCounts(GetCurrentTextContentWidth(), lineHeight);
-            VerticalOffset = GetVisualRowsBeforeLogicalLine(lineIndex) * lineHeight;
+            VerticalOffsetCore = GetVisualRowsBeforeLogicalLine(lineIndex) * lineHeight;
         }
         else
         {
-            VerticalOffset = lineIndex * lineHeight;
+            VerticalOffsetCore = lineIndex * lineHeight;
         }
     }
 
@@ -2382,26 +2405,17 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         };
     }
 
-    private static void OnSpellCheckEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    internal void OnSpellCheckSettingChanged(bool isEnabled)
     {
-        if (d is TextBox textBox)
+        if (isEnabled)
         {
-            bool isEnabled = (bool)(e.NewValue ?? false);
-            if (Jalium.UI.Controls.SpellCheck.GetIsEnabled(textBox) != isEnabled)
-            {
-                Jalium.UI.Controls.SpellCheck.SetIsEnabled(textBox, isEnabled);
-            }
-
-            if (isEnabled)
-            {
-                textBox.PerformSpellCheck();
-            }
-            else
-            {
-                textBox._spellingErrors.Clear();
-            }
-            textBox.InvalidateVisual();
+            PerformSpellCheck();
         }
+        else
+        {
+            _spellingErrors.Clear();
+        }
+        InvalidateVisual();
     }
 
     private static void OnSpellCheckConfigurationChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -2462,15 +2476,23 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// <summary>
     /// Gets whether IME composition is currently active.
     /// </summary>
-    public bool IsImeComposing => _isImeComposing;
+    internal bool IsImeComposing => _isImeComposing;
 
     /// <inheritdoc />
-    public bool IsImeAllowed => !IsReadOnly;
+    internal bool IsImeAllowed => !IsReadOnly;
 
     /// <inheritdoc />
-    public Point GetImeCaretPosition()
+    internal Point GetImeCaretPosition()
     {
         return GetCaretScreenPosition();
+    }
+
+    /// <inheritdoc />
+    internal Rect GetImeCaretRectangle()
+    {
+        Point bottom = GetCaretScreenPosition();
+        double height = Math.Max(1, Math.Round(GetLineHeight()));
+        return new Rect(bottom.X, bottom.Y - height, 1, height);
     }
 
     private Point GetCaretScreenPosition()
@@ -2498,7 +2520,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     }
 
     /// <inheritdoc />
-    public void OnImeCompositionStart()
+    internal void OnImeCompositionStart()
     {
         _isImeComposing = true;
         _imeCompositionStart = _caretIndex;
@@ -2515,7 +2537,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     }
 
     /// <inheritdoc />
-    public void OnImeCompositionUpdate(string compositionString, int cursorPosition)
+    internal void OnImeCompositionUpdate(string compositionString, int cursorPosition)
     {
         _imeCompositionString = compositionString;
         _imeCompositionCursor = cursorPosition;
@@ -2523,7 +2545,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     }
 
     /// <inheritdoc />
-    public void OnImeCompositionEnd(string? resultString)
+    internal void OnImeCompositionEnd(string? resultString)
     {
         _isImeComposing = false;
         _imeCompositionString = string.Empty;
@@ -2533,6 +2555,25 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         InvalidateVisual();
     }
 
+    bool IImeSupport.IsImeAllowed => IsImeAllowed;
+
+    bool IImeSupport.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
+        => TryGetImeSurroundingTextCore(out snapshot);
+
+    bool IImeSupport.DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
+        => DeleteImeSurroundingTextCore(beforeUtf8ByteCount, afterUtf8ByteCount);
+
+    Point IImeSupport.GetImeCaretPosition() => GetImeCaretPosition();
+
+    Rect IImeSupport.GetImeCaretRectangle() => GetImeCaretRectangle();
+
+    void IImeSupport.OnImeCompositionStart() => OnImeCompositionStart();
+
+    void IImeSupport.OnImeCompositionUpdate(string compositionString, int cursorPosition)
+        => OnImeCompositionUpdate(compositionString, cursorPosition);
+
+    void IImeSupport.OnImeCompositionEnd(string? resultString) => OnImeCompositionEnd(resultString);
+
     #endregion
 
     #region Spell Checking
@@ -2540,7 +2581,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// <summary>
     /// Performs spell checking on the text.
     /// </summary>
-    public void PerformSpellCheck()
+    internal void PerformSpellCheck()
     {
         if (!IsSpellCheckEnabled || SpellChecker.Default == null || !SpellChecker.Default.IsAvailable)
         {
@@ -2566,7 +2607,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// </summary>
     /// <param name="position">The character position.</param>
     /// <returns>The spelling error at the position, or null.</returns>
-    public SpellingError? GetSpellingErrorAtPosition(int position)
+    internal SpellingError? GetSpellingErrorAtPosition(int position)
     {
         foreach (var error in _spellingErrors)
         {
@@ -2583,7 +2624,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// </summary>
     /// <param name="error">The spelling error.</param>
     /// <param name="correction">The correction to apply.</param>
-    public void ReplaceSpellingError(SpellingError error, string correction)
+    internal void ReplaceSpellingError(SpellingError error, string correction)
     {
         if (IsReadOnly)
             return;
@@ -2605,7 +2646,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Ignores a spelling error for this session.
     /// </summary>
     /// <param name="error">The spelling error to ignore.</param>
-    public void IgnoreSpellingError(SpellingError error)
+    internal void IgnoreSpellingError(SpellingError error)
     {
         SpellChecker.Default?.IgnoreWord(error.Word);
         PerformSpellCheck();
@@ -2615,7 +2656,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// Adds a word to the user dictionary.
     /// </summary>
     /// <param name="error">The spelling error containing the word to add.</param>
-    public void AddToDictionary(SpellingError error)
+    internal void AddToDictionary(SpellingError error)
     {
         SpellChecker.Default?.AddToDictionary(error.Word);
         PerformSpellCheck();
@@ -2628,7 +2669,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// <summary>
     /// Detects formatted regions (URLs, emails, etc.) in the text.
     /// </summary>
-    public void DetectFormattedRegions()
+    internal void DetectFormattedRegions()
     {
         if (!DetectUrls)
         {
@@ -2636,7 +2677,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
             return;
         }
 
-        var formatter = TextFormatter.Default;
+        var formatter = TextInputFormatter.Default;
         formatter.DetectUrls = DetectUrls;
         formatter.DetectEmails = DetectUrls;
         formatter.DetectPhoneNumbers = DetectUrls;
@@ -2651,7 +2692,7 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// </summary>
     /// <param name="position">The character position.</param>
     /// <returns>The formatted region at the position, or null.</returns>
-    public FormattedRegion? GetFormattedRegionAtPosition(int position)
+    internal FormattedRegion? GetFormattedRegionAtPosition(int position)
     {
         foreach (var region in _formattedRegions)
         {

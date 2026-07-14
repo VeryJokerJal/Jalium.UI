@@ -19,7 +19,7 @@ namespace Jalium.UI.Controls.Automation.Uia;
 /// VARIANT we pass to UIA by value we <see cref="Clear"/> ourselves after the call.
 /// </remarks>
 [StructLayout(LayoutKind.Sequential)]
-public struct UiaVariant
+internal struct UiaVariant
 {
     internal const ushort VT_EMPTY = 0;
     internal const ushort VT_I4 = 3;

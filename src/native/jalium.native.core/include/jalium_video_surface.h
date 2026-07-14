@@ -69,6 +69,14 @@ typedef enum {
 
     /// CoreVideo CVPixelBufferRef wrapping IOSurface. Reserved for Apple.
     JALIUM_VS_KIND_CVPIXELBUFFER   = 6,
+
+    /// Linux dma-buf exported by VAAPI/GStreamer. The appended plane table in
+    /// JaliumVideoSurfaceDescriptor carries one borrowed fd per plane plus its
+    /// stride, offset and DRM modifier. The backend duplicates any fd it needs
+    /// to retain; the caller remains responsible for the descriptor fds. The
+    /// current Vulkan backend imports only single-plane packed RGB; YUV,
+    /// DMA_DRM and multi-plane descriptors are rejected for CPU fallback.
+    JALIUM_VS_KIND_LINUX_DMABUF    = 7,
 } JaliumVideoSurfaceKind;
 
 /// Format hints for create / wrap. v1 supports only BGRA8; NV12 / P010 etc.
@@ -80,6 +88,17 @@ typedef enum {
     JALIUM_VS_FORMAT_RGB10A2       = 3,
 } JaliumVideoSurfaceFormat;
 
+#define JALIUM_VIDEO_SURFACE_MAX_PLANES 4u
+
+typedef struct {
+    int32_t  fd;             ///< Borrowed dma-buf fd; -1 when unused.
+    uint32_t stride_bytes;   ///< Row pitch for this plane.
+    uint32_t offset_bytes;   ///< Byte offset in fd to plane origin.
+    uint32_t reserved;
+    uint64_t modifier;       ///< DRM format modifier; 0 means linear/unspecified.
+    uint64_t size_bytes;     ///< Allocation size when known; 0 lets Vulkan query.
+} JaliumVideoSurfacePlaneDescriptor;
+
 /// Descriptor for wrap_external. Caller-allocates and fills in.
 typedef struct {
     JaliumVideoSurfaceKind kind;
@@ -89,6 +108,23 @@ typedef struct {
     uint64_t               handle1;       ///< Secondary handle (VkDeviceMemory, NT-owner PID, ...).
     uint32_t               format_hint;   ///< JaliumVideoSurfaceFormat. 0 = BGRA8.
     uint32_t               reserved;
+    // v2 Linux dma-buf extension. The v1 prefix above intentionally remains
+    // ABI-stable for D3D11/AHardwareBuffer/IOSurface producers.
+    uint32_t               plane_count;
+    uint32_t               drm_fourcc;
+    uint32_t               descriptor_flags;
+    uint32_t               color_space;
+    JaliumVideoSurfacePlaneDescriptor planes[JALIUM_VIDEO_SURFACE_MAX_PLANES];
+    int32_t                acquire_fence_fd; ///< Borrowed sync_file fd, or -1.
+    uint32_t               reserved2;
+    // Optional producer lifetime bridge. wrap_external calls retain(context)
+    // on successful import and the imported surface calls release(context)
+    // after its last render fence. Values are process-local function/context
+    // pointers encoded as uint64_t; all currently supported native RIDs are
+    // 64-bit. Zero means no producer lifetime is required.
+    uint64_t               lifetime_context;
+    uint64_t               lifetime_retain_callback;
+    uint64_t               lifetime_release_callback;
 } JaliumVideoSurfaceDescriptor;
 
 /// Creates a CPU-owned BGRA8 surface that the backend stages to GPU on Unlock.

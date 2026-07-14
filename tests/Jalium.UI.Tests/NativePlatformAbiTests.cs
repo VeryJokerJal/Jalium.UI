@@ -49,8 +49,22 @@ public sealed class NativePlatformAbiTests
     }
 
     [Fact]
+    public void DragImage_HasStableBgraLayout()
+    {
+        Assert.Equal(0, Marshal.OffsetOf<NativeDragImage>(nameof(NativeDragImage.BgraPixels)).ToInt32());
+        Assert.Equal(nint.Size, Marshal.OffsetOf<NativeDragImage>(nameof(NativeDragImage.Width)).ToInt32());
+        Assert.Equal(nint.Size + 4, Marshal.OffsetOf<NativeDragImage>(nameof(NativeDragImage.Height)).ToInt32());
+        Assert.Equal(nint.Size + 8, Marshal.OffsetOf<NativeDragImage>(nameof(NativeDragImage.Stride)).ToInt32());
+        Assert.Equal(nint.Size + 12, Marshal.OffsetOf<NativeDragImage>(nameof(NativeDragImage.HotspotX)).ToInt32());
+        Assert.Equal(nint.Size + 16, Marshal.OffsetOf<NativeDragImage>(nameof(NativeDragImage.HotspotY)).ToInt32());
+        int expectedSize = (nint.Size + 20 + nint.Size - 1) & ~(nint.Size - 1);
+        Assert.Equal(expectedSize, Marshal.SizeOf<NativeDragImage>());
+    }
+
+    [Fact]
     public void DragEvents_AreAppendedWithoutRenumberingExistingEvents()
     {
+        Assert.Equal(10, (int)PlatformEventType.MonitorsChanged);
         Assert.Equal(70, (int)PlatformEventType.DispatcherWake);
         Assert.Equal(80, (int)PlatformEventType.DragEnter);
         Assert.Equal(81, (int)PlatformEventType.DragOver);
@@ -58,6 +72,14 @@ public sealed class NativePlatformAbiTests
         Assert.Equal(83, (int)PlatformEventType.Drop);
         Assert.Equal(84, (int)PlatformEventType.DragFinished);
         Assert.Equal(99, (int)PlatformEventType.Quit);
+    }
+
+    [Fact]
+    public void DragContinueActions_MatchNativeAbi()
+    {
+        Assert.Equal(0, (int)PlatformDragContinueAction.Continue);
+        Assert.Equal(1, (int)PlatformDragContinueAction.Drop);
+        Assert.Equal(2, (int)PlatformDragContinueAction.Cancel);
     }
 
     [Theory]
@@ -74,6 +96,44 @@ public sealed class NativePlatformAbiTests
             ?? throw new InvalidOperationException($"Native method {methodName} has no LibraryImport attribute.");
 
         Assert.Equal(StringMarshalling.Utf16, attribute.StringMarshalling);
+    }
+
+    [Theory]
+    [InlineData("WindowSetEnabled", "jalium_window_set_enabled")]
+    [InlineData("WindowSetOpacity", "jalium_window_set_opacity")]
+    [InlineData("WindowSetShowInTaskbar", "jalium_window_set_show_in_taskbar")]
+    [InlineData("WindowSetResizable", "jalium_window_set_resizable")]
+    [InlineData("WindowSetDecorated", "jalium_window_set_decorated")]
+    [InlineData("WindowSetOwner", "jalium_window_set_owner")]
+    [InlineData("WindowActivate", "jalium_window_activate")]
+    [InlineData("WindowGetPortalParentHandle", "jalium_window_get_portal_parent_handle")]
+    [InlineData("WindowGetPortalParentHandleForNativeHandle", "jalium_window_get_portal_parent_handle_for_native_handle")]
+    [InlineData("DragBeginEx", "jalium_drag_begin_ex")]
+    [InlineData("DragBeginWithImage", "jalium_drag_begin_with_image")]
+    public void WindowManagementEntryPoints_MatchNativeAbi(string methodName, string entryPoint)
+    {
+        MethodInfo method = typeof(NativeMethods).GetMethod(
+            methodName,
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"Native method {methodName} was not found.");
+        LibraryImportAttribute attribute = method.GetCustomAttribute<LibraryImportAttribute>()
+            ?? throw new InvalidOperationException($"Native method {methodName} has no LibraryImport attribute.");
+
+        Assert.Equal(entryPoint, attribute.EntryPoint);
+    }
+
+    [Fact]
+    public void CursorScreenPositionAbi_ReturnsAResultCode()
+    {
+        MethodInfo method = typeof(NativeMethods).GetMethod(
+            "InputGetCursorPos",
+            BindingFlags.Static | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Native cursor-position method was not found.");
+        LibraryImportAttribute attribute = method.GetCustomAttribute<LibraryImportAttribute>()
+            ?? throw new InvalidOperationException("Native cursor-position method has no LibraryImport attribute.");
+
+        Assert.Equal("jalium_input_get_cursor_pos", attribute.EntryPoint);
+        Assert.Equal(typeof(JaliumResult), method.ReturnType);
     }
 
     [Theory]

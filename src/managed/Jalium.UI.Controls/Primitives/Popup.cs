@@ -78,7 +78,7 @@ public enum PlacementMode
 /// When content overflows (and ShouldConstrainToRootBounds is false),
 /// creates a lightweight native window to render outside the parent window bounds.
 /// </summary>
-[ContentProperty("Child")]
+[Jalium.UI.Markup.ContentProperty("Child")]
 public partial class Popup : FrameworkElement
 {
     /// <inheritdoc />
@@ -555,7 +555,8 @@ public partial class Popup : FrameworkElement
         // 窗口级 AutoFlip 把 popup 夹回父窗口内（line 658-669 generic X clamp）；对 PreferExternalWindow
         // 的 context-menu 类 popup，这会破坏"贴鼠标 / 飞出窗口"的目标，所以跳过 —— 屏幕级 flip 由
         // OpenAsExternalWindow → ApplyScreenAutoFlip 兜底，保证不会跑到屏幕外或被任务栏遮住。
-        var skipWindowAutoFlip = PreferExternalWindow && !ShouldConstrainToRootBounds && Platform.PlatformFactory.IsWindows;
+        bool supportsExternalPopup = Platform.PlatformFactory.IsWindows || Platform.PlatformFactory.IsLinux;
+        var skipWindowAutoFlip = PreferExternalWindow && !ShouldConstrainToRootBounds && supportsExternalPopup;
         var adjustedPos = skipWindowAutoFlip ? windowLocalPos : ApplyAutoFlip(windowLocalPos, popupSize, windowSize);
 
         // Detach child from any existing visual parent before wrapping in PopupRoot.
@@ -579,7 +580,7 @@ public partial class Popup : FrameworkElement
         {
             OpenAsOverlay(adjustedPos, popupSize, windowSize);
         }
-        else if (PreferExternalWindow && Platform.PlatformFactory.IsWindows)
+        else if (PreferExternalWindow && supportsExternalPopup)
         {
             OpenAsExternalWindow(adjustedPos, popupSize);
         }
@@ -605,7 +606,7 @@ public partial class Popup : FrameworkElement
                     || screenPos.X < workArea.Left;
             }
 
-            if ((overflowsWindow || overflowsScreen) && Platform.PlatformFactory.IsWindows)
+            if ((overflowsWindow || overflowsScreen) && supportsExternalPopup)
             {
                 OpenAsExternalWindow(adjustedPos, popupSize);
             }
@@ -663,8 +664,12 @@ public partial class Popup : FrameworkElement
         // Convert window-local to screen coordinates
         var screenPos = WindowLocalToScreen(windowLocalPos);
 
-        // Apply auto-flip based on screen working area (respects taskbar)
-        screenPos = ApplyScreenAutoFlip(screenPos, popupSize);
+        // Win32 needs client-to-screen placement and explicit work-area
+        // clamping. Linux receives parent-relative coordinates; xdg_positioner
+        // applies compositor constraints and X11 uses the translated owner
+        // origin, so applying a second global clamp here would corrupt it.
+        if (Platform.PlatformFactory.IsWindows)
+            screenPos = ApplyScreenAutoFlip(screenPos, popupSize);
 
         _popupWindow = new PopupWindow(_parentWindow!, _popupRoot!);
         var dpiScale = _parentWindow!.DpiScale;
@@ -842,13 +847,18 @@ public partial class Popup : FrameworkElement
         var windowLocalPos = CalculateWindowLocalPosition(popupSize);
         var windowSize = new Size(_parentWindow.ActualWidth, _parentWindow.ActualHeight);
         // 与 OpenPopup 保持一致：外飞窗口的 popup 不做窗口级 AutoFlip，避免被夹回父窗口内。
-        var skipWindowAutoFlip = PreferExternalWindow && !ShouldConstrainToRootBounds && Platform.PlatformFactory.IsWindows;
+        var supportsExternalPopup = Platform.PlatformFactory.IsWindows || Platform.PlatformFactory.IsLinux;
+        var skipWindowAutoFlip = PreferExternalWindow && !ShouldConstrainToRootBounds && supportsExternalPopup;
         var adjustedPos = skipWindowAutoFlip ? windowLocalPos : ApplyAutoFlip(windowLocalPos, popupSize, windowSize);
 
         if (_isUsingExternalWindow && _popupWindow != null)
         {
             var screenPos = WindowLocalToScreen(adjustedPos);
-            screenPos = ApplyScreenAutoFlip(screenPos, popupSize);
+            // Keep this symmetric with OpenAsExternalWindow: Linux popup
+            // coordinates are owner-relative (and Wayland compositor
+            // constrained), while Win32 receives global screen coordinates.
+            if (Platform.PlatformFactory.IsWindows)
+                screenPos = ApplyScreenAutoFlip(screenPos, popupSize);
             var dpiScale = _parentWindow!.DpiScale;
             _popupWindow.MoveTo(
                 (int)screenPos.X, (int)screenPos.Y,
@@ -1118,11 +1128,11 @@ public partial class Popup : FrameworkElement
     {
         if (!OperatingSystem.IsWindows())
         {
-            // No monitor-enumeration ABI on Linux/Android yet, and popups are
-            // hosted in the in-process overlay there, so the parent window's
-            // client area *is* the usable area. Return it in the same physical
-            // coordinate space WindowLocalToScreen degrades to (window origin =
-            // screen origin) so overflow math stays consistent.
+            // Linux external-popup coordinates are intentionally owner-relative
+            // (Wayland has no global desktop coordinates), and overlay popups
+            // are clipped by this same client area. Keep overflow math in that
+            // common physical coordinate space; the native Wayland positioner
+            // applies output work-area constraints for external popups.
             var window = _parentWindow;
             if (window is null)
                 return new Rect(0, 0, 1920, 1080);

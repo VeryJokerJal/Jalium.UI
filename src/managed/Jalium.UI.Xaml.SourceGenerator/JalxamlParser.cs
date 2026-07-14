@@ -58,7 +58,7 @@ public static class JalxamlParser
     // The codegen path requires the resolved name to be correct because it bakes
     // <c>new global::{name}()</c> straight into <c>InitializeComponent</c>. A wrong name
     // (e.g. <c>Jalium.UI.Shapes.Path</c> when the type lives under
-    // <c>Jalium.UI.Controls.Shapes</c>) compiles into garbage and the document is rejected
+    // <c>Jalium.UI.Shapes</c>) compiles into garbage and the document is rejected
     // by the C# compiler. Rather than guess, anything we cannot prove is in the mappings
     // returns null from <see cref="GetTypeName"/> and the SG falls back to the runtime
     // <c>LoadComponent</c> path for that file.
@@ -67,7 +67,7 @@ public static class JalxamlParser
         // Application / page / window. NB: Application lives in Jalium.UI (not Controls).
         { "Application", "Jalium.UI.Application" },
         { "Page", "Jalium.UI.Controls.Page" },
-        { "Window", "Jalium.UI.Controls.Window" },
+        { "Window", "Jalium.UI.Window" },
         { "ToggleSwitch", "Jalium.UI.Controls.ToggleSwitch" },
 
         // Buttons / inputs
@@ -123,7 +123,7 @@ public static class JalxamlParser
         { "ContentControl", "Jalium.UI.Controls.ContentControl" },
         { "ContentPresenter", "Jalium.UI.Controls.ContentPresenter" },
         { "ItemsControl", "Jalium.UI.Controls.ItemsControl" },
-        { "ItemsPresenter", "Jalium.UI.Controls.Primitives.ItemsPresenter" },
+        { "ItemsPresenter", "Jalium.UI.Controls.ItemsPresenter" },
         { "UserControl", "Jalium.UI.Controls.UserControl" },
         { "Frame", "Jalium.UI.Controls.Frame" },
         { "ScrollViewer", "Jalium.UI.Controls.ScrollViewer" },
@@ -154,13 +154,14 @@ public static class JalxamlParser
         { "ToolTip", "Jalium.UI.Controls.ToolTip" },
         { "ToolBar", "Jalium.UI.Controls.ToolBar" },
         { "ToolBarTray", "Jalium.UI.Controls.ToolBarTray" },
-        { "StatusBar", "Jalium.UI.Controls.StatusBar" },
+        { "StatusBar", "Jalium.UI.Controls.Primitives.StatusBar" },
+        { "StatusBarItem", "Jalium.UI.Controls.Primitives.StatusBarItem" },
 
         // Templates / styles / triggers (Jalium.UI namespace)
         { "DataTemplate", "Jalium.UI.DataTemplate" },
         { "HierarchicalDataTemplate", "Jalium.UI.HierarchicalDataTemplate" },
         { "ItemContainerTemplate", "Jalium.UI.Controls.ItemContainerTemplate" },
-        { "ControlTemplate", "Jalium.UI.ControlTemplate" },
+        { "ControlTemplate", "Jalium.UI.Controls.ControlTemplate" },
         { "ItemsPanelTemplate", "Jalium.UI.Controls.ItemsPanelTemplate" },
         { "Style", "Jalium.UI.Style" },
         { "Setter", "Jalium.UI.Setter" },
@@ -216,17 +217,17 @@ public static class JalxamlParser
     };
 
     /// <summary>
-    /// Shapes live under <c>Jalium.UI.Controls.Shapes</c>. They are kept out of the main
+    /// Shapes live under the WPF-compatible <c>Jalium.UI.Shapes</c> namespace. They are kept out of the main
     /// <see cref="TypeMappings"/> table because the lookup is short and case-insensitive.
     /// </summary>
     private static readonly Dictionary<string, string> ShapeTypeMappings = new(StringComparer.Ordinal)
     {
-        { "Rectangle", "Jalium.UI.Controls.Shapes.Rectangle" },
-        { "Ellipse", "Jalium.UI.Controls.Shapes.Ellipse" },
-        { "Path", "Jalium.UI.Controls.Shapes.Path" },
-        { "Line", "Jalium.UI.Controls.Shapes.Line" },
-        { "Polygon", "Jalium.UI.Controls.Shapes.Polygon" },
-        { "Polyline", "Jalium.UI.Controls.Shapes.Polyline" },
+        { "Rectangle", "Jalium.UI.Shapes.Rectangle" },
+        { "Ellipse", "Jalium.UI.Shapes.Ellipse" },
+        { "Path", "Jalium.UI.Shapes.Path" },
+        { "Line", "Jalium.UI.Shapes.Line" },
+        { "Polygon", "Jalium.UI.Shapes.Polygon" },
+        { "Polyline", "Jalium.UI.Shapes.Polyline" },
     };
 
     public static JalxamlParseResult? Parse(string content, string filePath)

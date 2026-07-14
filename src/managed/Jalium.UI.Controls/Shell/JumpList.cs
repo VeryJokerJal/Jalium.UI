@@ -72,7 +72,7 @@ public sealed class JumpItemsRemovedEventArgs : EventArgs
 /// <summary>
 /// Represents a list of items and tasks displayed from an application's taskbar button.
 /// </summary>
-[ContentProperty(nameof(JumpItems))]
+[Jalium.UI.Markup.ContentProperty(nameof(JumpItems))]
 public sealed class JumpList : ISupportInitialize
 {
     private const uint ShardPathW = 0x00000003;

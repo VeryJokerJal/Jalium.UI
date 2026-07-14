@@ -1,9 +1,21 @@
+using System.Collections;
+using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
+using System.Printing;
+using Jalium.UI;
+using Jalium.UI.Controls;
+using Jalium.UI.Controls.Printing;
 using Jalium.UI.Controls.Platform;
+using Jalium.UI.Documents;
 using Jalium.UI.Media;
+using Jalium.UI.Xps;
+using RenderTargetBitmap = Jalium.UI.Media.Imaging.RenderTargetBitmap;
 
-namespace Jalium.UI.Controls.Printing;
+namespace Jalium.UI.Controls
+{
 
 /// <summary>
 /// Exception thrown by PrintDialog operations.
@@ -42,26 +54,31 @@ public class PrintDialogException : Exception
 /// <summary>
 /// Invokes a standard print dialog box.
 /// </summary>
-public sealed class PrintDialog
+public class PrintDialog
 {
     private uint _minPage = 1;
     private uint _maxPage = 9999;
     private PageRange _pageRange;
+    private uint? _linuxPortalPrintToken;
+    private nint _linuxPortalOwner;
 
     /// <summary>
     /// Gets whether this API can currently submit print jobs on the running platform.
     /// </summary>
-    public static bool IsSupported => RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
+    internal static bool IsSupported =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.Windows) || IsPortalPrintAvailable;
 
     /// <summary>
     /// Gets whether the Linux desktop session exposes the xdg Print portal.
     /// </summary>
     /// <remarks>
-    /// The existing synchronous <see cref="PrintVisual(Visual, string)"/> API does not yet
-    /// produce and pass the document file descriptor required by the portal. This probe lets
-    /// applications capability-gate print UI without assuming a particular Linux desktop.
+    /// Linux printing renders the requested visual to PDF, completes the
+    /// portal's PreparePrint transaction, and passes the PDF through the Unix
+    /// file-descriptor list required by the Print method. This probe lets
+    /// applications capability-gate print UI without assuming a particular
+    /// Linux desktop or print backend.
     /// </remarks>
-    public static bool IsPortalPrintAvailable =>
+    internal static bool IsPortalPrintAvailable =>
         RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
         LinuxDesktopPortal.IsInterfaceAvailable("org.freedesktop.portal.Print");
 
@@ -88,7 +105,7 @@ public sealed class PrintDialog
     /// <summary>
     /// Gets or sets the starting page of the page range.
     /// </summary>
-    public int PageRangeFrom
+    internal int PageRangeFrom
     {
         get => _pageRange.PageFrom;
         set => _pageRange.PageFrom = Math.Clamp(
@@ -100,7 +117,7 @@ public sealed class PrintDialog
     /// <summary>
     /// Gets or sets the ending page of the page range.
     /// </summary>
-    public int PageRangeTo
+    internal int PageRangeTo
     {
         get => _pageRange.PageTo;
         set => _pageRange.PageTo = Math.Clamp(
@@ -157,7 +174,7 @@ public sealed class PrintDialog
     /// <summary>
     /// Gets or sets the print ticket.
     /// </summary>
-    public PrintTicket? PrintTicket { get; set; }
+    public System.Printing.PrintTicket? PrintTicket { get; set; }
 
     /// <summary>
     /// Gets or sets a value indicating whether the current page option is enabled.
@@ -172,7 +189,7 @@ public sealed class PrintDialog
     /// <summary>
     /// Gets or sets the current page number.
     /// </summary>
-    public int CurrentPage { get; set; } = 1;
+    internal int CurrentPage { get; set; } = 1;
 
     /// <summary>
     /// Gets the printable area width.
@@ -200,7 +217,7 @@ public sealed class PrintDialog
     /// <summary>
     /// Displays the print dialog with the specified owner window.
     /// </summary>
-    public bool ShowDialog(Window owner)
+    internal bool ShowDialog(Window owner)
     {
         return ShowDialogInternal(owner);
     }
@@ -241,12 +258,29 @@ public sealed class PrintDialog
     /// <returns><see langword="true"/> if the user clicked Print; otherwise <see langword="false"/>.</returns>
     private bool ShowDialogInternal(Window? owner = null)
     {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
-            // A portal Print request needs a rendered document file descriptor;
-            // this legacy synchronous dialog has no document at this point.
-            return false;
+            _linuxPortalOwner = owner?.Handle ?? nint.Zero;
+            var preparation = LinuxDesktopPortal.PreparePrint(_linuxPortalOwner, "Print");
+            if (preparation.IsSuccess)
+            {
+                _linuxPortalPrintToken = preparation.Token;
+                return true;
+            }
+
+            _linuxPortalPrintToken = null;
+            if (preparation.Status is LinuxPortalResponseStatus.Cancelled or
+                LinuxPortalResponseStatus.Unavailable)
+            {
+                return false;
+            }
+
+            throw new PrintDialogException(
+                preparation.Error ?? "The xdg Print portal failed to prepare the print job.");
         }
+
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return false;
 
         var ownerHandle = DialogOwnerResolver.Resolve(owner?.Handle ?? nint.Zero);
         return ShowWindowsPrintDialog(ownerHandle);
@@ -257,7 +291,7 @@ public sealed class PrintDialog
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             return IsPortalPrintAvailable
-                ? "The xdg Print portal is available, but this PrintDialog API cannot yet submit the rendered document file descriptor; printing is disabled."
+                ? "The xdg Print portal failed to accept the print job."
                 : "Printing is unavailable because the org.freedesktop.portal.Print portal is not present in this Linux desktop session.";
         }
 
@@ -272,6 +306,12 @@ public sealed class PrintDialog
     /// <param name="description">A description used as the print job name.</param>
     private void PrintVisualInternal(Visual visual, string description)
     {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            PrintVisualWithPortal(visual, description);
+            return;
+        }
+
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             throw new PrintDialogException(GetUnsupportedPlatformMessage());
@@ -334,6 +374,12 @@ public sealed class PrintDialog
     /// <param name="description">A description used as the print job name.</param>
     private void PrintDocumentInternal(DocumentPaginator documentPaginator, string description)
     {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            PrintDocumentWithPortal(documentPaginator, description);
+            return;
+        }
+
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             throw new PrintDialogException(GetUnsupportedPlatformMessage());
@@ -403,6 +449,142 @@ public sealed class PrintDialog
         {
             PrintingNativeMethods.DeleteDC(hdc);
         }
+    }
+
+    private void PrintVisualWithPortal(Visual visual, string description)
+    {
+        EnsureLinuxPortalPrintPrepared(description);
+        SubmitLinuxPortalPdf(
+            [RenderLinuxPdfPage(visual, MeasureVisualForPrint(visual, default))],
+            description);
+    }
+
+    private void PrintDocumentWithPortal(DocumentPaginator documentPaginator, string description)
+    {
+        EnsureLinuxPortalPrintPrepared(description);
+        documentPaginator.ComputePageCount();
+        var (first, last) = ResolveDocumentPageRange(documentPaginator.PageCount);
+        var pages = new List<LinuxPdfRasterPage>();
+        for (var pageIndex = first; pageIndex <= last; pageIndex++)
+        {
+            var documentPage = documentPaginator.GetPage(pageIndex);
+            if (documentPage?.Visual == null)
+                continue;
+
+            var pageSize = documentPage.Size.IsEmpty || documentPage.Size.Width <= 0 ||
+                           documentPage.Size.Height <= 0
+                ? documentPaginator.PageSize
+                : documentPage.Size;
+            pages.Add(RenderLinuxPdfPage(
+                documentPage.Visual,
+                MeasureVisualForPrint(documentPage.Visual, pageSize)));
+        }
+
+        if (pages.Count == 0)
+            throw new PrintDialogException("The document contains no printable pages.");
+
+        SubmitLinuxPortalPdf(pages, description);
+    }
+
+    private void EnsureLinuxPortalPrintPrepared(string description)
+    {
+        if (_linuxPortalPrintToken.HasValue)
+            return;
+
+        var preparation = LinuxDesktopPortal.PreparePrint(
+            _linuxPortalOwner,
+            string.IsNullOrWhiteSpace(description) ? "Print" : description);
+        if (!preparation.IsSuccess)
+        {
+            throw new PrintDialogException(
+                preparation.Error ?? preparation.Status switch
+                {
+                    LinuxPortalResponseStatus.Cancelled => "The print operation was cancelled.",
+                    LinuxPortalResponseStatus.TimedOut => "The print portal timed out.",
+                    _ => GetUnsupportedPlatformMessage()
+                });
+        }
+
+        _linuxPortalPrintToken = preparation.Token;
+    }
+
+    private void SubmitLinuxPortalPdf(
+        IReadOnlyList<LinuxPdfRasterPage> pages,
+        string description)
+    {
+        var tempPath = Path.Combine(Path.GetTempPath(), $"jalium-print-{Guid.NewGuid():N}.pdf");
+        try
+        {
+            using var pdf = new FileStream(
+                tempPath,
+                FileMode.CreateNew,
+                FileAccess.ReadWrite,
+                FileShare.Read,
+                bufferSize: 64 * 1024,
+                FileOptions.SequentialScan);
+            LinuxPdfDocumentWriter.Write(pdf, pages);
+            pdf.Position = 0;
+
+            var descriptor = pdf.SafeFileHandle.DangerousGetHandle().ToInt32();
+            var response = LinuxDesktopPortal.SubmitPrint(
+                _linuxPortalOwner,
+                string.IsNullOrWhiteSpace(description) ? "Jalium.UI Document" : description,
+                descriptor,
+                _linuxPortalPrintToken.GetValueOrDefault());
+            if (response.Status != LinuxPortalResponseStatus.Success)
+            {
+                throw new PrintDialogException(
+                    response.Error ?? response.Status switch
+                    {
+                        LinuxPortalResponseStatus.Cancelled => "The print operation was cancelled.",
+                        LinuxPortalResponseStatus.TimedOut => "The print portal timed out.",
+                        _ => "The xdg Print portal rejected the PDF document."
+                    });
+            }
+        }
+        finally
+        {
+            _linuxPortalPrintToken = null;
+            try
+            {
+                if (File.Exists(tempPath))
+                    File.Delete(tempPath);
+            }
+            catch
+            {
+                // The portal has already duplicated the descriptor. A stale
+                // temporary file is safer than masking a successful print job.
+            }
+        }
+    }
+
+    private static LinuxPdfRasterPage RenderLinuxPdfPage(Visual visual, Size pageSize)
+    {
+        var bitmapWidth = Math.Max(1, checked((int)Math.Ceiling(pageSize.Width)));
+        var bitmapHeight = Math.Max(1, checked((int)Math.Ceiling(pageSize.Height)));
+        var renderTarget = new RenderTargetBitmap(
+            bitmapWidth,
+            bitmapHeight,
+            96.0,
+            96.0,
+            PixelFormat.Bgra32);
+        renderTarget.Clear(Color.White);
+        renderTarget.Render(visual);
+
+        var bgra = new byte[checked(bitmapWidth * bitmapHeight * 4)];
+        renderTarget.CopyPixels(
+            new Int32Rect(0, 0, bitmapWidth, bitmapHeight),
+            bgra,
+            checked(bitmapWidth * 4),
+            0);
+        var rgb = LinuxPdfDocumentWriter.CompositeBgraOnWhite(bgra);
+        const double pointsPerDip = 72.0 / 96.0;
+        return new LinuxPdfRasterPage(
+            bitmapWidth,
+            bitmapHeight,
+            Math.Max(pointsPerDip, pageSize.Width * pointsPerDip),
+            Math.Max(pointsPerDip, pageSize.Height * pointsPerDip),
+            rgb);
     }
 
     #endregion
@@ -502,7 +684,7 @@ public sealed class PrintDialog
     {
         // Copy count and page range come straight from the structure.
         var copies = Math.Max(1, (int)printDialog.nCopies);
-        PrintTicket ??= new PrintTicket();
+        PrintTicket ??= new System.Printing.PrintTicket();
         PrintTicket.CopyCount = copies;
 
         if ((printDialog.Flags & PrintingNativeMethods.PD_SELECTION) != 0)
@@ -600,7 +782,7 @@ public sealed class PrintDialog
         try
         {
             var devMode = Marshal.PtrToStructure<PrintingNativeMethods.DEVMODE>(ptr);
-            PrintTicket ??= new PrintTicket();
+            PrintTicket ??= new System.Printing.PrintTicket();
 
             if ((devMode.dmFields & PrintingNativeMethods.DM_ORIENTATION) != 0)
             {
@@ -929,15 +1111,157 @@ public sealed class PrintDialog
     #endregion
 }
 
+}
+
+namespace System.Printing
+{
+
+/// <summary>Provides the common lifecycle contract for print-system objects.</summary>
+public abstract class PrintSystemObject : IDisposable
+{
+    private bool _disposed;
+    private string _name = string.Empty;
+
+    protected PrintSystemObject()
+    {
+    }
+
+    protected PrintSystemObject(PrintSystemObjectLoadMode mode)
+    {
+    }
+
+    public virtual string Name
+    {
+        get => _name;
+        set => _name = value ?? string.Empty;
+    }
+
+    public PrintSystemObject? Parent { get; internal set; }
+
+    public virtual void Commit()
+    {
+    }
+
+    public virtual void Refresh()
+    {
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+    }
+}
+
+/// <summary>Provides the common lifecycle contract for print-system collections.</summary>
+public abstract class PrintSystemObjects : IDisposable
+{
+    public void Dispose()
+    {
+        Dispose(true);
+        GC.SuppressFinalize(this);
+    }
+
+    protected virtual void Dispose(bool disposing)
+    {
+    }
+}
+
+public enum PrintSystemObjectLoadMode
+{
+    None = 0,
+    LoadUninitialized = 1,
+    LoadInitialized = 2,
+}
+
+public enum PrintSystemDesiredAccess
+{
+    None = 0,
+    EnumerateServer = 131074,
+    UsePrinter = 131080,
+    AdministrateServer = 983041,
+    AdministratePrinter = 983052,
+}
+
+public enum PrintQueueIndexedProperty
+{
+    Name = 0,
+    ShareName = 1,
+    Comment = 2,
+    Location = 3,
+    Description = 4,
+    Priority = 5,
+    DefaultPriority = 6,
+    StartTimeOfDay = 7,
+    UntilTimeOfDay = 8,
+    AveragePagesPerMinute = 9,
+    NumberOfJobs = 10,
+    QueueAttributes = 11,
+    QueueDriver = 12,
+    QueuePort = 13,
+    QueuePrintProcessor = 14,
+    HostingPrintServer = 15,
+    QueueStatus = 16,
+    SeparatorFile = 17,
+    UserPrintTicket = 18,
+    DefaultPrintTicket = 19,
+}
+
+public enum PrintServerIndexedProperty
+{
+    DefaultSpoolDirectory = 0,
+    PortThreadPriority = 1,
+    DefaultPortThreadPriority = 2,
+    SchedulerPriority = 3,
+    DefaultSchedulerPriority = 4,
+    BeepEnabled = 5,
+    NetPopup = 6,
+    EventLog = 7,
+    MajorVersion = 8,
+    MinorVersion = 9,
+    RestartJobOnPoolTimeout = 10,
+    RestartJobOnPoolEnabled = 11,
+}
+
+[Flags]
+public enum EnumeratedPrintQueueTypes
+{
+    Queued = 1,
+    DirectPrinting = 2,
+    Shared = 8,
+    Connections = 16,
+    Local = 64,
+    EnableDevQuery = 128,
+    KeepPrintedJobs = 256,
+    WorkOffline = 1024,
+    EnableBidi = 2048,
+    RawOnly = 4096,
+    PublishedInDirectoryServices = 8192,
+    Fax = 16384,
+    TerminalServer = 32768,
+    PushedUserConnection = 131072,
+    PushedMachineConnection = 262144,
+}
+
 /// <summary>
 /// Represents a print queue (printer).
 /// </summary>
-public sealed class PrintQueue
+public class PrintQueue : PrintSystemObject
 {
     /// <summary>
     /// Gets the name of the printer.
     /// </summary>
-    public string Name { get; }
+    public override string Name { get; set; }
 
     /// <summary>
     /// Gets the full name including server if applicable.
@@ -957,34 +1281,87 @@ public sealed class PrintQueue
     /// <summary>
     /// Gets a value indicating whether the printer is online.
     /// </summary>
-    public bool IsOnline { get; set; } = true;
+    internal bool IsOnline { get; set; } = true;
 
     /// <summary>
     /// Gets a value indicating whether this is the default printer.
     /// </summary>
-    public bool IsDefault { get; set; }
+    internal bool IsDefault { get; set; }
 
     /// <summary>
     /// Gets the default print ticket for this printer.
     /// </summary>
-    public PrintTicket? DefaultPrintTicket { get; set; }
+    public System.Printing.PrintTicket? DefaultPrintTicket { get; set; }
 
-    /// <summary>
-    /// Initializes a new instance of the PrintQueue class.
-    /// </summary>
-    public PrintQueue(string name)
+    /// <summary>Gets or sets the current user's print ticket.</summary>
+    public PrintTicket? UserPrintTicket { get; set; }
+
+    /// <summary>Gets the print server hosting this queue.</summary>
+    public PrintServer HostingPrintServer { get; private set; }
+
+    /// <summary>Initializes a queue on the specified print server.</summary>
+    public PrintQueue(PrintServer printServer, string printQueueName)
+        : this(printQueueName, printQueueName)
     {
-        Name = name;
-        FullName = name;
+        HostingPrintServer = printServer ?? throw new ArgumentNullException(nameof(printServer));
+        Parent = printServer;
+    }
+
+    public PrintQueue(PrintServer printServer, string printQueueName, PrintSystemDesiredAccess desiredAccess)
+        : this(printServer, printQueueName)
+    {
+    }
+
+    public PrintQueue(PrintServer printServer, string printQueueName, PrintQueueIndexedProperty[] propertyFilter)
+        : this(printServer, printQueueName)
+    {
+        ArgumentNullException.ThrowIfNull(propertyFilter);
+    }
+
+    public PrintQueue(PrintServer printServer, string printQueueName, string[] propertyFilter)
+        : this(printServer, printQueueName)
+    {
+        ArgumentNullException.ThrowIfNull(propertyFilter);
+    }
+
+    public PrintQueue(PrintServer printServer, string printQueueName, int printSchemaVersion)
+        : this(printServer, printQueueName)
+    {
+    }
+
+    public PrintQueue(PrintServer printServer, string printQueueName, PrintQueueIndexedProperty[] propertyFilter, PrintSystemDesiredAccess desiredAccess)
+        : this(printServer, printQueueName, propertyFilter)
+    {
+    }
+
+    public PrintQueue(PrintServer printServer, string printQueueName, string[] propertyFilter, PrintSystemDesiredAccess desiredAccess)
+        : this(printServer, printQueueName, propertyFilter)
+    {
+    }
+
+    public PrintQueue(PrintServer printServer, string printQueueName, int printSchemaVersion, PrintSystemDesiredAccess desiredAccess)
+        : this(printServer, printQueueName, printSchemaVersion)
+    {
     }
 
     /// <summary>
     /// Initializes a new instance of the PrintQueue class.
     /// </summary>
-    public PrintQueue(string name, string fullName)
+    internal PrintQueue(string name)
+    {
+        Name = name;
+        FullName = name;
+        HostingPrintServer = new PrintServer();
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the PrintQueue class.
+    /// </summary>
+    internal PrintQueue(string name, string fullName)
     {
         Name = name;
         FullName = fullName;
+        HostingPrintServer = new PrintServer();
     }
 
     /// <summary>
@@ -992,7 +1369,7 @@ public sealed class PrintQueue
     /// connected printers of the machine.
     /// </summary>
     /// <returns>A collection of print queues installed on the local machine.</returns>
-    public static IEnumerable<PrintQueue> GetPrintQueues()
+    internal static IEnumerable<PrintQueue> GetPrintQueues()
     {
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
@@ -1006,7 +1383,7 @@ public sealed class PrintQueue
     /// Gets the default print queue.
     /// </summary>
     /// <returns>The default print queue, or <see langword="null"/> when none is configured.</returns>
-    public static PrintQueue? GetDefaultPrintQueue()
+    internal static PrintQueue? GetDefaultPrintQueue()
     {
         var queues = GetPrintQueues().ToList();
         return queues.FirstOrDefault(q => q.IsDefault) ?? queues.FirstOrDefault();
@@ -1159,24 +1536,24 @@ public sealed class PrintQueue
         // would query the actual printer capabilities
         return new PrintCapabilities
         {
-            CollationCapability = new[] { Collation.Uncollated, Collation.Collated },
-            DuplexingCapability = new[] { Duplexing.OneSided, Duplexing.TwoSidedLongEdge, Duplexing.TwoSidedShortEdge },
-            PageOrientationCapability = new[] { PageOrientation.Portrait, PageOrientation.Landscape },
-            OutputQualityCapability = new[] { OutputQuality.Draft, OutputQuality.Normal, OutputQuality.High },
-            OutputColorCapability = new[] { OutputColor.Color, OutputColor.Grayscale, OutputColor.Monochrome },
-            PageMediaSizeCapability = new[]
+            CollationCapability = Array.AsReadOnly(new[] { Collation.Uncollated, Collation.Collated }),
+            DuplexingCapability = Array.AsReadOnly(new[] { Duplexing.OneSided, Duplexing.TwoSidedLongEdge, Duplexing.TwoSidedShortEdge }),
+            PageOrientationCapability = Array.AsReadOnly(new[] { PageOrientation.Portrait, PageOrientation.Landscape }),
+            OutputQualityCapability = Array.AsReadOnly(new[] { OutputQuality.Draft, OutputQuality.Normal, OutputQuality.High }),
+            OutputColorCapability = Array.AsReadOnly(new[] { OutputColor.Color, OutputColor.Grayscale, OutputColor.Monochrome }),
+            PageMediaSizeCapability = Array.AsReadOnly(new[]
             {
                 new PageMediaSize(PageMediaSizeName.NorthAmericaLetter, 816, 1056),
                 new PageMediaSize(PageMediaSizeName.NorthAmericaLegal, 816, 1344),
                 new PageMediaSize(PageMediaSizeName.ISOA4, 794, 1123),
                 new PageMediaSize(PageMediaSizeName.ISOA3, 1123, 1587)
-            },
-            PageResolutionCapability = new[]
+            }),
+            PageResolutionCapability = Array.AsReadOnly(new[]
             {
                 new PageResolution(300, 300),
                 new PageResolution(600, 600),
                 new PageResolution(1200, 1200)
-            },
+            }),
             MaxCopyCount = 999
         };
     }
@@ -1185,7 +1562,7 @@ public sealed class PrintQueue
     /// Creates an XpsDocumentWriter for this print queue.
     /// </summary>
     /// <returns>An XpsDocumentWriter for this queue.</returns>
-    public XpsDocumentWriter CreateXpsDocumentWriter()
+    internal XpsDocumentWriter CreateXpsDocumentWriter()
     {
         return new XpsDocumentWriter(this);
     }
@@ -1195,24 +1572,33 @@ public sealed class PrintQueue
     /// </summary>
     /// <param name="jobName">The name of the print job.</param>
     /// <returns>A print job object.</returns>
-    public PrintSystemJobInfo? AddJob(string jobName)
+    public PrintSystemJobInfo AddJob(string jobName)
     {
         // Platform-specific implementation
         return new PrintSystemJobInfo(this, jobName);
     }
 
+    /// <summary>Adds an unnamed print job.</summary>
+    public PrintSystemJobInfo AddJob() => AddJob("Print job");
+
     /// <summary>
     /// Gets all print jobs currently queued for this printer.
     /// </summary>
     /// <returns>A collection of print jobs.</returns>
-    public IEnumerable<PrintSystemJobInfo> GetPrintJobInfoCollection()
+    public PrintJobInfoCollection GetPrintJobInfoCollection()
     {
+        var collection = new PrintJobInfoCollection(this, Array.Empty<string>());
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            return Array.Empty<PrintSystemJobInfo>();
+            return collection;
         }
 
-        return EnumerateWindowsJobs();
+        foreach (PrintSystemJobInfo job in EnumerateWindowsJobs())
+        {
+            collection.Add(job);
+        }
+
+        return collection;
     }
 
     /// <summary>
@@ -1378,49 +1764,70 @@ public sealed class PrintQueue
 /// <summary>
 /// Represents information about a print job.
 /// </summary>
-public sealed class PrintSystemJobInfo
+public class PrintSystemJobInfo : PrintSystemObject
 {
     /// <summary>
     /// Gets the print queue associated with this job.
     /// </summary>
-    public PrintQueue PrintQueue { get; }
+    public PrintQueue HostingPrintQueue { get; set; }
+
+    /// <summary>Gets or sets the print server hosting this job.</summary>
+    public PrintServer HostingPrintServer { get; set; }
 
     /// <summary>
     /// Gets the name of the print job.
     /// </summary>
-    public string JobName { get; }
+    public string JobName { get; set; }
 
     /// <summary>
     /// Gets the job identifier.
     /// </summary>
-    public int JobIdentifier { get; }
+    public int JobIdentifier { get; set; }
 
     /// <summary>
     /// Gets the status of the print job.
     /// </summary>
-    public PrintJobStatus JobStatus { get; internal set; }
+    public PrintJobStatus JobStatus { get; set; }
 
     /// <summary>
     /// Gets the number of pages printed.
     /// </summary>
-    public int NumberOfPagesPrinted { get; internal set; }
+    public int NumberOfPagesPrinted { get; set; }
 
     /// <summary>
     /// Gets the total number of pages in the job.
     /// </summary>
-    public int NumberOfPages { get; internal set; }
+    public int NumberOfPages { get; set; }
 
     /// <summary>
     /// Gets the time the job was submitted.
     /// </summary>
-    public DateTime TimeJobSubmitted { get; }
+    public DateTime TimeJobSubmitted { get; set; }
+
+    public bool IsBlocked => (JobStatus & PrintJobStatus.Blocked) != 0;
+    public bool IsCompleted => (JobStatus & PrintJobStatus.Completed) != 0;
+    public bool IsDeleted => (JobStatus & PrintJobStatus.Deleted) != 0;
+    public bool IsDeleting => (JobStatus & PrintJobStatus.Deleting) != 0;
+    public bool IsInError => (JobStatus & PrintJobStatus.Error) != 0;
+    public bool IsOffline => (JobStatus & PrintJobStatus.Offline) != 0;
+    public bool IsPaperOut => (JobStatus & PrintJobStatus.PaperOut) != 0;
+    public bool IsPaused => (JobStatus & PrintJobStatus.Paused) != 0;
+    public bool IsPrinted => (JobStatus & PrintJobStatus.Printed) != 0;
+    public bool IsPrinting => (JobStatus & PrintJobStatus.Printing) != 0;
+    public bool IsRestarted => (JobStatus & PrintJobStatus.Restarted) != 0;
+    public bool IsRetained => (JobStatus & PrintJobStatus.Retained) != 0;
+    public bool IsSpooling => (JobStatus & PrintJobStatus.Spooling) != 0;
+    public bool IsUserInterventionRequired => (JobStatus & PrintJobStatus.UserIntervention) != 0;
 
     /// <summary>
     /// Initializes a new instance of the PrintSystemJobInfo class.
     /// </summary>
     internal PrintSystemJobInfo(PrintQueue queue, string jobName)
     {
-        PrintQueue = queue;
+        HostingPrintQueue = queue;
+        HostingPrintServer = queue.HostingPrintServer;
+        Parent = queue;
+        Name = jobName;
         JobName = jobName;
         JobIdentifier = new Random().Next(1, 10000);
         TimeJobSubmitted = DateTime.Now;
@@ -1520,7 +1927,7 @@ public enum PrintJobStatus
     /// <summary>
     /// The job is blocked because a device is not available.
     /// </summary>
-    BlockedDeviceQueue = 512,
+    Blocked = 512,
 
     /// <summary>
     /// User intervention is required.
@@ -1546,47 +1953,167 @@ public enum PrintJobStatus
 /// <summary>
 /// Represents print settings and capabilities.
 /// </summary>
-public class PrintTicket
+public sealed class PrintTicket : INotifyPropertyChanged
 {
-    /// <summary>
-    /// Gets or sets the number of copies.
-    /// </summary>
-    public int CopyCount { get; set; } = 1;
+    private byte[]? _sourceXml;
+    private Collation? _collation;
+    private int? _copyCount;
+    private Duplexing? _duplexing;
+    private InputBin? _inputBin;
+    private OutputColor? _outputColor;
+    private OutputQuality? _outputQuality;
+    private PageMediaSize? _pageMediaSize;
+    private PageOrder? _pageOrder;
+    private PageOrientation? _pageOrientation;
+    private PageResolution? _pageResolution;
+    private int? _pagesPerSheet;
+    private Stapling? _stapling;
 
-    /// <summary>
-    /// Gets or sets a value indicating whether to collate copies.
-    /// </summary>
-    public Collation? Collation { get; set; }
+    /// <inheritdoc />
+    public event PropertyChangedEventHandler? PropertyChanged;
 
-    /// <summary>
-    /// Gets or sets the duplex mode.
-    /// </summary>
-    public Duplexing? Duplexing { get; set; }
+    /// <summary>Initializes an empty print ticket.</summary>
+    public PrintTicket()
+    {
+    }
 
-    /// <summary>
-    /// Gets or sets the page media size.
-    /// </summary>
-    public PageMediaSize? PageMediaSize { get; set; }
+    /// <summary>Initializes a print ticket from its XML representation.</summary>
+    public PrintTicket(Stream xmlStream)
+    {
+        ArgumentNullException.ThrowIfNull(xmlStream);
+        if (!xmlStream.CanRead)
+        {
+            throw new ArgumentException("The print-ticket stream must be readable.", nameof(xmlStream));
+        }
 
-    /// <summary>
-    /// Gets or sets the page orientation.
-    /// </summary>
-    public PageOrientation? PageOrientation { get; set; }
+        using var copy = new MemoryStream();
+        xmlStream.CopyTo(copy);
+        _sourceXml = copy.ToArray();
+    }
 
-    /// <summary>
-    /// Gets or sets the print quality.
-    /// </summary>
-    public OutputQuality? OutputQuality { get; set; }
+    public Collation? Collation
+    {
+        get => _collation;
+        set => SetValue(ref _collation, value);
+    }
 
-    /// <summary>
-    /// Gets or sets the output color.
-    /// </summary>
-    public OutputColor? OutputColor { get; set; }
+    public int? CopyCount
+    {
+        get => _copyCount;
+        set => SetValue(ref _copyCount, value);
+    }
 
-    /// <summary>
-    /// Gets or sets the page resolution.
-    /// </summary>
-    public PageResolution? PageResolution { get; set; }
+    public Duplexing? Duplexing
+    {
+        get => _duplexing;
+        set => SetValue(ref _duplexing, value);
+    }
+
+    public InputBin? InputBin
+    {
+        get => _inputBin;
+        set => SetValue(ref _inputBin, value);
+    }
+
+    public OutputColor? OutputColor
+    {
+        get => _outputColor;
+        set => SetValue(ref _outputColor, value);
+    }
+
+    public OutputQuality? OutputQuality
+    {
+        get => _outputQuality;
+        set => SetValue(ref _outputQuality, value);
+    }
+
+    public PageMediaSize? PageMediaSize
+    {
+        get => _pageMediaSize;
+        set => SetValue(ref _pageMediaSize, value);
+    }
+
+    public PageOrder? PageOrder
+    {
+        get => _pageOrder;
+        set => SetValue(ref _pageOrder, value);
+    }
+
+    public PageOrientation? PageOrientation
+    {
+        get => _pageOrientation;
+        set => SetValue(ref _pageOrientation, value);
+    }
+
+    public PageResolution? PageResolution
+    {
+        get => _pageResolution;
+        set => SetValue(ref _pageResolution, value);
+    }
+
+    public int? PagesPerSheet
+    {
+        get => _pagesPerSheet;
+        set => SetValue(ref _pagesPerSheet, value);
+    }
+
+    public Stapling? Stapling
+    {
+        get => _stapling;
+        set => SetValue(ref _stapling, value);
+    }
+
+    /// <summary>Creates an independent copy of this ticket.</summary>
+    public PrintTicket Clone()
+    {
+        return new PrintTicket
+        {
+            _sourceXml = _sourceXml?.ToArray(),
+            _collation = _collation,
+            _copyCount = _copyCount,
+            _duplexing = _duplexing,
+            _inputBin = _inputBin,
+            _outputColor = _outputColor,
+            _outputQuality = _outputQuality,
+            _pageMediaSize = _pageMediaSize,
+            _pageOrder = _pageOrder,
+            _pageOrientation = _pageOrientation,
+            _pageResolution = _pageResolution,
+            _pagesPerSheet = _pagesPerSheet,
+            _stapling = _stapling,
+        };
+    }
+
+    /// <summary>Gets the XML representation supplied to this ticket.</summary>
+    public MemoryStream GetXmlStream() => new(_sourceXml ?? CreateMinimalPrintTicketXml(), writable: false);
+
+    /// <summary>Saves the XML representation to a writable stream.</summary>
+    public void SaveTo(Stream outStream)
+    {
+        ArgumentNullException.ThrowIfNull(outStream);
+        if (!outStream.CanWrite)
+        {
+            throw new ArgumentException("The destination stream must be writable.", nameof(outStream));
+        }
+
+        using MemoryStream source = GetXmlStream();
+        source.CopyTo(outStream);
+    }
+
+    private void SetValue<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return;
+        }
+
+        field = value;
+        _sourceXml = null;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    private static byte[] CreateMinimalPrintTicketXml() =>
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?><psf:PrintTicket xmlns:psf=\"http://schemas.microsoft.com/windows/2003/08/printing/printschemaframework\" version=\"1\" />"u8.ToArray();
 }
 
 /// <summary>
@@ -1610,6 +2137,14 @@ public sealed class PageMediaSize
     public PageMediaSizeName? PageMediaSizeName { get; }
 
     /// <summary>
+    /// Initializes a media size identified by a standard Print Schema name.
+    /// </summary>
+    public PageMediaSize(PageMediaSizeName mediaSizeName)
+    {
+        PageMediaSizeName = mediaSizeName;
+    }
+
+    /// <summary>
     /// Initializes a new instance of the PageMediaSize class.
     /// </summary>
     public PageMediaSize(double width, double height)
@@ -1627,6 +2162,9 @@ public sealed class PageMediaSize
         Width = width;
         Height = height;
     }
+
+    /// <inheritdoc />
+    public override string ToString() => PageMediaSizeName?.ToString() ?? $"{Width} x {Height}";
 }
 
 /// <summary>
@@ -1644,6 +2182,15 @@ public sealed class PageResolution
     /// </summary>
     public int? Y { get; }
 
+    /// <summary>Gets the qualitative resolution.</summary>
+    public PageQualitativeResolution? QualitativeResolution { get; }
+
+    /// <summary>Initializes a qualitative page resolution.</summary>
+    public PageResolution(PageQualitativeResolution qualitative)
+    {
+        QualitativeResolution = qualitative;
+    }
+
     /// <summary>
     /// Initializes a new instance of the PageResolution class.
     /// </summary>
@@ -1652,6 +2199,29 @@ public sealed class PageResolution
         X = x;
         Y = y;
     }
+
+    /// <summary>Initializes a numeric and qualitative page resolution.</summary>
+    public PageResolution(int resolutionX, int resolutionY, PageQualitativeResolution qualitative)
+    {
+        X = resolutionX;
+        Y = resolutionY;
+        QualitativeResolution = qualitative;
+    }
+
+    /// <inheritdoc />
+    public override string ToString() =>
+        X is not null && Y is not null ? $"{X} x {Y}" : QualitativeResolution?.ToString() ?? string.Empty;
+}
+
+/// <summary>Specifies a qualitative page-resolution setting.</summary>
+public enum PageQualitativeResolution
+{
+    Unknown = 0,
+    Default = 1,
+    Draft = 2,
+    High = 3,
+    Normal = 4,
+    Other = 5,
 }
 
 /// <summary>
@@ -1659,15 +2229,9 @@ public sealed class PageResolution
 /// </summary>
 public enum Collation
 {
-    /// <summary>
-    /// Uncollated output.
-    /// </summary>
-    Uncollated,
-
-    /// <summary>
-    /// Collated output.
-    /// </summary>
-    Collated
+    Unknown = 0,
+    Collated = 1,
+    Uncollated = 2,
 }
 
 /// <summary>
@@ -1675,20 +2239,10 @@ public enum Collation
 /// </summary>
 public enum Duplexing
 {
-    /// <summary>
-    /// One-sided printing.
-    /// </summary>
-    OneSided,
-
-    /// <summary>
-    /// Two-sided printing, short edge.
-    /// </summary>
-    TwoSidedShortEdge,
-
-    /// <summary>
-    /// Two-sided printing, long edge.
-    /// </summary>
-    TwoSidedLongEdge
+    Unknown = 0,
+    OneSided = 1,
+    TwoSidedShortEdge = 2,
+    TwoSidedLongEdge = 3,
 }
 
 /// <summary>
@@ -1696,25 +2250,11 @@ public enum Duplexing
 /// </summary>
 public enum PageOrientation
 {
-    /// <summary>
-    /// Portrait orientation.
-    /// </summary>
-    Portrait,
-
-    /// <summary>
-    /// Landscape orientation.
-    /// </summary>
-    Landscape,
-
-    /// <summary>
-    /// Reverse portrait orientation.
-    /// </summary>
-    ReversePortrait,
-
-    /// <summary>
-    /// Reverse landscape orientation.
-    /// </summary>
-    ReverseLandscape
+    Unknown = 0,
+    Landscape = 1,
+    Portrait = 2,
+    ReverseLandscape = 3,
+    ReversePortrait = 4,
 }
 
 /// <summary>
@@ -1722,25 +2262,14 @@ public enum PageOrientation
 /// </summary>
 public enum OutputQuality
 {
-    /// <summary>
-    /// Draft quality.
-    /// </summary>
-    Draft,
-
-    /// <summary>
-    /// Normal quality.
-    /// </summary>
-    Normal,
-
-    /// <summary>
-    /// High quality.
-    /// </summary>
-    High,
-
-    /// <summary>
-    /// Photo quality.
-    /// </summary>
-    Photographic
+    Unknown = 0,
+    Automatic = 1,
+    Draft = 2,
+    Fax = 3,
+    High = 4,
+    Normal = 5,
+    Photographic = 6,
+    Text = 7,
 }
 
 /// <summary>
@@ -1748,20 +2277,10 @@ public enum OutputQuality
 /// </summary>
 public enum OutputColor
 {
-    /// <summary>
-    /// Color output.
-    /// </summary>
-    Color,
-
-    /// <summary>
-    /// Grayscale output.
-    /// </summary>
-    Grayscale,
-
-    /// <summary>
-    /// Monochrome output.
-    /// </summary>
-    Monochrome
+    Unknown = 0,
+    Color = 1,
+    Grayscale = 2,
+    Monochrome = 3,
 }
 
 /// <summary>
@@ -1769,218 +2288,177 @@ public enum OutputColor
 /// </summary>
 public enum PageMediaSizeName
 {
-    /// <summary>
-    /// Unknown size.
-    /// </summary>
-    Unknown,
-
-    /// <summary>
-    /// A3 (297mm x 420mm).
-    /// </summary>
-    ISOA3,
-
-    /// <summary>
-    /// A4 (210mm x 297mm).
-    /// </summary>
-    ISOA4,
-
-    /// <summary>
-    /// A5 (148mm x 210mm).
-    /// </summary>
-    ISOA5,
-
-    /// <summary>
-    /// Letter (8.5" x 11").
-    /// </summary>
-    NorthAmericaLetter,
-
-    /// <summary>
-    /// Legal (8.5" x 14").
-    /// </summary>
-    NorthAmericaLegal,
-
-    /// <summary>
-    /// Tabloid (11" x 17").
-    /// </summary>
-    NorthAmericaTabloid,
-
-    /// <summary>
-    /// Executive (7.25" x 10.5").
-    /// </summary>
-    NorthAmericaExecutive
-}
-
-/// <summary>
-/// Provides pagination for documents.
-/// </summary>
-public abstract class DocumentPaginator
-{
-    /// <summary>
-    /// Gets a value indicating whether the document is being paginated.
-    /// </summary>
-    public abstract bool IsPageCountValid { get; }
-
-    /// <summary>
-    /// Gets the number of pages.
-    /// </summary>
-    public abstract int PageCount { get; }
-
-    /// <summary>
-    /// Gets or sets the page size.
-    /// </summary>
-    public abstract Size PageSize { get; set; }
-
-    /// <summary>
-    /// Gets or sets the source document.
-    /// </summary>
-    public abstract object? Source { get; }
-
-    /// <summary>
-    /// Gets the DocumentPage for the specified page number.
-    /// </summary>
-    public abstract DocumentPage GetPage(int pageNumber);
-
-    /// <summary>
-    /// Forces pagination to complete.
-    /// </summary>
-    public void ComputePageCount()
-    {
-        // Default implementation
-    }
-
-    /// <summary>
-    /// Occurs when pagination is complete.
-    /// </summary>
-    public event EventHandler<PaginationCompletedEventArgs>? ComputePageCountCompleted;
-
-    /// <summary>
-    /// Occurs when the page count changes.
-    /// </summary>
-    public event EventHandler<PaginationProgressEventArgs>? PaginationProgress;
-
-    /// <summary>
-    /// Raises the ComputePageCountCompleted event.
-    /// </summary>
-    protected void OnComputePageCountCompleted(Exception? error)
-    {
-        ComputePageCountCompleted?.Invoke(this, new PaginationCompletedEventArgs(error));
-    }
-
-    /// <summary>
-    /// Raises the PaginationProgress event.
-    /// </summary>
-    protected void OnPaginationProgress(int pageCount)
-    {
-        PaginationProgress?.Invoke(this, new PaginationProgressEventArgs(pageCount));
-    }
-}
-
-/// <summary>
-/// Represents a single page of a document.
-/// </summary>
-public sealed class DocumentPage
-{
-    /// <summary>
-    /// Gets a blank document page.
-    /// </summary>
-    public static DocumentPage Missing { get; } = new(null);
-
-    /// <summary>
-    /// Gets the visual content of the page.
-    /// </summary>
-    public Visual? Visual { get; }
-
-    /// <summary>
-    /// Gets the size of the page.
-    /// </summary>
-    public Size Size { get; }
-
-    /// <summary>
-    /// Gets the content box (area containing actual content).
-    /// </summary>
-    public Rect ContentBox { get; }
-
-    /// <summary>
-    /// Gets the bleed box (for printing marks).
-    /// </summary>
-    public Rect BleedBox { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the DocumentPage class.
-    /// </summary>
-    public DocumentPage(Visual? visual)
-    {
-        Visual = visual;
-        Size = Size.Empty;
-        ContentBox = Rect.Empty;
-        BleedBox = Rect.Empty;
-    }
-
-    /// <summary>
-    /// Initializes a new instance of the DocumentPage class.
-    /// </summary>
-    public DocumentPage(Visual visual, Size pageSize, Rect contentBox, Rect bleedBox)
-    {
-        Visual = visual;
-        Size = pageSize;
-        ContentBox = contentBox;
-        BleedBox = bleedBox;
-    }
-}
-
-/// <summary>
-/// Event arguments for pagination completed events.
-/// </summary>
-public sealed class PaginationCompletedEventArgs : EventArgs
-{
-    /// <summary>
-    /// Gets the error if pagination failed.
-    /// </summary>
-    public Exception? Error { get; }
-
-    /// <summary>
-    /// Gets a value indicating whether pagination was cancelled.
-    /// </summary>
-    public bool Cancelled { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the PaginationCompletedEventArgs class.
-    /// </summary>
-    public PaginationCompletedEventArgs(Exception? error, bool cancelled = false)
-    {
-        Error = error;
-        Cancelled = cancelled;
-    }
-}
-
-/// <summary>
-/// Event arguments for pagination progress events.
-/// </summary>
-public sealed class PaginationProgressEventArgs : EventArgs
-{
-    /// <summary>
-    /// Gets the current page count.
-    /// </summary>
-    public int PageCount { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the PaginationProgressEventArgs class.
-    /// </summary>
-    public PaginationProgressEventArgs(int pageCount)
-    {
-        PageCount = pageCount;
-    }
-}
-
-/// <summary>
-/// Interface for objects that can provide a DocumentPaginator.
-/// </summary>
-public interface IDocumentPaginatorSource
-{
-    /// <summary>
-    /// Gets the DocumentPaginator for this source.
-    /// </summary>
-    DocumentPaginator DocumentPaginator { get; }
+    Unknown = 0,
+    ISOA0 = 1,
+    ISOA1 = 2,
+    ISOA10 = 3,
+    ISOA2 = 4,
+    ISOA3 = 5,
+    ISOA3Rotated = 6,
+    ISOA3Extra = 7,
+    ISOA4 = 8,
+    ISOA4Rotated = 9,
+    ISOA4Extra = 10,
+    ISOA5 = 11,
+    ISOA5Rotated = 12,
+    ISOA5Extra = 13,
+    ISOA6 = 14,
+    ISOA6Rotated = 15,
+    ISOA7 = 16,
+    ISOA8 = 17,
+    ISOA9 = 18,
+    ISOB0 = 19,
+    ISOB1 = 20,
+    ISOB10 = 21,
+    ISOB2 = 22,
+    ISOB3 = 23,
+    ISOB4 = 24,
+    ISOB4Envelope = 25,
+    ISOB5Envelope = 26,
+    ISOB5Extra = 27,
+    ISOB7 = 28,
+    ISOB8 = 29,
+    ISOB9 = 30,
+    ISOC0 = 31,
+    ISOC1 = 32,
+    ISOC10 = 33,
+    ISOC2 = 34,
+    ISOC3 = 35,
+    ISOC3Envelope = 36,
+    ISOC4 = 37,
+    ISOC4Envelope = 38,
+    ISOC5 = 39,
+    ISOC5Envelope = 40,
+    ISOC6 = 41,
+    ISOC6Envelope = 42,
+    ISOC6C5Envelope = 43,
+    ISOC7 = 44,
+    ISOC8 = 45,
+    ISOC9 = 46,
+    ISODLEnvelope = 47,
+    ISODLEnvelopeRotated = 48,
+    ISOSRA3 = 49,
+    JapanQuadrupleHagakiPostcard = 50,
+    JISB0 = 51,
+    JISB1 = 52,
+    JISB10 = 53,
+    JISB2 = 54,
+    JISB3 = 55,
+    JISB4 = 56,
+    JISB4Rotated = 57,
+    JISB5 = 58,
+    JISB5Rotated = 59,
+    JISB6 = 60,
+    JISB6Rotated = 61,
+    JISB7 = 62,
+    JISB8 = 63,
+    JISB9 = 64,
+    JapanChou3Envelope = 65,
+    JapanChou3EnvelopeRotated = 66,
+    JapanChou4Envelope = 67,
+    JapanChou4EnvelopeRotated = 68,
+    JapanHagakiPostcard = 69,
+    JapanHagakiPostcardRotated = 70,
+    JapanKaku2Envelope = 71,
+    JapanKaku2EnvelopeRotated = 72,
+    JapanKaku3Envelope = 73,
+    JapanKaku3EnvelopeRotated = 74,
+    JapanYou4Envelope = 75,
+    NorthAmerica10x11 = 76,
+    NorthAmerica10x14 = 77,
+    NorthAmerica11x17 = 78,
+    NorthAmerica9x11 = 79,
+    NorthAmericaArchitectureASheet = 80,
+    NorthAmericaArchitectureBSheet = 81,
+    NorthAmericaArchitectureCSheet = 82,
+    NorthAmericaArchitectureDSheet = 83,
+    NorthAmericaArchitectureESheet = 84,
+    NorthAmericaCSheet = 85,
+    NorthAmericaDSheet = 86,
+    NorthAmericaESheet = 87,
+    NorthAmericaExecutive = 88,
+    NorthAmericaGermanLegalFanfold = 89,
+    NorthAmericaGermanStandardFanfold = 90,
+    NorthAmericaLegal = 91,
+    NorthAmericaLegalExtra = 92,
+    NorthAmericaLetter = 93,
+    NorthAmericaLetterRotated = 94,
+    NorthAmericaLetterExtra = 95,
+    NorthAmericaLetterPlus = 96,
+    NorthAmericaMonarchEnvelope = 97,
+    NorthAmericaNote = 98,
+    NorthAmericaNumber10Envelope = 99,
+    NorthAmericaNumber10EnvelopeRotated = 100,
+    NorthAmericaNumber9Envelope = 101,
+    NorthAmericaNumber11Envelope = 102,
+    NorthAmericaNumber12Envelope = 103,
+    NorthAmericaNumber14Envelope = 104,
+    NorthAmericaPersonalEnvelope = 105,
+    NorthAmericaQuarto = 106,
+    NorthAmericaStatement = 107,
+    NorthAmericaSuperA = 108,
+    NorthAmericaSuperB = 109,
+    NorthAmericaTabloid = 110,
+    NorthAmericaTabloidExtra = 111,
+    OtherMetricA4Plus = 112,
+    OtherMetricA3Plus = 113,
+    OtherMetricFolio = 114,
+    OtherMetricInviteEnvelope = 115,
+    OtherMetricItalianEnvelope = 116,
+    PRC1Envelope = 117,
+    PRC1EnvelopeRotated = 118,
+    PRC10Envelope = 119,
+    PRC10EnvelopeRotated = 120,
+    PRC16K = 121,
+    PRC16KRotated = 122,
+    PRC2Envelope = 123,
+    PRC2EnvelopeRotated = 124,
+    PRC32K = 125,
+    PRC32KRotated = 126,
+    PRC32KBig = 127,
+    PRC3Envelope = 128,
+    PRC3EnvelopeRotated = 129,
+    PRC4Envelope = 130,
+    PRC4EnvelopeRotated = 131,
+    PRC5Envelope = 132,
+    PRC5EnvelopeRotated = 133,
+    PRC6Envelope = 134,
+    PRC6EnvelopeRotated = 135,
+    PRC7Envelope = 136,
+    PRC7EnvelopeRotated = 137,
+    PRC8Envelope = 138,
+    PRC8EnvelopeRotated = 139,
+    PRC9Envelope = 140,
+    PRC9EnvelopeRotated = 141,
+    Roll04Inch = 142,
+    Roll06Inch = 143,
+    Roll08Inch = 144,
+    Roll12Inch = 145,
+    Roll15Inch = 146,
+    Roll18Inch = 147,
+    Roll22Inch = 148,
+    Roll24Inch = 149,
+    Roll30Inch = 150,
+    Roll36Inch = 151,
+    Roll54Inch = 152,
+    JapanDoubleHagakiPostcard = 153,
+    JapanDoubleHagakiPostcardRotated = 154,
+    JapanLPhoto = 155,
+    Japan2LPhoto = 156,
+    JapanYou1Envelope = 157,
+    JapanYou2Envelope = 158,
+    JapanYou3Envelope = 159,
+    JapanYou4EnvelopeRotated = 160,
+    JapanYou6Envelope = 161,
+    JapanYou6EnvelopeRotated = 162,
+    NorthAmerica4x6 = 163,
+    NorthAmerica4x8 = 164,
+    NorthAmerica5x7 = 165,
+    NorthAmerica8x10 = 166,
+    NorthAmerica10x12 = 167,
+    NorthAmerica14x17 = 168,
+    BusinessCard = 169,
+    CreditCard = 170,
 }
 
 /// <summary>
@@ -1988,78 +2466,158 @@ public interface IDocumentPaginatorSource
 /// </summary>
 public sealed class PrintCapabilities
 {
+    private static readonly ReadOnlyCollection<Collation> EmptyCollation = Array.AsReadOnly(Array.Empty<Collation>());
+    private static readonly ReadOnlyCollection<Duplexing> EmptyDuplexing = Array.AsReadOnly(Array.Empty<Duplexing>());
+    private static readonly ReadOnlyCollection<InputBin> EmptyInputBins = Array.AsReadOnly(Array.Empty<InputBin>());
+    private static readonly ReadOnlyCollection<OutputColor> EmptyOutputColors = Array.AsReadOnly(Array.Empty<OutputColor>());
+    private static readonly ReadOnlyCollection<OutputQuality> EmptyOutputQualities = Array.AsReadOnly(Array.Empty<OutputQuality>());
+    private static readonly ReadOnlyCollection<PageMediaSize> EmptyMediaSizes = Array.AsReadOnly(Array.Empty<PageMediaSize>());
+    private static readonly ReadOnlyCollection<PageOrder> EmptyPageOrders = Array.AsReadOnly(Array.Empty<PageOrder>());
+    private static readonly ReadOnlyCollection<PageOrientation> EmptyOrientations = Array.AsReadOnly(Array.Empty<PageOrientation>());
+    private static readonly ReadOnlyCollection<PageResolution> EmptyResolutions = Array.AsReadOnly(Array.Empty<PageResolution>());
+    private static readonly ReadOnlyCollection<int> EmptyPagesPerSheet = Array.AsReadOnly(Array.Empty<int>());
+    private static readonly ReadOnlyCollection<Stapling> EmptyStapling = Array.AsReadOnly(Array.Empty<Stapling>());
+
+    /// <summary>Initializes capabilities from Print Schema XML.</summary>
+    public PrintCapabilities(Stream xmlStream)
+    {
+        ArgumentNullException.ThrowIfNull(xmlStream);
+        if (!xmlStream.CanRead)
+        {
+            throw new ArgumentException("The print-capabilities stream must be readable.", nameof(xmlStream));
+        }
+    }
+
+    internal PrintCapabilities()
+    {
+    }
+
     /// <summary>
     /// Gets the collection of supported collation options.
     /// </summary>
-    public IReadOnlyCollection<Collation> CollationCapability { get; init; } = Array.Empty<Collation>();
+    public ReadOnlyCollection<Collation> CollationCapability { get; internal set; } = EmptyCollation;
 
     /// <summary>
     /// Gets the collection of supported duplex options.
     /// </summary>
-    public IReadOnlyCollection<Duplexing> DuplexingCapability { get; init; } = Array.Empty<Duplexing>();
+    public ReadOnlyCollection<Duplexing> DuplexingCapability { get; internal set; } = EmptyDuplexing;
+
+    /// <summary>Gets the supported input bins.</summary>
+    public ReadOnlyCollection<InputBin> InputBinCapability { get; internal set; } = EmptyInputBins;
 
     /// <summary>
     /// Gets the collection of supported page orientations.
     /// </summary>
-    public IReadOnlyCollection<PageOrientation> PageOrientationCapability { get; init; } = Array.Empty<PageOrientation>();
+    public ReadOnlyCollection<PageOrientation> PageOrientationCapability { get; internal set; } = EmptyOrientations;
 
     /// <summary>
     /// Gets the collection of supported output qualities.
     /// </summary>
-    public IReadOnlyCollection<OutputQuality> OutputQualityCapability { get; init; } = Array.Empty<OutputQuality>();
+    public ReadOnlyCollection<OutputQuality> OutputQualityCapability { get; internal set; } = EmptyOutputQualities;
 
     /// <summary>
     /// Gets the collection of supported output colors.
     /// </summary>
-    public IReadOnlyCollection<OutputColor> OutputColorCapability { get; init; } = Array.Empty<OutputColor>();
+    public ReadOnlyCollection<OutputColor> OutputColorCapability { get; internal set; } = EmptyOutputColors;
 
     /// <summary>
     /// Gets the collection of supported page media sizes.
     /// </summary>
-    public IReadOnlyCollection<PageMediaSize> PageMediaSizeCapability { get; init; } = Array.Empty<PageMediaSize>();
+    public ReadOnlyCollection<PageMediaSize> PageMediaSizeCapability { get; internal set; } = EmptyMediaSizes;
+
+    /// <summary>Gets the supported page orders.</summary>
+    public ReadOnlyCollection<PageOrder> PageOrderCapability { get; internal set; } = EmptyPageOrders;
 
     /// <summary>
     /// Gets the collection of supported page resolutions.
     /// </summary>
-    public IReadOnlyCollection<PageResolution> PageResolutionCapability { get; init; } = Array.Empty<PageResolution>();
+    public ReadOnlyCollection<PageResolution> PageResolutionCapability { get; internal set; } = EmptyResolutions;
+
+    /// <summary>Gets the supported page counts per sheet.</summary>
+    public ReadOnlyCollection<int> PagesPerSheetCapability { get; internal set; } = EmptyPagesPerSheet;
+
+    /// <summary>Gets the supported stapling settings.</summary>
+    public ReadOnlyCollection<Stapling> StaplingCapability { get; internal set; } = EmptyStapling;
 
     /// <summary>
     /// Gets the maximum supported copies.
     /// </summary>
-    public int? MaxCopyCount { get; init; }
+    public int? MaxCopyCount { get; internal set; }
+}
 
-    /// <summary>
-    /// Gets a value indicating whether stapling is supported.
-    /// </summary>
-    public bool? StaplingCapability { get; init; }
+/// <summary>Represents a collection of print queues.</summary>
+public class PrintQueueCollection : PrintSystemObjects, IEnumerable<PrintQueue>
+{
+    private readonly List<PrintQueue> _queues = [];
 
-    /// <summary>
-    /// Gets a value indicating whether page ordering is supported.
-    /// </summary>
-    public bool? PageOrderCapability { get; init; }
+    public PrintQueueCollection()
+    {
+    }
 
-    /// <summary>
-    /// Gets the printable area offset from the origin.
-    /// </summary>
-    public Point? OriginOffset { get; init; }
+    public PrintQueueCollection(PrintServer printServer, string[] propertyFilter)
+        : this(printServer, propertyFilter, Array.Empty<EnumeratedPrintQueueTypes>())
+    {
+    }
 
-    /// <summary>
-    /// Gets the printable area margins.
-    /// </summary>
-    public Thickness? PrintableAreaMargins { get; init; }
+    public PrintQueueCollection(
+        PrintServer printServer,
+        string[] propertyFilter,
+        EnumeratedPrintQueueTypes[] enumerationFlag)
+    {
+        ArgumentNullException.ThrowIfNull(printServer);
+        ArgumentNullException.ThrowIfNull(propertyFilter);
+        ArgumentNullException.ThrowIfNull(enumerationFlag);
+        _queues.AddRange(PrintQueue.GetPrintQueues());
+    }
+
+    public object SyncRoot => ((ICollection)_queues).SyncRoot;
+
+    public void Add(PrintQueue printObject)
+    {
+        ArgumentNullException.ThrowIfNull(printObject);
+        _queues.Add(printObject);
+    }
+
+    public IEnumerator<PrintQueue> GetEnumerator() => _queues.GetEnumerator();
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public IEnumerator GetNonGenericEnumerator() => ((IEnumerable)_queues).GetEnumerator();
+}
+
+/// <summary>Represents a collection of jobs in a print queue.</summary>
+public class PrintJobInfoCollection : PrintSystemObjects, IEnumerable<PrintSystemJobInfo>
+{
+    private readonly List<PrintSystemJobInfo> _jobs = [];
+
+    public PrintJobInfoCollection(PrintQueue printQueue, string[] propertyFilter)
+    {
+        ArgumentNullException.ThrowIfNull(printQueue);
+        ArgumentNullException.ThrowIfNull(propertyFilter);
+    }
+
+    public void Add(PrintSystemJobInfo printObject)
+    {
+        ArgumentNullException.ThrowIfNull(printObject);
+        _jobs.Add(printObject);
+    }
+
+    public IEnumerator<PrintSystemJobInfo> GetEnumerator() => _jobs.GetEnumerator();
+
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+
+    public IEnumerator GetNonGenericEnumerator() => ((IEnumerable)_jobs).GetEnumerator();
 }
 
 /// <summary>
 /// Represents a print server.
 /// </summary>
-public sealed class PrintServer : IDisposable
+public class PrintServer : PrintSystemObject
 {
-    private bool _disposed;
-
     /// <summary>
     /// Gets the name of the print server.
     /// </summary>
-    public string Name { get; }
+    public override string Name { get; set; }
 
     /// <summary>
     /// Initializes a new instance of the PrintServer class for the local server.
@@ -2067,6 +2625,11 @@ public sealed class PrintServer : IDisposable
     public PrintServer()
     {
         Name = Environment.MachineName;
+    }
+
+    public PrintServer(PrintSystemDesiredAccess desiredAccess)
+        : this()
+    {
     }
 
     /// <summary>
@@ -2078,48 +2641,75 @@ public sealed class PrintServer : IDisposable
         Name = serverName;
     }
 
+    public PrintServer(string path, PrintSystemDesiredAccess desiredAccess)
+        : this(path)
+    {
+    }
+
+    public PrintServer(string path, string[] propertiesFilter)
+        : this(path)
+    {
+        ArgumentNullException.ThrowIfNull(propertiesFilter);
+    }
+
+    public PrintServer(string path, PrintServerIndexedProperty[] propertiesFilter)
+        : this(path)
+    {
+        ArgumentNullException.ThrowIfNull(propertiesFilter);
+    }
+
+    public PrintServer(string path, string[] propertiesFilter, PrintSystemDesiredAccess desiredAccess)
+        : this(path, propertiesFilter)
+    {
+    }
+
+    public PrintServer(string path, PrintServerIndexedProperty[] propertiesFilter, PrintSystemDesiredAccess desiredAccess)
+        : this(path, propertiesFilter)
+    {
+    }
+
     /// <summary>
     /// Gets all print queues from this server.
     /// </summary>
-    public IEnumerable<PrintQueue> GetPrintQueues()
+    public PrintQueueCollection GetPrintQueues()
     {
-        // Platform-specific implementation would enumerate printers
-        return PrintQueue.GetPrintQueues();
+        return new PrintQueueCollection(this, Array.Empty<string>());
     }
+
+    public PrintQueueCollection GetPrintQueues(string[] propertiesFilter) =>
+        new(this, propertiesFilter);
+
+    public PrintQueueCollection GetPrintQueues(PrintQueueIndexedProperty[] propertiesFilter) =>
+        new(this, propertiesFilter.Select(static value => value.ToString()).ToArray());
+
+    public PrintQueueCollection GetPrintQueues(EnumeratedPrintQueueTypes[] enumerationFlag) =>
+        new(this, Array.Empty<string>(), enumerationFlag);
+
+    public PrintQueueCollection GetPrintQueues(string[] propertiesFilter, EnumeratedPrintQueueTypes[] enumerationFlag) =>
+        new(this, propertiesFilter, enumerationFlag);
+
+    public PrintQueueCollection GetPrintQueues(PrintQueueIndexedProperty[] propertiesFilter, EnumeratedPrintQueueTypes[] enumerationFlag) =>
+        new(this, propertiesFilter.Select(static value => value.ToString()).ToArray(), enumerationFlag);
+
+    public PrintQueue GetPrintQueue(string printQueueName) => new(this, printQueueName);
+
+    public PrintQueue GetPrintQueue(string printQueueName, string[] propertiesFilter) =>
+        new(this, printQueueName, propertiesFilter);
 
     /// <summary>
     /// Gets the default print queue from this server.
     /// </summary>
-    public PrintQueue? GetDefaultPrintQueue()
+    internal PrintQueue? GetDefaultPrintQueue()
     {
         return PrintQueue.GetDefaultPrintQueue();
     }
 
-    /// <summary>
-    /// Disposes resources.
-    /// </summary>
-    public void Dispose()
-    {
-        Dispose(true);
-        GC.SuppressFinalize(this);
-    }
-
-    /// <summary>
-    /// Disposes resources.
-    /// </summary>
-    private void Dispose(bool disposing)
-    {
-        if (!_disposed)
-        {
-            _disposed = true;
-        }
-    }
 }
 
 /// <summary>
 /// Provides helper methods for XPS document printing.
 /// </summary>
-public sealed class XpsDocumentWriter
+internal sealed class PlatformXpsDocumentWriter
 {
     private readonly PrintQueue _printQueue;
 
@@ -2127,7 +2717,7 @@ public sealed class XpsDocumentWriter
     /// Initializes a new instance of the XpsDocumentWriter class.
     /// </summary>
     /// <param name="printQueue">The print queue to write to.</param>
-    public XpsDocumentWriter(PrintQueue printQueue)
+    internal PlatformXpsDocumentWriter(PrintQueue printQueue)
     {
         _printQueue = printQueue ?? throw new ArgumentNullException(nameof(printQueue));
     }
@@ -2147,7 +2737,7 @@ public sealed class XpsDocumentWriter
     /// </summary>
     /// <param name="visual">The visual to print.</param>
     /// <param name="printTicket">The print ticket to use.</param>
-    public void Write(Visual visual, PrintTicket? printTicket)
+    public void Write(Visual visual, System.Printing.PrintTicket? printTicket)
     {
         ArgumentNullException.ThrowIfNull(visual);
         WriteInternal(visual, printTicket);
@@ -2168,7 +2758,7 @@ public sealed class XpsDocumentWriter
     /// </summary>
     /// <param name="documentPaginator">The document paginator to print.</param>
     /// <param name="printTicket">The print ticket to use.</param>
-    public void Write(DocumentPaginator documentPaginator, PrintTicket? printTicket)
+    public void Write(DocumentPaginator documentPaginator, System.Printing.PrintTicket? printTicket)
     {
         ArgumentNullException.ThrowIfNull(documentPaginator);
         WriteInternal(documentPaginator, printTicket);
@@ -2189,7 +2779,7 @@ public sealed class XpsDocumentWriter
     /// </summary>
     /// <param name="documentPaginatorSource">The document to print.</param>
     /// <param name="printTicket">The print ticket to use.</param>
-    public void Write(IDocumentPaginatorSource documentPaginatorSource, PrintTicket? printTicket)
+    public void Write(IDocumentPaginatorSource documentPaginatorSource, System.Printing.PrintTicket? printTicket)
     {
         ArgumentNullException.ThrowIfNull(documentPaginatorSource);
         Write(documentPaginatorSource.DocumentPaginator, printTicket);
@@ -2203,212 +2793,30 @@ public sealed class XpsDocumentWriter
         // Platform-specific cancellation
     }
 
-    /// <summary>
-    /// Occurs when an asynchronous write operation is completed.
-    /// </summary>
-    public event EventHandler<WritingCompletedEventArgs>? WritingCompleted;
-
-    /// <summary>
-    /// Occurs when a page is written.
-    /// </summary>
-    public event EventHandler<WritingProgressChangedEventArgs>? WritingProgressChanged;
-
-    /// <summary>
-    /// Occurs when a print subtask is completed.
-    /// </summary>
-    public event EventHandler<WritingPrintTicketRequiredEventArgs>? WritingPrintTicketRequired;
-
-    /// <summary>Raises the <see cref="WritingPrintTicketRequired"/> event from a print pipeline implementation.</summary>
-    internal void RaiseWritingPrintTicketRequired(WritingPrintTicketRequiredEventArgs e) => WritingPrintTicketRequired?.Invoke(this, e);
-
-    private void WriteInternal(Visual visual, PrintTicket? printTicket)
+    private void WriteInternal(Visual visual, System.Printing.PrintTicket? printTicket)
     {
-        try
+        // Route the visual through the platform print path, reusing the print
+        // queue this writer was created for. Public serialization events are
+        // raised by the canonical Jalium.UI.Xps.XpsDocumentWriter facade.
+        var dialog = new PrintDialog
         {
-            // Route the visual through the platform print path, reusing the
-            // print queue this writer was created for.
-            var dialog = new PrintDialog
-            {
-                PrintQueue = _printQueue,
-                PrintTicket = ResolvePrintTicket(printTicket)
-            };
+            PrintQueue = _printQueue,
+            PrintTicket = printTicket ?? _printQueue.DefaultPrintTicket
+        };
 
-            dialog.PrintVisual(visual, _printQueue.Name);
-            OnWritingProgressChanged(1, 1);
-            OnWritingCompleted(null, false);
-        }
-        catch (Exception ex)
+        dialog.PrintVisual(visual, _printQueue.Name);
+    }
+
+    private void WriteInternal(DocumentPaginator paginator, System.Printing.PrintTicket? printTicket)
+    {
+        var dialog = new PrintDialog
         {
-            OnWritingCompleted(ex, false);
-            throw;
-        }
+            PrintQueue = _printQueue,
+            PrintTicket = printTicket ?? _printQueue.DefaultPrintTicket
+        };
+
+        dialog.PrintDocument(paginator, _printQueue.Name);
     }
-
-    private void WriteInternal(DocumentPaginator paginator, PrintTicket? printTicket)
-    {
-        try
-        {
-            var dialog = new PrintDialog
-            {
-                PrintQueue = _printQueue,
-                PrintTicket = ResolvePrintTicket(printTicket)
-            };
-
-            dialog.PrintDocument(paginator, _printQueue.Name);
-
-            var pageCount = paginator.IsPageCountValid ? paginator.PageCount : 0;
-            for (var i = 0; i < pageCount; i++)
-            {
-                OnWritingProgressChanged(i + 1, pageCount);
-            }
-
-            OnWritingCompleted(null, false);
-        }
-        catch (Exception ex)
-        {
-            OnWritingCompleted(ex, false);
-            throw;
-        }
-    }
-
-    /// <summary>
-    /// Resolves the effective print ticket, raising the
-    /// <see cref="WritingPrintTicketRequired"/> event so a host can supply one
-    /// when none is provided explicitly.
-    /// </summary>
-    private PrintTicket? ResolvePrintTicket(PrintTicket? explicitTicket)
-    {
-        if (explicitTicket != null)
-        {
-            return explicitTicket;
-        }
-
-        var args = new WritingPrintTicketRequiredEventArgs(PrintTicketLevel.Job, 0);
-        RaiseWritingPrintTicketRequired(args);
-        return args.PrintTicket ?? _printQueue.DefaultPrintTicket;
-    }
-
-    /// <summary>
-    /// Raises the WritingCompleted event.
-    /// </summary>
-    private void OnWritingCompleted(Exception? error, bool cancelled)
-    {
-        WritingCompleted?.Invoke(this, new WritingCompletedEventArgs(error, cancelled));
-    }
-
-    /// <summary>
-    /// Raises the WritingProgressChanged event.
-    /// </summary>
-    private void OnWritingProgressChanged(int currentPage, int totalPages)
-    {
-        WritingProgressChanged?.Invoke(this, new WritingProgressChangedEventArgs(currentPage, totalPages));
-    }
-}
-
-/// <summary>
-/// Event arguments for writing completed events.
-/// </summary>
-public sealed class WritingCompletedEventArgs : EventArgs
-{
-    /// <summary>
-    /// Gets the error if the operation failed.
-    /// </summary>
-    public Exception? Error { get; }
-
-    /// <summary>
-    /// Gets a value indicating whether the operation was cancelled.
-    /// </summary>
-    public bool Cancelled { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the WritingCompletedEventArgs class.
-    /// </summary>
-    public WritingCompletedEventArgs(Exception? error, bool cancelled)
-    {
-        Error = error;
-        Cancelled = cancelled;
-    }
-}
-
-/// <summary>
-/// Event arguments for writing progress changed events.
-/// </summary>
-public sealed class WritingProgressChangedEventArgs : EventArgs
-{
-    /// <summary>
-    /// Gets the current page number.
-    /// </summary>
-    public int CurrentPage { get; }
-
-    /// <summary>
-    /// Gets the total number of pages.
-    /// </summary>
-    public int TotalPages { get; }
-
-    /// <summary>
-    /// Gets the progress percentage.
-    /// </summary>
-    public int ProgressPercentage => TotalPages > 0 ? (CurrentPage * 100) / TotalPages : 0;
-
-    /// <summary>
-    /// Initializes a new instance of the WritingProgressChangedEventArgs class.
-    /// </summary>
-    public WritingProgressChangedEventArgs(int currentPage, int totalPages)
-    {
-        CurrentPage = currentPage;
-        TotalPages = totalPages;
-    }
-}
-
-/// <summary>
-/// Event arguments for when a print ticket is required.
-/// </summary>
-public sealed class WritingPrintTicketRequiredEventArgs : EventArgs
-{
-    /// <summary>
-    /// Gets or sets the print ticket.
-    /// </summary>
-    public PrintTicket? PrintTicket { get; set; }
-
-    /// <summary>
-    /// Gets the sequence number for this print ticket request.
-    /// </summary>
-    public int Sequence { get; }
-
-    /// <summary>
-    /// Gets the level at which this print ticket applies.
-    /// </summary>
-    public PrintTicketLevel PrintTicketLevel { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the WritingPrintTicketRequiredEventArgs class.
-    /// </summary>
-    public WritingPrintTicketRequiredEventArgs(PrintTicketLevel level, int sequence)
-    {
-        PrintTicketLevel = level;
-        Sequence = sequence;
-    }
-}
-
-/// <summary>
-/// Specifies the level at which a print ticket applies.
-/// </summary>
-public enum PrintTicketLevel
-{
-    /// <summary>
-    /// The print ticket applies to the job.
-    /// </summary>
-    Job,
-
-    /// <summary>
-    /// The print ticket applies to a document within the job.
-    /// </summary>
-    Document,
-
-    /// <summary>
-    /// The print ticket applies to a page within the document.
-    /// </summary>
-    Page
 }
 
 /// <summary>
@@ -2416,40 +2824,12 @@ public enum PrintTicketLevel
 /// </summary>
 public enum InputBin
 {
-    /// <summary>
-    /// Automatic tray selection.
-    /// </summary>
-    AutoSelect,
-
-    /// <summary>
-    /// Cassette tray.
-    /// </summary>
-    Cassette,
-
-    /// <summary>
-    /// Tray 1.
-    /// </summary>
-    Tray1,
-
-    /// <summary>
-    /// Tray 2.
-    /// </summary>
-    Tray2,
-
-    /// <summary>
-    /// Tray 3.
-    /// </summary>
-    Tray3,
-
-    /// <summary>
-    /// Manual feed.
-    /// </summary>
-    Manual,
-
-    /// <summary>
-    /// Auto sheet feeder.
-    /// </summary>
-    AutoSheetFeeder
+    Unknown = 0,
+    AutoSelect = 1,
+    Cassette = 2,
+    Tractor = 3,
+    AutoSheetFeeder = 4,
+    Manual = 5,
 }
 
 /// <summary>
@@ -2457,55 +2837,17 @@ public enum InputBin
 /// </summary>
 public enum Stapling
 {
-    /// <summary>
-    /// No stapling.
-    /// </summary>
-    None,
-
-    /// <summary>
-    /// Staple in the top left corner.
-    /// </summary>
-    StapleTopLeft,
-
-    /// <summary>
-    /// Staple in the top right corner.
-    /// </summary>
-    StapleTopRight,
-
-    /// <summary>
-    /// Staple in the bottom left corner.
-    /// </summary>
-    StapleBottomLeft,
-
-    /// <summary>
-    /// Staple in the bottom right corner.
-    /// </summary>
-    StapleBottomRight,
-
-    /// <summary>
-    /// Dual staple on the left side.
-    /// </summary>
-    StapleDualLeft,
-
-    /// <summary>
-    /// Dual staple on the right side.
-    /// </summary>
-    StapleDualRight,
-
-    /// <summary>
-    /// Dual staple on the top.
-    /// </summary>
-    StapleDualTop,
-
-    /// <summary>
-    /// Dual staple on the bottom.
-    /// </summary>
-    StapleDualBottom,
-
-    /// <summary>
-    /// Saddle stitch.
-    /// </summary>
-    SaddleStitch
+    Unknown = 0,
+    SaddleStitch = 1,
+    BottomLeft = 2,
+    BottomRight = 3,
+    DualLeft = 4,
+    DualRight = 5,
+    DualTop = 6,
+    DualBottom = 7,
+    TopLeft = 8,
+    TopRight = 9,
+    None = 10,
 }
 
 /// <summary>
@@ -2513,49 +2855,9 @@ public enum Stapling
 /// </summary>
 public enum PageOrder
 {
-    /// <summary>
-    /// Standard page order (1, 2, 3...).
-    /// </summary>
-    Standard,
-
-    /// <summary>
-    /// Reverse page order (...3, 2, 1).
-    /// </summary>
-    Reverse
+    Unknown = 0,
+    Standard = 1,
+    Reverse = 2,
 }
 
-/// <summary>
-/// Specifies pages per sheet options.
-/// </summary>
-public enum PagesPerSheet
-{
-    /// <summary>
-    /// One page per sheet.
-    /// </summary>
-    One = 1,
-
-    /// <summary>
-    /// Two pages per sheet.
-    /// </summary>
-    Two = 2,
-
-    /// <summary>
-    /// Four pages per sheet.
-    /// </summary>
-    Four = 4,
-
-    /// <summary>
-    /// Six pages per sheet.
-    /// </summary>
-    Six = 6,
-
-    /// <summary>
-    /// Nine pages per sheet.
-    /// </summary>
-    Nine = 9,
-
-    /// <summary>
-    /// Sixteen pages per sheet.
-    /// </summary>
-    Sixteen = 16
 }

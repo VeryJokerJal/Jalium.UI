@@ -79,23 +79,23 @@ public sealed class DispatcherHooks
     /// </summary>
     public event EventHandler? DispatcherInactive;
 
-    internal void RaiseOperationPosted(Jalium.UI.Dispatcher dispatcher, DispatcherOperation operation) =>
-        OperationPosted?.Invoke(Dispatcher.FromLegacy(dispatcher), new DispatcherHookEventArgs(operation));
+    internal void RaiseOperationPosted(DispatcherCore dispatcher, DispatcherOperation operation) =>
+        OperationPosted?.Invoke(Dispatcher.FromCore(dispatcher), new DispatcherHookEventArgs(operation));
 
-    internal void RaiseOperationStarted(Jalium.UI.Dispatcher dispatcher, DispatcherOperation operation) =>
-        OperationStarted?.Invoke(Dispatcher.FromLegacy(dispatcher), new DispatcherHookEventArgs(operation));
+    internal void RaiseOperationStarted(DispatcherCore dispatcher, DispatcherOperation operation) =>
+        OperationStarted?.Invoke(Dispatcher.FromCore(dispatcher), new DispatcherHookEventArgs(operation));
 
-    internal void RaiseOperationCompleted(Jalium.UI.Dispatcher dispatcher, DispatcherOperation operation) =>
-        OperationCompleted?.Invoke(Dispatcher.FromLegacy(dispatcher), new DispatcherHookEventArgs(operation));
+    internal void RaiseOperationCompleted(DispatcherCore dispatcher, DispatcherOperation operation) =>
+        OperationCompleted?.Invoke(Dispatcher.FromCore(dispatcher), new DispatcherHookEventArgs(operation));
 
-    internal void RaiseOperationAborted(Jalium.UI.Dispatcher dispatcher, DispatcherOperation operation) =>
-        OperationAborted?.Invoke(Dispatcher.FromLegacy(dispatcher), new DispatcherHookEventArgs(operation));
+    internal void RaiseOperationAborted(DispatcherCore dispatcher, DispatcherOperation operation) =>
+        OperationAborted?.Invoke(Dispatcher.FromCore(dispatcher), new DispatcherHookEventArgs(operation));
 
-    internal void RaiseOperationPriorityChanged(Jalium.UI.Dispatcher dispatcher, DispatcherOperation operation) =>
-        OperationPriorityChanged?.Invoke(Dispatcher.FromLegacy(dispatcher), new DispatcherHookEventArgs(operation));
+    internal void RaiseOperationPriorityChanged(DispatcherCore dispatcher, DispatcherOperation operation) =>
+        OperationPriorityChanged?.Invoke(Dispatcher.FromCore(dispatcher), new DispatcherHookEventArgs(operation));
 
-    internal void RaiseDispatcherInactive(Jalium.UI.Dispatcher dispatcher) =>
-        DispatcherInactive?.Invoke(Dispatcher.FromLegacy(dispatcher), EventArgs.Empty);
+    internal void RaiseDispatcherInactive(DispatcherCore dispatcher) =>
+        DispatcherInactive?.Invoke(Dispatcher.FromCore(dispatcher), EventArgs.Empty);
 }
 
 /// <summary>
@@ -130,7 +130,7 @@ public delegate void DispatcherHookEventHandler(object sender, DispatcherHookEve
 public sealed class DispatcherSynchronizationContext : SynchronizationContext
 {
     private readonly Dispatcher _dispatcher;
-    private readonly Jalium.UI.DispatcherPriority _priority;
+    private readonly DispatcherPriority _priority;
 
     /// <summary>
     /// Initializes a new instance using the current dispatcher.
@@ -157,27 +157,6 @@ public sealed class DispatcherSynchronizationContext : SynchronizationContext
     {
         _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
         Dispatcher.ValidatePriority(priority, nameof(priority));
-        _priority = Dispatcher.ToLegacyPriority(priority);
-        SetWaitNotificationRequired();
-    }
-
-    /// <summary>
-    /// Compatibility overload for applications compiled against early Jalium builds.
-    /// </summary>
-    public DispatcherSynchronizationContext(Jalium.UI.Dispatcher dispatcher)
-        : this(Dispatcher.FromLegacy(dispatcher), DispatcherPriority.Normal)
-    {
-    }
-
-    /// <summary>
-    /// Compatibility overload for applications compiled against early Jalium builds.
-    /// </summary>
-    public DispatcherSynchronizationContext(
-        Jalium.UI.Dispatcher dispatcher,
-        Jalium.UI.DispatcherPriority priority)
-    {
-        _dispatcher = Dispatcher.FromLegacy(dispatcher ?? throw new ArgumentNullException(nameof(dispatcher)));
-        Jalium.UI.Dispatcher.ValidatePriority(priority, nameof(priority));
         _priority = priority;
         SetWaitNotificationRequired();
     }
@@ -187,12 +166,12 @@ public sealed class DispatcherSynchronizationContext : SynchronizationContext
     {
         ArgumentNullException.ThrowIfNull(d);
 
-        Jalium.UI.DispatcherPriority priority = BaseCompatibilityPreferences.GetInlineDispatcherSynchronizationContextSend()
+        DispatcherPriority priority = BaseCompatibilityPreferences.GetInlineDispatcherSynchronizationContextSend()
             && _dispatcher.CheckAccess()
-            ? Jalium.UI.DispatcherPriority.Send
+            ? DispatcherPriority.Send
             : _priority;
 
-        _dispatcher.LegacyDispatcher.Invoke(() => d(state), priority);
+        _dispatcher.Invoke(() => d(state), priority);
     }
 
     /// <inheritdoc />
@@ -203,7 +182,7 @@ public sealed class DispatcherSynchronizationContext : SynchronizationContext
         // Post has no returned Task on which an exception can be observed.  Use a regular
         // DispatcherOperation so failures continue through the dispatcher's unhandled-exception
         // path, matching WPF's SynchronizationContext contract.
-        _dispatcher.LegacyDispatcher.BeginInvoke(_priority, () => d(state));
+        _dispatcher.BeginInvoke(_priority, () => d(state));
     }
 
     /// <inheritdoc />
@@ -214,10 +193,10 @@ public sealed class DispatcherSynchronizationContext : SynchronizationContext
             return this;
         }
 
-        Jalium.UI.DispatcherPriority priority = BaseCompatibilityPreferences.GetFlowDispatcherSynchronizationContextPriority()
+        DispatcherPriority priority = BaseCompatibilityPreferences.GetFlowDispatcherSynchronizationContextPriority()
             ? _priority
-            : Jalium.UI.DispatcherPriority.Normal;
-        return new DispatcherSynchronizationContext(_dispatcher.LegacyDispatcher, priority);
+            : DispatcherPriority.Normal;
+        return new DispatcherSynchronizationContext(_dispatcher, priority);
     }
 
     /// <inheritdoc />

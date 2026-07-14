@@ -12,7 +12,7 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 
 - 积极开发中 —— v26.10.6（小版本之间 API 仍可能演进）
 - 主要目标平台：Windows 10/11（x64、ARM64）
-- 跨平台：Android（arm64-v8a、x86_64）、Linux（Vulkan）、macOS（Metal）
+- 跨平台：Android（arm64-v8a、x86_64）、Linux（X11/Wayland；Vulkan 或软件渲染）、macOS（Metal）
 - 运行时目标：.NET 10（`net10.0-windows`、`net10.0-android`、`net10.0`）
 - 渲染：DirectX 12（Windows）、Vulkan（Linux/Android）、Metal（macOS）、软件渲染回退
 
@@ -25,7 +25,7 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 - 开发体验：JALXAML 热重载（实时可视化树修补），外加按需启用的内建 DevTools 检查器与调试 HUD
 - 通过 NuGet 提供构建期工具链（`Jalium.UI.Build`、`Jalium.UI.Xaml.SourceGenerator`）
 - 一流的 Generic Host 集成 —— `AppBuilder` 实现 `IHostApplicationBuilder`（`Microsoft.Extensions.Hosting`），支持 DI、配置、选项、日志与指标，另有 Jalium MVVM 视图/视图模型接线
-- 带自动化对等体（automation peer）的 UIA 无障碍支持
+- 带 Windows UIA 与 Linux AT-SPI 桥接的自动化对等体（automation peer）无障碍支持
 - 视觉特效：液态玻璃、背景模糊、亚克力（acrylic）、云母（mica）、过渡着色器、动画位图（GIF / APNG / 动画 WebP）
 - 通过 `MediaElement` / `NativeVideoSurface` 提供原生 GPU 视频（D3D12 / Vulkan 表面，分阶段推进中）
 - 完整的多点触控输入 —— 带物理惯性的操控、手势识别、实时触控笔预览
@@ -75,7 +75,9 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 | --- | --- |
 | `Jalium.UI.Desktop` | `net10.0-windows` —— 携带按 RID 划分原生 DLL（win-x64 / win-arm64）的桌面发行版 |
 | `Jalium.UI.Android` | `net10.0-android` —— 携带原生 .so 库的 Android 发行版 |
-| `Jalium.UI.Linux` | `net10.0` —— Linux 桌面发行版（Wayland/X11，Vulkan + 软件渲染；linux-x64 / arm64 / musl RID） |
+| `Jalium.UI.Linux` | `net10.0` —— Linux 桌面发行版（Wayland/X11，Vulkan + 软件渲染；预留 linux-x64 / linux-arm64 / linux-musl-x64 / linux-musl-arm64 RID 布局） |
+
+这里列出的 RID 是包布局，并不表示四个 RID 与 NativeAOT 均已完成发布验证；当前证据与剩余边界以 [Linux 支持状态矩阵](docs/linux-parity-status.md) 为准。
 
 ## 能力概览
 
@@ -99,7 +101,7 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 - **富功能类**：`InkCanvas`、`WebView`/`WebBrowser`、`EditControl`、`RichTextBox`、`QRCode`（自托管编码器）、`TitleBar`、`Terminal`、`SwipeControl`
 - **开发者工具类**：`DiffViewer`、`HexEditor`
 - **互操作类**：`WindowsFormsHost`（在 `net10.0-windows` 上托管 `System.Windows.Forms` 控件）
-- **打印类**：`PrintDialog`，由原生 Win32 平台层提供支持
+- **打印类**：`PrintDialog`，Windows 使用 Win32，Linux 使用 PDF + xdg-desktop-portal
 - **通知类**：Toast 风格的通知系统
 
 ### 文本编辑
@@ -183,7 +185,7 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 
 ### 无障碍
 
-- 面向核心控件与专用控件的 UIA 自动化对等体
+- 面向核心控件与专用控件的自动化对等体，通过 Windows UIA 与 Linux AT-SPI 导出
 - Chart、DiffViewer、HexEditor、JsonTreeViewer、Map、PropertyGrid 的自动化
 - `Window.ResolveCursor` 会为禁用元素返回标准箭头，
   使悬停状态不会与已启用的控件混淆。
@@ -339,8 +341,9 @@ app.Run(window);
 
 ### 前置条件
 
-- .NET 10 SDK（`net10.0-windows`）
-- 安装了 C++ 工作负载的 Visual Studio（用于原生模块）
+- .NET 10 SDK
+- 安装了 C++ 工作负载的 Visual Studio（用于 Windows 原生模块）
+- CMake、Ninja、Clang/GCC 以及 X11/Wayland 开发包（用于 Linux 原生模块；参见 [Linux 指南](docs/linux.md)）
 - Vulkan SDK（可选，用于 Vulkan 后端）
 - Android NDK（可选，用于 Android 构建）
 
@@ -430,7 +433,7 @@ Jalium.UI/
 | [`docs/drawing-api.md`](docs/drawing-api.md) | 绘图 API（DrawingContext、GPU 特效、渲染） |
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | 手动构建配置指南 |
 | [`docs/linux.md`](docs/linux.md) | Linux 桌面指南（运行时依赖、窗口系统、打包） |
-| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | Linux 支持状态矩阵与路线图 |
+| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | 经验证的 Linux 支持矩阵、证据与剩余边界 |
 | [`docs/render-thread-design.md`](docs/render-thread-design.md) | 渲染线程架构 |
 | [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | 呈现节奏 / 帧调度 |
 | [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | Shell 拖放集成 |

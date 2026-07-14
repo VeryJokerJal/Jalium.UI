@@ -6,7 +6,7 @@ namespace Jalium.UI.Interactivity;
 /// <summary>
 /// Executes a specified ICommand when invoked.
 /// </summary>
-public sealed class InvokeCommandAction : TriggerAction<DependencyObject>
+public sealed class InvokeCommandAction : BehaviorTriggerAction<DependencyObject>
 {
     /// <summary>
     /// Identifies the Command dependency property.

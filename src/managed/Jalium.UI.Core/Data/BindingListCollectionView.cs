@@ -933,73 +933,6 @@ public class XmlNamespaceMapping : ISupportInitialize
 }
 
 /// <summary>
-/// Converts values between different types in an alternating fashion.
-/// </summary>
-[ContentProperty(nameof(Values))]
-public class AlternationConverter : IValueConverter
-{
-    private readonly List<object> _values = new();
-
-    /// <summary>
-    /// Gets the list of objects in the converter.
-    /// </summary>
-    public IList Values => _values;
-
-    /// <summary>
-    /// Converts a value based on the alternation count.
-    /// </summary>
-    public object? Convert(object? o, Type targetType, object? parameter, CultureInfo culture)
-    {
-        if (_values.Count == 0 || o is not int alternationIndex)
-        {
-            return DependencyProperty.UnsetValue;
-        }
-
-        int index = alternationIndex % _values.Count;
-        if (index < 0)
-        {
-            index += _values.Count;
-        }
-
-        return _values[index];
-    }
-
-    /// <summary>
-    /// Converts a value using the current culture. Retained for source compatibility with the
-    /// earlier Jalium three-parameter converter surface.
-    /// </summary>
-    public object? Convert(object? value, Type targetType, object? parameter) =>
-        Convert(value, targetType, parameter, CultureInfo.CurrentCulture);
-
-    /// <inheritdoc />
-    public object ConvertBack(object? o, Type targetType, object? parameter, CultureInfo culture)
-    {
-        return _values.IndexOf(o!);
-    }
-}
-
-/// <summary>
-/// Provides the legacy data-namespace system font values retained for source compatibility.
-/// New code should use <c>Jalium.UI.SystemFonts</c>, whose font-family properties expose
-/// <c>FontFamily</c> values and the complete WPF-compatible resource-key surface.
-/// </summary>
-public static class SystemFonts
-{
-    public static string MessageFontFamily => FrameworkElement.DefaultFontFamilyName;
-    public static double MessageFontSize => 14.0;
-    public static string CaptionFontFamily => FrameworkElement.DefaultFontFamilyName;
-    public static double CaptionFontSize => 14.0;
-    public static string SmallCaptionFontFamily => FrameworkElement.DefaultFontFamilyName;
-    public static double SmallCaptionFontSize => 11.0;
-    public static string MenuFontFamily => FrameworkElement.DefaultFontFamilyName;
-    public static double MenuFontSize => 14.0;
-    public static string StatusFontFamily => FrameworkElement.DefaultFontFamilyName;
-    public static double StatusFontSize => 14.0;
-    public static string IconFontFamily => FrameworkElement.DefaultFontFamilyName;
-    public static double IconFontSize => 9.0;
-}
-
-/// <summary>
 /// A collection of XmlNamespaceMapping objects that provides support for
 /// adding and managing XML namespace mappings for use with XmlDataProvider.
 /// </summary>
@@ -1083,9 +1016,10 @@ public class XmlNamespaceMappingCollection :
     }
 
     /// <inheritdoc />
-    public new IEnumerator<XmlNamespaceMapping> GetEnumerator() => _mappings.GetEnumerator();
+    public override IEnumerator GetEnumerator() => ProtectedGetEnumerator();
 
-    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    IEnumerator<XmlNamespaceMapping> IEnumerable<XmlNamespaceMapping>.GetEnumerator() =>
+        ProtectedGetEnumerator();
 
     /// <summary>
     /// Adds the specified object as a child. If the object is an XmlNamespaceMapping, it is added to the collection.

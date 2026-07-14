@@ -109,21 +109,21 @@ public abstract class BackdropEffect : IBackdropEffect
 /// <summary>
 /// A simple blur effect.
 /// </summary>
-public sealed class BlurEffect : BackdropEffect
+public sealed class BackdropBlurEffect : BackdropEffect
 {
     /// <summary>
-    /// Initializes a new instance of the <see cref="BlurEffect"/> class.
+    /// Initializes a new instance of the <see cref="BackdropBlurEffect"/> class.
     /// </summary>
-    public BlurEffect()
+    public BackdropBlurEffect()
     {
     }
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="BlurEffect"/> class.
+    /// Initializes a new instance of the <see cref="BackdropBlurEffect"/> class.
     /// </summary>
     /// <param name="radius">The blur radius in pixels.</param>
     /// <param name="blurType">The type of blur to apply.</param>
-    public BlurEffect(float radius, BackdropBlurType blurType = BackdropBlurType.Gaussian)
+    public BackdropBlurEffect(float radius, BackdropBlurType blurType = BackdropBlurType.Gaussian)
     {
         BlurRadius = radius;
         BlurType = blurType;

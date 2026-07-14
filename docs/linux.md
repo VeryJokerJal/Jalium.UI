@@ -1,7 +1,18 @@
 # Linux desktop support
 
-Jalium.UI targets portable desktop Linux rather than a single distribution.
-The release payload contains four .NET runtime identifiers:
+Jalium.UI has a native Linux desktop backend for X11 and Wayland. Vulkan is
+the accelerated renderer and the CPU renderer is the portability fallback.
+Linux support is implemented by `Jalium.UI.Linux`; it is not a compatibility
+layer over WPF or Win32.
+
+The detailed verification ledger and the remaining limits are tracked in
+[`linux-parity-status.md`](linux-parity-status.md). In particular, a feature
+being present in the source is not treated as proof for every architecture,
+desktop, device, or driver.
+
+## Release RIDs and ABI floor
+
+The package layout reserves four Linux runtime identifiers:
 
 | C library | Architecture | RID |
 | --- | --- | --- |
@@ -10,229 +21,407 @@ The release payload contains four .NET runtime identifiers:
 | musl | x86-64 | `linux-musl-x64` |
 | musl | Arm64 | `linux-musl-arm64` |
 
-This covers mainstream desktop distributions on x86-64 and Arm64: glibc 2.31
-or newer systems such as supported Debian/Ubuntu releases, Fedora, RHEL 9 or
-newer, current openSUSE/SLES and Arch-family releases, plus Alpine through the
-separate musl payload. Linux Arm32, LoongArch64, bionic/Termux, mobile shells,
-and framebuffer-only installations are not release RIDs in this repository.
+The glibc release build is produced in the Ubuntu 20.04 baseline image. The
+release gates reject imports newer than `GLIBC_2.31` or
+`GLIBCXX_3.4.28`, including imports from a self-contained apphost or a
+NativeAOT executable. Native libraries use `RUNPATH=$ORIGIN` for Jalium-to-
+Jalium dependencies.
 
-The glibc release payload is built in Ubuntu 20.04 containers with glibc 2.31
-and GCC 9. CI rejects any native library, self-contained apphost/runtime ELF,
-or NativeAOT executable that imports symbols newer than `GLIBC_2.31` or
-`GLIBCXX_3.4.28`. This is an ABI floor, not an extension of a distribution's
-vendor support lifetime: a target desktop must still provide the runtime
-dependencies below. Musl releases are built and tested separately on Alpine.
+`linux-x64` and `linux-musl-x64` have current local evidence for their native,
+static-link, package, self-contained, trimmed single-file, and NativeAOT gates.
+`linux-arm64` has the same evidence under local QEMU execution, which does not
+replace physical Arm qualification. The workflow contains a native Arm runner
+for `linux-musl-arm64`, but that RID and the final combined four-RID package
+remain pending in this working tree. Consult the verification ledger before a
+release.
 
-## Windowing and rendering
+Linux Arm32, LoongArch64, Android/bionic, Termux, and framebuffer-only systems
+are not release targets here.
 
-- `JALIUM_WINDOW_SYSTEM=auto` prefers Wayland when a compositor is available
-  and falls back to X11.
-- `JALIUM_WINDOW_SYSTEM=wayland` and `x11` force a backend and fail clearly
-  when that backend is unavailable.
-- Vulkan supports both `VK_KHR_wayland_surface` and
-  `VK_KHR_xlib_surface`.
-- The software renderer presents through `wl_shm` on Wayland and `XPutImage`
-  on X11.
-- `JALIUM_RENDER_BACKEND=auto` prefers Vulkan and keeps the software renderer
-  as the portability fallback. `vulkan` and `software` force one backend.
+## Selecting the window system and renderer
 
-The native libraries are deployed together under `runtimes/<rid>/native` and
-use only `RUNPATH=$ORIGIN` for Jalium-to-Jalium dependencies.
+```bash
+# auto is the default
+JALIUM_WINDOW_SYSTEM=auto   # prefer Wayland, then try X11
+JALIUM_WINDOW_SYSTEM=wayland
+JALIUM_WINDOW_SYSTEM=x11
+
+JALIUM_RENDER_BACKEND=auto # prefer Vulkan, then use software
+JALIUM_RENDER_BACKEND=vulkan
+JALIUM_RENDER_BACKEND=software
+```
+
+Forcing a backend makes an unavailable backend fail explicitly. `auto` is the
+appropriate setting for a distributable desktop application.
+
+### X11
+
+The X11 path implements:
+
+- window creation, state, activation, owner relationships, min/max sizing,
+  interactive move/resize, icon, opacity, topmost, and taskbar visibility;
+- monitor enumeration through XRandR and work-area/state integration through
+  ICCCM/EWMH;
+- keyboard and XIM composition, themed cursors, mouse capture, XInput2 smooth
+  scrolling, touch, and pen axes;
+- XDND drag-and-drop and multi-format clipboard ownership;
+- Vulkan presentation through `VK_KHR_xlib_surface`;
+- software presentation through MIT-SHM when available, with a tested
+  `XPutImage` fallback and damage-scoped updates.
+
+Window-manager requests such as activation and topmost remain policy decisions:
+a conforming request can still be refused by the active window manager.
+
+### Wayland
+
+The Wayland path implements:
+
+- `xdg_toplevel` and `xdg_popup`, owner-relative popup placement, min/max
+  sizing, compositor move/resize, maximize/minimize/fullscreen, and configure
+  synchronization;
+- compositor-native system menus and token-backed activation through
+  `xdg_toplevel.show_window_menu` and `xdg-activation-v1` when an eligible
+  input serial is available;
+- integer `wl_output` scale, buffer scaling, monitor metadata, themed cursors,
+  `zxdg-decoration`, optional `xdg-toplevel-icon-v1`, and `xdg-foreign-v2`
+  portal parent handles;
+- keyboard repeat/state, xkb text commits, text-input-v3, WSLg's
+  text-input-v1, mouse, and `wl_touch`;
+- data-device clipboard and drag-and-drop;
+- Vulkan presentation through `VK_KHR_wayland_surface` and software
+  presentation through double-buffered `wl_shm`.
+
+Core Wayland protocols deliberately do not expose several global desktop
+operations. Jalium therefore reports these operations as unsupported instead
+of fabricating success:
+
+- global cursor coordinates and absolute top-level window positions;
+- always-on-top, whole-window opacity, and taskbar-list visibility;
+- forced focus/activation without a compositor-issued activation token.
+
+Per-pixel alpha is still available through a transparent render surface.
+`xdg-toplevel-icon-v1`, decoration, and portal-parent support are conditional on
+the compositor advertising the corresponding protocol. Integer output scaling
+is implemented; a dedicated fractional-scale protocol path is not.
+
+## Rendering and text
+
+- Vulkan and software render targets use the same managed drawing pipeline.
+- The self-hosted OpenType engine performs shaping and rasterization;
+  Fontconfig is used for font discovery and per-codepoint fallback. It does not
+  require FreeType or HarfBuzz for ordinary outline text.
+- Explicit ClearType/LCD mode produces independent RGB coverage. Vulkan uses a
+  dual-source blend pipeline when the device advertises that feature and
+  degrades that run to grayscale when it does not.
+- Color glyphs preserve authored colors for supported COLR/CPAL and CBDT/CBLC
+  data. Optional runtime FreeType can extend COLR-v1 coverage, but this is not a
+  promise that every color-font technology or paint graph is supported.
+- A CJK font must be installed for CJK fallback; no renderer can draw a glyph
+  absent from every installed font.
+
+The current Linux GPU evidence is software Vulkan (`llvmpipe`) and WSL/virtual
+compositors. It is not physical-vendor GPU qualification.
+
+## Input, clipboard, and drag-and-drop
+
+Both window systems support normal keyboard/mouse input, composition, capture,
+key state, text and URI-list drag-and-drop, and common clipboard formats:
+
+- UTF-8 plain text;
+- `text/html` and RTF;
+- `text/uri-list` / file-drop lists;
+- `image/png` / bitmap data;
+- byte-backed custom MIME representations through `IDataObject`.
+
+The drag source exposes effect negotiation, feedback/cancellation, and a drag
+image. The real interop tests use `xclip`, `wl-copy`/`wl-paste`, XDND, and a
+nested Weston compositor rather than testing only an in-process data object.
+
+`wl_touch` and XInput2 touch are wired into the managed pointer/touch pipeline.
+XInput2 and Wayland tablet-v2 map proximity, hover/contact, pressure, tilt,
+rotation, eraser/tool type, and barrel/secondary buttons into the managed pen
+pipeline. The current evidence uses synthetic protocol events rather than
+physical touch or pen hardware.
+
+## Media
+
+`libjalium.native.media.so` does not have direct GStreamer or GLib
+`DT_NEEDED` entries. GStreamer 1.16+ is loaded with `dlopen`/`dlsym` only when a
+GStreamer-backed capability is used. If the runtime or a codec plugin is
+absent, the capability reports unavailable while the media library itself
+remains loadable. Built-in audio codecs and GIF decoding therefore do not
+disappear merely because GStreamer is not installed.
+
+The Linux GStreamer backend implements:
+
+- local files and HTTP/HTTPS sources, including HTTP range requests;
+- H.264 video and AAC audio when the installed plugins provide the codecs;
+- accurate microsecond seek, audio-track discovery/selection, and embedded
+  subtitle discovery/read/seek;
+- animated GIF, APNG, and WebP frame count, compositing/disposal/blend, frame
+  decode, and frame timing;
+- camera and microphone enumeration/open/read/close APIs;
+- managed bridge coverage for the same local and HTTP media fixture.
+
+The automated positive path generates a real H.264/AAC Matroska file with two
+audio tracks and a subtitle track, then exercises local and HTTP 200/206
+lifecycles. The HTTP fixture is streamable (its Matroska Cues are front-loaded);
+opening an arbitrary remote Matroska file with tail-loaded Cues and seeking
+immediately is not part of this qualification. Camera and microphone tests
+currently prove enumeration and safe no-device failure only; no physical
+capture device has been qualified.
+
+### dma-buf boundary
+
+`JALIUM_LINUX_MEDIA_DMABUF_EXPORT` is an observed capability, not a generic
+"VAAPI is installed" flag. It is set only after a real sample exports a
+Vulkan-importable, single-plane packed-RGB dma-buf (`AR24`, `XR24`, `AB24`, or
+`XB24`).
+
+NV12, P010, `DMA_DRM`, and multi-plane dma-bufs currently reopen the
+timestamp-matched CPU BGRA/RGBA path. Vulkan does not yet own the YCbCr
+immutable-sampler pipeline needed for those formats. The available WSL/CI
+environment has no `/dev/dri`, so the fallback and lifetime rules are tested,
+but physical VAAPI-to-Vulkan zero-copy is not.
 
 ## Desktop integration
 
-- File open/save/folder selection and URI launching use
-  `xdg-desktop-portal` through one persistent libgio D-Bus connection.
-- Desktop notifications use libnotify only when a live
-  `org.freedesktop.Notifications` service exists.
-- Text clipboard, drag-and-drop, keyboard text input, key repeat/state, and
-  composition are implemented for X11 and Wayland. Clipboard and drag-and-drop
-  support UTF-8 text and URI lists; Wayland input supports text-input-v3 and
-  the text-input-v1 protocol advertised by WSLg.
-- The managed `AutomationPeer` tree is exported through AT-SPI2 on Linux,
-  including Accessible, Component, Action, and Text interfaces plus focus,
-  property, window, and child-change events. If the desktop accessibility bus
-  is absent, startup remains safe and the bridge reports itself unavailable.
-- The standard release payload links GStreamer 1.16 or newer directly for image, video,
-  camera, and AAC/M4A integration. Its GLib/GObject and GStreamer base/app,
-  pbutils, video, and audio libraries are therefore runtime dependencies, not
-  optional plugins. A custom native build made without GStreamer keeps the ABI
-  stubs but does not provide those media capabilities.
+### Portals and printing
 
-The Gallery capability-gates Windows-only WebView2, taskbar/jump-list, and
-tray-icon samples. Printing is currently gated until the synchronous print API
-can provide the document file descriptor required by the portal.
+One persistent libgio D-Bus connection backs:
+
+- open/save/folder dialogs, filters, cancellation, and X11/Wayland parent
+  handles through `org.freedesktop.portal.FileChooser`;
+- URI and file launching through `org.freedesktop.portal.OpenURI`;
+- color scheme, contrast, and reduced-motion reads/change signals through
+  `org.freedesktop.portal.Settings`;
+- printing through `org.freedesktop.portal.Print`.
+
+Linux printing renders the requested visual or paginator to PDF, completes
+`PreparePrint`, and passes the PDF descriptor to `Print` with a Unix FD list.
+The desktop portal/backend normally hands that job to the desktop print stack,
+commonly CUPS. Jalium does not directly enumerate or administer CUPS queues on
+Linux: `PrintQueue` enumeration and queue control remain Windows-only. The
+automated proof uses a protocol-faithful fake portal and validates the PDF file
+descriptor; a physical printer has not been tested.
+
+### Accessibility
+
+The managed automation-peer tree is exported on the AT-SPI2 accessibility bus.
+The bridge implements Accessible, Application, Component, Action, Text,
+EditableText, Value, Selection, and Table contracts, plus focus, state,
+property, child-tree, and window lifecycle events. Startup remains safe when
+the accessibility bus is absent.
+
+The integration smoke queries and mutates the tree with real accessibility-bus
+D-Bus calls, including Unicode-scalar text, EditableText changes,
+`ChildrenChanged`, focus/property changes, and window lifecycle. This is
+protocol coverage, not an interoperability certification for every screen
+reader.
+
+### Tray, notifications, session, and file associations
+
+- `NotifyIcon` exports both freedesktop and KDE StatusNotifierItem identities,
+  properties, icon/tooltip/menu metadata, Activate, SecondaryActivate,
+  ContextMenu, and Scroll callbacks. Balloon notifications use libnotify and
+  surface action/closed callbacks when a notification service is present.
+- `Application`/`Window.SessionEnding` integrates with systemd-logind's delay
+  inhibitor and `PrepareForShutdown`, and with XSMP logout/cancellation for
+  X11 sessions. A desktop may expose either path.
+- File associations create per-user `.desktop` and shared-MIME-info files,
+  update the MIME database, and select the handler with `xdg-mime`. Removal
+  cleans only the association created by Jalium.
+- Linux `SystemParameters` reads GNOME GSettings, KDE configuration, portal
+  appearance settings, environment overrides, monitor/work-area data, and
+  `/sys/class/power_supply`; changes raise the framework settings events.
 
 ## Runtime dependencies
 
-Package names vary between distributions. Ubuntu 24.04 uses the time64 GLib
-package name:
+Package names vary by distribution. The table distinguishes mandatory native
+display dependencies from optional desktop/media capabilities.
+
+| Area | Runtime requirement | When required |
+| --- | --- | --- |
+| X11 | X11, Xext, XRandR, Xi, Xcursor | X11 backend; Xext enables MIT-SHM |
+| Wayland | wayland-client, xkbcommon | Wayland backend |
+| Vulkan | Vulkan loader and a vendor/Mesa ICD | Vulkan renderer |
+| Software | no GPU driver; X11 or Wayland display libraries | Software renderer |
+| Text | Fontconfig and at least one font | All rendered text |
+| Portals/settings/AT-SPI | GLib/GObject/GIO; portal and AT-SPI services as used | Corresponding integration |
+| Notifications | libnotify and a notification daemon | Balloon/toast notifications |
+| XSMP | libSM and libICE | X11 session-ending integration |
+| Media | GStreamer 1.16 base/app/video/audio/allocators/pbutils; libwebp for WebP decode | Corresponding GStreamer/WebP-backed formats |
+| File associations | `xdg-mime`, shared-mime-info; desktop-file-utils optional | Register/remove association |
+
+Typical Ubuntu 24.04 runtime packages are:
 
 ```bash
 sudo apt-get install \
-  ca-certificates libc6 libgcc-s1 libgssapi-krb5-2 \
-  libssl3 libstdc++6 tzdata zlib1g \
-  libx11-6 libxrandr2 libwayland-client0 libxkbcommon0 \
-  libvulkan1 mesa-vulkan-drivers fontconfig \
-  libglib2.0-0t64 libnotify4 xdg-desktop-portal at-spi2-core \
-  gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-  libicu74
+  ca-certificates libc6 libgcc-s1 libstdc++6 libssl3 zlib1g libicu74 \
+  libx11-6 libxext6 libxrandr2 libxi6 libxcursor1 \
+  libwayland-client0 libxkbcommon0 \
+  libvulkan1 mesa-vulkan-drivers \
+  fontconfig fonts-dejavu-core fonts-noto-cjk \
+  libglib2.0-0t64 libnotify4 libsm6 libice6 at-spi2-core \
+  xdg-desktop-portal xdg-desktop-portal-gtk xdg-utils shared-mime-info \
+  gstreamer1.0-plugins-base gstreamer1.0-plugins-good
 ```
 
-On Ubuntu 22.04 and Debian 12 the GLib runtime package is `libglib2.0-0`; install
-the ICU package version supplied by that distribution (`libicu70` on Ubuntu
-22.04 and `libicu72` on Debian 12). Alpine uses the equivalent runtime set:
+Install `gstreamer1.0-libav` and/or `gstreamer1.0-plugins-bad` when the media
+formats you ship require those codecs. Ubuntu 22.04 and Debian 12 use
+`libglib2.0-0` rather than the Ubuntu 24.04 time64 package name and ship a
+different ICU package version. Alpine uses the equivalent musl packages.
 
-```bash
-apk add \
-  ca-certificates libgcc libssl3 libstdc++ tzdata krb5 zlib \
-  libx11 libxrandr wayland-libs libxkbcommon \
-  vulkan-loader mesa-vulkan-swrast fontconfig \
-  glib libnotify xdg-desktop-portal at-spi2-core \
-  gstreamer gst-plugins-base gst-plugins-good icu-libs icu-data-full
-```
+A desktop portal also needs one backend appropriate to the session, such as
+the GTK, KDE, or compositor-specific backend.
 
-A minimal session must also install one portal backend appropriate for its
-desktop (`xdg-desktop-portal-gtk`, `xdg-desktop-portal-kde`, or the compositor's
-equivalent) and at least one font package visible to Fontconfig. Full GNOME,
-KDE Plasma, and other mainstream desktop installations normally provide both.
-
-Fedora/RHEL, openSUSE, and Arch users should install their distribution's
-equivalents for X11, Wayland, xkbcommon, the Vulkan loader/Mesa driver,
-fontconfig, GLib/GObject, libnotify, xdg-desktop-portal, AT-SPI2, GStreamer 1.0
-base/good plugins, and ICU. Video codecs outside the base/good sets may require
-GStreamer libav or an additional codec plugin. Vulkan can be omitted only for
-an application that forces the software backend and does not run the standard
-Vulkan payload diagnostic.
-
-To build the native libraries on Debian/Ubuntu:
+Build dependencies on Debian/Ubuntu include:
 
 ```bash
 sudo apt-get install \
-  build-essential cmake ninja-build pkg-config \
-  libx11-dev libxext-dev libxrandr-dev \
+  build-essential clang cmake ninja-build pkg-config python3 binutils \
+  libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
   libwayland-dev wayland-protocols libxkbcommon-dev \
   libvulkan-dev libfontconfig1-dev \
   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 ```
 
-Equivalent development packages are installed by the Alpine CI job before it
-builds the musl payload.
+## Build, validate, and package
 
-## Build and package
-
-Build one native RID on a matching Linux host:
-
-```bash
-bash eng/linux/build-native.sh linux-x64 Release
-```
-
-Enable all native smoke targets:
+Build a native payload on a matching host:
 
 ```bash
 JALIUM_NATIVE_BUILD_TESTS=1 \
   bash eng/linux/build-native.sh linux-x64 Release
 ```
 
-Build managed projects in a checkout that is also mounted in Windows/WSL with
-an isolated output root:
+The Ubuntu 20.04 baseline wrapper performs the glibc build, native CTest suite,
+and real X11/Wayland presentation checks:
 
 ```bash
-dotnet build src/packaging/Jalium.UI.Linux/Jalium.UI.Linux.csproj \
-  -c Release \
-  -p:JaliumBuildRoot=/tmp/jalium-ui-build \
+bash eng/linux/build-glibc-baseline.sh linux-x64 Release
+```
+
+Validate the release ABI and exports:
+
+```bash
+bash eng/linux/check-symbol-versions.sh \
+  src/native/bin/native/linux-x64/Release 2.31 3.4.28
+bash eng/linux/check-native-exports.sh \
+  src/native/bin/native/linux-x64/Release
+```
+
+Exercise the static NativeAOT aggregate and its Linux media/audio link path on
+a matching libc and architecture host:
+
+```bash
+bash eng/linux/test-native-aot-static.sh linux-x64 Release
+```
+
+This gate builds `libjalium.native.aot.a`, links the dedicated
+`jalium.native.aot.linux.media-link` executable, runs it, and checks the
+aggregate registration export. It is a static-link regression test, not a
+single-file Linux packaging mode.
+
+Cross builds require an actual compiler/sysroot for the requested architecture
+and libc. A host build cannot be relabelled as another RID:
+
+```bash
+JALIUM_CROSS_C_COMPILER=/opt/cross/bin/aarch64-linux-gnu-gcc \
+JALIUM_CROSS_CXX_COMPILER=/opt/cross/bin/aarch64-linux-gnu-g++ \
+JALIUM_CROSS_SYSROOT=/opt/sysroots/aarch64-linux-gnu \
+JALIUM_CROSS_PKG_CONFIG_LIBDIR=/opt/sysroots/aarch64-linux-gnu/usr/lib/aarch64-linux-gnu/pkgconfig:/opt/sysroots/aarch64-linux-gnu/usr/share/pkgconfig \
+  bash eng/linux/build-native-cross.sh linux-arm64 Release
+
+bash eng/linux/test-cross-toolchains.sh
+```
+
+Build the portable managed test project and the Linux sample with isolated
+outputs when the checkout is shared with Windows/WSL:
+
+```bash
+dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
+  -c Release -m:1 \
+  -p:JaliumBuildRoot=/tmp/jalium-managed \
+  -p:GeneratePackageOnBuild=false
+
+dotnet build samples/Jalium.UI.LinuxDemo/Jalium.UI.LinuxDemo.csproj \
+  -c Release -m:1 \
+  -p:JaliumBuildRoot=/tmp/jalium-managed \
   -p:GeneratePackageOnBuild=false
 ```
 
-The Gallery repository provides the end-to-end publisher:
+Package one RID, then exercise a package-only self-contained, trimmed
+single-file, or NativeAOT consumer:
 
 ```bash
-cd ../Jalium.UI.Gallery
-bash eng/linux/publish.sh linux-x64 Release
+bash eng/linux/pack-linux-packages.sh \
+  linux-x64 Release artifacts/packages /tmp/jalium-pack
+
+package_version="$(sed -n 's:.*<Version>\([^<]*\)</Version>.*:\1:p' Directory.Build.props | head -1)"
+bash eng/linux/test-nuget-consumer.sh \
+  linux-x64 artifacts/packages /tmp/jalium-consumer \
+  "$package_version" self-contained
+bash eng/linux/test-nuget-consumer.sh \
+  linux-x64 artifacts/packages /tmp/jalium-consumer \
+  "$package_version" single-file
+bash eng/linux/test-nuget-consumer.sh \
+  linux-x64 artifacts/packages /tmp/jalium-consumer \
+  "$package_version" aot
 ```
 
-It builds the matching native payload, restores and publishes a self-contained
-Gallery, runs `--diagnostics-only`, validates all seven `.so` files, and writes
-a `.tar.gz` archive under `artifacts/linux`.
+Packing is protected by a stale-native guard
+(`eng/msbuild/JaliumStaleNativeGuard.targets`): `dotnet pack` fails with
+`JALSTALE` errors when `src/native` has uncommitted changes, when a packed
+binary is older than the last commit touching its sources, or when a payload's
+`.jalium-native-complete` stamp (which now records `head=`/`dirty=` build
+provenance) does not match the commit being packed. Rebuild the payload
+(`cmake --build <builddir> --target jalium.native.package.complete`, or
+`src/native/build-android.sh all` for Android) to clear the errors, or pass
+`-p:JaliumAllowStaleNative=true` to downgrade them to warnings deliberately.
+Stamps written by builds older than the guard lack provenance and are rejected
+once — rebuild each payload once to refresh them.
 
-Publish a NativeAOT variant with the same RID-specific native payload:
-
-```bash
-bash eng/linux/publish.sh linux-x64 Release --aot
-```
-
-NativeAOT requires a C toolchain (`clang` on the release builders) and zlib
-development headers. The result contains a native Gallery executable and no
-managed application DLLs; the seven Jalium backend `.so` files remain beside
-it because their window-system, renderer, text, and media ABIs are selected at
-runtime. The glibc NativeAOT executable is linked and run in the same Ubuntu
-20.04 baseline container as the native payload, then the complete publish
-directory is checked against the symbol ceiling. CI publishes both
-self-contained and NativeAOT archives for all four release RIDs.
-
-## Diagnostics
-
-```bash
-./Jalium.UI.Gallery --diagnostics-only
-```
-
-The command reports OS/RID/architecture, display selection, renderer override,
-file presence and actual `dlopen` status for every native library, plus portal,
-notification-daemon, and AT-SPI2 bridge status. It returns nonzero when the
-native payload is incomplete or unloadable.
-
-## Distribution matrix
-
-Package names for the runtime dependencies listed above, per family. "Runtime"
-is what end-user machines need; "-dev" packages are only needed to build the
-native payload from source.
-
-| Capability | Debian/Ubuntu | Fedora/RHEL | Arch | Alpine (musl) | openSUSE |
-| --- | --- | --- | --- | --- | --- |
-| X11 client | `libx11-6 libxext6 libxrandr2` | `libX11 libXext libXrandr` | `libx11 libxext libxrandr` | `libx11 libxext libxrandr` | `libX11-6 libXext6 libXrandr2` |
-| Wayland client | `libwayland-client0` | `wayland` | `wayland` | `wayland-libs-client` | `libwayland-client0` |
-| Keyboard maps | `libxkbcommon0` | `libxkbcommon` | `libxkbcommon` | `libxkbcommon` | `libxkbcommon0` |
-| Font discovery | `libfontconfig1` | `fontconfig` | `fontconfig` | `fontconfig` | `fontconfig` |
-| Vulkan loader | `libvulkan1` (+ `mesa-vulkan-drivers`) | `vulkan-loader` (+ `mesa-vulkan-drivers`) | `vulkan-icd-loader` (+ `vulkan-swrast`) | `vulkan-loader` (+ `mesa-vulkan-swrast`) | `libvulkan1` |
-| Media (optional) | `gstreamer1.0-plugins-base/-good` | `gstreamer1-plugins-base/-good` | `gst-plugins-base/-good` | `gst-plugins-base/-good` | `gstreamer-plugins-base/-good` |
-| Portals (dialogs) | `xdg-desktop-portal` + backend | `xdg-desktop-portal` + backend | `xdg-desktop-portal` + backend | `xdg-desktop-portal` + backend | `xdg-desktop-portal` + backend |
-| Notifications | `libnotify4` | `libnotify` | `libnotify` | `libnotify` | `libnotify4` |
-| CJK text | `fonts-noto-cjk` | `google-noto-sans-cjk-fonts` | `noto-fonts-cjk` | `font-noto-cjk` | `noto-sans-cjk-fonts` |
-
-A CJK font is required for CJK glyphs — the self-hosted text engine falls back
-per-codepoint through fontconfig, but it cannot draw glyphs no installed font
-provides.
+The workflow defines this sequence for all four RIDs and then assembles a
+combined package. Three RIDs currently have local consumer evidence; the final
+four-RID result remains pending until the native `linux-musl-arm64` job and the
+combined-package job complete successfully for the current source.
+The ordinary self-contained and NativeAOT consumers deploy the seven Jalium
+shared libraries beside the application. The single-file mode sets
+`PublishSingleFile`, `PublishTrimmed`, and
+`IncludeNativeLibrariesForSelfExtract`; CI starts it with a fresh
+`DOTNET_BUNDLE_EXTRACT_BASE_DIR`, proves the app opens, and verifies that all
+seven Jalium `.so` files were extracted and loaded from the bundle. This is a
+single deployment file, not a fully static executable: native payloads still
+exist as shared libraries in the configured bundle extraction cache while the
+app runs.
+Passing the static aggregate link gate does not change that runtime boundary.
 
 ## Troubleshooting
 
-**Window opens but stays black.** The software present path reports
-`BACKEND_NOT_AVAILABLE` when the native payload was built without
-X11/Wayland present support; rebuild with `libx11-dev`/`libwayland-dev`
-installed, or check `--diagnostics-only` output for which `.so` failed to load.
+**The application cannot load `libjalium.native.*.so`.** Publish with an
+explicit matching RID and keep all seven libraries together. Run
+`check-native-exports.sh` to distinguish a missing system dependency from a
+missing Jalium export.
 
-**`DllNotFoundException: libjalium.native.*`.** The RID-specific native
-payload is not next to the app. For NuGet consumers, publish or run with an
-explicit `-r linux-x64` (or arm64/musl) so `runtimes/<rid>/native` assets are
-materialized; for repo builds run `bash eng/linux/build-native.sh` first.
+**Vulkan fails in a VM or container.** Install Mesa's Vulkan software ICD or
+set `JALIUM_RENDER_BACKEND=software`. `auto` falls back automatically.
 
-**No file dialog appears.** Portal dialogs need `xdg-desktop-portal` plus a
-desktop backend (`-gtk`, `-kde`, `-wlr`, …) on the session bus. Check
-`FileDialog.IsPortalAvailable`; without a portal the call returns `false`
-rather than opening a fallback dialog.
+**No portal dialog or print UI appears.** Install both
+`xdg-desktop-portal` and a desktop-specific portal backend. Check the session
+bus and `XDG_CURRENT_DESKTOP`; a service package without a running backend is
+not sufficient.
 
-**Vulkan fails in a VM/container.** Install the Mesa software rasterizer
-(`mesa-vulkan-drivers` / `vulkan-swrast`) or force
-`JALIUM_RENDER_BACKEND=software`. The renderer falls back to software
-automatically when Vulkan initialization fails.
+**A codec is unavailable.** Use `gst-inspect-1.0` to check the decoder/demuxer
+on the target machine. The Jalium media library loading successfully only
+proves that its own ABI is available, not that every GStreamer plugin is
+installed.
 
-**Blurry on a HiDPI Wayland monitor.** Fixed by per-surface buffer scale;
-if you run an older payload, update — the compositor was upscaling a
-scale-1 buffer.
+**IME does not compose on X11.** Use a UTF-8 locale and verify that the session
+has a working XIM provider. Wayland negotiates text-input-v3 and then v1 where
+available; otherwise it uses xkb text commits.
 
-**IME does not compose (X11).** XIM requires a UTF-8 locale; in minimal
-environments set e.g. `LANG=C.UTF-8`. On Wayland, text-input-v3 (or v1 on
-WSLg) is negotiated automatically; check the diagnostics output for the
-selected IME path.
-
-**Which window system was picked?** Set `JALIUM_WINDOW_SYSTEM=x11|wayland`
-to force one; default `auto` prefers Wayland when `WAYLAND_DISPLAY` is set.
+**A Wayland API returns unsupported.** Check the protocol-limit list above.
+Global cursor position, tokenless forced activation, topmost, taskbar
+visibility, and whole-window opacity cannot be emulated correctly with core
+Wayland APIs.

@@ -5,8 +5,12 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Provides command related utility methods that register CommandBinding and InputBinding objects.
 /// </summary>
-public static class CommandManager
+public sealed class CommandManager
 {
+    private CommandManager()
+    {
+    }
+
     private static readonly object _syncLock = new();
     private static readonly List<WeakReference<CommandBinding>> _classCommandBindings = new();
     private static readonly List<WeakReference<InputBinding>> _classInputBindings = new();

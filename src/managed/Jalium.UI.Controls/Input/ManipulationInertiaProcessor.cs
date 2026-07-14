@@ -84,11 +84,11 @@ internal sealed class ManipulationInertiaProcessor
         // to Vector? (null), collapsing the test to a mere null check and never
         // comparing the velocity value. Mirror the rotation branch below: null-check
         // the behavior, then compare InitialVelocity against the zero vector.
-        if (translationBehavior != null && translationBehavior.InitialVelocity != default)
+        if (translationBehavior?.IsInitialVelocitySet == true)
             linearVelocity = translationBehavior.InitialVelocity;
-        if (rotationBehavior != null && rotationBehavior.InitialVelocity != 0)
+        if (rotationBehavior?.IsInitialVelocitySet == true)
             angularVelocity = rotationBehavior.InitialVelocity;
-        if (expansionBehavior != null && expansionBehavior.InitialVelocity != default)
+        if (expansionBehavior?.IsInitialVelocitySet == true)
             expansionVelocity = expansionBehavior.InitialVelocity;
 
         _linearVelocity = linearVelocity;
@@ -101,9 +101,15 @@ internal sealed class ManipulationInertiaProcessor
         if (linearStopped && angularStopped && expansionStopped)
             return false;
 
-        _kLinear = ResolveDecay(translationBehavior?.DesiredDeceleration, linearVelocity.Length);
-        _kAngular = ResolveDecay(rotationBehavior?.DesiredDeceleration, Math.Abs(angularVelocity));
-        _kExpansion = ResolveDecay(expansionBehavior?.DesiredDeceleration, expansionVelocity.Length);
+        _kLinear = ResolveDecay(
+            translationBehavior?.IsDesiredDecelerationSet == true ? translationBehavior.DesiredDeceleration : null,
+            linearVelocity.Length);
+        _kAngular = ResolveDecay(
+            rotationBehavior?.IsDesiredDecelerationSet == true ? rotationBehavior.DesiredDeceleration : null,
+            Math.Abs(angularVelocity));
+        _kExpansion = ResolveDecay(
+            expansionBehavior?.IsDesiredDecelerationSet == true ? expansionBehavior.DesiredDeceleration : null,
+            expansionVelocity.Length);
 
         _lastTickTicks = Environment.TickCount64;
         _running = true;

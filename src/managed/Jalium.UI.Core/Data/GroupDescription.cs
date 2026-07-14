@@ -5,69 +5,56 @@ using System.Globalization;
 namespace Jalium.UI.Data;
 
 /// <summary>
-/// Provides an abstract class that describes how to divide the items in a collection into groups.
+/// Provides the Jalium-specific generic-comparer bridge for the canonical
+/// <see cref="System.ComponentModel.GroupDescription"/> type.
 /// </summary>
-public abstract class GroupDescription : System.ComponentModel.GroupDescription, INotifyPropertyChanged
+public static class GroupDescriptionExtensions
 {
     /// <summary>
-    /// Occurs when a property value changes.
+    /// Gets the group comparer through Jalium's generic-comparer surface.
     /// </summary>
-    public new event PropertyChangedEventHandler? PropertyChanged;
-
-    /// <summary>
-    /// Gets or sets a custom comparer for sorting groups using an object that implements IComparer.
-    /// </summary>
-    public new IComparer<object>? CustomSort
+    public static System.Collections.Generic.IComparer<object>? GetJaliumCustomSort(
+        this System.ComponentModel.GroupDescription description)
     {
-        get => base.CustomSort switch
+        ArgumentNullException.ThrowIfNull(description);
+        return description.CustomSort switch
         {
             null => null,
             GenericComparerAdapter adapter => adapter.Comparer,
-            IComparer<object> comparer => comparer,
+            System.Collections.Generic.IComparer<object> comparer => comparer,
             IComparer comparer => new NonGenericComparerAdapter(comparer),
         };
-        set => base.CustomSort = value switch
+    }
+
+    /// <summary>
+    /// Sets the group comparer through Jalium's generic-comparer surface.
+    /// </summary>
+    public static void SetJaliumCustomSort(
+        this System.ComponentModel.GroupDescription description,
+        System.Collections.Generic.IComparer<object>? comparer)
+    {
+        ArgumentNullException.ThrowIfNull(description);
+        description.CustomSort = comparer switch
         {
             null => null,
-            IComparer comparer => comparer,
-            _ => new GenericComparerAdapter(value),
+            IComparer nonGenericComparer => nonGenericComparer,
+            _ => new GenericComparerAdapter(comparer),
         };
-    }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether the subgroups should be sorted in reverse order.
-    /// </summary>
-    public bool SortDescriptionsInGrouping { get; set; }
-
-    /// <summary>
-    /// Raises the PropertyChanged event.
-    /// </summary>
-    /// <param name="propertyName">The name of the property that changed.</param>
-    protected virtual void OnPropertyChanged(string propertyName)
-    {
-        OnPropertyChanged(new PropertyChangedEventArgs(propertyName));
-    }
-
-    /// <inheritdoc />
-    protected override void OnPropertyChanged(PropertyChangedEventArgs e)
-    {
-        base.OnPropertyChanged(e);
-        PropertyChanged?.Invoke(this, e);
     }
 
     private sealed class GenericComparerAdapter : IComparer
     {
-        public GenericComparerAdapter(IComparer<object> comparer)
+        public GenericComparerAdapter(System.Collections.Generic.IComparer<object> comparer)
         {
             Comparer = comparer;
         }
 
-        public IComparer<object> Comparer { get; }
+        public System.Collections.Generic.IComparer<object> Comparer { get; }
 
         public int Compare(object? x, object? y) => Comparer.Compare(x!, y!);
     }
 
-    private sealed class NonGenericComparerAdapter : IComparer<object>
+    private sealed class NonGenericComparerAdapter : System.Collections.Generic.IComparer<object>
     {
         private readonly IComparer _comparer;
 
@@ -83,10 +70,10 @@ public abstract class GroupDescription : System.ComponentModel.GroupDescription,
 /// <summary>
 /// Describes the grouping of items using a property name as the criteria.
 /// </summary>
-public sealed class PropertyGroupDescription : GroupDescription
+public sealed class PropertyGroupDescription : System.ComponentModel.GroupDescription
 {
-    private static readonly IComparer CompareNameAscendingInstance = new NameComparer(ListSortDirection.Ascending);
-    private static readonly IComparer CompareNameDescendingInstance = new NameComparer(ListSortDirection.Descending);
+    private static readonly IComparer CompareNameAscendingInstance = new NameComparer(System.ComponentModel.ListSortDirection.Ascending);
+    private static readonly IComparer CompareNameDescendingInstance = new NameComparer(System.ComponentModel.ListSortDirection.Descending);
 
     private string? _propertyName;
     private IValueConverter? _converter;
@@ -241,9 +228,9 @@ public sealed class PropertyGroupDescription : GroupDescription
 
     private sealed class NameComparer : IComparer
     {
-        private readonly ListSortDirection _direction;
+        private readonly System.ComponentModel.ListSortDirection _direction;
 
-        internal NameComparer(ListSortDirection direction)
+        internal NameComparer(System.ComponentModel.ListSortDirection direction)
         {
             _direction = direction;
         }
@@ -253,7 +240,7 @@ public sealed class PropertyGroupDescription : GroupDescription
             var xName = (x as CollectionViewGroup)?.Name ?? x;
             var yName = (y as CollectionViewGroup)?.Name ?? y;
             var result = Comparer.DefaultInvariant.Compare(xName, yName);
-            return _direction == ListSortDirection.Ascending ? result : -result;
+            return _direction == System.ComponentModel.ListSortDirection.Ascending ? result : -result;
         }
     }
 }

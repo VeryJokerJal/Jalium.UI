@@ -3,7 +3,7 @@ using Jalium.UI.Media.Effects;
 using Jalium.UI.Media.Media3D;
 using Jalium.UI.Rendering;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Media;
 
 /// <summary>
 /// Represents a node in the visual tree.
@@ -50,7 +50,7 @@ public abstract class Visual : DependencyObject
     // the first dirty frame and replays it from this slot on subsequent
     // clean frames. SetRenderDirty() implicitly invalidates the cache because
     // RenderDirect re-records whenever _isRenderDirty is true. Kept as object
-    // so Core doesn't leak the Media.Rendering.Drawing concrete type.
+    // so Core doesn't leak the Media.Rendering.RecordedDrawing concrete type.
     private object? _cachedDrawing;
 
     // Retained GPU layer handle (opaque native pointer; 0 = none). Holds this
@@ -326,7 +326,7 @@ public abstract class Visual : DependencyObject
     /// <c>JALIUM_DISABLE_RENDER_CACHE=1</c> environment variable checked by
     /// that bootstrap.
     /// </remarks>
-    public static IRenderCacheHost? RenderCacheHost { get; set; }
+    internal static IRenderCacheHost? RenderCacheHost { get; set; }
 
     // Retained-mode cache telemetry — cumulative since process start.
     // DevTools subtracts last-frame snapshot to expose per-frame deltas via
@@ -1518,7 +1518,7 @@ public abstract class Visual : DependencyObject
     }
 
     /// <summary>Returns the transform from this visual to an ancestor visual.</summary>
-    public Media.GeneralTransform TransformToAncestor(Visual ancestor)
+    public GeneralTransform TransformToAncestor(Visual ancestor)
     {
         ArgumentNullException.ThrowIfNull(ancestor);
         if (!ReferenceEquals(this, ancestor) && !ancestor.IsAncestorOf(this))
@@ -1526,7 +1526,7 @@ public abstract class Visual : DependencyObject
             throw new InvalidOperationException("The specified visual is not an ancestor of this visual.");
         }
 
-        return ToMediaGeneralTransform(TransformToVisual(ancestor));
+        return TransformToVisual(ancestor) ?? new MatrixTransform(Matrix.Identity);
     }
 
     /// <summary>
@@ -1544,15 +1544,15 @@ public abstract class Visual : DependencyObject
                 "This visual is not hosted below the specified Visual3D ancestor.");
         }
 
-        Media.GeneralTransform transform2D = ReferenceEquals(this, hostedRoot)
-            ? new Media.MatrixTransform(Matrix.Identity)
+        GeneralTransform transform2D = ReferenceEquals(this, hostedRoot)
+            ? new MatrixTransform(Matrix.Identity)
             : TransformToAncestor(hostedRoot);
         GeneralTransform3D transform3D = host.TransformToAncestor(ancestor);
         return new GeneralTransform2DTo3D(transform2D, host, transform3D);
     }
 
     /// <summary>Returns the transform from this visual to a descendant visual.</summary>
-    public Media.GeneralTransform TransformToDescendant(Visual descendant)
+    public GeneralTransform TransformToDescendant(Visual descendant)
     {
         ArgumentNullException.ThrowIfNull(descendant);
         if (!ReferenceEquals(this, descendant) && !IsAncestorOf(descendant))
@@ -1560,7 +1560,7 @@ public abstract class Visual : DependencyObject
             throw new InvalidOperationException("The specified visual is not a descendant of this visual.");
         }
 
-        return ToMediaGeneralTransform(TransformToVisual(descendant));
+        return TransformToVisual(descendant) ?? new MatrixTransform(Matrix.Identity);
     }
 
     /// <summary>Called when the DPI used to render this visual changes.</summary>
@@ -1627,28 +1627,6 @@ public abstract class Visual : DependencyObject
         return group;
     }
 
-    private static Media.GeneralTransform ToMediaGeneralTransform(GeneralTransform? transform)
-    {
-        if (transform is null)
-        {
-            return new Media.MatrixTransform(Matrix.Identity);
-        }
-
-        // The legacy Jalium transform returned by TransformToVisual is affine. Sampling the
-        // origin and unit axes preserves its full translate/scale/rotate/skew matrix while
-        // returning WPF's canonical Media.GeneralTransform hierarchy.
-        Point origin = transform.Transform(default);
-        Point unitX = transform.Transform(new Point(1.0, 0.0));
-        Point unitY = transform.Transform(new Point(0.0, 1.0));
-        return new Media.MatrixTransform(new Matrix(
-            unitX.X - origin.X,
-            unitX.Y - origin.Y,
-            unitY.X - origin.X,
-            unitY.Y - origin.Y,
-            origin.X,
-            origin.Y));
-    }
-
     private static Viewport2DVisual3D? FindVisual3DHost(Visual3D current, Visual reference)
     {
         if (current is Viewport2DVisual3D host && host.Visual is Visual root &&
@@ -1687,8 +1665,8 @@ public abstract class Visual : DependencyObject
         // Only UIElements contribute layout offset / render transforms; other visuals are
         // pass-through (identity). GetRenderMatrix already walks the whole chain up to the window.
         if (this is UIElement uiElement)
-            return new MatrixGeneralTransform(uiElement.GetRenderMatrix());
+            return new MatrixTransform(uiElement.GetRenderMatrix());
 
-        return new MatrixGeneralTransform(Matrix.Identity);
+        return new MatrixTransform(Matrix.Identity);
     }
 }

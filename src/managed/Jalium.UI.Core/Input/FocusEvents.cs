@@ -23,20 +23,30 @@ public sealed class ManipulationStartedEventArgs : InputEventArgs
 {
     private bool _cancelRequested;
 
-    public IInputElement? ManipulationContainer { get; init; }
-    public Point ManipulationOrigin { get; init; }
+    internal ManipulationStartedEventArgs()
+    {
+    }
+
+    public IInputElement ManipulationContainer { get; internal init; } = null!;
+    public Point ManipulationOrigin { get; internal init; }
     public IEnumerable<IManipulator> Manipulators =>
         Source is UIElement element ? Manipulation.GetManipulators(element) : [];
 
-    public void Complete() { }
+    public void Complete()
+    {
+        CompleteRequested = true;
+        _cancelRequested = false;
+    }
+
     public bool Cancel()
     {
-        bool wasCanceled = _cancelRequested;
         _cancelRequested = true;
-        return !wasCanceled;
+        CompleteRequested = false;
+        return true;
     }
 
     internal bool CancelRequested => _cancelRequested;
+    internal bool CompleteRequested { get; private set; }
 
     /// <inheritdoc />
     protected override void InvokeEventHandler(Delegate handler, object target)
@@ -61,12 +71,16 @@ public sealed class ManipulationStartedEventArgs : InputEventArgs
 /// </summary>
 public sealed class ManipulationDeltaEventArgs : InputEventArgs
 {
-    public IInputElement? ManipulationContainer { get; init; }
-    public Point ManipulationOrigin { get; init; }
-    public ManipulationDelta? DeltaManipulation { get; init; }
-    public ManipulationDelta? CumulativeManipulation { get; init; }
-    public ManipulationVelocities? Velocities { get; init; }
-    public bool IsInertial { get; init; }
+    internal ManipulationDeltaEventArgs()
+    {
+    }
+
+    public IInputElement ManipulationContainer { get; internal init; } = null!;
+    public Point ManipulationOrigin { get; internal init; }
+    public ManipulationDelta DeltaManipulation { get; internal init; } = null!;
+    public ManipulationDelta CumulativeManipulation { get; internal init; } = null!;
+    public ManipulationVelocities Velocities { get; internal init; } = null!;
+    public bool IsInertial { get; internal init; }
     public IEnumerable<IManipulator> Manipulators =>
         Source is UIElement element ? Manipulation.GetManipulators(element) : [];
 
@@ -88,22 +102,36 @@ public sealed class ManipulationDeltaEventArgs : InputEventArgs
     /// <summary>
     /// Terminates the active manipulation. No inertia is generated.
     /// </summary>
-    public void Complete() => CompleteRequested = true;
+    public void Complete()
+    {
+        CompleteRequested = true;
+        StartInertiaRequested = false;
+        CancelRequested = false;
+    }
 
     /// <summary>
     /// Cancels the active manipulation. Any subsequent input is treated as fresh pointer input.
     /// </summary>
     public bool Cancel()
     {
-        bool wasCanceled = CancelRequested;
+        if (IsInertial)
+            return false;
+
         CancelRequested = true;
-        return !wasCanceled;
+        CompleteRequested = false;
+        StartInertiaRequested = false;
+        return true;
     }
 
     /// <summary>
     /// Hints the engine that inertia should begin immediately, even while contacts remain.
     /// </summary>
-    public void StartInertia() => StartInertiaRequested = true;
+    public void StartInertia()
+    {
+        CompleteRequested = true;
+        StartInertiaRequested = true;
+        CancelRequested = false;
+    }
 
     /// <summary>
     /// Reports the portion of the delta the handler could not apply (e.g. clamped to a scrollable boundary).
@@ -111,6 +139,7 @@ public sealed class ManipulationDeltaEventArgs : InputEventArgs
     /// </summary>
     public void ReportBoundaryFeedback(ManipulationDelta unusedManipulation)
     {
+        ArgumentNullException.ThrowIfNull(unusedManipulation);
         UnusedManipulation = unusedManipulation;
     }
 
@@ -139,19 +168,25 @@ public sealed class ManipulationCompletedEventArgs : InputEventArgs
 {
     private bool _cancelRequested;
 
-    public IInputElement? ManipulationContainer { get; init; }
-    public Point ManipulationOrigin { get; init; }
-    public ManipulationDelta? TotalManipulation { get; init; }
-    public ManipulationVelocities? FinalVelocities { get; init; }
-    public bool IsInertial { get; init; }
+    internal ManipulationCompletedEventArgs()
+    {
+    }
+
+    public IInputElement ManipulationContainer { get; internal init; } = null!;
+    public Point ManipulationOrigin { get; internal init; }
+    public ManipulationDelta TotalManipulation { get; internal init; } = null!;
+    public ManipulationVelocities FinalVelocities { get; internal init; } = null!;
+    public bool IsInertial { get; internal init; }
     public IEnumerable<IManipulator> Manipulators =>
         Source is UIElement element ? Manipulation.GetManipulators(element) : [];
 
     public bool Cancel()
     {
-        bool wasCanceled = _cancelRequested;
+        if (IsInertial)
+            return false;
+
         _cancelRequested = true;
-        return !wasCanceled;
+        return true;
     }
 
     internal bool CancelRequested => _cancelRequested;
@@ -179,25 +214,55 @@ public sealed class ManipulationCompletedEventArgs : InputEventArgs
 /// </summary>
 public sealed class ManipulationInertiaStartingEventArgs : InputEventArgs
 {
-    public IInputElement? ManipulationContainer { get; init; }
+    private readonly List<Manipulations.InertiaParameters2D> _inertiaParameters = [];
+    private InertiaTranslationBehavior? _translationBehavior;
+    private InertiaRotationBehavior? _rotationBehavior;
+    private InertiaExpansionBehavior? _expansionBehavior;
+
+    internal ManipulationInertiaStartingEventArgs()
+    {
+    }
+
+    public IInputElement ManipulationContainer { get; internal init; } = null!;
     public Point ManipulationOrigin { get; set; }
-    public ManipulationVelocities? InitialVelocities { get; init; }
-    public InertiaTranslationBehavior? TranslationBehavior { get; set; }
-    public InertiaRotationBehavior? RotationBehavior { get; set; }
-    public InertiaExpansionBehavior? ExpansionBehavior { get; set; }
+    public ManipulationVelocities InitialVelocities { get; internal init; } = null!;
+    public InertiaTranslationBehavior TranslationBehavior
+    {
+        get => _translationBehavior ??= new InertiaTranslationBehavior(InitialVelocities.LinearVelocity);
+        set => _translationBehavior = value;
+    }
+    public InertiaRotationBehavior RotationBehavior
+    {
+        get => _rotationBehavior ??= new InertiaRotationBehavior(InitialVelocities.AngularVelocity);
+        set => _rotationBehavior = value;
+    }
+    public InertiaExpansionBehavior ExpansionBehavior
+    {
+        get => _expansionBehavior ??= new InertiaExpansionBehavior(InitialVelocities.ExpansionVelocity);
+        set => _expansionBehavior = value;
+    }
     public IEnumerable<IManipulator> Manipulators =>
         Source is UIElement element ? Manipulation.GetManipulators(element) : [];
 
     internal bool CancelRequested { get; private set; }
-    internal bool CompleteRequested { get; private set; }
+    internal bool IsInInertia { get; init; }
 
-    public void SetInertiaParameter(InertiaParameters2D parameter) { }
-    public void Complete() => CompleteRequested = true;
+    [System.ComponentModel.Browsable(false)]
+    public void SetInertiaParameter(Manipulations.InertiaParameters2D parameter)
+    {
+        ArgumentNullException.ThrowIfNull(parameter);
+        _inertiaParameters.Add(parameter);
+    }
+
+    internal IReadOnlyList<Manipulations.InertiaParameters2D> InertiaParameters => _inertiaParameters;
+
     public bool Cancel()
     {
-        bool wasCanceled = CancelRequested;
+        if (IsInInertia)
+            return false;
+
         CancelRequested = true;
-        return !wasCanceled;
+        return true;
     }
 
     /// <inheritdoc />
@@ -221,9 +286,9 @@ public sealed class ManipulationInertiaStartingEventArgs : InputEventArgs
 /// <summary>
 /// Specifies the velocities of a manipulation.
 /// </summary>
-public sealed class ManipulationVelocities
+public class ManipulationVelocities
 {
-    public ManipulationVelocities()
+    internal ManipulationVelocities()
     {
     }
 
@@ -237,34 +302,206 @@ public sealed class ManipulationVelocities
         ExpansionVelocity = expansionVelocity;
     }
 
-    public Vector LinearVelocity { get; init; }
-    public double AngularVelocity { get; init; }
-    public Vector ExpansionVelocity { get; init; }
+    public Vector LinearVelocity { get; internal init; }
+    public double AngularVelocity { get; internal init; }
+    public Vector ExpansionVelocity { get; internal init; }
 }
 
-public sealed class InertiaTranslationBehavior
+public class InertiaTranslationBehavior
 {
-    public Vector InitialVelocity { get; set; }
-    public double DesiredDisplacement { get; set; } = double.NaN;
-    public double DesiredDeceleration { get; set; } = double.NaN;
+    private Vector _initialVelocity = new(double.NaN, double.NaN);
+    private double _desiredDisplacement = double.NaN;
+    private double _desiredDeceleration = double.NaN;
+
+    public InertiaTranslationBehavior()
+    {
+    }
+
+    internal InertiaTranslationBehavior(Vector initialVelocity)
+    {
+        _initialVelocity = initialVelocity;
+    }
+
+    public Vector InitialVelocity
+    {
+        get => _initialVelocity;
+        set
+        {
+            IsInitialVelocitySet = true;
+            _initialVelocity = value;
+        }
+    }
+
+    public double DesiredDisplacement
+    {
+        get => _desiredDisplacement;
+        set
+        {
+            ThrowIfInvalidFinite(value);
+            IsDesiredDisplacementSet = true;
+            _desiredDisplacement = value;
+            IsDesiredDecelerationSet = false;
+            _desiredDeceleration = double.NaN;
+        }
+    }
+
+    public double DesiredDeceleration
+    {
+        get => _desiredDeceleration;
+        set
+        {
+            ThrowIfInvalidFinite(value);
+            IsDesiredDecelerationSet = true;
+            _desiredDeceleration = value;
+            IsDesiredDisplacementSet = false;
+            _desiredDisplacement = double.NaN;
+        }
+    }
+
+    internal bool IsInitialVelocitySet { get; private set; }
+    internal bool IsDesiredDisplacementSet { get; private set; }
+    internal bool IsDesiredDecelerationSet { get; private set; }
+    internal bool CanUseForInertia => IsInitialVelocitySet || IsDesiredDisplacementSet || IsDesiredDecelerationSet;
+
+    private static void ThrowIfInvalidFinite(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+            throw new ArgumentOutOfRangeException(nameof(value));
+    }
 }
 
-public sealed class InertiaRotationBehavior
+public class InertiaRotationBehavior
 {
-    public double InitialVelocity { get; set; }
-    public double DesiredRotation { get; set; } = double.NaN;
-    public double DesiredDeceleration { get; set; } = double.NaN;
+    private double _initialVelocity = double.NaN;
+    private double _desiredRotation = double.NaN;
+    private double _desiredDeceleration = double.NaN;
+
+    public InertiaRotationBehavior()
+    {
+    }
+
+    internal InertiaRotationBehavior(double initialVelocity)
+    {
+        _initialVelocity = initialVelocity;
+    }
+
+    public double InitialVelocity
+    {
+        get => _initialVelocity;
+        set
+        {
+            IsInitialVelocitySet = true;
+            _initialVelocity = value;
+        }
+    }
+
+    public double DesiredRotation
+    {
+        get => _desiredRotation;
+        set
+        {
+            ThrowIfInvalidFinite(value);
+            IsDesiredRotationSet = true;
+            _desiredRotation = value;
+            IsDesiredDecelerationSet = false;
+            _desiredDeceleration = double.NaN;
+        }
+    }
+
+    public double DesiredDeceleration
+    {
+        get => _desiredDeceleration;
+        set
+        {
+            ThrowIfInvalidFinite(value);
+            IsDesiredDecelerationSet = true;
+            _desiredDeceleration = value;
+            IsDesiredRotationSet = false;
+            _desiredRotation = double.NaN;
+        }
+    }
+
+    internal bool IsInitialVelocitySet { get; private set; }
+    internal bool IsDesiredRotationSet { get; private set; }
+    internal bool IsDesiredDecelerationSet { get; private set; }
+    internal bool CanUseForInertia => IsInitialVelocitySet || IsDesiredRotationSet || IsDesiredDecelerationSet;
+
+    private static void ThrowIfInvalidFinite(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+            throw new ArgumentOutOfRangeException(nameof(value));
+    }
 }
 
-public sealed class InertiaExpansionBehavior
+public class InertiaExpansionBehavior
 {
-    public Vector InitialVelocity { get; set; }
-    public double DesiredExpansion { get; set; } = double.NaN;
-    public double DesiredDeceleration { get; set; } = double.NaN;
-    public Vector InitialRadius { get; set; }
-}
+    private Vector _initialVelocity = new(double.NaN, double.NaN);
+    private Vector _desiredExpansion = new(double.NaN, double.NaN);
+    private double _desiredDeceleration = double.NaN;
+    private double _initialRadius = 1.0;
 
-public abstract class InertiaParameters2D { }
+    public InertiaExpansionBehavior()
+    {
+    }
+
+    internal InertiaExpansionBehavior(Vector initialVelocity)
+    {
+        _initialVelocity = initialVelocity;
+    }
+
+    public Vector InitialVelocity
+    {
+        get => _initialVelocity;
+        set
+        {
+            IsInitialVelocitySet = true;
+            _initialVelocity = value;
+        }
+    }
+
+    public Vector DesiredExpansion
+    {
+        get => _desiredExpansion;
+        set
+        {
+            IsDesiredExpansionSet = true;
+            _desiredExpansion = value;
+            IsDesiredDecelerationSet = false;
+            _desiredDeceleration = double.NaN;
+        }
+    }
+
+    public double DesiredDeceleration
+    {
+        get => _desiredDeceleration;
+        set
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value))
+                throw new ArgumentOutOfRangeException(nameof(value));
+            IsDesiredDecelerationSet = true;
+            _desiredDeceleration = value;
+            IsDesiredExpansionSet = false;
+            _desiredExpansion = new Vector(double.NaN, double.NaN);
+        }
+    }
+
+    public double InitialRadius
+    {
+        get => _initialRadius;
+        set
+        {
+            IsInitialRadiusSet = true;
+            _initialRadius = value;
+        }
+    }
+
+    internal bool IsInitialVelocitySet { get; private set; }
+    internal bool IsDesiredExpansionSet { get; private set; }
+    internal bool IsDesiredDecelerationSet { get; private set; }
+    internal bool IsInitialRadiusSet { get; private set; }
+    internal bool CanUseForInertia =>
+        IsInitialVelocitySet || IsDesiredExpansionSet || IsDesiredDecelerationSet || IsInitialRadiusSet;
+}
 
 /// <summary>
 /// Provides data for touch frame events.

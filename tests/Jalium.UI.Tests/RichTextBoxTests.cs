@@ -286,7 +286,7 @@ public class RichTextBoxTests
         var rtb = new RichTextBox(doc);
 
         // Act
-        var text = rtb.GetText();
+        var text = rtb.GetPlainText();
 
         // Assert
         Assert.Contains("Hello World", text);
@@ -299,10 +299,10 @@ public class RichTextBoxTests
         var rtb = new RichTextBox();
 
         // Act
-        rtb.SetText("New Text");
+        rtb.SetPlainText("New Text");
 
         // Assert
-        var text = rtb.GetText();
+        var text = rtb.GetPlainText();
         Assert.Contains("New Text", text);
     }
 
@@ -420,7 +420,7 @@ public class RichTextBoxTests
             Width = 320,
             Height = 120
         };
-        rtb.SetText("hello");
+        rtb.SetPlainText("hello");
         rtb.CaretPosition = rtb.Document.ContentEnd;
         rtb.Measure(new Size(320, 120));
         rtb.Arrange(new Rect(0, 0, 320, 120));
@@ -454,7 +454,7 @@ public class RichTextBoxTests
         rtb.RaiseEvent(new TextCompositionEventArgs(UIElement.TextInputEvent, "中", 1));
         rtb.OnImeCompositionEnd("中");
 
-        Assert.Contains("中", rtb.GetText());
+        Assert.Contains("中", rtb.GetPlainText());
         Assert.False(rtb.IsImeComposing);
     }
 
@@ -462,15 +462,15 @@ public class RichTextBoxTests
     public void RichTextBox_ImeComposition_ShouldNotHandleEnterAsEditorInput()
     {
         var rtb = new RichTextBox();
-        rtb.SetText("hello");
+        rtb.SetPlainText("hello");
         rtb.OnImeCompositionStart();
-        var before = rtb.GetText();
+        var before = rtb.GetPlainText();
 
         var keyArgs = new KeyEventArgs(UIElement.KeyDownEvent, Key.Enter, ModifierKeys.None, isDown: true, isRepeat: false, timestamp: 1);
         rtb.RaiseEvent(keyArgs);
 
         Assert.False(keyArgs.Handled);
-        Assert.Equal(before, rtb.GetText());
+        Assert.Equal(before, rtb.GetPlainText());
         rtb.OnImeCompositionEnd(null);
     }
 
@@ -478,15 +478,15 @@ public class RichTextBoxTests
     public void RichTextBox_ImeComposition_ShouldNotHandleCtrlFormattingShortcut()
     {
         var rtb = new RichTextBox();
-        rtb.SetText("hello");
+        rtb.SetPlainText("hello");
         rtb.OnImeCompositionStart();
-        var before = rtb.GetText();
+        var before = rtb.GetPlainText();
 
         var keyArgs = new KeyEventArgs(UIElement.KeyDownEvent, Key.B, ModifierKeys.Control, isDown: true, isRepeat: false, timestamp: 1);
         rtb.RaiseEvent(keyArgs);
 
         Assert.False(keyArgs.Handled);
-        Assert.Equal(before, rtb.GetText());
+        Assert.Equal(before, rtb.GetPlainText());
         rtb.OnImeCompositionEnd(null);
     }
 
@@ -736,7 +736,7 @@ public class RichTextBoxTests
         var rtb = new RichTextBox();
 
         // Act
-        rtb.HorizontalOffset = 50;
+        rtb.ScrollToHorizontalOffset(50);
 
         // Assert
         Assert.Equal(50, rtb.HorizontalOffset);
@@ -749,7 +749,7 @@ public class RichTextBoxTests
         var rtb = new RichTextBox();
 
         // Act
-        rtb.VerticalOffset = 100;
+        rtb.ScrollToVerticalOffset(100);
 
         // Assert
         Assert.Equal(100, rtb.VerticalOffset);
@@ -762,7 +762,7 @@ public class RichTextBoxTests
         var rtb = new RichTextBox();
 
         // Act
-        rtb.HorizontalOffset = -50;
+        rtb.ScrollToHorizontalOffset(-50);
 
         // Assert
         Assert.Equal(0, rtb.HorizontalOffset);
@@ -775,7 +775,7 @@ public class RichTextBoxTests
         var rtb = new RichTextBox();
 
         // Act
-        rtb.VerticalOffset = -100;
+        rtb.ScrollToVerticalOffset(-100);
 
         // Assert
         Assert.Equal(0, rtb.VerticalOffset);

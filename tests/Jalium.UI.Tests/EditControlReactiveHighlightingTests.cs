@@ -160,7 +160,7 @@ public sealed class EditControlReactiveHighlightingTests
             LastProvidedFilePath = filePathProvider();
         }
 
-        public void NotifyDocumentChanged(TextChangeEventArgs change)
+        public void NotifyDocumentChanged(DocumentChangeEventArgs change)
         {
             NotifyCount++;
         }

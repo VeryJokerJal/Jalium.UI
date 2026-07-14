@@ -1,7 +1,7 @@
 using Jalium.UI.Media;
 using Jalium.UI.Media.Effects;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Media;
 
 /// <summary>
 /// Manages a collection of Visual objects.

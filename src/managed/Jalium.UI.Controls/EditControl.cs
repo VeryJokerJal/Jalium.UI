@@ -5,6 +5,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
 
@@ -38,8 +39,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     private static readonly SolidColorBrush s_scrollBarTrackBrush = new(Color.FromArgb(72, 68, 68, 68));
     private static readonly SolidColorBrush s_scrollBarThumbBrush = new(Color.FromArgb(220, 180, 180, 180));
     private static readonly SolidColorBrush s_scrollBarActiveThumbBrush = new(Color.FromArgb(235, 212, 212, 212));
-    private static readonly BlurEffect s_gutterOverflowBlurEffect = new(12f);
-    private static readonly BlurEffect s_scrollBarBackdropBlurEffect = new(10f);
+    private static readonly BackdropBlurEffect s_gutterOverflowBlurEffect = new(12f);
+    private static readonly BackdropBlurEffect s_scrollBarBackdropBlurEffect = new(10f);
     private static readonly SolidColorBrush s_gutterOverflowOverlayBrush = new(Color.FromArgb(52, 20, 20, 20));
     private static readonly Pen s_foldingGuidePen = new(new SolidColorBrush(Color.FromArgb(120, 125, 137, 149)), 1);
     private static readonly Pen s_foldingChevronPen = new(new SolidColorBrush(Color.FromRgb(197, 206, 214)), 1.2);
@@ -123,8 +124,6 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     private DateTime _lastClickTime;
     private Point _lastClickPosition;
     private int _clickCount;
-    private const double DoubleClickTime = 500;
-    private const double DoubleClickDistance = 4;
 
     // IME state
     private bool _isImeComposing;
@@ -556,7 +555,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     public bool IsImeComposing => _isImeComposing;
 
-    public event EventHandler<TextChangeEventArgs>? TextChanged;
+    public event EventHandler<DocumentChangeEventArgs>? TextChanged;
 
     public event EventHandler? SelectionChanged;
 
@@ -1263,9 +1262,12 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     {
         var now = DateTime.Now;
         double timeSinceLastClick = (now - _lastClickTime).TotalMilliseconds;
-        double distanceFromLastClick = Math.Abs(position.X - _lastClickPosition.X) + Math.Abs(position.Y - _lastClickPosition.Y);
+        double distanceFromLastClick = Math.Max(
+            Math.Abs(position.X - _lastClickPosition.X),
+            Math.Abs(position.Y - _lastClickPosition.Y));
 
-        if (timeSinceLastClick < DoubleClickTime && distanceFromLastClick < DoubleClickDistance)
+        if (timeSinceLastClick <= global::Jalium.UI.SystemParameters.DoubleClickTime &&
+            distanceFromLastClick <= global::Jalium.UI.SystemParameters.MouseDoubleClickDistance)
             _clickCount++;
         else
             _clickCount = 1;
@@ -2430,7 +2432,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         string? text;
         try
         {
-            text = Clipboard.GetText();
+            text = WpfClipboard.GetText();
         }
         catch
         {
@@ -2452,7 +2454,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             if (_behaviorOptions.PreserveLineEndingsOnCopy || IsFeatureEnabled(EditFeature.PreserveCopyLineEndings))
                 text = NormalizeLineEndingsForDocument(text);
 
-            return Clipboard.SetText(text);
+            WpfClipboard.SetText(text);
+            return true;
         }
         catch
         {
@@ -3388,7 +3391,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 string? clipboardText;
                 try
                 {
-                    clipboardText = Clipboard.GetText();
+                    clipboardText = WpfClipboard.GetText();
                 }
                 catch
                 {
@@ -3582,12 +3585,60 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     public bool IsImeAllowed => !IsReadOnly;
 
+    internal bool TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
+    {
+        if (IsReadOnly)
+        {
+            snapshot = default;
+            return false;
+        }
+
+        string text = _document.Text;
+        int cursor = Math.Clamp(_selection.ActiveOffset, 0, text.Length);
+        int anchor = Math.Clamp(_selection.AnchorOffset, 0, text.Length);
+        snapshot = new ImeSurroundingTextSnapshot(text, cursor, anchor);
+        return true;
+    }
+
+    bool IImeSupport.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
+        => TryGetImeSurroundingText(out snapshot);
+
+    public bool DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
+    {
+        if (IsReadOnly ||
+            !TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot) ||
+            !ImeTextEncoding.TryGetDeleteRange(
+                snapshot,
+                beforeUtf8ByteCount,
+                afterUtf8ByteCount,
+                out int start,
+                out int length))
+        {
+            return false;
+        }
+
+        if (length == 0)
+            return true;
+
+        _selection.SetSelection(start, length);
+        _caret.Offset = start + length;
+        DeleteSelection();
+        return true;
+    }
+
     public Point GetImeCaretPosition()
     {
         var caretPos = _view.GetPointFromOffset(_caret.Offset, ShowLineNumbers);
         caretPos = new Point(caretPos.X, caretPos.Y + _view.LineHeight);
 
         return caretPos;
+    }
+
+    public Rect GetImeCaretRectangle()
+    {
+        Point bottom = GetImeCaretPosition();
+        double height = Math.Max(1, _view.LineHeight);
+        return new Rect(bottom.X, bottom.Y - height, 1, height);
     }
 
     public void OnImeCompositionStart()
@@ -3739,7 +3790,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         }
     }
 
-    private void OnDocumentChanged(object? sender, TextChangeEventArgs e)
+    private void OnDocumentChanged(object? sender, DocumentChangeEventArgs e)
     {
         // Sync the Text DP without triggering a re-parse
         var currentText = _document.Text;
@@ -3790,6 +3841,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
         TextChanged?.Invoke(this, e);
         InvalidateVisual();
+        RefreshLinuxImeContext();
     }
 
     private void OnUndoStateChanged(object? sender, EventArgs e)
@@ -5935,7 +5987,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     private void HandleReplaceShortcut()
     {
-        string? text = Clipboard.GetText();
+        string? text = WpfClipboard.GetText();
         if (!string.IsNullOrEmpty(text))
             ReplaceCurrent(text);
     }
@@ -6267,11 +6319,25 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     private void OnSelectionChanged()
     {
         SelectionChanged?.Invoke(this, EventArgs.Empty);
+        RefreshLinuxImeContext();
     }
 
     private void OnCaretPositionChanged()
     {
         CaretPositionChanged?.Invoke(this, EventArgs.Empty);
+        RefreshLinuxImeContext();
+    }
+
+    private void RefreshLinuxImeContext()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is Window window)
+            {
+                window.RefreshLinuxImeContext();
+                break;
+            }
+        }
     }
 
     private void UpdateImeWindowIfComposing()

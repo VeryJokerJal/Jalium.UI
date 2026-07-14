@@ -24,6 +24,9 @@ class SoftwareBackend;
 #ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
 class WaylandShmPresenter;
 #endif
+#ifdef JALIUM_SOFTWARE_X11_PRESENT
+class X11SoftwarePresenter;
+#endif
 
 // ============================================================================
 // Resource Classes
@@ -175,6 +178,9 @@ struct SoftwareFramebuffer {
     }
 
     void BlendPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+    void BlendPixelSubpixel(int32_t x, int32_t y,
+                            uint8_t r, uint8_t g, uint8_t b,
+                            uint8_t coverageR, uint8_t coverageG, uint8_t coverageB);
     void SetPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 };
 
@@ -258,6 +264,9 @@ public:
     JaliumResult Resize(int32_t width, int32_t height) override;
     JaliumResult BeginDraw() override;
     JaliumResult EndDraw() override;
+    JaliumResult RequestReadback() override;
+    JaliumResult FetchReadback(uint8_t* buf, uint32_t bufStride,
+        int32_t* outWidth, int32_t* outHeight) override;
 
     void Clear(float r, float g, float b, float a) override;
     void FillRectangle(float x, float y, float w, float h, Brush* brush) override;
@@ -494,6 +503,11 @@ private:
     float scaleX_ = 1.0f;
     float scaleY_ = 1.0f;
     bool fullInvalidation_ = true;
+    bool hasDirtyRect_ = false;
+    int32_t dirtyLeft_ = 0;
+    int32_t dirtyTop_ = 0;
+    int32_t dirtyRight_ = 0;
+    int32_t dirtyBottom_ = 0;
 
     // Effect capture state
     SoftwareFramebuffer effectCaptureFb_;
@@ -511,11 +525,21 @@ private:
     // Desktop capture state
     SoftwareFramebuffer desktopCaptureFb_;
 
+    // One-shot frame readback. RequestReadback arms the next EndDraw; EndDraw
+    // snapshots the CPU framebuffer before presentation so FetchReadback has
+    // exactly the same BGRA8/top-down contract as the GPU backends.
+    SoftwareFramebuffer readbackFb_;
+    bool readbackPending_ = false;
+    bool readbackReady_ = false;
+
     // Platform-neutral surface descriptor for non-Windows present
     JaliumSurfaceDescriptor surfaceDescriptor_{};
 
 #ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
     std::unique_ptr<WaylandShmPresenter> waylandPresenter_;
+#endif
+#ifdef JALIUM_SOFTWARE_X11_PRESENT
+    std::unique_ptr<X11SoftwarePresenter> x11Presenter_;
 #endif
 
 #ifdef _WIN32

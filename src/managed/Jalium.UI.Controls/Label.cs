@@ -1,6 +1,7 @@
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
 
@@ -259,7 +260,7 @@ public class Label : ContentControl
     {
         if (!string.IsNullOrEmpty(SelectedText))
         {
-            Clipboard.SetText(SelectedText);
+            WpfClipboard.SetText(SelectedText);
         }
     }
 

@@ -1,0 +1,15 @@
+JALIUM_MEDIA_C_ABI_1 {
+    global:
+        jalium_audio_*;
+        jalium_camera_*;
+        jalium_image_*;
+        jalium_linux_*;
+        jalium_media_*;
+        jalium_microphone_*;
+        jalium_query_audio_stats;
+        jalium_reset_audio_stats;
+        jalium_subtitle_*;
+        jalium_video_*;
+    local:
+        *;
+};

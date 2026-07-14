@@ -94,6 +94,57 @@ JALIUM_MEDIA_API const char* jalium_media_status_string(jalium_media_status_t st
 JALIUM_MEDIA_API uint32_t jalium_media_supported_video_codecs(void);
 
 // ============================================================================
+// Runtime capability and stream discovery (Linux GStreamer backend)
+// ============================================================================
+
+typedef enum jalium_linux_media_capability {
+    JALIUM_LINUX_MEDIA_GSTREAMER_RUNTIME = 1u << 0,
+    JALIUM_LINUX_MEDIA_VIDEO_CPU_FRAMES  = 1u << 1,
+    JALIUM_LINUX_MEDIA_AUDIO_DECODE      = 1u << 2,
+    JALIUM_LINUX_MEDIA_CAMERA_CAPTURE    = 1u << 3,
+    JALIUM_LINUX_MEDIA_MIC_CAPTURE       = 1u << 4,
+    JALIUM_LINUX_MEDIA_TRACK_DISCOVERY   = 1u << 5,
+    JALIUM_LINUX_MEDIA_SUBTITLE_DECODE   = 1u << 6,
+    // Reported only after this process has actually negotiated and exported a
+    // single-plane packed RGB dma-buf layout accepted by the Vulkan importer.
+    // Plugin presence alone is insufficient. NV12/P010, DMA_DRM and
+    // multi-plane layouts currently fall back to CPU frames.
+    JALIUM_LINUX_MEDIA_DMABUF_EXPORT     = 1u << 7,
+} jalium_linux_media_capability_t;
+
+/// Returns the capabilities that are actually usable in this process. An
+/// installed build can therefore distinguish "GStreamer headers were present
+/// at build time" from "the runtime and required plugins loaded successfully".
+JALIUM_MEDIA_API uint32_t jalium_linux_media_capabilities(void);
+
+typedef enum jalium_media_track_kind {
+    JALIUM_MEDIA_TRACK_AUDIO    = 1,
+    JALIUM_MEDIA_TRACK_SUBTITLE = 2,
+} jalium_media_track_kind_t;
+
+typedef struct jalium_media_track_info {
+    jalium_media_track_kind_t kind;
+    uint32_t                  index;       ///< zero-based within its kind
+    const char*               id;          ///< UTF-8 stream id; may be empty
+    const char*               label;       ///< UTF-8 human-readable title
+    const char*               language;    ///< BCP-47/ISO language tag or empty
+    const char*               codec;       ///< GStreamer caps media type
+    uint32_t                  channels;     ///< audio only; otherwise zero
+    uint32_t                  sample_rate;  ///< audio only; otherwise zero
+    int32_t                   is_default;
+    int32_t                   is_forced;
+} jalium_media_track_info_t;
+
+JALIUM_MEDIA_API jalium_media_status_t jalium_media_discover_tracks(
+    const char*                 utf8_path_or_uri,
+    jalium_media_track_info_t** out_tracks,
+    uint32_t*                   out_count);
+
+JALIUM_MEDIA_API void jalium_media_tracks_free(
+    jalium_media_track_info_t* tracks,
+    uint32_t                  count);
+
+// ============================================================================
 // Image decoding (callee-owned buffer)
 // ============================================================================
 
@@ -208,6 +259,10 @@ JALIUM_MEDIA_API void jalium_video_decoder_close(jalium_video_decoder_t* decoder
 //
 // `out_descriptor->kind` matches JaliumVideoSurfaceKind in jalium_video_surface.h.
 // `handle0` / `handle1` interpretation depends on `kind`.
+// The Linux descriptor ABI can describe up to four planes, but the current
+// Vulkan consumer accepts only one packed RGB AR24/XR24/AB24/XB24 plane.
+// NV12/P010, DMA_DRM and multi-plane samples return an unsupported GPU layout
+// and are reopened through the precise-timestamp CPU frame path.
 typedef struct jalium_video_decoder_gpu_descriptor {
     int32_t   kind;          // JaliumVideoSurfaceKind (D3D11_SHARED / AHARDWAREBUFFER / ...)
     uint32_t  width;
@@ -216,11 +271,52 @@ typedef struct jalium_video_decoder_gpu_descriptor {
     uint64_t  handle1;       // Secondary handle (NT-handle owner PID / VkDeviceMemory).
     uint32_t  format_hint;   // JaliumVideoSurfaceFormat (0 = BGRA8).
     uint32_t  reserved;
+    uint32_t  plane_count;   // 0 for legacy handles; 1..4 for Linux dma-buf.
+    uint32_t  drm_fourcc;    // DRM_FORMAT_* fourcc (e.g. NV12 / AR24).
+    uint32_t  descriptor_flags;
+    uint32_t  color_space;
+    struct {
+        int32_t  fd;         // owned descriptor fd; close through release API.
+        uint32_t stride_bytes;
+        uint32_t offset_bytes;
+        uint32_t reserved;
+        uint64_t modifier;
+        uint64_t size_bytes;
+    } planes[4];
+    int32_t   acquire_fence_fd; // owned sync_file fd, or -1.
+    uint32_t  reserved2;
+    // Optional process-local producer lifetime callbacks. The descriptor owns
+    // one context reference until release_gpu_surface_descriptor. A renderer
+    // that imports the surface invokes retain(context) and later invokes
+    // release(context) after its submission fence, preventing decoder-pool
+    // reuse while the GPU still samples the dma-buf.
+    uint64_t  lifetime_context;
+    uint64_t  lifetime_retain_callback;
+    uint64_t  lifetime_release_callback;
 } jalium_video_decoder_gpu_descriptor_t;
 
 JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_acquire_gpu_surface_descriptor(
     jalium_video_decoder_t*                  decoder,
     jalium_video_decoder_gpu_descriptor_t*   out_descriptor);
+
+/// Pulls the next hardware-decoded GPU frame. Unlike the legacy acquire call,
+/// this does not require a preceding CPU read/copy. On success the descriptor
+/// owns duplicated fds and must be released exactly once after the renderer
+/// has imported (or rejected) it.
+JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_read_gpu_frame_descriptor(
+    jalium_video_decoder_t*                decoder,
+    jalium_video_decoder_gpu_descriptor_t* out_descriptor,
+    int64_t*                               out_pts_microseconds,
+    int32_t*                               out_is_keyframe);
+
+JALIUM_MEDIA_API void jalium_video_decoder_release_gpu_surface_descriptor(
+    jalium_video_decoder_gpu_descriptor_t* descriptor);
+
+/// Switches a Linux decoder from its dma-buf pipeline to the CPU BGRA/RGBA
+/// pipeline at the last decoded timestamp. Other platforms return
+/// NOT_IMPLEMENTED. Used when Vulkan rejects a modifier/format at runtime.
+JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_disable_gpu_output(
+    jalium_video_decoder_t* decoder);
 
 // ============================================================================
 // Camera capture (opaque handle, source-owned frame buffer)
@@ -263,6 +359,78 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_camera_read_frame(
     jalium_video_frame_t*   out_frame);
 
 JALIUM_MEDIA_API void jalium_camera_close(jalium_camera_source_t* source);
+
+// ============================================================================
+// Microphone capture (Linux GStreamer backend)
+// ============================================================================
+
+typedef struct jalium_microphone_source jalium_microphone_source_t;
+
+typedef struct jalium_microphone_device {
+    const char* id;
+    const char* friendly_name;
+} jalium_microphone_device_t;
+
+typedef struct jalium_audio_capture_frame {
+    const float* samples;          ///< source-owned until next read/close
+    uint32_t     frame_count;
+    uint32_t     sample_rate;
+    uint32_t     channels;
+    int64_t      pts_microseconds;
+} jalium_audio_capture_frame_t;
+
+JALIUM_MEDIA_API jalium_media_status_t jalium_microphone_enumerate(
+    jalium_microphone_device_t** out_devices,
+    uint32_t*                    out_count);
+
+JALIUM_MEDIA_API void jalium_microphone_devices_free(
+    jalium_microphone_device_t* devices,
+    uint32_t                    count);
+
+JALIUM_MEDIA_API jalium_media_status_t jalium_microphone_open(
+    const char*                 device_id,
+    uint32_t                    requested_sample_rate,
+    uint32_t                    requested_channels,
+    jalium_microphone_source_t** out_source);
+
+JALIUM_MEDIA_API jalium_media_status_t jalium_microphone_read_frame(
+    jalium_microphone_source_t* source,
+    jalium_audio_capture_frame_t* out_frame);
+
+JALIUM_MEDIA_API void jalium_microphone_close(
+    jalium_microphone_source_t* source);
+
+// Linux-selected audio track decoder. The returned opaque handle follows the
+// normal jalium_audio_decoder_* lifetime/read/seek ABI from jalium_audio.h.
+struct jalium_audio_decoder;
+JALIUM_MEDIA_API jalium_media_status_t jalium_linux_audio_decoder_open_track(
+    const char*                    utf8_path_or_uri,
+    uint32_t                       track_index,
+    struct jalium_audio_decoder**  out_decoder);
+
+typedef struct jalium_subtitle_decoder jalium_subtitle_decoder_t;
+
+typedef struct jalium_subtitle_cue {
+    const char* utf8_text;          ///< decoder-owned until next read/close
+    int64_t     start_microseconds;
+    int64_t     duration_microseconds;
+} jalium_subtitle_cue_t;
+
+JALIUM_MEDIA_API jalium_media_status_t jalium_subtitle_decoder_open(
+    const char*                 utf8_path_or_uri,
+    uint32_t                    track_index,
+    jalium_subtitle_decoder_t** out_decoder);
+
+JALIUM_MEDIA_API jalium_media_status_t jalium_subtitle_decoder_read_cue(
+    jalium_subtitle_decoder_t* decoder,
+    jalium_subtitle_cue_t*     out_cue);
+
+JALIUM_MEDIA_API jalium_media_status_t jalium_subtitle_decoder_seek_us(
+    jalium_subtitle_decoder_t* decoder,
+    int64_t                    position_us);
+
+JALIUM_MEDIA_API void jalium_subtitle_decoder_close(
+    jalium_subtitle_decoder_t* decoder);
 
 #ifdef __cplusplus
 }

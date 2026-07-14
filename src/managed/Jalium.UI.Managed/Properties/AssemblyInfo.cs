@@ -10,6 +10,7 @@ using Jalium.UI.Markup;
 [assembly: InternalsVisibleTo("ReactiveUI.Wpf")]
 [assembly: InternalsVisibleTo("Jalium.UI.Desktop")]
 [assembly: InternalsVisibleTo("Jalium.UI.Android")]
+[assembly: InternalsVisibleTo("Jalium.UI.LinuxPortalSmoke")]
 
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Automation")]
@@ -40,7 +41,7 @@ using Jalium.UI.Markup;
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Controls.Navigation")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Controls.Primitives")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Controls.Ribbon")]
-[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Controls.Shapes")]
+[assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Shapes")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Controls.Shell")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Shell")]
 [assembly: XmlnsDefinition(JalxamlNamespaces.Presentation, "Jalium.UI.Controls.TextEffects")]

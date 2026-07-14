@@ -1,9 +1,8 @@
 using System.Collections;
 using System.Collections.Specialized;
-using System.ComponentModel;
 using System.Globalization;
 
-namespace Jalium.UI.Data;
+namespace System.ComponentModel;
 
 /// <summary>
 /// Enables collections to have the functionalities of current record management,
@@ -51,7 +50,7 @@ public interface ICollectionView : IEnumerable, INotifyCollectionChanged
     /// Gets a collection of GroupDescription objects that describe how the items in the collection
     /// are grouped in the view.
     /// </summary>
-    System.Collections.ObjectModel.ObservableCollection<System.ComponentModel.GroupDescription> GroupDescriptions { get; }
+    System.Collections.ObjectModel.ObservableCollection<GroupDescription> GroupDescriptions { get; }
 
     /// <summary>
     /// Gets the top-level groups.
@@ -77,7 +76,7 @@ public interface ICollectionView : IEnumerable, INotifyCollectionChanged
     /// Gets a collection of SortDescription objects that describe how the items in the collection
     /// are sorted in the view.
     /// </summary>
-    System.ComponentModel.SortDescriptionCollection SortDescriptions { get; }
+    SortDescriptionCollection SortDescriptions { get; }
 
     /// <summary>
     /// Returns the underlying collection.
@@ -150,32 +149,3 @@ public interface ICollectionView : IEnumerable, INotifyCollectionChanged
     /// </summary>
     void Refresh();
 }
-
-/// <summary>
-/// Provides data for the CurrentChanging event.
-/// </summary>
-public sealed class CurrentChangingEventArgs : System.ComponentModel.CurrentChangingEventArgs
-{
-    /// <summary>
-    /// Initializes a new instance of the CurrentChangingEventArgs class.
-    /// </summary>
-    public CurrentChangingEventArgs()
-        : base()
-    {
-    }
-
-    /// <summary>
-    /// Initializes a new instance of the CurrentChangingEventArgs class
-    /// and sets the IsCancelable property to the specified value.
-    /// </summary>
-    /// <param name="isCancelable">true if the event is cancelable; otherwise, false.</param>
-    public CurrentChangingEventArgs(bool isCancelable)
-        : base(isCancelable)
-    {
-    }
-}
-
-/// <summary>
-/// Represents the method that will handle the CurrentChanging event.
-/// </summary>
-public delegate void CurrentChangingEventHandler(object sender, CurrentChangingEventArgs e);

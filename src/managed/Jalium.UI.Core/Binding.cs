@@ -8,6 +8,7 @@ using System.Xml.XPath;
 using Jalium.UI.Controls;
 using Jalium.UI.Diagnostics;
 using Jalium.UI.Markup;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Data;
 

@@ -1,7 +1,6 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
-using BitmapImage = Jalium.UI.Media.BitmapImage;
 using Jalium.UI.Media.Native;
 using Jalium.UI.Media.Pipeline;
 using Microsoft.Extensions.DependencyInjection;
@@ -38,6 +37,7 @@ public static class MediaAppBuilderExtensions
         builder.Services.TryAddSingleton<INativeImageDecoder, NativeImageDecoder>();
         builder.Services.TryAddSingleton<INativeVideoDecoderFactory, NativeVideoDecoderFactory>();
         builder.Services.TryAddSingleton<INativeCameraSourceFactory, NativeCameraSourceFactory>();
+        builder.Services.TryAddSingleton<INativeMicrophoneSourceFactory, NativeMicrophoneSourceFactory>();
 
         // 把单例解码器注入静态字段，让所有 BitmapImage / MediaElement / MediaPlayer / CameraView
         // 共享同一组原生实例。

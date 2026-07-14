@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Jalium.UI.Interop.Win32;
+using Jalium.UI.Media;
 using static Jalium.UI.Interop.Win32.Win32Methods;
 
 namespace Jalium.UI.Controls;

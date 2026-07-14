@@ -4,6 +4,13 @@ using Jalium.UI.Automation.Peers;
 using Jalium.UI.Controls.Navigation;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Navigation;
+using IExpandCollapseProvider = Jalium.UI.Automation.Provider.IExpandCollapseProvider;
+using IInvokeProvider = Jalium.UI.Automation.Provider.IInvokeProvider;
+using IRangeValueProvider = Jalium.UI.Automation.Provider.IRangeValueProvider;
+using ISelectionItemProvider = Jalium.UI.Automation.Provider.ISelectionItemProvider;
+using ISelectionProvider = Jalium.UI.Automation.Provider.ISelectionProvider;
+using IToggleProvider = Jalium.UI.Automation.Provider.IToggleProvider;
+using IValueProvider = Jalium.UI.Automation.Provider.IValueProvider;
 
 namespace Jalium.UI.Automation.Peers;
 
@@ -165,7 +172,7 @@ public sealed class RepeatButtonAutomationPeer : ButtonBaseAutomationPeer, Jaliu
 /// <summary>
 /// Exposes Thumb types to UI Automation.
 /// </summary>
-public sealed class ThumbAutomationPeer : FrameworkElementAutomationPeer
+public class ThumbAutomationPeer : FrameworkElementAutomationPeer
 {
     public ThumbAutomationPeer(Thumb owner) : base(owner) { }
 
@@ -178,14 +185,40 @@ public sealed class ThumbAutomationPeer : FrameworkElementAutomationPeer
 /// <summary>
 /// Exposes GridSplitter types to UI Automation.
 /// </summary>
-public sealed class GridSplitterAutomationPeer : FrameworkElementAutomationPeer
+public class GridSplitterAutomationPeer : ThumbAutomationPeer, Jalium.UI.Automation.Provider.ITransformProvider
 {
     public GridSplitterAutomationPeer(GridSplitter owner) : base(owner) { }
 
-    protected override AutomationControlType GetAutomationControlTypeCore()
-        => AutomationControlType.Thumb;
+    public override object? GetPattern(PatternInterface patternInterface) => GetPatternCore(patternInterface);
 
     protected override string GetClassNameCore() => nameof(GridSplitter);
+
+    protected override object? GetPatternCore(PatternInterface patternInterface) =>
+        patternInterface == PatternInterface.Transform ? this : base.GetPatternCore(patternInterface);
+
+    bool Jalium.UI.Automation.Provider.ITransformProvider.CanMove => true;
+
+    bool Jalium.UI.Automation.Provider.ITransformProvider.CanResize => false;
+
+    bool Jalium.UI.Automation.Provider.ITransformProvider.CanRotate => false;
+
+    void Jalium.UI.Automation.Provider.ITransformProvider.Move(double x, double y)
+    {
+        if (!IsEnabled())
+            throw new InvalidOperationException("Cannot move a disabled grid splitter.");
+        if (!double.IsFinite(x))
+            throw new ArgumentOutOfRangeException(nameof(x));
+        if (!double.IsFinite(y))
+            throw new ArgumentOutOfRangeException(nameof(y));
+
+        ((GridSplitter)Owner).KeyboardMoveSplitter(x, y);
+    }
+
+    void Jalium.UI.Automation.Provider.ITransformProvider.Resize(double width, double height) =>
+        throw new InvalidOperationException("Grid splitters cannot be resized through automation.");
+
+    void Jalium.UI.Automation.Provider.ITransformProvider.Rotate(double degrees) =>
+        throw new InvalidOperationException("Grid splitters cannot be rotated through automation.");
 }
 
 #endregion
@@ -327,13 +360,6 @@ public sealed partial class DatePickerAutomationPeer : FrameworkElementAutomatio
             throw new InvalidOperationException("Cannot collapse a disabled DatePicker.");
         DatePickerOwner.IsDropDownOpen = false;
     }
-
-    ExpandCollapseState IExpandCollapseProvider.ExpandCollapseState =>
-        ((Jalium.UI.Automation.Provider.IExpandCollapseProvider)this).ExpandCollapseState;
-    void IExpandCollapseProvider.Expand() =>
-        ((Jalium.UI.Automation.Provider.IExpandCollapseProvider)this).Expand();
-    void IExpandCollapseProvider.Collapse() =>
-        ((Jalium.UI.Automation.Provider.IExpandCollapseProvider)this).Collapse();
 
     public string Value => DatePickerOwner.SelectedDate?.ToString("d") ?? string.Empty;
     public bool IsReadOnly => !IsEnabled();
@@ -687,6 +713,8 @@ public sealed class NavigationViewAutomationPeer : FrameworkElementAutomationPee
     public AutomationPeer[] GetSelection() => Array.Empty<AutomationPeer>();
     public bool IsSelectionRequired => false;
     public bool CanSelectMultiple => false;
+
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] ISelectionProvider.GetSelection() => [];
 }
 
 /// <summary>
@@ -735,6 +763,9 @@ public sealed class NavigationViewItemAutomationPeer : FrameworkElementAutomatio
             return null!;
         }
     }
+
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple? ISelectionItemProvider.SelectionContainer =>
+        SelectionContainer is AutomationPeer peer ? ProviderFromPeer(peer) : null;
 
     public void Select() => ItemOwner.IsSelected = true;
     public void AddToSelection() => ItemOwner.IsSelected = true;
@@ -1137,7 +1168,7 @@ public sealed class UserControlAutomationPeer : FrameworkElementAutomationPeer
 /// </summary>
 public sealed class StatusBarAutomationPeer : FrameworkElementAutomationPeer
 {
-    public StatusBarAutomationPeer(StatusBar owner) : base(owner) { }
+    public StatusBarAutomationPeer(Jalium.UI.Controls.Primitives.StatusBar owner) : base(owner) { }
 
     protected override AutomationControlType GetAutomationControlTypeCore()
         => AutomationControlType.StatusBar;
@@ -1150,14 +1181,15 @@ public sealed class StatusBarAutomationPeer : FrameworkElementAutomationPeer
 /// </summary>
 public sealed class StatusBarItemAutomationPeer : FrameworkElementAutomationPeer
 {
-    public StatusBarItemAutomationPeer(Jalium.UI.Controls.StatusBarItem owner) : base(owner) { }
+    public StatusBarItemAutomationPeer(Jalium.UI.Controls.Primitives.StatusBarItem owner) : base(owner) { }
 
-    private Jalium.UI.Controls.StatusBarItem ItemOwner => (Jalium.UI.Controls.StatusBarItem)Owner;
+    private Jalium.UI.Controls.Primitives.StatusBarItem ItemOwner =>
+        (Jalium.UI.Controls.Primitives.StatusBarItem)Owner;
 
     protected override AutomationControlType GetAutomationControlTypeCore()
         => AutomationControlType.Custom;
 
-    protected override string GetClassNameCore() => nameof(Jalium.UI.Controls.StatusBarItem);
+    protected override string GetClassNameCore() => nameof(Jalium.UI.Controls.Primitives.StatusBarItem);
 
     protected override string GetNameCore()
     {
@@ -1237,9 +1269,11 @@ public sealed class Viewport3DAutomationPeer : FrameworkElementAutomationPeer
 /// <summary>
 /// Exposes DocumentViewer types to UI Automation.
 /// </summary>
-public sealed class DocumentViewerAutomationPeer : FrameworkElementAutomationPeer
+public class DocumentViewerAutomationPeer : DocumentViewerBaseAutomationPeer
 {
     public DocumentViewerAutomationPeer(DocumentViewer owner) : base(owner) { }
+
+    public override object? GetPattern(PatternInterface patternInterface) => base.GetPattern(patternInterface);
 
     protected override AutomationControlType GetAutomationControlTypeCore()
         => AutomationControlType.Document;
@@ -1291,14 +1325,15 @@ public sealed class DataGridCellAutomationPeer : FrameworkElementAutomationPeer
 /// </summary>
 public sealed partial class DataGridColumnHeaderAutomationPeer : ButtonBaseAutomationPeer
 {
-    public DataGridColumnHeaderAutomationPeer(Jalium.UI.Controls.DataGridColumnHeader owner) : base(owner) { }
+    public DataGridColumnHeaderAutomationPeer(Jalium.UI.Controls.Primitives.DataGridColumnHeader owner) : base(owner) { }
 
-    private Jalium.UI.Controls.DataGridColumnHeader HeaderOwner => (Jalium.UI.Controls.DataGridColumnHeader)Owner;
+    private Jalium.UI.Controls.Primitives.DataGridColumnHeader HeaderOwner =>
+        (Jalium.UI.Controls.Primitives.DataGridColumnHeader)Owner;
 
     protected override AutomationControlType GetAutomationControlTypeCore()
         => AutomationControlType.HeaderItem;
 
-    protected override string GetClassNameCore() => nameof(Jalium.UI.Controls.DataGridColumnHeader);
+    protected override string GetClassNameCore() => nameof(Jalium.UI.Controls.Primitives.DataGridColumnHeader);
 
     protected override string GetNameCore()
     {

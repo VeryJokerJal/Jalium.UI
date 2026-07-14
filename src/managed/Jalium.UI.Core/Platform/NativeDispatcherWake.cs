@@ -15,6 +15,7 @@ internal sealed partial class NativeDispatcherWake : IDispatcherWake
 
     private nint _handle;
     private bool _disposed;
+    private readonly object _gate = new();
     private Action? _callback;
     private NativeDispatcherCallbackDelegate? _nativeDelegate;
     private GCHandle _nativeDelegateHandle;
@@ -29,43 +30,60 @@ internal sealed partial class NativeDispatcherWake : IDispatcherWake
 
     public void Wake()
     {
-        if (_handle != nint.Zero)
-            DispatcherWake(_handle);
+        lock (_gate)
+        {
+            if (!_disposed && _handle != nint.Zero)
+                DispatcherWake(_handle);
+        }
     }
 
     public void SetCallback(Action callback)
     {
-        _callback = callback;
+        ArgumentNullException.ThrowIfNull(callback);
+        lock (_gate)
+        {
+            if (_disposed)
+                return;
 
-        if (_handle == nint.Zero) return;
+            _callback = callback;
 
-        // Create a native-callable function pointer that invokes the managed callback.
-        // The delegate must be pinned via GCHandle to prevent GC collection.
-        _nativeDelegate = _ => _callback?.Invoke();
-        if (_nativeDelegateHandle.IsAllocated)
-            _nativeDelegateHandle.Free();
-        _nativeDelegateHandle = GCHandle.Alloc(_nativeDelegate);
+            if (_handle == nint.Zero) return;
 
-        DispatcherSetCallback(
-            _handle,
-            Marshal.GetFunctionPointerForDelegate(_nativeDelegate),
-            nint.Zero);
+            // Create a native-callable function pointer that invokes the managed callback.
+            // The delegate must be pinned via GCHandle to prevent GC collection.
+            _nativeDelegate = _ => _callback?.Invoke();
+            if (_nativeDelegateHandle.IsAllocated)
+                _nativeDelegateHandle.Free();
+            _nativeDelegateHandle = GCHandle.Alloc(_nativeDelegate);
+
+            DispatcherSetCallback(
+                _handle,
+                Marshal.GetFunctionPointerForDelegate(_nativeDelegate),
+                nint.Zero);
+        }
     }
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-
-        if (_handle != nint.Zero)
+        lock (_gate)
         {
-            DispatcherSetCallback(_handle, nint.Zero, nint.Zero);
-            DispatcherDestroy(_handle);
-            _handle = nint.Zero;
-        }
+            if (_disposed) return;
+            _disposed = true;
 
-        if (_nativeDelegateHandle.IsAllocated)
-            _nativeDelegateHandle.Free();
+            // Wake and Destroy take this same lock, so native code can never
+            // receive a handle after its dispatcher has been deleted.
+            if (_handle != nint.Zero)
+            {
+                DispatcherSetCallback(_handle, nint.Zero, nint.Zero);
+                DispatcherDestroy(_handle);
+                _handle = nint.Zero;
+            }
+
+            _callback = null;
+            if (_nativeDelegateHandle.IsAllocated)
+                _nativeDelegateHandle.Free();
+            _nativeDelegate = null;
+        }
     }
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_dispatcher_create")]

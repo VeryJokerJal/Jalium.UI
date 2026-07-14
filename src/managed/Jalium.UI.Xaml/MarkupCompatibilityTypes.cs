@@ -20,7 +20,7 @@ public class PropertyDefinition : MemberDefinition
     [TypeConverter(typeof(XamlTypeTypeConverter))] public XamlType? Type { get; set; }
 }
 
-[ContentProperty(nameof(Name))]
+[Jalium.UI.Markup.ContentProperty(nameof(Name))]
 public class Reference : MarkupExtension
 {
     public Reference() { }
@@ -53,7 +53,7 @@ public class Reference : MarkupExtension
     }
 }
 
-[ContentProperty(nameof(Text))]
+[Jalium.UI.Markup.ContentProperty(nameof(Text))]
 public sealed class XData
 {
     public string? Text { get; set; }

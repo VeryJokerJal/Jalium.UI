@@ -1,40 +1,13 @@
+using NavigationMode = Jalium.UI.Navigation.NavigationMode;
+using NavigationService = Jalium.UI.Navigation.NavigationService;
+using WpfCustomContentState = Jalium.UI.Navigation.CustomContentState;
+
 namespace Jalium.UI.Controls.Navigation;
-
-/// <summary>
-/// Enables the ability to store custom state information that is associated with
-/// journal entries for navigation history.
-/// </summary>
-public abstract class CustomContentState
-{
-    /// <summary>
-    /// Gets the name of the custom content state to display in navigation history.
-    /// </summary>
-    public abstract string JournalEntryName { get; }
-
-    /// <summary>
-    /// Called to reapply state to a piece of content when navigation occurs.
-    /// </summary>
-    /// <param name="content">The content to which state should be re-applied.</param>
-    /// <param name="mode">The mode of navigation (Back, Forward, or New).</param>
-    public abstract void Replay(object content, NavigationMode mode);
-}
-
-/// <summary>
-/// Interface that allows a page to provide custom state for journal entries.
-/// </summary>
-public interface IProvideCustomContentState
-{
-    /// <summary>
-    /// Gets the current custom content state of the page.
-    /// </summary>
-    /// <returns>A CustomContentState object representing the current state.</returns>
-    CustomContentState? GetContentState();
-}
 
 /// <summary>
 /// Represents a simple custom content state that stores key-value pairs.
 /// </summary>
-public sealed class DictionaryContentState : CustomContentState
+public sealed class DictionaryContentState : WpfCustomContentState
 {
     private readonly Dictionary<string, object?> _values = new();
     private readonly string _journalEntryName;
@@ -86,6 +59,7 @@ public sealed class DictionaryContentState : CustomContentState
         {
             return typedValue;
         }
+
         return default;
     }
 
@@ -95,10 +69,10 @@ public sealed class DictionaryContentState : CustomContentState
     public IEnumerable<string> Keys => _values.Keys;
 
     /// <inheritdoc/>
-    public override void Replay(object content, NavigationMode mode)
+    public override void Replay(NavigationService navigationService, NavigationMode mode)
     {
-        // If the content implements IProvideCustomContentState, attempt to restore state
-        if (content is IDictionaryContentStateRestorer restorer)
+        ArgumentNullException.ThrowIfNull(navigationService);
+        if (navigationService.Content is IDictionaryContentStateRestorer restorer)
         {
             restorer.RestoreState(this);
         }
@@ -120,7 +94,7 @@ public interface IDictionaryContentStateRestorer
 /// <summary>
 /// Represents custom content state for a scroll position.
 /// </summary>
-public sealed class ScrollContentState : CustomContentState
+public sealed class ScrollContentState : WpfCustomContentState
 {
     /// <summary>
     /// Gets the horizontal scroll offset.
@@ -149,10 +123,10 @@ public sealed class ScrollContentState : CustomContentState
     }
 
     /// <inheritdoc/>
-    public override void Replay(object content, NavigationMode mode)
+    public override void Replay(NavigationService navigationService, NavigationMode mode)
     {
-        // Find a ScrollViewer in the content and restore scroll position
-        if (content is FrameworkElement element)
+        ArgumentNullException.ThrowIfNull(navigationService);
+        if (navigationService.Content is FrameworkElement element)
         {
             var scrollViewer = FindScrollViewer(element);
             if (scrollViewer != null)
@@ -170,7 +144,7 @@ public sealed class ScrollContentState : CustomContentState
             return sv;
         }
 
-        // Search in visual tree
+        // Search in visual tree.
         if (element is ContentControl cc && cc.Content is FrameworkElement child)
         {
             return FindScrollViewer(child);
@@ -183,7 +157,10 @@ public sealed class ScrollContentState : CustomContentState
                 if (panelChild is FrameworkElement fe)
                 {
                     var result = FindScrollViewer(fe);
-                    if (result != null) return result;
+                    if (result != null)
+                    {
+                        return result;
+                    }
                 }
             }
         }
@@ -195,7 +172,7 @@ public sealed class ScrollContentState : CustomContentState
 /// <summary>
 /// Represents custom content state for a data context.
 /// </summary>
-public sealed class DataContextContentState : CustomContentState
+public sealed class DataContextContentState : WpfCustomContentState
 {
     /// <summary>
     /// Gets the data context object.
@@ -221,9 +198,10 @@ public sealed class DataContextContentState : CustomContentState
     }
 
     /// <inheritdoc/>
-    public override void Replay(object content, NavigationMode mode)
+    public override void Replay(NavigationService navigationService, NavigationMode mode)
     {
-        if (content is FrameworkElement element)
+        ArgumentNullException.ThrowIfNull(navigationService);
+        if (navigationService.Content is FrameworkElement element)
         {
             element.DataContext = DataContext;
         }
@@ -233,9 +211,9 @@ public sealed class DataContextContentState : CustomContentState
 /// <summary>
 /// Composite custom content state that combines multiple states.
 /// </summary>
-public sealed class CompositeContentState : CustomContentState
+public sealed class CompositeContentState : WpfCustomContentState
 {
-    private readonly List<CustomContentState> _states = new();
+    private readonly List<WpfCustomContentState> _states = new();
     private readonly string _journalEntryName;
 
     /// <summary>
@@ -256,22 +234,24 @@ public sealed class CompositeContentState : CustomContentState
     /// Adds a state to the composite.
     /// </summary>
     /// <param name="state">The state to add.</param>
-    public void Add(CustomContentState state)
+    public void Add(WpfCustomContentState state)
     {
+        ArgumentNullException.ThrowIfNull(state);
         _states.Add(state);
     }
 
     /// <summary>
     /// Gets all states in the composite.
     /// </summary>
-    public IReadOnlyList<CustomContentState> States => _states;
+    public IReadOnlyList<WpfCustomContentState> States => _states;
 
     /// <inheritdoc/>
-    public override void Replay(object content, NavigationMode mode)
+    public override void Replay(NavigationService navigationService, NavigationMode mode)
     {
+        ArgumentNullException.ThrowIfNull(navigationService);
         foreach (var state in _states)
         {
-            state.Replay(content, mode);
+            state.Replay(navigationService, mode);
         }
     }
 }

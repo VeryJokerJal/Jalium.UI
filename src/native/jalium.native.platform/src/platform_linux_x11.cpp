@@ -9,16 +9,39 @@
 #include <X11/XKBlib.h>
 #include <X11/Xresource.h>
 
+#ifdef JALIUM_HAS_XCURSOR
+#include <X11/Xcursor/Xcursor.h>
+#endif
+
+#ifdef JALIUM_HAS_XINPUT2
+#include <X11/extensions/XInput2.h>
+#endif
+
 #ifdef JALIUM_HAS_WAYLAND
 #include <wayland-client.h>
 #include <wayland-cursor.h>
 #include <xkbcommon/xkbcommon.h>
 #include "xdg-shell-client-protocol.h"
+#ifdef JALIUM_HAS_XDG_ACTIVATION_V1
+#include "xdg-activation-v1-client-protocol.h"
+#endif
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
 #include "text-input-unstable-v3-client-protocol.h"
 #endif
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
 #include "text-input-unstable-v1-client-protocol.h"
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TABLET_V2
+#include "tablet-unstable-v2-client-protocol.h"
+#endif
+#ifdef JALIUM_HAS_XDG_FOREIGN_V2
+#include "xdg-foreign-unstable-v2-client-protocol.h"
+#endif
+#ifdef JALIUM_HAS_XDG_DECORATION_V1
+#include "xdg-decoration-unstable-v1-client-protocol.h"
+#endif
+#ifdef JALIUM_HAS_XDG_TOPLEVEL_ICON_V1
+#include "xdg-toplevel-icon-v1-client-protocol.h"
 #endif
 #include <sys/mman.h>
 #endif
@@ -36,6 +59,7 @@
 #include <time.h>
 #include <signal.h>
 #include <errno.h>
+#include <linux/input-event-codes.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -53,6 +77,8 @@
 #include <cmath>
 #include <chrono>
 #include <thread>
+#include <limits>
+#include <new>
 
 // ============================================================================
 // Global State
@@ -87,6 +113,23 @@ static Atom         g_xdndDataAtom = 0;
 static Atom         g_uriListAtom = 0;
 static Window       g_clipboardWindow = 0;
 static std::string  g_clipboardUtf8;
+
+struct OwnedClipboardItem {
+    std::string mimeType;
+    std::vector<uint8_t> bytes;
+    Atom x11Atom = None;
+};
+
+struct X11ClipboardIncrTransfer {
+    Window requestor = 0;
+    Atom property = None;
+    Atom target = None;
+    std::vector<uint8_t> bytes;
+    size_t offset = 0;
+};
+
+static std::vector<OwnedClipboardItem> g_clipboardItems;
+static std::vector<X11ClipboardIncrTransfer> g_clipboardIncrTransfers;
 static std::recursive_mutex g_clipboardMutex;
 static XIM          g_xim = nullptr;
 static int          g_epollFd = -1;
@@ -94,6 +137,77 @@ static int          g_wakeEventFd = -1;   // eventfd for cross-thread wake
 static std::atomic<bool> g_quitRequested{false};
 static std::atomic<int32_t> g_exitCode{0};
 static std::atomic<uint64_t> g_dragSessionCounter{1};
+
+#ifdef JALIUM_HAS_XINPUT2
+static int g_xinputOpcode = -1;
+static bool g_xinput2Available = false;
+
+struct XInputPenAxes {
+    bool isPen = false;
+    bool inRange = false;
+    bool inContact = false;
+    bool inverted = false;
+    JaliumPlatformWindow* window = nullptr;
+    int32_t toolType = JALIUM_POINTER_TOOL_UNKNOWN;
+    uint32_t buttons = JALIUM_POINTER_BUTTON_NONE;
+    float x = 0.0f;
+    float y = 0.0f;
+    int pressure = -1;
+    int tiltX = -1;
+    int tiltY = -1;
+    int rotation = -1;
+    double pressureMin = 0.0;
+    double pressureMax = 1.0;
+    double tiltXMin = -90.0;
+    double tiltXMax = 90.0;
+    double tiltYMin = -90.0;
+    double tiltYMax = 90.0;
+    double rotationMin = 0.0;
+    double rotationMax = 360.0;
+    float currentPressure = 0.0f;
+    float currentTiltX = 0.0f;
+    float currentTiltY = 0.0f;
+    float currentRotation = 0.0f;
+};
+static std::unordered_map<int, XInputPenAxes> g_xinputPenAxes;
+
+struct XInputScrollAxis {
+    int number = -1;
+    int scrollType = 0;
+    double increment = 0.0;
+    double previousValue = 0.0;
+    bool hasPreviousValue = false;
+};
+static std::unordered_map<int, std::vector<XInputScrollAxis>> g_xinputScrollAxes;
+
+struct XInputTouchContact {
+    JaliumPlatformWindow* window = nullptr;
+    uint32_t pointerId = 0;
+    float x = 0;
+    float y = 0;
+    uint64_t order = 0;
+    bool primary = false;
+};
+static std::unordered_map<uint64_t, XInputTouchContact> g_xinputTouchContacts;
+static uint64_t g_xinputTouchOrder = 0;
+#endif
+
+#ifdef JALIUM_HAS_XRANDR
+static int g_xrandrEventBase = -1;
+static int g_xrandrErrorBase = -1;
+static bool g_xrandrAvailable = false;
+static bool g_xrandr13Available = false;
+static bool g_xrandrMonitorObjectsAvailable = false;
+#endif
+
+#ifdef JALIUM_PLATFORM_TEST_HOOKS
+static std::atomic<int32_t> g_testTouchPresent{-1};
+static std::atomic<int32_t> g_testTouchContacts{0};
+static JaliumPlatformWindow* g_testSystemMenuWindow = nullptr;
+static int32_t g_testSystemMenuX = 0;
+static int32_t g_testSystemMenuY = 0;
+static uint32_t g_testSystemMenuSerial = 0;
+#endif
 
 enum class LinuxWindowSystem { Disabled, XServer, Wayland };
 static LinuxWindowSystem g_windowSystem = LinuxWindowSystem::Disabled;
@@ -104,9 +218,13 @@ static wl_registry* g_waylandRegistry = nullptr;
 static wl_compositor* g_waylandCompositor = nullptr;
 static wl_shm* g_waylandShm = nullptr;
 static xdg_wm_base* g_xdgWmBase = nullptr;
+#ifdef JALIUM_HAS_XDG_ACTIVATION_V1
+static xdg_activation_v1* g_xdgActivation = nullptr;
+#endif
 static wl_seat* g_waylandSeat = nullptr;
 static wl_pointer* g_waylandPointer = nullptr;
 static wl_keyboard* g_waylandKeyboard = nullptr;
+static wl_touch* g_waylandTouch = nullptr;
 static xkb_context* g_xkbContext = nullptr;
 static xkb_keymap* g_xkbKeymap = nullptr;
 static xkb_state* g_xkbState = nullptr;
@@ -123,6 +241,59 @@ static wl_data_device_manager* g_waylandDataDeviceManager = nullptr;
 static wl_data_device* g_waylandDataDevice = nullptr;
 static wl_data_source* g_waylandClipboardSource = nullptr;
 static bool g_waylandCompositionActive = false;
+
+struct WaylandTouchContact {
+    JaliumPlatformWindow* window = nullptr;
+    float x = 0;
+    float y = 0;
+    uint64_t order = 0;
+    bool primary = false;
+};
+static std::unordered_map<int32_t, WaylandTouchContact> g_waylandTouchContacts;
+static uint64_t g_waylandTouchOrder = 0;
+
+#ifdef JALIUM_HAS_WAYLAND_TABLET_V2
+static zwp_tablet_manager_v2* g_waylandTabletManager = nullptr;
+static zwp_tablet_seat_v2* g_waylandTabletSeat = nullptr;
+static std::atomic<uint32_t> g_waylandTabletPointerIds{0x40000000u};
+
+struct WaylandTabletToolState {
+    zwp_tablet_tool_v2* tool = nullptr;
+    JaliumPlatformWindow* window = nullptr;
+    uint32_t pointerId = 0;
+    float x = 0;
+    float y = 0;
+    float pressure = 0;
+    float tiltX = 0;
+    float tiltY = 0;
+    float twist = 0;
+    float distance = 0;
+    float slider = 0;
+    float wheelDegrees = 0;
+    int32_t wheelClicks = 0;
+    uint32_t capabilities = 0;
+    uint32_t buttons = JALIUM_POINTER_BUTTON_NONE;
+    int32_t toolType = JALIUM_POINTER_TOOL_PEN;
+    bool inRange = false;
+    bool down = false;
+    bool pendingDown = false;
+    bool pendingUp = false;
+    bool pendingCancel = false;
+    bool pendingProximityOut = false;
+    bool dirty = false;
+};
+static std::unordered_set<WaylandTabletToolState*> g_waylandTabletTools;
+#endif
+
+#ifdef JALIUM_HAS_XDG_FOREIGN_V2
+static zxdg_exporter_v2* g_waylandExporter = nullptr;
+#endif
+#ifdef JALIUM_HAS_XDG_DECORATION_V1
+static zxdg_decoration_manager_v1* g_waylandDecorationManager = nullptr;
+#endif
+#ifdef JALIUM_HAS_XDG_TOPLEVEL_ICON_V1
+static xdg_toplevel_icon_manager_v1* g_waylandToplevelIconManager = nullptr;
+#endif
 
 struct WaylandDataOfferState {
     wl_data_offer* offer = nullptr;
@@ -146,6 +317,9 @@ static std::string g_pendingWaylandCommit;
 static int32_t g_pendingWaylandPreeditCursor = 0;
 static bool g_pendingWaylandPreeditSet = false;
 static bool g_pendingWaylandCommitSet = false;
+static uint32_t g_pendingWaylandDeleteBefore = 0;
+static uint32_t g_pendingWaylandDeleteAfter = 0;
+static bool g_pendingWaylandDeleteSet = false;
 #endif
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
 static zwp_text_input_manager_v1* g_waylandTextInputManagerV1 = nullptr;
@@ -204,6 +378,8 @@ static ClickTracker g_x11ClickTracker;
 #ifdef JALIUM_HAS_WAYLAND
 static ClickTracker g_waylandClickTracker;
 #endif
+static uint32_t g_doubleClickMilliseconds = 500;
+static float g_doubleClickDistance = 4.0f;
 
 static std::mutex g_windowMapMutex;
 static std::unordered_map<Window, JaliumPlatformWindow*> g_windowMap;
@@ -217,6 +393,7 @@ static std::unordered_set<JaliumPlatformWindow*> g_waylandWindows;
 
 struct JaliumPlatformWindow {
     Window              xwindow = 0;
+    Colormap            x11Colormap = 0;
     XIC                 xic = nullptr;
     XIMCallback         ximPreeditStart{};
     XIMCallback         ximPreeditDone{};
@@ -233,8 +410,16 @@ struct JaliumPlatformWindow {
     JaliumWindowState   state = JALIUM_WINDOW_STATE_NORMAL;
     int32_t             x = 0;
     int32_t             y = 0;
+    intptr_t            parentHandle = 0;
+    bool                enabled = true;
+    int32_t             requestedMinWidth = 0;
+    int32_t             requestedMinHeight = 0;
+    int32_t             requestedMaxWidth = 0;
+    int32_t             requestedMaxHeight = 0;
     uint64_t            dragSessionId = 0;
     uint32_t            dragSelectedEffect = JALIUM_DRAG_EFFECT_NONE;
+    bool                x11PopupPointerGrabbed = false;
+    bool                x11PopupKeyboardGrabbed = false;
 
     // Anchor of the most recent mouse button press, used by the interactive
     // move/resize ABI (_NET_WM_MOVERESIZE wants the press's root position and
@@ -257,12 +442,30 @@ struct JaliumPlatformWindow {
     wl_surface*         waylandSurface = nullptr;
     xdg_surface*        xdgSurface = nullptr;
     xdg_toplevel*       xdgToplevel = nullptr;
+    xdg_popup*          xdgPopup = nullptr;
+    uint32_t            xdgPopupRepositionToken = 0;
+#ifdef JALIUM_HAS_XDG_DECORATION_V1
+    zxdg_toplevel_decoration_v1* xdgDecoration = nullptr;
+    uint32_t            xdgDecorationMode = ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+#endif
+#ifdef JALIUM_HAS_XDG_FOREIGN_V2
+    zxdg_exported_v2*   portalExport = nullptr;
+    std::string         portalParentToken;
+#endif
     std::string         waylandTitle;
     std::atomic<bool>   waylandConfigured{false};
     std::atomic<bool>   waylandVisible{false};
     std::atomic<bool>   waylandPaintPending{false};
     std::atomic<bool>   waylandDispatchingPaint{false};
     bool                waylandActivated = false;
+    bool                imeEnabled = false;
+    std::string         imeSurroundingText;
+    int32_t             imeCursorByteOffset = 0;
+    int32_t             imeAnchorByteOffset = 0;
+    int32_t             imeCaretX = 0;
+    int32_t             imeCaretY = 0;
+    int32_t             imeCaretWidth = 1;
+    int32_t             imeCaretHeight = 1;
 
     // Integer output scale of the wl_output this surface currently occupies.
     // Window width/height (and every pointer coordinate we dispatch) are kept
@@ -271,6 +474,11 @@ struct JaliumPlatformWindow {
     // scale-1 compositor everything multiplies by 1 and behavior is identical
     // to the pre-HiDPI code.
     int32_t             waylandScale = 1;
+    // wl_surface.enter/leave may name more than one output while a surface
+    // straddles monitor boundaries. Keep a registry-name keyed snapshot so
+    // scale changes and output removal can update the same state without
+    // retaining wl_output pointers after registry removal.
+    std::unordered_map<uint32_t, int32_t> waylandEnteredOutputs;
     // Compositor-logical size from the last xdg configure (0 until told).
     int32_t             waylandLogicalWidth = 0;
     int32_t             waylandLogicalHeight = 0;
@@ -278,6 +486,37 @@ struct JaliumPlatformWindow {
 
     void DispatchEvent(const JaliumPlatformEvent& evt)
     {
+        if (!enabled)
+        {
+            switch (evt.type)
+            {
+            case JALIUM_EVENT_CLOSE_REQUESTED:
+            case JALIUM_EVENT_ACTIVATE:
+            case JALIUM_EVENT_FOCUS_GAINED:
+            case JALIUM_EVENT_MOUSE_MOVE:
+            case JALIUM_EVENT_MOUSE_DOWN:
+            case JALIUM_EVENT_MOUSE_UP:
+            case JALIUM_EVENT_MOUSE_WHEEL:
+            case JALIUM_EVENT_MOUSE_ENTER:
+            case JALIUM_EVENT_MOUSE_LEAVE:
+            case JALIUM_EVENT_KEY_DOWN:
+            case JALIUM_EVENT_KEY_UP:
+            case JALIUM_EVENT_CHAR_INPUT:
+            case JALIUM_EVENT_COMPOSITION_START:
+            case JALIUM_EVENT_COMPOSITION_UPDATE:
+            case JALIUM_EVENT_DELETE_SURROUNDING_TEXT:
+            case JALIUM_EVENT_POINTER_DOWN:
+            case JALIUM_EVENT_POINTER_UP:
+            case JALIUM_EVENT_POINTER_MOVE:
+            case JALIUM_EVENT_POINTER_CANCEL:
+            case JALIUM_EVENT_DRAG_ENTER:
+            case JALIUM_EVENT_DRAG_OVER:
+            case JALIUM_EVENT_DROP:
+                return;
+            default:
+                break;
+            }
+        }
         if (callback && !destroyed)
             callback(&evt, userData);
     }
@@ -320,6 +559,10 @@ static bool ProcessPendingWaylandDrop();
 #endif
 
 static JaliumPlatformWindow* FindWindow(Window xwin);
+static void CancelXInputContactsForWindow(JaliumPlatformWindow* window);
+#ifdef JALIUM_HAS_XRANDR
+static void RefreshX11DisplayMetrics();
+#endif
 
 static uint32_t XdndActionToEffect(Atom action)
 {
@@ -990,6 +1233,23 @@ static void DispatchComposition(
     window->DispatchEvent(event);
 }
 
+static void DispatchDeleteSurrounding(
+    JaliumPlatformWindow* window, uint32_t beforeUtf8Bytes,
+    uint32_t afterUtf8Bytes)
+{
+    if (!window || (beforeUtf8Bytes == 0 && afterUtf8Bytes == 0)) return;
+    JaliumPlatformEvent event{};
+    event.type = JALIUM_EVENT_DELETE_SURROUNDING_TEXT;
+    event.window = window;
+    event.deleteSurrounding.beforeUtf8Bytes = static_cast<int32_t>(
+        std::min<uint32_t>(beforeUtf8Bytes,
+                           static_cast<uint32_t>(std::numeric_limits<int32_t>::max())));
+    event.deleteSurrounding.afterUtf8Bytes = static_cast<int32_t>(
+        std::min<uint32_t>(afterUtf8Bytes,
+                           static_cast<uint32_t>(std::numeric_limits<int32_t>::max())));
+    window->DispatchEvent(event);
+}
+
 static void SetKeyState(int32_t virtualKey, bool down, bool toggleOnPress)
 {
     if (virtualKey < 0 || virtualKey >= static_cast<int32_t>(g_keyStates.size())) return;
@@ -1021,12 +1281,10 @@ static void ClearPressedKeyStates()
 static int32_t RegisterClick(ClickTracker& tracker, JaliumPlatformWindow* window,
                              int32_t button, uint32_t time, float x, float y)
 {
-    constexpr uint32_t DoubleClickMilliseconds = 500;
-    constexpr float DoubleClickDistance = 4.0f;
     const bool continues = tracker.window == window && tracker.button == button &&
-        static_cast<uint32_t>(time - tracker.time) <= DoubleClickMilliseconds &&
-        std::fabs(x - tracker.x) <= DoubleClickDistance &&
-        std::fabs(y - tracker.y) <= DoubleClickDistance;
+        static_cast<uint32_t>(time - tracker.time) <= g_doubleClickMilliseconds &&
+        std::fabs(x - tracker.x) <= g_doubleClickDistance &&
+        std::fabs(y - tracker.y) <= g_doubleClickDistance;
     tracker.count = continues ? std::min(tracker.count + 1, 3) : 1;
     tracker.window = window;
     tracker.button = button;
@@ -1034,6 +1292,29 @@ static int32_t RegisterClick(ClickTracker& tracker, JaliumPlatformWindow* window
     tracker.x = x;
     tracker.y = y;
     return tracker.count;
+}
+
+static void LoadDoubleClickSettings()
+{
+    g_doubleClickMilliseconds = 500;
+    g_doubleClickDistance = 4.0f;
+    if (const char* value = getenv("JALIUM_DOUBLE_CLICK_TIME"); value && *value)
+    {
+        char* end = nullptr;
+        errno = 0;
+        const unsigned long parsed = strtoul(value, &end, 10);
+        if (errno == 0 && end && *end == '\0' && parsed > 0 && parsed <= 5000)
+            g_doubleClickMilliseconds = static_cast<uint32_t>(parsed);
+    }
+    if (const char* value = getenv("JALIUM_DOUBLE_CLICK_DISTANCE"); value && *value)
+    {
+        char* end = nullptr;
+        errno = 0;
+        const float parsed = strtof(value, &end);
+        if (errno == 0 && end && *end == '\0' && std::isfinite(parsed) &&
+            parsed >= 0.0f && parsed <= 100.0f)
+            g_doubleClickDistance = parsed;
+    }
 }
 
 static void SetX11WindowTitle(Window window, const JaliumUtf16Char* title)
@@ -1361,8 +1642,11 @@ static float DetectDpiScale()
                     if (type && strcmp(type, "String") == 0 && value.addr)
                     {
                         float dpi = static_cast<float>(atof(value.addr));
-                        XrmDestroyDatabase(db);
-                        if (dpi > 0) return dpi / 96.0f;
+                        if (dpi > 0)
+                        {
+                            XrmDestroyDatabase(db);
+                            return dpi / 96.0f;
+                        }
                     }
                 }
                 XrmDestroyDatabase(db);
@@ -1381,6 +1665,363 @@ static float DetectDpiScale()
 
     return 1.0f;
 }
+
+struct X11MonitorMetrics {
+    int32_t x = 0;
+    int32_t y = 0;
+    int32_t width = 0;
+    int32_t height = 0;
+    int32_t widthMm = 0;
+    int32_t heightMm = 0;
+    float scale = 1.0f;
+    int32_t refreshRate = 0;
+    bool primary = false;
+};
+
+static float ComputeX11MonitorScale(
+    int32_t width, int32_t height, int32_t widthMm, int32_t heightMm,
+    float fallback)
+{
+    fallback = std::isfinite(fallback) && fallback > 0.0f ? fallback : 1.0f;
+    const double dpiX = width > 0 && widthMm > 0
+        ? static_cast<double>(width) * 25.4 / static_cast<double>(widthMm)
+        : 0.0;
+    const double dpiY = height > 0 && heightMm > 0
+        ? static_cast<double>(height) * 25.4 / static_cast<double>(heightMm)
+        : 0.0;
+    const bool validX = std::isfinite(dpiX) && dpiX >= 50.0 && dpiX <= 400.0;
+    const bool validY = std::isfinite(dpiY) && dpiY >= 50.0 && dpiY <= 400.0;
+    if (!validX && !validY) return fallback;
+    if (validX && validY)
+    {
+        const double relativeDifference =
+            std::abs(dpiX - dpiY) / std::max(dpiX, dpiY);
+        if (relativeDifference > 0.20)
+            return fallback;
+    }
+    const double dpi = validX && validY ? (dpiX + dpiY) * 0.5
+        : (validX ? dpiX : dpiY);
+    const float scale = static_cast<float>(dpi / 96.0);
+    return scale >= 0.5f && scale <= 4.0f ? scale : fallback;
+}
+
+#ifdef JALIUM_HAS_XRANDR
+static int32_t GetX11ModeRefreshRate(
+    const XRRScreenResources* resources, RRMode modeId)
+{
+    if (!resources || modeId == None) return 0;
+    for (int modeIndex = 0; modeIndex < resources->nmode; ++modeIndex)
+    {
+        const XRRModeInfo& mode = resources->modes[modeIndex];
+        if (mode.id != modeId || mode.hTotal == 0 || mode.vTotal == 0)
+            continue;
+        double rate = static_cast<double>(mode.dotClock) /
+            (static_cast<double>(mode.hTotal) * mode.vTotal);
+        if ((mode.modeFlags & RR_DoubleScan) != 0) rate *= 0.5;
+        if ((mode.modeFlags & RR_Interlace) != 0) rate *= 2.0;
+        return std::isfinite(rate) && rate > 0.0
+            ? static_cast<int32_t>(std::lround(rate))
+            : 0;
+    }
+    return 0;
+}
+
+static int32_t GetX11FallbackRefreshRate()
+{
+    if (g_display)
+    {
+        XRRScreenConfiguration* configuration =
+            XRRGetScreenInfo(g_display, g_rootWindow);
+        if (configuration)
+        {
+            const short rate = XRRConfigCurrentRate(configuration);
+            XRRFreeScreenConfigInfo(configuration);
+            if (rate > 0) return rate;
+        }
+    }
+    return 60;
+}
+
+static int32_t GetX11MonitorRefreshRate(
+    const XRRMonitorInfo& monitor, XRRScreenResources* resources)
+{
+    if (!g_display || !resources) return 0;
+    for (int outputIndex = 0; outputIndex < monitor.noutput; ++outputIndex)
+    {
+        XRROutputInfo* output = XRRGetOutputInfo(
+            g_display, resources, monitor.outputs[outputIndex]);
+        if (!output) continue;
+        const RRCrtc crtcId = output->crtc;
+        XRRFreeOutputInfo(output);
+        if (crtcId == None) continue;
+
+        XRRCrtcInfo* crtc = XRRGetCrtcInfo(g_display, resources, crtcId);
+        if (!crtc) continue;
+        const int32_t refreshRate =
+            GetX11ModeRefreshRate(resources, crtc->mode);
+        XRRFreeCrtcInfo(crtc);
+        if (refreshRate > 0) return refreshRate;
+    }
+    return 0;
+}
+
+static void FillX11MonitorMetrics(
+    const XRRMonitorInfo& monitor, float fallbackScale,
+    XRRScreenResources* resources, X11MonitorMetrics& metrics)
+{
+    metrics.x = monitor.x;
+    metrics.y = monitor.y;
+    metrics.width = monitor.width;
+    metrics.height = monitor.height;
+    metrics.widthMm = monitor.mwidth;
+    metrics.heightMm = monitor.mheight;
+    metrics.primary = monitor.primary != False;
+    metrics.scale = ComputeX11MonitorScale(
+        metrics.width, metrics.height, metrics.widthMm, metrics.heightMm,
+        fallbackScale);
+    metrics.refreshRate = GetX11MonitorRefreshRate(monitor, resources);
+    if (metrics.refreshRate <= 0)
+        metrics.refreshRate = GetX11FallbackRefreshRate();
+}
+
+static bool GetX11MonitorMetricsSnapshot(
+    std::vector<X11MonitorMetrics>& metrics)
+{
+    metrics.clear();
+    if (!g_display || !g_xrandrAvailable) return false;
+    // GetScreenResourcesCurrent and output-primary are RandR 1.3 requests.
+    // A 1.2 server still supplies full CRTC topology through the original
+    // GetScreenResources request.
+    XRRScreenResources* resources = g_xrandr13Available
+        ? XRRGetScreenResourcesCurrent(g_display, g_rootWindow)
+        : XRRGetScreenResources(g_display, g_rootWindow);
+    if (!resources) return false;
+    const float fallbackScale = DetectDpiScale();
+
+    if (g_xrandrMonitorObjectsAvailable)
+    {
+        int monitorCount = 0;
+        XRRMonitorInfo* monitors =
+            XRRGetMonitors(g_display, g_rootWindow, True, &monitorCount);
+        if (monitors)
+        {
+            metrics.reserve(static_cast<size_t>(std::max(monitorCount, 0)));
+            for (int index = 0; index < monitorCount; ++index)
+            {
+                X11MonitorMetrics monitorMetrics{};
+                FillX11MonitorMetrics(
+                    monitors[index], fallbackScale, resources, monitorMetrics);
+                metrics.push_back(monitorMetrics);
+            }
+            XRRFreeMonitors(monitors);
+        }
+    }
+
+    // XRRGetMonitors is a RandR 1.5 server API. On 1.2-1.4, and on a 1.5
+    // server without monitor objects, active CRTCs are the authoritative
+    // per-screen topology.
+    if (metrics.empty())
+    {
+        const RROutput primaryOutput = g_xrandr13Available
+            ? XRRGetOutputPrimary(g_display, g_rootWindow)
+            : None;
+        metrics.reserve(static_cast<size_t>(std::max(resources->ncrtc, 0)));
+        for (int crtcIndex = 0; crtcIndex < resources->ncrtc; ++crtcIndex)
+        {
+            XRRCrtcInfo* crtc = XRRGetCrtcInfo(
+                g_display, resources, resources->crtcs[crtcIndex]);
+            if (!crtc) continue;
+            if (crtc->mode == None || crtc->width == 0 || crtc->height == 0)
+            {
+                XRRFreeCrtcInfo(crtc);
+                continue;
+            }
+
+            X11MonitorMetrics monitorMetrics{};
+            monitorMetrics.x = crtc->x;
+            monitorMetrics.y = crtc->y;
+            monitorMetrics.width = static_cast<int32_t>(crtc->width);
+            monitorMetrics.height = static_cast<int32_t>(crtc->height);
+            monitorMetrics.refreshRate =
+                GetX11ModeRefreshRate(resources, crtc->mode);
+            for (int outputIndex = 0; outputIndex < crtc->noutput; ++outputIndex)
+            {
+                const RROutput outputId = crtc->outputs[outputIndex];
+                XRROutputInfo* output =
+                    XRRGetOutputInfo(g_display, resources, outputId);
+                if (!output) continue;
+                if (monitorMetrics.widthMm <= 0 && output->mm_width > 0 &&
+                    output->mm_height > 0)
+                {
+                    monitorMetrics.widthMm = output->mm_width;
+                    monitorMetrics.heightMm = output->mm_height;
+                    if ((crtc->rotation & (RR_Rotate_90 | RR_Rotate_270)) != 0)
+                        std::swap(
+                            monitorMetrics.widthMm, monitorMetrics.heightMm);
+                }
+                monitorMetrics.primary |= outputId == primaryOutput;
+                XRRFreeOutputInfo(output);
+            }
+            monitorMetrics.scale = ComputeX11MonitorScale(
+                monitorMetrics.width, monitorMetrics.height,
+                monitorMetrics.widthMm, monitorMetrics.heightMm,
+                fallbackScale);
+            if (monitorMetrics.refreshRate <= 0)
+                monitorMetrics.refreshRate = GetX11FallbackRefreshRate();
+            metrics.push_back(monitorMetrics);
+            XRRFreeCrtcInfo(crtc);
+        }
+    }
+
+    XRRFreeScreenResources(resources);
+    return !metrics.empty();
+}
+
+static bool GetX11MonitorMetricsByIndex(int32_t index, X11MonitorMetrics& metrics)
+{
+    if (index < 0) return false;
+    std::vector<X11MonitorMetrics> monitors;
+    if (!GetX11MonitorMetricsSnapshot(monitors) ||
+        static_cast<size_t>(index) >= monitors.size())
+        return false;
+    metrics = monitors[static_cast<size_t>(index)];
+    return true;
+}
+
+static bool GetX11MonitorMetricsForRect(
+    int32_t x, int32_t y, int32_t width, int32_t height,
+    X11MonitorMetrics& metrics)
+{
+    std::vector<X11MonitorMetrics> monitors;
+    if (!GetX11MonitorMetricsSnapshot(monitors)) return false;
+
+    const double centerX = static_cast<double>(x) + width * 0.5;
+    const double centerY = static_cast<double>(y) + height * 0.5;
+    int selected = 0;
+    double bestDistance = std::numeric_limits<double>::max();
+    for (size_t index = 0; index < monitors.size(); ++index)
+    {
+        const X11MonitorMetrics& monitor = monitors[index];
+        if (centerX >= monitor.x && centerX < monitor.x + monitor.width &&
+            centerY >= monitor.y && centerY < monitor.y + monitor.height)
+        {
+            selected = index;
+            bestDistance = -1.0;
+            break;
+        }
+        const double monitorCenterX = monitor.x + monitor.width * 0.5;
+        const double monitorCenterY = monitor.y + monitor.height * 0.5;
+        const double dx = centerX - monitorCenterX;
+        const double dy = centerY - monitorCenterY;
+        const double distance = dx * dx + dy * dy;
+        if (distance < bestDistance)
+        {
+            bestDistance = distance;
+            selected = index;
+        }
+    }
+    metrics = monitors[static_cast<size_t>(selected)];
+    return true;
+}
+#else
+static bool GetX11MonitorMetricsByIndex(int32_t, X11MonitorMetrics&) { return false; }
+static bool GetX11MonitorMetricsForRect(
+    int32_t, int32_t, int32_t, int32_t, X11MonitorMetrics&) { return false; }
+#endif
+
+static void GetX11WindowRootRect(
+    JaliumPlatformWindow* window,
+    int32_t& x, int32_t& y, int32_t& width, int32_t& height)
+{
+    x = window ? window->x : 0;
+    y = window ? window->y : 0;
+    width = window ? window->width : 1;
+    height = window ? window->height : 1;
+    if (!window || !g_display || !window->xwindow) return;
+
+    XWindowAttributes attributes{};
+    if (XGetWindowAttributes(g_display, window->xwindow, &attributes))
+    {
+        width = attributes.width;
+        height = attributes.height;
+    }
+    Window child = None;
+    (void)XTranslateCoordinates(
+        g_display, window->xwindow, g_rootWindow, 0, 0, &x, &y, &child);
+}
+
+static bool GetX11MonitorMetricsForWindow(
+    JaliumPlatformWindow* window, X11MonitorMetrics& metrics)
+{
+    int32_t x = 0, y = 0, width = 1, height = 1;
+    GetX11WindowRootRect(window, x, y, width, height);
+    return GetX11MonitorMetricsForRect(x, y, width, height, metrics);
+}
+
+static bool UpdateX11WindowDpi(
+    JaliumPlatformWindow* window,
+    const X11MonitorMetrics& metrics)
+{
+    if (!window || !std::isfinite(metrics.scale) || metrics.scale <= 0.0f ||
+        std::abs(window->dpiScale - metrics.scale) < 0.01f)
+        return false;
+
+    const float previousScale = window->dpiScale > 0.0f ? window->dpiScale : 1.0f;
+    const int32_t suggestedWidth = std::max(
+        1, static_cast<int32_t>(std::lround(
+            static_cast<double>(window->width) * metrics.scale / previousScale)));
+    const int32_t suggestedHeight = std::max(
+        1, static_cast<int32_t>(std::lround(
+            static_cast<double>(window->height) * metrics.scale / previousScale)));
+    window->dpiScale = metrics.scale;
+
+    JaliumPlatformEvent event{};
+    event.type = JALIUM_EVENT_DPI_CHANGED;
+    event.window = window;
+    event.dpiChanged.dpiX = metrics.scale * 96.0f;
+    event.dpiChanged.dpiY = metrics.scale * 96.0f;
+    event.dpiChanged.suggestedX = metrics.x;
+    event.dpiChanged.suggestedY = metrics.y;
+    event.dpiChanged.suggestedWidth = suggestedWidth;
+    event.dpiChanged.suggestedHeight = suggestedHeight;
+    window->DispatchEvent(event);
+
+    if (g_display && window->xwindow &&
+        (suggestedWidth != window->width || suggestedHeight != window->height))
+    {
+        XResizeWindow(g_display, window->xwindow,
+                      static_cast<unsigned int>(suggestedWidth),
+                      static_cast<unsigned int>(suggestedHeight));
+    }
+    return true;
+}
+
+#ifdef JALIUM_HAS_XRANDR
+static void RefreshX11DisplayMetrics()
+{
+    std::vector<JaliumPlatformWindow*> windows;
+    {
+        std::lock_guard<std::mutex> lock(g_windowMapMutex);
+        windows.reserve(g_windowMap.size());
+        for (const auto& [xwindow, window] : g_windowMap)
+        {
+            (void)xwindow;
+            if (window && !window->destroyed) windows.push_back(window);
+        }
+    }
+    for (JaliumPlatformWindow* window : windows)
+    {
+        X11MonitorMetrics metrics{};
+        if (GetX11MonitorMetricsForWindow(window, metrics))
+            UpdateX11WindowDpi(window, metrics);
+
+        JaliumPlatformEvent event{};
+        event.type = JALIUM_EVENT_MONITORS_CHANGED;
+        event.window = window;
+        window->DispatchEvent(event);
+    }
+}
+#endif
 
 static std::u32string XimTextToUtf32(const XIMText* text)
 {
@@ -1451,6 +2092,62 @@ static JaliumPlatformWindow* WaylandWindowFromSurface(wl_surface* surface)
 {
     return surface ? static_cast<JaliumPlatformWindow*>(wl_surface_get_user_data(surface)) : nullptr;
 }
+
+#ifdef JALIUM_HAS_XDG_ACTIVATION_V1
+struct WaylandActivationRequest {
+    xdg_activation_token_v1* token = nullptr;
+    JaliumPlatformWindow* window = nullptr;
+};
+
+static std::unordered_set<WaylandActivationRequest*> g_waylandActivationRequests;
+
+static void CancelWaylandActivationRequests(JaliumPlatformWindow* window)
+{
+    for (auto iterator = g_waylandActivationRequests.begin();
+         iterator != g_waylandActivationRequests.end();)
+    {
+        WaylandActivationRequest* request = *iterator;
+        if (window && request->window != window)
+        {
+            ++iterator;
+            continue;
+        }
+
+        if (request->token)
+            xdg_activation_token_v1_destroy(request->token);
+        delete request;
+        iterator = g_waylandActivationRequests.erase(iterator);
+    }
+}
+
+static void HandleActivationTokenDone(
+    void* data, xdg_activation_token_v1* token, const char* activationToken)
+{
+    auto* request = static_cast<WaylandActivationRequest*>(data);
+    if (!request || g_waylandActivationRequests.erase(request) == 0)
+        return;
+
+    JaliumPlatformWindow* window = request->window;
+    if (g_xdgActivation && activationToken && *activationToken && window &&
+        !window->destroyed && window->waylandSurface)
+    {
+        xdg_activation_v1_activate(
+            g_xdgActivation, activationToken, window->waylandSurface);
+    }
+
+    if (token)
+        xdg_activation_token_v1_destroy(token);
+    delete request;
+    if (g_waylandDisplay)
+        wl_display_flush(g_waylandDisplay);
+}
+
+static const xdg_activation_token_v1_listener g_activationTokenListener = {
+    HandleActivationTokenDone
+};
+#else
+static void CancelWaylandActivationRequests(JaliumPlatformWindow*) {}
+#endif
 
 static void DispatchWaylandPaint(JaliumPlatformWindow* window)
 {
@@ -1549,20 +2246,116 @@ static void ApplyWaylandScale(JaliumPlatformWindow* window, int32_t newScale)
     DispatchWaylandPaint(window);
 }
 
-static void HandleSurfaceEnter(void* data, wl_surface*, wl_output* output)
+static WaylandOutputInfo* FindWaylandOutput(wl_output* output)
 {
-    auto* window = static_cast<JaliumPlatformWindow*>(data);
     for (WaylandOutputInfo* info : g_waylandOutputs)
     {
-        if (info->output == output)
+        if (info && info->output == output)
+            return info;
+    }
+    return nullptr;
+}
+
+static void RecomputeWaylandScale(JaliumPlatformWindow* window)
+{
+    if (!window) return;
+    int32_t scale = 1;
+    for (const auto& [output, outputScale] : window->waylandEnteredOutputs)
+    {
+        (void)output;
+        scale = std::max(scale, std::max(outputScale, 1));
+    }
+    ApplyWaylandScale(window, scale);
+}
+
+static uint32_t SelectWaylandEnteredOutputId(
+    const JaliumPlatformWindow* window)
+{
+    if (!window) return 0;
+    uint32_t selectedId = 0;
+    int32_t selectedScale = 0;
+    for (const auto& [outputId, scale] : window->waylandEnteredOutputs)
+    {
+        if (selectedId == 0 || scale > selectedScale ||
+            (scale == selectedScale && outputId < selectedId))
         {
-            ApplyWaylandScale(window, info->scale);
-            break;
+            selectedId = outputId;
+            selectedScale = scale;
         }
+    }
+    return selectedId;
+}
+
+static void SetWaylandOutputState(
+    JaliumPlatformWindow* window,
+    uint32_t registryName,
+    int32_t scale,
+    bool entered)
+{
+    if (!window) return;
+    if (entered)
+        window->waylandEnteredOutputs[registryName] = std::max(scale, 1);
+    else
+        window->waylandEnteredOutputs.erase(registryName);
+    RecomputeWaylandScale(window);
+}
+
+static std::vector<JaliumPlatformWindow*> SnapshotWaylandWindows()
+{
+    std::lock_guard<std::mutex> lock(g_windowMapMutex);
+    std::vector<JaliumPlatformWindow*> windows;
+    windows.reserve(g_waylandWindows.size());
+    windows.insert(windows.end(), g_waylandWindows.begin(), g_waylandWindows.end());
+    return windows;
+}
+
+static void UpdateWaylandOutputScale(uint32_t registryName, int32_t scale)
+{
+    for (JaliumPlatformWindow* window : SnapshotWaylandWindows())
+    {
+        auto entered = window->waylandEnteredOutputs.find(registryName);
+        if (entered == window->waylandEnteredOutputs.end())
+            continue;
+        entered->second = std::max(scale, 1);
+        RecomputeWaylandScale(window);
     }
 }
 
-static void HandleSurfaceLeave(void*, wl_surface*, wl_output*) {}
+static void RemoveWaylandOutputFromWindows(uint32_t registryName)
+{
+    for (JaliumPlatformWindow* window : SnapshotWaylandWindows())
+    {
+        if (window->waylandEnteredOutputs.erase(registryName) != 0)
+            RecomputeWaylandScale(window);
+    }
+}
+
+static void DispatchWaylandMonitorsChanged()
+{
+    for (JaliumPlatformWindow* window : SnapshotWaylandWindows())
+    {
+        JaliumPlatformEvent event{};
+        event.type = JALIUM_EVENT_MONITORS_CHANGED;
+        event.window = window;
+        window->DispatchEvent(event);
+    }
+}
+
+static void HandleSurfaceEnter(void* data, wl_surface*, wl_output* output)
+{
+    auto* window = static_cast<JaliumPlatformWindow*>(data);
+    WaylandOutputInfo* info = FindWaylandOutput(output);
+    if (info)
+        SetWaylandOutputState(window, info->registryName, info->scale, true);
+}
+
+static void HandleSurfaceLeave(void* data, wl_surface*, wl_output* output)
+{
+    auto* window = static_cast<JaliumPlatformWindow*>(data);
+    WaylandOutputInfo* info = FindWaylandOutput(output);
+    if (info)
+        SetWaylandOutputState(window, info->registryName, info->scale, false);
+}
 
 // v6 members (preferred_buffer_scale/transform) intentionally stay null via
 // aggregate initialization on newer headers.
@@ -1663,15 +2456,258 @@ static const xdg_toplevel_listener g_xdgToplevelListener = {
 #endif
 };
 
+static void HandleXdgPopupConfigure(
+    void* data, xdg_popup*, int32_t x, int32_t y, int32_t width, int32_t height)
+{
+    auto* window = static_cast<JaliumPlatformWindow*>(data);
+    if (!window) return;
+    const int32_t scale = window->waylandScale > 0 ? window->waylandScale : 1;
+    const int32_t physicalX = x * scale;
+    const int32_t physicalY = y * scale;
+    const int32_t physicalWidth = width * scale;
+    const int32_t physicalHeight = height * scale;
+
+    if (physicalX != window->x || physicalY != window->y)
+    {
+        window->x = physicalX;
+        window->y = physicalY;
+        JaliumPlatformEvent event{};
+        event.type = JALIUM_EVENT_MOVE;
+        event.window = window;
+        event.move.x = physicalX;
+        event.move.y = physicalY;
+        window->DispatchEvent(event);
+    }
+    if (physicalWidth > 0 && physicalHeight > 0 &&
+        (physicalWidth != window->width || physicalHeight != window->height))
+    {
+        window->width = physicalWidth;
+        window->height = physicalHeight;
+        window->waylandLogicalWidth = width;
+        window->waylandLogicalHeight = height;
+        JaliumPlatformEvent event{};
+        event.type = JALIUM_EVENT_RESIZE;
+        event.window = window;
+        event.resize.width = physicalWidth;
+        event.resize.height = physicalHeight;
+        window->DispatchEvent(event);
+    }
+}
+
+static void HandleXdgPopupDone(void* data, xdg_popup*)
+{
+    auto* window = static_cast<JaliumPlatformWindow*>(data);
+    if (!window) return;
+    JaliumPlatformEvent event{};
+    event.type = JALIUM_EVENT_CLOSE_REQUESTED;
+    event.window = window;
+    window->DispatchEvent(event);
+}
+
+#ifdef XDG_POPUP_REPOSITIONED_SINCE_VERSION
+static void HandleXdgPopupRepositioned(void*, xdg_popup*, uint32_t) {}
+#endif
+
+static const xdg_popup_listener g_xdgPopupListener = {
+    HandleXdgPopupConfigure,
+    HandleXdgPopupDone
+#ifdef XDG_POPUP_REPOSITIONED_SINCE_VERSION
+    , HandleXdgPopupRepositioned
+#endif
+};
+
+static JaliumPlatformWindow* FindWaylandWindowBySurface(wl_surface* surface)
+{
+    if (!surface) return nullptr;
+    std::lock_guard<std::mutex> lock(g_windowMapMutex);
+    for (JaliumPlatformWindow* candidate : g_waylandWindows)
+    {
+        if (candidate && candidate->waylandSurface == surface)
+            return candidate;
+    }
+    return nullptr;
+}
+
+static xdg_positioner* CreatePopupPositioner(JaliumPlatformWindow* window)
+{
+    if (!window || !g_xdgWmBase) return nullptr;
+    xdg_positioner* positioner = xdg_wm_base_create_positioner(g_xdgWmBase);
+    if (!positioner) return nullptr;
+    const int32_t scale = window->waylandScale > 0 ? window->waylandScale : 1;
+    const int32_t logicalWidth = std::max(1, (window->width + scale - 1) / scale);
+    const int32_t logicalHeight = std::max(1, (window->height + scale - 1) / scale);
+    const int32_t logicalX = window->x / scale;
+    const int32_t logicalY = window->y / scale;
+    xdg_positioner_set_size(positioner, logicalWidth, logicalHeight);
+    // Keep the anchor rectangle inside the parent geometry even when the
+    // requested popup origin overflows it; offsets are the protocol-defined
+    // place for the desired displacement and can then be constrained safely.
+    xdg_positioner_set_anchor_rect(positioner, 0, 0, 1, 1);
+    xdg_positioner_set_anchor(positioner, XDG_POSITIONER_ANCHOR_TOP_LEFT);
+    xdg_positioner_set_gravity(positioner, XDG_POSITIONER_GRAVITY_BOTTOM_RIGHT);
+    xdg_positioner_set_offset(positioner, logicalX, logicalY);
+    xdg_positioner_set_constraint_adjustment(
+        positioner,
+        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_X |
+        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_SLIDE_Y |
+        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_X |
+        XDG_POSITIONER_CONSTRAINT_ADJUSTMENT_FLIP_Y);
+#ifdef XDG_POSITIONER_SET_REACTIVE_SINCE_VERSION
+    if (xdg_positioner_get_version(positioner) >=
+        XDG_POSITIONER_SET_REACTIVE_SINCE_VERSION)
+    {
+        xdg_positioner_set_reactive(positioner);
+        if (auto* parent = FindWaylandWindowBySurface(
+                reinterpret_cast<wl_surface*>(window->parentHandle)))
+        {
+            const int32_t parentScale = parent->waylandScale > 0
+                ? parent->waylandScale : 1;
+            xdg_positioner_set_parent_size(
+                positioner,
+                std::max(1, parent->width / parentScale),
+                std::max(1, parent->height / parentScale));
+        }
+    }
+#endif
+    return positioner;
+}
+
+#ifdef JALIUM_HAS_XDG_FOREIGN_V2
+static void HandlePortalExported(void* data, zxdg_exported_v2*, const char* handle)
+{
+    auto* window = static_cast<JaliumPlatformWindow*>(data);
+    if (window)
+        window->portalParentToken = handle ? handle : "";
+}
+
+static const zxdg_exported_v2_listener g_portalExportListener = {
+    HandlePortalExported
+};
+
+static void EnsureWaylandPortalExport(JaliumPlatformWindow* window)
+{
+    if (!window || !window->waylandSurface || window->portalExport ||
+        !g_waylandExporter || (window->style & JALIUM_WINDOW_STYLE_POPUP))
+        return;
+    window->portalExport = zxdg_exporter_v2_export_toplevel(
+        g_waylandExporter, window->waylandSurface);
+    if (window->portalExport)
+        zxdg_exported_v2_add_listener(
+            window->portalExport, &g_portalExportListener, window);
+}
+
+static void DestroyWaylandPortalExport(JaliumPlatformWindow* window)
+{
+    if (!window) return;
+    if (window->portalExport)
+    {
+        zxdg_exported_v2_destroy(window->portalExport);
+        window->portalExport = nullptr;
+    }
+    window->portalParentToken.clear();
+}
+#else
+static void EnsureWaylandPortalExport(JaliumPlatformWindow*) {}
+static void DestroyWaylandPortalExport(JaliumPlatformWindow*) {}
+#endif
+
+#ifdef JALIUM_HAS_XDG_DECORATION_V1
+static void HandleWaylandDecorationConfigure(
+    void* data, zxdg_toplevel_decoration_v1*, uint32_t mode)
+{
+    auto* window = static_cast<JaliumPlatformWindow*>(data);
+    if (window) window->xdgDecorationMode = mode;
+}
+
+static const zxdg_toplevel_decoration_v1_listener g_waylandDecorationListener = {
+    HandleWaylandDecorationConfigure
+};
+
+static void CreateWaylandDecoration(JaliumPlatformWindow* window)
+{
+    if (!window || !window->xdgToplevel || window->xdgDecoration ||
+        !g_waylandDecorationManager)
+        return;
+    window->xdgDecoration =
+        zxdg_decoration_manager_v1_get_toplevel_decoration(
+            g_waylandDecorationManager, window->xdgToplevel);
+    if (!window->xdgDecoration) return;
+    zxdg_toplevel_decoration_v1_add_listener(
+        window->xdgDecoration, &g_waylandDecorationListener, window);
+    const bool decorated =
+        (window->style & JALIUM_WINDOW_STYLE_BORDERLESS) == 0;
+    zxdg_toplevel_decoration_v1_set_mode(
+        window->xdgDecoration,
+        decorated
+            ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+            : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+}
+
+static void DestroyWaylandDecoration(JaliumPlatformWindow* window)
+{
+    if (window && window->xdgDecoration)
+    {
+        zxdg_toplevel_decoration_v1_destroy(window->xdgDecoration);
+        window->xdgDecoration = nullptr;
+    }
+}
+#else
+static void CreateWaylandDecoration(JaliumPlatformWindow*) {}
+static void DestroyWaylandDecoration(JaliumPlatformWindow*) {}
+#endif
+
 static bool CreateWaylandRole(JaliumPlatformWindow* window)
 {
     if (!window || !window->waylandSurface || !g_xdgWmBase) return false;
-    if (window->xdgToplevel) return true;
+    if (window->xdgToplevel || window->xdgPopup) return true;
 
     window->waylandConfigured.store(false, std::memory_order_release);
     window->xdgSurface = xdg_wm_base_get_xdg_surface(g_xdgWmBase, window->waylandSurface);
     if (!window->xdgSurface) return false;
     xdg_surface_add_listener(window->xdgSurface, &g_xdgSurfaceListener, window);
+
+    if (window->style & JALIUM_WINDOW_STYLE_POPUP)
+    {
+        auto* parent = FindWaylandWindowBySurface(
+            reinterpret_cast<wl_surface*>(window->parentHandle));
+        if (!parent || !parent->xdgSurface)
+        {
+            xdg_surface_destroy(window->xdgSurface);
+            window->xdgSurface = nullptr;
+            return false;
+        }
+        window->waylandScale = parent->waylandScale > 0 ? parent->waylandScale : 1;
+        xdg_positioner* positioner = CreatePopupPositioner(window);
+        if (!positioner)
+        {
+            xdg_surface_destroy(window->xdgSurface);
+            window->xdgSurface = nullptr;
+            return false;
+        }
+        window->xdgPopup = xdg_surface_get_popup(
+            window->xdgSurface, parent->xdgSurface, positioner);
+        xdg_positioner_destroy(positioner);
+        if (!window->xdgPopup)
+        {
+            xdg_surface_destroy(window->xdgSurface);
+            window->xdgSurface = nullptr;
+            return false;
+        }
+        xdg_popup_add_listener(window->xdgPopup, &g_xdgPopupListener, window);
+        if ((window->style & JALIUM_WINDOW_STYLE_POPUP_GRAB) &&
+            g_waylandSeat && g_waylandInputSerial != 0)
+        {
+            // Must be issued before the initial mapping commit and with the
+            // serial of the user action that opened the menu.
+            xdg_popup_grab(
+                window->xdgPopup, g_waylandSeat, g_waylandInputSerial);
+        }
+        wl_surface_set_buffer_scale(window->waylandSurface, window->waylandScale);
+        wl_surface_commit(window->waylandSurface);
+        wl_display_flush(g_waylandDisplay);
+        return true;
+    }
+
     window->xdgToplevel = xdg_surface_get_toplevel(window->xdgSurface);
     if (!window->xdgToplevel)
     {
@@ -1682,6 +2718,7 @@ static bool CreateWaylandRole(JaliumPlatformWindow* window)
     xdg_toplevel_add_listener(window->xdgToplevel, &g_xdgToplevelListener, window);
     xdg_toplevel_set_title(window->xdgToplevel, window->waylandTitle.c_str());
     xdg_toplevel_set_app_id(window->xdgToplevel, "jalium.ui");
+    CreateWaylandDecoration(window);
     if (!(window->style & JALIUM_WINDOW_STYLE_RESIZABLE))
     {
         xdg_toplevel_set_min_size(window->xdgToplevel, window->width, window->height);
@@ -1689,12 +2726,17 @@ static bool CreateWaylandRole(JaliumPlatformWindow* window)
     }
     wl_surface_commit(window->waylandSurface);
     wl_display_flush(g_waylandDisplay);
+    EnsureWaylandPortalExport(window);
     return true;
 }
 
 static void DestroyWaylandRole(JaliumPlatformWindow* window)
 {
     if (!window) return;
+    CancelWaylandActivationRequests(window);
+    DestroyWaylandPortalExport(window);
+    if (window->xdgPopup) { xdg_popup_destroy(window->xdgPopup); window->xdgPopup = nullptr; }
+    DestroyWaylandDecoration(window);
     if (window->xdgToplevel) { xdg_toplevel_destroy(window->xdgToplevel); window->xdgToplevel = nullptr; }
     if (window->xdgSurface) { xdg_surface_destroy(window->xdgSurface); window->xdgSurface = nullptr; }
     window->waylandConfigured.store(false, std::memory_order_release);
@@ -1922,50 +2964,55 @@ static const wl_data_device_listener g_dataDeviceListener = {
     HandleDataDeviceMotion, HandleDataDeviceDrop, HandleDataDeviceSelection
 };
 
-static bool WriteAllAndClose(int fd, const std::string& text)
-{
-    bool success = true;
-    size_t offset = 0;
-    while (offset < text.size())
-    {
-        const ssize_t written = write(fd, text.data() + offset, text.size() - offset);
-        if (written > 0) offset += static_cast<size_t>(written);
-        else if (written < 0 && errno == EINTR) continue;
-        else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
-        {
-            struct pollfd descriptor{fd, POLLOUT, 0};
-            int result;
-            do { result = poll(&descriptor, 1, 2000); }
-            while (result < 0 && errno == EINTR);
-            if (result > 0) continue;
-            success = false;
-            break;
-        }
-        else { success = false; break; }
-    }
-    close(fd);
-    return success;
-}
-
 static void HandleDataSourceTarget(void*, wl_data_source*, const char*) {}
 static void HandleDataSourceSend(void*, wl_data_source*, const char* mimeType, int32_t fd)
 {
     if (fd < 0) return;
-    const bool supported = mimeType &&
-        (strcmp(mimeType, "text/plain;charset=utf-8") == 0 ||
-         strcmp(mimeType, "text/plain") == 0 ||
-         strcmp(mimeType, "UTF8_STRING") == 0);
-    std::string snapshot;
-    if (supported)
+    std::vector<uint8_t> snapshot;
+    if (mimeType)
     {
         std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
-        snapshot = g_clipboardUtf8;
+        const auto iterator = std::find_if(
+            g_clipboardItems.begin(), g_clipboardItems.end(),
+            [mimeType](const OwnedClipboardItem& item)
+            {
+                return item.mimeType == mimeType;
+            });
+        if (iterator != g_clipboardItems.end()) snapshot = iterator->bytes;
     }
-    (void)WriteAllAndClose(fd, snapshot);
+    std::thread([fd, bytes = std::move(snapshot)]() mutable
+    {
+        size_t offset = 0;
+        while (offset < bytes.size())
+        {
+            const ssize_t written = write(fd, bytes.data() + offset, bytes.size() - offset);
+            if (written > 0) offset += static_cast<size_t>(written);
+            else if (written < 0 && errno == EINTR) continue;
+            else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+            {
+                struct pollfd descriptor{fd, POLLOUT, 0};
+                int result;
+                do { result = poll(&descriptor, 1, 2000); }
+                while (result < 0 && errno == EINTR);
+                if (result > 0) continue;
+                break;
+            }
+            else break;
+        }
+        close(fd);
+    }).detach();
 }
 static void HandleDataSourceCancelled(void*, wl_data_source* source)
 {
-    if (source == g_waylandClipboardSource) g_waylandClipboardSource = nullptr;
+    {
+        std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+        if (source == g_waylandClipboardSource)
+        {
+            g_waylandClipboardSource = nullptr;
+            g_clipboardItems.clear();
+            g_clipboardUtf8.clear();
+        }
+    }
     wl_data_source_destroy(source);
 }
 static void HandleDataSourceDropPerformed(void*, wl_data_source*) {}
@@ -2146,15 +3193,53 @@ static void EnsureWaylandDataDevice()
 }
 
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+static void ApplyWaylandTextInputV3(JaliumPlatformWindow* window)
+{
+    if (!window || !g_waylandTextInput || window != g_keyboardFocus)
+        return;
+
+    if (!window->imeEnabled)
+    {
+        zwp_text_input_v3_disable(g_waylandTextInput);
+        zwp_text_input_v3_commit(g_waylandTextInput);
+        return;
+    }
+
+    const int32_t textLength = static_cast<int32_t>(std::min<size_t>(
+        window->imeSurroundingText.size(),
+        static_cast<size_t>(std::numeric_limits<int32_t>::max())));
+    const int32_t cursor = std::clamp(
+        window->imeCursorByteOffset, 0, textLength);
+    const int32_t anchor = std::clamp(
+        window->imeAnchorByteOffset, 0, textLength);
+    const int32_t scale = std::max(window->waylandScale, 1);
+
+    zwp_text_input_v3_enable(g_waylandTextInput);
+    zwp_text_input_v3_set_content_type(
+        g_waylandTextInput, ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
+        ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
+    zwp_text_input_v3_set_surrounding_text(
+        g_waylandTextInput, window->imeSurroundingText.c_str(), cursor, anchor);
+    zwp_text_input_v3_set_cursor_rectangle(
+        g_waylandTextInput,
+        window->imeCaretX / scale,
+        window->imeCaretY / scale,
+        std::max(1, (window->imeCaretWidth + scale - 1) / scale),
+        std::max(1, (window->imeCaretHeight + scale - 1) / scale));
+    zwp_text_input_v3_commit(g_waylandTextInput);
+}
+
 static void HandleTextInputEnter(void*, zwp_text_input_v3* textInput, wl_surface* surface)
 {
     JaliumPlatformWindow* window = WaylandWindowFromSurface(surface);
     if (window) g_keyboardFocus = window;
-    zwp_text_input_v3_enable(textInput);
-    zwp_text_input_v3_set_content_type(
-        textInput, ZWP_TEXT_INPUT_V3_CONTENT_HINT_NONE,
-        ZWP_TEXT_INPUT_V3_CONTENT_PURPOSE_NORMAL);
-    zwp_text_input_v3_commit(textInput);
+    if (window)
+        ApplyWaylandTextInputV3(window);
+    else
+    {
+        zwp_text_input_v3_disable(textInput);
+        zwp_text_input_v3_commit(textInput);
+    }
 }
 
 static void HandleTextInputLeave(void*, zwp_text_input_v3* textInput, wl_surface*)
@@ -2166,6 +3251,9 @@ static void HandleTextInputLeave(void*, zwp_text_input_v3* textInput, wl_surface
     g_pendingWaylandCommit.clear();
     g_pendingWaylandPreeditSet = false;
     g_pendingWaylandCommitSet = false;
+    g_pendingWaylandDeleteBefore = 0;
+    g_pendingWaylandDeleteAfter = 0;
+    g_pendingWaylandDeleteSet = false;
     zwp_text_input_v3_disable(textInput);
     zwp_text_input_v3_commit(textInput);
 }
@@ -2185,11 +3273,12 @@ static void HandleTextInputCommit(void*, zwp_text_input_v3*, const char* text)
     g_pendingWaylandCommitSet = true;
 }
 
-static void HandleTextInputDeleteSurrounding(void*, zwp_text_input_v3*, uint32_t, uint32_t)
+static void HandleTextInputDeleteSurrounding(
+    void*, zwp_text_input_v3*, uint32_t beforeLength, uint32_t afterLength)
 {
-    // The current public platform ABI has no surrounding-text mutation event.
-    // Committed text still works; delete-surrounding is ignored until that API
-    // can carry UTF-8 byte ranges without emulating key presses.
+    g_pendingWaylandDeleteBefore = beforeLength;
+    g_pendingWaylandDeleteAfter = afterLength;
+    g_pendingWaylandDeleteSet = true;
 }
 
 static void HandleTextInputDone(void*, zwp_text_input_v3*, uint32_t)
@@ -2199,9 +3288,17 @@ static void HandleTextInputDone(void*, zwp_text_input_v3*, uint32_t)
     {
         g_pendingWaylandPreeditSet = false;
         g_pendingWaylandCommitSet = false;
+        g_pendingWaylandDeleteBefore = 0;
+        g_pendingWaylandDeleteAfter = 0;
+        g_pendingWaylandDeleteSet = false;
         return;
     }
 
+    if (g_pendingWaylandDeleteSet)
+    {
+        DispatchDeleteSurrounding(
+            window, g_pendingWaylandDeleteBefore, g_pendingWaylandDeleteAfter);
+    }
     if (g_pendingWaylandCommitSet && !g_pendingWaylandCommit.empty())
     {
         DispatchComposition(window, JALIUM_EVENT_COMPOSITION_END,
@@ -2230,6 +3327,9 @@ static void HandleTextInputDone(void*, zwp_text_input_v3*, uint32_t)
     g_pendingWaylandCommit.clear();
     g_pendingWaylandPreeditSet = false;
     g_pendingWaylandCommitSet = false;
+    g_pendingWaylandDeleteBefore = 0;
+    g_pendingWaylandDeleteAfter = 0;
+    g_pendingWaylandDeleteSet = false;
 }
 
 static const zwp_text_input_v3_listener g_textInputListener = {
@@ -2248,6 +3348,51 @@ static void EnsureWaylandTextInput()
 #endif
 
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
+static void ApplyWaylandTextInputV1(JaliumPlatformWindow* window)
+{
+    if (!window || !g_waylandTextInputV1 || !g_waylandSeat ||
+        window != g_keyboardFocus)
+        return;
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+    if (g_waylandTextInputManager)
+        return;
+#endif
+
+    if (!window->imeEnabled)
+    {
+        zwp_text_input_v1_deactivate(g_waylandTextInputV1, g_waylandSeat);
+        g_waylandTextInputV1Active = false;
+        zwp_text_input_v1_commit_state(
+            g_waylandTextInputV1, ++g_waylandTextInputSerialV1);
+        return;
+    }
+
+    const int32_t textLength = static_cast<int32_t>(std::min<size_t>(
+        window->imeSurroundingText.size(),
+        static_cast<size_t>(std::numeric_limits<int32_t>::max())));
+    const uint32_t cursor = static_cast<uint32_t>(std::clamp(
+        window->imeCursorByteOffset, 0, textLength));
+    const uint32_t anchor = static_cast<uint32_t>(std::clamp(
+        window->imeAnchorByteOffset, 0, textLength));
+    const int32_t scale = std::max(window->waylandScale, 1);
+
+    zwp_text_input_v1_activate(
+        g_waylandTextInputV1, g_waylandSeat, window->waylandSurface);
+    zwp_text_input_v1_set_surrounding_text(
+        g_waylandTextInputV1, window->imeSurroundingText.c_str(), cursor, anchor);
+    zwp_text_input_v1_set_content_type(
+        g_waylandTextInputV1, ZWP_TEXT_INPUT_V1_CONTENT_HINT_NONE,
+        ZWP_TEXT_INPUT_V1_CONTENT_PURPOSE_NORMAL);
+    zwp_text_input_v1_set_cursor_rectangle(
+        g_waylandTextInputV1,
+        window->imeCaretX / scale,
+        window->imeCaretY / scale,
+        std::max(1, (window->imeCaretWidth + scale - 1) / scale),
+        std::max(1, (window->imeCaretHeight + scale - 1) / scale));
+    zwp_text_input_v1_commit_state(
+        g_waylandTextInputV1, ++g_waylandTextInputSerialV1);
+}
+
 static void HandleTextInputV1Enter(void*, zwp_text_input_v1*, wl_surface*)
 {
     g_waylandTextInputV1Active = true;
@@ -2303,7 +3448,30 @@ static void HandleTextInputV1CommitString(
 }
 
 static void HandleTextInputV1CursorPosition(void*, zwp_text_input_v1*, int32_t, int32_t) {}
-static void HandleTextInputV1DeleteSurrounding(void*, zwp_text_input_v1*, int32_t, uint32_t) {}
+static void HandleTextInputV1DeleteSurrounding(
+    void*, zwp_text_input_v1*, int32_t index, uint32_t length)
+{
+    if (!g_keyboardFocus || length == 0) return;
+
+    // v1 describes an arbitrary byte interval relative to the cursor, while
+    // the public Jalium event deliberately exposes adjacent before/after
+    // lengths. Preserve exactness: disconnected intervals cannot be expressed
+    // without deleting the gap, so ignore those rare requests instead of
+    // corrupting application text.
+    const int64_t start = index;
+    const int64_t end = start + static_cast<int64_t>(length);
+    if (start > 0 || end < 0) return;
+
+    const uint32_t before = start < 0
+        ? static_cast<uint32_t>(std::min<int64_t>(
+              -start, std::numeric_limits<uint32_t>::max()))
+        : 0;
+    const uint32_t after = end > 0
+        ? static_cast<uint32_t>(std::min<int64_t>(
+              end, std::numeric_limits<uint32_t>::max()))
+        : 0;
+    DispatchDeleteSurrounding(g_keyboardFocus, before, after);
+}
 static void HandleTextInputV1Keysym(
     void*, zwp_text_input_v1*, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {}
 static void HandleTextInputV1Language(void*, zwp_text_input_v1*, uint32_t, const char*) {}
@@ -2567,22 +3735,6 @@ static void HandleKeyboardEnter(void*, wl_keyboard*, uint32_t serial,
 {
     g_waylandInputSerial = serial;
     g_keyboardFocus = WaylandWindowFromSurface(surface);
-#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
-    if (g_waylandTextInputV1 && g_waylandSeat && surface
-#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
-        && !g_waylandTextInputManager
-#endif
-       )
-    {
-        zwp_text_input_v1_activate(g_waylandTextInputV1, g_waylandSeat, surface);
-        zwp_text_input_v1_set_content_type(
-            g_waylandTextInputV1, ZWP_TEXT_INPUT_V1_CONTENT_HINT_NONE,
-            ZWP_TEXT_INPUT_V1_CONTENT_PURPOSE_NORMAL);
-        zwp_text_input_v1_commit_state(
-            g_waylandTextInputV1, ++g_waylandTextInputSerialV1);
-        wl_display_flush(g_waylandDisplay);
-    }
-#endif
     ClearPressedKeyStates();
     if (keys && g_xkbState)
     {
@@ -2599,6 +3751,13 @@ static void HandleKeyboardEnter(void*, wl_keyboard*, uint32_t serial,
     event.type = JALIUM_EVENT_FOCUS_GAINED;
     event.window = g_keyboardFocus;
     g_keyboardFocus->DispatchEvent(event);
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+    ApplyWaylandTextInputV3(g_keyboardFocus);
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
+    ApplyWaylandTextInputV1(g_keyboardFocus);
+#endif
+    if (g_waylandDisplay) wl_display_flush(g_waylandDisplay);
 }
 
 static void HandleKeyboardLeave(void*, wl_keyboard*, uint32_t, wl_surface*)
@@ -2692,6 +3851,545 @@ static const wl_keyboard_listener g_keyboardListener = {
     HandleKeyboardModifiers, HandleKeyboardRepeatInfo
 };
 
+#ifdef JALIUM_HAS_WAYLAND_TABLET_V2
+static void DispatchWaylandTabletTool(
+    WaylandTabletToolState* state, JaliumEventType type)
+{
+    if (!state || !state->window) return;
+    JaliumPlatformEvent event{};
+    event.type = type;
+    event.window = state->window;
+    event.pointer.pointerId = state->pointerId;
+    event.pointer.x = state->x;
+    event.pointer.y = state->y;
+    event.pointer.pressure = state->down &&
+        type != JALIUM_EVENT_POINTER_UP &&
+        type != JALIUM_EVENT_POINTER_CANCEL
+        ? state->pressure : 0.0f;
+    event.pointer.tiltX = state->tiltX;
+    event.pointer.tiltY = state->tiltY;
+    event.pointer.twist = state->twist;
+    event.pointer.pointerType =
+        state->toolType == JALIUM_POINTER_TOOL_MOUSE ||
+        state->toolType == JALIUM_POINTER_TOOL_LENS
+        ? JALIUM_POINTER_MOUSE : JALIUM_POINTER_PEN;
+    event.pointer.modifiers = g_waylandModifiers;
+    uint32_t flags = JALIUM_POINTER_FLAG_PRIMARY;
+    if (state->inRange) flags |= JALIUM_POINTER_FLAG_IN_RANGE;
+    if (state->down) flags |= JALIUM_POINTER_FLAG_IN_CONTACT;
+    if (state->toolType == JALIUM_POINTER_TOOL_ERASER)
+        flags |= JALIUM_POINTER_FLAG_ERASER |
+                 JALIUM_POINTER_FLAG_INVERTED;
+    if (state->toolType != JALIUM_POINTER_TOOL_MOUSE &&
+        state->toolType != JALIUM_POINTER_TOOL_LENS &&
+        (state->buttons & (JALIUM_POINTER_BUTTON_BARREL |
+                           JALIUM_POINTER_BUTTON_SECONDARY)) != 0)
+        flags |= JALIUM_POINTER_FLAG_BARREL;
+    event.pointer.flags = flags;
+    event.pointer.toolType = state->toolType;
+    event.pointer.buttons = state->buttons;
+    state->window->DispatchEvent(event);
+}
+
+static int32_t WaylandTabletToolType(uint32_t type)
+{
+    switch (type)
+    {
+    case ZWP_TABLET_TOOL_V2_TYPE_ERASER:
+        return JALIUM_POINTER_TOOL_ERASER;
+    case ZWP_TABLET_TOOL_V2_TYPE_BRUSH:
+        return JALIUM_POINTER_TOOL_BRUSH;
+    case ZWP_TABLET_TOOL_V2_TYPE_PENCIL:
+        return JALIUM_POINTER_TOOL_PENCIL;
+    case ZWP_TABLET_TOOL_V2_TYPE_AIRBRUSH:
+        return JALIUM_POINTER_TOOL_AIRBRUSH;
+    case ZWP_TABLET_TOOL_V2_TYPE_MOUSE:
+        return JALIUM_POINTER_TOOL_MOUSE;
+    case ZWP_TABLET_TOOL_V2_TYPE_LENS:
+        return JALIUM_POINTER_TOOL_LENS;
+    case ZWP_TABLET_TOOL_V2_TYPE_PEN:
+        return JALIUM_POINTER_TOOL_PEN;
+    default:
+        return JALIUM_POINTER_TOOL_UNKNOWN;
+    }
+}
+
+static void TabletToolType(
+    void* data, zwp_tablet_tool_v2*, uint32_t type)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (state) state->toolType = WaylandTabletToolType(type);
+}
+static void TabletToolHardwareSerial(void*, zwp_tablet_tool_v2*, uint32_t, uint32_t) {}
+static void TabletToolHardwareId(void*, zwp_tablet_tool_v2*, uint32_t, uint32_t) {}
+static void TabletToolCapability(
+    void* data, zwp_tablet_tool_v2*, uint32_t capability)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (state && capability < 32)
+        state->capabilities |= 1u << capability;
+}
+static void TabletToolDone(void*, zwp_tablet_tool_v2*) {}
+
+static void TabletToolRemoved(void* data, zwp_tablet_tool_v2*)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    if (state->window)
+    {
+        if (state->down)
+        {
+            state->down = false;
+            state->inRange = false;
+            state->buttons &= ~JALIUM_POINTER_BUTTON_PRIMARY;
+            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_CANCEL);
+        }
+        else if (state->inRange)
+        {
+            state->inRange = false;
+            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_MOVE);
+        }
+    }
+    g_waylandTabletTools.erase(state);
+    if (state->tool) zwp_tablet_tool_v2_destroy(state->tool);
+    delete state;
+}
+
+static void TabletToolProximityIn(
+    void* data, zwp_tablet_tool_v2*, uint32_t serial,
+    zwp_tablet_v2*, wl_surface* surface)
+{
+    g_waylandInputSerial = serial;
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    state->window = WaylandWindowFromSurface(surface);
+    state->inRange = state->window != nullptr;
+    state->down = false;
+    state->pressure = 0.0f;
+    state->buttons &= ~JALIUM_POINTER_BUTTON_PRIMARY;
+    state->pendingProximityOut = false;
+    state->dirty = true;
+}
+
+static void TabletToolProximityOut(void* data, zwp_tablet_tool_v2*)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    state->pendingCancel = state->down;
+    state->pendingProximityOut = true;
+    state->inRange = false;
+    state->down = false;
+    state->pressure = 0.0f;
+    state->buttons &= ~JALIUM_POINTER_BUTTON_PRIMARY;
+    state->dirty = true;
+}
+
+static void TabletToolDown(void* data, zwp_tablet_tool_v2*, uint32_t serial)
+{
+    g_waylandInputSerial = serial;
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    state->down = true;
+    state->inRange = true;
+    state->buttons |= JALIUM_POINTER_BUTTON_PRIMARY;
+    state->pendingDown = true;
+    state->pendingUp = false;
+    state->pendingCancel = false;
+    state->dirty = true;
+}
+
+static void TabletToolUp(void* data, zwp_tablet_tool_v2*)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    state->down = false;
+    state->pressure = 0.0f;
+    state->buttons &= ~JALIUM_POINTER_BUTTON_PRIMARY;
+    state->pendingUp = true;
+    state->pendingDown = false;
+    state->dirty = true;
+}
+
+static void TabletToolMotion(
+    void* data, zwp_tablet_tool_v2*, wl_fixed_t x, wl_fixed_t y)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state || !state->window) return;
+    const float scale = static_cast<float>(
+        state->window->waylandScale > 0 ? state->window->waylandScale : 1);
+    state->x = static_cast<float>(wl_fixed_to_double(x)) * scale;
+    state->y = static_cast<float>(wl_fixed_to_double(y)) * scale;
+    state->dirty = true;
+}
+
+static void TabletToolPressure(void* data, zwp_tablet_tool_v2*, uint32_t pressure)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    state->pressure = std::clamp(
+        static_cast<float>(pressure) / 65535.0f, 0.0f, 1.0f);
+    state->dirty = true;
+}
+
+static void TabletToolDistance(
+    void* data, zwp_tablet_tool_v2*, uint32_t distance)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    state->distance = std::clamp(
+        static_cast<float>(distance) / 65535.0f, 0.0f, 1.0f);
+    state->dirty = true;
+}
+
+static void TabletToolTilt(
+    void* data, zwp_tablet_tool_v2*, wl_fixed_t x, wl_fixed_t y)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    state->tiltX = static_cast<float>(wl_fixed_to_double(x));
+    state->tiltY = static_cast<float>(wl_fixed_to_double(y));
+    state->dirty = true;
+}
+
+static void TabletToolRotation(void* data, zwp_tablet_tool_v2*, wl_fixed_t degrees)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    state->twist = static_cast<float>(wl_fixed_to_double(degrees));
+    state->dirty = true;
+}
+
+static void TabletToolSlider(
+    void* data, zwp_tablet_tool_v2*, int32_t position)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    state->slider = std::clamp(
+        static_cast<float>(position) / 65535.0f, -1.0f, 1.0f);
+    state->dirty = true;
+}
+static void TabletToolWheel(
+    void* data, zwp_tablet_tool_v2*, wl_fixed_t degrees, int32_t clicks)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    state->wheelDegrees = static_cast<float>(wl_fixed_to_double(degrees));
+    state->wheelClicks = clicks;
+    state->dirty = true;
+}
+
+static uint32_t WaylandTabletButtonMask(uint32_t button)
+{
+    switch (button)
+    {
+    case BTN_TOUCH:
+    case BTN_LEFT:
+        return JALIUM_POINTER_BUTTON_PRIMARY;
+    case BTN_STYLUS:
+        return JALIUM_POINTER_BUTTON_BARREL;
+    case BTN_STYLUS2:
+    case BTN_RIGHT:
+        return JALIUM_POINTER_BUTTON_SECONDARY;
+    case BTN_MIDDLE:
+        return JALIUM_POINTER_BUTTON_TERTIARY;
+    default:
+        return JALIUM_POINTER_BUTTON_NONE;
+    }
+}
+
+static void TabletToolButton(
+    void* data, zwp_tablet_tool_v2*, uint32_t serial,
+    uint32_t button, uint32_t buttonState)
+{
+    g_waylandInputSerial = serial;
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state) return;
+    const uint32_t mask = WaylandTabletButtonMask(button);
+    if (buttonState == ZWP_TABLET_TOOL_V2_BUTTON_STATE_PRESSED)
+        state->buttons |= mask;
+    else
+        state->buttons &= ~mask;
+    state->dirty = true;
+}
+
+static void TabletToolFrame(void* data, zwp_tablet_tool_v2*, uint32_t)
+{
+    auto* state = static_cast<WaylandTabletToolState*>(data);
+    if (!state || !state->dirty) return;
+    if (state->window)
+    {
+        if (state->pendingCancel)
+            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_CANCEL);
+        else if (state->pendingDown)
+            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_DOWN);
+        else if (state->pendingUp)
+            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_UP);
+        else
+            DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_MOVE);
+    }
+    const bool clearWindow = state->pendingProximityOut;
+    state->pendingDown = false;
+    state->pendingUp = false;
+    state->pendingCancel = false;
+    state->pendingProximityOut = false;
+    state->dirty = false;
+    if (clearWindow) state->window = nullptr;
+}
+
+static const zwp_tablet_tool_v2_listener g_tabletToolListener = {
+    TabletToolType,
+    TabletToolHardwareSerial,
+    TabletToolHardwareId,
+    TabletToolCapability,
+    TabletToolDone,
+    TabletToolRemoved,
+    TabletToolProximityIn,
+    TabletToolProximityOut,
+    TabletToolDown,
+    TabletToolUp,
+    TabletToolMotion,
+    TabletToolPressure,
+    TabletToolDistance,
+    TabletToolTilt,
+    TabletToolRotation,
+    TabletToolSlider,
+    TabletToolWheel,
+    TabletToolButton,
+    TabletToolFrame,
+};
+
+static void TabletName(void*, zwp_tablet_v2*, const char*) {}
+static void TabletId(void*, zwp_tablet_v2*, uint32_t, uint32_t) {}
+static void TabletPath(void*, zwp_tablet_v2*, const char*) {}
+static void TabletDone(void*, zwp_tablet_v2*) {}
+static void TabletRemoved(void*, zwp_tablet_v2* tablet)
+{
+    zwp_tablet_v2_destroy(tablet);
+}
+static const zwp_tablet_v2_listener g_tabletListener = {
+    TabletName, TabletId, TabletPath, TabletDone, TabletRemoved
+};
+
+static void TabletSeatTabletAdded(void*, zwp_tablet_seat_v2*, zwp_tablet_v2* tablet)
+{
+    zwp_tablet_v2_add_listener(tablet, &g_tabletListener, nullptr);
+}
+
+static void TabletSeatToolAdded(void*, zwp_tablet_seat_v2*, zwp_tablet_tool_v2* tool)
+{
+    auto* state = new WaylandTabletToolState();
+    state->tool = tool;
+    state->pointerId = g_waylandTabletPointerIds.fetch_add(
+        1, std::memory_order_relaxed);
+    g_waylandTabletTools.insert(state);
+    zwp_tablet_tool_v2_add_listener(tool, &g_tabletToolListener, state);
+}
+
+static void TabletSeatPadAdded(void*, zwp_tablet_seat_v2*, zwp_tablet_pad_v2* pad)
+{
+    // Jalium currently consumes pen tools but exposes no tablet-pad routed
+    // event surface. Destroying the optional pad proxy does not affect tools.
+    zwp_tablet_pad_v2_destroy(pad);
+}
+
+static const zwp_tablet_seat_v2_listener g_tabletSeatListener = {
+    TabletSeatTabletAdded,
+    TabletSeatToolAdded,
+    TabletSeatPadAdded,
+};
+
+static void EnsureWaylandTabletSeat()
+{
+    if (g_waylandTabletSeat || !g_waylandTabletManager || !g_waylandSeat) return;
+    g_waylandTabletSeat = zwp_tablet_manager_v2_get_tablet_seat(
+        g_waylandTabletManager, g_waylandSeat);
+    if (g_waylandTabletSeat)
+        zwp_tablet_seat_v2_add_listener(
+            g_waylandTabletSeat, &g_tabletSeatListener, nullptr);
+}
+
+static void CancelWaylandTabletToolsForWindow(JaliumPlatformWindow* window)
+{
+    for (WaylandTabletToolState* state : g_waylandTabletTools)
+    {
+        if (state && state->window == window)
+        {
+            if (state->down)
+            {
+                state->down = false;
+                state->inRange = false;
+                state->pressure = 0.0f;
+                state->buttons &= ~JALIUM_POINTER_BUTTON_PRIMARY;
+                DispatchWaylandTabletTool(state, JALIUM_EVENT_POINTER_CANCEL);
+            }
+            state->window = nullptr;
+            state->inRange = false;
+            state->down = false;
+            state->pendingDown = false;
+            state->pendingUp = false;
+            state->pendingCancel = false;
+            state->pendingProximityOut = false;
+            state->dirty = false;
+        }
+    }
+}
+#else
+static void EnsureWaylandTabletSeat() {}
+static void CancelWaylandTabletToolsForWindow(JaliumPlatformWindow*) {}
+#endif
+
+static uint32_t WaylandTouchPointerId(int32_t touchId)
+{
+    return 0x10000000u | (static_cast<uint32_t>(touchId) & 0x0fffffffu);
+}
+
+static void DispatchWaylandTouch(
+    JaliumPlatformWindow* window, JaliumEventType type, int32_t touchId,
+    float x, float y, float pressure, bool primary)
+{
+    if (!window) return;
+    JaliumPlatformEvent event{};
+    event.type = type;
+    event.window = window;
+    event.pointer.pointerId = WaylandTouchPointerId(touchId);
+    event.pointer.x = x;
+    event.pointer.y = y;
+    event.pointer.pressure = pressure;
+    event.pointer.pointerType = JALIUM_POINTER_TOUCH;
+    event.pointer.modifiers = g_waylandModifiers;
+    event.pointer.flags = primary ? JALIUM_POINTER_FLAG_PRIMARY : 0;
+    if (type == JALIUM_EVENT_POINTER_DOWN ||
+        type == JALIUM_EVENT_POINTER_MOVE)
+    {
+        event.pointer.flags |= JALIUM_POINTER_FLAG_IN_RANGE |
+                               JALIUM_POINTER_FLAG_IN_CONTACT;
+        event.pointer.buttons = JALIUM_POINTER_BUTTON_PRIMARY;
+    }
+    event.pointer.toolType = JALIUM_POINTER_TOOL_UNKNOWN;
+    window->DispatchEvent(event);
+}
+
+static void PromoteNextWaylandPrimaryTouch()
+{
+    WaylandTouchContact* next = nullptr;
+    for (auto& [id, contact] : g_waylandTouchContacts)
+    {
+        (void)id;
+        if (!next || contact.order < next->order)
+            next = &contact;
+    }
+    if (next) next->primary = true;
+}
+
+static void HandleTouchDown(
+    void*, wl_touch*, uint32_t serial, uint32_t, wl_surface* surface,
+    int32_t id, wl_fixed_t x, wl_fixed_t y)
+{
+    g_waylandInputSerial = serial;
+    JaliumPlatformWindow* window = WaylandWindowFromSurface(surface);
+    if (!window) return;
+    const float scale = static_cast<float>(
+        window->waylandScale > 0 ? window->waylandScale : 1);
+    WaylandTouchContact contact{};
+    contact.window = window;
+    contact.x = static_cast<float>(wl_fixed_to_double(x)) * scale;
+    contact.y = static_cast<float>(wl_fixed_to_double(y)) * scale;
+    contact.order = ++g_waylandTouchOrder;
+    contact.primary = g_waylandTouchContacts.empty();
+    g_waylandTouchContacts[id] = contact;
+    DispatchWaylandTouch(
+        window, JALIUM_EVENT_POINTER_DOWN, id,
+        contact.x, contact.y, 1.0f, contact.primary);
+}
+
+static void HandleTouchUp(void*, wl_touch*, uint32_t serial, uint32_t, int32_t id)
+{
+    g_waylandInputSerial = serial;
+    const auto iterator = g_waylandTouchContacts.find(id);
+    if (iterator == g_waylandTouchContacts.end()) return;
+    const WaylandTouchContact contact = iterator->second;
+    DispatchWaylandTouch(
+        contact.window, JALIUM_EVENT_POINTER_UP, id,
+        contact.x, contact.y, 0.0f, contact.primary);
+    const bool wasPrimary = contact.primary;
+    g_waylandTouchContacts.erase(iterator);
+    if (wasPrimary) PromoteNextWaylandPrimaryTouch();
+}
+
+static void HandleTouchMotion(
+    void*, wl_touch*, uint32_t, int32_t id, wl_fixed_t x, wl_fixed_t y)
+{
+    const auto iterator = g_waylandTouchContacts.find(id);
+    if (iterator == g_waylandTouchContacts.end()) return;
+    WaylandTouchContact& contact = iterator->second;
+    const float scale = static_cast<float>(
+        contact.window && contact.window->waylandScale > 0
+            ? contact.window->waylandScale : 1);
+    contact.x = static_cast<float>(wl_fixed_to_double(x)) * scale;
+    contact.y = static_cast<float>(wl_fixed_to_double(y)) * scale;
+    DispatchWaylandTouch(
+        contact.window, JALIUM_EVENT_POINTER_MOVE, id,
+        contact.x, contact.y, 1.0f, contact.primary);
+}
+
+static void HandleTouchFrame(void*, wl_touch*) {}
+
+static void HandleTouchCancel(void*, wl_touch*)
+{
+    for (const auto& [id, contact] : g_waylandTouchContacts)
+    {
+        DispatchWaylandTouch(
+            contact.window, JALIUM_EVENT_POINTER_CANCEL, id,
+            contact.x, contact.y, 0.0f, contact.primary);
+    }
+    g_waylandTouchContacts.clear();
+    g_waylandTouchOrder = 0;
+}
+
+#ifdef WL_TOUCH_SHAPE_SINCE_VERSION
+static void HandleTouchShape(void*, wl_touch*, int32_t, wl_fixed_t, wl_fixed_t) {}
+#endif
+#ifdef WL_TOUCH_ORIENTATION_SINCE_VERSION
+static void HandleTouchOrientation(void*, wl_touch*, int32_t, wl_fixed_t) {}
+#endif
+
+static const wl_touch_listener g_touchListener = {
+    HandleTouchDown,
+    HandleTouchUp,
+    HandleTouchMotion,
+    HandleTouchFrame,
+    HandleTouchCancel
+#ifdef WL_TOUCH_SHAPE_SINCE_VERSION
+    , HandleTouchShape
+#endif
+#ifdef WL_TOUCH_ORIENTATION_SINCE_VERSION
+    , HandleTouchOrientation
+#endif
+};
+
+static void CancelWaylandTouchesForWindow(JaliumPlatformWindow* window)
+{
+    bool removedPrimary = false;
+    for (auto iterator = g_waylandTouchContacts.begin();
+         iterator != g_waylandTouchContacts.end();)
+    {
+        if (iterator->second.window == window)
+        {
+            DispatchWaylandTouch(
+                window, JALIUM_EVENT_POINTER_CANCEL, iterator->first,
+                iterator->second.x, iterator->second.y, 0.0f,
+                iterator->second.primary);
+            removedPrimary |= iterator->second.primary;
+            iterator = g_waylandTouchContacts.erase(iterator);
+        }
+        else
+        {
+            ++iterator;
+        }
+    }
+    if (removedPrimary) PromoteNextWaylandPrimaryTouch();
+}
+
 static void HandleSeatCapabilities(void*, wl_seat* seat, uint32_t capabilities)
 {
     if ((capabilities & WL_SEAT_CAPABILITY_POINTER) && !g_waylandPointer)
@@ -2713,6 +4411,17 @@ static void HandleSeatCapabilities(void*, wl_seat* seat, uint32_t capabilities)
     {
         wl_keyboard_destroy(g_waylandKeyboard);
         g_waylandKeyboard = nullptr;
+    }
+    if ((capabilities & WL_SEAT_CAPABILITY_TOUCH) && !g_waylandTouch)
+    {
+        g_waylandTouch = wl_seat_get_touch(seat);
+        wl_touch_add_listener(g_waylandTouch, &g_touchListener, nullptr);
+    }
+    else if (!(capabilities & WL_SEAT_CAPABILITY_TOUCH) && g_waylandTouch)
+    {
+        HandleTouchCancel(nullptr, g_waylandTouch);
+        wl_touch_destroy(g_waylandTouch);
+        g_waylandTouch = nullptr;
     }
 }
 
@@ -2739,12 +4448,16 @@ static void HandleOutputMode(void* data, wl_output*, uint32_t flags,
     info->refreshMilliHz = refresh;
 }
 
-static void HandleOutputDone(void*, wl_output*) {}
+static void HandleOutputDone(void*, wl_output*)
+{
+    DispatchWaylandMonitorsChanged();
+}
 
 static void HandleOutputScale(void* data, wl_output*, int32_t factor)
 {
     auto* info = static_cast<WaylandOutputInfo*>(data);
     info->scale = factor > 0 ? factor : 1;
+    UpdateWaylandOutputScale(info->registryName, info->scale);
 }
 
 // Trailing name/description members (wl_output v4 headers) stay null via
@@ -2756,22 +4469,68 @@ static const wl_output_listener g_outputListener = {
     HandleOutputScale,
 };
 
+#ifdef JALIUM_HAS_XDG_TOPLEVEL_ICON_V1
+static void HandleWaylandToplevelIconSize(
+    void*, xdg_toplevel_icon_manager_v1*, int32_t)
+{
+}
+
+static void HandleWaylandToplevelIconDone(
+    void*, xdg_toplevel_icon_manager_v1*)
+{
+}
+
+static const xdg_toplevel_icon_manager_v1_listener
+    g_waylandToplevelIconManagerListener = {
+        HandleWaylandToplevelIconSize,
+        HandleWaylandToplevelIconDone,
+    };
+#endif
+
+static uint32_t WaylandBindVersion(
+    uint32_t advertised, const wl_interface& generatedInterface,
+    uint32_t implementationMaximum)
+{
+    // The compositor may advertise a newer protocol than the XML used by the
+    // build host's wayland-scanner. Binding that newer version lets the server
+    // send event opcodes absent from the generated listener table and causes a
+    // fatal "interface has no event" disconnect. Cap against both contracts.
+    return std::min(advertised,
+                    std::min(implementationMaximum,
+                             static_cast<uint32_t>(generatedInterface.version)));
+}
+
 static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
                                  const char* interface, uint32_t version)
 {
     if (strcmp(interface, wl_compositor_interface.name) == 0)
-        g_waylandCompositor = static_cast<wl_compositor*>(wl_registry_bind(registry, name, &wl_compositor_interface, std::min(version, 4u)));
+        g_waylandCompositor = static_cast<wl_compositor*>(wl_registry_bind(
+            registry, name, &wl_compositor_interface,
+            WaylandBindVersion(version, wl_compositor_interface, 4)));
     else if (strcmp(interface, wl_shm_interface.name) == 0 && !g_waylandShm)
         g_waylandShm = static_cast<wl_shm*>(
             wl_registry_bind(registry, name, &wl_shm_interface, 1));
     else if (strcmp(interface, xdg_wm_base_interface.name) == 0)
     {
-        g_xdgWmBase = static_cast<xdg_wm_base*>(wl_registry_bind(registry, name, &xdg_wm_base_interface, std::min(version, 6u)));
+        g_xdgWmBase = static_cast<xdg_wm_base*>(wl_registry_bind(
+            registry, name, &xdg_wm_base_interface,
+            WaylandBindVersion(version, xdg_wm_base_interface, 6)));
         xdg_wm_base_add_listener(g_xdgWmBase, &g_wmBaseListener, nullptr);
     }
+#ifdef JALIUM_HAS_XDG_ACTIVATION_V1
+    else if (strcmp(interface, xdg_activation_v1_interface.name) == 0 &&
+             !g_xdgActivation)
+    {
+        g_xdgActivation = static_cast<xdg_activation_v1*>(wl_registry_bind(
+            registry, name, &xdg_activation_v1_interface,
+            WaylandBindVersion(version, xdg_activation_v1_interface, 1)));
+    }
+#endif
     else if (strcmp(interface, wl_seat_interface.name) == 0 && !g_waylandSeat)
     {
-        g_waylandSeat = static_cast<wl_seat*>(wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 9u)));
+        g_waylandSeat = static_cast<wl_seat*>(wl_registry_bind(
+            registry, name, &wl_seat_interface,
+            WaylandBindVersion(version, wl_seat_interface, 9)));
         wl_seat_add_listener(g_waylandSeat, &g_seatListener, nullptr);
         EnsureWaylandDataDevice();
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
@@ -2780,13 +4539,15 @@ static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
         EnsureWaylandTextInputV1();
 #endif
+        EnsureWaylandTabletSeat();
     }
     else if (strcmp(interface, wl_data_device_manager_interface.name) == 0 &&
              !g_waylandDataDeviceManager)
     {
         g_waylandDataDeviceManager = static_cast<wl_data_device_manager*>(
             wl_registry_bind(registry, name, &wl_data_device_manager_interface,
-                             std::min(version, 3u)));
+                             WaylandBindVersion(
+                                 version, wl_data_device_manager_interface, 3)));
         EnsureWaylandDataDevice();
     }
 #ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
@@ -2794,7 +4555,9 @@ static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
              !g_waylandTextInputManager)
     {
         g_waylandTextInputManager = static_cast<zwp_text_input_manager_v3*>(
-            wl_registry_bind(registry, name, &zwp_text_input_manager_v3_interface, 1));
+            wl_registry_bind(
+                registry, name, &zwp_text_input_manager_v3_interface,
+                WaylandBindVersion(version, zwp_text_input_manager_v3_interface, 1)));
         EnsureWaylandTextInput();
     }
 #endif
@@ -2803,8 +4566,59 @@ static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
              !g_waylandTextInputManagerV1)
     {
         g_waylandTextInputManagerV1 = static_cast<zwp_text_input_manager_v1*>(
-            wl_registry_bind(registry, name, &zwp_text_input_manager_v1_interface, 1));
+            wl_registry_bind(
+                registry, name, &zwp_text_input_manager_v1_interface,
+                WaylandBindVersion(version, zwp_text_input_manager_v1_interface, 1)));
         EnsureWaylandTextInputV1();
+    }
+#endif
+#ifdef JALIUM_HAS_XDG_FOREIGN_V2
+    else if (strcmp(interface, zxdg_exporter_v2_interface.name) == 0 &&
+             !g_waylandExporter)
+    {
+        g_waylandExporter = static_cast<zxdg_exporter_v2*>(
+            wl_registry_bind(registry, name, &zxdg_exporter_v2_interface,
+                             WaylandBindVersion(
+                                 version, zxdg_exporter_v2_interface, 1)));
+    }
+#endif
+#ifdef JALIUM_HAS_XDG_DECORATION_V1
+    else if (strcmp(interface, zxdg_decoration_manager_v1_interface.name) == 0 &&
+             !g_waylandDecorationManager)
+    {
+        g_waylandDecorationManager =
+            static_cast<zxdg_decoration_manager_v1*>(
+                wl_registry_bind(
+                    registry, name, &zxdg_decoration_manager_v1_interface,
+                    WaylandBindVersion(
+                        version, zxdg_decoration_manager_v1_interface, 2)));
+    }
+#endif
+#ifdef JALIUM_HAS_XDG_TOPLEVEL_ICON_V1
+    else if (strcmp(interface, xdg_toplevel_icon_manager_v1_interface.name) == 0 &&
+             !g_waylandToplevelIconManager)
+    {
+        g_waylandToplevelIconManager =
+            static_cast<xdg_toplevel_icon_manager_v1*>(
+                wl_registry_bind(
+                    registry, name, &xdg_toplevel_icon_manager_v1_interface,
+                    WaylandBindVersion(
+                        version, xdg_toplevel_icon_manager_v1_interface, 1)));
+        if (g_waylandToplevelIconManager)
+            xdg_toplevel_icon_manager_v1_add_listener(
+                g_waylandToplevelIconManager,
+                &g_waylandToplevelIconManagerListener, nullptr);
+    }
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TABLET_V2
+    else if (strcmp(interface, zwp_tablet_manager_v2_interface.name) == 0 &&
+             !g_waylandTabletManager)
+    {
+        g_waylandTabletManager = static_cast<zwp_tablet_manager_v2*>(
+            wl_registry_bind(registry, name, &zwp_tablet_manager_v2_interface,
+                             WaylandBindVersion(
+                                 version, zwp_tablet_manager_v2_interface, 1)));
+        EnsureWaylandTabletSeat();
     }
 #endif
     else if (strcmp(interface, wl_output_interface.name) == 0)
@@ -2812,7 +4626,9 @@ static void HandleRegistryGlobal(void*, wl_registry* registry, uint32_t name,
         auto* info = new WaylandOutputInfo();
         info->registryName = name;
         info->output = static_cast<wl_output*>(
-            wl_registry_bind(registry, name, &wl_output_interface, std::min(version, 3u)));
+            wl_registry_bind(
+                registry, name, &wl_output_interface,
+                WaylandBindVersion(version, wl_output_interface, 3)));
         wl_output_add_listener(info->output, &g_outputListener, info);
         g_waylandOutputs.push_back(info);
     }
@@ -2824,9 +4640,11 @@ static void HandleRegistryRemove(void*, wl_registry*, uint32_t name)
     {
         if (g_waylandOutputs[i]->registryName == name)
         {
+            RemoveWaylandOutputFromWindows(name);
             wl_output_destroy(g_waylandOutputs[i]->output);
             delete g_waylandOutputs[i];
             g_waylandOutputs.erase(g_waylandOutputs.begin() + static_cast<ptrdiff_t>(i));
+            DispatchWaylandMonitorsChanged();
             return;
         }
     }
@@ -2841,6 +4659,7 @@ static void ShutdownWayland()
     g_waylandDragWindow = nullptr;
     g_waylandDropPending = false;
     g_waylandDragMime.clear();
+    CancelWaylandActivationRequests(nullptr);
     for (WaylandOutputInfo* info : g_waylandOutputs)
     {
         wl_output_destroy(info->output);
@@ -2913,7 +4732,59 @@ static void ShutdownWayland()
     g_waylandTextInputSerialV1 = 0;
     g_waylandTextInputCursorV1 = 0;
 #endif
+#ifdef JALIUM_HAS_XDG_FOREIGN_V2
+    if (g_waylandExporter)
+    {
+        zxdg_exporter_v2_destroy(g_waylandExporter);
+        g_waylandExporter = nullptr;
+    }
+#endif
+#ifdef JALIUM_HAS_XDG_ACTIVATION_V1
+    if (g_xdgActivation)
+    {
+        xdg_activation_v1_destroy(g_xdgActivation);
+        g_xdgActivation = nullptr;
+    }
+#endif
+#ifdef JALIUM_HAS_XDG_DECORATION_V1
+    if (g_waylandDecorationManager)
+    {
+        zxdg_decoration_manager_v1_destroy(g_waylandDecorationManager);
+        g_waylandDecorationManager = nullptr;
+    }
+#endif
+#ifdef JALIUM_HAS_XDG_TOPLEVEL_ICON_V1
+    if (g_waylandToplevelIconManager)
+    {
+        xdg_toplevel_icon_manager_v1_destroy(g_waylandToplevelIconManager);
+        g_waylandToplevelIconManager = nullptr;
+    }
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TABLET_V2
+    if (g_waylandTabletSeat)
+    {
+        zwp_tablet_seat_v2_destroy(g_waylandTabletSeat);
+        g_waylandTabletSeat = nullptr;
+    }
+    for (WaylandTabletToolState* state : g_waylandTabletTools)
+    {
+        if (state->tool) zwp_tablet_tool_v2_destroy(state->tool);
+        delete state;
+    }
+    g_waylandTabletTools.clear();
+    if (g_waylandTabletManager)
+    {
+        zwp_tablet_manager_v2_destroy(g_waylandTabletManager);
+        g_waylandTabletManager = nullptr;
+    }
+#endif
     g_waylandCompositionActive = false;
+    if (g_waylandTouch)
+    {
+        HandleTouchCancel(nullptr, g_waylandTouch);
+        wl_touch_destroy(g_waylandTouch);
+        g_waylandTouch = nullptr;
+    }
     if (g_waylandPointer) { wl_pointer_destroy(g_waylandPointer); g_waylandPointer = nullptr; }
     if (g_waylandKeyboard) { wl_keyboard_destroy(g_waylandKeyboard); g_waylandKeyboard = nullptr; }
     if (g_waylandSeat) { wl_seat_destroy(g_waylandSeat); g_waylandSeat = nullptr; }
@@ -2979,6 +4850,87 @@ static bool TryInitializeWayland()
 
 void jalium_platform_shutdown_impl();
 
+#ifdef JALIUM_HAS_XINPUT2
+static void InitializeXInput2()
+{
+    g_xinputOpcode = -1;
+    g_xinput2Available = false;
+    int eventBase = 0;
+    int errorBase = 0;
+    if (!g_display || !XQueryExtension(
+            g_display, "XInputExtension", &g_xinputOpcode,
+            &eventBase, &errorBase))
+        return;
+    int major = 2;
+    int minor = 2;
+    if (XIQueryVersion(g_display, &major, &minor) != Success ||
+        major < 2 || (major == 2 && minor < 2))
+    {
+        g_xinputOpcode = -1;
+        return;
+    }
+    g_xinput2Available = true;
+}
+
+static void SelectXInput2Events(Window window)
+{
+    if (!g_xinput2Available || !g_display || !window) return;
+    unsigned char pointerMask[XIMaskLen(XI_LASTEVENT)]{};
+    XISetMask(pointerMask, XI_Motion);
+    XISetMask(pointerMask, XI_ButtonPress);
+    XISetMask(pointerMask, XI_ButtonRelease);
+    XISetMask(pointerMask, XI_Enter);
+    XISetMask(pointerMask, XI_Leave);
+    XISetMask(pointerMask, XI_TouchBegin);
+    XISetMask(pointerMask, XI_TouchUpdate);
+    XISetMask(pointerMask, XI_TouchEnd);
+    XISetMask(pointerMask, XI_TouchOwnership);
+    unsigned char deviceMask[XIMaskLen(XI_LASTEVENT)]{};
+    XISetMask(deviceMask, XI_DeviceChanged);
+    XIEventMask eventMasks[2]{};
+    eventMasks[0].deviceid = XIAllMasterDevices;
+    eventMasks[0].mask_len = sizeof(pointerMask);
+    eventMasks[0].mask = pointerMask;
+    eventMasks[1].deviceid = XIAllDevices;
+    eventMasks[1].mask_len = sizeof(deviceMask);
+    eventMasks[1].mask = deviceMask;
+    (void)XISelectEvents(g_display, window, eventMasks, 2);
+}
+#else
+static void InitializeXInput2() {}
+static void SelectXInput2Events(Window) {}
+#endif
+
+#ifdef JALIUM_HAS_XRANDR
+static void InitializeXRandR()
+{
+    g_xrandrEventBase = -1;
+    g_xrandrErrorBase = -1;
+    g_xrandrAvailable = false;
+    g_xrandr13Available = false;
+    g_xrandrMonitorObjectsAvailable = false;
+    if (!g_display || !XRRQueryExtension(
+            g_display, &g_xrandrEventBase, &g_xrandrErrorBase))
+        return;
+    int major = 1;
+    int minor = 5;
+    if (!XRRQueryVersion(g_display, &major, &minor) ||
+        major < 1 || (major == 1 && minor < 2))
+        return;
+    XRRSelectInput(
+        g_display, g_rootWindow,
+        RRScreenChangeNotifyMask |
+        RRCrtcChangeNotifyMask |
+        RROutputChangeNotifyMask);
+    g_xrandrAvailable = true;
+    g_xrandr13Available = major > 1 || (major == 1 && minor >= 3);
+    g_xrandrMonitorObjectsAvailable =
+        major > 1 || (major == 1 && minor >= 5);
+}
+#else
+static void InitializeXRandR() {}
+#endif
+
 static bool TryInitializeX11()
 {
     XrmInitialize();
@@ -2989,6 +4941,8 @@ static bool TryInitializeX11()
     g_rootWindow = RootWindow(g_display, g_screen);
     g_wmDeleteWindow = XInternAtom(g_display, "WM_DELETE_WINDOW", False);
     g_wmProtocols = XInternAtom(g_display, "WM_PROTOCOLS", False);
+    InitializeXInput2();
+    InitializeXRandR();
     Bool detectableRepeat = False;
     (void)XkbSetDetectableAutoRepeat(g_display, True, &detectableRepeat);
     XSetLocaleModifiers("");
@@ -3026,6 +4980,7 @@ JaliumResult jalium_platform_init_impl()
     setlocale(LC_ALL, "");
     signal(SIGPIPE, SIG_IGN);
     for (auto& state : g_keyStates) state.store(0, std::memory_order_relaxed);
+    LoadDoubleClickSettings();
     g_epollFd = epoll_create1(EPOLL_CLOEXEC);
     if (g_epollFd < 0) return JALIUM_ERROR_INITIALIZATION_FAILED;
 
@@ -3168,6 +5123,11 @@ void jalium_platform_shutdown_impl()
                 XDestroyWindow(g_display, window->xwindow);
                 window->xwindow = 0;
             }
+            if (window->x11Colormap && g_display)
+            {
+                XFreeColormap(g_display, window->x11Colormap);
+                window->x11Colormap = 0;
+            }
         }
         g_windowMap.clear();
     }
@@ -3179,6 +5139,21 @@ void jalium_platform_shutdown_impl()
         g_clipboardWindow = 0;
     }
     if (g_display) { XCloseDisplay(g_display); g_display = nullptr; }
+#ifdef JALIUM_HAS_XINPUT2
+    g_xinputTouchContacts.clear();
+    g_xinputTouchOrder = 0;
+    g_xinputPenAxes.clear();
+    g_xinputScrollAxes.clear();
+    g_xinputOpcode = -1;
+    g_xinput2Available = false;
+#endif
+#ifdef JALIUM_HAS_XRANDR
+    g_xrandrEventBase = -1;
+    g_xrandrErrorBase = -1;
+    g_xrandrAvailable = false;
+    g_xrandr13Available = false;
+    g_xrandrMonitorObjectsAvailable = false;
+#endif
     g_screen = 0;
     g_rootWindow = 0;
     g_wmDeleteWindow = 0;
@@ -3208,6 +5183,8 @@ void jalium_platform_shutdown_impl()
     {
         std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
         g_clipboardUtf8.clear();
+        g_clipboardItems.clear();
+        g_clipboardIncrTransfers.clear();
     }
     ClearPressedKeyStates();
     g_windowSystem = LinuxWindowSystem::Disabled;
@@ -3238,6 +5215,7 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
     win->height = params->height > 0 ? params->height : 600;
     win->x = params->x == JALIUM_DEFAULT_POS ? 0 : params->x;
     win->y = params->y == JALIUM_DEFAULT_POS ? 0 : params->y;
+    win->parentHandle = params->parentHandle;
 
 #ifdef JALIUM_HAS_WAYLAND
     if (g_windowSystem == LinuxWindowSystem::Wayland && g_waylandCompositor)
@@ -3258,6 +5236,23 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
             wl_surface_destroy(win->waylandSurface);
             delete win;
             return nullptr;
+        }
+        // xdg_popup already receives its parent xdg_surface in
+        // CreateWaylandRole. Only toplevel transients use set_parent; calling
+        // it with a popup's null xdgToplevel dereferences a null wl_proxy.
+        if (win->parentHandle != 0 && win->xdgToplevel)
+        {
+            auto* parentSurface = reinterpret_cast<wl_surface*>(win->parentHandle);
+            std::lock_guard<std::mutex> lock(g_windowMapMutex);
+            for (JaliumPlatformWindow* candidate : g_waylandWindows)
+            {
+                if (candidate && candidate->waylandSurface == parentSurface && candidate->xdgToplevel)
+                {
+                    xdg_toplevel_set_parent(win->xdgToplevel, candidate->xdgToplevel);
+                    wl_surface_commit(win->waylandSurface);
+                    break;
+                }
+            }
         }
         {
             std::lock_guard<std::mutex> lock(g_windowMapMutex);
@@ -3280,9 +5275,27 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
                      StructureNotifyMask | FocusChangeMask |
                      EnterWindowMask | LeaveWindowMask |
                      PropertyChangeMask; // _NET_WM_STATE changes → STATE_CHANGED
-    swa.background_pixel = BlackPixel(g_display, g_screen);
+    swa.background_pixel = (params->style & JALIUM_WINDOW_STYLE_TRANSPARENT)
+        ? 0 : BlackPixel(g_display, g_screen);
 
     unsigned long valueMask = CWEventMask | CWBackPixel;
+
+    Visual* visual = CopyFromParent;
+    int depth = CopyFromParent;
+    if (params->style & JALIUM_WINDOW_STYLE_TRANSPARENT)
+    {
+        XVisualInfo visualInfo{};
+        if (XMatchVisualInfo(g_display, g_screen, 32, TrueColor, &visualInfo))
+        {
+            visual = visualInfo.visual;
+            depth = visualInfo.depth;
+            win->x11Colormap = XCreateColormap(
+                g_display, g_rootWindow, visualInfo.visual, AllocNone);
+            swa.colormap = win->x11Colormap;
+            swa.border_pixel = 0;
+            valueMask |= CWColormap | CWBorderPixel;
+        }
+    }
 
     // Override redirect for popup windows
     if (params->style & JALIUM_WINDOW_STYLE_POPUP)
@@ -3291,19 +5304,54 @@ JaliumPlatformWindow* jalium_window_create(const JaliumWindowParams* params)
         valueMask |= CWOverrideRedirect;
     }
 
+    int32_t createX = win->x;
+    int32_t createY = win->y;
+    if ((params->style & JALIUM_WINDOW_STYLE_POPUP) && win->parentHandle != 0)
+    {
+        Window ignored = 0;
+        XTranslateCoordinates(
+            g_display, static_cast<Window>(win->parentHandle), g_rootWindow,
+            win->x, win->y, &createX, &createY, &ignored);
+    }
+
     win->xwindow = XCreateWindow(
         g_display, g_rootWindow,
-        win->x, win->y, win->width, win->height,
+        createX, createY, win->width, win->height,
         0,
-        CopyFromParent, InputOutput, CopyFromParent,
+        depth, InputOutput, visual,
         valueMask, &swa
     );
 
     if (!win->xwindow)
     {
+        if (win->x11Colormap)
+            XFreeColormap(g_display, win->x11Colormap);
         delete win;
         return nullptr;
     }
+
+    X11MonitorMetrics initialMonitor{};
+    if (GetX11MonitorMetricsForRect(
+            createX, createY, win->width, win->height, initialMonitor))
+        win->dpiScale = initialMonitor.scale;
+
+    SelectXInput2Events(win->xwindow);
+
+    if (params->style & JALIUM_WINDOW_STYLE_POPUP)
+    {
+        // Popup coordinates are part of the cross-platform ABI as
+        // parent-relative physical pixels (matching xdg_positioner).
+        win->x = params->x == JALIUM_DEFAULT_POS ? 0 : params->x;
+        win->y = params->y == JALIUM_DEFAULT_POS ? 0 : params->y;
+    }
+    else
+    {
+        win->x = createX;
+        win->y = createY;
+    }
+
+    if (win->parentHandle != 0)
+        XSetTransientForHint(g_display, win->xwindow, static_cast<Window>(win->parentHandle));
 
     // XDND version 5 is backward compatible with v3/v4 sources and supports
     // negotiated copy/move/link actions plus XdndTypeList.
@@ -3412,6 +5460,8 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
 #ifdef JALIUM_HAS_WAYLAND
     if (window->waylandSurface)
     {
+        CancelWaylandTouchesForWindow(window);
+        CancelWaylandTabletToolsForWindow(window);
         {
             std::lock_guard<std::mutex> lock(g_windowMapMutex);
             g_waylandWindows.erase(window);
@@ -3428,6 +5478,11 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
     }
 #endif
 
+    CancelXInputContactsForWindow(window);
+    if (window->x11PopupPointerGrabbed && g_display)
+        XUngrabPointer(g_display, CurrentTime);
+    if (window->x11PopupKeyboardGrabbed && g_display)
+        XUngrabKeyboard(g_display, CurrentTime);
     {
         std::lock_guard<std::mutex> lock(g_windowMapMutex);
         g_windowMap.erase(window->xwindow);
@@ -3438,6 +5493,8 @@ void jalium_window_destroy(JaliumPlatformWindow* window)
 
     if (window->xwindow && g_display)
         XDestroyWindow(g_display, window->xwindow);
+    if (window->x11Colormap && g_display)
+        XFreeColormap(g_display, window->x11Colormap);
 
     delete window;
 }
@@ -3458,6 +5515,18 @@ void jalium_window_show(JaliumPlatformWindow* window)
     if (window && g_display)
     {
         XMapRaised(g_display, window->xwindow);
+        if (window->style & JALIUM_WINDOW_STYLE_POPUP_GRAB)
+        {
+            const int pointerResult = XGrabPointer(
+                g_display, window->xwindow, True,
+                ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+            window->x11PopupPointerGrabbed = pointerResult == GrabSuccess;
+            const int keyboardResult = XGrabKeyboard(
+                g_display, window->xwindow, True,
+                GrabModeAsync, GrabModeAsync, CurrentTime);
+            window->x11PopupKeyboardGrabbed = keyboardResult == GrabSuccess;
+        }
         XFlush(g_display);
     }
 }
@@ -3478,6 +5547,16 @@ void jalium_window_hide(JaliumPlatformWindow* window)
 #endif
     if (window && g_display)
     {
+        if (window->x11PopupPointerGrabbed)
+        {
+            XUngrabPointer(g_display, CurrentTime);
+            window->x11PopupPointerGrabbed = false;
+        }
+        if (window->x11PopupKeyboardGrabbed)
+        {
+            XUngrabKeyboard(g_display, CurrentTime);
+            window->x11PopupKeyboardGrabbed = false;
+        }
         XUnmapWindow(g_display, window->xwindow);
         XFlush(g_display);
     }
@@ -3520,6 +5599,22 @@ void jalium_window_resize(JaliumPlatformWindow* window, int32_t width, int32_t h
             event.resize.height = height;
             window->DispatchEvent(event);
         }
+        if (window->xdgPopup)
+        {
+#ifdef XDG_POPUP_REPOSITION_SINCE_VERSION
+            if (xdg_popup_get_version(window->xdgPopup) >= XDG_POPUP_REPOSITION_SINCE_VERSION)
+            {
+                if (xdg_positioner* positioner = CreatePopupPositioner(window))
+                {
+                    xdg_popup_reposition(
+                        window->xdgPopup, positioner, ++window->xdgPopupRepositionToken);
+                    xdg_positioner_destroy(positioner);
+                    wl_surface_commit(window->waylandSurface);
+                    wl_display_flush(g_waylandDisplay);
+                }
+            }
+#endif
+        }
         DispatchWaylandPaint(window);
         return;
     }
@@ -3536,15 +5631,41 @@ void jalium_window_move(JaliumPlatformWindow* window, int32_t x, int32_t y)
 #ifdef JALIUM_HAS_WAYLAND
     if (window && window->waylandSurface)
     {
-        // xdg-shell intentionally gives clients no absolute positioning API.
+        // Toplevels intentionally have no absolute positioning API. xdg_popup
+        // positions are parent-relative and may be updated with reposition(v3).
         window->x = x;
         window->y = y;
+        if (window->xdgPopup)
+        {
+#ifdef XDG_POPUP_REPOSITION_SINCE_VERSION
+            if (xdg_popup_get_version(window->xdgPopup) >= XDG_POPUP_REPOSITION_SINCE_VERSION)
+            {
+                if (xdg_positioner* positioner = CreatePopupPositioner(window))
+                {
+                    xdg_popup_reposition(
+                        window->xdgPopup, positioner, ++window->xdgPopupRepositionToken);
+                    xdg_positioner_destroy(positioner);
+                    wl_surface_commit(window->waylandSurface);
+                    wl_display_flush(g_waylandDisplay);
+                }
+            }
+#endif
+        }
         return;
     }
 #endif
     if (window && g_display)
     {
-        XMoveWindow(g_display, window->xwindow, x, y);
+        int32_t targetX = x;
+        int32_t targetY = y;
+        if ((window->style & JALIUM_WINDOW_STYLE_POPUP) && window->parentHandle != 0)
+        {
+            Window ignored = 0;
+            XTranslateCoordinates(
+                g_display, static_cast<Window>(window->parentHandle), g_rootWindow,
+                x, y, &targetX, &targetY, &ignored);
+        }
+        XMoveWindow(g_display, window->xwindow, targetX, targetY);
         XFlush(g_display);
     }
 }
@@ -3554,7 +5675,8 @@ void jalium_window_set_state(JaliumPlatformWindow* window, JaliumWindowState sta
 #ifdef JALIUM_HAS_WAYLAND
     if (window && window->waylandSurface)
     {
-        if (!window->xdgToplevel && !CreateWaylandRole(window)) return;
+        if ((!window->xdgToplevel && !window->xdgPopup) && !CreateWaylandRole(window)) return;
+        if (window->xdgPopup) return;
         switch (state)
         {
         case JALIUM_WINDOW_STATE_NORMAL:
@@ -3718,6 +5840,74 @@ JaliumSurfaceDescriptor jalium_window_get_surface(JaliumPlatformWindow* window)
         desc.handle1 = static_cast<intptr_t>(window->xwindow);
     }
     return desc;
+}
+
+static uint32_t CopyPortalParentHandle(
+    JaliumPlatformWindow* window, char* utf8Buffer, uint32_t bufferSize)
+{
+#ifdef JALIUM_HAS_XDG_FOREIGN_V2
+    if (window && window->waylandSurface)
+    {
+        EnsureWaylandPortalExport(window);
+        if (window->portalExport && window->portalParentToken.empty() &&
+            g_waylandDisplay)
+        {
+            // exported(handle) is asynchronous. Portal APIs need a complete
+            // parent string synchronously, so finish this one-time handshake
+            // before returning the required UTF-8 buffer size.
+            wl_display_flush(g_waylandDisplay);
+            (void)wl_display_roundtrip(g_waylandDisplay);
+        }
+        if (!window->portalParentToken.empty())
+        {
+            const std::string value = "wayland:" + window->portalParentToken;
+            const uint32_t required = static_cast<uint32_t>(value.size() + 1);
+            if (utf8Buffer && bufferSize >= required)
+                memcpy(utf8Buffer, value.c_str(), required);
+            return required;
+        }
+        return 0;
+    }
+#endif
+    if (window && window->xwindow)
+    {
+        char value[2 + 1 + sizeof(Window) * 2 + 1]{};
+        const int written = snprintf(
+            value, sizeof(value), "x11:%lx",
+            static_cast<unsigned long>(window->xwindow));
+        if (written <= 0) return 0;
+        const uint32_t required = static_cast<uint32_t>(written + 1);
+        if (utf8Buffer && bufferSize >= required)
+            memcpy(utf8Buffer, value, required);
+        return required;
+    }
+    return 0;
+}
+
+uint32_t jalium_window_get_portal_parent_handle(
+    JaliumPlatformWindow* window, char* utf8Buffer, uint32_t bufferSize)
+{
+    return CopyPortalParentHandle(window, utf8Buffer, bufferSize);
+}
+
+uint32_t jalium_window_get_portal_parent_handle_for_native_handle(
+    intptr_t nativeHandle, char* utf8Buffer, uint32_t bufferSize)
+{
+    if (nativeHandle == 0) return 0;
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+    {
+        return CopyPortalParentHandle(
+            FindWaylandWindowBySurface(
+                reinterpret_cast<wl_surface*>(nativeHandle)),
+            utf8Buffer, bufferSize);
+    }
+#endif
+    if (g_windowSystem == LinuxWindowSystem::XServer)
+        return CopyPortalParentHandle(
+            FindWindow(static_cast<Window>(nativeHandle)),
+            utf8Buffer, bufferSize);
+    return 0;
 }
 
 int32_t jalium_wayland_surface_is_ready(intptr_t waylandSurface)
@@ -3915,6 +6105,13 @@ void jalium_window_get_position(JaliumPlatformWindow* window, int32_t* x, int32_
 #endif
     if (!window || !g_display) { if (x) *x = 0; if (y) *y = 0; return; }
 
+    if ((window->style & JALIUM_WINDOW_STYLE_POPUP) && window->parentHandle != 0)
+    {
+        if (x) *x = window->x;
+        if (y) *y = window->y;
+        return;
+    }
+
     int rx, ry;
     Window child;
     XTranslateCoordinates(g_display, window->xwindow, g_rootWindow, 0, 0, &rx, &ry, &child);
@@ -3933,8 +6130,720 @@ static JaliumPlatformWindow* FindWindow(Window xwin)
     return (it != g_windowMap.end()) ? it->second : nullptr;
 }
 
+static bool ComputeSmoothScrollDelta(
+    double previousValue,
+    double currentValue,
+    double increment,
+    bool vertical,
+    float& deltaX,
+    float& deltaY)
+{
+    if (!std::isfinite(previousValue) || !std::isfinite(currentValue) ||
+        !std::isfinite(increment) || std::abs(increment) < 1e-12)
+        return false;
+
+    const double units = (currentValue - previousValue) / increment;
+    // XI2 scroll valuators are absolute and may wrap/reset at their numeric
+    // limit. Treat an implausible jump as a new baseline rather than scrolling
+    // the application by thousands of pages.
+    if (!std::isfinite(units) || std::abs(units) > 100.0)
+        return false;
+
+    if (vertical)
+        deltaY -= static_cast<float>(units); // positive XI units mean down
+    else
+        deltaX += static_cast<float>(units); // positive XI units mean right
+    return std::abs(units) > 1e-6;
+}
+
+#ifdef JALIUM_HAS_XINPUT2
+static bool ContainsInsensitive(std::string value, const char* needle)
+{
+    std::transform(value.begin(), value.end(), value.begin(),
+                   [](unsigned char character) {
+                       return static_cast<char>(std::tolower(character));
+                   });
+    return value.find(needle) != std::string::npos;
+}
+
+static XInputPenAxes& GetXInputPenAxes(int sourceId)
+{
+    const auto cached = g_xinputPenAxes.find(sourceId);
+    if (cached != g_xinputPenAxes.end()) return cached->second;
+
+    XInputPenAxes axes{};
+    int deviceCount = 0;
+    XIDeviceInfo* devices = XIQueryDevice(g_display, sourceId, &deviceCount);
+    if (devices && deviceCount > 0)
+    {
+        const std::string name = devices[0].name ? devices[0].name : "";
+        axes.isPen = ContainsInsensitive(name, "stylus") ||
+                     ContainsInsensitive(name, "pen") ||
+                     ContainsInsensitive(name, "eraser") ||
+                     ContainsInsensitive(name, "tablet tool") ||
+                     ContainsInsensitive(name, "airbrush") ||
+                     ContainsInsensitive(name, "puck") ||
+                     ContainsInsensitive(name, "lens") ||
+                     (ContainsInsensitive(name, "tablet") &&
+                      ContainsInsensitive(name, "cursor"));
+        if (ContainsInsensitive(name, "eraser"))
+        {
+            axes.toolType = JALIUM_POINTER_TOOL_ERASER;
+            axes.inverted = true;
+        }
+        else if (ContainsInsensitive(name, "airbrush"))
+            axes.toolType = JALIUM_POINTER_TOOL_AIRBRUSH;
+        else if (ContainsInsensitive(name, "brush"))
+            axes.toolType = JALIUM_POINTER_TOOL_BRUSH;
+        else if (ContainsInsensitive(name, "pencil"))
+            axes.toolType = JALIUM_POINTER_TOOL_PENCIL;
+        else if (ContainsInsensitive(name, "lens"))
+            axes.toolType = JALIUM_POINTER_TOOL_LENS;
+        else if (ContainsInsensitive(name, "puck") ||
+                 ContainsInsensitive(name, "cursor"))
+            axes.toolType = JALIUM_POINTER_TOOL_MOUSE;
+        else
+            axes.toolType = JALIUM_POINTER_TOOL_PEN;
+        for (int index = 0; index < devices[0].num_classes; ++index)
+        {
+            XIAnyClassInfo* any = devices[0].classes[index];
+            if (!any || any->type != XIValuatorClass) continue;
+            auto* valuator = reinterpret_cast<XIValuatorClassInfo*>(any);
+            char* atomName = valuator->label != None
+                ? XGetAtomName(g_display, valuator->label) : nullptr;
+            const std::string label = atomName ? atomName : "";
+            if (atomName) XFree(atomName);
+            if (ContainsInsensitive(label, "pressure"))
+            {
+                axes.pressure = valuator->number;
+                axes.pressureMin = valuator->min;
+                axes.pressureMax = valuator->max;
+            }
+            else if (ContainsInsensitive(label, "tilt x") ||
+                     ContainsInsensitive(label, "tilt_x"))
+            {
+                axes.tiltX = valuator->number;
+                axes.tiltXMin = valuator->min;
+                axes.tiltXMax = valuator->max;
+            }
+            else if (ContainsInsensitive(label, "tilt y") ||
+                     ContainsInsensitive(label, "tilt_y"))
+            {
+                axes.tiltY = valuator->number;
+                axes.tiltYMin = valuator->min;
+                axes.tiltYMax = valuator->max;
+            }
+            else if (ContainsInsensitive(label, "rotation") ||
+                     ContainsInsensitive(label, "twist"))
+            {
+                axes.rotation = valuator->number;
+                axes.rotationMin = valuator->min;
+                axes.rotationMax = valuator->max;
+            }
+        }
+        // Some drivers expose a generic device name but provide unmistakable
+        // pressure/tilt axes. Classify those as pen only from the actual
+        // device classes; never promote an ordinary mouse by name alone.
+        axes.isPen |= axes.pressure >= 0 &&
+            (axes.tiltX >= 0 || axes.tiltY >= 0 ||
+             ContainsInsensitive(name, "tablet"));
+    }
+    if (devices) XIFreeDeviceInfo(devices);
+    return g_xinputPenAxes.emplace(sourceId, axes).first->second;
+}
+
+static bool TryGetXInputValuator(
+    const XIValuatorState& valuators, int axis, double& result);
+
+static std::vector<XInputScrollAxis>& GetXInputScrollAxes(int sourceId)
+{
+    const auto cached = g_xinputScrollAxes.find(sourceId);
+    if (cached != g_xinputScrollAxes.end()) return cached->second;
+
+    std::vector<XInputScrollAxis> axes;
+    int deviceCount = 0;
+    XIDeviceInfo* devices = XIQueryDevice(g_display, sourceId, &deviceCount);
+    if (devices && deviceCount > 0)
+    {
+        for (int index = 0; index < devices[0].num_classes; ++index)
+        {
+            XIAnyClassInfo* any = devices[0].classes[index];
+            if (!any || any->type != XIScrollClass) continue;
+            auto* scroll = reinterpret_cast<XIScrollClassInfo*>(any);
+            if ((scroll->scroll_type != XIScrollTypeVertical &&
+                 scroll->scroll_type != XIScrollTypeHorizontal) ||
+                !std::isfinite(scroll->increment) ||
+                std::abs(scroll->increment) < 1e-12)
+                continue;
+            axes.push_back(XInputScrollAxis{
+                scroll->number,
+                scroll->scroll_type,
+                scroll->increment,
+                0.0,
+                false });
+        }
+    }
+    if (devices) XIFreeDeviceInfo(devices);
+    return g_xinputScrollAxes.emplace(sourceId, std::move(axes)).first->second;
+}
+
+static bool UpdateXInputSmoothScroll(
+    int sourceId,
+    const XIValuatorState& valuators,
+    float& deltaX,
+    float& deltaY)
+{
+    bool changed = false;
+    for (XInputScrollAxis& axis : GetXInputScrollAxes(sourceId))
+    {
+        double currentValue = 0.0;
+        if (!TryGetXInputValuator(valuators, axis.number, currentValue))
+            continue;
+
+        // Scroll valuators are absolute. The first value after entering a
+        // window cannot be compared safely because the device may have moved
+        // over another client, so establish a baseline and wait for the next.
+        if (!axis.hasPreviousValue)
+        {
+            axis.previousValue = currentValue;
+            axis.hasPreviousValue = true;
+            continue;
+        }
+
+        changed |= ComputeSmoothScrollDelta(
+            axis.previousValue,
+            currentValue,
+            axis.increment,
+            axis.scrollType == XIScrollTypeVertical,
+            deltaX,
+            deltaY);
+        axis.previousValue = currentValue;
+    }
+    return changed;
+}
+
+static void ResetXInputSmoothScroll()
+{
+    for (auto& [device, axes] : g_xinputScrollAxes)
+    {
+        (void)device;
+        for (XInputScrollAxis& axis : axes)
+            axis.hasPreviousValue = false;
+    }
+}
+
+static bool TryGetXInputValuator(
+    const XIValuatorState& valuators, int axis, double& result)
+{
+    if (axis < 0 || !valuators.mask || !valuators.values) return false;
+    const double* current = valuators.values;
+    for (int index = 0; index < valuators.mask_len * 8; ++index)
+    {
+        if (!XIMaskIsSet(valuators.mask, index)) continue;
+        if (index == axis)
+        {
+            result = *current;
+            return true;
+        }
+        ++current;
+    }
+    return false;
+}
+
+static float NormalizeXInputAxis(
+    double value, double minimum, double maximum,
+    float outputMinimum, float outputMaximum)
+{
+    if (!std::isfinite(value) || maximum <= minimum) return outputMinimum;
+    const double normalized = std::clamp(
+        (value - minimum) / (maximum - minimum), 0.0, 1.0);
+    return outputMinimum + static_cast<float>(normalized) *
+        (outputMaximum - outputMinimum);
+}
+
+static void UpdateXInputPenAxes(
+    XInputPenAxes& axes, const XIValuatorState& valuators)
+{
+    double value = 0;
+    if (TryGetXInputValuator(valuators, axes.pressure, value))
+        axes.currentPressure = NormalizeXInputAxis(
+            value, axes.pressureMin, axes.pressureMax, 0.0f, 1.0f);
+    if (TryGetXInputValuator(valuators, axes.tiltX, value))
+        axes.currentTiltX = NormalizeXInputAxis(
+            value, axes.tiltXMin, axes.tiltXMax, -90.0f, 90.0f);
+    if (TryGetXInputValuator(valuators, axes.tiltY, value))
+        axes.currentTiltY = NormalizeXInputAxis(
+            value, axes.tiltYMin, axes.tiltYMax, -90.0f, 90.0f);
+    if (TryGetXInputValuator(valuators, axes.rotation, value))
+        axes.currentRotation = NormalizeXInputAxis(
+            value, axes.rotationMin, axes.rotationMax, 0.0f, 360.0f);
+}
+
+static void DispatchXInputPointer(
+    JaliumPlatformWindow* window, JaliumEventType type, uint32_t pointerId,
+    float x, float y, float pressure, float tiltX, float tiltY, float twist,
+    JaliumPointerType pointerType, int32_t modifiers, uint32_t flags,
+    int32_t toolType, uint32_t buttons)
+{
+    if (!window) return;
+    JaliumPlatformEvent event{};
+    event.type = type;
+    event.window = window;
+    event.pointer.pointerId = pointerId;
+    event.pointer.x = x;
+    event.pointer.y = y;
+    event.pointer.pressure = pressure;
+    event.pointer.tiltX = tiltX;
+    event.pointer.tiltY = tiltY;
+    event.pointer.twist = twist;
+    event.pointer.pointerType = pointerType;
+    event.pointer.modifiers = modifiers;
+    event.pointer.flags = flags;
+    event.pointer.toolType = toolType;
+    event.pointer.buttons = buttons;
+    window->DispatchEvent(event);
+}
+
+static uint32_t XInputPenFlags(const XInputPenAxes& axes)
+{
+    uint32_t flags = JALIUM_POINTER_FLAG_PRIMARY;
+    if (axes.inRange) flags |= JALIUM_POINTER_FLAG_IN_RANGE;
+    if (axes.inContact) flags |= JALIUM_POINTER_FLAG_IN_CONTACT;
+    if (axes.toolType == JALIUM_POINTER_TOOL_ERASER)
+        flags |= JALIUM_POINTER_FLAG_ERASER;
+    if (axes.inverted) flags |= JALIUM_POINTER_FLAG_INVERTED;
+    if ((axes.buttons & (JALIUM_POINTER_BUTTON_BARREL |
+                         JALIUM_POINTER_BUTTON_SECONDARY)) != 0)
+        flags |= JALIUM_POINTER_FLAG_BARREL;
+    return flags;
+}
+
+static JaliumPointerType XInputPointerTypeForTool(const XInputPenAxes& axes)
+{
+    return axes.toolType == JALIUM_POINTER_TOOL_MOUSE ||
+        axes.toolType == JALIUM_POINTER_TOOL_LENS
+        ? JALIUM_POINTER_MOUSE : JALIUM_POINTER_PEN;
+}
+
+static uint32_t XInputPenButtonMask(int detail)
+{
+    switch (detail)
+    {
+    case Button1: return JALIUM_POINTER_BUTTON_PRIMARY;
+    case Button2: return JALIUM_POINTER_BUTTON_BARREL;
+    case Button3: return JALIUM_POINTER_BUTTON_SECONDARY;
+    default: return JALIUM_POINTER_BUTTON_NONE;
+    }
+}
+
+static void UpdateXInputPenButton(
+    XInputPenAxes& axes, int detail, bool pressed)
+{
+    const uint32_t mask = XInputPenButtonMask(detail);
+    if (pressed) axes.buttons |= mask;
+    else axes.buttons &= ~mask;
+}
+
+static uint32_t XInputPenPointerId(int sourceId)
+{
+    return 0x80000000u |
+        (static_cast<uint32_t>(sourceId) & 0x0fffffffu);
+}
+
+static uint64_t XInputTouchKey(int deviceId, uint32_t touchId)
+{
+    return (static_cast<uint64_t>(static_cast<uint32_t>(deviceId)) << 32) |
+        touchId;
+}
+
+static uint32_t XInputTouchPointerId(int sourceId, uint32_t touchId)
+{
+    return 0x20000000u |
+        ((static_cast<uint32_t>(sourceId) & 0xffu) << 20) |
+        (touchId & 0x000fffffu);
+}
+
+static void PromoteNextXInputPrimaryTouch()
+{
+    XInputTouchContact* next = nullptr;
+    for (auto& [key, contact] : g_xinputTouchContacts)
+    {
+        (void)key;
+        if (!next || contact.order < next->order)
+            next = &contact;
+    }
+    if (next) next->primary = true;
+}
+
+static bool ProcessXInputEvent(XEvent& xev)
+{
+    if (!g_xinput2Available || xev.type != GenericEvent ||
+        xev.xcookie.extension != g_xinputOpcode)
+        return false;
+    if (!XGetEventData(g_display, &xev.xcookie)) return true;
+
+    const int eventType = xev.xcookie.evtype;
+    if (eventType == XI_TouchOwnership)
+    {
+        auto* ownership = static_cast<XITouchOwnershipEvent*>(xev.xcookie.data);
+        if (ownership)
+            (void)XIAllowTouchEvents(
+                g_display, ownership->deviceid, ownership->touchid,
+                ownership->event, XIAcceptTouch);
+        XFreeEventData(g_display, &xev.xcookie);
+        return true;
+    }
+
+    if (eventType == XI_DeviceChanged)
+    {
+        auto* changed = static_cast<XIDeviceChangedEvent*>(xev.xcookie.data);
+        if (changed)
+        {
+            const auto removePenState = [](int deviceId) {
+                const auto iterator = g_xinputPenAxes.find(deviceId);
+                if (iterator == g_xinputPenAxes.end()) return;
+                XInputPenAxes& axes = iterator->second;
+                if (axes.inContact && axes.window)
+                {
+                    axes.inContact = false;
+                    axes.inRange = false;
+                    axes.currentPressure = 0.0f;
+                    axes.buttons &= ~JALIUM_POINTER_BUTTON_PRIMARY;
+                    DispatchXInputPointer(
+                        axes.window, JALIUM_EVENT_POINTER_CANCEL,
+                        XInputPenPointerId(deviceId), axes.x, axes.y, 0.0f,
+                        axes.currentTiltX, axes.currentTiltY,
+                        axes.currentRotation, XInputPointerTypeForTool(axes),
+                        JALIUM_MOD_NONE, XInputPenFlags(axes), axes.toolType,
+                        axes.buttons);
+                }
+                g_xinputPenAxes.erase(iterator);
+            };
+            g_xinputScrollAxes.erase(changed->deviceid);
+            g_xinputScrollAxes.erase(changed->sourceid);
+            removePenState(changed->deviceid);
+            removePenState(changed->sourceid);
+        }
+        XFreeEventData(g_display, &xev.xcookie);
+        return true;
+    }
+
+    if (eventType == XI_Enter || eventType == XI_Leave)
+    {
+        auto* crossing = static_cast<XIEnterEvent*>(xev.xcookie.data);
+        if (crossing)
+        {
+            const int sourceId = crossing->sourceid > 0
+                ? crossing->sourceid : crossing->deviceid;
+            XInputPenAxes& axes = GetXInputPenAxes(sourceId);
+            JaliumPlatformWindow* window = FindWindow(crossing->event);
+            if (axes.isPen && (window || axes.window))
+            {
+                axes.x = static_cast<float>(crossing->event_x);
+                axes.y = static_cast<float>(crossing->event_y);
+                if (eventType == XI_Enter)
+                {
+                    axes.window = window;
+                    axes.inRange = true;
+                    DispatchXInputPointer(
+                        axes.window, JALIUM_EVENT_POINTER_MOVE,
+                        XInputPenPointerId(sourceId), axes.x, axes.y, 0.0f,
+                        axes.currentTiltX, axes.currentTiltY,
+                        axes.currentRotation, XInputPointerTypeForTool(axes),
+                        GetX11Modifiers(crossing->mods.effective),
+                        XInputPenFlags(axes), axes.toolType, axes.buttons);
+                }
+                else
+                {
+                    JaliumPlatformWindow* previousWindow = axes.window
+                        ? axes.window : window;
+                    const bool wasContact = axes.inContact;
+                    axes.inContact = false;
+                    axes.inRange = false;
+                    axes.currentPressure = 0.0f;
+                    axes.buttons &= ~JALIUM_POINTER_BUTTON_PRIMARY;
+                    DispatchXInputPointer(
+                        previousWindow, wasContact
+                            ? JALIUM_EVENT_POINTER_CANCEL
+                            : JALIUM_EVENT_POINTER_MOVE,
+                        XInputPenPointerId(sourceId), axes.x, axes.y, 0.0f,
+                        axes.currentTiltX, axes.currentTiltY,
+                        axes.currentRotation, XInputPointerTypeForTool(axes),
+                        GetX11Modifiers(crossing->mods.effective),
+                        XInputPenFlags(axes), axes.toolType, axes.buttons);
+                    axes.window = nullptr;
+                }
+            }
+        }
+        XFreeEventData(g_display, &xev.xcookie);
+        return true;
+    }
+
+    auto* device = static_cast<XIDeviceEvent*>(xev.xcookie.data);
+    if (!device)
+    {
+        XFreeEventData(g_display, &xev.xcookie);
+        return true;
+    }
+    JaliumPlatformWindow* window = FindWindow(device->event);
+    if (!window)
+    {
+        XFreeEventData(g_display, &xev.xcookie);
+        return true;
+    }
+
+    const int32_t modifiers = GetX11Modifiers(device->mods.effective);
+    if (eventType == XI_TouchBegin || eventType == XI_TouchUpdate ||
+        eventType == XI_TouchEnd)
+    {
+        const uint32_t touchId = static_cast<uint32_t>(device->detail);
+        const int sourceId = device->sourceid > 0
+            ? device->sourceid : device->deviceid;
+        const uint64_t touchKey = XInputTouchKey(device->deviceid, touchId);
+        auto iterator = g_xinputTouchContacts.find(touchKey);
+        if (eventType == XI_TouchBegin)
+        {
+            (void)XIAllowTouchEvents(
+                g_display, device->deviceid, touchId,
+                device->event, XIAcceptTouch);
+            XInputTouchContact contact{};
+            contact.window = window;
+            contact.pointerId = XInputTouchPointerId(sourceId, touchId);
+            contact.x = static_cast<float>(device->event_x);
+            contact.y = static_cast<float>(device->event_y);
+            contact.order = ++g_xinputTouchOrder;
+            contact.primary = g_xinputTouchContacts.empty();
+            iterator = g_xinputTouchContacts.emplace(
+                touchKey, contact).first;
+        }
+        else if (iterator != g_xinputTouchContacts.end())
+        {
+            iterator->second.x = static_cast<float>(device->event_x);
+            iterator->second.y = static_cast<float>(device->event_y);
+        }
+        if (iterator != g_xinputTouchContacts.end())
+        {
+            const JaliumEventType type = eventType == XI_TouchBegin
+                ? JALIUM_EVENT_POINTER_DOWN
+                : (eventType == XI_TouchEnd
+                    ? JALIUM_EVENT_POINTER_UP : JALIUM_EVENT_POINTER_MOVE);
+            DispatchXInputPointer(
+                iterator->second.window, type, iterator->second.pointerId,
+                iterator->second.x, iterator->second.y,
+                eventType == XI_TouchEnd ? 0.0f : 1.0f,
+                0.0f, 0.0f, 0.0f, JALIUM_POINTER_TOUCH, modifiers,
+                (iterator->second.primary ? JALIUM_POINTER_FLAG_PRIMARY : 0) |
+                    (eventType == XI_TouchEnd ? 0 :
+                        JALIUM_POINTER_FLAG_IN_RANGE |
+                        JALIUM_POINTER_FLAG_IN_CONTACT),
+                JALIUM_POINTER_TOOL_UNKNOWN,
+                eventType == XI_TouchEnd
+                    ? JALIUM_POINTER_BUTTON_NONE
+                    : JALIUM_POINTER_BUTTON_PRIMARY);
+            if (eventType == XI_TouchEnd)
+            {
+                const bool wasPrimary = iterator->second.primary;
+                g_xinputTouchContacts.erase(iterator);
+                if (wasPrimary) PromoteNextXInputPrimaryTouch();
+            }
+        }
+        XFreeEventData(g_display, &xev.xcookie);
+        return true;
+    }
+
+    if (eventType == XI_Motion || eventType == XI_ButtonPress ||
+        eventType == XI_ButtonRelease)
+    {
+        const int sourceId = device->sourceid > 0
+            ? device->sourceid : device->deviceid;
+        XInputPenAxes& axes = GetXInputPenAxes(sourceId);
+        UpdateXInputPenAxes(axes, device->valuators);
+        if (axes.isPen)
+        {
+            axes.window = window;
+            axes.x = static_cast<float>(device->event_x);
+            axes.y = static_cast<float>(device->event_y);
+            axes.inRange = true;
+            JaliumEventType type = JALIUM_EVENT_POINTER_MOVE;
+            if (eventType == XI_ButtonPress && device->detail == Button1)
+            {
+                axes.inContact = true;
+                UpdateXInputPenButton(axes, device->detail, true);
+                type = JALIUM_EVENT_POINTER_DOWN;
+            }
+            else if (eventType == XI_ButtonRelease && device->detail == Button1)
+            {
+                axes.inContact = false;
+                axes.currentPressure = 0.0f;
+                UpdateXInputPenButton(axes, device->detail, false);
+                type = JALIUM_EVENT_POINTER_UP;
+            }
+            else if (eventType == XI_ButtonPress)
+            {
+                UpdateXInputPenButton(axes, device->detail, true);
+            }
+            else if (eventType == XI_ButtonRelease)
+            {
+                UpdateXInputPenButton(axes, device->detail, false);
+            }
+            const float pressure = axes.inContact
+                ? axes.currentPressure : 0.0f;
+            DispatchXInputPointer(
+                window, type, XInputPenPointerId(sourceId), axes.x, axes.y,
+                pressure, axes.currentTiltX, axes.currentTiltY,
+                axes.currentRotation, XInputPointerTypeForTool(axes), modifiers,
+                XInputPenFlags(axes), axes.toolType, axes.buttons);
+            XFreeEventData(g_display, &xev.xcookie);
+            return true;
+        }
+
+        // XI2 pointer events replace core pointer delivery. Drop events marked
+        // as pointer-emulated because the touch stream above is authoritative
+        // and managed code performs its own primary-touch mouse promotion.
+        if ((device->flags & XIPointerEmulated) == 0)
+        {
+            JaliumPlatformEvent event{};
+            event.window = window;
+            if (eventType == XI_Motion)
+            {
+                event.type = JALIUM_EVENT_MOUSE_MOVE;
+                event.mouse.x = static_cast<float>(device->event_x);
+                event.mouse.y = static_cast<float>(device->event_y);
+                event.mouse.modifiers = modifiers;
+                window->DispatchEvent(event);
+
+                float deltaX = 0.0f;
+                float deltaY = 0.0f;
+                if (UpdateXInputSmoothScroll(
+                        device->sourceid, device->valuators,
+                        deltaX, deltaY))
+                {
+                    JaliumPlatformEvent wheel{};
+                    wheel.type = JALIUM_EVENT_MOUSE_WHEEL;
+                    wheel.window = window;
+                    wheel.wheel.x = static_cast<float>(device->event_x);
+                    wheel.wheel.y = static_cast<float>(device->event_y);
+                    wheel.wheel.deltaX = deltaX;
+                    wheel.wheel.deltaY = deltaY;
+                    wheel.wheel.modifiers = modifiers;
+                    window->DispatchEvent(wheel);
+                }
+            }
+            else if (device->detail >= Button4 && device->detail <= 7 &&
+                     eventType == XI_ButtonPress)
+            {
+                event.type = JALIUM_EVENT_MOUSE_WHEEL;
+                event.wheel.x = static_cast<float>(device->event_x);
+                event.wheel.y = static_cast<float>(device->event_y);
+                event.wheel.modifiers = modifiers;
+                if (device->detail == Button4) event.wheel.deltaY = 1.0f;
+                else if (device->detail == Button5) event.wheel.deltaY = -1.0f;
+                else if (device->detail == 6) event.wheel.deltaX = -1.0f;
+                else event.wheel.deltaX = 1.0f;
+                window->DispatchEvent(event);
+            }
+            else if (!(device->detail >= Button4 && device->detail <= 7))
+            {
+                event.type = eventType == XI_ButtonPress
+                    ? JALIUM_EVENT_MOUSE_DOWN : JALIUM_EVENT_MOUSE_UP;
+                event.mouse.x = static_cast<float>(device->event_x);
+                event.mouse.y = static_cast<float>(device->event_y);
+                event.mouse.button = X11ButtonToJalium(device->detail);
+                event.mouse.modifiers = modifiers;
+                event.mouse.clickCount = eventType == XI_ButtonPress
+                    ? RegisterClick(
+                        g_x11ClickTracker, window, event.mouse.button,
+                        device->time, event.mouse.x, event.mouse.y)
+                    : g_x11ClickTracker.count;
+                window->DispatchEvent(event);
+            }
+        }
+    }
+
+    XFreeEventData(g_display, &xev.xcookie);
+    return true;
+}
+
+static void CancelXInputContactsForWindow(JaliumPlatformWindow* window)
+{
+    bool removedPrimary = false;
+    for (auto iterator = g_xinputTouchContacts.begin();
+         iterator != g_xinputTouchContacts.end();)
+    {
+        if (iterator->second.window == window)
+        {
+            DispatchXInputPointer(
+                window, JALIUM_EVENT_POINTER_CANCEL,
+                iterator->second.pointerId,
+                iterator->second.x, iterator->second.y, 0.0f,
+                0.0f, 0.0f, 0.0f, JALIUM_POINTER_TOUCH,
+                JALIUM_MOD_NONE,
+                iterator->second.primary ? JALIUM_POINTER_FLAG_PRIMARY : 0,
+                JALIUM_POINTER_TOOL_UNKNOWN, JALIUM_POINTER_BUTTON_NONE);
+            removedPrimary |= iterator->second.primary;
+            iterator = g_xinputTouchContacts.erase(iterator);
+        }
+        else
+        {
+            ++iterator;
+        }
+    }
+    if (removedPrimary) PromoteNextXInputPrimaryTouch();
+
+    for (auto& [sourceId, axes] : g_xinputPenAxes)
+    {
+        if (axes.window != window) continue;
+        if (axes.inContact)
+        {
+            axes.inContact = false;
+            axes.inRange = false;
+            axes.currentPressure = 0.0f;
+            axes.buttons &= ~JALIUM_POINTER_BUTTON_PRIMARY;
+            DispatchXInputPointer(
+                window, JALIUM_EVENT_POINTER_CANCEL,
+                XInputPenPointerId(sourceId), axes.x, axes.y, 0.0f,
+                axes.currentTiltX, axes.currentTiltY, axes.currentRotation,
+                XInputPointerTypeForTool(axes), JALIUM_MOD_NONE,
+                XInputPenFlags(axes),
+                axes.toolType, axes.buttons);
+        }
+        axes.window = nullptr;
+        axes.inRange = false;
+        axes.inContact = false;
+        axes.buttons = JALIUM_POINTER_BUTTON_NONE;
+    }
+}
+#else
+static bool ProcessXInputEvent(XEvent&) { return false; }
+static void CancelXInputContactsForWindow(JaliumPlatformWindow*) {}
+#endif
+
+static bool ProcessXRandREvent(XEvent& event)
+{
+#ifdef JALIUM_HAS_XRANDR
+    if (!g_xrandrAvailable || g_xrandrEventBase < 0)
+        return false;
+    if (event.type == g_xrandrEventBase + RRScreenChangeNotify)
+    {
+        XRRUpdateConfiguration(&event);
+        RefreshX11DisplayMetrics();
+        return true;
+    }
+    if (event.type == g_xrandrEventBase + RRNotify)
+    {
+        RefreshX11DisplayMetrics();
+        return true;
+    }
+#else
+    (void)event;
+#endif
+    return false;
+}
+
 static void ProcessXEvent(XEvent& xev)
 {
+    if (ProcessXInputEvent(xev)) return;
+    if (ProcessXRandREvent(xev)) return;
     if (ProcessClipboardXEvent(xev)) return;
     if (ProcessXdndXEvent(xev)) return;
     JaliumPlatformWindow* win = FindWindow(xev.xany.window);
@@ -3954,16 +6863,16 @@ static void ProcessXEvent(XEvent& xev)
         break;
 
     case ConfigureNotify:
-        if (xev.xconfigure.width != win->width || xev.xconfigure.height != win->height)
         {
-            win->width = xev.xconfigure.width;
-            win->height = xev.xconfigure.height;
-            evt.type = JALIUM_EVENT_RESIZE;
-            evt.resize.width = win->width;
-            evt.resize.height = win->height;
-            win->DispatchEvent(evt);
-        }
-        {
+            const bool sizeChanged =
+                xev.xconfigure.width != win->width ||
+                xev.xconfigure.height != win->height;
+            if (sizeChanged)
+            {
+                win->width = xev.xconfigure.width;
+                win->height = xev.xconfigure.height;
+            }
+
             // Synthetic ConfigureNotify (the WM's move notification) carries
             // root coordinates directly; real events are parent-relative and
             // need a translation round-trip.
@@ -3976,13 +6885,40 @@ static void ProcessXEvent(XEvent& xev)
                                       0, 0, &rootX, &rootY, &child);
             }
 
-            if (rootX != win->x || rootY != win->y)
+            X11MonitorMetrics monitor{};
+            const bool dpiChanged = GetX11MonitorMetricsForRect(
+                rootX, rootY, win->width, win->height, monitor) &&
+                UpdateX11WindowDpi(win, monitor);
+
+            // A DPI transition schedules a scaled XResizeWindow above. Wait
+            // for that authoritative ConfigureNotify instead of publishing an
+            // intermediate logical size with the new DPI and old pixel size.
+            if (sizeChanged && !dpiChanged)
             {
-                win->x = rootX;
-                win->y = rootY;
+                evt.type = JALIUM_EVENT_RESIZE;
+                evt.resize.width = win->width;
+                evt.resize.height = win->height;
+                win->DispatchEvent(evt);
+            }
+
+            int reportedX = rootX;
+            int reportedY = rootY;
+            if ((win->style & JALIUM_WINDOW_STYLE_POPUP) && win->parentHandle != 0)
+            {
+                Window child = 0;
+                XTranslateCoordinates(
+                    g_display, g_rootWindow,
+                    static_cast<Window>(win->parentHandle), rootX, rootY,
+                    &reportedX, &reportedY, &child);
+            }
+
+            if (reportedX != win->x || reportedY != win->y)
+            {
+                win->x = reportedX;
+                win->y = reportedY;
                 evt.type = JALIUM_EVENT_MOVE;
-                evt.move.x = rootX;
-                evt.move.y = rootY;
+                evt.move.x = reportedX;
+                evt.move.y = reportedY;
                 win->DispatchEvent(evt);
             }
         }
@@ -4024,6 +6960,9 @@ static void ProcessXEvent(XEvent& xev)
         break;
 
     case MotionNotify:
+#ifdef JALIUM_HAS_XINPUT2
+        if (g_xinput2Available && !xev.xmotion.send_event) break;
+#endif
         evt.type = JALIUM_EVENT_MOUSE_MOVE;
         evt.mouse.x = static_cast<float>(xev.xmotion.x);
         evt.mouse.y = static_cast<float>(xev.xmotion.y);
@@ -4032,6 +6971,9 @@ static void ProcessXEvent(XEvent& xev)
         break;
 
     case ButtonPress:
+#ifdef JALIUM_HAS_XINPUT2
+        if (g_xinput2Available && !xev.xbutton.send_event) break;
+#endif
         // Scroll wheel
         if (xev.xbutton.button == Button4 || xev.xbutton.button == Button5 ||
             xev.xbutton.button == 6 || xev.xbutton.button == 7)
@@ -4065,6 +7007,9 @@ static void ProcessXEvent(XEvent& xev)
         break;
 
     case ButtonRelease:
+#ifdef JALIUM_HAS_XINPUT2
+        if (g_xinput2Available && !xev.xbutton.send_event) break;
+#endif
         if (xev.xbutton.button >= Button4 && xev.xbutton.button <= 7)
             break; // Ignore scroll button releases
 
@@ -4077,6 +7022,11 @@ static void ProcessXEvent(XEvent& xev)
         break;
 
     case EnterNotify:
+#ifdef JALIUM_HAS_XINPUT2
+        // XI2 scroll valuators are absolute. Any movement while the pointer
+        // was over another client makes the old baseline invalid.
+        ResetXInputSmoothScroll();
+#endif
         evt.type = JALIUM_EVENT_MOUSE_ENTER;
         win->DispatchEvent(evt);
         break;
@@ -4502,7 +7452,50 @@ float jalium_window_get_dpi_scale(JaliumPlatformWindow* window)
 
 int32_t jalium_window_get_monitor_refresh_rate(JaliumPlatformWindow* window)
 {
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+    {
+        const WaylandOutputInfo* selected = nullptr;
+        int32_t selectedScale = 0;
+        if (window && !window->waylandEnteredOutputs.empty())
+        {
+            const uint32_t selectedId = SelectWaylandEnteredOutputId(window);
+            for (const WaylandOutputInfo* output : g_waylandOutputs)
+            {
+                if (output->registryName == selectedId)
+                {
+                    selected = output;
+                    selectedScale = std::max(output->scale, 1);
+                    break;
+                }
+            }
+        }
+        if (!selected)
+        {
+            for (const WaylandOutputInfo* output : g_waylandOutputs)
+            {
+                const int32_t scale = std::max(output->scale, 1);
+                if (!selected || scale > selectedScale ||
+                    (scale == selectedScale &&
+                     output->registryName < selected->registryName))
+                {
+                    selected = output;
+                    selectedScale = scale;
+                }
+            }
+        }
+        if (selected && selected->refreshMilliHz > 0)
+            return (selected->refreshMilliHz + 500) / 1000;
+        return 60;
+    }
+#endif
 #ifdef JALIUM_HAS_XRANDR
+    X11MonitorMetrics metrics{};
+    if ((window && GetX11MonitorMetricsForWindow(window, metrics)) ||
+        (!window && GetX11MonitorMetricsByIndex(0, metrics)))
+    {
+        if (metrics.refreshRate > 0) return metrics.refreshRate;
+    }
     if (g_display)
     {
         XRRScreenConfiguration* conf = XRRGetScreenInfo(g_display, g_rootWindow);
@@ -4540,24 +7533,112 @@ int16_t jalium_input_get_key_state(int32_t jaliumVirtualKey)
                                 ((state & 0x01u) ? 0x0001u : 0u));
 }
 
-void jalium_input_get_cursor_pos(float* x, float* y)
+JaliumResult jalium_input_get_touch_capabilities(
+    int32_t* touchPresent, int32_t* maxContacts)
+{
+    if (!touchPresent || !maxContacts)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    *touchPresent = 0;
+    *maxContacts = 0;
+
+#ifdef JALIUM_PLATFORM_TEST_HOOKS
+    const int32_t testPresent =
+        g_testTouchPresent.load(std::memory_order_acquire);
+    if (testPresent >= 0)
+    {
+        *touchPresent = testPresent != 0 ? 1 : 0;
+        *maxContacts = *touchPresent != 0
+            ? std::max(g_testTouchContacts.load(std::memory_order_acquire), 0)
+            : 0;
+        return JALIUM_OK;
+    }
+#endif
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+    {
+        // Core wl_touch advertises presence through wl_seat capabilities but
+        // deliberately exposes no maximum contact count.
+        *touchPresent = g_waylandTouch ? 1 : 0;
+        return JALIUM_OK;
+    }
+#endif
+
+    if (g_windowSystem != LinuxWindowSystem::XServer)
+        return JALIUM_ERROR_INVALID_STATE;
+
+#ifdef JALIUM_HAS_XINPUT2
+    if (!g_xinput2Available || !g_display)
+        return JALIUM_OK;
+
+    int deviceCount = 0;
+    XIDeviceInfo* devices = XIQueryDevice(g_display, XIAllDevices, &deviceCount);
+    if (!devices)
+        return JALIUM_OK;
+    for (int deviceIndex = 0; deviceIndex < deviceCount; ++deviceIndex)
+    {
+        const XIDeviceInfo& device = devices[deviceIndex];
+        if (!device.enabled) continue;
+        for (int classIndex = 0; classIndex < device.num_classes; ++classIndex)
+        {
+            XIAnyClassInfo* any = device.classes[classIndex];
+            if (!any || any->type != XITouchClass) continue;
+            const auto* touch = reinterpret_cast<XITouchClassInfo*>(any);
+            *touchPresent = 1;
+            *maxContacts = std::max(
+                *maxContacts, std::max(static_cast<int32_t>(touch->num_touches), 0));
+        }
+    }
+    XIFreeDeviceInfo(devices);
+#endif
+    return JALIUM_OK;
+}
+
+JaliumResult jalium_platform_set_double_click_settings(
+    uint32_t milliseconds, float distance)
+{
+    if (milliseconds == 0 || milliseconds > 60000 ||
+        !std::isfinite(distance) || distance < 0.0f || distance > 16384.0f)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    g_doubleClickMilliseconds = milliseconds;
+    g_doubleClickDistance = distance;
+    g_x11ClickTracker = {};
+#ifdef JALIUM_HAS_WAYLAND
+    g_waylandClickTracker = {};
+#endif
+    return JALIUM_OK;
+}
+
+JaliumResult jalium_input_get_cursor_pos(float* x, float* y)
 {
 #ifdef JALIUM_HAS_WAYLAND
     if (g_windowSystem == LinuxWindowSystem::Wayland)
     {
-        if (x) *x = g_pointerX;
-        if (y) *y = g_pointerY;
-        return;
+        // Wayland deliberately exposes only surface-local pointer coordinates.
+        // g_pointerX/Y are therefore useful while dispatching that surface's
+        // event, but they are not global desktop coordinates and must never be
+        // returned through this screen-position ABI.
+        if (x) *x = 0.0f;
+        if (y) *y = 0.0f;
+        return JALIUM_ERROR_NOT_SUPPORTED;
     }
 #endif
-    if (!g_display) { if (x) *x = 0; if (y) *y = 0; return; }
+    if (!x || !y) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (!g_display) { *x = 0.0f; *y = 0.0f; return JALIUM_ERROR_INVALID_STATE; }
 
     Window root, child;
     int rootX, rootY, winX, winY;
     unsigned int mask;
-    XQueryPointer(g_display, g_rootWindow, &root, &child, &rootX, &rootY, &winX, &winY, &mask);
-    if (x) *x = static_cast<float>(rootX);
-    if (y) *y = static_cast<float>(rootY);
+    if (!XQueryPointer(g_display, g_rootWindow, &root, &child,
+                       &rootX, &rootY, &winX, &winY, &mask))
+    {
+        *x = 0.0f;
+        *y = 0.0f;
+        return JALIUM_ERROR_INVALID_STATE;
+    }
+    *x = static_cast<float>(rootX);
+    *y = static_cast<float>(rootY);
+    return JALIUM_OK;
 }
 
 // ============================================================================
@@ -4601,9 +7682,119 @@ static bool IsX11TextTarget(Atom target)
            target == g_textPlainAtom || target == XA_STRING;
 }
 
+static const OwnedClipboardItem* FindClipboardItemLocked(const char* mimeType)
+{
+    if (!mimeType) return nullptr;
+    const auto iterator = std::find_if(
+        g_clipboardItems.begin(), g_clipboardItems.end(),
+        [mimeType](const OwnedClipboardItem& item)
+        {
+            return item.mimeType == mimeType;
+        });
+    return iterator == g_clipboardItems.end() ? nullptr : &*iterator;
+}
+
+static const OwnedClipboardItem* FindClipboardItemLocked(Atom atom)
+{
+    const auto iterator = std::find_if(
+        g_clipboardItems.begin(), g_clipboardItems.end(),
+        [atom](const OwnedClipboardItem& item)
+        {
+            return item.x11Atom == atom;
+        });
+    return iterator == g_clipboardItems.end() ? nullptr : &*iterator;
+}
+
+static const OwnedClipboardItem* FindClipboardTextItemLocked()
+{
+    constexpr const char* preferred[] = {
+        "text/plain;charset=utf-8", "UTF8_STRING", "text/plain"
+    };
+    for (const char* mimeType : preferred)
+        if (const OwnedClipboardItem* item = FindClipboardItemLocked(mimeType))
+            return item;
+    return nullptr;
+}
+
+static void SynchronizeLegacyClipboardTextLocked()
+{
+    if (const OwnedClipboardItem* item = FindClipboardTextItemLocked())
+        g_clipboardUtf8.assign(
+            reinterpret_cast<const char*>(item->bytes.data()), item->bytes.size());
+    else
+        g_clipboardUtf8.clear();
+}
+
+static bool StartX11ClipboardTransfer(
+    const XSelectionRequestEvent& request, Atom property,
+    Atom target, const std::vector<uint8_t>& bytes)
+{
+    // Keep ordinary properties comfortably below the minimum X11 request
+    // limit. Larger payloads use ICCCM INCR and are advanced by requestor
+    // PropertyDelete notifications in ProcessClipboardXEvent.
+    constexpr size_t directLimit = 64u * 1024u;
+    if (bytes.size() <= directLimit)
+    {
+        XChangeProperty(
+            g_display, request.requestor, property, target, 8,
+            PropModeReplace, bytes.empty() ? nullptr : bytes.data(),
+            static_cast<int>(bytes.size()));
+        return true;
+    }
+
+    unsigned long totalBytes = static_cast<unsigned long>(bytes.size());
+    XSelectInput(g_display, request.requestor, PropertyChangeMask);
+    XChangeProperty(
+        g_display, request.requestor, property, g_incrAtom, 32,
+        PropModeReplace,
+        reinterpret_cast<const unsigned char*>(&totalBytes), 1);
+    g_clipboardIncrTransfers.push_back(
+        X11ClipboardIncrTransfer{request.requestor, property, target, bytes, 0});
+    return true;
+}
+
+static bool AdvanceX11ClipboardTransfer(const XPropertyEvent& propertyEvent)
+{
+    if (propertyEvent.state != PropertyDelete) return false;
+    std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+    const auto iterator = std::find_if(
+        g_clipboardIncrTransfers.begin(), g_clipboardIncrTransfers.end(),
+        [&propertyEvent](const X11ClipboardIncrTransfer& transfer)
+        {
+            return transfer.requestor == propertyEvent.window &&
+                   transfer.property == propertyEvent.atom;
+        });
+    if (iterator == g_clipboardIncrTransfers.end()) return false;
+
+    constexpr size_t chunkSize = 64u * 1024u;
+    if (iterator->offset < iterator->bytes.size())
+    {
+        const size_t count = std::min(
+            chunkSize, iterator->bytes.size() - iterator->offset);
+        XChangeProperty(
+            g_display, iterator->requestor, iterator->property,
+            iterator->target, 8, PropModeReplace,
+            iterator->bytes.data() + iterator->offset,
+            static_cast<int>(count));
+        iterator->offset += count;
+    }
+    else
+    {
+        XChangeProperty(
+            g_display, iterator->requestor, iterator->property,
+            iterator->target, 8, PropModeReplace, nullptr, 0);
+        g_clipboardIncrTransfers.erase(iterator);
+    }
+    XFlush(g_display);
+    return true;
+}
+
 static bool ProcessClipboardXEvent(XEvent& event)
 {
     if (!g_display || !g_clipboardWindow) return false;
+    if (event.type == PropertyNotify &&
+        AdvanceX11ClipboardTransfer(event.xproperty))
+        return true;
     if (event.type == SelectionRequest)
     {
         const XSelectionRequestEvent& request = event.xselectionrequest;
@@ -4622,29 +7813,45 @@ static bool ProcessClipboardXEvent(XEvent& event)
 
         if (request.target == g_targetsAtom)
         {
-            const Atom targets[] = {
-                g_targetsAtom, g_utf8StringAtom, g_textPlainUtf8Atom,
-                g_textPlainAtom, XA_STRING
-            };
-            XChangeProperty(g_display, request.requestor, property, XA_ATOM, 32,
-                            PropModeReplace,
-                            reinterpret_cast<const unsigned char*>(targets),
-                            static_cast<int>(std::size(targets)));
-            response.property = property;
-        }
-        else if (IsX11TextTarget(request.target))
-        {
-            std::string snapshot;
+            std::vector<Atom> targets{g_targetsAtom};
             {
                 std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
-                snapshot = request.target == XA_STRING
-                    ? Utf8ToLatin1(g_clipboardUtf8) : g_clipboardUtf8;
+                targets.reserve(g_clipboardItems.size() + 2);
+                for (const OwnedClipboardItem& item : g_clipboardItems)
+                    if (item.x11Atom != None &&
+                        std::find(targets.begin(), targets.end(), item.x11Atom) == targets.end())
+                        targets.push_back(item.x11Atom);
+                if (FindClipboardTextItemLocked() &&
+                    std::find(targets.begin(), targets.end(), XA_STRING) == targets.end())
+                    targets.push_back(XA_STRING);
             }
-            XChangeProperty(g_display, request.requestor, property, request.target, 8,
+            XChangeProperty(g_display, request.requestor, property, XA_ATOM, 32,
                             PropModeReplace,
-                            reinterpret_cast<const unsigned char*>(snapshot.data()),
-                            static_cast<int>(snapshot.size()));
+                            reinterpret_cast<const unsigned char*>(targets.data()),
+                            static_cast<int>(targets.size()));
             response.property = property;
+        }
+        else
+        {
+            std::vector<uint8_t> snapshot;
+            bool supported = false;
+            {
+                std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+                if (const OwnedClipboardItem* item = FindClipboardItemLocked(request.target))
+                {
+                    snapshot = item->bytes;
+                    supported = true;
+                }
+                else if (request.target == XA_STRING && FindClipboardTextItemLocked())
+                {
+                    const std::string latin1 = Utf8ToLatin1(g_clipboardUtf8);
+                    snapshot.assign(latin1.begin(), latin1.end());
+                    supported = true;
+                }
+            }
+            if (supported && StartX11ClipboardTransfer(
+                    request, property, request.target, snapshot))
+                response.property = property;
         }
 
         XSendEvent(g_display, request.requestor, False, NoEventMask,
@@ -4656,6 +7863,10 @@ static bool ProcessClipboardXEvent(XEvent& event)
         event.xselectionclear.window == g_clipboardWindow &&
         event.xselectionclear.selection == g_clipboardAtom)
     {
+        std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+        g_clipboardIncrTransfers.clear();
+        g_clipboardItems.clear();
+        g_clipboardUtf8.clear();
         return true;
     }
     return (event.type == SelectionNotify &&
@@ -4709,7 +7920,7 @@ static bool ReadX11Property(Atom& actualType, int& actualFormat,
     unsigned char* value = nullptr;
     const int status = XGetWindowProperty(
         g_display, g_clipboardWindow, g_jaliumClipProp, 0, 0x1fffffff,
-        True, AnyPropertyType, &actualType, &actualFormat,
+        False, AnyPropertyType, &actualType, &actualFormat,
         &itemCount, &remaining, &value);
     if (status != Success)
     {
@@ -4721,6 +7932,17 @@ static bool ReadX11Property(Atom& actualType, int& actualFormat,
     {
         if (value) XFree(value);
         bytes.clear();
+
+        // Selection owners publish the INCR header before SelectionNotify, which
+        // also queues PropertyNewValue on our requestor window. Drain that header
+        // notification before deleting the property; otherwise it can be mistaken
+        // for the first data chunk and an otherwise valid large transfer reads as
+        // an empty payload.
+        XEvent stalePropertyEvent{};
+        while (XCheckTypedWindowEvent(
+            g_display, g_clipboardWindow, PropertyNotify, &stalePropertyEvent)) {}
+        XDeleteProperty(g_display, g_clipboardWindow, g_jaliumClipProp);
+        XFlush(g_display);
         for (;;)
         {
             XEvent propertyEvent{};
@@ -4766,6 +7988,7 @@ static bool ReadX11Property(Atom& actualType, int& actualFormat,
     else
         bytes.clear();
     if (value) XFree(value);
+    XDeleteProperty(g_display, g_clipboardWindow, g_jaliumClipProp);
     return true;
 }
 
@@ -4796,10 +8019,15 @@ static const char* SelectWaylandTextMime(const WaylandDataOfferState* offer)
     return nullptr;
 }
 
-static bool ReadWaylandSelection(std::string& text)
+static bool ReadWaylandSelectionData(
+    const char* mimeType, std::vector<uint8_t>& bytes)
 {
-    const char* mimeType = SelectWaylandTextMime(g_waylandSelectionOffer);
     if (!mimeType || !g_waylandSelectionOffer || !g_waylandSelectionOffer->offer)
+        return false;
+    if (std::find(
+            g_waylandSelectionOffer->mimeTypes.begin(),
+            g_waylandSelectionOffer->mimeTypes.end(), mimeType) ==
+        g_waylandSelectionOffer->mimeTypes.end())
         return false;
     int descriptors[2] = {-1, -1};
     if (pipe2(descriptors, O_CLOEXEC | O_NONBLOCK) != 0) return false;
@@ -4812,7 +8040,7 @@ static bool ReadWaylandSelection(std::string& text)
         return false;
     }
 
-    text.clear();
+    bytes.clear();
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
     bool complete = false;
     while (std::chrono::steady_clock::now() < deadline && !complete)
@@ -4830,7 +8058,8 @@ static bool ReadWaylandSelection(std::string& text)
         {
             char buffer[8192];
             const ssize_t count = read(descriptors[0], buffer, sizeof(buffer));
-            if (count > 0) text.append(buffer, static_cast<size_t>(count));
+            if (count > 0)
+                bytes.insert(bytes.end(), buffer, buffer + count);
             else if (count == 0) { complete = true; break; }
             else if (errno == EINTR) continue;
             else if (errno == EAGAIN || errno == EWOULDBLOCK) break;
@@ -4841,7 +8070,328 @@ static bool ReadWaylandSelection(std::string& text)
     close(descriptors[0]);
     return complete;
 }
+
+static bool ReadWaylandSelection(std::string& text)
+{
+    const char* mimeType = SelectWaylandTextMime(g_waylandSelectionOffer);
+    std::vector<uint8_t> bytes;
+    if (!ReadWaylandSelectionData(mimeType, bytes)) return false;
+    text.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+    return true;
+}
 #endif
+
+static bool IsUtf8ClipboardMime(const char* mimeType)
+{
+    return mimeType &&
+        (strcmp(mimeType, "text/plain;charset=utf-8") == 0 ||
+         strcmp(mimeType, "UTF8_STRING") == 0 ||
+         strcmp(mimeType, "text/plain") == 0);
+}
+
+static bool CopyClipboardItems(
+    const JaliumClipboardDataItem* items, uint32_t itemCount,
+    std::vector<OwnedClipboardItem>& result)
+{
+    result.clear();
+    result.reserve(itemCount);
+    for (uint32_t index = 0; index < itemCount; ++index)
+    {
+        if (!items[index].mimeType || !*items[index].mimeType ||
+            strchr(items[index].mimeType, '\n') ||
+            (!items[index].data && items[index].dataSize != 0))
+            return false;
+
+        OwnedClipboardItem copy;
+        copy.mimeType = items[index].mimeType;
+        if (items[index].dataSize != 0)
+            copy.bytes.assign(
+                items[index].data,
+                items[index].data + items[index].dataSize);
+
+        const auto existing = std::find_if(
+            result.begin(), result.end(),
+            [&copy](const OwnedClipboardItem& item)
+            {
+                return item.mimeType == copy.mimeType;
+            });
+        if (existing == result.end()) result.push_back(std::move(copy));
+        else *existing = std::move(copy);
+    }
+    return true;
+}
+
+static JaliumResult AllocateClipboardData(
+    const std::vector<uint8_t>& bytes, uint8_t** outData,
+    uint32_t* outDataSize)
+{
+    if (bytes.size() > static_cast<size_t>(UINT32_MAX))
+        return JALIUM_ERROR_OUT_OF_MEMORY;
+    auto* allocation = static_cast<uint8_t*>(malloc(std::max<size_t>(1, bytes.size())));
+    if (!allocation) return JALIUM_ERROR_OUT_OF_MEMORY;
+    if (!bytes.empty()) memcpy(allocation, bytes.data(), bytes.size());
+    *outData = allocation;
+    *outDataSize = static_cast<uint32_t>(bytes.size());
+    return JALIUM_OK;
+}
+
+static JaliumResult AllocateClipboardFormats(
+    const std::vector<std::string>& formats, char** outMimeTypes)
+{
+    std::string joined;
+    std::unordered_set<std::string> seen;
+    for (const std::string& format : formats)
+    {
+        if (format.empty() || !seen.insert(format).second) continue;
+        if (!joined.empty()) joined.push_back('\n');
+        joined.append(format);
+    }
+    auto* allocation = static_cast<char*>(malloc(joined.size() + 1));
+    if (!allocation) return JALIUM_ERROR_OUT_OF_MEMORY;
+    if (!joined.empty()) memcpy(allocation, joined.data(), joined.size());
+    allocation[joined.size()] = '\0';
+    *outMimeTypes = allocation;
+    return JALIUM_OK;
+}
+
+JaliumResult jalium_clipboard_get_formats(char** outMimeTypes)
+{
+    if (!outMimeTypes) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *outMimeTypes = nullptr;
+    std::vector<std::string> formats;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+    {
+        if (g_waylandClipboardSource)
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+            formats.reserve(g_clipboardItems.size());
+            for (const OwnedClipboardItem& item : g_clipboardItems)
+                formats.push_back(item.mimeType);
+        }
+        else if (g_waylandSelectionOffer)
+            formats = g_waylandSelectionOffer->mimeTypes;
+        return AllocateClipboardFormats(formats, outMimeTypes);
+    }
+#endif
+
+    if (!g_display || !g_clipboardWindow) return JALIUM_ERROR_INVALID_STATE;
+    std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+    EnsureClipboardAtoms();
+    const Window owner = XGetSelectionOwner(g_display, g_clipboardAtom);
+    if (owner == g_clipboardWindow)
+    {
+        formats.reserve(g_clipboardItems.size());
+        for (const OwnedClipboardItem& item : g_clipboardItems)
+            formats.push_back(item.mimeType);
+    }
+    else if (owner != None)
+    {
+        Atom actualType = None;
+        int actualFormat = 0;
+        std::vector<unsigned char> bytes;
+        if (RequestX11Selection(g_targetsAtom, actualType, actualFormat, bytes) &&
+            actualType == XA_ATOM && actualFormat == 32)
+        {
+            const auto* targets = reinterpret_cast<const unsigned long*>(bytes.data());
+            const size_t count = bytes.size() / sizeof(unsigned long);
+            formats.reserve(count);
+            for (size_t index = 0; index < count; ++index)
+            {
+                const Atom target = static_cast<Atom>(targets[index]);
+                if (target == g_targetsAtom || target == g_incrAtom) continue;
+                char* name = XGetAtomName(g_display, target);
+                if (name)
+                {
+                    formats.emplace_back(name);
+                    XFree(name);
+                }
+            }
+        }
+    }
+    return AllocateClipboardFormats(formats, outMimeTypes);
+}
+
+JaliumResult jalium_clipboard_get_data(
+    const char* mimeType, uint8_t** outData, uint32_t* outDataSize)
+{
+    if (!mimeType || !*mimeType || !outData || !outDataSize)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    *outData = nullptr;
+    *outDataSize = 0;
+    std::vector<uint8_t> bytes;
+    bool present = false;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+    {
+        if (g_waylandClipboardSource)
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+            const OwnedClipboardItem* item = FindClipboardItemLocked(mimeType);
+            if (!item && IsUtf8ClipboardMime(mimeType))
+                item = FindClipboardTextItemLocked();
+            if (item) { bytes = item->bytes; present = true; }
+        }
+        else if (g_waylandSelectionOffer)
+        {
+            const char* requestedMime = mimeType;
+            if (std::find(
+                    g_waylandSelectionOffer->mimeTypes.begin(),
+                    g_waylandSelectionOffer->mimeTypes.end(), mimeType) ==
+                g_waylandSelectionOffer->mimeTypes.end())
+            {
+                requestedMime = IsUtf8ClipboardMime(mimeType)
+                    ? SelectWaylandTextMime(g_waylandSelectionOffer) : nullptr;
+            }
+            present = requestedMime && ReadWaylandSelectionData(requestedMime, bytes);
+        }
+        return present ? AllocateClipboardData(bytes, outData, outDataSize) : JALIUM_OK;
+    }
+#endif
+
+    if (!g_display || !g_clipboardWindow) return JALIUM_ERROR_INVALID_STATE;
+    std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+    EnsureClipboardAtoms();
+    const Window owner = XGetSelectionOwner(g_display, g_clipboardAtom);
+    if (owner == None) return JALIUM_OK;
+    if (owner == g_clipboardWindow)
+    {
+        const OwnedClipboardItem* item = FindClipboardItemLocked(mimeType);
+        if (!item && IsUtf8ClipboardMime(mimeType))
+            item = FindClipboardTextItemLocked();
+        if (!item) return JALIUM_OK;
+        return AllocateClipboardData(item->bytes, outData, outDataSize);
+    }
+
+    Atom selectedTarget = XInternAtom(g_display, mimeType, False);
+    if (IsUtf8ClipboardMime(mimeType))
+    {
+        Atom actualType = None;
+        int actualFormat = 0;
+        std::vector<unsigned char> targetBytes;
+        if (RequestX11Selection(g_targetsAtom, actualType, actualFormat, targetBytes) &&
+            actualType == XA_ATOM && actualFormat == 32)
+        {
+            const auto* targets = reinterpret_cast<const unsigned long*>(targetBytes.data());
+            const size_t count = targetBytes.size() / sizeof(unsigned long);
+            auto contains = [targets, count](Atom target)
+            {
+                return std::find(targets, targets + count,
+                                 static_cast<unsigned long>(target)) != targets + count;
+            };
+            if (contains(selectedTarget)) {}
+            else if (contains(g_textPlainUtf8Atom)) selectedTarget = g_textPlainUtf8Atom;
+            else if (contains(g_utf8StringAtom)) selectedTarget = g_utf8StringAtom;
+            else if (contains(g_textPlainAtom)) selectedTarget = g_textPlainAtom;
+            else if (contains(XA_STRING)) selectedTarget = XA_STRING;
+            else return JALIUM_OK;
+        }
+    }
+
+    Atom actualType = None;
+    int actualFormat = 0;
+    std::vector<unsigned char> selectionBytes;
+    if (!RequestX11Selection(selectedTarget, actualType, actualFormat, selectionBytes) ||
+        actualFormat != 8)
+        return JALIUM_OK;
+    if (selectedTarget == XA_STRING && IsUtf8ClipboardMime(mimeType))
+    {
+        const std::string utf8 = Latin1ToUtf8(selectionBytes.data(), selectionBytes.size());
+        bytes.assign(utf8.begin(), utf8.end());
+    }
+    else
+        bytes.assign(selectionBytes.begin(), selectionBytes.end());
+    return AllocateClipboardData(bytes, outData, outDataSize);
+}
+
+JaliumResult jalium_clipboard_set_data(
+    const JaliumClipboardDataItem* items, uint32_t itemCount)
+{
+    if (itemCount == 0) return jalium_clipboard_clear();
+    if (!items) return JALIUM_ERROR_INVALID_ARGUMENT;
+    std::vector<OwnedClipboardItem> copies;
+    if (!CopyClipboardItems(items, itemCount, copies) || copies.empty())
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+    {
+        if (!g_waylandDataDeviceManager || !g_waylandDataDevice)
+            return JALIUM_ERROR_NOT_SUPPORTED;
+        if (g_waylandInputSerial == 0)
+            return JALIUM_ERROR_INVALID_STATE;
+        wl_data_source* source = wl_data_device_manager_create_data_source(
+            g_waylandDataDeviceManager);
+        if (!source) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+        wl_data_source_add_listener(source, &g_dataSourceListener, nullptr);
+        for (const OwnedClipboardItem& item : copies)
+            wl_data_source_offer(source, item.mimeType.c_str());
+
+        wl_data_source* previous = g_waylandClipboardSource;
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+            g_clipboardItems = std::move(copies);
+            SynchronizeLegacyClipboardTextLocked();
+            g_waylandClipboardSource = source;
+        }
+        wl_data_device_set_selection(
+            g_waylandDataDevice, source, g_waylandInputSerial);
+        if (previous) wl_data_source_destroy(previous);
+        return wl_display_flush(g_waylandDisplay) < 0
+            ? JALIUM_ERROR_UNKNOWN : JALIUM_OK;
+    }
+#endif
+
+    if (!g_display || !g_clipboardWindow) return JALIUM_ERROR_INVALID_STATE;
+    std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+    EnsureClipboardAtoms();
+    for (OwnedClipboardItem& item : copies)
+        item.x11Atom = XInternAtom(g_display, item.mimeType.c_str(), False);
+    g_clipboardItems = std::move(copies);
+    g_clipboardIncrTransfers.clear();
+    SynchronizeLegacyClipboardTextLocked();
+    XSetSelectionOwner(g_display, g_clipboardAtom, g_clipboardWindow, CurrentTime);
+    XFlush(g_display);
+    return XGetSelectionOwner(g_display, g_clipboardAtom) == g_clipboardWindow
+        ? JALIUM_OK : JALIUM_ERROR_UNKNOWN;
+}
+
+JaliumResult jalium_clipboard_clear(void)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem == LinuxWindowSystem::Wayland)
+    {
+        if (!g_waylandDataDevice || g_waylandInputSerial == 0)
+            return JALIUM_ERROR_INVALID_STATE;
+        wl_data_device_set_selection(g_waylandDataDevice, nullptr, g_waylandInputSerial);
+        wl_data_source* source = g_waylandClipboardSource;
+        g_waylandClipboardSource = nullptr;
+        if (source)
+        {
+            wl_data_source_destroy(source);
+        }
+        {
+            std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+            g_clipboardItems.clear();
+            g_clipboardUtf8.clear();
+        }
+        return wl_display_flush(g_waylandDisplay) < 0
+            ? JALIUM_ERROR_UNKNOWN : JALIUM_OK;
+    }
+#endif
+    if (!g_display || !g_clipboardWindow) return JALIUM_ERROR_INVALID_STATE;
+    std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+    EnsureClipboardAtoms();
+    g_clipboardItems.clear();
+    g_clipboardIncrTransfers.clear();
+    g_clipboardUtf8.clear();
+    XSetSelectionOwner(g_display, g_clipboardAtom, g_clipboardWindow, CurrentTime);
+    XFlush(g_display);
+    return XGetSelectionOwner(g_display, g_clipboardAtom) == g_clipboardWindow
+        ? JALIUM_OK : JALIUM_ERROR_UNKNOWN;
+}
 
 JaliumResult jalium_clipboard_get_text(JaliumUtf16Char** outText)
 {
@@ -4855,6 +8405,7 @@ JaliumResult jalium_clipboard_get_text(JaliumUtf16Char** outText)
         if (g_waylandClipboardSource)
         {
             std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
+            if (!FindClipboardTextItemLocked()) return JALIUM_OK;
             text = g_clipboardUtf8;
         }
         else if (!ReadWaylandSelection(text))
@@ -4870,6 +8421,7 @@ JaliumResult jalium_clipboard_get_text(JaliumUtf16Char** outText)
     if (owner == None) return JALIUM_OK;
     if (owner == g_clipboardWindow)
     {
+        if (!FindClipboardTextItemLocked()) return JALIUM_OK;
         *outText = Utf8ToUtf16Allocated(g_clipboardUtf8);
         return *outText ? JALIUM_OK : JALIUM_ERROR_OUT_OF_MEMORY;
     }
@@ -4908,44 +8460,20 @@ JaliumResult jalium_clipboard_get_text(JaliumUtf16Char** outText)
 JaliumResult jalium_clipboard_set_text(const JaliumUtf16Char* text)
 {
     if (!text) return JALIUM_ERROR_INVALID_ARGUMENT;
+    const std::string utf8 = Utf16ToUtf8(text);
+    if (utf8.size() > static_cast<size_t>(UINT32_MAX))
+        return JALIUM_ERROR_OUT_OF_MEMORY;
+    const char* mimeTypes[] = {
+        "text/plain;charset=utf-8", "text/plain", "UTF8_STRING"
+    };
+    JaliumClipboardDataItem items[3]{};
+    for (size_t index = 0; index < std::size(items); ++index)
     {
-        std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
-        g_clipboardUtf8 = Utf16ToUtf8(text);
+        items[index].mimeType = mimeTypes[index];
+        items[index].data = reinterpret_cast<const uint8_t*>(utf8.data());
+        items[index].dataSize = static_cast<uint32_t>(utf8.size());
     }
-
-#ifdef JALIUM_HAS_WAYLAND
-    if (g_windowSystem == LinuxWindowSystem::Wayland)
-    {
-        if (!g_waylandDataDeviceManager || !g_waylandDataDevice)
-            return JALIUM_ERROR_NOT_SUPPORTED;
-        if (g_waylandInputSerial == 0)
-            return JALIUM_ERROR_INVALID_STATE;
-        if (g_waylandClipboardSource)
-        {
-            wl_data_source_destroy(g_waylandClipboardSource);
-            g_waylandClipboardSource = nullptr;
-        }
-        g_waylandClipboardSource = wl_data_device_manager_create_data_source(
-            g_waylandDataDeviceManager);
-        if (!g_waylandClipboardSource) return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
-        wl_data_source_add_listener(
-            g_waylandClipboardSource, &g_dataSourceListener, nullptr);
-        wl_data_source_offer(g_waylandClipboardSource, "text/plain;charset=utf-8");
-        wl_data_source_offer(g_waylandClipboardSource, "text/plain");
-        wl_data_source_offer(g_waylandClipboardSource, "UTF8_STRING");
-        wl_data_device_set_selection(g_waylandDataDevice, g_waylandClipboardSource,
-                                     g_waylandInputSerial);
-        if (wl_display_flush(g_waylandDisplay) < 0) return JALIUM_ERROR_UNKNOWN;
-        return JALIUM_OK;
-    }
-#endif
-    if (!g_display || !g_clipboardWindow) return JALIUM_ERROR_INVALID_STATE;
-    std::lock_guard<std::recursive_mutex> lock(g_clipboardMutex);
-    EnsureClipboardAtoms();
-    XSetSelectionOwner(g_display, g_clipboardAtom, g_clipboardWindow, CurrentTime);
-    XFlush(g_display);
-    return XGetSelectionOwner(g_display, g_clipboardAtom) == g_clipboardWindow
-        ? JALIUM_OK : JALIUM_ERROR_UNKNOWN;
+    return jalium_clipboard_set_data(items, static_cast<uint32_t>(std::size(items)));
 }
 
 // ============================================================================
@@ -5051,9 +8579,108 @@ static void PumpX11DragEvents()
     }
 }
 
+struct DragSourceCallbacks {
+    JaliumDragFeedbackCallback feedback = nullptr;
+    JaliumDragQueryContinueCallback queryContinue = nullptr;
+    void* userData = nullptr;
+};
+
+static uint32_t X11DragKeyStates(unsigned int mask)
+{
+    uint32_t states = 0;
+    if (mask & Button1Mask) states |= 1u;
+    if (mask & Button3Mask) states |= 2u;
+    if (mask & ShiftMask) states |= 4u;
+    if (mask & ControlMask) states |= 8u;
+    if (mask & Button2Mask) states |= 16u;
+    if (mask & Mod1Mask) states |= 32u;
+    return states;
+}
+
+static bool IsEscapePressed()
+{
+    return (g_keyStates[0x1B].load(std::memory_order_acquire) & 0x80u) != 0;
+}
+
+static JaliumDragContinueAction QueryDragContinuation(
+    const DragSourceCallbacks& callbacks,
+    uint32_t keyStates,
+    bool escapePressed,
+    bool defaultDrop)
+{
+    if (callbacks.queryContinue)
+    {
+        const JaliumDragContinueAction action = callbacks.queryContinue(
+            keyStates, escapePressed ? 1 : 0, callbacks.userData);
+        if (action == JALIUM_DRAG_DROP || action == JALIUM_DRAG_CANCEL)
+            return action;
+        return JALIUM_DRAG_CONTINUE;
+    }
+    if (escapePressed) return JALIUM_DRAG_CANCEL;
+    return defaultDrop ? JALIUM_DRAG_DROP : JALIUM_DRAG_CONTINUE;
+}
+
+static void NotifyDragFeedback(
+    const DragSourceCallbacks& callbacks, uint32_t effect)
+{
+    if (callbacks.feedback)
+        callbacks.feedback(effect, callbacks.userData);
+}
+
+static bool IsValidDragImage(const JaliumDragImage* image)
+{
+    if (!image) return false;
+    if (!image->bgraPixels || image->width == 0 || image->height == 0)
+        return false;
+    if (image->width > 4096 || image->height > 4096 ||
+        image->stride < image->width * 4u)
+        return false;
+    const uint64_t byteCount =
+        static_cast<uint64_t>(image->stride) * image->height;
+    return byteCount <= static_cast<uint64_t>(SIZE_MAX);
+}
+
+static uint32_t PremultipliedArgb(const uint8_t* bgra)
+{
+    const uint32_t alpha = bgra[3];
+    const uint32_t red = (static_cast<uint32_t>(bgra[2]) * alpha + 127u) / 255u;
+    const uint32_t green = (static_cast<uint32_t>(bgra[1]) * alpha + 127u) / 255u;
+    const uint32_t blue = (static_cast<uint32_t>(bgra[0]) * alpha + 127u) / 255u;
+    return alpha << 24 | red << 16 | green << 8 | blue;
+}
+
+static Cursor CreateX11DragCursor(const JaliumDragImage* image)
+{
+#ifdef JALIUM_HAS_XCURSOR
+    if (!g_display || !IsValidDragImage(image)) return None;
+    XcursorImage* cursorImage = XcursorImageCreate(image->width, image->height);
+    if (!cursorImage) return None;
+    cursorImage->xhot = static_cast<XcursorDim>(std::clamp(
+        image->hotspotX, 0, static_cast<int32_t>(image->width - 1)));
+    cursorImage->yhot = static_cast<XcursorDim>(std::clamp(
+        image->hotspotY, 0, static_cast<int32_t>(image->height - 1)));
+    for (uint32_t y = 0; y < image->height; ++y)
+    {
+        const uint8_t* sourceRow = image->bgraPixels +
+            static_cast<size_t>(y) * image->stride;
+        for (uint32_t x = 0; x < image->width; ++x)
+            cursorImage->pixels[static_cast<size_t>(y) * image->width + x] =
+                PremultipliedArgb(sourceRow + static_cast<size_t>(x) * 4u);
+    }
+    const Cursor cursor = XcursorImageLoadCursor(g_display, cursorImage);
+    XcursorImageDestroy(cursorImage);
+    return cursor;
+#else
+    (void)image;
+    return None;
+#endif
+}
+
 static JaliumResult BeginX11Drag(
     JaliumPlatformWindow* window, std::vector<OwnedDragItem> items,
-    uint32_t allowedEffects, uint32_t* performedEffect)
+    uint32_t allowedEffects, const DragSourceCallbacks& callbacks,
+    const JaliumDragImage* dragImage,
+    uint32_t* performedEffect)
 {
     if (!g_display || !window || !window->xwindow)
         return JALIUM_ERROR_INVALID_STATE;
@@ -5087,19 +8714,22 @@ static JaliumResult BeginX11Drag(
     if (XGetSelectionOwner(g_display, g_xdndSelectionAtom) != window->xwindow)
         return JALIUM_ERROR_INVALID_STATE;
 
+    const Cursor dragCursor = CreateX11DragCursor(dragImage);
     const int grab = XGrabPointer(
         g_display, window->xwindow, False,
         ButtonReleaseMask | PointerMotionMask,
-        GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
+        GrabModeAsync, GrabModeAsync, None, dragCursor, CurrentTime);
     if (grab != GrabSuccess)
     {
+        if (dragCursor != None) XFreeCursor(g_display, dragCursor);
         XSetSelectionOwner(g_display, g_xdndSelectionAtom, None, CurrentTime);
         return JALIUM_ERROR_BUSY;
     }
 
     g_x11DragSource = &state;
     bool released = false;
-    while (!released && !state.finished)
+    bool cancelled = false;
+    while (!released && !state.finished && !cancelled)
     {
         PumpX11DragEvents();
         int rootX = 0;
@@ -5135,8 +8765,17 @@ static JaliumResult BeginX11Drag(
         XSync(g_display, False);
         PumpX11DragEvents();
 
-        released = (mask & Button1Mask) == 0;
-        if (!released)
+        const uint32_t selectedEffect = state.targetAccepted
+            ? (XdndActionToEffect(state.requestedAction) & allowedEffects)
+            : JALIUM_DRAG_EFFECT_NONE;
+        NotifyDragFeedback(callbacks, selectedEffect);
+        const bool physicalReleased = (mask & Button1Mask) == 0;
+        const JaliumDragContinueAction continuation = QueryDragContinuation(
+            callbacks, X11DragKeyStates(mask), IsEscapePressed(),
+            physicalReleased);
+        cancelled = continuation == JALIUM_DRAG_CANCEL;
+        released = continuation == JALIUM_DRAG_DROP;
+        if (!released && !cancelled)
         {
             struct pollfd descriptor{};
             descriptor.fd = ConnectionNumber(g_display);
@@ -5149,11 +8788,12 @@ static JaliumResult BeginX11Drag(
     }
 
     XUngrabPointer(g_display, CurrentTime);
+    if (dragCursor != None) XFreeCursor(g_display, dragCursor);
     // XdndStatus is an asynchronous ClientMessage. On an immediate release
     // (including the deterministic in-process test path) it can still be in
     // the X server after the last Position was flushed, so give the target a
     // short bounded window to answer before deciding whether to Drop/Leave.
-    if (!state.finished && state.target && !state.targetAccepted)
+    if (!cancelled && !state.finished && state.target && !state.targetAccepted)
     {
         const auto statusDeadline =
             std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
@@ -5170,7 +8810,16 @@ static JaliumResult BeginX11Drag(
             if (result > 0) (void)XEventsQueued(g_display, QueuedAfterReading);
         }
     }
-    if (!state.finished && state.target && state.targetAccepted)
+    // An immediate release may learn the accepted action only in the bounded
+    // status drain above. Surface that final cursor/effect decision before the
+    // Drop message so GiveFeedback observes the same negotiated result that
+    // is returned through performedEffect.
+    NotifyDragFeedback(
+        callbacks,
+        state.targetAccepted
+            ? (XdndActionToEffect(state.requestedAction) & allowedEffects)
+            : JALIUM_DRAG_EFFECT_NONE);
+    if (!cancelled && !state.finished && state.target && state.targetAccepted)
     {
         state.dropSent = true;
         SendXdndClientMessage(
@@ -5201,17 +8850,116 @@ static JaliumResult BeginX11Drag(
     XDeleteProperty(g_display, window->xwindow, g_xdndTypeListAtom);
     XDeleteProperty(g_display, window->xwindow, g_xdndActionListAtom);
     XFlush(g_display);
-    *performedEffect = state.performedEffect;
+    *performedEffect = cancelled
+        ? JALIUM_DRAG_EFFECT_NONE : state.performedEffect;
     return JALIUM_OK;
 }
 
 #ifdef JALIUM_HAS_WAYLAND
+struct WaylandDragIcon {
+    wl_surface* surface = nullptr;
+    wl_buffer* buffer = nullptr;
+    void* pixels = MAP_FAILED;
+    size_t byteCount = 0;
+    int32_t width = 0;
+    int32_t height = 0;
+    int32_t hotspotX = 0;
+    int32_t hotspotY = 0;
+};
+
+static void DestroyWaylandDragIcon(WaylandDragIcon& icon)
+{
+    if (icon.buffer) wl_buffer_destroy(icon.buffer);
+    if (icon.surface) wl_surface_destroy(icon.surface);
+    if (icon.pixels != MAP_FAILED) munmap(icon.pixels, icon.byteCount);
+    icon = {};
+}
+
+static bool CreateWaylandDragIcon(
+    const JaliumDragImage* image, WaylandDragIcon& icon)
+{
+    if (!g_waylandCompositor || !g_waylandShm) return false;
+    const bool hasImage = IsValidDragImage(image);
+    icon.width = hasImage ? static_cast<int32_t>(image->width) : 1;
+    icon.height = hasImage ? static_cast<int32_t>(image->height) : 1;
+    icon.hotspotX = hasImage
+        ? std::clamp(image->hotspotX, 0, icon.width - 1) : 0;
+    icon.hotspotY = hasImage
+        ? std::clamp(image->hotspotY, 0, icon.height - 1) : 0;
+    const int32_t stride = icon.width * 4;
+    icon.byteCount = static_cast<size_t>(stride) * icon.height;
+
+    char path[] = "/tmp/jalium-drag-icon-XXXXXX";
+    const int fd = mkstemp(path);
+    if (fd < 0) return false;
+    unlink(path);
+    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+    if (ftruncate(fd, static_cast<off_t>(icon.byteCount)) != 0)
+    {
+        close(fd);
+        return false;
+    }
+    icon.pixels = mmap(
+        nullptr, icon.byteCount, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (icon.pixels == MAP_FAILED)
+    {
+        close(fd);
+        return false;
+    }
+
+    auto* destination = static_cast<uint8_t*>(icon.pixels);
+    memset(destination, 0, icon.byteCount);
+    if (hasImage)
+    {
+        for (int32_t y = 0; y < icon.height; ++y)
+        {
+            const uint8_t* sourceRow = image->bgraPixels +
+                static_cast<size_t>(y) * image->stride;
+            uint32_t* destinationRow = reinterpret_cast<uint32_t*>(
+                destination + static_cast<size_t>(y) * stride);
+            for (int32_t x = 0; x < icon.width; ++x)
+                destinationRow[x] = PremultipliedArgb(
+                    sourceRow + static_cast<size_t>(x) * 4u);
+        }
+    }
+
+    wl_shm_pool* pool = wl_shm_create_pool(
+        g_waylandShm, fd, static_cast<int32_t>(icon.byteCount));
+    close(fd);
+    if (!pool)
+    {
+        DestroyWaylandDragIcon(icon);
+        return false;
+    }
+    icon.buffer = wl_shm_pool_create_buffer(
+        pool, 0, icon.width, icon.height, stride, WL_SHM_FORMAT_ARGB8888);
+    wl_shm_pool_destroy(pool);
+    icon.surface = wl_compositor_create_surface(g_waylandCompositor);
+    if (!icon.buffer || !icon.surface)
+    {
+        DestroyWaylandDragIcon(icon);
+        return false;
+    }
+    return true;
+}
+
+static void CommitWaylandDragIcon(const WaylandDragIcon& icon)
+{
+    wl_surface_attach(
+        icon.surface, icon.buffer, -icon.hotspotX, -icon.hotspotY);
+    wl_surface_damage(icon.surface, 0, 0, icon.width, icon.height);
+    wl_surface_commit(icon.surface);
+}
+
 static JaliumResult BeginWaylandDrag(
     JaliumPlatformWindow* window, std::vector<OwnedDragItem> items,
-    uint32_t allowedEffects, uint32_t* performedEffect)
+    uint32_t allowedEffects, const DragSourceCallbacks& callbacks,
+    const JaliumDragImage* dragImage,
+    uint32_t* performedEffect)
 {
     if (!g_waylandDisplay || !g_waylandDataDeviceManager ||
-        !g_waylandDataDevice || !window || !window->waylandSurface ||
+        !g_waylandDataDevice || !g_waylandCompositor || !g_waylandShm ||
+        !window || !window->waylandSurface ||
         g_waylandPointerSerial == 0)
         return JALIUM_ERROR_INVALID_STATE;
     if (g_waylandDragSource)
@@ -5230,14 +8978,23 @@ static JaliumResult BeginWaylandDrag(
     if (wl_proxy_get_version(reinterpret_cast<wl_proxy*>(state.source)) >= 3)
         wl_data_source_set_actions(state.source, WaylandEffectsToActions(allowedEffects));
 
+    WaylandDragIcon icon;
+    if (!CreateWaylandDragIcon(dragImage, icon))
+    {
+        wl_data_source_destroy(state.source);
+        return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    }
+
     g_waylandDragSource = &state;
     wl_data_device_start_drag(
         g_waylandDataDevice, state.source, window->waylandSurface,
-        nullptr, g_waylandPointerSerial);
+        icon.surface, g_waylandPointerSerial);
+    CommitWaylandDragIcon(icon);
     if (wl_display_flush(g_waylandDisplay) < 0)
     {
         g_waylandDragSource = nullptr;
         wl_data_source_destroy(state.source);
+        DestroyWaylandDragIcon(icon);
         return JALIUM_ERROR_UNKNOWN;
     }
 
@@ -5254,6 +9011,16 @@ static JaliumResult BeginWaylandDrag(
         }
         (void)ProcessPendingWaylandDrop();
         if (state.finished) break;
+        const uint32_t selectedEffect =
+            WaylandActionToEffect(state.selectedAction) & allowedEffects;
+        NotifyDragFeedback(callbacks, selectedEffect);
+        const JaliumDragContinueAction continuation = QueryDragContinuation(
+            callbacks, WaylandDragKeyStates(), IsEscapePressed(), false);
+        if (continuation == JALIUM_DRAG_CANCEL)
+        {
+            state.cancelled = true;
+            break;
+        }
         wl_display_flush(g_waylandDisplay);
 
         struct pollfd descriptor{};
@@ -5280,6 +9047,7 @@ static JaliumResult BeginWaylandDrag(
     (void)ProcessPendingWaylandDrop();
     g_waylandDragSource = nullptr;
     wl_data_source_destroy(state.source);
+    DestroyWaylandDragIcon(icon);
     state.source = nullptr;
     *performedEffect = state.cancelled
         ? JALIUM_DRAG_EFFECT_NONE : state.performedEffect;
@@ -5303,11 +9071,15 @@ void jalium_drag_set_effect(
     window->dragSelectedEffect = requested & window->xdndAllowedEffects;
 }
 
-JaliumResult jalium_drag_begin(
+JaliumResult jalium_drag_begin_with_image(
     JaliumPlatformWindow* window,
     const JaliumDragDataItem* items,
     uint32_t itemCount,
     uint32_t allowedEffects,
+    JaliumDragFeedbackCallback feedbackCallback,
+    JaliumDragQueryContinueCallback queryContinueCallback,
+    void* callbackUserData,
+    const JaliumDragImage* dragImage,
     uint32_t* performedEffect)
 {
     if (!window || !items || itemCount == 0 || !performedEffect)
@@ -5320,16 +9092,473 @@ JaliumResult jalium_drag_begin(
         return JALIUM_ERROR_INVALID_ARGUMENT;
     std::vector<OwnedDragItem> copied = CopyDragItems(items, itemCount);
     if (copied.empty()) return JALIUM_ERROR_INVALID_ARGUMENT;
+    const DragSourceCallbacks callbacks{
+        feedbackCallback, queryContinueCallback, callbackUserData };
 
 #ifdef JALIUM_HAS_WAYLAND
     if (g_windowSystem == LinuxWindowSystem::Wayland)
         return BeginWaylandDrag(
-            window, std::move(copied), allowedEffects, performedEffect);
+            window, std::move(copied), allowedEffects, callbacks,
+            dragImage,
+            performedEffect);
 #endif
     if (g_windowSystem == LinuxWindowSystem::XServer)
-        return BeginX11Drag(window, std::move(copied), allowedEffects, performedEffect);
+        return BeginX11Drag(
+            window, std::move(copied), allowedEffects, callbacks,
+            dragImage,
+            performedEffect);
     return JALIUM_ERROR_INVALID_STATE;
 }
+
+JaliumResult jalium_drag_begin_ex(
+    JaliumPlatformWindow* window,
+    const JaliumDragDataItem* items,
+    uint32_t itemCount,
+    uint32_t allowedEffects,
+    JaliumDragFeedbackCallback feedbackCallback,
+    JaliumDragQueryContinueCallback queryContinueCallback,
+    void* callbackUserData,
+    uint32_t* performedEffect)
+{
+    return jalium_drag_begin_with_image(
+        window, items, itemCount, allowedEffects,
+        feedbackCallback, queryContinueCallback, callbackUserData,
+        nullptr, performedEffect);
+}
+
+JaliumResult jalium_drag_begin(
+    JaliumPlatformWindow* window,
+    const JaliumDragDataItem* items,
+    uint32_t itemCount,
+    uint32_t allowedEffects,
+    uint32_t* performedEffect)
+{
+    return jalium_drag_begin_ex(
+        window, items, itemCount, allowedEffects,
+        nullptr, nullptr, nullptr, performedEffect);
+}
+
+#ifdef JALIUM_PLATFORM_TEST_HOOKS
+int32_t jalium_test_wayland_inject_touch(
+    JaliumPlatformWindow* window, JaliumEventType type, int32_t touchId,
+    float x, float y)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem != LinuxWindowSystem::Wayland || !window ||
+        !window->waylandSurface)
+        return JALIUM_ERROR_INVALID_STATE;
+    const float scale = static_cast<float>(
+        window->waylandScale > 0 ? window->waylandScale : 1);
+    const wl_fixed_t fixedX = wl_fixed_from_double(x / scale);
+    const wl_fixed_t fixedY = wl_fixed_from_double(y / scale);
+    const uint32_t serial = ++g_waylandInputSerial;
+    switch (type)
+    {
+    case JALIUM_EVENT_POINTER_DOWN:
+        HandleTouchDown(
+            nullptr, nullptr, serial, 1, window->waylandSurface,
+            touchId, fixedX, fixedY);
+        return JALIUM_OK;
+    case JALIUM_EVENT_POINTER_MOVE:
+        if (g_waylandTouchContacts.find(touchId) == g_waylandTouchContacts.end())
+            return JALIUM_ERROR_INVALID_STATE;
+        HandleTouchMotion(nullptr, nullptr, 2, touchId, fixedX, fixedY);
+        return JALIUM_OK;
+    case JALIUM_EVENT_POINTER_UP:
+        if (g_waylandTouchContacts.find(touchId) == g_waylandTouchContacts.end())
+            return JALIUM_ERROR_INVALID_STATE;
+        HandleTouchUp(nullptr, nullptr, serial, 3, touchId);
+        return JALIUM_OK;
+    case JALIUM_EVENT_POINTER_CANCEL:
+        HandleTouchCancel(nullptr, nullptr);
+        return JALIUM_OK;
+    default:
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+#else
+    (void)window; (void)type; (void)touchId; (void)x; (void)y;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_tablet(
+    JaliumPlatformWindow* window, JaliumEventType type, int32_t toolId,
+    float x, float y, float pressure, float tiltX, float tiltY, float twist)
+{
+    return jalium_test_wayland_inject_tablet_state(
+        window, type, toolId, x, y, pressure, tiltX, tiltY, twist,
+        JALIUM_POINTER_TOOL_PEN, JALIUM_POINTER_BUTTON_NONE, 0.0f, 0.0f);
+}
+
+int32_t jalium_test_wayland_inject_tablet_state(
+    JaliumPlatformWindow* window, JaliumEventType type, int32_t toolId,
+    float x, float y, float pressure, float tiltX, float tiltY, float twist,
+    int32_t toolType, uint32_t buttons, float distance, float slider)
+{
+#if defined(JALIUM_HAS_WAYLAND) && defined(JALIUM_HAS_WAYLAND_TABLET_V2)
+    if (g_windowSystem != LinuxWindowSystem::Wayland || !window ||
+        !window->waylandSurface)
+        return JALIUM_ERROR_INVALID_STATE;
+    if (toolType < JALIUM_POINTER_TOOL_UNKNOWN ||
+        toolType > JALIUM_POINTER_TOOL_LENS ||
+        !std::isfinite(distance) || !std::isfinite(slider))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+    static std::unordered_map<int32_t, WaylandTabletToolState> tools;
+    auto iterator = tools.find(toolId);
+    if (type == JALIUM_EVENT_POINTER_DOWN)
+    {
+        if (iterator != tools.end())
+        {
+            TabletToolProximityOut(&iterator->second, nullptr);
+            TabletToolFrame(&iterator->second, nullptr, 0);
+            tools.erase(iterator);
+        }
+        iterator = tools.end();
+    }
+    if (iterator == tools.end() &&
+        (type == JALIUM_EVENT_POINTER_DOWN ||
+         type == JALIUM_EVENT_POINTER_MOVE))
+    {
+        iterator = tools.try_emplace(toolId).first;
+        iterator->second.pointerId =
+            0x20000000u | (static_cast<uint32_t>(toolId) & 0x0fffffffu);
+        uint32_t protocolToolType = ZWP_TABLET_TOOL_V2_TYPE_PEN;
+        switch (toolType)
+        {
+        case JALIUM_POINTER_TOOL_ERASER:
+            protocolToolType = ZWP_TABLET_TOOL_V2_TYPE_ERASER; break;
+        case JALIUM_POINTER_TOOL_BRUSH:
+            protocolToolType = ZWP_TABLET_TOOL_V2_TYPE_BRUSH; break;
+        case JALIUM_POINTER_TOOL_PENCIL:
+            protocolToolType = ZWP_TABLET_TOOL_V2_TYPE_PENCIL; break;
+        case JALIUM_POINTER_TOOL_AIRBRUSH:
+            protocolToolType = ZWP_TABLET_TOOL_V2_TYPE_AIRBRUSH; break;
+        case JALIUM_POINTER_TOOL_MOUSE:
+            protocolToolType = ZWP_TABLET_TOOL_V2_TYPE_MOUSE; break;
+        case JALIUM_POINTER_TOOL_LENS:
+            protocolToolType = ZWP_TABLET_TOOL_V2_TYPE_LENS; break;
+        default:
+            break;
+        }
+        TabletToolType(&iterator->second, nullptr, protocolToolType);
+        TabletToolCapability(
+            &iterator->second, nullptr,
+            ZWP_TABLET_TOOL_V2_CAPABILITY_PRESSURE);
+        TabletToolCapability(
+            &iterator->second, nullptr,
+            ZWP_TABLET_TOOL_V2_CAPABILITY_TILT);
+        TabletToolCapability(
+            &iterator->second, nullptr,
+            ZWP_TABLET_TOOL_V2_CAPABILITY_ROTATION);
+        TabletToolCapability(
+            &iterator->second, nullptr,
+            ZWP_TABLET_TOOL_V2_CAPABILITY_DISTANCE);
+        TabletToolCapability(
+            &iterator->second, nullptr,
+            ZWP_TABLET_TOOL_V2_CAPABILITY_SLIDER);
+        TabletToolProximityIn(
+            &iterator->second, nullptr, ++g_waylandInputSerial,
+            nullptr, window->waylandSurface);
+    }
+    else if (iterator == tools.end())
+    {
+        return JALIUM_ERROR_INVALID_STATE;
+    }
+
+    WaylandTabletToolState& state = iterator->second;
+    const auto applyButton = [&](uint32_t mask, uint32_t nativeButton) {
+        const bool requested = (buttons & mask) != 0;
+        const bool active = (state.buttons & mask) != 0;
+        if (requested == active) return;
+        TabletToolButton(
+            &state, nullptr, ++g_waylandInputSerial, nativeButton,
+            requested ? ZWP_TABLET_TOOL_V2_BUTTON_STATE_PRESSED
+                      : ZWP_TABLET_TOOL_V2_BUTTON_STATE_RELEASED);
+    };
+    applyButton(JALIUM_POINTER_BUTTON_BARREL, BTN_STYLUS);
+    applyButton(JALIUM_POINTER_BUTTON_SECONDARY, BTN_STYLUS2);
+    applyButton(JALIUM_POINTER_BUTTON_TERTIARY, BTN_MIDDLE);
+    const float scale = static_cast<float>(
+        window->waylandScale > 0 ? window->waylandScale : 1);
+    TabletToolMotion(
+        &state, nullptr,
+        wl_fixed_from_double(x / scale), wl_fixed_from_double(y / scale));
+    TabletToolPressure(
+        &state, nullptr,
+        static_cast<uint32_t>(std::lround(
+            std::clamp(pressure, 0.0f, 1.0f) * 65535.0f)));
+    TabletToolTilt(
+        &state, nullptr, wl_fixed_from_double(tiltX), wl_fixed_from_double(tiltY));
+    TabletToolRotation(&state, nullptr, wl_fixed_from_double(twist));
+    TabletToolDistance(
+        &state, nullptr,
+        static_cast<uint32_t>(std::lround(
+            std::clamp(distance, 0.0f, 1.0f) * 65535.0f)));
+    TabletToolSlider(
+        &state, nullptr,
+        static_cast<int32_t>(std::lround(
+            std::clamp(slider, -1.0f, 1.0f) * 65535.0f)));
+
+    switch (type)
+    {
+    case JALIUM_EVENT_POINTER_DOWN:
+        TabletToolDown(&state, nullptr, ++g_waylandInputSerial);
+        TabletToolFrame(&state, nullptr, 1);
+        return JALIUM_OK;
+    case JALIUM_EVENT_POINTER_MOVE:
+        TabletToolFrame(&state, nullptr, 2);
+        return JALIUM_OK;
+    case JALIUM_EVENT_POINTER_UP:
+        TabletToolUp(&state, nullptr);
+        TabletToolFrame(&state, nullptr, 3);
+        return JALIUM_OK;
+    case JALIUM_EVENT_POINTER_CANCEL:
+        TabletToolProximityOut(&state, nullptr);
+        TabletToolFrame(&state, nullptr, 4);
+        tools.erase(iterator);
+        return JALIUM_OK;
+    default:
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+#else
+    (void)window; (void)type; (void)toolId; (void)x; (void)y;
+    (void)pressure; (void)tiltX; (void)tiltY; (void)twist;
+    (void)toolType; (void)buttons; (void)distance; (void)slider;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_decoration_configure(
+    JaliumPlatformWindow* window, uint32_t mode)
+{
+#if defined(JALIUM_HAS_WAYLAND) && defined(JALIUM_HAS_XDG_DECORATION_V1)
+    if (g_windowSystem != LinuxWindowSystem::Wayland || !window)
+        return JALIUM_ERROR_INVALID_STATE;
+    if (mode != ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE &&
+        mode != ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    HandleWaylandDecorationConfigure(window, nullptr, mode);
+    return JALIUM_OK;
+#else
+    (void)window; (void)mode;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+uint32_t jalium_test_wayland_get_decoration_mode(JaliumPlatformWindow* window)
+{
+#if defined(JALIUM_HAS_WAYLAND) && defined(JALIUM_HAS_XDG_DECORATION_V1)
+    return window ? window->xdgDecorationMode : 0;
+#else
+    (void)window;
+    return 0;
+#endif
+}
+
+int32_t jalium_test_wayland_set_output(
+    JaliumPlatformWindow* window, uint32_t outputId, int32_t scale,
+    int32_t entered)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem != LinuxWindowSystem::Wayland || !window ||
+        !window->waylandSurface)
+        return JALIUM_ERROR_INVALID_STATE;
+    if (outputId == 0 || scale <= 0 || (entered != 0 && entered != 1))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    SetWaylandOutputState(window, outputId, scale, entered != 0);
+    return JALIUM_OK;
+#else
+    (void)window; (void)outputId; (void)scale; (void)entered;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_reset_outputs(JaliumPlatformWindow* window)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem != LinuxWindowSystem::Wayland || !window ||
+        !window->waylandSurface)
+        return JALIUM_ERROR_INVALID_STATE;
+    window->waylandEnteredOutputs.clear();
+    RecomputeWaylandScale(window);
+    return JALIUM_OK;
+#else
+    (void)window;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+uint32_t jalium_test_wayland_get_selected_output(JaliumPlatformWindow* window)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem != LinuxWindowSystem::Wayland || !window)
+        return 0;
+    return SelectWaylandEnteredOutputId(window);
+#else
+    (void)window;
+    return 0;
+#endif
+}
+
+int32_t jalium_test_x11_notify_display_change(void)
+{
+#ifdef JALIUM_HAS_XRANDR
+    if (g_windowSystem != LinuxWindowSystem::XServer || !g_xrandrAvailable)
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    RefreshX11DisplayMetrics();
+    return JALIUM_OK;
+#else
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+float jalium_test_x11_compute_monitor_scale(
+    int32_t width, int32_t height, int32_t widthMm, int32_t heightMm,
+    float fallbackScale)
+{
+    return ComputeX11MonitorScale(
+        width, height, widthMm, heightMm, fallbackScale);
+}
+
+int32_t jalium_test_override_double_click_settings(
+    uint32_t milliseconds, float distance)
+{
+    if (milliseconds == 0 || milliseconds > 5000 ||
+        !std::isfinite(distance) || distance < 0.0f || distance > 100.0f)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    g_doubleClickMilliseconds = milliseconds;
+    g_doubleClickDistance = distance;
+    g_x11ClickTracker = {};
+#ifdef JALIUM_HAS_WAYLAND
+    g_waylandClickTracker = {};
+#endif
+    return JALIUM_OK;
+}
+
+int32_t jalium_test_register_click(
+    uint32_t time, float x, float y, int32_t button, int32_t reset)
+{
+    static ClickTracker tracker;
+    if (reset != 0) tracker = {};
+    return RegisterClick(
+        tracker, reinterpret_cast<JaliumPlatformWindow*>(1),
+        button, time, x, y);
+}
+
+void jalium_test_override_touch_capabilities(
+    int32_t touchPresent, int32_t maxContacts)
+{
+    g_testTouchPresent.store(touchPresent, std::memory_order_release);
+    g_testTouchContacts.store(
+        std::max(maxContacts, 0), std::memory_order_release);
+}
+
+int32_t jalium_test_xinput_smooth_scroll_delta(
+    double previousValue, double currentValue, double increment,
+    int32_t vertical, float* deltaX, float* deltaY)
+{
+    if (!deltaX || !deltaY) return -1;
+    *deltaX = 0.0f;
+    *deltaY = 0.0f;
+    return ComputeSmoothScrollDelta(
+        previousValue, currentValue, increment, vertical != 0,
+        *deltaX, *deltaY) ? 1 : 0;
+}
+
+uint32_t jalium_test_xinput_pen_flags(
+    int32_t toolType, int32_t inverted, int32_t inRange,
+    int32_t inContact, uint32_t buttons)
+{
+#ifdef JALIUM_HAS_XINPUT2
+    XInputPenAxes axes{};
+    axes.toolType = toolType;
+    axes.inverted = inverted != 0;
+    axes.inRange = inRange != 0;
+    axes.inContact = inContact != 0;
+    axes.buttons = buttons;
+    return XInputPenFlags(axes);
+#else
+    (void)toolType; (void)inverted; (void)inRange; (void)inContact;
+    (void)buttons;
+    return 0;
+#endif
+}
+
+int32_t jalium_test_wayland_get_ime_context(
+    JaliumPlatformWindow* window, int32_t* enabled,
+    char* utf8Buffer, uint32_t bufferCapacity,
+    int32_t* cursorByteOffset, int32_t* anchorByteOffset,
+    int32_t* x, int32_t* y, int32_t* width, int32_t* height)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem != LinuxWindowSystem::Wayland || !window ||
+        !window->waylandSurface)
+        return JALIUM_ERROR_INVALID_STATE;
+    if (!enabled || !utf8Buffer || bufferCapacity == 0 ||
+        !cursorByteOffset || !anchorByteOffset || !x || !y || !width || !height)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (window->imeSurroundingText.size() + 1 > bufferCapacity)
+        return JALIUM_ERROR_OUT_OF_MEMORY;
+
+    memcpy(utf8Buffer, window->imeSurroundingText.c_str(),
+           window->imeSurroundingText.size() + 1);
+    *enabled = window->imeEnabled ? 1 : 0;
+    *cursorByteOffset = window->imeCursorByteOffset;
+    *anchorByteOffset = window->imeAnchorByteOffset;
+    *x = window->imeCaretX;
+    *y = window->imeCaretY;
+    *width = window->imeCaretWidth;
+    *height = window->imeCaretHeight;
+    return JALIUM_OK;
+#else
+    (void)window; (void)enabled; (void)utf8Buffer; (void)bufferCapacity;
+    (void)cursorByteOffset; (void)anchorByteOffset; (void)x; (void)y;
+    (void)width; (void)height;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_inject_delete_surrounding(
+    JaliumPlatformWindow* window, uint32_t beforeUtf8Bytes,
+    uint32_t afterUtf8Bytes)
+{
+#ifdef JALIUM_HAS_WAYLAND
+    if (g_windowSystem != LinuxWindowSystem::Wayland || !window ||
+        !window->waylandSurface)
+        return JALIUM_ERROR_INVALID_STATE;
+    DispatchDeleteSurrounding(window, beforeUtf8Bytes, afterUtf8Bytes);
+    return JALIUM_OK;
+#else
+    (void)window; (void)beforeUtf8Bytes; (void)afterUtf8Bytes;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+}
+
+int32_t jalium_test_wayland_get_last_system_menu(
+    JaliumPlatformWindow* window, int32_t* x, int32_t* y,
+    uint32_t* inputSerial)
+{
+    if (!window || !x || !y || !inputSerial)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (g_testSystemMenuWindow != window)
+        return JALIUM_ERROR_INVALID_STATE;
+    *x = g_testSystemMenuX;
+    *y = g_testSystemMenuY;
+    *inputSerial = g_testSystemMenuSerial;
+    return JALIUM_OK;
+}
+
+int32_t jalium_test_wayland_has_activation(void)
+{
+#if defined(JALIUM_HAS_WAYLAND) && defined(JALIUM_HAS_XDG_ACTIVATION_V1)
+    return g_windowSystem == LinuxWindowSystem::Wayland && g_xdgActivation
+        ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+#endif
 
 // ============================================================================
 // Window management extensions (monitors, size limits, interactive move/
@@ -5344,18 +9573,42 @@ struct WaylandOutputInfo; // keep the signatures below uniform
 
 bool GetX11WorkArea(int32_t* x, int32_t* y, int32_t* width, int32_t* height)
 {
-    if (!g_display) return false;
+    if (!g_display || !x || !y || !width || !height) return false;
+    unsigned long currentDesktop = 0;
+    {
+        const Atom currentDesktopAtom =
+            XInternAtom(g_display, "_NET_CURRENT_DESKTOP", False);
+        Atom actualType = None;
+        int actualFormat = 0;
+        unsigned long itemCount = 0, bytesAfter = 0;
+        unsigned char* data = nullptr;
+        if (XGetWindowProperty(
+                g_display, g_rootWindow, currentDesktopAtom, 0, 1, False,
+                XA_CARDINAL, &actualType, &actualFormat, &itemCount,
+                &bytesAfter, &data) == Success && data)
+        {
+            if (actualType == XA_CARDINAL && actualFormat == 32 && itemCount >= 1)
+                currentDesktop = *reinterpret_cast<unsigned long*>(data);
+            XFree(data);
+        }
+    }
+    if (currentDesktop > static_cast<unsigned long>(
+            std::numeric_limits<long>::max() / 4))
+        return false;
+
     Atom workAreaAtom = XInternAtom(g_display, "_NET_WORKAREA", False);
     Atom actualType = None;
     int actualFormat = 0;
     unsigned long itemCount = 0, bytesAfter = 0;
     unsigned char* data = nullptr;
     bool ok = false;
-    if (XGetWindowProperty(g_display, g_rootWindow, workAreaAtom, 0, 4, False,
+    const long propertyOffset = static_cast<long>(currentDesktop * 4);
+    if (XGetWindowProperty(g_display, g_rootWindow, workAreaAtom,
+                           propertyOffset, 4, False,
                            XA_CARDINAL, &actualType, &actualFormat, &itemCount,
                            &bytesAfter, &data) == Success && data)
     {
-        if (itemCount >= 4)
+        if (actualType == XA_CARDINAL && actualFormat == 32 && itemCount >= 4)
         {
             const long* values = reinterpret_cast<const long*>(data);
             *x = static_cast<int32_t>(values[0]);
@@ -5380,15 +9633,9 @@ int32_t jalium_platform_get_monitor_count(void)
     if (g_windowSystem != LinuxWindowSystem::XServer || !g_display)
         return 0;
 #ifdef JALIUM_HAS_XRANDR
-    int monitorCount = 0;
-    XRRMonitorInfo* monitors =
-        XRRGetMonitors(g_display, g_rootWindow, True, &monitorCount);
-    if (monitors)
-    {
-        XRRFreeMonitors(monitors);
-        if (monitorCount > 0)
-            return monitorCount;
-    }
+    std::vector<X11MonitorMetrics> monitors;
+    if (GetX11MonitorMetricsSnapshot(monitors))
+        return static_cast<int32_t>(monitors.size());
 #endif
     return 1;
 }
@@ -5427,22 +9674,16 @@ int32_t jalium_platform_get_monitor_info(int32_t index, JaliumMonitorInfo* info)
 
     int32_t workX = 0, workY = 0, workWidth = 0, workHeight = 0;
     const bool hasWorkArea = GetX11WorkArea(&workX, &workY, &workWidth, &workHeight);
-    const float scale = DetectDpiScale();
-
-#ifdef JALIUM_HAS_XRANDR
-    int monitorCount = 0;
-    XRRMonitorInfo* monitors =
-        XRRGetMonitors(g_display, g_rootWindow, True, &monitorCount);
-    if (monitors && index < monitorCount)
+    X11MonitorMetrics monitor{};
+    if (GetX11MonitorMetricsByIndex(index, monitor))
     {
-        const XRRMonitorInfo& monitor = monitors[index];
         info->x = monitor.x;
         info->y = monitor.y;
         info->width = monitor.width;
         info->height = monitor.height;
         info->isPrimary = monitor.primary ? 1 : 0;
-        info->scale = scale;
-        info->refreshRate = jalium_window_get_monitor_refresh_rate(nullptr);
+        info->scale = monitor.scale;
+        info->refreshRate = monitor.refreshRate;
 
         // _NET_WORKAREA is desktop-global; intersect it with this monitor.
         if (hasWorkArea)
@@ -5466,12 +9707,8 @@ int32_t jalium_platform_get_monitor_info(int32_t index, JaliumMonitorInfo* info)
             info->workWidth = info->width;
             info->workHeight = info->height;
         }
-        XRRFreeMonitors(monitors);
         return JALIUM_OK;
     }
-    if (monitors)
-        XRRFreeMonitors(monitors);
-#endif
 
     if (index != 0)
         return JALIUM_ERROR_INVALID_ARGUMENT;
@@ -5479,7 +9716,7 @@ int32_t jalium_platform_get_monitor_info(int32_t index, JaliumMonitorInfo* info)
     info->y = 0;
     info->width = DisplayWidth(g_display, g_screen);
     info->height = DisplayHeight(g_display, g_screen);
-    info->scale = scale;
+    info->scale = DetectDpiScale();
     info->refreshRate = jalium_window_get_monitor_refresh_rate(nullptr);
     info->isPrimary = 1;
     if (hasWorkArea)
@@ -5507,6 +9744,11 @@ int32_t jalium_window_set_min_max_size(
     if (!window)
         return JALIUM_ERROR_INVALID_ARGUMENT;
 
+    window->requestedMinWidth = std::max(0, minWidth);
+    window->requestedMinHeight = std::max(0, minHeight);
+    window->requestedMaxWidth = std::max(0, maxWidth);
+    window->requestedMaxHeight = std::max(0, maxHeight);
+
 #ifdef JALIUM_HAS_WAYLAND
     if (window->waylandSurface)
     {
@@ -5514,12 +9756,17 @@ int32_t jalium_window_set_min_max_size(
             return JALIUM_ERROR_INVALID_STATE;
         // xdg_toplevel speaks compositor-logical units.
         const int32_t scale = window->waylandScale > 0 ? window->waylandScale : 1;
+        const bool resizable = (window->style & JALIUM_WINDOW_STYLE_RESIZABLE) != 0;
+        const int32_t effectiveMinWidth = resizable ? window->requestedMinWidth : window->width;
+        const int32_t effectiveMinHeight = resizable ? window->requestedMinHeight : window->height;
+        const int32_t effectiveMaxWidth = resizable ? window->requestedMaxWidth : window->width;
+        const int32_t effectiveMaxHeight = resizable ? window->requestedMaxHeight : window->height;
         xdg_toplevel_set_min_size(window->xdgToplevel,
-                                  minWidth > 0 ? minWidth / scale : 0,
-                                  minHeight > 0 ? minHeight / scale : 0);
+                                  effectiveMinWidth > 0 ? effectiveMinWidth / scale : 0,
+                                  effectiveMinHeight > 0 ? effectiveMinHeight / scale : 0);
         xdg_toplevel_set_max_size(window->xdgToplevel,
-                                  maxWidth > 0 ? maxWidth / scale : 0,
-                                  maxHeight > 0 ? maxHeight / scale : 0);
+                                  effectiveMaxWidth > 0 ? effectiveMaxWidth / scale : 0,
+                                  effectiveMaxHeight > 0 ? effectiveMaxHeight / scale : 0);
         wl_surface_commit(window->waylandSurface);
         wl_display_flush(g_waylandDisplay);
         return JALIUM_OK;
@@ -5532,17 +9779,22 @@ int32_t jalium_window_set_min_max_size(
     long supplied = 0;
     XGetWMNormalHints(g_display, window->xwindow, &hints, &supplied);
     hints.flags &= ~(PMinSize | PMaxSize);
-    if (minWidth > 0 || minHeight > 0)
+    const bool resizable = (window->style & JALIUM_WINDOW_STYLE_RESIZABLE) != 0;
+    const int32_t effectiveMinWidth = resizable ? window->requestedMinWidth : window->width;
+    const int32_t effectiveMinHeight = resizable ? window->requestedMinHeight : window->height;
+    const int32_t effectiveMaxWidth = resizable ? window->requestedMaxWidth : window->width;
+    const int32_t effectiveMaxHeight = resizable ? window->requestedMaxHeight : window->height;
+    if (effectiveMinWidth > 0 || effectiveMinHeight > 0)
     {
         hints.flags |= PMinSize;
-        hints.min_width = minWidth > 0 ? minWidth : 0;
-        hints.min_height = minHeight > 0 ? minHeight : 0;
+        hints.min_width = effectiveMinWidth > 0 ? effectiveMinWidth : 0;
+        hints.min_height = effectiveMinHeight > 0 ? effectiveMinHeight : 0;
     }
-    if (maxWidth > 0 || maxHeight > 0)
+    if (effectiveMaxWidth > 0 || effectiveMaxHeight > 0)
     {
         hints.flags |= PMaxSize;
-        hints.max_width = maxWidth > 0 ? maxWidth : INT32_MAX;
-        hints.max_height = maxHeight > 0 ? maxHeight : INT32_MAX;
+        hints.max_width = effectiveMaxWidth > 0 ? effectiveMaxWidth : INT32_MAX;
+        hints.max_height = effectiveMaxHeight > 0 ? effectiveMaxHeight : INT32_MAX;
     }
     XSetWMNormalHints(g_display, window->xwindow, &hints);
     XFlush(g_display);
@@ -5636,6 +9888,93 @@ int32_t jalium_window_begin_resize_drag(JaliumPlatformWindow* window, int32_t ed
     return BeginX11MoveResize(window, direction);
 }
 
+#if defined(JALIUM_HAS_WAYLAND) && defined(JALIUM_HAS_XDG_TOPLEVEL_ICON_V1)
+namespace {
+
+struct WaylandToplevelIconBuffer {
+    wl_buffer* buffer = nullptr;
+    void* pixels = MAP_FAILED;
+    size_t byteCount = 0;
+};
+
+void DestroyWaylandToplevelIconBuffer(WaylandToplevelIconBuffer& icon)
+{
+    if (icon.buffer) wl_buffer_destroy(icon.buffer);
+    if (icon.pixels != MAP_FAILED) munmap(icon.pixels, icon.byteCount);
+    icon = {};
+}
+
+bool CreateWaylandToplevelIconBuffer(
+    const uint32_t* bgraPixels, int32_t width, int32_t height,
+    WaylandToplevelIconBuffer& icon)
+{
+    if (!g_waylandShm || !bgraPixels || width <= 0 || height <= 0 ||
+        width > 4096 || height > 4096)
+        return false;
+
+    // The protocol requires every wl_shm buffer to be square. Preserve a
+    // rectangular source without distortion by centering it in transparent
+    // padding at the larger edge length.
+    const int32_t edge = std::max(width, height);
+    const int32_t stride = edge * 4;
+    icon.byteCount = static_cast<size_t>(stride) * static_cast<size_t>(edge);
+
+    char path[] = "/tmp/jalium-window-icon-XXXXXX";
+    const int fd = mkstemp(path);
+    if (fd < 0) return false;
+    unlink(path);
+    (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+    if (ftruncate(fd, static_cast<off_t>(icon.byteCount)) != 0)
+    {
+        close(fd);
+        return false;
+    }
+    icon.pixels = mmap(
+        nullptr, icon.byteCount, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (icon.pixels == MAP_FAILED)
+    {
+        close(fd);
+        return false;
+    }
+
+    auto* destination = static_cast<uint8_t*>(icon.pixels);
+    memset(destination, 0, icon.byteCount);
+    const int32_t offsetX = (edge - width) / 2;
+    const int32_t offsetY = (edge - height) / 2;
+    const auto* source = reinterpret_cast<const uint8_t*>(bgraPixels);
+    for (int32_t y = 0; y < height; ++y)
+    {
+        auto* destinationRow = reinterpret_cast<uint32_t*>(
+            destination + static_cast<size_t>(y + offsetY) * stride);
+        const uint8_t* sourceRow =
+            source + static_cast<size_t>(y) * static_cast<size_t>(width) * 4u;
+        for (int32_t x = 0; x < width; ++x)
+            destinationRow[x + offsetX] = PremultipliedArgb(
+                sourceRow + static_cast<size_t>(x) * 4u);
+    }
+
+    wl_shm_pool* pool = wl_shm_create_pool(
+        g_waylandShm, fd, static_cast<int32_t>(icon.byteCount));
+    close(fd);
+    if (!pool)
+    {
+        DestroyWaylandToplevelIconBuffer(icon);
+        return false;
+    }
+    icon.buffer = wl_shm_pool_create_buffer(
+        pool, 0, edge, edge, stride, WL_SHM_FORMAT_ARGB8888);
+    wl_shm_pool_destroy(pool);
+    if (!icon.buffer)
+    {
+        DestroyWaylandToplevelIconBuffer(icon);
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+#endif
+
 int32_t jalium_window_set_icon(
     JaliumPlatformWindow* window,
     const uint32_t* bgraPixels,
@@ -5648,9 +9987,50 @@ int32_t jalium_window_set_icon(
 #ifdef JALIUM_HAS_WAYLAND
     if (window->waylandSurface)
     {
-        // Wayland has no core per-window icon; desktop entries provide icons.
+#ifdef JALIUM_HAS_XDG_TOPLEVEL_ICON_V1
+        if (!window->xdgToplevel || !g_waylandToplevelIconManager)
+            return JALIUM_ERROR_NOT_SUPPORTED;
+
+        if (!bgraPixels || width <= 0 || height <= 0)
+        {
+            xdg_toplevel_icon_manager_v1_set_icon(
+                g_waylandToplevelIconManager, window->xdgToplevel, nullptr);
+            wl_surface_commit(window->waylandSurface);
+            wl_display_flush(g_waylandDisplay);
+            return JALIUM_OK;
+        }
+
+        WaylandToplevelIconBuffer buffer;
+        if (!CreateWaylandToplevelIconBuffer(
+                bgraPixels, width, height, buffer))
+            return (width > 4096 || height > 4096)
+                ? JALIUM_ERROR_INVALID_ARGUMENT
+                : JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+
+        xdg_toplevel_icon_v1* icon =
+            xdg_toplevel_icon_manager_v1_create_icon(
+                g_waylandToplevelIconManager);
+        if (!icon)
+        {
+            DestroyWaylandToplevelIconBuffer(buffer);
+            return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+        }
+        xdg_toplevel_icon_v1_add_buffer(icon, buffer.buffer, 1);
+        xdg_toplevel_icon_manager_v1_set_icon(
+            g_waylandToplevelIconManager, window->xdgToplevel, icon);
+        wl_surface_commit(window->waylandSurface);
+
+        // set_icon snapshots the immutable icon state. Protocol request order
+        // guarantees the server consumes add_buffer/set_icon before these
+        // destructor requests, so no per-window client resource is retained.
+        xdg_toplevel_icon_v1_destroy(icon);
+        DestroyWaylandToplevelIconBuffer(buffer);
+        wl_display_flush(g_waylandDisplay);
+        return JALIUM_OK;
+#else
         (void)bgraPixels; (void)width; (void)height;
         return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
     }
 #endif
     if (!g_display || !window->xwindow)
@@ -5711,6 +10091,429 @@ int32_t jalium_window_set_topmost(JaliumPlatformWindow* window, int32_t topmost)
                SubstructureRedirectMask | SubstructureNotifyMask, &ev);
     XFlush(g_display);
     return JALIUM_OK;
+}
+
+int32_t jalium_window_set_enabled(JaliumPlatformWindow* window, int32_t enabled)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    window->enabled = enabled != 0;
+    return JALIUM_OK;
+}
+
+int32_t jalium_window_set_opacity(JaliumPlatformWindow* window, double opacity)
+{
+    if (!window || !std::isfinite(opacity))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        // Core xdg-shell has no whole-toplevel opacity request. Per-pixel alpha
+        // remains available through the transparent surface/render path.
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+#endif
+    if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    const double clamped = std::clamp(opacity, 0.0, 1.0);
+    const uint32_t value = static_cast<uint32_t>(
+        std::llround(clamped * static_cast<double>(UINT32_MAX)));
+    const Atom opacityAtom = XInternAtom(g_display, "_NET_WM_WINDOW_OPACITY", False);
+    const unsigned long propertyValue = value;
+    XChangeProperty(g_display, window->xwindow, opacityAtom, XA_CARDINAL, 32,
+                    PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(&propertyValue), 1);
+    XFlush(g_display);
+    return JALIUM_OK;
+}
+
+int32_t jalium_window_set_show_in_taskbar(
+    JaliumPlatformWindow* window, int32_t showInTaskbar)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        (void)showInTaskbar;
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+#endif
+    if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    const Atom netWmState = XInternAtom(g_display, "_NET_WM_STATE", False);
+    const Atom skipTaskbar = XInternAtom(g_display, "_NET_WM_STATE_SKIP_TASKBAR", False);
+    XWindowAttributes attributes{};
+    if (XGetWindowAttributes(g_display, window->xwindow, &attributes) &&
+        attributes.map_state != IsUnmapped)
+    {
+        XEvent event{};
+        event.type = ClientMessage;
+        event.xclient.window = window->xwindow;
+        event.xclient.message_type = netWmState;
+        event.xclient.format = 32;
+        event.xclient.data.l[0] = showInTaskbar ? 0 : 1; // remove / add
+        event.xclient.data.l[1] = static_cast<long>(skipTaskbar);
+        event.xclient.data.l[3] = 1; // normal application source
+        XSendEvent(g_display, g_rootWindow, False,
+                   SubstructureRedirectMask | SubstructureNotifyMask, &event);
+    }
+    else
+    {
+        Atom actualType = None;
+        int actualFormat = 0;
+        unsigned long itemCount = 0;
+        unsigned long remaining = 0;
+        unsigned char* data = nullptr;
+        std::vector<Atom> states;
+        if (XGetWindowProperty(g_display, window->xwindow, netWmState, 0, 64,
+                               False, XA_ATOM, &actualType, &actualFormat,
+                               &itemCount, &remaining, &data) == Success && data)
+        {
+            const auto* atoms = reinterpret_cast<const Atom*>(data);
+            states.assign(atoms, atoms + itemCount);
+            XFree(data);
+        }
+        states.erase(std::remove(states.begin(), states.end(), skipTaskbar), states.end());
+        if (!showInTaskbar)
+            states.push_back(skipTaskbar);
+        XChangeProperty(g_display, window->xwindow, netWmState, XA_ATOM, 32,
+                        PropModeReplace,
+                        reinterpret_cast<const unsigned char*>(states.data()),
+                        static_cast<int>(states.size()));
+    }
+    XFlush(g_display);
+    return JALIUM_OK;
+}
+
+int32_t jalium_window_set_resizable(JaliumPlatformWindow* window, int32_t resizable)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (resizable)
+        window->style |= JALIUM_WINDOW_STYLE_RESIZABLE;
+    else
+        window->style &= ~static_cast<uint32_t>(JALIUM_WINDOW_STYLE_RESIZABLE);
+
+    return jalium_window_set_min_max_size(
+        window,
+        window->requestedMinWidth,
+        window->requestedMinHeight,
+        window->requestedMaxWidth,
+        window->requestedMaxHeight);
+}
+
+int32_t jalium_window_set_decorated(JaliumPlatformWindow* window, int32_t decorated)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        if (decorated)
+            window->style &= ~static_cast<uint32_t>(JALIUM_WINDOW_STYLE_BORDERLESS);
+        else
+            window->style |= JALIUM_WINDOW_STYLE_BORDERLESS;
+#ifdef JALIUM_HAS_XDG_DECORATION_V1
+        CreateWaylandDecoration(window);
+        if (!window->xdgDecoration)
+            return JALIUM_ERROR_NOT_SUPPORTED;
+        zxdg_toplevel_decoration_v1_set_mode(
+            window->xdgDecoration,
+            decorated
+                ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+        wl_surface_commit(window->waylandSurface);
+        return wl_display_flush(g_waylandDisplay) < 0
+            ? JALIUM_ERROR_UNKNOWN : JALIUM_OK;
+#else
+        return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+    }
+#endif
+    if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    const Atom motifHints = XInternAtom(g_display, "_MOTIF_WM_HINTS", False);
+    struct MotifHints {
+        unsigned long flags;
+        unsigned long functions;
+        unsigned long decorations;
+        long inputMode;
+        unsigned long status;
+    } hints{2, 0, decorated ? 1ul : 0ul, 0, 0};
+    XChangeProperty(g_display, window->xwindow, motifHints, motifHints, 32,
+                    PropModeReplace,
+                    reinterpret_cast<const unsigned char*>(&hints), 5);
+    if (decorated)
+        window->style &= ~static_cast<uint32_t>(JALIUM_WINDOW_STYLE_BORDERLESS);
+    else
+        window->style |= JALIUM_WINDOW_STYLE_BORDERLESS;
+    XFlush(g_display);
+    return JALIUM_OK;
+}
+
+int32_t jalium_window_set_owner(
+    JaliumPlatformWindow* window, intptr_t ownerNativeHandle)
+{
+    if (!window || ownerNativeHandle == jalium_window_get_native_handle(window))
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+    window->parentHandle = ownerNativeHandle;
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        if (!window->xdgToplevel && !CreateWaylandRole(window))
+            return JALIUM_ERROR_INVALID_STATE;
+        xdg_toplevel* parentToplevel = nullptr;
+        if (ownerNativeHandle != 0)
+        {
+            auto* parentSurface = reinterpret_cast<wl_surface*>(ownerNativeHandle);
+            std::lock_guard<std::mutex> lock(g_windowMapMutex);
+            for (JaliumPlatformWindow* candidate : g_waylandWindows)
+            {
+                if (candidate && candidate->waylandSurface == parentSurface)
+                {
+                    parentToplevel = candidate->xdgToplevel;
+                    break;
+                }
+            }
+            if (!parentToplevel)
+                return JALIUM_ERROR_INVALID_ARGUMENT;
+        }
+        xdg_toplevel_set_parent(window->xdgToplevel, parentToplevel);
+        wl_surface_commit(window->waylandSurface);
+        wl_display_flush(g_waylandDisplay);
+        return JALIUM_OK;
+    }
+#endif
+    if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    if (ownerNativeHandle != 0)
+        XSetTransientForHint(g_display, window->xwindow, static_cast<Window>(ownerNativeHandle));
+    else
+        XDeleteProperty(g_display, window->xwindow, XInternAtom(g_display, "WM_TRANSIENT_FOR", False));
+    XFlush(g_display);
+    return JALIUM_OK;
+}
+
+int32_t jalium_window_activate(JaliumPlatformWindow* window)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+#ifdef JALIUM_HAS_XDG_ACTIVATION_V1
+        if (!g_xdgActivation || !window->xdgToplevel)
+            return JALIUM_ERROR_NOT_SUPPORTED;
+
+        const char* inheritedToken = getenv("XDG_ACTIVATION_TOKEN");
+        if (inheritedToken && *inheritedToken)
+        {
+            xdg_activation_v1_activate(
+                g_xdgActivation, inheritedToken, window->waylandSurface);
+            unsetenv("XDG_ACTIVATION_TOKEN");
+            return wl_display_flush(g_waylandDisplay) < 0
+                ? JALIUM_ERROR_UNKNOWN : JALIUM_OK;
+        }
+
+        xdg_activation_token_v1* token =
+            xdg_activation_v1_get_activation_token(g_xdgActivation);
+        if (!token)
+            return JALIUM_ERROR_UNKNOWN;
+
+        auto* request = new (std::nothrow) WaylandActivationRequest();
+        if (!request)
+        {
+            xdg_activation_token_v1_destroy(token);
+            return JALIUM_ERROR_OUT_OF_MEMORY;
+        }
+        request->token = token;
+        request->window = window;
+        g_waylandActivationRequests.insert(request);
+        xdg_activation_token_v1_add_listener(
+            token, &g_activationTokenListener, request);
+        if (g_waylandSeat && g_waylandInputSerial != 0)
+        {
+            xdg_activation_token_v1_set_serial(
+                token, g_waylandInputSerial, g_waylandSeat);
+        }
+        xdg_activation_token_v1_set_surface(token, window->waylandSurface);
+        xdg_activation_token_v1_commit(token);
+        if (wl_display_flush(g_waylandDisplay) < 0)
+        {
+            g_waylandActivationRequests.erase(request);
+            xdg_activation_token_v1_destroy(token);
+            delete request;
+            return JALIUM_ERROR_UNKNOWN;
+        }
+        return JALIUM_OK;
+#else
+        return JALIUM_ERROR_NOT_SUPPORTED;
+#endif
+    }
+#endif
+    if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    XWindowAttributes attributes{};
+    if (!XGetWindowAttributes(g_display, window->xwindow, &attributes) ||
+        attributes.map_state == IsUnmapped)
+    {
+        XMapRaised(g_display, window->xwindow);
+    }
+
+    XEvent event{};
+    event.type = ClientMessage;
+    event.xclient.window = window->xwindow;
+    event.xclient.message_type = XInternAtom(g_display, "_NET_ACTIVE_WINDOW", False);
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = 1; // normal application
+    event.xclient.data.l[1] = CurrentTime;
+    XSendEvent(g_display, g_rootWindow, False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &event);
+    XFlush(g_display);
+    return JALIUM_OK;
+}
+
+int32_t jalium_window_show_system_menu(
+    JaliumPlatformWindow* window, int32_t x, int32_t y)
+{
+    if (!window)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        if (!window->xdgToplevel || !g_waylandSeat ||
+            g_waylandInputSerial == 0)
+            return JALIUM_ERROR_NOT_SUPPORTED;
+
+        const int32_t scale = std::max(window->waylandScale, 1);
+#ifdef JALIUM_PLATFORM_TEST_HOOKS
+        g_testSystemMenuWindow = window;
+        g_testSystemMenuX = x;
+        g_testSystemMenuY = y;
+        g_testSystemMenuSerial = g_waylandInputSerial;
+#endif
+        xdg_toplevel_show_window_menu(
+            window->xdgToplevel, g_waylandSeat, g_waylandInputSerial,
+            x / scale, y / scale);
+        return wl_display_flush(g_waylandDisplay) < 0
+            ? JALIUM_ERROR_UNKNOWN : JALIUM_OK;
+    }
+#endif
+    if (!g_display || !window->xwindow)
+        return JALIUM_ERROR_INVALID_STATE;
+
+    const Atom showMenu = XInternAtom(g_display, "_GTK_SHOW_WINDOW_MENU", False);
+    const Atom netSupported = XInternAtom(g_display, "_NET_SUPPORTED", False);
+    Atom actualType = None;
+    int actualFormat = 0;
+    unsigned long itemCount = 0;
+    unsigned long remaining = 0;
+    unsigned char* raw = nullptr;
+    bool supported = false;
+    if (XGetWindowProperty(
+            g_display, g_rootWindow, netSupported, 0, 4096, False, XA_ATOM,
+            &actualType, &actualFormat, &itemCount, &remaining, &raw) == Success &&
+        raw && actualType == XA_ATOM && actualFormat == 32)
+    {
+        const auto* atoms = reinterpret_cast<const Atom*>(raw);
+        supported = std::find(atoms, atoms + itemCount, showMenu) !=
+                    atoms + itemCount;
+    }
+    if (raw) XFree(raw);
+    if (!supported)
+        return JALIUM_ERROR_NOT_SUPPORTED;
+
+    int32_t rootX = x;
+    int32_t rootY = y;
+    Window child = None;
+    if (!XTranslateCoordinates(
+            g_display, window->xwindow, g_rootWindow, x, y,
+            &rootX, &rootY, &child))
+        return JALIUM_ERROR_UNKNOWN;
+
+    int32_t deviceId = 0;
+#ifdef JALIUM_HAS_XINPUT2
+    if (g_xinput2Available)
+        (void)XIGetClientPointer(g_display, window->xwindow, &deviceId);
+#endif
+
+    XEvent event{};
+    event.type = ClientMessage;
+    event.xclient.window = window->xwindow;
+    event.xclient.message_type = showMenu;
+    event.xclient.format = 32;
+    event.xclient.data.l[0] = deviceId;
+    event.xclient.data.l[1] = rootX;
+    event.xclient.data.l[2] = rootY;
+    XSendEvent(g_display, g_rootWindow, False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &event);
+    XFlush(g_display);
+    return JALIUM_OK;
+}
+
+int32_t jalium_window_update_ime_context(
+    JaliumPlatformWindow* window, int32_t enabled, const char* utf8Text,
+    int32_t cursorByteOffset, int32_t anchorByteOffset,
+    int32_t x, int32_t y, int32_t width, int32_t height)
+{
+    if (!window || cursorByteOffset < 0 || anchorByteOffset < 0 ||
+        width < 0 || height < 0)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+#ifdef JALIUM_HAS_WAYLAND
+    if (window->waylandSurface)
+    {
+        window->imeEnabled = enabled != 0;
+        window->imeSurroundingText = utf8Text ? utf8Text : "";
+        const int32_t textLength = static_cast<int32_t>(std::min<size_t>(
+            window->imeSurroundingText.size(),
+            static_cast<size_t>(std::numeric_limits<int32_t>::max())));
+        window->imeCursorByteOffset = std::clamp(cursorByteOffset, 0, textLength);
+        window->imeAnchorByteOffset = std::clamp(anchorByteOffset, 0, textLength);
+        window->imeCaretX = x;
+        window->imeCaretY = y;
+        window->imeCaretWidth = std::max(width, 1);
+        window->imeCaretHeight = std::max(height, 1);
+        if (!window->imeEnabled)
+        {
+            window->imeSurroundingText.clear();
+            window->imeCursorByteOffset = 0;
+            window->imeAnchorByteOffset = 0;
+        }
+
+        bool supported = false;
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V3
+        if (g_waylandTextInputManager && g_waylandTextInput)
+        {
+            supported = true;
+            ApplyWaylandTextInputV3(window);
+        }
+#endif
+#ifdef JALIUM_HAS_WAYLAND_TEXT_INPUT_V1
+        if (!supported && g_waylandTextInputManagerV1 && g_waylandTextInputV1)
+        {
+            supported = true;
+            ApplyWaylandTextInputV1(window);
+        }
+#endif
+        if (!supported)
+            return JALIUM_ERROR_NOT_SUPPORTED;
+        return wl_display_flush(g_waylandDisplay) < 0
+            ? JALIUM_ERROR_UNKNOWN : JALIUM_OK;
+    }
+#endif
+
+    // XIM handles preedit/commit, but X11 has no portable surrounding-text or
+    // candidate-rectangle contract equivalent to text-input-v3.
+    return JALIUM_ERROR_NOT_SUPPORTED;
 }
 
 #endif // __linux__ && !__ANDROID__

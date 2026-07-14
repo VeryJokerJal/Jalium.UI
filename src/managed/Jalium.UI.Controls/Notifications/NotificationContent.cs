@@ -19,14 +19,14 @@ public sealed class NotificationContent
 
     /// <summary>
     /// Gets or sets the optional application icon image.
-    /// Accepts any <see cref="ImageSource"/> (e.g. <see cref="BitmapImage"/>, <see cref="RenderTargetBitmap"/>).
+    /// Accepts any <see cref="ImageSource"/> (e.g. <see cref="Imaging.BitmapImage"/>, <see cref="Imaging.RenderTargetBitmap"/>).
     /// The backend will extract pixel data or a temp file path as needed by each platform.
     /// </summary>
     public ImageSource? Icon { get; set; }
 
     /// <summary>
     /// Gets or sets the optional hero / inline image.
-    /// Accepts any <see cref="ImageSource"/> (e.g. <see cref="BitmapImage"/>, <see cref="RenderTargetBitmap"/>).
+    /// Accepts any <see cref="ImageSource"/> (e.g. <see cref="Imaging.BitmapImage"/>, <see cref="Imaging.RenderTargetBitmap"/>).
     /// </summary>
     public ImageSource? Image { get; set; }
 

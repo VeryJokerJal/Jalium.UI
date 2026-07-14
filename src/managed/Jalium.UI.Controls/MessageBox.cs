@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI;
 
 /// <summary>
 /// Specifies the buttons that are displayed on a message box.
@@ -9,11 +10,8 @@ public enum MessageBoxButton
 {
     OK = 0x00000000,
     OKCancel = 0x00000001,
-    AbortRetryIgnore = 0x00000002,
     YesNoCancel = 0x00000003,
-    YesNo = 0x00000004,
-    RetryCancel = 0x00000005,
-    CancelTryContinue = 0x00000006
+    YesNo = 0x00000004
 }
 
 /// <summary>
@@ -24,13 +22,8 @@ public enum MessageBoxResult
     None = 0,
     OK = 1,
     Cancel = 2,
-    Abort = 3,
-    Retry = 4,
-    Ignore = 5,
     Yes = 6,
-    No = 7,
-    TryAgain = 10,
-    Continue = 11
+    No = 7
 }
 
 /// <summary>
@@ -177,9 +170,14 @@ public sealed class MessageBox
     private static MessageBoxResult ShowCore(IntPtr owner, string messageBoxText, string caption,
         MessageBoxButton button, MessageBoxImage icon, MessageBoxResult defaultResult, MessageBoxOptions options)
     {
-        if (!Platform.PlatformFactory.IsWindows)
+        if (!Controls.Platform.PlatformFactory.IsWindows)
         {
             var dialog = new MessageBoxDialog(messageBoxText, caption, button, icon, defaultResult);
+            if (owner != IntPtr.Zero && Window.TryGetOpenWindow(owner) is { } ownerWindow)
+            {
+                dialog.Owner = ownerWindow;
+                dialog.WindowStartupLocation = WindowStartupLocation.CenterOwner;
+            }
             dialog.ShowDialog();
             return dialog.Result;
         }
@@ -193,8 +191,6 @@ public sealed class MessageBox
             MessageBoxResult.No when button == MessageBoxButton.YesNo => 0x00000100u,
             MessageBoxResult.No when button == MessageBoxButton.YesNoCancel => 0x00000200u, // MB_DEFBUTTON3
             MessageBoxResult.Cancel when button == MessageBoxButton.YesNoCancel => 0x00000200u,
-            MessageBoxResult.Retry when button == MessageBoxButton.AbortRetryIgnore => 0x00000100u,
-            MessageBoxResult.Ignore when button == MessageBoxButton.AbortRetryIgnore => 0x00000200u,
             _ => 0u
         };
 
@@ -204,13 +200,8 @@ public sealed class MessageBox
         {
             1 => MessageBoxResult.OK,
             2 => MessageBoxResult.Cancel,
-            3 => MessageBoxResult.Abort,
-            4 => MessageBoxResult.Retry,
-            5 => MessageBoxResult.Ignore,
             6 => MessageBoxResult.Yes,
             7 => MessageBoxResult.No,
-            10 => MessageBoxResult.TryAgain,
-            11 => MessageBoxResult.Continue,
             _ => MessageBoxResult.None
         };
     }

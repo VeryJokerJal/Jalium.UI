@@ -4,7 +4,7 @@ namespace Jalium.UI.Media.Effects;
 
 /// <summary>
 /// A bitmap effect that blurs the element content itself.
-/// This is different from BackdropEffect's BlurEffect which blurs content behind the element.
+/// This is different from <see cref="Jalium.UI.Media.BackdropBlurEffect"/>, which blurs content behind the element.
 /// </summary>
 public sealed class ElementBlurEffect : Effect
 {

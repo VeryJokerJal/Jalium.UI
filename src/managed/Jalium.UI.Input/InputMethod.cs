@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Runtime.CompilerServices;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Input;
 
@@ -37,7 +38,7 @@ public partial class InputMethod : DispatcherObject
     {
         get
         {
-            Dispatcher dispatcher = Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread();
+            Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
             return Instances.GetValue(dispatcher, static _ => new InputMethod());
         }
     }

@@ -20,8 +20,7 @@
     },
     {
       "name": "linux-x64",
-      "displayName": "Linux glibc x64",
-      "description": "Native x64 glibc build. Run on x64 glibc or supply an x64 glibc toolchain.",
+      "displayName": "Linux glibc x64 (native)",
       "inherits": "linux-base",
       "cacheVariables": {
         "JALIUM_LINUX_LIBC": "glibc",
@@ -30,8 +29,7 @@
     },
     {
       "name": "linux-arm64",
-      "displayName": "Linux glibc arm64",
-      "description": "Native arm64 glibc build. Run on arm64 glibc or supply an arm64 glibc toolchain.",
+      "displayName": "Linux glibc arm64 (native)",
       "inherits": "linux-base",
       "cacheVariables": {
         "JALIUM_LINUX_LIBC": "glibc",
@@ -40,8 +38,7 @@
     },
     {
       "name": "linux-musl-x64",
-      "displayName": "Linux musl x64",
-      "description": "Native x64 musl build. Run in an x64 Alpine/musl environment or supply a musl toolchain.",
+      "displayName": "Linux musl x64 (native)",
       "inherits": "linux-base",
       "cacheVariables": {
         "JALIUM_LINUX_LIBC": "musl",
@@ -50,9 +47,60 @@
     },
     {
       "name": "linux-musl-arm64",
-      "displayName": "Linux musl arm64",
-      "description": "Native arm64 musl build. Run in an arm64 Alpine/musl environment or supply a musl toolchain.",
+      "displayName": "Linux musl arm64 (native)",
       "inherits": "linux-base",
+      "cacheVariables": {
+        "JALIUM_LINUX_LIBC": "musl",
+        "JALIUM_NATIVE_RID": "linux-musl-arm64"
+      }
+    },
+    {
+      "name": "linux-cross-base",
+      "hidden": true,
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "JALIUM_CROSS_C_COMPILER": "$env{JALIUM_CROSS_C_COMPILER}",
+        "JALIUM_CROSS_CXX_COMPILER": "$env{JALIUM_CROSS_CXX_COMPILER}",
+        "JALIUM_CROSS_SYSROOT": "$env{JALIUM_CROSS_SYSROOT}",
+        "JALIUM_CROSS_PKG_CONFIG_EXECUTABLE": "$env{JALIUM_CROSS_PKG_CONFIG_EXECUTABLE}",
+        "JALIUM_CROSS_PKG_CONFIG_LIBDIR": "$env{JALIUM_CROSS_PKG_CONFIG_LIBDIR}"
+      }
+    },
+    {
+      "name": "linux-cross-x64",
+      "displayName": "Linux glibc x64 cross toolchain",
+      "inherits": "linux-cross-base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-glibc-x64.cmake",
+      "cacheVariables": {
+        "JALIUM_LINUX_LIBC": "glibc",
+        "JALIUM_NATIVE_RID": "linux-x64"
+      }
+    },
+    {
+      "name": "linux-cross-arm64",
+      "displayName": "Linux glibc arm64 cross toolchain",
+      "inherits": "linux-cross-base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-glibc-arm64.cmake",
+      "cacheVariables": {
+        "JALIUM_LINUX_LIBC": "glibc",
+        "JALIUM_NATIVE_RID": "linux-arm64"
+      }
+    },
+    {
+      "name": "linux-cross-musl-x64",
+      "displayName": "Linux musl x64 cross toolchain",
+      "inherits": "linux-cross-base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-musl-x64.cmake",
+      "cacheVariables": {
+        "JALIUM_LINUX_LIBC": "musl",
+        "JALIUM_NATIVE_RID": "linux-musl-x64"
+      }
+    },
+    {
+      "name": "linux-cross-musl-arm64",
+      "displayName": "Linux musl arm64 cross toolchain",
+      "inherits": "linux-cross-base",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-musl-arm64.cmake",
       "cacheVariables": {
         "JALIUM_LINUX_LIBC": "musl",
         "JALIUM_NATIVE_RID": "linux-musl-arm64"
@@ -75,6 +123,22 @@
     {
       "name": "build-linux-musl-arm64",
       "configurePreset": "linux-musl-arm64"
+    },
+    {
+      "name": "build-linux-cross-x64",
+      "configurePreset": "linux-cross-x64"
+    },
+    {
+      "name": "build-linux-cross-arm64",
+      "configurePreset": "linux-cross-arm64"
+    },
+    {
+      "name": "build-linux-cross-musl-x64",
+      "configurePreset": "linux-cross-musl-x64"
+    },
+    {
+      "name": "build-linux-cross-musl-arm64",
+      "configurePreset": "linux-cross-musl-arm64"
     }
   ]
 }

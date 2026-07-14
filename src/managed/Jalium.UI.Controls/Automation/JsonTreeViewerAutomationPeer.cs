@@ -1,4 +1,5 @@
 using Jalium.UI.Automation;
+using IValueProvider = Jalium.UI.Automation.Provider.IValueProvider;
 
 namespace Jalium.UI.Automation.Peers;
 

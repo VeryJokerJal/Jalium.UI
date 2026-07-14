@@ -292,6 +292,12 @@ internal sealed partial class DockIndicatorWindow : IDisposable
 
             var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
             _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);
+            // Same per-frame contract as Window's frame paths: drain orphaned
+            // retained layers AND reset the effect-capture cull override on this
+            // POOLED context (a render exception that unwound past an open
+            // BeginEffectCapture would otherwise pin culling to a stale capture
+            // rect for every subsequent frame — see PopupWindow.RenderFrame).
+            _drawingContext.DrainPendingRetainedLayers();
             _drawingContext.Offset = Point.Zero;
             _visual.Render(_drawingContext);
 

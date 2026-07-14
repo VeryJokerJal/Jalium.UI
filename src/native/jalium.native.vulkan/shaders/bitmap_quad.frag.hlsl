@@ -41,6 +41,18 @@ struct PsInput
     float2 uv : TEXCOORD0;
 };
 
+#ifdef JALIUM_LCD_COVERAGE
+// Linux's self-hosted text path stages RGB sub-pixel coverage through the
+// generic bitmap upload image. Dual-source blending consumes the secondary
+// output as independent destination attenuation for R/G/B; a conventional
+// single-alpha bitmap blend cannot express that contract.
+struct PsOutput
+{
+    [[vk::location(0), vk::index(0)]] float4 color : SV_Target0;
+    [[vk::location(0), vk::index(1)]] float4 coverage : SV_Target1;
+};
+#endif
+
 // Coverage of a pixel against a rounded rectangle, on [0, 1] — ported from
 // solid_rect.frag.hlsl so bitmaps clipped by a rounded container get the same
 // 1-px anti-aliased clip edge instead of the previous hard boolean discard
@@ -119,7 +131,11 @@ float CoveragePerCornerRoundRect(float2 pixel, float4 rect, float4 rxs, float4 r
     return CoverageRoundRect(pixel, rect, float2(rx, ry));
 }
 
+#ifdef JALIUM_LCD_COVERAGE
+PsOutput main(PsInput input)
+#else
 float4 main(PsInput input) : SV_Target
+#endif
 {
     float coverage = 1.0f;
 
@@ -163,8 +179,32 @@ float4 main(PsInput input) : SV_Target
     }
 
     float4 color = bitmapTexture.Sample(bitmapSampler, input.uv);
+#ifdef JALIUM_LCD_COVERAGE
+    // The staging texture stores logical RGB coverage (the B8G8R8A8 image
+    // swizzle maps its BGRA bytes back to .rgb). padding.xy carries text R/G;
+    // padding2.xy carries text B/A, reusing fields that were previously
+    // reserved so the 192-byte bitmap push-constant ABI does not grow.
+    float3 channelCoverage = saturate(color.rgb) * coverage;
+    float textAlpha = saturate(gPushConstants.padding2.y) *
+                      saturate(gPushConstants.uvOpacity.z);
+    channelCoverage *= textAlpha;
+    float maxCoverage = max(channelCoverage.r,
+                            max(channelCoverage.g, channelCoverage.b));
+    if (maxCoverage < 1.0f / 255.0f) {
+        discard;
+    }
+
+    float3 textColor = saturate(float3(gPushConstants.padding.x,
+                                      gPushConstants.padding.y,
+                                      gPushConstants.padding2.x));
+    PsOutput output;
+    output.color = float4(textColor * channelCoverage, maxCoverage);
+    output.coverage = float4(channelCoverage, maxCoverage);
+    return output;
+#else
     // Straight-alpha pipeline (SRC_ALPHA / ONE_MINUS_SRC_ALPHA): scale only
     // alpha by opacity and clip coverage — the blend multiplies RGB itself.
     color.a *= saturate(gPushConstants.uvOpacity.z) * coverage;
     return color;
+#endif
 }

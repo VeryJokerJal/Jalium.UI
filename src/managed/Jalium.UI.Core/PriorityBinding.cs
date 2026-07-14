@@ -9,7 +9,7 @@ namespace Jalium.UI.Data;
 /// Describes a collection of Binding objects that is attached to a single binding target property,
 /// which receives its value from the first binding in the collection that produces a value successfully.
 /// </summary>
-[ContentProperty("Bindings")]
+[Jalium.UI.Markup.ContentProperty("Bindings")]
 public class PriorityBinding : BindingBase, IAddChild
 {
     private readonly Collection<BindingBase> _bindings = new();

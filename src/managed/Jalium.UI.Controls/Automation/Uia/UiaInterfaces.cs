@@ -35,7 +35,7 @@ namespace Jalium.UI.Controls.Automation.Uia;
 // (Fragment/FragmentRoot) must be unsafe too — the COM source generator re-emits this
 [GeneratedComInterface]
 [Guid("d6dd68d1-86fd-4332-8666-9abedea2d24c")]
-public unsafe partial interface IRawElementProviderSimple
+internal unsafe partial interface IRawElementProviderSimple
 {
     // [PreserveSig] + raw out-pointer instead of the generator's auto-HRESULT lowering, so we
     // can null-guard pRetVal OURSELVES. The CUAS/TSF text-input stack behind an IME (e.g. the
@@ -69,7 +69,7 @@ public unsafe partial interface IRawElementProviderSimple
 
 [GeneratedComInterface]
 [Guid("f7063da8-8359-439c-9297-bbc5299a7d87")]
-public partial interface IRawElementProviderFragment
+internal partial interface IRawElementProviderFragment
 {
     IRawElementProviderFragment? Navigate(NavigateDirection direction);
 
@@ -88,7 +88,7 @@ public partial interface IRawElementProviderFragment
 
 [GeneratedComInterface]
 [Guid("620ce2a5-ab8f-40a9-86cb-de3c75599b58")]
-public partial interface IRawElementProviderFragmentRoot
+internal partial interface IRawElementProviderFragmentRoot
 {
     IRawElementProviderFragment? ElementProviderFromPoint(double x, double y);
 
@@ -102,14 +102,14 @@ public partial interface IRawElementProviderFragmentRoot
 
 [GeneratedComInterface]
 [Guid("54fcb24b-e18e-47a2-b4d3-eccbe77599a2")]
-public partial interface IUiaInvokeProvider
+internal partial interface IUiaInvokeProvider
 {
     void Invoke();
 }
 
 [GeneratedComInterface]
 [Guid("56d00bd0-c4f4-433c-a836-1a52a57e0892")]
-public partial interface IUiaToggleProvider
+internal partial interface IUiaToggleProvider
 {
     void Toggle();
     int get_ToggleState();
@@ -117,7 +117,7 @@ public partial interface IUiaToggleProvider
 
 [GeneratedComInterface]
 [Guid("c7935180-6fb3-4201-b174-7df73adbf64a")]
-public partial interface IUiaValueProvider
+internal partial interface IUiaValueProvider
 {
     void SetValue([MarshalAs(UnmanagedType.LPWStr)] string value);
 
@@ -129,7 +129,7 @@ public partial interface IUiaValueProvider
 
 [GeneratedComInterface]
 [Guid("36dc7aef-33e6-4691-afe1-2be7274b3d33")]
-public partial interface IUiaRangeValueProvider
+internal partial interface IUiaRangeValueProvider
 {
     void SetValue(double value);
     double get_Value();
@@ -142,7 +142,7 @@ public partial interface IUiaRangeValueProvider
 
 [GeneratedComInterface]
 [Guid("d847d3a5-cab0-4a98-8c32-ecb45c59ad24")]
-public partial interface IUiaExpandCollapseProvider
+internal partial interface IUiaExpandCollapseProvider
 {
     void Expand();
     void Collapse();
@@ -151,7 +151,7 @@ public partial interface IUiaExpandCollapseProvider
 
 [GeneratedComInterface]
 [Guid("fb8b03af-3bdf-48d4-bd36-1a65793be168")]
-public partial interface IUiaSelectionProvider
+internal partial interface IUiaSelectionProvider
 {
     [return: MarshalUsing(typeof(SafeArrayProviderMarshaller))]
     IRawElementProviderSimple[]? GetSelection();
@@ -162,7 +162,7 @@ public partial interface IUiaSelectionProvider
 
 [GeneratedComInterface]
 [Guid("2acad808-b2d4-452d-a407-91ff1ad167b2")]
-public partial interface IUiaSelectionItemProvider
+internal partial interface IUiaSelectionItemProvider
 {
     void Select();
     void AddToSelection();
@@ -173,7 +173,7 @@ public partial interface IUiaSelectionItemProvider
 
 [GeneratedComInterface]
 [Guid("b38b8077-1fc3-42a5-8cae-d40c2215055a")]
-public partial interface IUiaScrollProvider
+internal partial interface IUiaScrollProvider
 {
     void Scroll(int horizontalAmount, int verticalAmount);
     void SetScrollPercent(double horizontalPercent, double verticalPercent);
@@ -187,7 +187,7 @@ public partial interface IUiaScrollProvider
 
 [GeneratedComInterface]
 [Guid("2360c714-4bf1-4b26-ba65-9b21316127eb")]
-public partial interface IUiaScrollItemProvider
+internal partial interface IUiaScrollItemProvider
 {
     void ScrollIntoView();
 }
@@ -203,7 +203,7 @@ public partial interface IUiaScrollItemProvider
 
 [GeneratedComInterface]
 [Guid("3589c92c-63f3-4367-99bb-ada653b77cf2")]
-public partial interface IUiaTextProvider
+internal partial interface IUiaTextProvider
 {
     [return: MarshalUsing(typeof(SafeArrayTextRangeMarshaller))]
     IUiaTextRangeProvider[]? GetSelection();
@@ -222,7 +222,7 @@ public partial interface IUiaTextProvider
 
 [GeneratedComInterface]
 [Guid("5347ad7b-c355-46f8-aff5-909033582f63")]
-public partial interface IUiaTextRangeProvider
+internal partial interface IUiaTextRangeProvider
 {
     IUiaTextRangeProvider? Clone();
 
@@ -270,7 +270,7 @@ public partial interface IUiaTextRangeProvider
 // ============================================================================
 
 [StructLayout(LayoutKind.Sequential)]
-public struct UiaRect
+internal struct UiaRect
 {
     public double Left;
     public double Top;
@@ -280,7 +280,7 @@ public struct UiaRect
 
 /// <summary>Blittable UiaPoint (a pair of doubles) passed by value to ITextProvider.RangeFromPoint.</summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct UiaPoint
+internal struct UiaPoint
 {
     public double X;
     public double Y;

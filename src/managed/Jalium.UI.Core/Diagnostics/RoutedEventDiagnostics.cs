@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Diagnostics;
 

@@ -51,7 +51,7 @@ public sealed class UndoStack
     /// <summary>
     /// Records a text change for undo.
     /// </summary>
-    internal void PushChange(TextChange change)
+    internal void PushChange(DocumentChange change)
     {
         var now = DateTime.UtcNow;
         if (_currentMergeGroup != null)
@@ -80,7 +80,7 @@ public sealed class UndoStack
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
-    private bool TryMergeWithLast(TextChange change, DateTime now)
+    private bool TryMergeWithLast(DocumentChange change, DateTime now)
     {
         if (MergeTypingWindowMs > 0 && (now - _lastPushUtc).TotalMilliseconds > MergeTypingWindowMs)
             return false;
@@ -100,7 +100,7 @@ public sealed class UndoStack
                 return false;
 
             // Merge: combine the inserted text
-            last.Changes[0] = new TextChange(
+            last.Changes[0] = new DocumentChange(
                 lastChange.Offset,
                 lastChange.RemovedText,
                 lastChange.InsertedText + change.InsertedText);
@@ -112,7 +112,7 @@ public sealed class UndoStack
             change.RemovalLength == 1 && lastChange.RemovalLength > 0 &&
             change.Offset == lastChange.Offset - 1)
         {
-            last.Changes[0] = new TextChange(
+            last.Changes[0] = new DocumentChange(
                 change.Offset,
                 change.RemovedText + lastChange.RemovedText,
                 string.Empty);
@@ -217,7 +217,7 @@ public sealed class UndoStack
 
     private sealed class UndoGroup
     {
-        public List<TextChange> Changes { get; init; } = [];
+        public List<DocumentChange> Changes { get; init; } = [];
 
         public UndoGroup Clone()
         {

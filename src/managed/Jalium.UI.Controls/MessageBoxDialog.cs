@@ -114,9 +114,6 @@ internal sealed class MessageBoxDialog : Window
         MessageBoxButton.OKCancel => [("OK", MessageBoxResult.OK), ("Cancel", MessageBoxResult.Cancel)],
         MessageBoxButton.YesNo => [("Yes", MessageBoxResult.Yes), ("No", MessageBoxResult.No)],
         MessageBoxButton.YesNoCancel => [("Yes", MessageBoxResult.Yes), ("No", MessageBoxResult.No), ("Cancel", MessageBoxResult.Cancel)],
-        MessageBoxButton.AbortRetryIgnore => [("Abort", MessageBoxResult.Abort), ("Retry", MessageBoxResult.Retry), ("Ignore", MessageBoxResult.Ignore)],
-        MessageBoxButton.RetryCancel => [("Retry", MessageBoxResult.Retry), ("Cancel", MessageBoxResult.Cancel)],
-        MessageBoxButton.CancelTryContinue => [("Cancel", MessageBoxResult.Cancel), ("Try Again", MessageBoxResult.TryAgain), ("Continue", MessageBoxResult.Continue)],
         _ => [("OK", MessageBoxResult.OK)]
     };
 }

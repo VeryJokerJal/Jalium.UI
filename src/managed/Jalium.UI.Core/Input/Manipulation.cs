@@ -78,10 +78,10 @@ public static class Manipulation
                 ExpansionBehavior = preview.ExpansionBehavior,
             };
             element.RaiseEvent(bubble);
-            if (bubble.CancelRequested || bubble.CompleteRequested)
+            if (bubble.CancelRequested)
                 CompleteManipulation(element);
         }
-        else if (preview.CancelRequested || preview.CompleteRequested)
+        else if (preview.CancelRequested)
         {
             CompleteManipulation(element);
         }

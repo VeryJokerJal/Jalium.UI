@@ -57,6 +57,11 @@ SCENE_OVERRIDES: dict[str, tuple[float, int]] = {
                                             # (square corners at radius 0: 5.7%)
                                             # lands in FAIL; tighten once the D3D12
                                             # stroke distance is normalised.
+    "staging-mixed-superellipse-liquidglass": (0.5, 256),
+                                            # One large SDF-vs-tessellated boundary
+                                            # plus a tiny LiquidGlass panel. The
+                                            # expected seam is ~0.3%; a stale staging
+                                            # base drops the entire squircle (~20%).
     "gradient-linear": (1.0, 256),          # interpolation precision differs
     "gradient-radial": (1.5, 512),
     "text": (3.0, 4096),                    # glyph raster/hinting: whole glyphs may shift

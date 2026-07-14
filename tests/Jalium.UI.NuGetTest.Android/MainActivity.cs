@@ -1,7 +1,7 @@
 using Android.App;
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
-using Window = Jalium.UI.Controls.Window;
+using Window = Jalium.UI.Window;
 using Button = Jalium.UI.Controls.Button;
 using TextBlock = Jalium.UI.Controls.TextBlock;
 using StackPanel = Jalium.UI.Controls.StackPanel;

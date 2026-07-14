@@ -156,7 +156,7 @@ public class RealTimeStylusThreadTests
         // QueueProcessedCallbacks dispatches to the UI Dispatcher.BeginInvoke;
         // pump it synchronously by running pending dispatcher operations.
         rts.QueueProcessedCallbacks(result);
-        (Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread()).ProcessQueue();
+        Dispatcher.CurrentDispatcher.ProcessQueue();
 
         Assert.Equal("rts-payload", uiReader.Observed);
     }

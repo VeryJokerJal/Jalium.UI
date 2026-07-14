@@ -6,7 +6,8 @@ using Jalium.UI.Media.Effects;
 namespace Jalium.UI.Tests.TextEffects;
 
 /// <summary>
-/// Verifies the <see cref="DrawingContext.PushEffect"/> / <see cref="DrawingContext.PopEffect"/>
+/// Verifies the <see cref="DrawingContext.PushEffect(BitmapEffect, BitmapEffectInput)"/> /
+/// <see cref="DrawingContext.PopEffect"/>
 /// integration inside <see cref="TextEffectPresenter"/>. These tests don't need a
 /// real GPU context — they use <see cref="RecordingDrawingContext"/> to observe
 /// call sequence.

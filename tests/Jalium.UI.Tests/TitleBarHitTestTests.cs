@@ -2,6 +2,7 @@ using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Tests;
 
@@ -158,6 +159,26 @@ public class TitleBarHitTestTests
 
         Assert.Equal(HTCAPTION, inCaptionBand);
         Assert.Equal(HTCLIENT, belowCaptionBand);
+    }
+
+    [Fact]
+    public void IsSystemMenuCaptionPoint_OnlyAcceptsDraggableCaptionArea()
+    {
+        var window = new Window
+        {
+            Width = 320,
+            Height = 200,
+            TitleBarHeight = 48,
+            HasSystemMenu = true
+        };
+
+        LayoutWindow(window, 320, 200);
+
+        Assert.True(window.IsSystemMenuCaptionPoint(new Point(20, 40)));
+        Assert.False(window.IsSystemMenuCaptionPoint(new Point(20, 56)));
+
+        window.HasSystemMenu = false;
+        Assert.False(window.IsSystemMenuCaptionPoint(new Point(20, 40)));
     }
 
     [Fact]

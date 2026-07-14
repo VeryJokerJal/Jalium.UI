@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Controls;
 

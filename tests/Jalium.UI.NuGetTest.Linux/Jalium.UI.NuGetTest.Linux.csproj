@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Jalium.UI.NuGetTest.Linux</RootNamespace>
+    <AssemblyName>Jalium.UI.NuGetTest.Linux</AssemblyName>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- This executable is a deployment-shape gate.  Inheriting the
+         repository-wide documentation setting would publish an XML sidecar
+         beside an otherwise valid trimmed single-file executable. -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <JaliumPackageVersion Condition="'$(JaliumPackageVersion)' == ''">$(Version)</JaliumPackageVersion>
+  </PropertyGroup>
+
+  <!-- This project intentionally has no ProjectReference. It is the release
+       consumer gate for the packages produced by the current checkout. -->
+  <ItemGroup>
+    <PackageReference Include="Jalium.UI.Linux" Version="$(JaliumPackageVersion)" />
+  </ItemGroup>
+
+</Project>

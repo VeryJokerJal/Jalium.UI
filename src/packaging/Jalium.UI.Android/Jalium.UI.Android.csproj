@@ -42,36 +42,69 @@
     <PackageReference Include="Jalium.UI.Build" Version="$(Version)" PrivateAssets="none" />
   </ItemGroup>
 
-  <!-- Android native .so libraries for arm64-v8a -->
+  <!-- Android native .so libraries for arm64-v8a. Every entry is required:
+       build-android.sh writes the completeness stamp only after validating the
+       whole ABI payload, so a failed/stale native build can never pack a
+       partial AAR. -->
   <ItemGroup>
+    <_JaliumAndroidPackageStamp Include="$(JaliumAndroidNativeRoot)\.jalium-android-payload-complete" />
+    <_JaliumAndroidPayloadStamp Include="$(JaliumAndroidNativeRoot)\arm64-v8a\.jalium-native-complete" Abi="arm64-v8a" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.core.so" Abi="arm64-v8a"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.core.so')" />
+                          JaliumRequired="true" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.platform.so" Abi="arm64-v8a"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.platform.so')" />
+                          JaliumRequired="true" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.media.core.so" Abi="arm64-v8a"
+                          JaliumRequired="true" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.vulkan.so" Abi="arm64-v8a"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.vulkan.so')" />
+                          JaliumRequired="true" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.software.so" Abi="arm64-v8a"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.software.so')" />
+                          JaliumRequired="true" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.text.so" Abi="arm64-v8a"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.text.so')" />
+                          JaliumRequired="true" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.media.so" Abi="arm64-v8a"
+                          JaliumRequired="true" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libc++_shared.so" Abi="arm64-v8a"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libc++_shared.so')" />
+                          JaliumRequired="true" />
   </ItemGroup>
 
   <!-- Android native .so libraries for x86_64 (emulator) -->
   <ItemGroup>
+    <_JaliumAndroidPayloadStamp Include="$(JaliumAndroidNativeRoot)\x86_64\.jalium-native-complete" Abi="x86_64" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.core.so" Abi="x86_64"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.core.so')" />
+                          JaliumRequired="true" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.platform.so" Abi="x86_64"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.platform.so')" />
+                          JaliumRequired="true" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.media.core.so" Abi="x86_64"
+                          JaliumRequired="true" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.vulkan.so" Abi="x86_64"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.vulkan.so')" />
+                          JaliumRequired="true" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.software.so" Abi="x86_64"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.software.so')" />
+                          JaliumRequired="true" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.text.so" Abi="x86_64"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.text.so')" />
+                          JaliumRequired="true" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.media.so" Abi="x86_64"
+                          JaliumRequired="true" />
     <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libc++_shared.so" Abi="x86_64"
-                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libc++_shared.so')" />
+                          JaliumRequired="true" />
   </ItemGroup>
+
+  <Target Name="ValidateJaliumAndroidNativePayload"
+          BeforeTargets="PrepareForBuild;_IntermediatePack">
+    <Error Condition="!Exists('%(_JaliumAndroidPackageStamp.Identity)')"
+           Text="The dual-ABI Jalium Android package payload is incomplete. Missing package-set stamp: '%(_JaliumAndroidPackageStamp.Identity)'. Run 'src/native/build-android.sh all'; single-ABI builds are development-only and intentionally invalidate this stamp." />
+    <Error Condition="!Exists('%(_JaliumAndroidPayloadStamp.Identity)')"
+           Text="The complete Jalium Android native payload for ABI '%(_JaliumAndroidPayloadStamp.Abi)' was not found. Missing stamp: '%(_JaliumAndroidPayloadStamp.Identity)'. Run src/native/build-android.sh before building or packing." />
+    <Error Condition="'%(AndroidNativeLibrary.JaliumRequired)' == 'true' and !Exists('%(AndroidNativeLibrary.Identity)')"
+           Text="The complete Jalium Android native payload for ABI '%(AndroidNativeLibrary.Abi)' is missing required library '%(AndroidNativeLibrary.Identity)'. Rebuild the ABI with src/native/build-android.sh." />
+  </Target>
+
+  <!-- Fail the pack when a packed .so is stale relative to git history
+       (-p:JaliumAllowStaleNative=true downgrades to warnings). The NDK pin
+       and ABI/API flags live in build-android.sh, so it counts as a build
+       input for every Android binary. -->
+  <PropertyGroup>
+    <JaliumNativeGuardExtraPathSpec>src/native/build-android.sh</JaliumNativeGuardExtraPathSpec>
+  </PropertyGroup>
+  <Import Project="$(MSBuildThisFileDirectory)../../../eng/msbuild/JaliumStaleNativeGuard.targets" />
 
 </Project>

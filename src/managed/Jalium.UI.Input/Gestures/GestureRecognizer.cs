@@ -1,13 +1,17 @@
 using System.Diagnostics;
 using Jalium.UI.Threading;
 
-namespace Jalium.UI.Input.Gestures;
+// This is the cross-platform pointer gesture engine used by Jalium internals.
+// It intentionally is not a public WPF compatibility surface: WPF manipulation
+// contracts live in Jalium.UI.Input, while ink gesture recognition lives in
+// Jalium.UI.Ink.
+namespace Jalium.UI.Input.Internal.Gestures;
 
 /// <summary>
 /// Specifies the types of gestures that can be recognized.
 /// </summary>
 [Flags]
-public enum GestureSettings
+internal enum GestureSettings
 {
     None = 0,
     Tap = 1 << 0,
@@ -39,7 +43,7 @@ public enum GestureSettings
 /// (defaults to the current thread's dispatcher). Tests can drive timing with
 /// <see cref="AdvanceClockForTesting"/>.
 /// </summary>
-public sealed class GestureRecognizer
+internal sealed class GestureRecognizer
 {
     // Public-tunable thresholds. WPF / WinUI defaults.
     public static int TapTimeoutMs { get; set; } = 300;
@@ -121,7 +125,7 @@ public sealed class GestureRecognizer
     #endregion
 
     public GestureRecognizer()
-        : this(Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread()) { }
+        : this(Dispatcher.CurrentDispatcher) { }
 
     public GestureRecognizer(Dispatcher dispatcher)
     {
@@ -466,7 +470,7 @@ public sealed class GestureRecognizer
 }
 
 /// <summary>Represents changes in manipulation.</summary>
-public struct ManipulationDelta
+internal readonly struct ManipulationDelta
 {
     public Point Translation { get; }
     public float Rotation { get; }
@@ -482,7 +486,7 @@ public struct ManipulationDelta
 }
 
 /// <summary>Represents manipulation velocities.</summary>
-public struct ManipulationVelocities
+internal readonly struct ManipulationVelocities
 {
     public Point Linear { get; }
     public float Angular { get; }
@@ -497,7 +501,7 @@ public struct ManipulationVelocities
 
 #region Event Args
 
-public sealed class TappedEventArgs : EventArgs
+internal sealed class TappedEventArgs : EventArgs
 {
     public PointerDeviceType PointerDeviceType { get; }
     public Point Position { get; }
@@ -510,7 +514,7 @@ public sealed class TappedEventArgs : EventArgs
     }
 }
 
-public sealed class RightTappedEventArgs : EventArgs
+internal sealed class RightTappedEventArgs : EventArgs
 {
     public PointerDeviceType PointerDeviceType { get; }
     public Point Position { get; }
@@ -521,9 +525,9 @@ public sealed class RightTappedEventArgs : EventArgs
     }
 }
 
-public enum HoldingState { Started, Completed, Canceled }
+internal enum HoldingState { Started, Completed, Canceled }
 
-public sealed class HoldingEventArgs : EventArgs
+internal sealed class HoldingEventArgs : EventArgs
 {
     public PointerDeviceType PointerDeviceType { get; }
     public Point Position { get; }
@@ -536,9 +540,9 @@ public sealed class HoldingEventArgs : EventArgs
     }
 }
 
-public enum DraggingState { Started, Continuing, Completed }
+internal enum DraggingState { Started, Continuing, Completed }
 
-public sealed class DraggingEventArgs : EventArgs
+internal sealed class DraggingEventArgs : EventArgs
 {
     public PointerDeviceType PointerDeviceType { get; }
     public Point Position { get; }
@@ -551,13 +555,13 @@ public sealed class DraggingEventArgs : EventArgs
     }
 }
 
-public sealed class ManipulationStartedEventArgs : EventArgs
+internal sealed class ManipulationStartedEventArgs : EventArgs
 {
     public Point Position { get; }
     public ManipulationStartedEventArgs(Point position) { Position = position; }
 }
 
-public sealed class ManipulationDeltaEventArgs : EventArgs
+internal sealed class ManipulationDeltaEventArgs : EventArgs
 {
     public Point Position { get; }
     public ManipulationDelta Delta { get; }
@@ -571,7 +575,7 @@ public sealed class ManipulationDeltaEventArgs : EventArgs
     }
 }
 
-public sealed class ManipulationCompletedEventArgs : EventArgs
+internal sealed class ManipulationCompletedEventArgs : EventArgs
 {
     public Point Position { get; }
     public ManipulationDelta Cumulative { get; }
@@ -583,7 +587,7 @@ public sealed class ManipulationCompletedEventArgs : EventArgs
     }
 }
 
-public sealed class ManipulationInertiaStartingEventArgs : EventArgs
+internal sealed class ManipulationInertiaStartingEventArgs : EventArgs
 {
     public Point Position { get; }
     public ManipulationDelta Cumulative { get; }
@@ -597,19 +601,19 @@ public sealed class ManipulationInertiaStartingEventArgs : EventArgs
     }
 }
 
-public sealed class InertiaTranslationBehavior
+internal sealed class InertiaTranslationBehavior
 {
     public double DesiredDisplacement { get; set; }
     public double DesiredDeceleration { get; set; }
 }
 
-public sealed class InertiaRotationBehavior
+internal sealed class InertiaRotationBehavior
 {
     public double DesiredRotation { get; set; }
     public double DesiredDeceleration { get; set; }
 }
 
-public sealed class InertiaExpansionBehavior
+internal sealed class InertiaExpansionBehavior
 {
     public double DesiredExpansion { get; set; }
     public double DesiredDeceleration { get; set; }

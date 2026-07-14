@@ -1,6 +1,4 @@
 using System.Runtime.CompilerServices;
-using LegacyBitmapImage = Jalium.UI.Media.BitmapImage;
-using WriteableBitmap = Jalium.UI.Media.WriteableBitmap;
 
 namespace Jalium.UI.Media.Imaging;
 
@@ -28,7 +26,7 @@ internal static class BitmapDownscaleCache
     private sealed class Entry
     {
         public ulong Key;
-        public LegacyBitmapImage Thumbnail = null!;
+        public BitmapImage Thumbnail = null!;
         public long Bytes;
     }
 
@@ -61,7 +59,7 @@ internal static class BitmapDownscaleCache
     /// 合成**,合成请求通过 <see cref="TryGetOrCreate"/> 调用方在 fallback 同时入队的
     /// 异步路径完成。
     /// </summary>
-    public static bool TryGetOrCreate(LegacyBitmapImage source, int targetW, int targetH, out LegacyBitmapImage thumb)
+    public static bool TryGetOrCreate(BitmapImage source, int targetW, int targetH, out BitmapImage thumb)
     {
         thumb = null!;
         if (source.RawPixelData == null) return false;
@@ -100,7 +98,7 @@ internal static class BitmapDownscaleCache
         return false;
     }
 
-    private static ulong MakeKey(LegacyBitmapImage source, int bucketW, int bucketH)
+    private static ulong MakeKey(BitmapImage source, int bucketW, int bucketH)
     {
         // identity hash (32 bit) × bucketW (16 bit) × bucketH (16 bit)
         // identity hash 碰撞概率极低;碰撞最坏 cache miss 一次,无 crash。
@@ -110,7 +108,7 @@ internal static class BitmapDownscaleCache
              | (ulong)(ushort)bucketH;
     }
 
-    private static void EnqueueSynthesis(LegacyBitmapImage source, int srcW, int srcH, int bucketW, int bucketH, ulong key)
+    private static void EnqueueSynthesis(BitmapImage source, int srcW, int srcH, int bucketW, int bucketH, ulong key)
     {
         lock (s_lock)
         {
@@ -131,7 +129,7 @@ internal static class BitmapDownscaleCache
                 int stride = src.PixelStride > 0 ? src.PixelStride : srcWLocal * 4;
 
                 byte[] thumbPixels = BoxFilterDownscale(rawPixels, srcWLocal, srcHLocal, stride, bw, bh);
-                var newThumb = LegacyBitmapImage.FromPixels(thumbPixels, bw, bh, bw * 4);
+                var newThumb = BitmapImage.FromPixels(thumbPixels, bw, bh, bw * 4);
                 if (newThumb == null) return;
 
                 long newBytes = (long)bw * bh * 4;

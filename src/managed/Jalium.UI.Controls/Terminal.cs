@@ -7,6 +7,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
 
@@ -690,7 +691,7 @@ public class Terminal : Control, IImeSupport
     {
         var text = GetSelectedText();
         if (!string.IsNullOrEmpty(text))
-            Clipboard.SetText(text);
+            WpfClipboard.SetText(text);
     }
 
     /// <summary>
@@ -700,7 +701,7 @@ public class Terminal : Control, IImeSupport
     {
         if (IsReadOnly) return;
 
-        var text = Clipboard.GetText();
+        var text = WpfClipboard.GetText();
         if (string.IsNullOrEmpty(text)) return;
 
         if (_parser.BracketedPasteMode)
@@ -1803,6 +1804,7 @@ public class Terminal : Control, IImeSupport
         _caretOpacity = 1.0;
         _lastCaretBlink = DateTime.Now;
         StartCaretAnimation();
+        NotifyLinuxImeContextChanged();
     }
 
     private void OnGotFocusHandler(object sender, RoutedEventArgs e)
@@ -1827,6 +1829,21 @@ public class Terminal : Control, IImeSupport
     public bool IsImeAllowed => !IsReadOnly;
 
     /// <inheritdoc />
+    internal bool TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
+    {
+        // Terminal contents can contain sensitive shell output and do not map
+        // to a conventional editable text buffer. Keep the safe default.
+        snapshot = default;
+        return false;
+    }
+
+    bool IImeSupport.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
+        => TryGetImeSurroundingText(out snapshot);
+
+    /// <inheritdoc />
+    public bool DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount) => false;
+
+    /// <inheritdoc />
     public Point GetImeCaretPosition()
     {
         double localX = _buffer.CursorCol * _cellWidth;
@@ -1838,6 +1855,25 @@ public class Terminal : Control, IImeSupport
         return new Point(
             border.Left + padding.Left + localX,
             border.Top + padding.Top + localY);
+    }
+
+    /// <inheritdoc />
+    public Rect GetImeCaretRectangle()
+    {
+        Point topLeft = GetImeCaretPosition();
+        return new Rect(topLeft.X, topLeft.Y, Math.Max(1, _cellWidth), Math.Max(1, _cellHeight));
+    }
+
+    private void NotifyLinuxImeContextChanged()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is Window window)
+            {
+                window.RefreshLinuxImeContext();
+                break;
+            }
+        }
     }
 
     /// <inheritdoc />

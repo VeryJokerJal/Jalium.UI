@@ -2,7 +2,7 @@ using System.Runtime.InteropServices;
 using Jalium.UI.Core.Platform;
 using Jalium.UI.Threading;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Media;
 
 /// <summary>
 /// Provides rendering timing information and a centralized frame timer
@@ -14,7 +14,7 @@ namespace Jalium.UI;
 /// animation ticks happen in the same Dispatcher batch, so only ONE
 /// render pass occurs per frame �?critical for integrated GPU performance.
 /// </summary>
-public static partial class CompositionTarget
+public abstract partial class CompositionTarget
 {
     private static volatile int _refreshRate = 60;
     private static Timer? _frameTimer;
@@ -84,7 +84,7 @@ public static partial class CompositionTarget
     /// When active, rendering is driven by the frame timer �?external callers
     /// (mouse drag, property changes) should not schedule extra renders.
     /// </summary>
-    public static bool IsActive => Volatile.Read(ref _subscriberCount) > 0;
+    internal static bool IsActive => Volatile.Read(ref _subscriberCount) > 0;
 
     /// <summary>
     /// Gets whether we are currently inside the Rendering event invocation.
@@ -96,13 +96,13 @@ public static partial class CompositionTarget
     /// <summary>
     /// Gets the detected monitor refresh rate in Hz (e.g., 60, 120, 144).
     /// </summary>
-    public static int RefreshRate => _refreshRate;
+    internal static int RefreshRate => _refreshRate;
 
     /// <summary>
     /// Gets the detected monitor refresh rate as the nominal target frame rate.
     /// The animation loop is uncapped �?actual FPS is determined by rendering speed.
     /// </summary>
-    public static int TargetFrameRate => _refreshRate;
+    internal static int TargetFrameRate => _refreshRate;
 
     /// <summary>
     /// Gets the frame interval in milliseconds for the animation frame loop, capped
@@ -122,19 +122,19 @@ public static partial class CompositionTarget
     /// refresh interval (e.g. 60 Hz → 16 ms, 165 Hz → 6 ms; 60 Hz fallback when unknown).
     /// </para>
     /// </summary>
-    public static int FrameIntervalMs => _refreshRate > 0 ? Math.Max(1, 1000 / _refreshRate) : 16;
+    internal static int FrameIntervalMs => _refreshRate > 0 ? Math.Max(1, 1000 / _refreshRate) : 16;
 
     /// <summary>
     /// Gets the frame interval as a TimeSpan.
     /// </summary>
-    public static TimeSpan FrameInterval => TimeSpan.FromMilliseconds(FrameIntervalMs);
+    internal static TimeSpan FrameInterval => TimeSpan.FromMilliseconds(FrameIntervalMs);
 
     /// <summary>
     /// Subscribes to the frame timer. The backing System.Threading.Timer is
     /// created on the first subscriber and disposed when the last one leaves.
     /// Call <see cref="Unsubscribe"/> to balance.
     /// </summary>
-    public static void Subscribe()
+    internal static void Subscribe()
     {
         lock (_timerLock)
         {
@@ -150,7 +150,7 @@ public static partial class CompositionTarget
     /// Unsubscribes from the frame timer. When the last subscriber leaves,
     /// the backing timer is disposed so there is zero overhead when idle.
     /// </summary>
-    public static void Unsubscribe()
+    internal static void Unsubscribe()
     {
         lock (_timerLock)
         {
@@ -208,7 +208,7 @@ public static partial class CompositionTarget
     /// dispatcher. Cheap and lock-free on the hot path (only pokes the loop on the
     /// parked→active edge); safe to call from any thread.
     /// </summary>
-    public static void RequestFrame()
+    internal static void RequestFrame()
     {
         long now = Environment.TickCount64;
         long previousDeadline = Interlocked.Exchange(ref _keepAliveUntilTick, now + KeepAliveMs);
@@ -525,7 +525,7 @@ public static partial class CompositionTarget
             return;
         }
 
-        var dispatcher = Dispatcher.MainDispatcher;
+        var dispatcher = Jalium.UI.Threading.Dispatcher.MainDispatcher;
         if (dispatcher != null)
         {
             try

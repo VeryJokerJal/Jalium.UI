@@ -1,5 +1,7 @@
 using Jalium.UI;
 
+using Jalium.UI.Threading;
+
 namespace Jalium.UI.Input;
 
 /// <summary>
@@ -83,12 +85,16 @@ public delegate void InputMethodStateChangedEventHandler(object sender, InputMet
 /// <summary>
 /// Manages input language for the application.
 /// </summary>
-public sealed class InputLanguageManager
+public sealed class InputLanguageManager : DispatcherObject
 {
     private static readonly InputLanguageManager _current = new();
     private IInputLanguageSource? _source;
     private System.Globalization.CultureInfo _currentInputLanguage =
         System.Globalization.CultureInfo.CurrentCulture;
+
+    private InputLanguageManager()
+    {
+    }
 
     public static InputLanguageManager Current => _current;
 

@@ -1241,6 +1241,10 @@ public:
 class VideoSurface {
 public:
     virtual ~VideoSurface() = default;
+    /// Releases the caller-owned reference. Most surfaces are exclusively
+    /// owned and delete immediately; externally imported surfaces may retain
+    /// themselves until render-fence references have completed.
+    virtual void Release() { delete this; }
     virtual uint32_t GetWidth()  const = 0;
     virtual uint32_t GetHeight() const = 0;
     virtual JaliumVideoSurfaceKind GetKind() const = 0;

@@ -13,7 +13,7 @@ internal sealed class MinimapRenderer
     private const double MinimapLineHeight = 2;
     private const double MinimapCharWidth = 1.2;
     private const double MinViewportHeight = 4;
-    private static readonly BlurEffect s_trackBackdropBlurEffect = new(10f);
+    private static readonly BackdropBlurEffect s_trackBackdropBlurEffect = new(10f);
 
     /// <summary>
     /// Gets the width of the minimap.

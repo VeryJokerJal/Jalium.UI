@@ -240,6 +240,26 @@ public abstract class Freezable : DependencyObject
     }
 
     /// <summary>
+    /// Internal bridge used by generated/compatibility dependency-property callbacks without
+    /// adding helper interfaces or protected members to the public Freezable-derived API shape.
+    /// </summary>
+    internal void NotifyFreezablePropertyChanged(
+        DependencyPropertyChangedEventArgs e,
+        DependencyProperty? property = null)
+    {
+        if (property is null)
+        {
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject);
+        }
+        else
+        {
+            OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject, property);
+        }
+
+        WritePostscript();
+    }
+
+    /// <summary>
     /// Verifies that the current thread may read this instance unless it is frozen.
     /// </summary>
     protected void ReadPreamble()

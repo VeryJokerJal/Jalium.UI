@@ -1,4 +1,6 @@
 using Jalium.UI.Media;
+using BitmapSource = Jalium.UI.Media.Imaging.BitmapSource;
+using BitmapImage = Jalium.UI.Media.Imaging.BitmapImage;
 
 namespace Jalium.UI.Notifications;
 

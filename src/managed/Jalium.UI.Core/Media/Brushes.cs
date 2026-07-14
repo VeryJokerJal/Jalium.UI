@@ -3,8 +3,12 @@ namespace Jalium.UI.Media;
 /// <summary>
 /// Contains static predefined SolidColorBrush objects for all standard named colors.
 /// </summary>
-public static class Brushes
+public sealed class Brushes
 {
+    private Brushes()
+    {
+    }
+
     private static SolidColorBrush? _aliceBlue;
     private static SolidColorBrush? _antiqueWhite;
     private static SolidColorBrush? _aqua;

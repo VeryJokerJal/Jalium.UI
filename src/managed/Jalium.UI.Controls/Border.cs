@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Input;
+using Jalium.UI.Input;
 using Jalium.UI.Documents;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -11,7 +11,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Draws a border, background, or both around another element.
 /// </summary>
-[ContentProperty("Child")]
+[Jalium.UI.Markup.ContentProperty("Child")]
 public class Border : Decorator
 {
     private const float DefaultGlassTintChannel = 0.08f;
@@ -330,15 +330,6 @@ public class Border : Decorator
     {
         get => (double)GetValue(SuperEllipseNProperty)!;
         set => SetValue(SuperEllipseNProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the child element.
-    /// </summary>
-    public override UIElement? Child
-    {
-        get => base.Child;
-        set => base.Child = value;
     }
 
     #endregion

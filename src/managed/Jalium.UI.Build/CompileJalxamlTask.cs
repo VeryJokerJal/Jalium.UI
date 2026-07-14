@@ -785,7 +785,7 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
     {
         { "Application", "Jalium.UI.Controls.Application" },
         { "Page", "Jalium.UI.Controls.Page" },
-        { "Window", "Jalium.UI.Controls.Window" },
+        { "Window", "Jalium.UI.Window" },
         { "Button", "Jalium.UI.Controls.Button" },
         { "TextBlock", "Jalium.UI.Controls.TextBlock" },
         { "TextBox", "Jalium.UI.Controls.TextBox" },

@@ -51,6 +51,61 @@ inline std::wstring ManagedToWString(const void* utf16_ptr, uint32_t len) {
     return result;
 }
 
+// Hit-testing APIs expose indices back to managed code. The public ABI uses
+// UTF-16 offsets while std::wstring uses UTF-32 offsets on Linux/Android, so
+// those indices must be translated in both directions around the backend call.
+// An offset in the middle of a surrogate pair maps to that scalar's leading
+// edge; valid caret offsets before and after the pair round-trip exactly.
+inline uint32_t ManagedUtf16IndexToWStringIndex(
+    const void* utf16_ptr,
+    uint32_t len,
+    uint32_t utf16_index) {
+    if (!utf16_ptr) return 0;
+    const uint16_t* s = reinterpret_cast<const uint16_t*>(utf16_ptr);
+    const uint32_t target = utf16_index < len ? utf16_index : len;
+    uint32_t utf16 = 0;
+    uint32_t wide = 0;
+    while (utf16 < target) {
+        const uint16_t ch = s[utf16];
+        if (ch >= 0xD800 && ch <= 0xDBFF && utf16 + 1 < len) {
+            const uint16_t lo = s[utf16 + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                if (utf16 + 1 >= target) break;
+                utf16 += 2;
+                ++wide;
+                continue;
+            }
+        }
+        ++utf16;
+        ++wide;
+    }
+    return wide;
+}
+
+inline uint32_t ManagedWStringIndexToUtf16Index(
+    const void* utf16_ptr,
+    uint32_t len,
+    uint32_t wide_index) {
+    if (!utf16_ptr) return 0;
+    const uint16_t* s = reinterpret_cast<const uint16_t*>(utf16_ptr);
+    uint32_t utf16 = 0;
+    uint32_t wide = 0;
+    while (utf16 < len && wide < wide_index) {
+        const uint16_t ch = s[utf16];
+        if (ch >= 0xD800 && ch <= 0xDBFF && utf16 + 1 < len) {
+            const uint16_t lo = s[utf16 + 1];
+            if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                utf16 += 2;
+                ++wide;
+                continue;
+            }
+        }
+        ++utf16;
+        ++wide;
+    }
+    return utf16;
+}
+
 // Convenience for null-terminated strings
 inline std::wstring ManagedToWString(const void* utf16_ptr) {
     if (!utf16_ptr) return {};

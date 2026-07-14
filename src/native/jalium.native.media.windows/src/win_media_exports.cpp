@@ -6,6 +6,8 @@
 #include "win_mf_video_decoder.h"
 #include "win_mf_camera_source.h"
 
+#include <cstring>
+
 extern "C" {
 
 // ----- Lifecycle ---------------------------------------------------------
@@ -134,7 +136,47 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_acquire_gpu_surface_
     jalium_video_decoder_t*                decoder,
     jalium_video_decoder_gpu_descriptor_t* out_descriptor)
 {
+    if (!decoder || !out_descriptor) return JALIUM_MEDIA_E_INVALID_ARG;
+    std::memset(out_descriptor, 0, sizeof(*out_descriptor));
+    for (auto& plane : out_descriptor->planes) plane.fd = -1;
+    out_descriptor->acquire_fence_fd = -1;
     return jalium::media::win::MfVideoDecoderAcquireGpuDescriptor(decoder, out_descriptor);
+}
+
+JALIUM_MEDIA_API jalium_media_status_t
+jalium_video_decoder_read_gpu_frame_descriptor(
+    jalium_video_decoder_t* decoder,
+    jalium_video_decoder_gpu_descriptor_t* out_descriptor,
+    int64_t* out_pts_microseconds,
+    int32_t* out_is_keyframe)
+{
+    if (!decoder || !out_descriptor || !out_pts_microseconds ||
+        !out_is_keyframe) {
+        return JALIUM_MEDIA_E_INVALID_ARG;
+    }
+    std::memset(out_descriptor, 0, sizeof(*out_descriptor));
+    for (auto& plane : out_descriptor->planes) plane.fd = -1;
+    out_descriptor->acquire_fence_fd = -1;
+    *out_pts_microseconds = 0;
+    *out_is_keyframe = 0;
+    return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+}
+
+JALIUM_MEDIA_API void
+jalium_video_decoder_release_gpu_surface_descriptor(
+    jalium_video_decoder_gpu_descriptor_t* descriptor)
+{
+    if (!descriptor) return;
+    std::memset(descriptor, 0, sizeof(*descriptor));
+    for (auto& plane : descriptor->planes) plane.fd = -1;
+    descriptor->acquire_fence_fd = -1;
+}
+
+JALIUM_MEDIA_API jalium_media_status_t
+jalium_video_decoder_disable_gpu_output(jalium_video_decoder_t* decoder)
+{
+    return decoder ? JALIUM_MEDIA_E_NOT_IMPLEMENTED
+                   : JALIUM_MEDIA_E_INVALID_ARG;
 }
 
 // ----- Camera capture ----------------------------------------------------

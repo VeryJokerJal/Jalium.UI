@@ -4,6 +4,8 @@ using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Effects;
+using System.Collections.Specialized;
+using System.Threading;
 
 namespace Jalium.UI;
 
@@ -596,7 +598,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// Identifies the IsPressed dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsPressedProperty = IsPressedPropertyKey.DependencyProperty;
+    internal static readonly DependencyProperty IsPressedProperty = IsPressedPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the IsFocused read-only dependency property key.
@@ -714,7 +716,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
     /// <summary>
     /// Gets or sets the backdrop effect.
-    /// Use implementations like BlurEffect, AcrylicEffect, MicaEffect, etc.
+    /// Use implementations like BackdropBlurEffect, AcrylicEffect, MicaEffect, etc.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public IBackdropEffect? BackdropEffect
@@ -854,7 +856,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// Gets a value indicating whether this element is currently pressed.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsPressed => (bool)GetValue(IsPressedProperty)!;
+    internal bool IsPressed => (bool)GetValue(IsPressedProperty)!;
 
     /// <summary>
     /// Sets the IsPressed property value. Called internally by input state tracking.
@@ -2305,7 +2307,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// <summary>
     /// Called when the IsPressed property changes.
     /// </summary>
-    protected virtual void OnIsPressedChanged(bool oldValue, bool newValue)
+    internal virtual void OnIsPressedChanged(bool oldValue, bool newValue)
     {
         InvalidateVisual();
     }
@@ -4466,7 +4468,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         _ = BeginAnimationCore(
             dp,
             animation,
-            (HandoffBehavior)(int)handoffBehavior,
+            handoffBehavior,
             ElementAnimationKind.Explicit,
             clearAnimatedValueOnReplace: true,
             allowAutomaticToReplaceExplicit: true,
@@ -4494,7 +4496,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         _ = BeginAnimationCore(
             dp,
             animation,
-            (HandoffBehavior)(int)handoffBehavior,
+            handoffBehavior,
             ElementAnimationKind.Explicit,
             clearAnimatedValueOnReplace: true,
             allowAutomaticToReplaceExplicit: true);
@@ -4505,9 +4507,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </summary>
     /// <param name="dp">The dependency property to animate.</param>
     /// <param name="animation">The animation timeline, or null to stop any existing animation.</param>
-    public void BeginAnimation(DependencyProperty dp, IAnimationTimeline? animation)
+    internal void BeginAnimation(DependencyProperty dp, IAnimationTimeline? animation)
     {
-        BeginAnimation(dp, animation, HandoffBehavior.SnapshotAndReplace);
+        BeginAnimation(dp, animation, Media.Animation.HandoffBehavior.SnapshotAndReplace);
     }
 
     /// <summary>
@@ -4516,10 +4518,13 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// <param name="dp">The dependency property to animate.</param>
     /// <param name="animation">The animation timeline, or null to stop any existing animation.</param>
     /// <param name="handoffBehavior">How to handle existing animations. With
-    /// <see cref="HandoffBehavior.SnapshotAndReplace"/> the currently displayed value is
+    /// <see cref="Media.Animation.HandoffBehavior.SnapshotAndReplace"/> the currently displayed value is
     /// captured at the replacement instant and used as the new animation's origin;
-    /// <see cref="HandoffBehavior.Compose"/> currently degrades to the same behavior.</param>
-    public void BeginAnimation(DependencyProperty dp, IAnimationTimeline? animation, HandoffBehavior handoffBehavior)
+    /// <see cref="Media.Animation.HandoffBehavior.Compose"/> currently degrades to the same behavior.</param>
+    internal void BeginAnimation(
+        DependencyProperty dp,
+        IAnimationTimeline? animation,
+        Media.Animation.HandoffBehavior handoffBehavior)
     {
         ArgumentNullException.ThrowIfNull(dp);
         _ = BeginAnimationCore(
@@ -4534,7 +4539,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     private bool BeginAnimationCore(
         DependencyProperty dp,
         IAnimationTimeline? animation,
-        HandoffBehavior handoffBehavior,
+        Media.Animation.HandoffBehavior handoffBehavior,
         ElementAnimationKind kind,
         bool clearAnimatedValueOnReplace,
         bool allowAutomaticToReplaceExplicit,
@@ -4567,8 +4572,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             // new animation from the base value — a visible jump when the old
             // animation was mid-flight with FillBehavior.Stop.
             if (animation != null &&
-                (handoffBehavior == HandoffBehavior.SnapshotAndReplace ||
-                 handoffBehavior == HandoffBehavior.Compose))
+                (handoffBehavior == Media.Animation.HandoffBehavior.SnapshotAndReplace ||
+                 handoffBehavior == Media.Animation.HandoffBehavior.Compose))
             {
                 // Capture the currently displayed value BEFORE the old animation
                 // is removed — the animated layer is still in effect here.
@@ -4656,7 +4661,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         return BeginAnimationCore(
             dp,
             animation,
-            (HandoffBehavior)(int)handoffBehavior,
+            handoffBehavior,
             ElementAnimationKind.Storyboard,
             clearAnimatedValueOnReplace: true,
             allowAutomaticToReplaceExplicit: true,
@@ -5103,10 +5108,1310 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         {
             if (current._automationPeer != null)
             {
+                // GetChildren() is cached on the peer.  A visual change may be
+                // below one or more elements that do not expose peers, in which
+                // case this ancestor's flattened accessibility children still
+                // change.  Invalidate before notifying the platform bridge so
+                // it can compare the new tree with its previously cached view.
+                current._automationPeer.ResetChildrenCache();
                 current._automationPeer.RaiseAutomationEvent(Automation.Peers.AutomationEvents.StructureChanged);
                 break;
             }
             current = current.VisualParent as UIElement;
+        }
+    }
+
+    #endregion
+
+    #region ManipulationWpfParity
+
+    protected virtual void OnManipulationStarting(ManipulationStartingEventArgs e)
+    {
+    }
+
+    protected virtual void OnManipulationStarted(ManipulationStartedEventArgs e)
+    {
+    }
+
+    protected virtual void OnManipulationDelta(ManipulationDeltaEventArgs e)
+    {
+    }
+
+    protected virtual void OnManipulationInertiaStarting(ManipulationInertiaStartingEventArgs e)
+    {
+    }
+
+    protected virtual void OnManipulationBoundaryFeedback(ManipulationBoundaryFeedbackEventArgs e)
+    {
+    }
+
+    protected virtual void OnManipulationCompleted(ManipulationCompletedEventArgs e)
+    {
+    }
+
+    #endregion
+
+    #region StylusWpfParity
+
+    public static readonly RoutedEvent GotStylusCaptureEvent =
+        Stylus.GotStylusCaptureEvent.AddOwner(typeof(UIElement));
+
+    public static readonly RoutedEvent LostStylusCaptureEvent =
+        Stylus.LostStylusCaptureEvent.AddOwner(typeof(UIElement));
+
+    public static readonly RoutedEvent PreviewStylusButtonDownEvent =
+        Stylus.PreviewStylusButtonDownEvent.AddOwner(typeof(UIElement));
+
+    public static readonly RoutedEvent PreviewStylusButtonUpEvent =
+        Stylus.PreviewStylusButtonUpEvent.AddOwner(typeof(UIElement));
+
+    public static readonly RoutedEvent PreviewStylusInAirMoveEvent =
+        Stylus.PreviewStylusInAirMoveEvent.AddOwner(typeof(UIElement));
+
+    public static readonly RoutedEvent PreviewStylusInRangeEvent =
+        Stylus.PreviewStylusInRangeEvent.AddOwner(typeof(UIElement));
+
+    public static readonly RoutedEvent PreviewStylusOutOfRangeEvent =
+        Stylus.PreviewStylusOutOfRangeEvent.AddOwner(typeof(UIElement));
+
+    public static readonly RoutedEvent PreviewStylusSystemGestureEvent =
+        Stylus.PreviewStylusSystemGestureEvent.AddOwner(typeof(UIElement));
+
+    public event StylusEventHandler GotStylusCapture
+    {
+        add => AddHandler(GotStylusCaptureEvent, value);
+        remove => RemoveHandler(GotStylusCaptureEvent, value);
+    }
+
+    public event StylusEventHandler LostStylusCapture
+    {
+        add => AddHandler(LostStylusCaptureEvent, value);
+        remove => RemoveHandler(LostStylusCaptureEvent, value);
+    }
+
+    public event StylusButtonEventHandler PreviewStylusButtonDown
+    {
+        add => AddHandler(PreviewStylusButtonDownEvent, value);
+        remove => RemoveHandler(PreviewStylusButtonDownEvent, value);
+    }
+
+    public event StylusButtonEventHandler PreviewStylusButtonUp
+    {
+        add => AddHandler(PreviewStylusButtonUpEvent, value);
+        remove => RemoveHandler(PreviewStylusButtonUpEvent, value);
+    }
+
+    public event StylusEventHandler PreviewStylusInAirMove
+    {
+        add => AddHandler(PreviewStylusInAirMoveEvent, value);
+        remove => RemoveHandler(PreviewStylusInAirMoveEvent, value);
+    }
+
+    public event StylusEventHandler PreviewStylusInRange
+    {
+        add => AddHandler(PreviewStylusInRangeEvent, value);
+        remove => RemoveHandler(PreviewStylusInRangeEvent, value);
+    }
+
+    public event StylusEventHandler PreviewStylusOutOfRange
+    {
+        add => AddHandler(PreviewStylusOutOfRangeEvent, value);
+        remove => RemoveHandler(PreviewStylusOutOfRangeEvent, value);
+    }
+
+    public event StylusSystemGestureEventHandler PreviewStylusSystemGesture
+    {
+        add => AddHandler(PreviewStylusSystemGestureEvent, value);
+        remove => RemoveHandler(PreviewStylusSystemGestureEvent, value);
+    }
+
+    protected virtual void OnGotStylusCapture(StylusEventArgs e)
+    {
+    }
+
+    protected virtual void OnLostStylusCapture(StylusEventArgs e)
+    {
+    }
+
+    protected virtual void OnPreviewStylusButtonDown(StylusButtonEventArgs e)
+    {
+    }
+
+    protected virtual void OnPreviewStylusButtonUp(StylusButtonEventArgs e)
+    {
+    }
+
+    protected virtual void OnPreviewStylusInAirMove(StylusEventArgs e)
+    {
+    }
+
+    protected virtual void OnPreviewStylusInRange(StylusEventArgs e)
+    {
+    }
+
+    protected virtual void OnPreviewStylusOutOfRange(StylusEventArgs e)
+    {
+    }
+
+    protected virtual void OnPreviewStylusSystemGesture(StylusSystemGestureEventArgs e)
+    {
+    }
+
+    #endregion
+
+    #region Touch
+
+    // ─────────────────────────────────────────────────────────────
+    //  Touch capture & over tracking.
+    //  Multiple touch contacts can exist simultaneously. Each contact is
+    //  tracked per-pointer-id rather than as a single static slot like the
+    //  mouse, so a static dictionary keyed by id holds capture and each
+    //  UIElement holds three lazily-allocated TouchDevice lists for the
+    //  contacts it currently owns or covers.
+    // ─────────────────────────────────────────────────────────────
+
+    private readonly struct CaptureRecord
+    {
+        public CaptureRecord(UIElement element, TouchDevice device) { Element = element; Device = device; }
+        public UIElement Element { get; }
+        public TouchDevice Device { get; }
+    }
+
+    private static readonly Dictionary<int, CaptureRecord> s_touchCaptures = new();
+
+    private List<TouchDevice>? _touchesOver;
+    private List<TouchDevice>? _touchesDirectlyOver;
+    private List<TouchDevice>? _touchesCaptured;
+
+    // ── CLR event wrappers ──
+
+    /// <summary>Occurs when a touch contact enters the bounds of this element.</summary>
+    public event TouchEventHandler TouchEnter
+    {
+        add => AddHandler(TouchEnterEvent, value);
+        remove => RemoveHandler(TouchEnterEvent, value);
+    }
+
+    /// <summary>Occurs when a touch contact leaves the bounds of this element.</summary>
+    public event TouchEventHandler TouchLeave
+    {
+        add => AddHandler(TouchLeaveEvent, value);
+        remove => RemoveHandler(TouchLeaveEvent, value);
+    }
+
+    /// <summary>Occurs when this element acquires capture of a touch contact.</summary>
+    public event TouchEventHandler GotTouchCapture
+    {
+        add => AddHandler(GotTouchCaptureEvent, value);
+        remove => RemoveHandler(GotTouchCaptureEvent, value);
+    }
+
+    /// <summary>Occurs when a captured touch contact is released from this element.</summary>
+    public event TouchEventHandler LostTouchCapture
+    {
+        add => AddHandler(LostTouchCaptureEvent, value);
+        remove => RemoveHandler(LostTouchCaptureEvent, value);
+    }
+
+    // ── Public capture/query API ──
+
+    /// <summary>Gets the touch contacts captured to this element.</summary>
+    public IEnumerable<TouchDevice> TouchesCaptured => _touchesCaptured ?? Enumerable.Empty<TouchDevice>();
+
+    /// <summary>Gets the touch contacts whose primary hit target is this element.</summary>
+    public IEnumerable<TouchDevice> TouchesDirectlyOver => _touchesDirectlyOver ?? Enumerable.Empty<TouchDevice>();
+
+    /// <summary>Gets the touch contacts currently over this element or any of its descendants.</summary>
+    public IEnumerable<TouchDevice> TouchesOver => _touchesOver ?? Enumerable.Empty<TouchDevice>();
+
+    /// <summary>Gets the touch contacts captured to this element or any of its descendants.</summary>
+    public IEnumerable<TouchDevice> TouchesCapturedWithin
+    {
+        get
+        {
+            foreach (var pair in s_touchCaptures)
+            {
+                if (IsSelfOrDescendant(pair.Value.Element, this))
+                    yield return pair.Value.Device;
+            }
+        }
+    }
+
+    /// <summary>True if any touch contact is captured to this element.</summary>
+    public bool AreAnyTouchesCaptured => _touchesCaptured is { Count: > 0 };
+
+    /// <summary>True if any touch contact is captured to this element or any of its descendants.</summary>
+    public bool AreAnyTouchesCapturedWithin
+    {
+        get
+        {
+            foreach (var pair in s_touchCaptures)
+            {
+                if (IsSelfOrDescendant(pair.Value.Element, this))
+                    return true;
+            }
+            return false;
+        }
+    }
+
+    /// <summary>True if any touch contact is directly over this element.</summary>
+    public bool AreAnyTouchesDirectlyOver => _touchesDirectlyOver is { Count: > 0 };
+
+    /// <summary>True if any touch contact is over this element or any of its descendants.</summary>
+    public bool AreAnyTouchesOver
+    {
+        get
+        {
+            if (_touchesOver is { Count: > 0 })
+            {
+                return true;
+            }
+
+            for (var index = 0; index < VisualChildrenCount; index++)
+            {
+                if (GetVisualChild(index) is UIElement child && child.AreAnyTouchesOver)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Captures the specified touch contact to this element. Any prior capture for that
+    /// contact is released, raising a paired LostTouchCapture / GotTouchCapture.
+    /// </summary>
+    public bool CaptureTouch(TouchDevice touchDevice)
+    {
+        ArgumentNullException.ThrowIfNull(touchDevice);
+        if (!IsEnabled || Visibility != Visibility.Visible)
+            return false;
+
+        if (s_touchCaptures.TryGetValue(touchDevice.Id, out var previous))
+        {
+            if (ReferenceEquals(previous.Element, this))
+                return true;
+            previous.Element.RemoveCapturedTouchInternal(touchDevice);
+        }
+
+        s_touchCaptures[touchDevice.Id] = new CaptureRecord(this, touchDevice);
+        AddCapturedTouchInternal(touchDevice);
+        touchDevice.Capture(this);
+        return true;
+    }
+
+    /// <summary>Releases a previously captured touch contact from this element.</summary>
+    public bool ReleaseTouchCapture(TouchDevice touchDevice)
+    {
+        ArgumentNullException.ThrowIfNull(touchDevice);
+        if (!s_touchCaptures.TryGetValue(touchDevice.Id, out var record) || !ReferenceEquals(record.Element, this))
+            return false;
+        s_touchCaptures.Remove(touchDevice.Id);
+        RemoveCapturedTouchInternal(touchDevice);
+        touchDevice.Capture(null);
+        return true;
+    }
+
+    /// <summary>Releases all touch contacts captured by this element.</summary>
+    public void ReleaseAllTouchCaptures()
+    {
+        if (_touchesCaptured == null || _touchesCaptured.Count == 0)
+            return;
+        // Snapshot to allow mutation while raising events.
+        var devices = _touchesCaptured.ToArray();
+        foreach (var device in devices)
+        {
+            ReleaseTouchCapture(device);
+        }
+    }
+
+    /// <summary>Returns the element that has captured the specified touch contact, or null.</summary>
+    public static UIElement? GetTouchCapture(int touchId)
+    {
+        return s_touchCaptures.TryGetValue(touchId, out var record) ? record.Element : null;
+    }
+
+    /// <summary>Forces release of all touch captures. Invoked on window deactivation / capture loss.</summary>
+    internal static void ForceReleaseAllTouchCaptures()
+    {
+        if (s_touchCaptures.Count == 0) return;
+        var snapshot = s_touchCaptures.ToArray();
+        s_touchCaptures.Clear();
+        foreach (var pair in snapshot)
+        {
+            CaptureRecord record = pair.Value;
+            record.Element.RemoveCapturedTouchInternal(record.Device);
+            record.Device.Capture(null);
+        }
+    }
+
+    // ── Internal hooks used by the input dispatcher ──
+
+    internal void AddCapturedTouchInternal(TouchDevice device)
+    {
+        (_touchesCaptured ??= new List<TouchDevice>(1)).Add(device);
+        UpdateTouchDependencyState();
+    }
+
+    internal void RemoveCapturedTouchInternal(TouchDevice device)
+    {
+        _touchesCaptured?.Remove(device);
+        UpdateTouchDependencyState();
+    }
+
+    internal void AddDirectlyOverTouchInternal(TouchDevice device)
+    {
+        (_touchesDirectlyOver ??= new List<TouchDevice>(1)).Add(device);
+        UpdateTouchDependencyState();
+    }
+
+    internal void RemoveDirectlyOverTouchInternal(TouchDevice device)
+    {
+        _touchesDirectlyOver?.Remove(device);
+        UpdateTouchDependencyState();
+    }
+
+    internal void AddOverTouchInternal(TouchDevice device)
+    {
+        (_touchesOver ??= new List<TouchDevice>(1)).Add(device);
+        UpdateTouchDependencyState();
+    }
+
+    internal void RemoveOverTouchInternal(TouchDevice device)
+    {
+        _touchesOver?.Remove(device);
+        UpdateTouchDependencyState();
+    }
+
+    internal void RaiseGotTouchCapture(TouchDevice device)
+    {
+        var args = new TouchEventArgs(device, Environment.TickCount) { RoutedEvent = GotTouchCaptureEvent };
+        RaiseEvent(args);
+    }
+
+    internal void RaiseLostTouchCapture(TouchDevice device)
+    {
+        var args = new TouchEventArgs(device, Environment.TickCount) { RoutedEvent = LostTouchCaptureEvent };
+        RaiseEvent(args);
+    }
+
+    private static bool IsSelfOrDescendant(UIElement candidate, UIElement reference)
+    {
+        Visual? current = candidate;
+        while (current != null)
+        {
+            if (ReferenceEquals(current, reference)) return true;
+            current = current.VisualParent;
+        }
+        return false;
+    }
+
+    #endregion
+
+    #region Transitions
+
+    private const string TransitionAllValue = "All";
+    private const string TransitionNoneValue = "None";
+    private const string DefaultTransitionPropertyValue = TransitionNoneValue;
+    private static readonly TimeSpan s_defaultTransitionDuration = TimeSpan.FromMilliseconds(180);
+
+    private Dictionary<string, bool>? _transitionPropertyLookup;
+    private string? _transitionPropertyLookupSource;
+    private TransitionPropertyCollection? _transitionPropertyCollectionSubscription;
+    private bool _transitionAllProperties;
+    private bool _transitionNoProperties;
+    private int _transitionArmVersion;
+    private bool _automaticTransitionsArmed;
+
+    internal static Func<DependencyProperty, object?, object?, TimeSpan, TransitionTimingFunction, IAnimationTimeline?>? AutomaticTransitionAnimationFactory { get; set; }
+
+    /// <summary>
+    /// Identifies the TransitionProperty dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty TransitionPropertyProperty =
+        DependencyProperty.Register(nameof(TransitionProperty), typeof(TransitionPropertyCollection), typeof(UIElement),
+            new PropertyMetadata(DefaultTransitionPropertyValue, OnTransitionConfigurationChanged));
+
+    /// <summary>
+    /// Identifies the TransitionDuration dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty TransitionDurationProperty =
+        DependencyProperty.Register(nameof(TransitionDuration), typeof(Duration), typeof(UIElement),
+            new PropertyMetadata(new Duration(s_defaultTransitionDuration), OnTransitionConfigurationChanged));
+
+    /// <summary>
+    /// Identifies the TransitionTimingFunction dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty TransitionTimingFunctionProperty =
+        DependencyProperty.Register(nameof(TransitionTimingFunction), typeof(TransitionTimingFunction), typeof(UIElement),
+            new PropertyMetadata(TransitionTimingFunction.Recommended, OnTransitionConfigurationChanged));
+
+    /// <summary>
+    /// Gets or sets the collection of properties that should participate in automatic transitions.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public TransitionPropertyCollection TransitionProperty
+    {
+        get => TransitionPropertyCollection.FromRawValue(GetValue(TransitionPropertyProperty));
+        set => SetValue(TransitionPropertyProperty, value ?? TransitionPropertyCollection.None());
+    }
+
+    /// <summary>
+    /// Gets or sets the duration used by automatic property transitions.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public Duration TransitionDuration
+    {
+        get => GetValue(TransitionDurationProperty) is Duration duration
+            ? duration
+            : new Duration(s_defaultTransitionDuration);
+        set => SetValue(TransitionDurationProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the timing function used by automatic property transitions.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public TransitionTimingFunction TransitionTimingFunction
+    {
+        get => GetValue(TransitionTimingFunctionProperty) is TransitionTimingFunction timingFunction
+            ? timingFunction
+            : TransitionTimingFunction.Recommended;
+        set => SetValue(TransitionTimingFunctionProperty, value);
+    }
+
+    /// <summary>
+    /// Allows derived controls to suppress automatic transitions for specific properties.
+    /// </summary>
+    /// <param name="dp">The property being mutated.</param>
+    /// <returns><see langword="true"/> to bypass automatic transition handling for the property.</returns>
+    protected virtual bool ShouldSuppressAutomaticTransition(DependencyProperty dp)
+    {
+        return false;
+    }
+
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        base.OnVisualParentChanged(oldParent);
+    }
+
+    /// <summary>
+    /// Provides the WPF-compatible dependency-object parent-change hook while the
+    /// lower visual layer retains its strongly typed compatibility overload.
+    /// </summary>
+    protected internal override void OnVisualParentChanged(DependencyObject? oldParent)
+    {
+        UpdateIsVisibleFromTree();
+
+        if (VisualParent != null)
+        {
+            ScheduleAutomaticTransitionArmRecursive(this);
+        }
+        else if (oldParent != null)
+        {
+            DisarmAutomaticTransitionsRecursive(this);
+
+            // Deferred, cancellable stop: if the subtree is still detached at the
+            // next frame its animations are stopped for good; a re-attach in the
+            // meantime (Popup/ComboBox moving content between trees within one
+            // dispatcher batch) cancels the pending check and nothing stops.
+            Animation.AnimationManager.NotifyDetached(this);
+        }
+    }
+
+    internal bool ShouldAutomaticallyTransition(DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+
+        if (!_automaticTransitionsArmed)
+            return false;
+
+        if (GetAutomaticTransitionAnimationFactory() == null)
+            return false;
+
+        if (ReferenceEquals(dp, TransitionPropertyProperty) ||
+            ReferenceEquals(dp, TransitionDurationProperty) ||
+            ReferenceEquals(dp, TransitionTimingFunctionProperty))
+        {
+            return false;
+        }
+
+        if (ShouldSuppressAutomaticTransition(dp))
+            return false;
+
+        var duration = GetTransitionDurationOrDefault();
+        if (duration <= TimeSpan.Zero)
+            return false;
+
+        EnsureTransitionPropertyLookup();
+        if (_transitionNoProperties)
+            return false;
+
+        return _transitionAllProperties ||
+               (_transitionPropertyLookup?.ContainsKey(dp.Name) == true);
+    }
+
+    internal bool TryStartAutomaticTransition(DependencyProperty dp, object? fromValue, object? toValue)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+
+        var duration = GetTransitionDurationOrDefault();
+        if (duration <= TimeSpan.Zero)
+            return false;
+
+        var animationFactory = GetAutomaticTransitionAnimationFactory();
+        if (animationFactory == null)
+            return false;
+
+        var animation = animationFactory(
+            dp,
+            fromValue,
+            toValue,
+            duration,
+            TransitionTimingFunction);
+
+        if (animation == null)
+            return false;
+
+        return BeginAnimationCore(
+            dp,
+            animation,
+            Media.Animation.HandoffBehavior.SnapshotAndReplace,
+            ElementAnimationKind.AutomaticTransition,
+            clearAnimatedValueOnReplace: false,
+            allowAutomaticToReplaceExplicit: false,
+            initialAnimatedValue: fromValue,
+            useInitialAnimatedValue: true,
+            deferClockBeginUntilRendering: true);
+    }
+
+    internal void StopAutomaticTransition(DependencyProperty dp, bool clearAnimatedValue)
+    {
+        StopAnimationCore(dp, ElementAnimationKind.AutomaticTransition, clearAnimatedValue);
+    }
+
+    internal bool HasExplicitAnimation(DependencyProperty dp)
+    {
+        return TryGetActiveAnimation(dp, out var animation) &&
+               animation.Kind == ElementAnimationKind.Explicit;
+    }
+
+    internal bool HasAutomaticTransition(DependencyProperty dp)
+    {
+        return TryGetActiveAnimation(dp, out var animation) &&
+               animation.Kind == ElementAnimationKind.AutomaticTransition;
+    }
+
+    private static void OnTransitionConfigurationChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element)
+        {
+            if (ReferenceEquals(e.Property, TransitionPropertyProperty))
+            {
+                element.UpdateTransitionPropertyCollectionSubscription(e.OldValue, e.NewValue);
+                element.InvalidateTransitionPropertyLookup();
+            }
+        }
+    }
+
+    private TimeSpan GetTransitionDurationOrDefault()
+    {
+        var duration = TransitionDuration;
+        if (!duration.HasTimeSpan)
+            return TimeSpan.Zero;
+
+        return duration.TimeSpan;
+    }
+
+    private void EnsureTransitionPropertyLookup()
+    {
+        var raw = GetValue(TransitionPropertyProperty);
+        var cacheKey = TransitionPropertyCollection.GetCacheKey(raw);
+        if (cacheKey == _transitionPropertyLookupSource)
+            return;
+
+        _transitionPropertyLookupSource = cacheKey;
+        _transitionPropertyLookup = null;
+        _transitionAllProperties = false;
+        _transitionNoProperties = false;
+
+        if (raw is TransitionPropertyCollection collection)
+        {
+            ApplyTransitionPropertyCollectionLookup(collection);
+            return;
+        }
+
+        var rawText = raw as string;
+        if (string.IsNullOrWhiteSpace(rawText) ||
+            string.Equals(rawText, TransitionNoneValue, StringComparison.OrdinalIgnoreCase))
+        {
+            _transitionNoProperties = true;
+            return;
+        }
+
+        if (string.Equals(rawText, TransitionAllValue, StringComparison.OrdinalIgnoreCase))
+        {
+            _transitionAllProperties = true;
+            return;
+        }
+
+        var lookup = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in rawText.Split(','))
+        {
+            var trimmed = TransitionPropertyCollection.NormalizeName(name);
+            if (trimmed == null)
+                continue;
+
+            lookup[trimmed] = true;
+        }
+
+        _transitionPropertyLookup = lookup;
+        _transitionNoProperties = lookup.Count == 0;
+    }
+
+    private void InvalidateTransitionPropertyLookup()
+    {
+        _transitionPropertyLookupSource = null;
+        _transitionPropertyLookup = null;
+        _transitionAllProperties = false;
+        _transitionNoProperties = false;
+    }
+
+    private void ApplyTransitionPropertyCollectionLookup(TransitionPropertyCollection collection)
+    {
+        if (collection.IsNone)
+        {
+            _transitionNoProperties = true;
+            return;
+        }
+
+        if (collection.IsAll)
+        {
+            _transitionAllProperties = true;
+            return;
+        }
+
+        var lookup = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var propertyName in collection)
+        {
+            var normalized = TransitionPropertyCollection.NormalizeName(propertyName);
+            if (normalized == null)
+                continue;
+
+            lookup[normalized] = true;
+        }
+
+        _transitionPropertyLookup = lookup;
+        _transitionNoProperties = lookup.Count == 0;
+    }
+
+    private void UpdateTransitionPropertyCollectionSubscription(object? oldValue, object? newValue)
+    {
+        if (_transitionPropertyCollectionSubscription != null &&
+            ReferenceEquals(oldValue, _transitionPropertyCollectionSubscription))
+        {
+            _transitionPropertyCollectionSubscription.CollectionChanged -= OnTransitionPropertyCollectionChanged;
+            _transitionPropertyCollectionSubscription = null;
+        }
+
+        if (newValue is not TransitionPropertyCollection collection)
+            return;
+
+        collection.CollectionChanged -= OnTransitionPropertyCollectionChanged;
+        collection.CollectionChanged += OnTransitionPropertyCollectionChanged;
+        _transitionPropertyCollectionSubscription = collection;
+    }
+
+    private void OnTransitionPropertyCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        InvalidateTransitionPropertyLookup();
+    }
+
+    private void ScheduleAutomaticTransitionArmRecursive(UIElement root)
+    {
+        root.ScheduleAutomaticTransitionArm();
+
+        for (int i = 0; i < root.VisualChildrenCount; i++)
+        {
+            if (root.GetVisualChild(i) is UIElement child)
+            {
+                ScheduleAutomaticTransitionArmRecursive(child);
+            }
+        }
+    }
+
+    private void DisarmAutomaticTransitionsRecursive(UIElement root)
+    {
+        root.DisarmAutomaticTransitions();
+
+        for (int i = 0; i < root.VisualChildrenCount; i++)
+        {
+            if (root.GetVisualChild(i) is UIElement child)
+            {
+                DisarmAutomaticTransitionsRecursive(child);
+            }
+        }
+    }
+
+    private void ScheduleAutomaticTransitionArm()
+    {
+        // 同步 arm — Style.Setter (baseline) 走 allowAutoTransition=false，
+        // 不会因为这里 arm=true 而误触过渡；只有 Trigger.Setter 等动态状态切换
+        // 才参与过渡。BeginInvoke 异步 arm 的旧实现存在多次 disarm-rearm 循环
+        // 之间的竞态：当用户 navigation 切回页面时，layout pass 中的 ApplyTemplate
+        // 会让模板内元素再次 disarm 并重新调度 BeginInvoke，而最初一次的 callback
+        // 可能因 dispatcher 拥塞被压制，导致用户首次 hover 时 arm 仍是 false。
+        // 同步 arm 彻底消除这一竞态。
+        unchecked { _transitionArmVersion++; }
+        _automaticTransitionsArmed = true;
+    }
+
+    private static Func<DependencyProperty, object?, object?, TimeSpan, TransitionTimingFunction, IAnimationTimeline?>? GetAutomaticTransitionAnimationFactory()
+    {
+        return AutomaticTransitionAnimationFactory ??=
+            Jalium.UI.Media.Animation.AnimationFactory.CreateTransitionAnimation;
+    }
+
+    private void DisarmAutomaticTransitions()
+    {
+        unchecked { _transitionArmVersion++; }
+        _automaticTransitionsArmed = false;
+
+        if (_activeAnimations == null || _activeAnimations.Count == 0)
+            return;
+
+        foreach (var dp in _activeAnimations
+                     .Where(static pair => pair.Value.Kind == ElementAnimationKind.AutomaticTransition)
+                     .Select(static pair => pair.Key)
+                     .ToArray())
+        {
+            StopAutomaticTransition(dp, clearAnimatedValue: true);
+        }
+    }
+
+    #endregion
+
+    #region WpfParity
+
+    private static readonly DependencyPropertyKey AreAnyTouchesCapturedPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(AreAnyTouchesCaptured), typeof(bool), typeof(UIElement), new PropertyMetadata(false));
+    private static readonly DependencyPropertyKey AreAnyTouchesCapturedWithinPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(AreAnyTouchesCapturedWithin), typeof(bool), typeof(UIElement), new PropertyMetadata(false));
+    private static readonly DependencyPropertyKey AreAnyTouchesDirectlyOverPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(AreAnyTouchesDirectlyOver), typeof(bool), typeof(UIElement), new PropertyMetadata(false));
+    private static readonly DependencyPropertyKey AreAnyTouchesOverPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(AreAnyTouchesOver), typeof(bool), typeof(UIElement), new PropertyMetadata(false));
+    private static readonly DependencyPropertyKey IsMouseCapturedPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsMouseCaptured), typeof(bool), typeof(UIElement), new PropertyMetadata(false, OnIsMouseCapturedPropertyChanged));
+    private static readonly DependencyPropertyKey IsMouseCaptureWithinPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsMouseCaptureWithin), typeof(bool), typeof(UIElement), new PropertyMetadata(false, OnIsMouseCaptureWithinPropertyChanged));
+    private static readonly DependencyPropertyKey IsMouseDirectlyOverPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsMouseDirectlyOver), typeof(bool), typeof(UIElement), new PropertyMetadata(false, OnIsMouseDirectlyOverPropertyChanged));
+    private static readonly DependencyPropertyKey IsStylusCapturedPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsStylusCaptured), typeof(bool), typeof(UIElement), new PropertyMetadata(false, OnIsStylusCapturedPropertyChanged));
+    private static readonly DependencyPropertyKey IsStylusCaptureWithinPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsStylusCaptureWithin), typeof(bool), typeof(UIElement), new PropertyMetadata(false, OnIsStylusCaptureWithinPropertyChanged));
+    private static readonly DependencyPropertyKey IsStylusDirectlyOverPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsStylusDirectlyOver), typeof(bool), typeof(UIElement), new PropertyMetadata(false, OnIsStylusDirectlyOverPropertyChanged));
+    private static readonly DependencyPropertyKey IsStylusOverPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsStylusOver), typeof(bool), typeof(UIElement), new PropertyMetadata(false));
+    private static readonly DependencyPropertyKey IsVisiblePropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsVisible), typeof(bool), typeof(UIElement), new PropertyMetadata(true, OnIsVisiblePropertyChanged));
+
+    public static readonly DependencyProperty AllowDropProperty = DragDrop.AllowDropProperty;
+    public static readonly DependencyProperty AreAnyTouchesCapturedProperty = AreAnyTouchesCapturedPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty AreAnyTouchesCapturedWithinProperty = AreAnyTouchesCapturedWithinPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty AreAnyTouchesDirectlyOverProperty = AreAnyTouchesDirectlyOverPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty AreAnyTouchesOverProperty = AreAnyTouchesOverPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty IsMouseCapturedProperty = IsMouseCapturedPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty IsMouseCaptureWithinProperty = IsMouseCaptureWithinPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty IsMouseDirectlyOverProperty = IsMouseDirectlyOverPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty IsStylusCapturedProperty = IsStylusCapturedPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty IsStylusCaptureWithinProperty = IsStylusCaptureWithinPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty IsStylusDirectlyOverProperty = IsStylusDirectlyOverPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty IsStylusOverProperty = IsStylusOverPropertyKey.DependencyProperty;
+    public static readonly DependencyProperty IsVisibleProperty = IsVisiblePropertyKey.DependencyProperty;
+
+    public static readonly DependencyProperty SnapsToDevicePixelsProperty =
+        DependencyProperty.Register(
+            nameof(SnapsToDevicePixels),
+            typeof(bool),
+            typeof(UIElement),
+            new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsRender));
+
+    public static readonly DependencyProperty UidProperty =
+        DependencyProperty.Register(nameof(Uid), typeof(string), typeof(UIElement), new PropertyMetadata(string.Empty));
+
+    public static readonly RoutedEvent PreviewDragEnterEvent = DragDrop.PreviewDragEnterEvent;
+    public static readonly RoutedEvent DragEnterEvent = DragDrop.DragEnterEvent;
+    public static readonly RoutedEvent PreviewDragOverEvent = DragDrop.PreviewDragOverEvent;
+    public static readonly RoutedEvent DragOverEvent = DragDrop.DragOverEvent;
+    public static readonly RoutedEvent PreviewDragLeaveEvent = DragDrop.PreviewDragLeaveEvent;
+    public static readonly RoutedEvent DragLeaveEvent = DragDrop.DragLeaveEvent;
+    public static readonly RoutedEvent PreviewDropEvent = DragDrop.PreviewDropEvent;
+    public static readonly RoutedEvent DropEvent = DragDrop.DropEvent;
+    public static readonly RoutedEvent GiveFeedbackEvent = DragDrop.GiveFeedbackEvent;
+    public static readonly RoutedEvent QueryContinueDragEvent = DragDrop.QueryContinueDragEvent;
+    public static readonly RoutedEvent PreviewGiveFeedbackEvent = DragDrop.PreviewGiveFeedbackEvent;
+    public static readonly RoutedEvent PreviewQueryContinueDragEvent = DragDrop.PreviewQueryContinueDragEvent;
+    public static readonly RoutedEvent QueryCursorEvent =
+        EventManager.RegisterRoutedEvent(nameof(QueryCursor), RoutingStrategy.Bubble, typeof(QueryCursorEventHandler), typeof(UIElement));
+
+    private static int s_nextPersistId;
+    private readonly int _persistId = Interlocked.Increment(ref s_nextPersistId);
+
+    public bool IsVisible => (bool)(GetValue(IsVisibleProperty) ?? true);
+
+    public bool IsInputMethodEnabled => InputMethodService.GetIsInputMethodEnabled(this);
+
+    public bool IsStylusCaptureWithin
+    {
+        get
+        {
+            Visual? current = _stylusCaptured;
+            while (current != null)
+            {
+                if (ReferenceEquals(current, this)) return true;
+                current = current.VisualParent;
+            }
+
+            return false;
+        }
+    }
+
+    public bool SnapsToDevicePixels
+    {
+        get => (bool)(GetValue(SnapsToDevicePixelsProperty) ?? false);
+        set => SetValue(SnapsToDevicePixelsProperty, value);
+    }
+
+    public string Uid
+    {
+        get => (string?)GetValue(UidProperty) ?? string.Empty;
+        set => SetValue(UidProperty, value ?? string.Empty);
+    }
+
+    [Obsolete("PersistId is retained for WPF compatibility only.")]
+    public int PersistId => _persistId;
+
+    public bool HasAnimatedProperties => _activeAnimations is { Count: > 0 };
+
+    protected virtual bool IsEnabledCore => true;
+
+    protected internal virtual bool HasEffectiveKeyboardFocus => IsKeyboardFocused;
+
+    public event EventHandler? LayoutUpdated;
+    public event DependencyPropertyChangedEventHandler? FocusableChanged;
+    public event DependencyPropertyChangedEventHandler? IsEnabledChanged;
+    public event DependencyPropertyChangedEventHandler? IsHitTestVisibleChanged;
+    public event DependencyPropertyChangedEventHandler? IsKeyboardFocusedChanged;
+    public event DependencyPropertyChangedEventHandler? IsKeyboardFocusWithinChanged;
+    public event DependencyPropertyChangedEventHandler? IsMouseCapturedChanged;
+    public event DependencyPropertyChangedEventHandler? IsMouseCaptureWithinChanged;
+    public event DependencyPropertyChangedEventHandler? IsMouseDirectlyOverChanged;
+    public event DependencyPropertyChangedEventHandler? IsStylusCapturedChanged;
+    public event DependencyPropertyChangedEventHandler? IsStylusCaptureWithinChanged;
+    public event DependencyPropertyChangedEventHandler? IsStylusDirectlyOverChanged;
+    public event DependencyPropertyChangedEventHandler? IsVisibleChanged;
+
+    public event GiveFeedbackEventHandler PreviewGiveFeedback
+    {
+        add => AddHandler(PreviewGiveFeedbackEvent, value);
+        remove => RemoveHandler(PreviewGiveFeedbackEvent, value);
+    }
+
+    public event QueryContinueDragEventHandler PreviewQueryContinueDrag
+    {
+        add => AddHandler(PreviewQueryContinueDragEvent, value);
+        remove => RemoveHandler(PreviewQueryContinueDragEvent, value);
+    }
+
+    public event QueryCursorEventHandler QueryCursor
+    {
+        add => AddHandler(QueryCursorEvent, value);
+        remove => RemoveHandler(QueryCursorEvent, value);
+    }
+
+    public new object? GetAnimationBaseValue(DependencyProperty dp) => base.GetAnimationBaseValue(dp);
+
+    public bool ShouldSerializeCommandBindings() => _commandBindings is { Count: > 0 };
+
+    public bool ShouldSerializeInputBindings() => _inputBindings is { Count: > 0 };
+
+    public IInputElement? InputHitTest(Point point) => VisualTreeHelper.HitTest(this, point)?.VisualHit as IInputElement;
+
+    public Point TranslatePoint(Point point, UIElement? relativeTo)
+    {
+        var inRoot = GetRenderMatrixTo(null).Transform(point);
+        if (relativeTo == null)
+        {
+            return inRoot;
+        }
+
+        var relativeMatrix = relativeTo.GetRenderMatrixTo(null);
+        return relativeMatrix.TryInvert(out var inverse) ? inverse.Transform(inRoot) : point;
+    }
+
+    public void UpdateLayout()
+    {
+        UIElement root = this;
+        while (root.VisualParent is UIElement parent)
+        {
+            root = parent;
+        }
+
+        var available = root.PreviousAvailableSize;
+        if (double.IsNaN(available.Width) || double.IsNaN(available.Height) ||
+            double.IsInfinity(available.Width) || double.IsInfinity(available.Height))
+        {
+            available = root.RenderSize;
+        }
+
+        if (available.Width <= 0 || available.Height <= 0)
+        {
+            available = root.DesiredSize;
+        }
+
+        if (FindLayoutManager() is { } layoutManager)
+        {
+            layoutManager.UpdateLayout(root, available);
+        }
+        else
+        {
+            root.Measure(available);
+            root.Arrange(new Rect(0, 0, available.Width, available.Height));
+        }
+
+        RaiseLayoutUpdatedRecursive(root);
+    }
+
+    public void AddToEventRoute(EventRoute route, RoutedEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(route);
+        ArgumentNullException.ThrowIfNull(e);
+
+        foreach (var classHandler in EventManager.GetClassHandlers(route.RoutedEvent, GetType()))
+        {
+            route.Add(this, classHandler.Handler, classHandler.HandledEventsToo);
+        }
+
+        if (_eventHandlers != null && _eventHandlers.TryGetValue(route.RoutedEvent, out var handlers))
+        {
+            foreach (var handler in handlers.ToArray())
+            {
+                route.Add(this, handler.Handler, handler.InvokeHandledEventsToo);
+            }
+        }
+    }
+
+    protected internal virtual DependencyObject? GetUIParentCore() => VisualParent;
+
+    protected internal virtual void OnRenderSizeChanged(SizeChangedInfo info)
+    {
+    }
+
+    protected virtual void OnChildDesiredSizeChanged(UIElement child)
+    {
+        ArgumentNullException.ThrowIfNull(child);
+        InvalidateMeasure();
+    }
+
+    protected virtual Geometry? GetLayoutClip(Size layoutSlotSize) => GetLayoutClip();
+
+    protected override HitTestResult? HitTestCore(PointHitTestParameters hitTestParameters)
+    {
+        ArgumentNullException.ThrowIfNull(hitTestParameters);
+        return HitTestCore(hitTestParameters.HitPoint);
+    }
+
+    protected override GeometryHitTestResult? HitTestCore(GeometryHitTestParameters hitTestParameters)
+    {
+        ArgumentNullException.ThrowIfNull(hitTestParameters);
+        var elementBounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
+        var hitBounds = hitTestParameters.HitTestArea.Bounds;
+        var intersection = Rect.Intersect(elementBounds, hitBounds);
+        if (intersection.IsEmpty)
+        {
+            return new GeometryHitTestResult(this, IntersectionDetail.Empty);
+        }
+
+        var detail = ContainsRect(elementBounds, hitBounds)
+            ? IntersectionDetail.FullyContains
+            : ContainsRect(hitBounds, elementBounds)
+                ? IntersectionDetail.FullyInside
+                : IntersectionDetail.Intersects;
+        return new GeometryHitTestResult(this, detail);
+    }
+
+    private static bool ContainsRect(Rect outer, Rect inner)
+    {
+        return !outer.IsEmpty && !inner.IsEmpty &&
+               inner.Left >= outer.Left && inner.Top >= outer.Top &&
+               inner.Right <= outer.Right && inner.Bottom <= outer.Bottom;
+    }
+
+    protected virtual void OnGotKeyboardFocus(KeyboardFocusChangedEventArgs e)
+    {
+    }
+
+    protected virtual void OnLostKeyboardFocus(KeyboardFocusChangedEventArgs e)
+    {
+    }
+
+    protected virtual void OnPreviewGotKeyboardFocus(KeyboardFocusChangedEventArgs e)
+    {
+    }
+
+    protected virtual void OnPreviewLostKeyboardFocus(KeyboardFocusChangedEventArgs e)
+    {
+    }
+
+    protected virtual void OnPreviewGiveFeedback(GiveFeedbackEventArgs e)
+    {
+    }
+
+    protected virtual void OnPreviewQueryContinueDrag(QueryContinueDragEventArgs e)
+    {
+    }
+
+    protected virtual void OnQueryCursor(QueryCursorEventArgs e)
+    {
+    }
+
+    protected virtual void OnAccessKey(AccessKeyEventArgs e)
+    {
+    }
+
+    internal void InvokeAccessKey(AccessKeyEventArgs e)
+    {
+        ArgumentNullException.ThrowIfNull(e);
+        OnAccessKey(e);
+    }
+
+    protected virtual void OnIsMouseCapturedChanged(DependencyPropertyChangedEventArgs e)
+    {
+    }
+
+    protected virtual void OnIsMouseCaptureWithinChanged(DependencyPropertyChangedEventArgs e)
+    {
+    }
+
+    protected virtual void OnIsMouseDirectlyOverChanged(DependencyPropertyChangedEventArgs e)
+    {
+    }
+
+    protected virtual void OnIsStylusCapturedChanged(DependencyPropertyChangedEventArgs e)
+    {
+    }
+
+    protected virtual void OnIsStylusCaptureWithinChanged(DependencyPropertyChangedEventArgs e)
+    {
+    }
+
+    protected virtual void OnIsStylusDirectlyOverChanged(DependencyPropertyChangedEventArgs e)
+    {
+    }
+
+    private static void RaiseLayoutUpdatedRecursive(UIElement element)
+    {
+        element.LayoutUpdated?.Invoke(element, EventArgs.Empty);
+        for (var index = 0; index < element.VisualChildrenCount; index++)
+        {
+            if (element.GetVisualChild(index) is UIElement child)
+            {
+                RaiseLayoutUpdatedRecursive(child);
+            }
+        }
+    }
+
+    private static void InitializeWpfParityClassHandlers()
+    {
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewGotKeyboardFocusEvent,
+            new KeyboardFocusChangedEventHandler((sender, e) => ((UIElement)sender).OnPreviewGotKeyboardFocus(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), GotKeyboardFocusEvent,
+            new KeyboardFocusChangedEventHandler((sender, e) => ((UIElement)sender).OnGotKeyboardFocus(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewLostKeyboardFocusEvent,
+            new KeyboardFocusChangedEventHandler((sender, e) => ((UIElement)sender).OnPreviewLostKeyboardFocus(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), LostKeyboardFocusEvent,
+            new KeyboardFocusChangedEventHandler((sender, e) => ((UIElement)sender).OnLostKeyboardFocus(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewGiveFeedbackEvent,
+            new GiveFeedbackEventHandler((sender, e) => ((UIElement)sender).OnPreviewGiveFeedback(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewQueryContinueDragEvent,
+            new QueryContinueDragEventHandler((sender, e) => ((UIElement)sender).OnPreviewQueryContinueDrag(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), QueryCursorEvent,
+            new QueryCursorEventHandler((sender, e) => ((UIElement)sender).OnQueryCursor(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), GotStylusCaptureEvent,
+            new StylusEventHandler((sender, e) => ((UIElement)sender).OnGotStylusCapture(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), LostStylusCaptureEvent,
+            new StylusEventHandler((sender, e) => ((UIElement)sender).OnLostStylusCapture(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusButtonDownEvent,
+            new StylusButtonEventHandler((sender, e) => ((UIElement)sender).OnPreviewStylusButtonDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusButtonUpEvent,
+            new StylusButtonEventHandler((sender, e) => ((UIElement)sender).OnPreviewStylusButtonUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusInAirMoveEvent,
+            new StylusEventHandler((sender, e) => ((UIElement)sender).OnPreviewStylusInAirMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusInRangeEvent,
+            new StylusEventHandler((sender, e) => ((UIElement)sender).OnPreviewStylusInRange(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusOutOfRangeEvent,
+            new StylusEventHandler((sender, e) => ((UIElement)sender).OnPreviewStylusOutOfRange(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusSystemGestureEvent,
+            new StylusSystemGestureEventHandler((sender, e) => ((UIElement)sender).OnPreviewStylusSystemGesture(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), ManipulationStartingEvent,
+            new EventHandler<ManipulationStartingEventArgs>((sender, e) => ((UIElement)sender!).OnManipulationStarting(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), ManipulationStartedEvent,
+            new EventHandler<ManipulationStartedEventArgs>((sender, e) => ((UIElement)sender!).OnManipulationStarted(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), ManipulationDeltaEvent,
+            new EventHandler<ManipulationDeltaEventArgs>((sender, e) => ((UIElement)sender!).OnManipulationDelta(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), ManipulationInertiaStartingEvent,
+            new EventHandler<ManipulationInertiaStartingEventArgs>((sender, e) => ((UIElement)sender!).OnManipulationInertiaStarting(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), ManipulationBoundaryFeedbackEvent,
+            new EventHandler<ManipulationBoundaryFeedbackEventArgs>((sender, e) => ((UIElement)sender!).OnManipulationBoundaryFeedback(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), ManipulationCompletedEvent,
+            new EventHandler<ManipulationCompletedEventArgs>((sender, e) => ((UIElement)sender!).OnManipulationCompleted(e)));
+    }
+
+    private static void OnFocusablePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element) element.FocusableChanged?.Invoke(element, e);
+    }
+
+    private static void OnIsMouseCapturedPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var element = (UIElement)d;
+        element.OnIsMouseCapturedChanged(e);
+        element.IsMouseCapturedChanged?.Invoke(element, e);
+    }
+
+    private static void OnIsMouseCaptureWithinPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var element = (UIElement)d;
+        element.OnIsMouseCaptureWithinChanged(e);
+        element.IsMouseCaptureWithinChanged?.Invoke(element, e);
+    }
+
+    private static void OnIsMouseDirectlyOverPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var element = (UIElement)d;
+        element.OnIsMouseDirectlyOverChanged(e);
+        element.IsMouseDirectlyOverChanged?.Invoke(element, e);
+    }
+
+    private static void OnIsStylusCapturedPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var element = (UIElement)d;
+        element.OnIsStylusCapturedChanged(e);
+        element.IsStylusCapturedChanged?.Invoke(element, e);
+    }
+
+    private static void OnIsStylusCaptureWithinPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var element = (UIElement)d;
+        element.OnIsStylusCaptureWithinChanged(e);
+        element.IsStylusCaptureWithinChanged?.Invoke(element, e);
+    }
+
+    private static void OnIsStylusDirectlyOverPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var element = (UIElement)d;
+        element.OnIsStylusDirectlyOverChanged(e);
+        element.IsStylusDirectlyOverChanged?.Invoke(element, e);
+    }
+
+    private static void OnIsVisiblePropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        var element = (UIElement)d;
+        element.IsVisibleChanged?.Invoke(element, e);
+    }
+
+    private void RaiseIsEnabledChanged(DependencyPropertyChangedEventArgs e) => IsEnabledChanged?.Invoke(this, e);
+    private void RaiseIsHitTestVisibleChanged(DependencyPropertyChangedEventArgs e) => IsHitTestVisibleChanged?.Invoke(this, e);
+    private void RaiseIsKeyboardFocusedChanged(DependencyPropertyChangedEventArgs e) => IsKeyboardFocusedChanged?.Invoke(this, e);
+    private void RaiseIsKeyboardFocusWithinChanged(DependencyPropertyChangedEventArgs e) => IsKeyboardFocusWithinChanged?.Invoke(this, e);
+
+    internal void UpdateIsVisibleFromTree()
+    {
+        var visible = Visibility == Visibility.Visible &&
+                      (VisualParent is not UIElement parent || parent.IsVisible);
+        SetValue(IsVisiblePropertyKey, visible);
+        for (var index = 0; index < VisualChildrenCount; index++)
+        {
+            if (GetVisualChild(index) is UIElement child)
+            {
+                child.UpdateIsVisibleFromTree();
+            }
+        }
+    }
+
+    private static HashSet<UIElement> GetAncestorSet(UIElement? element)
+    {
+        var result = new HashSet<UIElement>();
+        Visual? current = element;
+        while (current != null)
+        {
+            if (current is UIElement ui) result.Add(ui);
+            current = current.VisualParent;
+        }
+
+        return result;
+    }
+
+    private static void UpdateMouseDirectlyOverDependencyState(UIElement? oldElement, UIElement? newElement)
+    {
+        oldElement?.SetValue(IsMouseDirectlyOverPropertyKey, false);
+        newElement?.SetValue(IsMouseDirectlyOverPropertyKey, true);
+    }
+
+    private static void UpdateMouseCaptureDependencyState(UIElement? oldElement, UIElement? newElement)
+    {
+        oldElement?.SetValue(IsMouseCapturedPropertyKey, false);
+        newElement?.SetValue(IsMouseCapturedPropertyKey, true);
+        UpdateWithinState(oldElement, newElement, IsMouseCaptureWithinPropertyKey);
+    }
+
+    private static void UpdateStylusDirectlyOverDependencyState(UIElement? oldElement, UIElement? newElement)
+    {
+        oldElement?.SetValue(IsStylusDirectlyOverPropertyKey, false);
+        newElement?.SetValue(IsStylusDirectlyOverPropertyKey, true);
+        UpdateWithinState(oldElement, newElement, IsStylusOverPropertyKey);
+    }
+
+    private static void UpdateStylusCaptureDependencyState(UIElement? oldElement, UIElement? newElement)
+    {
+        oldElement?.SetValue(IsStylusCapturedPropertyKey, false);
+        newElement?.SetValue(IsStylusCapturedPropertyKey, true);
+        UpdateWithinState(oldElement, newElement, IsStylusCaptureWithinPropertyKey);
+    }
+
+    private static void UpdateWithinState(UIElement? oldElement, UIElement? newElement, DependencyPropertyKey key)
+    {
+        var oldAncestors = GetAncestorSet(oldElement);
+        var newAncestors = GetAncestorSet(newElement);
+        foreach (var element in oldAncestors)
+        {
+            if (!newAncestors.Contains(element)) element.SetValue(key, false);
+        }
+
+        foreach (var element in newAncestors)
+        {
+            if (!oldAncestors.Contains(element)) element.SetValue(key, true);
+        }
+    }
+
+    private void UpdateTouchDependencyState()
+    {
+        SetValue(AreAnyTouchesCapturedPropertyKey, AreAnyTouchesCaptured);
+        SetValue(AreAnyTouchesCapturedWithinPropertyKey, AreAnyTouchesCapturedWithin);
+        SetValue(AreAnyTouchesDirectlyOverPropertyKey, AreAnyTouchesDirectlyOver);
+        SetValue(AreAnyTouchesOverPropertyKey, AreAnyTouchesOver);
+
+        if (VisualParent is UIElement parent)
+        {
+            parent.UpdateTouchDependencyState();
         }
     }
 
@@ -5253,8 +6558,3 @@ internal interface ILayoutManagerHost
     /// </summary>
     LayoutManager LayoutManager { get; }
 }
-
-
-
-
-

@@ -1,4 +1,5 @@
 using Jalium.UI.Controls;
+using Jalium.UI.Media;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Jalium.UI.Hosting;

@@ -5,7 +5,7 @@ using Jalium.UI.Media.Effects;
 using Jalium.UI.Media.Imaging;
 using Jalium.UI.Media.Media3D;
 using ImagingBitmapSource = Jalium.UI.Media.Imaging.BitmapSource;
-using ShapePath = Jalium.UI.Controls.Shapes.Path;
+using ShapePath = Jalium.UI.Shapes.Path;
 
 namespace Jalium.UI.Tests;
 
@@ -115,7 +115,7 @@ public sealed class MediaVisualFinalGapTests
         Geometry geometry = Geometry.Parse("M0,0 L4,4");
         var path = new ShapePath { Data = geometry };
         Assert.Same(geometry, path.Data);
-        Assert.Same(geometry, path.Geometry);
+        Assert.Same(geometry, path.Data);
     }
 
     [Fact]

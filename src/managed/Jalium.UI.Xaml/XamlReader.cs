@@ -1,4 +1,4 @@
-﻿using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.ComponentModel;
 using System.Runtime.Serialization;
@@ -6,7 +6,7 @@ using System.Xml;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
-using Jalium.UI.Controls.Shapes;
+using Jalium.UI.Shapes;
 using Jalium.UI.Data;
 using Jalium.UI.Diagnostics;
 using Jalium.UI.Documents;
@@ -1285,7 +1285,7 @@ public partial class XamlReader
                         {
                             existing.MergedDictionaries.Add(merged);
                         }
-                        foreach (KeyValuePair<object, object?> entry in dictionaryValue)
+                        foreach (System.Collections.DictionaryEntry entry in dictionaryValue)
                         {
                             existing[entry.Key] = entry.Value;
                         }
@@ -2973,12 +2973,12 @@ public partial class XamlReader
         // [ContentProperty] **优先**于 Panel/ItemsControl/ContentControl 这种"按类型兜底"的
         // 路径——这才是 WPF/XAML 的标准行为。原先把 `parent is Panel → Children.Add` 放在
         // ContentProperty 之前会让 Panel 子类（如 SplitDockGroup / DockTabPanel）即使
-        // 显式标了 `[ContentProperty("Items")]`，子元素仍被加到 Children 而不是 Items
+        // 显式标了 `[Jalium.UI.Markup.ContentProperty("Items")]`，子元素仍被加到 Children 而不是 Items
         // ——实际表现是"子在 visual tree 里、但不在自定义集合里"，所有依赖该集合的逻辑
         // （事件路由 / 命中查找）都会失败。
         //
         // [ContentProperty] 的 Inherited=true，没标的 Panel 子类会继承 Panel 自己的
-        // `[ContentProperty("Children")]`，最终也走 list.Add(child) 等价于 Children.Add，
+        // `[Jalium.UI.Markup.ContentProperty("Children")]`，最终也走 list.Add(child) 等价于 Children.Add，
         // 和旧路径行为一致；不会破坏现有 Panel 子类。
         var parentType = parent.GetType();
         string? contentPropertyName = GetContentPropertyName(parentType);
@@ -3523,10 +3523,9 @@ public partial class XamlReader
         return SetContentProperty(instance, text, context);
     }
 
-    [RequiresUnreferencedCode("Reads canonical and legacy ContentPropertyAttribute metadata from the runtime type.")]
+    [RequiresUnreferencedCode("Reads ContentPropertyAttribute metadata from the runtime type.")]
     private static string? GetContentPropertyName(Type type)
-        => type.GetCustomAttribute<ContentPropertyAttribute>(inherit: true)?.Name
-            ?? type.GetCustomAttribute<Jalium.UI.ContentPropertyAttribute>(inherit: true)?.Name;
+        => type.GetCustomAttribute<ContentPropertyAttribute>(inherit: true)?.Name;
 }
 
 /// <summary>
@@ -3543,7 +3542,7 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     {
         "Jalium.UI.Controls",
         "Jalium.UI.Controls.Primitives",
-        "Jalium.UI.Controls.Shapes",
+        "Jalium.UI.Shapes",
         "Jalium.UI",
         "Jalium.UI.Media",
         "Jalium.UI.Documents",
@@ -4059,8 +4058,10 @@ public static class XamlTypeRegistry
         Register<Binding>(types);
         Register<BindingBase>(types);
         Register<BindingExtension>(types);
-        Register<StaticResourceExtension>(types);
-        Register<DynamicResourceExtension>(types);
+        Register<global::Jalium.UI.StaticResourceExtension>(types);
+        Register<global::Jalium.UI.DynamicResourceExtension>(types);
+        Register<global::Jalium.UI.ThemeDictionaryExtension>(types);
+        Register<global::Jalium.UI.ColorConvertedBitmapExtension>(types);
         Register<ThemeResourceExtension>(types);
         Register<TemplateBindingExtension>(types);
         Register<NullExtension>(types);
@@ -4116,7 +4117,7 @@ public static class XamlTypeRegistry
         Register<DataGrid>(types);
         Register<DataGridRow>(types);
         Register<DataGridCell>(types);
-        Register<Jalium.UI.Controls.DataGridColumnHeader>(types);
+        Register<Jalium.UI.Controls.Primitives.DataGridColumnHeader>(types);
         Register<TreeDataGrid>(types);
         Register<TreeDataGridRow>(types);
         Register<Slider>(types);
@@ -4167,8 +4168,8 @@ public static class XamlTypeRegistry
         Register<DatePickerTextBox>(types);
         Register<TimePicker>(types);
         Register<ColorPicker>(types);
-        Register<StatusBar>(types);
-        Register<Jalium.UI.Controls.StatusBarItem>(types); // Fully qualified to disambiguate from Primitives.StatusBarItem
+        Register<Jalium.UI.Controls.Primitives.StatusBar>(types);
+        Register<Jalium.UI.Controls.Primitives.StatusBarItem>(types);
         Register<Separator>(types);
         Register<InfoBar>(types);
         Register<Thumb>(types);
@@ -4270,11 +4271,11 @@ public static class XamlTypeRegistry
 
     private static void RegisterShapeTypes(Dictionary<string, Type> types)
     {
-        // Jalium.UI.Controls.Shapes namespace
+        // Jalium.UI.Shapes namespace
         Register<Shape>(types);
         Register<Ellipse>(types);
         Register<Rectangle>(types);
-        Register<Jalium.UI.Controls.Shapes.Path>(types);
+        Register<Jalium.UI.Shapes.Path>(types);
         Register<Line>(types);
         Register<Polygon>(types);
         Register<Polyline>(types);
@@ -4319,13 +4320,13 @@ public static class XamlTypeRegistry
         Register<TableRow>(types);
         Register<TableCell>(types);
         Register<Jalium.UI.Documents.AdornerDecorator>(types);
-        Register<Jalium.UI.Documents.Decorator>(types);
+        Register<Jalium.UI.Controls.Decorator>(types);
     }
 
     private static void RegisterInteractivityTypes(Dictionary<string, Type> types)
     {
         // Jalium.UI.Interactivity namespace
-        Register<Jalium.UI.Interactivity.EventTrigger>(types);
+        Register<BehaviorEventTrigger>(types);
         Register<InvokeCommandAction>(types);
         Register<CallMethodAction>(types);
         Register<ChangePropertyAction>(types);
@@ -4739,10 +4740,9 @@ public static class XamlTypeRegistry
         }
     }
 
-    [RequiresUnreferencedCode("Reads canonical and legacy ContentPropertyAttribute metadata from the runtime type.")]
+    [RequiresUnreferencedCode("Reads ContentPropertyAttribute metadata from the runtime type.")]
     private static string? GetContentPropertyName(Type type)
-        => type.GetCustomAttribute<ContentPropertyAttribute>(inherit: true)?.Name
-            ?? type.GetCustomAttribute<Jalium.UI.ContentPropertyAttribute>(inherit: true)?.Name;
+        => type.GetCustomAttribute<ContentPropertyAttribute>(inherit: true)?.Name;
 
     private static void ApplyNodeLayout(FrameworkElement element, Gpu.SceneNode node, Gpu.Rect bounds)
     {
@@ -4879,7 +4879,7 @@ public static class XamlTypeRegistry
 
     private static FrameworkElement CreatePathElement(Gpu.CompiledUIBundle bundle, Gpu.PathNode node)
     {
-        var element = new Jalium.UI.Controls.Shapes.Path();
+        var element = new Jalium.UI.Shapes.Path();
 
         if (TryGetMaterial(bundle, node.MaterialIndex, out var material))
         {

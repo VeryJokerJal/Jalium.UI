@@ -1,5 +1,6 @@
 ﻿using Jalium.UI.Media;
 using Jalium.UI;
+using Jalium.UI.Documents;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -174,7 +175,7 @@ public class DocumentPageView : FrameworkElement, IServiceProvider, IDisposable
     /// <summary>
     /// Gets the current document page.
     /// </summary>
-    public DocumentPage DocumentPage => _documentPage ?? Primitives.DocumentPage.Missing;
+    public DocumentPage DocumentPage => _documentPage ?? Jalium.UI.Documents.DocumentPage.Missing;
 
     #endregion
 
@@ -200,7 +201,7 @@ public class DocumentPageView : FrameworkElement, IServiceProvider, IDisposable
         CheckDisposed();
         LoadPage();
 
-        if (_documentPage == null || _documentPage == Primitives.DocumentPage.Missing)
+        if (_documentPage == null || _documentPage == Jalium.UI.Documents.DocumentPage.Missing)
         {
             return default(Size);
         }
@@ -294,11 +295,11 @@ public class DocumentPageView : FrameworkElement, IServiceProvider, IDisposable
 
         if (PageNumber < 0)
         {
-            _documentPage = Primitives.DocumentPage.Missing;
+            _documentPage = Jalium.UI.Documents.DocumentPage.Missing;
             return;
         }
 
-        _documentPage = paginator.GetPage(PageNumber) ?? Primitives.DocumentPage.Missing;
+        _documentPage = paginator.GetPage(PageNumber) ?? Jalium.UI.Documents.DocumentPage.Missing;
         _newPageConnected = true;
     }
 

@@ -1,6 +1,5 @@
 ﻿using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
-using BitmapImage = Jalium.UI.Media.BitmapImage;
 using Jalium.UI.Media.Native;
 using Jalium.UI.Media.Pipeline;
 using Jalium.UI.Threading;
@@ -45,6 +44,11 @@ public class CameraView : Control
     private ImageSource? _currentFrame;
     private readonly object _frameLock = new();
 
+    public CameraView()
+    {
+        Unloaded += (_, _) => StopInternal();
+    }
+
     /// <summary>
     /// 枚举系统当前可见的摄像头设备。
     /// </summary>
@@ -60,17 +64,17 @@ public class CameraView : Control
     /// <summary>Identifies the <see cref="RequestedWidth"/> dependency property.</summary>
     public static readonly DependencyProperty RequestedWidthProperty =
         DependencyProperty.Register(nameof(RequestedWidth), typeof(int), typeof(CameraView),
-            new PropertyMetadata(1280));
+            new PropertyMetadata(1280, OnCaptureFormatChanged, CoercePositiveInt));
 
     /// <summary>Identifies the <see cref="RequestedHeight"/> dependency property.</summary>
     public static readonly DependencyProperty RequestedHeightProperty =
         DependencyProperty.Register(nameof(RequestedHeight), typeof(int), typeof(CameraView),
-            new PropertyMetadata(720));
+            new PropertyMetadata(720, OnCaptureFormatChanged, CoercePositiveInt));
 
     /// <summary>Identifies the <see cref="RequestedFps"/> dependency property.</summary>
     public static readonly DependencyProperty RequestedFpsProperty =
         DependencyProperty.Register(nameof(RequestedFps), typeof(double), typeof(CameraView),
-            new PropertyMetadata(30.0));
+            new PropertyMetadata(30.0, OnCaptureFormatChanged, CoercePositiveDouble));
 
     /// <summary>Identifies the <see cref="Stretch"/> dependency property.</summary>
     public static readonly DependencyProperty StretchProperty =
@@ -169,12 +173,34 @@ public class CameraView : Control
         }
     }
 
+    /// <summary>The most recent open or capture failure, preserving its native status.</summary>
+    public Exception? LastError { get; private set; }
+
+    /// <summary>Whether the camera backend loaded in the current process.</summary>
+    public static bool IsCaptureSupported => !OperatingSystem.IsLinux() ||
+        NativeLinuxMedia.GetCapabilities().HasFlag(LinuxMediaCapability.CameraCapture);
+
     private static void OnSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is CameraView view)
         {
             view.RestartCapture();
         }
+    }
+
+    private static void OnCaptureFormatChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is CameraView { Source: not null } view) view.RestartCapture();
+    }
+
+    private static object CoercePositiveInt(DependencyObject d, object? value)
+        => Math.Clamp((int)(value ?? 1), 1, 16384);
+
+    private static object CoercePositiveDouble(DependencyObject d, object? value)
+    {
+        var number = (double)(value ?? 30.0);
+        if (!double.IsFinite(number)) number = 30.0;
+        return Math.Clamp(number, 0.1, 1000.0);
     }
 
     /// <summary>
@@ -189,6 +215,7 @@ public class CameraView : Control
 
         try
         {
+            LastError = null;
             _source = GetFactory().Create();
             _source.Open(device.Id, RequestedWidth, RequestedHeight, RequestedFps);
 
@@ -198,8 +225,9 @@ public class CameraView : Control
 
             RaiseEvent(new RoutedEventArgs(CameraOpenedEvent, this));
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            LastError = ex;
             StopInternal();
             RaiseEvent(new RoutedEventArgs(CameraFailedEvent, this));
         }
@@ -230,10 +258,13 @@ public class CameraView : Control
                 {
                     ok = _source!.TryReadFrame(out frame);
                 }
-                catch
+                catch (Exception ex)
                 {
                     Dispatcher.MainDispatcher?.BeginInvoke(() =>
-                        RaiseEvent(new RoutedEventArgs(CameraFailedEvent, this)));
+                    {
+                        LastError = ex;
+                        RaiseEvent(new RoutedEventArgs(CameraFailedEvent, this));
+                    });
                     break;
                 }
 
@@ -259,13 +290,27 @@ public class CameraView : Control
 
     private void StopInternal()
     {
+        var source = _source;
+        _source = null;
+        var task = _captureTask;
         try { _captureCts?.Cancel(); } catch { }
-        try { _captureTask?.Wait(TimeSpan.FromSeconds(1)); } catch { }
+        var completed = task == null;
+        try { completed = task?.Wait(TimeSpan.FromSeconds(2)) ?? true; } catch { completed = true; }
         _captureCts?.Dispose();
         _captureCts = null;
         _captureTask = null;
-        _source?.Dispose();
-        _source = null;
+        if (completed)
+        {
+            source?.Dispose();
+        }
+        else if (source != null && task != null)
+        {
+            _ = task.ContinueWith(
+                _ => source.Dispose(),
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
         lock (_frameLock) _currentFrame = null;
     }
 

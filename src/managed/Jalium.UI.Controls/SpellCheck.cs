@@ -131,10 +131,11 @@ public sealed class SpellCheck
         if (dependencyObject is TextBox textBox)
         {
             bool isEnabled = (bool)args.NewValue!;
-            if (textBox.IsSpellCheckEnabled != isEnabled)
-            {
-                textBox.IsSpellCheckEnabled = isEnabled;
-            }
+            textBox.OnSpellCheckSettingChanged(isEnabled);
+        }
+        else if (dependencyObject is RichTextBox richTextBox)
+        {
+            richTextBox.OnSpellCheckSettingChanged((bool)args.NewValue!);
         }
     }
 }

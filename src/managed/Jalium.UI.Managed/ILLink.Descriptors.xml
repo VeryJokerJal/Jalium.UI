@@ -14,5 +14,7 @@
     <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaSelectionItemProvider" preserve="all" />
     <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaScrollProvider" preserve="all" />
     <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaScrollItemProvider" preserve="all" />
+    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaTextProvider" preserve="all" />
+    <type fullname="Jalium.UI.Controls.Automation.Uia.IUiaTextRangeProvider" preserve="all" />
   </assembly>
 </linker>

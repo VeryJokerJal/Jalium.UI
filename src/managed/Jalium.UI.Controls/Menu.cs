@@ -9,7 +9,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a menu bar that contains menu items.
 /// </summary>
-public class Menu : ItemsControl
+public class Menu : MenuBase
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()

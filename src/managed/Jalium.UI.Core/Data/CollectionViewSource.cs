@@ -374,12 +374,6 @@ public class CollectionViewSource : DependencyObject, ISupportInitialize, IWeakE
     }
 
     /// <summary>
-    /// Returns whether a canonical component-model view is the cached default for its source.
-    /// </summary>
-    public static bool IsDefaultView(System.ComponentModel.ICollectionView view) =>
-        IsDefaultView((ICollectionView?)view);
-
-    /// <summary>
     /// Starts initialization, during which <see cref="CollectionViewType"/> can be set.
     /// </summary>
     public void BeginInit() => _isInitializing = true;
@@ -445,7 +439,6 @@ public class CollectionViewSource : DependencyObject, ISupportInitialize, IWeakE
         source is IListSource ||
         source is DataSourceProvider ||
         source is ICollectionView ||
-        source is ICollectionViewFactory ||
         source is System.ComponentModel.ICollectionViewFactory;
 
     private static bool IsCollectionViewTypeValid(object? value) =>
@@ -477,11 +470,6 @@ public class CollectionViewSource : DependencyObject, ISupportInitialize, IWeakE
         if (source is System.ComponentModel.ICollectionViewFactory componentModelFactory)
         {
             return componentModelFactory.CreateView();
-        }
-
-        if (source is ICollectionViewFactory factory)
-        {
-            return factory.CreateView();
         }
 
         if (source is IBindingList bindingList)

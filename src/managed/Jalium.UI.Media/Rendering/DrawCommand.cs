@@ -36,7 +36,7 @@ internal enum DrawCommandKind : byte
 }
 
 /// <summary>
-/// One recorded drawing call, stored in a <see cref="Drawing"/>'s command
+/// One recorded drawing call, stored in a <see cref="RecordedDrawing"/>'s command
 /// array. Designed as a fixed-size 120-byte readonly struct so a List of
 /// commands is dense and allocation-free per-command (the variable-length
 /// payload — brushes, pens, geometries — is carried as <see cref="object"/>

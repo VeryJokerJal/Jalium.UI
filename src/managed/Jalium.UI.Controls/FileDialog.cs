@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Base class for file dialogs.
 /// </summary>
-public abstract class FileDialog
+internal abstract class FileDialog
 {
     /// <summary>
     /// Gets whether the current Linux session exposes the desktop-neutral file chooser portal.
@@ -199,7 +199,7 @@ public abstract class FileDialog
 /// <summary>
 /// Represents an open file dialog.
 /// </summary>
-public sealed class OpenFileDialog : FileDialog
+internal sealed class OpenFileDialog : FileDialog
 {
     #region Properties
 
@@ -463,7 +463,7 @@ public sealed class OpenFileDialog : FileDialog
 /// <summary>
 /// Represents a save file dialog.
 /// </summary>
-public sealed class SaveFileDialog : FileDialog
+internal sealed class SaveFileDialog : FileDialog
 {
     #region Properties
 
@@ -1274,7 +1274,7 @@ public sealed class FolderBrowserDialog
 /// <summary>
 /// Represents a custom place in a file dialog.
 /// </summary>
-public sealed class FileDialogCustomPlace
+internal sealed class FileDialogCustomPlace
 {
     /// <summary>
     /// Gets or sets the path of the custom place.

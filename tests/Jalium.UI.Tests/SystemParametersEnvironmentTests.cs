@@ -5,10 +5,16 @@ namespace Jalium.UI.Tests;
 public class SystemParametersEnvironmentTests
 {
     [Fact]
-    public void CurrentEnvironment_OnWindowsTarget_ShouldIncludeWindows()
+    public void CurrentEnvironment_ShouldIncludeCurrentDesktopOperatingSystem()
     {
-        Assert.True(SystemParameters.IsWindows);
-        Assert.True((SystemParameters.CurrentEnvironment & SystemEnvironmentKind.Windows) != 0);
+        Assert.Equal(OperatingSystem.IsWindows(), SystemParameters.IsWindows);
+        Assert.Equal(OperatingSystem.IsLinux(), SystemParameters.IsLinux);
+        Assert.Equal(
+            OperatingSystem.IsWindows(),
+            (SystemParameters.CurrentEnvironment & SystemEnvironmentKind.Windows) != 0);
+        Assert.Equal(
+            OperatingSystem.IsLinux(),
+            (SystemParameters.CurrentEnvironment & SystemEnvironmentKind.Linux) != 0);
         Assert.False(SystemParameters.IsBrowser);
         Assert.False(SystemParameters.IsFreeBSD);
         Assert.False(SystemParameters.IsMacOS);

@@ -1,145 +1,140 @@
-# Linux 桌面支持：差距矩阵与补齐计划
+# Linux 桌面支持：实现与验证矩阵
 
-> 基于 2026-07-13 对整个仓库的系统化审计（8 个子系统并行审读 + 容器内真实构建/运行验证）。
-> 验证环境：Ubuntu 20.04 glibc 基线容器（CI 同款）与 Alpine 3.24 musl 容器；weston headless（Wayland）与 Xvfb（X11）。
+> 审计日期：2026-07-14。本文只记录当前源码、测试脚本和本地验证能够支持的结论。
+> “已实现”表示代码路径存在；“已验证”表示当前版本有对应的自动化或真实协议证据。
+> 二者不会混写。
 
-## 总体结论
+## 结论
 
-1. **地基是真实的，不是空壳。** native linux-x64/musl-x64 全量构建通过（7 个 .so），
-   一个真实的 code-only 应用在 X11 与 Wayland 双路径端到端运行成功：Vulkan(llvmpipe) 渲染、
-   自绘 CSD 标题栏、fontconfig 文本（含 CJK fallback）、DispatcherTimer、xdotool 合成点击触发
-   `Button.Click`、干净退出。X11 per-monitor DPI 缩放（Xft.dpi）真实生效。
-2. **但存在六条"一碰即崩"的 Linux 崩溃链**，共同根因是两类反模式：无守卫地复用
-   `Win32Methods`（user32/kernel32/imm32 P/Invoke），以及把 `Handle != 0` 当作"运行在
-   Windows"的判据（Linux 上 Handle 是平台句柄，恒非零）。
-3. **若干"声明支持、实际未完成/坏掉"的关键点**：带 Filter 的文件对话框因 GVariant 括号写反
-   全废；通知 action 点击永远无效；打印只有探测无提交；托盘 NotifyIcon 纯空壳；
-   SystemParameters 全部硬编码假数据；Wayland HiDPI 恒 1.0；主测试套锁死 net10.0-windows。
-4. CI（linux.yml）自创建以来从未绿过，三个根因（NU1301 / gst-plugins-good / main-vs-master）
-   已修复并在本地容器实证。
+Linux 后端已不再是只能开窗的样例：X11/Wayland、Vulkan/软件渲染、输入、剪贴板、
+拖放、媒体、打印、无障碍、托盘/通知、系统设置、会话结束和文件关联均有实际实现。
+当前已识别的软件实现缺口已经补齐。发布前剩余的是完成当前机器无法提供的 RID/硬件/
+桌面环境 qualification，并明确承认 Wayland 协议与外部服务的边界。
 
-## 一、已确认崩溃链（P0/P1，Wave A）
+## 当前验证快照
 
-| # | 症状（Linux 上） | 根因 | 证据 |
-|---|---|---|---|
-| A1 | 带 Filter 的 Open/Save/Folder 对话框全部瞬时失败 | GVariant 文本 `'filters': <[…>]` 括号顺序写反（应为 `<[…]>`），g_variant_parse 整体报错 | LinuxDesktopPortal.cs:256 |
-| A2 | 任何 ScrollViewer 滚轮滚动 → DllNotFoundException | GetSystemWheelScrollLines 直接 P/Invoke user32!SystemParametersInfoW，无守卫 | ScrollViewer.cs:2798-2807 |
-| A3 | 打开任何 Popup/ContextMenu/ToolTip → 静默失败（Dispatcher 吞异常） | OpenPopup→GetWorkingArea→MonitorFromWindow；MousePoint 定位→GetCursorPos/ScreenToClient；守卫误用 `Handle != 0` | Popup.cs:549,594-606,917-929,1101-1122 |
-| A4 | IME 组合中移动光标 → DllNotFoundException（组合中断） | UpdateImeCompositionWindow 无守卫调 imm32 | Window.cs:10223-10235 |
-| A5 | SystemCommands.ShowSystemMenu → 崩 | GetSystemMenu/TrackPopupMenuEx 无守卫，`Handle==0` 误判 | SystemCommands.cs:76-102 |
-| A6 | DockItem 撕出/拖拽面板 → 崩 | GetCursorPos/GetWindowRect/SetWindowPos 裸调用 | DockItem.cs:308-614, DockManager.cs:114 |
-| A7 | Terminal 控件放入视觉树 → 崩（AutoStartShell 默认 true） | ConPty 直调 kernel32，无 Unix PTY 后端 | Terminal.cs:583-595, ConPty.cs:261-280 |
-| A8 | 光标形状全部错位（Arrow 显示成 IBeam、SizeWE 变隐藏…） | managed CursorType（28 值）直接强转为 native JaliumCursorShape（12 值），无翻译层 | WindowInputDispatcher.cs:178-190 vs jalium_platform.h:170-181 |
-| A9 | 嵌套 PushFrame/DispatcherOperation.Wait 期间界面假死 | 非 Windows PushFrame 不泵平台事件 | Dispatcher.cs:775-813 |
-| A10 | IsVirtualKeyDown 地雷（一旦跨平台路径复用即崩） | s_getKeyStateProvider 静态绑定裸 user32 GetKeyState | Window.cs:11473-11484 |
+| 项目 | 当前结果 | 说明 |
+| --- | --- | --- |
+| Ubuntu 20.04 / `linux-x64` native | ✅ 已验证 | glibc 2.31 基线；当前 10/10 CTest 通过 |
+| ELF 版本、导出、重定位 | ✅ 已验证 | 7 个 `.so` 通过 `GLIBC_2.31` / `GLIBCXX_3.4.28` 上限、导出闭包和 `ldd -r` |
+| X11 软件 present | ✅ 已验证 | MIT-SHM 与强制 `XPutImage` 回退均有像素/增量更新测试 |
+| Wayland 软件/Vulkan present | ✅ 已验证 | Weston 下 `wl_shm` 与 Vulkan surface smoke；WSL Weston 13 DnD 通过 |
+| 真实媒体正路径 | ✅ 已验证 | H.264/AAC、本地、流式 Matroska HTTP 200/206、精确 seek、双音轨、字幕、GIF/APNG/动画 WebP |
+| Print portal | ✅ 已验证 | `PreparePrint`、`Print` 和 Unix PDF FD 传递通过假 portal 协议测试 |
+| StatusNotifier/通知 | ✅ 已验证 | 两套 watcher 注册、属性、点击/双击/菜单/滚轮、通知 action/close 通过 |
+| logind / XSMP | ✅ 已验证 | delay inhibitor、`PrepareForShutdown`、logout cancellation 通过 |
+| AT-SPI | ✅ 已验证 | 真实 accessibility bus D-Bus smoke 覆盖 Unicode Text/EditableText、Value/Action、焦点、属性、`ChildrenChanged` 与窗口生命周期 |
+| portable managed suite | ✅ 已验证 | Xvfb/X11 下 3844 passed、1 skipped、0 failed；渲染后端保持自动选择，只排除下列 8 个 Windows-only 文件 |
+| `linux-musl-x64` | ✅ 已验证 | native CTest 10/10、导出 7/7、无 `GLIBC_*`；静态聚合与三种 NuGet consumer 全过 |
+| `linux-arm64` | ✅ QEMU 验证 | AArch64 native CTest 10/10、静态聚合 1/1、11 包及 self-contained/single-file/NativeAOT 全过；仍不等同物理 Arm qualification |
+| `linux-musl-arm64` | ⏳ 待原生环境验证 | build/package/consumer/CI 路径已实现；当前机器没有 Arm64 musl SDK/runtime，不能用 glibc Arm 结果替代 |
+| 四 RID NuGet + self-contained + trimmed single-file + NativeAOT | ⏳ 3/4 已验证 | `linux-x64`、`linux-musl-x64`、`linux-arm64` 已过；`linux-musl-arm64` 与最终 combined package 待原生 Arm CI |
 
-## 二、native 平台层缺口（Wave B）
+发布文档不得把上述“待验证”项目改写成“已支持并验证”，除非当前提交已得到对应日志。
 
-ABI 级缺失（jalium_platform.h 无入口，Windows 由托管 Win32 interop 补足、Linux 无对应）：
-- **显示器枚举**（bounds/workarea/scale/refresh/primary）→ X11: XRandR + _NET_WORKAREA；Wayland: wl_output(+xdg_output)
-- **窗口 min/max 尺寸约束** → X11: WM_NORMAL_HINTS；Wayland: xdg_toplevel.set_min/max_size
-- **交互式移动/缩放（DragMove）** → X11: _NET_WM_MOVERESIZE；Wayland: xdg_toplevel.move/resize
-- **窗口图标** → X11: _NET_WM_ICON（Wayland 无标准，xdg-toplevel-icon-v1 可选）
-- **运行时样式变更**（Topmost/Resizable 等 live 变更）
-- **剪贴板非文本格式**（image/png、text/html）
+## 能力矩阵
 
-行为缺陷（已有代码需修）：
-- X11 `jalium_window_get_state` 恒返回 NORMAL（TODO stub，需查 _NET_WM_STATE）；X11 不派发 MOVE/STATE_CHANGED/ACTIVATE/DPI_CHANGED 事件
-- Wayland dpiScale 恒 1.0（需 wl_output scale + wl_surface_set_buffer_scale；HiDPI 屏幕上模糊）
-- Wayland set_cursor 是显式 no-op（需 wayland-cursor 主题 + wl_pointer_set_cursor）
-- Wayland `jalium_input_get_cursor_pos` 把 surface-local 坐标当屏幕坐标返回
-- Wayland 无 xdg_popup（Popup 外飞窗口在 Wayland 无定位手段，暂靠 overlay 模式）
-- Wayland 无 zxdg_decoration 协商（GNOME 上无边框）
-- 触摸输入两后端均缺（wl_touch / XInput2）；X11 无平滑滚轮
-- CMake APPLE 分支引用不存在的 platform_macos.mm（配置必败）
+| 子系统 | 已实现内容 | 自动化/协议证据 | 仍有边界 |
+| --- | --- | --- | --- |
+| X11 窗口 | 状态、激活、owner、尺寸约束、交互移动/缩放、图标、Topmost、Opacity、ShowInTaskbar、XRandR/EWMH | platform CTest、真实 Xvfb/sample | WM 可按策略拒绝 EWMH 请求 |
+| Wayland 窗口 | `xdg_toplevel`、`xdg_popup`、整数 HiDPI、主题光标、decoration、foreign parent、可选 toplevel icon、原生 system menu 与 token-backed xdg activation | platform CTest、Weston sample/DnD | 无全局坐标、无 token 时不能强制激活、无 Topmost/整窗 Opacity/任务栏控制；无专用 fractional-scale 路径 |
+| Vulkan | Xlib/Wayland WSI、LCD 双源混合、颜色 emoji、CPU video staging、受限 dma-buf import | Wayland Vulkan smoke、LCD CTest | 当前只有 llvmpipe/虚拟环境证据，无物理 GPU qualification |
+| 软件渲染 | Wayland `wl_shm`；X11 MIT-SHM + `XPutImage` fallback；damage-scoped present | 软件 present CTest 和像素读取 | 性能仍取决于 compositor/X server |
+| 文本 | 自研 OpenType shaping/raster、fontconfig fallback、CJK、LCD RGB coverage、COLR/CPAL、CBDT/CBLC | text/Vulkan/software 像素测试 | 并非所有 COLR-v1/SVG/sbix paint graph；目标机仍须安装字体 |
+| 键盘/IME | XIM、xkb、Wayland text-input-v3/v1、repeat/state、组合文本 | native platform tests、sample 输入 | 无 text-input 协议时只能用 xkb commit |
+| 鼠标/触摸/笔 | capture、光标、平滑滚轮、XInput2 touch/pen、Wayland `wl_touch` 与 tablet-v2（hover/contact/proximity、pressure/tilt/twist、工具/按钮） | synthetic native/managed tests | 无物理触摸/笔设备证据 |
+| 剪贴板 | 文本、HTML、RTF、URI/file drop、PNG/bitmap、自定义 MIME | `xclip`、`wl-copy`/`wl-paste` 互操作 | 外部应用对自定义 MIME 的支持由对端决定 |
+| 拖放 | Xdnd/Wayland data device、effects、feedback/cancel、drag image、URI/text/custom MIME | X11 与 Weston 真实交互脚本 | 组合器/目标程序可协商到不同 effect |
+| Portal | FileChooser filters/cancel、OpenURI、Settings、X11/Wayland parent | 协议完整 fake portal + 模型测试；CI 配置真实服务 cancel smoke | session 必须运行可用的 portal backend；只有 service 包而没有 backend 不足以完成请求 |
+| 打印 | 视觉/分页器转 PDF、PreparePrint、Unix FD Print | 假 portal 完整 FD 协议测试 | 无物理打印机证据；Linux `PrintQueue`/CUPS 队列管理未实现 |
+| AT-SPI | Accessible/Application/Component/Action/Text/EditableText/Value/Selection/Table 和事件 | 模型测试 + 真实 accessibility bus D-Bus smoke | 未做 Orca 等全量互操作认证 |
+| 托盘/通知 | freedesktop + KDE SNI、图标/tooltip/menu、activate/context/scroll、libnotify action/close | fake watcher + fake notification daemon | 需要宿主托盘 watcher；balloon 需要 libnotify 和通知服务 |
+| 系统设置 | portal appearance、GNOME GSettings、KDE config、环境覆盖、monitor/workarea、power supply | managed parser/environment tests | 未知桌面会回退到保守默认值 |
+| 会话结束 | logind delay inhibitor + shutdown signal；XSMP logout/cancel | 两个假服务端端到端 smoke | session 只会暴露适合自己的协议 |
+| 文件关联 | per-user `.desktop`、shared MIME XML、`xdg-mime`、回滚/删除 | managed tests | 依赖 `xdg-utils` / shared-mime-info；不做系统级安装 |
+| 媒体 | runtime-loaded GStreamer、H.264/AAC、HTTP、seek、多音轨、字幕、GIF/APNG/动画 WebP、camera/mic ABI | loader present/absent、真实生成媒体、HTTP 200→206、动画帧像素/时序、managed smoke | codec 插件和 WebP runtime 条件化；远程尾置 Cues Matroska 的打开后立即 seek 未 qualification；camera/mic 只有 no-device 证据 |
+| 打包 | 四 RID 目录、version script、交叉工具链守卫、隔离 NuGet source mapping；`libjalium.native.aot.a` 媒体/音频聚合链接门禁；trimmed single-file 自解包门禁 | glibc x64、musl x64、glibc Arm64 的静态聚合、11 包及三种 consumer 已过；single-file 均证明干净提取并加载恰好 7 个 `.so` | `linux-musl-arm64` 与四 RID combined package 待原生 Arm CI；single-file 会提取共享 `.so`，不属于全静态打包 |
 
-## 三、渲染/文本缺口（Wave B/C）
+## 媒体 dma-buf 的准确边界
 
-- fontconfig 家族名 wcstombs 依赖 locale（非 UTF-8 locale 下非 ASCII 族名损坏）→ 显式 UTF-8 转换
-- present 能力编译开关缺失时 EndDraw 静默成功（黑窗无错误信号）
-- fontconfig 声明可选实为必需（无头则编译失败）
-- X11 XPutImage 假设 24/32-depth；无 XShm；无增量 damage
-- Vulkan WSI 无 XCB 分支（仅 Xlib）
-- 字体 glyph fallback 仅一级（固定 Noto Sans CJK SC）；无 FcFontSort 逐字符链
-- 无 LCD/ClearType 亚像素（恒灰度 AA，1/8px 亚像素定位已有）；无 COLR/CBDT 彩色 emoji
-- Linux 运行时 HLSL 编译不可用（DXC Windows-only；内置效果不受影响，全部嵌入 SPIR-V）
+- `JALIUM_LINUX_MEDIA_DMABUF_EXPORT` 只在当前进程中的真实样本成功导出、且 Vulkan
+  能导入单平面 packed-RGB dma-buf 后置位。
+- 当前接受的 DRM 格式是 `AR24`、`XR24`、`AB24`、`XB24`。
+- NV12、P010、`DMA_DRM` 和多平面描述符不会假装零拷贝；它们按同一时间戳重新打开
+  CPU BGRA/RGBA 管线。
+- Vulkan 尚无这批 YCbCr 格式所需的 immutable sampler 管线。
+- 当前 WSL/CI 没有 `/dev/dri`，所以只证明能力位、拒绝/回退和资源生命周期安全，
+  不证明真实 VAAPI → Vulkan 零拷贝。
 
-## 四、多媒体缺口（Wave C）
+## Wayland：协议限制，不是待补 Win32 仿真
 
-- **架构缺陷：libjalium.native.media.so 硬链接 GStreamer**——未装 GStreamer 的用户机器上纯音频
-  （WAV/FLAC/MP3/OGG，本应零依赖）也一并 DllNotFound。需改为运行时 dlopen/符号动态解析
-- 媒体类型不匹配探测阻塞 15-30s（pad 永不链接，appsink 等满超时）
-- 动画图像（GIF/APNG）恒回 1 帧（Windows WIC 有完整多帧）
-- SoundPlayerAction 硬编码 winmm（Linux 静默无声，应走 AudioPlayer）
-- 非 file URI 被 FileExists 挡死（http 流本可由 uridecodebin 播放）
-- seek 仅 KEY_UNIT 精度；无 VAAPI/dma-buf 硬解零拷贝（CPU 双拷贝路径可用）
-- 无字幕/多音轨 ABI；无麦克风采集；Balance 全平台空壳
-- CI 无 H.264 插件且 smoke 正路径需手动传参 → 视频解码正路径从未被任何自动化验证
+以下行为不能用 core Wayland 正确伪造，当前实现会返回“不支持”：
 
-## 五、桌面集成/无障碍缺口（Wave C）
+1. 获取桌面全局光标坐标或设置顶层窗口绝对位置；
+2. 没有 compositor 接受的 input serial / xdg-activation token 时强制抢焦点；
+3. 设置 always-on-top；
+4. 控制窗口是否出现在全局任务栏；
+5. 设置整窗统一 opacity。
 
-- 通知 action 回调 no-op + 无 GLib 泵 → 按钮点击/Activated/Dismissed 永不触发
-- 无 org.freedesktop.portal.Settings → 无系统深浅色跟随、HighContrast 恒 false
-- SystemParameters/SystemColors 全部硬编码 fallback（1920x1080、DoubleClickTime 500…）
-- 打印：仅能力探测，无 portal PreparePrint/Print 提交 → 完全无法打印
-- NotifyIcon 五个平台钩子全空（Windows 也没实现）；无 StatusNotifierItem
-- AT-SPI 桥质量高（五接口+38 角色+事件），但缺 Value/EditableText/Table/Selection 接口
-  （滑杆读数、AT 写文本、DataGrid 表格导航不可用）；Text 坐标类方法是近似值
-- portal 对话框在 Wayland 无父窗口挂靠（需 xdg-foreign 导出）
-- 拖出无拖拽图像、无 GiveFeedback/QueryContinueDrag
-- Clipboard 仅纯文本
-- 无 xdg-mime/.desktop 文件关联注册
+透明 surface 的逐像素 alpha、相对父窗口的 `xdg_popup`、compositor 授权的 move/resize
+都已实现，不应与上述限制混为一谈。窗口图标、server-side decoration、portal parent
+取决于 compositor 是否公布相应可选协议。
 
-## 六、构建/打包/CI/示例/文档缺口（Wave D）
+## 硬件与桌面环境尚无证明的项目
 
-- ~~linux.yml push 触发分支 `main` 不存在（默认分支 master）~~ ✅ 已修
-- ~~musl job 缺 gst-plugins-good~~ ✅ 已修；~~NU1301~~ ✅ 已修；~~Dockerfile dotnet 层静默失败~~ ✅ 已修
-- **samples/ 零个 Linux 可运行示例**（8 个桌面示例全部 net10.0-windows + WinExe）
-- 主测试套 tests/Jalium.UI.Tests 锁死 net10.0-windows；Linux 实际只执行 ~24 个 managed 用例
-- Vulkan 渲染在 Linux 的测试执行数为 0（--wayland-vulkan-smoke 无调用方）
-- eng/linux 三个真实端到端脚本（AT-SPI/剪贴板互操作/Wayland DnD）是孤儿，未接 CI
-- 三个 Smoke 项目不在 slnx、无 runner；Media.LinuxSmoke 开箱即 DllNotFound（引用链无 Interop）
-- musl job 不跑 managed 测试；无 NuGet linux RID 消费端验证（NuGetTest.Desktop 是 Windows-only）
-- README 四语无 Jalium.UI.Linux 包/构建指引，且仍宣称 FreeType+HarfBuzz（已被自研引擎替换）；
-  docs/linux.md 无任何入链；无发行版支持矩阵/故障排查文档
-- 静态 AOT 聚合器 media 分支缺 Linux（jalium.native.aot 只有 WIN32/ANDROID）
-- OS 早退式假绿测试（LinuxDragDropTests 在 Windows 上"通过"却什么都没验证）
-- 共享 JaliumBuildRoot 并行构建 deps.json 竞争（需 -m:1）
+- 物理 NVIDIA/AMD/Intel Vulkan GPU 和多显示器混合 DPI；
+- 有 `/dev/dri` 的 VAAPI/dma-buf 单平面真实导出，更不用说 NV12/P010 零拷贝；
+- 物理触摸屏、XInput2 数位笔和 Wayland tablet-v2 笔设备；
+- 真实摄像头、麦克风和权限门户；
+- 真实打印机/CUPS 队列；当前只验证 portal PDF FD；
+- Orca 等真实 Linux 辅助技术组合；当前以 AT-SPI D-Bus 合约为主；
+- 所有桌面 shell 的 SNI、portal、session-manager 方言。
 
-## 实施波次与状态（2026-07-13 更新）
+这些都是 qualification 缺口，不能从“API 存在”推导为“硬件已验证”。
 
-- ✅ **Wave A 完成**：全部 10 条崩溃链/毁灭性缺陷修复（含 filters GVariant、滚轮、Popup、
-  imm32、SystemCommands、Dock、Unix PTY、光标枚举、PushFrame 泵、IsVirtualKeyDown）+
-  GVariant 结构校验测试与 3 个真实 PTY 端到端测试；另修复 code-only 应用
-  ContextMenuService 静态构造从不运行导致右键菜单全平台失效的问题。
-- ✅ **Wave B 完成**：新平台 ABI（显示器枚举/min-max 约束/交互移动缩放/图标/topmost）
-  三后端落地；X11 get_state 真查询 + MOVE/STATE_CHANGED 事件补发；Wayland HiDPI
-  （wl_output + buffer scale + 坐标/尺寸物理像素化）；Wayland 主题光标；managed 接线
-  （DragMove/Topmost live/尺寸约束/StartupLocation/Window.Icon/SystemParameters 真实
-  屏幕与工作区数据）。
-- 🟡 **Wave C 大部完成**：✅ 通知 action 激活与 Dismissed（GLib 泵）；✅ portal Settings
-  深浅色跟随（ThemeMode.None 时启动读取+SettingChanged 订阅）；✅ 媒体无流探测 15s
-  阻塞→0.03s 快速失败；✅ SoundPlayerAction 走框架音频栈；✅ AT-SPI Value/EditableText
-  接口；✅ fontconfig locale 安全 UTF-8 转换。**未完成**（见下"后续跟进"）：GStreamer
-  运行时 dlopen 化、portal Print 提交、剪贴板 image/png+text/html。
-- 🟡 **Wave D 大部完成**：✅ samples/Jalium.UI.LinuxDemo（首个 Linux 示例，CI headless
-  双路径运行）；✅ CI 接入孤儿脚本（剪贴板互操作/Wayland DnD）+ Vulkan-on-Wayland
-  冒烟 + 示例构建运行；✅ README 四语 Linux 章节 + FreeType/HarfBuzz 措辞清除 +
-  docs/linux.md 发行版矩阵与故障排查；✅ Linux 测试切片 40→55（PTY e2e、GVariant
-  结构校验、AtSpiModelTests 首次在 Linux 执行）；✅ `.gitignore` 的 `samples/` 全忽略
-  缺陷。**未完成**：NuGet linux RID 消费端验证项目、musl job 的 managed 测试、主套件
-  net10.0 可移植化评估。
-- ⏳ **Wave E（后续跟进，按优先序)**：
-  1. libjalium.native.media.so 的 GStreamer 改运行时 dlopen（当前硬链接：未装 GStreamer
-     的机器上纯音频也 DllNotFound——发布质量硬伤，改动面为 linux_media.cpp 全部 gst 调用）
-  2. portal Print 的 PreparePrint/Print 提交（当前只有能力探测，Linux 无法打印）
-  3. 剪贴板非文本格式（image/png、text/html 的 ABI + X11/Wayland 双实现）
-  4. Wayland xdg_popup（菜单/下拉在 Wayland 目前走 overlay，无外飞窗口）
-  5. 触摸输入（XInput2 touch / wl_touch → 既有 managed 触摸栈）
-  6. X11 XShm 加速 present 与增量 damage；X11 ARGB 透明视觉
-  7. LCD/ClearType 亚像素光栅（当前恒灰度 AA）；COLR/CBDT 彩色 emoji
-  8. VAAPI dma-buf 硬解零拷贝；动画 GIF/APNG 多帧解码
-  9. 托盘 StatusNotifierItem；xdg-decoration 协商；会话结束/设置变化事件
-  10. 符号导出白名单（-fvisibility=hidden + version script）与交叉编译 preset
+## 有意排除的 Windows-only 测试文件
 
-状态跟踪：本文件随实施持续更新；逐波提交、容器内验证后勾销。
+`tests/Jalium.UI.Linux.Tests` 自动包含主测试目录中的全部 C# 测试源，只有下列 8 个
+文件被整文件排除：
+
+1. `DeviceLost/DeviceRemovalInjectionTests.cs` — Win32 device-removal 注入 harness；
+2. `EffectCaptureCullOverrideTests.cs` — Win32 hidden native window/GPU fixture；
+3. `FileDialogComActivationTests.cs` — Windows COM common-dialog activation；
+4. `SpellCheckerComActivationTests.cs` — Windows spell-check COM activation；
+5. `UiaComWrappersTests.cs` — Windows UIA COM wrappers；
+6. `VulkanEffectGpuRtSmokeTests.cs` — Win32 HWND GPU smoke fixture；
+7. `VulkanRetainedLayerParityTests.cs` — Win32 HWND retained-render fixture；
+8. `WindowTaskbarRelaunchTests.cs` — Windows taskbar AppUserModel/relaunch contract。
+
+测试中的单个 Windows 分支仍可在 Linux 项目中存在，但必须用平台条件表达；不得再用
+不断扩大的手工文件白名单掩盖可移植性问题。
+
+## 明确未提供的 Linux 能力
+
+- WebView2、WindowsFormsHost、JumpList、`TaskbarItemInfo` 等 Windows shell/COM 功能；
+- Linux 对 CUPS 队列的枚举、暂停、恢复、作业管理；
+- Wayland fractional-scale-v1 专用路径；
+- NV12/P010/多平面 dma-buf 的 Vulkan YCbCr 零拷贝；
+- Linux 运行时任意 HLSL 编译。内置效果使用预编译 SPIR-V，不受此限制；
+- 每一种颜色字体格式/paint graph 的完整实现；
+- Linux 全静态发布；trimmed single-file consumer 会从单一部署文件提取 7 个共享 `.so`，self-contained/NativeAOT consumer 则旁置部署它们；
+- framebuffer/DRM/KMS 直出和无 compositor 桌面。
+
+## 发布闭环清单
+
+- [x] Ubuntu 20.04 `linux-x64` native 10/10 CTest
+- [x] `linux-x64` GLIBC/GLIBCXX、导出闭包、`ldd -r`
+- [x] X11/Wayland 软件与 Vulkan smoke
+- [x] 真实 H.264/HTTP/multitrack/subtitle/GIF/APNG/动画 WebP
+- [x] Print、StatusNotifier/notification、logind、XSMP 协议 smoke
+- [x] AT-SPI Unicode/EditableText/`ChildrenChanged` 集成 smoke
+- [x] portable managed suite 当前版本全绿（3844 passed、1 skipped）
+- [x] 新鲜 `linux-musl-x64` native/package/三种 consumer 验证
+- [x] `linux-arm64` native、静态聚合与三种 consumer（QEMU）
+- [ ] `linux-musl-arm64` 原生运行与三种 consumer 证据
+- [x] 已验证的三个 RID 的 `test-native-aot-static.sh` 静态聚合链接门禁全绿
+- [ ] 四 RID 的 self-contained、trimmed single-file 与 NativeAOT consumer 全绿
+- [ ] combined package 同时包含四 RID、每 RID 恰好 7 个 `.so`
+
+只有上述发布门全部闭合后，才能把四 RID/single-file/AOT 的文档措辞从“workflow 已配置”提升为
+“当前版本已验证”。

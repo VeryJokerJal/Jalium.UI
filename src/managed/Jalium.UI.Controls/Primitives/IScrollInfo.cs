@@ -1,3 +1,5 @@
+using Jalium.UI.Media;
+
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>Provides logical or physical scrolling metrics and operations.</summary>

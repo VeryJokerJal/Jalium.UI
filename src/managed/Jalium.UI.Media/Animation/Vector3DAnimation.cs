@@ -1,5 +1,5 @@
-using System.Collections;
 using Jalium.UI.Media.Media3D;
+using System.Collections;
 
 namespace Jalium.UI.Media.Animation;
 
@@ -9,6 +9,30 @@ namespace Jalium.UI.Media.Animation;
 /// </summary>
 public partial class Vector3DAnimation : Vector3DAnimationBase
 {
+    public bool IsAdditive
+    {
+        get => (bool)GetValue(IsAdditiveProperty)!;
+        set => SetValue(IsAdditiveProperty, value);
+    }
+
+    public bool IsCumulative
+    {
+        get => (bool)GetValue(IsCumulativeProperty)!;
+        set => SetValue(IsCumulativeProperty, value);
+    }
+
+    // --- from Media3DSimpleAnimations.WpfParity.cs ---
+    public Vector3DAnimation(Vector3D toValue, Duration duration, FillBehavior fillBehavior)
+        : this(toValue, duration) => FillBehavior = fillBehavior;
+
+    public Vector3DAnimation(Vector3D fromValue, Vector3D toValue, Duration duration, FillBehavior fillBehavior)
+        : this(fromValue, toValue, duration) => FillBehavior = fillBehavior;
+
+    public new Vector3DAnimation Clone() => (Vector3DAnimation)base.Clone();
+
+    protected override Freezable CreateInstanceCore() => new Vector3DAnimation();
+
+    // --- from Vector3DAnimation.cs ---
     #region Dependency Properties
 
     /// <summary>
@@ -135,35 +159,16 @@ public partial class Vector3DAnimation : Vector3DAnimationBase
 }
 
 /// <summary>
-/// Animates the value of a <see cref="Vector3D"/> property using key frames.
-/// </summary>
-public partial class Vector3DAnimationUsingKeyFrames : Vector3DAnimationBase
-{
-    private Vector3DKeyFrameCollection _keyFrames = new();
-
-    /// <summary>
-    /// Gets the collection of keyframes.
-    /// </summary>
-    public Vector3DKeyFrameCollection KeyFrames
-    {
-        get => _keyFrames;
-        set => ReplaceAnimationChild(ref _keyFrames, value);
-    }
-}
-
-#region Vector3D KeyFrames
-
-/// <summary>
 /// A keyframe that defines a <see cref="Vector3D"/> value with discrete interpolation.
 /// </summary>
 public class DiscreteVector3DKeyFrame : Vector3DKeyFrame
 {
     public DiscreteVector3DKeyFrame() { }
-    public DiscreteVector3DKeyFrame(Vector3D value) => TypedValue = value;
-    public DiscreteVector3DKeyFrame(Vector3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public DiscreteVector3DKeyFrame(Vector3D value) => Value = value;
+    public DiscreteVector3DKeyFrame(Vector3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Vector3D InterpolateValueCore(Vector3D baseValue, double keyFrameProgress)
-        => keyFrameProgress >= 1.0 ? TypedValue : baseValue;
+        => keyFrameProgress >= 1.0 ? Value : baseValue;
 
     protected override Freezable CreateInstanceCore() => new DiscreteVector3DKeyFrame();
 }
@@ -174,11 +179,11 @@ public class DiscreteVector3DKeyFrame : Vector3DKeyFrame
 public class LinearVector3DKeyFrame : Vector3DKeyFrame
 {
     public LinearVector3DKeyFrame() { }
-    public LinearVector3DKeyFrame(Vector3D value) => TypedValue = value;
-    public LinearVector3DKeyFrame(Vector3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public LinearVector3DKeyFrame(Vector3D value) => Value = value;
+    public LinearVector3DKeyFrame(Vector3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Vector3D InterpolateValueCore(Vector3D baseValue, double keyFrameProgress)
-        => baseValue + (TypedValue - baseValue) * keyFrameProgress;
+        => baseValue + (Value - baseValue) * keyFrameProgress;
 
     protected override Freezable CreateInstanceCore() => new LinearVector3DKeyFrame();
 }
@@ -202,11 +207,11 @@ public class SplineVector3DKeyFrame : Vector3DKeyFrame
     }
 
     public SplineVector3DKeyFrame() { }
-    public SplineVector3DKeyFrame(Vector3D value) => TypedValue = value;
-    public SplineVector3DKeyFrame(Vector3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public SplineVector3DKeyFrame(Vector3D value) => Value = value;
+    public SplineVector3DKeyFrame(Vector3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public SplineVector3DKeyFrame(Vector3D value, KeyTime keyTime, KeySpline keySpline)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         KeySpline = keySpline;
     }
@@ -214,13 +219,13 @@ public class SplineVector3DKeyFrame : Vector3DKeyFrame
     protected override Vector3D InterpolateValueCore(Vector3D baseValue, double keyFrameProgress)
     {
         var progress = KeySpline?.GetSplineProgress(keyFrameProgress) ?? keyFrameProgress;
-        return baseValue + (TypedValue - baseValue) * progress;
+        return baseValue + (Value - baseValue) * progress;
     }
 
     protected override Freezable CreateInstanceCore() => new SplineVector3DKeyFrame();
 
     private static void OnKeySplineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((SplineVector3DKeyFrame)d).OnFreezableChildPropertyChanged(e, KeySplineProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, KeySplineProperty);
 }
 
 /// <summary>
@@ -240,11 +245,11 @@ public class EasingVector3DKeyFrame : Vector3DKeyFrame
     }
 
     public EasingVector3DKeyFrame() { }
-    public EasingVector3DKeyFrame(Vector3D value) => TypedValue = value;
-    public EasingVector3DKeyFrame(Vector3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public EasingVector3DKeyFrame(Vector3D value) => Value = value;
+    public EasingVector3DKeyFrame(Vector3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public EasingVector3DKeyFrame(Vector3D value, KeyTime keyTime, IEasingFunction easingFunction)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         EasingFunction = easingFunction;
     }
@@ -252,13 +257,11 @@ public class EasingVector3DKeyFrame : Vector3DKeyFrame
     protected override Vector3D InterpolateValueCore(Vector3D baseValue, double keyFrameProgress)
     {
         var progress = EasingFunction?.Ease(keyFrameProgress) ?? keyFrameProgress;
-        return baseValue + (TypedValue - baseValue) * progress;
+        return baseValue + (Value - baseValue) * progress;
     }
 
     protected override Freezable CreateInstanceCore() => new EasingVector3DKeyFrame();
 
     private static void OnEasingFunctionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((EasingVector3DKeyFrame)d).OnFreezableChildPropertyChanged(e, EasingFunctionProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, EasingFunctionProperty);
 }
-
-#endregion

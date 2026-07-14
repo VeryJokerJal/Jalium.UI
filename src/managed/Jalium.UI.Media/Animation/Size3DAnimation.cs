@@ -140,9 +140,11 @@ public sealed class Size3DAnimation : AnimationTimeline
 /// <summary>
 /// Animates the value of a <see cref="Size3D"/> property using key frames.
 /// </summary>
-public sealed class Size3DAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Size3D>
+public sealed class Size3DAnimationUsingKeyFrames : TypedAnimationTimeline<Size3D>
 {
     private Size3DKeyFrameCollection _keyFrames = new();
+
+    public Size3DAnimationUsingKeyFrames() => OnFreezablePropertyChanged(null, _keyFrames);
 
     /// <summary>
     /// Gets the collection of keyframes.
@@ -150,16 +152,28 @@ public sealed class Size3DAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Si
     public Size3DKeyFrameCollection KeyFrames
     {
         get => _keyFrames;
-        set => ReplaceKeyFrames(ref _keyFrames, value);
+        set => ReplaceAnimationChild(ref _keyFrames, value);
     }
 
-    protected override IList KeyFramesCore => _keyFrames;
+    protected override Size3D GetCurrentValueCore(Size3D defaultOriginValue, Size3D defaultDestinationValue, AnimationClock animationClock) =>
+        KeyFrameAnimationTimeline<Size3D>.Evaluate(this, KeyFrames, defaultOriginValue, defaultDestinationValue, animationClock);
+
+    protected override Duration GetNaturalDurationCore(Clock clock) =>
+        KeyFrameAnimationTimeline<Size3D>.GetNaturalDuration(KeyFrames);
+
+    protected override bool FreezeCore(bool isChecking) => base.FreezeCore(isChecking) && Freeze(_keyFrames, isChecking);
+    protected override void CloneCore(Freezable source) { base.CloneCore(source); CopyFrames((Size3DAnimationUsingKeyFrames)source, KeyFrameCollectionCloneMode.BaseValue); }
+    protected override void CloneCurrentValueCore(Freezable source) { base.CloneCurrentValueCore(source); CopyFrames((Size3DAnimationUsingKeyFrames)source, KeyFrameCollectionCloneMode.CurrentValue); }
+    protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); CopyFrames((Size3DAnimationUsingKeyFrames)source, KeyFrameCollectionCloneMode.AsFrozen); }
+    protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); CopyFrames((Size3DAnimationUsingKeyFrames)source, KeyFrameCollectionCloneMode.CurrentValueAsFrozen); }
+    private void CopyFrames(Size3DAnimationUsingKeyFrames source, KeyFrameCollectionCloneMode mode) =>
+        KeyFrames = KeyFrameAnimationTimeline<Size3D>.CloneKeyFrames(source._keyFrames, mode);
 }
 
 /// <summary>
 /// A collection of <see cref="Size3D"/> keyframes.
 /// </summary>
-public sealed class Size3DKeyFrameCollection : KeyFrameCollectionBase<Size3DKeyFrame>
+public sealed partial class Size3DKeyFrameCollection : Freezable, IList
 {
     private static readonly Size3DKeyFrameCollection s_empty =
         KeyFrameCollectionDefaults.CreateFrozen<Size3DKeyFrameCollection>();
@@ -167,18 +181,36 @@ public sealed class Size3DKeyFrameCollection : KeyFrameCollectionBase<Size3DKeyF
     public static Size3DKeyFrameCollection Empty => s_empty;
     public new Size3DKeyFrameCollection Clone() => (Size3DKeyFrameCollection)base.Clone();
     protected override Freezable CreateInstanceCore() => new Size3DKeyFrameCollection();
-    protected override bool FreezeCore(bool isChecking) => base.FreezeCore(isChecking);
-    protected override void CloneCore(Freezable sourceFreezable) => base.CloneCore(sourceFreezable);
-    protected override void CloneCurrentValueCore(Freezable sourceFreezable) => base.CloneCurrentValueCore(sourceFreezable);
-    protected override void GetAsFrozenCore(Freezable sourceFreezable) => base.GetAsFrozenCore(sourceFreezable);
-    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable) => base.GetCurrentValueAsFrozenCore(sourceFreezable);
+    protected override bool FreezeCore(bool isChecking) => base.FreezeCore(isChecking) && _storage.Freeze(isChecking);
+    protected override void CloneCore(Freezable sourceFreezable) { base.CloneCore(sourceFreezable); _storage.CopyFrom(((Size3DKeyFrameCollection)sourceFreezable)._storage, KeyFrameCollectionCloneMode.BaseValue); }
+    protected override void CloneCurrentValueCore(Freezable sourceFreezable) { base.CloneCurrentValueCore(sourceFreezable); _storage.CopyFrom(((Size3DKeyFrameCollection)sourceFreezable)._storage, KeyFrameCollectionCloneMode.CurrentValue); }
+    protected override void GetAsFrozenCore(Freezable sourceFreezable) { base.GetAsFrozenCore(sourceFreezable); _storage.CopyFrom(((Size3DKeyFrameCollection)sourceFreezable)._storage, KeyFrameCollectionCloneMode.AsFrozen); }
+    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable) { base.GetCurrentValueAsFrozenCore(sourceFreezable); _storage.CopyFrom(((Size3DKeyFrameCollection)sourceFreezable)._storage, KeyFrameCollectionCloneMode.CurrentValueAsFrozen); }
 }
 
 #region Size3D KeyFrames
 
 /// <summary>Defines a key frame for a <see cref="Size3D"/> animation.</summary>
-public abstract class Size3DKeyFrame : KeyFrame<Size3D>
+public abstract class Size3DKeyFrame : Freezable, IKeyFrame
 {
+    public static readonly DependencyProperty ValueProperty = KeyFrameSupport.RegisterValue<Size3D, Size3DKeyFrame>();
+    public static readonly DependencyProperty KeyTimeProperty = KeyFrameSupport.RegisterKeyTime<Size3DKeyFrame>();
+
+    protected Size3DKeyFrame() { }
+    protected Size3DKeyFrame(Size3D value) => Value = value;
+    protected Size3DKeyFrame(Size3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
+
+    public Size3D Value { get => (Size3D)(GetValue(ValueProperty) ?? default(Size3D)); set => SetValue(ValueProperty, value); }
+    public KeyTime KeyTime { get => (KeyTime)(GetValue(KeyTimeProperty) ?? KeyTime.Uniform); set => SetValue(KeyTimeProperty, value); }
+    object IKeyFrame.Value { get => Value; set => Value = (Size3D)value; }
+
+    public Size3D InterpolateValue(Size3D baseValue, double keyFrameProgress)
+    {
+        KeyFrameSupport.ValidateProgress(keyFrameProgress);
+        return InterpolateValueCore(baseValue, keyFrameProgress);
+    }
+
+    protected abstract Size3D InterpolateValueCore(Size3D baseValue, double keyFrameProgress);
 }
 
 /// <summary>
@@ -187,11 +219,11 @@ public abstract class Size3DKeyFrame : KeyFrame<Size3D>
 public sealed class DiscreteSize3DKeyFrame : Size3DKeyFrame
 {
     public DiscreteSize3DKeyFrame() { }
-    public DiscreteSize3DKeyFrame(Size3D value) => TypedValue = value;
-    public DiscreteSize3DKeyFrame(Size3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public DiscreteSize3DKeyFrame(Size3D value) => Value = value;
+    public DiscreteSize3DKeyFrame(Size3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Size3D InterpolateValueCore(Size3D baseValue, double keyFrameProgress)
-        => keyFrameProgress >= 1.0 ? TypedValue : baseValue;
+        => keyFrameProgress >= 1.0 ? Value : baseValue;
 
     protected override Freezable CreateInstanceCore() => new DiscreteSize3DKeyFrame();
 }
@@ -202,14 +234,14 @@ public sealed class DiscreteSize3DKeyFrame : Size3DKeyFrame
 public sealed class LinearSize3DKeyFrame : Size3DKeyFrame
 {
     public LinearSize3DKeyFrame() { }
-    public LinearSize3DKeyFrame(Size3D value) => TypedValue = value;
-    public LinearSize3DKeyFrame(Size3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public LinearSize3DKeyFrame(Size3D value) => Value = value;
+    public LinearSize3DKeyFrame(Size3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Size3D InterpolateValueCore(Size3D baseValue, double keyFrameProgress)
         => new(
-            baseValue.X + (TypedValue.X - baseValue.X) * keyFrameProgress,
-            baseValue.Y + (TypedValue.Y - baseValue.Y) * keyFrameProgress,
-            baseValue.Z + (TypedValue.Z - baseValue.Z) * keyFrameProgress);
+            baseValue.X + (Value.X - baseValue.X) * keyFrameProgress,
+            baseValue.Y + (Value.Y - baseValue.Y) * keyFrameProgress,
+            baseValue.Z + (Value.Z - baseValue.Z) * keyFrameProgress);
 
     protected override Freezable CreateInstanceCore() => new LinearSize3DKeyFrame();
 }
@@ -233,11 +265,11 @@ public sealed class SplineSize3DKeyFrame : Size3DKeyFrame
     }
 
     public SplineSize3DKeyFrame() { }
-    public SplineSize3DKeyFrame(Size3D value) => TypedValue = value;
-    public SplineSize3DKeyFrame(Size3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public SplineSize3DKeyFrame(Size3D value) => Value = value;
+    public SplineSize3DKeyFrame(Size3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public SplineSize3DKeyFrame(Size3D value, KeyTime keyTime, KeySpline keySpline)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         KeySpline = keySpline;
     }
@@ -246,15 +278,15 @@ public sealed class SplineSize3DKeyFrame : Size3DKeyFrame
     {
         var progress = KeySpline?.GetSplineProgress(keyFrameProgress) ?? keyFrameProgress;
         return new(
-            baseValue.X + (TypedValue.X - baseValue.X) * progress,
-            baseValue.Y + (TypedValue.Y - baseValue.Y) * progress,
-            baseValue.Z + (TypedValue.Z - baseValue.Z) * progress);
+            baseValue.X + (Value.X - baseValue.X) * progress,
+            baseValue.Y + (Value.Y - baseValue.Y) * progress,
+            baseValue.Z + (Value.Z - baseValue.Z) * progress);
     }
 
     protected override Freezable CreateInstanceCore() => new SplineSize3DKeyFrame();
 
     private static void OnKeySplineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((SplineSize3DKeyFrame)d).OnFreezableChildPropertyChanged(e, KeySplineProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, KeySplineProperty);
 }
 
 /// <summary>
@@ -268,11 +300,11 @@ public sealed class EasingSize3DKeyFrame : Size3DKeyFrame
     public IEasingFunction? EasingFunction { get; set; }
 
     public EasingSize3DKeyFrame() { }
-    public EasingSize3DKeyFrame(Size3D value) => TypedValue = value;
-    public EasingSize3DKeyFrame(Size3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public EasingSize3DKeyFrame(Size3D value) => Value = value;
+    public EasingSize3DKeyFrame(Size3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public EasingSize3DKeyFrame(Size3D value, KeyTime keyTime, IEasingFunction easingFunction)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         EasingFunction = easingFunction;
     }
@@ -281,9 +313,9 @@ public sealed class EasingSize3DKeyFrame : Size3DKeyFrame
     {
         var progress = EasingFunction?.Ease(keyFrameProgress) ?? keyFrameProgress;
         return new(
-            baseValue.X + (TypedValue.X - baseValue.X) * progress,
-            baseValue.Y + (TypedValue.Y - baseValue.Y) * progress,
-            baseValue.Z + (TypedValue.Z - baseValue.Z) * progress);
+            baseValue.X + (Value.X - baseValue.X) * progress,
+            baseValue.Y + (Value.Y - baseValue.Y) * progress,
+            baseValue.Z + (Value.Z - baseValue.Z) * progress);
     }
 
     protected override Freezable CreateInstanceCore() => new EasingSize3DKeyFrame();

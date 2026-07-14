@@ -308,6 +308,29 @@ JALIUM_API void jalium_render_target_set_vsync(JaliumRenderTarget* rt, int32_t e
 /// @param enabled 1 to enable external pacing, 0 to restore internal pacing.
 JALIUM_API void jalium_render_target_set_external_present_pacing(JaliumRenderTarget* rt, int32_t enabled);
 
+/// Sets the multisample count used by analytic path rendering.
+/// @param rt The render target.
+/// @param sampleCount Requested sample count. Backends clamp unsupported values.
+JALIUM_API void jalium_render_target_set_path_msaa(JaliumRenderTarget* rt, uint32_t sampleCount);
+
+// Test-only render-target diagnostics. Side-effecting hooks are inert unless
+// JALIUM_DEBUG_DEVICE_REMOVE=1; read-only hooks remain available to harnesses.
+JALIUM_API int32_t jalium_render_target_debug_remove_device(JaliumRenderTarget* rt);
+JALIUM_API int32_t jalium_render_target_debug_retained_destroy_counts(
+    JaliumRenderTarget* rt,
+    uint64_t* orphaned,
+    uint64_t* graveyard);
+JALIUM_API uint64_t jalium_render_target_debug_device_pointer(JaliumRenderTarget* rt);
+JALIUM_API int32_t jalium_render_target_debug_in_offscreen_capture(JaliumRenderTarget* rt);
+JALIUM_API int32_t jalium_render_target_debug_force_leaked_command_list_resize(
+    JaliumRenderTarget* rt,
+    int32_t width,
+    int32_t height,
+    int32_t* out_list_closed);
+JALIUM_API int32_t jalium_render_target_debug_force_vello_output_orphan(
+    JaliumRenderTarget* rt,
+    int32_t* out_alive);
+
 /// Sets the DPI for the render target.
 /// Updates D2D context so DIP coordinates are correctly mapped to physical pixels.
 /// @param rt The render target.

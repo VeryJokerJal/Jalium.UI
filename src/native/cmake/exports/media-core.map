@@ -1,0 +1,9 @@
+JALIUM_MEDIA_CORE_C_ABI_1 {
+    global:
+        jalium_media_aligned_alloc;
+        jalium_media_aligned_free;
+        jalium_media_status_string;
+        jalium_media_swap_rb_inplace;
+    local:
+        *;
+};

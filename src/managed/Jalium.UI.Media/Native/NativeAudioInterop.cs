@@ -96,6 +96,12 @@ internal static partial class NativeAudioInterop
         int hint,
         out nint outDecoder);
 
+    [LibraryImport(MediaLib, EntryPoint = "jalium_linux_audio_decoder_open_track", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial NativeMediaStatus jalium_linux_audio_decoder_open_track(
+        string utf8PathOrUri,
+        uint trackIndex,
+        out nint outDecoder);
+
     [LibraryImport(MediaLib, EntryPoint = "jalium_audio_decoder_open_memory")]
     internal static unsafe partial NativeMediaStatus jalium_audio_decoder_open_memory(
         byte* data,

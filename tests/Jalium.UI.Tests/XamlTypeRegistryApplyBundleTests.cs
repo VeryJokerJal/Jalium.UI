@@ -153,7 +153,7 @@ public class XamlTypeRegistryApplyBundleTests
         };
     }
 
-    [ContentProperty("Child")]
+    [Jalium.UI.Markup.ContentProperty("Child")]
     private sealed class FallbackHost : FrameworkElement
     {
         public UIElement? Child { get; set; }

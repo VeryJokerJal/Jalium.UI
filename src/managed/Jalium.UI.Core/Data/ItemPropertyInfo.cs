@@ -1,6 +1,4 @@
 using System.Collections.ObjectModel;
-using Jalium.UI.Data;
-
 namespace System.ComponentModel;
 
 /// <summary>
@@ -59,13 +57,6 @@ public enum NewItemPlaceholderPosition
 
     /// <summary>The placeholder appears after all data items.</summary>
     AtEnd = 2,
-}
-
-/// <summary>
-/// Provides the canonical component-model identity for a Jalium collection view.
-/// </summary>
-public interface ICollectionView : Jalium.UI.Data.ICollectionView
-{
 }
 
 /// <summary>

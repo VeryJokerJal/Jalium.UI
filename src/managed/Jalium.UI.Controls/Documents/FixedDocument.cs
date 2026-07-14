@@ -1,5 +1,4 @@
 using System.Collections;
-using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using Jalium.UI.Automation.Peers;
@@ -64,8 +63,9 @@ public sealed class FixedDocument : FrameworkContentElement, IDocumentPaginatorS
 /// <summary>
 /// Provides access to an ordered sequence of pages in a FixedDocument.
 /// </summary>
-public sealed class PageContentCollection : Collection<PageContent>
+public sealed class PageContentCollection : IEnumerable<PageContent>
 {
+    private readonly List<PageContent> _items = new();
     private readonly FixedDocument _owner;
 
     internal PageContentCollection(FixedDocument owner)
@@ -73,29 +73,34 @@ public sealed class PageContentCollection : Collection<PageContent>
         _owner = owner;
     }
 
-    /// <inheritdoc />
-    protected override void InsertItem(int index, PageContent item)
+    /// <summary>Gets the number of pages.</summary>
+    public int Count => _items.Count;
+
+    /// <summary>Gets the page at the specified index.</summary>
+    public PageContent this[int index] => _items[index];
+
+    /// <summary>Adds a page and returns its index.</summary>
+    public int Add(PageContent newPageContent)
     {
-        base.InsertItem(index, item);
+        ArgumentNullException.ThrowIfNull(newPageContent);
+        _owner.AddLogicalChild(newPageContent);
+        try
+        {
+            _items.Add(newPageContent);
+        }
+        catch
+        {
+            _owner.RemoveLogicalChild(newPageContent);
+            throw;
+        }
+
+        return _items.Count - 1;
     }
 
-    /// <inheritdoc />
-    protected override void RemoveItem(int index)
-    {
-        base.RemoveItem(index);
-    }
+    /// <summary>Returns an enumerator over the pages.</summary>
+    public IEnumerator<PageContent> GetEnumerator() => _items.GetEnumerator();
 
-    /// <inheritdoc />
-    protected override void SetItem(int index, PageContent item)
-    {
-        base.SetItem(index, item);
-    }
-
-    /// <inheritdoc />
-    protected override void ClearItems()
-    {
-        base.ClearItems();
-    }
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }
 
 /// <summary>
@@ -456,52 +461,39 @@ public sealed class FixedDocumentSequence : FrameworkContentElement, IDocumentPa
 /// <summary>
 /// A collection of DocumentReference objects.
 /// </summary>
-public sealed class DocumentReferenceCollection : Collection<DocumentReference>
+public sealed class DocumentReferenceCollection : IEnumerable<DocumentReference>, INotifyCollectionChanged
 {
+    private readonly List<DocumentReference> _items = new();
+
     /// <summary>
     /// Occurs when the collection changes.
     /// </summary>
     public event NotifyCollectionChangedEventHandler? CollectionChanged;
 
-    /// <inheritdoc />
-    protected override void InsertItem(int index, DocumentReference item)
+    /// <summary>Gets the number of document references.</summary>
+    public int Count => _items.Count;
+
+    /// <summary>Gets the document reference at the specified index.</summary>
+    public DocumentReference this[int index] => _items[index];
+
+    /// <summary>Adds a document reference.</summary>
+    public void Add(DocumentReference item)
     {
         ArgumentNullException.ThrowIfNull(item);
-        base.InsertItem(index, item);
+        int index = _items.Count;
+        _items.Add(item);
         CollectionChanged?.Invoke(
             this,
             new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Add, item, index));
     }
 
-    /// <inheritdoc />
-    protected override void SetItem(int index, DocumentReference item)
-    {
-        ArgumentNullException.ThrowIfNull(item);
-        var oldItem = this[index];
-        base.SetItem(index, item);
-        CollectionChanged?.Invoke(
-            this,
-            new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Replace, item, oldItem, index));
-    }
+    /// <summary>Copies the references to an array.</summary>
+    public void CopyTo(DocumentReference[] array, int arrayIndex) => _items.CopyTo(array, arrayIndex);
 
-    /// <inheritdoc />
-    protected override void RemoveItem(int index)
-    {
-        var item = this[index];
-        base.RemoveItem(index);
-        CollectionChanged?.Invoke(
-            this,
-            new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Remove, item, index));
-    }
+    /// <summary>Returns an enumerator over the references.</summary>
+    public IEnumerator<DocumentReference> GetEnumerator() => _items.GetEnumerator();
 
-    /// <inheritdoc />
-    protected override void ClearItems()
-    {
-        base.ClearItems();
-        CollectionChanged?.Invoke(
-            this,
-            new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
-    }
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 }
 
 /// <summary>
@@ -581,6 +573,7 @@ public abstract class DocumentPaginator
     /// <summary>
     /// Gets the page count.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public abstract int PageCount { get; }
 
     /// <summary>
@@ -706,12 +699,23 @@ public class DocumentPage : IDisposable
     /// <summary>
     /// Gets the visual representation of the page.
     /// </summary>
-    public virtual Visual? Visual => _visual;
+    // The original viewer paginator exposed mutable page payloads. Keep that
+    // Jalium extension on the canonical Documents type while retiring the
+    // duplicate Controls.Primitives.DocumentPage surface.
+    public virtual Visual? Visual
+    {
+        get => _visual;
+        set => _visual = value;
+    }
 
     /// <summary>
     /// Gets the size of the page.
     /// </summary>
-    public virtual Size Size => _size;
+    public virtual Size Size
+    {
+        get => _size;
+        set => _size = value;
+    }
 
     /// <summary>
     /// Gets the bleed box of the page.

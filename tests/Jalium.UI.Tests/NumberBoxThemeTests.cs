@@ -4,7 +4,7 @@ using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
-using ShapePath = Jalium.UI.Controls.Shapes.Path;
+using ShapePath = Jalium.UI.Shapes.Path;
 
 namespace Jalium.UI.Tests;
 

@@ -18,6 +18,7 @@
 #include <time.h>
 #include <poll.h>
 
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 
@@ -302,6 +303,18 @@ JaliumSurfaceDescriptor jalium_window_get_surface(JaliumPlatformWindow* window)
         desc.handle0 = reinterpret_cast<intptr_t>(window->nativeWindow);
     }
     return desc;
+}
+
+uint32_t jalium_window_get_portal_parent_handle(
+    JaliumPlatformWindow*, char*, uint32_t)
+{
+    return 0;
+}
+
+uint32_t jalium_window_get_portal_parent_handle_for_native_handle(
+    intptr_t, char*, uint32_t)
+{
+    return 0;
 }
 
 void jalium_window_set_event_callback(JaliumPlatformWindow* window,
@@ -643,6 +656,22 @@ static int32_t TranslateAndroidMotionAction(int32_t action)
     }
 }
 
+static uint32_t AndroidPointerButtons(int32_t buttonState)
+{
+    uint32_t buttons = JALIUM_POINTER_BUTTON_NONE;
+    if ((buttonState & AMOTION_EVENT_BUTTON_PRIMARY) != 0)
+        buttons |= JALIUM_POINTER_BUTTON_PRIMARY;
+    if ((buttonState & AMOTION_EVENT_BUTTON_SECONDARY) != 0)
+        buttons |= JALIUM_POINTER_BUTTON_SECONDARY;
+    if ((buttonState & AMOTION_EVENT_BUTTON_TERTIARY) != 0)
+        buttons |= JALIUM_POINTER_BUTTON_TERTIARY;
+    if ((buttonState & AMOTION_EVENT_BUTTON_STYLUS_PRIMARY) != 0)
+        buttons |= JALIUM_POINTER_BUTTON_BARREL;
+    if ((buttonState & AMOTION_EVENT_BUTTON_STYLUS_SECONDARY) != 0)
+        buttons |= JALIUM_POINTER_BUTTON_SECONDARY;
+    return buttons;
+}
+
 // Key Mapping: Android AKEYCODE -> Jalium Virtual Key (Win32 VK compatible)
 static int32_t AndroidKeyCodeToJaliumVK(int32_t keyCode)
 {
@@ -739,10 +768,21 @@ extern "C" int32_t jalium_android_on_input_event(AInputEvent* event)
             evt.pointer.pointerId = AMotionEvent_getPointerId(event, i);
             evt.pointer.x = AMotionEvent_getX(event, i);
             evt.pointer.y = AMotionEvent_getY(event, i);
-            evt.pointer.pressure = AMotionEvent_getPressure(event, i);
-            evt.pointer.tiltX = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_TILT, i);
+            evt.pointer.pressure = eventType == JALIUM_EVENT_POINTER_UP ||
+                eventType == JALIUM_EVENT_POINTER_CANCEL
+                ? 0.0f
+                : std::clamp(AMotionEvent_getPressure(event, i), 0.0f, 1.0f);
+            constexpr float RadiansToDegrees = 57.29577951308232f;
+            evt.pointer.tiltX = AMotionEvent_getAxisValue(
+                event, AMOTION_EVENT_AXIS_TILT, i) * RadiansToDegrees;
             evt.pointer.tiltY = 0; // Android provides a single tilt angle, not X/Y separately
-            evt.pointer.twist = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_ORIENTATION, i);
+            evt.pointer.twist = AMotionEvent_getAxisValue(
+                event, AMOTION_EVENT_AXIS_ORIENTATION, i) * RadiansToDegrees;
+            if (evt.pointer.twist < 0.0f) evt.pointer.twist += 360.0f;
+            evt.pointer.flags = i == 0 ? JALIUM_POINTER_FLAG_PRIMARY : 0;
+            evt.pointer.buttons = AndroidPointerButtons(
+                AMotionEvent_getButtonState(event));
+            evt.pointer.toolType = JALIUM_POINTER_TOOL_UNKNOWN;
 
             int32_t toolType = AMotionEvent_getToolType(event, i);
             switch (toolType)
@@ -751,16 +791,33 @@ extern "C" int32_t jalium_android_on_input_event(AInputEvent* event)
                 evt.pointer.pointerType = JALIUM_POINTER_TOUCH;
                 break;
             case AMOTION_EVENT_TOOL_TYPE_STYLUS:
+                evt.pointer.pointerType = JALIUM_POINTER_PEN;
+                evt.pointer.toolType = JALIUM_POINTER_TOOL_PEN;
+                break;
             case AMOTION_EVENT_TOOL_TYPE_ERASER:
                 evt.pointer.pointerType = JALIUM_POINTER_PEN;
+                evt.pointer.toolType = JALIUM_POINTER_TOOL_ERASER;
+                evt.pointer.flags |= JALIUM_POINTER_FLAG_ERASER;
                 break;
             case AMOTION_EVENT_TOOL_TYPE_MOUSE:
                 evt.pointer.pointerType = JALIUM_POINTER_MOUSE;
+                evt.pointer.toolType = JALIUM_POINTER_TOOL_MOUSE;
                 break;
             default:
                 evt.pointer.pointerType = JALIUM_POINTER_TOUCH;
                 break;
             }
+            if (eventType == JALIUM_EVENT_POINTER_DOWN ||
+                (eventType == JALIUM_EVENT_POINTER_MOVE &&
+                 evt.pointer.pointerType != JALIUM_POINTER_MOUSE))
+            {
+                evt.pointer.flags |= JALIUM_POINTER_FLAG_IN_RANGE |
+                                     JALIUM_POINTER_FLAG_IN_CONTACT;
+                if (evt.pointer.buttons == JALIUM_POINTER_BUTTON_NONE)
+                    evt.pointer.buttons = JALIUM_POINTER_BUTTON_PRIMARY;
+            }
+            if ((evt.pointer.buttons & JALIUM_POINTER_BUTTON_BARREL) != 0)
+                evt.pointer.flags |= JALIUM_POINTER_FLAG_BARREL;
 
             evt.pointer.modifiers = JALIUM_MOD_NONE;
             int32_t metaState = AMotionEvent_getMetaState(event);
@@ -837,12 +894,26 @@ extern "C" void jalium_android_inject_touch(
     evt.pointer.pointerId = pointerId;
     evt.pointer.x = x;
     evt.pointer.y = y;
-    evt.pointer.pressure = pressure;
+    evt.pointer.pressure = eventType == JALIUM_EVENT_POINTER_UP ||
+        eventType == JALIUM_EVENT_POINTER_CANCEL
+        ? 0.0f : std::clamp(pressure, 0.0f, 1.0f);
     evt.pointer.tiltX = 0;
     evt.pointer.tiltY = 0;
     evt.pointer.twist = 0;
     evt.pointer.pointerType = pointerType;
     evt.pointer.modifiers = modifiers;
+    evt.pointer.flags = JALIUM_POINTER_FLAG_PRIMARY;
+    if (eventType == JALIUM_EVENT_POINTER_DOWN ||
+        eventType == JALIUM_EVENT_POINTER_MOVE)
+    {
+        evt.pointer.flags |= JALIUM_POINTER_FLAG_IN_RANGE |
+                             JALIUM_POINTER_FLAG_IN_CONTACT;
+        evt.pointer.buttons = JALIUM_POINTER_BUTTON_PRIMARY;
+    }
+    evt.pointer.toolType = pointerType == JALIUM_POINTER_PEN
+        ? JALIUM_POINTER_TOOL_PEN
+        : (pointerType == JALIUM_POINTER_MOUSE
+            ? JALIUM_POINTER_TOOL_MOUSE : JALIUM_POINTER_TOOL_UNKNOWN);
 
     g_mainWindow->DispatchEvent(evt);
 }
@@ -893,36 +964,58 @@ static int DispatcherLooperCallback(int fd, int events, void* data);
 
 int32_t jalium_platform_run_message_loop(void)
 {
-    // Ensure this thread has an ALooper. If jalium_platform_init was called on
-    // a different thread (e.g., Android main thread), g_looper belongs to that
-    // thread. Prepare a new looper for the current thread if needed.
+    // The JaliumUI thread exclusively owns its looper. PlatformInit can be
+    // called from Android's Java main thread and must not influence this choice.
     ALooper* threadLooper = ALooper_forThread();
     if (!threadLooper)
-    {
-        ALooper* newLooper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
-        LOGI("jalium_platform_run_message_loop: prepared new looper=%p (was %p on main thread)", newLooper, g_looper);
+        threadLooper = ALooper_prepare(ALOOPER_PREPARE_ALLOW_NON_CALLBACKS);
 
-        // If we created a new looper for this thread, re-register any existing
-        // dispatcher so its eventfd fires on THIS thread (not the main thread).
-        if (newLooper && newLooper != g_looper && g_dispatcher && g_dispatcher->eventFd >= 0)
+    if (!threadLooper)
+    {
+        LOGE("jalium_platform_run_message_loop: failed to get/prepare thread looper");
+        return JALIUM_ERROR_INITIALIZATION_FAILED;
+    }
+
+    // Reset before publishing the wake target. A quit racing after publication
+    // must never be overwritten by loop startup.
+    g_quitRequested.store(false, std::memory_order_release);
+
+    JaliumDispatcher* dispatcher = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_looperMutex);
+        dispatcher = g_dispatcher;
+        if (dispatcher && dispatcher->eventFd >= 0)
         {
-            // Remove from old looper if possible (best-effort, may be on another thread)
-            if (g_looper)
-                ALooper_removeFd(g_looper, g_dispatcher->eventFd);
-            ALooper_addFd(newLooper, g_dispatcher->eventFd, LOOPER_ID_DISPATCHER,
-                          ALOOPER_EVENT_INPUT, DispatcherLooperCallback, g_dispatcher);
-            LOGI("jalium_platform_run_message_loop: re-registered dispatcher fd=%d on new looper", g_dispatcher->eventFd);
+            if (dispatcher->registeredLooper)
+            {
+                LOGE("jalium_platform_run_message_loop: dispatcher fd=%d is already registered on looper=%p",
+                     dispatcher->eventFd, dispatcher->registeredLooper);
+                return JALIUM_ERROR_INITIALIZATION_FAILED;
+            }
+
+            if (ALooper_addFd(threadLooper, dispatcher->eventFd, LOOPER_ID_DISPATCHER,
+                              ALOOPER_EVENT_INPUT, DispatcherLooperCallback, dispatcher) < 0)
+            {
+                LOGE("jalium_platform_run_message_loop: failed to register dispatcher fd=%d",
+                     dispatcher->eventFd);
+                return JALIUM_ERROR_INITIALIZATION_FAILED;
+            }
+
+            ALooper_acquire(threadLooper);
+            dispatcher->registeredLooper = threadLooper;
         }
 
-        g_looper = newLooper;
-    }
-    else if (!g_looper)
-    {
-        g_looper = threadLooper;
+        // Publish a separately-acquired ref for cross-thread quit/wake. A
+        // previous loop is never used for fd removal and cannot clear a newer
+        // loop's publication when it eventually exits.
+        ALooper_acquire(threadLooper);
+        ALooper* previous = g_runLooper;
+        g_runLooper = threadLooper;
+        if (previous)
+            ALooper_release(previous);
     }
 
-    LOGI("jalium_platform_run_message_loop: starting loop on looper=%p", g_looper);
-    g_quitRequested = false;
+    LOGI("jalium_platform_run_message_loop: starting loop on looper=%p", threadLooper);
 
     while (!g_quitRequested.load(std::memory_order_acquire))
     {
@@ -939,6 +1032,33 @@ int32_t jalium_platform_run_message_loop(void)
             // This is handled by the dispatcher's looper callback
         }
     }
+
+    ALooper* dispatcherLooper = nullptr;
+    ALooper* publishedLooper = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_looperMutex);
+        if (dispatcher && dispatcher->registeredLooper == threadLooper)
+        {
+            dispatcherLooper = dispatcher->registeredLooper;
+            dispatcher->registeredLooper = nullptr;
+        }
+        if (g_runLooper == threadLooper)
+        {
+            publishedLooper = g_runLooper;
+            g_runLooper = nullptr;
+        }
+    }
+
+    // Only unregister from the exact looper that owns this dispatcher's fd.
+    // In particular, an exiting old loop never removes a newly-created
+    // dispatcher's numerically-reused eventfd from a replacement looper.
+    if (dispatcherLooper)
+    {
+        ALooper_removeFd(dispatcherLooper, dispatcher->eventFd);
+        ALooper_release(dispatcherLooper);
+    }
+    if (publishedLooper)
+        ALooper_release(publishedLooper);
 
     return g_exitCode.load(std::memory_order_acquire);
 }
@@ -959,9 +1079,23 @@ int32_t jalium_platform_poll_events(void)
 
 void jalium_platform_quit(int32_t exitCode)
 {
-    g_exitCode = exitCode;
-    g_quitRequested = true;
-    ALooper_wake(g_looper);
+    g_exitCode.store(exitCode, std::memory_order_release);
+    g_quitRequested.store(true, std::memory_order_release);
+
+    ALooper* runLooper = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_looperMutex);
+        if (g_runLooper)
+        {
+            ALooper_acquire(g_runLooper);
+            runLooper = g_runLooper;
+        }
+    }
+    if (runLooper)
+    {
+        ALooper_wake(runLooper);
+        ALooper_release(runLooper);
+    }
 }
 
 // ============================================================================
@@ -993,14 +1127,14 @@ JaliumResult jalium_dispatcher_create(JaliumDispatcher** outDispatcher)
         return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     }
 
-    // Do NOT register on any looper yet.
-    // The JaliumUI thread's looper doesn't exist until jalium_platform_run_message_loop
-    // calls ALooper_prepare(). Registering on g_looper (main thread) would cause the
-    // callback to fire on the wrong thread, violating Dispatcher thread affinity.
-    // jalium_platform_run_message_loop will register on the correct thread's looper.
+    // Do NOT register on any looper yet. The JaliumUI thread's looper does not
+    // exist until jalium_platform_run_message_loop calls ALooper_prepare().
     LOGI("jalium_dispatcher_create: fd=%d created (deferred registration until message loop)", disp->eventFd);
 
-    g_dispatcher = disp;
+    {
+        std::lock_guard<std::mutex> lock(g_looperMutex);
+        g_dispatcher = disp;
+    }
     *outDispatcher = disp;
     return JALIUM_OK;
 }
@@ -1008,14 +1142,23 @@ JaliumResult jalium_dispatcher_create(JaliumDispatcher** outDispatcher)
 void jalium_dispatcher_destroy(JaliumDispatcher* dispatcher)
 {
     if (!dispatcher) return;
+    ALooper* registeredLooper = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_looperMutex);
+        registeredLooper = dispatcher->registeredLooper;
+        dispatcher->registeredLooper = nullptr;
+        if (g_dispatcher == dispatcher)
+            g_dispatcher = nullptr;
+    }
+
     if (dispatcher->eventFd >= 0)
     {
-        if (g_looper)
-            ALooper_removeFd(g_looper, dispatcher->eventFd);
+        if (registeredLooper)
+            ALooper_removeFd(registeredLooper, dispatcher->eventFd);
         close(dispatcher->eventFd);
     }
-    if (g_dispatcher == dispatcher)
-        g_dispatcher = nullptr;
+    if (registeredLooper)
+        ALooper_release(registeredLooper);
     delete dispatcher;
 }
 
@@ -1127,11 +1270,27 @@ int16_t jalium_input_get_key_state(int32_t jaliumVirtualKey)
     return 0;
 }
 
-void jalium_input_get_cursor_pos(float* x, float* y)
+JaliumResult jalium_input_get_touch_capabilities(
+    int32_t* touchPresent, int32_t* maxContacts)
 {
-    // Not applicable on touch devices
-    if (x) *x = 0;
-    if (y) *y = 0;
+    if (!touchPresent || !maxContacts)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    *touchPresent = 0;
+    *maxContacts = 0;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+JaliumResult jalium_platform_set_double_click_settings(uint32_t, float)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+JaliumResult jalium_input_get_cursor_pos(float* x, float* y)
+{
+    // Android touch positions are view-local, not global screen coordinates.
+    if (x) *x = 0.0f;
+    if (y) *y = 0.0f;
+    return JALIUM_ERROR_NOT_SUPPORTED;
 }
 
 // ============================================================================
@@ -1303,6 +1462,44 @@ JaliumResult jalium_clipboard_set_text(const JaliumUtf16Char* text)
     return JALIUM_OK;
 }
 
+// Android keeps the established text ClipData bridge above. Export the MIME
+// transaction ABI as well so one managed interop surface can be used on every
+// platform; richer Android ClipData item support can be layered on without an
+// ABI revision.
+JaliumResult jalium_clipboard_get_formats(char** outMimeTypes)
+{
+    if (!outMimeTypes) return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto* empty = static_cast<char*>(malloc(1));
+    if (!empty) return JALIUM_ERROR_OUT_OF_MEMORY;
+    empty[0] = '\0';
+    *outMimeTypes = empty;
+    return JALIUM_OK;
+}
+
+JaliumResult jalium_clipboard_get_data(
+    const char* mimeType, uint8_t** outData, uint32_t* outDataSize)
+{
+    if (!mimeType || !outData || !outDataSize)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    *outData = nullptr;
+    *outDataSize = 0;
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+JaliumResult jalium_clipboard_set_data(
+    const JaliumClipboardDataItem* items, uint32_t itemCount)
+{
+    if (!items && itemCount != 0) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (itemCount == 0) return jalium_clipboard_clear();
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+JaliumResult jalium_clipboard_clear(void)
+{
+    static const JaliumUtf16Char empty[] = {0};
+    return jalium_clipboard_set_text(empty);
+}
+
 void jalium_drag_set_effect(JaliumPlatformWindow*, uint64_t, uint32_t) {}
 
 JaliumResult jalium_drag_begin(
@@ -1346,6 +1543,76 @@ int32_t jalium_window_set_icon(JaliumPlatformWindow*, const uint32_t*, int32_t, 
 int32_t jalium_window_set_topmost(JaliumPlatformWindow*, int32_t)
 {
     return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+JaliumResult jalium_drag_begin_ex(
+    JaliumPlatformWindow* window, const JaliumDragDataItem* items,
+    uint32_t itemCount, uint32_t allowedEffects,
+    JaliumDragFeedbackCallback, JaliumDragQueryContinueCallback, void*,
+    uint32_t* performedEffect)
+{
+    return jalium_drag_begin(
+        window, items, itemCount, allowedEffects, performedEffect);
+}
+
+JaliumResult jalium_drag_begin_with_image(
+    JaliumPlatformWindow* window, const JaliumDragDataItem* items,
+    uint32_t itemCount, uint32_t allowedEffects,
+    JaliumDragFeedbackCallback feedbackCallback,
+    JaliumDragQueryContinueCallback queryContinueCallback, void* userData,
+    const JaliumDragImage*, uint32_t* performedEffect)
+{
+    return jalium_drag_begin_ex(
+        window, items, itemCount, allowedEffects,
+        feedbackCallback, queryContinueCallback, userData, performedEffect);
+}
+
+int32_t jalium_window_set_enabled(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_opacity(JaliumPlatformWindow*, double)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_show_in_taskbar(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_resizable(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_decorated(JaliumPlatformWindow*, int32_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_set_owner(JaliumPlatformWindow*, intptr_t)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_activate(JaliumPlatformWindow*)
+{
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
+int32_t jalium_window_show_system_menu(
+    JaliumPlatformWindow* window, int32_t, int32_t)
+{
+    return window ? JALIUM_ERROR_NOT_SUPPORTED : JALIUM_ERROR_INVALID_ARGUMENT;
+}
+
+int32_t jalium_window_update_ime_context(
+    JaliumPlatformWindow* window, int32_t, const char*, int32_t, int32_t,
+    int32_t, int32_t, int32_t, int32_t)
+{
+    return window ? JALIUM_ERROR_NOT_SUPPORTED : JALIUM_ERROR_INVALID_ARGUMENT;
 }
 
 #endif // __ANDROID__

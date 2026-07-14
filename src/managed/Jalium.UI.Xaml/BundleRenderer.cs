@@ -305,7 +305,7 @@ public sealed class BundleRenderer
         }
         else if (p.BlurRadius > 0)
         {
-            return new BlurEffect { BlurRadius = p.BlurRadius };
+            return new BackdropBlurEffect { BlurRadius = p.BlurRadius };
         }
 
         return null;

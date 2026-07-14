@@ -88,4 +88,23 @@ public class FontDialogTests
             new double[] { 8, 9, 10, 11, 12, 14, 16, 18, 20, 22, 24, 26, 28, 36, 48, 72 },
             FontDialog.GetStandardFontSizes().ToArray());
     }
+
+    [Fact]
+    public void LinuxFallback_ShouldCreateAFrameworkOwnedDialog()
+    {
+        var dialog = new FontDialog
+        {
+            FontFamily = new FontFamily("Sans"),
+            FontSize = 14,
+            ShowColor = true,
+            ShowEffects = true
+        };
+
+        Window window = dialog.CreateFallbackDialogForTesting();
+
+        Assert.Equal("Choose Font", window.Title);
+        Assert.IsType<StackPanel>(window.Content);
+        Assert.Equal(WindowStartupLocation.CenterScreen, window.WindowStartupLocation);
+        Assert.Equal(ResizeMode.NoResize, window.ResizeMode);
+    }
 }

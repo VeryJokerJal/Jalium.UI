@@ -6,7 +6,7 @@ using Jalium.UI.Controls;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Rendering;
 using Xunit;
-using Drawing = Jalium.UI.Media.Rendering.Drawing;
+using Drawing = Jalium.UI.Media.Rendering.RecordedDrawing;
 
 namespace Jalium.UI.Tests.RenderThread;
 

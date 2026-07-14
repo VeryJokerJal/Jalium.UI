@@ -41,7 +41,7 @@ public class ScrollBar : RangeBase
     private static readonly SolidColorBrush s_defaultThumbBrush = new(Color.FromRgb(170, 170, 170));
     private static readonly SolidColorBrush s_defaultArrowBrush = new(Color.FromRgb(210, 210, 210));
     private static readonly SolidColorBrush s_transparentBrush = new(Color.Transparent);
-    private static readonly BlurEffect s_defaultTrackBackdropEffect = new(0f, BackdropBlurType.Gaussian);
+    private static readonly BackdropBlurEffect s_defaultTrackBackdropEffect = new(0f, BackdropBlurType.Gaussian);
     private static readonly Style s_internalRepeatButtonStyle = new(typeof(RepeatButton));
     private static readonly Style s_internalThumbStyle = CreateInternalThumbStyle();
 

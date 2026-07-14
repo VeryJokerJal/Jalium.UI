@@ -30,23 +30,13 @@ public class DataGridColumnHeadersPresenter : ItemsControl
             return;
         }
 
-        header.Column = column;
-        header.Content = column.Header;
+        header.PrepareColumnHeader(item, DataGridOwner, DataGridOwner, column);
         var width = column.ActualWidth;
         if (!(width > 0))
         {
             width = column.Width.DisplayValue;
         }
         header.Width = double.IsFinite(width) && width >= 0 ? width : 100;
-        header.SortDirection = column.SortDirection switch
-        {
-            Jalium.UI.Data.ListSortDirection.Ascending => System.ComponentModel.ListSortDirection.Ascending,
-            Jalium.UI.Data.ListSortDirection.Descending => System.ComponentModel.ListSortDirection.Descending,
-            _ => null
-        };
-        header.CanUserSort = column.CanUserSort;
-        header.DisplayIndex = column.DisplayIndex;
-        header.IsFrozen = column.IsFrozen;
         if (column.HeaderStyle != null)
         {
             header.Style = column.HeaderStyle;
@@ -57,8 +47,7 @@ public class DataGridColumnHeadersPresenter : ItemsControl
     {
         if (element is DataGridColumnHeader header)
         {
-            header.Content = null;
-            header.Column = null;
+            header.ClearColumnHeader();
         }
 
         base.ClearContainerForItemOverride(element, item);
@@ -67,7 +56,7 @@ public class DataGridColumnHeadersPresenter : ItemsControl
     internal DataGridColumnHeader CreateHeader(Jalium.UI.Controls.DataGridColumn column)
     {
         ArgumentNullException.ThrowIfNull(column);
-        var header = new DataGridColumnHeader { Column = column };
+        var header = new DataGridColumnHeader();
         PrepareContainerForItemOverride(header, column);
         Items.Add(header);
         return header;

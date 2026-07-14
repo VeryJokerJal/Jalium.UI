@@ -1,3 +1,4 @@
+using System.Reflection;
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
 
@@ -28,6 +29,74 @@ public class ViewboxRenderBoundsTests
             Math.Abs(expected.Width - actual.Width) < tol &&
             Math.Abs(expected.Height - actual.Height) < tol,
             $"Expected {expected}, got {actual}");
+    }
+
+    [Fact]
+    public void PublicShape_UsesCanonicalDecoratorContract()
+    {
+        Assert.Equal(typeof(Decorator), typeof(Viewbox).BaseType);
+        Assert.Null(typeof(Viewbox).GetField(
+            "ChildProperty",
+            BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly));
+
+        var childProperty = typeof(Viewbox).GetProperty(
+            nameof(Viewbox.Child),
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+        Assert.NotNull(childProperty);
+        Assert.Equal(typeof(Decorator), childProperty.GetMethod?.GetBaseDefinition().DeclaringType);
+        Assert.False(new Viewbox().ClipToBounds);
+
+        var stretchMetadata = Assert.IsType<FrameworkPropertyMetadata>(
+            Viewbox.StretchProperty.GetMetadata(typeof(Viewbox)));
+        var directionMetadata = Assert.IsType<FrameworkPropertyMetadata>(
+            Viewbox.StretchDirectionProperty.GetMetadata(typeof(Viewbox)));
+        Assert.True(stretchMetadata.AffectsMeasure);
+        Assert.True(directionMetadata.AffectsMeasure);
+        Assert.NotNull(Viewbox.StretchProperty.ValidateValueCallback);
+        Assert.NotNull(Viewbox.StretchDirectionProperty.ValidateValueCallback);
+    }
+
+    [Fact]
+    public void Child_UsesPrivateVisualHostAndViewboxLogicalParent()
+    {
+        var first = new Border();
+        var second = new Border();
+        var viewbox = new ProbeViewbox { Child = first };
+
+        Assert.Same(viewbox, first.Parent);
+        Assert.NotNull(first.VisualParent);
+        Assert.NotSame(viewbox, first.VisualParent);
+        Assert.IsNotType<Border>(viewbox.InternalVisual);
+
+        viewbox.Child = second;
+
+        Assert.Null(first.Parent);
+        Assert.Null(first.VisualParent);
+        Assert.Same(viewbox, second.Parent);
+        Assert.Same(viewbox.InternalVisual, second.VisualParent);
+    }
+
+    [Fact]
+    public void Child_AcceptsNonFrameworkUiElement()
+    {
+        var child = new UIElement();
+        var viewbox = new Viewbox { Child = child };
+
+        Assert.Same(child, viewbox.Child);
+        Assert.NotNull(child.VisualParent);
+
+        viewbox.Child = null;
+
+        Assert.Null(child.VisualParent);
+    }
+
+    [Fact]
+    public void StretchProperties_RejectUndefinedEnumValues()
+    {
+        var viewbox = new Viewbox();
+
+        Assert.Throws<ArgumentException>(() => viewbox.Stretch = (Stretch)99);
+        Assert.Throws<ArgumentException>(() => viewbox.StretchDirection = (StretchDirection)99);
     }
 
     [Fact]
@@ -79,5 +148,10 @@ public class ViewboxRenderBoundsTests
         public void RequestFullInvalidation() { }
         public void SetNativeCapture() { }
         public void ReleaseNativeCapture() { }
+    }
+
+    private sealed class ProbeViewbox : Viewbox
+    {
+        public Visual? InternalVisual => GetVisualChild(0);
     }
 }

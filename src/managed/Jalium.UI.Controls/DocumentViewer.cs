@@ -1,8 +1,10 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Documents;
 using Jalium.UI.Input;
-using PrimitiveDocumentPaginator = Jalium.UI.Controls.Primitives.DocumentPaginator;
+using Jalium.UI.Media;
+using DocumentPaginator = Jalium.UI.Documents.DocumentPaginator;
 
 namespace Jalium.UI.Controls;
 
@@ -89,7 +91,7 @@ public class DocumentViewer : DocumentViewerBase
     private readonly List<DocumentPageView> _pageViews = [];
     private readonly ReadOnlyCollection<DocumentPageView> _readOnlyPageViews;
     private readonly List<TextSearchResult> _searchResults = [];
-    private PrimitiveDocumentPaginator? _paginator;
+    private DocumentPaginator? _paginator;
     private bool _pageViewsChanged;
     private bool _publishingPageViews;
     private bool _updatingFitMode;

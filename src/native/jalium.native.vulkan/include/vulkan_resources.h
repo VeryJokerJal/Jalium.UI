@@ -1,6 +1,7 @@
 #pragma once
 
 #include "jalium_backend.h"
+#include "vulkan_minimal.h"
 
 #ifndef _WIN32
 // Forward declarations for cross-platform text engine
@@ -13,6 +14,7 @@ namespace jalium { class TextEngine; class JaliumTextFormat; }
 #include <cstdint>
 #include <list>
 #include <unordered_map>
+#include <atomic>
 
 #ifdef _WIN32
 // DirectWrite text path (mirrors the D3D12 backend's DWrite usage so Windows
@@ -23,6 +25,8 @@ namespace jalium { class TextEngine; class JaliumTextFormat; }
 #endif
 
 namespace jalium {
+
+struct VulkanDeviceGeneration;
 
 #ifdef _WIN32
 // Process-shared DirectWrite factory accessor (Windows only). Mirrors the way
@@ -134,6 +138,57 @@ public:
     /// The composable target the Vulkan render path already knows how to draw.
     VulkanBitmap         bitmap;
     std::vector<uint8_t> staging;
+};
+
+/// Linux single-plane RGB dma-buf imported as a sampled Vulkan image. NV12 /
+/// P010 descriptors are deliberately rejected until the render pipeline owns
+/// a matching immutable YCbCr sampler; the media decoder then reopens its CPU
+/// pipeline at the same PTS.
+class VulkanImportedVideoSurface : public VideoSurface {
+public:
+    static VulkanImportedVideoSurface* Create(
+        std::shared_ptr<VulkanDeviceGeneration> generation,
+        const JaliumVideoSurfaceDescriptor& descriptor);
+    ~VulkanImportedVideoSurface() override;
+
+    uint32_t GetWidth() const override { return width_; }
+    uint32_t GetHeight() const override { return height_; }
+    JaliumVideoSurfaceKind GetKind() const override {
+        return JALIUM_VS_KIND_LINUX_DMABUF;
+    }
+    bool Lock(uint8_t**, uint32_t*) override { return false; }
+    bool Unlock(const JaliumVideoSurfaceDirtyRect*) override { return false; }
+    void Release() override;
+
+    /// Keeps the imported image alive from command recording until the
+    /// submission fence for that frame is observed.
+    void RetainForFrame() {
+        referenceCount_.fetch_add(1, std::memory_order_relaxed);
+    }
+    void ReleaseForFrame() { Release(); }
+
+    VkDevice DeviceHandle() const;
+    VkImage Image() const { return image_; }
+    VkImageView ImageView() const { return view_; }
+    bool DeviceLost() const;
+    bool ConsumeInitialLayoutTransition() {
+        bool expected = true;
+        return needsInitialTransition_.compare_exchange_strong(
+            expected, false, std::memory_order_acq_rel);
+    }
+
+private:
+    VulkanImportedVideoSurface() = default;
+    std::shared_ptr<VulkanDeviceGeneration> generation_;
+    uint32_t width_ = 0;
+    uint32_t height_ = 0;
+    VkImage image_ = VK_NULL_HANDLE;
+    VkImageView view_ = VK_NULL_HANDLE;
+    VkDeviceMemory memory_ = VK_NULL_HANDLE;
+    uint64_t lifetimeContext_ = 0;
+    uint64_t lifetimeReleaseCallback_ = 0;
+    std::atomic<uint32_t> referenceCount_{1};
+    std::atomic<bool> needsInitialTransition_{true};
 };
 
 class VulkanTextFormat : public TextFormat {

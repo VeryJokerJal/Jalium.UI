@@ -1,5 +1,6 @@
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Primitives;
+using ISelectionItemProvider = Jalium.UI.Automation.Provider.ISelectionItemProvider;
 
 namespace Jalium.UI.Automation.Peers;
 
@@ -174,6 +175,8 @@ public sealed class RadioButtonAutomationPeer : ToggleButtonAutomationPeer, ISel
     /// Gets the selection container (not implemented for RadioButton).
     /// </summary>
     public AutomationPeer SelectionContainer => null!;
+
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple? ISelectionItemProvider.SelectionContainer => null;
 
     /// <summary>
     /// Selects the radio button.

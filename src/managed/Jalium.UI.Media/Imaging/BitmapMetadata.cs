@@ -3,7 +3,7 @@ namespace Jalium.UI.Media.Imaging;
 /// <summary>
 /// Provides support for reading and writing metadata to and from a bitmap image.
 /// </summary>
-public class BitmapMetadata : BitmapMetadataBase, IEnumerable<string>
+public class BitmapMetadata : ImageMetadata, IEnumerable<string>
 {
     private readonly Dictionary<string, object?> _metadata = new();
 

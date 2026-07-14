@@ -1,0 +1,14 @@
+JALIUM_PLATFORM_C_ABI_1 {
+    global:
+        jalium_clipboard_*;
+        jalium_dispatcher_*;
+        jalium_drag_*;
+        jalium_input_*;
+        jalium_platform_*;
+        jalium_test_*;
+        jalium_timer_*;
+        jalium_wayland_*;
+        jalium_window_*;
+    local:
+        *;
+};

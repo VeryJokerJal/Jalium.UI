@@ -1,6 +1,7 @@
 using System.Reflection;
+using Jalium.UI;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Specifies the visual structure and behavior of a Control.
@@ -78,73 +79,4 @@ public class ControlTemplate : FrameworkTemplate
                 nameof(templatedParent));
         }
     }
-}
-
-/// <summary>
-/// Represents the visual template for an item in an ItemsControl.
-/// </summary>
-public sealed class ItemContainerTemplate : ControlTemplate
-{
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ItemContainerTemplate"/> class.
-    /// </summary>
-    public ItemContainerTemplate()
-    {
-    }
-}
-
-/// <summary>
-/// Used to apply templates to elements.
-/// </summary>
-public interface ITemplatedControl
-{
-    /// <summary>
-    /// Gets or sets the template that defines the visual appearance.
-    /// </summary>
-    ControlTemplate? Template { get; set; }
-
-    /// <summary>
-    /// Applies the current template.
-    /// </summary>
-    bool ApplyTemplate();
-}
-
-/// <summary>
-/// Represents an element that has a template-defined visual subtree.
-/// </summary>
-public sealed class TemplateRoot : FrameworkElement
-{
-    private readonly Dictionary<string, FrameworkElement> _namedElements = new();
-
-    /// <summary>
-    /// Registers a named element in this template root.
-    /// </summary>
-    public void RegisterName(string name, FrameworkElement element)
-    {
-        _namedElements[name] = element;
-    }
-
-    /// <summary>
-    /// Finds an element by name.
-    /// </summary>
-    public new FrameworkElement? FindName(string name)
-    {
-        return _namedElements.GetValueOrDefault(name);
-    }
-}
-
-/// <summary>
-/// Represents a placeholder for the content in a ControlTemplate.
-/// </summary>
-public sealed class ContentPresenterPlaceholder : FrameworkElement
-{
-    /// <summary>
-    /// Gets or sets the name of the content property to present.
-    /// </summary>
-    public string? ContentSource { get; set; } = "Content";
-
-    /// <summary>
-    /// Gets or sets the name of the content template property.
-    /// </summary>
-    public string? ContentTemplateSource { get; set; } = "ContentTemplate";
 }

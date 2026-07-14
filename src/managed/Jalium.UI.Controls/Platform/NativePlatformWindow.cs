@@ -1,4 +1,6 @@
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Jalium.UI.Interop;
 
 namespace Jalium.UI.Controls.Platform;
@@ -10,6 +12,12 @@ namespace Jalium.UI.Controls.Platform;
 /// </summary>
 internal sealed partial class NativePlatformWindow : IPlatformWindow
 {
+    private sealed class DragCallbackContext
+    {
+        public Action<uint>? Feedback;
+        public Func<uint, bool, PlatformDragContinueAction>? QueryContinue;
+        public Exception? Exception;
+    }
     private nint _handle;
     private Action<PlatformEvent>? _eventHandler;
     private bool _disposed;
@@ -195,6 +203,62 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                NativeMethods.WindowSetTopmost(_handle, topmost ? 1 : 0) == 0;
     }
 
+    public bool SetEnabled(bool enabled)
+    {
+        return _handle != nint.Zero &&
+               NativeMethods.WindowSetEnabled(_handle, enabled ? 1 : 0) == 0;
+    }
+
+    public bool SetOpacity(double opacity)
+    {
+        return _handle != nint.Zero &&
+               NativeMethods.WindowSetOpacity(_handle, Math.Clamp(opacity, 0.0, 1.0)) == 0;
+    }
+
+    public bool SetShowInTaskbar(bool showInTaskbar)
+    {
+        return _handle != nint.Zero &&
+               NativeMethods.WindowSetShowInTaskbar(_handle, showInTaskbar ? 1 : 0) == 0;
+    }
+
+    public bool SetResizable(bool resizable)
+    {
+        return _handle != nint.Zero &&
+               NativeMethods.WindowSetResizable(_handle, resizable ? 1 : 0) == 0;
+    }
+
+    public bool SetDecorated(bool decorated)
+    {
+        return _handle != nint.Zero &&
+               NativeMethods.WindowSetDecorated(_handle, decorated ? 1 : 0) == 0;
+    }
+
+    public bool SetOwner(nint ownerNativeHandle)
+    {
+        return _handle != nint.Zero &&
+               NativeMethods.WindowSetOwner(_handle, ownerNativeHandle) == 0;
+    }
+
+    public bool Activate()
+    {
+        return _handle != nint.Zero && NativeMethods.WindowActivate(_handle) == 0;
+    }
+
+    public bool ShowSystemMenu(int x, int y)
+    {
+        if (_handle == nint.Zero)
+            return false;
+
+        try
+        {
+            return NativeMethods.WindowShowSystemMenu(_handle, x, y) == 0;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
+    }
+
     public void SetState(WindowState state)
     {
         if (_handle != nint.Zero)
@@ -229,6 +293,32 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
     {
         if (_handle != nint.Zero)
             NativeMethods.WindowSetCursor(_handle, cursorShape);
+    }
+
+    public void UpdateImeContext(PlatformImeContext context)
+    {
+        if (_handle == nint.Zero)
+            return;
+
+        try
+        {
+            _ = NativeMethods.WindowUpdateImeContext(
+                _handle,
+                context.Enabled ? 1 : 0,
+                context.SurroundingText,
+                context.CursorUtf8ByteOffset,
+                context.AnchorUtf8ByteOffset,
+                context.CaretX,
+                context.CaretY,
+                context.CaretWidth,
+                context.CaretHeight);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            // Managed and native payloads may be updated independently during
+            // development. An older backend simply keeps its existing IME
+            // behavior until the new ABI is present.
+        }
     }
 
     public void SetEventHandler(Action<PlatformEvent>? handler)
@@ -359,6 +449,11 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                     break;
                 }
 
+                case PlatformEventType.DeleteSurroundingText:
+                    evt.ImeDeleteBeforeUtf8ByteCount = idata[0];
+                    evt.ImeDeleteAfterUtf8ByteCount = idata[1];
+                    break;
+
                 case PlatformEventType.PointerDown:
                 case PlatformEventType.PointerUp:
                 case PlatformEventType.PointerMove:
@@ -372,6 +467,9 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                     evt.Twist = data[6];
                     evt.PointerType = idata[7];
                     evt.Modifiers = idata[8];
+                    evt.PointerFlags = (uint)idata[9];
+                    evt.PointerToolType = idata[10];
+                    evt.PointerButtons = (uint)idata[11];
                     break;
 
                 case PlatformEventType.SafeAreaChanged:
@@ -479,4 +577,99 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
             return result == 0 ? performedEffect : 0;
         }
     }
+
+    internal unsafe uint BeginDrag(
+        ReadOnlySpan<NativeDragDataItem> items,
+        uint allowedEffects,
+        Action<uint>? feedback,
+        Func<uint, bool, PlatformDragContinueAction>? queryContinue) =>
+        BeginDrag(items, allowedEffects, feedback, queryContinue, null);
+
+    internal unsafe uint BeginDrag(
+        ReadOnlySpan<NativeDragDataItem> items,
+        uint allowedEffects,
+        Action<uint>? feedback,
+        Func<uint, bool, PlatformDragContinueAction>? queryContinue,
+        NativeDragImage? dragImage)
+    {
+        if (_handle == nint.Zero || items.IsEmpty)
+            return 0;
+
+        var callbackContext = new DragCallbackContext
+        {
+            Feedback = feedback,
+            QueryContinue = queryContinue,
+        };
+        GCHandle callbackHandle = GCHandle.Alloc(callbackContext);
+        try
+        {
+            fixed (NativeDragDataItem* itemsPtr = items)
+            {
+                NativeDragImage nativeImage = dragImage.GetValueOrDefault();
+                nint feedbackPointer = feedback == null
+                    ? nint.Zero
+                    : (nint)(delegate* unmanaged[Cdecl]<uint, nint, void>)&OnDragFeedback;
+                nint queryPointer = queryContinue == null
+                    ? nint.Zero
+                    : (nint)(delegate* unmanaged[Cdecl]<uint, int, nint, int>)&OnQueryContinueDrag;
+                int result = NativeMethods.DragBeginWithImage(
+                    _handle, (nint)itemsPtr, (uint)items.Length, allowedEffects,
+                    feedbackPointer, queryPointer, GCHandle.ToIntPtr(callbackHandle),
+                    dragImage.HasValue ? (nint)(&nativeImage) : nint.Zero,
+                    out uint performedEffect);
+                if (callbackContext.Exception != null)
+                    ExceptionDispatchInfo.Capture(callbackContext.Exception).Throw();
+                return result == 0 ? performedEffect : 0;
+            }
+        }
+        finally
+        {
+            callbackHandle.Free();
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static void OnDragFeedback(uint effect, nint userData)
+    {
+        try
+        {
+            if (GCHandle.FromIntPtr(userData).Target is DragCallbackContext context &&
+                context.Exception == null)
+            {
+                context.Feedback?.Invoke(effect);
+            }
+        }
+        catch (Exception exception)
+        {
+            if (GCHandle.FromIntPtr(userData).Target is DragCallbackContext context)
+                context.Exception ??= exception;
+        }
+    }
+
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static int OnQueryContinueDrag(uint keyStates, int escapePressed, nint userData)
+    {
+        try
+        {
+            if (GCHandle.FromIntPtr(userData).Target is not DragCallbackContext context)
+                return (int)PlatformDragContinueAction.Cancel;
+            if (context.Exception != null)
+                return (int)PlatformDragContinueAction.Cancel;
+            return (int)(context.QueryContinue?.Invoke(keyStates, escapePressed != 0)
+                ?? PlatformDragContinueAction.Continue);
+        }
+        catch (Exception exception)
+        {
+            if (GCHandle.FromIntPtr(userData).Target is DragCallbackContext context)
+                context.Exception ??= exception;
+            return (int)PlatformDragContinueAction.Cancel;
+        }
+    }
+}
+
+internal enum PlatformDragContinueAction
+{
+    Continue = 0,
+    Drop = 1,
+    Cancel = 2,
 }

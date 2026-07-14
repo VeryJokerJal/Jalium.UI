@@ -2,6 +2,7 @@ using System.Text.Json;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
 
@@ -1098,7 +1099,7 @@ public class JsonTreeViewer : Control
     public void CopyPathToClipboard(JsonTreeNode node)
     {
         var path = node.Path;
-        Clipboard.SetText(path);
+        WpfClipboard.SetText(path);
         RaiseEvent(new JsonTreeViewerPathCopiedEventArgs(PathCopiedEvent, node, path));
     }
 

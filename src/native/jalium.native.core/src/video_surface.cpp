@@ -125,7 +125,7 @@ JALIUM_API void jalium_video_surface_destroy(JaliumVideoSurface* s)
 {
     if (!s) return;
     g_stats.surfacesDestroyed.fetch_add(1, std::memory_order_relaxed);
-    delete reinterpret_cast<jalium::VideoSurface*>(s);
+    reinterpret_cast<jalium::VideoSurface*>(s)->Release();
 }
 
 JALIUM_API void jalium_render_target_draw_video_surface(

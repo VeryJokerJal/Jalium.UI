@@ -178,7 +178,7 @@ public sealed class SvgImage : ImageSource, IDisposable
     {
         try
         {
-            var dispatcher = Dispatcher.CurrentDispatcher;
+            var dispatcher = Jalium.UI.Threading.Dispatcher.CurrentDispatcher;
             using var httpClient = new System.Net.Http.HttpClient();
             var svgContent = await httpClient.GetStringAsync(uri, cancellationToken).ConfigureAwait(false);
 

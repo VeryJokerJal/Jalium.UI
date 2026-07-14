@@ -1,20 +1,20 @@
 using System.ComponentModel;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using Jalium.UI;
 using Jalium.UI.Core.Platform;
-using Jalium.UI.Threading;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Threading;
 
 /// <summary>
 /// Provides services for managing the queue of work items for a thread.
 /// </summary>
-public sealed partial class Dispatcher : IDisposable
+internal sealed partial class DispatcherCore : IDisposable
 {
-    private static readonly ThreadLocal<Dispatcher?> _currentDispatcher = new();
-    private static Dispatcher? _mainDispatcher;
+    private static readonly ThreadLocal<DispatcherCore?> _currentDispatcher = new();
+    private static DispatcherCore? _mainDispatcher;
     private static readonly object _lock = new();
-    private static readonly ConcurrentDictionary<Thread, Dispatcher> _dispatchers = new();
+    private static readonly ConcurrentDictionary<Thread, DispatcherCore> _dispatchers = new();
 
     private readonly Thread _thread;
     private readonly uint _threadId;
@@ -29,7 +29,7 @@ public sealed partial class Dispatcher : IDisposable
 
     private volatile bool _isShutdown;
     private volatile bool _exitAllFramesRequested;
-    private bool _disposed;
+    private volatile bool _disposed;
     private int _disableProcessingCount;
     private DispatcherHooks? _hooks;
 
@@ -78,12 +78,12 @@ public sealed partial class Dispatcher : IDisposable
     /// <summary>
     /// Gets the <see cref="Dispatcher"/> for the thread currently executing.
     /// </summary>
-    public static Dispatcher? CurrentDispatcher => _currentDispatcher.Value;
+    public static DispatcherCore? CurrentDispatcher => _currentDispatcher.Value;
 
     /// <summary>
     /// Gets the <see cref="Dispatcher"/> for the main UI thread.
     /// </summary>
-    public static Dispatcher? MainDispatcher => _mainDispatcher;
+    public static DispatcherCore? MainDispatcher => _mainDispatcher;
 
     /// <summary>
     /// Gets the thread this <see cref="Dispatcher"/> is associated with.
@@ -119,18 +119,18 @@ public sealed partial class Dispatcher : IDisposable
     /// <summary>
     /// Occurs when a thread exception is thrown and uncaught during execution of a delegate by way of Invoke or BeginInvoke.
     /// </summary>
-    public event Threading.DispatcherUnhandledExceptionEventHandler? UnhandledException;
+    public event DispatcherUnhandledExceptionEventHandler? UnhandledException;
 
     /// <summary>
     /// Occurs when a thread exception is thrown and uncaught during execution of a delegate, before the
     /// <see cref="UnhandledException"/> event, to determine whether the exception should be caught.
     /// </summary>
-    public event Threading.DispatcherUnhandledExceptionFilterEventHandler? UnhandledExceptionFilter;
+    public event DispatcherUnhandledExceptionFilterEventHandler? UnhandledExceptionFilter;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Dispatcher"/> class for the current thread.
     /// </summary>
-    private Dispatcher()
+    private DispatcherCore()
     {
         _thread = Thread.CurrentThread;
         _threadId = s_isWindows ? GetCurrentThreadId() : 0;
@@ -157,12 +157,12 @@ public sealed partial class Dispatcher : IDisposable
     /// </remarks>
     internal void EnsureNativeWake()
     {
-        if (s_isWindows || _disposed || _dispatcherWake != null)
+        if (s_isWindows || _disposed || _isShutdown || _dispatcherWake != null)
             return;
 
         lock (_instanceLock)
         {
-            if (_disposed || _dispatcherWake != null)
+            if (_disposed || _isShutdown || _dispatcherWake != null)
                 return;
 
             try
@@ -183,11 +183,11 @@ public sealed partial class Dispatcher : IDisposable
     /// Gets or creates a <see cref="Dispatcher"/> for the current thread.
     /// </summary>
     /// <returns>The dispatcher for the current thread.</returns>
-    public static Dispatcher GetForCurrentThread()
+    public static DispatcherCore GetForCurrentThread()
     {
         if (_currentDispatcher.Value == null)
         {
-            var dispatcher = new Dispatcher();
+            var dispatcher = new DispatcherCore();
             _currentDispatcher.Value = dispatcher;
             _dispatchers[dispatcher._thread] = dispatcher;
 
@@ -205,7 +205,7 @@ public sealed partial class Dispatcher : IDisposable
     /// Returns the <see cref="Dispatcher"/> for the specified thread, or <see langword="null"/> if none exists.
     /// </summary>
     /// <param name="thread">The thread whose dispatcher is requested.</param>
-    public static Dispatcher? FromThread(Thread thread)
+    public static DispatcherCore? FromThread(Thread thread)
     {
         ArgumentNullException.ThrowIfNull(thread);
         return _dispatchers.TryGetValue(thread, out var dispatcher) ? dispatcher : null;
@@ -220,6 +220,21 @@ public sealed partial class Dispatcher : IDisposable
         lock (_lock)
         {
             _mainDispatcher = dispatcher;
+        }
+    }
+
+    /// <summary>
+    /// Clears the process main-dispatcher slot only when called by the thread
+    /// that currently owns that exact dispatcher. Used by restartable platform
+    /// hosts before disposing their native wake handle.
+    /// </summary>
+    public void ClearAsMainThread()
+    {
+        VerifyAccess();
+        lock (_lock)
+        {
+            if (ReferenceEquals(_mainDispatcher, this))
+                _mainDispatcher = null;
         }
     }
 
@@ -553,7 +568,7 @@ public sealed partial class Dispatcher : IDisposable
         bool wake;
         lock (_instanceLock)
         {
-            if (_isShutdown)
+            if (_isShutdown || _disposed)
             {
                 // Cannot queue work after shutdown has begun.
                 op.AbortInternal();
@@ -652,6 +667,8 @@ public sealed partial class Dispatcher : IDisposable
         int budget;
         lock (_instanceLock)
         {
+            if (_disposed)
+                return;
             budget = _queue.Count;
         }
 
@@ -675,7 +692,7 @@ public sealed partial class Dispatcher : IDisposable
             dispatcherInactive = !_queue.Any(static operation =>
                 operation.Status != DispatcherOperationStatus.Aborted
                 && (int)operation.Priority >= MinDispatchPriority);
-            if (_queue.Count == 0)
+            if (_queue.Count == 0 && !_disposed)
                 _workAvailable.Reset();
             // Non-empty: keep _workAvailable set so the non-Windows PushFrame loop
                 // (ProcessQueue(); Wait(...)) starts the next batch immediately.
@@ -717,7 +734,7 @@ public sealed partial class Dispatcher : IDisposable
         if (filter != null)
         {
             var filterArgs = new DispatcherUnhandledExceptionFilterEventArgs(this, ex);
-            filter(this, filterArgs);
+            filter(Dispatcher.FromCore(this), filterArgs);
             requestCatch = filterArgs.RequestCatch;
         }
 
@@ -728,7 +745,7 @@ public sealed partial class Dispatcher : IDisposable
         if (handler != null)
         {
             var args = new DispatcherUnhandledExceptionEventArgs(this, ex);
-            handler(this, args);
+            handler(Dispatcher.FromCore(this), args);
         }
 
         // Jalium historically swallowed non-critical dispatcher exceptions to keep the pump alive;
@@ -741,8 +758,15 @@ public sealed partial class Dispatcher : IDisposable
     /// </summary>
     public void BeginInvokeShutdown()
     {
-        _isShutdown = true;
-        ShutdownStarted?.Invoke(this, EventArgs.Empty);
+        bool raiseStarted;
+        lock (_instanceLock)
+        {
+            raiseStarted = !_isShutdown && !_disposed;
+            _isShutdown = true;
+        }
+
+        if (raiseStarted)
+            ShutdownStarted?.Invoke(Dispatcher.FromCore(this), EventArgs.Empty);
         NotifyDispatcherThread();
     }
 
@@ -874,16 +898,46 @@ public sealed partial class Dispatcher : IDisposable
     /// <paramref name="keepRunning"/> returns true (re-checked each turn and before
     /// each idle block). Window.ShowDialog uses this so a modal dialog gets the same
     /// input-first ordering as the main pump, and a WM_QUIT is re-posted so the
-    /// application's main loop still exits. Windows only; a no-op elsewhere.
+    /// application's main loop still exits. On non-Windows hosts the same contract
+    /// is implemented by polling the native platform queue and draining dispatcher
+    /// work before each bounded idle wait.
     /// </summary>
     public void RunModalLoop(Func<bool> keepRunning)
     {
         ArgumentNullException.ThrowIfNull(keepRunning);
         VerifyAccess();
-        if (!s_isWindows)
-            return;
+        if (_isShutdown)
+            throw new InvalidOperationException("Cannot enter a modal loop after dispatcher shutdown has started.");
+        if (Volatile.Read(ref _disableProcessingCount) > 0)
+            throw new InvalidOperationException(
+                "Cannot enter a modal loop while dispatcher processing is disabled via DisableProcessing.");
+
+        var frame = new DispatcherFrame();
         Interlocked.Increment(ref _frameDepth);
-        try { RunWindowsMessageLoopCore(new DispatcherFrame(), outermost: false, keepRunning); }
+        try
+        {
+            if (s_isWindows)
+            {
+                RunWindowsMessageLoopCore(frame, outermost: false, keepRunning);
+            }
+            else
+            {
+                while (frame.Continue && keepRunning())
+                {
+                    // Keep X11/Wayland/Android responsive while the outer
+                    // Application loop is suspended by ShowDialog.
+                    Jalium.UI.Core.Platform.NativePlatformEventPump.PollEvents();
+                    ProcessQueue();
+                    if (!frame.Continue || !keepRunning())
+                        break;
+
+                    // Platform input does not necessarily signal the managed
+                    // dispatcher event. A short bounded wait avoids both a busy
+                    // spin and perceptible modal input latency.
+                    _workAvailable.Wait(15);
+                }
+            }
+        }
         finally
         {
             if (Interlocked.Decrement(ref _frameDepth) == 0)
@@ -1248,6 +1302,13 @@ public sealed partial class Dispatcher : IDisposable
 
     private void NotifyDispatcherThread()
     {
+        lock (_instanceLock)
+        {
+            // Dispose publishes terminal state under this same lock before it
+            // closes either wake resource. Late notifications are safe no-ops.
+            if (_disposed)
+                return;
+
         _workAvailable.Set();
 
         if (s_isWindows)
@@ -1274,6 +1335,7 @@ public sealed partial class Dispatcher : IDisposable
             // Wake via platform-native mechanism (eventfd on Linux, ALooper on Android)
             _dispatcherWake?.Wake();
         }
+        }
     }
 
     #endregion
@@ -1282,8 +1344,31 @@ public sealed partial class Dispatcher : IDisposable
 
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        List<DispatcherOperation> pending;
+        IDispatcherWake? dispatcherWake;
+        lock (_instanceLock)
+        {
+            if (_disposed)
+                return;
+
+            // Publish terminal state before detaching resources. Enqueue and
+            // Notify take this same lock, so neither can observe a live handle
+            // after teardown begins.
+            _isShutdown = true;
+            _disposed = true;
+            pending = _queue.ToList();
+            _queue.Clear();
+            foreach (DispatcherOperation operation in pending)
+                operation.Node = null;
+            dispatcherWake = _dispatcherWake;
+            _dispatcherWake = null;
+        }
+
+        foreach (DispatcherOperation operation in pending)
+        {
+            if (operation.Status == DispatcherOperationStatus.Pending)
+                operation.AbortInternal();
+        }
 
         _dispatchers.TryRemove(_thread, out _);
 
@@ -1292,9 +1377,9 @@ public sealed partial class Dispatcher : IDisposable
             DestroyMessageWindow();
         }
 
-        _dispatcherWake?.Dispose();
-        _dispatcherWake = null;
+        dispatcherWake?.Dispose();
         _workAvailable.Dispose();
+        ShutdownFinished?.Invoke(Dispatcher.FromCore(this), EventArgs.Empty);
     }
 
     #endregion
@@ -1394,85 +1479,4 @@ public sealed partial class Dispatcher : IDisposable
     private static partial uint MsgWaitForMultipleObjectsEx(uint nCount, ref nint pHandles, uint dwMilliseconds, uint dwWakeMask, uint dwFlags);
 
     #endregion
-}
-
-/// <summary>
-/// Represents the method that handles the <see cref="Dispatcher.UnhandledException"/> event.
-/// </summary>
-// Kept as a source-compatibility shim for code written against early Jalium.UI builds.
-// WPF places this delegate in System.Windows.Threading; framework events use the
-// canonical Jalium.UI.Threading delegate below.
-[Obsolete("Use Jalium.UI.Threading.DispatcherUnhandledExceptionEventHandler.")]
-public delegate void DispatcherUnhandledExceptionEventHandler(object sender, DispatcherUnhandledExceptionEventArgs e);
-
-/// <summary>
-/// Represents the method that handles the <see cref="Dispatcher.UnhandledExceptionFilter"/> event.
-/// </summary>
-[Obsolete("Use Jalium.UI.Threading.DispatcherUnhandledExceptionFilterEventHandler.")]
-public delegate void DispatcherUnhandledExceptionFilterEventHandler(object sender, DispatcherUnhandledExceptionFilterEventArgs e);
-
-/// <summary>
-/// Specifies the priority at which operations can be invoked via the <see cref="Dispatcher"/>.
-/// </summary>
-public enum DispatcherPriority
-{
-    /// <summary>
-    /// The enumeration value is -1. This is an invalid priority.
-    /// </summary>
-    Invalid = -1,
-
-    /// <summary>
-    /// The operation will not be processed.
-    /// </summary>
-    Inactive = 0,
-
-    /// <summary>
-    /// The operation is processed when the system is idle.
-    /// </summary>
-    SystemIdle = 1,
-
-    /// <summary>
-    /// The operation is processed when the application is idle.
-    /// </summary>
-    ApplicationIdle = 2,
-
-    /// <summary>
-    /// The operation is processed after background operations have completed.
-    /// </summary>
-    ContextIdle = 3,
-
-    /// <summary>
-    /// The operation is processed after all other non-idle operations have completed.
-    /// </summary>
-    Background = 4,
-
-    /// <summary>
-    /// The operation is processed at the same priority as input.
-    /// </summary>
-    Input = 5,
-
-    /// <summary>
-    /// The operation is processed when layout and render operations have completed.
-    /// </summary>
-    Loaded = 6,
-
-    /// <summary>
-    /// The operation is processed at the same priority as rendering.
-    /// </summary>
-    Render = 7,
-
-    /// <summary>
-    /// The operation is processed at the same priority as data binding.
-    /// </summary>
-    DataBind = 8,
-
-    /// <summary>
-    /// The operation is processed at normal priority.
-    /// </summary>
-    Normal = 9,
-
-    /// <summary>
-    /// The operation is processed before other asynchronous operations.
-    /// </summary>
-    Send = 10
 }

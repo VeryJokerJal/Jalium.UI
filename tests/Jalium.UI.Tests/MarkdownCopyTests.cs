@@ -2,6 +2,7 @@ using System.Linq;
 using System.Reflection;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Tests;
 
@@ -109,7 +110,7 @@ public class MarkdownCopyTests
     public void Clipboard_BuildCfHtml_ProducesValidOffsets()
     {
         const string fragment = "<p>Hello 世界</p>";
-        var cf = Clipboard.BuildCfHtml(fragment);
+        var cf = WpfClipboard.BuildCfHtml(fragment);
 
         Assert.Contains("Version:0.9", cf, StringComparison.Ordinal);
         Assert.Contains("<!--StartFragment-->" + fragment + "<!--EndFragment-->", cf, StringComparison.Ordinal);

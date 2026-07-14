@@ -21,7 +21,7 @@ public interface IReactiveSyntaxHighlighter : ISyntaxHighlighter
     /// Notifies that the attached document changed.
     /// </summary>
     /// <param name="change">The document change payload.</param>
-    void NotifyDocumentChanged(TextChangeEventArgs change);
+    void NotifyDocumentChanged(DocumentChangeEventArgs change);
 
     /// <summary>
     /// Detaches this highlighter and cancels any background work.

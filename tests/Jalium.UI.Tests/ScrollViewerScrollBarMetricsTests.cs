@@ -7,6 +7,29 @@ namespace Jalium.UI.Tests;
 public class ScrollViewerScrollBarMetricsTests
 {
     [Fact]
+    public void PublicShape_UsesContentControlContentContract()
+    {
+        Assert.Equal(typeof(ContentControl), typeof(ScrollViewer).BaseType);
+        Assert.Null(typeof(ScrollViewer).GetProperty(
+            nameof(ContentControl.Content),
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly));
+        Assert.Null(typeof(ScrollViewer).GetField(
+            nameof(ContentControl.ContentProperty),
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.DeclaredOnly));
+    }
+
+    [Fact]
+    public void ScalarContent_UsesInheritedContentPipeline()
+    {
+        var viewer = new ProbeScrollViewer { Content = "hello" };
+
+        var text = Assert.IsType<TextBlock>(viewer.DirectContentElement);
+
+        Assert.Equal("hello", text.Text);
+        Assert.True(viewer.HasContent);
+    }
+
+    [Fact]
     public void ScrollViewer_WithScrollInfoContentMargin_ShouldIncludeMarginInScrollableExtent()
     {
         var content = new StackPanel
@@ -93,5 +116,10 @@ public class ScrollViewerScrollBarMetricsTests
         Assert.NotNull(method);
 
         method!.Invoke(null, [scrollBar, maxOffset, viewportSize, offset, visibilityMode, canScroll]);
+    }
+
+    private sealed class ProbeScrollViewer : ScrollViewer
+    {
+        public UIElement? DirectContentElement => ContentElement;
     }
 }

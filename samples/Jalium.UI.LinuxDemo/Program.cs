@@ -3,6 +3,8 @@ using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using Microsoft.Win32;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.LinuxDemo;
 
@@ -129,7 +131,7 @@ internal static class Program
         };
         copyButton.Click += (_, _) =>
         {
-            Clipboard.SetText(textBox.Text ?? string.Empty);
+            WpfClipboard.SetText(textBox.Text ?? string.Empty);
             Report("已复制到系统剪贴板（wl_data_device / X11 selection）");
         };
         buttonRow.Children.Add(copyButton);
@@ -143,7 +145,7 @@ internal static class Program
         };
         pasteButton.Click += (_, _) =>
         {
-            var text = Clipboard.GetText();
+            var text = WpfClipboard.GetText();
             textBox.Text = text;
             Report(string.IsNullOrEmpty(text) ? "剪贴板为空" : $"粘贴了 {text.Length} 个字符");
         };

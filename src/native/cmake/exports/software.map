@@ -1,0 +1,6 @@
+JALIUM_SOFTWARE_C_ABI_1 {
+    global:
+        jalium_software_init;
+    local:
+        *;
+};

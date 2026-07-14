@@ -59,6 +59,14 @@ elseif(ANDROID)
         PRIVATE
             log
     )
+elseif(UNIX)
+    # context.cpp discovers backend DSOs with dlopen/dlsym. Newer glibc folds
+    # libdl into libc, but the Ubuntu 20.04 / glibc 2.31 release baseline still
+    # requires an explicit -ldl dependency.
+    target_link_libraries(${PROJECT_NAME}
+        PRIVATE
+            ${CMAKE_DL_LIBS}
+    )
 endif()
 
 # Set output name

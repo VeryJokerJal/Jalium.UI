@@ -23,7 +23,7 @@ namespace Jalium.UI.Media.Rendering;
 /// immutable pooled instances and eliminates this aliasing.
 /// </para>
 /// </remarks>
-public sealed class Drawing
+internal sealed class RecordedDrawing
 {
     internal readonly DrawCommand[] Commands;
     internal readonly int Count;
@@ -45,7 +45,7 @@ public sealed class Drawing
     /// </summary>
     internal readonly bool FullyRecordable;
 
-    internal Drawing(DrawCommand[] commands, int count, Rect? bounds, bool fullyRecordable = true)
+    internal RecordedDrawing(DrawCommand[] commands, int count, Rect? bounds, bool fullyRecordable = true)
     {
         Commands = commands;
         Count = count;
@@ -57,18 +57,18 @@ public sealed class Drawing
     /// Shared empty drawing returned for visuals whose <c>OnRender</c>
     /// records no commands. Replaying it is a zero-cost no-op.
     /// </summary>
-    public static Drawing Empty { get; } = new(System.Array.Empty<DrawCommand>(), 0, null);
+    internal static RecordedDrawing Empty { get; } = new(System.Array.Empty<DrawCommand>(), 0, null);
 
     /// <summary>
     /// Number of recorded commands. Used for diagnostics only; replay
     /// iterates the underlying array directly.
     /// </summary>
-    public int CommandCount => Count;
+    internal int CommandCount => Count;
 
     /// <summary>
     /// False when whole-frame capture hit content that cannot be represented as
     /// draw commands; the caller must discard this Drawing and direct-render the
     /// frame. Always true for per-visual recordings and for <see cref="Empty"/>.
     /// </summary>
-    public bool IsFullyRecordable => FullyRecordable;
+    internal bool IsFullyRecordable => FullyRecordable;
 }

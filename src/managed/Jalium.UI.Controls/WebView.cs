@@ -66,7 +66,7 @@ public partial class WebView : FrameworkElement, IDisposable
 
     public WebView()
     {
-        _dispatcher = Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread();
+        _dispatcher = Dispatcher.CurrentDispatcher;
         _scrollChangedHandler = OnAncestorScrollChanged;
         SizeChanged += OnSelfSizeChanged;
         AddHandler(ScrollViewer.ScrollChangedEvent, _scrollChangedHandler, true);

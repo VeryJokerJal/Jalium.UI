@@ -26,6 +26,7 @@ struct RasterizedGlyph {
     int32_t  bearingY = 0;       ///< Vertical offset from baseline (pixels, positive = up)
     float    advanceX = 0.0f;    ///< Horizontal advance width
     bool     hasSubpixel = false; ///< True if rasterized with LCD sub-pixel rendering
+    bool     isColor = false;     ///< True when pixels contain authored color (premultiplied RGBA)
 };
 
 /// Sub-pixel rendering mode.
@@ -33,6 +34,12 @@ enum class SubpixelMode {
     None,       ///< Grayscale anti-aliasing only
     Horizontal, ///< Horizontal LCD sub-pixel (RGB stripes)
     Vertical,   ///< Vertical LCD sub-pixel (RGB stripes)
+};
+
+enum class GlyphAntialiasMode : uint8_t {
+    Aliased = 1,
+    Grayscale = 2,
+    HorizontalLcd = 3,
 };
 
 class GlyphRasterizer {
@@ -54,7 +61,8 @@ public:
         FontFace* face,
         uint32_t glyphIndex,
         float fontSizePx,
-        uint8_t subpixelX = 0);
+        uint8_t subpixelX = 0,
+        GlyphAntialiasMode antialiasMode = GlyphAntialiasMode::Grayscale);
 
 private:
     SubpixelMode subpixelMode_;

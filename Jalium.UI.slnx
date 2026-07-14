@@ -21,7 +21,11 @@
     <Project Path="src/managed/Jalium.UI.Compiler/Jalium.UI.Compiler.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Jalium.UI.LinuxAccessibilitySmoke/Jalium.UI.LinuxAccessibilitySmoke.csproj" />
+    <Project Path="tests/Jalium.UI.LinuxClipboardSmoke/Jalium.UI.LinuxClipboardSmoke.csproj" />
+    <Project Path="tests/Jalium.UI.LinuxPortalSmoke/Jalium.UI.LinuxPortalSmoke.csproj" />
     <Project Path="tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj" />
+    <Project Path="tests/Jalium.UI.Media.LinuxSmoke/Jalium.UI.Media.LinuxSmoke.csproj" />
     <Project Path="tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj" />
   </Folder>
 </Solution>

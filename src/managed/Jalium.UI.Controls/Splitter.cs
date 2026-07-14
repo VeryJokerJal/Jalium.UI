@@ -247,6 +247,20 @@ public class GridSplitter : Thumb
         }
     }
 
+    /// <summary>Moves the splitter by an automation-supplied horizontal and vertical delta.</summary>
+    internal void KeyboardMoveSplitter(double horizontalChange, double verticalChange)
+    {
+        _effectiveResizeDirection = GetEffectiveResizeDirection();
+        double delta = _effectiveResizeDirection == GridResizeDirection.Columns
+            ? horizontalChange
+            : verticalChange;
+
+        StartResize();
+        ApplyResize(delta);
+        ClearValue(BackgroundProperty);
+        _cumulativeDragDelta = 0;
+    }
+
     #endregion
 
     #region Drag Operations

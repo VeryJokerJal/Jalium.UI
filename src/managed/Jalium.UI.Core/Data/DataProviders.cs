@@ -646,7 +646,6 @@ public class CompositeCollection :
     IList,
     INotifyCollectionChanged,
     IWeakEventListener,
-    Jalium.UI.ICollectionViewFactory,
     System.ComponentModel.ICollectionViewFactory
 {
     private readonly List<object?> _collections;
@@ -845,8 +844,6 @@ public class CompositeCollection :
     System.ComponentModel.ICollectionView System.ComponentModel.ICollectionViewFactory.CreateView() =>
         new CollectionView(_flattenedItems);
 
-    ICollectionView Jalium.UI.ICollectionViewFactory.CreateView() =>
-        new CollectionView(_flattenedItems);
 }
 
 /// <summary>

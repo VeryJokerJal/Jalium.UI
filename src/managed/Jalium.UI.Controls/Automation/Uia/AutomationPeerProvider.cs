@@ -3,6 +3,17 @@ using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.Marshalling;
 using System.Threading;
 using Jalium.UI.Automation;
+using Jalium.UI.Media;
+using IExpandCollapseProvider = Jalium.UI.Automation.Provider.IExpandCollapseProvider;
+using IInvokeProvider = Jalium.UI.Automation.Provider.IInvokeProvider;
+using IRangeValueProvider = Jalium.UI.Automation.Provider.IRangeValueProvider;
+using IScrollItemProvider = Jalium.UI.Automation.Provider.IScrollItemProvider;
+using IScrollProvider = Jalium.UI.Automation.Provider.IScrollProvider;
+using ISelectionItemProvider = Jalium.UI.Automation.Provider.ISelectionItemProvider;
+using ISelectionProvider = Jalium.UI.Automation.Provider.ISelectionProvider;
+using ITextProvider = Jalium.UI.Automation.Provider.ITextProvider;
+using IToggleProvider = Jalium.UI.Automation.Provider.IToggleProvider;
+using IValueProvider = Jalium.UI.Automation.Provider.IValueProvider;
 
 namespace Jalium.UI.Controls.Automation.Uia;
 

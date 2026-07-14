@@ -1,5 +1,6 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Markup;
 
 namespace Jalium.UI.Tests;
@@ -97,6 +98,61 @@ public class HotReloadRuntimeTests
         Assert.Equal(0, result.FailedElements);
         Assert.True(result.UpdatedElements + result.FallbackReplacements >= 1);
         Assert.Equal(2, target.Children.Count);
-        Assert.All(target.Children, c => Assert.IsType<Border>(c));
+        Assert.All(target.Children.Cast<UIElement>(), c => Assert.IsType<Border>(c));
+    }
+
+    [Fact]
+    public void ApplyPatch_ViewboxPatchesOverrideChildBeforeDecoratorFallback()
+    {
+        var target = new HotReloadViewbox { Child = new Border() };
+        HotReloadRuntime.RegisterComponent(target);
+
+        var result = HotReloadRuntime.ApplyPatch(
+            typeof(HotReloadViewbox).FullName!,
+            "f.jalxaml",
+            $"""
+            <Viewbox xmlns="{Pres}">
+                <TextBlock Text="updated" />
+            </Viewbox>
+            """);
+
+        Assert.Equal(0, result.FailedElements);
+        Assert.Equal("updated", Assert.IsType<TextBlock>(target.Child).Text);
+        Assert.Same(target, ((FrameworkElement)target.Child).Parent);
+    }
+
+    [Fact]
+    public void ApplyPatch_BulletDecoratorPatchesBulletAndChildSlots()
+    {
+        var target = new HotReloadBulletDecorator
+        {
+            Bullet = new Border { Width = 2 },
+            Child = new TextBlock { Text = "old" },
+        };
+        HotReloadRuntime.RegisterComponent(target);
+
+        var result = HotReloadRuntime.ApplyPatch(
+            typeof(HotReloadBulletDecorator).FullName!,
+            "f.jalxaml",
+            $"""
+            <BulletDecorator xmlns="{Pres}">
+                <BulletDecorator.Bullet>
+                    <Border Width="9" />
+                </BulletDecorator.Bullet>
+                <TextBlock Text="new" />
+            </BulletDecorator>
+            """);
+
+        Assert.Equal(0, result.FailedElements);
+        Assert.Equal(9, Assert.IsType<Border>(target.Bullet).Width);
+        Assert.Equal("new", Assert.IsType<TextBlock>(target.Child).Text);
+    }
+
+    private sealed class HotReloadViewbox : Viewbox
+    {
+    }
+
+    private sealed class HotReloadBulletDecorator : BulletDecorator
+    {
     }
 }

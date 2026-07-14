@@ -3,17 +3,17 @@ namespace Jalium.UI.Interactivity;
 /// <summary>
 /// Represents an object that can invoke Actions conditionally.
 /// </summary>
-public abstract class TriggerBase : DependencyObject, IAttachedObject
+public abstract class BehaviorTriggerBase : DependencyObject, IAttachedObject
 {
     private DependencyObject? _associatedObject;
-    private readonly TriggerActionCollection _actions;
+    private readonly BehaviorTriggerActionCollection _actions;
 
     /// <summary>
-    /// Initializes a new instance of the TriggerBase class.
+    /// Initializes a new instance of the BehaviorTriggerBase class.
     /// </summary>
-    protected TriggerBase()
+    protected BehaviorTriggerBase()
     {
-        _actions = new TriggerActionCollection();
+        _actions = new BehaviorTriggerActionCollection();
     }
 
     /// <summary>
@@ -24,7 +24,7 @@ public abstract class TriggerBase : DependencyObject, IAttachedObject
     /// <summary>
     /// Gets the collection of actions associated with this trigger.
     /// </summary>
-    public TriggerActionCollection Actions => _actions;
+    public BehaviorTriggerActionCollection Actions => _actions;
 
     /// <summary>
     /// Gets the type constraint for the associated object.
@@ -65,7 +65,7 @@ public abstract class TriggerBase : DependencyObject, IAttachedObject
     /// Invokes all actions associated with this trigger.
     /// </summary>
     /// <param name="parameter">The parameter to pass to the actions.</param>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("TriggerAction.Invoke implementations may use reflection on user-supplied targets.")]
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("BehaviorTriggerAction.Invoke implementations may use reflection on user-supplied targets.")]
     protected void InvokeActions(object? parameter)
     {
         foreach (var action in _actions)
@@ -93,7 +93,7 @@ public abstract class TriggerBase : DependencyObject, IAttachedObject
 /// Represents an object that can invoke Actions conditionally, with a type constraint on the associated object.
 /// </summary>
 /// <typeparam name="T">The type of object this trigger can be attached to.</typeparam>
-public abstract class TriggerBase<T> : TriggerBase where T : DependencyObject
+public abstract class BehaviorTriggerBase<T> : BehaviorTriggerBase where T : DependencyObject
 {
     /// <summary>
     /// Gets the object to which this trigger is attached.

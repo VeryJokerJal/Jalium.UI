@@ -1,5 +1,4 @@
-using System.Runtime.InteropServices;
-using Jalium.UI.Media;
+using Jalium.UI.Interop;
 
 namespace Jalium.UI.Tests;
 
@@ -12,45 +11,27 @@ public class D3DImageTests
 
         Assert.Equal(0, image.PixelWidth);
         Assert.Equal(0, image.PixelHeight);
-        Assert.False(image.IsFrontBufferAvailable);
+        Assert.True(image.IsFrontBufferAvailable);
         Assert.False(image.IsLocked);
         Assert.Equal(nint.Zero, image.NativeHandle);
     }
 
     [Fact]
-    public void D3DImage_SetBackBuffer_ShouldUpdateAvailabilityAndRaiseEvent()
+    public void D3DImage_SetBackBuffer_ShouldRequireLockAndRetainWpfState()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return;
-        }
+        using var image = new D3DImage();
 
-        object comOwner = new();
-        var backBuffer = Marshal.GetIUnknownForObject(comOwner);
-        try
-        {
-            using var image = new D3DImage();
-            var eventCount = 0;
-            image.IsFrontBufferAvailableChanged += (_, _) => eventCount++;
+        Assert.Throws<InvalidOperationException>(() =>
+            image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, new IntPtr(42), enableSoftwareFallback: true));
 
-            image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, backBuffer, enableSoftwareFallback: true);
+        image.Lock();
+        image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, new IntPtr(42), enableSoftwareFallback: true);
+        image.Unlock();
 
-            Assert.True(image.IsFrontBufferAvailable);
-            Assert.True(image.IsSoftwareFallbackEnabled);
-            Assert.Equal(backBuffer, image.NativeHandle);
-            Assert.Equal(1, eventCount);
-
-            image.SetBackBuffer(D3DResourceType.IDirect3DSurface9, IntPtr.Zero);
-
-            Assert.False(image.IsFrontBufferAvailable);
-            Assert.Equal(nint.Zero, image.NativeHandle);
-            Assert.Equal(2, eventCount);
-        }
-        finally
-        {
-            Marshal.Release(backBuffer);
-            GC.KeepAlive(comOwner);
-        }
+        Assert.True(image.IsFrontBufferAvailable);
+        Assert.True(image.IsSoftwareFallbackEnabled);
+        Assert.Equal(new IntPtr(42), image.NativeHandle);
+        Assert.Equal(D3DResourceType.IDirect3DSurface9, image.ResourceType);
     }
 
     [Fact]
@@ -74,11 +55,11 @@ public class D3DImageTests
     }
 
     [Fact]
-    public void D3DImage_TryLockWithInvalidTimeout_ShouldThrow()
+    public void D3DImage_TryLockWithAutomaticDuration_ShouldThrow()
     {
         var image = new D3DImage();
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => image.TryLock(TimeSpan.FromMilliseconds(-2)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => image.TryLock(Duration.Automatic));
     }
 
     [Fact]
@@ -92,5 +73,15 @@ public class D3DImageTests
         Assert.Equal(180, image.PixelHeight);
         Assert.Equal(320d, image.Width);
         Assert.Equal(180d, image.Height);
+    }
+
+    [Fact]
+    public void LegacyMediaD3DTypes_AreNotPublic()
+    {
+        var exported = typeof(D3DImage).Assembly.GetExportedTypes();
+
+        Assert.DoesNotContain(exported, type => type.FullName is "Jalium.UI.Media.D3DImage" or "Jalium.UI.Media.D3DResourceType");
+        Assert.Contains(exported, type => type == typeof(D3DImage));
+        Assert.Contains(exported, type => type == typeof(D3DResourceType));
     }
 }

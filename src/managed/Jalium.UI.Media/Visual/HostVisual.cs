@@ -55,7 +55,7 @@ public sealed class VisualTarget : CompositionTarget
 public sealed class BitmapCacheBrush : Brush
 {
     public static readonly DependencyProperty TargetProperty =
-        DependencyProperty.Register(nameof(Target), typeof(Jalium.UI.Visual), typeof(BitmapCacheBrush), new PropertyMetadata(null));
+        DependencyProperty.Register(nameof(Target), typeof(Visual), typeof(BitmapCacheBrush), new PropertyMetadata(null));
     public static readonly DependencyProperty BitmapCacheProperty =
         DependencyProperty.Register(nameof(BitmapCache), typeof(BitmapCache), typeof(BitmapCacheBrush), new PropertyMetadata(null));
     public static readonly DependencyProperty AutoLayoutContentProperty =
@@ -64,9 +64,9 @@ public sealed class BitmapCacheBrush : Brush
     /// <summary>
     /// Gets or sets the Visual whose content is cached.
     /// </summary>
-    public Jalium.UI.Visual? Target
+    public Visual? Target
     {
-        get => (Jalium.UI.Visual?)GetValue(TargetProperty);
+        get => (Visual?)GetValue(TargetProperty);
         set => SetValue(TargetProperty, value);
     }
 
@@ -89,7 +89,7 @@ public sealed class BitmapCacheBrush : Brush
     {
     }
 
-    public BitmapCacheBrush(Jalium.UI.Visual visual)
+    public BitmapCacheBrush(Visual visual)
     {
         Target = visual ?? throw new ArgumentNullException(nameof(visual));
     }

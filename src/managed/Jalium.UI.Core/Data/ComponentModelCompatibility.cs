@@ -1,5 +1,4 @@
 using Jalium.UI;
-using Jalium.UI.Data;
 
 namespace System.ComponentModel;
 
@@ -102,7 +101,7 @@ public class CurrentChangingEventManager : WeakEventManager
 
     public static void AddHandler(
         ICollectionView source,
-        EventHandler<Jalium.UI.Data.CurrentChangingEventArgs> handler)
+        EventHandler<CurrentChangingEventArgs> handler)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(handler);
@@ -111,7 +110,7 @@ public class CurrentChangingEventManager : WeakEventManager
 
     public static void RemoveHandler(
         ICollectionView source,
-        EventHandler<Jalium.UI.Data.CurrentChangingEventArgs> handler)
+        EventHandler<CurrentChangingEventArgs> handler)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(handler);
@@ -119,7 +118,7 @@ public class CurrentChangingEventManager : WeakEventManager
     }
 
     protected override ListenerList NewListenerList() =>
-        new ListenerList<Jalium.UI.Data.CurrentChangingEventArgs>();
+        new ListenerList<CurrentChangingEventArgs>();
 
     protected override void StartListening(object source) =>
         ((ICollectionView)source).CurrentChanging += OnCurrentChanging;
@@ -127,7 +126,7 @@ public class CurrentChangingEventManager : WeakEventManager
     protected override void StopListening(object source) =>
         ((ICollectionView)source).CurrentChanging -= OnCurrentChanging;
 
-    private void OnCurrentChanging(object? sender, Jalium.UI.Data.CurrentChangingEventArgs args) =>
+    private void OnCurrentChanging(object? sender, CurrentChangingEventArgs args) =>
         DeliverEvent(sender!, args);
 }
 

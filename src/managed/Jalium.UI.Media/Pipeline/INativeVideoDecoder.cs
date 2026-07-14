@@ -67,6 +67,36 @@ public interface INativeVideoDecoder : IDisposable
     }
 }
 
+/// <summary>Result of pulling a decoder frame directly as an external GPU surface.</summary>
+public enum GpuVideoFrameReadResult
+{
+    /// <summary>The decoder is using its CPU frame pipeline.</summary>
+    NotSupported,
+    /// <summary>A GPU surface and presentation timestamp were returned.</summary>
+    Frame,
+    /// <summary>The media stream reached end of stream.</summary>
+    EndOfStream,
+    /// <summary>The external format/modifier was rejected and the decoder switched to CPU output.</summary>
+    FellBackToCpu,
+}
+
+/// <summary>
+/// Optional zero-copy extension implemented by decoders that can pull the next
+/// frame directly as an external GPU resource, without first allocating a CPU
+/// <see cref="MediaFrame"/>.
+/// </summary>
+public interface INativeGpuVideoDecoder
+{
+    /// <summary>Whether the GPU path has not yet been ruled out for this source.</summary>
+    bool MayHaveGpuOutput { get; }
+
+    /// <summary>Pulls and imports the next GPU frame into the active render context.</summary>
+    GpuVideoFrameReadResult TryReadGpuFrame(
+        nint renderContextHandle,
+        out NativeVideoSurface? surface,
+        out TimeSpan presentationTime);
+}
+
 /// <summary>
 /// <see cref="INativeVideoDecoder"/> 工厂。注入到 <see cref="MediaPlayer"/> / <see cref="VideoDrawing"/>。
 /// </summary>

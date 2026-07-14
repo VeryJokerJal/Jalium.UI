@@ -116,7 +116,7 @@ public class ManipulationInertiaProcessorTests
     }
 
     [Fact]
-    public void Tick_HandlerSetsCancelOnDelta_StopsAndRaisesCompleted()
+    public void Tick_InertialDeltaCannotBeCancelledAndProcessorContinues()
     {
         var target = new Border();
         int completedCount = 0;
@@ -132,8 +132,8 @@ public class ManipulationInertiaProcessorTests
             new Vector(0.5, 0), 0, Vector.Zero, null, null, null));
         processor.TickForTesting(16);
 
-        Assert.False(processor.IsRunning);
-        Assert.Equal(1, completedCount);
+        Assert.True(processor.IsRunning);
+        Assert.Equal(0, completedCount);
     }
 
     private static ManipulationDelta NewDelta() =>

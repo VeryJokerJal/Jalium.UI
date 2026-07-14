@@ -1,6 +1,16 @@
 using System.Collections.Generic;
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Media;
+using IExpandCollapseProvider = Jalium.UI.Automation.Provider.IExpandCollapseProvider;
+using IInvokeProvider = Jalium.UI.Automation.Provider.IInvokeProvider;
+using IRangeValueProvider = Jalium.UI.Automation.Provider.IRangeValueProvider;
+using IScrollItemProvider = Jalium.UI.Automation.Provider.IScrollItemProvider;
+using IScrollProvider = Jalium.UI.Automation.Provider.IScrollProvider;
+using ISelectionItemProvider = Jalium.UI.Automation.Provider.ISelectionItemProvider;
+using ISelectionProvider = Jalium.UI.Automation.Provider.ISelectionProvider;
+using IToggleProvider = Jalium.UI.Automation.Provider.IToggleProvider;
+using IValueProvider = Jalium.UI.Automation.Provider.IValueProvider;
 
 namespace Jalium.UI.Automation.Peers;
 
@@ -260,11 +270,6 @@ public partial class ComboBoxAutomationPeer : SelectorAutomationPeer,
         ArgumentNullException.ThrowIfNull(val);
         ComboBoxOwner.Text = val;
     }
-
-    string IValueProvider.Value => ((Jalium.UI.Automation.Provider.IValueProvider)this).Value;
-    bool IValueProvider.IsReadOnly => ((Jalium.UI.Automation.Provider.IValueProvider)this).IsReadOnly;
-    void IValueProvider.SetValue(string val) =>
-        ((Jalium.UI.Automation.Provider.IValueProvider)this).SetValue(val);
 
     #endregion
 }
@@ -1228,6 +1233,7 @@ public sealed partial class DataGridAutomationPeer : ItemsControlAutomationPeer,
     public AutomationPeer[] GetSelection()
     {
         return DataGridOwner.SelectedItems
+            .Cast<object>()
             .Select(FindOrCreateItemAutomationPeer)
             .Cast<AutomationPeer>()
             .ToArray();
@@ -1555,6 +1561,8 @@ public sealed class TreeSelectorAutomationPeer : FrameworkElementAutomationPeer,
     /// <inheritdoc />
     public bool CanSelectMultiple => SelectorOwner.SelectionMode != SelectionMode.Single;
 
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple[] ISelectionProvider.GetSelection() => [];
+
     #endregion
 }
 
@@ -1658,6 +1666,9 @@ public sealed class TreeSelectorItemAutomationPeer : FrameworkElementAutomationP
             return null!;
         }
     }
+
+    Jalium.UI.Automation.Provider.IRawElementProviderSimple? ISelectionItemProvider.SelectionContainer =>
+        SelectionContainer is AutomationPeer peer ? ProviderFromPeer(peer) : null;
 
     /// <inheritdoc />
     public void Select()

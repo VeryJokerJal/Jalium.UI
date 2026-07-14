@@ -1,4 +1,9 @@
-namespace Jalium.UI.Documents;
+using System.ComponentModel;
+using Jalium.UI.Controls;
+using Jalium.UI.Media;
+
+namespace Jalium.UI.Documents
+{
 
 /// <summary>
 /// Provides an AdornerLayer for elements below it in the visual tree.
@@ -89,29 +94,66 @@ public sealed class AdornerDecorator : Decorator
     }
 }
 
+}
+
+namespace Jalium.UI.Controls
+{
+
 /// <summary>
 /// Base class for elements that apply effects around a single child element.
 /// </summary>
+[Jalium.UI.Markup.ContentProperty("Child")]
 public class Decorator : FrameworkElement, Jalium.UI.Markup.IAddChild
 {
     private UIElement? _child;
 
     /// <summary>
-    /// Identifies the Child property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty ChildProperty =
-        DependencyProperty.Register(nameof(Child), typeof(UIElement), typeof(Decorator),
-            new PropertyMetadata(null, OnChildChanged));
-
-    /// <summary>
     /// Gets or sets the single child element of a Decorator.
     /// </summary>
+    [DefaultValue(null)]
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public virtual UIElement? Child
     {
         get => _child;
-        set => SetValue(ChildProperty, value);
+        set
+        {
+            if (ReferenceEquals(_child, value))
+            {
+                return;
+            }
+
+            if (value != null && ReferenceEquals(value.VisualParent, this))
+            {
+                throw new InvalidOperationException("The element is already a visual child of this decorator.");
+            }
+
+            UIElement? oldChild = _child;
+            _child = null;
+            if (oldChild != null)
+            {
+                RemoveVisualChild(oldChild);
+                RemoveLogicalChild(oldChild);
+            }
+
+            _child = value;
+            if (value != null)
+            {
+                try
+                {
+                    AddLogicalChild(value);
+                    AddVisualChild(value);
+                }
+                catch
+                {
+                    RemoveVisualChild(value);
+                    RemoveLogicalChild(value);
+                    _child = null;
+                    throw;
+                }
+            }
+
+            InvalidateMeasure();
+        }
     }
 
     /// <inheritdoc />
@@ -186,26 +228,6 @@ public class Decorator : FrameworkElement, Jalium.UI.Markup.IAddChild
         return finalSize;
     }
 
-    private static void OnChildChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is Decorator decorator)
-        {
-            var oldChild = e.OldValue as UIElement;
-            var newChild = e.NewValue as UIElement;
+}
 
-            if (oldChild != null)
-            {
-                decorator.RemoveVisualChild(oldChild);
-            }
-
-            decorator._child = newChild;
-
-            if (newChild != null)
-            {
-                decorator.AddVisualChild(newChild);
-            }
-
-            decorator.InvalidateMeasure();
-        }
-    }
 }

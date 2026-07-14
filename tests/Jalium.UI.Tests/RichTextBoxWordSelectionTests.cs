@@ -16,7 +16,7 @@ public class RichTextBoxWordSelectionTests
             Width = 320,
             Height = 120
         };
-        richTextBox.SetText("one two three");
+        richTextBox.SetPlainText("one two three");
         richTextBox.Measure(new Size(320, 120));
         richTextBox.Arrange(new Rect(0, 0, 320, 120));
 

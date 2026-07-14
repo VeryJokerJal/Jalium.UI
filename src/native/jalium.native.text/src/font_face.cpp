@@ -24,6 +24,7 @@ std::unique_ptr<FontFace> FontFace::Parse(std::vector<uint8_t> bytes, int faceIn
 FontFace::~FontFace() = default;
 
 bool FontFace::ParseInternal(int faceIndex) {
+    faceIndex_ = faceIndex;
     ByteReader file(bytes_.data(), bytes_.size());
     if (!tables_.Parse(file, faceIndex)) return false;
 

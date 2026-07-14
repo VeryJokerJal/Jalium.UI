@@ -1,10 +1,10 @@
 using System.Globalization;
 using Jalium.UI;
 using Jalium.UI.Controls;
-using Jalium.UI.Controls.Shapes;
+using Jalium.UI.Shapes;
 using Jalium.UI.Media;
 using AnimationDuration = Jalium.UI.Duration;
-using ShapePointCollection = Jalium.UI.Controls.Shapes.PointCollection;
+using MediaPointCollection = Jalium.UI.Media.PointCollection;
 
 namespace Jalium.UI.Markup;
 
@@ -27,7 +27,7 @@ public abstract class TypeConverter
 /// <summary>
 /// Converts strings to Thickness values.
 /// </summary>
-public sealed class ThicknessConverter : TypeConverter
+internal sealed class ThicknessConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -73,7 +73,7 @@ public sealed class GeometryTypeConverter : TypeConverter
 /// <summary>
 /// Converts strings to CornerRadius values.
 /// </summary>
-public sealed class CornerRadiusConverter : TypeConverter
+internal sealed class CornerRadiusConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -98,7 +98,9 @@ public sealed class CornerRadiusConverter : TypeConverter
 /// <summary>
 /// Converts strings to Brush values.
 /// </summary>
-public sealed class BrushConverter : TypeConverter
+// Parser implementation; the public WPF-compatible converter is
+// Jalium.UI.Media.BrushConverter.
+internal sealed class BrushConverter : TypeConverter
 {
     private static readonly Dictionary<string, Color> _namedColors = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -188,7 +190,9 @@ public sealed class BrushConverter : TypeConverter
 /// <summary>
 /// Converts strings to Color values.
 /// </summary>
-public sealed class ColorConverter : TypeConverter
+// Parser implementation; the public WPF-compatible converter is
+// Jalium.UI.Media.ColorConverter.
+internal sealed class ColorConverter : TypeConverter
 {
     private static readonly Dictionary<string, Color> _namedColors = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -277,7 +281,7 @@ public sealed class ColorConverter : TypeConverter
 /// <summary>
 /// Converts strings to GridLength values.
 /// </summary>
-public sealed class GridLengthConverter : TypeConverter
+internal sealed class GridLengthConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -485,12 +489,12 @@ public sealed class IconElementConverter : TypeConverter
 /// Converts strings to PointCollection values.
 /// Format: "x1,y1 x2,y2 x3,y3" (space-separated coordinate pairs).
 /// </summary>
-public sealed class PointCollectionConverter : TypeConverter
+internal sealed class PointCollectionConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
         if (value is not string str) return null;
-        return ShapePointCollection.Parse(str);
+        return MediaPointCollection.Parse(str);
     }
 }
 
@@ -503,7 +507,7 @@ public sealed class PointCollectionConverter : TypeConverter
 /// to materialise a Point), and the brush silently ends up with default
 /// endpoints — the gradient looks correct only by accident.
 /// </summary>
-public sealed class PointConverter : TypeConverter
+internal sealed class PointConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -526,7 +530,7 @@ public sealed class PointConverter : TypeConverter
 /// Converts strings to <see cref="Vector"/> values. Same "x,y" or "x y"
 /// grammar as <see cref="PointConverter"/>.
 /// </summary>
-public sealed class VectorConverter : TypeConverter
+internal sealed class VectorConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -544,7 +548,7 @@ public sealed class VectorConverter : TypeConverter
 /// Converts strings to <see cref="Size"/> values. Format: "width,height"
 /// or "width height".
 /// </summary>
-public sealed class SizeConverter : TypeConverter
+internal sealed class SizeConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -575,7 +579,7 @@ public static class TypeConverterRegistry
         [typeof(Uri)] = new UriValueConverter(),
         [typeof(Type)] = new TypeTypeConverter(),
         [typeof(IconElement)] = new IconElementConverter(),
-        [typeof(ShapePointCollection)] = new PointCollectionConverter(),
+        [typeof(MediaPointCollection)] = new PointCollectionConverter(),
         [typeof(Point)] = new PointConverter(),
         [typeof(Vector)] = new VectorConverter(),
         [typeof(Size)] = new SizeConverter(),

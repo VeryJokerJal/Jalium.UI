@@ -30,6 +30,19 @@ public class EditorFeatureTests
     }
 
     [Fact]
+    public void EditorView_GetOffsetFromPoint_ExactTrailingEdge_ShouldReturnUtf16LineEnd()
+    {
+        var doc = new TextDocument("A😀");
+        var view = new EditorView { Document = doc };
+        view.UpdateLayout("Segoe UI", 14);
+
+        Point lineEnd = view.GetPointFromOffset(doc.TextLength, showLineNumbers: false);
+        int offset = view.GetOffsetFromPoint(lineEnd, showLineNumbers: false);
+
+        Assert.Equal(doc.TextLength, offset);
+    }
+
+    [Fact]
     public void EditorView_GetOffsetFromPoint_LargeY_ShouldClampToLastLine()
     {
         var doc = new TextDocument("a\nbb\nccc");

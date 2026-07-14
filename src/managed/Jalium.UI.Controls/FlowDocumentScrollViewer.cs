@@ -8,7 +8,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Displays a <see cref="FlowDocument"/> as a continuous scrolling text surface.
 /// </summary>
-[ContentProperty("Document")]
+[Jalium.UI.Markup.ContentProperty("Document")]
 public class FlowDocumentScrollViewer : Control
 {
     private readonly ScrollViewer _contentHost;

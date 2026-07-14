@@ -4,7 +4,7 @@ using System.Collections.Generic;
 namespace Jalium.UI.Media.Rendering;
 
 /// <summary>
-/// Builds the axis-aligned world bounds of a <see cref="Drawing"/> while
+/// Builds the axis-aligned world bounds of a <see cref="RecordedDrawing"/> while
 /// <see cref="DrawingRecorder"/> captures draw / push / pop operations.
 /// Maintains a transform stack and a clip stack so bounds for draws nested
 /// inside <c>PushTransform</c> / <c>PushClip</c> scopes are computed in

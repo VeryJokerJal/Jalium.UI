@@ -1,9 +1,11 @@
-namespace Jalium.UI.Media;
+using Jalium.UI.Media;
+
+namespace Jalium.UI.Media.Imaging;
 
 /// <summary>
-/// Converts a Visual object into a bitmap.
+/// Converts a visual object into a bitmap using Jalium's native rendering path.
 /// </summary>
-public class RenderTargetBitmap : Imaging.BitmapSource
+public sealed partial class RenderTargetBitmap : BitmapSource
 {
     private byte[] _pixelBuffer;
     private readonly int _pixelWidth;
@@ -94,7 +96,7 @@ public class RenderTargetBitmap : Imaging.BitmapSource
         // element's OnRender into the supplied drawing context and then
         // recurses into the visual subtree (children, templated content and
         // applied transforms / clips / opacity). Driving rendering through it
-        // keeps RenderTargetBitmap consistent with the on-screen render path
+        // keeps the Jalium render target bitmap consistent with the on-screen render path
         // instead of merely walking the child collection.
         visual.Render(drawingContext);
     }
@@ -159,7 +161,7 @@ public class RenderTargetBitmap : Imaging.BitmapSource
 }
 
 /// <summary>
-/// Drawing context for RenderTargetBitmap.
+/// Drawing context for <see cref="RenderTargetBitmap"/>.
 /// </summary>
 internal sealed class RenderTargetDrawingContext : DrawingContextAdapter
 {

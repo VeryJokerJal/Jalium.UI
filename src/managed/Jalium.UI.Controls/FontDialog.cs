@@ -204,7 +204,7 @@ public sealed class FontDialog
             return ShowWindowsDialog(DialogOwnerResolver.Resolve(owner?.Handle ?? nint.Zero));
         }
 
-        return ShowFallbackDialog();
+        return ShowFallbackDialog(owner);
     }
 
     /// <summary>
@@ -303,51 +303,25 @@ public sealed class FontDialog
         }
     }
 
-    private bool ShowFallbackDialog()
+    private bool ShowFallbackDialog(Window? owner)
     {
-        Console.WriteLine("Font Dialog");
-        Console.WriteLine($"Sample: {SampleText}");
-        Console.Write($"Font family [{FontFamily?.Source ?? DefaultFontFamilyName}] (blank to cancel): ");
+        var dialog = CreateFallbackDialog(owner);
+        return dialog.ShowDialog() == true;
+    }
 
-        var familyInput = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(familyInput))
+    internal Window CreateFallbackDialogForTesting(Window? owner = null) =>
+        CreateFallbackDialog(owner);
+
+    private FontDialogWindow CreateFallbackDialog(Window? owner)
+    {
+        var dialog = new FontDialogWindow(this)
         {
-            return false;
-        }
-
-        FontFamily = new FontFamily(familyInput.Trim());
-
-        Console.Write($"Font size [{FontSize.ToString("0.##", CultureInfo.InvariantCulture)}]: ");
-        var sizeInput = Console.ReadLine();
-        if (TryParseFontSize(sizeInput, out var size))
-        {
-            FontSize = size;
-        }
-
-        if (ShowEffects)
-        {
-            var effects = GetDialogEffects(TextDecorations);
-            var bold = PromptYesNo("Bold", FontWeight >= FontWeights.Bold);
-            var italic = PromptYesNo("Italic", FontStyle == FontStyles.Italic || FontStyle == FontStyles.Oblique);
-            var underline = PromptYesNo("Underline", effects.Underline);
-            var strikeout = PromptYesNo("Strikeout", effects.Strikeout);
-
-            FontWeight = bold ? FontWeights.Bold : FontWeights.Normal;
-            FontStyle = italic ? FontStyles.Italic : FontStyles.Normal;
-            TextDecorations = UpdateDialogTextDecorations(TextDecorations, underline, strikeout);
-        }
-
-        if (ShowColor)
-        {
-            Console.Write($"Font color [{Color}] (#RRGGBB or #AARRGGBB): ");
-            var colorInput = Console.ReadLine();
-            if (TryParseDialogColor(colorInput, out var selectedColor))
-            {
-                Color = selectedColor;
-            }
-        }
-
-        return true;
+            Owner = owner,
+            WindowStartupLocation = owner == null
+                ? WindowStartupLocation.CenterScreen
+                : WindowStartupLocation.CenterOwner,
+        };
+        return dialog;
     }
 
     #endregion
@@ -474,18 +448,6 @@ public sealed class FontDialog
             : primaryName;
     }
 
-    private static bool PromptYesNo(string prompt, bool defaultValue)
-    {
-        Console.Write($"{prompt} [{(defaultValue ? "Y/n" : "y/N")}]: ");
-        var response = Console.ReadLine();
-        if (string.IsNullOrWhiteSpace(response))
-        {
-            return defaultValue;
-        }
-
-        return response.Trim().StartsWith("y", StringComparison.OrdinalIgnoreCase);
-    }
-
     private static bool TryParseFontSize(string? input, out double size)
     {
         if (string.IsNullOrWhiteSpace(input))
@@ -589,6 +551,221 @@ public sealed class FontDialog
             OffsetUnit = decoration.OffsetUnit,
             ThicknessUnit = decoration.ThicknessUnit
         };
+    }
+
+    private sealed class FontDialogWindow : Window
+    {
+        private readonly FontDialog _target;
+        private readonly ComboBox _family;
+        private readonly TextBox _size;
+        private readonly CheckBox _bold;
+        private readonly CheckBox _italic;
+        private readonly CheckBox _underline;
+        private readonly CheckBox _strikeout;
+        private readonly TextBox? _color;
+        private readonly TextBlock _preview;
+
+        internal FontDialogWindow(FontDialog target)
+        {
+            _target = target;
+            Title = "Choose Font";
+            Width = 520;
+            SizeToContent = SizeToContent.Height;
+            ResizeMode = ResizeMode.NoResize;
+
+            var effects = GetDialogEffects(target.TextDecorations);
+            _family = new ComboBox
+            {
+                IsEditable = true,
+                Text = target.FontFamily?.Source ?? DefaultFontFamilyName,
+                MinWidth = 330,
+            };
+            foreach (FontFamily family in GetSystemFontFamilies())
+            {
+                if (!target.FixedPitchOnly || LooksFixedPitch(family.Source))
+                    _family.Items.Add(family.Source);
+            }
+
+            _size = new TextBox
+            {
+                Text = target.FontSize.ToString("0.##", CultureInfo.InvariantCulture),
+                MinWidth = 100,
+            };
+            _bold = MakeCheckBox("Bold", target.FontWeight >= FontWeights.Bold);
+            _italic = MakeCheckBox(
+                "Italic",
+                target.FontStyle == FontStyles.Italic || target.FontStyle == FontStyles.Oblique);
+            _underline = MakeCheckBox("Underline", effects.Underline);
+            _strikeout = MakeCheckBox("Strikeout", effects.Strikeout);
+            _color = target.ShowColor
+                ? new TextBox { Text = target.Color.ToString(), MinWidth = 150 }
+                : null;
+            _preview = new TextBlock
+            {
+                Text = target.SampleText,
+                TextWrapping = TextWrapping.Wrap,
+                FontSize = target.FontSize,
+                FontFamily = target.FontFamily ?? new FontFamily(DefaultFontFamilyName),
+                FontWeight = target.FontWeight,
+                FontStyle = target.FontStyle,
+                TextDecorations = target.TextDecorations ?? new TextDecorationCollection(),
+                Foreground = new SolidColorBrush(target.Color),
+                MinHeight = 54,
+                VerticalAlignment = VerticalAlignment.Center,
+            };
+
+            Content = BuildContent();
+            _family.SelectionChanged += (_, _) => RefreshPreview();
+            _size.TextChanged += (_, _) => RefreshPreview();
+            _bold.Click += (_, _) => RefreshPreview();
+            _italic.Click += (_, _) => RefreshPreview();
+            _underline.Click += (_, _) => RefreshPreview();
+            _strikeout.Click += (_, _) => RefreshPreview();
+            if (_color != null)
+                _color.TextChanged += (_, _) => RefreshPreview();
+        }
+
+        private UIElement BuildContent()
+        {
+            var root = new StackPanel { Margin = new Thickness(20) };
+            root.Children.Add(Labeled("Font family", _family));
+
+            var sizeRow = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Margin = new Thickness(0, 12, 0, 0),
+            };
+            sizeRow.Children.Add(Labeled("Size", _size));
+            if (_color != null)
+            {
+                var colorPanel = Labeled("Color", _color);
+                colorPanel.Margin = new Thickness(16, 0, 0, 0);
+                sizeRow.Children.Add(colorPanel);
+            }
+            root.Children.Add(sizeRow);
+
+            if (_target.ShowEffects)
+            {
+                var effects = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Margin = new Thickness(0, 14, 0, 0),
+                };
+                effects.Children.Add(_bold);
+                effects.Children.Add(_italic);
+                effects.Children.Add(_underline);
+                effects.Children.Add(_strikeout);
+                root.Children.Add(effects);
+            }
+
+            root.Children.Add(new TextBlock
+            {
+                Text = "Preview",
+                Margin = new Thickness(0, 16, 0, 5),
+            });
+            root.Children.Add(new Border
+            {
+                BorderThickness = new Thickness(1),
+                Padding = new Thickness(12),
+                Child = _preview,
+            });
+
+            var buttons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                Margin = new Thickness(0, 18, 0, 0),
+            };
+            var cancel = new Button
+            {
+                Content = "Cancel",
+                MinWidth = 84,
+                Padding = new Thickness(14, 6, 14, 6),
+            };
+            cancel.Click += (_, _) =>
+            {
+                DialogResult = false;
+                Close();
+            };
+            var accept = new Button
+            {
+                Content = "OK",
+                MinWidth = 84,
+                Margin = new Thickness(8, 0, 0, 0),
+                Padding = new Thickness(14, 6, 14, 6),
+            };
+            accept.Click += (_, _) => Accept();
+            buttons.Children.Add(cancel);
+            buttons.Children.Add(accept);
+            root.Children.Add(buttons);
+            return root;
+        }
+
+        private void Accept()
+        {
+            string familyName = ResolveFamilyName();
+            if (string.IsNullOrWhiteSpace(familyName))
+                return;
+            _target.FontFamily = new FontFamily(familyName);
+            if (TryParseFontSize(_size.Text, out double size))
+                _target.FontSize = size;
+            _target.FontWeight = _bold.IsChecked == true ? FontWeights.Bold : FontWeights.Normal;
+            _target.FontStyle = _italic.IsChecked == true ? FontStyles.Italic : FontStyles.Normal;
+            _target.TextDecorations = UpdateDialogTextDecorations(
+                _target.TextDecorations,
+                _underline.IsChecked == true,
+                _strikeout.IsChecked == true);
+            if (_color != null && TryParseDialogColor(_color.Text, out Color color))
+                _target.Color = color;
+
+            DialogResult = true;
+            Close();
+        }
+
+        private void RefreshPreview()
+        {
+            string familyName = ResolveFamilyName();
+            if (!string.IsNullOrWhiteSpace(familyName))
+                _preview.FontFamily = new FontFamily(familyName);
+            if (TryParseFontSize(_size.Text, out double size))
+                _preview.FontSize = CoerceFontSize(size, _target.MinSize, _target.MaxSize);
+            _preview.FontWeight = _bold.IsChecked == true ? FontWeights.Bold : FontWeights.Normal;
+            _preview.FontStyle = _italic.IsChecked == true ? FontStyles.Italic : FontStyles.Normal;
+            _preview.TextDecorations = UpdateDialogTextDecorations(
+                _target.TextDecorations,
+                _underline.IsChecked == true,
+                _strikeout.IsChecked == true) ?? new TextDecorationCollection();
+            if (_color != null && TryParseDialogColor(_color.Text, out Color color))
+                _preview.Foreground = new SolidColorBrush(color);
+        }
+
+        private string ResolveFamilyName() =>
+            _family.SelectedItem as string ?? _family.Text?.Trim() ?? string.Empty;
+
+        private static StackPanel Labeled(string label, UIElement editor)
+        {
+            var panel = new StackPanel();
+            panel.Children.Add(new TextBlock
+            {
+                Text = label,
+                Margin = new Thickness(0, 0, 0, 5),
+            });
+            panel.Children.Add(editor);
+            return panel;
+        }
+
+        private static CheckBox MakeCheckBox(string label, bool value) => new()
+        {
+            Content = label,
+            IsChecked = value,
+            Margin = new Thickness(0, 0, 14, 0),
+        };
+
+        private static bool LooksFixedPitch(string name) =>
+            name.Contains("Mono", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("Code", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("Console", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("Courier", StringComparison.OrdinalIgnoreCase);
     }
 
     #endregion

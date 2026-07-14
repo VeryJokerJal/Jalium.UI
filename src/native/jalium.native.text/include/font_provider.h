@@ -4,6 +4,8 @@
 #include <vector>
 #include <cstdint>
 #include <memory>
+#include <mutex>
+#include <unordered_map>
 
 namespace jalium {
 
@@ -15,6 +17,12 @@ class FontFace;
 
 class FontProvider {
 public:
+    struct FontMatch {
+        std::string path;
+        int faceIndex = 0;
+        std::string family;
+    };
+
     virtual ~FontProvider() = default;
 
     /// Finds the best matching font file for the given parameters.
@@ -38,6 +46,20 @@ public:
     /// @return Owned FontFace, or nullptr if not found.
     virtual std::unique_ptr<FontFace> CreateFace(
         const wchar_t* familyName,
+        int32_t weight,
+        int32_t style);
+
+    /// Creates a face from an already resolved platform font match.  Fallback
+    /// discovery returns exact file/index pairs; resolving the family again can
+    /// otherwise select a different face when fontconfig aliases are involved.
+    std::unique_ptr<FontFace> CreateFace(const FontMatch& match);
+
+    /// Returns the platform fallback chain for a Unicode cluster.  The default
+    /// implementation preserves the legacy single-family fallback for Android;
+    /// Linux overrides this with FcFontSort over a cluster charset.
+    virtual std::vector<FontMatch> FindFallbackFonts(
+        const std::vector<uint32_t>& codepoints,
+        const wchar_t* preferredFamily,
         int32_t weight,
         int32_t style);
 
@@ -66,8 +88,16 @@ public:
     const wchar_t* GetDefaultFontFamily() const override;
     const wchar_t* GetFallbackFontFamily() const override;
 
+    std::vector<FontMatch> FindFallbackFonts(
+        const std::vector<uint32_t>& codepoints,
+        const wchar_t* preferredFamily,
+        int32_t weight,
+        int32_t style) override;
+
 private:
     void* fcConfig_ = nullptr;  // FcConfig* (opaque to avoid header dep)
+    std::mutex fallbackCacheMutex_;
+    std::unordered_map<std::string, std::vector<FontMatch>> fallbackCache_;
 };
 
 /// Android: discovers fonts from /system/fonts/ and fonts.xml

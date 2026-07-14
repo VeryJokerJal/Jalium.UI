@@ -1,3 +1,5 @@
+using Jalium.UI.Threading;
+
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
@@ -46,13 +48,7 @@ public static class LayoutInformation
     public static UIElement? GetLayoutExceptionElement(Dispatcher dispatcher)
     {
         ArgumentNullException.ThrowIfNull(dispatcher);
-        return dispatcher.LastLayoutExceptionElement;
-    }
-
-    public static UIElement? GetLayoutExceptionElement(Threading.Dispatcher dispatcher)
-    {
-        ArgumentNullException.ThrowIfNull(dispatcher);
-        return dispatcher.LegacyDispatcher.LastLayoutExceptionElement;
+        return dispatcher.CoreDispatcher.LastLayoutExceptionElement;
     }
 
     /// <summary>

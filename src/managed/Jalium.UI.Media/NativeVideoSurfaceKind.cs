@@ -33,6 +33,14 @@ public enum NativeVideoSurfaceKind
 
     /// <summary>CoreVideo CVPixelBufferRef wrapping IOSurface. Future Apple.</summary>
     CVPixelBuffer = 6,
+
+    /// <summary>
+    /// Linux dma-buf exported by VAAPI/GStreamer. The descriptor ABI can
+    /// carry multiple planes; the current Vulkan path imports only a
+    /// single-plane packed RGB layout and rejects other layouts for CPU
+    /// fallback.
+    /// </summary>
+    LinuxDmaBuf = 7,
 }
 
 /// <summary>

@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cwchar>
 
+#define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
 #define STBI_FAILURE_USERMSG
@@ -434,6 +435,18 @@ void VulkanBackend::UnregisterDeviceContext(const std::shared_ptr<VulkanDeviceGe
         brushPipelineAttempted_ = false;
         deviceGeneration_.reset();
     }
+}
+
+std::shared_ptr<VulkanDeviceGeneration>
+VulkanBackend::AcquireExternalImportGeneration()
+{
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    if (!deviceGeneration_ || deviceGeneration_->IsLost() ||
+        !deviceGeneration_->ctx.valid ||
+        !deviceGeneration_->ctx.dmaBufImportEnabled) {
+        return nullptr;
+    }
+    return deviceGeneration_;
 }
 
 std::shared_ptr<VulkanBrushPipeline> VulkanBackend::EnsureBrushPipeline()

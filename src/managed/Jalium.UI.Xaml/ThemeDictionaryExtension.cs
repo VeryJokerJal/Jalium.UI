@@ -1,10 +1,12 @@
-namespace Jalium.UI.Markup;
+using Jalium.UI.Markup;
+
+namespace Jalium.UI;
 
 /// <summary>
 /// Implements a markup extension that enables application authors to customize control styles
 /// based on the current system theme.
 /// </summary>
-public sealed class ThemeDictionaryExtension : MarkupExtension
+public class ThemeDictionaryExtension : MarkupExtension
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="ThemeDictionaryExtension"/> class.
@@ -47,8 +49,10 @@ public sealed class ThemeDictionaryExtension : MarkupExtension
 /// <summary>
 /// Implements a markup extension that converts a BitmapImage from one embedded color profile to another.
 /// </summary>
-public sealed class ColorConvertedBitmapExtension : MarkupExtension
+public class ColorConvertedBitmapExtension : MarkupExtension
 {
+    private readonly object? _image;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="ColorConvertedBitmapExtension"/> class.
     /// </summary>
@@ -60,25 +64,10 @@ public sealed class ColorConvertedBitmapExtension : MarkupExtension
     /// Initializes a new instance of the <see cref="ColorConvertedBitmapExtension"/> class
     /// with the specified source.
     /// </summary>
-    public ColorConvertedBitmapExtension(object source)
+    public ColorConvertedBitmapExtension(object image)
     {
-        Source = source;
+        _image = image;
     }
-
-    /// <summary>
-    /// Gets or sets the source bitmap.
-    /// </summary>
-    public object? Source { get; set; }
-
-    /// <summary>
-    /// Gets or sets the source color profile.
-    /// </summary>
-    public Uri? SourceColorContext { get; set; }
-
-    /// <summary>
-    /// Gets or sets the destination color profile.
-    /// </summary>
-    public Uri? DestinationColorContext { get; set; }
 
     /// <summary>
     /// Returns the color-converted bitmap.
@@ -88,6 +77,6 @@ public sealed class ColorConvertedBitmapExtension : MarkupExtension
     public override object? ProvideValue(IServiceProvider serviceProvider)
     {
         // Simplified: return the source as-is (full implementation would do ICC profile conversion)
-        return Source;
+        return _image;
     }
 }

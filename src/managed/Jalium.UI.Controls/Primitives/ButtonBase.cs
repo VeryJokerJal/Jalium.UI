@@ -583,7 +583,7 @@ public abstract class ButtonBase : ContentControl, ICommandSource
     /// <summary>
     /// Called when the IsPressed property changes.
     /// </summary>
-    protected override void OnIsPressedChanged(bool oldValue, bool newValue)
+    internal override void OnIsPressedChanged(bool oldValue, bool newValue)
     {
         base.OnIsPressedChanged(oldValue, newValue);
         OnIsPressedChanged(new DependencyPropertyChangedEventArgs(
@@ -600,25 +600,4 @@ public abstract class ButtonBase : ContentControl, ICommandSource
     }
 
     #endregion
-}
-
-/// <summary>
-/// Specifies when the Click event should be raised.
-/// </summary>
-public enum ClickMode
-{
-    /// <summary>
-    /// Click is raised when the mouse button is released.
-    /// </summary>
-    Release,
-
-    /// <summary>
-    /// Click is raised when the mouse button is pressed.
-    /// </summary>
-    Press,
-
-    /// <summary>
-    /// Click is raised when the mouse enters the button.
-    /// </summary>
-    Hover
 }

@@ -12,7 +12,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 - Active development — v26.10.6 (APIs can still evolve between minor versions)
 - Primary target: Windows 10/11 (x64, ARM64)
-- Cross-platform: Android (arm64-v8a, x86_64), Linux (Vulkan), macOS (Metal)
+- Cross-platform: Android (arm64-v8a, x86_64), Linux (X11/Wayland; Vulkan or software), macOS (Metal)
 - Runtime target: .NET 10 (`net10.0-windows`, `net10.0-android`, `net10.0`)
 - Rendering: DirectX 12 (Windows), Vulkan (Linux/Android), Metal (macOS), Software fallback
 
@@ -25,7 +25,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 - Developer experience: JALXAML hot reload (live visual-tree patching) plus an opt-in built-in DevTools inspector and debug HUD
 - Build-time tooling via NuGet (`Jalium.UI.Build`, `Jalium.UI.Xaml.SourceGenerator`)
 - First-class Generic Host integration — `AppBuilder` implements `IHostApplicationBuilder` (`Microsoft.Extensions.Hosting`) for DI, configuration, options, logging and metrics, plus Jalium MVVM view/view-model wiring
-- UIA accessibility support with automation peers
+- Accessibility automation peers with Windows UIA and Linux AT-SPI bridges
 - Visual effects: liquid glass, backdrop blur, acrylic, mica, transition shaders, animated bitmaps (GIF / APNG / animated WebP)
 - Native GPU video via `MediaElement` / `NativeVideoSurface` (D3D12 / Vulkan surfaces, staged rollout)
 - Full multi-touch input — manipulation with physical inertia, gesture recognition, real-time stylus preview
@@ -99,7 +99,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 - **Rich**: `InkCanvas`, `WebView`/`WebBrowser`, `EditControl`, `RichTextBox`, `QRCode` (self-hosted encoder), `TitleBar`, `Terminal`, `SwipeControl`
 - **Developer tools**: `DiffViewer`, `HexEditor`
 - **Interop**: `WindowsFormsHost` (host `System.Windows.Forms` controls on `net10.0-windows`)
-- **Printing**: `PrintDialog` backed by a native Win32 platform layer
+- **Printing**: `PrintDialog` backed by Win32 on Windows and PDF + xdg-desktop-portal on Linux
 - **Notifications**: Toast-style notification system
 
 ### Text Editing
@@ -184,7 +184,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 ### Accessibility
 
-- UIA automation peers for core and specialized controls
+- Automation peers for core and specialized controls, exported through Windows UIA and Linux AT-SPI
 - Chart, DiffViewer, HexEditor, JsonTreeViewer, Map, PropertyGrid automation
 - `Window.ResolveCursor` returns the standard arrow for disabled elements so
   hover state cannot be confused with enabled controls.
@@ -340,8 +340,9 @@ app.Run(window);
 
 ### Prerequisites
 
-- .NET 10 SDK (`net10.0-windows`)
-- Visual Studio with C++ workload (for native modules)
+- .NET 10 SDK
+- Visual Studio with C++ workload (for Windows native modules)
+- CMake, Ninja, Clang/GCC, and the X11/Wayland development packages (for Linux native modules; see the [Linux guide](docs/linux.md))
 - Vulkan SDK (optional, for Vulkan backend)
 - Android NDK (optional, for Android builds)
 
@@ -432,7 +433,7 @@ Jalium.UI/
 | [`docs/drawing-api.md`](docs/drawing-api.md) | Drawing API (DrawingContext, GPU effects, rendering) |
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | Manual build configuration guide |
 | [`docs/linux.md`](docs/linux.md) | Linux desktop guide (runtime dependencies, window systems, packaging) |
-| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | Linux support status matrix and roadmap |
+| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | Verified Linux support matrix, evidence, and remaining boundaries |
 | [`docs/render-thread-design.md`](docs/render-thread-design.md) | Render thread architecture |
 | [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | Present pacing / frame scheduling |
 | [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | Shell drag & drop integration |

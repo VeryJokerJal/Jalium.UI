@@ -12,8 +12,8 @@ public class TabPanel : Panel
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabStripPlacementProperty =
-        DependencyProperty.Register(nameof(TabStripPlacement), typeof(Dock), typeof(TabPanel),
-            new PropertyMetadata(Dock.Top, OnLayoutPropertyChanged));
+        DependencyProperty.Register(nameof(TabStripPlacement), typeof(Jalium.UI.Controls.Dock), typeof(TabPanel),
+            new PropertyMetadata(Jalium.UI.Controls.Dock.Top, OnLayoutPropertyChanged));
 
     #endregion
 
@@ -23,9 +23,9 @@ public class TabPanel : Panel
     /// Gets or sets the placement of the tab strip.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
-    public Dock TabStripPlacement
+    public Jalium.UI.Controls.Dock TabStripPlacement
     {
-        get => (Dock)GetValue(TabStripPlacementProperty)!;
+        get => (Jalium.UI.Controls.Dock)GetValue(TabStripPlacementProperty)!;
         set => SetValue(TabStripPlacementProperty, value);
     }
 
@@ -44,7 +44,8 @@ public class TabPanel : Panel
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var isHorizontal = TabStripPlacement == Dock.Top || TabStripPlacement == Dock.Bottom;
+        var isHorizontal = TabStripPlacement == Jalium.UI.Controls.Dock.Top ||
+            TabStripPlacement == Jalium.UI.Controls.Dock.Bottom;
 
         var totalWidth = 0.0;
         var totalHeight = 0.0;
@@ -91,7 +92,8 @@ public class TabPanel : Panel
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var isHorizontal = TabStripPlacement == Dock.Top || TabStripPlacement == Dock.Bottom;
+        var isHorizontal = TabStripPlacement == Jalium.UI.Controls.Dock.Top ||
+            TabStripPlacement == Jalium.UI.Controls.Dock.Bottom;
 
         if (isHorizontal)
         {
@@ -198,30 +200,4 @@ public class TabPanel : Panel
     }
 
     #endregion
-}
-
-/// <summary>
-/// Specifies the dock position.
-/// </summary>
-public enum Dock
-{
-    /// <summary>
-    /// Dock at the left.
-    /// </summary>
-    Left,
-
-    /// <summary>
-    /// Dock at the top.
-    /// </summary>
-    Top,
-
-    /// <summary>
-    /// Dock at the right.
-    /// </summary>
-    Right,
-
-    /// <summary>
-    /// Dock at the bottom.
-    /// </summary>
-    Bottom
 }

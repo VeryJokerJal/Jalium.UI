@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <cstddef>
 
 namespace jalium::font {
 class Cmap;
@@ -85,6 +86,13 @@ public:
     // into the owned bytes; {nullptr,0}-equivalent empty reader if absent.
     font::ByteReader GetTable(uint32_t tag) const { return tables_.Table(tag); }
     bool HasTable(uint32_t tag) const { return tables_.Has(tag); }
+    bool HasColorTables() const noexcept {
+        return (tables_.Has(font::kTag_COLR) && tables_.Has(font::kTag_CPAL)) ||
+               (tables_.Has(font::kTag_CBDT) && tables_.Has(font::kTag_CBLC));
+    }
+    const uint8_t* RawData() const noexcept { return bytes_.data(); }
+    size_t RawSize() const noexcept { return bytes_.size(); }
+    int FaceIndex() const noexcept { return faceIndex_; }
 
 private:
     FontFace() = default;
@@ -100,6 +108,7 @@ private:
     int32_t     indexToLocFormat_ = 0;
     FontMetrics metrics_;
     bool        valid_ = false;
+    int         faceIndex_ = 0;
 
     // Cached table spans used on the hot path.
     font::ByteReader hmtx_;

@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Data;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 

@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Provides automatic text formatting services.
 /// </summary>
-public class TextFormatter
+internal sealed class TextInputFormatter
 {
     private static readonly Dictionary<string, string> _autoCorrections = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -67,7 +67,7 @@ public class TextFormatter
     /// <summary>
     /// Gets the default text formatter instance.
     /// </summary>
-    public static TextFormatter Default { get; } = new TextFormatter();
+    public static TextInputFormatter Default { get; } = new();
 
     /// <summary>
     /// Gets or sets whether auto-capitalization is enabled.
@@ -325,11 +325,10 @@ public class TextFormatter
         return start;
     }
 }
-
 /// <summary>
 /// Represents a formatted region in text.
 /// </summary>
-public sealed class FormattedRegion
+internal sealed class FormattedRegion
 {
     /// <summary>
     /// Gets the start index of the region.
@@ -366,7 +365,7 @@ public sealed class FormattedRegion
 /// <summary>
 /// Specifies the type of formatted region.
 /// </summary>
-public enum FormattedRegionType
+internal enum FormattedRegionType
 {
     /// <summary>
     /// A URL.
@@ -392,7 +391,7 @@ public enum FormattedRegionType
 /// <summary>
 /// Represents the result of formatting input.
 /// </summary>
-public sealed class FormattingResult
+internal sealed class FormattingResult
 {
     /// <summary>
     /// Gets or sets the start position of text to correct.

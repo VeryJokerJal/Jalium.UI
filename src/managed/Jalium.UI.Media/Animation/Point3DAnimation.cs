@@ -1,5 +1,5 @@
-using System.Collections;
 using Jalium.UI.Media.Media3D;
+using System.Collections;
 
 namespace Jalium.UI.Media.Animation;
 
@@ -9,6 +9,30 @@ namespace Jalium.UI.Media.Animation;
 /// </summary>
 public sealed partial class Point3DAnimation : Point3DAnimationBase
 {
+    public bool IsAdditive
+    {
+        get => (bool)GetValue(IsAdditiveProperty)!;
+        set => SetValue(IsAdditiveProperty, value);
+    }
+
+    public bool IsCumulative
+    {
+        get => (bool)GetValue(IsCumulativeProperty)!;
+        set => SetValue(IsCumulativeProperty, value);
+    }
+
+    // --- from Media3DSimpleAnimations.WpfParity.cs ---
+    public Point3DAnimation(Point3D toValue, Duration duration, FillBehavior fillBehavior)
+        : this(toValue, duration) => FillBehavior = fillBehavior;
+
+    public Point3DAnimation(Point3D fromValue, Point3D toValue, Duration duration, FillBehavior fillBehavior)
+        : this(fromValue, toValue, duration) => FillBehavior = fillBehavior;
+
+    public new Point3DAnimation Clone() => (Point3DAnimation)base.Clone();
+
+    protected override Freezable CreateInstanceCore() => new Point3DAnimation();
+
+    // --- from Point3DAnimation.cs ---
     #region Dependency Properties
 
     /// <summary>
@@ -135,35 +159,16 @@ public sealed partial class Point3DAnimation : Point3DAnimationBase
 }
 
 /// <summary>
-/// Animates the value of a <see cref="Point3D"/> property using key frames.
-/// </summary>
-public partial class Point3DAnimationUsingKeyFrames : Point3DAnimationBase
-{
-    private Point3DKeyFrameCollection _keyFrames = new();
-
-    /// <summary>
-    /// Gets the collection of keyframes.
-    /// </summary>
-    public Point3DKeyFrameCollection KeyFrames
-    {
-        get => _keyFrames;
-        set => ReplaceAnimationChild(ref _keyFrames, value);
-    }
-}
-
-#region Point3D KeyFrames
-
-/// <summary>
 /// A keyframe that defines a <see cref="Point3D"/> value with discrete interpolation.
 /// </summary>
 public class DiscretePoint3DKeyFrame : Point3DKeyFrame
 {
     public DiscretePoint3DKeyFrame() { }
-    public DiscretePoint3DKeyFrame(Point3D value) => TypedValue = value;
-    public DiscretePoint3DKeyFrame(Point3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public DiscretePoint3DKeyFrame(Point3D value) => Value = value;
+    public DiscretePoint3DKeyFrame(Point3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Point3D InterpolateValueCore(Point3D baseValue, double keyFrameProgress)
-        => keyFrameProgress >= 1.0 ? TypedValue : baseValue;
+        => keyFrameProgress >= 1.0 ? Value : baseValue;
 
     protected override Freezable CreateInstanceCore() => new DiscretePoint3DKeyFrame();
 }
@@ -174,14 +179,14 @@ public class DiscretePoint3DKeyFrame : Point3DKeyFrame
 public class LinearPoint3DKeyFrame : Point3DKeyFrame
 {
     public LinearPoint3DKeyFrame() { }
-    public LinearPoint3DKeyFrame(Point3D value) => TypedValue = value;
-    public LinearPoint3DKeyFrame(Point3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public LinearPoint3DKeyFrame(Point3D value) => Value = value;
+    public LinearPoint3DKeyFrame(Point3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Point3D InterpolateValueCore(Point3D baseValue, double keyFrameProgress)
         => new(
-            baseValue.X + (TypedValue.X - baseValue.X) * keyFrameProgress,
-            baseValue.Y + (TypedValue.Y - baseValue.Y) * keyFrameProgress,
-            baseValue.Z + (TypedValue.Z - baseValue.Z) * keyFrameProgress);
+            baseValue.X + (Value.X - baseValue.X) * keyFrameProgress,
+            baseValue.Y + (Value.Y - baseValue.Y) * keyFrameProgress,
+            baseValue.Z + (Value.Z - baseValue.Z) * keyFrameProgress);
 
     protected override Freezable CreateInstanceCore() => new LinearPoint3DKeyFrame();
 }
@@ -205,11 +210,11 @@ public class SplinePoint3DKeyFrame : Point3DKeyFrame
     }
 
     public SplinePoint3DKeyFrame() { }
-    public SplinePoint3DKeyFrame(Point3D value) => TypedValue = value;
-    public SplinePoint3DKeyFrame(Point3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public SplinePoint3DKeyFrame(Point3D value) => Value = value;
+    public SplinePoint3DKeyFrame(Point3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public SplinePoint3DKeyFrame(Point3D value, KeyTime keyTime, KeySpline keySpline)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         KeySpline = keySpline;
     }
@@ -218,15 +223,15 @@ public class SplinePoint3DKeyFrame : Point3DKeyFrame
     {
         var progress = KeySpline?.GetSplineProgress(keyFrameProgress) ?? keyFrameProgress;
         return new(
-            baseValue.X + (TypedValue.X - baseValue.X) * progress,
-            baseValue.Y + (TypedValue.Y - baseValue.Y) * progress,
-            baseValue.Z + (TypedValue.Z - baseValue.Z) * progress);
+            baseValue.X + (Value.X - baseValue.X) * progress,
+            baseValue.Y + (Value.Y - baseValue.Y) * progress,
+            baseValue.Z + (Value.Z - baseValue.Z) * progress);
     }
 
     protected override Freezable CreateInstanceCore() => new SplinePoint3DKeyFrame();
 
     private static void OnKeySplineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((SplinePoint3DKeyFrame)d).OnFreezableChildPropertyChanged(e, KeySplineProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, KeySplineProperty);
 }
 
 /// <summary>
@@ -246,11 +251,11 @@ public class EasingPoint3DKeyFrame : Point3DKeyFrame
     }
 
     public EasingPoint3DKeyFrame() { }
-    public EasingPoint3DKeyFrame(Point3D value) => TypedValue = value;
-    public EasingPoint3DKeyFrame(Point3D value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public EasingPoint3DKeyFrame(Point3D value) => Value = value;
+    public EasingPoint3DKeyFrame(Point3D value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public EasingPoint3DKeyFrame(Point3D value, KeyTime keyTime, IEasingFunction easingFunction)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         EasingFunction = easingFunction;
     }
@@ -259,15 +264,13 @@ public class EasingPoint3DKeyFrame : Point3DKeyFrame
     {
         var progress = EasingFunction?.Ease(keyFrameProgress) ?? keyFrameProgress;
         return new(
-            baseValue.X + (TypedValue.X - baseValue.X) * progress,
-            baseValue.Y + (TypedValue.Y - baseValue.Y) * progress,
-            baseValue.Z + (TypedValue.Z - baseValue.Z) * progress);
+            baseValue.X + (Value.X - baseValue.X) * progress,
+            baseValue.Y + (Value.Y - baseValue.Y) * progress,
+            baseValue.Z + (Value.Z - baseValue.Z) * progress);
     }
 
     protected override Freezable CreateInstanceCore() => new EasingPoint3DKeyFrame();
 
     private static void OnEasingFunctionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((EasingPoint3DKeyFrame)d).OnFreezableChildPropertyChanged(e, EasingFunctionProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, EasingFunctionProperty);
 }
-
-#endregion

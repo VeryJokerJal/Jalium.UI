@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Jalium.UI.Media;
 
 namespace Jalium.UI;
 

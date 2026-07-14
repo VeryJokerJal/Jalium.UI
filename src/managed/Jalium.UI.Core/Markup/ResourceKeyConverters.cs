@@ -6,7 +6,7 @@ namespace Jalium.UI.Markup;
 /// <summary>
 /// Reports that component resource keys deliberately have no general type-conversion path.
 /// </summary>
-public sealed class ComponentResourceKeyConverter : TypeConverter
+public class ComponentResourceKeyConverter : ExpressionConverter
 {
     /// <inheritdoc />
     public override bool CanConvertFrom(ITypeDescriptorContext? context, Type sourceType)

@@ -234,7 +234,7 @@ public class InkCanvasRealTimeStylusPreviewTests
     private static void Pump(RealTimeStylus rts, RealTimeStylusProcessResult result)
     {
         rts.QueueProcessedCallbacks(result);
-        var dispatcher = Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread();
+        var dispatcher = Dispatcher.CurrentDispatcher;
         dispatcher.ProcessQueue();
     }
 

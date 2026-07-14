@@ -3,6 +3,7 @@ using System.Collections.Specialized;
 using System.Collections.ObjectModel;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Virtualization;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 

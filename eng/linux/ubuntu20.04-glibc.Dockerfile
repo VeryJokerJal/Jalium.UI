@@ -8,13 +8,14 @@ ENV PATH="/usr/share/dotnet:${PATH}"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        bash binutils build-essential ca-certificates ninja-build pkg-config python3-pip \
-        libx11-dev libxext-dev libxrandr-dev xclip xvfb \
+        bash binutils build-essential ca-certificates file git ninja-build pkg-config python3-pip \
+        libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev xclip xvfb \
         libwayland-dev wayland-protocols libxkbcommon-dev weston \
         libvulkan-dev mesa-vulkan-drivers \
-        libfontconfig1-dev \
+        libfontconfig1-dev fonts-dejavu-core fonts-noto-cjk \
         libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
         gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+        gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg \
     && python3 -m pip install --no-cache-dir cmake==3.31.10 \
     && rm -rf /var/lib/apt/lists/*
 

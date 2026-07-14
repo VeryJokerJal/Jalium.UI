@@ -10,7 +10,7 @@ namespace Jalium.UI.Controls;
 /// Specifies that the text should be parsed for underscored access keys (mnemonics).
 /// The first character following an underscore is used as the access key.
 /// </summary>
-[ContentProperty(nameof(Text))]
+[Jalium.UI.Markup.ContentProperty(nameof(Text))]
 public class AccessText : FrameworkElement, IAddChild
 {
     private readonly TextBlock _textBlock;
