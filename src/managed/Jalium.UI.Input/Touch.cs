@@ -13,6 +13,9 @@ public static class Touch
 {
     private static readonly Dictionary<int, TouchDevice> _touchDevices = new();
     private static TouchCapabilities? _cachedCapabilities;
+    private static TouchCapabilities? _overrideCapabilities;
+    private static Func<(int Result, int TouchPresent, int Contacts)>?
+        _linuxCapabilitiesQueryForTesting;
 
     static Touch()
     {
@@ -32,9 +35,31 @@ public static class Touch
     /// <summary>Gets a value indicating whether touch input is present on this system.</summary>
     public static bool IsTouchAvailable => GetTouchCapabilities().TouchPresent;
 
-    /// <summary>Returns the static touch capabilities of the system (cached for process lifetime).</summary>
-    public static TouchCapabilities GetTouchCapabilities() =>
-        _cachedCapabilities ??= QueryPlatformCapabilities();
+    /// <summary>
+    /// Returns current touch capabilities. Windows keeps the process-lifetime
+    /// system-metric snapshot; Linux re-queries the active Wayland seat or XI2
+    /// devices so hot-plug changes become visible. Unchanged Linux snapshots
+    /// reuse the previous object.
+    /// </summary>
+    public static TouchCapabilities GetTouchCapabilities()
+    {
+        if (_overrideCapabilities is not null)
+            return _overrideCapabilities;
+
+        if (OperatingSystem.IsLinux() || _linuxCapabilitiesQueryForTesting is not null)
+        {
+            var current = QueryLinuxPlatformCapabilities();
+            if (_cachedCapabilities is not null &&
+                _cachedCapabilities.TouchPresent == current.TouchPresent &&
+                _cachedCapabilities.Contacts == current.Contacts)
+            {
+                return _cachedCapabilities;
+            }
+            return _cachedCapabilities = current;
+        }
+
+        return _cachedCapabilities ??= QueryPlatformCapabilities();
+    }
 
     private static TouchCapabilities QueryPlatformCapabilities()
     {
@@ -65,16 +90,66 @@ public static class Touch
         }
     }
 
+    private static TouchCapabilities QueryLinuxPlatformCapabilities()
+    {
+        try
+        {
+            int result;
+            int touchPresent;
+            int contacts;
+            if (_linuxCapabilitiesQueryForTesting is not null)
+            {
+                (result, touchPresent, contacts) = _linuxCapabilitiesQueryForTesting();
+            }
+            else
+            {
+                result = Jalium.UI.Interop.NativeMethods.InputGetTouchCapabilities(
+                    out touchPresent, out contacts);
+            }
+
+            if (result != 0 || touchPresent == 0)
+                return new TouchCapabilities { TouchPresent = false, Contacts = 0 };
+            return new TouchCapabilities
+            {
+                TouchPresent = true,
+                Contacts = Math.Max(0, contacts),
+            };
+        }
+        catch (DllNotFoundException)
+        {
+            return new TouchCapabilities { TouchPresent = false, Contacts = 0 };
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return new TouchCapabilities { TouchPresent = false, Contacts = 0 };
+        }
+        catch (BadImageFormatException)
+        {
+            return new TouchCapabilities { TouchPresent = false, Contacts = 0 };
+        }
+    }
+
     /// <summary>Resets the cached capabilities. Intended for tests.</summary>
     internal static void ResetCapabilitiesCacheForTesting()
     {
         _cachedCapabilities = null;
+        _overrideCapabilities = null;
+        _linuxCapabilitiesQueryForTesting = null;
     }
 
     /// <summary>Allows tests to inject a synthetic capabilities snapshot.</summary>
     internal static void OverrideCapabilitiesForTesting(TouchCapabilities capabilities)
     {
-        _cachedCapabilities = capabilities;
+        _overrideCapabilities = capabilities;
+    }
+
+    /// <summary>Overrides only the native Linux query while preserving refresh behavior.</summary>
+    internal static void OverrideLinuxCapabilitiesQueryForTesting(
+        Func<(int Result, int TouchPresent, int Contacts)> query)
+    {
+        _cachedCapabilities = null;
+        _overrideCapabilities = null;
+        _linuxCapabilitiesQueryForTesting = query;
     }
 
     /// <summary>Registers a new touch contact.</summary>

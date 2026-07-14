@@ -24,6 +24,6 @@ namespace Jalium.UI.Rendering;
 /// from <c>OnRender</c> should not.
 /// </para>
 /// </remarks>
-public interface ICacheableDrawingContext
+internal interface ICacheableDrawingContext
 {
 }

@@ -6,7 +6,7 @@ namespace Jalium.UI.Media.Rendering;
 
 /// <summary>
 /// The <see cref="IRenderCacheHost"/> implementation that wires
-/// <see cref="DrawingRecorder"/> / <see cref="Drawing"/> / <see cref="DrawingReplayer"/>
+/// <see cref="DrawingRecorder"/> / <see cref="RecordedDrawing"/> / <see cref="DrawingReplayer"/>
 /// together and installs itself into <c>Visual.RenderCacheHost</c>. Bootstrapped
 /// once at startup by <c>RenderTargetDrawingContext</c>'s type initializer so
 /// callers never need to call <see cref="Bootstrap"/> manually.
@@ -18,7 +18,7 @@ namespace Jalium.UI.Media.Rendering;
 /// <see cref="CreateFrameRecorder"/> + <see cref="FinishRecord"/> both run on the
 /// UI thread inside <c>Window.PublishFrameToRenderThread</c>; the render thread
 /// only calls <see cref="Replay"/>, which is read-only over the published
-/// <see cref="Drawing"/> and never touches the pool. So the single lock suffices —
+/// <see cref="RecordedDrawing"/> and never touches the pool. So the single lock suffices —
 /// do not add per-thread pools unless a future path lets a non-UI thread
 /// allocate/commit a recorder. (Whole-frame freeze-clone snapshots, written by
 /// <see cref="DrawInputSnapshotter"/> during record on the UI thread, are likewise
@@ -31,7 +31,7 @@ namespace Jalium.UI.Media.Rendering;
 /// one-line bailout if the cache is suspected in a regression.
 /// </para>
 /// </remarks>
-public sealed class MediaRenderCacheHost : IRenderCacheHost
+internal sealed class MediaRenderCacheHost : IRenderCacheHost
 {
     private readonly Stack<DrawingRecorder> _pool = new();
     private readonly object _poolLock = new();
@@ -49,7 +49,7 @@ public sealed class MediaRenderCacheHost : IRenderCacheHost
 
     /// <summary>
     /// Whole-frame recorder for the render-thread path: captures the entire visual
-    /// tree (including per-child offsets) as a self-contained <see cref="Drawing"/>
+    /// tree (including per-child offsets) as a self-contained <see cref="RecordedDrawing"/>
     /// with no live target. Released via <see cref="FinishRecord"/> like a normal
     /// recorder; replayed via <see cref="Replay"/>.
     /// </summary>
@@ -77,14 +77,14 @@ public sealed class MediaRenderCacheHost : IRenderCacheHost
 
     public void Replay(object drawing, DrawingContext targetDrawingContext)
     {
-        DrawingReplayer.Replay((Drawing)drawing, targetDrawingContext);
+        DrawingReplayer.Replay((RecordedDrawing)drawing, targetDrawingContext);
     }
 
     /// <summary>
     /// Idempotent. True after <see cref="Bootstrap"/> has evaluated its
     /// registration policy (whether or not it actually installed the host).
     /// </summary>
-    public static bool IsBootstrapped { get; private set; }
+    internal static bool IsBootstrapped { get; private set; }
 
     /// <summary>
     /// Installs the host into <c>Visual.RenderCacheHost</c> unless one of:
@@ -95,7 +95,7 @@ public sealed class MediaRenderCacheHost : IRenderCacheHost
     /// </list>
     /// Safe to call repeatedly; only the first call performs work.
     /// </summary>
-    public static void Bootstrap()
+    internal static void Bootstrap()
     {
         if (IsBootstrapped)
         {

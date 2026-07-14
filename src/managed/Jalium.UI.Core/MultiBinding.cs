@@ -9,7 +9,7 @@ namespace Jalium.UI.Data;
 /// <summary>
 /// Describes a collection of Binding objects attached to a single binding target property.
 /// </summary>
-[ContentProperty("Bindings")]
+[Jalium.UI.Markup.ContentProperty("Bindings")]
 public class MultiBinding : BindingBase, IAddChild
 {
     private readonly Collection<BindingBase> _bindings = new();

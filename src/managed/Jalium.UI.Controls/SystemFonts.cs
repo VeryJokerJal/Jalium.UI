@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls.Platform;
 using Jalium.UI.Media;
 
 namespace Jalium.UI;
@@ -14,11 +15,23 @@ public static class SystemFonts
     private const uint SpiGetNonClientMetrics = 0x0029;
     private const int LogPixelsY = 90;
 
-    private static readonly Lazy<SystemFontSet> s_fonts = new(
-        ReadSystemFonts,
-        LazyThreadSafetyMode.ExecutionAndPublication);
+    private static Lazy<SystemFontSet> s_fonts = CreateFontCache();
     private static readonly object s_keyLock = new();
     private static readonly Dictionary<string, ResourceKey> s_keyCache = new(StringComparer.Ordinal);
+
+    static SystemFonts()
+    {
+        if (!OperatingSystem.IsLinux())
+            return;
+
+        LinuxDesktopSettings.SettingsChanged += static (_, _) =>
+            Interlocked.Exchange(ref s_fonts, CreateFontCache());
+        LinuxDesktopSettings.EnsureMonitoring();
+    }
+
+    private static Lazy<SystemFontSet> CreateFontCache() => new(
+        ReadSystemFonts,
+        LazyThreadSafetyMode.ExecutionAndPublication);
 
     #region System font values
 
@@ -171,6 +184,17 @@ public static class SystemFonts
     private static SystemFontSet ReadSystemFonts()
     {
         var fallback = CreateFallbackFonts();
+        if (OperatingSystem.IsLinux())
+        {
+            LinuxSystemFontSettings settings = LinuxDesktopSettings.SystemFontSettings;
+            return new SystemFontSet(
+                CreateFont(settings.Caption.Value, fallback.Caption),
+                CreateFont(settings.SmallCaption.Value, fallback.SmallCaption),
+                CreateFont(settings.Menu.Value, fallback.Menu),
+                CreateFont(settings.Status.Value, fallback.Status),
+                CreateFont(settings.Message.Value, fallback.Message),
+                CreateFont(settings.Icon.Value, fallback.Icon));
+        }
         if (!OperatingSystem.IsWindows())
         {
             return fallback;
@@ -248,7 +272,26 @@ public static class SystemFonts
             size,
             FontStyles.Normal,
             FontWeights.Normal,
-            new TextDecorationCollection());
+            CreateFrozenTextDecorations());
+
+    private static SystemFontInfo CreateFont(
+        LinuxSystemFontDescription description,
+        SystemFontInfo fallback)
+    {
+        if (string.IsNullOrWhiteSpace(description.Family) ||
+            !double.IsFinite(description.Size) || description.Size <= 0 ||
+            description.Weight is < 1 or > 999)
+        {
+            return fallback;
+        }
+
+        return new SystemFontInfo(
+            new FontFamily(description.Family),
+            description.Size,
+            description.Italic ? FontStyles.Italic : FontStyles.Normal,
+            FontWeight.FromOpenTypeWeight(description.Weight),
+            CreateFrozenTextDecorations());
+    }
 
     private static SystemFontInfo CreateFont(LogFont logFont, uint dpi, SystemFontInfo fallback)
     {
@@ -282,12 +325,21 @@ public static class SystemFonts
             decorations.Add(new TextDecoration { Location = TextDecorationLocation.Strikethrough });
         }
 
+        decorations.Freeze();
+
         return new SystemFontInfo(
             family,
             size,
             logFont.Italic != 0 ? FontStyles.Italic : FontStyles.Normal,
             weight,
             decorations);
+    }
+
+    private static TextDecorationCollection CreateFrozenTextDecorations()
+    {
+        var decorations = new TextDecorationCollection();
+        decorations.Freeze();
+        return decorations;
     }
 
     private static uint ReadSystemDpi()

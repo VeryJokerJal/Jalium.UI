@@ -1,7 +1,12 @@
 using Jalium.UI;
 using Jalium.UI.Automation;
+using Jalium.UI.Automation.Provider;
+using Jalium.UI.Automation.Text;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Automation;
+using DataGridColumnHeader = Jalium.UI.Controls.Primitives.DataGridColumnHeader;
+using StatusBar = Jalium.UI.Controls.Primitives.StatusBar;
+using StatusBarItem = Jalium.UI.Controls.Primitives.StatusBarItem;
 
 namespace Jalium.UI.Tests;
 
@@ -436,6 +441,29 @@ public class AutomationPeerTests
         // Assert
         Assert.NotNull(pattern);
         Assert.IsAssignableFrom<IValueProvider>(pattern);
+    }
+
+    [Fact]
+    public void TextBoxAutomationPeer_TextPattern_ReturnsPreciseBounds()
+    {
+        var textBox = new TextBox
+        {
+            Text = "Hello world",
+            Width = 200,
+            Height = 60,
+        };
+        textBox.Measure(new Size(200, 60));
+        textBox.Arrange(new Rect(0, 0, 200, 60));
+
+        var peer = Assert.IsType<TextBoxAutomationPeer>(textBox.GetAutomationPeer());
+        var provider = Assert.IsAssignableFrom<ITextProvider>(peer.GetPattern(PatternInterface.Text));
+        ITextRangeProvider range = provider.DocumentRange;
+        range.MoveEndpointByUnit(TextPatternRangeEndpoint.End, TextUnit.Character, -6);
+        double[] bounds = range.GetBoundingRectangles();
+
+        Assert.Equal(4, bounds.Length);
+        Assert.True(bounds[2] > 1);
+        Assert.True(bounds[3] > 1);
     }
 
     [Fact]

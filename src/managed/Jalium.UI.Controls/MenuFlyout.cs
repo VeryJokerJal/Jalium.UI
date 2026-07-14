@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
@@ -8,7 +8,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a flyout that displays a menu of commands.
 /// </summary>
-[ContentProperty("Items")]
+[Jalium.UI.Markup.ContentProperty("Items")]
 public sealed class MenuFlyout : FlyoutBase
 {
     private readonly ObservableCollection<Control> _items = new();

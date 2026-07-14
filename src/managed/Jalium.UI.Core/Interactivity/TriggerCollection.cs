@@ -5,7 +5,7 @@ namespace Jalium.UI.Interactivity;
 /// <summary>
 /// Represents a collection of triggers with a shared AssociatedObject.
 /// </summary>
-public sealed class TriggerCollection : Collection<TriggerBase>
+public sealed class BehaviorTriggerCollection : Collection<BehaviorTriggerBase>
 {
     private DependencyObject? _associatedObject;
 
@@ -24,7 +24,7 @@ public sealed class TriggerCollection : Collection<TriggerBase>
             return;
 
         if (_associatedObject != null)
-            throw new InvalidOperationException("Cannot host TriggerCollection multiple times.");
+            throw new InvalidOperationException("Cannot host BehaviorTriggerCollection multiple times.");
 
         _associatedObject = dependencyObject;
 
@@ -50,7 +50,7 @@ public sealed class TriggerCollection : Collection<TriggerBase>
     /// <summary>
     /// Called when an item is inserted into the collection.
     /// </summary>
-    protected override void InsertItem(int index, TriggerBase item)
+    protected override void InsertItem(int index, BehaviorTriggerBase item)
     {
         if (_associatedObject != null)
         {
@@ -86,7 +86,7 @@ public sealed class TriggerCollection : Collection<TriggerBase>
     /// <summary>
     /// Called when an item is set in the collection.
     /// </summary>
-    protected override void SetItem(int index, TriggerBase item)
+    protected override void SetItem(int index, BehaviorTriggerBase item)
     {
         var oldTrigger = this[index];
         oldTrigger.Detach();

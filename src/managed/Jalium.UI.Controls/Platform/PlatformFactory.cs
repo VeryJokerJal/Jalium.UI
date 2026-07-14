@@ -54,6 +54,8 @@ internal static class PlatformFactory
             if (result != 0)
                 throw new InvalidOperationException(
                     $"Failed to initialize platform library (error {result}).");
+            if (IsLinux)
+                LinuxDesktopSettings.PushNativeDoubleClickSettings();
         }
     }
 

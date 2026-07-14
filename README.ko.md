@@ -12,7 +12,7 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 
 - 활발히 개발 중 — v26.10.6 (마이너 버전 간에 API가 변경될 수 있음)
 - 주요 대상: Windows 10/11 (x64, ARM64)
-- 크로스 플랫폼: Android (arm64-v8a, x86_64), Linux (Vulkan), macOS (Metal)
+- 크로스 플랫폼: Android (arm64-v8a, x86_64), Linux (X11/Wayland, Vulkan 또는 소프트웨어), macOS (Metal)
 - 런타임 대상: .NET 10 (`net10.0-windows`, `net10.0-android`, `net10.0`)
 - 렌더링: DirectX 12 (Windows), Vulkan (Linux/Android), Metal (macOS), 소프트웨어 폴백
 
@@ -25,7 +25,7 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 - 개발자 경험: JALXAML 핫 리로드(라이브 비주얼 트리 패칭)와 함께 선택적으로 활성화하는(opt-in) 내장 DevTools 인스펙터 및 디버그 HUD
 - NuGet을 통한 빌드 타임 도구 (`Jalium.UI.Build`, `Jalium.UI.Xaml.SourceGenerator`)
 - 일급(first-class) Generic Host 통합 — `AppBuilder`는 DI, 구성, 옵션, 로깅 및 메트릭을 위해 `IHostApplicationBuilder`(`Microsoft.Extensions.Hosting`)를 구현하며, 여기에 더해 Jalium MVVM 뷰/뷰모델 연결을 제공합니다
-- 오토메이션 피어(automation peer)를 갖춘 UIA 접근성 지원
+- Windows UIA 및 Linux AT-SPI 브리지를 갖춘 오토메이션 피어(automation peer) 접근성 지원
 - 시각 효과: 리퀴드 글래스(liquid glass), 배경 블러(backdrop blur), 아크릴(acrylic), 마이카(mica), 전환 셰이더(transition shader), 애니메이션 비트맵 (GIF / APNG / 애니메이션 WebP)
 - `MediaElement` / `NativeVideoSurface`를 통한 네이티브 GPU 비디오 (D3D12 / Vulkan 서피스, 단계적 롤아웃)
 - 완전한 멀티터치 입력 — 물리적 관성을 갖춘 조작(manipulation), 제스처 인식, 실시간 스타일러스 미리 보기
@@ -62,7 +62,7 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 | `jalium.native.metal` | macOS | Metal 렌더 백엔드 |
 | `jalium.native.software` | 전체 | CPU 기반 소프트웨어 렌더링 폴백 |
 | `jalium.native.platform` | 전체 | 플랫폼 추상화 (윈도우, 입력, 이벤트) |
-| `jalium.native.text` | Linux, Android, macOS | 크로스 플랫폼 텍스트 엔진 (FreeType + HarfBuzz) |
+| `jalium.native.text` | Linux, Android, macOS | 자체 개발 텍스트 엔진 (sfnt/cmap/glyf/CFF + OT shaper; Linux에서는 fontconfig를 폰트 검색에만 사용) |
 | `jalium.native.browser` | Windows | WebView2 브라우저 통합 |
 | `jalium.native.media.core` | 전체 | 크로스 플랫폼 미디어 C ABI + 공유 오디오 (miniaudio / dr_libs / minimp3 / stb_vorbis) |
 | `jalium.native.media.windows` | Windows | Media Foundation 비디오 / 카메라 / AAC 디코더 + WIC 이미징 |
@@ -75,6 +75,9 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 | --- | --- |
 | `Jalium.UI.Desktop` | `net10.0-windows` — RID별 네이티브 DLL을 포함한 데스크톱 배포판 (win-x64 / win-arm64) |
 | `Jalium.UI.Android` | `net10.0-android` — 네이티브 .so 라이브러리를 포함한 Android 배포판 |
+| `Jalium.UI.Linux` | `net10.0` — Linux 데스크톱 배포판 (Wayland/X11, Vulkan + 소프트웨어 렌더링; linux-x64 / linux-arm64 / linux-musl-x64 / linux-musl-arm64 RID 레이아웃 예약) |
+
+여기에 표시된 RID는 패키지 레이아웃이며 4개 RID와 NativeAOT가 모두 릴리스 검증을 마쳤다는 의미가 아닙니다. 현재 증거와 남은 경계는 [Linux 지원 상태 매트릭스](docs/linux-parity-status.md)를 참조하세요.
 
 ## 기능 개요
 
@@ -98,7 +101,7 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 - **리치**: `InkCanvas`, `WebView`/`WebBrowser`, `EditControl`, `RichTextBox`, `QRCode` (자체 호스팅 인코더), `TitleBar`, `Terminal`, `SwipeControl`
 - **개발자 도구**: `DiffViewer`, `HexEditor`
 - **상호 운용**: `WindowsFormsHost` (`net10.0-windows`에서 `System.Windows.Forms` 컨트롤 호스팅)
-- **인쇄**: 네이티브 Win32 플랫폼 레이어로 지원되는 `PrintDialog`
+- **인쇄**: Windows에서는 Win32, Linux에서는 PDF + xdg-desktop-portal을 사용하는 `PrintDialog`
 - **알림**: 토스트 스타일 알림 시스템
 
 ### 텍스트 편집
@@ -121,7 +124,7 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 
 - 듀얼 소스 블렌딩(dual-source blending)을 갖춘 ClearType 서브픽셀 텍스트 렌더링.
 - CPU 래스터화 폴백 경로.
-- FreeType + HarfBuzz를 통한 크로스 플랫폼 텍스트 셰이핑 (Linux/Android).
+- 자체 개발 OpenType 엔진을 통한 크로스 플랫폼 텍스트 셰이핑 (Linux/Android) — FreeType/HarfBuzz 런타임 의존성 없음; fontconfig는 폰트 검색에만 사용.
 - 요소별 `TextOptions.{TextRenderingMode, TextFormattingMode, TextHintingMode}`
   상속 가능 첨부 속성(attached property) — 값이 `FormattedText` → 네이티브
   `JaliumTextFormat`을 거쳐 래스터라이저까지 전달됩니다:
@@ -183,7 +186,7 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 
 ### 접근성
 
-- 코어 및 전문 컨트롤을 위한 UIA 오토메이션 피어
+- 코어 및 전문 컨트롤을 위한 오토메이션 피어 (Windows UIA 및 Linux AT-SPI를 통해 제공)
 - Chart, DiffViewer, HexEditor, JsonTreeViewer, Map, PropertyGrid 오토메이션
 - `Window.ResolveCursor`는 비활성화된 요소에 대해 표준 화살표를 반환하여
   호버 상태가 활성화된 컨트롤과 혼동되지 않도록 합니다.
@@ -266,6 +269,9 @@ dotnet add package Jalium.UI.Desktop
 
 # Android
 dotnet add package Jalium.UI.Android
+
+# Linux 데스크톱
+dotnet add package Jalium.UI.Linux
 ```
 
 ### 세분화된 설치 (고급)
@@ -336,8 +342,9 @@ app.Run(window);
 
 ### 사전 요구 사항
 
-- .NET 10 SDK (`net10.0-windows`)
-- C++ 워크로드를 갖춘 Visual Studio (네이티브 모듈용)
+- .NET 10 SDK
+- C++ 워크로드를 갖춘 Visual Studio (Windows 네이티브 모듈용)
+- CMake, Ninja, Clang/GCC 및 X11/Wayland 개발 패키지 (Linux 네이티브 모듈용; [Linux 가이드](docs/linux.md) 참조)
 - Vulkan SDK (선택 사항, Vulkan 백엔드용)
 - Android NDK (선택 사항, Android 빌드용)
 
@@ -353,8 +360,11 @@ dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release
 # 네이티브 모듈 빌드 (VS 개발자 명령 프롬프트에서)
 msbuild src/native/Jalium.Native.sln /m /p:Configuration=Release /p:Platform=x64
 
+# Linux 네이티브 모듈 빌드 (glibc / musl 호스트)
+bash eng/linux/build-native.sh linux-x64 Release
+
 # Android용 빌드
-bash src/native/build-android-deps.sh  # FreeType + HarfBuzz
+bash src/native/build-android-deps.sh  # Android 네이티브 의존성
 bash src/native/build-android.sh       # 네이티브 라이브러리
 ```
 
@@ -389,7 +399,7 @@ Jalium.UI/
       jalium.native.metal/     # Metal 백엔드 (macOS)
       jalium.native.software/  # CPU 소프트웨어 렌더러
       jalium.native.platform/  # 플랫폼 추상화 레이어
-      jalium.native.text/      # FreeType + HarfBuzz 텍스트 엔진 (비 Windows)
+      jalium.native.text/      # 자체 개발 텍스트 엔진 (비 Windows)
       jalium.native.browser/   # WebView2 통합
       jalium.native.media.core/     # 크로스 플랫폼 미디어 C ABI + 공유 오디오
       jalium.native.media.windows/  # Media Foundation 비디오 / 카메라 + WIC
@@ -423,6 +433,8 @@ Jalium.UI/
 | [`docs/razor-syntax.md`](docs/razor-syntax.md) | JALXAML용 Razor 구문 레퍼런스 |
 | [`docs/drawing-api.md`](docs/drawing-api.md) | 드로잉 API (DrawingContext, GPU 효과, 렌더링) |
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | 수동 빌드 구성 가이드 |
+| [`docs/linux.md`](docs/linux.md) | Linux 데스크톱 가이드 (런타임 의존성, 윈도우 시스템, 패키징) |
+| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | 검증된 Linux 지원 매트릭스, 증거 및 남은 경계 |
 | [`docs/render-thread-design.md`](docs/render-thread-design.md) | 렌더 스레드 아키텍처 |
 | [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | Present 페이싱 / 프레임 스케줄링 |
 | [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | 셸 드래그 앤 드롭 통합 |

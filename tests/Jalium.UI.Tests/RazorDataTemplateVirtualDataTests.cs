@@ -1,6 +1,7 @@
 using Jalium.UI.Collections;
 using Jalium.UI.Controls;
 using Jalium.UI.Markup;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 

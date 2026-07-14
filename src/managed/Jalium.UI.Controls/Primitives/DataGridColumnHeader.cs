@@ -8,7 +8,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a column header in a DataGrid.
 /// </summary>
-public class DataGridColumnHeader : ButtonBase
+public class DataGridColumnHeader : ButtonBase, Jalium.UI.Controls.IProvideDataGridColumn
 {
     private static readonly ComponentResourceKey s_columnFloatingHeaderStyleKey =
         new(typeof(DataGridColumnHeader), nameof(ColumnFloatingHeaderStyleKey));
@@ -29,7 +29,6 @@ public class DataGridColumnHeader : ButtonBase
     private static readonly SolidColorBrush s_defaultFgBrush = new(Color.White);
     private static readonly SolidColorBrush s_defaultSeparatorBrush = new(Color.FromRgb(67, 67, 70));
     private static readonly SolidColorBrush s_borderBrush = new(Color.FromRgb(67, 67, 70));
-    private static readonly Pen s_borderPen = new(s_borderBrush, 1);
 
     #endregion
 
@@ -46,50 +45,42 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the SortDirection dependency property.
     /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
-    public static readonly DependencyProperty SortDirectionProperty =
-        DependencyProperty.Register(nameof(SortDirection), typeof(ListSortDirection?), typeof(DataGridColumnHeader),
+    private static readonly DependencyPropertyKey SortDirectionPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(SortDirection), typeof(ListSortDirection?), typeof(DataGridColumnHeader),
             new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
+    public static readonly DependencyProperty SortDirectionProperty = SortDirectionPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the CanUserSort dependency property.
     /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty CanUserSortProperty =
-        DependencyProperty.Register(nameof(CanUserSort), typeof(bool), typeof(DataGridColumnHeader),
+    private static readonly DependencyPropertyKey CanUserSortPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(CanUserSort), typeof(bool), typeof(DataGridColumnHeader),
             new PropertyMetadata(true));
 
-    /// <summary>
-    /// Identifies the CanUserResize dependency property.
-    /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty CanUserResizeProperty =
-        DependencyProperty.Register(nameof(CanUserResize), typeof(bool), typeof(DataGridColumnHeader),
-            new PropertyMetadata(true));
-
-    /// <summary>
-    /// Identifies the CanUserReorder dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty CanUserReorderProperty =
-        DependencyProperty.Register(nameof(CanUserReorder), typeof(bool), typeof(DataGridColumnHeader),
-            new PropertyMetadata(true));
+    public static readonly DependencyProperty CanUserSortProperty = CanUserSortPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the DisplayIndex dependency property.
     /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty DisplayIndexProperty =
-        DependencyProperty.Register(nameof(DisplayIndex), typeof(int), typeof(DataGridColumnHeader),
+    private static readonly DependencyPropertyKey DisplayIndexPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(DisplayIndex), typeof(int), typeof(DataGridColumnHeader),
             new PropertyMetadata(-1));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    public static readonly DependencyProperty DisplayIndexProperty = DisplayIndexPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the IsFrozen dependency property.
     /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsFrozenProperty =
-        DependencyProperty.Register(nameof(IsFrozen), typeof(bool), typeof(DataGridColumnHeader),
+    private static readonly DependencyPropertyKey IsFrozenPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsFrozen), typeof(bool), typeof(DataGridColumnHeader),
             new PropertyMetadata(false));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty IsFrozenProperty = IsFrozenPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the SeparatorBrush dependency property.
@@ -112,64 +103,28 @@ public class DataGridColumnHeader : ButtonBase
     #region CLR Properties
 
     /// <summary>
-    /// Gets or sets the sort direction for this column.
+    /// Gets the sort direction for this column.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
-    public ListSortDirection? SortDirection
-    {
-        get => (ListSortDirection?)GetValue(SortDirectionProperty);
-        internal set => SetValue(SortDirectionProperty, value);
-    }
+    public ListSortDirection? SortDirection => (ListSortDirection?)GetValue(SortDirectionProperty);
 
     /// <summary>
-    /// Gets or sets a value indicating whether the user can sort by this column.
+    /// Gets a value indicating whether the user can sort by this column.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool CanUserSort
-    {
-        get => (bool)GetValue(CanUserSortProperty)!;
-        internal set => SetValue(CanUserSortProperty, value);
-    }
+    public bool CanUserSort => (bool)GetValue(CanUserSortProperty)!;
 
     /// <summary>
-    /// Gets or sets a value indicating whether the user can resize this column.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool CanUserResize
-    {
-        get => (bool)GetValue(CanUserResizeProperty)!;
-        set => SetValue(CanUserResizeProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether the user can reorder this column.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool CanUserReorder
-    {
-        get => (bool)GetValue(CanUserReorderProperty)!;
-        set => SetValue(CanUserReorderProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the display index of this column.
+    /// Gets the display index of this column.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public int DisplayIndex
-    {
-        get => (int)GetValue(DisplayIndexProperty)!;
-        internal set => SetValue(DisplayIndexProperty, value);
-    }
+    public int DisplayIndex => (int)GetValue(DisplayIndexProperty)!;
 
     /// <summary>
-    /// Gets or sets a value indicating whether this column is frozen.
+    /// Gets a value indicating whether this column is frozen.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsFrozen
-    {
-        get => (bool)GetValue(IsFrozenProperty)!;
-        internal set => SetValue(IsFrozenProperty, value);
-    }
+    public bool IsFrozen => (bool)GetValue(IsFrozenProperty)!;
 
     /// <summary>
     /// Gets or sets the brush used for the separator.
@@ -192,19 +147,29 @@ public class DataGridColumnHeader : ButtonBase
     }
 
     /// <summary>
-    /// Gets or sets the column associated with this header.
+    /// Gets the column associated with this header.
     /// </summary>
-    public Jalium.UI.Controls.DataGridColumn? Column { get; internal set; }
+    public Jalium.UI.Controls.DataGridColumn? Column => _column;
 
     #endregion
 
     #region Private Fields
 
+    private const double ResizeHotZoneWidth = 8.0;
+    private const double DragThreshold = 5.0;
+
+    private Jalium.UI.Controls.DataGridColumn? _column;
+    private TextBlock? _sortIndicator;
+    private FrameworkElement? _resizeGrip;
     private bool _isResizing;
+    private double _resizeStartX;
     private double _resizeStartWidth;
-    private Point _resizeStartPoint;
-    private const double ResizeGripWidth = 5;
-    private const double MinColumnWidth = 20;
+    private bool _isDragging;
+    private Point _mouseDownPoint;
+    private bool _mouseDownForDrag;
+
+    internal Jalium.UI.Controls.DataGrid? ParentDataGrid { get; private set; }
+    internal Jalium.UI.Controls.IColumnHeaderHost? ColumnHost { get; private set; }
 
     #endregion
 
@@ -215,83 +180,297 @@ public class DataGridColumnHeader : ButtonBase
     /// </summary>
     public DataGridColumnHeader()
     {
-        Height = 28;
-        HorizontalContentAlignment = HorizontalAlignment.Left;
-        VerticalContentAlignment = VerticalAlignment.Center;
-        Padding = new Thickness(8, 0, 8, 0);
+        UseTemplateContentManagement();
+        Focusable = false;
 
-        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnPreviewMouseDownHandler), true);
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler), true);
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler), true);
     }
 
     #endregion
 
-    #region Resize Handling
+    #region Column Integration and Interaction
+
+    /// <inheritdoc />
+    public override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        _sortIndicator = GetTemplateChild("PART_SortIndicator") as TextBlock;
+        _resizeGrip = GetTemplateChild("PART_ResizeGrip") as FrameworkElement;
+
+        if (_resizeGrip != null)
+        {
+            _resizeGrip.IsHitTestVisible = false;
+        }
+
+        UpdateResizeGripState();
+        UpdateSortIndicatorVisual();
+    }
+
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Automation.Peers.DataGridColumnHeaderAutomationPeer(this);
+
+    internal void PrepareColumnHeader(
+        object? item,
+        Jalium.UI.Controls.DataGrid? parentDataGrid,
+        Jalium.UI.Controls.IColumnHeaderHost? columnHost,
+        Jalium.UI.Controls.DataGridColumn column)
+    {
+        ArgumentNullException.ThrowIfNull(column);
+
+        _column = column;
+        ParentDataGrid = parentDataGrid;
+        ColumnHost = columnHost;
+        Content = item;
+        SynchronizeColumnState();
+    }
+
+    internal void ClearColumnHeader()
+    {
+        if (IsMouseCaptured)
+        {
+            ReleaseMouseCapture();
+        }
+
+        _isResizing = false;
+        _isDragging = false;
+        _mouseDownForDrag = false;
+        Cursor = null;
+        _column = null;
+        ParentDataGrid = null;
+        ColumnHost = null;
+        Content = null;
+        SetValue(SortDirectionPropertyKey, null);
+        SetValue(CanUserSortPropertyKey, true);
+        SetValue(DisplayIndexPropertyKey, -1);
+        SetValue(IsFrozenPropertyKey, false);
+        UpdateResizeGripState();
+        UpdateSortIndicatorVisual();
+    }
+
+    internal void SynchronizeColumnState()
+    {
+        SetValue(SortDirectionPropertyKey, Column?.SortDirection);
+        SetValue(CanUserSortPropertyKey, Column?.CanUserSort ?? true);
+        SetValue(DisplayIndexPropertyKey, Column?.DisplayIndex ?? -1);
+        SetValue(IsFrozenPropertyKey, Column?.IsFrozen ?? false);
+        UpdateResizeGripState();
+        UpdateSortIndicatorVisual();
+    }
+
+    internal void UpdateSortIndicator(ListSortDirection? direction)
+    {
+        SetValue(SortDirectionPropertyKey, direction);
+        UpdateSortIndicatorVisual();
+    }
+
+    private void UpdateSortIndicatorVisual()
+    {
+        if (_sortIndicator == null)
+        {
+            return;
+        }
+
+        if (SortDirection.HasValue)
+        {
+            _sortIndicator.Text = SortDirection == ListSortDirection.Ascending ? "\u25B2" : "\u25BC";
+            _sortIndicator.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _sortIndicator.Text = string.Empty;
+            _sortIndicator.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void UpdateResizeGripState()
+    {
+        if (_resizeGrip != null)
+        {
+            _resizeGrip.Visibility = CanResizeCurrentColumn() ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    private bool CanResizeCurrentColumn() =>
+        Column != null
+        && (ColumnHost?.CanUserResizeColumns ?? false)
+        && Column.CanUserResize;
+
+    private bool CanDragCurrentColumn() =>
+        Column != null
+        && (ColumnHost?.CanUserReorderColumns ?? false)
+        && Column.CanUserReorder;
+
+    private bool IsInResizeZone(Point point)
+    {
+        if (!CanResizeCurrentColumn())
+        {
+            return false;
+        }
+
+        var hotZoneWidth = Math.Max(1.0, Math.Min(RenderSize.Width, ResizeHotZoneWidth));
+        return point.X >= Math.Max(0.0, RenderSize.Width - hotZoneWidth);
+    }
+
+    private void UpdateResizeCursor(Point point)
+    {
+        if (_isDragging)
+        {
+            return;
+        }
+
+        Cursor = (_isResizing || IsInResizeZone(point)) ? Cursors.SizeWE : null;
+    }
+
+    private void OnPreviewMouseDownHandler(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left || Column == null)
+        {
+            return;
+        }
+
+        if (IsInResizeZone(e.GetPosition(this)))
+        {
+            BeginResize(e.GetPosition(null).X);
+            e.Handled = true;
+        }
+        else if (CanDragCurrentColumn())
+        {
+            _mouseDownPoint = e.GetPosition(null);
+            _mouseDownForDrag = true;
+            CaptureMouse();
+            e.Handled = true;
+        }
+    }
 
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (CanUserResize)
+        var host = ColumnHost;
+        if (_isResizing && Column != null)
         {
-            var position = e.GetPosition(this);
-            var isInResizeGrip = position.X >= RenderSize.Width - ResizeGripWidth;
+            UpdateResize(e.GetPosition(null).X);
+            Cursor = Cursors.SizeWE;
+            e.Handled = true;
+            return;
+        }
 
-            // Change cursor when over resize grip
-            // Note: Cursor management would be handled by the hosting window
+        if (_isDragging && host is UIElement hostElement)
+        {
+            host.UpdateColumnDrag(e.GetPosition(hostElement));
+            e.Handled = true;
+            return;
+        }
+
+        if (_mouseDownForDrag && !_isDragging)
+        {
+            var currentPosition = e.GetPosition(null);
+            if (Math.Abs(currentPosition.X - _mouseDownPoint.X) > DragThreshold)
+            {
+                _isDragging = true;
+                _mouseDownForDrag = false;
+                Cursor = Cursors.SizeAll;
+                host?.StartColumnDrag(this, Column!);
+                e.Handled = true;
+                return;
+            }
+        }
+
+        UpdateResizeCursor(e.GetPosition(this));
+    }
+
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
+    {
+        if (_isResizing)
+        {
+            EndResize();
+            UpdateResizeCursor(e.GetPosition(this));
+            e.Handled = true;
+            return;
+        }
+
+        if (_isDragging)
+        {
+            _isDragging = false;
+            if (IsMouseCaptured)
+            {
+                ReleaseMouseCapture();
+            }
+
+            Cursor = null;
+            if (ColumnHost is UIElement hostElement)
+            {
+                ColumnHost.EndColumnDrag(e.GetPosition(hostElement));
+            }
+
+            e.Handled = true;
+            return;
+        }
+
+        if (_mouseDownForDrag)
+        {
+            _mouseDownForDrag = false;
+            if (IsMouseCaptured)
+            {
+                ReleaseMouseCapture();
+            }
         }
     }
 
-    /// <summary>
-    /// Begins a resize operation.
-    /// </summary>
-    /// <param name="startPoint">The starting point of the resize.</param>
-    internal void BeginResize(Point startPoint)
+    /// <inheritdoc />
+    protected override void OnLostMouseCapture()
     {
+        base.OnLostMouseCapture();
+
+        if (_isDragging && ColumnHost is { IsColumnDragging: true } host)
+        {
+            host.CancelColumnDrag();
+        }
+
+        _isDragging = false;
+        _isResizing = false;
+        _mouseDownForDrag = false;
+        Cursor = null;
+    }
+
+    internal void BeginResize(double startX)
+    {
+        if (!CanResizeCurrentColumn() || Column == null)
+        {
+            return;
+        }
+
         _isResizing = true;
-        _resizeStartPoint = startPoint;
-        _resizeStartWidth = RenderSize.Width;
-        CaptureMouse();
-    }
-
-    /// <summary>
-    /// Updates the resize operation.
-    /// </summary>
-    /// <param name="currentPoint">The current mouse position.</param>
-    internal void UpdateResize(Point currentPoint)
-    {
-        if (!_isResizing) return;
-
-        var delta = currentPoint.X - _resizeStartPoint.X;
-        var newWidth = Math.Max(MinColumnWidth, _resizeStartWidth + delta);
-
-        if (Column != null)
+        _resizeStartX = startX;
+        _resizeStartWidth = Column.ActualWidth;
+        if (!(_resizeStartWidth > 0))
         {
-            Column.Width = newWidth;
+            _resizeStartWidth = double.IsFinite(Width) && Width > 0 ? Width : Column.Width.DisplayValue;
         }
+
+        CaptureMouse();
+        Cursor = Cursors.SizeWE;
     }
 
-    /// <summary>
-    /// Ends the resize operation.
-    /// </summary>
+    internal void UpdateResize(double currentX)
+    {
+        if (!_isResizing || Column == null)
+        {
+            return;
+        }
+
+        var newWidth = Math.Clamp(_resizeStartWidth + currentX - _resizeStartX, Column.MinWidth, Column.MaxWidth);
+        ColumnHost?.ResizeColumn(Column, newWidth);
+    }
+
     internal void EndResize()
     {
         _isResizing = false;
-        ReleaseMouseCapture();
-    }
-
-    #endregion
-
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        var padding = Padding;
-        var width = Column?.ActualWidth ?? 100;
-        if (!(width > 0))
+        if (IsMouseCaptured)
         {
-            width = Column?.Width.DisplayValue ?? 100;
+            ReleaseMouseCapture();
         }
-
-        return new Size(width, Height > 0 ? Height : 28);
     }
 
     #endregion
@@ -356,6 +535,13 @@ public class DataGridColumnHeader : ButtonBase
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)
     {
+        // A template owns the visual tree in normal DataGrid use. Keep the
+        // lightweight renderer only as a template-less fallback.
+        if (Template != null)
+        {
+            return;
+        }
+
         var dc = drawingContext;
 
         var rect = new Rect(RenderSize);

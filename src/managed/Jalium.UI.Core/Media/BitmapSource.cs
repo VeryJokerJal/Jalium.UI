@@ -1,7 +1,10 @@
-namespace Jalium.UI.Media;
+namespace Jalium.UI.Media.Imaging
+{
 
-/// <summary>Base class for bitmap-backed image sources.</summary>
-public abstract class BitmapSource : ImageSource
+/// <summary>
+/// Canonical WPF-compatible bitmap storage and runtime base.
+/// </summary>
+public abstract partial class BitmapSource : ImageSource
 {
     /// <inheritdoc />
     public override ImageMetadata? Metadata => null;
@@ -22,7 +25,7 @@ public abstract class BitmapSource : ImageSource
 
     public virtual PixelFormat Format => PixelFormat.Bgra32;
 
-    public virtual Imaging.BitmapPalette? Palette => null;
+    public virtual BitmapPalette? Palette => null;
 
     public virtual void CopyPixels(byte[] pixels, int stride, int offset)
     {
@@ -48,6 +51,11 @@ public abstract class BitmapSource : ImageSource
     /// <inheritdoc />
     protected override bool FreezeCore(bool isChecking) => base.FreezeCore(isChecking);
 }
+
+}
+
+namespace Jalium.UI.Media
+{
 
 /// <summary>
 /// Describes the channel layout and storage size of a bitmap pixel.
@@ -243,4 +251,6 @@ internal static class PixelFormatMasks
 
     private static IList<PixelFormatChannelMask> Masks(params byte[][] masks) =>
         Array.AsReadOnly(masks.Select(static mask => new PixelFormatChannelMask(mask)).ToArray());
+}
+
 }

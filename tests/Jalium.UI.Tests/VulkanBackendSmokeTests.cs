@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Tests;
 
@@ -118,7 +119,7 @@ public sealed class VulkanBackendSmokeTests
     /// session, so before this test a Vulkan backend that could not render a
     /// single frame still passed the suite.
     /// </summary>
-    [RequiresBackendFact(RenderBackend.Vulkan)]
+    [RequiresWindowsBackendFact(RenderBackend.Vulkan)]
     public void VulkanRenderSmoke_BeginDrawEndDraw_Succeeds()
     {
         const int width = 256;

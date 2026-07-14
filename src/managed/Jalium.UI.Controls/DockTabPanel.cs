@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
@@ -9,7 +9,7 @@ namespace Jalium.UI.Controls;
 /// A panel that displays multiple <see cref="DockItem"/> children as tabs.
 /// Used within <see cref="DockSplitPanel"/> or <see cref="DockLayout"/>.
 /// </summary>
-[ContentProperty("Items")]
+[Jalium.UI.Markup.ContentProperty("Items")]
 public class DockTabPanel : Selector
 {
     /// <inheritdoc />

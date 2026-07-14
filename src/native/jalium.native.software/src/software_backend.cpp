@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <memory>
+#include <mutex>
 
 #ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
 #include "wayland_shm_present.h"
@@ -37,6 +38,7 @@ using Microsoft::WRL::ComPtr;
 
 #if defined(__linux__) || defined(__ANDROID__)
 // stb_image for cross-platform image decoding (Software backend non-Windows)
+#define STB_IMAGE_STATIC
 #ifndef STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #endif
@@ -48,6 +50,11 @@ using Microsoft::WRL::ComPtr;
 #if defined(JALIUM_SOFTWARE_X11_PRESENT)
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#if defined(JALIUM_SOFTWARE_XSHM_PRESENT)
+#include <X11/extensions/XShm.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#endif
 #endif
 
 namespace jalium {
@@ -151,6 +158,35 @@ void SoftwareFramebuffer::BlendPixel(int32_t x, int32_t y, uint8_t r, uint8_t g,
     pixels[idx + 3] = (uint8_t)(outA * 255.0f + 0.5f);
 }
 
+void SoftwareFramebuffer::BlendPixelSubpixel(
+    int32_t x, int32_t y,
+    uint8_t r, uint8_t g, uint8_t b,
+    uint8_t coverageR, uint8_t coverageG, uint8_t coverageB)
+{
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    const uint8_t maxCoverage = std::max({coverageR, coverageG, coverageB});
+    if (maxCoverage == 0) return;
+    const size_t index = (static_cast<size_t>(y) * width + x) * 4;
+    const float alphaR = coverageR / 255.0f;
+    const float alphaG = coverageG / 255.0f;
+    const float alphaB = coverageB / 255.0f;
+    const float sourceAlpha = maxCoverage / 255.0f;
+    const float destinationAlpha = pixels[index + 3] / 255.0f;
+    const float outputAlpha = sourceAlpha + destinationAlpha * (1.0f - sourceAlpha);
+    if (outputAlpha <= 0.0001f) return;
+
+    // LCD coverage is independent for each color channel. A single SrcOver
+    // alpha cannot represent it, so composite the three premultiplied channels
+    // separately and use max(R,G,B) coverage for the framebuffer alpha.
+    const float outR = r * alphaR + pixels[index + 2] * destinationAlpha * (1.0f - alphaR);
+    const float outG = g * alphaG + pixels[index + 1] * destinationAlpha * (1.0f - alphaG);
+    const float outB = b * alphaB + pixels[index] * destinationAlpha * (1.0f - alphaB);
+    pixels[index + 2] = static_cast<uint8_t>(std::clamp(outR / outputAlpha, 0.0f, 255.0f));
+    pixels[index + 1] = static_cast<uint8_t>(std::clamp(outG / outputAlpha, 0.0f, 255.0f));
+    pixels[index] = static_cast<uint8_t>(std::clamp(outB / outputAlpha, 0.0f, 255.0f));
+    pixels[index + 3] = static_cast<uint8_t>(outputAlpha * 255.0f + 0.5f);
+}
+
 void SoftwareFramebuffer::SetPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
     if (x < 0 || x >= width || y < 0 || y >= height) return;
@@ -196,10 +232,13 @@ JaliumResult SoftwareTextFormat::MeasureText(
     if (!metrics) return JALIUM_ERROR_INVALID_ARGUMENT;
 
 #ifdef _WIN32
-    // Use GDI for accurate text measurement
+    // Use GDI for accurate text measurement. fontSize is a DIP em size (the
+    // DirectWrite convention every backend shares); a negative lfHeight selects
+    // the GDI character (em) height, and 1 DIP == 1 px in the 96-DPI layout
+    // space this measurement reports in — no point conversion.
     HDC hdc = CreateCompatibleDC(nullptr);
     if (hdc) {
-        int fontHeight = -(int)(fontSize * 96.0f / 72.0f);
+        int fontHeight = -(std::max)(1, (int)(fontSize + 0.5f));
         HFONT hFont = CreateFontW(fontHeight, 0, 0, 0,
             fontWeight, (fontStyle == 1 || fontStyle == 2) ? TRUE : FALSE,
             FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
@@ -207,27 +246,42 @@ JaliumResult SoftwareTextFormat::MeasureText(
             fontFamily.c_str());
         HGDIOBJ oldFont = SelectObject(hdc, hFont);
 
+        TEXTMETRICW tm{};
+        BOOL haveTm = GetTextMetricsW(hdc, &tm);
+
+        // DT_EXTERNALLEADING makes DrawText advance lines by
+        // tmHeight + tmExternalLeading instead of bare tmHeight, matching how
+        // DirectWrite spaces lines (lineGap participates). It must be set both
+        // here and in RenderTextWithGDI so measured heights, the reported
+        // lineHeight, and the painted line advance are one ruler. DT_NOPREFIX
+        // stops GDI from eating '&' as an accelerator marker (mnemonic
+        // underlining is handled by the managed AccessText layer).
         RECT rc = { 0, 0, maxWidth > 0 ? (LONG)maxWidth : 10000, maxHeight > 0 ? (LONG)maxHeight : 10000 };
-        UINT dtFlags = DT_CALCRECT | DT_WORDBREAK;
+        UINT dtFlags = DT_CALCRECT | DT_WORDBREAK | DT_EXTERNALLEADING | DT_NOPREFIX;
         DrawTextW(hdc, text, textLength, &rc, dtFlags);
-
-        TEXTMETRICW tm;
-        GetTextMetricsW(hdc, &tm);
-
-        metrics->width = (float)(rc.right - rc.left);
-        metrics->height = (float)(rc.bottom - rc.top);
-        metrics->lineHeight = (float)tm.tmHeight;
-        metrics->baseline = (float)tm.tmAscent;
-        metrics->ascent = (float)tm.tmAscent;
-        metrics->descent = (float)tm.tmDescent;
-        metrics->lineGap = (float)tm.tmExternalLeading;
-        metrics->lineCount = (metrics->lineHeight > 0) ? (uint32_t)(metrics->height / metrics->lineHeight) : 1;
-        if (metrics->lineCount == 0) metrics->lineCount = 1;
 
         SelectObject(hdc, oldFont);
         DeleteObject(hFont);
         DeleteDC(hdc);
-        return JALIUM_OK;
+
+        if (haveTm && tm.tmHeight > 0) {
+            // WPF-style lineHeight = ascent + descent + lineGap, i.e. GDI's
+            // tmHeight + tmExternalLeading — exactly the DT_EXTERNALLEADING
+            // line advance, so lineCount recovers N exactly from the
+            // DT_CALCRECT height. Keeping this and GetFontMetrics on the same
+            // GDI ruler is what lets the managed layout box match what
+            // RenderTextWithGDI paints.
+            metrics->width = (float)(rc.right - rc.left);
+            metrics->height = (float)(rc.bottom - rc.top);
+            metrics->lineHeight = (float)(tm.tmHeight + tm.tmExternalLeading);
+            metrics->baseline = (float)tm.tmAscent;
+            metrics->ascent = (float)tm.tmAscent;
+            metrics->descent = (float)tm.tmDescent;
+            metrics->lineGap = (float)tm.tmExternalLeading;
+            metrics->lineCount = (uint32_t)((metrics->height + tm.tmExternalLeading) / metrics->lineHeight);
+            if (metrics->lineCount == 0) metrics->lineCount = 1;
+            return JALIUM_OK;
+        }
     }
 #endif
 
@@ -267,6 +321,41 @@ JaliumResult SoftwareTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
 {
     if (!metrics) return JALIUM_ERROR_INVALID_ARGUMENT;
     std::memset(metrics, 0, sizeof(JaliumTextMetrics));
+
+#ifdef _WIN32
+    // Same GDI ruler as MeasureText (DIP em height): the managed layout sizes
+    // line boxes from these metrics and RenderTextWithGDI paints with the same
+    // font, so the two must agree or glyphs get clipped against their own line
+    // box. The managed side caches per (family, size, weight, style), so the
+    // DC round-trip here is a cache-miss-only cost.
+    HDC hdc = CreateCompatibleDC(nullptr);
+    if (hdc) {
+        int fontHeight = -(std::max)(1, (int)(fontSize + 0.5f));
+        HFONT hFont = CreateFontW(fontHeight, 0, 0, 0,
+            fontWeight, (fontStyle == 1 || fontStyle == 2) ? TRUE : FALSE,
+            FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+            fontFamily.c_str());
+        HGDIOBJ oldFont = SelectObject(hdc, hFont);
+
+        TEXTMETRICW tm{};
+        BOOL ok = GetTextMetricsW(hdc, &tm);
+
+        SelectObject(hdc, oldFont);
+        DeleteObject(hFont);
+        DeleteDC(hdc);
+
+        if (ok && tm.tmHeight > 0) {
+            metrics->lineHeight = (float)(tm.tmHeight + tm.tmExternalLeading);
+            metrics->baseline = (float)tm.tmAscent;
+            metrics->ascent = (float)tm.tmAscent;
+            metrics->descent = (float)tm.tmDescent;
+            metrics->lineGap = (float)tm.tmExternalLeading;
+            return JALIUM_OK;
+        }
+    }
+#endif
+
     metrics->lineHeight = fontSize * 1.2f;
     metrics->baseline = fontSize * 0.8f;
     metrics->ascent = fontSize * 0.8f;
@@ -784,6 +873,419 @@ void SoftwareRenderTarget::ApplyDashPattern(const std::vector<float>& pts, uint3
 // SoftwareRenderTarget
 // ============================================================================
 
+#if defined(JALIUM_SOFTWARE_X11_PRESENT)
+namespace {
+
+bool X11EnvironmentFlag(const char* name)
+{
+    const char* value = std::getenv(name);
+    return value && value[0] != '\0' && value[0] != '0';
+}
+
+unsigned long ScaleChannelToMask(uint8_t value, unsigned long mask)
+{
+    if (mask == 0) return 0;
+    unsigned int shift = 0;
+    while (((mask >> shift) & 1ul) == 0ul) ++shift;
+    const unsigned long maximum = mask >> shift;
+    const unsigned long scaled =
+        (static_cast<unsigned long>(value) * maximum + 127ul) / 255ul;
+    return (scaled << shift) & mask;
+}
+
+std::mutex g_x11ErrorTrapMutex;
+Display* g_x11TrappedDisplay = nullptr;
+bool g_x11TrappedError = false;
+XErrorHandler g_x11PreviousErrorHandler = nullptr;
+
+int HandleTrappedX11Error(Display* display, XErrorEvent* event)
+{
+    if (display == g_x11TrappedDisplay)
+    {
+        g_x11TrappedError = true;
+        return 0;
+    }
+    return g_x11PreviousErrorHandler
+        ? g_x11PreviousErrorHandler(display, event)
+        : 0;
+}
+
+class X11ErrorTrap final {
+public:
+    explicit X11ErrorTrap(Display* display)
+        : lock_(g_x11ErrorTrapMutex), display_(display)
+    {
+        // The platform initializes Xlib threading. Hold the display lock for
+        // the whole request/error round trip so errors from another thread on
+        // this Display cannot be attributed to this present operation.
+        XLockDisplay(display_);
+        g_x11TrappedDisplay = display_;
+        g_x11TrappedError = false;
+        previous_ = XSetErrorHandler(HandleTrappedX11Error);
+        g_x11PreviousErrorHandler = previous_;
+        // Drain earlier requests so an unrelated stale error cannot be
+        // mistaken for an MIT-SHM attach/put failure. The temporary handler is
+        // already installed, so a stale error is contained instead of invoking
+        // Xlib's process-terminating default handler.
+        XSync(display_, False);
+        g_x11TrappedError = false;
+    }
+
+    ~X11ErrorTrap()
+    {
+        if (active_) Finish(false);
+    }
+
+    bool Finish(bool requestSucceeded)
+    {
+        if (!active_) return false;
+        XSync(display_, False);
+        const bool succeeded = requestSucceeded && !g_x11TrappedError;
+        XSetErrorHandler(previous_);
+        g_x11TrappedDisplay = nullptr;
+        g_x11TrappedError = false;
+        g_x11PreviousErrorHandler = nullptr;
+        active_ = false;
+        XUnlockDisplay(display_);
+        return succeeded;
+    }
+
+private:
+    std::unique_lock<std::mutex> lock_;
+    Display* display_ = nullptr;
+    XErrorHandler previous_ = nullptr;
+    bool active_ = true;
+};
+
+} // namespace
+
+class X11SoftwarePresenter final {
+public:
+    X11SoftwarePresenter(Display* display, ::Window window)
+        : display_(display), window_(window),
+          disableShm_(X11EnvironmentFlag("JALIUM_SOFTWARE_X11_DISABLE_SHM")),
+          requireShm_(X11EnvironmentFlag("JALIUM_SOFTWARE_X11_REQUIRE_SHM"))
+    {
+#if defined(JALIUM_SOFTWARE_XSHM_PRESENT)
+        shmInfo_.shmid = -1;
+        shmInfo_.shmaddr = reinterpret_cast<char*>(-1);
+#endif
+    }
+
+    ~X11SoftwarePresenter()
+    {
+        ResetImage();
+        if (gc_ && display_) XFreeGC(display_, gc_);
+    }
+
+    bool Present(const uint8_t* bgraPixels, int32_t width, int32_t height,
+                 int32_t sourceStride, int32_t left, int32_t top,
+                 int32_t right, int32_t bottom)
+    {
+        if (!bgraPixels || width <= 0 || height <= 0 || width > INT32_MAX / 4 ||
+            sourceStride < width * 4 || left < 0 || top < 0 ||
+            right > width || bottom > height || left >= right || top >= bottom)
+            return false;
+        if (!EnsureImage(width, height)) return false;
+
+        CopyPixels(bgraPixels, sourceStride, left, top, right, bottom);
+        const unsigned int copyWidth = static_cast<unsigned int>(right - left);
+        const unsigned int copyHeight = static_cast<unsigned int>(bottom - top);
+
+#if defined(JALIUM_SOFTWARE_XSHM_PRESENT)
+        if (usingShm_)
+        {
+            X11ErrorTrap trap(display_);
+            const bool requested = XShmPutImage(
+                display_, window_, gc_, image_,
+                left, top, left, top, copyWidth, copyHeight, False) != False;
+            if (trap.Finish(requested)) return true;
+
+            // A remote/misconfigured X server can advertise MIT-SHM yet reject
+            // a later put. Tear down the segment and retry this same frame via
+            // the universally available XPutImage path.
+            shmPermanentlyDisabled_ = true;
+            ResetImage();
+            if (requireShm_ || !EnsureImage(width, height)) return false;
+            CopyPixels(bgraPixels, sourceStride, left, top, right, bottom);
+        }
+#endif
+
+        // XPutImage errors (most importantly BadMatch from a visual/depth
+        // mismatch) are asynchronous. Synchronize so EndDraw reports failure
+        // instead of silently leaving a stale window.
+        X11ErrorTrap trap(display_);
+        XPutImage(display_, window_, gc_, image_,
+                  left, top, left, top, copyWidth, copyHeight);
+        return trap.Finish(true);
+    }
+
+    void InvalidateStorage()
+    {
+        ResetImage();
+    }
+
+private:
+    bool EnsureImage(int32_t width, int32_t height)
+    {
+        XWindowAttributes attributes{};
+        if (!display_ || !window_ || !XGetWindowAttributes(display_, window_, &attributes) ||
+            !attributes.visual || attributes.depth <= 0)
+            return false;
+
+        const bool formatChanged = visual_ != attributes.visual || depth_ != attributes.depth;
+        if (formatChanged)
+        {
+            ResetImage();
+            if (gc_)
+            {
+                XFreeGC(display_, gc_);
+                gc_ = nullptr;
+            }
+            visual_ = attributes.visual;
+            depth_ = attributes.depth;
+        }
+        if (!gc_)
+        {
+            gc_ = XCreateGC(display_, window_, 0, nullptr);
+            if (!gc_) return false;
+        }
+        if (image_ && imageWidth_ == width && imageHeight_ == height)
+            return true;
+
+        ResetImage();
+#if defined(JALIUM_SOFTWARE_XSHM_PRESENT)
+        if (!disableShm_ && !shmPermanentlyDisabled_ && XShmQueryExtension(display_))
+        {
+            if (CreateShmImage(width, height)) return true;
+            shmPermanentlyDisabled_ = true;
+        }
+        if (requireShm_) return false;
+#else
+        if (requireShm_) return false;
+#endif
+        return CreateFallbackImage(width, height);
+    }
+
+    bool CreateFallbackImage(int32_t width, int32_t height)
+    {
+        image_ = XCreateImage(display_, visual_, static_cast<unsigned int>(depth_),
+                              ZPixmap, 0, nullptr,
+                              static_cast<unsigned int>(width),
+                              static_cast<unsigned int>(height), 32, 0);
+        if (!image_ || image_->bytes_per_line <= 0)
+        {
+            if (image_) XDestroyImage(image_);
+            image_ = nullptr;
+            return false;
+        }
+        if (static_cast<size_t>(image_->bytes_per_line) >
+            SIZE_MAX / static_cast<size_t>(height))
+        {
+            XDestroyImage(image_);
+            image_ = nullptr;
+            return false;
+        }
+        const size_t byteCount = static_cast<size_t>(image_->bytes_per_line) * height;
+        image_->data = static_cast<char*>(std::calloc(1, byteCount));
+        if (!image_->data)
+        {
+            XDestroyImage(image_);
+            image_ = nullptr;
+            return false;
+        }
+        imageWidth_ = width;
+        imageHeight_ = height;
+        usingShm_ = false;
+        return true;
+    }
+
+#if defined(JALIUM_SOFTWARE_XSHM_PRESENT)
+    bool CreateShmImage(int32_t width, int32_t height)
+    {
+        image_ = XShmCreateImage(
+            display_, visual_, static_cast<unsigned int>(depth_), ZPixmap,
+            nullptr, &shmInfo_,
+            static_cast<unsigned int>(width), static_cast<unsigned int>(height));
+        if (!image_ || image_->bytes_per_line <= 0)
+        {
+            if (image_) XDestroyImage(image_);
+            image_ = nullptr;
+            return false;
+        }
+
+        if (static_cast<size_t>(image_->bytes_per_line) >
+            SIZE_MAX / static_cast<size_t>(height))
+        {
+            XDestroyImage(image_);
+            image_ = nullptr;
+            return false;
+        }
+        const size_t byteCount = static_cast<size_t>(image_->bytes_per_line) * height;
+        shmInfo_.shmid = shmget(IPC_PRIVATE, byteCount, IPC_CREAT | 0600);
+        if (shmInfo_.shmid < 0)
+        {
+            XDestroyImage(image_);
+            image_ = nullptr;
+            return false;
+        }
+        shmInfo_.shmaddr = static_cast<char*>(shmat(shmInfo_.shmid, nullptr, 0));
+        if (shmInfo_.shmaddr == reinterpret_cast<char*>(-1))
+        {
+            shmctl(shmInfo_.shmid, IPC_RMID, nullptr);
+            shmInfo_.shmid = -1;
+            XDestroyImage(image_);
+            image_ = nullptr;
+            return false;
+        }
+        shmInfo_.readOnly = False;
+        image_->data = shmInfo_.shmaddr;
+
+        X11ErrorTrap trap(display_);
+        const bool requested = XShmAttach(display_, &shmInfo_) != False;
+        if (!trap.Finish(requested))
+        {
+            // Detach defensively in case the request succeeded but a different
+            // extension error was observed during the synchronized interval.
+            X11ErrorTrap detachTrap(display_);
+            XShmDetach(display_, &shmInfo_);
+            (void)detachTrap.Finish(true);
+            image_->data = nullptr;
+            XDestroyImage(image_);
+            image_ = nullptr;
+            shmdt(shmInfo_.shmaddr);
+            shmctl(shmInfo_.shmid, IPC_RMID, nullptr);
+            shmInfo_.shmid = -1;
+            shmInfo_.shmaddr = reinterpret_cast<char*>(-1);
+            return false;
+        }
+
+        shmAttached_ = true;
+        // The segment remains alive until both client and X server detach; mark
+        // it now so a crash cannot leak a persistent SysV shared-memory object.
+        shmMarkedForRemoval_ =
+            shmctl(shmInfo_.shmid, IPC_RMID, nullptr) == 0;
+        imageWidth_ = width;
+        imageHeight_ = height;
+        usingShm_ = true;
+        return true;
+    }
+#endif
+
+    void CopyPixels(const uint8_t* source, int32_t sourceStride,
+                    int32_t left, int32_t top, int32_t right, int32_t bottom)
+    {
+        const bool standardBgrx = image_->bits_per_pixel == 32 &&
+            image_->byte_order == LSBFirst &&
+            image_->red_mask == 0x00ff0000ul &&
+            image_->green_mask == 0x0000ff00ul &&
+            image_->blue_mask == 0x000000fful && depth_ != 32;
+        if (standardBgrx)
+        {
+            const size_t copyBytes = static_cast<size_t>(right - left) * 4u;
+            for (int32_t y = top; y < bottom; ++y)
+            {
+                std::memcpy(
+                    image_->data + static_cast<size_t>(y) * image_->bytes_per_line +
+                        static_cast<size_t>(left) * 4u,
+                    source + static_cast<size_t>(y) * sourceStride +
+                        static_cast<size_t>(left) * 4u,
+                    copyBytes);
+            }
+            return;
+        }
+
+        const unsigned long colorMask =
+            image_->red_mask | image_->green_mask | image_->blue_mask;
+        const unsigned long storageMask = depth_ >= static_cast<int>(sizeof(unsigned long) * 8u)
+            ? ~0ul
+            : ((1ul << depth_) - 1ul);
+        const unsigned long alphaMask = depth_ == 32
+            ? (storageMask & ~colorMask)
+            : 0ul;
+        for (int32_t y = top; y < bottom; ++y)
+        {
+            const uint8_t* sourceRow = source + static_cast<size_t>(y) * sourceStride;
+            for (int32_t x = left; x < right; ++x)
+            {
+                const uint8_t* bgra = sourceRow + static_cast<size_t>(x) * 4u;
+                const uint8_t alpha = bgra[3];
+                // XRender's depth-32 ARGB visuals require premultiplied color;
+                // the software framebuffer deliberately stores straight alpha.
+                const uint8_t red = alphaMask
+                    ? static_cast<uint8_t>((static_cast<unsigned int>(bgra[2]) * alpha + 127u) / 255u)
+                    : bgra[2];
+                const uint8_t green = alphaMask
+                    ? static_cast<uint8_t>((static_cast<unsigned int>(bgra[1]) * alpha + 127u) / 255u)
+                    : bgra[1];
+                const uint8_t blue = alphaMask
+                    ? static_cast<uint8_t>((static_cast<unsigned int>(bgra[0]) * alpha + 127u) / 255u)
+                    : bgra[0];
+                unsigned long pixel =
+                    ScaleChannelToMask(red, image_->red_mask) |
+                    ScaleChannelToMask(green, image_->green_mask) |
+                    ScaleChannelToMask(blue, image_->blue_mask);
+                if (alphaMask) pixel |= ScaleChannelToMask(alpha, alphaMask);
+                XPutPixel(image_, x, y, pixel);
+            }
+        }
+    }
+
+    void ResetImage()
+    {
+        if (!image_) return;
+#if defined(JALIUM_SOFTWARE_XSHM_PRESENT)
+        if (usingShm_)
+        {
+            if (shmAttached_ && display_)
+            {
+                X11ErrorTrap trap(display_);
+                XShmDetach(display_, &shmInfo_);
+                (void)trap.Finish(true);
+            }
+            image_->data = nullptr;
+            XDestroyImage(image_);
+            if (shmInfo_.shmaddr != reinterpret_cast<char*>(-1))
+                shmdt(shmInfo_.shmaddr);
+            if (shmInfo_.shmid >= 0 && !shmMarkedForRemoval_)
+                shmctl(shmInfo_.shmid, IPC_RMID, nullptr);
+            shmInfo_ = {};
+            shmInfo_.shmid = -1;
+            shmInfo_.shmaddr = reinterpret_cast<char*>(-1);
+            shmAttached_ = false;
+            shmMarkedForRemoval_ = false;
+        }
+        else
+#endif
+        {
+            XDestroyImage(image_);
+        }
+        image_ = nullptr;
+        imageWidth_ = 0;
+        imageHeight_ = 0;
+        usingShm_ = false;
+    }
+
+    Display* display_ = nullptr;
+    ::Window window_ = 0;
+    Visual* visual_ = nullptr;
+    int depth_ = 0;
+    GC gc_ = nullptr;
+    XImage* image_ = nullptr;
+    int32_t imageWidth_ = 0;
+    int32_t imageHeight_ = 0;
+    bool usingShm_ = false;
+    bool disableShm_ = false;
+    bool requireShm_ = false;
+    bool shmPermanentlyDisabled_ = false;
+#if defined(JALIUM_SOFTWARE_XSHM_PRESENT)
+    XShmSegmentInfo shmInfo_{};
+    bool shmAttached_ = false;
+    bool shmMarkedForRemoval_ = false;
+#endif
+};
+#endif
+
 SoftwareRenderTarget::SoftwareRenderTarget(SoftwareBackend* backend, int32_t width, int32_t height)
     : backend_(backend)
 {
@@ -804,9 +1306,25 @@ SoftwareRenderTarget::~SoftwareRenderTarget() {
 
 JaliumResult SoftwareRenderTarget::Resize(int32_t width, int32_t height)
 {
+    if (width <= 0 || height <= 0 || width > INT32_MAX / 4 ||
+        static_cast<uint64_t>(width) * static_cast<uint64_t>(height) >
+            static_cast<uint64_t>(SIZE_MAX) / 4u)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    try
+    {
+        fb_.Resize(width, height);
+    }
+    catch (const std::bad_alloc&)
+    {
+        return JALIUM_ERROR_OUT_OF_MEMORY;
+    }
     width_ = width;
     height_ = height;
-    fb_.Resize(width, height);
+    fullInvalidation_ = true;
+    hasDirtyRect_ = false;
+#if defined(JALIUM_SOFTWARE_X11_PRESENT)
+    if (x11Presenter_) x11Presenter_->InvalidateStorage();
+#endif
     return JALIUM_OK;
 }
 
@@ -828,6 +1346,27 @@ JaliumResult SoftwareRenderTarget::EndDraw()
     // Pop the root DPI scale transform pushed in BeginDraw
     if (scaleX_ != 1.0f || scaleY_ != 1.0f) {
         PopTransform();
+    }
+
+    // Software already owns a CPU BGRA8 framebuffer, but preserve the same
+    // two-phase semantics as D3D12/Vulkan: a request captures the *next*
+    // completed frame, not whichever pixels happen to exist at request time.
+    // Keep the snapshot independent from fb_ so a later resize/draw cannot
+    // invalidate the dimensions returned by FetchReadback's size query.
+    if (readbackPending_) {
+        readbackPending_ = false;
+        readbackReady_ = false;
+        try {
+            readbackFb_.width = width_;
+            readbackFb_.height = height_;
+            readbackFb_.pixels = fb_.pixels;
+            readbackReady_ = true;
+        } catch (const std::bad_alloc&) {
+            readbackFb_.width = 0;
+            readbackFb_.height = 0;
+            readbackFb_.pixels.clear();
+            return JALIUM_ERROR_OUT_OF_MEMORY;
+        }
     }
 
 #ifdef _WIN32
@@ -855,32 +1394,39 @@ JaliumResult SoftwareRenderTarget::EndDraw()
     {
         if (!waylandPresenter_)
             return JALIUM_ERROR_BACKEND_NOT_AVAILABLE;
-        return waylandPresenter_->Present(
-            fb_.pixels.data(), width_, height_, width_ * 4)
-            ? JALIUM_OK
-            : JALIUM_ERROR_PRESENT_FAILED;
+        const bool presented = waylandPresenter_->Present(
+            fb_.pixels.data(), width_, height_, width_ * 4);
+        if (presented)
+        {
+            fullInvalidation_ = false;
+            hasDirtyRect_ = false;
+        }
+        return presented ? JALIUM_OK : JALIUM_ERROR_PRESENT_FAILED;
     }
 #endif
 #ifdef JALIUM_SOFTWARE_X11_PRESENT
-    // Present to X11 window via XPutImage
+    // Present only the invalidated region. The presenter owns an XImage whose
+    // format matches this window's real Visual/Depth and selects MIT-SHM or
+    // XPutImage at runtime.
     if (surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_X11 &&
         surfaceDescriptor_.handle0 != 0 && surfaceDescriptor_.handle1 != 0)
     {
         Display* dpy = reinterpret_cast<Display*>(surfaceDescriptor_.handle0);
         ::Window xwin = static_cast<::Window>(surfaceDescriptor_.handle1);
-        int screen = DefaultScreen(dpy);
-
-        XImage* image = XCreateImage(dpy, DefaultVisual(dpy, screen),
-            DefaultDepth(dpy, screen), ZPixmap, 0,
-            reinterpret_cast<char*>(fb_.pixels.data()),
-            width_, height_, 32, width_ * 4);
-        if (image) {
-            GC gc = DefaultGC(dpy, screen);
-            XPutImage(dpy, xwin, gc, image, 0, 0, 0, 0, width_, height_);
-            image->data = nullptr; // Don't let XDestroyImage free our buffer
-            XDestroyImage(image);
-            XFlush(dpy);
-        }
+        if (!fullInvalidation_ && !hasDirtyRect_) return JALIUM_OK;
+        const int32_t left = fullInvalidation_ ? 0 : dirtyLeft_;
+        const int32_t top = fullInvalidation_ ? 0 : dirtyTop_;
+        const int32_t right = fullInvalidation_ ? width_ : dirtyRight_;
+        const int32_t bottom = fullInvalidation_ ? height_ : dirtyBottom_;
+        if (!x11Presenter_)
+            x11Presenter_ = std::make_unique<X11SoftwarePresenter>(dpy, xwin);
+        const bool presented = x11Presenter_->Present(
+            fb_.pixels.data(), width_, height_, width_ * 4,
+            left, top, right, bottom);
+        if (!presented) return JALIUM_ERROR_PRESENT_FAILED;
+        fullInvalidation_ = false;
+        hasDirtyRect_ = false;
+        return JALIUM_OK;
     }
 #endif
 #ifdef __ANDROID__
@@ -926,7 +1472,55 @@ JaliumResult SoftwareRenderTarget::EndDraw()
         }
     }
 #endif
+#if !defined(__ANDROID__)
+    // Reaching here with a Linux desktop surface means the matching present
+    // path was compiled out (libX11/wayland-client dev packages missing at
+    // build time) or its handles were invalid. Reporting JALIUM_OK used to
+    // leave the window permanently black with zero diagnostics — surface the
+    // failure instead.
+    if (surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_X11 ||
+        surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_WAYLAND)
+        return JALIUM_ERROR_BACKEND_NOT_AVAILABLE;
 #endif
+#endif
+    return JALIUM_OK;
+}
+
+JaliumResult SoftwareRenderTarget::RequestReadback()
+{
+    if (width_ <= 0 || height_ <= 0 || fb_.pixels.empty())
+        return JALIUM_ERROR_INVALID_STATE;
+    readbackPending_ = true;
+    return JALIUM_OK;
+}
+
+JaliumResult SoftwareRenderTarget::FetchReadback(
+    uint8_t* buf, uint32_t bufStride, int32_t* outWidth, int32_t* outHeight)
+{
+    if (outWidth) *outWidth = 0;
+    if (outHeight) *outHeight = 0;
+    if (!readbackReady_ || readbackFb_.width <= 0 || readbackFb_.height <= 0 ||
+        readbackFb_.pixels.empty())
+        return JALIUM_ERROR_INVALID_STATE;
+
+    const uint32_t width = static_cast<uint32_t>(readbackFb_.width);
+    const uint32_t height = static_cast<uint32_t>(readbackFb_.height);
+    if (!buf) {
+        if (outWidth) *outWidth = readbackFb_.width;
+        if (outHeight) *outHeight = readbackFb_.height;
+        return JALIUM_OK;
+    }
+    const uint32_t rowBytes = width * 4u;
+    if (bufStride < rowBytes)
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+
+    for (uint32_t y = 0; y < height; ++y) {
+        std::memcpy(buf + static_cast<size_t>(y) * bufStride,
+            readbackFb_.pixels.data() + static_cast<size_t>(y) * rowBytes,
+            rowBytes);
+    }
+    if (outWidth) *outWidth = readbackFb_.width;
+    if (outHeight) *outHeight = readbackFb_.height;
     return JALIUM_OK;
 }
 
@@ -1830,16 +2424,6 @@ void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* c
     float pxStrokeWidth = strokeWidth * maxScale;
     if (pxStrokeWidth <= 0.0f) return;
 
-    // Transform each contour's points into device space in-place.
-    for (auto& c : contours) {
-        for (size_t i = 0; i + 1 < c.points.size(); i += 2) {
-            float tx = 0.0f, ty = 0.0f;
-            currentTransform_.Apply(c.points[i], c.points[i + 1], tx, ty);
-            c.points[i]     = tx;
-            c.points[i + 1] = ty;
-        }
-    }
-
     auto join = static_cast<ImpellerJoin>(lineJoin);
     auto cap  = static_cast<ImpellerCap>(lineCap);
     // Dash patterns and the analytic stroke widener live entirely in
@@ -1856,21 +2440,64 @@ void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* c
     std::vector<ScratchVertex> scratchVerts;
     std::vector<uint32_t>       scratchIndices;
 
-    for (auto& c : contours) {
-        if (c.VertexCount() < 2) continue;
-        jalium::ExpandStrokePath<ScratchVertex>(
-            scratchVerts, scratchIndices,
-            c.points.data(), c.VertexCount(),
-            pxStrokeWidth, join, miterLimit, cap, closed,
-            0.0f, 0.0f, 0.0f, 1.0f,  // colour ignored in collect-mode
-            &strokeContours);
-        (void)dashPattern; (void)dashCount; (void)dashOffset;
-        // TODO: dash pattern is not yet applied in the analytic software
-        // path. Dashed strokes fall back to the Aliased branch below until
-        // dash walking lands here too.
-        if (dashPattern && dashCount > 0) {
-            StrokePathAliased(startX, startY, commands, commandLength, brush, strokeWidth, closed, lineJoin, miterLimit, lineCap, dashPattern, dashCount, dashOffset);
-            return;
+    auto transformPointsToDevice = [&](const float* source, uint32_t pointCount,
+                                       std::vector<float>& destination) {
+        destination.resize(static_cast<size_t>(pointCount) * 2u);
+        for (uint32_t i = 0; i < pointCount; ++i) {
+            currentTransform_.Apply(source[i * 2], source[i * 2 + 1],
+                destination[i * 2], destination[i * 2 + 1]);
+        }
+    };
+
+    if (dashPattern && dashCount > 0) {
+        // Dash lengths are expressed in source/DIP units (the managed caller
+        // has already multiplied DashStyle values by the pen thickness). Walk
+        // before applying the affine transform so anisotropic transforms do
+        // not accidentally reinterpret the pattern in device-space units.
+        // Duplicate odd patterns: WPF/CSS semantics repeat the list twice so
+        // the next cycle starts with the opposite on/off phase.
+        std::vector<float> normalizedDash;
+        normalizedDash.reserve((dashCount & 1u) ? dashCount * 2u : dashCount);
+        for (uint32_t i = 0; i < dashCount; ++i) {
+            const float value = std::isfinite(dashPattern[i])
+                ? std::max(dashPattern[i], 0.001f) : 0.001f;
+            normalizedDash.push_back(value);
+        }
+        if (dashCount & 1u) {
+            for (uint32_t i = 0; i < dashCount; ++i)
+                normalizedDash.push_back(normalizedDash[i]);
+        }
+        const float normalizedOffset = std::isfinite(dashOffset) ? dashOffset : 0.0f;
+
+        for (const auto& c : contours) {
+            if (c.VertexCount() < 2) continue;
+            jalium::WalkDashPattern(
+                c.points.data(), c.VertexCount(),
+                normalizedDash.data(), static_cast<uint32_t>(normalizedDash.size()),
+                normalizedOffset,
+                [&](const float* subPoints, uint32_t subPointCount, bool, bool) {
+                    if (subPointCount < 2) return;
+                    std::vector<float> devicePoints;
+                    transformPointsToDevice(subPoints, subPointCount, devicePoints);
+                    jalium::ExpandStrokePath<ScratchVertex>(
+                        scratchVerts, scratchIndices,
+                        devicePoints.data(), subPointCount,
+                        pxStrokeWidth, join, miterLimit, cap, false,
+                        0.0f, 0.0f, 0.0f, 1.0f,
+                        &strokeContours);
+                });
+        }
+    } else {
+        for (const auto& c : contours) {
+            if (c.VertexCount() < 2) continue;
+            std::vector<float> devicePoints;
+            transformPointsToDevice(c.points.data(), c.VertexCount(), devicePoints);
+            jalium::ExpandStrokePath<ScratchVertex>(
+                scratchVerts, scratchIndices,
+                devicePoints.data(), c.VertexCount(),
+                pxStrokeWidth, join, miterLimit, cap, closed,
+                0.0f, 0.0f, 0.0f, 1.0f,  // colour ignored in collect-mode
+                &strokeContours);
         }
     }
 
@@ -2078,24 +2705,49 @@ void SoftwareRenderTarget::RenderTextWithGlyphAtlas(
                 if (dx < 0 || dx >= width_ || sx < 0 || sx >= static_cast<int32_t>(atlasW))
                     continue;
 
-                // Sample coverage from glyph atlas (RGBA8: A = max coverage)
+                // Atlas is RGBA. Masks use RGB channel coverage + max coverage
+                // in A; authored color glyphs contain premultiplied RGBA.
                 size_t atlasIdx = (static_cast<size_t>(sy) * atlasW + sx) * 4;
                 uint8_t coverage = atlasData[atlasIdx + 3];
                 if (coverage == 0) continue;
 
-                // Base alpha = text opacity * glyph coverage, split vertically.
-                float baseAlpha = textAlpha * 255.0f * (static_cast<float>(coverage) / 255.0f);
+                const bool colorGlyph = (quad.flags & ATLAS_GLYPH_COLOR) != 0;
+                const bool lcdGlyph = (quad.flags & ATLAS_GLYPH_LCD) != 0;
+
+                auto blendSample = [&](int32_t destinationY, float verticalWeight) {
+                    if (verticalWeight <= 0.0f || destinationY < 0 || destinationY >= height_ ||
+                        IsClipped(dx + 0.5f, destinationY + 0.5f)) return;
+                    if (colorGlyph) {
+                        const uint8_t sourceA = atlasData[atlasIdx + 3];
+                        if (sourceA == 0) return;
+                        const uint8_t sourceR = static_cast<uint8_t>(std::min(
+                            255u, static_cast<unsigned>(atlasData[atlasIdx]) * 255u / sourceA));
+                        const uint8_t sourceG = static_cast<uint8_t>(std::min(
+                            255u, static_cast<unsigned>(atlasData[atlasIdx + 1]) * 255u / sourceA));
+                        const uint8_t sourceB = static_cast<uint8_t>(std::min(
+                            255u, static_cast<unsigned>(atlasData[atlasIdx + 2]) * 255u / sourceA));
+                        const uint8_t alpha = static_cast<uint8_t>(
+                            std::clamp(textAlpha * verticalWeight * sourceA + 0.5f, 0.0f, 255.0f));
+                        fb_.BlendPixel(dx, destinationY, sourceR, sourceG, sourceB, alpha);
+                    } else if (lcdGlyph) {
+                        const auto channelCoverage = [&](int channel) {
+                            return static_cast<uint8_t>(std::clamp(
+                                textAlpha * verticalWeight * atlasData[atlasIdx + channel] + 0.5f,
+                                0.0f, 255.0f));
+                        };
+                        fb_.BlendPixelSubpixel(dx, destinationY, textR, textG, textB,
+                                               channelCoverage(0), channelCoverage(1), channelCoverage(2));
+                    } else {
+                        const uint8_t alpha = static_cast<uint8_t>(std::clamp(
+                            textAlpha * verticalWeight * coverage + 0.5f, 0.0f, 255.0f));
+                        fb_.BlendPixel(dx, destinationY, textR, textG, textB, alpha);
+                    }
+                };
 
                 int32_t dyLo = dstY + row;
-                if (wLo > 0.0f && dyLo >= 0 && dyLo < height_ && !IsClipped(dx + 0.5f, dyLo + 0.5f)) {
-                    uint8_t alpha = static_cast<uint8_t>(baseAlpha * wLo + 0.5f);
-                    if (alpha > 0) fb_.BlendPixel(dx, dyLo, textR, textG, textB, alpha);
-                }
+                blendSample(dyLo, wLo);
                 int32_t dyHi = dyLo + 1;
-                if (fracY > 0.0f && dyHi >= 0 && dyHi < height_ && !IsClipped(dx + 0.5f, dyHi + 0.5f)) {
-                    uint8_t alpha = static_cast<uint8_t>(baseAlpha * fracY + 0.5f);
-                    if (alpha > 0) fb_.BlendPixel(dx, dyHi, textR, textG, textB, alpha);
-                }
+                blendSample(dyHi, fracY);
             }
         }
     }
@@ -2127,10 +2779,22 @@ void SoftwareRenderTarget::RenderTextWithGDI(
     HDC hdc = static_cast<HDC>(cachedTextDC_);
     if (!hdc) return;
 
+    // (w, h) arrive in DIPs while (tx, ty) is already in physical pixels — the
+    // root transform pushed in BeginDraw carries the DPI scale. The blit below
+    // copies DIB texels 1:1 onto framebuffer pixels, so the DIB must be sized
+    // in physical pixels and the em height scaled the same way, or high-DPI
+    // text is rasterized at DIP resolution and truncated. At 96 DPI both
+    // factors are 1 and this is byte-identical to the DIP-sized path. The
+    // 16384 clamp only guards the "unbounded" 10000-DIP layout fallback from
+    // exploding the DIB allocation at high scale factors.
+    int32_t pw = std::min((int32_t)std::ceil(w * scaleX_), 16384);
+    int32_t ph = std::min((int32_t)std::ceil(h * scaleY_), 16384);
+    if (pw <= 0 || ph <= 0) return;
+
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bmi.bmiHeader.biWidth = (int32_t)w;
-    bmi.bmiHeader.biHeight = -(int32_t)h;
+    bmi.bmiHeader.biWidth = pw;
+    bmi.bmiHeader.biHeight = -ph;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -2140,7 +2804,11 @@ void SoftwareRenderTarget::RenderTextWithGDI(
     if (hbm && bits) {
         HGDIOBJ oldBm = SelectObject(hdc, hbm);
 
-        int fontHeight = -(int)(stf->fontSize * dpiY_ / 72.0f);
+        // fontSize is a DIP em size (DirectWrite convention shared by every
+        // backend); scale straight to physical pixels. The previous
+        // dpiY_ / 72 form treated it as a point size, rendering every glyph
+        // 4/3 too large and clipping it against its own line box.
+        int fontHeight = -(std::max)(1, (int)(stf->fontSize * scaleY_ + 0.5f));
         HFONT hFont = CreateFontW(fontHeight, 0, 0, 0,
             stf->fontWeight, (stf->fontStyle == 1 || stf->fontStyle == 2) ? TRUE : FALSE,
             FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
@@ -2148,11 +2816,20 @@ void SoftwareRenderTarget::RenderTextWithGDI(
             stf->fontFamily.c_str());
         HGDIOBJ oldFont = SelectObject(hdc, hFont);
 
-        SetTextColor(hdc, RGB(r, g, b));
+        // Always rasterize white-on-black: the DIB is consumed purely as a
+        // coverage mask (the blit below turns per-pixel luminance into alpha
+        // and applies the brush colour itself). Drawing with the brush colour
+        // here made coverage proportional to brightness — black text vanished
+        // entirely and dark text turned ghost-translucent.
+        SetTextColor(hdc, RGB(255, 255, 255));
         SetBkMode(hdc, TRANSPARENT);
 
-        RECT rc = { 0, 0, (LONG)w, (LONG)h };
-        UINT dtFlags = DT_WORDBREAK;
+        // DT_EXTERNALLEADING keeps the painted line advance on the same ruler
+        // as MeasureText / GetFontMetrics (tmHeight + tmExternalLeading);
+        // DT_NOPREFIX keeps literal '&' characters (mnemonics are a managed
+        // AccessText concern, not GDI's).
+        RECT rc = { 0, 0, (LONG)pw, (LONG)ph };
+        UINT dtFlags = DT_WORDBREAK | DT_EXTERNALLEADING | DT_NOPREFIX;
         switch (stf->alignment) {
             case 1: dtFlags |= DT_RIGHT; break;
             case 2: dtFlags |= DT_CENTER; break;
@@ -2167,7 +2844,7 @@ void SoftwareRenderTarget::RenderTextWithGDI(
         // (tx,ty) are integer (fracX/fracY == 0) the sampling reduces to the
         // original 1:1 copy, so static text is unchanged.
         uint8_t* textBits = static_cast<uint8_t*>(bits);
-        int32_t bw = (int32_t)w, bh = (int32_t)h;
+        int32_t bw = pw, bh = ph;
         int32_t ix = static_cast<int32_t>(std::floor(tx));
         int32_t iy = static_cast<int32_t>(std::floor(ty));
         float fracX = tx - static_cast<float>(ix);
@@ -2177,13 +2854,22 @@ void SoftwareRenderTarget::RenderTextWithGDI(
             int srcIdx = (rr * bw + cc) * 4;
             return (textBits[srcIdx + 2] + textBits[srcIdx + 1] + textBits[srcIdx + 0]) / 3.0f;
         };
-        for (int32_t row = 0; row <= bh; row++) {
+        // Iterate only the DIB rows/cols that land inside the framebuffer —
+        // the unbounded-layout fallback (w = h = 10000 DIPs) otherwise spins
+        // ~10^8 iterations of pure bounds-check misses per DrawText call. The
+        // per-pixel guards stay as a defensive backstop; this only trims the
+        // loop ranges.
+        int32_t rowBegin = (std::max)(0, -iy);
+        int32_t rowEnd = (std::min)(bh, height_ - 1 - iy);
+        int32_t colBegin = (std::max)(0, -ix);
+        int32_t colEnd = (std::min)(bw, width_ - 1 - ix);
+        for (int32_t row = rowBegin; row <= rowEnd; row++) {
             int32_t dyy = iy + row;
             if (dyy < 0 || dyy >= height_) continue;
             float sv = static_cast<float>(row) - fracY;
             int32_t sv0 = static_cast<int32_t>(std::floor(sv));
             float fv = sv - static_cast<float>(sv0);
-            for (int32_t col = 0; col <= bw; col++) {
+            for (int32_t col = colBegin; col <= colEnd; col++) {
                 int32_t dxx = ix + col;
                 if (dxx < 0 || dxx >= width_) continue;
                 float su = static_cast<float>(col) - fracX;
@@ -2369,12 +3055,50 @@ void SoftwareRenderTarget::SetDpi(float dpiX, float dpiY)
 
 void SoftwareRenderTarget::AddDirtyRect(float x, float y, float w, float h)
 {
-    (void)x; (void)y; (void)w; (void)h;
+    if (fullInvalidation_ || !std::isfinite(x) || !std::isfinite(y) ||
+        !std::isfinite(w) || !std::isfinite(h) || w <= 0.0f || h <= 0.0f ||
+        width_ <= 0 || height_ <= 0)
+        return;
+
+    const double scaleX = std::isfinite(scaleX_) && scaleX_ > 0.0f ? scaleX_ : 1.0;
+    const double scaleY = std::isfinite(scaleY_) && scaleY_ > 0.0f ? scaleY_ : 1.0;
+    const double leftValue = std::clamp(
+        std::floor(static_cast<double>(x) * scaleX), 0.0,
+        static_cast<double>(width_));
+    const double topValue = std::clamp(
+        std::floor(static_cast<double>(y) * scaleY), 0.0,
+        static_cast<double>(height_));
+    const double rightValue = std::clamp(
+        std::ceil((static_cast<double>(x) + w) * scaleX), 0.0,
+        static_cast<double>(width_));
+    const double bottomValue = std::clamp(
+        std::ceil((static_cast<double>(y) + h) * scaleY), 0.0,
+        static_cast<double>(height_));
+    const int32_t left = static_cast<int32_t>(leftValue);
+    const int32_t top = static_cast<int32_t>(topValue);
+    const int32_t right = static_cast<int32_t>(rightValue);
+    const int32_t bottom = static_cast<int32_t>(bottomValue);
+    if (left >= right || top >= bottom) return;
+
+    if (!hasDirtyRect_)
+    {
+        dirtyLeft_ = left;
+        dirtyTop_ = top;
+        dirtyRight_ = right;
+        dirtyBottom_ = bottom;
+        hasDirtyRect_ = true;
+        return;
+    }
+    dirtyLeft_ = std::min(dirtyLeft_, left);
+    dirtyTop_ = std::min(dirtyTop_, top);
+    dirtyRight_ = std::max(dirtyRight_, right);
+    dirtyBottom_ = std::max(dirtyBottom_, bottom);
 }
 
 void SoftwareRenderTarget::SetFullInvalidation()
 {
     fullInvalidation_ = true;
+    hasDirtyRect_ = false;
 }
 
 void SoftwareRenderTarget::DrawVideoSurface(VideoSurface* surface,

@@ -6,7 +6,7 @@ namespace Jalium.UI.Media.Native;
 /// 通过 <c>jalium_audio_decoder_*</c> P/Invoke 实现的解码器。同一实例只允许
 /// 由 <see cref="AudioPlayer"/> 的 pump worker 单线程访问。
 /// </summary>
-public sealed class NativeAudioDecoder : INativeAudioDecoder
+public sealed class NativeAudioDecoder : INativeAudioDecoder, INativeAudioTrackSelector
 {
     private nint _handle;
     private int _sampleRate;
@@ -14,6 +14,20 @@ public sealed class NativeAudioDecoder : INativeAudioDecoder
     private System.TimeSpan _duration;
     private SupportedAudioCodec _codec;
     private bool _disposed;
+    private int _audioTrackIndex;
+
+    /// <inheritdoc />
+    public int AudioTrackIndex
+    {
+        get => _audioTrackIndex;
+        set
+        {
+            if (value < 0) throw new System.ArgumentOutOfRangeException(nameof(value));
+            if (_handle != nint.Zero)
+                throw new System.InvalidOperationException("Set AudioTrackIndex before Open.");
+            _audioTrackIndex = value;
+        }
+    }
 
     /// <inheritdoc />
     public int SampleRate => _sampleRate;
@@ -38,10 +52,30 @@ public sealed class NativeAudioDecoder : INativeAudioDecoder
 
         CloseHandleLocked();
 
-        var st = NativeAudioInterop.jalium_audio_decoder_open_file(
-            utf8Path,
-            (int)JaliumAudioCodec.Auto,
-            out var handle);
+        NativeMediaStatus st;
+        nint handle;
+        if (OperatingSystem.IsLinux() && _audioTrackIndex > 0)
+        {
+            st = OpenLinuxTrack(utf8Path, out handle);
+        }
+        else
+        {
+            st = NativeAudioInterop.jalium_audio_decoder_open_file(
+                utf8Path,
+                (int)JaliumAudioCodec.Auto,
+                out handle);
+            // Built-in codecs cover local elementary audio files. GStreamer
+            // handles remote URIs and richer containers when that probe fails.
+            if (OperatingSystem.IsLinux() && st != NativeMediaStatus.Ok)
+            {
+                var linuxStatus = OpenLinuxTrack(utf8Path, out var linuxHandle);
+                if (linuxStatus == NativeMediaStatus.Ok)
+                {
+                    st = linuxStatus;
+                    handle = linuxHandle;
+                }
+            }
+        }
         NativeMediaException.ThrowIfFailed(st, "jalium_audio_decoder_open_file");
 
         try
@@ -61,6 +95,20 @@ public sealed class NativeAudioDecoder : INativeAudioDecoder
         {
             NativeAudioInterop.jalium_audio_decoder_close(handle);
             throw;
+        }
+    }
+
+    private NativeMediaStatus OpenLinuxTrack(string source, out nint handle)
+    {
+        try
+        {
+            return NativeAudioInterop.jalium_linux_audio_decoder_open_track(
+                source, checked((uint)_audioTrackIndex), out handle);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            handle = nint.Zero;
+            return NativeMediaStatus.NotImplemented;
         }
     }
 

@@ -1,7 +1,7 @@
 namespace Jalium.UI.Media.Rendering;
 
 /// <summary>
-/// Replays a <see cref="Drawing"/> onto a live <see cref="DrawingContext"/>.
+/// Replays a <see cref="RecordedDrawing"/> onto a live <see cref="DrawingContext"/>.
 /// The observable effect of <c>Replay(drawing, target)</c> is indistinguishable
 /// from re-running the original <c>OnRender</c> body against <paramref name="target"/>,
 /// except that no user code runs, no temporary brushes / pens / geometries
@@ -16,7 +16,7 @@ namespace Jalium.UI.Media.Rendering;
 /// </remarks>
 internal static class DrawingReplayer
 {
-    public static void Replay(Drawing drawing, DrawingContext target)
+    public static void Replay(RecordedDrawing drawing, DrawingContext target)
     {
         if (drawing.Count == 0)
         {

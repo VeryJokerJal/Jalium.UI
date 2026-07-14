@@ -638,25 +638,3 @@ public abstract class Selector : ItemsControl
 
     #endregion
 }
-
-/// <summary>
-/// Specifies the selection behavior for a selector control.
-/// </summary>
-public enum SelectionMode
-{
-    /// <summary>
-    /// The user can select only one item at a time.
-    /// </summary>
-    Single,
-
-    /// <summary>
-    /// The user can select multiple items without holding down a modifier key.
-    /// </summary>
-    Multiple,
-
-    /// <summary>
-    /// The user can select multiple contiguous items while holding down the SHIFT key,
-    /// or non-contiguous items by holding down the CTRL key.
-    /// </summary>
-    Extended
-}

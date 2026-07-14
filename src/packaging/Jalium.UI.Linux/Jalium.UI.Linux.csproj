@@ -12,6 +12,10 @@
     <IncludeBuildOutput>false</IncludeBuildOutput>
     <IncludeSymbols>false</IncludeSymbols>
     <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
+    <!-- This is intentionally a dependency-only entry package. NuGet's
+         framework/lib parity analyzer otherwise reports NU5128 because there
+         is no Jalium.UI.Linux implementation assembly in the nupkg. -->
+    <NoWarn>$(NoWarn);NU5128</NoWarn>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>

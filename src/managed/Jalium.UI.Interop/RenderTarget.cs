@@ -1386,7 +1386,7 @@ public sealed class RenderTarget : IDisposable
     /// <summary>
     /// Draws a <see cref="Jalium.UI.Media.NativeVideoSurface"/> at the given rectangle.
     /// Used by the video render path in <see cref="RenderTargetDrawingContext.DrawImage(Jalium.UI.Media.ImageSource, Jalium.UI.Rect, Jalium.UI.Media.BitmapScalingMode)"/>
-    /// when the source is a <see cref="Jalium.UI.Media.D3DImage"/> backed by a
+    /// when the source is a <see cref="Jalium.UI.Interop.D3DImage"/> backed by a
     /// <c>NativeVideoSurface</c>.
     /// </summary>
     public void DrawVideoSurface(nint videoSurfaceHandle, float x, float y, float width, float height, float opacity, Jalium.UI.Media.BitmapScalingMode scalingMode)

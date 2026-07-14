@@ -6,6 +6,7 @@ using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
 
@@ -13,7 +14,7 @@ namespace Jalium.UI.Controls;
 /// A control for entering passwords with masked display.
 /// Inherits from Control for security reasons - passwords should not be exposed via data binding.
 /// </summary>
-public class PasswordBox : Control, IImeSupport
+public sealed class PasswordBox : Control, IImeSupport
 {
     #region Automation
 
@@ -62,8 +63,6 @@ public class PasswordBox : Control, IImeSupport
     private DateTime _lastClickTime;
     private int _clickCount;
     private Point _lastClickPosition;
-    private const int DoubleClickTime = 500;
-    private const double DoubleClickDistance = 4;
 
     // Text width measurement cache
     private Dictionary<string, double> _textWidthCache = new();
@@ -100,7 +99,7 @@ public class PasswordBox : Control, IImeSupport
     /// Identifies the Placeholder dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty PlaceholderTextProperty =
+    internal static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(PasswordBox),
             new PropertyMetadata(string.Empty, OnVisualPropertyChanged));
 
@@ -108,7 +107,7 @@ public class PasswordBox : Control, IImeSupport
     /// Identifies the RevealMode dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty RevealModeProperty =
+    internal static readonly DependencyProperty RevealModeProperty =
         DependencyProperty.Register(nameof(RevealMode), typeof(PasswordRevealMode), typeof(PasswordBox),
             new PropertyMetadata(PasswordRevealMode.Hidden, OnVisualPropertyChanged));
 
@@ -116,7 +115,7 @@ public class PasswordBox : Control, IImeSupport
     /// Identifies the IsPasswordRevealed dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsPasswordRevealedProperty =
+    internal static readonly DependencyProperty IsPasswordRevealedProperty =
         DependencyProperty.Register(nameof(IsPasswordRevealed), typeof(bool), typeof(PasswordBox),
             new PropertyMetadata(false, OnVisualPropertyChanged));
 
@@ -124,7 +123,7 @@ public class PasswordBox : Control, IImeSupport
     /// Identifies the IsReadOnly dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
-    public static readonly DependencyProperty IsReadOnlyProperty =
+    internal static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(PasswordBox),
             new PropertyMetadata(false, OnIsReadOnlyChangedStatic));
 
@@ -185,7 +184,7 @@ public class PasswordBox : Control, IImeSupport
     /// Identifies the TextTrimming dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public static readonly DependencyProperty TextTrimmingProperty =
+    internal static readonly DependencyProperty TextTrimmingProperty =
         DependencyProperty.Register(nameof(TextTrimming), typeof(TextTrimming), typeof(PasswordBox),
             new PropertyMetadata(TextTrimming.CharacterEllipsis, OnVisualPropertyChanged));
 
@@ -193,7 +192,7 @@ public class PasswordBox : Control, IImeSupport
     /// Identifies the IsUndoEnabled dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsUndoEnabledProperty =
+    internal static readonly DependencyProperty IsUndoEnabledProperty =
         DependencyProperty.Register(nameof(IsUndoEnabled), typeof(bool), typeof(PasswordBox),
             new PropertyMetadata(true));
 
@@ -201,7 +200,7 @@ public class PasswordBox : Control, IImeSupport
     /// Identifies the UndoLimit dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty UndoLimitProperty =
+    internal static readonly DependencyProperty UndoLimitProperty =
         DependencyProperty.Register(nameof(UndoLimit), typeof(int), typeof(PasswordBox),
             new PropertyMetadata(100));
 
@@ -313,7 +312,7 @@ public class PasswordBox : Control, IImeSupport
     /// Gets or sets the placeholder text shown when the password is empty.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public string PlaceholderText
+    internal string PlaceholderText
     {
         get => (string)(GetValue(PlaceholderTextProperty) ?? string.Empty);
         set => SetValue(PlaceholderTextProperty, value);
@@ -323,7 +322,7 @@ public class PasswordBox : Control, IImeSupport
     /// Gets or sets the password reveal mode.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public PasswordRevealMode RevealMode
+    internal PasswordRevealMode RevealMode
     {
         get => (PasswordRevealMode)(GetValue(RevealModeProperty) ?? PasswordRevealMode.Hidden);
         set => SetValue(RevealModeProperty, value);
@@ -333,7 +332,7 @@ public class PasswordBox : Control, IImeSupport
     /// Gets or sets whether the password is currently revealed.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsPasswordRevealed
+    internal bool IsPasswordRevealed
     {
         get => (bool)GetValue(IsPasswordRevealedProperty)!;
         set => SetValue(IsPasswordRevealedProperty, value);
@@ -343,7 +342,7 @@ public class PasswordBox : Control, IImeSupport
     /// Gets or sets whether the password box is read-only.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
-    public bool IsReadOnly
+    internal bool IsReadOnly
     {
         get => (bool)GetValue(IsReadOnlyProperty)!;
         set => SetValue(IsReadOnlyProperty, value);
@@ -397,7 +396,7 @@ public class PasswordBox : Control, IImeSupport
     /// Gets or sets the trimming behavior for visible text when it overflows the content area.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public TextTrimming TextTrimming
+    internal TextTrimming TextTrimming
     {
         get => (TextTrimming)GetValue(TextTrimmingProperty)!;
         set => SetValue(TextTrimmingProperty, value);
@@ -407,7 +406,7 @@ public class PasswordBox : Control, IImeSupport
     /// Gets or sets whether undo is enabled.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsUndoEnabled
+    internal bool IsUndoEnabled
     {
         get => (bool)GetValue(IsUndoEnabledProperty)!;
         set => SetValue(IsUndoEnabledProperty, value);
@@ -417,7 +416,7 @@ public class PasswordBox : Control, IImeSupport
     /// Gets or sets the maximum number of undo entries.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public int UndoLimit
+    internal int UndoLimit
     {
         get => (int)GetValue(UndoLimitProperty)!;
         set => SetValue(UndoLimitProperty, value);
@@ -426,17 +425,17 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets whether undo can be performed.
     /// </summary>
-    public bool CanUndo => _undoStack.Count > 0;
+    internal bool CanUndo => _undoStack.Count > 0;
 
     /// <summary>
     /// Gets whether redo can be performed.
     /// </summary>
-    public bool CanRedo => _redoStack.Count > 0;
+    internal bool CanRedo => _redoStack.Count > 0;
 
     /// <summary>
     /// Gets or sets the caret position (character index).
     /// </summary>
-    public int CaretIndex
+    internal int CaretIndex
     {
         get => _caretIndex;
         set
@@ -457,7 +456,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the starting position of selected text.
     /// </summary>
-    public int SelectionStart
+    internal int SelectionStart
     {
         get => _selectionStart;
         set
@@ -469,6 +468,7 @@ public class PasswordBox : Control, IImeSupport
             {
                 _selectionStart = newValue;
                 InvalidateVisual();
+                NotifyLinuxImeContextChanged();
             }
         }
     }
@@ -476,7 +476,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the number of characters selected.
     /// </summary>
-    public int SelectionLength
+    internal int SelectionLength
     {
         get => _selectionLength;
         set
@@ -490,6 +490,7 @@ public class PasswordBox : Control, IImeSupport
             {
                 _selectionLength = newValue;
                 InvalidateVisual();
+                NotifyLinuxImeContextChanged();
             }
         }
     }
@@ -497,7 +498,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets the selected text (masked or revealed based on IsPasswordRevealed).
     /// </summary>
-    public string SelectedText
+    internal string SelectedText
     {
         get
         {
@@ -564,6 +565,9 @@ public class PasswordBox : Control, IImeSupport
         AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnLostFocusHandler));
     }
 
+    /// <inheritdoc />
+    public override void OnApplyTemplate() => base.OnApplyTemplate();
+
     #endregion
 
     #region Public Methods
@@ -588,12 +592,13 @@ public class PasswordBox : Control, IImeSupport
         _selectionLength = _password.Length;
         _caretIndex = _password.Length;
         InvalidateVisual();
+        NotifyLinuxImeContextChanged();
     }
 
     /// <summary>
     /// Selects a range of text.
     /// </summary>
-    public void Select(int start, int length)
+    internal void Select(int start, int length)
     {
         // Snap both endpoints onto grapheme-cluster boundaries so a programmatic
         // selection never begins or ends inside an emoji.
@@ -604,17 +609,19 @@ public class PasswordBox : Control, IImeSupport
         _selectionLength = snappedEnd - snappedStart;
         _caretIndex = _selectionStart + _selectionLength;
         InvalidateVisual();
+        NotifyLinuxImeContextChanged();
     }
 
     /// <summary>
     /// Clears the current selection.
     /// </summary>
-    public void ClearSelection()
+    internal void ClearSelection()
     {
         if (_selectionLength > 0)
         {
             _selectionLength = 0;
             InvalidateVisual();
+            NotifyLinuxImeContextChanged();
         }
     }
 
@@ -627,7 +634,7 @@ public class PasswordBox : Control, IImeSupport
         if (IsReadOnly)
             return;
 
-        var clipboardText = Clipboard.GetText();
+        var clipboardText = WpfClipboard.GetText();
         if (!string.IsNullOrEmpty(clipboardText))
         {
             // Remove newlines from pasted text
@@ -639,7 +646,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Undoes the last edit operation.
     /// </summary>
-    public void Undo()
+    internal void Undo()
     {
         if (!IsUndoEnabled || _undoStack.Count == 0)
             return;
@@ -666,7 +673,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Redoes the last undone operation.
     /// </summary>
-    public void Redo()
+    internal void Redo()
     {
         if (!IsUndoEnabled || _redoStack.Count == 0)
             return;
@@ -1204,6 +1211,8 @@ public class PasswordBox : Control, IImeSupport
         {
             ScheduleNextCaretTick(_lastCaretBlink);
         }
+
+        NotifyLinuxImeContextChanged();
     }
 
     private double UpdateCaretAnimation()
@@ -1288,6 +1297,7 @@ public class PasswordBox : Control, IImeSupport
         var e = new RoutedEventArgs(PasswordChangedEvent, this);
         RaiseEvent(e);
         InvalidateVisual();
+        NotifyLinuxImeContextChanged();
     }
 
     #endregion
@@ -1409,9 +1419,12 @@ public class PasswordBox : Control, IImeSupport
 
             // Detect double/triple click
             var timeSinceLastClick = (now - _lastClickTime).TotalMilliseconds;
-            var distanceFromLastClick = Math.Abs(position.X - _lastClickPosition.X) + Math.Abs(position.Y - _lastClickPosition.Y);
+            var distanceFromLastClick = Math.Max(
+                Math.Abs(position.X - _lastClickPosition.X),
+                Math.Abs(position.Y - _lastClickPosition.Y));
 
-            if (timeSinceLastClick < DoubleClickTime && distanceFromLastClick < DoubleClickDistance)
+            if (timeSinceLastClick <= global::Jalium.UI.SystemParameters.DoubleClickTime &&
+                distanceFromLastClick <= global::Jalium.UI.SystemParameters.MouseDoubleClickDistance)
             {
                 _clickCount++;
             }
@@ -1799,15 +1812,49 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets whether IME composition is currently active.
     /// </summary>
-    public bool IsImeComposing => _isImeComposing;
+    internal bool IsImeComposing => _isImeComposing;
 
     /// <inheritdoc />
-    public bool IsImeAllowed => !IsReadOnly;
+    internal bool IsImeAllowed => !IsReadOnly;
 
     /// <inheritdoc />
-    public Point GetImeCaretPosition()
+    internal bool TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
+    {
+        // Never expose the password to a compositor or input-method process.
+        snapshot = default;
+        return false;
+    }
+
+    bool IImeSupport.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
+        => TryGetImeSurroundingText(out snapshot);
+
+    /// <inheritdoc />
+    internal bool DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount) => false;
+
+    /// <inheritdoc />
+    internal Point GetImeCaretPosition()
     {
         return GetCaretScreenPosition();
+    }
+
+    /// <inheritdoc />
+    internal Rect GetImeCaretRectangle()
+    {
+        Point bottom = GetCaretScreenPosition();
+        double height = Math.Max(1, Math.Round(GetLineHeight()));
+        return new Rect(bottom.X, bottom.Y - height, 1, height);
+    }
+
+    private void NotifyLinuxImeContextChanged()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is Window window)
+            {
+                window.RefreshLinuxImeContext();
+                break;
+            }
+        }
     }
 
     private Point GetCaretScreenPosition()
@@ -1823,7 +1870,7 @@ public class PasswordBox : Control, IImeSupport
     }
 
     /// <inheritdoc />
-    public void OnImeCompositionStart()
+    internal void OnImeCompositionStart()
     {
         _isImeComposing = true;
         _imeCompositionString = string.Empty;
@@ -1838,7 +1885,7 @@ public class PasswordBox : Control, IImeSupport
     }
 
     /// <inheritdoc />
-    public void OnImeCompositionUpdate(string compositionString, int cursorPosition)
+    internal void OnImeCompositionUpdate(string compositionString, int cursorPosition)
     {
         _imeCompositionString = compositionString;
         _imeCompositionCursor = cursorPosition;
@@ -1846,13 +1893,29 @@ public class PasswordBox : Control, IImeSupport
     }
 
     /// <inheritdoc />
-    public void OnImeCompositionEnd(string? resultString)
+    internal void OnImeCompositionEnd(string? resultString)
     {
         _isImeComposing = false;
         _imeCompositionString = string.Empty;
         _imeCompositionCursor = 0;
         InvalidateVisual();
     }
+
+    bool IImeSupport.IsImeAllowed => IsImeAllowed;
+
+    bool IImeSupport.DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
+        => DeleteImeSurroundingText(beforeUtf8ByteCount, afterUtf8ByteCount);
+
+    Point IImeSupport.GetImeCaretPosition() => GetImeCaretPosition();
+
+    Rect IImeSupport.GetImeCaretRectangle() => GetImeCaretRectangle();
+
+    void IImeSupport.OnImeCompositionStart() => OnImeCompositionStart();
+
+    void IImeSupport.OnImeCompositionUpdate(string compositionString, int cursorPosition)
+        => OnImeCompositionUpdate(compositionString, cursorPosition);
+
+    void IImeSupport.OnImeCompositionEnd(string? resultString) => OnImeCompositionEnd(resultString);
 
     #endregion
 
@@ -1893,7 +1956,7 @@ public class PasswordBox : Control, IImeSupport
 /// <summary>
 /// Specifies the password reveal mode.
 /// </summary>
-public enum PasswordRevealMode
+internal enum PasswordRevealMode
 {
     /// <summary>
     /// Password is always hidden.

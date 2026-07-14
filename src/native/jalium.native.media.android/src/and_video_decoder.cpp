@@ -39,6 +39,8 @@ struct jalium_video_decoder {
     uint32_t               width           = 0;
     uint32_t               height          = 0;
     uint32_t               stride_bytes    = 0;
+    uint32_t               source_stride   = 0;
+    uint32_t               source_slice_height = 0;
     double                 duration_s      = 0.0;
     double                 fps             = 0.0;
     uint64_t               frame_count     = 0;
@@ -88,8 +90,7 @@ ColorMatrix DeriveColorMatrix(int32_t color_standard, uint32_t height)
 bool IsNV12Format(int32_t color_format)
 {
     return color_format == COLOR_FormatYUV420SemiPlanar
-        || color_format == COLOR_QCOM_FormatYUV420SemiPlanar
-        || color_format == COLOR_FormatYUV420Flexible;
+        || color_format == COLOR_QCOM_FormatYUV420SemiPlanar;
 }
 
 bool IsI420Format(int32_t color_format)
@@ -122,18 +123,23 @@ void ReleaseDecoderState(jalium_video_decoder_t* d)
 
 jalium_media_status_t ApplyOutputFormat(jalium_video_decoder_t* d, AMediaFormat* fmt)
 {
-    int32_t w = 0, h = 0, color = 0, std_ = 0, stride = 0;
+    int32_t w = 0, h = 0, color = 0, std_ = 0, stride = 0, slice_height = 0;
     AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_WIDTH,  &w);
     AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_HEIGHT, &h);
     AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_COLOR_FORMAT, &color);
     AMediaFormat_getInt32(fmt, "color-standard", &std_);
     AMediaFormat_getInt32(fmt, AMEDIAFORMAT_KEY_STRIDE, &stride);
+    // The public key constant was introduced after minSdk 24; the literal key
+    // is stable and avoids importing a newer NDK data symbol into the ELF.
+    AMediaFormat_getInt32(fmt, "slice-height", &slice_height);
 
     if (w <= 0 || h <= 0) return JALIUM_MEDIA_E_DECODE_FAILED;
 
     d->width        = static_cast<uint32_t>(w);
     d->height       = static_cast<uint32_t>(h);
     d->stride_bytes = jalium_media_compute_stride(d->width);
+    d->source_stride = static_cast<uint32_t>(stride > 0 ? stride : w);
+    d->source_slice_height = static_cast<uint32_t>(slice_height > 0 ? slice_height : h);
     d->color_format = (color != 0) ? color : COLOR_FormatYUV420Flexible;
     d->color_standard = std_;
 
@@ -202,6 +208,75 @@ jalium_media_status_t ConvertAImageToBgra(jalium_video_decoder_t* d, AImage* img
                    matrix, d->format);
     }
     return JALIUM_MEDIA_OK;
+}
+
+// NDK MediaCodec has never exposed AMediaCodec_getOutputImage. In ByteBuffer
+// mode we can safely consume only layouts whose plane arrangement is defined
+// by the reported codec color format. Flexible/vendor-private layouts are
+// rejected explicitly instead of guessing and risking an out-of-bounds read.
+jalium_media_status_t ConvertOutputBufferToBgra(
+    jalium_video_decoder_t* d,
+    const uint8_t*          data,
+    size_t                  size)
+{
+    if (!d || !data || d->width == 0 || d->height == 0) {
+        return JALIUM_MEDIA_E_INVALID_ARG;
+    }
+
+    const uint32_t y_stride = d->source_stride > 0 ? d->source_stride : d->width;
+    const uint32_t slice_height = d->source_slice_height > 0
+        ? d->source_slice_height
+        : d->height;
+    if (y_stride < d->width || slice_height < d->height) {
+        return JALIUM_MEDIA_E_DECODE_FAILED;
+    }
+
+    const size_t output_size = static_cast<size_t>(d->stride_bytes) * d->height;
+    if (d->frame_buffer_size < output_size) {
+        if (d->frame_buffer) jalium_media_aligned_free(d->frame_buffer);
+        d->frame_buffer = static_cast<uint8_t*>(jalium_media_aligned_alloc(output_size));
+        if (!d->frame_buffer) {
+            d->frame_buffer_size = 0;
+            return JALIUM_MEDIA_E_OUT_OF_MEMORY;
+        }
+        d->frame_buffer_size = output_size;
+    }
+
+    const size_t y_size = static_cast<size_t>(y_stride) * slice_height;
+    const uint32_t chroma_rows = (slice_height + 1u) / 2u;
+    auto matrix = DeriveColorMatrix(d->color_standard, d->height);
+
+    if (IsNV12Format(d->color_format)) {
+        const size_t required = y_size + static_cast<size_t>(y_stride) * chroma_rows;
+        if (size < required) return JALIUM_MEDIA_E_DECODE_FAILED;
+
+        NV12ToBgra(data, y_stride,
+                   data + y_size, y_stride,
+                   d->frame_buffer, d->stride_bytes,
+                   d->width, d->height,
+                   matrix, d->format);
+        return JALIUM_MEDIA_OK;
+    }
+
+    if (IsI420Format(d->color_format)) {
+        const uint32_t chroma_stride = (y_stride + 1u) / 2u;
+        const size_t chroma_size = static_cast<size_t>(chroma_stride) * chroma_rows;
+        const size_t required = y_size + chroma_size * 2u;
+        if (size < required) return JALIUM_MEDIA_E_DECODE_FAILED;
+
+        const uint8_t* u_plane = data + y_size;
+        const uint8_t* v_plane = u_plane + chroma_size;
+        I420ToBgra(data, y_stride,
+                   u_plane, chroma_stride,
+                   v_plane, chroma_stride,
+                   d->frame_buffer, d->stride_bytes,
+                   d->width, d->height,
+                   matrix, d->format);
+        return JALIUM_MEDIA_OK;
+    }
+
+    ANDLOGW("Unsupported MediaCodec ByteBuffer color format 0x%x", d->color_format);
+    return JALIUM_MEDIA_E_UNSUPPORTED_FORMAT;
 }
 
 } // anonymous
@@ -309,6 +384,8 @@ jalium_media_status_t VideoDecoderOpenFile(
     d->width  = static_cast<uint32_t>(w > 0 ? w : 0);
     d->height = static_cast<uint32_t>(h > 0 ? h : 0);
     d->stride_bytes = jalium_media_compute_stride(d->width);
+    d->source_stride = d->width;
+    d->source_slice_height = d->height;
     d->fps = static_cast<double>(fps_n);
 
     int64_t durUs = 0;
@@ -383,45 +460,27 @@ jalium_media_status_t VideoDecoderReadFrame(
                 return JALIUM_MEDIA_E_END_OF_STREAM;
             }
 
-            // Pull the AImage for this output buffer (planar YUV access).
-            AImage* img = nullptr;
-            if (AMediaCodec_getOutputImage(d->codec, static_cast<size_t>(outIdx), &img) != AMEDIA_OK || !img) {
-                AMediaCodec_releaseOutputBuffer(d->codec, static_cast<size_t>(outIdx), false);
-                continue;
+            size_t output_capacity = 0;
+            uint8_t* output_buffer = AMediaCodec_getOutputBuffer(
+                d->codec, static_cast<size_t>(outIdx), &output_capacity);
+            jalium_media_status_t status = JALIUM_MEDIA_E_PLATFORM;
+            bool valid_range = output_buffer && info.offset >= 0 && info.size >= 0;
+            // Android documents AMediaCodec_getOutputBuffer's out_size as
+            // invalid through API 35. BufferInfo.offset/size is authoritative
+            // on those releases; only API 36+ may use out_size as an
+            // additional capacity check.
+            if (valid_range && GetApiLevel() >= 36) {
+                const size_t offset = static_cast<size_t>(info.offset);
+                const size_t length = static_cast<size_t>(info.size);
+                valid_range = offset <= output_capacity &&
+                              length <= output_capacity - offset;
             }
-
-            int32_t imgWidth = 0, imgHeight = 0;
-            AImage_getWidth(img, &imgWidth);
-            AImage_getHeight(img, &imgHeight);
-            if (imgWidth > 0 && imgHeight > 0 &&
-                (static_cast<uint32_t>(imgWidth) != d->width || static_cast<uint32_t>(imgHeight) != d->height)) {
-                d->width = static_cast<uint32_t>(imgWidth);
-                d->height = static_cast<uint32_t>(imgHeight);
-                d->stride_bytes = jalium_media_compute_stride(d->width);
-                const size_t needed = static_cast<size_t>(d->stride_bytes) * d->height;
-                if (d->frame_buffer_size < needed) {
-                    if (d->frame_buffer) jalium_media_aligned_free(d->frame_buffer);
-                    d->frame_buffer = static_cast<uint8_t*>(jalium_media_aligned_alloc(needed));
-                    if (!d->frame_buffer) {
-                        AImage_delete(img);
-                        AMediaCodec_releaseOutputBuffer(d->codec, static_cast<size_t>(outIdx), false);
-                        return JALIUM_MEDIA_E_OUT_OF_MEMORY;
-                    }
-                    d->frame_buffer_size = needed;
-                }
-            } else if (!d->frame_buffer) {
-                const size_t needed = static_cast<size_t>(d->stride_bytes) * d->height;
-                d->frame_buffer = static_cast<uint8_t*>(jalium_media_aligned_alloc(needed));
-                if (!d->frame_buffer) {
-                    AImage_delete(img);
-                    AMediaCodec_releaseOutputBuffer(d->codec, static_cast<size_t>(outIdx), false);
-                    return JALIUM_MEDIA_E_OUT_OF_MEMORY;
-                }
-                d->frame_buffer_size = needed;
+            if (valid_range) {
+                status = ConvertOutputBufferToBgra(
+                    d,
+                    output_buffer + static_cast<size_t>(info.offset),
+                    static_cast<size_t>(info.size));
             }
-
-            auto status = ConvertAImageToBgra(d, img);
-            AImage_delete(img);
             AMediaCodec_releaseOutputBuffer(d->codec, static_cast<size_t>(outIdx), false);
 
             if (status != JALIUM_MEDIA_OK) return status;

@@ -431,7 +431,9 @@ public class ToolBar : HeaderedItemsControl
 
         var ordered = _containerOrder.Count > 0
             ? _containerOrder.ToArray()
-            : mainPanel.Children.Concat(_overflowPanel.Children).ToArray();
+            : mainPanel.Children.Cast<UIElement>()
+                .Concat(_overflowPanel.Children.Cast<UIElement>())
+                .ToArray();
         mainPanel.Children.Clear();
         _overflowPanel.Children.Clear();
         foreach (var child in ordered)

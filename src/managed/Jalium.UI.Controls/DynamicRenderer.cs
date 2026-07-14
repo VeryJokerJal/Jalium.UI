@@ -2,6 +2,7 @@ using Jalium.UI.Controls;
 using Jalium.UI.Ink;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 using InkStylusPoint = Jalium.UI.Input.StylusPoint;
 using InkStylusPointCollection = Jalium.UI.Input.StylusPointCollection;
 
@@ -44,9 +45,8 @@ public class DynamicRenderer : StylusPlugIn
     public Visual RootVisual => _previewVisual;
 
     /// <summary>Gets the dispatcher that owns the renderer's visual state.</summary>
-    protected Jalium.UI.Threading.Dispatcher GetDispatcher() =>
-        Jalium.UI.Threading.Dispatcher.FromLegacy(
-            Element?.Dispatcher ?? Jalium.UI.Dispatcher.GetForCurrentThread());
+    protected Dispatcher GetDispatcher() =>
+        Element?.Dispatcher ?? Dispatcher.CurrentDispatcher;
 
     /// <summary>Draws a generated ink geometry into the supplied drawing context.</summary>
     protected virtual void OnDraw(

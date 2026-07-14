@@ -21,11 +21,18 @@ set(SOURCES
     src/and_media_exports.cpp
 )
 
-add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE} ${HEADERS} ${SOURCES})
+# Keep the public P/Invoke surface identical across platforms: the shared audio
+# implementation is compiled into libjalium.native.media.so, not media.core.
+add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE}
+    ${HEADERS}
+    ${SOURCES}
+    ${JALIUM_AUDIO_SOURCES}
+)
 
 target_include_directories(${PROJECT_NAME}
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${JALIUM_AUDIO_PRIVATE_INCLUDES}
 )
 
 target_link_libraries(${PROJECT_NAME}
@@ -37,6 +44,8 @@ target_link_libraries(${PROJECT_NAME}
         camera2ndk
         android
         log
+        ${CMAKE_DL_LIBS}
+        m
 )
 
 target_compile_definitions(${PROJECT_NAME}

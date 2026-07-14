@@ -15,7 +15,7 @@ public sealed class ComponentModelFinalGapTests
         int changed = 0;
         int changing = 0;
         EventHandler<EventArgs> changedHandler = (_, _) => changed++;
-        EventHandler<Jalium.UI.Data.CurrentChangingEventArgs> changingHandler = (_, _) => changing++;
+        EventHandler<System.ComponentModel.CurrentChangingEventArgs> changingHandler = (_, _) => changing++;
 
         CurrentChangedEventManager.AddListener(canonical, listener);
         CurrentChangedEventManager.AddHandler(canonical, changedHandler);

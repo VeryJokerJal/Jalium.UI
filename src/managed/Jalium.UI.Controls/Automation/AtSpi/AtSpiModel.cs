@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Jalium.UI.Automation;
+using RawProvider = Jalium.UI.Automation.Provider;
 
 namespace Jalium.UI.Controls.Automation.AtSpi;
 
@@ -71,6 +72,88 @@ internal enum AtSpiState : int
     SelectableText = 38,
     Checkable = 41,
     ReadOnly = 43,
+}
+
+internal enum AtSpiLegacyTextPosition
+{
+    At,
+    Before,
+    After,
+}
+
+internal readonly record struct AtSpiTextChange(
+    int Offset,
+    string DeletedText,
+    int DeletedCount,
+    string InsertedText,
+    int InsertedCount);
+
+/// <summary>
+/// Maps AT-SPI Unicode-scalar offsets to the UTF-16 offsets used by Jalium's
+/// managed text providers. Invalid, unpaired surrogate code units are kept as
+/// one addressable character so malformed application text remains navigable.
+/// </summary>
+internal sealed class AtSpiTextMap
+{
+    private readonly int[] _utf16Offsets;
+
+    internal AtSpiTextMap(string? text)
+    {
+        Text = text ?? string.Empty;
+        var offsets = new List<int>(Text.Length + 1) { 0 };
+        int utf16Offset = 0;
+        while (utf16Offset < Text.Length)
+        {
+            utf16Offset += char.IsHighSurrogate(Text[utf16Offset]) &&
+                           utf16Offset + 1 < Text.Length &&
+                           char.IsLowSurrogate(Text[utf16Offset + 1])
+                ? 2
+                : 1;
+            offsets.Add(utf16Offset);
+        }
+
+        _utf16Offsets = offsets.ToArray();
+    }
+
+    internal string Text { get; }
+    internal int CharacterCount => _utf16Offsets.Length - 1;
+
+    internal int ToUtf16Offset(int scalarOffset) =>
+        _utf16Offsets[Math.Clamp(scalarOffset, 0, CharacterCount)];
+
+    internal int ToScalarOffset(int utf16Offset, bool roundUp = false)
+    {
+        utf16Offset = Math.Clamp(utf16Offset, 0, Text.Length);
+        int index = Array.BinarySearch(_utf16Offsets, utf16Offset);
+        if (index >= 0)
+            return index;
+
+        int insertionIndex = ~index;
+        return roundUp ? insertionIndex : insertionIndex - 1;
+    }
+
+    internal int GetCodePoint(int scalarOffset)
+    {
+        if (scalarOffset < 0 || scalarOffset >= CharacterCount)
+            return -1;
+
+        int utf16Offset = _utf16Offsets[scalarOffset];
+        char first = Text[utf16Offset];
+        return char.IsHighSurrogate(first) &&
+               utf16Offset + 1 < Text.Length &&
+               char.IsLowSurrogate(Text[utf16Offset + 1])
+            ? char.ConvertToUtf32(first, Text[utf16Offset + 1])
+            : first;
+    }
+
+    internal string Slice(int start, int end)
+    {
+        start = Math.Clamp(start, 0, CharacterCount);
+        end = end < 0 ? CharacterCount : Math.Clamp(end, start, CharacterCount);
+        int utf16Start = ToUtf16Offset(start);
+        int utf16End = ToUtf16Offset(end);
+        return Text[utf16Start..utf16End];
+    }
 }
 
 internal static class AtSpiModel
@@ -181,22 +264,23 @@ internal static class AtSpiModel
         if (!peer.IsOffscreen())
             states |= State(AtSpiState.Visible) | State(AtSpiState.Showing);
 
-        if (peer.GetPattern(PatternInterface.Value) is IValueProvider value)
+        if (peer.GetPattern(PatternInterface.Value) is RawProvider.IValueProvider value)
             states |= value.IsReadOnly ? State(AtSpiState.ReadOnly) : State(AtSpiState.Editable);
 
-        if (peer.GetPattern(PatternInterface.Text) is ITextProvider text)
+        if (peer.GetPattern(PatternInterface.Text) is RawProvider.ITextProvider text)
         {
+            string content = text.DocumentRange.GetText(-1);
             states |= State(AtSpiState.SelectableText);
-            states |= text.Text.Contains('\n', StringComparison.Ordinal)
+            states |= content.Contains('\n', StringComparison.Ordinal)
                 ? State(AtSpiState.MultiLine)
                 : State(AtSpiState.SingleLine);
-            if (text.IsReadOnly)
+            if (text.DocumentRange.GetAttributeValue(40015) is true)
                 states |= State(AtSpiState.ReadOnly);
             else
                 states |= State(AtSpiState.Editable);
         }
 
-        if (peer.GetPattern(PatternInterface.ExpandCollapse) is IExpandCollapseProvider expand)
+        if (peer.GetPattern(PatternInterface.ExpandCollapse) is RawProvider.IExpandCollapseProvider expand)
         {
             states |= State(AtSpiState.Expandable);
             states |= expand.ExpandCollapseState switch
@@ -207,7 +291,7 @@ internal static class AtSpiModel
             };
         }
 
-        if (peer.GetPattern(PatternInterface.Toggle) is IToggleProvider toggle)
+        if (peer.GetPattern(PatternInterface.Toggle) is RawProvider.IToggleProvider toggle)
         {
             states |= State(AtSpiState.Checkable);
             if (toggle.ToggleState == ToggleState.On)
@@ -216,7 +300,7 @@ internal static class AtSpiModel
                 states |= State(AtSpiState.Indeterminate);
         }
 
-        if (peer.GetPattern(PatternInterface.SelectionItem) is ISelectionItemProvider selection)
+        if (peer.GetPattern(PatternInterface.SelectionItem) is RawProvider.ISelectionItemProvider selection)
         {
             states |= State(AtSpiState.Selectable);
             if (selection.IsSelected)
@@ -240,9 +324,9 @@ internal static class AtSpiModel
 
     internal static string GetText(AutomationPeer peer)
     {
-        if (peer.GetPattern(PatternInterface.Text) is ITextProvider text)
-            return text.Text ?? string.Empty;
-        if (peer.GetPattern(PatternInterface.Value) is IValueProvider value)
+        if (peer.GetPattern(PatternInterface.Text) is RawProvider.ITextProvider text)
+            return text.DocumentRange.GetText(-1);
+        if (peer.GetPattern(PatternInterface.Value) is RawProvider.IValueProvider value)
             return value.Value ?? string.Empty;
         return peer.GetAutomationControlType() == AutomationControlType.Text
             ? peer.GetName()
@@ -254,50 +338,319 @@ internal static class AtSpiModel
         int offset,
         uint granularity)
     {
-        value ??= string.Empty;
-        if (value.Length == 0)
+        var map = new AtSpiTextMap(value);
+        if (offset < 0 || offset >= map.CharacterCount)
             return (string.Empty, 0, 0);
 
-        offset = Math.Clamp(offset, 0, value.Length - 1);
-        int start;
-        int end;
-        switch (granularity)
+        if (granularity == 0)
+            return (map.Slice(offset, offset + 1), offset, offset + 1);
+
+        IReadOnlyList<int> boundaries = granularity switch
         {
-            case 0: // character
-                start = offset;
-                if (char.IsLowSurrogate(value[start]) && start > 0 && char.IsHighSurrogate(value[start - 1]))
-                    start--;
-                end = start + 1;
-                if (char.IsHighSurrogate(value[start]) && end < value.Length && char.IsLowSurrogate(value[end]))
-                    end++;
-                break;
-            case 1: // word
-                start = offset;
-                while (start > 0 && !char.IsWhiteSpace(value[start - 1])) start--;
-                end = offset;
-                while (end < value.Length && !char.IsWhiteSpace(value[end])) end++;
-                break;
-            case 4: // line
-                start = value.LastIndexOf('\n', offset);
-                start = start < 0 ? 0 : start + 1;
-                end = value.IndexOf('\n', offset);
-                if (end < 0) end = value.Length;
-                break;
-            default: // sentence/paragraph and unknown granularities
-                start = 0;
-                end = value.Length;
-                break;
+            1 => GetWordStarts(map),
+            2 => GetSentenceStarts(map),
+            3 => GetLineStarts(map),
+            4 => GetParagraphStarts(map),
+            _ => [],
+        };
+
+        return GetRangeAtOffset(map, boundaries, offset);
+    }
+
+    internal static (string Text, int Start, int End) GetLegacyTextAtOffset(
+        string? value,
+        int offset,
+        uint boundaryType,
+        AtSpiLegacyTextPosition position)
+    {
+        var map = new AtSpiTextMap(value);
+        if (map.CharacterCount == 0 || boundaryType > 6)
+            return (string.Empty, 0, 0);
+
+        IReadOnlyList<(int Start, int End)> ranges = boundaryType switch
+        {
+            0 => Enumerable.Range(0, map.CharacterCount)
+                .Select(static index => (index, index + 1)).ToArray(),
+            1 => MakeRanges(GetWordStarts(map)),
+            2 => MakeRanges(GetWordEnds(map)),
+            3 => MakeRanges(GetSentenceStarts(map)),
+            4 => MakeRanges(GetSentenceEnds(map)),
+            5 => MakeRanges(GetLineStarts(map)),
+            6 => MakeRanges(GetLineEnds(map)),
+            _ => [],
+        };
+
+        (int Start, int End)? selected = position switch
+        {
+            AtSpiLegacyTextPosition.At when offset >= 0 && offset < map.CharacterCount =>
+                ranges.FirstOrDefault(range => range.Start <= offset && offset < range.End),
+            AtSpiLegacyTextPosition.Before => ranges.LastOrDefault(
+                range => range.End <= Math.Clamp(offset, 0, map.CharacterCount)),
+            AtSpiLegacyTextPosition.After => ranges.FirstOrDefault(
+                range => range.Start >= Math.Clamp(offset, 0, map.CharacterCount)),
+            _ => null,
+        };
+
+        // ValueTuple's default value is also a valid-looking (0, 0), but all
+        // real ranges are non-empty, so use it as the no-result sentinel.
+        if (selected is not { } range || range.End <= range.Start)
+            return (string.Empty, 0, 0);
+
+        return (map.Slice(range.Start, range.End), range.Start, range.End);
+    }
+
+    internal static AtSpiTextChange GetTextChange(string? oldValue, string? newValue)
+    {
+        var oldMap = new AtSpiTextMap(oldValue);
+        var newMap = new AtSpiTextMap(newValue);
+        int commonPrefix = 0;
+        int commonLimit = Math.Min(oldMap.CharacterCount, newMap.CharacterCount);
+        while (commonPrefix < commonLimit &&
+               oldMap.GetCodePoint(commonPrefix) == newMap.GetCodePoint(commonPrefix))
+        {
+            commonPrefix++;
         }
 
-        return (value[start..end], start, end);
+        int commonSuffix = 0;
+        while (commonSuffix < oldMap.CharacterCount - commonPrefix &&
+               commonSuffix < newMap.CharacterCount - commonPrefix &&
+               oldMap.GetCodePoint(oldMap.CharacterCount - commonSuffix - 1) ==
+               newMap.GetCodePoint(newMap.CharacterCount - commonSuffix - 1))
+        {
+            commonSuffix++;
+        }
+
+        int deletedCount = oldMap.CharacterCount - commonPrefix - commonSuffix;
+        int insertedCount = newMap.CharacterCount - commonPrefix - commonSuffix;
+        return new AtSpiTextChange(
+            commonPrefix,
+            oldMap.Slice(commonPrefix, commonPrefix + deletedCount),
+            deletedCount,
+            newMap.Slice(commonPrefix, commonPrefix + insertedCount),
+            insertedCount);
+    }
+
+    internal static int GetCharacterCount(string? value) => new AtSpiTextMap(value).CharacterCount;
+
+    internal static int ScalarToUtf16Offset(string? value, int scalarOffset) =>
+        new AtSpiTextMap(value).ToUtf16Offset(scalarOffset);
+
+    internal static int Utf16ToScalarOffset(string? value, int utf16Offset, bool roundUp = false) =>
+        new AtSpiTextMap(value).ToScalarOffset(utf16Offset, roundUp);
+
+    internal static int GetCharacterAtOffset(string? value, int scalarOffset) =>
+        new AtSpiTextMap(value).GetCodePoint(scalarOffset);
+
+    private static (string Text, int Start, int End) GetRangeAtOffset(
+        AtSpiTextMap map,
+        IReadOnlyList<int> boundaries,
+        int offset)
+    {
+        IReadOnlyList<(int Start, int End)> ranges = MakeRanges(boundaries);
+        foreach (var range in ranges)
+        {
+            if (range.Start <= offset && offset < range.End)
+                return (map.Slice(range.Start, range.End), range.Start, range.End);
+        }
+
+        return (string.Empty, 0, 0);
+    }
+
+    private static IReadOnlyList<(int Start, int End)> MakeRanges(IReadOnlyList<int> boundaries)
+    {
+        var ranges = new List<(int Start, int End)>(Math.Max(0, boundaries.Count - 1));
+        for (int index = 0; index + 1 < boundaries.Count; index++)
+        {
+            if (boundaries[index + 1] > boundaries[index])
+                ranges.Add((boundaries[index], boundaries[index + 1]));
+        }
+        return ranges;
+    }
+
+    private static IReadOnlyList<int> GetWordStarts(AtSpiTextMap map)
+    {
+        var result = NewBoundaries(map);
+        bool previousWasWord = false;
+        for (int offset = 0; offset < map.CharacterCount; offset++)
+        {
+            bool currentIsWord = IsWordCharacter(map.GetCodePoint(offset));
+            if (currentIsWord && !previousWasWord)
+                AddBoundary(result, offset);
+            previousWasWord = currentIsWord;
+        }
+        FinishBoundaries(result, map);
+        return result;
+    }
+
+    private static IReadOnlyList<int> GetWordEnds(AtSpiTextMap map)
+    {
+        var result = NewBoundaries(map);
+        bool previousWasWord = false;
+        for (int offset = 0; offset < map.CharacterCount; offset++)
+        {
+            bool currentIsWord = IsWordCharacter(map.GetCodePoint(offset));
+            if (previousWasWord && !currentIsWord)
+                AddBoundary(result, offset);
+            previousWasWord = currentIsWord;
+        }
+        if (previousWasWord)
+            AddBoundary(result, map.CharacterCount);
+        FinishBoundaries(result, map);
+        return result;
+    }
+
+    private static IReadOnlyList<int> GetSentenceStarts(AtSpiTextMap map)
+    {
+        var result = NewBoundaries(map);
+        for (int offset = 0; offset < map.CharacterCount; offset++)
+        {
+            if (!IsSentenceTerminator(map.GetCodePoint(offset)))
+                continue;
+
+            int next = offset + 1;
+            while (next < map.CharacterCount && IsSentenceTerminator(map.GetCodePoint(next)))
+                next++;
+            while (next < map.CharacterCount && IsWhiteSpace(map.GetCodePoint(next)))
+                next++;
+            AddBoundary(result, next);
+            offset = next - 1;
+        }
+        FinishBoundaries(result, map);
+        return result;
+    }
+
+    private static IReadOnlyList<int> GetSentenceEnds(AtSpiTextMap map)
+    {
+        var result = NewBoundaries(map);
+        for (int offset = 0; offset < map.CharacterCount; offset++)
+        {
+            if (!IsSentenceTerminator(map.GetCodePoint(offset)))
+                continue;
+
+            int next = offset + 1;
+            while (next < map.CharacterCount && IsSentenceTerminator(map.GetCodePoint(next)))
+                next++;
+            AddBoundary(result, next);
+            offset = next - 1;
+        }
+        FinishBoundaries(result, map);
+        return result;
+    }
+
+    private static IReadOnlyList<int> GetLineStarts(AtSpiTextMap map)
+    {
+        var result = NewBoundaries(map);
+        for (int offset = 0; offset < map.CharacterCount; offset++)
+        {
+            int next = ConsumeLineBreak(map, offset);
+            if (next == offset)
+                continue;
+            AddBoundary(result, next);
+            offset = next - 1;
+        }
+        FinishBoundaries(result, map);
+        return result;
+    }
+
+    private static IReadOnlyList<int> GetLineEnds(AtSpiTextMap map)
+    {
+        var result = NewBoundaries(map);
+        for (int offset = 0; offset < map.CharacterCount; offset++)
+        {
+            int next = ConsumeLineBreak(map, offset);
+            if (next == offset)
+                continue;
+            AddBoundary(result, offset);
+            offset = next - 1;
+        }
+        FinishBoundaries(result, map);
+        return result;
+    }
+
+    private static IReadOnlyList<int> GetParagraphStarts(AtSpiTextMap map)
+    {
+        var result = NewBoundaries(map);
+        for (int offset = 0; offset < map.CharacterCount; offset++)
+        {
+            int next = ConsumeParagraphBreak(map, offset);
+            if (next == offset)
+                continue;
+            AddBoundary(result, next);
+            offset = next - 1;
+        }
+        FinishBoundaries(result, map);
+        return result;
+    }
+
+    private static List<int> NewBoundaries(AtSpiTextMap map) =>
+        map.CharacterCount == 0 ? [] : [0];
+
+    private static void FinishBoundaries(List<int> boundaries, AtSpiTextMap map) =>
+        AddBoundary(boundaries, map.CharacterCount);
+
+    private static void AddBoundary(List<int> boundaries, int offset)
+    {
+        if (boundaries.Count == 0 || boundaries[^1] != offset)
+            boundaries.Add(offset);
+    }
+
+    private static int ConsumeLineBreak(AtSpiTextMap map, int offset)
+    {
+        if (offset < 0 || offset >= map.CharacterCount)
+            return offset;
+
+        int codePoint = map.GetCodePoint(offset);
+        if (codePoint == '\r')
+        {
+            return offset + 1 < map.CharacterCount && map.GetCodePoint(offset + 1) == '\n'
+                ? offset + 2
+                : offset + 1;
+        }
+        return codePoint is '\n' or 0x85 or 0x2028 or 0x2029 ? offset + 1 : offset;
+    }
+
+    private static int ConsumeParagraphBreak(AtSpiTextMap map, int offset)
+    {
+        if (offset < 0 || offset >= map.CharacterCount)
+            return offset;
+
+        int codePoint = map.GetCodePoint(offset);
+        if (codePoint == '\r')
+        {
+            return offset + 1 < map.CharacterCount && map.GetCodePoint(offset + 1) == '\n'
+                ? offset + 2
+                : offset + 1;
+        }
+        return codePoint is '\n' or 0x2029 ? offset + 1 : offset;
+    }
+
+    private static bool IsSentenceTerminator(int codePoint) =>
+        codePoint is '.' or '!' or '?' or 0x2026 or 0x3002 or 0xFF01 or 0xFF1F;
+
+    private static bool IsWhiteSpace(int codePoint) =>
+        Rune.TryCreate(codePoint, out Rune rune) && Rune.IsWhiteSpace(rune);
+
+    private static bool IsWordCharacter(int codePoint)
+    {
+        if (!Rune.TryCreate(codePoint, out Rune rune))
+            return false;
+        return Rune.GetUnicodeCategory(rune) is
+            UnicodeCategory.UppercaseLetter or
+            UnicodeCategory.LowercaseLetter or
+            UnicodeCategory.TitlecaseLetter or
+            UnicodeCategory.ModifierLetter or
+            UnicodeCategory.OtherLetter or
+            UnicodeCategory.NonSpacingMark or
+            UnicodeCategory.SpacingCombiningMark or
+            UnicodeCategory.DecimalDigitNumber or
+            UnicodeCategory.LetterNumber or
+            UnicodeCategory.OtherNumber or
+            UnicodeCategory.ConnectorPunctuation;
     }
 
     internal static string SliceText(string? value, int start, int end)
     {
-        value ??= string.Empty;
-        start = Math.Clamp(start, 0, value.Length);
-        end = end < 0 ? value.Length : Math.Clamp(end, start, value.Length);
-        return value[start..end];
+        return new AtSpiTextMap(value).Slice(start, end);
     }
 
     internal static string Quote(string? value)

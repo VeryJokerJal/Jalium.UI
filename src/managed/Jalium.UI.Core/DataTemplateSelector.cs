@@ -117,17 +117,6 @@ namespace Jalium.UI.Controls
 namespace Jalium.UI
 {
     /// <summary>
-    /// Compatibility name for the former Jalium namespace. New code should use
-    /// <see cref="Controls.DataTemplateSelector"/>, matching WPF.
-    /// </summary>
-    public class DataTemplateSelector : Controls.DataTemplateSelector
-    {
-        public DataTemplateSelector()
-        {
-        }
-    }
-
-    /// <summary>
     /// Represents a DataTemplate that supports a hierarchy of generated items controls.
     /// </summary>
     public class HierarchicalDataTemplate : DataTemplate
@@ -173,15 +162,4 @@ namespace Jalium.UI
         }
     }
 
-    /// <summary>
-    /// Compatibility name for the former Jalium namespace. It derives from the
-    /// WPF-compatible <see cref="Controls.ItemsPanelTemplate"/> type so existing source
-    /// values remain assignable to control properties.
-    /// </summary>
-    public sealed class ItemsPanelTemplate : Controls.ItemsPanelTemplate
-    {
-        public ItemsPanelTemplate()
-        {
-        }
-    }
 }

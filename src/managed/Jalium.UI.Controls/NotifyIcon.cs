@@ -1,5 +1,6 @@
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Controls.Platform;
 
 namespace Jalium.UI.Controls;
 
@@ -10,6 +11,8 @@ public class NotifyIcon : FrameworkElement, IDisposable
 {
     private bool _disposed;
     private bool _isVisible;
+    private LinuxStatusNotifierItem? _linuxStatusNotifier;
+    private long _lastPlatformActivation;
 
     #region Dependency Properties
 
@@ -264,7 +267,8 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// </summary>
     protected void ShowInternal()
     {
-        // Platform-specific implementation using Shell_NotifyIcon
+        if (OperatingSystem.IsLinux() && _linuxStatusNotifier == null)
+            LinuxStatusNotifierItem.TryCreate(this, out _linuxStatusNotifier);
     }
 
     /// <summary>
@@ -272,7 +276,8 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// </summary>
     protected void HideInternal()
     {
-        // Platform-specific implementation
+        _linuxStatusNotifier?.Dispose();
+        _linuxStatusNotifier = null;
     }
 
     /// <summary>
@@ -280,7 +285,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// </summary>
     protected void UpdateIconInternal(ImageSource? icon)
     {
-        // Platform-specific implementation
+        _linuxStatusNotifier?.UpdateIcon(icon);
     }
 
     /// <summary>
@@ -288,7 +293,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// </summary>
     protected void UpdateTooltipInternal(string text)
     {
-        // Platform-specific implementation
+        _linuxStatusNotifier?.UpdateTitle(text);
     }
 
     /// <summary>
@@ -296,7 +301,64 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// </summary>
     protected void ShowBalloonTipInternal(int timeout, string title, string text, BalloonTipIcon icon)
     {
-        // Platform-specific implementation
+        _linuxStatusNotifier?.ShowBalloon(timeout, title, text, icon);
+    }
+
+    internal void RaiseActivationFromPlatform()
+    {
+        DispatchPlatformCallback(() =>
+        {
+            long now = Environment.TickCount64;
+            OnClick();
+            if (_lastPlatformActivation != 0 &&
+                now - _lastPlatformActivation <= SystemParameters.DoubleClickTime)
+            {
+                OnDoubleClick();
+                _lastPlatformActivation = 0;
+            }
+            else
+            {
+                _lastPlatformActivation = now;
+            }
+        });
+    }
+
+    internal void OpenContextMenuFromPlatform(int x, int y)
+    {
+        DispatchPlatformCallback(() => ContextMenu?.Open(new Point(x, y)));
+    }
+
+    internal void RaiseScrollFromPlatform(int delta)
+    {
+        DispatchPlatformCallback(() =>
+        {
+            var eventArgs = new MouseWheelEventArgs(
+                UIElement.MouseWheelEvent,
+                default,
+                delta,
+                MouseButtonState.Released,
+                MouseButtonState.Released,
+                MouseButtonState.Released,
+                MouseButtonState.Released,
+                MouseButtonState.Released,
+                ModifierKeys.None,
+                unchecked((int)Environment.TickCount64));
+            RaiseEvent(eventArgs);
+        });
+    }
+
+    internal void RaiseBalloonClickedFromPlatform() =>
+        DispatchPlatformCallback(OnBalloonTipClicked);
+
+    internal void RaiseBalloonClosedFromPlatform() =>
+        DispatchPlatformCallback(OnBalloonTipClosed);
+
+    private void DispatchPlatformCallback(Action callback)
+    {
+        if (Dispatcher.CheckAccess())
+            callback();
+        else
+            Dispatcher.BeginInvoke(callback);
     }
 
     #endregion

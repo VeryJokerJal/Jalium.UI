@@ -15,6 +15,7 @@
 namespace jalium {
 
 class VulkanBackend;
+class VulkanImportedVideoSurface;
 
 class VulkanRenderTarget : public RenderTarget {
 public:
@@ -78,6 +79,7 @@ public:
     void SetDpi(float dpiX, float dpiY) override;
     void AddDirtyRect(float x, float y, float w, float h) override;
     void SetFullInvalidation() override;
+    bool SupportsPartialPresentation() const override;
     void DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity) override;
     void DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity, int scalingMode) override;
     void DrawVideoSurface(VideoSurface* surface, float x, float y, float w, float h,
@@ -263,6 +265,12 @@ private:
         // unbounded) — mirrors D3D12's PushRoundedClipExclude, which pushes no
         // scissor either.
         bool exclude = false;
+        // PushClipAliased entry — managed uses it exclusively for the window
+        // dirty-region clip. Effect captures skip aliased entries while
+        // recording (see effectCaptureClipSuspendDepth_) so the isolated
+        // offscreen content is never truncated by the damage rect; real
+        // ancestor clips still apply.
+        bool aliased = false;
         float x = 0.0f;
         float y = 0.0f;
         float w = 0.0f;
@@ -314,6 +322,13 @@ private:
         // (Vulkan collapses D3D12's linear-vs-aniso split into that single
         // high-quality sampler, so HighQuality semantics are unchanged).
         bool useNearestSampler = false;
+        // Linux self-hosted ClearType staging. Pixels carry B/G/R channel
+        // coverage (A=max coverage), not ordinary image colour.
+        bool lcdCoverage = false;
+        float lcdTextR = 0.0f;
+        float lcdTextG = 0.0f;
+        float lcdTextB = 0.0f;
+        float lcdTextA = 1.0f;
     };
 
     struct GpuFilledPolygonCommand {
@@ -539,6 +554,15 @@ private:
         float    opacity  = 1.0f;
     };
 
+    struct GpuExternalVideoCommand {
+        void* surface = nullptr; // VulkanImportedVideoSurface* (non-owning)
+        float x = 0.0f;
+        float y = 0.0f;
+        float w = 0.0f;
+        float h = 0.0f;
+        float opacity = 1.0f;
+    };
+
     // A shaped text run rendered through the dedicated text-glyph pipeline.
     // Holds the per-glyph instances as raw floats — 12 per glyph, matching the
     // 48-byte VkGlyphInstance layout (posX,posY, sizeX,sizeY, uvMinX,uvMinY,
@@ -577,6 +601,7 @@ private:
         Transition,
         VcTriangles,    // per-vertex-coloured triangle list (DrawLine 3-strip AA, etc.)
         InkLayer,       // composite a resident ink-layer image (InkCanvas)
+        ExternalVideo,  // sample an imported Linux RGB dma-buf directly
         CustomShader,   // runtime-compiled custom pixel-shader effect
         TextRun,        // shaped text run via the dedicated text-glyph pipeline (Windows DirectWrite)
         OffscreenBegin, // env JALIUM_VK_EFFECT_GPU_RT: open the offscreen effect RT; subsequent replay
@@ -719,6 +744,7 @@ private:
         GpuTransitionCommand transition {};
         GpuVcTrianglesCommand vcTriangles {};
         GpuInkLayerCommand inkLayer {};
+        GpuExternalVideoCommand externalVideo {};
         GpuCustomShaderCommand customShader {};
         GpuTextRunCommand textRun {};
         GpuEngineBatchSpanCommand engineBatchSpan {};
@@ -753,6 +779,10 @@ private:
     void ClearCpuCanvas(uint8_t b, uint8_t g, uint8_t r, uint8_t a);
     void FillSolidRect(int left, int top, int right, int bottom, uint8_t b, uint8_t g, uint8_t r, uint8_t a);
     void BlendPixel(int x, int y, uint8_t b, uint8_t g, uint8_t r, uint8_t a);
+    void BlendPixelSubpixel(int x, int y,
+                           uint8_t textB, uint8_t textG, uint8_t textR,
+                           uint8_t coverageB, uint8_t coverageG,
+                           uint8_t coverageR, uint8_t coverageA);
     bool TryGetSolidBrushColor(Brush* brush, uint8_t& b, uint8_t& g, uint8_t& r, uint8_t& a) const;
     // Like TryGetSolidBrushColor but also accepts linear/radial gradient
     // brushes, collapsing them to their average stop color. The approximation
@@ -774,6 +804,7 @@ private:
                           std::vector<EngineBrushData::GradientStop>& stopStore) const;
     std::vector<uint8_t> BlurPixels(const std::vector<uint8_t>& source, int sourceWidth, int sourceHeight, int radius, float x, float y, float w, float h) const;
     void BlendBuffer(const std::vector<uint8_t>& source, int sourceWidth, int sourceHeight, float x, float y, float w, float h, float opacity);
+    void BlendLcdCoverageBuffer(const GpuBitmapCommand& bitmap);
     void PushTemporaryClip(float x, float y, float w, float h, float rx = 0.0f, float ry = 0.0f);
     void PopTemporaryClip();
     void ParseTintColor(const char* tint, float fallbackR, float fallbackG, float fallbackB, uint8_t& outB, uint8_t& outG, uint8_t& outR) const;
@@ -836,7 +867,7 @@ private:
     // scalingMode: JaliumBitmapScalingMode value (3 = NearestNeighbor selects
     // the point sampler at replay; every other mode keeps the shared
     // linear/anisotropic frameSampler — matches the D3D12 sampler mapping).
-    bool TryRecordGpuPixelBufferCommandShared(std::shared_ptr<const std::vector<uint8_t>> pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity, int scalingMode = 0, bool opacityAlreadyBaked = false);
+    bool TryRecordGpuPixelBufferCommandShared(std::shared_ptr<const std::vector<uint8_t>> pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity, int scalingMode = 0, bool opacityAlreadyBaked = false, bool lcdCoverage = false, float lcdTextR = 0.0f, float lcdTextG = 0.0f, float lcdTextB = 0.0f, float lcdTextA = 1.0f);
     bool TryRecordGpuBlurCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float radius, float opacity, bool alphaOnlyTint = false, float tintR = 0.0f, float tintG = 0.0f, float tintB = 0.0f, float tintA = 1.0f);
     // GPU compositor path for element BlurEffect: records a Blur command that
     // sources its pixels from the LIVE composited frame (the element's own screen
@@ -931,18 +962,35 @@ private:
     bool TryRecordGpuLineAACommand(float x1, float y1, float x2, float y2, float strokeWidth, Brush* brush);
     bool TryRecordGpuPolylineCommand(const std::vector<float>& points, bool closed, float strokeWidth, Brush* brush);
     bool TryRecordGpuRectangleStrokeCommand(float x, float y, float w, float h, float strokeWidth, Brush* brush);
-    bool TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, float y, float w, float h, float opacity, int scalingMode, bool opacityAlreadyBaked = false);
+    bool TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, float y, float w, float h,
+                                   float opacity, int scalingMode,
+                                   bool opacityAlreadyBaked = false,
+                                   bool lcdCoverage = false,
+                                   float lcdTextR = 0.0f,
+                                   float lcdTextG = 0.0f,
+                                   float lcdTextB = 0.0f,
+                                   float lcdTextA = 1.0f);
     // Shared implementation behind both public DrawBitmap overrides. When
     // opacityAlreadyBaked is true the bitmap's alpha already carries the
     // opacity stack, so the GPU recorder must NOT re-apply GetCurrentOpacity()
     // (the CPU blit path likewise stays correct because the baked alpha is
     // intrinsic to the pixels). RenderText's FreeType path is the one caller
     // that passes true; image draws pass false and keep opacity*GetCurrentOpacity().
-    void DrawBitmapInternal(Bitmap* bitmap, float x, float y, float w, float h, float opacity, int scalingMode, bool opacityAlreadyBaked);
+    void DrawBitmapInternal(Bitmap* bitmap, float x, float y, float w, float h,
+                            float opacity, int scalingMode,
+                            bool opacityAlreadyBaked,
+                            bool lcdCoverage = false,
+                            float lcdTextR = 0.0f,
+                            float lcdTextG = 0.0f,
+                            float lcdTextB = 0.0f,
+                            float lcdTextA = 1.0f);
     // Records an InkLayer replay command sampling a resident VulkanInkLayerBitmap
     // image. Returns false (caller falls back to CPU readback-and-blend) when GPU
     // replay isn't active or the layer/extent is degenerate.
     bool TryRecordGpuInkLayerCommand(void* inkLayer, float x, float y, float opacity);
+    bool TryRecordGpuExternalVideoCommand(
+        VulkanImportedVideoSurface* surface,
+        float x, float y, float w, float h, float opacity);
     // Readback cache for the foreign-but-healthy ink blit fallback: a layer
     // living on another window's VkDevice can't be GPU-sampled here, so its
     // pixels travel through host memory. Keyed by the layer's ContentVersion
@@ -1055,6 +1103,13 @@ private:
     bool gpuReplaySupported_ = false;
     bool gpuReplayHasClear_ = false;
     std::vector<GpuReplayCommand> gpuReplayCommands_;
+    // One intrusive retain per unique imported surface recorded this frame.
+    // DrawReplayFrame transfers these references to its fence slot; abandoned
+    // or CPU-fallback frames release them immediately.
+    std::vector<VulkanImportedVideoSurface*> recordedExternalVideoSurfaces_;
+    void RetainRecordedExternalVideoSurface(
+        VulkanImportedVideoSurface* surface);
+    void ReleaseRecordedExternalVideoSurfaces();
     // Number of engine batches already covered by an emitted EngineBatchSpan.
     // Monotonic within a frame (the engines' batch vectors only grow until
     // EndDraw's ClearBatches); reset to 0 in BeginDraw. Batches whose span was
@@ -1121,6 +1176,12 @@ private:
     std::vector<int> effectContentStartStack_;
     int pendingGlowStart_ = -1;
     int pendingGlowEnd_ = -1;
+    // Depth of open GPU-RT effect capture regions. While > 0, replay-clip
+    // population skips ALIASED clip entries (the managed dirty-region scissor)
+    // so the capture always holds the COMPLETE element silhouette — a partial
+    // frame's damage rect must only bound the effect's OUTPUT, not its input
+    // (D3D12 parity: BeginOffscreenCapture saves & clears the scissor stack).
+    int effectCaptureClipSuspendDepth_ = 0;
     // env JALIUM_VK_EFFECT_GPU_RT: index of the OffscreenEnd marker recorded by
     // the outermost EndEffectCapture. The effect Draw* that follows (the managed
     // call order guarantees nothing records in between) uses it to retroactively

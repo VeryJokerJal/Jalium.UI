@@ -393,7 +393,7 @@ public class TextBoxTests
             .GetField("_textBoxContentHost", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(textBox, host);
         textBox.ArrangeTextContent(new Size(viewport.Width, wrappedContentSize.Height));
-        textBox.VerticalOffset = 100;
+        textBox.ScrollToVerticalOffset(100);
 
         // Act
         textBox.RaiseEvent(CreateMouseWheel(new Point(10, 10), -120));

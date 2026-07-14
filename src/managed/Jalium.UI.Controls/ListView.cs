@@ -408,7 +408,7 @@ public abstract class ViewBase : DependencyObject
 /// <summary>
 /// Represents a view mode that displays data items in columns for a ListView control.
 /// </summary>
-[ContentProperty(nameof(Columns))]
+[Jalium.UI.Markup.ContentProperty(nameof(Columns))]
 [StyleTypedProperty(Property = nameof(ColumnHeaderContainerStyle), StyleTargetType = typeof(GridViewColumnHeader))]
 public class GridView : ViewBase, Jalium.UI.Markup.IAddChild
 {

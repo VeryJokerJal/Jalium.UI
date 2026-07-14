@@ -1,11 +1,12 @@
 using Jalium.UI;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Input;
 
 /// <summary>
 /// Abstract class that describes an input device.
 /// </summary>
-public abstract class InputDevice
+public abstract class InputDevice : DispatcherObject
 {
     /// <summary>
     /// Gets the element that receives input from this device.

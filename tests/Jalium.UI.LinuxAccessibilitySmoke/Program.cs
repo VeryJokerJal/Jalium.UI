@@ -27,9 +27,18 @@ var action = new Button { Content = "Run accessible action" };
 AutomationProperties.SetName(action, "Smoke Action");
 AutomationProperties.SetAutomationId(action, "smoke-action");
 
-var editor = new TextBox { Text = "Editable smoke text" };
+var editor = new TextBox { Text = "A😀B\u2028line\npara" };
 AutomationProperties.SetName(editor, "Smoke Editor");
 AutomationProperties.SetAutomationId(editor, "smoke-editor");
+
+var valueSlider = new Slider
+{
+    Minimum = 0,
+    Maximum = 100,
+    Value = 25,
+};
+AutomationProperties.SetName(valueSlider, "Smoke Value");
+AutomationProperties.SetAutomationId(valueSlider, "smoke-value");
 
 var closeAction = new Button { Content = "Close smoke window" };
 AutomationProperties.SetName(closeAction, "Close Smoke Window");
@@ -38,6 +47,7 @@ AutomationProperties.SetAutomationId(closeAction, "smoke-close");
 panel.Children.Add(status);
 panel.Children.Add(action);
 panel.Children.Add(editor);
+panel.Children.Add(valueSlider);
 panel.Children.Add(closeAction);
 
 action.Click += (_, _) =>
@@ -64,15 +74,15 @@ var window = new Window
     Content = panel,
 };
 AutomationProperties.SetAutomationId(window, "atspi-smoke-window");
-closeAction.Click += (_, _) => window.Dispatcher.BeginInvoke(window.Close);
+closeAction.Click += (_, _) => window.Dispatcher.BeginInvoke((Action)window.Close);
 
-window.Shown += (_, _) => window.Dispatcher.BeginInvoke(() =>
+window.Shown += (_, _) => window.Dispatcher.BeginInvoke((Action)(() =>
 {
     Console.WriteLine(
         $"AT-SPI status={LinuxAccessibility.AtSpiStatus}; " +
         $"active={LinuxAccessibility.IsAtSpiActive}; " +
         $"error={LinuxAccessibility.AtSpiLastError ?? "none"}; pid={Environment.ProcessId}");
-});
+}));
 
 int lifetimeSeconds = int.TryParse(
     Environment.GetEnvironmentVariable("JALIUM_ATSPI_SMOKE_SECONDS"),
@@ -82,7 +92,7 @@ int lifetimeSeconds = int.TryParse(
 var closer = new Thread(() =>
 {
     Thread.Sleep(TimeSpan.FromSeconds(lifetimeSeconds));
-    window.Dispatcher.BeginInvoke(window.Close);
+    window.Dispatcher.BeginInvoke((Action)window.Close);
 })
 {
     IsBackground = true,

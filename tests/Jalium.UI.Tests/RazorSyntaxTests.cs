@@ -4,6 +4,7 @@ using System.Threading;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Markup;
+using Jalium.UI.Media;
 using Microsoft.CSharp.RuntimeBinder;
 
 namespace Jalium.UI.Tests;

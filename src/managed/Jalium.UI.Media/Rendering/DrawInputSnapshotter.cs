@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Media.Rendering;
 

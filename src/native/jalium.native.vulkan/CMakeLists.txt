@@ -118,3 +118,14 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "jalium.native.vulkan"
     DEBUG_POSTFIX ""
 )
+
+if((JALIUM_TEXT_BUILD_TESTS OR JALIUM_PLATFORM_BUILD_TESTS) AND
+   UNIX AND NOT APPLE AND NOT ANDROID)
+    add_executable(jalium.native.vulkan.lcd.tests
+        tests/vulkan_lcd_staging_tests.cpp
+    )
+    target_include_directories(jalium.native.vulkan.lcd.tests
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    add_test(NAME jalium.native.vulkan.lcd
+             COMMAND jalium.native.vulkan.lcd.tests)
+endif()

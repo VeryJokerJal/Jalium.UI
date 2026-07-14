@@ -6,3 +6,10 @@ namespace Jalium.UI.Input.Manipulations;
 public abstract class ManipulationParameters2D
 {
 }
+
+/// <summary>
+/// Base class for parameters consumed by a two-dimensional inertia processor.
+/// </summary>
+public abstract class InertiaParameters2D
+{
+}

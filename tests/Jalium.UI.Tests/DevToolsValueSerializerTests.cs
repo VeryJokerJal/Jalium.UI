@@ -1,5 +1,6 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
+using Jalium.UI.Markup;
 using CanonicalBrushValueSerializer = Jalium.UI.Media.Converters.BrushValueSerializer;
 using CanonicalGeometryValueSerializer = Jalium.UI.Media.Converters.GeometryValueSerializer;
 using CanonicalTransformValueSerializer = Jalium.UI.Media.Converters.TransformValueSerializer;
@@ -24,11 +25,11 @@ public class DevToolsValueSerializerTests
     }
 
     [Fact]
-    public void GetSerializerFor_ReturnsNull_ForUnsupportedTypes()
+    public void GetSerializerFor_UsesCanonicalTypeConverterFallback()
     {
-        Assert.Null(ValueSerializer.GetSerializerFor(typeof(int)));
-        Assert.Null(ValueSerializer.GetSerializerFor(typeof(string)));
-        Assert.Null(ValueSerializer.GetSerializerFor(null));
+        Assert.NotNull(ValueSerializer.GetSerializerFor(typeof(int)));
+        Assert.NotNull(ValueSerializer.GetSerializerFor(typeof(string)));
+        Assert.Null(ValueSerializer.GetSerializerFor((Type?)null));
     }
 
     [Fact]

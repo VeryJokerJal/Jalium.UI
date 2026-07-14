@@ -9,7 +9,8 @@ using Jalium.UI.Input;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
-using ListSortDirection = Jalium.UI.Data.ListSortDirection;
+using DataGridColumnHeader = Jalium.UI.Controls.Primitives.DataGridColumnHeader;
+using ListSortDirection = System.ComponentModel.ListSortDirection;
 
 namespace Jalium.UI.Controls;
 
@@ -670,12 +671,10 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
             var header = new DataGridColumnHeader
             {
-                Content = column.Header,
                 Width = column.ActualWidth,
-                Height = double.IsNaN(ColumnHeaderHeight) ? double.NaN : GetEffectiveColumnHeaderHeight(),
-                ColumnHost = this,
-                Column = column
+                Height = double.IsNaN(ColumnHeaderHeight) ? double.NaN : GetEffectiveColumnHeaderHeight()
             };
+            header.PrepareColumnHeader(column.Header, null, this, column);
 
             header.AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnColumnHeaderClick));
             header.UpdateSortIndicator(column.SortDirection);

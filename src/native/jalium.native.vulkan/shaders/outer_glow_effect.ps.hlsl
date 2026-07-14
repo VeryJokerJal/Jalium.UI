@@ -56,8 +56,14 @@ float4 main(PsIn i) : SV_Target
 
     float2 uvScale = float2(p1.z, p1.w);
     float2 baseUv = i.uv;                // shared VS already baked uvScale into uv
-    float2 lo = float2(0.0f, 0.0f);
-    float2 hi = uvScale;                 // never sample past the cleared capture region
+    // Half-texel inset (same fix as the Emboss PS): the upload image is SHARED
+    // and larger than this capture, so a clamp at exactly uvScale lets the
+    // LINEAR sampler blend the capture's last column/row with a neighbouring
+    // effect's stale texels — a bright 1px seam down the capture's right/bottom
+    // edge. Inset by half a texel so the outermost taps stay inside the blit.
+    float2 halfTexel = 0.5f * float2(p1.x, p1.y);
+    float2 lo = halfTexel;
+    float2 hi = max(halfTexel, uvScale - halfTexel);
 
     // True 2D RADIAL gaussian over a (2K+1)x(2K+1) grid (matches kOuterGlowPS).
     float accumA = 0.0f;

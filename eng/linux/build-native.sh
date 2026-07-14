@@ -58,6 +58,15 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd -- "$script_dir/../.." && pwd)"
 native_root="$repo_root/src/native"
 build_dir="${JALIUM_NATIVE_BUILD_DIR:-$native_root/out/build/$rid}"
+
+# Container builds run as root over a host-owned mount; git then refuses the
+# repository (dubious ownership) and the provenance stamp written by
+# cmake/JaliumNativeStamp.cmake would degrade to head=unknown, which the NuGet
+# pack guard rejects. Only the container's own global config is touched, never
+# a host user's (the bootstrap is gated on uid 0 + a failing rev-parse).
+if ! git -C "$repo_root" rev-parse HEAD >/dev/null 2>&1 && [[ "$(id -u)" == "0" ]]; then
+  git config --global --add safe.directory "$repo_root" 2>/dev/null || true
+fi
 output_root="${JALIUM_NATIVE_OUTPUT_ROOT:-$native_root/bin/native}"
 output_dir="$output_root/$rid/$configuration"
 
@@ -78,10 +87,26 @@ if [[ "${JALIUM_NATIVE_BUILD_TESTS:-0}" == "1" ]]; then
     -D JALIUM_PLATFORM_BUILD_TESTS=ON
     -D JALIUM_MEDIA_LINUX_BUILD_TESTS=ON
     -D JALIUM_SOFTWARE_BUILD_TESTS=ON
+    -D JALIUM_TEXT_BUILD_TESTS=ON
   )
 fi
 
 cmake "${cmake_args[@]}"
+
+# A release-validation build must not silently compile out the XI2 touch/pen/
+# smooth-scroll path or Xcursor drag images just because a runner omitted two
+# development packages. Ordinary developer builds keep both dependencies
+# optional, while CI/full-smoke builds fail before producing a misleading
+# completion stamp.
+if [[ "${JALIUM_NATIVE_BUILD_TESTS:-0}" == "1" ]]; then
+  for capability in XINPUT2 XCURSOR; do
+    if ! grep -qx "${capability}_FOUND:INTERNAL=1" "$build_dir/CMakeCache.txt"; then
+      echo "Full Linux validation requires ${capability}; install its development package." >&2
+      exit 1
+    fi
+  done
+fi
+
 cmake --build "$build_dir" --parallel
 
 if [[ ! -f "$output_dir/.jalium-native-complete" ]]; then

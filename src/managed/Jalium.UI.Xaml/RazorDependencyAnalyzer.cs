@@ -75,31 +75,6 @@ internal sealed record RazorCSharpDependencyAnalysis(
     IReadOnlyList<string> RootIdentifiers,
     IReadOnlyList<string> DeclaredIdentifiers);
 
-/// <summary>
-/// Roslyn-based dependency analyzer. Only referenced when <see cref="RazorScriptingFeature.IsSupported"/>
-/// is true — ILC will trim this entire class (and transitively all Roslyn types) when the feature
-/// switch is set to false.
-/// The actual implementation lives in <c>RazorRoslynScriptCompiler.cs</c> to isolate Roslyn usings.
-/// This partial declaration exposes the <see cref="GetRootIdentifier"/> helper which does NOT
-/// depend on Roslyn and is used by non-Roslyn code paths.
-/// </summary>
-internal static partial class RazorCSharpDependencyAnalyzer
-{
-    internal static string GetRootIdentifier(string path)
-    {
-        var dotIndex = path.IndexOf('.');
-        var bracketIndex = path.IndexOf('[');
-        if (dotIndex < 0)
-            return bracketIndex < 0 ? path : path[..bracketIndex];
-
-        if (bracketIndex < 0)
-            return path[..dotIndex];
-
-        var endIndex = Math.Min(dotIndex, bracketIndex);
-        return path[..endIndex];
-    }
-}
-
 public sealed class RazorScriptGlobals
 {
     public required Func<string, object?> Resolve { get; init; }

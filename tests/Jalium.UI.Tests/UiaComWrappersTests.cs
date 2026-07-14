@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using Jalium.UI.Automation;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Automation.Uia;
+using ManagedTextProvider = Jalium.UI.Automation.Provider.ITextProvider;
 
 namespace Jalium.UI.Tests;
 
@@ -323,7 +324,9 @@ public class UiaComWrappersTests
         var textBox = new TextBox { Text = "ab ab ab" };
         var peer = (Jalium.UI.Automation.Peers.TextBoxAutomationPeer)textBox.GetAutomationPeer()!;
         var provider = UiaAccessibilityBridge.GetOrCreateProvider(peer, nint.Zero);
-        var textProvider = new UiaTextProviderWrapper((ITextProvider)peer, provider);
+        var textProvider = new UiaTextProviderWrapper(
+            Assert.IsAssignableFrom<ManagedTextProvider>(peer.GetPattern(PatternInterface.Text)),
+            provider);
 
         IUiaTextRangeProvider? doc = textProvider.get_DocumentRange();
         Assert.NotNull(doc);

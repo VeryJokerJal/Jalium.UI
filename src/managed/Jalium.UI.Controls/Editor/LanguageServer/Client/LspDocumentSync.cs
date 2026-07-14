@@ -119,7 +119,7 @@ internal sealed class LspDocumentSync : IDisposable
     /// <summary>
     /// Called when the document content changes. Sends didChange notifications.
     /// </summary>
-    private void OnDocumentChanged(object? sender, TextChangeEventArgs e)
+    private void OnDocumentChanged(object? sender, DocumentChangeEventArgs e)
     {
         if (!_isOpen || !_client.IsInitialized || _document == null) return;
 
@@ -129,7 +129,7 @@ internal sealed class LspDocumentSync : IDisposable
 
         if (_client.SyncKind == TextDocumentSyncKind.Incremental)
         {
-            // Convert TextChangeEventArgs to incremental LSP change
+            // Convert DocumentChangeEventArgs to an incremental LSP change.
             var startPos = OffsetToLspPosition(_document, e.Offset);
             var endPos = OffsetToLspPosition(_document, e.Offset + e.Change.RemovalLength, e.RemovedText);
             changes =

@@ -118,7 +118,7 @@ internal sealed class ReflectionMarkupProperty : MarkupProperty
 
     public override AttributeCollection Attributes => _descriptor.Attributes;
     public override DependencyProperty? DependencyProperty
-        => Jalium.UI.DependencyPropertyDescriptor.FromProperty(_descriptor)?.DependencyProperty
+        => System.ComponentModel.DependencyPropertyDescriptor.FromProperty(_descriptor)?.DependencyProperty
             ?? Jalium.UI.DependencyProperty.FromName(_descriptor.ComponentType, _descriptor.Name);
     public override bool IsAttached => DependencyProperty is { } property && property.OwnerType != _owner.ObjectType;
     public override bool IsConstructorArgument => _descriptor.Attributes[typeof(ConstructorArgumentAttribute)] is ConstructorArgumentAttribute;
@@ -126,9 +126,8 @@ internal sealed class ReflectionMarkupProperty : MarkupProperty
     {
         get
         {
-            string? canonical = (_owner.Attributes[typeof(ContentPropertyAttribute)] as ContentPropertyAttribute)?.Name;
-            string? legacy = (_owner.Attributes[typeof(Jalium.UI.ContentPropertyAttribute)] as Jalium.UI.ContentPropertyAttribute)?.Name;
-            return string.Equals(_descriptor.Name, canonical ?? legacy, StringComparison.Ordinal);
+            string? contentProperty = (_owner.Attributes[typeof(ContentPropertyAttribute)] as ContentPropertyAttribute)?.Name;
+            return string.Equals(_descriptor.Name, contentProperty, StringComparison.Ordinal);
         }
     }
     public override bool IsKey

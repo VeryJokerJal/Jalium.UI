@@ -1,11 +1,11 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Base class for panel controls that host child elements.
 /// </summary>
-[ContentProperty("Children")]
+[Jalium.UI.Markup.ContentProperty("Children")]
 public abstract class Panel : FrameworkElement
 {
     #region Background Property
@@ -335,7 +335,7 @@ public abstract class Panel : FrameworkElement
 /// <summary>
 /// Collection of UI elements for a panel.
 /// </summary>
-public class UIElementCollection : System.Collections.IList, IEnumerable<UIElement>
+public class UIElementCollection : System.Collections.IList
 {
     private readonly List<UIElement> _items = new();
     private readonly UIElement _parent;
@@ -533,8 +533,6 @@ public class UIElementCollection : System.Collections.IList, IEnumerable<UIEleme
     /// Returns an enumerator that iterates through the collection.
     /// </summary>
     public virtual System.Collections.IEnumerator GetEnumerator() => _items.GetEnumerator();
-
-    IEnumerator<UIElement> IEnumerable<UIElement>.GetEnumerator() => _items.GetEnumerator();
 
     int System.Collections.IList.Add(object? value)
     {

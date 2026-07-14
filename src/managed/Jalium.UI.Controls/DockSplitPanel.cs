@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Themes;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls;
 /// A panel that arranges children in a horizontal or vertical split layout
 /// with resizable splitter bars between them.
 /// </summary>
-[ContentProperty("Children")]
+[Jalium.UI.Markup.ContentProperty("Children")]
 public class DockSplitPanel : Panel
 {
     private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(ThemeColors.WindowBackground);

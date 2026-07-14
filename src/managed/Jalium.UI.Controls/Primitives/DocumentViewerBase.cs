@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Jalium.UI.Documents;
 using Jalium.UI.Input;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -593,65 +594,4 @@ public abstract class DocumentViewerBase : Control, Jalium.UI.Markup.IAddChild, 
     }
 
     #endregion
-}
-
-/// <summary>
-/// Interface for document sources that can be paginated.
-/// </summary>
-public interface IDocumentPaginatorSource
-{
-    /// <summary>
-    /// Gets the document paginator.
-    /// </summary>
-    DocumentPaginator DocumentPaginator { get; }
-}
-
-/// <summary>
-/// Provides pagination functionality for documents.
-/// </summary>
-public abstract class DocumentPaginator
-{
-    /// <summary>
-    /// Gets the page count.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
-    public abstract int PageCount { get; }
-
-    /// <summary>
-    /// Gets a value indicating whether page count is valid.
-    /// </summary>
-    public abstract bool IsPageCountValid { get; }
-
-    /// <summary>
-    /// Gets the page size.
-    /// </summary>
-    public abstract Size PageSize { get; set; }
-
-    /// <summary>
-    /// Gets the specified page.
-    /// </summary>
-    /// <param name="pageNumber">The page number.</param>
-    /// <returns>The document page.</returns>
-    public abstract DocumentPage GetPage(int pageNumber);
-}
-
-/// <summary>
-/// Represents a page of a document.
-/// </summary>
-public sealed class DocumentPage
-{
-    /// <summary>
-    /// Gets the visual content of the page.
-    /// </summary>
-    public Visual? Visual { get; set; }
-
-    /// <summary>
-    /// Gets the size of the page.
-    /// </summary>
-    public Size Size { get; set; }
-
-    /// <summary>
-    /// Represents a missing page.
-    /// </summary>
-    public static readonly DocumentPage Missing = new() { Size = Size.Empty };
 }

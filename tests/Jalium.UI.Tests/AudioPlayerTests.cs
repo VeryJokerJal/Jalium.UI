@@ -53,6 +53,22 @@ public class AudioPlayerTests
     }
 
     [Fact]
+    public void Balance_ActuallyAppliesStereoGains_WithoutTouchingSurroundChannels()
+    {
+        var left = new[] { 1f, 1f, 0.5f, -0.5f };
+        AudioPlayer.ApplyBalanceInPlace(left, 2, -1.0);
+        Assert.Equal(new[] { 1f, 0f, 0.5f, 0f }, left);
+
+        var right = new[] { 1f, 1f, 0.5f, -0.5f };
+        AudioPlayer.ApplyBalanceInPlace(right, 2, 1.0);
+        Assert.Equal(new[] { 0f, 1f, 0f, -0.5f }, right);
+
+        var surround = new[] { 1f, 1f, 0.25f, 0.5f };
+        AudioPlayer.ApplyBalanceInPlace(surround, 4, 0.5);
+        Assert.Equal(new[] { 0.5f, 1f, 0.25f, 0.5f }, surround);
+    }
+
+    [Fact]
     public void SpeedRatio_Clamps_To_Range()
     {
         using var player = new AudioPlayer();

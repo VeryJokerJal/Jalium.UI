@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a menu item that displays a sub-menu in a MenuFlyout control.
 /// </summary>
-[ContentProperty("Items")]
+[Jalium.UI.Markup.ContentProperty("Items")]
 public sealed class MenuFlyoutSubItem : MenuFlyoutItem
 {
     private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(Color.FromRgb(45, 45, 48));

@@ -1,16 +1,18 @@
-﻿using System.Diagnostics.CodeAnalysis;
+using System.Diagnostics.CodeAnalysis;
 using System.ComponentModel;
 using Jalium.UI.Data;
 using Jalium.UI.Input;
 using Jalium.UI.Markup;
+using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI;
 
 /// <summary>
 /// Contains property setters that can be shared between instances of a type.
 /// </summary>
-[ContentProperty("Setters")]
-public class Style : DispatcherObject, INameScope, Jalium.UI.Markup.INameScope, IQueryAmbient, Jalium.UI.Markup.IAddChild
+[Jalium.UI.Markup.ContentProperty("Setters")]
+public class Style : DispatcherObject, Jalium.UI.Markup.INameScope, IQueryAmbient, Jalium.UI.Markup.IAddChild
 {
     private readonly SetterBaseCollection _setters = new();
     private IList<EventSetter>? _eventSetters;
@@ -87,8 +89,6 @@ public class Style : DispatcherObject, INameScope, Jalium.UI.Markup.INameScope, 
         => _nameScope.RegisterName(name, scopedElement);
 
     public void UnregisterName(string name) => _nameScope.UnregisterName(name);
-
-    object? INameScope.FindName(string name) => _nameScope.FindName(name);
 
     object? Jalium.UI.Markup.INameScope.FindName(string name) => _nameScope.FindName(name);
 
@@ -263,7 +263,7 @@ public class Style : DispatcherObject, INameScope, Jalium.UI.Markup.INameScope, 
 /// <summary>
 /// Represents a setter that sets a property value.
 /// </summary>
-[ContentProperty("Value")]
+[Jalium.UI.Markup.ContentProperty("Value")]
 [XamlSetMarkupExtension(nameof(ReceiveMarkupExtension))]
 [XamlSetTypeConverter(nameof(ReceiveTypeConverter))]
 public class Setter : SetterBase, ISupportInitialize
@@ -848,7 +848,7 @@ public class Setter : SetterBase, ISupportInitialize
 /// <summary>
 /// Base class for triggers that conditionally apply property values.
 /// </summary>
-[ContentProperty("Setters")]
+[Jalium.UI.Markup.ContentProperty("Setters")]
 public abstract class TriggerBase : DependencyObject
 {
     private bool _isSealed;
@@ -2118,7 +2118,7 @@ public sealed class BindingCondition
 /// <summary>
 /// Represents a trigger that applies property values when multiple conditions are all true.
 /// </summary>
-[ContentProperty("Setters")]
+[Jalium.UI.Markup.ContentProperty("Setters")]
 public sealed class MultiTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
 {
     /// <summary>
@@ -2499,7 +2499,7 @@ public sealed class DataTrigger : TriggerBase
 /// <summary>
 /// Represents a trigger that applies property values when an event occurs.
 /// </summary>
-[ContentProperty(nameof(Actions))]
+[Jalium.UI.Markup.ContentProperty(nameof(Actions))]
 public class EventTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
 {
     private FrameworkElement? _attachedElement;
@@ -2643,7 +2643,7 @@ public class EventTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
 /// <summary>
 /// Represents a trigger that applies property values when multiple data binding conditions are all true.
 /// </summary>
-[ContentProperty("Setters")]
+[Jalium.UI.Markup.ContentProperty("Setters")]
 public sealed class MultiDataTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
 {
     /// <summary>

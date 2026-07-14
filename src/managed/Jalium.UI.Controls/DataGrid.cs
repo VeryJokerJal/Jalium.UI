@@ -9,7 +9,9 @@ using Jalium.UI.Data;
 using Jalium.UI.Input;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
-using ListSortDirection = Jalium.UI.Data.ListSortDirection;
+using DataGridColumnHeader = Jalium.UI.Controls.Primitives.DataGridColumnHeader;
+using ListSortDirection = System.ComponentModel.ListSortDirection;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
 
@@ -30,9 +32,18 @@ internal interface IColumnHeaderHost
 }
 
 /// <summary>
+/// Internal WPF-compatible contract used by elements that expose their owning
+/// DataGrid column without adding another public compatibility API.
+/// </summary>
+internal interface IProvideDataGridColumn
+{
+    DataGridColumn? Column { get; }
+}
+
+/// <summary>
 /// Represents a control that displays data in a customizable grid using TemplatedControl pattern.
 /// </summary>
-public class DataGrid : ItemsControl, IColumnHeaderHost
+public class DataGrid : MultiSelector, IColumnHeaderHost
 {
     /// <summary>Begins editing the current cell.</summary>
     public static readonly RoutedCommand BeginEditCommand =
@@ -56,6 +67,16 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
         new DataGridHeadersVisibilityConverter();
     private static readonly IValueConverter s_rowDetailsScrollingConverter =
         new RowDetailsScrollingOrientationConverter();
+
+    static DataGrid()
+    {
+        Selector.SelectedItemProperty.OverrideMetadata(
+            typeof(DataGrid),
+            new PropertyMetadata(null, OnSelectedItemChanged));
+        Selector.SelectedIndexProperty.OverrideMetadata(
+            typeof(DataGrid),
+            new PropertyMetadata(-1, OnSelectedIndexChanged));
+    }
 
     /// <summary>Gets the command that deletes the selected rows.</summary>
     public static RoutedUICommand DeleteCommand => s_deleteCommand;
@@ -89,21 +110,6 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
     }
 
     #region Dependency Properties
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
-    public new static readonly DependencyProperty ItemsSourceProperty =
-        DependencyProperty.Register(nameof(ItemsSource), typeof(IEnumerable), typeof(DataGrid),
-            new PropertyMetadata(null, OnItemsSourceChanged));
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty SelectedItemProperty =
-        DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(DataGrid),
-            new PropertyMetadata(null, OnSelectedItemChanged));
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty SelectedIndexProperty =
-        DependencyProperty.Register(nameof(SelectedIndex), typeof(int), typeof(DataGrid),
-            new PropertyMetadata(-1, OnSelectedIndexChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CurrentItemProperty =
@@ -372,16 +378,6 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
 
     #region Routed Events
 
-    public static readonly RoutedEvent SelectionChangedEvent =
-        EventManager.RegisterRoutedEvent(nameof(SelectionChanged), RoutingStrategy.Bubble,
-            typeof(EventHandler<SelectionChangedEventArgs>), typeof(DataGrid));
-
-    public event EventHandler<SelectionChangedEventArgs> SelectionChanged
-    {
-        add => AddHandler(SelectionChangedEvent, value);
-        remove => RemoveHandler(SelectionChangedEvent, value);
-    }
-
     public event DataGridSortingEventHandler? Sorting;
 
     public event EventHandler<DataGridBeginningEditEventArgs>? BeginningEdit;
@@ -563,27 +559,6 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
     #endregion
 
     #region CLR Properties
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
-    public new IEnumerable? ItemsSource
-    {
-        get => (IEnumerable?)GetValue(ItemsSourceProperty);
-        set => SetValue(ItemsSourceProperty, value);
-    }
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public object? SelectedItem
-    {
-        get => GetValue(SelectedItemProperty);
-        set => SetValue(SelectedItemProperty, value);
-    }
-
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public int SelectedIndex
-    {
-        get => (int)GetValue(SelectedIndexProperty)!;
-        set => SetValue(SelectedIndexProperty, value);
-    }
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? CurrentItem
@@ -996,8 +971,6 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
 
     public ObservableCollection<DataGridColumn> Columns { get; }
 
-    public IList<object> SelectedItems { get; }
-
     /// <summary>Gets the cells currently selected in this grid.</summary>
     public IList<DataGridCellInfo> SelectedCells => _selectedCells;
 
@@ -1010,8 +983,9 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
     private const double DefaultRowHeaderWidth = 20.0;
 
     private readonly List<object> _items = new();
-    private readonly List<object> _selectedItems = new();
+    private readonly ObservableCollection<object> _selectedItems;
     private readonly HashSet<object> _selectedItemsLookup = new();
+    private object[] _selectedItemsSnapshot = [];
     private readonly SelectedCellCollection _selectedCells;
     private readonly Dictionary<object, Visibility> _detailsVisibilityByItem = new();
     private readonly ObservableCollection<ValidationRule> _rowValidationRules = new();
@@ -1037,6 +1011,7 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
     private DataGridRow? _currentEditingRow;
     private bool _isUpdatingColumnWidthFromResize;
     private bool _isSynchronizingSelection;
+    private bool _selectionMutationOwnedByDataGrid;
     private bool _isSynchronizingCurrentCell;
     private bool _isSynchronizingColumnDisplayIndexes;
     private int _selectionAnchorIndex = -1;
@@ -1066,10 +1041,10 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
     public DataGrid()
     {
         Focusable = true;
+        _selectedItems = SelectedItemsStorage;
         _selectedCells = new SelectedCellCollection(this);
         Columns = new ObservableCollection<DataGridColumn>();
         Columns.CollectionChanged += OnColumnsCollectionChanged;
-        SelectedItems = _selectedItems;
         _rowValidationRules.CollectionChanged += OnRowValidationRulesChanged;
 
         AddHandler(RoutedCommand.CanExecuteEvent,
@@ -1404,13 +1379,10 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
 
             var header = new DataGridColumnHeader
             {
-                Content = column.Header,
                 Width = GetRenderableColumnWidth(column),
-                Height = double.IsNaN(ColumnHeaderHeight) ? double.NaN : GetEffectiveColumnHeaderHeight(),
-                ParentDataGrid = this,
-                ColumnHost = this,
-                Column = column
+                Height = double.IsNaN(ColumnHeaderHeight) ? double.NaN : GetEffectiveColumnHeaderHeight()
             };
+            header.PrepareColumnHeader(column.Header, this, this, column);
 
             var headerStyle = column.HeaderStyle ?? (Style?)GetValue(ColumnHeaderStyleProperty);
             if (headerStyle != null)
@@ -2305,23 +2277,80 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
 
     private void ClearSelection()
     {
-        _selectedItems.Clear();
+        _selectionMutationOwnedByDataGrid = true;
+        try
+        {
+            _selectedItems.Clear();
+        }
+        finally
+        {
+            _selectionMutationOwnedByDataGrid = false;
+        }
         _selectedItemsLookup.Clear();
     }
 
     private void AddToSelection(object item)
     {
-        _selectedItems.Add(item);
+        _selectionMutationOwnedByDataGrid = true;
+        try
+        {
+            _selectedItems.Add(item);
+        }
+        finally
+        {
+            _selectionMutationOwnedByDataGrid = false;
+        }
         _selectedItemsLookup.Add(item);
     }
 
     private void RemoveFromSelection(object item)
     {
-        _selectedItems.Remove(item);
+        _selectionMutationOwnedByDataGrid = true;
+        try
+        {
+            _selectedItems.Remove(item);
+        }
+        finally
+        {
+            _selectionMutationOwnedByDataGrid = false;
+        }
         _selectedItemsLookup.Remove(item);
     }
 
     private bool IsItemSelected(object item) => _selectedItemsLookup.Contains(item);
+
+    internal bool AutomationSelectItem(object item, bool addToSelection)
+    {
+        int rowIndex = _items.IndexOf(item);
+        if (rowIndex < 0)
+            return false;
+
+        var oldSelectedItems = _selectedItems.ToArray();
+        if (!addToSelection || SelectionMode == DataGridSelectionMode.Single)
+            ClearSelection();
+        if (!_selectedItems.Contains(item))
+            AddToSelection(item);
+        else
+            _selectedItemsLookup.Add(item);
+        _selectionAnchorIndex = rowIndex;
+        UpdateSelectionPropertiesFromSelectedItems(rowIndex);
+        UpdateRowSelectionVisuals();
+        RaiseSelectionChangedIfNeeded(oldSelectedItems);
+        return true;
+    }
+
+    internal bool AutomationRemoveItemFromSelection(object item)
+    {
+        if (!_selectedItems.Contains(item))
+            return true;
+
+        var oldSelectedItems = _selectedItems.ToArray();
+        RemoveFromSelection(item);
+        UpdateSelectionPropertiesFromSelectedItems();
+        UpdateRowSelectionVisuals();
+        RaiseSelectionChangedIfNeeded(oldSelectedItems);
+        return true;
+    }
 
     private void UpdateSelectionPropertiesFromSelectedItems(int preferredIndex = -1)
     {
@@ -2365,6 +2394,7 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
         var added = _selectedItems.Where(item => !oldSelection.Contains(item)).ToArray();
         if (removed.Length == 0 && added.Length == 0)
         {
+            _selectedItemsSnapshot = _selectedItems.ToArray();
             return;
         }
 
@@ -2374,6 +2404,7 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
         }
 
         OnSelectionChanged(new SelectionChangedEventArgs(SelectionChangedEvent, removed, added));
+        _selectedItemsSnapshot = _selectedItems.ToArray();
     }
 
     /// <summary>Raises the routed <see cref="SelectionChanged"/> event.</summary>
@@ -2382,6 +2413,33 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
         ArgumentNullException.ThrowIfNull(e);
         e.RoutedEvent ??= SelectionChangedEvent;
         RaiseEvent(e);
+    }
+
+    internal override bool HandleSelectedItemsCollectionChanged(NotifyCollectionChangedEventArgs e)
+    {
+        if (_selectionMutationOwnedByDataGrid)
+        {
+            return false;
+        }
+
+        object[] oldSelection = _selectedItemsSnapshot;
+        _selectedItemsLookup.Clear();
+        foreach (object item in _selectedItems)
+        {
+            _selectedItemsLookup.Add(item);
+        }
+
+        if (SelectionMode == DataGridSelectionMode.Single && _selectedItems.Count > 1)
+        {
+            object retained = e.NewItems?.Cast<object>().LastOrDefault() ?? _selectedItems[0];
+            ClearSelection();
+            AddToSelection(retained);
+        }
+
+        UpdateSelectionPropertiesFromSelectedItems();
+        UpdateRowSelectionVisuals();
+        RaiseSelectionChangedIfNeeded(oldSelection);
+        return false;
     }
 
     private void SelectRow(int rowIndex, ModifierKeys modifiers)
@@ -2500,7 +2558,7 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
         }
     }
 
-    public void SelectAll()
+    internal override void SelectAllCore()
     {
         if (SelectionMode != DataGridSelectionMode.Extended) return;
 
@@ -2514,7 +2572,7 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
         RaiseSelectionChangedIfNeeded(oldSelectedItems);
     }
 
-    public void UnselectAll()
+    internal override void UnselectAllCore()
     {
         var oldSelectedItems = _selectedItems.ToArray();
         ClearSelection();
@@ -2878,31 +2936,10 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
         dataGrid.RefreshRows();
     }
 
-    private static void OnItemsSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is DataGrid dataGrid)
-        {
-            dataGrid.OnItemsSourceChanged((IEnumerable?)e.OldValue, (IEnumerable?)e.NewValue);
-        }
-    }
-
-    private void OnSourceCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
-        => OnItemsChanged(e);
-
     /// <inheritdoc />
     protected override void OnItemsSourceChanged(IEnumerable? oldValue, IEnumerable? newValue)
     {
         base.OnItemsSourceChanged(oldValue, newValue);
-        if (oldValue is INotifyCollectionChanged oldCollection)
-        {
-            oldCollection.CollectionChanged -= OnSourceCollectionChanged;
-        }
-
-        if (newValue is INotifyCollectionChanged newCollection)
-        {
-            newCollection.CollectionChanged += OnSourceCollectionChanged;
-        }
-
         RefreshItems();
     }
 
@@ -3165,7 +3202,7 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
         var text = BuildClipboardText();
         if (text.Length > 0)
         {
-            _ = Clipboard.SetText(text);
+            WpfClipboard.SetText(text);
         }
 
         args.Handled = true;
@@ -3464,9 +3501,13 @@ public class DataGrid : ItemsControl, IColumnHeaderHost
 
     private static void OnSelectionModeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is DataGrid dataGrid &&
-            e.NewValue is DataGridSelectionMode newMode &&
-            newMode == DataGridSelectionMode.Single)
+        if (d is not DataGrid dataGrid || e.NewValue is not DataGridSelectionMode newMode)
+        {
+            return;
+        }
+
+        dataGrid.CanSelectMultipleItems = newMode != DataGridSelectionMode.Single;
+        if (newMode == DataGridSelectionMode.Single)
         {
             if (dataGrid._selectedItems.Count > 1)
             {
@@ -5983,236 +6024,6 @@ public class DataGridCell : ContentControl
             parent = parent.InternalVisualParent;
         }
         return null;
-    }
-}
-
-#endregion
-
-#region DataGridColumnHeader
-
-/// <summary>
-/// Represents a column header in a DataGrid.
-/// </summary>
-public class DataGridColumnHeader : ButtonBase
-{
-    /// <inheritdoc />
-    protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
-    {
-        return new Jalium.UI.Automation.Peers.DataGridColumnHeaderAutomationPeer(this);
-    }
-
-    private const double ResizeHotZoneWidth = 8.0;
-    private const double DragThreshold = 5.0;
-
-    internal DataGrid? ParentDataGrid { get; set; }
-    internal IColumnHeaderHost? ColumnHost { get; set; }
-    internal DataGridColumn? Column { get; set; }
-
-    private TextBlock? _sortIndicator;
-    private FrameworkElement? _resizeGrip;
-    private bool _isResizing;
-    private double _resizeStartX;
-    private double _resizeStartWidth;
-
-    // Drag reorder state
-    private bool _isDragging;
-    private Point _mouseDownPoint;
-    private bool _mouseDownForDrag;
-
-    public DataGridColumnHeader()
-    {
-        UseTemplateContentManagement();
-        Focusable = false;
-
-        AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnPreviewMouseDownHandler), true);
-        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler), true);
-        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler), true);
-    }
-
-    public override void OnApplyTemplate()
-    {
-        base.OnApplyTemplate();
-        _sortIndicator = GetTemplateChild("PART_SortIndicator") as TextBlock;
-        _resizeGrip = GetTemplateChild("PART_ResizeGrip") as FrameworkElement;
-
-        if (_resizeGrip != null)
-        {
-            _resizeGrip.IsHitTestVisible = false;
-        }
-
-        UpdateResizeGripState();
-        UpdateSortIndicator(Column?.SortDirection);
-    }
-
-    private void UpdateResizeGripState()
-    {
-        if (_resizeGrip == null)
-        {
-            return;
-        }
-
-        var host = ColumnHost;
-        var canResize = Column != null
-            && (host?.CanUserResizeColumns ?? false)
-            && Column.CanUserResize;
-
-        _resizeGrip.Visibility = canResize ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private bool CanResizeCurrentColumn() =>
-        Column != null
-        && (ColumnHost?.CanUserResizeColumns ?? false)
-        && Column.CanUserResize;
-
-    private bool CanDragCurrentColumn() =>
-        Column != null
-        && (ColumnHost?.CanUserReorderColumns ?? false)
-        && Column.CanUserReorder;
-
-    private bool IsInResizeZone(Point point)
-    {
-        if (!CanResizeCurrentColumn())
-        {
-            return false;
-        }
-
-        var hotZoneWidth = Math.Max(1.0, Math.Min(RenderSize.Width, ResizeHotZoneWidth));
-        return point.X >= Math.Max(0.0, RenderSize.Width - hotZoneWidth);
-    }
-
-    private void UpdateResizeCursor(Point point)
-    {
-        if (_isDragging) return;
-        Cursor = (_isResizing || IsInResizeZone(point))
-            ? Jalium.UI.Input.Cursors.SizeWE
-            : null;
-    }
-
-    private void OnPreviewMouseDownHandler(object sender, MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton != MouseButton.Left || Column == null) return;
-
-        if (IsInResizeZone(e.GetPosition(this)))
-        {
-            // Start resize
-            _isResizing = true;
-            _resizeStartX = e.GetPosition(null).X;
-            _resizeStartWidth = Column.ActualWidth;
-            CaptureMouse();
-            Cursor = Jalium.UI.Input.Cursors.SizeWE;
-            e.Handled = true;
-        }
-        else if (CanDragCurrentColumn())
-        {
-            // Record start position for potential drag
-            _mouseDownPoint = e.GetPosition(null);
-            _mouseDownForDrag = true;
-            CaptureMouse();
-            e.Handled = true;
-        }
-    }
-
-    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
-    {
-        var host = ColumnHost;
-        if (_isResizing && Column != null)
-        {
-            var currentX = e.GetPosition(null).X;
-            var delta = currentX - _resizeStartX;
-            var newWidth = Math.Clamp(_resizeStartWidth + delta, Column.MinWidth, Column.MaxWidth);
-            host?.ResizeColumn(Column, newWidth);
-            Cursor = Jalium.UI.Input.Cursors.SizeWE;
-            e.Handled = true;
-            return;
-        }
-
-        if (_isDragging && host is UIElement hostElement)
-        {
-            host.UpdateColumnDrag(e.GetPosition(hostElement));
-            e.Handled = true;
-            return;
-        }
-
-        if (_mouseDownForDrag && !_isDragging)
-        {
-            var currentPos = e.GetPosition(null);
-            if (Math.Abs(currentPos.X - _mouseDownPoint.X) > DragThreshold)
-            {
-                _isDragging = true;
-                _mouseDownForDrag = false;
-                Cursor = Jalium.UI.Input.Cursors.SizeAll;
-                host?.StartColumnDrag(this, Column!);
-                e.Handled = true;
-                return;
-            }
-        }
-
-        UpdateResizeCursor(e.GetPosition(this));
-    }
-
-    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
-    {
-        if (_isResizing)
-        {
-            _isResizing = false;
-            if (IsMouseCaptured) ReleaseMouseCapture();
-            UpdateResizeCursor(e.GetPosition(this));
-            e.Handled = true;
-            return;
-        }
-
-        if (_isDragging)
-        {
-            _isDragging = false;
-            if (IsMouseCaptured) ReleaseMouseCapture();
-            Cursor = null;
-            if (ColumnHost is UIElement hostElement)
-            {
-                ColumnHost.EndColumnDrag(e.GetPosition(hostElement));
-            }
-            e.Handled = true;
-            return;
-        }
-
-        if (_mouseDownForDrag)
-        {
-            _mouseDownForDrag = false;
-            if (IsMouseCaptured) ReleaseMouseCapture();
-        }
-    }
-
-    protected override void OnLostMouseCapture()
-    {
-        base.OnLostMouseCapture();
-
-        if (_isDragging)
-        {
-            _isDragging = false;
-            if (ColumnHost != null && ColumnHost.IsColumnDragging)
-            {
-                ColumnHost.CancelColumnDrag();
-            }
-        }
-
-        _isResizing = false;
-        _mouseDownForDrag = false;
-        Cursor = null;
-    }
-
-    internal void UpdateSortIndicator(ListSortDirection? direction)
-    {
-        if (_sortIndicator == null) return;
-
-        if (direction.HasValue)
-        {
-            _sortIndicator.Text = direction == ListSortDirection.Ascending ? "\u25B2" : "\u25BC";
-            _sortIndicator.Visibility = Visibility.Visible;
-        }
-        else
-        {
-            _sortIndicator.Text = "";
-            _sortIndicator.Visibility = Visibility.Collapsed;
-        }
     }
 }
 

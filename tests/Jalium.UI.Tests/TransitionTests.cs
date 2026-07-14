@@ -9,7 +9,7 @@ using AnimationDuration = Jalium.UI.Duration;
 
 namespace Jalium.UI.Tests;
 
-// Drives the process-global AnimationManager (TickAnimations → ProcessFrame), so
+// Drives the process-global AnimationManager (TickAnimations 鈫?ProcessFrame), so
 // it must serialize with the other animation tests: a parallel collection's
 // ProcessFrame with a synthetic future timestamp would fast-forward this class's
 // live transition clocks mid-assert.
@@ -705,7 +705,7 @@ public class TransitionTests
         }
     }
 
-    private sealed class CustomTransitionValueAnimation : AnimationTimeline<CustomTransitionValue>
+    private sealed class CustomTransitionValueAnimation : TypedAnimationTimeline<CustomTransitionValue>
     {
         public CustomTransitionValue? From { get; init; }
 

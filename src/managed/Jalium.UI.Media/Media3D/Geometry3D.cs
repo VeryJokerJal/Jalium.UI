@@ -32,7 +32,7 @@ public sealed class MeshGeometry3D : Geometry3D
     public static readonly DependencyProperty TextureCoordinatesProperty =
         DependencyProperty.Register(
             nameof(TextureCoordinates),
-            typeof(PointCollection),
+            typeof(Jalium.UI.Media.PointCollection),
             typeof(MeshGeometry3D),
             new PropertyMetadata(null));
 
@@ -47,7 +47,7 @@ public sealed class MeshGeometry3D : Geometry3D
     {
         Positions = new Point3DCollection();
         Normals = new Vector3DCollection();
-        TextureCoordinates = new PointCollection();
+        TextureCoordinates = new Jalium.UI.Media.PointCollection();
         TriangleIndices = new Int32Collection();
     }
 
@@ -63,9 +63,9 @@ public sealed class MeshGeometry3D : Geometry3D
         set => SetValue(NormalsProperty, value);
     }
 
-    public PointCollection TextureCoordinates
+    public Jalium.UI.Media.PointCollection TextureCoordinates
     {
-        get => (PointCollection?)GetValue(TextureCoordinatesProperty)!;
+        get => (Jalium.UI.Media.PointCollection?)GetValue(TextureCoordinatesProperty)!;
         set => SetValue(TextureCoordinatesProperty, value);
     }
 
@@ -130,18 +130,6 @@ public sealed class MeshGeometry3D : Geometry3D
         CloneMutableCollections((MeshGeometry3D)sourceFreezable, useCurrentValue: true);
     }
 
-    protected override void GetAsFrozenCore(Freezable sourceFreezable)
-    {
-        base.GetAsFrozenCore(sourceFreezable);
-        ClonePointCollection((MeshGeometry3D)sourceFreezable);
-    }
-
-    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable)
-    {
-        base.GetCurrentValueAsFrozenCore(sourceFreezable);
-        ClonePointCollection((MeshGeometry3D)sourceFreezable);
-    }
-
     private void CloneMutableCollections(MeshGeometry3D source, bool useCurrentValue)
     {
         if (source.Positions is not null)
@@ -165,13 +153,12 @@ public sealed class MeshGeometry3D : Geometry3D
                 : (Int32Collection)source.TriangleIndices.Clone();
         }
 
-        ClonePointCollection(source);
+        if (source.TextureCoordinates is not null)
+        {
+            TextureCoordinates = useCurrentValue
+                ? source.TextureCoordinates.CloneCurrentValue()
+                : source.TextureCoordinates.Clone();
+        }
     }
 
-    private void ClonePointCollection(MeshGeometry3D source)
-    {
-        TextureCoordinates = source.TextureCoordinates is null
-            ? null!
-            : new PointCollection(source.TextureCoordinates);
-    }
 }

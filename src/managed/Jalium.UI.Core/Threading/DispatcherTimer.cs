@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Jalium.UI;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Threading;
 
@@ -61,20 +62,6 @@ public sealed class DispatcherTimer
         _interval = TimeSpan.Zero;
     }
 
-    /// <summary>Compatibility overload for the original Jalium dispatcher priority.</summary>
-    public DispatcherTimer(Jalium.UI.DispatcherPriority priority)
-        : this(Dispatcher.FromLegacyPriority(priority))
-    {
-    }
-
-    /// <summary>Compatibility overload for the original Jalium dispatcher surface.</summary>
-    public DispatcherTimer(
-        Jalium.UI.DispatcherPriority priority,
-        Jalium.UI.Dispatcher dispatcher)
-        : this(Dispatcher.FromLegacyPriority(priority), Dispatcher.FromLegacy(dispatcher))
-    {
-    }
-
     /// <summary>
     /// Initializes a new instance of the <see cref="DispatcherTimer"/> class
     /// which uses the specified time interval, priority, event handler, and dispatcher.
@@ -92,20 +79,6 @@ public sealed class DispatcherTimer
         {
             Tick += callback;
         }
-    }
-
-    /// <summary>Compatibility overload for the original Jalium dispatcher surface.</summary>
-    public DispatcherTimer(
-        TimeSpan interval,
-        Jalium.UI.DispatcherPriority priority,
-        EventHandler callback,
-        Jalium.UI.Dispatcher dispatcher)
-        : this(
-            interval,
-            Dispatcher.FromLegacyPriority(priority),
-            callback,
-            Dispatcher.FromLegacy(dispatcher))
-    {
     }
 
     /// <summary>

@@ -1,6 +1,6 @@
 using System.ComponentModel;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Threading;
 
 /// <summary>
 /// Represents an object that is associated with a <see cref="Dispatcher"/>.
@@ -14,7 +14,7 @@ public abstract class DispatcherObject
     /// </summary>
     protected DispatcherObject()
     {
-        _dispatcher = Dispatcher.GetForCurrentThread();
+        _dispatcher = Dispatcher.CurrentDispatcher;
     }
 
     /// <summary>

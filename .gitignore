@@ -217,6 +217,10 @@ PublishScripts/
 **/[Pp]ackages/*
 # except build/, which is used as an MSBuild target.
 !**/[Pp]ackages/build/
+# Keep the root local-feed folder present in fresh clones: NuGet.config lists
+# ./packages as a package source and NuGet fails restore (NU1301) when the
+# directory is missing entirely.
+!/packages/.gitkeep
 # Uncomment if necessary however generally it will be regenerated when needed
 #!**/[Pp]ackages/repositories.config
 # NuGet v3's project.json files produces more ignorable files
@@ -389,8 +393,10 @@ FodyWeavers.xsd
 # Android bugreport
 bugreport-*.zip
 
-# Sample projects
-samples/
+# Sample-local publish output (sources under samples/ are tracked; a blanket
+# "samples/" rule silently swallowed every new sample file).
+samples/**/publish-aot*/
+samples/**/publish/
 
 # Native build output
 src/native/build-*/

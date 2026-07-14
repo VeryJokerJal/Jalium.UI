@@ -1,11 +1,11 @@
 ﻿using Jalium.UI.Media;
 
-namespace Jalium.UI.Controls.Shapes;
+namespace Jalium.UI.Shapes;
 
 /// <summary>
 /// Draws a series of connected lines and curves described by a <see cref="Geometry"/>.
 /// </summary>
-public class Path : Shape
+public sealed class Path : Shape
 {
     static Path()
     {
@@ -29,12 +29,6 @@ public class Path : Shape
         DependencyProperty.Register(nameof(Data), typeof(Geometry), typeof(Path),
             new PropertyMetadata(null, OnDataChanged));
 
-    /// <summary>
-    /// Identifies the <see cref="Geometry"/> dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
-    public static readonly DependencyProperty GeometryProperty = DataProperty;
-
     #endregion
 
     #region CLR Properties
@@ -48,16 +42,6 @@ public class Path : Shape
     {
         get => (Geometry?)GetValue(DataProperty);
         set => SetValue(DataProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the geometry directly.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
-    public Geometry? Geometry
-    {
-        get => Data;
-        set => Data = value;
     }
 
     #endregion

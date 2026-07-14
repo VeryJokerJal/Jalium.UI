@@ -6,6 +6,8 @@
 #include "and_video_decoder.h"
 #include "and_camera_source.h"
 
+#include <cstring>
+
 extern "C" {
 
 // ----- Lifecycle ---------------------------------------------------------
@@ -149,17 +151,47 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_acquire_gpu_surface_
     // 当前 stub 返 NotImplemented → managed AcquireGpuSurface 返 null →
     // MediaElement fallback 到 stage 2 NativeVideoSurface BGRA staging
     // (and_yuv_neon/sse2/scalar.cpp 路径仍提供 SIMD YUV→BGRA 转换)。
-    (void)decoder;
-    if (out_descriptor) {
-        out_descriptor->kind        = 0;
-        out_descriptor->width       = 0;
-        out_descriptor->height      = 0;
-        out_descriptor->handle0     = 0;
-        out_descriptor->handle1     = 0;
-        out_descriptor->format_hint = 0;
-        out_descriptor->reserved    = 0;
-    }
+    if (!decoder || !out_descriptor) return JALIUM_MEDIA_E_INVALID_ARG;
+    std::memset(out_descriptor, 0, sizeof(*out_descriptor));
+    for (auto& plane : out_descriptor->planes) plane.fd = -1;
+    out_descriptor->acquire_fence_fd = -1;
     return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+}
+
+JALIUM_MEDIA_API jalium_media_status_t
+jalium_video_decoder_read_gpu_frame_descriptor(
+    jalium_video_decoder_t* decoder,
+    jalium_video_decoder_gpu_descriptor_t* out_descriptor,
+    int64_t* out_pts_microseconds,
+    int32_t* out_is_keyframe)
+{
+    if (!decoder || !out_descriptor || !out_pts_microseconds ||
+        !out_is_keyframe) {
+        return JALIUM_MEDIA_E_INVALID_ARG;
+    }
+    std::memset(out_descriptor, 0, sizeof(*out_descriptor));
+    for (auto& plane : out_descriptor->planes) plane.fd = -1;
+    out_descriptor->acquire_fence_fd = -1;
+    *out_pts_microseconds = 0;
+    *out_is_keyframe = 0;
+    return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+}
+
+JALIUM_MEDIA_API void
+jalium_video_decoder_release_gpu_surface_descriptor(
+    jalium_video_decoder_gpu_descriptor_t* descriptor)
+{
+    if (!descriptor) return;
+    std::memset(descriptor, 0, sizeof(*descriptor));
+    for (auto& plane : descriptor->planes) plane.fd = -1;
+    descriptor->acquire_fence_fd = -1;
+}
+
+JALIUM_MEDIA_API jalium_media_status_t
+jalium_video_decoder_disable_gpu_output(jalium_video_decoder_t* decoder)
+{
+    return decoder ? JALIUM_MEDIA_E_NOT_IMPLEMENTED
+                   : JALIUM_MEDIA_E_INVALID_ARG;
 }
 
 // ----- Camera capture ----------------------------------------------------

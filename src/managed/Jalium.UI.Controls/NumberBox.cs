@@ -191,6 +191,13 @@ public class NumberBox : TextBoxBase, IImeSupport
 
     #region CLR Properties
 
+    /// <summary>Gets or sets the caret position in the editable text.</summary>
+    public int CaretIndex
+    {
+        get => CaretIndexCore;
+        set => CaretIndexCore = value;
+    }
+
     /// <summary>
     /// Gets or sets the numeric value.
     /// </summary>
@@ -1431,10 +1438,24 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     public bool IsImeAllowed => !IsReadOnly;
 
+    bool IImeSupport.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
+        => TryGetImeSurroundingTextCore(out snapshot);
+
+    bool IImeSupport.DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
+        => DeleteImeSurroundingTextCore(beforeUtf8ByteCount, afterUtf8ByteCount);
+
     /// <inheritdoc />
     public Point GetImeCaretPosition()
     {
         return GetCaretScreenPosition();
+    }
+
+    /// <inheritdoc />
+    public Rect GetImeCaretRectangle()
+    {
+        Point bottom = GetCaretScreenPosition();
+        double height = Math.Max(1, Math.Round(GetLineHeight()));
+        return new Rect(bottom.X, bottom.Y - height, 1, height);
     }
 
     private Point GetCaretScreenPosition()

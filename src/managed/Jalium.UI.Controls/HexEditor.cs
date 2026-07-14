@@ -3,6 +3,7 @@ using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
 
@@ -1862,7 +1863,7 @@ public class HexEditor : Control
             var offset = CaretOffset;
             if (offset >= 0 && offset < data.Length)
             {
-                Clipboard.SetText(data[offset].ToString("X2"));
+                WpfClipboard.SetText(data[offset].ToString("X2"));
             }
             return;
         }
@@ -1875,7 +1876,7 @@ public class HexEditor : Control
             sb.Append(data[i].ToString("X2"));
         }
 
-        Clipboard.SetText(sb.ToString());
+        WpfClipboard.SetText(sb.ToString());
     }
 
     private void PasteFromClipboard()
@@ -1883,7 +1884,7 @@ public class HexEditor : Control
         var data = Data;
         if (data == null || IsReadOnly) return;
 
-        var text = Clipboard.GetText();
+        var text = WpfClipboard.GetText();
         if (string.IsNullOrEmpty(text)) return;
 
         // Parse hex bytes from clipboard text

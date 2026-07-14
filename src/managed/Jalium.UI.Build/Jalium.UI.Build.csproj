@@ -8,7 +8,11 @@
     <!-- 设置为 MSBuild 任务程序集 -->
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <IsPackable>true</IsPackable>
-    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <!-- GeneratePackageOnBuild is deliberately NOT set: implicit per-build
+         packages bypassed explicit packing intent (CI and docs always passed
+         -p:GeneratePackageOnBuild=false to suppress it) and produced local
+         half-baked .nupkg files that leaked into consumers. Pack explicitly
+         with `dotnet pack`, which runs the stale-native guard. -->
     <PackageId>Jalium.UI.Build</PackageId>
     <Description>MSBuild tasks for compiling Jalium.UI JALXAML files</Description>
     <Authors>Jalium</Authors>
@@ -147,5 +151,9 @@
     <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.platform\jalium.native.platform.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.platform\jalium.native.platform.static.vcxproj')" />
     <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.aot\jalium.native.aot.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.aot\jalium.native.aot.static.vcxproj')" />
   </ItemGroup>
+
+  <!-- Fail the pack when a packed .static.lib is stale relative to git
+       history (-p:JaliumAllowStaleNative=true downgrades to warnings). -->
+  <Import Project="$(MSBuildThisFileDirectory)../../../eng/msbuild/JaliumStaleNativeGuard.targets" />
 
 </Project>

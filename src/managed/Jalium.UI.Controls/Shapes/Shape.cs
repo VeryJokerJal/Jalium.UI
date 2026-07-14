@@ -1,6 +1,6 @@
 using Jalium.UI.Media;
 
-namespace Jalium.UI.Controls.Shapes;
+namespace Jalium.UI.Shapes;
 
 /// <summary>
 /// Provides a base class for shape elements.

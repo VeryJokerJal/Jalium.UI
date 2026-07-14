@@ -40,6 +40,28 @@ public sealed class DocumentsRefreshedParityTests
     }
 
     [Fact]
+    public void PaginationProgressUsesDocumentsContractAndRetainsJaliumPageCountConvenience()
+    {
+        var args = new PaginationProgressEventArgs(pageCount: 12);
+
+        Assert.Equal(0, args.Start);
+        Assert.Equal(12, args.Count);
+        Assert.Equal(12, args.PageCount);
+        Assert.DoesNotContain(
+            typeof(PaginationProgressEventArgs).Assembly.GetExportedTypes(),
+            type => type.FullName == "Jalium.UI.Controls.Printing.PaginationProgressEventArgs");
+    }
+
+    [Fact]
+    public void ListMarkerStyleUsesTheCanonicalRootContract()
+    {
+        Assert.Equal(typeof(Jalium.UI.TextMarkerStyle), typeof(List).GetProperty(nameof(List.MarkerStyle))!.PropertyType);
+        Assert.DoesNotContain(
+            typeof(List).Assembly.GetExportedTypes(),
+            type => type.FullName == "Jalium.UI.Documents.TextMarkerStyle");
+    }
+
+    [Fact]
     public void CollectionAndTableTypeShapesMatchWpf()
     {
         Assert.Equal(typeof(TextElementCollection<Block>), typeof(BlockCollection).BaseType);

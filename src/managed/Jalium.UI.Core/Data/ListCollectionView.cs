@@ -935,13 +935,6 @@ public class ListCollectionView : CollectionView,
 }
 
 /// <summary>
-/// Defines editable collection-view operations.
-/// </summary>
-public interface IEditableCollectionView : System.ComponentModel.IEditableCollectionView
-{
-}
-
-/// <summary>
 /// Selects a grouping description as a function of the parent group and level.
 /// </summary>
 public delegate GroupDescription? GroupDescriptionSelectorCallback(CollectionViewGroup group, int level);

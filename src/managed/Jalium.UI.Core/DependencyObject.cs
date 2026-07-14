@@ -1,4 +1,6 @@
 using Jalium.UI.Data;
+using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI;
 
@@ -376,7 +378,7 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     /// <param name="dp">The dependency property.</param>
     /// <returns>The binding expression, or null if the property is not bound.</returns>
-    public BindingExpressionBase? GetBindingExpression(DependencyProperty dp)
+    internal BindingExpressionBase? GetBindingExpression(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
         return _bindings.GetValueOrDefault(dp);

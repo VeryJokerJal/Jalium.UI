@@ -2,6 +2,7 @@
 
 #include "jalium_types.h"
 #include "jalium_backend.h"
+#include "jalium_text_api.h"
 #include "text_shaper.h"
 #include "glyph_atlas.h"
 #include "font_face.h"
@@ -9,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 namespace jalium {
 
@@ -24,7 +26,7 @@ class GlyphRasterizer;
 // - Custom layout engine for line breaking, alignment, and hit testing
 // ============================================================================
 
-class JaliumTextFormat : public TextFormat {
+class JALIUM_TEXT_API JaliumTextFormat : public TextFormat {
 public:
     JaliumTextFormat(
         TextEngine* engine,
@@ -78,6 +80,19 @@ public:
         std::vector<TextGlyphQuad>& outQuads,
         float renderScale = 1.0f);
 
+    /// Extended overload used by backends that must explicitly degrade an AA
+    /// mode (Linux Vulkan stages through a single-alpha bitmap). Keep the
+    /// original overload above as a real symbol for binary compatibility with
+    /// separately rebuilt backend .so files.
+    void GenerateGlyphQuads(
+        const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight,
+        float colorR, float colorG, float colorB, float colorA,
+        float originX, float originY,
+        std::vector<TextGlyphQuad>& outQuads,
+        float renderScale,
+        int32_t renderingModeOverride);
+
     /// Gets the font face used by this format.
     FontFace* GetFace() const { return face_.get(); }
 
@@ -114,13 +129,12 @@ private:
     /// All-primary text takes a fast path identical to shaping with face_ alone.
     ShapedRun ShapeWithFallback(const wchar_t* text, uint32_t textLength);
 
-    /// Picks the face that should render a codepoint: primary if it has the
-    /// glyph, else the fallback face if it does, else primary (renders .notdef).
-    FontFace* ChooseFaceForCodepoint(uint32_t codepoint, uint64_t& outFontId) const;
-
-    /// Lazily loads fallbackFace_ from the provider's fallback family. No-op
-    /// after the first attempt; safe when the platform has no fallback font.
-    void EnsureFallbackFace();
+    /// Picks one face for a complete Unicode cluster.  Keeping combining marks,
+    /// variation selectors and ZWJ emoji together is required for GSUB to see
+    /// the sequence; splitting fallback at each codepoint breaks those glyphs.
+    FontFace* ChooseFaceForCluster(
+        const std::vector<uint32_t>& codepoints,
+        uint64_t& outFontId);
 
     // Font state
     TextEngine*     engine_;
@@ -131,12 +145,17 @@ private:
     int32_t         fontWeight_;
     int32_t         fontStyle_;
 
-    // Unicode-coverage fallback face (e.g. Noto Sans CJK), loaded lazily the
-    // first time the primary face lacks a glyph. A distinct fallbackFontId_
-    // keeps its atlas entries from colliding with the primary face's.
-    std::unique_ptr<FontFace> fallbackFace_;
-    uint64_t        fallbackFontId_ = 0;
-    bool            fallbackAttempted_ = false;
+    struct FallbackFaceEntry {
+        std::unique_ptr<FontFace> face;
+        uint64_t fontId = 0;
+        std::string matchKey;
+    };
+    // Fontconfig may choose different faces for CJK, symbols, historic scripts
+    // and emoji. Keep every successfully loaded face alive for this format and
+    // cache both file matches and cluster decisions.
+    std::vector<FallbackFaceEntry> fallbackFaces_;
+    std::unordered_map<std::string, int32_t> fallbackMatchCache_;
+    std::unordered_map<std::string, int32_t> clusterFaceCache_;
 
     // Layout settings
     int32_t  alignment_ = 0;           ///< JaliumTextAlignment

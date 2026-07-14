@@ -1,4 +1,5 @@
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -258,7 +259,7 @@ public class StackPanel : Panel, IScrollInfo
         double maxCross = 0;
         bool sawVisible = false;
 
-        foreach (var child in Children.ToArray())
+        foreach (UIElement child in Children.Cast<UIElement>().ToArray())
         {
             // Skip collapsed children
             if (child.Visibility == Visibility.Collapsed)
@@ -338,7 +339,7 @@ public class StackPanel : Panel, IScrollInfo
         double scrollOffsetX = ScrollOwner != null ? -_horizontalOffset : 0;
         double scrollOffsetY = ScrollOwner != null ? -_verticalOffset : 0;
 
-        foreach (var child in Children.ToArray())
+        foreach (UIElement child in Children.Cast<UIElement>().ToArray())
         {
             // Skip collapsed children
             if (child.Visibility == Visibility.Collapsed)

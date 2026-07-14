@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Renders the contained 3-D content within the 2-D layout bounds of this element.
 /// </summary>
-[ContentProperty(nameof(Children))]
+[Jalium.UI.Markup.ContentProperty(nameof(Children))]
 public class Viewport3D : FrameworkElement, IAddChild
 {
     private readonly Viewport3DVisual _viewport3DVisual;

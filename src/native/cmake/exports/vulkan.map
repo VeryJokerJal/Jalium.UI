@@ -1,0 +1,6 @@
+JALIUM_VULKAN_C_ABI_1 {
+    global:
+        jalium_vulkan_init;
+    local:
+        *;
+};

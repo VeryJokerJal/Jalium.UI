@@ -1,10 +1,10 @@
 using Jalium.UI;
-using Jalium.UI.Controls.Shapes;
+using Jalium.UI.Shapes;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
 using Xunit;
-using ShapePath = Jalium.UI.Controls.Shapes.Path;
-using ShapePointCollection = Jalium.UI.Controls.Shapes.PointCollection;
+using ShapePath = Jalium.UI.Shapes.Path;
+using MediaPointCollection = Jalium.UI.Media.PointCollection;
 
 namespace Jalium.UI.Tests;
 
@@ -31,7 +31,7 @@ public class ShapeGeometryAndFreezeTests
     {
         var poly = new Polygon
         {
-            Points = new ShapePointCollection { new Point(0, 0), new Point(10, 0), new Point(5, 10) }
+            Points = new MediaPointCollection { new Point(0, 0), new Point(10, 0), new Point(5, 10) }
         };
         var pg = Assert.IsType<PathGeometry>(poly.RenderedGeometry);
         Assert.Single(pg.Figures);
@@ -43,7 +43,7 @@ public class ShapeGeometryAndFreezeTests
     {
         var pl = new Polyline
         {
-            Points = new ShapePointCollection { new Point(0, 0), new Point(10, 10), new Point(20, 0) }
+            Points = new MediaPointCollection { new Point(0, 0), new Point(10, 10), new Point(20, 0) }
         };
         var pg = Assert.IsType<PathGeometry>(pl.RenderedGeometry);
         Assert.Single(pg.Figures);

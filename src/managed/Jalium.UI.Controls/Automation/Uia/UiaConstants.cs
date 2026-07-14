@@ -328,7 +328,7 @@ internal static class UiaConstants
 /// <summary>
 /// Direction for UIA fragment navigation.
 /// </summary>
-public enum NavigateDirection
+internal enum NavigateDirection
 {
     Parent = 0,
     NextSibling = 1,
@@ -341,7 +341,7 @@ public enum NavigateDirection
 /// Options for UIA providers.
 /// </summary>
 [Flags]
-public enum ProviderOptions
+internal enum ProviderOptions
 {
     ClientSideProvider = 0x1,
     ServerSideProvider = 0x2,

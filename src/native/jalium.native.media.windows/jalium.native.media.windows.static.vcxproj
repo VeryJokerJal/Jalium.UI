@@ -102,5 +102,6 @@
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="..\jalium.native.stamp.targets" />
   <ImportGroup Label="ExtensionTargets" />
 </Project>

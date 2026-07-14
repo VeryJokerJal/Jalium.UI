@@ -69,6 +69,7 @@ struct VulkanDeviceContext {
     uint32_t                    graphicsQueueFamily = 0;
     PFN_vkGetInstanceProcAddr   getInstanceProcAddr = nullptr;
     PFN_vkGetDeviceProcAddr     getDeviceProcAddr   = nullptr;
+    bool                        dmaBufImportEnabled = false;
     bool                        valid               = false;
 };
 

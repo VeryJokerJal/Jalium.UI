@@ -1,5 +1,6 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Virtualization;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -275,7 +276,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
             if (!_deferredCatchUpPending)
             {
                 _deferredCatchUpPending = true;
-                Dispatcher.CurrentDispatcher?.BeginInvoke(InvalidateMeasureIfDeferredCatchUp);
+                Jalium.UI.Threading.Dispatcher.CurrentDispatcher.BeginInvoke(InvalidateMeasureIfDeferredCatchUp);
             }
         }
 

@@ -12,6 +12,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Microsoft.Build.Framework" Version="18.4.0" />
+    <PackageReference Include="Microsoft.Build.Utilities.Core" Version="18.4.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.3.0" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
@@ -25,17 +27,43 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Build\Jalium.UI.Build.csproj"
+                      AdditionalProperties="BuildJaliumNativeProjects=false;BuildJaliumNativeStaticProjects=false" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
+  </ItemGroup>
+
+  <!--
+    Keep the portable suite coupled to the complete source inventory. New tests
+    are included automatically; the exclusion list below is the auditable set
+    of tests that genuinely require a Windows-only harness or desktop API.
+  -->
+  <ItemGroup>
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\DeviceLost\**\*.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\EffectCaptureCullOverrideTests.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\FileDialogComActivationTests.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\SpellCheckerComActivationTests.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\UiaComWrappersTests.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\VulkanEffectGpuRtSmokeTests.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\VulkanRetainedLayerParityTests.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\WindowTaskbarRelaunchTests.cs" />
+
+    <Compile Include="..\Jalium.UI.Tests\**\*.cs"
+             Exclude="..\Jalium.UI.Tests\bin\**;..\Jalium.UI.Tests\obj*\**;@(_WindowsOnlyTestSource)"
+             LinkBase="" />
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\Jalium.UI.Tests\LinuxDesktopPortalTests.cs" Link="LinuxDesktopPortalTests.cs" />
-    <Compile Include="..\Jalium.UI.Tests\LinuxDragDropTests.cs" Link="LinuxDragDropTests.cs" />
-    <Compile Include="..\Jalium.UI.Tests\NativePlatformAbiTests.cs" Link="NativePlatformAbiTests.cs" />
-    <Compile Include="..\Jalium.UI.Tests\NativeSurfaceDescriptorTests.cs" Link="NativeSurfaceDescriptorTests.cs" />
-    <Compile Include="..\Jalium.UI.Tests\RenderTargetTestNative.cs" Link="RenderTargetTestNative.cs" />
+    <EmbeddedResource Include="..\Jalium.UI.Tests\TestAssets\**\*.jalxaml"
+                      Link="TestAssets\%(RecursiveDir)%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\Jalium.UI.Tests\TestAssets\ApplicationResource.txt"
+                      Link="TestAssets\ApplicationResource.txt" />
+    <EmbeddedResource Include="..\Jalium.UI.Tests\TestAssets\SplashScreen.bmp"
+                      Link="TestAssets\SplashScreen.bmp" />
   </ItemGroup>
 
 </Project>

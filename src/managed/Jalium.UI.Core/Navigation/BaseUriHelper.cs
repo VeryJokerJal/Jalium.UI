@@ -1,4 +1,5 @@
 using Jalium.UI.Markup;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Navigation;
 

@@ -3,8 +3,12 @@ namespace Jalium.UI.Media;
 /// <summary>
 /// Contains static predefined Color objects for all standard named colors.
 /// </summary>
-public static class Colors
+public sealed class Colors
 {
+    private Colors()
+    {
+    }
+
     public static Color AliceBlue => Color.FromRgb(240, 248, 255);
     public static Color AntiqueWhite => Color.FromRgb(250, 235, 215);
     public static Color Aqua => Color.FromRgb(0, 255, 255);

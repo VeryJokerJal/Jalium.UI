@@ -645,7 +645,7 @@ public class Control : FrameworkElement
         _templateRegisteredNames.Add(name, element);
     }
 
-    private static void SetTemplatedParentRecursive(FrameworkElement element, FrameworkElement parent)
+    internal static void SetTemplatedParentRecursive(FrameworkElement element, FrameworkElement parent)
     {
         SetTemplatedParentRecursive(element, parent, new HashSet<FrameworkElement>(ReferenceEqualityComparer.Instance));
     }
@@ -685,11 +685,6 @@ public class Control : FrameworkElement
                 SetTemplatedParentRecursive(nestedContentChild, parent, visited);
             }
 
-            if (element is ScrollViewer nestedScrollViewer && nestedScrollViewer.Content is FrameworkElement nestedScrollContent)
-            {
-                SetTemplatedParentRecursive(nestedScrollContent, parent, visited);
-            }
-
             return;
         }
 
@@ -721,12 +716,6 @@ public class Control : FrameworkElement
             SetTemplatedParentRecursive(contentChild, parent, visited);
         }
 
-        // Special handling for ScrollViewer - its Content might not be in visual tree yet
-        if (element is ScrollViewer scrollViewer && scrollViewer.Content is FrameworkElement scrollContent)
-        {
-            SetTemplatedParentRecursive(scrollContent, parent, visited);
-        }
-
         // Special handling for Panel - ensure all children are processed
         if (element is Panel panel)
         {
@@ -740,7 +729,7 @@ public class Control : FrameworkElement
         }
     }
 
-    private static void PromoteTemplateLocalValuesRecursive(FrameworkElement element)
+    internal static void PromoteTemplateLocalValuesRecursive(FrameworkElement element)
     {
         element.PromoteLocalValuesToLayer(DependencyObject.LayerValueSource.ParentTemplate);
         DynamicResourceBindingOperations.PromoteDynamicResourcesToLayer(
@@ -780,12 +769,6 @@ public class Control : FrameworkElement
             PromoteTemplateLocalValuesRecursive(contentChild);
         }
 
-        // Special handling for ScrollViewer - its Content might not be in visual tree yet
-        if (element is ScrollViewer scrollViewer && scrollViewer.Content is FrameworkElement scrollContent)
-        {
-            PromoteTemplateLocalValuesRecursive(scrollContent);
-        }
-
         // Special handling for Panel - ensure all children are processed
         if (element is Panel panel)
         {
@@ -799,7 +782,7 @@ public class Control : FrameworkElement
         }
     }
 
-    private static void ReactivateBindingsRecursive(FrameworkElement element)
+    internal static void ReactivateBindingsRecursive(FrameworkElement element)
     {
         // Reactivate bindings on this element
         element.ReactivateBindings();
@@ -835,12 +818,6 @@ public class Control : FrameworkElement
         if (element is ContentControl contentControl && contentControl.Content is FrameworkElement contentChild)
         {
             ReactivateBindingsRecursive(contentChild);
-        }
-
-        // Special handling for ScrollViewer
-        if (element is ScrollViewer scrollViewer && scrollViewer.Content is FrameworkElement scrollContent)
-        {
-            ReactivateBindingsRecursive(scrollContent);
         }
 
         // Special handling for Panel

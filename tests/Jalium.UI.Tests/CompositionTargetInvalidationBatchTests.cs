@@ -2,6 +2,7 @@ using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Documents;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 

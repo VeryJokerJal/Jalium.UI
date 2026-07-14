@@ -12,7 +12,7 @@ WPF スタイルのオブジェクトモデル、Razor 構文拡張を備えた 
 
 - 活発に開発中 — v26.10.6（API はマイナーバージョン間でも変化する可能性があります）
 - 主要ターゲット: Windows 10/11（x64、ARM64）
-- クロスプラットフォーム: Android（arm64-v8a、x86_64）、Linux（Vulkan）、macOS（Metal）
+- クロスプラットフォーム: Android（arm64-v8a、x86_64）、Linux（X11/Wayland、Vulkan または Software）、macOS（Metal）
 - ランタイムターゲット: .NET 10（`net10.0-windows`、`net10.0-android`、`net10.0`）
 - レンダリング: DirectX 12（Windows）、Vulkan（Linux/Android）、Metal（macOS）、Software フォールバック
 
@@ -25,7 +25,7 @@ WPF スタイルのオブジェクトモデル、Razor 構文拡張を備えた 
 - 開発者体験: JALXAML ホットリロード（ライブビジュアルツリーへのパッチ適用）に加え、選択的に有効化できる組み込みの DevTools インスペクターとデバッグ HUD
 - NuGet 経由のビルド時ツール（`Jalium.UI.Build`、`Jalium.UI.Xaml.SourceGenerator`）
 - 第一級の Generic Host 統合 — `AppBuilder` は `IHostApplicationBuilder`（`Microsoft.Extensions.Hosting`）を実装しており、DI、構成、オプション、ロギング、メトリクス、さらに Jalium MVVM のビュー/ビューモデル配線を提供します
-- オートメーションピアによる UIA アクセシビリティ対応
+- Windows UIA と Linux AT-SPI ブリッジを備えたオートメーションピアによるアクセシビリティ対応
 - ビジュアルエフェクト: リキッドグラス、背景ぼかし、アクリル、マイカ、トランジションシェーダー、アニメーションビットマップ（GIF / APNG / アニメーション WebP）
 - `MediaElement` / `NativeVideoSurface` によるネイティブ GPU ビデオ（D3D12 / Vulkan サーフェス、段階的にロールアウト中）
 - 完全なマルチタッチ入力 — 物理的な慣性を伴うマニピュレーション、ジェスチャ認識、リアルタイムスタイラスプレビュー
@@ -62,7 +62,7 @@ WPF スタイルのオブジェクトモデル、Razor 構文拡張を備えた 
 | `jalium.native.metal` | macOS | Metal レンダーバックエンド |
 | `jalium.native.software` | すべて | CPU ベースのソフトウェアレンダリングフォールバック |
 | `jalium.native.platform` | すべて | プラットフォーム抽象化（ウィンドウ、入力、イベント） |
-| `jalium.native.text` | Linux, Android, macOS | クロスプラットフォームテキストエンジン（FreeType + HarfBuzz） |
+| `jalium.native.text` | Linux, Android, macOS | 自製テキストエンジン（sfnt/cmap/glyf/CFF + OT shaper；Linux では fontconfig はフォント検出のみ） |
 | `jalium.native.browser` | Windows | WebView2 ブラウザー統合 |
 | `jalium.native.media.core` | すべて | クロスプラットフォームメディア C ABI + 共有オーディオ（miniaudio / dr_libs / minimp3 / stb_vorbis） |
 | `jalium.native.media.windows` | Windows | Media Foundation のビデオ / カメラ / AAC デコーダー + WIC イメージング |
@@ -75,6 +75,9 @@ WPF スタイルのオブジェクトモデル、Razor 構文拡張を備えた 
 | --- | --- |
 | `Jalium.UI.Desktop` | `net10.0-windows` — RID 別のネイティブ DLL（win-x64 / win-arm64）を含むデスクトップ配布 |
 | `Jalium.UI.Android` | `net10.0-android` — ネイティブ .so ライブラリを含む Android 配布 |
+| `Jalium.UI.Linux` | `net10.0` — Linux デスクトップ配布（Wayland/X11、Vulkan + ソフトウェアレンダリング；linux-x64 / linux-arm64 / linux-musl-x64 / linux-musl-arm64 の RID レイアウトを予約） |
+
+ここに示す RID はパッケージレイアウトであり、4 RID と NativeAOT がすべてリリース検証済みであることを意味しません。現在の証拠と残る境界については、[Linux サポート状況マトリクス](docs/linux-parity-status.md)を参照してください。
 
 ## 機能概要
 
@@ -98,7 +101,7 @@ WPF スタイルのオブジェクトモデル、Razor 構文拡張を備えた 
 - **リッチ**: `InkCanvas`、`WebView`/`WebBrowser`、`EditControl`、`RichTextBox`、`QRCode`（自己完結型エンコーダー）、`TitleBar`、`Terminal`、`SwipeControl`
 - **開発者ツール**: `DiffViewer`、`HexEditor`
 - **相互運用**: `WindowsFormsHost`（`net10.0-windows` 上で `System.Windows.Forms` コントロールをホスト）
-- **印刷**: ネイティブ Win32 プラットフォームレイヤーに支えられた `PrintDialog`
+- **印刷**: Windows では Win32、Linux では PDF + xdg-desktop-portal を使用する `PrintDialog`
 - **通知**: トースト形式の通知システム
 
 ### テキスト編集
@@ -119,7 +122,7 @@ WPF スタイルのオブジェクトモデル、Razor 構文拡張を備えた 
 
 - デュアルソースブレンディングによる ClearType サブピクセルテキストレンダリング。
 - CPU ラスタライズフォールバックパス。
-- FreeType + HarfBuzz によるクロスプラットフォームテキストシェーピング（Linux/Android）。
+- 自製 OpenType エンジンによるクロスプラットフォームテキストシェーピング（Linux/Android）— FreeType/HarfBuzz のランタイム依存なし。fontconfig はフォント検出のみに使用。
 - 要素単位の `TextOptions.{TextRenderingMode, TextFormattingMode, TextHintingMode}`
   継承可能な添付プロパティ — 値は `FormattedText` → ネイティブの
   `JaliumTextFormat` を流れてラスタライザーに到達します:
@@ -178,7 +181,7 @@ WPF スタイルのオブジェクトモデル、Razor 構文拡張を備えた 
 
 ### アクセシビリティ
 
-- コアおよび専用コントロール向けの UIA オートメーションピア
+- コアおよび専用コントロール向けのオートメーションピア（Windows UIA と Linux AT-SPI を通じて公開）
 - Chart、DiffViewer、HexEditor、JsonTreeViewer、Map、PropertyGrid のオートメーション
 - `Window.ResolveCursor` は無効な要素に対して標準の矢印を返すため、
   ホバー状態が有効なコントロールと混同されることはありません。
@@ -260,6 +263,9 @@ dotnet add package Jalium.UI.Desktop
 
 # Android
 dotnet add package Jalium.UI.Android
+
+# Linux デスクトップ
+dotnet add package Jalium.UI.Linux
 ```
 
 ### 個別インストール（上級者向け）
@@ -330,8 +336,9 @@ app.Run(window);
 
 ### 前提条件
 
-- .NET 10 SDK（`net10.0-windows`）
-- C++ ワークロードを備えた Visual Studio（ネイティブモジュール用）
+- .NET 10 SDK
+- C++ ワークロードを備えた Visual Studio（Windows ネイティブモジュール用）
+- CMake、Ninja、Clang/GCC、および X11/Wayland 開発パッケージ（Linux ネイティブモジュール用；[Linux ガイド](docs/linux.md)を参照）
 - Vulkan SDK（オプション、Vulkan バックエンド用）
 - Android NDK（オプション、Android ビルド用）
 
@@ -347,8 +354,11 @@ dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release
 # ネイティブモジュールをビルド（VS Developer Command Prompt 内で）
 msbuild src/native/Jalium.Native.sln /m /p:Configuration=Release /p:Platform=x64
 
+# Linux ネイティブモジュールのビルド（glibc / musl ホスト）
+bash eng/linux/build-native.sh linux-x64 Release
+
 # Android 向けにビルド
-bash src/native/build-android-deps.sh  # FreeType + HarfBuzz
+bash src/native/build-android-deps.sh  # Android ネイティブ依存
 bash src/native/build-android.sh       # ネイティブライブラリ
 ```
 
@@ -383,7 +393,7 @@ Jalium.UI/
       jalium.native.metal/     # Metal バックエンド（macOS）
       jalium.native.software/  # CPU ソフトウェアレンダラー
       jalium.native.platform/  # プラットフォーム抽象化レイヤー
-      jalium.native.text/      # FreeType + HarfBuzz テキストエンジン（非 Windows）
+      jalium.native.text/      # 自製テキストエンジン（非 Windows）
       jalium.native.browser/   # WebView2 統合
       jalium.native.media.core/     # クロスプラットフォームメディア C ABI + 共有オーディオ
       jalium.native.media.windows/  # Media Foundation のビデオ / カメラ + WIC
@@ -417,6 +427,8 @@ Jalium.UI/
 | [`docs/razor-syntax.md`](docs/razor-syntax.md) | JALXAML 向けの Razor 構文リファレンス |
 | [`docs/drawing-api.md`](docs/drawing-api.md) | 描画 API（DrawingContext、GPU エフェクト、レンダリング） |
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | 手動ビルド構成ガイド |
+| [`docs/linux.md`](docs/linux.md) | Linux デスクトップガイド（ランタイム依存、ウィンドウシステム、パッケージング） |
+| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | 検証済み Linux サポートマトリクス、証拠、残る境界 |
 | [`docs/render-thread-design.md`](docs/render-thread-design.md) | レンダースレッドアーキテクチャ |
 | [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | プレゼントペーシング / フレームスケジューリング |
 | [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | シェルのドラッグ＆ドロップ統合 |

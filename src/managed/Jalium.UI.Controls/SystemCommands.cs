@@ -1,8 +1,9 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using static Jalium.UI.Interop.Win32.Win32Methods;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI;
 
 /// <summary>
 /// Defines routed commands for common system window operations.
@@ -76,6 +77,15 @@ public static class SystemCommands
     public static void ShowSystemMenu(Window window, Point screenLocation)
     {
         ArgumentNullException.ThrowIfNull(window);
+
+        if (OperatingSystem.IsLinux())
+        {
+            _ = window.TryShowSystemMenuAtScreen(screenLocation);
+            return;
+        }
+
+        if (!OperatingSystem.IsWindows())
+            return;
 
         if (window.Handle == IntPtr.Zero)
             return;

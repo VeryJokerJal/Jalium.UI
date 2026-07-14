@@ -1,7 +1,11 @@
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Jalium.UI.Interop;
+using Jalium.UI.Media;
+using Jalium.UI.Navigation;
 
 namespace Jalium.UI.Controls;
 
@@ -9,8 +13,9 @@ namespace Jalium.UI.Controls;
 /// Hosts and navigates between HTML documents.
 /// This is a compatibility surface that forwards to <see cref="WebView"/>.
 /// </summary>
-public class WebBrowser : FrameworkElement
+public sealed class WebBrowser : ActiveXHost
 {
+    private static readonly Guid WebBrowserClassId = new("8856F961-340A-11D0-A96B-00C04FD705A2");
     private readonly WebView _webView;
     private bool _syncingSourceFromInner;
     private object? _objectForScripting;
@@ -46,8 +51,7 @@ public class WebBrowser : FrameworkElement
         get => _objectForScripting;
         set
         {
-            if (value != null && OperatingSystem.IsWindows() &&
-                !Marshal.IsTypeVisibleFromCom(value.GetType()))
+            if (value != null && !IsTypeVisibleFromCom(value.GetType()))
             {
                 throw new ArgumentException("The scripting object type must be visible to COM.", nameof(value));
             }
@@ -61,6 +65,7 @@ public class WebBrowser : FrameworkElement
     /// Initializes a new instance of the <see cref="WebBrowser"/> class.
     /// </summary>
     public WebBrowser()
+        : base(WebBrowserClassId, fTrusted: true)
     {
         _webView = new WebView();
         _webView.NavigationStarting += OnInnerNavigationStarting;
@@ -191,13 +196,13 @@ public class WebBrowser : FrameworkElement
     }
 
     /// <summary>Occurs just before navigation to a document.</summary>
-    public event EventHandler<WebBrowserNavigatingEventArgs>? Navigating;
+    public event NavigatingCancelEventHandler? Navigating;
 
     /// <summary>Occurs when the document being navigated to has been downloaded and parsed.</summary>
-    public event EventHandler<WebBrowserNavigatedEventArgs>? Navigated;
+    public event NavigatedEventHandler? Navigated;
 
     /// <summary>Occurs when the document being navigated to has finished loading.</summary>
-    public event EventHandler<WebBrowserNavigatedEventArgs>? LoadCompleted;
+    public event LoadCompletedEventHandler? LoadCompleted;
 
     protected override int VisualChildrenCount => 1;
 
@@ -221,6 +226,16 @@ public class WebBrowser : FrameworkElement
         return finalSize;
     }
 
+    // Jalium's portable implementation hosts WebView2/WebKit through WebView as a managed
+    // visual child. Keep the WPF ActiveXHost inheritance contract without activating a
+    // second legacy Internet Explorer COM window underneath it.
+    protected override HandleRef BuildWindowCore(HandleRef hwndParent) =>
+        new(this, IntPtr.Zero);
+
+    protected override void DestroyWindowCore(HandleRef hwnd)
+    {
+    }
+
     private static void OnSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is not WebBrowser browser || browser._syncingSourceFromInner)
@@ -232,7 +247,15 @@ public class WebBrowser : FrameworkElement
     private void OnInnerNavigationStarting(object? sender, WebViewNavigationStartingEventArgs e)
     {
         ApplyObjectForScripting();
-        var navigatingArgs = new WebBrowserNavigatingEventArgs { Uri = e.Uri };
+        var navigatingArgs = new NavigatingCancelEventArgs(
+            e.Uri,
+            content: null,
+            targetContentState: null,
+            extraData: null,
+            NavigationMode.New,
+            webRequest: null,
+            navigator: this,
+            isNavigationInitiator: true);
         Navigating?.Invoke(this, navigatingArgs);
         e.Cancel = navigatingArgs.Cancel;
     }
@@ -241,13 +264,13 @@ public class WebBrowser : FrameworkElement
     {
         UpdateNavigationState();
 
-        var args = new WebBrowserNavigatedEventArgs
-        {
-            Uri = _webView.Source,
-            Content = null,
-            IsNavigationInitiator = true,
-            ExtraData = null
-        };
+        var args = new NavigationEventArgs(
+            _webView.Source,
+            content: null,
+            extraData: null,
+            webResponse: null,
+            navigator: this,
+            isNavigationInitiator: true);
 
         Navigated?.Invoke(this, args);
         LoadCompleted?.Invoke(this, args);
@@ -290,6 +313,30 @@ public class WebBrowser : FrameworkElement
         {
             core.AddHostObjectToScript("external", _objectForScripting);
         }
+    }
+
+    private static bool IsTypeVisibleFromCom(Type type)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            return Marshal.IsTypeVisibleFromCom(type);
+        }
+
+        // Built-in COM interop is unavailable on Unix, so the runtime reports
+        // false even for an explicitly [ComVisible(true)] public type. Preserve
+        // the WPF setter contract by evaluating the same visibility metadata.
+        if (!type.IsVisible || type.IsGenericType)
+        {
+            return false;
+        }
+
+        var typeVisibility = type.GetCustomAttribute<ComVisibleAttribute>(inherit: false);
+        if (typeVisibility != null)
+        {
+            return typeVisibility.Value;
+        }
+
+        return type.Assembly.GetCustomAttribute<ComVisibleAttribute>()?.Value ?? true;
     }
 
     private void UpdateNavigationState()
@@ -335,37 +382,6 @@ public class WebBrowser : FrameworkElement
             return rawResult;
         }
     }
-}
-
-/// <summary>
-/// Provides data for the <see cref="WebBrowser.Navigating"/> event.
-/// </summary>
-public sealed class WebBrowserNavigatingEventArgs : EventArgs
-{
-    /// <summary>Gets the URI being navigated to.</summary>
-    public Uri? Uri { get; init; }
-
-    /// <summary>Gets or sets a value indicating whether the navigation should be canceled.</summary>
-    public bool Cancel { get; set; }
-}
-
-/// <summary>
-/// Provides data for the <see cref="WebBrowser.Navigated"/> and
-/// <see cref="WebBrowser.LoadCompleted"/> events.
-/// </summary>
-public sealed class WebBrowserNavigatedEventArgs : EventArgs
-{
-    /// <summary>Gets the URI that was navigated to.</summary>
-    public Uri? Uri { get; init; }
-
-    /// <summary>Gets the content of the page.</summary>
-    public object? Content { get; init; }
-
-    /// <summary>Gets a value indicating whether this browser initiated the navigation.</summary>
-    public bool IsNavigationInitiator { get; init; }
-
-    /// <summary>Gets extra data associated with the navigation.</summary>
-    public object? ExtraData { get; init; }
 }
 
 [JsonSerializable(typeof(string))]

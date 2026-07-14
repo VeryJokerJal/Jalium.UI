@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Net.Cache;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Media.Imaging;
 
@@ -7,7 +8,7 @@ namespace Jalium.UI.Media.Imaging;
 /// Represents a container for bitmap frames. Each bitmap decoder can contain one or more
 /// <see cref="BitmapFrame"/> objects.
 /// </summary>
-public abstract class BitmapDecoder
+public abstract class BitmapDecoder : DispatcherObject
 {
     private static readonly BitmapCreateOptions s_knownCreateOptions =
         BitmapCreateOptions.PreservePixelFormat |
@@ -225,7 +226,7 @@ public abstract class BitmapDecoder
 
             var data = _encodedData ?? LoadAndValidateSource();
             _encodedData = data;
-            var nativeDecoder = Jalium.UI.Media.BitmapImage.ResolveDecoder();
+            var nativeDecoder = BitmapImage.ResolveDecoder();
             var frameCount = nativeDecoder.ReadFrameCount(data);
             if (frameCount <= 0)
             {

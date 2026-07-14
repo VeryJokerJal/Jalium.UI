@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Diagnostics.Metrics;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Hosting;
 

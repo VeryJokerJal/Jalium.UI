@@ -136,13 +136,19 @@ public class Frame : ContentControl
     public bool Navigate(Uri source)
     {
         ArgumentNullException.ThrowIfNull(source);
-        return _navigationService.Navigate(ResolveSource(source));
+        return _navigationService.Navigate(
+            ResolveSource(source),
+            extraData: null,
+            sandboxExternalContent: SandboxExternalContent);
     }
 
     public bool Navigate(Uri source, object? extraData)
     {
         ArgumentNullException.ThrowIfNull(source);
-        return _navigationService.Navigate(ResolveSource(source), extraData);
+        return _navigationService.Navigate(
+            ResolveSource(source),
+            extraData,
+            sandboxExternalContent: SandboxExternalContent);
     }
 
     public bool Navigate(object content)

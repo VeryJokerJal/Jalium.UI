@@ -1,8 +1,6 @@
-using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Documents;
-using PrintDocumentPage = Jalium.UI.Controls.Printing.DocumentPage;
-using PrintDocumentPaginator = Jalium.UI.Controls.Printing.DocumentPaginator;
-using ViewerDocumentPaginator = Jalium.UI.Controls.Primitives.DocumentPaginator;
+using Jalium.UI.Xps;
+using ViewerDocumentPaginator = Jalium.UI.Documents.DocumentPaginator;
 
 namespace Jalium.UI.Controls;
 
@@ -79,7 +77,7 @@ internal sealed class FlowDocumentSearchSession
 internal static class FlowDocumentViewerSupport
 {
     private static readonly object s_printGate = new();
-    private static Printing.XpsDocumentWriter? s_activeWriter;
+    private static XpsDocumentWriter? s_activeWriter;
 
     public static bool IsValidZoomValue(object? value) =>
         value is double number && double.IsFinite(number) && number > 0.0;
@@ -117,7 +115,7 @@ internal static class FlowDocumentViewerSupport
             return false;
         }
 
-        var dialog = new Printing.PrintDialog
+        var dialog = new PrintDialog
         {
             MinPage = 1,
             MaxPage = (uint)Math.Max(1, paginator.PageCount),
@@ -131,14 +129,13 @@ internal static class FlowDocumentViewerSupport
             return false;
         }
 
-        var adapter = new PrintPaginatorAdapter(paginator);
         if (dialog.PrintQueue == null)
         {
-            dialog.PrintDocument(adapter, "Flow document");
+            dialog.PrintDocument(paginator, "Flow document");
             return true;
         }
 
-        var writer = new Printing.XpsDocumentWriter(dialog.PrintQueue);
+        var writer = new XpsDocumentWriter(dialog.PrintQueue);
         lock (s_printGate)
         {
             s_activeWriter = writer;
@@ -146,7 +143,14 @@ internal static class FlowDocumentViewerSupport
 
         try
         {
-            writer.Write(adapter, dialog.PrintTicket);
+            if (dialog.PrintTicket is { } printTicket)
+            {
+                writer.Write(paginator, printTicket);
+            }
+            else
+            {
+                writer.Write(paginator);
+            }
             return true;
         }
         finally
@@ -169,35 +173,4 @@ internal static class FlowDocumentViewerSupport
         }
     }
 
-    private sealed class PrintPaginatorAdapter : PrintDocumentPaginator
-    {
-        private readonly ViewerDocumentPaginator _source;
-
-        public PrintPaginatorAdapter(ViewerDocumentPaginator source)
-        {
-            _source = source;
-        }
-
-        public override bool IsPageCountValid => _source.IsPageCountValid;
-        public override int PageCount => _source.PageCount;
-        public override Size PageSize
-        {
-            get => _source.PageSize;
-            set => _source.PageSize = value;
-        }
-
-        public override object Source => _source;
-
-        public override PrintDocumentPage GetPage(int pageNumber)
-        {
-            var page = _source.GetPage(pageNumber);
-            if (page == Primitives.DocumentPage.Missing || page.Visual == null)
-            {
-                return PrintDocumentPage.Missing;
-            }
-
-            var bounds = new Rect(page.Size);
-            return new PrintDocumentPage(page.Visual, page.Size, bounds, bounds);
-        }
-    }
 }

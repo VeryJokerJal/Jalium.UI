@@ -3,32 +3,6 @@ using Jalium.UI.Media;
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
-/// Specifies which direction an element should scroll.
-/// </summary>
-public enum SelectiveScrollingOrientation
-{
-    /// <summary>
-    /// Element does not scroll.
-    /// </summary>
-    None = 0,
-
-    /// <summary>
-    /// Element scrolls horizontally.
-    /// </summary>
-    Horizontal = 1,
-
-    /// <summary>
-    /// Element scrolls vertically.
-    /// </summary>
-    Vertical = 2,
-
-    /// <summary>
-    /// Element scrolls both horizontally and vertically.
-    /// </summary>
-    Both = 3
-}
-
-/// <summary>
 /// A grid panel that allows child elements to selectively scroll in different directions.
 /// Commonly used in DataGrid to freeze certain rows or columns.
 /// </summary>

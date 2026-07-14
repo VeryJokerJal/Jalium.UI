@@ -746,31 +746,7 @@ public class InkCanvas : FrameworkElement, IAddChild
     /// <summary>Replaces the set of gestures considered by the recognizer.</summary>
     public void SetEnabledGestures(IEnumerable<ApplicationGesture> applicationGestures)
     {
-        ArgumentNullException.ThrowIfNull(applicationGestures);
-        var gestures = new List<ApplicationGesture>();
-        foreach (ApplicationGesture gesture in applicationGestures)
-        {
-            if (!Enum.IsDefined(gesture))
-                throw new ArgumentException(
-                    "The specified ApplicationGesture is not valid.",
-                    nameof(applicationGestures));
-            if (gestures.Contains(gesture))
-                throw new ArgumentException(
-                    "Duplicate ApplicationGesture values are not allowed.",
-                    nameof(applicationGestures));
-            gestures.Add(gesture);
-        }
-
-        if (gestures.Count == 0)
-            throw new ArgumentException(
-                "The ApplicationGesture collection must contain at least one member.",
-                nameof(applicationGestures));
-        if (gestures.Contains(ApplicationGesture.AllGestures) && gestures.Count != 1)
-            throw new ArgumentException(
-                "If AllGestures is specified, it must be the only member.",
-                nameof(applicationGestures));
-
-        _enabledGestures = gestures.ToArray();
+        _enabledGestures = InkGestureRecognizerCore.ValidateEnabledGestures(applicationGestures);
     }
 
     /// <summary>Returns whether this process currently has compatible ink data to paste.</summary>
@@ -1827,61 +1803,7 @@ public class InkCanvas : FrameworkElement, IAddChild
 
     private GestureRecognitionResult? RecognizeGesture(Stroke stroke)
     {
-        InkStylusPointCollection points = stroke.StylusPoints;
-        if (points.Count == 0)
-            return null;
-
-        InkStylusPoint first = points[0];
-        InkStylusPoint last = points[points.Count - 1];
-        double dx = last.X - first.X;
-        double dy = last.Y - first.Y;
-        double displacement = Math.Sqrt(dx * dx + dy * dy);
-        double pathLength = 0;
-        for (int i = 1; i < points.Count; i++)
-        {
-            double segmentX = points[i].X - points[i - 1].X;
-            double segmentY = points[i].Y - points[i - 1].Y;
-            pathLength += Math.Sqrt(segmentX * segmentX + segmentY * segmentY);
-        }
-
-        ApplicationGesture candidate;
-        if (pathLength <= 20.0 && displacement <= 12.0)
-        {
-            candidate = ApplicationGesture.Tap;
-        }
-        else if (displacement < 10.0)
-        {
-            return null;
-        }
-        else if (Math.Abs(dx) >= Math.Abs(dy) * 2.0)
-        {
-            candidate = dx >= 0 ? ApplicationGesture.Right : ApplicationGesture.Left;
-        }
-        else if (Math.Abs(dy) >= Math.Abs(dx) * 2.0)
-        {
-            candidate = dy >= 0 ? ApplicationGesture.Down : ApplicationGesture.Up;
-        }
-        else if (dx >= 0)
-        {
-            candidate = dy >= 0 ? ApplicationGesture.DownRight : ApplicationGesture.UpRight;
-        }
-        else
-        {
-            candidate = dy >= 0 ? ApplicationGesture.DownLeft : ApplicationGesture.UpLeft;
-        }
-
-        bool allEnabled = _enabledGestures.Length == 1
-            && _enabledGestures[0] == ApplicationGesture.AllGestures;
-        if (!allEnabled && !_enabledGestures.Contains(candidate))
-            return null;
-
-        double straightness = pathLength <= double.Epsilon ? 1.0 : displacement / pathLength;
-        RecognitionConfidence confidence = straightness >= 0.85
-            ? RecognitionConfidence.Strong
-            : straightness >= 0.60
-                ? RecognitionConfidence.Intermediate
-                : RecognitionConfidence.Poor;
-        return new GestureRecognitionResult(confidence, candidate);
+        return InkGestureRecognizerCore.Recognize(stroke, _enabledGestures);
     }
 
     /// <summary>
@@ -2135,12 +2057,12 @@ public class InkCanvas : FrameworkElement, IAddChild
 
         if (e.OldValue is StrokeCollection oldCollection)
         {
-            oldCollection.CollectionChanged -= canvas.OnStrokesCollectionChanged;
+            ((INotifyCollectionChanged)oldCollection).CollectionChanged -= canvas.OnStrokesCollectionChanged;
         }
 
         if (e.NewValue is StrokeCollection newCollection)
         {
-            newCollection.CollectionChanged += canvas.OnStrokesCollectionChanged;
+            ((INotifyCollectionChanged)newCollection).CollectionChanged += canvas.OnStrokesCollectionChanged;
         }
 
         if (e.OldValue is StrokeCollection previousStrokes &&

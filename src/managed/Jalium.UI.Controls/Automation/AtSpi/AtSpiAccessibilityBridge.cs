@@ -3,6 +3,8 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Jalium.UI.Automation;
 using Jalium.UI.Threading;
+using RawProvider = Jalium.UI.Automation.Provider;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls.Automation.AtSpi;
 
@@ -17,6 +19,10 @@ internal static class AtSpiAccessibilityBridge
     private const string ComponentInterface = "org.a11y.atspi.Component";
     private const string ActionInterface = "org.a11y.atspi.Action";
     private const string TextInterface = "org.a11y.atspi.Text";
+    private const string ValueInterface = "org.a11y.atspi.Value";
+    private const string EditableTextInterface = "org.a11y.atspi.EditableText";
+    private const string SelectionInterface = "org.a11y.atspi.Selection";
+    private const string TableInterface = "org.a11y.atspi.Table";
     private const string ApplicationInterface = "org.a11y.atspi.Application";
     private const string ObjectEventInterface = "org.a11y.atspi.Event.Object";
     private const string WindowEventInterface = "org.a11y.atspi.Event.Window";
@@ -43,6 +49,7 @@ internal static class AtSpiAccessibilityBridge
     internal static bool IsActive => s_active;
     internal static string Status => Volatile.Read(ref s_status);
     internal static string? LastError => Volatile.Read(ref s_lastError);
+    internal static string IntrospectionDocument => IntrospectionXml;
 
     internal static void NotifyWindowCreated(Window window)
     {
@@ -159,6 +166,9 @@ internal static class AtSpiAccessibilityBridge
             ComponentInterface => HandleComponentMethod(node, methodName, parameters),
             ActionInterface => HandleActionMethod(node, methodName, parameters),
             TextInterface => HandleTextMethod(node, methodName, parameters),
+            EditableTextInterface => HandleEditableTextMethod(node, methodName, parameters),
+            SelectionInterface => HandleSelectionMethod(node, methodName, parameters),
+            TableInterface => HandleTableMethod(node, methodName, parameters),
             ApplicationInterface => HandleApplicationMethod(methodName),
             _ => throw new NotSupportedException($"Unsupported AT-SPI interface '{interfaceName}'."),
         };
@@ -173,6 +183,10 @@ internal static class AtSpiAccessibilityBridge
             AccessibleInterface => GetAccessibleProperty(node, propertyName),
             ActionInterface => GetActionProperty(node, propertyName),
             TextInterface => GetTextProperty(node, propertyName),
+            ValueInterface => GetValueProperty(node, propertyName),
+            EditableTextInterface when propertyName == "version" => "uint32 1",
+            SelectionInterface => GetSelectionProperty(node, propertyName),
+            TableInterface => GetTableProperty(node, propertyName),
             ApplicationInterface => GetApplicationProperty(propertyName),
             ComponentInterface when propertyName == "version" => "uint32 1",
             _ => throw new NotSupportedException($"Unsupported AT-SPI property '{interfaceName}.{propertyName}'."),
@@ -192,7 +206,363 @@ internal static class AtSpiAccessibilityBridge
             return true;
         }
 
+        if (interfaceName == ValueInterface && propertyName == "CurrentValue")
+        {
+            var node = NodeFromUserData(userData);
+            var newValue = AtSpiNative.GetDirectDouble(value);
+            return node.TryInvoke(peer =>
+            {
+                if (peer.GetPattern(PatternInterface.RangeValue) is
+                        RawProvider.IRangeValueProvider { IsReadOnly: false } provider)
+                {
+                    provider.SetValue(newValue);
+                }
+            });
+        }
+
         return false;
+    }
+
+    private static string GetValueProperty(AtSpiNode node, string property)
+    {
+        if (property == "version")
+            return "uint32 1";
+
+        var (minimum, maximum, current, increment) = node.Invoke(() =>
+            node.Peer!.GetPattern(PatternInterface.RangeValue) is RawProvider.IRangeValueProvider provider
+                ? (provider.Minimum, provider.Maximum, provider.Value, provider.SmallChange)
+                : (0.0, 0.0, 0.0, 0.0));
+
+        static string Format(double value) =>
+            double.IsFinite(value)
+                ? value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)
+                : "0";
+
+        return property switch
+        {
+            "MinimumValue" => $"double {Format(minimum)}",
+            "MaximumValue" => $"double {Format(maximum)}",
+            "CurrentValue" => $"double {Format(current)}",
+            "MinimumIncrement" => $"double {Format(increment)}",
+            "Text" => AtSpiModel.Quote(Format(current)),
+            _ => throw new NotSupportedException($"Unsupported Value property '{property}'."),
+        };
+    }
+
+    private static string HandleEditableTextMethod(AtSpiNode node, string method, nint parameters)
+    {
+        bool Apply(Func<string, string?> transform)
+        {
+            bool applied = false;
+            bool invoked = node.TryInvoke(peer =>
+            {
+                if (peer.GetPattern(PatternInterface.Value) is not
+                        RawProvider.IValueProvider { IsReadOnly: false } provider)
+                {
+                    return;
+                }
+
+                if (transform(provider.Value ?? string.Empty) is { } updated)
+                {
+                    provider.SetValue(updated);
+                    applied = true;
+                }
+            });
+            if (invoked && applied)
+            {
+                string currentText = node.Invoke(() => AtSpiModel.GetText(node.Peer!));
+                EmitTextChanges(node, currentText);
+            }
+            return invoked && applied;
+        }
+
+        switch (method)
+        {
+            case "SetTextContents":
+            {
+                string text = AtSpiNative.GetString(parameters, 0);
+                return $"({Bool(Apply(_ => text))},)";
+            }
+
+            case "InsertText":
+            {
+                int position = AtSpiNative.GetInt32(parameters, 0);
+                string text = AtSpiNative.GetString(parameters, 1);
+                int length = AtSpiNative.GetInt32(parameters, 2);
+                if (length >= 0)
+                    text = AtSpiModel.SliceText(text, 0, length);
+                bool ok = Apply(current =>
+                {
+                    var map = new AtSpiTextMap(current);
+                    return current.Insert(map.ToUtf16Offset(position), text);
+                });
+                return $"({Bool(ok)},)";
+            }
+
+            case "DeleteText":
+            {
+                int start = AtSpiNative.GetInt32(parameters, 0);
+                int end = AtSpiNative.GetInt32(parameters, 1);
+                bool ok = Apply(current =>
+                {
+                    var map = new AtSpiTextMap(current);
+                    int from = map.ToUtf16Offset(Math.Min(start, end));
+                    int to = map.ToUtf16Offset(Math.Max(start, end));
+                    return current.Remove(from, to - from);
+                });
+                return $"({Bool(ok)},)";
+            }
+
+            case "CopyText":
+            {
+                int start = AtSpiNative.GetInt32(parameters, 0);
+                int end = AtSpiNative.GetInt32(parameters, 1);
+                string current = node.Invoke(() =>
+                    node.Peer!.GetPattern(PatternInterface.Value) is RawProvider.IValueProvider provider
+                        ? provider.Value ?? string.Empty
+                        : string.Empty);
+                var map = new AtSpiTextMap(current);
+                int from = Math.Clamp(Math.Min(start, end), 0, map.CharacterCount);
+                int to = Math.Clamp(Math.Max(start, end), from, map.CharacterCount);
+                WpfClipboard.SetText(map.Slice(from, to));
+                // CopyText intentionally has no D-Bus return value in AT-SPI2.
+                return "()";
+            }
+
+            case "CutText":
+            {
+                int start = AtSpiNative.GetInt32(parameters, 0);
+                int end = AtSpiNative.GetInt32(parameters, 1);
+                bool ok = false;
+                _ = node.TryInvoke(peer =>
+                {
+                    if (peer.GetPattern(PatternInterface.Value) is not
+                            RawProvider.IValueProvider { IsReadOnly: false } provider)
+                    {
+                        return;
+                    }
+
+                    string current = provider.Value ?? string.Empty;
+                    var map = new AtSpiTextMap(current);
+                    int fromScalar = Math.Clamp(Math.Min(start, end), 0, map.CharacterCount);
+                    int toScalar = Math.Clamp(Math.Max(start, end), fromScalar, map.CharacterCount);
+                    int from = map.ToUtf16Offset(fromScalar);
+                    int to = map.ToUtf16Offset(toScalar);
+                    try
+                    {
+                        WpfClipboard.SetText(map.Slice(fromScalar, toScalar));
+                    }
+                    catch (ExternalException)
+                    {
+                        return;
+                    }
+                    provider.SetValue(current.Remove(from, to - from));
+                    ok = true;
+                });
+                if (ok)
+                {
+                    string currentText = node.Invoke(() => AtSpiModel.GetText(node.Peer!));
+                    EmitTextChanges(node, currentText);
+                }
+                return $"({Bool(ok)},)";
+            }
+
+            case "PasteText":
+            {
+                int position = AtSpiNative.GetInt32(parameters, 0);
+                if (!WpfClipboard.ContainsText())
+                    return "(false,)";
+                string clipboardText = WpfClipboard.GetText();
+                bool ok = Apply(current =>
+                {
+                    var map = new AtSpiTextMap(current);
+                    return current.Insert(map.ToUtf16Offset(position), clipboardText);
+                });
+                return $"({Bool(ok)},)";
+            }
+
+            default:
+                throw new NotSupportedException($"Unsupported EditableText method '{method}'.");
+        }
+    }
+
+    private static string HandleSelectionMethod(AtSpiNode node, string method, nint parameters)
+    {
+        switch (method)
+        {
+            case "GetSelectedChild":
+            {
+                int index = AtSpiNative.GetInt32(parameters, 0);
+                IReadOnlyList<AtSpiNode> selected = GetSelectedNodes(node);
+                AtSpiNode? child = index >= 0 && index < selected.Count ? selected[index] : null;
+                return $"({Reference(child)},)";
+            }
+            case "SelectChild":
+            {
+                int index = AtSpiNative.GetInt32(parameters, 0);
+                bool selected = TrySelectChild(node, index, add: true);
+                return $"({Bool(selected)},)";
+            }
+            case "DeselectSelectedChild":
+            {
+                int selectedIndex = AtSpiNative.GetInt32(parameters, 0);
+                IReadOnlyList<AtSpiNode> selected = GetSelectedNodes(node);
+                bool deselected = selectedIndex >= 0 && selectedIndex < selected.Count &&
+                    TryChangeSelectionItem(node, selected[selectedIndex].Peer, SelectionChange.Remove);
+                return $"({Bool(deselected)},)";
+            }
+            case "IsChildSelected":
+            {
+                int index = AtSpiNative.GetInt32(parameters, 0);
+                bool isSelected = IsChildSelected(node, index);
+                return $"({Bool(isSelected)},)";
+            }
+            case "SelectAll":
+                return $"({Bool(TrySelectAll(node))},)";
+            case "ClearSelection":
+                return $"({Bool(TryClearSelection(node))},)";
+            case "DeselectChild":
+            {
+                int index = AtSpiNative.GetInt32(parameters, 0);
+                bool deselected = TrySelectChild(node, index, add: false);
+                return $"({Bool(deselected)},)";
+            }
+            default:
+                throw new NotSupportedException($"Unsupported Selection method '{method}'.");
+        }
+    }
+
+    private static string HandleTableMethod(AtSpiNode node, string method, nint parameters)
+    {
+        var (rows, columns) = GetTableDimensions(node);
+        switch (method)
+        {
+            case "GetAccessibleAt":
+            {
+                int row = AtSpiNative.GetInt32(parameters, 0);
+                int column = AtSpiNative.GetInt32(parameters, 1);
+                return $"({Reference(GetTableCellNode(node, row, column))},)";
+            }
+            case "GetIndexAt":
+            {
+                int row = AtSpiNative.GetInt32(parameters, 0);
+                int column = AtSpiNative.GetInt32(parameters, 1);
+                long wideIndex = IsValidTableCell(row, column, rows, columns)
+                    ? (long)row * columns + column
+                    : -1;
+                int index = wideIndex is >= 0 and <= int.MaxValue ? (int)wideIndex : -1;
+                return $"({index},)";
+            }
+            case "GetRowAtIndex":
+            {
+                int index = AtSpiNative.GetInt32(parameters, 0);
+                int row = index >= 0 && columns > 0 && index < (long)rows * columns
+                    ? index / columns
+                    : -1;
+                return $"({row},)";
+            }
+            case "GetColumnAtIndex":
+            {
+                int index = AtSpiNative.GetInt32(parameters, 0);
+                int column = index >= 0 && columns > 0 && index < (long)rows * columns
+                    ? index % columns
+                    : -1;
+                return $"({column},)";
+            }
+            case "GetRowDescription":
+            {
+                int row = AtSpiNative.GetInt32(parameters, 0);
+                return $"({AtSpiModel.Quote(GetTableHeaderName(node, row, rowHeader: true))},)";
+            }
+            case "GetColumnDescription":
+            {
+                int column = AtSpiNative.GetInt32(parameters, 0);
+                return $"({AtSpiModel.Quote(GetTableHeaderName(node, column, rowHeader: false))},)";
+            }
+            case "GetRowExtentAt":
+            case "GetColumnExtentAt":
+            {
+                int row = AtSpiNative.GetInt32(parameters, 0);
+                int column = AtSpiNative.GetInt32(parameters, 1);
+                int extent = IsValidTableCell(row, column, rows, columns) ? 1 : -1;
+                return $"({extent},)";
+            }
+            case "GetRowHeader":
+            {
+                int row = AtSpiNative.GetInt32(parameters, 0);
+                return $"({Reference(GetTableHeaderNode(node, row, rowHeader: true))},)";
+            }
+            case "GetColumnHeader":
+            {
+                int column = AtSpiNative.GetInt32(parameters, 0);
+                return $"({Reference(GetTableHeaderNode(node, column, rowHeader: false))},)";
+            }
+            case "GetSelectedRows":
+                return $"({IntArray(GetSelectedTableRows(node))},)";
+            case "GetSelectedColumns":
+                // Jalium's grid providers expose row/item selection. They do not
+                // currently advertise whole-column selection.
+                return "(@ai [],)";
+            case "IsRowSelected":
+            {
+                int row = AtSpiNative.GetInt32(parameters, 0);
+                return $"({Bool(GetSelectedTableRows(node).Contains(row))},)";
+            }
+            case "IsColumnSelected":
+                return "(false,)";
+            case "IsSelected":
+            {
+                int row = AtSpiNative.GetInt32(parameters, 0);
+                int column = AtSpiNative.GetInt32(parameters, 1);
+                return $"({Bool(IsTableCellSelected(node, row, column))},)";
+            }
+            case "AddRowSelection":
+            {
+                int row = AtSpiNative.GetInt32(parameters, 0);
+                return $"({Bool(TryChangeTableRowSelection(node, row, SelectionChange.Add))},)";
+            }
+            case "RemoveRowSelection":
+            {
+                int row = AtSpiNative.GetInt32(parameters, 0);
+                return $"({Bool(TryChangeTableRowSelection(node, row, SelectionChange.Remove))},)";
+            }
+            case "AddColumnSelection":
+            case "RemoveColumnSelection":
+                return "(false,)";
+            case "GetRowColumnExtentsAtIndex":
+            {
+                int index = AtSpiNative.GetInt32(parameters, 0);
+                bool valid = index >= 0 && columns > 0 && index < (long)rows * columns;
+                int row = valid ? index / columns : -1;
+                int column = valid ? index % columns : -1;
+                bool selected = valid && IsTableCellSelected(node, row, column);
+                return $"({Bool(valid)}, {row}, {column}, {(valid ? 1 : 0)}, {(valid ? 1 : 0)}, {Bool(selected)})";
+            }
+            default:
+                throw new NotSupportedException($"Unsupported Table method '{method}'.");
+        }
+    }
+
+    private static string GetSelectionProperty(AtSpiNode node, string property) => property switch
+    {
+        "version" => "uint32 1",
+        "NSelectedChildren" => $"int32 {GetSelectedNodes(node).Count}",
+        _ => throw new NotSupportedException($"Unsupported Selection property '{property}'."),
+    };
+
+    private static string GetTableProperty(AtSpiNode node, string property)
+    {
+        var (rows, columns) = GetTableDimensions(node);
+        return property switch
+        {
+            "version" => "uint32 1",
+            "NRows" => $"int32 {rows}",
+            "NColumns" => $"int32 {columns}",
+            "Caption" or "Summary" => Reference(null),
+            "NSelectedRows" => $"int32 {GetSelectedTableRows(node).Length}",
+            "NSelectedColumns" => "int32 0",
+            _ => throw new NotSupportedException($"Unsupported Table property '{property}'."),
+        };
     }
 
     private static bool EnsureStarted()
@@ -299,10 +669,14 @@ internal static class AtSpiAccessibilityBridge
         string path = $"/org/a11y/atspi/accessible/{Interlocked.Increment(ref s_nextObjectId)}";
         var node = new AtSpiNode(
             path, peer, window, dispatcher,
-            descriptor.Role, descriptor.HasAction, descriptor.HasText);
+            descriptor.Role, descriptor.HasAction, descriptor.HasText, descriptor.InitialText);
         var interfaces = new List<string> { AccessibleInterface, ComponentInterface };
         if (descriptor.HasAction) interfaces.Add(ActionInterface);
         if (descriptor.HasText) interfaces.Add(TextInterface);
+        if (descriptor.HasValue) interfaces.Add(ValueInterface);
+        if (descriptor.HasEditableText) interfaces.Add(EditableTextInterface);
+        if (descriptor.HasSelection) interfaces.Add(SelectionInterface);
+        if (descriptor.HasTable) interfaces.Add(TableInterface);
 
         if (!RegisterNodeLocked(node, interfaces, out var error))
             throw new InvalidOperationException(error ?? $"Unable to register AT-SPI object {path}.");
@@ -316,10 +690,20 @@ internal static class AtSpiAccessibilityBridge
     {
         AtSpiRole role = AtSpiModel.MapRole(peer.GetAutomationControlType(), peer.GetClassName());
         bool hasAction = GetAction(peer).Kind != AtSpiActionKind.None;
-        bool hasText = peer.GetPattern(PatternInterface.Text) is ITextProvider ||
-                       peer.GetPattern(PatternInterface.Value) is IValueProvider ||
+        bool hasText = peer.GetPattern(PatternInterface.Text) is RawProvider.ITextProvider ||
+                       peer.GetPattern(PatternInterface.Value) is RawProvider.IValueProvider ||
                        role is AtSpiRole.Label or AtSpiRole.Text or AtSpiRole.Entry or AtSpiRole.PasswordText;
-        return new AtSpiNodeDescriptor(role, hasAction, hasText);
+        // org.a11y.atspi.Value: sliders, progress bars, scroll bars, spinners.
+        bool hasValue = peer.GetPattern(PatternInterface.RangeValue) is RawProvider.IRangeValueProvider;
+        // org.a11y.atspi.EditableText: writable Value pattern on a text role
+        // lets assistive tech type into TextBox/RichTextBox.
+        bool hasEditableText = hasText &&
+            peer.GetPattern(PatternInterface.Value) is RawProvider.IValueProvider { IsReadOnly: false };
+        bool hasSelection = peer.GetPattern(PatternInterface.Selection) is RawProvider.ISelectionProvider;
+        bool hasTable = peer.GetPattern(PatternInterface.Table) is RawProvider.ITableProvider;
+        string initialText = hasText ? AtSpiModel.GetText(peer) : string.Empty;
+        return new AtSpiNodeDescriptor(
+            role, hasAction, hasText, hasValue, hasEditableText, hasSelection, hasTable, initialText);
     }
 
     private static bool RegisterNodeLocked(
@@ -361,8 +745,7 @@ internal static class AtSpiAccessibilityBridge
             case "GetChildAtIndex":
             {
                 int index = AtSpiNative.GetInt32(parameters, 0);
-                var children = GetChildren(node, updateCache: true);
-                var child = index >= 0 && index < children.Count ? children[index] : null;
+                AtSpiNode? child = GetChildAtIndex(node, index);
                 return $"({Reference(child)},)";
             }
             case "GetChildren":
@@ -447,7 +830,7 @@ internal static class AtSpiAccessibilityBridge
             case "ScrollToPoint":
                 return $"({Bool(node.TryInvoke(static peer =>
                 {
-                    if (peer.GetPattern(PatternInterface.ScrollItem) is IScrollItemProvider scroll)
+                    if (peer.GetPattern(PatternInterface.ScrollItem) is RawProvider.IScrollItemProvider scroll)
                         scroll.ScrollIntoView();
                 }))},)";
             default:
@@ -476,76 +859,75 @@ internal static class AtSpiAccessibilityBridge
     private static string HandleTextMethod(AtSpiNode node, string method, nint parameters)
     {
         string text = node.Invoke(() => AtSpiModel.GetText(node.Peer!));
+        var map = new AtSpiTextMap(text);
         switch (method)
         {
             case "GetStringAtOffset":
-            case "GetTextAtOffset":
             {
                 var result = AtSpiModel.GetStringAtOffset(
                     text, AtSpiNative.GetInt32(parameters, 0), AtSpiNative.GetUInt32(parameters, 1));
+                return $"({AtSpiModel.Quote(result.Text)}, {result.Start}, {result.End})";
+            }
+            case "GetTextAtOffset":
+            {
+                var result = AtSpiModel.GetLegacyTextAtOffset(
+                    text,
+                    AtSpiNative.GetInt32(parameters, 0),
+                    AtSpiNative.GetUInt32(parameters, 1),
+                    AtSpiLegacyTextPosition.At);
                 return $"({AtSpiModel.Quote(result.Text)}, {result.Start}, {result.End})";
             }
             case "GetText":
                 return $"({AtSpiModel.Quote(AtSpiModel.SliceText(text, AtSpiNative.GetInt32(parameters, 0), AtSpiNative.GetInt32(parameters, 1)))},)";
             case "SetCaretOffset":
             {
-                int offset = Math.Clamp(AtSpiNative.GetInt32(parameters, 0), 0, text.Length);
+                int offset = Math.Clamp(AtSpiNative.GetInt32(parameters, 0), 0, map.CharacterCount);
                 return $"({Bool(SelectText(node, offset, 0))},)";
             }
             case "GetTextBeforeOffset":
             {
-                int offset = Math.Clamp(AtSpiNative.GetInt32(parameters, 0), 0, text.Length);
-                string before = text[..offset];
-                var result = before.Length == 0
-                    ? (string.Empty, 0, 0)
-                    : AtSpiModel.GetStringAtOffset(before, before.Length - 1, AtSpiNative.GetUInt32(parameters, 1));
-                return $"({AtSpiModel.Quote(result.Item1)}, {result.Item2}, {result.Item3})";
+                var result = AtSpiModel.GetLegacyTextAtOffset(
+                    text,
+                    AtSpiNative.GetInt32(parameters, 0),
+                    AtSpiNative.GetUInt32(parameters, 1),
+                    AtSpiLegacyTextPosition.Before);
+                return $"({AtSpiModel.Quote(result.Text)}, {result.Start}, {result.End})";
             }
             case "GetTextAfterOffset":
             {
-                int offset = Math.Clamp(AtSpiNative.GetInt32(parameters, 0) + 1, 0, text.Length);
-                if (offset >= text.Length) return "('', 0, 0)";
-                var result = AtSpiModel.GetStringAtOffset(text, offset, AtSpiNative.GetUInt32(parameters, 1));
+                var result = AtSpiModel.GetLegacyTextAtOffset(
+                    text,
+                    AtSpiNative.GetInt32(parameters, 0),
+                    AtSpiNative.GetUInt32(parameters, 1),
+                    AtSpiLegacyTextPosition.After);
                 return $"({AtSpiModel.Quote(result.Text)}, {result.Start}, {result.End})";
             }
             case "GetCharacterAtOffset":
-            {
-                int offset = AtSpiNative.GetInt32(parameters, 0);
-                int codePoint = -1;
-                if (offset >= 0 && offset < text.Length)
-                {
-                    char current = text[offset];
-                    if (char.IsHighSurrogate(current) && offset + 1 < text.Length && char.IsLowSurrogate(text[offset + 1]))
-                        codePoint = char.ConvertToUtf32(current, text[offset + 1]);
-                    else if (char.IsLowSurrogate(current) && offset > 0 && char.IsHighSurrogate(text[offset - 1]))
-                        codePoint = char.ConvertToUtf32(text[offset - 1], current);
-                    else
-                        codePoint = current;
-                }
-                return $"({codePoint},)";
-            }
+                return $"({map.GetCodePoint(AtSpiNative.GetInt32(parameters, 0))},)";
             case "GetAttributeValue":
                 return "('',)";
             case "GetAttributes":
             case "GetAttributeRun":
-                return $"(@a{{ss}} {{}}, 0, {text.Length})";
+                return $"(@a{{ss}} {{}}, 0, {map.CharacterCount})";
             case "GetDefaultAttributes":
             case "GetDefaultAttributeSet":
                 return "(@a{ss} {},)";
             case "GetCharacterExtents":
             case "GetRangeExtents":
             {
-                uint coord = AtSpiNative.GetUInt32(parameters, method == "GetCharacterExtents" ? 1 : 2);
-                var rect = GetBounds(node, coord);
+                bool character = method == "GetCharacterExtents";
+                int start = AtSpiNative.GetInt32(parameters, 0);
+                int end = character ? start + 1 : AtSpiNative.GetInt32(parameters, 1);
+                uint coord = AtSpiNative.GetUInt32(parameters, character ? 1 : 2);
+                var rect = GetTextRangeBounds(node, start, Math.Max(0, end - start), coord);
                 return $"({rect.X}, {rect.Y}, {rect.Width}, {rect.Height})";
             }
             case "GetOffsetAtPoint":
             {
-                var rect = GetBounds(node, AtSpiNative.GetUInt32(parameters, 2));
                 int x = AtSpiNative.GetInt32(parameters, 0);
-                int offset = rect.Width <= 0 || text.Length == 0
-                    ? 0
-                    : Math.Clamp((int)((x - rect.X) / (double)rect.Width * text.Length), 0, text.Length);
+                int y = AtSpiNative.GetInt32(parameters, 1);
+                uint coord = AtSpiNative.GetUInt32(parameters, 2);
+                int offset = GetTextOffsetAtPoint(node, map.CharacterCount, x, y, coord);
                 return $"({offset},)";
             }
             case "GetNSelections":
@@ -564,7 +946,9 @@ internal static class AtSpiAccessibilityBridge
                 int offset = method == "SetSelection" ? 1 : 0;
                 int start = AtSpiNative.GetInt32(parameters, offset);
                 int end = AtSpiNative.GetInt32(parameters, offset + 1);
-                return $"({Bool(SelectText(node, start, Math.Max(0, end - start)))},)";
+                int from = Math.Min(start, end);
+                int to = Math.Max(start, end);
+                return $"({Bool(SelectText(node, from, to - from))},)";
             }
             case "RemoveSelection":
             {
@@ -580,8 +964,19 @@ internal static class AtSpiAccessibilityBridge
                 int end = AtSpiNative.GetInt32(parameters, 1);
                 bool scrolled = node.TryInvoke(peer =>
                 {
-                    if (peer.GetPattern(PatternInterface.Text) is ITextProvider provider)
-                        provider.ScrollIntoView(start, Math.Max(0, end - start));
+                    if (peer.GetPattern(PatternInterface.Text) is RawProvider.ITextProvider provider)
+                    {
+                        IAutomationTextProviderSource? source = GetTextSource(provider);
+                        if (source is null)
+                            return;
+
+                        var providerMap = new AtSpiTextMap(source.Text);
+                        int fromScalar = Math.Clamp(Math.Min(start, end), 0, providerMap.CharacterCount);
+                        int toScalar = Math.Clamp(Math.Max(start, end), fromScalar, providerMap.CharacterCount);
+                        int fromUtf16 = providerMap.ToUtf16Offset(fromScalar);
+                        int toUtf16 = providerMap.ToUtf16Offset(toScalar);
+                        source.ScrollIntoView(fromUtf16, toUtf16 - fromUtf16);
+                    }
                 });
                 return $"({Bool(scrolled)},)";
             }
@@ -605,7 +1000,7 @@ internal static class AtSpiAccessibilityBridge
             "Name" => AtSpiModel.Quote(node.IsApplicationRoot ? ApplicationName() : node.Invoke(() => node.Peer!.GetName())),
             "Description" => AtSpiModel.Quote(node.IsApplicationRoot ? "Jalium.UI application" : node.Invoke(() => node.Peer!.GetHelpText())),
             "Parent" => Reference(GetParent(node)),
-            "ChildCount" => $"int32 {GetChildren(node, updateCache: true).Count}",
+            "ChildCount" => $"int32 {GetAccessibleChildCount(node)}",
             "Locale" => AtSpiModel.Quote(CurrentLocale()),
             "AccessibleId" => AtSpiModel.Quote(node.IsApplicationRoot ? "application" : node.Invoke(() => node.Peer!.GetAutomationId())),
             "HelpText" => AtSpiModel.Quote(node.IsApplicationRoot ? string.Empty : node.Invoke(() => node.Peer!.GetHelpText())),
@@ -625,7 +1020,7 @@ internal static class AtSpiAccessibilityBridge
         return property switch
         {
             "version" => "uint32 1",
-            "CharacterCount" => $"int32 {node.Invoke(() => AtSpiModel.GetText(node.Peer!).Length)}",
+            "CharacterCount" => $"int32 {node.Invoke(() => AtSpiModel.GetCharacterCount(AtSpiModel.GetText(node.Peer!)))}",
             "CaretOffset" => $"int32 {GetTextSelection(node).Start}",
             _ => throw new NotSupportedException($"Unsupported Text property '{property}'."),
         };
@@ -645,6 +1040,373 @@ internal static class AtSpiAccessibilityBridge
         };
     }
 
+    private static (int Rows, int Columns) GetTableDimensions(AtSpiNode node) =>
+        node.Invoke(() => GetGridProvider(node.Peer!) is { } grid
+            ? (Math.Max(0, grid.RowCount), Math.Max(0, grid.ColumnCount))
+            : (0, 0));
+
+    private static RawProvider.IGridProvider? GetGridProvider(AutomationPeer peer) =>
+        peer.GetPattern(PatternInterface.Table) as RawProvider.IGridProvider ??
+        peer.GetPattern(PatternInterface.Grid) as RawProvider.IGridProvider;
+
+    private static RawProvider.ITableProvider? GetTableProvider(AutomationPeer peer) =>
+        peer.GetPattern(PatternInterface.Table) as RawProvider.ITableProvider;
+
+    private static AutomationPeer? GetPeer(RawProvider.IRawElementProviderSimple? provider) =>
+        provider is RawProvider.IAutomationPeerRawProvider raw ? raw.Peer : null;
+
+    private static AutomationPeer[] GetSelectionPeers(AutomationPeer peer)
+    {
+        object? pattern = peer.GetPattern(PatternInterface.Selection);
+        if (pattern is RawProvider.ISelectionProvider provider)
+        {
+            return provider.GetSelection()
+                .Select(GetPeer)
+                .Where(static value => value is not null)
+                .Cast<AutomationPeer>()
+                .ToArray();
+        }
+        return [];
+    }
+
+    private static bool CanSelectMultiple(AutomationPeer peer)
+    {
+        object? pattern = peer.GetPattern(PatternInterface.Selection);
+        return pattern is RawProvider.ISelectionProvider provider && provider.CanSelectMultiple;
+    }
+
+    private static bool IsSelectionRequired(AutomationPeer peer)
+    {
+        object? pattern = peer.GetPattern(PatternInterface.Selection);
+        return pattern is RawProvider.ISelectionProvider provider && provider.IsSelectionRequired;
+    }
+
+    private static IReadOnlyList<AtSpiNode> GetSelectedNodes(AtSpiNode node)
+    {
+        AutomationPeer[] selected = node.Invoke(() => GetSelectionPeers(node.Peer!));
+        if (selected.Length == 0)
+            return [];
+
+        if (node.Interfaces.Contains(TableInterface, StringComparer.Ordinal))
+        {
+            var (rows, columns) = GetTableDimensions(node);
+            if (rows == 0 || columns == 0)
+                return [];
+
+            AutomationPeer[] ordinaryChildren = node.Invoke(() => node.Peer!.GetChildren().ToArray());
+            var result = new List<AtSpiNode>(selected.Length);
+            var addedPaths = new HashSet<string>(StringComparer.Ordinal);
+            foreach (AutomationPeer selectedPeer in selected)
+            {
+                AtSpiNode? selectedNode = null;
+                var coordinate = FindTableCoordinate(node, selectedPeer, rows, columns);
+                if (coordinate is { } cell)
+                {
+                    selectedNode = GetTableCellNode(node, cell.Row, cell.Column);
+                }
+                else
+                {
+                    int row = Array.FindIndex(ordinaryChildren, child => ReferenceEquals(child, selectedPeer));
+                    if (row >= 0 && row < rows)
+                        selectedNode = GetTableCellNode(node, row, 0);
+                }
+
+                if (selectedNode != null && addedPaths.Add(selectedNode.Path))
+                    result.Add(selectedNode);
+            }
+            return result;
+        }
+
+        return selected
+            .Select(peer => EnsurePeerNode(peer, node.Window!, node.Dispatcher!))
+            .ToArray();
+    }
+
+    private static (int Row, int Column)? FindTableCoordinate(
+        AtSpiNode node,
+        AutomationPeer target,
+        int rows,
+        int columns)
+    {
+        return node.Invoke<(int Row, int Column)?>(() =>
+        {
+            RawProvider.IGridProvider? grid = GetGridProvider(node.Peer!);
+            if (grid == null)
+                return null;
+            for (int row = 0; row < rows; row++)
+            {
+                for (int column = 0; column < columns; column++)
+                {
+                    if (ReferenceEquals(GetPeer(grid.GetItem(row, column)), target))
+                        return (row, column);
+                }
+            }
+            return null;
+        });
+    }
+
+    private static AtSpiNode? GetTableCellNode(AtSpiNode table, int row, int column)
+    {
+        var (rows, columns) = GetTableDimensions(table);
+        if (!IsValidTableCell(row, column, rows, columns))
+            return null;
+
+        AutomationPeer? peer = table.Invoke(() =>
+        {
+            RawProvider.IGridProvider? grid = GetGridProvider(table.Peer!);
+            return grid == null ? null : GetPeer(grid.GetItem(row, column));
+        });
+        if (peer == null)
+            return null;
+
+        AtSpiNode cell = EnsurePeerNode(peer, table.Window!, table.Dispatcher!);
+        lock (s_gate)
+        {
+            cell.LogicalParent = table;
+            long logicalIndex = (long)row * columns + column;
+            cell.LogicalIndex = logicalIndex <= int.MaxValue ? (int)logicalIndex : -1;
+        }
+        return cell;
+    }
+
+    private static AtSpiNode? GetTableHeaderNode(AtSpiNode table, int index, bool rowHeader)
+    {
+        AutomationPeer? peer = table.Invoke(() =>
+        {
+            RawProvider.ITableProvider? provider = GetTableProvider(table.Peer!);
+            RawProvider.IRawElementProviderSimple[] headers = provider == null
+                ? []
+                : rowHeader ? provider.GetRowHeaders() : provider.GetColumnHeaders();
+            return index >= 0 && index < headers.Length ? GetPeer(headers[index]) : null;
+        });
+        return peer == null ? null : EnsurePeerNode(peer, table.Window!, table.Dispatcher!);
+    }
+
+    private static string GetTableHeaderName(AtSpiNode table, int index, bool rowHeader)
+    {
+        AtSpiNode? header = GetTableHeaderNode(table, index, rowHeader);
+        return header?.Invoke(() => header.Peer!.GetName()) ?? string.Empty;
+    }
+
+    private static int[] GetSelectedTableRows(AtSpiNode table)
+    {
+        var (rows, columns) = GetTableDimensions(table);
+        if (rows == 0 || columns == 0)
+            return [];
+
+        return table.Invoke(() =>
+        {
+            AutomationPeer[] selected = GetSelectionPeers(table.Peer!);
+            if (selected.Length == 0)
+                return [];
+
+            var selectedSet = new HashSet<AutomationPeer>(selected);
+            var result = new SortedSet<int>();
+            AutomationPeer[] ordinaryChildren = table.Peer!.GetChildren().ToArray();
+            for (int row = 0; row < Math.Min(rows, ordinaryChildren.Length); row++)
+            {
+                if (selectedSet.Contains(ordinaryChildren[row]))
+                    _ = result.Add(row);
+            }
+
+            RawProvider.IGridProvider? grid = GetGridProvider(table.Peer!);
+            if (grid != null)
+            {
+                for (int row = 0; row < rows; row++)
+                {
+                    for (int column = 0; column < columns; column++)
+                    {
+                        AutomationPeer? cell = GetPeer(grid.GetItem(row, column));
+                        if (cell != null && selectedSet.Contains(cell))
+                        {
+                            _ = result.Add(row);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            return result.ToArray();
+        });
+    }
+
+    private static bool IsTableCellSelected(AtSpiNode table, int row, int column)
+    {
+        var (rows, columns) = GetTableDimensions(table);
+        if (!IsValidTableCell(row, column, rows, columns))
+            return false;
+        if (GetSelectedTableRows(table).Contains(row))
+            return true;
+
+        return table.Invoke(() =>
+        {
+            RawProvider.IGridProvider? grid = GetGridProvider(table.Peer!);
+            AutomationPeer? cell = grid == null ? null : GetPeer(grid.GetItem(row, column));
+            return cell != null && GetSelectionPeers(table.Peer!).Contains(cell);
+        });
+    }
+
+    private static bool TrySelectChild(AtSpiNode node, int index, bool add)
+    {
+        if (index < 0)
+            return false;
+
+        if (node.Interfaces.Contains(TableInterface, StringComparer.Ordinal))
+        {
+            var (rows, columns) = GetTableDimensions(node);
+            if (columns == 0 || index >= (long)rows * columns)
+                return false;
+            return TryChangeTableRowSelection(
+                node,
+                index / columns,
+                add ? SelectionChange.Add : SelectionChange.Remove);
+        }
+
+        IReadOnlyList<AtSpiNode> children = GetChildren(node, updateCache: true);
+        if (index >= children.Count)
+            return false;
+        return TryChangeSelectionItem(
+            node,
+            children[index].Peer,
+            add ? SelectionChange.Add : SelectionChange.Remove);
+    }
+
+    private static bool IsChildSelected(AtSpiNode node, int index)
+    {
+        if (index < 0)
+            return false;
+        if (node.Interfaces.Contains(TableInterface, StringComparer.Ordinal))
+        {
+            var (rows, columns) = GetTableDimensions(node);
+            return columns > 0 && index < (long)rows * columns &&
+                IsTableCellSelected(node, index / columns, index % columns);
+        }
+
+        IReadOnlyList<AtSpiNode> children = GetChildren(node, updateCache: true);
+        if (index >= children.Count || children[index].Peer == null)
+            return false;
+        return node.Invoke(() => GetSelectionPeers(node.Peer!).Contains(children[index].Peer));
+    }
+
+    private static bool TrySelectAll(AtSpiNode node)
+    {
+        if (!node.Invoke(() => CanSelectMultiple(node.Peer!)))
+            return false;
+
+        if (node.Interfaces.Contains(TableInterface, StringComparer.Ordinal))
+        {
+            int rows = GetTableDimensions(node).Rows;
+            bool result = true;
+            for (int row = 0; row < rows; row++)
+                result &= TryChangeTableRowSelection(node, row, SelectionChange.Add);
+            return result;
+        }
+
+        IReadOnlyList<AtSpiNode> children = GetChildren(node, updateCache: true);
+        bool allSelected = true;
+        foreach (AtSpiNode child in children)
+            allSelected &= TryChangeSelectionItem(node, child.Peer, SelectionChange.Add);
+        return allSelected;
+    }
+
+    private static bool TryClearSelection(AtSpiNode node)
+    {
+        if (node.Invoke(() => IsSelectionRequired(node.Peer!)))
+            return false;
+
+        AutomationPeer[] selected = node.Invoke(() => GetSelectionPeers(node.Peer!));
+        bool cleared = true;
+        foreach (AutomationPeer peer in selected)
+            cleared &= TryChangeSelectionItem(node, peer, SelectionChange.Remove);
+        return cleared;
+    }
+
+    private static bool TryChangeTableRowSelection(
+        AtSpiNode table,
+        int row,
+        SelectionChange change)
+    {
+        var (rows, columns) = GetTableDimensions(table);
+        if (row < 0 || row >= rows)
+            return false;
+
+        AutomationPeer? itemPeer = table.Invoke(() =>
+        {
+            RawProvider.IGridProvider? grid = GetGridProvider(table.Peer!);
+            AutomationPeer? firstCell = columns > 0 && grid != null
+                ? GetPeer(grid.GetItem(row, 0))
+                : null;
+            if (HasSelectionItemPattern(firstCell))
+                return firstCell;
+
+            IReadOnlyList<AutomationPeer> children = table.Peer!.GetChildren();
+            return row < children.Count ? children[row] : null;
+        });
+        return TryChangeSelectionItem(table, itemPeer, change);
+    }
+
+    private static bool HasSelectionItemPattern(AutomationPeer? peer) =>
+        peer?.GetPattern(PatternInterface.SelectionItem) is RawProvider.ISelectionItemProvider;
+
+    private static bool TryChangeSelectionItem(
+        AtSpiNode container,
+        AutomationPeer? itemPeer,
+        SelectionChange change)
+    {
+        if (itemPeer == null)
+            return false;
+
+        bool changed = false;
+        bool invoked = container.TryInvoke(peer =>
+        {
+            object? pattern = itemPeer.GetPattern(PatternInterface.SelectionItem);
+            bool useAdd = change == SelectionChange.Add && CanSelectMultiple(peer);
+            if (pattern is RawProvider.ISelectionItemProvider provider)
+            {
+                if (change == SelectionChange.Remove) provider.RemoveFromSelection();
+                else if (useAdd) provider.AddToSelection();
+                else provider.Select();
+                changed = true;
+            }
+        });
+        return invoked && changed;
+    }
+
+    private static bool IsValidTableCell(int row, int column, int rows, int columns) =>
+        row >= 0 && row < rows && column >= 0 && column < columns;
+
+    private static string IntArray(IEnumerable<int> values)
+    {
+        string content = string.Join(", ", values.Select(static value => $"int32 {value}"));
+        return $"@ai [{content}]";
+    }
+
+    private static int GetAccessibleChildCount(AtSpiNode node)
+    {
+        if (node.Interfaces.Contains(TableInterface, StringComparer.Ordinal))
+        {
+            var (rows, columns) = GetTableDimensions(node);
+            return (int)Math.Min(int.MaxValue, (long)rows * columns);
+        }
+        return GetChildren(node, updateCache: true).Count;
+    }
+
+    private static AtSpiNode? GetChildAtIndex(AtSpiNode node, int index)
+    {
+        if (index < 0)
+            return null;
+        if (node.Interfaces.Contains(TableInterface, StringComparer.Ordinal))
+        {
+            var (rows, columns) = GetTableDimensions(node);
+            if (columns == 0 || index >= (long)rows * columns)
+                return null;
+            return GetTableCellNode(node, index / columns, index % columns);
+        }
+
+        IReadOnlyList<AtSpiNode> children = GetChildren(node, updateCache: true);
+        return index < children.Count ? children[index] : null;
+    }
+
     private static IReadOnlyList<AtSpiNode> GetChildren(AtSpiNode node, bool updateCache)
     {
         if (node.IsApplicationRoot)
@@ -653,10 +1415,30 @@ internal static class AtSpiAccessibilityBridge
                 return s_windowNodes.Values.ToArray();
         }
 
-        var peers = node.Invoke(() => node.Peer!.GetChildren());
-        var children = new List<AtSpiNode>(peers.Count);
-        foreach (var peer in peers)
-            children.Add(EnsurePeerNode(peer, node.Window!, node.Dispatcher!));
+        List<AtSpiNode> children;
+        if (node.Interfaces.Contains(TableInterface, StringComparer.Ordinal))
+        {
+            var (rows, columns) = GetTableDimensions(node);
+            long count = (long)rows * columns;
+            if (count > int.MaxValue)
+                throw new InvalidOperationException("The AT-SPI table is too large to materialize its child array.");
+            children = new List<AtSpiNode>((int)count);
+            for (int row = 0; row < rows; row++)
+            {
+                for (int column = 0; column < columns; column++)
+                {
+                    if (GetTableCellNode(node, row, column) is { } cell)
+                        children.Add(cell);
+                }
+            }
+        }
+        else
+        {
+            var peers = node.Invoke(() => node.Peer!.GetChildren());
+            children = new List<AtSpiNode>(peers.Count);
+            foreach (var peer in peers)
+                children.Add(EnsurePeerNode(peer, node.Window!, node.Dispatcher!));
+        }
         if (updateCache)
             node.CachedChildPaths = children.Select(static child => child.Path).ToArray();
         return children;
@@ -666,12 +1448,16 @@ internal static class AtSpiAccessibilityBridge
     {
         if (node.IsApplicationRoot)
             return null;
+        if (node.LogicalParent is { } logicalParent)
+            return logicalParent;
         var parent = node.Invoke(() => node.Peer!.GetParent());
         return parent == null ? s_root : EnsurePeerNode(parent, node.Window!, node.Dispatcher!);
     }
 
     private static int GetIndexInParent(AtSpiNode node)
     {
+        if (node.LogicalIndex >= 0)
+            return node.LogicalIndex;
         var parent = GetParent(node);
         if (parent == null)
             return -1;
@@ -709,7 +1495,8 @@ internal static class AtSpiAccessibilityBridge
             double x = mapped.X * scale;
             double y = mapped.Y * scale;
 
-            if (coordinateType == 0 && node.Window != null)
+            if (node.Window != null &&
+                ShouldApplyScreenWindowOffset(coordinateType, HasGlobalScreenCoordinates()))
             {
                 if (double.IsFinite(node.Window.Left)) x += node.Window.Left * scale;
                 if (double.IsFinite(node.Window.Top)) y += node.Window.Top * scale;
@@ -732,34 +1519,171 @@ internal static class AtSpiAccessibilityBridge
         });
     }
 
+    internal static bool ShouldApplyScreenWindowOffset(
+        uint coordinateType,
+        bool hasGlobalScreenCoordinates) =>
+        coordinateType == 0 && hasGlobalScreenCoordinates;
+
+    private static bool HasGlobalScreenCoordinates()
+    {
+        if (!OperatingSystem.IsLinux())
+            return true;
+
+        try
+        {
+            // X11 supplies a compositor-independent global root coordinate.
+            // Core Wayland intentionally does not. Unknown Linux backends use
+            // the honest WINDOW-coordinate fallback rather than fabricating a
+            // screen origin from Window.Left/Top.
+            return Jalium.UI.Interop.NativeMethods.PlatformGetCurrent() ==
+                (int)Jalium.UI.Interop.NativePlatform.LinuxX11;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    private static AtSpiRect GetTextRangeBounds(
+        AtSpiNode node,
+        int start,
+        int length,
+        uint coordinateType)
+    {
+        IReadOnlyList<Rect> localRectangles = node.Invoke(() =>
+        {
+            if (node.Peer!.GetPattern(PatternInterface.Text) is not RawProvider.ITextProvider provider)
+                return Array.Empty<Rect>();
+            IAutomationTextProviderSource? source = GetTextSource(provider);
+            if (source is null)
+                return Array.Empty<Rect>();
+
+            var map = new AtSpiTextMap(source.Text);
+            int clampedStart = Math.Clamp(start, 0, map.CharacterCount);
+            int clampedLength = Math.Clamp(length, 0, map.CharacterCount - clampedStart);
+            int utf16Start = map.ToUtf16Offset(clampedStart);
+            int utf16End = map.ToUtf16Offset(clampedStart + clampedLength);
+            return source.GetBoundingRectangles(utf16Start, utf16End - utf16Start);
+        });
+        if (localRectangles.Count == 0)
+            return default;
+
+        AtSpiRect ownerBounds = GetBounds(node, coordinateType);
+        double scale = node.Window?.DpiScale ?? 1.0;
+        if (!double.IsFinite(scale) || scale <= 0)
+            scale = 1.0;
+
+        Rect union = Rect.Empty;
+        foreach (Rect local in localRectangles)
+        {
+            if (local.IsEmpty || !double.IsFinite(local.X) || !double.IsFinite(local.Y) ||
+                !double.IsFinite(local.Width) || !double.IsFinite(local.Height))
+            {
+                continue;
+            }
+            var mapped = new Rect(
+                ownerBounds.X + local.X * scale,
+                ownerBounds.Y + local.Y * scale,
+                Math.Max(0, local.Width * scale),
+                Math.Max(0, local.Height * scale));
+            union = union.IsEmpty ? mapped : Rect.Union(union, mapped);
+        }
+
+        return union.IsEmpty
+            ? default
+            : new AtSpiRect(
+                ToInt(union.X),
+                ToInt(union.Y),
+                Math.Max(0, ToInt(union.Width)),
+                Math.Max(0, ToInt(union.Height)));
+    }
+
+    private static int GetTextOffsetAtPoint(
+        AtSpiNode node,
+        int characterCount,
+        int x,
+        int y,
+        uint coordinateType)
+    {
+        if (characterCount <= 0)
+            return 0;
+
+        int nearest = 0;
+        long nearestDistance = long.MaxValue;
+        for (int offset = 0; offset < characterCount; offset++)
+        {
+            AtSpiRect bounds = GetTextRangeBounds(node, offset, 1, coordinateType);
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+                continue;
+            if (bounds.Contains(x, y))
+                return offset;
+
+            int nearestX = Math.Clamp(x, bounds.X, bounds.X + bounds.Width);
+            int nearestY = Math.Clamp(y, bounds.Y, bounds.Y + bounds.Height);
+            long dx = (long)x - nearestX;
+            long dy = (long)y - nearestY;
+            long distance = dx * dx + dy * dy;
+            if (distance < nearestDistance)
+            {
+                nearestDistance = distance;
+                nearest = offset;
+            }
+        }
+        return nearest;
+    }
+
     private static (int Start, int Length) GetTextSelection(AtSpiNode node) =>
-        node.Invoke(() => node.Peer!.GetPattern(PatternInterface.Text) is ITextProvider provider
-            ? (provider.SelectionStart, provider.SelectionLength)
-            : (0, 0));
+        node.Invoke(() =>
+        {
+            if (node.Peer!.GetPattern(PatternInterface.Text) is not RawProvider.ITextProvider provider)
+                return (0, 0);
+            IAutomationTextProviderSource? source = GetTextSource(provider);
+            if (source is null)
+                return (0, 0);
+
+            var map = new AtSpiTextMap(source.Text);
+            int start = map.ToScalarOffset(source.SelectionStart);
+            int end = source.SelectionLength == 0
+                ? start
+                : map.ToScalarOffset(
+                    source.SelectionStart + source.SelectionLength,
+                    roundUp: true);
+            return (start, Math.Max(0, end - start));
+        });
 
     private static bool SelectText(AtSpiNode node, int start, int length)
     {
         return node.TryInvoke(peer =>
         {
-            if (peer.GetPattern(PatternInterface.Text) is not ITextProvider provider)
+            if (peer.GetPattern(PatternInterface.Text) is not RawProvider.ITextProvider provider)
                 throw new NotSupportedException("This object does not provide selectable text.");
-            start = Math.Clamp(start, 0, provider.Text.Length);
-            length = Math.Clamp(length, 0, provider.Text.Length - start);
-            provider.Select(start, length);
+            IAutomationTextProviderSource? source = GetTextSource(provider);
+            if (source is null)
+                throw new NotSupportedException("This text provider does not expose an editable offset source.");
+
+            var map = new AtSpiTextMap(source.Text);
+            int scalarStart = Math.Clamp(start, 0, map.CharacterCount);
+            int scalarLength = Math.Clamp(length, 0, map.CharacterCount - scalarStart);
+            int utf16Start = map.ToUtf16Offset(scalarStart);
+            int utf16End = map.ToUtf16Offset(scalarStart + scalarLength);
+            source.Select(utf16Start, utf16End - utf16Start);
         });
     }
 
+    private static IAutomationTextProviderSource? GetTextSource(RawProvider.ITextProvider provider) =>
+        provider is RawProvider.AutomationTextProvider adapter ? adapter.Source : null;
+
     private static AtSpiAction GetAction(AutomationPeer peer)
     {
-        if (peer.GetPattern(PatternInterface.Invoke) is IInvokeProvider)
+        if (peer.GetPattern(PatternInterface.Invoke) is RawProvider.IInvokeProvider)
             return new(AtSpiActionKind.Invoke, "click", "Activate the control");
-        if (peer.GetPattern(PatternInterface.Toggle) is IToggleProvider)
+        if (peer.GetPattern(PatternInterface.Toggle) is RawProvider.IToggleProvider)
             return new(AtSpiActionKind.Toggle, "toggle", "Toggle the control state");
-        if (peer.GetPattern(PatternInterface.SelectionItem) is ISelectionItemProvider)
+        if (peer.GetPattern(PatternInterface.SelectionItem) is RawProvider.ISelectionItemProvider)
             return new(AtSpiActionKind.Select, "select", "Select this item");
-        if (peer.GetPattern(PatternInterface.ExpandCollapse) is IExpandCollapseProvider)
+        if (peer.GetPattern(PatternInterface.ExpandCollapse) is RawProvider.IExpandCollapseProvider)
             return new(AtSpiActionKind.ExpandOrCollapse, "toggle", "Expand or collapse the control");
-        if (peer.GetPattern(PatternInterface.ScrollItem) is IScrollItemProvider)
+        if (peer.GetPattern(PatternInterface.ScrollItem) is RawProvider.IScrollItemProvider)
             return new(AtSpiActionKind.ScrollIntoView, "show", "Scroll this item into view");
         return default;
     }
@@ -769,23 +1693,23 @@ internal static class AtSpiAccessibilityBridge
         switch (kind)
         {
             case AtSpiActionKind.Invoke:
-                ((IInvokeProvider)peer.GetPattern(PatternInterface.Invoke)!).Invoke();
+                ((RawProvider.IInvokeProvider)peer.GetPattern(PatternInterface.Invoke)!).Invoke();
                 break;
             case AtSpiActionKind.Toggle:
-                ((IToggleProvider)peer.GetPattern(PatternInterface.Toggle)!).Toggle();
+                ((RawProvider.IToggleProvider)peer.GetPattern(PatternInterface.Toggle)!).Toggle();
                 break;
             case AtSpiActionKind.Select:
-                ((ISelectionItemProvider)peer.GetPattern(PatternInterface.SelectionItem)!).Select();
+                ((RawProvider.ISelectionItemProvider)peer.GetPattern(PatternInterface.SelectionItem)!).Select();
                 break;
             case AtSpiActionKind.ExpandOrCollapse:
             {
-                var expand = (IExpandCollapseProvider)peer.GetPattern(PatternInterface.ExpandCollapse)!;
+                var expand = (RawProvider.IExpandCollapseProvider)peer.GetPattern(PatternInterface.ExpandCollapse)!;
                 if (expand.ExpandCollapseState == ExpandCollapseState.Collapsed) expand.Expand();
                 else expand.Collapse();
                 break;
             }
             case AtSpiActionKind.ScrollIntoView:
-                ((IScrollItemProvider)peer.GetPattern(PatternInterface.ScrollItem)!).ScrollIntoView();
+                ((RawProvider.IScrollItemProvider)peer.GetPattern(PatternInterface.ScrollItem)!).ScrollIntoView();
                 break;
         }
     }
@@ -804,7 +1728,7 @@ internal static class AtSpiAccessibilityBridge
                 RefreshChildrenAndEmitDiff(node);
                 break;
             case AutomationEvents.TextPatternOnTextChanged:
-                EmitObjectSignal(node, "TextChanged", "insert", 0, 0, $"<{AtSpiModel.Quote(AtSpiModel.GetText(peer))}>");
+                EmitTextChanges(node, AtSpiModel.GetText(peer));
                 break;
             case AutomationEvents.TextPatternOnTextSelectionChanged:
                 EmitObjectSignal(node, "TextSelectionChanged", string.Empty, 0, 0, "<0>");
@@ -844,6 +1768,13 @@ internal static class AtSpiAccessibilityBridge
         };
         EmitObjectSignal(node, "PropertyChange", atSpiName, 0, 0, Variant(newValue));
 
+        // Writable text providers commonly surface value changes through the
+        // Value property rather than raising a second TextPattern event. Keep
+        // the AT-SPI-only text cache in sync here; a later TextPattern event is
+        // harmless because the cached value already matches.
+        if (node.HasText && ReferenceEquals(property, AutomationProperty.ValueProperty))
+            EmitTextChanges(node, AtSpiModel.GetText(peer));
+
         if (ReferenceEquals(property, AutomationProperty.IsEnabledProperty))
             EmitStateChanged(node, "enabled", newValue is true);
         else if (ReferenceEquals(property, AutomationProperty.HasKeyboardFocusProperty))
@@ -856,6 +1787,39 @@ internal static class AtSpiAccessibilityBridge
         }
         else if (ReferenceEquals(property, AutomationProperty.ToggleStateProperty))
             EmitStateChanged(node, "checked", Equals(newValue, ToggleState.On));
+    }
+
+    private static void EmitTextChanges(AtSpiNode node, string currentText)
+    {
+        AtSpiTextChange change;
+        lock (node)
+        {
+            change = AtSpiModel.GetTextChange(node.CachedText, currentText);
+            node.CachedText = currentText;
+        }
+
+        // AT-SPI replacements are represented as a delete followed by an
+        // insert at the same Unicode-scalar offset.
+        if (change.DeletedCount > 0)
+        {
+            EmitObjectSignal(
+                node,
+                "TextChanged",
+                "delete",
+                change.Offset,
+                change.DeletedCount,
+                $"<{AtSpiModel.Quote(change.DeletedText)}>");
+        }
+        if (change.InsertedCount > 0)
+        {
+            EmitObjectSignal(
+                node,
+                "TextChanged",
+                "insert",
+                change.Offset,
+                change.InsertedCount,
+                $"<{AtSpiModel.Quote(change.InsertedText)}>");
+        }
     }
 
     private static void RaiseFocusChanged(AutomationPeer peer)
@@ -1037,7 +2001,8 @@ internal static class AtSpiAccessibilityBridge
             Dispatcher? dispatcher,
             AtSpiRole role,
             bool hasAction,
-            bool hasText)
+            bool hasText,
+            string initialText)
         {
             Path = path;
             Peer = peer;
@@ -1046,6 +2011,7 @@ internal static class AtSpiAccessibilityBridge
             Role = role;
             HasAction = hasAction;
             HasText = hasText;
+            CachedText = initialText;
         }
 
         internal string Path { get; }
@@ -1055,15 +2021,18 @@ internal static class AtSpiAccessibilityBridge
         internal AtSpiRole Role { get; }
         internal bool HasAction { get; }
         internal bool HasText { get; }
+        internal string CachedText { get; set; }
         internal bool IsApplicationRoot => Peer == null;
         internal bool Defunct { get; set; }
+        internal AtSpiNode? LogicalParent { get; set; }
+        internal int LogicalIndex { get; set; } = -1;
         internal string[] CachedChildPaths { get; set; } = [];
         internal List<string> Interfaces { get; } = [];
         internal List<uint> RegistrationIds { get; } = [];
         internal nint UserData => _handle.IsAllocated ? GCHandle.ToIntPtr(_handle) : 0;
 
         internal static AtSpiNode CreateApplicationRoot() =>
-            new(RootPath, null, null, null, AtSpiRole.Application, false, false);
+            new(RootPath, null, null, null, AtSpiRole.Application, false, false, string.Empty);
 
         internal void AllocateHandle()
         {
@@ -1121,7 +2090,18 @@ internal static class AtSpiAccessibilityBridge
     private readonly record struct AtSpiNodeDescriptor(
         AtSpiRole Role,
         bool HasAction,
-        bool HasText);
+        bool HasText,
+        bool HasValue,
+        bool HasEditableText,
+        bool HasSelection,
+        bool HasTable,
+        string InitialText);
+
+    private enum SelectionChange
+    {
+        Add,
+        Remove,
+    }
 
     private enum AtSpiActionKind
     {
@@ -1216,6 +2196,68 @@ internal static class AtSpiAccessibilityBridge
             <method name="GetDefaultAttributeSet"><arg direction="out" type="a{ss}"/></method>
             <method name="ScrollSubstringTo"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="in" type="u"/><arg direction="out" type="b"/></method>
             <method name="ScrollSubstringToPoint"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="in" type="u"/><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+          </interface>
+          <interface name="org.a11y.atspi.Value">
+            <property name="version" type="u" access="read"/>
+            <property name="MinimumValue" type="d" access="read"/>
+            <property name="MaximumValue" type="d" access="read"/>
+            <property name="MinimumIncrement" type="d" access="read"/>
+            <property name="CurrentValue" type="d" access="readwrite"/>
+            <property name="Text" type="s" access="read"/>
+          </interface>
+          <interface name="org.a11y.atspi.EditableText">
+            <property name="version" type="u" access="read"/>
+            <method name="SetTextContents"><arg direction="in" type="s"/><arg direction="out" type="b"/></method>
+            <method name="InsertText"><arg direction="in" type="i"/><arg direction="in" type="s"/><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="CopyText"><arg direction="in" type="i"/><arg direction="in" type="i"/></method>
+            <method name="CutText"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="DeleteText"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="PasteText"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+          </interface>
+          <interface name="org.a11y.atspi.Selection">
+            <property name="version" type="u" access="read"/>
+            <property name="NSelectedChildren" type="i" access="read"/>
+            <method name="GetSelectedChild"><arg direction="in" type="i"/><arg direction="out" type="(so)"/></method>
+            <method name="SelectChild"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="DeselectSelectedChild"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="IsChildSelected"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="SelectAll"><arg direction="out" type="b"/></method>
+            <method name="ClearSelection"><arg direction="out" type="b"/></method>
+            <method name="DeselectChild"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+          </interface>
+          <interface name="org.a11y.atspi.Table">
+            <property name="version" type="u" access="read"/>
+            <property name="NRows" type="i" access="read"/>
+            <property name="NColumns" type="i" access="read"/>
+            <property name="Caption" type="(so)" access="read"/>
+            <property name="Summary" type="(so)" access="read"/>
+            <property name="NSelectedRows" type="i" access="read"/>
+            <property name="NSelectedColumns" type="i" access="read"/>
+            <method name="GetAccessibleAt"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="(so)"/></method>
+            <method name="GetIndexAt"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="i"/></method>
+            <method name="GetRowAtIndex"><arg direction="in" type="i"/><arg direction="out" type="i"/></method>
+            <method name="GetColumnAtIndex"><arg direction="in" type="i"/><arg direction="out" type="i"/></method>
+            <method name="GetRowDescription"><arg direction="in" type="i"/><arg direction="out" type="s"/></method>
+            <method name="GetColumnDescription"><arg direction="in" type="i"/><arg direction="out" type="s"/></method>
+            <method name="GetRowExtentAt"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="i"/></method>
+            <method name="GetColumnExtentAt"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="i"/></method>
+            <method name="GetRowHeader"><arg direction="in" type="i"/><arg direction="out" type="(so)"/></method>
+            <method name="GetColumnHeader"><arg direction="in" type="i"/><arg direction="out" type="(so)"/></method>
+            <method name="GetSelectedRows"><arg direction="out" type="ai"/></method>
+            <method name="GetSelectedColumns"><arg direction="out" type="ai"/></method>
+            <method name="IsRowSelected"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="IsColumnSelected"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="IsSelected"><arg direction="in" type="i"/><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="AddRowSelection"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="AddColumnSelection"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="RemoveRowSelection"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="RemoveColumnSelection"><arg direction="in" type="i"/><arg direction="out" type="b"/></method>
+            <method name="GetRowColumnExtentsAtIndex">
+              <arg direction="in" type="i"/><arg direction="out" type="b"/>
+              <arg direction="out" type="i"/><arg direction="out" type="i"/>
+              <arg direction="out" type="i"/><arg direction="out" type="i"/>
+              <arg direction="out" type="b"/>
+            </method>
           </interface>
           <interface name="org.a11y.atspi.Application">
             <property name="ToolkitName" type="s" access="read"/>

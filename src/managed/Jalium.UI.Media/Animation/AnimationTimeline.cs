@@ -83,9 +83,8 @@ public abstract class AnimationTimeline : Timeline, IAnimationTimeline
     protected override Duration GetNaturalDurationCore(Clock clock) =>
         new(TimeSpan.FromSeconds(1));
 }
-
 /// <summary>Base class for strongly typed animation timelines.</summary>
-public abstract class AnimationTimeline<T> : AnimationTimeline
+public abstract class TypedAnimationTimeline<T> : AnimationTimeline
 {
     public override Type TargetPropertyType => typeof(T);
 

@@ -1,0 +1,7 @@
+set(JALIUM_CROSS_EXPECTED_RID linux-musl-x64)
+set(JALIUM_CROSS_EXPECTED_LIBC musl)
+set(JALIUM_CROSS_EXPECTED_ARCH x86_64)
+set(JALIUM_CROSS_TARGET_TRIPLE x86_64-linux-musl)
+set(JALIUM_CROSS_C_COMPILER_CANDIDATES x86_64-linux-musl-gcc musl-gcc)
+set(JALIUM_CROSS_CXX_COMPILER_CANDIDATES x86_64-linux-musl-g++ musl-g++)
+include("${CMAKE_CURRENT_LIST_DIR}/JaliumLinuxCrossCommon.cmake")

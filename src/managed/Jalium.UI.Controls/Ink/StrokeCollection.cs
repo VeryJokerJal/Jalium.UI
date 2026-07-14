@@ -7,13 +7,15 @@ namespace Jalium.UI.Ink;
 
 /// <summary>Represents an observable collection of unique <see cref="Stroke"/> objects.</summary>
 [TypeConverter(typeof(Jalium.UI.StrokeCollectionConverter))]
-public class StrokeCollection : ObservableCollection<Stroke>
+public class StrokeCollection : Collection<Stroke>, INotifyCollectionChanged, INotifyPropertyChanged
 {
     /// <summary>The clipboard format name used for persisted ink.</summary>
     public static readonly string InkSerializedFormat = "Ink Serialized Format";
 
     private readonly Dictionary<Guid, object> _propertyData = new();
     private int _deferNotifications;
+    private event NotifyCollectionChangedEventHandler? CollectionChangedInternal;
+    private event PropertyChangedEventHandler? PropertyChangedInternal;
 
     /// <summary>Initializes an empty collection.</summary>
     public StrokeCollection()
@@ -57,6 +59,18 @@ public class StrokeCollection : ObservableCollection<Stroke>
 
     /// <summary>Occurs when custom collection property data changes.</summary>
     public event PropertyDataChangedEventHandler? PropertyDataChanged;
+
+    event NotifyCollectionChangedEventHandler? INotifyCollectionChanged.CollectionChanged
+    {
+        add => CollectionChangedInternal += value;
+        remove => CollectionChangedInternal -= value;
+    }
+
+    event PropertyChangedEventHandler? INotifyPropertyChanged.PropertyChanged
+    {
+        add => PropertyChangedInternal += value;
+        remove => PropertyChangedInternal -= value;
+    }
 
     /// <summary>Gets the union of the real rendered stroke bounds.</summary>
     public Rect GetBounds()
@@ -412,7 +426,13 @@ public class StrokeCollection : ObservableCollection<Stroke>
         item.Invalidated += OnStrokeInvalidated;
         base.InsertItem(index, item);
         if (_deferNotifications == 0)
+        {
+            RaisePropertyChanged(nameof(Count));
+            RaisePropertyChanged("Item[]");
+            RaiseCollectionChanged(new NotifyCollectionChangedEventArgs(
+                NotifyCollectionChangedAction.Add, item, index));
             OnStrokesChanged(new StrokeCollectionChangedEventArgs([item], Array.Empty<Stroke>()));
+        }
     }
 
     protected override void RemoveItem(int index)
@@ -421,7 +441,13 @@ public class StrokeCollection : ObservableCollection<Stroke>
         removed.Invalidated -= OnStrokeInvalidated;
         base.RemoveItem(index);
         if (_deferNotifications == 0)
+        {
+            RaisePropertyChanged(nameof(Count));
+            RaisePropertyChanged("Item[]");
+            RaiseCollectionChanged(new NotifyCollectionChangedEventArgs(
+                NotifyCollectionChangedAction.Remove, removed, index));
             OnStrokesChanged(new StrokeCollectionChangedEventArgs(Array.Empty<Stroke>(), [removed]));
+        }
     }
 
     protected override void SetItem(int index, Stroke item)
@@ -434,7 +460,12 @@ public class StrokeCollection : ObservableCollection<Stroke>
         item.Invalidated += OnStrokeInvalidated;
         base.SetItem(index, item);
         if (_deferNotifications == 0)
+        {
+            RaisePropertyChanged("Item[]");
+            RaiseCollectionChanged(new NotifyCollectionChangedEventArgs(
+                NotifyCollectionChangedAction.Replace, item, removed, index));
             OnStrokesChanged(new StrokeCollectionChangedEventArgs([item], [removed]));
+        }
     }
 
     protected override void ClearItems()
@@ -446,19 +477,12 @@ public class StrokeCollection : ObservableCollection<Stroke>
             stroke.Invalidated -= OnStrokeInvalidated;
         base.ClearItems();
         if (_deferNotifications == 0)
+        {
+            RaisePropertyChanged(nameof(Count));
+            RaisePropertyChanged("Item[]");
+            RaiseCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
             OnStrokesChanged(new StrokeCollectionChangedEventArgs(Array.Empty<Stroke>(), removed));
-    }
-
-    protected override void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
-    {
-        if (_deferNotifications == 0)
-            base.OnCollectionChanged(e);
-    }
-
-    protected override void OnPropertyChanged(PropertyChangedEventArgs e)
-    {
-        if (_deferNotifications == 0)
-            base.OnPropertyChanged(e);
+        }
     }
 
     internal IReadOnlyDictionary<Guid, object> PropertyData => _propertyData;
@@ -509,9 +533,9 @@ public class StrokeCollection : ObservableCollection<Stroke>
             _deferNotifications--;
         }
 
-        base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
-        base.OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
-        base.OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        RaisePropertyChanged(nameof(Count));
+        RaisePropertyChanged("Item[]");
+        RaiseCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
         OnStrokesChanged(new StrokeCollectionChangedEventArgs(addedArray, removedArray));
     }
 
@@ -577,7 +601,13 @@ public class StrokeCollection : ObservableCollection<Stroke>
     }
 
     private void OnStrokeInvalidated(object? sender, EventArgs e) =>
-        base.OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        RaiseCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+
+    private void RaiseCollectionChanged(NotifyCollectionChangedEventArgs e) =>
+        CollectionChangedInternal?.Invoke(this, e);
+
+    private void RaisePropertyChanged(string propertyName) =>
+        PropertyChangedInternal?.Invoke(this, new PropertyChangedEventArgs(propertyName));
 
     private static bool IsFinite(Matrix matrix) =>
         double.IsFinite(matrix.M11) && double.IsFinite(matrix.M12) &&

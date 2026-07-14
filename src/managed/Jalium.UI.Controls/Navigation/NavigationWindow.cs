@@ -213,7 +213,10 @@ public class NavigationWindow : Window, IUriContext
     /// <returns>True if navigation is not canceled; otherwise, false.</returns>
     public bool Navigate(Uri source)
     {
-        bool navigated = NavigationService.Navigate(source);
+        bool navigated = NavigationService.Navigate(
+            source,
+            extraData: null,
+            sandboxExternalContent: SandboxExternalContent);
         UpdateJournalProperties();
         return navigated;
     }
@@ -226,7 +229,10 @@ public class NavigationWindow : Window, IUriContext
     /// <returns>True if navigation is not canceled; otherwise, false.</returns>
     public bool Navigate(Uri source, object? extraData)
     {
-        bool navigated = NavigationService.Navigate(source, extraData);
+        bool navigated = NavigationService.Navigate(
+            source,
+            extraData,
+            sandboxExternalContent: SandboxExternalContent);
         UpdateJournalProperties();
         return navigated;
     }

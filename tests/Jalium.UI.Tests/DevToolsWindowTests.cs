@@ -3,6 +3,7 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.DevTools;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Media;
 using Jalium.UI.Threading;
 
 namespace Jalium.UI.Tests;
@@ -10,6 +11,38 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class DevToolsWindowTests
 {
+    [Fact]
+    public void BgraPixelSampling_UsesPhysicalDpiCoordinatesAndChannelOrder()
+    {
+        byte[] pixels =
+        [
+            // 2x2, top-down BGRA
+            1, 2, 3, 4,       5, 6, 7, 8,
+            9, 10, 11, 12,    13, 14, 15, 16,
+        ];
+
+        Assert.True(DevToolsWindow.TrySampleBgraPixel(
+            pixels, 2, 2, dpiScale: 2, new Point(0.75, 0.75), out Color color));
+        Assert.Equal(Color.FromArgb(16, 15, 14, 13), color);
+    }
+
+    [Theory]
+    [InlineData(-0.1, 0, 1, 16)]
+    [InlineData(0, -0.1, 1, 16)]
+    [InlineData(2, 0, 1, 16)]
+    [InlineData(0, 2, 1, 16)]
+    [InlineData(0, 0, 0, 16)]
+    [InlineData(0, 0, 1, 15)]
+    public void BgraPixelSampling_RejectsInvalidCoordinatesScaleOrBuffer(
+        double x,
+        double y,
+        double scale,
+        int byteCount)
+    {
+        Assert.False(DevToolsWindow.TrySampleBgraPixel(
+            new byte[byteCount], 2, 2, scale, new Point(x, y), out _));
+    }
+
     private static void ResetApplicationState()
     {
         var currentField = typeof(Application).GetField("_current",
@@ -19,6 +52,24 @@ public class DevToolsWindowTests
         var resetMethod = typeof(ThemeManager).GetMethod("Reset",
             BindingFlags.NonPublic | BindingFlags.Static);
         resetMethod?.Invoke(null, null);
+    }
+
+    [Fact]
+    public void ScreenshotCrop_UsesPhysicalDpiAndClipsToBackBuffer()
+    {
+        Assert.True(DevToolsWindow.TryCalculateScreenshotCrop(
+            new Rect(-2.25, 3.25, 12.5, 8.5), 2.0, 18, 20, out Int32Rect crop));
+
+        Assert.Equal(new Int32Rect(0, 6, 18, 14), crop);
+    }
+
+    [Fact]
+    public void ScreenshotCrop_RejectsOffscreenAndInvalidBounds()
+    {
+        Assert.False(DevToolsWindow.TryCalculateScreenshotCrop(
+            new Rect(100, 100, 10, 10), 1.0, 80, 60, out _));
+        Assert.False(DevToolsWindow.TryCalculateScreenshotCrop(
+            new Rect(0, 0, 10, 10), 0.0, 80, 60, out _));
     }
 
     [Fact]

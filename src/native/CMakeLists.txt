@@ -5,6 +5,16 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Every Linux shared target starts hidden. Public C functions and the small
+# cross-backend C++ surface opt in through JALIUM_*_API, then a per-library GNU
+# version script applies the second half of the whitelist at link time.
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(CMAKE_C_VISIBILITY_PRESET hidden)
+    set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+    set(CMAKE_VISIBILITY_INLINES_HIDDEN ON)
+    include(cmake/JaliumLinuxExports.cmake)
+endif()
+
 # NuGet consumes the shared libraries directly from the build output.  Never
 # embed the source checkout's absolute path in their RUNPATH: every Jalium
 # library dependency is deployed beside its consumer under runtimes/<rid>/native.
@@ -52,7 +62,8 @@ option(JALIUM_BUILD_VULKAN "Also build the Vulkan backend on Windows (dev/test)"
 # found" and gives CI a false pass.
 if(JALIUM_PLATFORM_BUILD_TESTS OR
    JALIUM_MEDIA_LINUX_BUILD_TESTS OR
-   JALIUM_SOFTWARE_BUILD_TESTS)
+   JALIUM_SOFTWARE_BUILD_TESTS OR
+   JALIUM_TEXT_BUILD_TESTS)
     enable_testing()
 endif()
 
@@ -308,6 +319,16 @@ endif()
 
 add_subdirectory(jalium.native.software)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT JALIUM_BUILD_STATIC)
+    jalium_apply_linux_export_policy(jalium.native.core core.map)
+    jalium_apply_linux_export_policy(jalium.native.platform platform.map)
+    jalium_apply_linux_export_policy(jalium.native.media.core media-core.map)
+    jalium_apply_linux_export_policy(jalium.native.media.linux media.map)
+    jalium_apply_linux_export_policy(jalium.native.text text.map)
+    jalium_apply_linux_export_policy(jalium.native.vulkan vulkan.map)
+    jalium_apply_linux_export_policy(jalium.native.software software.map)
+endif()
+
 # Static-only aggregation TU that exports jalium_aot_register_all_backends().
 # Only meaningful when JALIUM_BUILD_STATIC=ON; pulls every backend into the AOT image.
 if(JALIUM_BUILD_STATIC)
@@ -354,9 +375,19 @@ if(NOT JALIUM_BUILD_STATIC)
         add_dependencies(${_package_target} jalium.native.package.invalidate)
     endforeach()
 
+    # The stamp is not a bare `touch` marker: it records which commit produced
+    # the payload (head=/dirty= lines) so the NuGet pack guard can refuse to
+    # ship binaries that do not match the commit being packed. The write runs
+    # at build time (cmake -P), never at configure time, so the recorded HEAD
+    # is always the one current when the libraries actually linked.
+    get_filename_component(_jalium_repo_root "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
     add_custom_target(jalium.native.package.complete ALL
-        COMMAND ${CMAKE_COMMAND} -E touch
-            "$<TARGET_FILE_DIR:jalium.native.core>/.jalium-native-complete"
+        COMMAND ${CMAKE_COMMAND}
+            "-DJALIUM_STAMP_FILE=$<TARGET_FILE_DIR:jalium.native.core>/.jalium-native-complete"
+            "-DJALIUM_REPO_ROOT=${_jalium_repo_root}"
+            "-DJALIUM_STAMP_RID=${JALIUM_NATIVE_RID}"
+            "-DJALIUM_STAMP_CONFIG=$<CONFIG>"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/JaliumNativeStamp.cmake"
         DEPENDS ${_jalium_package_targets}
-        COMMENT "Marking ${JALIUM_NATIVE_RID} native payload complete")
+        COMMENT "Marking ${JALIUM_NATIVE_RID} native payload complete (provenance stamp)")
 endif()

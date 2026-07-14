@@ -1,6 +1,9 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Reflection;
+using Jalium.UI.Media.Imaging;
+using IValueSerializerContext = Jalium.UI.Markup.IValueSerializerContext;
+using ValueSerializer = Jalium.UI.Markup.ValueSerializer;
 
 namespace Jalium.UI.Media;
 
@@ -221,7 +224,6 @@ public sealed class GeometryConverter : TypeConverter
             ? geometry.ToString()
             : base.ConvertTo(context, culture, value, destinationType);
 }
-
 /// <summary>Converts point collections to and from their compact XAML representation.</summary>
 public sealed class PointCollectionConverter : TypeConverter
 {
@@ -302,61 +304,11 @@ public sealed class RequestCachePolicyConverter : TypeConverter
 }
 
 /// <summary>
-/// Provides a context for value serialization operations.
+/// Jalium-specific serializer lookup retained behind the canonical
+/// <see cref="Jalium.UI.Markup.ValueSerializer"/> API.
 /// </summary>
-public interface IValueSerializerContext : IServiceProvider
+internal static class MediaValueSerializerRegistry
 {
-    /// <summary>
-    /// Gets the value serializer for the specified type.
-    /// </summary>
-    ValueSerializer? GetValueSerializerFor(Type type);
-}
-
-/// <summary>
-/// Abstract base class for converting instances of a type to and from a string representation.
-/// ValueSerializer differs from <see cref="TypeConverter"/> in that it is specifically designed
-/// for XAML serialization scenarios.
-/// </summary>
-public abstract class ValueSerializer
-{
-    /// <summary>
-    /// Determines whether the specified value can be converted to a string.
-    /// </summary>
-    /// <param name="value">The value to evaluate for conversion.</param>
-    /// <param name="context">Context information used for conversion.</param>
-    /// <returns><c>true</c> if the value can be converted to a string; otherwise, <c>false</c>.</returns>
-    public virtual bool CanConvertToString(object value, IValueSerializerContext? context) => false;
-
-    /// <summary>
-    /// Determines whether the specified string can be converted to an instance of the type.
-    /// </summary>
-    /// <param name="value">The string to evaluate for conversion.</param>
-    /// <param name="context">Context information used for conversion.</param>
-    /// <returns><c>true</c> if the string can be converted; otherwise, <c>false</c>.</returns>
-    public virtual bool CanConvertFromString(string value, IValueSerializerContext? context) => false;
-
-    /// <summary>
-    /// Converts the specified value to a string.
-    /// </summary>
-    /// <param name="value">The value to convert.</param>
-    /// <param name="context">Context information used for conversion.</param>
-    /// <returns>A string representation of the value.</returns>
-    public virtual string ConvertToString(object value, IValueSerializerContext? context)
-    {
-        throw new NotSupportedException($"Conversion to string is not supported for {value?.GetType().Name ?? "null"}.");
-    }
-
-    /// <summary>
-    /// Converts the specified string to an instance of the type.
-    /// </summary>
-    /// <param name="value">The string to convert.</param>
-    /// <param name="context">Context information used for conversion.</param>
-    /// <returns>An object instance created from the string.</returns>
-    public virtual object ConvertFromString(string value, IValueSerializerContext? context)
-    {
-        throw new NotSupportedException($"Conversion from string is not supported.");
-    }
-
     private static readonly ImageSourceValueSerializer s_imageSourceSerializer = new();
     private static readonly FontFamilyValueSerializer s_fontFamilySerializer = new();
     private static readonly Converters.BrushValueSerializer s_brushSerializer = new();
@@ -393,7 +345,7 @@ public abstract class ValueSerializer
     /// through a string, or <see langword="null"/> when no reliable string serializer is available.
     /// </summary>
     /// <param name="type">The type to obtain a serializer for.</param>
-    public static ValueSerializer? GetSerializerFor(Type? type)
+    internal static ValueSerializer? GetSerializerFor(Type? type)
     {
         if (type == null)
         {
@@ -581,121 +533,5 @@ public sealed class FontFamilyValueSerializer : ValueSerializer
     public override object ConvertFromString(string value, IValueSerializerContext? context)
     {
         return new FontFamily(value);
-    }
-}
-
-/// <summary>
-/// Converts <see cref="Brush"/> instances to and from string representations
-/// for XAML serialization.
-/// </summary>
-public sealed class BrushValueSerializer : ValueSerializer
-{
-    /// <inheritdoc />
-    public override bool CanConvertToString(object value, IValueSerializerContext? context)
-    {
-        return value is SolidColorBrush;
-    }
-
-    /// <inheritdoc />
-    public override bool CanConvertFromString(string value, IValueSerializerContext? context) => true;
-
-    /// <inheritdoc />
-    public override string ConvertToString(object value, IValueSerializerContext? context)
-    {
-        if (value is SolidColorBrush solidBrush)
-            return solidBrush.Color.ToString();
-
-        throw new NotSupportedException($"Cannot convert {value?.GetType().Name ?? "null"} to string.");
-    }
-
-    /// <inheritdoc />
-    public override object ConvertFromString(string value, IValueSerializerContext? context)
-    {
-        var color = ColorConverter.ConvertFromString(value);
-        if (color is Color c)
-            return new SolidColorBrush(c);
-
-        throw new FormatException($"Invalid brush format: {value}");
-    }
-}
-
-/// <summary>
-/// Converts <see cref="Transform"/> instances to and from string representations
-/// for XAML serialization.
-/// </summary>
-public sealed class TransformValueSerializer : ValueSerializer
-{
-    /// <inheritdoc />
-    public override bool CanConvertToString(object value, IValueSerializerContext? context)
-    {
-        return value is MatrixTransform;
-    }
-
-    /// <inheritdoc />
-    public override bool CanConvertFromString(string value, IValueSerializerContext? context) => true;
-
-    /// <inheritdoc />
-    public override string ConvertToString(object value, IValueSerializerContext? context)
-    {
-        if (value is MatrixTransform matrixTransform)
-        {
-            var m = matrixTransform.Value;
-            return FormattableString.Invariant(
-                $"{m.M11},{m.M12},{m.M21},{m.M22},{m.OffsetX},{m.OffsetY}");
-        }
-
-        throw new NotSupportedException($"Cannot convert {value?.GetType().Name ?? "null"} to string.");
-    }
-
-    /// <inheritdoc />
-    public override object ConvertFromString(string value, IValueSerializerContext? context)
-    {
-        if (string.Equals(value, "Identity", StringComparison.OrdinalIgnoreCase))
-            return Transform.Identity;
-
-        var parts = value.Split(',');
-        if (parts.Length == 6)
-        {
-            return new MatrixTransform(new Matrix(
-                double.Parse(parts[0], CultureInfo.InvariantCulture),
-                double.Parse(parts[1], CultureInfo.InvariantCulture),
-                double.Parse(parts[2], CultureInfo.InvariantCulture),
-                double.Parse(parts[3], CultureInfo.InvariantCulture),
-                double.Parse(parts[4], CultureInfo.InvariantCulture),
-                double.Parse(parts[5], CultureInfo.InvariantCulture)));
-        }
-
-        throw new FormatException($"Invalid transform format: {value}");
-    }
-}
-
-/// <summary>
-/// Converts <see cref="Geometry"/> instances to and from path markup string representations
-/// for XAML serialization.
-/// </summary>
-public sealed class GeometryValueSerializer : ValueSerializer
-{
-    /// <inheritdoc />
-    public override bool CanConvertToString(object value, IValueSerializerContext? context)
-    {
-        return value is Geometry;
-    }
-
-    /// <inheritdoc />
-    public override bool CanConvertFromString(string value, IValueSerializerContext? context) => true;
-
-    /// <inheritdoc />
-    public override string ConvertToString(object value, IValueSerializerContext? context)
-    {
-        if (value is Geometry geometry)
-            return geometry.ToString()!;
-
-        throw new NotSupportedException($"Cannot convert {value?.GetType().Name ?? "null"} to string.");
-    }
-
-    /// <inheritdoc />
-    public override object ConvertFromString(string value, IValueSerializerContext? context)
-    {
-        return Geometry.Parse(value);
     }
 }

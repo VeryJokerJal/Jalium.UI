@@ -134,7 +134,7 @@ public sealed class SolidColorBrush : Brush
 /// <summary>
 /// Base class for gradient brushes.
 /// </summary>
-[ContentProperty("GradientStops")]
+[Jalium.UI.Markup.ContentProperty("GradientStops")]
 public abstract class GradientBrush : Brush
 {
     /// <summary>Identifies the <see cref="ColorInterpolationMode"/> property.</summary>
@@ -890,16 +890,16 @@ public sealed class DrawingBrush : TileBrush
 public sealed class VisualBrush : TileBrush
 {
     public static readonly DependencyProperty VisualProperty =
-        DependencyProperty.Register(nameof(Visual), typeof(Jalium.UI.Visual), typeof(VisualBrush), new PropertyMetadata(null));
+        DependencyProperty.Register(nameof(Visual), typeof(Visual), typeof(VisualBrush), new PropertyMetadata(null));
     public static readonly DependencyProperty AutoLayoutContentProperty =
         DependencyProperty.Register(nameof(AutoLayoutContent), typeof(bool), typeof(VisualBrush), new PropertyMetadata(true));
 
     /// <summary>
     /// Gets or sets the visual that provides the content for the brush.
     /// </summary>
-    public Jalium.UI.Visual? Visual
+    public Visual? Visual
     {
-        get => (Jalium.UI.Visual?)GetValue(VisualProperty);
+        get => (Visual?)GetValue(VisualProperty);
         set => SetValue(VisualProperty, value);
     }
 
@@ -923,7 +923,7 @@ public sealed class VisualBrush : TileBrush
     /// Initializes a new instance of the <see cref="VisualBrush"/> class with the specified visual.
     /// </summary>
     /// <param name="visual">The visual to use.</param>
-    public VisualBrush(Jalium.UI.Visual visual)
+    public VisualBrush(Visual visual)
     {
         Visual = visual;
     }

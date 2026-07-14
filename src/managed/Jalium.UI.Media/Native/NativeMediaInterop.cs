@@ -51,6 +51,17 @@ internal static partial class NativeMediaInterop
         public int   IsKeyframe;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeVideoPlaneDescriptor
+    {
+        public int Fd;
+        public uint StrideBytes;
+        public uint OffsetBytes;
+        public uint Reserved;
+        public ulong Modifier;
+        public ulong SizeBytes;
+    }
+
     /// <summary>对应 <c>jalium_video_decoder_gpu_descriptor_t</c>。</summary>
     [StructLayout(LayoutKind.Sequential)]
     internal struct NativeVideoDecoderGpuDescriptor
@@ -62,6 +73,19 @@ internal static partial class NativeMediaInterop
         public ulong Handle1;
         public uint  FormatHint;
         public uint  Reserved;
+        public uint  PlaneCount;
+        public uint  DrmFourcc;
+        public uint  DescriptorFlags;
+        public uint  ColorSpace;
+        public NativeVideoPlaneDescriptor Plane0;
+        public NativeVideoPlaneDescriptor Plane1;
+        public NativeVideoPlaneDescriptor Plane2;
+        public NativeVideoPlaneDescriptor Plane3;
+        public int   AcquireFenceFd;
+        public uint  Reserved2;
+        public ulong LifetimeContext;
+        public ulong LifetimeRetainCallback;
+        public ulong LifetimeReleaseCallback;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -82,6 +106,46 @@ internal static partial class NativeMediaInterop
         public nint Formats;        // const jalium_camera_format_t*
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeMediaTrackInfo
+    {
+        public int Kind;
+        public uint Index;
+        public nint Id;
+        public nint Label;
+        public nint Language;
+        public nint Codec;
+        public uint Channels;
+        public uint SampleRate;
+        public int IsDefault;
+        public int IsForced;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeMicrophoneDevice
+    {
+        public nint Id;
+        public nint FriendlyName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeAudioCaptureFrame
+    {
+        public nint Samples;
+        public uint FrameCount;
+        public uint SampleRate;
+        public uint Channels;
+        public long PtsMicroseconds;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeSubtitleCue
+    {
+        public nint Utf8Text;
+        public long StartMicroseconds;
+        public long DurationMicroseconds;
+    }
+
     // ----- 生命周期 ----------------------------------------------------------
 
     [LibraryImport(MediaLib, EntryPoint = "jalium_media_initialize")]
@@ -95,6 +159,18 @@ internal static partial class NativeMediaInterop
 
     [LibraryImport(MediaLib, EntryPoint = "jalium_media_supported_video_codecs")]
     internal static partial uint jalium_media_supported_video_codecs();
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_linux_media_capabilities")]
+    internal static partial uint jalium_linux_media_capabilities();
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_media_discover_tracks", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial NativeMediaStatus jalium_media_discover_tracks(
+        string utf8PathOrUri,
+        out nint outTracks,
+        out uint outCount);
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_media_tracks_free")]
+    internal static partial void jalium_media_tracks_free(nint tracks, uint count);
 
     // ----- 图像解码 ---------------------------------------------------------
 
@@ -174,6 +250,20 @@ internal static partial class NativeMediaInterop
         nint decoder,
         out NativeVideoDecoderGpuDescriptor outDescriptor);
 
+    [LibraryImport(MediaLib, EntryPoint = "jalium_video_decoder_read_gpu_frame_descriptor")]
+    internal static partial NativeMediaStatus jalium_video_decoder_read_gpu_frame_descriptor(
+        nint decoder,
+        out NativeVideoDecoderGpuDescriptor outDescriptor,
+        out long outPtsMicroseconds,
+        out int outIsKeyframe);
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_video_decoder_release_gpu_surface_descriptor")]
+    internal static partial void jalium_video_decoder_release_gpu_surface_descriptor(
+        ref NativeVideoDecoderGpuDescriptor descriptor);
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_video_decoder_disable_gpu_output")]
+    internal static partial NativeMediaStatus jalium_video_decoder_disable_gpu_output(nint decoder);
+
     // ----- 摄像头 -----------------------------------------------------------
 
     [LibraryImport(MediaLib, EntryPoint = "jalium_camera_enumerate")]
@@ -200,6 +290,52 @@ internal static partial class NativeMediaInterop
 
     [LibraryImport(MediaLib, EntryPoint = "jalium_camera_close")]
     internal static partial void jalium_camera_close(nint source);
+
+    // ----- Microphone capture ---------------------------------------------
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_microphone_enumerate")]
+    internal static partial NativeMediaStatus jalium_microphone_enumerate(
+        out nint outDevices,
+        out uint outCount);
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_microphone_devices_free")]
+    internal static partial void jalium_microphone_devices_free(nint devices, uint count);
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_microphone_open", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial NativeMediaStatus jalium_microphone_open(
+        string deviceId,
+        uint requestedSampleRate,
+        uint requestedChannels,
+        out nint outSource);
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_microphone_read_frame")]
+    internal static partial NativeMediaStatus jalium_microphone_read_frame(
+        nint source,
+        out NativeAudioCaptureFrame outFrame);
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_microphone_close")]
+    internal static partial void jalium_microphone_close(nint source);
+
+    // ----- Embedded subtitles ---------------------------------------------
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_subtitle_decoder_open", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial NativeMediaStatus jalium_subtitle_decoder_open(
+        string utf8PathOrUri,
+        uint trackIndex,
+        out nint outDecoder);
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_subtitle_decoder_read_cue")]
+    internal static partial NativeMediaStatus jalium_subtitle_decoder_read_cue(
+        nint decoder,
+        out NativeSubtitleCue outCue);
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_subtitle_decoder_seek_us")]
+    internal static partial NativeMediaStatus jalium_subtitle_decoder_seek_us(
+        nint decoder,
+        long positionUs);
+
+    [LibraryImport(MediaLib, EntryPoint = "jalium_subtitle_decoder_close")]
+    internal static partial void jalium_subtitle_decoder_close(nint decoder);
 
     // ----- 工具 -------------------------------------------------------------
 

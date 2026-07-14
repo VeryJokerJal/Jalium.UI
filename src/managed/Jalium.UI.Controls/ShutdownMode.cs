@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls;
+namespace Jalium.UI;
 
 /// <summary>
 /// Specifies how an application will shutdown.

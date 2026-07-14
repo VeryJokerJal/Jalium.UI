@@ -2044,7 +2044,7 @@ public sealed class JalxamlParser
     {
         ["Application"] = "Jalium.UI.Controls.Application",
         ["Page"] = "Jalium.UI.Controls.Page",
-        ["Window"] = "Jalium.UI.Controls.Window",
+        ["Window"] = "Jalium.UI.Window",
         ["UserControl"] = "Jalium.UI.Controls.UserControl"
     };
 

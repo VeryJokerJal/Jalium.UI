@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Globalization;
 using Jalium.UI.Media.Animation;
 
@@ -181,27 +182,76 @@ public sealed class EmissiveMaterial : Material
 }
 
 /// <summary>Represents an ordered collection of materials.</summary>
-public sealed class MaterialCollection : FreezableCollection<Material>
+public sealed class MaterialCollection : Animatable, IList<Material>, IList
 {
-    public MaterialCollection()
-    {
-    }
+    private readonly AnimatableListStorage<Material> _items;
 
-    public MaterialCollection(int capacity)
-        : base(capacity)
-    {
-    }
+    public MaterialCollection() => _items = CreateStorage();
+
+    public MaterialCollection(int capacity) => _items = CreateStorage(capacity);
 
     public MaterialCollection(IEnumerable<Material> collection)
-        : base(collection)
     {
+        ArgumentNullException.ThrowIfNull(collection);
+        _items = CreateStorage(collection is ICollection<Material> source ? source.Count : 0);
+        _items.AddRange(collection);
     }
+
+    public Material this[int index] { get => _items[index]; set => _items[index] = value; }
+    object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<Material>.Cast(value); }
+    public int Count => _items.Count;
+    bool ICollection<Material>.IsReadOnly => _items.IsReadOnly;
+    bool IList.IsReadOnly => _items.IsReadOnly;
+    bool IList.IsFixedSize => _items.IsReadOnly;
+    bool ICollection.IsSynchronized => _items.IsSynchronized;
+    object ICollection.SyncRoot => this;
+    public void Add(Material value) => _items.Add(value);
+    int IList.Add(object? value) { Add(AnimatableListStorage<Material>.Cast(value)); return Count - 1; }
+    public void Clear() => _items.Clear();
+    public bool Contains(Material value) => _items.Contains(value);
+    bool IList.Contains(object? value) => value is Material material && Contains(material);
+    public void CopyTo(Material[] array, int index) => _items.CopyTo(array, index);
+    void ICollection.CopyTo(Array array, int index) => _items.CopyTo(array, index);
+    public Enumerator GetEnumerator() => new(_items.GetEnumerator());
+    IEnumerator<Material> IEnumerable<Material>.GetEnumerator() => GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    public int IndexOf(Material value) => _items.IndexOf(value);
+    int IList.IndexOf(object? value) => value is Material material ? IndexOf(material) : -1;
+    public void Insert(int index, Material value) => _items.Insert(index, value);
+    void IList.Insert(int index, object? value) => Insert(index, AnimatableListStorage<Material>.Cast(value));
+    public bool Remove(Material value) => _items.Remove(value);
+    void IList.Remove(object? value) { if (value is Material material) Remove(material); }
+    public void RemoveAt(int index) => _items.RemoveAt(index);
 
     public new MaterialCollection Clone() => (MaterialCollection)base.Clone();
 
     public new MaterialCollection CloneCurrentValue() => (MaterialCollection)base.CloneCurrentValue();
 
     protected override Freezable CreateInstanceCore() => new MaterialCollection();
+    protected override bool FreezeCore(bool isChecking) => base.FreezeCore(isChecking) && _items.Freeze(isChecking);
+    protected override void CloneCore(Freezable source) { base.CloneCore(source); _items.CopyFrom(((MaterialCollection)source)._items, AnimatableListCloneMode.Clone); }
+    protected override void CloneCurrentValueCore(Freezable source) { base.CloneCurrentValueCore(source); _items.CopyFrom(((MaterialCollection)source)._items, AnimatableListCloneMode.CloneCurrentValue); }
+    protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((MaterialCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
+    protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((MaterialCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
+
+    private AnimatableListStorage<Material> CreateStorage(int capacity = 0) => new(
+        () => ReadPreamble(),
+        () => WritePreamble(),
+        () => WritePostscript(),
+        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
+        () => IsFrozen,
+        capacity);
+
+    public struct Enumerator : IEnumerator<Material>
+    {
+        private List<Material>.Enumerator _inner;
+        internal Enumerator(List<Material>.Enumerator inner) => _inner = inner;
+        public Material Current => _inner.Current;
+        object IEnumerator.Current => Current;
+        public bool MoveNext() => _inner.MoveNext();
+        public void Reset() => ((IEnumerator)_inner).Reset();
+        public void Dispose() => _inner.Dispose();
+    }
 }
 
 /// <summary>Represents materials that are applied together.</summary>

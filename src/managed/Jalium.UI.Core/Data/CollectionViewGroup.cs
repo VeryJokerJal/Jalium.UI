@@ -44,7 +44,13 @@ public abstract class CollectionViewGroup : INotifyPropertyChanged
     /// <summary>
     /// Occurs when a property value changes.
     /// </summary>
-    public event PropertyChangedEventHandler? PropertyChanged;
+    protected virtual event PropertyChangedEventHandler? PropertyChanged;
+
+    event PropertyChangedEventHandler? INotifyPropertyChanged.PropertyChanged
+    {
+        add => PropertyChanged += value;
+        remove => PropertyChanged -= value;
+    }
 
     /// <summary>
     /// Gets the internal items collection for modification by derived classes.

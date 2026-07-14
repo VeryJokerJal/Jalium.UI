@@ -108,7 +108,7 @@ public class RepeatButton : ButtonBase
     private static readonly BackEase s_arrowReleaseEase = new() { EasingMode = EasingMode.EaseOut, Amplitude = 0.28 };
     private static readonly SineEase s_arrowDisableEase = new() { EasingMode = EasingMode.EaseOut };
 
-    private Jalium.UI.Controls.Shapes.Path? _arrowPath;
+    private Jalium.UI.Shapes.Path? _arrowPath;
     private ScaleTransform? _arrowScaleTransform;
     private readonly SolidColorBrush _animatedArrowBrush = new(Color.FromRgb(210, 210, 210));
     private DispatcherTimer? _arrowStateTimer;
@@ -205,7 +205,7 @@ public class RepeatButton : ButtonBase
     {
         base.OnApplyTemplate();
 
-        _arrowPath = GetTemplateChild("PART_Arrow") as Jalium.UI.Controls.Shapes.Path;
+        _arrowPath = GetTemplateChild("PART_Arrow") as Jalium.UI.Shapes.Path;
         if (_arrowPath != null)
         {
             _arrowScaleTransform = _arrowPath.RenderTransform as ScaleTransform;
@@ -240,7 +240,7 @@ public class RepeatButton : ButtonBase
     }
 
     /// <inheritdoc />
-    protected override void OnIsPressedChanged(bool oldValue, bool newValue)
+    internal override void OnIsPressedChanged(bool oldValue, bool newValue)
     {
         base.OnIsPressedChanged(oldValue, newValue);
 
@@ -564,10 +564,21 @@ internal static class SystemParameters
     /// <summary>
     /// Gets the keyboard delay in milliseconds (default: 500ms).
     /// </summary>
-    public static int KeyboardDelay => 500;
+    public static int KeyboardDelay => KeyboardDelayMilliseconds(
+        global::Jalium.UI.SystemParameters.KeyboardDelay);
 
     /// <summary>
     /// Gets the keyboard speed (repeat interval) in milliseconds (default: 33ms for ~30 repeats/sec).
     /// </summary>
-    public static int KeyboardSpeed => 33;
+    public static int KeyboardSpeed => KeyboardRepeatIntervalMilliseconds(
+        global::Jalium.UI.SystemParameters.KeyboardSpeed);
+
+    internal static int KeyboardDelayMilliseconds(int setting) =>
+        250 + Math.Clamp(setting, 0, 3) * 250;
+
+    internal static int KeyboardRepeatIntervalMilliseconds(int setting)
+    {
+        double repeatsPerSecond = 2.5 + Math.Clamp(setting, 0, 31) * 27.5 / 31.0;
+        return Math.Max(1, (int)Math.Round(1000.0 / repeatsPerSecond));
+    }
 }

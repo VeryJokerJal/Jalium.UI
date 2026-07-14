@@ -5,7 +5,7 @@ namespace Jalium.UI.Interactivity;
 /// <summary>
 /// Calls a method on a specified object when invoked.
 /// </summary>
-public sealed class CallMethodAction : TriggerAction<DependencyObject>
+public sealed class CallMethodAction : BehaviorTriggerAction<DependencyObject>
 {
     /// <summary>
     /// Identifies the TargetObject dependency property.
@@ -96,7 +96,7 @@ public sealed class CallMethodAction : TriggerAction<DependencyObject>
 /// <summary>
 /// Changes a property on a target object to a specified value.
 /// </summary>
-public sealed class ChangePropertyAction : TriggerAction<DependencyObject>
+public sealed class ChangePropertyAction : BehaviorTriggerAction<DependencyObject>
 {
     /// <summary>
     /// Identifies the TargetObject dependency property.
@@ -180,7 +180,7 @@ public sealed class ChangePropertyAction : TriggerAction<DependencyObject>
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
         Justification = "PropertyAccessorRegistry.TryGetPropertyInfo performs Type.GetProperty reflection on the runtime type of the target. " +
-            "GuessTargetType is reached only from ChangePropertyAction.Invoke, the XAML behavior/EventTrigger surface, which already carries the " +
+            "GuessTargetType is reached only from ChangePropertyAction.Invoke, the XAML behavior/BehaviorEventTrigger surface, which already carries the " +
             "[RequiresUnreferencedCode] contract ('ChangePropertyAction sets a property on the target via reflection.'). Consumers wiring a " +
             "ChangePropertyAction to a user-defined type under trimming/AOT must preserve that type's property members; this leaf merely propagates " +
             "the contract already declared at that public entry point.")]

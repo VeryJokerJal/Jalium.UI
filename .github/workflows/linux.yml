@@ -2,7 +2,7 @@ name: Linux
 
 on:
   push:
-    branches: [main, preview-26.10.7]
+    branches: [master, preview-26.10.7]
   pull_request:
   workflow_dispatch:
 
@@ -42,13 +42,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build pkg-config \
-            libx11-dev libxext-dev libxrandr-dev xvfb xclip \
+            build-essential clang cmake ninja-build pkg-config file python3 binutils zlib1g-dev \
+            libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
+            libsm6 libice6 xvfb xclip xdotool x11-utils \
             libwayland-dev wayland-protocols libxkbcommon-dev wl-clipboard weston \
             libvulkan-dev mesa-vulkan-drivers vulkan-tools \
-            libfontconfig1-dev \
+            libfontconfig1-dev fonts-dejavu-core fonts-noto-cjk \
+            dbus-x11 at-spi2-core libglib2.0-bin \
+            xdg-desktop-portal xdg-desktop-portal-gtk libnotify4 \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good
+            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg
 
       - uses: actions/setup-dotnet@v5
         with:
@@ -58,10 +62,27 @@ jobs:
             **/*.csproj
             **/packages.lock.json
 
+      - name: Validate explicit glibc cross preset
+        run: |
+          JALIUM_CROSS_C_COMPILER="$(command -v gcc)"
+          JALIUM_CROSS_CXX_COMPILER="$(command -v g++)"
+          JALIUM_CROSS_PKG_CONFIG_EXECUTABLE="$(command -v pkg-config)"
+          export JALIUM_CROSS_C_COMPILER
+          export JALIUM_CROSS_CXX_COMPILER
+          export JALIUM_CROSS_PKG_CONFIG_EXECUTABLE
+          export JALIUM_NATIVE_BUILD_DIR="${{ runner.temp }}/cross-preset-${{ matrix.rid }}"
+          export JALIUM_NATIVE_OUTPUT_ROOT="${{ runner.temp }}/cross-output-${{ matrix.rid }}"
+          bash eng/linux/build-native-cross.sh "${{ matrix.rid }}" Release
+          if [[ "${{ matrix.arch }}" == x64 ]]; then
+            bash eng/linux/test-cross-toolchains.sh --negative-only
+          fi
+
       - name: Build Ubuntu 20.04 baseline image
         run: |
           docker build --pull \
             --platform "${{ matrix.docker-platform }}" \
+            --build-arg JALIUM_INSTALL_DOTNET=1 \
+            --build-arg JALIUM_DOTNET_SDK_VERSION=10.0.301 \
             --file eng/linux/ubuntu20.04-glibc.Dockerfile \
             --tag "jalium-glibc-baseline:${{ matrix.arch }}" \
             eng/linux
@@ -73,7 +94,10 @@ jobs:
             --volume "$GITHUB_WORKSPACE:/work" \
             --workdir /work \
             "jalium-glibc-baseline:${{ matrix.arch }}" \
-            bash eng/linux/build-glibc-baseline.sh "${{ matrix.rid }}" Release
+            bash -euo pipefail -c '
+              bash eng/linux/build-glibc-baseline.sh "${{ matrix.rid }}" Release
+              bash eng/linux/test-native-aot-static.sh "${{ matrix.rid }}" Release
+            '
 
       - name: Validate ELF payload
         run: |
@@ -81,11 +105,43 @@ jobs:
           test "$(find "src/native/bin/native/${{ matrix.rid }}/Release" -maxdepth 1 -name '*.so' | wc -l)" -eq 7
           bash eng/linux/check-symbol-versions.sh \
             "src/native/bin/native/${{ matrix.rid }}/Release" 2.31 3.4.28
+          bash eng/linux/check-native-exports.sh \
+            "src/native/bin/native/${{ matrix.rid }}/Release"
           for library in src/native/bin/native/${{ matrix.rid }}/Release/*.so; do
             readelf -d "$library" | grep -F "Library runpath: [\$ORIGIN]"
             if readelf -d "$library" | grep -F '/home/runner/work/'; then exit 1; fi
             if ldd "$library" | grep -F 'not found'; then exit 1; fi
           done
+
+      - name: Vulkan-on-Wayland presentation smoke
+        run: |
+          runtime="${{ runner.temp }}/weston-vk"
+          mkdir -p "$runtime"
+          chmod 700 "$runtime"
+          XDG_RUNTIME_DIR="$runtime" weston \
+            --backend=headless-backend.so \
+            --socket=wayland-vk \
+            --idle-time=0 \
+            --log="$runtime/weston.log" &
+          weston_pid=$!
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 50); do
+            test -S "$runtime/wayland-vk" && break
+            sleep 0.1
+          done
+          test -S "$runtime/wayland-vk"
+          payload="src/native/bin/native/${{ matrix.rid }}/Release"
+          XDG_RUNTIME_DIR="$runtime" \
+            WAYLAND_DISPLAY=wayland-vk \
+            JALIUM_WINDOW_SYSTEM=wayland \
+            LD_LIBRARY_PATH="$payload" \
+            "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
+
+      - name: Clipboard interop smoke (X11 xclip + Wayland wl-clipboard)
+        run: xvfb-run -a bash eng/linux/test-input-clipboard.sh ${{ matrix.rid }} Release
+
+      - name: Wayland drag-and-drop smoke
+        run: xvfb-run -a bash eng/linux/test-wayland-dnd.sh ${{ matrix.rid }} Release
 
       - name: Restore managed tests
         run: >
@@ -94,30 +150,198 @@ jobs:
           -p:GeneratePackageOnBuild=false
 
       - name: Run managed tests
-        run: >
-          dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj
-          -c Release --no-restore -m:1
-          -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed"
-          -p:GeneratePackageOnBuild=false
-          --logger "trx;LogFileName=linux-${{ matrix.arch }}.trx"
-
-      - name: Pack managed implementation and RID-specific interop
         run: |
-          dotnet pack src/managed/Jalium.UI.Managed/Jalium.UI.Managed.csproj \
-            -c Release --no-restore \
-            -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
-            -p:PackageOutputPath="${{ runner.temp }}/packages"
-          dotnet pack src/managed/Jalium.UI.Interop/Jalium.UI.Interop.csproj \
-            -c Release --no-restore \
-            -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
-            -p:JaliumNativePackRid="${{ matrix.rid }}" \
-            -p:JaliumNativeConfiguration=Release \
-            -p:PackageOutputPath="${{ runner.temp }}/packages"
+          payload="src/native/bin/native/${{ matrix.rid }}/Release"
+          xvfb-run -a env \
+            JALIUM_WINDOW_SYSTEM=x11 \
+            LD_LIBRARY_PATH="$payload" \
+            dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
+              -c Release --no-restore -m:1 \
+              -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
+              -p:GeneratePackageOnBuild=false \
+              --logger "trx;LogFileName=linux-${{ matrix.arch }}.trx"
+
+      - name: Build Linux sample (keeps the app-facing path from rotting)
+        run: >
+          dotnet build samples/Jalium.UI.LinuxDemo/Jalium.UI.LinuxDemo.csproj
+          -c Release -m:1
+          -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed"
+          -p:JaliumNativeConfiguration=Release
+          -p:GeneratePackageOnBuild=false
+
+      - name: Run Linux sample headless (X11 + Wayland)
+        run: |
+          demo="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.LinuxDemo/Release/net10.0/Jalium.UI.LinuxDemo.dll"
+          test -f "$demo"
+          # X11: the app must create a window, render and stay alive for 8s.
+          timeout 20 xvfb-run -a env JALIUM_WINDOW_SYSTEM=x11 JALIUM_DEMO_AUTOCLOSE_MS=8000 \
+            dotnet "$demo" | tee "${{ runner.temp }}/demo-x11.log"
+          grep -q "\[demo\] ready" "${{ runner.temp }}/demo-x11.log"
+          # Wayland: same under headless weston.
+          runtime="${{ runner.temp }}/weston-demo"
+          mkdir -p "$runtime"; chmod 700 "$runtime"
+          XDG_RUNTIME_DIR="$runtime" weston --backend=headless-backend.so \
+            --socket=wayland-demo --idle-time=0 --log="$runtime/weston.log" &
+          weston_pid=$!
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 50); do test -S "$runtime/wayland-demo" && break; sleep 0.1; done
+          timeout 20 env XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=wayland-demo \
+            JALIUM_WINDOW_SYSTEM=wayland JALIUM_DEMO_AUTOCLOSE_MS=8000 \
+            dotnet "$demo" | tee "${{ runner.temp }}/demo-wayland.log"
+          grep -q "\[demo\] ready" "${{ runner.temp }}/demo-wayland.log"
+
+      - name: Build managed Linux integration smoke projects
+        run: |
+          for project in \
+            tests/Jalium.UI.LinuxAccessibilitySmoke/Jalium.UI.LinuxAccessibilitySmoke.csproj \
+            tests/Jalium.UI.LinuxClipboardSmoke/Jalium.UI.LinuxClipboardSmoke.csproj \
+            tests/Jalium.UI.LinuxPortalSmoke/Jalium.UI.LinuxPortalSmoke.csproj \
+            tests/Jalium.UI.Media.LinuxSmoke/Jalium.UI.Media.LinuxSmoke.csproj; do
+            dotnet build "$project" -c Release -m:1 \
+              -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
+              -p:JaliumNativeConfiguration=Release \
+              -p:GeneratePackageOnBuild=false
+          done
+
+      - name: Managed media bridge smoke
+        run: |
+          payload="src/native/bin/native/${{ matrix.rid }}/Release"
+          smoke="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.Media.LinuxSmoke/Release/net10.0/Jalium.UI.Media.LinuxSmoke.dll"
+          test -f "$smoke"
+          LD_LIBRARY_PATH="$payload" dotnet "$smoke"
+          LD_LIBRARY_PATH="$payload" python3 \
+            src/native/jalium.native.media.linux/tests/run_real_media_smoke.py \
+            --smoke "$payload/jalium.native.media.linux.tests" \
+            --managed-smoke "$smoke" \
+            --ffmpeg "$(command -v ffmpeg)" \
+            --subtitle src/native/jalium.native.media.linux/tests/media_smoke.srt \
+            --workdir "${{ runner.temp }}/real-media-smoke-${{ matrix.rid }}"
+
+      - name: Managed multi-format clipboard smoke
+        run: |
+          payload="src/native/bin/native/${{ matrix.rid }}/Release"
+          smoke="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.LinuxClipboardSmoke/Release/net10.0/Jalium.UI.Tests.dll"
+          test -f "$smoke"
+          xvfb-run -a env \
+            JALIUM_WINDOW_SYSTEM=x11 \
+            LD_LIBRARY_PATH="$payload" \
+            dotnet "$smoke"
+
+      # AT-SPI requires the real org.a11y.Bus service. One architecture is
+      # sufficient for the D-Bus protocol contract; native ABI remains covered
+      # independently by both architecture jobs.
+      - name: AT-SPI service integration smoke
+        if: matrix.arch == 'x64'
+        run: |
+          payload="src/native/bin/native/${{ matrix.rid }}/Release"
+          smoke="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.LinuxAccessibilitySmoke/Release/net10.0/Jalium.UI.LinuxAccessibilitySmoke.dll"
+          test -f "$smoke"
+          xvfb-run -a bash eng/linux/test-atspi.sh dotnet "$smoke" "$payload"
+
+      # The portal executable is D-Bus activated by xdg-desktop-portal and its
+      # GTK backend. The test cancels its real FileChooser request and confirms
+      # that notification capability is not fabricated without a daemon.
+      - name: Desktop portal service integration smoke
+        if: matrix.arch == 'x64'
+        run: |
+          smoke="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.LinuxPortalSmoke/Release/net10.0/Jalium.UI.LinuxPortalSmoke.dll"
+          test -f "$smoke"
+          runtime="${{ runner.temp }}/portal-runtime"
+          mkdir -p "$runtime"
+          chmod 700 "$runtime"
+          XDG_RUNTIME_DIR="$runtime" xvfb-run -a dbus-run-session -- env \
+            XDG_CURRENT_DESKTOP=GNOME \
+            JALIUM_EXPECT_NO_NOTIFICATION_DAEMON=1 \
+            dotnet "$smoke"
+
+      - name: Print portal Unix file-descriptor integration smoke
+        if: matrix.arch == 'x64'
+        run: |
+          smoke="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.LinuxPortalSmoke/Release/net10.0/Jalium.UI.LinuxPortalSmoke.dll"
+          test -f "$smoke"
+          bash eng/linux/test-print-portal.sh "$smoke"
+
+      - name: StatusNotifierItem and notification action integration smoke
+        if: matrix.arch == 'x64'
+        run: |
+          payload="src/native/bin/native/${{ matrix.rid }}/Release"
+          smoke="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.LinuxPortalSmoke/Release/net10.0/Jalium.UI.LinuxPortalSmoke.dll"
+          test -f "$smoke"
+          bash eng/linux/test-status-notifier.sh "$smoke" "$payload"
+
+      - name: logind SessionEnding integration smoke
+        if: matrix.arch == 'x64'
+        run: |
+          smoke="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.LinuxPortalSmoke/Release/net10.0/Jalium.UI.LinuxPortalSmoke.dll"
+          test -f "$smoke"
+          bash eng/linux/test-logind-session.sh "$smoke"
+
+      - name: XSMP logout and cancellation integration smoke
+        if: matrix.arch == 'x64'
+        run: |
+          smoke="${{ runner.temp }}/jalium-managed/bin/Jalium.UI.LinuxPortalSmoke/Release/net10.0/Jalium.UI.LinuxPortalSmoke.dll"
+          test -f "$smoke"
+          bash eng/linux/test-xsmp-session.sh "$smoke"
+
+      - name: Pack and validate self-contained, single-file and NativeAOT consumers on glibc 2.31
+        run: |
+          docker run --rm \
+            --platform "${{ matrix.docker-platform }}" \
+            --env JALIUM_REQUIRE_GLIBC_BASELINE=1 \
+            --env JALIUM_GLIBC_SYMBOL_CEILING=2.31 \
+            --env JALIUM_GLIBCXX_SYMBOL_CEILING=3.4.28 \
+            --env NUGET_PACKAGES="/artifacts/nuget-packages-${{ matrix.rid }}" \
+            --volume "$GITHUB_WORKSPACE:/work" \
+            --volume "${{ runner.temp }}:/artifacts" \
+            --workdir /work \
+            "jalium-glibc-baseline:${{ matrix.arch }}" \
+            bash -euo pipefail -c '
+              production_output_root="/artifacts/native-production-${{ matrix.rid }}"
+              test ! -e "$production_output_root"
+              export JALIUM_NATIVE_OUTPUT_ROOT="$production_output_root"
+              JALIUM_NATIVE_BUILD_TESTS=0 \
+              JALIUM_NATIVE_BUILD_DIR="/tmp/jalium-production-${{ matrix.rid }}" \
+                bash eng/linux/build-native.sh "${{ matrix.rid }}" Release
+              payload="$production_output_root/${{ matrix.rid }}/Release"
+              test -f "$payload/.jalium-native-complete"
+              test "$(find "$payload" -mindepth 1 -maxdepth 1 -type f -name "*.so" | wc -l)" -eq 7
+              test "$(find "$payload" -mindepth 1 -maxdepth 1 | wc -l)" -eq 8
+              test "$(find "$payload" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 8
+              bash eng/linux/check-symbol-versions.sh \
+                "$payload" 2.31 3.4.28
+              bash eng/linux/check-native-exports.sh "$payload"
+              for library in "$payload"/*.so; do
+                dynamic="$(readelf -d "$library")"
+                printf "%s\n" "$dynamic" | grep -F "Library runpath: [\$ORIGIN]"
+                ! printf "%s\n" "$dynamic" | grep -F "/home/runner/work/"
+                ! printf "%s\n" "$dynamic" | grep -F "/work/"
+                dependencies="$(ldd "$library")"
+                ! printf "%s\n" "$dependencies" | grep -F "not found"
+              done
+              bash eng/linux/pack-linux-packages.sh \
+                "${{ matrix.rid }}" Release \
+                /artifacts/packages \
+                "/artifacts/jalium-pack-${{ matrix.rid }}"
+              package_version="$(sed -n "s:.*<Version>\([^<]*\)</Version>.*:\1:p" Directory.Build.props | head -1)"
+              test -n "$package_version"
+              bash eng/linux/test-nuget-consumer.sh \
+                "${{ matrix.rid }}" /artifacts/packages \
+                "/artifacts/consumer-${{ matrix.rid }}" \
+                "$package_version" self-contained
+              bash eng/linux/test-nuget-consumer.sh \
+                "${{ matrix.rid }}" /artifacts/packages \
+                "/artifacts/consumer-${{ matrix.rid }}" \
+                "$package_version" single-file
+              bash eng/linux/test-nuget-consumer.sh \
+                "${{ matrix.rid }}" /artifacts/packages \
+                "/artifacts/consumer-${{ matrix.rid }}" \
+                "$package_version" aot
+            '
 
       - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.rid }}
-          path: src/native/bin/native/${{ matrix.rid }}/Release
+          path: ${{ runner.temp }}/native-production-${{ matrix.rid }}/${{ matrix.rid }}/Release
           include-hidden-files: true
           if-no-files-found: error
 
@@ -146,24 +370,36 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Build and test in Alpine
+      - name: Build native, run managed tests and validate packages in Alpine
         run: |
           docker run --rm \
             --platform "${{ matrix.docker-platform }}" \
             -e JALIUM_NATIVE_BUILD_TESTS=1 \
+            -e NUGET_PACKAGES="/artifacts/nuget-packages-${{ matrix.rid }}" \
             -v "$GITHUB_WORKSPACE:/work" \
+            -v "${{ runner.temp }}:/artifacts" \
             -w /work \
-            alpine:3.24 \
+            mcr.microsoft.com/dotnet/sdk:10.0-alpine3.24 \
             sh -euxc '
               apk add --no-cache \
-                bash build-base cmake ninja pkgconf linux-headers binutils pax-utils \
-                libx11-dev libxext-dev libxrandr-dev \
+                bash build-base clang lld cmake ninja pkgconf python3 git linux-headers \
+                binutils pax-utils file coreutils zlib-dev \
+                libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
                 wayland-dev wayland-protocols xkeyboard-config-dev libxkbcommon-dev \
-                vulkan-loader-dev mesa-dri-gallium fontconfig-dev \
-                gstreamer-dev gst-plugins-base-dev \
+                vulkan-loader-dev mesa-dri-gallium mesa-vulkan-swrast fontconfig-dev font-dejavu font-noto-cjk \
+                gstreamer-dev gst-plugins-base-dev gst-plugins-good \
+                gst-plugins-bad gst-libav ffmpeg \
                 xvfb-run weston weston-backend-headless weston-shell-desktop
+              set -o pipefail
               bash eng/linux/build-native.sh "${{ matrix.rid }}" Release
               payload="src/native/bin/native/${{ matrix.rid }}/Release"
+              bash eng/linux/check-native-exports.sh "$payload"
+              export JALIUM_CROSS_C_COMPILER="$(command -v gcc)"
+              export JALIUM_CROSS_CXX_COMPILER="$(command -v g++)"
+              export JALIUM_CROSS_PKG_CONFIG_EXECUTABLE="$(command -v pkg-config)"
+              export JALIUM_NATIVE_BUILD_DIR="/tmp/cross-preset-${{ matrix.rid }}"
+              export JALIUM_NATIVE_OUTPUT_ROOT="/tmp/cross-output-${{ matrix.rid }}"
+              bash eng/linux/build-native-cross.sh "${{ matrix.rid }}" Release
               test "$(find "$payload" -maxdepth 1 -name "*.so" | wc -l)" -eq 7
               for library in src/native/bin/native/${{ matrix.rid }}/Release/*.so; do
                 dynamic="$(readelf -d "$library")"
@@ -178,6 +414,8 @@ jobs:
               xvfb-run -a ctest \
                 --test-dir "src/native/out/build/${{ matrix.rid }}" \
                 --output-on-failure
+
+              bash eng/linux/test-native-aot-static.sh "${{ matrix.rid }}" Release
 
               runtime=/tmp/weston-runtime
               mkdir -p "$runtime"
@@ -198,39 +436,111 @@ jobs:
                 WAYLAND_DISPLAY=wayland-ci \
                 JALIUM_WINDOW_SYSTEM=wayland \
                 "$payload/jalium.native.software.wayland.tests"
+              XDG_RUNTIME_DIR="$runtime" \
+                WAYLAND_DISPLAY=wayland-ci \
+                JALIUM_WINDOW_SYSTEM=wayland \
+                LD_LIBRARY_PATH="$payload" \
+                "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
+
+              managed_root="/artifacts/jalium-managed-${{ matrix.rid }}"
+              xvfb-run -a env \
+                JALIUM_WINDOW_SYSTEM=x11 \
+                LD_LIBRARY_PATH="$payload" \
+                dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
+                  -c Release -m:1 \
+                  -p:JaliumBuildRoot="$managed_root" \
+                  -p:GeneratePackageOnBuild=false \
+                  --logger "trx;LogFileName=linux-${{ matrix.rid }}.trx"
+
+              dotnet build samples/Jalium.UI.LinuxDemo/Jalium.UI.LinuxDemo.csproj \
+                -c Release -m:1 \
+                -p:JaliumBuildRoot="$managed_root" \
+                -p:JaliumNativeConfiguration=Release \
+                -p:GeneratePackageOnBuild=false
+              demo="$managed_root/bin/Jalium.UI.LinuxDemo/Release/net10.0/Jalium.UI.LinuxDemo.dll"
+              test -f "$demo"
+              timeout 20s xvfb-run -a env \
+                JALIUM_WINDOW_SYSTEM=x11 \
+                JALIUM_RENDER_BACKEND=software \
+                JALIUM_DEMO_AUTOCLOSE_MS=4000 \
+                LD_LIBRARY_PATH="$payload" \
+                dotnet "$demo" | tee "/artifacts/demo-${{ matrix.rid }}.log"
+              grep -q "\[demo\] ready" "/artifacts/demo-${{ matrix.rid }}.log"
+
+              dotnet build tests/Jalium.UI.Media.LinuxSmoke/Jalium.UI.Media.LinuxSmoke.csproj \
+                -c Release -m:1 \
+                -p:JaliumBuildRoot="$managed_root" \
+                -p:GeneratePackageOnBuild=false
+              media_smoke="$managed_root/bin/Jalium.UI.Media.LinuxSmoke/Release/net10.0/Jalium.UI.Media.LinuxSmoke.dll"
+              test -f "$media_smoke"
+              LD_LIBRARY_PATH="$payload" dotnet "$media_smoke"
+              fixture="src/native/out/build/${{ matrix.rid }}/jalium.native.media.linux/real-media-smoke/jalium-h264-multitrack.mkv"
+              test -f "$fixture"
+              LD_LIBRARY_PATH="$payload" python3 \
+                src/native/jalium.native.media.linux/tests/run_real_media_smoke.py \
+                --smoke "$payload/jalium.native.media.linux.tests" \
+                --managed-smoke "$media_smoke" \
+                --fixture "$fixture"
+
+              dotnet build tests/Jalium.UI.LinuxClipboardSmoke/Jalium.UI.LinuxClipboardSmoke.csproj \
+                -c Release -m:1 \
+                -p:JaliumBuildRoot="$managed_root" \
+                -p:GeneratePackageOnBuild=false
+              clipboard_smoke="$managed_root/bin/Jalium.UI.LinuxClipboardSmoke/Release/net10.0/Jalium.UI.Tests.dll"
+              test -f "$clipboard_smoke"
+              timeout 20s xvfb-run -a env \
+                JALIUM_WINDOW_SYSTEM=x11 \
+                LD_LIBRARY_PATH="$payload" \
+                dotnet "$clipboard_smoke"
+
+              production_output_root="/artifacts/native-production-${{ matrix.rid }}"
+              test ! -e "$production_output_root"
+              export JALIUM_NATIVE_OUTPUT_ROOT="$production_output_root"
+              JALIUM_NATIVE_BUILD_TESTS=0 \
+              JALIUM_NATIVE_BUILD_DIR="/tmp/jalium-production-${{ matrix.rid }}" \
+                bash eng/linux/build-native.sh "${{ matrix.rid }}" Release
+              payload="$production_output_root/${{ matrix.rid }}/Release"
+              test -f "$payload/.jalium-native-complete"
+              test "$(find "$payload" -mindepth 1 -maxdepth 1 -type f -name "*.so" | wc -l)" -eq 7
+              test "$(find "$payload" -mindepth 1 -maxdepth 1 | wc -l)" -eq 8
+              test "$(find "$payload" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 8
+              bash eng/linux/check-native-exports.sh "$payload"
+              for library in "$payload"/*.so; do
+                dynamic="$(readelf -d "$library")"
+                printf "%s\n" "$dynamic" | grep -F "Library runpath: [\$ORIGIN]"
+                ! printf "%s\n" "$dynamic" | grep -F "/work/"
+                version_info="$(readelf --version-info "$library")"
+                ! printf "%s\n" "$version_info" | grep -E "GLIBC_[0-9]"
+                scanelf -n "$library"
+                dependencies="$(ldd "$library")"
+                ! printf "%s\n" "$dependencies" | grep -F "not found"
+              done
+
+              bash eng/linux/pack-linux-packages.sh \
+                "${{ matrix.rid }}" Release \
+                /artifacts/packages \
+                "/artifacts/jalium-pack-${{ matrix.rid }}"
+
+              package_version="$(sed -n "s:.*<Version>\([^<]*\)</Version>.*:\1:p" Directory.Build.props | head -1)"
+              test -n "$package_version"
+              bash eng/linux/test-nuget-consumer.sh \
+                "${{ matrix.rid }}" /artifacts/packages \
+                "/artifacts/consumer-${{ matrix.rid }}" \
+                "$package_version" self-contained
+              bash eng/linux/test-nuget-consumer.sh \
+                "${{ matrix.rid }}" /artifacts/packages \
+                "/artifacts/consumer-${{ matrix.rid }}" \
+                "$package_version" single-file
+              bash eng/linux/test-nuget-consumer.sh \
+                "${{ matrix.rid }}" /artifacts/packages \
+                "/artifacts/consumer-${{ matrix.rid }}" \
+                "$package_version" aot
             '
-
-      - uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: 10.0.x
-          cache: true
-          cache-dependency-path: |
-            **/*.csproj
-            **/packages.lock.json
-
-      - name: Restore interop package
-        run: >
-          dotnet restore src/managed/Jalium.UI.Interop/Jalium.UI.Interop.csproj
-          -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed"
-          -p:GeneratePackageOnBuild=false
-
-      - name: Pack managed implementation and RID-specific interop
-        run: |
-          dotnet pack src/managed/Jalium.UI.Managed/Jalium.UI.Managed.csproj \
-            -c Release --no-restore \
-            -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
-            -p:PackageOutputPath="${{ runner.temp }}/packages"
-          dotnet pack src/managed/Jalium.UI.Interop/Jalium.UI.Interop.csproj \
-            -c Release --no-restore \
-            -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
-            -p:JaliumNativePackRid="${{ matrix.rid }}" \
-            -p:JaliumNativeConfiguration=Release \
-            -p:PackageOutputPath="${{ runner.temp }}/packages"
 
       - uses: actions/upload-artifact@v7
         with:
           name: native-${{ matrix.rid }}
-          path: src/native/bin/native/${{ matrix.rid }}/Release
+          path: ${{ runner.temp }}/native-production-${{ matrix.rid }}/${{ matrix.rid }}/Release
           include-hidden-files: true
           if-no-files-found: error
 
@@ -278,39 +588,37 @@ jobs:
           for rid in linux-x64 linux-arm64 linux-musl-x64 linux-musl-arm64; do
             directory="src/native/bin/native/$rid/Release"
             test -f "$directory/.jalium-native-complete"
-            test "$(find "$directory" -maxdepth 1 -name '*.so' | wc -l)" -eq 7
+            test "$(find "$directory" -mindepth 1 -maxdepth 1 -type f -name '*.so' | wc -l)" -eq 7
+            test "$(find "$directory" -mindepth 1 -maxdepth 1 | wc -l)" -eq 8
+            test "$(find "$directory" -mindepth 1 -maxdepth 1 -type f | wc -l)" -eq 8
           done
 
-      - name: Restore packages
-        run: >
-          dotnet restore src/packaging/Jalium.UI.Linux/Jalium.UI.Linux.csproj
-          -p:JaliumBuildRoot="${{ runner.temp }}/jalium-pack"
-          -p:GeneratePackageOnBuild=false
-
-      - name: Pack all Linux RID assets
+      - name: Pack complete dependency closure with all Linux RID assets
         run: |
-          dotnet pack src/managed/Jalium.UI.Managed/Jalium.UI.Managed.csproj \
-            -c Release --no-restore \
-            -p:JaliumBuildRoot="${{ runner.temp }}/jalium-pack" \
-            -p:PackageOutputPath="${{ runner.temp }}/packages"
-          dotnet pack src/managed/Jalium.UI.Interop/Jalium.UI.Interop.csproj \
-            -c Release --no-restore \
-            -p:JaliumBuildRoot="${{ runner.temp }}/jalium-pack" \
-            -p:JaliumNativeConfiguration=Release \
-            -p:PackageOutputPath="${{ runner.temp }}/packages"
-          dotnet pack src/packaging/Jalium.UI.Linux/Jalium.UI.Linux.csproj \
-            -c Release --no-restore \
-            -p:JaliumBuildRoot="${{ runner.temp }}/jalium-pack" \
-            -p:JaliumNativeConfiguration=Release \
-            -p:PackageOutputPath="${{ runner.temp }}/packages"
+          bash eng/linux/pack-linux-packages.sh \
+            all Release \
+            "${{ runner.temp }}/packages" \
+            "${{ runner.temp }}/jalium-pack-all"
 
       - name: Verify all runtime folders are packaged
         run: |
           package="$(find "${{ runner.temp }}/packages" -name 'Jalium.UI.Interop.*.nupkg' | head -1)"
-          unzip -l "$package" > "${{ runner.temp }}/interop-files.txt"
+          test -f "$package"
+          unzip -Z1 "$package" > "${{ runner.temp }}/interop-files.txt"
+          libraries=(
+            libjalium.native.core.so
+            libjalium.native.platform.so
+            libjalium.native.media.core.so
+            libjalium.native.media.so
+            libjalium.native.text.so
+            libjalium.native.vulkan.so
+            libjalium.native.software.so
+          )
           for rid in linux-x64 linux-arm64 linux-musl-x64 linux-musl-arm64; do
-            grep -F "runtimes/$rid/native/libjalium.native.platform.so" "${{ runner.temp }}/interop-files.txt"
-            grep -F "runtimes/$rid/native/libjalium.native.media.so" "${{ runner.temp }}/interop-files.txt"
+            for library in "${libraries[@]}"; do
+              grep -Fx "runtimes/$rid/native/$library" "${{ runner.temp }}/interop-files.txt"
+            done
+            test "$(grep -cE "^runtimes/$rid/native/libjalium[.]native[.].*[.]so$" "${{ runner.temp }}/interop-files.txt")" -eq 7
           done
 
       - uses: actions/upload-artifact@v7

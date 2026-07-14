@@ -167,7 +167,10 @@ public sealed class TextEffectCollection : Animation.Animatable, IList<TextEffec
 /// <summary>
 /// Provides attached properties and methods for performing OpenType typography on text elements.
 /// </summary>
-public static class Typography
+// The complete WPF-compatible attached-property surface is provided by
+// Jalium.UI.Documents.Typography. Retain this early subset for in-assembly
+// compatibility without advertising a second public Typography type.
+internal static class Typography
 {
     // Standard Ligatures
     public static readonly DependencyProperty StandardLigaturesProperty =

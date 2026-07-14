@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Jalium.UI.LinuxDemo</RootNamespace>
+    <AssemblyName>Jalium.UI.LinuxDemo</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The Linux entry package: cross-platform managed runtime plus the
+         RID-specific native payload (libjalium.native.*.so) copied next to
+         the app by Jalium.UI.Interop's build targets. -->
+    <ProjectReference Include="..\..\src\packaging\Jalium.UI.Linux\Jalium.UI.Linux.csproj" />
+  </ItemGroup>
+
+</Project>

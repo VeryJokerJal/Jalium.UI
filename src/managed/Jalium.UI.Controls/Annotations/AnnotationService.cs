@@ -6,6 +6,7 @@ using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 using DocumentPage = Jalium.UI.Documents.DocumentPage;
 using DocumentPaginator = Jalium.UI.Documents.DocumentPaginator;
 using IDocumentPaginatorSource = Jalium.UI.Documents.IDocumentPaginatorSource;

@@ -5,22 +5,22 @@ namespace Jalium.UI;
 /// <summary>
 /// Implements base support for the INameScope interface, with a dictionary store of name-object mappings.
 /// </summary>
-public sealed class NameScope : INameScope, IDictionary<string, object>
+public sealed class NameScope : Jalium.UI.Markup.INameScope, IDictionary<string, object>
 {
     private readonly Dictionary<string, object> _nameMap = new();
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty NameScopeProperty =
-        DependencyProperty.RegisterAttached("NameScope", typeof(INameScope), typeof(NameScope), new PropertyMetadata(null));
+        DependencyProperty.RegisterAttached("NameScope", typeof(Jalium.UI.Markup.INameScope), typeof(NameScope), new PropertyMetadata(null));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static INameScope? GetNameScope(DependencyObject dependencyObject)
+    public static Jalium.UI.Markup.INameScope? GetNameScope(DependencyObject dependencyObject)
     {
-        return (INameScope?)dependencyObject.GetValue(NameScopeProperty);
+        return (Jalium.UI.Markup.INameScope?)dependencyObject.GetValue(NameScopeProperty);
     }
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static void SetNameScope(DependencyObject dependencyObject, INameScope? value)
+    public static void SetNameScope(DependencyObject dependencyObject, Jalium.UI.Markup.INameScope? value)
     {
         dependencyObject.SetValue(NameScopeProperty, value);
     }
@@ -91,14 +91,4 @@ public sealed class NameScope : INameScope, IDictionary<string, object>
 
     public IEnumerator<KeyValuePair<string, object>> GetEnumerator() => _nameMap.GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-}
-
-/// <summary>
-/// Defines a contract for how names of elements should be accessed within a particular name scope.
-/// </summary>
-public interface INameScope
-{
-    void RegisterName(string name, object scopedElement);
-    void UnregisterName(string name);
-    object? FindName(string name);
 }

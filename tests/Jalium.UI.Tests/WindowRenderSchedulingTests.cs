@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Interop;
+using Jalium.UI.Media;
 using Jalium.UI.Media.Rendering;
 
 namespace Jalium.UI.Tests;
@@ -375,7 +376,7 @@ public class WindowRenderSchedulingTests
         var capture = Activator.CreateInstance(captureType!, nonPublic: true);
         Assert.NotNull(capture);
         captureType!.GetField("Drawing", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
-            .SetValue(capture, Drawing.Empty);
+            .SetValue(capture, RecordedDrawing.Empty);
         captureType.GetField("Target", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!
             .SetValue(capture, renderTarget);
         captureType.GetField("OwnerContext", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!

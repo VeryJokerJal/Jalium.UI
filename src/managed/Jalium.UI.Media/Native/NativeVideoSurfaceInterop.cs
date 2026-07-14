@@ -12,6 +12,17 @@ internal static partial class NativeVideoSurfaceInterop
     internal const string CoreLib = "jalium.native.core";
 
     [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeVideoSurfacePlaneDescriptor
+    {
+        public int Fd;
+        public uint StrideBytes;
+        public uint OffsetBytes;
+        public uint Reserved;
+        public ulong Modifier;
+        public ulong SizeBytes;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
     internal struct NativeVideoSurfaceDescriptor
     {
         public int    Kind;          // JaliumVideoSurfaceKind
@@ -21,6 +32,19 @@ internal static partial class NativeVideoSurfaceInterop
         public ulong  Handle1;
         public uint   FormatHint;    // JaliumVideoSurfaceFormat
         public uint   Reserved;
+        public uint   PlaneCount;
+        public uint   DrmFourcc;
+        public uint   DescriptorFlags;
+        public uint   ColorSpace;
+        public NativeVideoSurfacePlaneDescriptor Plane0;
+        public NativeVideoSurfacePlaneDescriptor Plane1;
+        public NativeVideoSurfacePlaneDescriptor Plane2;
+        public NativeVideoSurfacePlaneDescriptor Plane3;
+        public int    AcquireFenceFd;
+        public uint   Reserved2;
+        public ulong  LifetimeContext;
+        public ulong  LifetimeRetainCallback;
+        public ulong  LifetimeReleaseCallback;
     }
 
     [StructLayout(LayoutKind.Sequential)]

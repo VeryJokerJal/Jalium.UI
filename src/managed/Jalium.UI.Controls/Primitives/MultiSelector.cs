@@ -15,7 +15,7 @@ public abstract class MultiSelector : Selector
     /// Identifies the CanSelectMultipleItems dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty CanSelectMultipleItemsProperty =
+    private static readonly DependencyProperty CanSelectMultipleItemsProperty =
         DependencyProperty.Register(nameof(CanSelectMultipleItems), typeof(bool), typeof(MultiSelector),
             new PropertyMetadata(true));
 
@@ -64,6 +64,8 @@ public abstract class MultiSelector : Selector
         _selectedItems.CollectionChanged += OnSelectedItemsCollectionChanged;
     }
 
+    internal ObservableCollection<object> SelectedItemsStorage => _selectedItems;
+
     #endregion
 
     #region Selection Methods
@@ -72,6 +74,11 @@ public abstract class MultiSelector : Selector
     /// Selects all items in the control.
     /// </summary>
     public void SelectAll()
+    {
+        SelectAllCore();
+    }
+
+    internal virtual void SelectAllCore()
     {
         if (!CanSelectMultipleItems)
             return;
@@ -98,6 +105,11 @@ public abstract class MultiSelector : Selector
     /// Clears all selections.
     /// </summary>
     public void UnselectAll()
+    {
+        UnselectAllCore();
+    }
+
+    internal virtual void UnselectAllCore()
     {
         BeginUpdateSelectedItems();
 
@@ -230,6 +242,11 @@ public abstract class MultiSelector : Selector
 
     private void OnSelectedItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
+        if (!HandleSelectedItemsCollectionChanged(e))
+        {
+            return;
+        }
+
         if (_isUpdatingSelectedItems)
         {
             // Track changes for batch processing
@@ -287,6 +304,8 @@ public abstract class MultiSelector : Selector
         InvalidateVisual();
     }
 
+    internal virtual bool HandleSelectedItemsCollectionChanged(NotifyCollectionChangedEventArgs e) => true;
+
     /// <summary>
     /// Called when the selection changes.
     /// </summary>
@@ -299,26 +318,4 @@ public abstract class MultiSelector : Selector
 
     #endregion
 
-    #region Container Management
-
-    /// <summary>
-    /// Gets a value indicating whether the specified item is selected.
-    /// </summary>
-    /// <param name="item">The item to check.</param>
-    /// <returns>True if the item is selected; otherwise, false.</returns>
-    public bool IsItemSelected(object item)
-    {
-        return SelectedItems.Contains(item);
-    }
-
-    /// <summary>
-    /// Gets the selected items as an array.
-    /// </summary>
-    /// <returns>An array of selected items.</returns>
-    public object[] GetSelectedItems()
-    {
-        return _selectedItems.ToArray();
-    }
-
-    #endregion
 }

@@ -36,7 +36,7 @@ public class ThemeTemplateSmokeTests
                 Content = dockTabPanel
             };
 
-            var controls = new Control[]
+            var controls = new FrameworkElement[]
             {
                 new Button(),
                 new TitleBarButton(),
@@ -84,7 +84,16 @@ public class ThemeTemplateSmokeTests
             host.Measure(new Size(1000, 800));
             host.Arrange(new Rect(0, 0, 1000, 800));
 
-            Assert.All(controls, control => Assert.True(control.VisualChildrenCount > 0 || control.Template == null));
+            Assert.All(controls, element =>
+            {
+                ControlTemplate? template = element switch
+                {
+                    Control control => control.Template,
+                    Page page => page.Template,
+                    _ => null,
+                };
+                Assert.True(element.VisualChildrenCount > 0 || template == null);
+            });
         }
         finally
         {

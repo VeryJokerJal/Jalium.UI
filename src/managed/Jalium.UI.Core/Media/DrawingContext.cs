@@ -1,12 +1,13 @@
 using Jalium.UI;
 using Jalium.UI.Media.Animation;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Media;
 
 /// <summary>
 /// Describes visual content using draw, push, and pop commands.
 /// </summary>
-public abstract class DrawingContext : IDisposable, IClipDrawingContext
+public abstract class DrawingContext : DispatcherObject, IDisposable, IClipDrawingContext
 {
     // ── Whole-frame recordability signal (JALIUM_RENDER_THREAD path) ──────
     // During whole-frame recording (DrawingRecorder.BindWholeFrame) the tree is
@@ -483,7 +484,7 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// Draws a backdrop effect.
     /// </summary>
     /// <param name="rectangle">The area to apply the effect to.</param>
-    /// <param name="effect">The backdrop effect to apply. Can be BlurEffect, AcrylicEffect, MicaEffect, or custom implementations.</param>
+    /// <param name="effect">The backdrop effect to apply. Can be BackdropBlurEffect, AcrylicEffect, MicaEffect, or custom implementations.</param>
     /// <param name="cornerRadius">The corner radius for the effect area.</param>
     public abstract void DrawBackdropEffect(
         Rect rectangle,
@@ -1011,168 +1012,6 @@ public enum PenLineJoin
     /// Lines are joined with a rounded corner.
     /// </summary>
     Round
-}
-
-/// <summary>
-/// Represents formatted text for rendering and measurement.
-/// </summary>
-public sealed partial class FormattedText
-{
-    /// <summary>
-    /// Gets the text content.
-    /// </summary>
-    public string Text { get; }
-
-    /// <summary>
-    /// Gets the font family name.
-    /// </summary>
-    public string FontFamily { get; private set; }
-
-    /// <summary>
-    /// Gets the font size.
-    /// </summary>
-    public double FontSize { get; private set; }
-
-    /// <summary>
-    /// Gets or sets the foreground brush.
-    /// </summary>
-    public Brush? Foreground { get; set; }
-
-    /// <summary>
-    /// Gets or sets the maximum width for text wrapping.
-    /// </summary>
-    public double MaxTextWidth
-    {
-        get => _maxTextWidth;
-        set
-        {
-            ValidateMaxTextWidth(value, nameof(value));
-            _maxTextWidth = value;
-            _maxTextWidths = null;
-            RecomputeApproximateMetrics();
-        }
-    }
-
-    /// <summary>
-    /// Gets or sets the maximum height.
-    /// </summary>
-    public double MaxTextHeight
-    {
-        get => _maxTextHeight;
-        set
-        {
-            ValidateMaxTextHeight(value, nameof(value));
-            _maxTextHeight = value;
-            RecomputeApproximateMetrics();
-        }
-    }
-
-    /// <summary>
-    /// Gets or sets the text trimming mode.
-    /// </summary>
-    public TextTrimming Trimming { get; set; } = TextTrimming.None;
-
-    /// <summary>
-    /// Gets or sets the font weight (400 = normal, 700 = bold).
-    /// </summary>
-    public int FontWeight { get; set; } = 400;
-
-    /// <summary>
-    /// Gets or sets the font style (0 = normal, 1 = italic, 2 = oblique).
-    /// </summary>
-    public int FontStyle { get; set; } = 0;
-
-    /// <summary>
-    /// Gets or sets the font stretch (5 = normal). Values 1-9 map to DirectWrite font stretch.
-    /// </summary>
-    public int FontStretch { get; set; } = 5;
-
-    /// <summary>
-    /// Gets or sets the per-element text rendering (anti-alias) mode resolved
-    /// from <c>TextOptions.TextRenderingMode</c> on the source element.
-    /// 0 = Auto (process-wide fallback), 1 = Aliased, 2 = Grayscale, 3 = ClearType.
-    /// The renderer forwards this to the native glyph atlas so each element
-    /// can render in its own mode within the same frame instead of inheriting
-    /// the process-wide value.
-    /// </summary>
-    public int TextRenderingMode { get; set; }
-
-    /// <summary>
-    /// Gets or sets the per-element text formatting mode resolved from
-    /// <c>TextOptions.TextFormattingMode</c> on the source element.
-    /// 0 = Ideal (WPF default — resolution-independent metrics),
-    /// 1 = Display (pixel-snapped metrics — sharper at small sizes).
-    /// </summary>
-    public int TextFormattingMode { get; set; }
-
-    /// <summary>
-    /// Gets or sets the per-element text hinting mode resolved from
-    /// <c>TextOptions.TextHintingMode</c> on the source element.
-    /// 0 = Auto, 1 = Fixed (full hinting), 2 = Animated (no hinting — smoother
-    /// sub-pixel motion through animations).
-    /// </summary>
-    public int TextHintingMode { get; set; }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="FormattedText"/> class.
-    /// </summary>
-    public FormattedText(string text, string fontFamily, double fontSize)
-    {
-        ArgumentNullException.ThrowIfNull(text);
-        ArgumentNullException.ThrowIfNull(fontFamily);
-        ValidateEmSize(fontSize, nameof(fontSize));
-
-        Text = text;
-        FontFamily = fontFamily;
-        FontSize = fontSize;
-        InitializeCompatibilityFormatting();
-    }
-
-    /// <summary>
-    /// Gets the width of the text layout.
-    /// </summary>
-    public double Width { get; internal set; }
-
-    /// <summary>
-    /// Gets the height of the text layout.
-    /// </summary>
-    public double Height { get; internal set; }
-
-    /// <summary>
-    /// Gets the natural line height (ascent + descent + line gap).
-    /// This is the WPF-style line height based on actual font metrics.
-    /// </summary>
-    public double LineHeight { get; internal set; }
-
-    /// <summary>
-    /// Gets the font ascent (distance from baseline to top of the tallest glyph).
-    /// </summary>
-    public double Ascent { get; internal set; }
-
-    /// <summary>
-    /// Gets the font descent (distance from baseline to bottom of the lowest glyph).
-    /// </summary>
-    public double Descent { get; internal set; }
-
-    /// <summary>
-    /// Gets the recommended line gap between lines.
-    /// </summary>
-    public double LineGap { get; internal set; }
-
-    /// <summary>
-    /// Gets the baseline offset from the top of the line.
-    /// </summary>
-    public double Baseline { get; internal set; }
-
-    /// <summary>
-    /// Gets the number of lines in the text layout.
-    /// </summary>
-    public int LineCount { get; internal set; } = 1;
-
-    /// <summary>
-    /// Gets whether this text has been measured using native text measurement.
-    /// </summary>
-    public bool IsMeasured { get; internal set; }
 }
 
 /// <summary>
@@ -4722,5 +4561,3 @@ public sealed class PolyQuadraticBezierSegment : PathSegment
     public new PolyQuadraticBezierSegment CloneCurrentValue() => (PolyQuadraticBezierSegment)base.CloneCurrentValue();
     protected override Freezable CreateInstanceCore() => new PolyQuadraticBezierSegment();
 }
-
-// ImageSource is defined in ImageSource.cs

@@ -12,7 +12,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 - Active development — v26.10.6 (APIs can still evolve between minor versions)
 - Primary target: Windows 10/11 (x64, ARM64)
-- Cross-platform: Android (arm64-v8a, x86_64), Linux (Vulkan), macOS (Metal)
+- Cross-platform: Android (arm64-v8a, x86_64), Linux (X11/Wayland; Vulkan or software), macOS (Metal)
 - Runtime target: .NET 10 (`net10.0-windows`, `net10.0-android`, `net10.0`)
 - Rendering: DirectX 12 (Windows), Vulkan (Linux/Android), Metal (macOS), Software fallback
 
@@ -25,7 +25,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 - Developer experience: JALXAML hot reload (live visual-tree patching) plus an opt-in built-in DevTools inspector and debug HUD
 - Build-time tooling via NuGet (`Jalium.UI.Build`, `Jalium.UI.Xaml.SourceGenerator`)
 - First-class Generic Host integration — `AppBuilder` implements `IHostApplicationBuilder` (`Microsoft.Extensions.Hosting`) for DI, configuration, options, logging and metrics, plus Jalium MVVM view/view-model wiring
-- UIA accessibility support with automation peers
+- Accessibility automation peers with Windows UIA and Linux AT-SPI bridges
 - Visual effects: liquid glass, backdrop blur, acrylic, mica, transition shaders, animated bitmaps (GIF / APNG / animated WebP)
 - Native GPU video via `MediaElement` / `NativeVideoSurface` (D3D12 / Vulkan surfaces, staged rollout)
 - Full multi-touch input — manipulation with physical inertia, gesture recognition, real-time stylus preview
@@ -62,7 +62,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 | `jalium.native.metal` | macOS | Metal render backend |
 | `jalium.native.software` | All | CPU-based software rendering fallback |
 | `jalium.native.platform` | All | Platform abstraction (window, input, events) |
-| `jalium.native.text` | Linux, Android, macOS | Cross-platform text engine (FreeType + HarfBuzz) |
+| `jalium.native.text` | Linux, Android, macOS | Self-hosted text engine (sfnt/cmap/glyf/CFF + OT shaper; fontconfig for discovery on Linux) |
 | `jalium.native.browser` | Windows | WebView2 browser integration |
 | `jalium.native.media.core` | All | Cross-platform media C ABI + shared audio (miniaudio / dr_libs / minimp3 / stb_vorbis) |
 | `jalium.native.media.windows` | Windows | Media Foundation video / camera / AAC decoder + WIC imaging |
@@ -75,6 +75,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 | --- | --- |
 | `Jalium.UI.Desktop` | `net10.0-windows` — Desktop distribution with per-RID native DLLs (win-x64 / win-arm64) |
 | `Jalium.UI.Android` | `net10.0-android` — Android distribution with native .so libraries |
+| `Jalium.UI.Linux` | `net10.0` — Linux desktop distribution (Wayland/X11, Vulkan + software rendering; linux-x64 / arm64 / musl RIDs) |
 
 ## Capability Overview
 
@@ -98,7 +99,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 - **Rich**: `InkCanvas`, `WebView`/`WebBrowser`, `EditControl`, `RichTextBox`, `QRCode` (self-hosted encoder), `TitleBar`, `Terminal`, `SwipeControl`
 - **Developer tools**: `DiffViewer`, `HexEditor`
 - **Interop**: `WindowsFormsHost` (host `System.Windows.Forms` controls on `net10.0-windows`)
-- **Printing**: `PrintDialog` backed by a native Win32 platform layer
+- **Printing**: `PrintDialog` backed by Win32 on Windows and PDF + xdg-desktop-portal on Linux
 - **Notifications**: Toast-style notification system
 
 ### Text Editing
@@ -121,7 +122,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 - ClearType sub-pixel text rendering with dual-source blending.
 - CPU rasterization fallback path.
-- Cross-platform text shaping via FreeType + HarfBuzz (Linux/Android).
+- Cross-platform text shaping via the self-hosted OpenType engine (Linux/Android) — no FreeType/HarfBuzz runtime dependency; fontconfig is used for font discovery only.
 - Per-element `TextOptions.{TextRenderingMode, TextFormattingMode, TextHintingMode}`
   inheritable attached properties — values flow through `FormattedText` → native
   `JaliumTextFormat` and reach the rasterizer:
@@ -183,7 +184,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 ### Accessibility
 
-- UIA automation peers for core and specialized controls
+- Automation peers for core and specialized controls, exported through Windows UIA and Linux AT-SPI
 - Chart, DiffViewer, HexEditor, JsonTreeViewer, Map, PropertyGrid automation
 - `Window.ResolveCursor` returns the standard arrow for disabled elements so
   hover state cannot be confused with enabled controls.
@@ -266,6 +267,9 @@ dotnet add package Jalium.UI.Desktop
 
 # Android
 dotnet add package Jalium.UI.Android
+
+# Linux desktop
+dotnet add package Jalium.UI.Linux
 ```
 
 ### Granular install (advanced)
@@ -336,8 +340,9 @@ app.Run(window);
 
 ### Prerequisites
 
-- .NET 10 SDK (`net10.0-windows`)
-- Visual Studio with C++ workload (for native modules)
+- .NET 10 SDK
+- Visual Studio with C++ workload (for Windows native modules)
+- CMake, Ninja, Clang/GCC, and the X11/Wayland development packages (for Linux native modules; see the [Linux guide](docs/linux.md))
 - Vulkan SDK (optional, for Vulkan backend)
 - Android NDK (optional, for Android builds)
 
@@ -353,8 +358,11 @@ dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release
 # Build native modules (in VS Developer Command Prompt)
 msbuild src/native/Jalium.Native.sln /m /p:Configuration=Release /p:Platform=x64
 
+# Build native modules for Linux (glibc or musl host)
+bash eng/linux/build-native.sh linux-x64 Release
+
 # Build for Android
-bash src/native/build-android-deps.sh  # FreeType + HarfBuzz
+bash src/native/build-android-deps.sh  # Android native dependencies
 bash src/native/build-android.sh       # Native libraries
 ```
 
@@ -389,7 +397,7 @@ Jalium.UI/
       jalium.native.metal/     # Metal backend (macOS)
       jalium.native.software/  # CPU software renderer
       jalium.native.platform/  # Platform abstraction layer
-      jalium.native.text/      # FreeType + HarfBuzz text engine (non-Windows)
+      jalium.native.text/      # Self-hosted text engine (non-Windows)
       jalium.native.browser/   # WebView2 integration
       jalium.native.media.core/     # Cross-platform media C ABI + shared audio
       jalium.native.media.windows/  # Media Foundation video / camera + WIC
@@ -399,9 +407,10 @@ Jalium.UI/
       Jalium.UI/               # Main metapackage
       Jalium.UI.Desktop/       # Windows desktop package (win-x64 / win-arm64)
       Jalium.UI.Android/       # Android package
+      Jalium.UI.Linux/         # Linux desktop package (linux-x64/arm64, musl)
   samples/                     # Gallery, DesktopDemo, AndroidDemo, HostingDemo,
                                #   MillionScroll, AotWindowDemo, BorderlessDemo,
-                               #   TransparentBackdropDemo
+                               #   TransparentBackdropDemo, LinuxDemo
   tools/
     Jalium.UI.HotReload.Watcher/  # Standalone JALXAML hot-reload file watcher
   tests/
@@ -423,6 +432,8 @@ Jalium.UI/
 | [`docs/razor-syntax.md`](docs/razor-syntax.md) | Razor syntax reference for JALXAML |
 | [`docs/drawing-api.md`](docs/drawing-api.md) | Drawing API (DrawingContext, GPU effects, rendering) |
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | Manual build configuration guide |
+| [`docs/linux.md`](docs/linux.md) | Linux desktop guide (runtime dependencies, window systems, packaging) |
+| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | Verified Linux support matrix, evidence, and remaining boundaries |
 | [`docs/render-thread-design.md`](docs/render-thread-design.md) | Render thread architecture |
 | [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | Present pacing / frame scheduling |
 | [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | Shell drag & drop integration |

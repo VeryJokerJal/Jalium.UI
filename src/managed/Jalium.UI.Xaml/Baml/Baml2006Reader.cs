@@ -1,15 +1,16 @@
 using System.Reflection;
 using System.Text;
 using System.Xml;
+using Jalium.UI.Markup;
 using Jalium.UI.Xaml;
 
-namespace Jalium.UI.Markup;
+namespace Jalium.UI.Baml2006;
 
 /// <summary>
-/// Settings for <see cref="Baml2006Reader"/>. The type remains public for Jalium source
-/// compatibility while using the repository's canonical XAML-reader settings contract.
+/// Internal settings used by <see cref="Baml2006Reader"/>, matching WPF's non-public
+/// settings implementation while using Jalium's canonical XAML-reader settings contract.
 /// </summary>
-public class Baml2006ReaderSettings : XamlReaderSettings
+internal class Baml2006ReaderSettings : XamlReaderSettings
 {
     public Baml2006ReaderSettings()
     {
@@ -85,7 +86,7 @@ public class Baml2006Reader : Jalium.UI.Xaml.XamlReader, IXamlLineInfo
     /// <summary>
     /// Initializes a reader with Jalium's extended ownership settings.
     /// </summary>
-    public Baml2006Reader(Stream stream, Baml2006ReaderSettings settings)
+    internal Baml2006Reader(Stream stream, Baml2006ReaderSettings settings)
     {
         ArgumentNullException.ThrowIfNull(stream);
         ArgumentNullException.ThrowIfNull(settings);
@@ -192,7 +193,7 @@ public class Baml2006Reader : Jalium.UI.Xaml.XamlReader, IXamlLineInfo
         {
             throw new NotSupportedException(
                 "The WPF private binary BAML record format is not portable. " +
-                "Supply textual XAML/JALXAML when using Jalium.UI's mapped Baml2006Reader.");
+                "Supply textual XAML/JALXAML when using Jalium.UI.Baml2006.Baml2006Reader.");
         }
 
         var nodes = new List<ReaderNode>();

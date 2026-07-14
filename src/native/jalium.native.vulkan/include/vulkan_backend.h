@@ -155,6 +155,11 @@ public:
     /// window superseded this one) is left untouched.
     void UnregisterDeviceContext(const std::shared_ptr<VulkanDeviceGeneration>& generation);
 
+    /// Pins the most recently registered live device for an external dma-buf
+    /// import. Returns null when the device did not enable the required Linux
+    /// external-memory/modifier extensions.
+    std::shared_ptr<VulkanDeviceGeneration> AcquireExternalImportGeneration();
+
 #ifndef _WIN32
     TextEngine* GetTextEngine() const { return textEngine_.get(); }
 #endif

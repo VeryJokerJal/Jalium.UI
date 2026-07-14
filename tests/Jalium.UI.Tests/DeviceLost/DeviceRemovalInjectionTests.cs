@@ -301,6 +301,27 @@ public sealed class DeviceRemovalInjectionTests
         // bin/<Config>/<tfm>/.
         var tfmDir = new DirectoryInfo(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
         DirectoryInfo? configDir = tfmDir.Parent;          // bin/<Config>
+
+        // Directory.Build.props can redirect every project into one shared
+        // JaliumBuildRoot, yielding
+        //   <root>/bin/<Project>/<Config>/<TFM>/
+        // rather than the SDK's default
+        //   <Project>/bin/<Config>/<TFM>/.
+        // The harness is still a build-order-only ProjectReference, so probe
+        // its sibling project directory before interpreting the tree as the
+        // default repository layout.
+        DirectoryInfo? projectOutputDir = configDir?.Parent;
+        DirectoryInfo? sharedBinDir = projectOutputDir?.Parent;
+        if (configDir is not null &&
+            sharedBinDir is not null &&
+            string.Equals(projectOutputDir?.Name, "Jalium.UI.Tests", StringComparison.OrdinalIgnoreCase))
+        {
+            string sharedCandidate = Path.Combine(
+                sharedBinDir.FullName, "Jalium.UI.DeviceLostHarness",
+                configDir.Name, tfmDir.Name, "Jalium.UI.DeviceLostHarness.exe");
+            if (File.Exists(sharedCandidate)) return sharedCandidate;
+        }
+
         DirectoryInfo? testsProjectDir = configDir?.Parent?.Parent; // tests/Jalium.UI.Tests
         DirectoryInfo? testsRoot = testsProjectDir?.Parent;          // tests/
 

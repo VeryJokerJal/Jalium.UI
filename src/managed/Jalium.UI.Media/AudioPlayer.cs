@@ -79,6 +79,7 @@ public sealed class AudioPlayer : IDisposable
     private bool   _isMuted;
     private double _balance;
     private double _speedRatio = 1.0;
+    private int _audioTrackIndex;
     private TimeSpan _naturalDuration;
     private TimeSpan _seekTarget;
     private bool _hasSeekTarget;
@@ -160,6 +161,25 @@ public sealed class AudioPlayer : IDisposable
         }
     }
 
+    /// <summary>
+    /// Zero-based embedded audio stream selected when the next source opens.
+    /// Close an already-open source before changing this value.
+    /// </summary>
+    public int AudioTrackIndex
+    {
+        get { lock (_lock) return _audioTrackIndex; }
+        set
+        {
+            if (value < 0) throw new ArgumentOutOfRangeException(nameof(value));
+            lock (_lock)
+            {
+                if (_hasMedia)
+                    throw new InvalidOperationException("Close the current source before changing audio tracks.");
+                _audioTrackIndex = value;
+            }
+        }
+    }
+
     /// <summary>媒体总时长。未打开 / 流式不可知时为 null。</summary>
     public TimeSpan? NaturalDuration
     {
@@ -198,7 +218,10 @@ public sealed class AudioPlayer : IDisposable
 
     // ── 公共方法 ──
 
-    /// <summary>同步打开指定 URI(目前只支持 <c>file://</c>)。</summary>
+    /// <summary>
+    /// 同步打开指定 URI。Linux 在 GStreamer 可用时支持本地文件与已注册的
+    /// URI scheme（包括 HTTP/HTTPS）；其它后端按各自能力返回失败事件。
+    /// </summary>
     public void Open(Uri source)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -395,6 +418,10 @@ public sealed class AudioPlayer : IDisposable
             try
             {
                 decoder = s_decoderFactory.Create();
+                if (decoder is INativeAudioTrackSelector selector)
+                {
+                    selector.AudioTrackIndex = _audioTrackIndex;
+                }
                 decoder.Open(path);
 
                 // 按源音频的 sample rate / channels 建 device 和 WSOLA,避免
@@ -501,6 +528,9 @@ public sealed class AudioPlayer : IDisposable
                 }
 
                 var inputSpan = src.AsSpan(0, frames * outChannels);
+                double balance;
+                lock (_lock) balance = _balance;
+                ApplyBalanceInPlace(inputSpan, outChannels, balance);
                 int produced;
                 if (speed != null)
                 {
@@ -525,6 +555,29 @@ public sealed class AudioPlayer : IDisposable
         {
             ArrayPool<float>.Shared.Return(src);
             ArrayPool<float>.Shared.Return(dst);
+        }
+    }
+
+    /// <summary>
+    /// Applies WPF-style stereo balance to interleaved floating-point PCM.
+    /// A negative value attenuates the right channel, a positive value
+    /// attenuates the left channel, and the centre value is bit-transparent.
+    /// Additional surround channels are deliberately left untouched because
+    /// the native decoder does not currently expose a channel-layout map.
+    /// </summary>
+    internal static void ApplyBalanceInPlace(Span<float> samples, int channels, double balance)
+    {
+        if (channels < 2 || samples.IsEmpty) return;
+
+        balance = Math.Clamp(balance, -1.0, 1.0);
+        if (Math.Abs(balance) < 1e-12) return;
+
+        var leftGain = balance > 0.0 ? (float)(1.0 - balance) : 1.0f;
+        var rightGain = balance < 0.0 ? (float)(1.0 + balance) : 1.0f;
+        for (var offset = 0; offset + 1 < samples.Length; offset += channels)
+        {
+            samples[offset] *= leftGain;
+            samples[offset + 1] *= rightGain;
         }
     }
 

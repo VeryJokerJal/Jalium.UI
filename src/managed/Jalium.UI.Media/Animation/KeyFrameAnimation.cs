@@ -1,4 +1,6 @@
 using System.Collections;
+using System.ComponentModel;
+using Jalium.UI.Media.Media3D;
 
 namespace Jalium.UI.Media.Animation;
 
@@ -19,8 +21,51 @@ public interface IKeyFrame
 }
 
 /// <summary>
+/// Centralizes dependency-property registration and interpolation validation
+/// without becoming a public key-frame base class.
+/// </summary>
+internal static class KeyFrameSupport
+{
+    internal static DependencyProperty RegisterValue<T, TKeyFrame>()
+        where TKeyFrame : Freezable =>
+        DependencyProperty.Register(
+            nameof(IKeyFrame.Value),
+            typeof(T),
+            typeof(TKeyFrame),
+            new PropertyMetadata(default(T), OnKeyFramePropertyChanged));
+
+    internal static DependencyProperty RegisterKeyTime<TKeyFrame>()
+        where TKeyFrame : Freezable =>
+        DependencyProperty.Register(
+            nameof(IKeyFrame.KeyTime),
+            typeof(KeyTime),
+            typeof(TKeyFrame),
+            new PropertyMetadata(KeyTime.Uniform, OnKeyFramePropertyChanged));
+
+    internal static void ValidateProgress(double keyFrameProgress)
+    {
+        if (keyFrameProgress < 0.0 || keyFrameProgress > 1.0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(keyFrameProgress));
+        }
+    }
+
+    private static void OnKeyFramePropertyChanged(
+        DependencyObject dependencyObject,
+        DependencyPropertyChangedEventArgs e) =>
+        ((Freezable)dependencyObject).NotifyFreezablePropertyChanged(e);
+
+    internal static void OnChildPropertyChanged(
+        Freezable owner,
+        DependencyPropertyChangedEventArgs e,
+        DependencyProperty property) =>
+        owner.NotifyFreezablePropertyChanged(e, property);
+}
+
+/// <summary>
 /// Represents a time value for a keyframe.
 /// </summary>
+[TypeConverter(typeof(KeyTimeConverter))]
 public readonly struct KeyTime : IEquatable<KeyTime>
 {
     private readonly TimeSpan _timeSpan;
@@ -51,12 +96,16 @@ public readonly struct KeyTime : IEquatable<KeyTime>
     /// <summary>
     /// Gets the TimeSpan value of this KeyTime.
     /// </summary>
-    public TimeSpan TimeSpan => _timeSpan;
+    public TimeSpan TimeSpan => _type == KeyTimeType.TimeSpan
+        ? _timeSpan
+        : throw new InvalidOperationException("This KeyTime does not contain a TimeSpan value.");
 
     /// <summary>
     /// Gets the percentage value of this KeyTime (0.0 to 1.0).
     /// </summary>
-    public double Percent => _percent;
+    public double Percent => _type == KeyTimeType.Percent
+        ? _percent
+        : throw new InvalidOperationException("This KeyTime does not contain a percentage value.");
 
     /// <summary>
     /// Gets the type of this KeyTime.
@@ -66,7 +115,13 @@ public readonly struct KeyTime : IEquatable<KeyTime>
     /// <summary>
     /// Creates a KeyTime from a TimeSpan.
     /// </summary>
-    public static KeyTime FromTimeSpan(TimeSpan timeSpan) => new(timeSpan);
+    public static KeyTime FromTimeSpan(TimeSpan timeSpan)
+    {
+        if (timeSpan < TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(timeSpan));
+
+        return new KeyTime(timeSpan);
+    }
 
     /// <summary>
     /// Creates a KeyTime from a percentage (0.0 to 1.0).
@@ -101,6 +156,7 @@ public readonly struct KeyTime : IEquatable<KeyTime>
 
     public override bool Equals(object? obj) => obj is KeyTime other && Equals(other);
     public override int GetHashCode() => HashCode.Combine(_type, _timeSpan, _percent);
+    public override string ToString() => new KeyTimeConverter().ConvertToString(this)!;
     public static bool operator ==(KeyTime left, KeyTime right) => left.Equals(right);
     public static bool operator !=(KeyTime left, KeyTime right) => !left.Equals(right);
 }
@@ -131,196 +187,120 @@ public enum KeyTimeType : byte
     Paced = 1
 }
 
-/// <summary>
-/// Abstract base class for keyframes of a specific type.
-/// </summary>
-/// <typeparam name="T">The type of value being animated.</typeparam>
-public abstract class KeyFrame<T> : Freezable, IKeyFrame
-{
-    /// <summary>
-    /// Identifies the Value dependency property.
-    /// </summary>
-    public static readonly DependencyProperty ValueProperty =
-        DependencyProperty.Register("Value", typeof(T), typeof(KeyFrame<T>),
-            new PropertyMetadata(default(T), OnKeyFramePropertyChanged));
-
-    /// <summary>
-    /// Identifies the <see cref="KeyTime"/> dependency property.
-    /// </summary>
-    public static readonly DependencyProperty KeyTimeProperty =
-        DependencyProperty.Register(nameof(KeyTime), typeof(KeyTime), typeof(KeyFrame<T>),
-            new PropertyMetadata(KeyTime.Uniform, OnKeyFramePropertyChanged));
-
-    /// <summary>
-    /// Gets or sets the keyframe's target value.
-    /// </summary>
-    public T Value
-    {
-        get => (T)(GetValue(ValueProperty) ?? default(T)!);
-        set => SetValue(ValueProperty, value);
-    }
-
-    /// <summary>
-    /// Gets the typed value (alias for Value).
-    /// </summary>
-    public T TypedValue
-    {
-        get => Value;
-        set => Value = value;
-    }
-
-    object IKeyFrame.Value
-    {
-        get => Value!;
-        set => Value = (T)value;
-    }
-
-    /// <summary>
-    /// Gets or sets the time at which the keyframe's target value should be reached.
-    /// </summary>
-    public KeyTime KeyTime
-    {
-        get => (KeyTime)(GetValue(KeyTimeProperty) ?? KeyTime.Uniform);
-        set => SetValue(KeyTimeProperty, value);
-    }
-
-    /// <summary>
-    /// Calculates the value of a keyframe at the specified progress.
-    /// </summary>
-    /// <param name="baseValue">The value to animate from.</param>
-    /// <param name="keyFrameProgress">A value between 0.0 and 1.0 indicating the current progress through this keyframe.</param>
-    /// <returns>The interpolated value.</returns>
-    public T InterpolateValue(T baseValue, double keyFrameProgress)
-    {
-        if (keyFrameProgress < 0.0 || keyFrameProgress > 1.0)
-            throw new ArgumentOutOfRangeException(nameof(keyFrameProgress));
-
-        if (keyFrameProgress == 0.0)
-            return baseValue;
-        if (keyFrameProgress == 1.0)
-            return Value;
-
-        return InterpolateValueCore(baseValue, keyFrameProgress);
-    }
-
-    /// <summary>
-    /// Calculates the value produced by the key frame after argument validation.
-    /// </summary>
-    protected abstract T InterpolateValueCore(T baseValue, double keyFrameProgress);
-
-    /// <summary>
-    /// Updates a child Freezable relationship stored in a key-frame dependency property.
-    /// </summary>
-    protected void OnFreezableChildPropertyChanged(
-        DependencyPropertyChangedEventArgs e,
-        DependencyProperty property)
-    {
-        OnFreezablePropertyChanged(
-            e.OldValue as DependencyObject,
-            e.NewValue as DependencyObject,
-            property);
-        WritePostscript();
-    }
-
-    private static void OnKeyFramePropertyChanged(DependencyObject dependencyObject, DependencyPropertyChangedEventArgs e)
-    {
-        var keyFrame = (KeyFrame<T>)dependencyObject;
-        keyFrame.OnFreezablePropertyChanged(e.OldValue as DependencyObject, e.NewValue as DependencyObject);
-        keyFrame.WritePostscript();
-    }
-}
-
 /// <summary>Defines the common contract for key frames that animate <see cref="double"/> values.</summary>
-public abstract class DoubleKeyFrame : KeyFrame<double>
+public abstract class DoubleKeyFrame : Freezable, IKeyFrame
 {
-    public new static readonly DependencyProperty ValueProperty = KeyFrame<double>.ValueProperty;
-    public new static readonly DependencyProperty KeyTimeProperty = KeyFrame<double>.KeyTimeProperty;
+    public static readonly DependencyProperty ValueProperty = KeyFrameSupport.RegisterValue<double, DoubleKeyFrame>();
+    public static readonly DependencyProperty KeyTimeProperty = KeyFrameSupport.RegisterKeyTime<DoubleKeyFrame>();
 
     protected DoubleKeyFrame() { }
     protected DoubleKeyFrame(double value) => Value = value;
     protected DoubleKeyFrame(double value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
-    public new double Value { get => base.Value; set => base.Value = value; }
-    public new KeyTime KeyTime { get => base.KeyTime; set => base.KeyTime = value; }
-    public new double InterpolateValue(double baseValue, double keyFrameProgress) =>
-        base.InterpolateValue(baseValue, keyFrameProgress);
+    public double Value { get => (double)(GetValue(ValueProperty) ?? 0d); set => SetValue(ValueProperty, value); }
+    public KeyTime KeyTime { get => (KeyTime)(GetValue(KeyTimeProperty) ?? KeyTime.Uniform); set => SetValue(KeyTimeProperty, value); }
+    object IKeyFrame.Value { get => Value; set => Value = (double)value; }
 
-    protected abstract override double InterpolateValueCore(double baseValue, double keyFrameProgress);
+    public double InterpolateValue(double baseValue, double keyFrameProgress)
+    {
+        KeyFrameSupport.ValidateProgress(keyFrameProgress);
+        return InterpolateValueCore(baseValue, keyFrameProgress);
+    }
+
+    protected abstract double InterpolateValueCore(double baseValue, double keyFrameProgress);
 }
 
 /// <summary>Defines the common contract for key frames that animate <see cref="Color"/> values.</summary>
-public abstract class ColorKeyFrame : KeyFrame<Color>
+public abstract class ColorKeyFrame : Freezable, IKeyFrame
 {
-    public new static readonly DependencyProperty ValueProperty = KeyFrame<Color>.ValueProperty;
-    public new static readonly DependencyProperty KeyTimeProperty = KeyFrame<Color>.KeyTimeProperty;
+    public static readonly DependencyProperty ValueProperty = KeyFrameSupport.RegisterValue<Color, ColorKeyFrame>();
+    public static readonly DependencyProperty KeyTimeProperty = KeyFrameSupport.RegisterKeyTime<ColorKeyFrame>();
 
     protected ColorKeyFrame() { }
     protected ColorKeyFrame(Color value) => Value = value;
     protected ColorKeyFrame(Color value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
-    public new Color Value { get => base.Value; set => base.Value = value; }
-    public new KeyTime KeyTime { get => base.KeyTime; set => base.KeyTime = value; }
-    public new Color InterpolateValue(Color baseValue, double keyFrameProgress) =>
-        base.InterpolateValue(baseValue, keyFrameProgress);
+    public Color Value { get => (Color)(GetValue(ValueProperty) ?? default(Color)); set => SetValue(ValueProperty, value); }
+    public KeyTime KeyTime { get => (KeyTime)(GetValue(KeyTimeProperty) ?? KeyTime.Uniform); set => SetValue(KeyTimeProperty, value); }
+    object IKeyFrame.Value { get => Value; set => Value = (Color)value; }
 
-    protected abstract override Color InterpolateValueCore(Color baseValue, double keyFrameProgress);
+    public Color InterpolateValue(Color baseValue, double keyFrameProgress)
+    {
+        KeyFrameSupport.ValidateProgress(keyFrameProgress);
+        return InterpolateValueCore(baseValue, keyFrameProgress);
+    }
+
+    protected abstract Color InterpolateValueCore(Color baseValue, double keyFrameProgress);
 }
 
 /// <summary>Defines the common contract for key frames that animate <see cref="Point"/> values.</summary>
-public abstract class PointKeyFrame : KeyFrame<Point>
+public abstract class PointKeyFrame : Freezable, IKeyFrame
 {
-    public new static readonly DependencyProperty ValueProperty = KeyFrame<Point>.ValueProperty;
-    public new static readonly DependencyProperty KeyTimeProperty = KeyFrame<Point>.KeyTimeProperty;
+    public static readonly DependencyProperty ValueProperty = KeyFrameSupport.RegisterValue<Point, PointKeyFrame>();
+    public static readonly DependencyProperty KeyTimeProperty = KeyFrameSupport.RegisterKeyTime<PointKeyFrame>();
 
     protected PointKeyFrame() { }
     protected PointKeyFrame(Point value) => Value = value;
     protected PointKeyFrame(Point value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
-    public new Point Value { get => base.Value; set => base.Value = value; }
-    public new KeyTime KeyTime { get => base.KeyTime; set => base.KeyTime = value; }
-    public new Point InterpolateValue(Point baseValue, double keyFrameProgress) =>
-        base.InterpolateValue(baseValue, keyFrameProgress);
+    public Point Value { get => (Point)(GetValue(ValueProperty) ?? default(Point)); set => SetValue(ValueProperty, value); }
+    public KeyTime KeyTime { get => (KeyTime)(GetValue(KeyTimeProperty) ?? KeyTime.Uniform); set => SetValue(KeyTimeProperty, value); }
+    object IKeyFrame.Value { get => Value; set => Value = (Point)value; }
 
-    protected abstract override Point InterpolateValueCore(Point baseValue, double keyFrameProgress);
+    public Point InterpolateValue(Point baseValue, double keyFrameProgress)
+    {
+        KeyFrameSupport.ValidateProgress(keyFrameProgress);
+        return InterpolateValueCore(baseValue, keyFrameProgress);
+    }
+
+    protected abstract Point InterpolateValueCore(Point baseValue, double keyFrameProgress);
 }
 
 /// <summary>Defines the common contract for key frames that animate <see cref="Thickness"/> values.</summary>
-public abstract class ThicknessKeyFrame : KeyFrame<Thickness>
+public abstract class ThicknessKeyFrame : Freezable, IKeyFrame
 {
-    public new static readonly DependencyProperty ValueProperty = KeyFrame<Thickness>.ValueProperty;
-    public new static readonly DependencyProperty KeyTimeProperty = KeyFrame<Thickness>.KeyTimeProperty;
+    public static readonly DependencyProperty ValueProperty = KeyFrameSupport.RegisterValue<Thickness, ThicknessKeyFrame>();
+    public static readonly DependencyProperty KeyTimeProperty = KeyFrameSupport.RegisterKeyTime<ThicknessKeyFrame>();
 
     protected ThicknessKeyFrame() { }
     protected ThicknessKeyFrame(Thickness value) => Value = value;
     protected ThicknessKeyFrame(Thickness value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
-    public new Thickness Value { get => base.Value; set => base.Value = value; }
-    public new KeyTime KeyTime { get => base.KeyTime; set => base.KeyTime = value; }
-    public new Thickness InterpolateValue(Thickness baseValue, double keyFrameProgress) =>
-        base.InterpolateValue(baseValue, keyFrameProgress);
+    public Thickness Value { get => (Thickness)(GetValue(ValueProperty) ?? default(Thickness)); set => SetValue(ValueProperty, value); }
+    public KeyTime KeyTime { get => (KeyTime)(GetValue(KeyTimeProperty) ?? KeyTime.Uniform); set => SetValue(KeyTimeProperty, value); }
+    object IKeyFrame.Value { get => Value; set => Value = (Thickness)value; }
 
-    protected abstract override Thickness InterpolateValueCore(Thickness baseValue, double keyFrameProgress);
+    public Thickness InterpolateValue(Thickness baseValue, double keyFrameProgress)
+    {
+        KeyFrameSupport.ValidateProgress(keyFrameProgress);
+        return InterpolateValueCore(baseValue, keyFrameProgress);
+    }
+
+    protected abstract Thickness InterpolateValueCore(Thickness baseValue, double keyFrameProgress);
 }
 
 /// <summary>Defines the common contract for key frames that animate object values.</summary>
-public abstract class ObjectKeyFrame : KeyFrame<object>
+public abstract class ObjectKeyFrame : Freezable, IKeyFrame
 {
-    public new static readonly DependencyProperty ValueProperty = KeyFrame<object>.ValueProperty;
-    public new static readonly DependencyProperty KeyTimeProperty = KeyFrame<object>.KeyTimeProperty;
+    public static readonly DependencyProperty ValueProperty = KeyFrameSupport.RegisterValue<object, ObjectKeyFrame>();
+    public static readonly DependencyProperty KeyTimeProperty = KeyFrameSupport.RegisterKeyTime<ObjectKeyFrame>();
 
     protected ObjectKeyFrame() { }
     protected ObjectKeyFrame(object value) => Value = value;
     protected ObjectKeyFrame(object value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
-    public new object Value { get => base.Value; set => base.Value = value; }
-    public new KeyTime KeyTime { get => base.KeyTime; set => base.KeyTime = value; }
-    public new object InterpolateValue(object baseValue, double keyFrameProgress) =>
-        base.InterpolateValue(baseValue, keyFrameProgress);
+    public object Value { get => GetValue(ValueProperty)!; set => SetValue(ValueProperty, value); }
+    public KeyTime KeyTime { get => (KeyTime)(GetValue(KeyTimeProperty) ?? KeyTime.Uniform); set => SetValue(KeyTimeProperty, value); }
+    object IKeyFrame.Value { get => Value; set => Value = value; }
 
-    protected abstract override object InterpolateValueCore(object baseValue, double keyFrameProgress);
+    public object InterpolateValue(object baseValue, double keyFrameProgress)
+    {
+        KeyFrameSupport.ValidateProgress(keyFrameProgress);
+        return InterpolateValueCore(baseValue, keyFrameProgress);
+    }
+
+    protected abstract object InterpolateValueCore(object baseValue, double keyFrameProgress);
 }
-
-#region Double KeyFrames
 
 /// <summary>
 /// A keyframe that defines a double value at a specific time with discrete interpolation.
@@ -328,13 +308,13 @@ public abstract class ObjectKeyFrame : KeyFrame<object>
 public class DiscreteDoubleKeyFrame : DoubleKeyFrame
 {
     public DiscreteDoubleKeyFrame() { }
-    public DiscreteDoubleKeyFrame(double value) => TypedValue = value;
-    public DiscreteDoubleKeyFrame(double value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public DiscreteDoubleKeyFrame(double value) => Value = value;
+    public DiscreteDoubleKeyFrame(double value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override double InterpolateValueCore(double baseValue, double keyFrameProgress)
     {
         // Discrete: jump to target value at the end
-        return keyFrameProgress >= 1.0 ? TypedValue : baseValue;
+        return keyFrameProgress >= 1.0 ? Value : baseValue;
     }
 
     protected override Freezable CreateInstanceCore() => new DiscreteDoubleKeyFrame();
@@ -346,12 +326,12 @@ public class DiscreteDoubleKeyFrame : DoubleKeyFrame
 public class LinearDoubleKeyFrame : DoubleKeyFrame
 {
     public LinearDoubleKeyFrame() { }
-    public LinearDoubleKeyFrame(double value) => TypedValue = value;
-    public LinearDoubleKeyFrame(double value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public LinearDoubleKeyFrame(double value) => Value = value;
+    public LinearDoubleKeyFrame(double value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override double InterpolateValueCore(double baseValue, double keyFrameProgress)
     {
-        return baseValue + (TypedValue - baseValue) * keyFrameProgress;
+        return baseValue + (Value - baseValue) * keyFrameProgress;
     }
 
     protected override Freezable CreateInstanceCore() => new LinearDoubleKeyFrame();
@@ -376,11 +356,11 @@ public class SplineDoubleKeyFrame : DoubleKeyFrame
     }
 
     public SplineDoubleKeyFrame() { }
-    public SplineDoubleKeyFrame(double value) => TypedValue = value;
-    public SplineDoubleKeyFrame(double value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public SplineDoubleKeyFrame(double value) => Value = value;
+    public SplineDoubleKeyFrame(double value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public SplineDoubleKeyFrame(double value, KeyTime keyTime, KeySpline keySpline)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         KeySpline = keySpline;
     }
@@ -388,13 +368,13 @@ public class SplineDoubleKeyFrame : DoubleKeyFrame
     protected override double InterpolateValueCore(double baseValue, double keyFrameProgress)
     {
         var splineProgress = KeySpline?.GetSplineProgress(keyFrameProgress) ?? keyFrameProgress;
-        return baseValue + (TypedValue - baseValue) * splineProgress;
+        return baseValue + (Value - baseValue) * splineProgress;
     }
 
     protected override Freezable CreateInstanceCore() => new SplineDoubleKeyFrame();
 
     private static void OnKeySplineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((SplineDoubleKeyFrame)d).OnFreezableChildPropertyChanged(e, KeySplineProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, KeySplineProperty);
 }
 
 /// <summary>
@@ -414,11 +394,11 @@ public class EasingDoubleKeyFrame : DoubleKeyFrame
     }
 
     public EasingDoubleKeyFrame() { }
-    public EasingDoubleKeyFrame(double value) => TypedValue = value;
-    public EasingDoubleKeyFrame(double value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public EasingDoubleKeyFrame(double value) => Value = value;
+    public EasingDoubleKeyFrame(double value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public EasingDoubleKeyFrame(double value, KeyTime keyTime, IEasingFunction easingFunction)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         EasingFunction = easingFunction;
     }
@@ -426,18 +406,14 @@ public class EasingDoubleKeyFrame : DoubleKeyFrame
     protected override double InterpolateValueCore(double baseValue, double keyFrameProgress)
     {
         var easedProgress = EasingFunction?.Ease(keyFrameProgress) ?? keyFrameProgress;
-        return baseValue + (TypedValue - baseValue) * easedProgress;
+        return baseValue + (Value - baseValue) * easedProgress;
     }
 
     protected override Freezable CreateInstanceCore() => new EasingDoubleKeyFrame();
 
     private static void OnEasingFunctionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((EasingDoubleKeyFrame)d).OnFreezableChildPropertyChanged(e, EasingFunctionProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, EasingFunctionProperty);
 }
-
-#endregion
-
-#region Color KeyFrames
 
 /// <summary>
 /// A keyframe that defines a Color value with discrete interpolation.
@@ -445,12 +421,12 @@ public class EasingDoubleKeyFrame : DoubleKeyFrame
 public class DiscreteColorKeyFrame : ColorKeyFrame
 {
     public DiscreteColorKeyFrame() { }
-    public DiscreteColorKeyFrame(Color value) => TypedValue = value;
-    public DiscreteColorKeyFrame(Color value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public DiscreteColorKeyFrame(Color value) => Value = value;
+    public DiscreteColorKeyFrame(Color value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Color InterpolateValueCore(Color baseValue, double keyFrameProgress)
     {
-        return keyFrameProgress >= 1.0 ? TypedValue : baseValue;
+        return keyFrameProgress >= 1.0 ? Value : baseValue;
     }
 
     protected override Freezable CreateInstanceCore() => new DiscreteColorKeyFrame();
@@ -462,15 +438,15 @@ public class DiscreteColorKeyFrame : ColorKeyFrame
 public class LinearColorKeyFrame : ColorKeyFrame
 {
     public LinearColorKeyFrame() { }
-    public LinearColorKeyFrame(Color value) => TypedValue = value;
-    public LinearColorKeyFrame(Color value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public LinearColorKeyFrame(Color value) => Value = value;
+    public LinearColorKeyFrame(Color value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Color InterpolateValueCore(Color baseValue, double keyFrameProgress)
     {
-        var a = (byte)(baseValue.A + (TypedValue.A - baseValue.A) * keyFrameProgress);
-        var r = (byte)(baseValue.R + (TypedValue.R - baseValue.R) * keyFrameProgress);
-        var g = (byte)(baseValue.G + (TypedValue.G - baseValue.G) * keyFrameProgress);
-        var b = (byte)(baseValue.B + (TypedValue.B - baseValue.B) * keyFrameProgress);
+        var a = (byte)(baseValue.A + (Value.A - baseValue.A) * keyFrameProgress);
+        var r = (byte)(baseValue.R + (Value.R - baseValue.R) * keyFrameProgress);
+        var g = (byte)(baseValue.G + (Value.G - baseValue.G) * keyFrameProgress);
+        var b = (byte)(baseValue.B + (Value.B - baseValue.B) * keyFrameProgress);
         return Color.FromArgb(a, r, g, b);
     }
 
@@ -493,11 +469,11 @@ public class SplineColorKeyFrame : ColorKeyFrame
     }
 
     public SplineColorKeyFrame() { }
-    public SplineColorKeyFrame(Color value) => TypedValue = value;
-    public SplineColorKeyFrame(Color value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public SplineColorKeyFrame(Color value) => Value = value;
+    public SplineColorKeyFrame(Color value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public SplineColorKeyFrame(Color value, KeyTime keyTime, KeySpline keySpline)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         KeySpline = keySpline;
     }
@@ -505,17 +481,17 @@ public class SplineColorKeyFrame : ColorKeyFrame
     protected override Color InterpolateValueCore(Color baseValue, double keyFrameProgress)
     {
         var progress = KeySpline?.GetSplineProgress(keyFrameProgress) ?? keyFrameProgress;
-        var a = (byte)(baseValue.A + (TypedValue.A - baseValue.A) * progress);
-        var r = (byte)(baseValue.R + (TypedValue.R - baseValue.R) * progress);
-        var g = (byte)(baseValue.G + (TypedValue.G - baseValue.G) * progress);
-        var b = (byte)(baseValue.B + (TypedValue.B - baseValue.B) * progress);
+        var a = (byte)(baseValue.A + (Value.A - baseValue.A) * progress);
+        var r = (byte)(baseValue.R + (Value.R - baseValue.R) * progress);
+        var g = (byte)(baseValue.G + (Value.G - baseValue.G) * progress);
+        var b = (byte)(baseValue.B + (Value.B - baseValue.B) * progress);
         return Color.FromArgb(a, r, g, b);
     }
 
     protected override Freezable CreateInstanceCore() => new SplineColorKeyFrame();
 
     private static void OnKeySplineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((SplineColorKeyFrame)d).OnFreezableChildPropertyChanged(e, KeySplineProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, KeySplineProperty);
 }
 
 /// <summary>
@@ -534,11 +510,11 @@ public class EasingColorKeyFrame : ColorKeyFrame
     }
 
     public EasingColorKeyFrame() { }
-    public EasingColorKeyFrame(Color value) => TypedValue = value;
-    public EasingColorKeyFrame(Color value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public EasingColorKeyFrame(Color value) => Value = value;
+    public EasingColorKeyFrame(Color value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public EasingColorKeyFrame(Color value, KeyTime keyTime, IEasingFunction easingFunction)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         EasingFunction = easingFunction;
     }
@@ -546,22 +522,18 @@ public class EasingColorKeyFrame : ColorKeyFrame
     protected override Color InterpolateValueCore(Color baseValue, double keyFrameProgress)
     {
         var progress = EasingFunction?.Ease(keyFrameProgress) ?? keyFrameProgress;
-        var a = (byte)(baseValue.A + (TypedValue.A - baseValue.A) * progress);
-        var r = (byte)(baseValue.R + (TypedValue.R - baseValue.R) * progress);
-        var g = (byte)(baseValue.G + (TypedValue.G - baseValue.G) * progress);
-        var b = (byte)(baseValue.B + (TypedValue.B - baseValue.B) * progress);
+        var a = (byte)(baseValue.A + (Value.A - baseValue.A) * progress);
+        var r = (byte)(baseValue.R + (Value.R - baseValue.R) * progress);
+        var g = (byte)(baseValue.G + (Value.G - baseValue.G) * progress);
+        var b = (byte)(baseValue.B + (Value.B - baseValue.B) * progress);
         return Color.FromArgb(a, r, g, b);
     }
 
     protected override Freezable CreateInstanceCore() => new EasingColorKeyFrame();
 
     private static void OnEasingFunctionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((EasingColorKeyFrame)d).OnFreezableChildPropertyChanged(e, EasingFunctionProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, EasingFunctionProperty);
 }
-
-#endregion
-
-#region Point KeyFrames
 
 /// <summary>
 /// A keyframe that defines a Point value with discrete interpolation.
@@ -569,12 +541,12 @@ public class EasingColorKeyFrame : ColorKeyFrame
 public class DiscretePointKeyFrame : PointKeyFrame
 {
     public DiscretePointKeyFrame() { }
-    public DiscretePointKeyFrame(Point value) => TypedValue = value;
-    public DiscretePointKeyFrame(Point value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public DiscretePointKeyFrame(Point value) => Value = value;
+    public DiscretePointKeyFrame(Point value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Point InterpolateValueCore(Point baseValue, double keyFrameProgress)
     {
-        return keyFrameProgress >= 1.0 ? TypedValue : baseValue;
+        return keyFrameProgress >= 1.0 ? Value : baseValue;
     }
 
     protected override Freezable CreateInstanceCore() => new DiscretePointKeyFrame();
@@ -586,14 +558,14 @@ public class DiscretePointKeyFrame : PointKeyFrame
 public class LinearPointKeyFrame : PointKeyFrame
 {
     public LinearPointKeyFrame() { }
-    public LinearPointKeyFrame(Point value) => TypedValue = value;
-    public LinearPointKeyFrame(Point value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public LinearPointKeyFrame(Point value) => Value = value;
+    public LinearPointKeyFrame(Point value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Point InterpolateValueCore(Point baseValue, double keyFrameProgress)
     {
         return new Point(
-            baseValue.X + (TypedValue.X - baseValue.X) * keyFrameProgress,
-            baseValue.Y + (TypedValue.Y - baseValue.Y) * keyFrameProgress);
+            baseValue.X + (Value.X - baseValue.X) * keyFrameProgress,
+            baseValue.Y + (Value.Y - baseValue.Y) * keyFrameProgress);
     }
 
     protected override Freezable CreateInstanceCore() => new LinearPointKeyFrame();
@@ -615,11 +587,11 @@ public class SplinePointKeyFrame : PointKeyFrame
     }
 
     public SplinePointKeyFrame() { }
-    public SplinePointKeyFrame(Point value) => TypedValue = value;
-    public SplinePointKeyFrame(Point value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public SplinePointKeyFrame(Point value) => Value = value;
+    public SplinePointKeyFrame(Point value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public SplinePointKeyFrame(Point value, KeyTime keyTime, KeySpline keySpline)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         KeySpline = keySpline;
     }
@@ -628,14 +600,14 @@ public class SplinePointKeyFrame : PointKeyFrame
     {
         var progress = KeySpline?.GetSplineProgress(keyFrameProgress) ?? keyFrameProgress;
         return new Point(
-            baseValue.X + (TypedValue.X - baseValue.X) * progress,
-            baseValue.Y + (TypedValue.Y - baseValue.Y) * progress);
+            baseValue.X + (Value.X - baseValue.X) * progress,
+            baseValue.Y + (Value.Y - baseValue.Y) * progress);
     }
 
     protected override Freezable CreateInstanceCore() => new SplinePointKeyFrame();
 
     private static void OnKeySplineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((SplinePointKeyFrame)d).OnFreezableChildPropertyChanged(e, KeySplineProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, KeySplineProperty);
 }
 
 /// <summary>
@@ -654,11 +626,11 @@ public class EasingPointKeyFrame : PointKeyFrame
     }
 
     public EasingPointKeyFrame() { }
-    public EasingPointKeyFrame(Point value) => TypedValue = value;
-    public EasingPointKeyFrame(Point value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public EasingPointKeyFrame(Point value) => Value = value;
+    public EasingPointKeyFrame(Point value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public EasingPointKeyFrame(Point value, KeyTime keyTime, IEasingFunction easingFunction)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         EasingFunction = easingFunction;
     }
@@ -667,19 +639,15 @@ public class EasingPointKeyFrame : PointKeyFrame
     {
         var progress = EasingFunction?.Ease(keyFrameProgress) ?? keyFrameProgress;
         return new Point(
-            baseValue.X + (TypedValue.X - baseValue.X) * progress,
-            baseValue.Y + (TypedValue.Y - baseValue.Y) * progress);
+            baseValue.X + (Value.X - baseValue.X) * progress,
+            baseValue.Y + (Value.Y - baseValue.Y) * progress);
     }
 
     protected override Freezable CreateInstanceCore() => new EasingPointKeyFrame();
 
     private static void OnEasingFunctionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((EasingPointKeyFrame)d).OnFreezableChildPropertyChanged(e, EasingFunctionProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, EasingFunctionProperty);
 }
-
-#endregion
-
-#region Thickness KeyFrames
 
 /// <summary>
 /// A keyframe that defines a Thickness value with discrete interpolation.
@@ -687,12 +655,12 @@ public class EasingPointKeyFrame : PointKeyFrame
 public class DiscreteThicknessKeyFrame : ThicknessKeyFrame
 {
     public DiscreteThicknessKeyFrame() { }
-    public DiscreteThicknessKeyFrame(Thickness value) => TypedValue = value;
-    public DiscreteThicknessKeyFrame(Thickness value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public DiscreteThicknessKeyFrame(Thickness value) => Value = value;
+    public DiscreteThicknessKeyFrame(Thickness value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Thickness InterpolateValueCore(Thickness baseValue, double keyFrameProgress)
     {
-        return keyFrameProgress >= 1.0 ? TypedValue : baseValue;
+        return keyFrameProgress >= 1.0 ? Value : baseValue;
     }
 
     protected override Freezable CreateInstanceCore() => new DiscreteThicknessKeyFrame();
@@ -704,16 +672,16 @@ public class DiscreteThicknessKeyFrame : ThicknessKeyFrame
 public class LinearThicknessKeyFrame : ThicknessKeyFrame
 {
     public LinearThicknessKeyFrame() { }
-    public LinearThicknessKeyFrame(Thickness value) => TypedValue = value;
-    public LinearThicknessKeyFrame(Thickness value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public LinearThicknessKeyFrame(Thickness value) => Value = value;
+    public LinearThicknessKeyFrame(Thickness value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override Thickness InterpolateValueCore(Thickness baseValue, double keyFrameProgress)
     {
         return new Thickness(
-            baseValue.Left + (TypedValue.Left - baseValue.Left) * keyFrameProgress,
-            baseValue.Top + (TypedValue.Top - baseValue.Top) * keyFrameProgress,
-            baseValue.Right + (TypedValue.Right - baseValue.Right) * keyFrameProgress,
-            baseValue.Bottom + (TypedValue.Bottom - baseValue.Bottom) * keyFrameProgress);
+            baseValue.Left + (Value.Left - baseValue.Left) * keyFrameProgress,
+            baseValue.Top + (Value.Top - baseValue.Top) * keyFrameProgress,
+            baseValue.Right + (Value.Right - baseValue.Right) * keyFrameProgress,
+            baseValue.Bottom + (Value.Bottom - baseValue.Bottom) * keyFrameProgress);
     }
 
     protected override Freezable CreateInstanceCore() => new LinearThicknessKeyFrame();
@@ -735,11 +703,11 @@ public class SplineThicknessKeyFrame : ThicknessKeyFrame
     }
 
     public SplineThicknessKeyFrame() { }
-    public SplineThicknessKeyFrame(Thickness value) => TypedValue = value;
-    public SplineThicknessKeyFrame(Thickness value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public SplineThicknessKeyFrame(Thickness value) => Value = value;
+    public SplineThicknessKeyFrame(Thickness value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public SplineThicknessKeyFrame(Thickness value, KeyTime keyTime, KeySpline keySpline)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         KeySpline = keySpline;
     }
@@ -748,16 +716,16 @@ public class SplineThicknessKeyFrame : ThicknessKeyFrame
     {
         var progress = KeySpline?.GetSplineProgress(keyFrameProgress) ?? keyFrameProgress;
         return new Thickness(
-            baseValue.Left + (TypedValue.Left - baseValue.Left) * progress,
-            baseValue.Top + (TypedValue.Top - baseValue.Top) * progress,
-            baseValue.Right + (TypedValue.Right - baseValue.Right) * progress,
-            baseValue.Bottom + (TypedValue.Bottom - baseValue.Bottom) * progress);
+            baseValue.Left + (Value.Left - baseValue.Left) * progress,
+            baseValue.Top + (Value.Top - baseValue.Top) * progress,
+            baseValue.Right + (Value.Right - baseValue.Right) * progress,
+            baseValue.Bottom + (Value.Bottom - baseValue.Bottom) * progress);
     }
 
     protected override Freezable CreateInstanceCore() => new SplineThicknessKeyFrame();
 
     private static void OnKeySplineChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((SplineThicknessKeyFrame)d).OnFreezableChildPropertyChanged(e, KeySplineProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, KeySplineProperty);
 }
 
 /// <summary>A keyframe that applies an easing function to Thickness interpolation.</summary>
@@ -774,11 +742,11 @@ public class EasingThicknessKeyFrame : ThicknessKeyFrame
     }
 
     public EasingThicknessKeyFrame() { }
-    public EasingThicknessKeyFrame(Thickness value) => TypedValue = value;
-    public EasingThicknessKeyFrame(Thickness value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public EasingThicknessKeyFrame(Thickness value) => Value = value;
+    public EasingThicknessKeyFrame(Thickness value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
     public EasingThicknessKeyFrame(Thickness value, KeyTime keyTime, IEasingFunction easingFunction)
     {
-        TypedValue = value;
+        Value = value;
         KeyTime = keyTime;
         EasingFunction = easingFunction;
     }
@@ -787,21 +755,17 @@ public class EasingThicknessKeyFrame : ThicknessKeyFrame
     {
         double progress = EasingFunction?.Ease(keyFrameProgress) ?? keyFrameProgress;
         return new Thickness(
-            baseValue.Left + (TypedValue.Left - baseValue.Left) * progress,
-            baseValue.Top + (TypedValue.Top - baseValue.Top) * progress,
-            baseValue.Right + (TypedValue.Right - baseValue.Right) * progress,
-            baseValue.Bottom + (TypedValue.Bottom - baseValue.Bottom) * progress);
+            baseValue.Left + (Value.Left - baseValue.Left) * progress,
+            baseValue.Top + (Value.Top - baseValue.Top) * progress,
+            baseValue.Right + (Value.Right - baseValue.Right) * progress,
+            baseValue.Bottom + (Value.Bottom - baseValue.Bottom) * progress);
     }
 
     protected override Freezable CreateInstanceCore() => new EasingThicknessKeyFrame();
 
     private static void OnEasingFunctionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) =>
-        ((EasingThicknessKeyFrame)d).OnFreezableChildPropertyChanged(e, EasingFunctionProperty);
+        KeyFrameSupport.OnChildPropertyChanged((Freezable)d, e, EasingFunctionProperty);
 }
-
-#endregion
-
-#region Object KeyFrames
 
 /// <summary>
 /// A keyframe that defines an Object value with discrete interpolation.
@@ -809,18 +773,16 @@ public class EasingThicknessKeyFrame : ThicknessKeyFrame
 public class DiscreteObjectKeyFrame : ObjectKeyFrame
 {
     public DiscreteObjectKeyFrame() { }
-    public DiscreteObjectKeyFrame(object value) => TypedValue = value;
-    public DiscreteObjectKeyFrame(object value, KeyTime keyTime) { TypedValue = value; KeyTime = keyTime; }
+    public DiscreteObjectKeyFrame(object value) => Value = value;
+    public DiscreteObjectKeyFrame(object value, KeyTime keyTime) { Value = value; KeyTime = keyTime; }
 
     protected override object InterpolateValueCore(object baseValue, double keyFrameProgress)
     {
-        return keyFrameProgress >= 1.0 ? TypedValue : baseValue;
+        return keyFrameProgress >= 1.0 ? Value : baseValue;
     }
 
     protected override Freezable CreateInstanceCore() => new DiscreteObjectKeyFrame();
 }
-
-#endregion
 
 /// <summary>
 /// Represents a cubic Bezier curve used for spline keyframes.
@@ -832,6 +794,8 @@ public class DiscreteObjectKeyFrame : ObjectKeyFrame
 /// X coordinates are constrained to [0,1] (so X(t) is monotonic), with the exact same
 /// Newton-Raphson-plus-bisection parameter solver so spline easing matches WPF bit-for-bit.
 /// </summary>
+[TypeConverter(typeof(KeySplineConverter))]
+[Localizability(LocalizationCategory.None, Readability = Readability.Unreadable)]
 public partial class KeySpline : Freezable, IFormattable
 {
     // 1/3 of the desired X accuracy, and a computational zero, matching WPF exactly.
@@ -1121,8 +1085,6 @@ public partial class KeySpline : Freezable, IFormattable
     }
 }
 
-#region KeyFrame Animation Timelines
-
 internal static class KeyFrameDefaults
 {
     internal static KeySpline CreateFrozenKeySpline()
@@ -1133,22 +1095,9 @@ internal static class KeyFrameDefaults
     }
 }
 
-/// <summary>
-/// Base class for keyframe-based animations.
-/// </summary>
-/// <typeparam name="T">The type of value being animated.</typeparam>
-public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where T : notnull
+/// <summary>Internal evaluation engine shared by the WPF-shaped key-frame timelines.</summary>
+internal static class KeyFrameAnimationTimeline<T> where T : notnull
 {
-    protected abstract IList KeyFramesCore { get; }
-
-    protected override T GetCurrentValueCore(T defaultOriginValue, T defaultDestinationValue, AnimationClock animationClock) =>
-        GetCurrentValueCoreImpl(defaultOriginValue, defaultDestinationValue, animationClock);
-
-    protected override Duration GetNaturalDurationCore(Clock clock) => GetNaturalDurationCoreImpl();
-
-    protected T GetCurrentValueCoreImpl(T defaultOriginValue, T defaultDestinationValue, AnimationClock animationClock) =>
-        Evaluate(this, KeyFramesCore, defaultOriginValue, defaultDestinationValue, animationClock);
-
     internal static T Evaluate(
         AnimationTimeline animation,
         IList keyFrames,
@@ -1169,12 +1118,12 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
         var currentTime = animationClock.CurrentTime ??
             TimeSpan.FromTicks((long)(duration.Ticks * animationClock.CurrentProgress));
         bool supportsComposition = AnimationValueOperations.IsSupported<T>();
-        bool isAdditive = (bool)animation.GetValue(IsAdditiveProperty)!;
-        bool isCumulative = (bool)animation.GetValue(IsCumulativeProperty)!;
+        bool isAdditive = (bool)animation.GetValue(AnimationTimeline.IsAdditiveProperty)!;
+        bool isCumulative = (bool)animation.GetValue(AnimationTimeline.IsCumulativeProperty)!;
 
         // Find the two keyframes we're between
-        KeyFrame<T>? prevFrame = null;
-        KeyFrame<T>? nextFrame = null;
+        IKeyFrame? prevFrame = null;
+        IKeyFrame? nextFrame = null;
         TimeSpan prevTime = TimeSpan.Zero;
         TimeSpan nextTime = duration;
 
@@ -1205,7 +1154,7 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
                 var firstSegmentOrigin = isAdditive && supportsComposition
                     ? AnimationValueOperations.GetZero<T>()
                     : defaultOriginValue;
-                currentIterationValue = nextFrame.InterpolateValue(firstSegmentOrigin, frameProgress);
+                currentIterationValue = InterpolateValue(nextFrame, firstSegmentOrigin, frameProgress);
             }
             else
             {
@@ -1215,7 +1164,7 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
         else if (nextFrame == null)
         {
             // Past all keyframes: hold the final resolved value.
-            currentIterationValue = prevFrame.TypedValue;
+            currentIterationValue = (T)prevFrame.Value;
         }
         else
         {
@@ -1225,7 +1174,7 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
                 ? (currentTime - prevTime).TotalMilliseconds / segmentDuration.TotalMilliseconds
                 : 1.0;
 
-            currentIterationValue = nextFrame.InterpolateValue(prevFrame.TypedValue, segmentProgress);
+            currentIterationValue = InterpolateValue(nextFrame, (T)prevFrame.Value, segmentProgress);
         }
 
         if (supportsComposition)
@@ -1236,7 +1185,7 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
                 // WPF key-frame animations accumulate the final resolved key
                 // frame value, rather than the last-minus-first delta used by
                 // From/To/By animations.
-                var finalValue = resolvedKeyFrames[^1].Frame.TypedValue;
+                var finalValue = (T)resolvedKeyFrames[^1].Frame.Value;
                 currentIterationValue = AnimationValueOperations.Add(
                     currentIterationValue,
                     AnimationValueOperations.Scale(finalValue, currentRepeat));
@@ -1251,16 +1200,49 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
         return currentIterationValue;
     }
 
-    private static List<(KeyFrame<T> Frame, TimeSpan Time)> ResolveKeyFrameTimes(
+    private static T InterpolateValue(IKeyFrame frame, T baseValue, double progress)
+    {
+        object value = frame switch
+        {
+            BooleanKeyFrame keyFrame => keyFrame.InterpolateValue((bool)(object)baseValue, progress),
+            ByteKeyFrame keyFrame => keyFrame.InterpolateValue((byte)(object)baseValue, progress),
+            CharKeyFrame keyFrame => keyFrame.InterpolateValue((char)(object)baseValue, progress),
+            ColorKeyFrame keyFrame => keyFrame.InterpolateValue((Color)(object)baseValue, progress),
+            DecimalKeyFrame keyFrame => keyFrame.InterpolateValue((decimal)(object)baseValue, progress),
+            DoubleKeyFrame keyFrame => keyFrame.InterpolateValue((double)(object)baseValue, progress),
+            Int16KeyFrame keyFrame => keyFrame.InterpolateValue((short)(object)baseValue, progress),
+            Int32KeyFrame keyFrame => keyFrame.InterpolateValue((int)(object)baseValue, progress),
+            Int64KeyFrame keyFrame => keyFrame.InterpolateValue((long)(object)baseValue, progress),
+            MatrixKeyFrame keyFrame => keyFrame.InterpolateValue((Matrix)(object)baseValue, progress),
+            ObjectKeyFrame keyFrame => keyFrame.InterpolateValue(baseValue, progress),
+            Point3DKeyFrame keyFrame => keyFrame.InterpolateValue((Point3D)(object)baseValue, progress),
+            PointKeyFrame keyFrame => keyFrame.InterpolateValue((Point)(object)baseValue, progress),
+            QuaternionKeyFrame keyFrame => keyFrame.InterpolateValue((Quaternion)(object)baseValue, progress),
+            RectKeyFrame keyFrame => keyFrame.InterpolateValue((Rect)(object)baseValue, progress),
+            Rotation3DKeyFrame keyFrame => keyFrame.InterpolateValue((Rotation3D)(object)baseValue, progress),
+            SingleKeyFrame keyFrame => keyFrame.InterpolateValue((float)(object)baseValue, progress),
+            SizeKeyFrame keyFrame => keyFrame.InterpolateValue((Size)(object)baseValue, progress),
+            StringKeyFrame keyFrame => keyFrame.InterpolateValue((string)(object)baseValue, progress),
+            ThicknessKeyFrame keyFrame => keyFrame.InterpolateValue((Thickness)(object)baseValue, progress),
+            Vector3DKeyFrame keyFrame => keyFrame.InterpolateValue((Vector3D)(object)baseValue, progress),
+            VectorKeyFrame keyFrame => keyFrame.InterpolateValue((Vector)(object)baseValue, progress),
+            Size3DKeyFrame keyFrame => keyFrame.InterpolateValue((Size3D)(object)baseValue, progress),
+            _ => throw new ArgumentException($"Unsupported key-frame type '{frame.GetType().FullName}'.", nameof(frame)),
+        };
+
+        return (T)value;
+    }
+
+    private static List<(IKeyFrame Frame, TimeSpan Time)> ResolveKeyFrameTimes(
         IList keyFrames,
         TimeSpan totalDuration)
     {
-        var result = new List<(KeyFrame<T> Frame, TimeSpan Time)>();
-        var uniformFrames = new List<KeyFrame<T>>();
+        var result = new List<(IKeyFrame Frame, TimeSpan Time)>();
+        var uniformFrames = new List<IKeyFrame>();
 
         foreach (object? item in keyFrames)
         {
-            var frame = (KeyFrame<T>)item!;
+            var frame = (IKeyFrame)item!;
             switch (frame.KeyTime.Type)
             {
                 case KeyTimeType.TimeSpan:
@@ -1294,15 +1276,13 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
         return result;
     }
 
-    protected Duration GetNaturalDurationCoreImpl() => GetNaturalDuration(KeyFramesCore);
-
     internal static Duration GetNaturalDuration(IList keyFrames)
     {
         bool hasTimeSpanKeyTime = false;
         var maxTime = TimeSpan.Zero;
         foreach (object? item in keyFrames)
         {
-            var frame = (KeyFrame<T>)item!;
+            var frame = (IKeyFrame)item!;
             if (frame.KeyTime.Type == KeyTimeType.TimeSpan)
             {
                 hasTimeSpanKeyTime = true;
@@ -1315,12 +1295,6 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
 
         return new Duration(hasTimeSpanKeyTime ? maxTime : TimeSpan.FromSeconds(1));
     }
-
-    protected internal override Duration GetNaturalDuration() => GetNaturalDurationCoreImpl();
-
-    protected void ReplaceKeyFrames<TCollection>(ref TCollection storage, TCollection value)
-        where TCollection : Freezable, IList
-        => ReplaceAnimationChild(ref storage, value);
 
     internal static TCollection CloneKeyFrames<TCollection>(TCollection source, KeyFrameCollectionCloneMode mode)
         where TCollection : Freezable
@@ -1335,7 +1309,7 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
         };
     }
 
-    internal static void AddChildTo<TFrame>(KeyFrameCollectionBase<TFrame> collection, object child)
+    internal static void AddChildTo<TFrame>(IList collection, object child)
         where TFrame : Freezable, IKeyFrame
     {
         if (child is not TFrame keyFrame)
@@ -1349,21 +1323,6 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
     internal static void RejectTextChild(string childText) =>
         throw new InvalidOperationException("Key-frame animations cannot have text children.");
 
-    protected override bool FreezeCore(bool isChecking)
-    {
-        if (!base.FreezeCore(isChecking))
-        {
-            return false;
-        }
-
-        return KeyFramesCore is not Freezable collection || Freeze(collection, isChecking);
-    }
-}
-
-/// <summary>Compatibility collection retained for legacy strongly typed key-frame timelines.</summary>
-[System.ComponentModel.EditorBrowsable(System.ComponentModel.EditorBrowsableState.Never)]
-public class KeyFrameCollection<T> : List<KeyFrame<T>> where T : notnull
-{
 }
 
 internal enum KeyFrameCollectionCloneMode
@@ -1373,90 +1332,3 @@ internal enum KeyFrameCollectionCloneMode
     AsFrozen,
     CurrentValueAsFrozen,
 }
-
-/// <summary>
-/// Animates the value of a double property using keyframes.
-/// </summary>
-public partial class DoubleAnimationUsingKeyFrames : DoubleAnimationBase
-{
-    private DoubleKeyFrameCollection _keyFrames = new();
-
-    /// <summary>
-    /// Gets the collection of keyframes.
-    /// </summary>
-    public DoubleKeyFrameCollection KeyFrames
-    {
-        get => _keyFrames;
-        set => ReplaceAnimationChild(ref _keyFrames, value);
-    }
-}
-
-/// <summary>
-/// Animates the value of a Color property using keyframes.
-/// </summary>
-public partial class ColorAnimationUsingKeyFrames : ColorAnimationBase
-{
-    private ColorKeyFrameCollection _keyFrames = new();
-
-    /// <summary>
-    /// Gets the collection of keyframes.
-    /// </summary>
-    public ColorKeyFrameCollection KeyFrames
-    {
-        get => _keyFrames;
-        set => ReplaceAnimationChild(ref _keyFrames, value);
-    }
-}
-
-/// <summary>
-/// Animates the value of a Point property using keyframes.
-/// </summary>
-public partial class PointAnimationUsingKeyFrames : PointAnimationBase
-{
-    private PointKeyFrameCollection _keyFrames = new();
-
-    /// <summary>
-    /// Gets the collection of keyframes.
-    /// </summary>
-    public PointKeyFrameCollection KeyFrames
-    {
-        get => _keyFrames;
-        set => ReplaceAnimationChild(ref _keyFrames, value);
-    }
-}
-
-/// <summary>
-/// Animates the value of a Thickness property using keyframes.
-/// </summary>
-public partial class ThicknessAnimationUsingKeyFrames : ThicknessAnimationBase
-{
-    private ThicknessKeyFrameCollection _keyFrames = new();
-
-    /// <summary>
-    /// Gets the collection of keyframes.
-    /// </summary>
-    public ThicknessKeyFrameCollection KeyFrames
-    {
-        get => _keyFrames;
-        set => ReplaceAnimationChild(ref _keyFrames, value);
-    }
-}
-
-/// <summary>
-/// Animates the value of an Object property using discrete keyframes.
-/// </summary>
-public partial class ObjectAnimationUsingKeyFrames : ObjectAnimationBase
-{
-    private ObjectKeyFrameCollection _keyFrames = new();
-
-    /// <summary>
-    /// Gets the collection of keyframes.
-    /// </summary>
-    public ObjectKeyFrameCollection KeyFrames
-    {
-        get => _keyFrames;
-        set => ReplaceAnimationChild(ref _keyFrames, value);
-    }
-}
-
-#endregion

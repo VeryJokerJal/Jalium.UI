@@ -45,6 +45,38 @@ internal sealed class RequiresBackendAbsentFactAttribute : FactAttribute
     }
 }
 
+/// <summary>Marks a test whose contract depends on a Windows desktop API.</summary>
+internal sealed class RequiresWindowsFactAttribute : FactAttribute
+{
+    public RequiresWindowsFactAttribute()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Skip = "This test requires a Windows desktop API.";
+        }
+    }
+}
+
+/// <summary>
+/// Gates backend tests whose fixture is itself Win32-only (for example, a
+/// Vulkan swapchain backed by a hidden HWND). Resource-only backend tests stay
+/// in the portable suite; only the HWND-dependent case uses this attribute.
+/// </summary>
+internal sealed class RequiresWindowsBackendFactAttribute : FactAttribute
+{
+    public RequiresWindowsBackendFactAttribute(RenderBackend backend)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Skip = "This backend fixture requires a Win32 HWND.";
+        }
+        else if (!BackendAvailabilityProbe.IsAvailable(backend, out var reason))
+        {
+            Skip = reason;
+        }
+    }
+}
+
 /// <summary>
 /// Shared availability probe for the backend-gated fact attributes. Any probe
 /// failure (e.g. <see cref="DllNotFoundException"/> when the native core DLL

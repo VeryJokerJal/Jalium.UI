@@ -1,5 +1,6 @@
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Primitives;
+using IValueProvider = Jalium.UI.Automation.Provider.IValueProvider;
 
 namespace Jalium.UI.Automation.Peers;
 
@@ -78,20 +79,29 @@ public class TextBoxBaseAutomationPeer : FrameworkElementAutomationPeer, IValueP
 /// <summary>
 /// Exposes TextBox types to UI Automation.
 /// </summary>
-public sealed class TextBoxAutomationPeer : TextBoxBaseAutomationPeer, ITextProvider
+public class TextBoxAutomationPeer : TextAutomationPeer, IAutomationTextProviderSource, IValueProvider
 {
+    private readonly Jalium.UI.Automation.Provider.ITextProvider _textProvider;
+
     /// <summary>
     /// Initializes a new instance of the TextBoxAutomationPeer class.
     /// </summary>
     /// <param name="owner">The TextBox that is associated with this peer.</param>
     public TextBoxAutomationPeer(TextBox owner) : base(owner)
     {
+        _textProvider = new Jalium.UI.Automation.Provider.AutomationTextProvider(this, this);
     }
+
+    /// <inheritdoc />
+    public override object? GetPattern(PatternInterface patternInterface) => GetPatternCore(patternInterface);
 
     /// <summary>
     /// Gets the TextBox owner.
     /// </summary>
     private TextBox TextBoxOwner => (TextBox)Owner;
+
+    /// <inheritdoc />
+    protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Edit;
 
     /// <inheritdoc />
     protected override string GetClassNameCore()
@@ -116,6 +126,9 @@ public sealed class TextBoxAutomationPeer : TextBoxBaseAutomationPeer, ITextProv
         // TextBox exposes the Text pattern (in addition to the Value pattern handled by the base
         // peer) so external UIA clients can detect and read the currently selected text.
         if (patternInterface == PatternInterface.Text)
+            return _textProvider;
+
+        if (patternInterface == PatternInterface.Value)
             return this;
 
         return base.GetPatternCore(patternInterface);
@@ -123,23 +136,63 @@ public sealed class TextBoxAutomationPeer : TextBoxBaseAutomationPeer, ITextProv
 
     #region ITextProvider
 
-    string ITextProvider.Text => TextBoxOwner.Text ?? string.Empty;
+    string IAutomationTextProviderSource.Text => TextBoxOwner.Text ?? string.Empty;
 
-    int ITextProvider.SelectionStart => TextBoxOwner.SelectionStart;
+    int IAutomationTextProviderSource.SelectionStart => TextBoxOwner.SelectionStart;
 
-    int ITextProvider.SelectionLength => TextBoxOwner.SelectionLength;
+    int IAutomationTextProviderSource.SelectionLength => TextBoxOwner.SelectionLength;
 
-    bool ITextProvider.IsReadOnly => TextBoxOwner.IsReadOnly;
+    bool IAutomationTextProviderSource.IsReadOnly => TextBoxOwner.IsReadOnly;
 
-    SupportedTextSelection ITextProvider.SupportedTextSelection => SupportedTextSelection.Single;
+    SupportedTextSelection IAutomationTextProviderSource.SupportedTextSelection => SupportedTextSelection.Single;
 
-    void ITextProvider.Select(int start, int length) => TextBoxOwner.Select(start, length);
+    void IAutomationTextProviderSource.Select(int start, int length) => TextBoxOwner.Select(start, length);
 
-    // Precise per-glyph selection geometry is not surfaced yet; report none rather than a misleading
-    // rectangle. GetText()/GetSelection() — the path external detectors rely on — remain exact.
-    IReadOnlyList<Rect> ITextProvider.GetBoundingRectangles(int start, int length) => Array.Empty<Rect>();
+    // Use the same caret hit-testing as rendering, grouped into one rectangle per visual line.
+    IReadOnlyList<Rect> IAutomationTextProviderSource.GetBoundingRectangles(int start, int length)
+    {
+        string text = TextBoxOwner.Text ?? string.Empty;
+        start = Math.Clamp(start, 0, text.Length);
+        length = Math.Clamp(length, 0, text.Length - start);
 
-    void ITextProvider.ScrollIntoView(int start, int length) => TextBoxOwner.ScrollToCaretPosition();
+        if (length == 0)
+        {
+            Rect caret = TextBoxOwner.GetRectFromCharacterIndex(start);
+            return [new Rect(caret.X, caret.Y, Math.Max(1, caret.Width), Math.Max(1, caret.Height))];
+        }
+
+        var rectangles = new List<Rect>();
+        Rect currentLine = Rect.Empty;
+        int end = start + length;
+        for (int index = start; index < end; index++)
+        {
+            Rect leading = TextBoxOwner.GetRectFromCharacterIndex(index, trailingEdge: false);
+            Rect trailing = TextBoxOwner.GetRectFromCharacterIndex(index, trailingEdge: true);
+            double left = Math.Min(leading.X, trailing.X);
+            double right = Math.Max(leading.X, trailing.X);
+            var character = new Rect(
+                left,
+                Math.Min(leading.Y, trailing.Y),
+                Math.Max(1, right - left),
+                Math.Max(1, Math.Max(leading.Height, trailing.Height)));
+
+            if (currentLine.IsEmpty || Math.Abs(currentLine.Y - character.Y) <= 0.5)
+            {
+                currentLine = currentLine.IsEmpty ? character : Rect.Union(currentLine, character);
+            }
+            else
+            {
+                rectangles.Add(currentLine);
+                currentLine = character;
+            }
+        }
+
+        if (!currentLine.IsEmpty)
+            rectangles.Add(currentLine);
+        return rectangles;
+    }
+
+    void IAutomationTextProviderSource.ScrollIntoView(int start, int length) => TextBoxOwner.ScrollToCaretPosition();
 
     #endregion
 
@@ -148,14 +201,20 @@ public sealed class TextBoxAutomationPeer : TextBoxBaseAutomationPeer, ITextProv
     /// <summary>
     /// Gets the text value.
     /// </summary>
-    public override string Value => TextBoxOwner.Text;
+    public string Value => TextBoxOwner.Text;
+
+    /// <inheritdoc />
+    public bool IsReadOnly => TextBoxOwner.IsReadOnly;
 
     /// <summary>
     /// Sets the text value.
     /// </summary>
-    public override void SetValue(string value)
+    public void SetValue(string value)
     {
-        base.SetValue(value);
+        if (!IsEnabled())
+            throw new InvalidOperationException("Cannot set value on a disabled control.");
+        if (IsReadOnly)
+            throw new InvalidOperationException("Cannot set value on a read-only control.");
 
         var oldValue = TextBoxOwner.Text;
         TextBoxOwner.Text = value ?? string.Empty;

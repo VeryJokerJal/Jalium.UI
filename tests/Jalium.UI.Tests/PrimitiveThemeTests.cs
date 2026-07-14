@@ -11,6 +11,15 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class PrimitiveThemeTests
 {
+    [Fact]
+    public void TickBarUsesTheCanonicalMediaDoubleCollection()
+    {
+        Assert.Equal(typeof(DoubleCollection), typeof(TickBar).GetProperty(nameof(TickBar.Ticks))!.PropertyType);
+        Assert.DoesNotContain(
+            typeof(TickBar).Assembly.GetExportedTypes(),
+            type => type.FullName == "Jalium.UI.Controls.Primitives.DoubleCollection");
+    }
+
     private static void ResetApplicationState()
     {
         var currentField = typeof(Application).GetField("_current",

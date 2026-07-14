@@ -3,7 +3,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Provides data for keyboard events.
 /// </summary>
-public sealed class KeyEventArgs : InputEventArgs
+public class KeyEventArgs : KeyboardEventArgs
 {
     private readonly Key _realKey;
 
@@ -25,7 +25,7 @@ public sealed class KeyEventArgs : InputEventArgs
         _realKey == Key.DeadCharProcessed ? _realKey : Key.None;
 
     /// <summary>Gets the presentation source that reported the key.</summary>
-    public PresentationSource? InputSource { get; }
+    public PresentationSource InputSource { get; } = null!;
 
     /// <summary>Gets the complete state of the key.</summary>
     public KeyStates KeyStates { get; }
@@ -71,9 +71,10 @@ public sealed class KeyEventArgs : InputEventArgs
     /// <summary>
     /// Initializes a new instance of the <see cref="KeyEventArgs"/> class.
     /// </summary>
-    public KeyEventArgs(RoutedEvent routedEvent, Key key, ModifierKeys modifiers, bool isDown, bool isRepeat, int timestamp)
-        : base(routedEvent, timestamp)
+    internal KeyEventArgs(RoutedEvent routedEvent, Key key, ModifierKeys modifiers, bool isDown, bool isRepeat, int timestamp)
+        : base(InputManager.Current.PrimaryKeyboardDevice, timestamp)
     {
+        RoutedEvent = routedEvent ?? throw new ArgumentNullException(nameof(routedEvent));
         _realKey = key;
         KeyboardModifiers = modifiers;
         KeyStates = isDown ? KeyStates.Down : KeyStates.None;

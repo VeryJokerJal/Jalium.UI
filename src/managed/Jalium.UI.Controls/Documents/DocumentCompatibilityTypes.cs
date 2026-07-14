@@ -145,14 +145,33 @@ public delegate void PagesChangedEventHandler(object sender, PagesChangedEventAr
 
 public class PaginationProgressEventArgs : EventArgs
 {
+    /// <summary>
+    /// Initializes a WPF-compatible progress notification from the affected page range.
+    /// </summary>
     public PaginationProgressEventArgs(int start, int count)
     {
         Start = start;
         Count = count;
     }
 
+    /// <summary>
+    /// Initializes a progress notification for the current total page count.
+    /// This Jalium convenience overload preserves the former printing API while
+    /// keeping the public type in the WPF-compatible Documents namespace.
+    /// </summary>
+    public PaginationProgressEventArgs(int pageCount)
+        : this(start: 0, count: pageCount)
+    {
+    }
+
     public int Start { get; }
     public int Count { get; }
+
+    /// <summary>
+    /// Gets the current page count reported by Jalium's print pipeline.
+    /// For range-based notifications this is the affected <see cref="Count"/>.
+    /// </summary>
+    public int PageCount => Count;
 }
 
 public delegate void PaginationProgressEventHandler(object sender, PaginationProgressEventArgs e);

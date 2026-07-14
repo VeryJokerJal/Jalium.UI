@@ -1,4 +1,6 @@
 using Jalium.UI.Automation.Provider;
+using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Automation.Peers;
 

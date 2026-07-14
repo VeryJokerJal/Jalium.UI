@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Diagnostics;
 

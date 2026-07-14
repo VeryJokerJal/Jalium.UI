@@ -95,6 +95,16 @@ internal static partial class NativeMethods
     private const string MetalLib = "jalium.native.metal";
     private const string SoftwareLib = "jalium.native.software";
     private const string PlatformLib = "jalium.native.platform";
+    private const string TextLib = "jalium.native.text";
+
+    [LibraryImport(TextLib, EntryPoint = "jalium_text_get_system_font_family_count")]
+    internal static partial int TextGetSystemFontFamilyCount();
+
+    [LibraryImport(TextLib, EntryPoint = "jalium_text_copy_system_font_family")]
+    internal static unsafe partial int TextCopySystemFontFamily(
+        int index,
+        byte* buffer,
+        int bufferSize);
 
     // Per-backend "init attempted" flags. 0 = not yet, 1 = init() has been
     // invoked once (whether it succeeded or threw). Interlocked CAS so the
@@ -1513,11 +1523,34 @@ internal static partial class NativeMethods
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_surface")]
     internal static partial NativeSurfaceDescriptor WindowGetSurface(nint window);
 
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_portal_parent_handle")]
+    internal static partial uint WindowGetPortalParentHandle(
+        nint window, nint utf8Buffer, uint bufferSize);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_portal_parent_handle_for_native_handle")]
+    internal static partial uint WindowGetPortalParentHandleForNativeHandle(
+        nint nativeHandle, nint utf8Buffer, uint bufferSize);
+
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_invalidate")]
     internal static partial void WindowInvalidate(nint window);
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_cursor")]
     internal static partial void WindowSetCursor(nint window, int cursorShape);
+
+    [LibraryImport(
+        PlatformLib,
+        EntryPoint = "jalium_window_update_ime_context",
+        StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int WindowUpdateImeContext(
+        nint window,
+        int enabled,
+        string? utf8Text,
+        int cursorByteOffset,
+        int anchorByteOffset,
+        int x,
+        int y,
+        int width,
+        int height);
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_client_size")]
     internal static partial void WindowGetClientSize(nint window, out int width, out int height);
@@ -1530,6 +1563,75 @@ internal static partial class NativeMethods
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_monitor_refresh_rate")]
     internal static partial int WindowGetMonitorRefreshRate(nint window);
+
+    // --- Window management extensions ---
+
+    /// <summary>Mirror of the native JaliumMonitorInfo struct (jalium_platform.h).</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeMonitorInfo
+    {
+        public int X;
+        public int Y;
+        public int Width;
+        public int Height;
+        public int WorkX;
+        public int WorkY;
+        public int WorkWidth;
+        public int WorkHeight;
+        public float Scale;
+        public int RefreshRate;
+        public int IsPrimary;
+    }
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_get_monitor_count")]
+    internal static partial int PlatformGetMonitorCount();
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_set_double_click_settings")]
+    internal static partial int PlatformSetDoubleClickSettings(uint milliseconds, float distance);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_get_monitor_info")]
+    internal static partial int PlatformGetMonitorInfo(int index, out NativeMonitorInfo info);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_min_max_size")]
+    internal static partial int WindowSetMinMaxSize(
+        nint window, int minWidth, int minHeight, int maxWidth, int maxHeight);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_begin_move_drag")]
+    internal static partial int WindowBeginMoveDrag(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_begin_resize_drag")]
+    internal static partial int WindowBeginResizeDrag(nint window, int edge);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_icon")]
+    internal static partial int WindowSetIcon(
+        nint window, [In] uint[]? bgraPixels, int width, int height);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_topmost")]
+    internal static partial int WindowSetTopmost(nint window, int topmost);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_enabled")]
+    internal static partial int WindowSetEnabled(nint window, int enabled);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_opacity")]
+    internal static partial int WindowSetOpacity(nint window, double opacity);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_show_in_taskbar")]
+    internal static partial int WindowSetShowInTaskbar(nint window, int showInTaskbar);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_resizable")]
+    internal static partial int WindowSetResizable(nint window, int resizable);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_decorated")]
+    internal static partial int WindowSetDecorated(nint window, int decorated);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_owner")]
+    internal static partial int WindowSetOwner(nint window, nint ownerNativeHandle);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_activate")]
+    internal static partial int WindowActivate(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_show_system_menu")]
+    internal static partial int WindowShowSystemMenu(nint window, int x, int y);
 
     // --- Event Loop ---
 
@@ -1589,8 +1691,13 @@ internal static partial class NativeMethods
     [LibraryImport(PlatformLib, EntryPoint = "jalium_input_get_key_state")]
     internal static partial short InputGetKeyState(int virtualKey);
 
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_input_get_touch_capabilities")]
+    internal static partial int InputGetTouchCapabilities(
+        out int touchPresent,
+        out int maxContacts);
+
     [LibraryImport(PlatformLib, EntryPoint = "jalium_input_get_cursor_pos")]
-    internal static partial void InputGetCursorPos(out float x, out float y);
+    internal static partial JaliumResult InputGetCursorPos(out float x, out float y);
 
     // --- Drag and Drop ---
 
@@ -1602,6 +1709,18 @@ internal static partial class NativeMethods
         nint window, nint items, uint itemCount, uint allowedEffects,
         out uint performedEffect);
 
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_drag_begin_ex")]
+    internal static partial int DragBeginEx(
+        nint window, nint items, uint itemCount, uint allowedEffects,
+        nint feedbackCallback, nint queryContinueCallback, nint callbackUserData,
+        out uint performedEffect);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_drag_begin_with_image")]
+    internal static partial int DragBeginWithImage(
+        nint window, nint items, uint itemCount, uint allowedEffects,
+        nint feedbackCallback, nint queryContinueCallback, nint callbackUserData,
+        nint dragImage, out uint performedEffect);
+
     // --- Clipboard ---
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_clipboard_get_text")]
@@ -1609,6 +1728,18 @@ internal static partial class NativeMethods
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_clipboard_set_text", StringMarshalling = StringMarshalling.Utf16)]
     internal static partial int ClipboardSetText(string text);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_clipboard_get_formats")]
+    internal static partial int ClipboardGetFormats(out nint mimeTypes);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_clipboard_get_data", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial int ClipboardGetData(string mimeType, out nint data, out uint dataSize);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_clipboard_set_data")]
+    internal static partial int ClipboardSetData(nint items, uint itemCount);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_clipboard_clear")]
+    internal static partial int ClipboardClear();
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_free")]
     internal static partial void PlatformFree(nint ptr);
@@ -1687,4 +1818,16 @@ internal struct NativeDragDataItem
     public nint MimeType;
     public nint Data;
     public uint DataSize;
+}
+
+/// <summary>Straight-alpha BGRA32 image shown by a native drag source.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeDragImage
+{
+    public nint BgraPixels;
+    public uint Width;
+    public uint Height;
+    public uint Stride;
+    public int HotspotX;
+    public int HotspotY;
 }

@@ -5,9 +5,8 @@ using Jalium.UI.Automation.Peers;
 using Jalium.UI.Markup;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Media.Imaging;
-using BitmapImage = Jalium.UI.Media.BitmapImage;
-using LegacyD3DImage = Jalium.UI.Media.D3DImage;
-using WriteableBitmap = Jalium.UI.Media.WriteableBitmap;
+using WpfD3DImage = Jalium.UI.Interop.D3DImage;
+using WriteableBitmap = Jalium.UI.Media.Imaging.WriteableBitmap;
 using Jalium.UI.Media.Native;
 using Jalium.UI.Media.Pipeline;
 using Jalium.UI.Threading;
@@ -32,46 +31,6 @@ public enum MediaState
     Close = 2,
     Pause = 3,
     Stop = 4
-}
-
-#endregion
-
-#region Duration 结构
-
-public struct Duration
-{
-    private readonly TimeSpan _timeSpan;
-    private readonly DurationType _type;
-
-    public static Duration Automatic => new(DurationType.Automatic);
-    public static Duration Forever => new(DurationType.Forever);
-
-    private Duration(DurationType type)
-    {
-        _type = type;
-        _timeSpan = TimeSpan.Zero;
-    }
-
-    public Duration(TimeSpan timeSpan)
-    {
-        _type = DurationType.TimeSpan;
-        _timeSpan = timeSpan;
-    }
-
-    public bool HasTimeSpan => _type == DurationType.TimeSpan;
-
-    public TimeSpan TimeSpan => _type == DurationType.TimeSpan
-        ? _timeSpan
-        : throw new InvalidOperationException("Duration does not have a TimeSpan value.");
-
-    public static implicit operator Duration(TimeSpan timeSpan) => new(timeSpan);
-
-    private enum DurationType
-    {
-        Automatic,
-        TimeSpan,
-        Forever
-    }
 }
 
 #endregion
@@ -126,10 +85,21 @@ public sealed class VideoFrame : IDisposable
     /// <summary>
     /// Stage 3+ 路径:DXVA / MediaCodec / VTDecompressionSession 等硬件解码器直接给一个
     /// GPU-resident surface。非 null 时 MediaElement 跳过 BGRA staging 路径,
-    /// 直接 bind <see cref="Jalium.UI.Media.D3DImage"/> 让 framework 走 jalium_render_target_draw_video_surface。
+    /// 直接 bind <see cref="Jalium.UI.Interop.D3DImage"/> 让 framework 走 jalium_render_target_draw_video_surface。
     /// 当前 stage 1+2 decoder 全部返 null,所以这个字段长期为 null;stage 3 真填后自动生效。
     /// </summary>
     public NativeVideoSurface? GpuSurface => _gpuSurface;
+
+    /// <summary>
+    /// Transfers ownership of the GPU surface to the display slot.  The
+    /// returned surface is no longer disposed with this frame.
+    /// </summary>
+    internal NativeVideoSurface? DetachGpuSurface()
+    {
+        var surface = _gpuSurface;
+        _gpuSurface = null;
+        return surface;
+    }
 
     /// <summary>
     /// CPU 路径:VideoFrame 接管 <paramref name="mediaFrame"/> 的生命周期。
@@ -427,6 +397,15 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     private Task? _videoDecodeTask;
     private Task? _videoRenderTask;
     private Task? _audioSyncTask;
+    private CancellationTokenSource? _subtitleCts;
+    private Task? _subtitleTask;
+    private string? _subtitleText;
+    private IReadOnlyList<MediaTrackInfo> _audioTracks = Array.Empty<MediaTrackInfo>();
+    private IReadOnlyList<MediaTrackInfo> _subtitleTracks = Array.Empty<MediaTrackInfo>();
+    private int _selectedAudioTrackIndex;
+    private int _selectedSubtitleTrackIndex = -1;
+    private int _trackSwitchGeneration;
+    private bool _disposed;
     private readonly object _lock = new();
 
     private WriteableBitmap? _frameBitmap;
@@ -436,7 +415,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     // WriteableBitmap.BackBuffer copy hop. Falls back to _frameBitmap when
     // CreateVideoSurface returns null / throws (e.g. backend stub).
     private NativeVideoSurface? _videoSurface;
-    private LegacyD3DImage? _d3dImage;
+    private WpfD3DImage? _d3dImage;
     private bool _videoSurfacePathUnsupported;  // sticky:once create fails, don't keep retrying
     private readonly SolidColorBrush _backgroundBrush = new(Color.FromRgb(0, 0, 0));
     private int _videoWidth;
@@ -490,7 +469,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
     public static readonly DependencyProperty VolumeProperty =
         DependencyProperty.Register(nameof(Volume), typeof(double), typeof(MediaElement),
-            new PropertyMetadata(1, OnVolumeChanged, CoerceVolume));
+            new PropertyMetadata(1.0, OnVolumeChanged, CoerceVolume));
 
     public static readonly DependencyProperty BalanceProperty =
         DependencyProperty.Register(nameof(Balance), typeof(double), typeof(MediaElement),
@@ -704,9 +683,9 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         }
     }
 
-    public Duration NaturalDuration => _duration == TimeSpan.Zero
-        ? Duration.Automatic
-        : new Duration(_duration);
+    public Jalium.UI.Duration NaturalDuration => _duration == TimeSpan.Zero
+        ? Jalium.UI.Duration.Automatic
+        : new Jalium.UI.Duration(_duration);
 
     public int NaturalVideoWidth => _videoWidth;
     public int NaturalVideoHeight => _videoHeight;
@@ -718,6 +697,44 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     public bool CanPause { get; private set; } = true;
     public bool IsPlaying => _isPlaying;
     public string SyncStats => $"Frames: {_framesRendered} Dropped: {_framesDropped} Late: {_framesLate}";
+    public IReadOnlyList<MediaTrackInfo> AudioTracks => _audioTracks;
+    public IReadOnlyList<MediaTrackInfo> SubtitleTracks => _subtitleTracks;
+    public Exception? TrackDiscoveryError { get; private set; }
+    public Exception? SubtitleError { get; private set; }
+
+    /// <summary>Gets or selects the zero-based embedded audio stream.</summary>
+    public int SelectedAudioTrackIndex
+    {
+        get => _selectedAudioTrackIndex;
+        set
+        {
+            if (value < 0) throw new ArgumentOutOfRangeException(nameof(value));
+            if (_audioTracks.Count > 0 && value >= _audioTracks.Count)
+                throw new ArgumentOutOfRangeException(nameof(value));
+            if (_selectedAudioTrackIndex == value) return;
+            var previousTrack = _selectedAudioTrackIndex;
+            _selectedAudioTrackIndex = value;
+            SwitchAudioTrack(previousTrack);
+        }
+    }
+
+    /// <summary>
+    /// Gets or selects the zero-based embedded subtitle stream; -1 disables
+    /// subtitle rendering.
+    /// </summary>
+    public int SelectedSubtitleTrackIndex
+    {
+        get => _selectedSubtitleTrackIndex;
+        set
+        {
+            if (value < -1) throw new ArgumentOutOfRangeException(nameof(value));
+            if (value >= _subtitleTracks.Count && value != -1)
+                throw new ArgumentOutOfRangeException(nameof(value));
+            if (_selectedSubtitleTrackIndex == value) return;
+            _selectedSubtitleTrackIndex = value;
+            RestartSubtitlePlayback();
+        }
+    }
 
     #endregion
 
@@ -746,15 +763,25 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
     private void Dispose(bool disposing)
     {
+        if (_disposed) return;
+        _disposed = true;
+        ++_openMediaGeneration;
+        ++_trackSwitchGeneration;
         DetachClock(_clock);
         _clock = null;
         StopPlayback();
+        DropPendingDisplayFrame();
         _syncClock?.Dispose();
         _videoDecoder?.Dispose();
         _frameBuffer?.Dispose();
         _audioManager?.Dispose();
+        _d3dImage?.SetBackBuffer((NativeVideoSurface?)null);
         _d3dImage?.Dispose();
         _videoSurface?.Dispose();
+        _syncClock = null;
+        _videoDecoder = null;
+        _frameBuffer = null;
+        _audioManager = null;
         _d3dImage = null;
         _videoSurface = null;
     }
@@ -933,6 +960,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                 var y = (rect.Height - scaledSize.Height) / 2;
                 dc.DrawImage(surfaceImage, new Rect(x, y, scaledSize.Width, scaledSize.Height), BitmapScalingMode.Linear);
             }
+            DrawSubtitleOverlay(dc, rect);
             return;
         }
 
@@ -960,6 +988,32 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
             };
             dc.DrawText(text, new Point((rect.Width - text.Width) / 2, (rect.Height - text.Height) / 2));
         }
+        DrawSubtitleOverlay(dc, rect);
+    }
+
+    private void DrawSubtitleOverlay(DrawingContext drawingContext, Rect bounds)
+    {
+        var subtitle = _subtitleText;
+        if (string.IsNullOrWhiteSpace(subtitle) || bounds.Width <= 40 || bounds.Height <= 20)
+            return;
+
+        var text = new FormattedText(subtitle, "Sans", 24)
+        {
+            Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+            MaxTextWidth = Math.Max(1, bounds.Width - 48),
+            TextAlignment = TextAlignment.Center,
+        };
+        var x = 24.0;
+        var y = Math.Max(8.0, bounds.Height - text.Height - 32.0);
+        var backgroundWidth = Math.Min(bounds.Width - 32.0, text.Width + 16.0);
+        var background = new Rect(
+            (bounds.Width - backgroundWidth) / 2.0,
+            y - 6.0,
+            backgroundWidth,
+            text.Height + 12.0);
+        drawingContext.DrawRectangle(
+            new SolidColorBrush(Color.FromArgb(180, 0, 0, 0)), null, background);
+        drawingContext.DrawText(text, new Point(x, y));
     }
 
     #endregion
@@ -1190,7 +1244,13 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         return Math.Clamp(volume, 0.0, 1.0);
     }
 
-    private static void OnBalanceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) { }
+    private static void OnBalanceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is MediaElement media && media._audioManager != null)
+        {
+            media._audioManager.Balance = (double)e.NewValue!;
+        }
+    }
 
     private static object CoerceBalance(DependencyObject d, object? value)
     {
@@ -1232,6 +1292,10 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
             {
                 media._syncClock.SpeedRatio = ratio;
             }
+            if (media._audioManager != null)
+            {
+                media._audioManager.SpeedRatio = ratio;
+            }
         }
     }
 
@@ -1262,7 +1326,12 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         InvalidateVisual();
 
         var generation = ++_openMediaGeneration;
+        ++_trackSwitchGeneration;
         var dispatcher = Dispatcher.MainDispatcher;
+        var requestedAudioTrack = _selectedAudioTrackIndex;
+        TrackDiscoveryError = null;
+        _audioTracks = Array.Empty<MediaTrackInfo>();
+        _subtitleTracks = Array.Empty<MediaTrackInfo>();
 
         Task.Run(() =>
         {
@@ -1275,9 +1344,33 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
             var probeHasAudio = false;
             var audioDurationSeconds = 0.0;
             Exception? probeError = null;
+            Exception? trackDiscoveryError = null;
+            IReadOnlyList<MediaTrackInfo> discoveredAudio = Array.Empty<MediaTrackInfo>();
+            IReadOnlyList<MediaTrackInfo> discoveredSubtitles = Array.Empty<MediaTrackInfo>();
+            AudioPlayer? openedAudio = null;
 
             try
             {
+                if (OperatingSystem.IsLinux())
+                {
+                    try
+                    {
+                        var tracks = NativeLinuxMedia.DiscoverTracks(BuildSourceUri(source));
+                        discoveredAudio = tracks
+                            .Where(track => track.Kind == MediaTrackKind.Audio)
+                            .OrderBy(track => track.Index)
+                            .ToArray();
+                        discoveredSubtitles = tracks
+                            .Where(track => track.Kind == MediaTrackKind.Subtitle)
+                            .OrderBy(track => track.Index)
+                            .ToArray();
+                    }
+                    catch (Exception ex)
+                    {
+                        trackDiscoveryError = ex;
+                    }
+                }
+
                 probe = GetVideoDecoderFactory().Create();
                 try
                 {
@@ -1294,25 +1387,33 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                     probe = null;
                 }
 
-                // audio probe — Open/Stop 序列只为知道是否有 audio track + 拿 duration。
-                // 完整启动 audio device 在后台线程完成,UI 线程不感知。
-                var audioMgr = _audioManager;
-                if (audioMgr != null)
+                // Open each candidate on an isolated player. Source changes
+                // can overlap while native probing runs; sharing
+                // _audioManager here let an older generation close or reopen
+                // the newer source after it had won the generation check.
+                var audioCandidate = new AudioPlayer();
+                try
                 {
-                    try
+                    audioCandidate.AudioTrackIndex = discoveredAudio.Count == 0
+                        ? requestedAudioTrack
+                        : Math.Min(requestedAudioTrack, discoveredAudio.Count - 1);
+                    audioCandidate.Open(BuildSourceUri(source));
+                    if (audioCandidate.HasAudio)
                     {
-                        audioMgr.Close();
-                        audioMgr.Open(BuildSourceUri(source));
-                        if (audioMgr.HasAudio)
-                        {
-                            probeHasAudio = true;
-                            audioDurationSeconds = audioMgr.NaturalDuration?.TotalSeconds ?? 0;
-                            audioMgr.Stop();
-                        }
+                        probeHasAudio = true;
+                        audioDurationSeconds =
+                            audioCandidate.NaturalDuration?.TotalSeconds ?? 0;
+                        audioCandidate.Stop();
+                        openedAudio = audioCandidate;
+                        audioCandidate = null!;
                     }
-                    catch
-                    {
-                    }
+                }
+                catch
+                {
+                }
+                finally
+                {
+                    audioCandidate?.Dispose();
                 }
             }
             catch (Exception ex)
@@ -1320,25 +1421,55 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                 probeError = ex;
                 probe?.Dispose();
                 probe = null;
+                openedAudio?.Dispose();
+                openedAudio = null;
             }
 
             var capturedDecoder = probe;
+            var capturedAudio = openedAudio;
+            if (dispatcher is null)
+            {
+                capturedDecoder?.Dispose();
+                capturedAudio?.Dispose();
+                return;
+            }
             dispatcher?.BeginInvoke(() =>
             {
                 // 期间用户切换了 Source — 旧探测结果作废。
                 if (generation != _openMediaGeneration)
                 {
                     capturedDecoder?.Dispose();
+                    capturedAudio?.Dispose();
                     return;
                 }
 
                 if (probeError != null)
                 {
+                    capturedAudio?.Dispose();
                     RaiseMediaFailed(probeError);
                     return;
                 }
 
                 _videoDecoder = capturedDecoder;
+                var previousAudio = _audioManager;
+                _audioManager = capturedAudio ?? new AudioPlayer();
+                if (previousAudio != null &&
+                    !ReferenceEquals(previousAudio, _audioManager))
+                {
+                    Task.Run(() =>
+                    {
+                        try { previousAudio.Dispose(); } catch { }
+                    });
+                }
+                TrackDiscoveryError = trackDiscoveryError;
+                _audioTracks = discoveredAudio;
+                _subtitleTracks = discoveredSubtitles;
+                if (_audioTracks.Count > 0 && _selectedAudioTrackIndex >= _audioTracks.Count)
+                    _selectedAudioTrackIndex = 0;
+                if (_subtitleTracks.Count == 0)
+                    _selectedSubtitleTrackIndex = -1;
+                else if (_selectedSubtitleTrackIndex >= _subtitleTracks.Count)
+                    _selectedSubtitleTrackIndex = -1;
                 _hasVideo = probeHasVideo;
                 _hasAudio = probeHasAudio;
                 _videoWidth = probeWidth;
@@ -1441,6 +1572,8 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         {
             _audioManager.Volume = _currentVolume;
             _audioManager.IsMuted = _isMuted;
+            _audioManager.Balance = Balance;
+            _audioManager.SpeedRatio = SpeedRatio;
 
             if (_position > TimeSpan.Zero)
                 _audioManager.Seek(_position);
@@ -1466,6 +1599,9 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         {
             _videoRenderTask = Task.Run(() => AudioOnlyPositionLoop(token), token);
         }
+
+
+        StartSubtitlePlayback();
     }
 
     private void StartVideoPlayback(CancellationToken token, int videoWidth, int videoHeight)
@@ -1528,6 +1664,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         }
         _syncClock?.Resume();
         _frameBuffer?.Clear();
+        StartSubtitlePlayback();
 
         var resumeWidth = _targetWidth;
         var resumeHeight = _targetHeight;
@@ -1586,6 +1723,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
         // cancel token 让 VideoRenderLoop 从 BlockingCollection.Take 立即醒来。
         _playbackCts?.Cancel();
+        StopSubtitlePlayback();
     }
 
     /// <summary>
@@ -1610,6 +1748,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         _frameBuffer?.Clear();
         DropPendingDisplayFrame();
         _audioManager?.Stop();
+        StopSubtitlePlayback();
 
         if (oldCts == null && oldDecoder == null) return;
 
@@ -1636,21 +1775,28 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     private void CloseMedia()
     {
         ++_openMediaGeneration;
+        ++_trackSwitchGeneration;
         StopPlayback();
 
-        // _audioManager.Close 会停止 device 并 dispose stream — 100ms+，移到后台。
+        // Detach the player before closing it. A subsequent OpenMedia uses an
+        // independent candidate, so a slow native close from this generation
+        // can never tear down the next source.
         var audioMgr = _audioManager;
+        _audioManager = new AudioPlayer();
         if (audioMgr != null)
         {
             Task.Run(() =>
             {
-                try { audioMgr.Close(); } catch { }
+                try { audioMgr.Dispose(); } catch { }
             });
         }
 
         _frameBuffer?.Dispose();
         _frameBuffer = null;
         DropPendingDisplayFrame();
+        _d3dImage?.SetBackBuffer((NativeVideoSurface?)null);
+        _videoSurface?.Dispose();
+        _videoSurface = null;
 
         _frameBitmap = null;
         _syncClock?.Dispose();
@@ -1659,6 +1805,10 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         _duration = TimeSpan.Zero;
         _hasVideo = false;
         _hasAudio = false;
+        _audioTracks = Array.Empty<MediaTrackInfo>();
+        _subtitleTracks = Array.Empty<MediaTrackInfo>();
+        TrackDiscoveryError = null;
+        _subtitleText = null;
         _videoWidth = 0;
         _videoHeight = 0;
         _isArranged = false;
@@ -1713,52 +1863,82 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
             while (!token.IsCancellationRequested && _isPlaying)
             {
-                MediaFrame? mediaFrame = null;
-                bool hasFrame;
-                try
+                VideoFrame? frame = null;
+
+                // Linux VAAPI/GStreamer can pull the next frame directly as
+                // dma-buf. Probe this before TryReadFrame so a successful
+                // import performs no CPU frame allocation or pixel copy.
+                if (_videoDecoder is INativeGpuVideoDecoder gpuDecoder &&
+                    gpuDecoder.MayHaveGpuOutput)
                 {
-                    hasFrame = _videoDecoder.TryReadFrame(out mediaFrame);
-                }
-                catch
-                {
-                    break;
+                    try
+                    {
+                        var context = RenderContext.GetOrCreateCurrent().Handle;
+                        var result = gpuDecoder.TryReadGpuFrame(
+                            context, out var directSurface, out var directPts);
+                        if (result == GpuVideoFrameReadResult.EndOfStream)
+                            break;
+                        if (result == GpuVideoFrameReadResult.FellBackToCpu)
+                            continue;
+                        if (result == GpuVideoFrameReadResult.Frame &&
+                            directSurface is not null)
+                        {
+                            var timestamp = directPts.TotalMilliseconds;
+                            if (timestamp <= 0)
+                                timestamp = startTimeMs + frameIndex * _frameDelayMs;
+                            frame = new VideoFrame(
+                                directSurface, (long)timestamp, (int)frameIndex);
+                        }
+                    }
+                    catch
+                    {
+                        break;
+                    }
                 }
 
-                if (!hasFrame || mediaFrame is null) break;
+                if (frame is null)
+                {
+                    MediaFrame? mediaFrame = null;
+                    bool hasFrame;
+                    try
+                    {
+                        hasFrame = _videoDecoder.TryReadFrame(out mediaFrame);
+                    }
+                    catch
+                    {
+                        break;
+                    }
 
-                var pts = mediaFrame.PresentationTime.TotalMilliseconds;
-                if (pts <= 0)
-                {
-                    // 容器没给 PTS — 退化为按 fps 推算
-                    pts = startTimeMs + frameIndex * _frameDelayMs;
-                }
+                    if (!hasFrame || mediaFrame is null) break;
 
-                // Stage 3 优先路径:if decoder gives us a GPU-resident surface(DXVA / MediaCodec /
-                // VTDecompressionSession 等硬件解码),走 0-copy 路径,完全跳过 BGRA staging。
-                // stage 1+2 期间所有 decoder 实现都返 null;真填 DXVA 后这条路径自动生效。
-                NativeVideoSurface? gpuSurface = null;
-                try
-                {
-                    // RenderContext 是 process-wide singleton,UI thread 已经初始化
-                    // (window 创建时);在 decode 线程拿到的就是同一个 handle。
-                    var ctx = RenderContext.GetOrCreateCurrent().Handle;
-                    gpuSurface = _videoDecoder.AcquireGpuSurface(ctx);
-                }
-                catch { gpuSurface = null; }
+                    var pts = mediaFrame.PresentationTime.TotalMilliseconds;
+                    if (pts <= 0)
+                    {
+                        // 容器没给 PTS — 退化为按 fps 推算
+                        pts = startTimeMs + frameIndex * _frameDelayMs;
+                    }
 
-                VideoFrame frame;
-                if (gpuSurface is not null)
-                {
-                    // GPU 路径:抛弃 mediaFrame buffer(decoder 在 GPU 上做了同样的工作);
-                    // VideoFrame 接管 gpuSurface 的生命周期。
-                    mediaFrame.Dispose();
-                    frame = new VideoFrame(gpuSurface, (long)pts, (int)frameIndex);
-                }
-                else
-                {
-                    // CPU 路径:VideoFrame 接管 mediaFrame 所有权,后续 UpdateFrameBitmap 走
-                    // NativeVideoSurface BGRA staging 或最终 WriteableBitmap fallback。
-                    frame = new VideoFrame(mediaFrame, (long)pts, (int)frameIndex);
+                    // Legacy external paths (DXVA/AHardwareBuffer) acquire a
+                    // GPU surface after the platform decoder's CPU-shaped read.
+                    NativeVideoSurface? gpuSurface = null;
+                    try
+                    {
+                        var ctx = RenderContext.GetOrCreateCurrent().Handle;
+                        gpuSurface = _videoDecoder.AcquireGpuSurface(ctx);
+                    }
+                    catch { gpuSurface = null; }
+
+                    if (gpuSurface is not null)
+                    {
+                        mediaFrame.Dispose();
+                        frame = new VideoFrame(
+                            gpuSurface, (long)pts, (int)frameIndex);
+                    }
+                    else
+                    {
+                        frame = new VideoFrame(
+                            mediaFrame, (long)pts, (int)frameIndex);
+                    }
                 }
 
                 if (!_frameBuffer!.TryAdd(frame, 50))
@@ -1977,16 +2157,25 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         //   D3DImage 让 framework 走 jalium_render_target_draw_video_surface。
         //   VideoFrame.Dispose 时 surface 会被还给 decoder ring(stage 3 真填后)或
         //   release native handle(stage 3 骨架期)。
-        if (frame.GpuSurface is { } gpu)
+        if (frame.GpuSurface is not null)
         {
+            // D3DImage keeps only a caller-owned reference. Transfer the
+            // surface out of VideoFrame before ApplyPendingFrame disposes the
+            // frame, and retain it until a later surface replaces it. Without
+            // this transfer the native VkImage was destroyed immediately
+            // after binding, leaving D3DImage with a disposed handle.
+            var gpu = frame.DetachGpuSurface();
+            if (gpu is null) return;
+            var previousSurface = _videoSurface;
             // 旧 NativeVideoSurface 退出 D3DImage 引用(下一次 dispose 时归还 decoder)。
-            _d3dImage ??= new LegacyD3DImage();
+            _d3dImage ??= new WpfD3DImage();
             _d3dImage.SetBackBuffer(gpu);
+            _videoSurface = gpu;
             // 旧 BGRA staging surface 在 GPU 路径下用不上,释放 GPU 内存。
-            if (_videoSurface is not null && !ReferenceEquals(_videoSurface, gpu))
+            if (previousSurface is not null &&
+                !ReferenceEquals(previousSurface, gpu))
             {
-                _videoSurface.Dispose();
-                _videoSurface = null;
+                previousSurface.Dispose();
             }
             InvalidateVisual();
             return;
@@ -2057,7 +2246,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
             {
                 var ctx = RenderContext.GetOrCreateCurrent();
                 _videoSurface = NativeVideoSurface.CreateBgra8(ctx.Handle, width, height);
-                _d3dImage ??= new LegacyD3DImage();
+                _d3dImage ??= new WpfD3DImage();
                 _d3dImage.SetBackBuffer(_videoSurface);
             }
             catch (NativeMediaException)
@@ -2190,6 +2379,216 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
                 _isPaused = false;
                 StartPlaybackInternal();
             });
+        });
+    }
+
+    #endregion
+
+    #region Track selection and subtitles
+
+    private void SwitchAudioTrack(int previousTrack)
+    {
+        var path = _mediaPath;
+        if (string.IsNullOrEmpty(path) || _audioManager == null || !_hasAudio) return;
+
+        var generation = ++_trackSwitchGeneration;
+        var position = _position;
+        var resumePlaying = _isPlaying;
+        var remainPaused = _isPaused;
+        var selectedTrack = _selectedAudioTrackIndex;
+        var volume = _currentVolume;
+        var muted = _isMuted;
+        var balance = Balance;
+        var speedRatio = SpeedRatio;
+        var dispatcher = Dispatcher.MainDispatcher;
+        _isPlaying = false;
+        StopPlayback();
+
+        Task.Run(() =>
+        {
+            Exception? failure = null;
+            AudioPlayer? candidate = null;
+            try
+            {
+                candidate = new AudioPlayer
+                {
+                    AudioTrackIndex = selectedTrack,
+                    Volume = volume,
+                    IsMuted = muted,
+                    Balance = balance,
+                    SpeedRatio = speedRatio,
+                };
+                candidate.Open(BuildSourceUri(path));
+                if (!candidate.HasAudio)
+                    throw new InvalidOperationException("The selected audio track did not produce audio.");
+                if (position > TimeSpan.Zero) candidate.Seek(position);
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+
+            if (dispatcher is null)
+            {
+                candidate?.Dispose();
+                return;
+            }
+            dispatcher.BeginInvoke(() =>
+            {
+                if (generation != _trackSwitchGeneration ||
+                    !string.Equals(path, _mediaPath, StringComparison.Ordinal))
+                {
+                    candidate?.Dispose();
+                    return;
+                }
+                if (failure != null)
+                {
+                    candidate?.Dispose();
+                    _selectedAudioTrackIndex = previousTrack;
+                    _position = position;
+                    if (resumePlaying)
+                    {
+                        _isPlaying = true;
+                        _isPaused = false;
+                        StartPlaybackInternal();
+                    }
+                    else
+                    {
+                        _isPlaying = false;
+                        _isPaused = remainPaused;
+                    }
+                    RaiseMediaFailed(failure);
+                    return;
+                }
+
+                var previousAudio = _audioManager;
+                _audioManager = candidate;
+                candidate = null;
+                if (previousAudio != null)
+                {
+                    Task.Run(() =>
+                    {
+                        try { previousAudio.Dispose(); } catch { }
+                    });
+                }
+                _hasAudio = true;
+                _position = position;
+                _videoStartTimeMs = position.TotalMilliseconds;
+                if (resumePlaying)
+                {
+                    _isPlaying = true;
+                    _isPaused = false;
+                    StartPlaybackInternal();
+                }
+                else
+                {
+                    _isPlaying = false;
+                    _isPaused = remainPaused;
+                }
+            });
+        });
+    }
+
+    private void RestartSubtitlePlayback()
+    {
+        StopSubtitlePlayback();
+        if (_isPlaying) StartSubtitlePlayback();
+    }
+
+    private void StartSubtitlePlayback()
+    {
+        StopSubtitlePlayback();
+        if (!OperatingSystem.IsLinux() || !_isPlaying ||
+            _selectedSubtitleTrackIndex < 0 || string.IsNullOrEmpty(_mediaPath)) return;
+
+        SubtitleError = null;
+        var source = BuildSourceUri(_mediaPath);
+        var track = _selectedSubtitleTrackIndex;
+        var cts = new CancellationTokenSource();
+        _subtitleCts = cts;
+        _subtitleTask = Task.Run(() => SubtitleLoop(source, track, cts.Token), cts.Token);
+    }
+
+    private void StopSubtitlePlayback()
+    {
+        var cts = _subtitleCts;
+        _subtitleCts = null;
+        _subtitleTask = null;
+        try { cts?.Cancel(); } catch { }
+        cts?.Dispose();
+        if (_subtitleText != null)
+        {
+            _subtitleText = null;
+            InvalidateVisual();
+        }
+    }
+
+    private async Task SubtitleLoop(Uri source, int trackIndex, CancellationToken token)
+    {
+        try
+        {
+            using var decoder = new NativeSubtitleDecoder();
+            decoder.Open(source, trackIndex);
+            var initialPosition = GetPlaybackPosition();
+            if (initialPosition > TimeSpan.Zero) decoder.Seek(initialPosition);
+
+            while (!token.IsCancellationRequested && decoder.TryReadCue(out var cue))
+            {
+                var end = cue.Start + (cue.Duration > TimeSpan.Zero
+                    ? cue.Duration : TimeSpan.FromSeconds(3));
+                var current = GetPlaybackPosition();
+                if (end <= current) continue;
+
+                while (!token.IsCancellationRequested &&
+                       (current = GetPlaybackPosition()) < cue.Start)
+                {
+                    var wait = cue.Start - current;
+                    await Task.Delay(
+                        wait > TimeSpan.FromMilliseconds(100)
+                            ? TimeSpan.FromMilliseconds(100) : wait,
+                        token).ConfigureAwait(false);
+                }
+                if (token.IsCancellationRequested) break;
+                PostSubtitleText(cue.Text, token);
+
+                while (!token.IsCancellationRequested && GetPlaybackPosition() < end)
+                {
+                    await Task.Delay(50, token).ConfigureAwait(false);
+                }
+                PostSubtitleText(null, token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            Dispatcher.MainDispatcher?.BeginInvoke(() =>
+            {
+                if (token.IsCancellationRequested) return;
+                SubtitleError = ex;
+                _subtitleText = null;
+                InvalidateVisual();
+            });
+        }
+    }
+
+    private TimeSpan GetPlaybackPosition()
+    {
+        if (_hasAudio && _audioManager != null)
+        {
+            try { return _audioManager.Position; } catch { }
+        }
+        return _syncClock?.GetMediaTime() ?? _position;
+    }
+
+    private void PostSubtitleText(string? text, CancellationToken token)
+    {
+        Dispatcher.MainDispatcher?.BeginInvoke(() =>
+        {
+            if (token.IsCancellationRequested) return;
+            _subtitleText = text;
+            InvalidateVisual();
         });
     }
 

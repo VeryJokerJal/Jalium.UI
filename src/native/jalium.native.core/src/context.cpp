@@ -238,6 +238,24 @@ JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
     return reinterpret_cast<JaliumContext*>(ctx);
 }
 
+JALIUM_API JaliumResult jalium_context_set_gpu_preference(
+    JaliumContext* ctx,
+    JaliumGpuPreference gpuPreference)
+{
+    if (!ctx) return JALIUM_ERROR_INVALID_ARGUMENT;
+    if (gpuPreference < JALIUM_GPU_PREFERENCE_AUTO ||
+        gpuPreference > JALIUM_GPU_PREFERENCE_MINIMUM_POWER) {
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+
+    // Context creation currently constructs the selected backend immediately;
+    // no cross-backend setter exists yet. Keep the declared/PInvoke ABI real
+    // and deterministic instead of leaving a missing entry point. Backends
+    // which add a pre-device preference hook can replace this result without
+    // changing the C ABI.
+    return JALIUM_ERROR_NOT_SUPPORTED;
+}
+
 JALIUM_API void jalium_context_destroy(JaliumContext* ctx) {
     if (ctx) {
         delete reinterpret_cast<jalium::Context*>(ctx);

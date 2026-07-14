@@ -119,7 +119,7 @@ public class HotReloadRuntimeFixTests
         // 关键不变式：没有任何子级对象被两个实例共享（即没有发生跨实例偷取）。
         foreach (var c1 in inst1.Children)
         {
-            Assert.DoesNotContain(c1, inst2.Children);
+            Assert.DoesNotContain(c1, inst2.Children.Cast<object>());
         }
     }
 

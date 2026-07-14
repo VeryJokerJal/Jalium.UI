@@ -1,3 +1,5 @@
+using System.ComponentModel;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -5,37 +7,14 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a layout control that aligns a bullet and content.
 /// </summary>
-public class BulletDecorator : FrameworkElement
+public class BulletDecorator : Decorator
 {
     #region Dependency Properties
 
-    /// <summary>
-    /// Identifies the Bullet dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty BulletProperty =
-        DependencyProperty.Register(nameof(Bullet), typeof(UIElement), typeof(BulletDecorator),
-            new PropertyMetadata(null, OnBulletChanged));
-
-    /// <summary>
-    /// Identifies the Child dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty ChildProperty =
-        DependencyProperty.Register(nameof(Child), typeof(UIElement), typeof(BulletDecorator),
-            new PropertyMetadata(null, OnChildChanged));
-
-    /// <summary>
-    /// Identifies the BulletAlignment dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty BulletAlignmentProperty =
-        DependencyProperty.Register(nameof(BulletAlignment), typeof(VerticalAlignment), typeof(BulletDecorator),
-            new PropertyMetadata(VerticalAlignment.Top, OnLayoutPropertyChanged));
-
     /// <summary>Identifies the brush used to paint the decorator background.</summary>
     public static readonly DependencyProperty BackgroundProperty =
-        DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(BulletDecorator),
+        Panel.BackgroundProperty.AddOwner(
+            typeof(BulletDecorator),
             new FrameworkPropertyMetadata(null, FrameworkPropertyMetadataOptions.AffectsRender));
 
     #endregion
@@ -45,31 +24,65 @@ public class BulletDecorator : FrameworkElement
     /// <summary>
     /// Gets or sets the bullet element.
     /// </summary>
+    [DefaultValue(null)]
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public UIElement? Bullet
     {
-        get => (UIElement?)GetValue(BulletProperty);
-        set => SetValue(BulletProperty, value);
-    }
+        get => _bullet;
+        set
+        {
+            if (ReferenceEquals(_bullet, value))
+            {
+                return;
+            }
 
-    /// <summary>
-    /// Gets or sets the child element.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public UIElement? Child
-    {
-        get => (UIElement?)GetValue(ChildProperty);
-        set => SetValue(ChildProperty, value);
-    }
+            if (value != null && ReferenceEquals(value, Child))
+            {
+                throw new InvalidOperationException("The bullet and child must be different elements.");
+            }
 
-    /// <summary>
-    /// Gets or sets the vertical alignment of the bullet relative to the child.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public VerticalAlignment BulletAlignment
-    {
-        get => (VerticalAlignment)GetValue(BulletAlignmentProperty)!;
-        set => SetValue(BulletAlignmentProperty, value);
+            UIElement? oldBullet = _bullet;
+            _bullet = null;
+            if (oldBullet != null)
+            {
+                RemoveVisualChild(oldBullet);
+                RemoveLogicalChild(oldBullet);
+            }
+
+            _bullet = value;
+            if (value != null)
+            {
+                UIElement? child = Child;
+                try
+                {
+                    AddLogicalChild(value);
+                    if (child != null)
+                    {
+                        RemoveVisualChild(child);
+                    }
+
+                    AddVisualChild(value);
+                    if (child != null)
+                    {
+                        AddVisualChild(child);
+                    }
+                }
+                catch
+                {
+                    RemoveVisualChild(value);
+                    RemoveLogicalChild(value);
+                    _bullet = null;
+                    if (child != null && child.VisualParent == null)
+                    {
+                        AddVisualChild(child);
+                    }
+
+                    throw;
+                }
+            }
+
+            InvalidateMeasure();
+        }
     }
 
     /// <summary>Gets or sets the brush used to paint the decorator background.</summary>
@@ -81,13 +94,25 @@ public class BulletDecorator : FrameworkElement
 
     #endregion
 
-    #region Private Fields
-
-    private const double BulletMargin = 4;
-
-    #endregion
+    private UIElement? _bullet;
 
     #region Visual Children
+
+    /// <inheritdoc />
+    protected internal override System.Collections.IEnumerator LogicalChildren
+    {
+        get
+        {
+            if (_bullet == null)
+            {
+                return base.LogicalChildren;
+            }
+
+            return Child == null
+                ? new object[] { _bullet }.GetEnumerator()
+                : new object[] { _bullet, Child }.GetEnumerator();
+        }
+    }
 
     /// <inheritdoc />
     protected override int VisualChildrenCount
@@ -95,7 +120,7 @@ public class BulletDecorator : FrameworkElement
         get
         {
             var count = 0;
-            if (Bullet != null) count++;
+            if (_bullet != null) count++;
             if (Child != null) count++;
             return count;
         }
@@ -106,9 +131,9 @@ public class BulletDecorator : FrameworkElement
     {
         if (index == 0)
         {
-            return Bullet ?? Child;
+            return _bullet ?? Child;
         }
-        if (index == 1 && Bullet != null && Child != null)
+        if (index == 1 && _bullet != null && Child != null)
         {
             return Child;
         }
@@ -123,7 +148,7 @@ public class BulletDecorator : FrameworkElement
     protected override void OnRender(DrawingContext drawingContext)
     {
         base.OnRender(drawingContext);
-        if (Background != null && RenderSize.Width > 0 && RenderSize.Height > 0)
+        if (Background != null)
         {
             drawingContext.DrawRectangle(Background, null, new Rect(RenderSize));
         }
@@ -135,50 +160,56 @@ public class BulletDecorator : FrameworkElement
         var bulletSize = default(Size);
         var childSize = default(Size);
 
-        if (Bullet != null)
+        if (_bullet != null)
         {
-            Bullet.Measure(availableSize);
-            bulletSize = Bullet.DesiredSize;
+            _bullet.Measure(availableSize);
+            bulletSize = _bullet.DesiredSize;
         }
 
         if (Child != null)
         {
             var childAvailable = new Size(
-                Math.Max(0, availableSize.Width - bulletSize.Width - BulletMargin),
+                Math.Max(0, availableSize.Width - bulletSize.Width),
                 availableSize.Height);
             Child.Measure(childAvailable);
             childSize = Child.DesiredSize;
         }
 
         return new Size(
-            bulletSize.Width + BulletMargin + childSize.Width,
+            bulletSize.Width + childSize.Width,
             Math.Max(bulletSize.Height, childSize.Height));
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var bulletSize = Bullet?.DesiredSize ?? default;
-        var childSize = Child?.DesiredSize ?? default;
+        UIElement? bullet = _bullet;
+        UIElement? child = Child;
+        double bulletOffsetY = 0;
+        Size bulletSize = default;
 
-        if (Bullet != null)
+        if (bullet != null)
         {
-            double bulletY = BulletAlignment switch
-            {
-                VerticalAlignment.Top => 0,
-                VerticalAlignment.Center => (finalSize.Height - bulletSize.Height) / 2,
-                VerticalAlignment.Bottom => finalSize.Height - bulletSize.Height,
-                _ => 0
-            };
-
-            Bullet.Arrange(new Rect(0, bulletY, bulletSize.Width, bulletSize.Height));
+            bullet.Arrange(new Rect(bullet.DesiredSize));
+            bulletSize = bullet.RenderSize;
         }
 
-        if (Child != null)
+        if (child != null)
         {
-            var childX = bulletSize.Width + BulletMargin;
-            var childWidth = Math.Max(0, finalSize.Width - childX);
-            Child.Arrange(new Rect(childX, 0, childWidth, finalSize.Height));
+            Size childSize = finalSize;
+            if (bullet != null)
+            {
+                childSize.Width = Math.Max(child.DesiredSize.Width, finalSize.Width - bullet.DesiredSize.Width);
+                childSize.Height = Math.Max(child.DesiredSize.Height, finalSize.Height);
+            }
+
+            child.Arrange(new Rect(bulletSize.Width, 0, childSize.Width, childSize.Height));
+            bulletOffsetY = Math.Max(0, GetFirstLineHeight(child) * 0.5 - bulletSize.Height * 0.5);
+        }
+
+        if (bullet != null && bulletOffsetY > double.Epsilon)
+        {
+            bullet.Arrange(new Rect(0, bulletOffsetY, bullet.DesiredSize.Width, bullet.DesiredSize.Height));
         }
 
         return finalSize;
@@ -186,55 +217,49 @@ public class BulletDecorator : FrameworkElement
 
     #endregion
 
-    #region Property Changed
-
-    private static void OnBulletChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private static double GetFirstLineHeight(UIElement element)
     {
-        if (d is BulletDecorator decorator)
+        TextBlock? text = FindText(element);
+        if (text == null)
         {
-            if (e.OldValue is UIElement oldBullet)
-            {
-                decorator.RemoveVisualChild(oldBullet);
-                decorator.RemoveLogicalChild(oldBullet);
-            }
-
-            if (e.NewValue is UIElement newBullet)
-            {
-                decorator.AddLogicalChild(newBullet);
-                decorator.AddVisualChild(newBullet);
-            }
-
-            decorator.InvalidateMeasure();
+            return element.RenderSize.Height;
         }
+
+        double fontSize = text.FontSize > 0 ? text.FontSize : 14;
+        double naturalLineHeight = TextMeasurement.GetLineHeight(
+            text.FontFamily.Source,
+            fontSize,
+            text.FontWeight.ToOpenTypeWeight(),
+            text.FontStyle.ToOpenTypeStyle());
+        double lineHeight = double.IsNaN(text.LineHeight)
+            ? naturalLineHeight
+            : text.LineStackingStrategy == LineStackingStrategy.MaxHeight
+                ? Math.Max(naturalLineHeight, text.LineHeight)
+                : Math.Max(0, text.LineHeight);
+        Point offset = text.TransformToAncestor(element);
+        return lineHeight + offset.Y * 2;
     }
 
-    private static void OnChildChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private static TextBlock? FindText(Visual root)
     {
-        if (d is BulletDecorator decorator)
+        if (root is TextBlock text)
         {
-            if (e.OldValue is UIElement oldChild)
-            {
-                decorator.RemoveVisualChild(oldChild);
-                decorator.RemoveLogicalChild(oldChild);
-            }
-
-            if (e.NewValue is UIElement newChild)
-            {
-                decorator.AddLogicalChild(newChild);
-                decorator.AddVisualChild(newChild);
-            }
-
-            decorator.InvalidateMeasure();
+            return text;
         }
-    }
 
-    private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is BulletDecorator decorator)
+        if (root is not ContentPresenter && root is not AccessText)
         {
-            decorator.InvalidateArrange();
+            return null;
         }
-    }
 
-    #endregion
+        return VisualTreeHelper.GetChildrenCount(root) == 1
+            ? VisualTreeHelper.GetChild(root, 0) switch
+            {
+                TextBlock childText => childText,
+                AccessText accessText when VisualTreeHelper.GetChildrenCount(accessText) == 1 =>
+                    VisualTreeHelper.GetChild(accessText, 0) as TextBlock,
+                _ => null,
+            }
+            : null;
+    }
 }

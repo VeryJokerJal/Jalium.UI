@@ -5,7 +5,9 @@ using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Interop;
 using Jalium.UI.Interop.Win32;
+using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using Jalium.UI.Controls.Platform;
 using static Jalium.UI.Interop.Win32.Win32Constants;
 using static Jalium.UI.Interop.Win32.Win32Methods;
 
@@ -19,6 +21,7 @@ namespace Jalium.UI.Controls.Primitives;
 internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManagerHost, IDisposable
 {
     private nint _hwnd;
+    private IPlatformWindow? _platformWindow;
     private readonly Window _parentWindow;
     private RenderTarget? _renderTarget;
     private RenderTargetDrawingContext? _drawingContext;
@@ -49,11 +52,13 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     // Mouse tracking
     private UIElement? _lastMouseOverElement;
     private bool _isMouseTracking;
+    private MouseButtonStates _platformMouseButtons = MouseButtonStates.AllReleased;
     private const uint MousePointerId = 1;
     private readonly Dictionary<uint, UIElement?> _activePointerTargets = [];
     private readonly Dictionary<uint, PointerPoint> _lastPointerPoints = [];
     private readonly Dictionary<uint, StylusDevice> _activeStylusDevices = [];
     private readonly Dictionary<uint, PointerManipulationSession> _activeManipulationSessions = [];
+    private uint? _primaryPlatformTouchPointerId;
     private readonly RealTimeStylus _realTimeStylus;
 
     // Static WndProc delegate and window class
@@ -123,18 +128,43 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _height = height;
         UpdateRootBoundsForHitTest();
 
-        RegisterPopupWindowClass();
+        if (PlatformFactory.IsWindows)
+        {
+            RegisterPopupWindowClass();
 
-        _hwnd = CreateWindowEx(
-            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
-            PopupWindowClassName,
-            "",
-            WS_POPUP,
-            screenX, screenY, width, height,
-            _parentWindow.Handle,
-            nint.Zero,
-            GetModuleHandle(null),
-            nint.Zero);
+            _hwnd = CreateWindowEx(
+                WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST | WS_EX_NOREDIRECTIONBITMAP,
+                PopupWindowClassName,
+                "",
+                WS_POPUP,
+                screenX, screenY, width, height,
+                _parentWindow.Handle,
+                nint.Zero,
+                GetModuleHandle(null),
+                nint.Zero);
+        }
+        else
+        {
+            // Native Linux popup coordinates are parent-relative physical
+            // pixels.  Popup.WindowLocalToScreen intentionally supplies that
+            // coordinate space on non-Windows hosts, so the same values work
+            // for X11 override-redirect and xdg_positioner.
+            const uint Borderless = 1u << 0;
+            const uint Topmost = 1u << 6;
+            const uint Popup = 1u << 7;
+            const uint Transparent = 1u << 8;
+            const uint PopupGrab = 1u << 9;
+            uint style = Borderless | Topmost | Popup | Transparent;
+            if (Child is PopupRoot { IsLightDismiss: true })
+                style |= PopupGrab;
+
+            _platformWindow = PlatformFactory.CreateWindow(
+                string.Empty, screenX, screenY, width, height,
+                style, _parentWindow.Handle)
+                ?? throw new InvalidOperationException("Failed to create native popup window.");
+            _platformWindow.SetEventHandler(OnPlatformEvent);
+            _hwnd = _platformWindow.NativeHandle;
+        }
 
         if (_hwnd == nint.Zero)
             throw new InvalidOperationException("Failed to create popup window.");
@@ -155,8 +185,12 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             ScheduleRenderRecoveryRetry();
         }
 
-        // Show without activating
-        _ = ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
+        // Show without activating. xdg_popup and X11 override-redirect carry
+        // the same no-activate semantics in the native backend.
+        if (_platformWindow != null)
+            _platformWindow.Show();
+        else
+            _ = ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
         UpdateRenderableRegistration(visible: true);
 
         // Trigger initial layout and render
@@ -166,7 +200,11 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     internal void Hide()
     {
-        if (_hwnd != nint.Zero)
+        if (_platformWindow != null)
+        {
+            _platformWindow.Hide();
+        }
+        else if (_hwnd != nint.Zero)
         {
             _ = ShowWindow(_hwnd, SW_HIDE);
         }
@@ -185,8 +223,17 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _height = height;
         UpdateRootBoundsForHitTest();
 
-        _ = SetWindowPos(_hwnd, HWND_TOPMOST, screenX, screenY, width, height,
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        if (_platformWindow != null)
+        {
+            if (sizeChanged)
+                _platformWindow.Resize(width, height);
+            _platformWindow.Move(screenX, screenY);
+        }
+        else
+        {
+            _ = SetWindowPos(_hwnd, HWND_TOPMOST, screenX, screenY, width, height,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        }
 
         if (sizeChanged && _renderTarget != null)
         {
@@ -213,13 +260,13 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             if (HasRenderFlag(RenderFlag_Rendering))
             {
                 SetRenderFlag(RenderFlag_Requested);
-                Jalium.UI.CompositionTarget.RequestFrame();
+                Jalium.UI.Media.CompositionTarget.RequestFrame();
                 return;
             }
 
             SetRenderFlag(RenderFlag_DirtyBetween);
             Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.POP_INVAL);
-            Jalium.UI.CompositionTarget.RequestFrame();
+            Jalium.UI.Media.CompositionTarget.RequestFrame();
         }
     }
 
@@ -287,13 +334,14 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     public void SetNativeCapture()
     {
-        if (_hwnd != nint.Zero)
+        if (_platformWindow == null && _hwnd != nint.Zero)
             SetCapture(_hwnd);
     }
 
     public void ReleaseNativeCapture()
     {
-        _ = ReleaseCapture();
+        if (_platformWindow == null)
+            _ = ReleaseCapture();
     }
 
     #endregion
@@ -326,7 +374,11 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _renderTarget = null;
 
         var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceReplaceContext);
-        _renderTarget = context.CreateRenderTargetForComposition(_hwnd, Math.Max(1, _width), Math.Max(1, _height));
+        _renderTarget = _platformWindow != null
+            ? context.CreateRenderTarget(
+                _platformWindow.GetSurface(), Math.Max(1, _width), Math.Max(1, _height))
+            : context.CreateRenderTargetForComposition(
+                _hwnd, Math.Max(1, _width), Math.Max(1, _height));
 
         // Match D2D DPI to the parent monitor scale.
         var dpi = (float)(_parentWindow.DpiScale * 96.0);
@@ -434,6 +486,14 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                 if (child != null)
                 {
                     _drawingContext ??= new RenderTargetDrawingContext(renderTarget, context);
+                    // Same per-frame contract as Window's frame paths: drain
+                    // orphaned retained layers AND reset the effect-capture cull
+                    // override on this POOLED context. Without this, a render
+                    // exception that unwound past an open BeginEffectCapture last
+                    // frame (the catch below keeps _drawingContext alive) would
+                    // pin CurrentClipBounds to a stale capture rect and cull the
+                    // popup's content against it on every subsequent frame.
+                    _drawingContext.DrainPendingRetainedLayers();
                     _drawingContext.Offset = Point.Zero;
                     child.Render(_drawingContext);
                 }
@@ -614,7 +674,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private void ScheduleRenderAfterRecovery()
     {
         ScheduleProcessRender();
-        Jalium.UI.CompositionTarget.RequestFrame();
+        Jalium.UI.Media.CompositionTarget.RequestFrame();
     }
 
     private void ScheduleRenderRecoveryRetry()
@@ -646,7 +706,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _renderRecoveryRetryTimer?.Stop();
 
         ScheduleProcessRender();
-        Jalium.UI.CompositionTarget.RequestFrame();
+        Jalium.UI.Media.CompositionTarget.RequestFrame();
     }
 
     private void ScheduleProcessRender()
@@ -674,7 +734,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             return;
         }
 
-        Jalium.UI.CompositionTarget.FrameStarting += OnFrameStarting;
+        Jalium.UI.Media.CompositionTarget.FrameStarting += OnFrameStarting;
         _frameStartingSubscribed = true;
     }
 
@@ -685,7 +745,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             return;
         }
 
-        Jalium.UI.CompositionTarget.FrameStarting -= OnFrameStarting;
+        Jalium.UI.Media.CompositionTarget.FrameStarting -= OnFrameStarting;
         _frameStartingSubscribed = false;
     }
 
@@ -703,11 +763,11 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _registeredAsRenderable = shouldBe;
         if (shouldBe)
         {
-            Jalium.UI.CompositionTarget.NotifyRenderableWindowAdded();
+            Jalium.UI.Media.CompositionTarget.NotifyRenderableWindowAdded();
         }
         else
         {
-            Jalium.UI.CompositionTarget.NotifyRenderableWindowRemoved();
+            Jalium.UI.Media.CompositionTarget.NotifyRenderableWindowRemoved();
         }
     }
 
@@ -862,6 +922,182 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         return DefWindowProc(hWnd, msg, wParam, lParam);
     }
 
+    private void OnPlatformEvent(PlatformEvent evt)
+    {
+        if (_disposed || _platformWindow == null)
+            return;
+
+        switch (evt.Type)
+        {
+            case PlatformEventType.Paint:
+                RenderFrame();
+                break;
+
+            case PlatformEventType.Resize:
+            {
+                if (evt.Width <= 0 || evt.Height <= 0)
+                    break;
+                bool sizeChanged = evt.Width != _width || evt.Height != _height;
+                _width = evt.Width;
+                _height = evt.Height;
+                UpdateRootBoundsForHitTest();
+                if (sizeChanged && _renderTarget != null)
+                    TryResizeRenderTarget(_width, _height, "PlatformPopupResize");
+                InvalidateMeasure();
+                InvalidateWindow();
+                break;
+            }
+
+            case PlatformEventType.Move:
+                _screenX = evt.X;
+                _screenY = evt.Y;
+                break;
+
+            case PlatformEventType.CloseRequested:
+                // xdg_popup.popup_done is a protocol-mandated dismissal.  Set
+                // IsOpen rather than tearing the host down in isolation so the
+                // Popup detaches its root and raises Closed exactly once.
+                if (Child is PopupRoot root && root.OwnerPopup.IsOpen)
+                    root.OwnerPopup.IsOpen = false;
+                else
+                    Dispose();
+                break;
+
+            case PlatformEventType.MouseEnter:
+                _isMouseTracking = true;
+                break;
+
+            case PlatformEventType.MouseLeave:
+                OnMouseLeave();
+                break;
+
+            case PlatformEventType.MouseMove:
+            {
+                Point position = PlatformPosition(evt.MouseX, evt.MouseY);
+                OnMouseMove(
+                    BuildMouseWParam(_platformMouseButtons),
+                    PackClientPoint(evt.MouseX, evt.MouseY),
+                    MapPlatformModifiers(evt.Modifiers),
+                    useNativeTracking: false);
+                break;
+            }
+
+            case PlatformEventType.MouseDown:
+            {
+                if (Child is PopupRoot { IsLightDismiss: true } dismissRoot &&
+                    (evt.MouseX < 0 || evt.MouseY < 0 ||
+                     evt.MouseX >= _width || evt.MouseY >= _height))
+                {
+                    dismissRoot.OwnerPopup.IsOpen = false;
+                    break;
+                }
+                MouseButton button = MapPlatformMouseButton(evt.Button);
+                _platformMouseButtons = _platformMouseButtons.WithButton(
+                    button, MouseButtonState.Pressed);
+                OnMouseButtonDown(
+                    button,
+                    BuildMouseWParam(_platformMouseButtons),
+                    PackClientPoint(evt.MouseX, evt.MouseY),
+                    MapPlatformModifiers(evt.Modifiers),
+                    Math.Max(1, evt.ClickCount));
+                break;
+            }
+
+            case PlatformEventType.MouseUp:
+            {
+                MouseButton button = MapPlatformMouseButton(evt.Button);
+                _platformMouseButtons = _platformMouseButtons.WithButton(
+                    button, MouseButtonState.Released);
+                OnMouseButtonUp(
+                    button,
+                    BuildMouseWParam(_platformMouseButtons),
+                    PackClientPoint(evt.MouseX, evt.MouseY),
+                    MapPlatformModifiers(evt.Modifiers),
+                    Math.Max(1, evt.ClickCount));
+                break;
+            }
+
+            case PlatformEventType.MouseWheel:
+                OnMouseWheel(
+                    BuildMouseWParam(_platformMouseButtons),
+                    nint.Zero,
+                    PlatformPosition(evt.MouseX, evt.MouseY),
+                    MapPlatformModifiers(evt.Modifiers),
+                    (int)Math.Round(evt.WheelDeltaY * 120.0f));
+                break;
+
+            case PlatformEventType.PointerDown:
+            case PlatformEventType.PointerMove:
+            case PlatformEventType.PointerUp:
+            case PlatformEventType.PointerCancel:
+                OnPlatformPointerEvent(evt);
+                break;
+
+            case PlatformEventType.KeyDown:
+                if (evt.KeyCode == 0x1B &&
+                    Child is PopupRoot { IsLightDismiss: true } escapeRoot)
+                {
+                    escapeRoot.OwnerPopup.IsOpen = false;
+                    break;
+                }
+                _parentWindow.HandleExternalPopupPlatformEvent(evt);
+                break;
+
+            case PlatformEventType.KeyUp:
+            case PlatformEventType.CharInput:
+            case PlatformEventType.CompositionStart:
+            case PlatformEventType.CompositionUpdate:
+            case PlatformEventType.CompositionEnd:
+                _parentWindow.HandleExternalPopupPlatformEvent(evt);
+                break;
+        }
+    }
+
+    private Point PlatformPosition(float x, float y)
+    {
+        double dpiScale = _parentWindow.DpiScale > 0 ? _parentWindow.DpiScale : 1.0;
+        return new Point(x / dpiScale, y / dpiScale);
+    }
+
+    private static MouseButton MapPlatformMouseButton(int button) => button switch
+    {
+        0 => MouseButton.Left,
+        1 => MouseButton.Right,
+        2 => MouseButton.Middle,
+        3 => MouseButton.XButton1,
+        4 => MouseButton.XButton2,
+        _ => MouseButton.Left,
+    };
+
+    private static ModifierKeys MapPlatformModifiers(int modifiers)
+    {
+        ModifierKeys result = ModifierKeys.None;
+        if ((modifiers & 0x01) != 0) result |= ModifierKeys.Shift;
+        if ((modifiers & 0x02) != 0) result |= ModifierKeys.Control;
+        if ((modifiers & 0x04) != 0) result |= ModifierKeys.Alt;
+        if ((modifiers & 0x08) != 0) result |= ModifierKeys.Windows;
+        return result;
+    }
+
+    private static nint PackClientPoint(float x, float y)
+    {
+        int px = Math.Clamp((int)Math.Round(x), short.MinValue, short.MaxValue);
+        int py = Math.Clamp((int)Math.Round(y), short.MinValue, short.MaxValue);
+        long packed = (ushort)(short)px | ((long)(ushort)(short)py << 16);
+        return (nint)packed;
+    }
+
+    private static nint BuildMouseWParam(MouseButtonStates states)
+    {
+        long flags = 0;
+        if (states.Left == MouseButtonState.Pressed) flags |= MK_LBUTTON;
+        if (states.Right == MouseButtonState.Pressed) flags |= MK_RBUTTON;
+        if (states.Middle == MouseButtonState.Pressed) flags |= MK_MBUTTON;
+        if (states.XButton1 == MouseButtonState.Pressed) flags |= MK_XBUTTON1;
+        if (states.XButton2 == MouseButtonState.Pressed) flags |= MK_XBUTTON2;
+        return (nint)flags;
+    }
+
     private void OnPaint()
     {
         var ps = new PAINTSTRUCT();
@@ -870,15 +1106,19 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         EndPaint(_hwnd, ref ps);
     }
 
-    private void OnMouseMove(nint wParam, nint lParam)
+    private void OnMouseMove(
+        nint wParam,
+        nint lParam,
+        ModifierKeys? platformModifiers = null,
+        bool useNativeTracking = true)
     {
         var position = GetMousePosition(lParam);
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
-        var modifiers = GetModifierKeys();
+        var modifiers = platformModifiers ?? GetModifierKeys();
         int timestamp = Environment.TickCount;
 
         // Track mouse leave
-        if (!_isMouseTracking)
+        if (useNativeTracking && !_isMouseTracking)
         {
             TRACKMOUSEEVENT tme = new()
             {
@@ -961,11 +1201,16 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         }
     }
 
-    private void OnMouseButtonDown(MouseButton button, nint wParam, nint lParam)
+    private void OnMouseButtonDown(
+        MouseButton button,
+        nint wParam,
+        nint lParam,
+        ModifierKeys? platformModifiers = null,
+        int clickCount = 1)
     {
         var position = GetMousePosition(lParam);
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
-        var modifiers = GetModifierKeys();
+        var modifiers = platformModifiers ?? GetModifierKeys();
         int timestamp = Environment.TickCount;
 
         var hitElement = HitTest(position)?.VisualHit as UIElement;
@@ -980,13 +1225,13 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         };
         Mouse.UpdateState(position, hitElement, buttons);
         Mouse.RaiseOutsideCapturedElementEvent(
-            true, hitElement, position, button, MouseButtonState.Pressed, 1,
+            true, hitElement, position, button, MouseButtonState.Pressed, clickCount,
             buttons, modifiers, timestamp);
         var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         // Raise tunnel event
         MouseButtonEventArgs tunnelArgs = new(
-            PreviewMouseDownEvent, position, button, MouseButtonState.Pressed, clickCount: 1,
+            PreviewMouseDownEvent, position, button, MouseButtonState.Pressed, clickCount,
             left, middle, right,
             xButton1, xButton2, modifiers, timestamp);
         target.RaiseEvent(tunnelArgs);
@@ -998,7 +1243,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         if (!tunnelArgs.Handled)
         {
             MouseButtonEventArgs bubbleArgs = new(
-                MouseDownEvent, position, button, MouseButtonState.Pressed, clickCount: 1,
+                MouseDownEvent, position, button, MouseButtonState.Pressed, clickCount,
                 left, middle, right,
                 xButton1, xButton2, modifiers, timestamp);
             target.RaiseEvent(bubbleArgs);
@@ -1025,11 +1270,16 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         }
     }
 
-    private void OnMouseButtonUp(MouseButton button, nint wParam, nint lParam)
+    private void OnMouseButtonUp(
+        MouseButton button,
+        nint wParam,
+        nint lParam,
+        ModifierKeys? platformModifiers = null,
+        int clickCount = 1)
     {
         var position = GetMousePosition(lParam);
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
-        var modifiers = GetModifierKeys();
+        var modifiers = platformModifiers ?? GetModifierKeys();
         int timestamp = Environment.TickCount;
 
         var hitElement = HitTest(position)?.VisualHit as UIElement;
@@ -1044,13 +1294,13 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         };
         Mouse.UpdateState(position, hitElement, buttons);
         Mouse.RaiseOutsideCapturedElementEvent(
-            false, hitElement, position, button, MouseButtonState.Released, 1,
+            false, hitElement, position, button, MouseButtonState.Released, clickCount,
             buttons, modifiers, timestamp);
         var target = Mouse.GetMouseTarget(hitElement) ?? (UIElement)this;
 
         // Raise tunnel event
         MouseButtonEventArgs tunnelArgs = new(
-            PreviewMouseUpEvent, position, button, MouseButtonState.Released, clickCount: 1,
+            PreviewMouseUpEvent, position, button, MouseButtonState.Released, clickCount,
             left, middle, right,
             xButton1, xButton2, modifiers, timestamp);
         target.RaiseEvent(tunnelArgs);
@@ -1062,7 +1312,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         if (!tunnelArgs.Handled)
         {
             MouseButtonEventArgs bubbleArgs = new(
-                MouseUpEvent, position, button, MouseButtonState.Released, clickCount: 1,
+                MouseUpEvent, position, button, MouseButtonState.Released, clickCount,
                 left, middle, right,
                 xButton1, xButton2, modifiers, timestamp);
             target.RaiseEvent(bubbleArgs);
@@ -1110,19 +1360,32 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _lastMouseOverElement = newMouseOverElement;
     }
 
-    private void OnMouseWheel(nint wParam, nint lParam)
+    private void OnMouseWheel(
+        nint wParam,
+        nint lParam,
+        Point? platformPosition = null,
+        ModifierKeys? platformModifiers = null,
+        int? platformDelta = null)
     {
         // WM_MOUSEWHEEL lParam contains SCREEN coordinates (physical pixels)
-        int screenX = (short)(lParam.ToInt64() & 0xFFFF);
-        int screenY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
-        POINT pt = new() { X = screenX, Y = screenY };
-        _ = ScreenToClient(_hwnd, ref pt);
-        var dpiScale = _parentWindow.DpiScale;
-        Point position = new(pt.X / dpiScale, pt.Y / dpiScale);
+        Point position;
+        if (platformPosition is { } suppliedPosition)
+        {
+            position = suppliedPosition;
+        }
+        else
+        {
+            int screenX = (short)(lParam.ToInt64() & 0xFFFF);
+            int screenY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+            POINT pt = new() { X = screenX, Y = screenY };
+            _ = ScreenToClient(_hwnd, ref pt);
+            var dpiScale = _parentWindow.DpiScale;
+            position = new Point(pt.X / dpiScale, pt.Y / dpiScale);
+        }
 
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
-        var modifiers = GetModifierKeys();
-        int delta = (short)((wParam.ToInt64() >> 16) & 0xFFFF);
+        var modifiers = platformModifiers ?? GetModifierKeys();
+        int delta = platformDelta ?? (short)((wParam.ToInt64() >> 16) & 0xFFFF);
         int timestamp = Environment.TickCount;
 
         var hitElement = HitTest(position)?.VisualHit as UIElement;
@@ -1186,6 +1449,82 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
         bool isDown = msg == Win32PointerInterop.WM_POINTERDOWN;
         bool isUp = msg == Win32PointerInterop.WM_POINTERUP;
+        DispatchPointerInput(pointerData, isDown, isUp);
+    }
+
+    private void OnPlatformPointerEvent(PlatformEvent evt)
+    {
+        PointerInputKind kind = evt.PointerType switch
+        {
+            1 => PointerInputKind.Touch,
+            2 => PointerInputKind.Pen,
+            _ => PointerInputKind.Mouse,
+        };
+        if (kind == PointerInputKind.Mouse)
+            return;
+
+        bool isDown = evt.Type == PlatformEventType.PointerDown;
+        bool isUp = evt.Type == PlatformEventType.PointerUp;
+        bool isCanceled = evt.Type == PlatformEventType.PointerCancel;
+        Point position = PlatformPosition(evt.PointerX, evt.PointerY);
+        ModifierKeys modifiers = MapPlatformModifiers(evt.Modifiers);
+        bool isTouch = kind == PointerInputKind.Touch;
+
+        if (isTouch && isDown && _primaryPlatformTouchPointerId == null)
+            _primaryPlatformTouchPointerId = evt.PointerId;
+
+        float pressure = Math.Clamp(evt.Pressure, 0.0f, 1.0f);
+        if (!isUp && !isCanceled && pressure <= 0.0f)
+            pressure = kind == PointerInputKind.Touch ? 1.0f : 0.5f;
+
+        PointerPointProperties properties = new()
+        {
+            IsLeftButtonPressed = !isUp && !isCanceled,
+            Pressure = pressure,
+            XTilt = evt.TiltX,
+            YTilt = evt.TiltY,
+            Twist = evt.Twist,
+            PointerUpdateKind = isDown
+                ? PointerUpdateKind.LeftButtonPressed
+                : isUp || isCanceled
+                    ? PointerUpdateKind.LeftButtonReleased
+                    : PointerUpdateKind.Other,
+            IsPrimary = isTouch && _primaryPlatformTouchPointerId == evt.PointerId,
+        };
+        PointerPoint point = new(
+            evt.PointerId,
+            position,
+            isTouch ? PointerDeviceType.Touch : PointerDeviceType.Pen,
+            !isUp && !isCanceled,
+            properties,
+            (ulong)Environment.TickCount,
+            0);
+        StylusPointCollection stylusPoints =
+            [new StylusPoint(position.X, position.Y, pressure)];
+        PointerInputData pointerData = new(
+            evt.PointerId,
+            kind,
+            point,
+            position,
+            modifiers,
+            IsInRange: !isCanceled,
+            IsCanceled: isCanceled,
+            stylusPoints);
+
+        DispatchPointerInput(pointerData, isDown, isUp);
+
+        if (isTouch && (isUp || isCanceled) &&
+            _primaryPlatformTouchPointerId == evt.PointerId)
+        {
+            _primaryPlatformTouchPointerId = null;
+        }
+    }
+
+    private void DispatchPointerInput(
+        PointerInputData pointerData,
+        bool isDown,
+        bool isUp)
+    {
         int timestamp = Environment.TickCount;
 
         var captured = UIElement.MouseCapturedElement;
@@ -2167,6 +2506,17 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         var dpiScale = _parentWindow.DpiScale <= 0 ? 1.0 : _parentWindow.DpiScale;
 
+        if (_platformWindow != null)
+        {
+            // The Linux popup ABI stores x/y in parent-relative physical
+            // pixels on both X11 and Wayland.
+            return new Rect(
+                _screenX / dpiScale,
+                _screenY / dpiScale,
+                _width / dpiScale,
+                _height / dpiScale);
+        }
+
         if (_hwnd == nint.Zero || _parentWindow.Handle == nint.Zero)
         {
             // In tests or before the native popup is shown, fall back to the tracked
@@ -2306,7 +2656,14 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
         }
 
-        if (destroyNativeWindow && hwndToDestroy != nint.Zero)
+        IPlatformWindow? platformWindow = _platformWindow;
+        _platformWindow = null;
+        if (platformWindow != null)
+        {
+            platformWindow.SetEventHandler(null);
+            platformWindow.Dispose();
+        }
+        else if (destroyNativeWindow && hwndToDestroy != nint.Zero)
         {
             _ = DestroyWindow(hwndToDestroy);
         }

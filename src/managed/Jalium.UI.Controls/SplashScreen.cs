@@ -1,8 +1,11 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls;
 using Jalium.UI.Data;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI
+{
 
 /// <summary>
 /// Provides a startup screen for a WPF application.
@@ -40,12 +43,12 @@ public class SplashScreen
     /// <summary>
     /// Gets the resource name used by the splash screen.
     /// </summary>
-    public string ResourceName => _resourceName;
+    internal string ResourceName => _resourceName;
 
     /// <summary>
     /// Gets whether the splash screen is currently shown.
     /// </summary>
-    public bool IsVisible => _window != null;
+    internal bool IsVisible => _window != null;
 
     /// <summary>
     /// Displays the splash screen.
@@ -268,6 +271,11 @@ public class SplashScreen
     }
 }
 
+}
+
+namespace Jalium.UI.Controls
+{
+
 /// <summary>
 /// Specifies the character casing applied to text in a <see cref="TextBox"/> control.
 /// </summary>
@@ -344,4 +352,6 @@ public sealed class BorderGapMaskConverter : IMultiValueConverter
     {
         throw new NotSupportedException();
     }
+}
+
 }

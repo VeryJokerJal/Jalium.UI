@@ -1,10 +1,12 @@
-﻿using Jalium.UI;
+using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Data;
 using Jalium.UI.Diagnostics;
+using Jalium.UI.Markup;
 using System.Reflection;
 
-namespace Jalium.UI.Markup;
+namespace Jalium.UI.Markup
+{
 
 /// <summary>
 /// Implementation of IProvideValueTarget for XAML parsing.
@@ -208,11 +210,14 @@ public sealed class BindingExtension : MarkupExtension
         return binding;
     }
 }
+}
 
+namespace Jalium.UI
+{
 /// <summary>
 /// XAML markup extension for static resources.
 /// </summary>
-public sealed class StaticResourceExtension : MarkupExtension, IStyleResourceMarkupExtension
+public class StaticResourceExtension : MarkupExtension, IStyleResourceMarkupExtension
 {
     /// <summary>
     /// Gets or sets the resource key.
@@ -391,7 +396,7 @@ public sealed class StaticResourceExtension : MarkupExtension, IStyleResourceMar
 /// Unlike StaticResource, DynamicResource updates when the resource changes.
 /// </summary>
 [System.ComponentModel.TypeConverter(typeof(global::Jalium.UI.DynamicResourceExtensionConverter))]
-public sealed class DynamicResourceExtension : MarkupExtension, IStyleResourceMarkupExtension
+public class DynamicResourceExtension : MarkupExtension, IStyleResourceMarkupExtension
 {
     /// <summary>
     /// Gets or sets the resource key.
@@ -442,7 +447,10 @@ public sealed class DynamicResourceExtension : MarkupExtension, IStyleResourceMa
         return new DynamicResourceReference(ResourceKey);
     }
 }
+}
 
+namespace Jalium.UI.Markup
+{
 /// <summary>
 /// Represents a reference to a dynamic resource that will be resolved at runtime.
 /// </summary>
@@ -623,7 +631,7 @@ public sealed class StaticExtension : MarkupExtension
 /// XAML markup extension for x:Array.
 /// Creates an array of the specified type.
 /// </summary>
-[ContentProperty(nameof(Items))]
+[Jalium.UI.Markup.ContentProperty(nameof(Items))]
 [MarkupExtensionReturnType(typeof(Array))]
 public sealed class ArrayExtension : MarkupExtension, IAddChild
 {
@@ -761,7 +769,7 @@ public sealed class TypeExtension : MarkupExtension
 /// XAML markup extension for TemplateBinding.
 /// Binds a property in a control template to a property on the templated parent.
 /// </summary>
-public sealed class TemplateBindingExtension : MarkupExtension
+internal sealed class TemplateBindingExtension : MarkupExtension
 {
     /// <summary>
     /// Gets or sets the name of the property on the templated parent to bind to.
@@ -1550,4 +1558,5 @@ internal static class MarkupExtensionParser
         // and property name. Avoids reflection on a dynamically supplied owner type.
         return DependencyProperty.FromName(type, propertyName);
     }
+}
 }

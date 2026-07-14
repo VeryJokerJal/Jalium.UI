@@ -1,11 +1,12 @@
 using System.Collections;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Media.Animation;
 
 /// <summary>
 /// Maintains run-time timing state for a <see cref="Timeline"/>.
 /// </summary>
-public class Clock
+public class Clock : DispatcherObject
 {
     private readonly Timeline _timeline;
     private readonly ClockController _controller;
@@ -357,7 +358,7 @@ public class ClockGroup : Clock
 }
 
 /// <summary>Interactively controls a root clock.</summary>
-public sealed class ClockController
+public sealed class ClockController : DispatcherObject
 {
     private readonly Clock _clock;
     private double _speedRatio = 1d;
@@ -464,9 +465,13 @@ public enum SlipBehavior
 }
 
 /// <summary>A read-only collection of child clocks associated with a clock group.</summary>
-public sealed class ClockCollection : ICollection<Clock>, IReadOnlyList<Clock>
+public class ClockCollection : ICollection<Clock>
 {
-    private readonly Clock _owner;
+    private readonly Clock? _owner;
+
+    private ClockCollection()
+    {
+    }
 
     internal ClockCollection(Clock owner)
     {
@@ -500,28 +505,26 @@ public sealed class ClockCollection : ICollection<Clock>, IReadOnlyList<Clock>
         }
     }
 
-    public IEnumerator<Clock> GetEnumerator() => _owner is ClockGroup group
+    IEnumerator<Clock> IEnumerable<Clock>.GetEnumerator() => _owner is ClockGroup group
         ? group.ChildClocks.GetEnumerator()
         : Enumerable.Empty<Clock>().GetEnumerator();
 
-    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => ((IEnumerable<Clock>)this).GetEnumerator();
 
     public void Add(Clock item) => throw new NotSupportedException("ClockCollection is read-only.");
     public bool Remove(Clock item) => throw new NotSupportedException("ClockCollection is read-only.");
     public void Clear() => throw new NotSupportedException("ClockCollection is read-only.");
 
-    void ICollection<Clock>.Add(Clock item) => Add(item);
-    bool ICollection<Clock>.Remove(Clock item) => Remove(item);
-    void ICollection<Clock>.Clear() => Clear();
-
     public override bool Equals(object? obj) => obj is ClockCollection other && ReferenceEquals(_owner, other._owner);
-    public override int GetHashCode() => _owner.GetHashCode();
+    public override int GetHashCode() => _owner?.GetHashCode() ?? 0;
     public static bool operator ==(ClockCollection? left, ClockCollection? right) => Equals(left, right);
     public static bool operator !=(ClockCollection? left, ClockCollection? right) => !Equals(left, right);
 }
 
 /// <summary>Specifies a timeline for media playback in the animation namespace.</summary>
-public sealed class MediaTimeline : Timeline
+// Jalium.UI.Media.MediaTimeline is the canonical WPF-compatible type. This
+// older simplified timeline is retained as an implementation detail only.
+internal sealed class MediaTimeline : Timeline
 {
     public Uri? Source { get; set; }
 

@@ -3,7 +3,7 @@ namespace Jalium.UI.Media.Animation;
 /// <summary>
 /// Animates the value of a Brush property between solid-color targets.
 /// </summary>
-public sealed class BrushAnimation : AnimationTimeline<Brush>
+public sealed class BrushAnimation : TypedAnimationTimeline<Brush>
 {
     private readonly record struct AnimatedBrushState(Color Color, double Opacity);
 

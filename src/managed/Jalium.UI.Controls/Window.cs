@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Documents;
@@ -7,6 +8,7 @@ using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Interop;
 using Jalium.UI.Interop.Win32;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 using Jalium.UI.Rendering;
 using Jalium.UI.Threading;
 using Jalium.UI.Controls.DevTools;
@@ -14,14 +16,31 @@ using System.Diagnostics;
 using RenderTargetDrawingContext = Jalium.UI.Interop.RenderTargetDrawingContext;
 using static Jalium.UI.Interop.Win32.Win32Constants;
 using static Jalium.UI.Interop.Win32.Win32Methods;
+using System.Collections;
+using System.Diagnostics.CodeAnalysis;
+using System.Text;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI;
 
 /// <summary>
 /// Represents a window in the Jalium.UI framework.
 /// </summary>
 public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, IInputDispatcherHost, IAdornerLayerHost
 {
+    static Window()
+    {
+        // Platform windows (Linux/Android) enforce Min/Max size in the window
+        // system (WM_NORMAL_HINTS / xdg_toplevel hints); re-push whenever the
+        // constraint properties change. Win32 windows enforce these in
+        // WM_GETMINMAXINFO and ignore this path.
+        var pushConstraints = new PropertyChangedCallback(
+            static (d, _) => (d as Window)?.UpdatePlatformSizeConstraints());
+        MinWidthProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
+        MinHeightProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
+        MaxWidthProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
+        MaxHeightProperty.OverrideMetadata(typeof(Window), new PropertyMetadata(pushConstraints));
+    }
+
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
     private static readonly bool DebugRender = IsEnvironmentSwitchEnabled("JALIUM_DEBUG_RENDER");
 
@@ -75,6 +94,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private bool _softKeyboardVisible;
     private double _softKeyboardHeight;
     private DeviceOrientation _deviceOrientation;
+    // SurfaceHolder.surfaceDestroyed is a hard ownership boundary on Android:
+    // once it returns no frame may touch the old ANativeWindow.  This flag is
+    // checked at both render-target creation and frame entry so already-queued
+    // render work becomes harmless while the Activity swaps surfaces.
+    private volatile bool _androidSurfaceAvailable = true;
     // Render state machine — all flags packed into a single int for atomic access.
     // Prevents race conditions where multiple threads check-then-set individual bools.
     private int _renderState; // Bitfield of RenderStateFlags, accessed via Interlocked
@@ -432,7 +456,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     LayoutManager ILayoutManagerHost.LayoutManager => _layoutManager;
 
-    #region Dependency Properties
 
     /// <summary>
     /// Identifies the Title dependency property.
@@ -667,9 +690,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         DependencyProperty.Register(nameof(ShowActivated), typeof(bool), typeof(Window),
             new PropertyMetadata(true));
 
-    #endregion
 
-    #region CLR Properties
 
     /// <summary>
     /// Gets or sets the window title.
@@ -749,10 +770,30 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// the existing Win32 code path directly).
     /// </summary>
     private IPlatformWindow? _platformWindow;
+    private PlatformImeContext _lastPlatformImeContext;
+    private bool _hasLastPlatformImeContext;
+    private ContextMenu? _fallbackSystemMenu;
 
     internal uint BeginPlatformDrag(ReadOnlySpan<NativeDragDataItem> items, uint allowedEffects) =>
         _platformWindow is NativePlatformWindow native
             ? native.BeginDrag(items, allowedEffects)
+            : 0;
+
+    internal uint BeginPlatformDrag(
+        ReadOnlySpan<NativeDragDataItem> items,
+        uint allowedEffects,
+        Action<uint>? feedback,
+        Func<uint, bool, PlatformDragContinueAction>? queryContinue) =>
+        BeginPlatformDrag(items, allowedEffects, feedback, queryContinue, null);
+
+    internal uint BeginPlatformDrag(
+        ReadOnlySpan<NativeDragDataItem> items,
+        uint allowedEffects,
+        Action<uint>? feedback,
+        Func<uint, bool, PlatformDragContinueAction>? queryContinue,
+        NativeDragImage? dragImage) =>
+        _platformWindow is NativePlatformWindow native
+            ? native.BeginDrag(items, allowedEffects, feedback, queryContinue, dragImage)
             : 0;
 
     internal void SetPlatformDragEffect(ulong sessionId, uint effect)
@@ -1091,6 +1132,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             _owner?.RemoveOwnedWindow(this);
             _owner = value;
             _owner?.AddOwnedWindow(this);
+            if (_platformWindow != null)
+                _ = _platformWindow.SetOwner(value?.Handle ?? nint.Zero);
         }
     }
     private Window? _owner;
@@ -1100,9 +1143,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public bool? DialogResult { get; set; }
 
-    #endregion
 
-    #region Events
 
     public override event SizeChangedEventHandler? SizeChanged;
     public event EventHandler<System.ComponentModel.CancelEventArgs>? Closing;
@@ -1125,9 +1166,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     public bool IsActive => (bool)(GetValue(IsActiveProperty) ?? false);
 
-    #endregion
 
-    #region Event Virtual Methods
 
     protected virtual void OnActivated(EventArgs e) => Activated?.Invoke(this, e);
     protected virtual void OnDeactivated(EventArgs e) => Deactivated?.Invoke(this, e);
@@ -1151,19 +1190,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
     protected virtual void OnSizeChanged(SizeChangedEventArgs e) => SizeChanged?.Invoke(this, e);
     protected virtual void OnSystemSettingsChanged(EventArgs e) => SystemSettingsChanged?.Invoke(this, e);
+    internal void RaisePlatformSystemSettingsChanged() => OnSystemSettingsChanged(EventArgs.Empty);
     protected virtual void OnSessionEnding(SessionEndingCancelEventArgs e) => SessionEnding?.Invoke(this, e);
+    internal void RaisePlatformSessionEnding(SessionEndingCancelEventArgs e) => OnSessionEnding(e);
     protected virtual void OnShown(EventArgs e) => Shown?.Invoke(this, e);
     protected virtual void OnHiding(EventArgs e) => Hiding?.Invoke(this, e);
     protected virtual bool OnPreviewWindowKeyDown(Key key, ModifierKeys modifiers, bool isRepeat) => false;
     protected virtual bool OnPreviewWindowKeyUp(Key key, ModifierKeys modifiers) => false;
     protected virtual bool OnPreviewWindowMouseDown(MouseButton button, Point position, int clickCount) => false;
-    protected virtual bool OnPreviewWindowMouseUp(MouseButton button, Point position) => false;
+    protected virtual bool OnPreviewWindowMouseUp(MouseButton button, Point position)
+    {
+        return button == MouseButton.Right && TryShowSystemMenuAtClient(position);
+    }
     protected virtual bool OnPreviewWindowMouseMove(Point position) => false;
     protected virtual bool OnPreviewWindowMouseWheel(int delta, Point position) => false;
 
-    #endregion
 
-    #region Base Class Overrides
 
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e) => base.OnPropertyChanged(e);
     internal override Geometry? GetLayoutClip() => null;
@@ -1185,8 +1227,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
         base.OnIsEnabledChanged(oldValue, newValue);
-        if (Handle != nint.Zero)
-            EnableWindow(Handle, newValue);
+        if (Handle == nint.Zero)
+            return;
+
+        if (_platformWindow != null)
+            _ = _platformWindow.SetEnabled(newValue);
+        else
+            _ = EnableWindow(Handle, newValue);
     }
 
     protected override void OnDataContextChanged(object? oldValue, object? newValue)
@@ -1286,7 +1333,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         RequestFullInvalidation();
     }
 
-    #endregion
 
     /// <summary>
     /// Gets the title bar control. Only available when TitleBarStyle is Custom.
@@ -1478,7 +1524,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 return null;
             }
 
-            var pngBytes = Helpers.IconHelper.ExtractProcessIconAsPng(processPath);
+            var pngBytes = Controls.Helpers.IconHelper.ExtractProcessIconAsPng(processPath);
             if (pngBytes == null || pngBytes.Length == 0)
             {
                 return null;
@@ -1542,7 +1588,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <summary>
     /// Shows the system menu (right-click menu) at the specified screen coordinates.
     /// </summary>
-    private void ShowSystemMenu(int screenX, int screenY)
+    private void ShowWin32SystemMenu(int screenX, int screenY)
     {
         if (!HasSystemMenu || Handle == nint.Zero)
             return;
@@ -2229,7 +2275,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _inputDispatcher.UpdateTitleBarButtonHover(newHoveredButton);
     }
 
-    #region Visual Children
 
     /// <inheritdoc />
     protected override int VisualChildrenCount
@@ -2274,9 +2319,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         throw new ArgumentOutOfRangeException(nameof(index));
     }
 
-    #endregion
 
-    #region Layout
 
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
@@ -2370,10 +2413,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Keep DWM non-client hover tracking region aligned with current title bar/button geometry.
         UpdateCustomTitleBarFrameMargins();
 
+        // A layout pass may move the focused caret even when its text/selection
+        // did not change (wrapping, scrolling, DPI, or window resize).
+        RefreshLinuxImeContext();
+
         return finalSize;
     }
 
-    #endregion
 
     /// <summary>
     /// Shows the window.
@@ -2440,8 +2486,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (_platformWindow != null)
         {
             _platformWindow.Show();
-            if (desiredState == WindowState.Maximized || desiredState == WindowState.FullScreen)
-                _platformWindow.SetState(WindowState.Maximized);
+            if (desiredState != WindowState.Normal)
+                _platformWindow.SetState(desiredState);
         }
         else
         {
@@ -2487,7 +2533,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         OnShown(EventArgs.Empty);
 
         if (OperatingSystem.IsLinux())
-            Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowCreated(this);
+            Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowCreated(this);
     }
 
     /// <summary>
@@ -2694,7 +2740,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // mirror that for the renderable-count check.
             _nativeWindowHidden = false;
             UpdateRenderableRegistration();
-            return true;
+            return _platformWindow.Activate();
         }
 
         // Win32 path
@@ -2721,8 +2767,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (_platformWindow != null)
         {
-            // Cross-platform: drag not directly supported by native platform lib yet
-            // TODO: Implement platform-specific drag move
+            // Window-system-driven move: _NET_WM_MOVERESIZE on X11,
+            // xdg_toplevel.move on Wayland. Must run while the triggering
+            // button press is still active — exactly the DragMove contract.
+            _ = _platformWindow.BeginMoveDrag();
             return;
         }
 
@@ -2736,7 +2784,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void CenterOnScreen()
     {
-        if (Handle == nint.Zero || _platformWindow != null) return;
+        if (Handle == nint.Zero) return;
+        if (_platformWindow != null)
+        {
+            CenterPlatformWindowOnScreen();
+            return;
+        }
         var monitor = MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST);
         var monitorInfo = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
         if (GetMonitorInfo(monitor, ref monitorInfo))
@@ -2757,7 +2810,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void CenterOnOwner()
     {
-        if (Handle == nint.Zero || _platformWindow != null) return;
+        if (Handle == nint.Zero) return;
+        if (_platformWindow != null)
+        {
+            CenterPlatformWindowOnOwner(Owner ?? _modalOwner);
+            return;
+        }
         nint ownerHwnd = Owner?.Handle ?? nint.Zero;
         if (ownerHwnd == nint.Zero) return;
         if (GetWindowRect(ownerHwnd, out RECT ownerRect))
@@ -2774,6 +2832,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     private bool _isModal;
+    private Window? _modalOwner;
 
     /// <summary>
     /// Opens a window and returns only when the newly opened window is closed.
@@ -2782,49 +2841,42 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         DialogResult = null;
 
-        if (_platformWindow != null)
-        {
-            // Cross-platform modal dialog: show window and block via Dispatcher
-            Show();
-            _isModal = true;
-            try
-            {
-                while (_isModal && Handle != nint.Zero)
-                {
-                    // Poll platform events + process dispatcher queue
-                    Interop.NativeMethods.PlatformPollEvents();
-                    _dispatcher?.ProcessQueue();
-                    Thread.Sleep(1);
-                }
-            }
-            finally
-            {
-                _isModal = false;
-            }
-            return DialogResult;
-        }
+        bool platformDialog = !PlatformFactory.IsWindows;
+        Window? ownerWindow = platformDialog
+            ? DialogOwnerResolver.ResolveWindow(Owner)
+            : Owner;
+        if (ReferenceEquals(ownerWindow, this))
+            ownerWindow = null;
 
-        // Win32 modal dialog path
-        nint ownerHandle = DialogOwnerResolver.Resolve(Owner?.Handle ?? nint.Zero);
+        nint ownerHandle = platformDialog
+            ? ownerWindow?.Handle ?? nint.Zero
+            : DialogOwnerResolver.Resolve(ownerWindow?.Handle ?? nint.Zero);
         if (ownerHandle == Handle)
-        {
             ownerHandle = nint.Zero;
-        }
 
-        if (ownerHandle != nint.Zero)
-        {
-            EnableWindow(ownerHandle, false);
-        }
-
-        Show();
-
+        bool restorePlatformOwnerEnabled = false;
+        _modalOwner = ownerWindow;
         _isModal = true;
         try
         {
+            if (platformDialog && ownerWindow != null)
+            {
+                restorePlatformOwnerEnabled = ownerWindow.IsEnabled;
+                if (restorePlatformOwnerEnabled)
+                    ownerWindow.IsEnabled = false;
+            }
+            else if (ownerHandle != nint.Zero)
+            {
+                _ = EnableWindow(ownerHandle, false);
+            }
+
+            // Show creates _platformWindow. Platform selection above deliberately
+            // uses PlatformFactory rather than testing that not-yet-created field.
+            Show();
+
             // Input-first nested modal pump (see Dispatcher.RunModalLoop): same
-            // "run while modal and the window lives" condition as the old bare
-            // GetMessage loop, but a posted dispatcher wake no longer outranks
-            // hardware input, and WM_QUIT is re-posted so the app's main loop exits.
+            // contract on every desktop backend. The non-Windows implementation
+            // polls platform events and dispatcher work instead of calling user32.
             var dispatcher = _dispatcher ?? Dispatcher.MainDispatcher ?? Dispatcher.GetForCurrentThread();
             dispatcher.RunModalLoop(() => _isModal && Handle != nint.Zero);
         }
@@ -2832,11 +2884,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             _isModal = false;
 
-            if (ownerHandle != nint.Zero)
+            if (platformDialog && ownerWindow != null)
             {
-                EnableWindow(ownerHandle, true);
-                SetForegroundWindow(ownerHandle);
+                if (restorePlatformOwnerEnabled)
+                {
+                    ownerWindow.IsEnabled = true;
+                    _ = ownerWindow.Activate();
+                }
             }
+            else if (ownerHandle != nint.Zero)
+            {
+                _ = EnableWindow(ownerHandle, true);
+                _ = SetForegroundWindow(ownerHandle);
+            }
+
+            _modalOwner = null;
         }
 
         return DialogResult;
@@ -2899,9 +2961,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (_isClosing || _managedTeardownCompleted) return;
         _isClosing = true;
 
-        // Exit modal loop if ShowDialog is waiting
-        _isModal = false;
-
         CompositionTarget.FrameStarting -= OnFrameStarting;
         // Decrement renderable count now — closing windows cannot present
         // frames even before WM_DESTROY tears the HWND down.
@@ -2918,7 +2977,31 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        // Exit ShowDialog only after Closing accepted the close. A cancelled
+        // modal close must leave its nested dispatcher frame running.
+        _isModal = false;
+
         CompleteManagedTeardown(nativeHandle: Handle, nativeDestroyed: false);
+    }
+
+    /// <summary>
+    /// Completes an Android process-level Activity shutdown without allowing a
+    /// user Closing handler to cancel native Window/GCHandle teardown. Surface
+    /// rendering must already have been detached before calling this method.
+    /// </summary>
+    internal bool CloseForAndroidShutdown()
+    {
+        if (!PlatformFactory.IsAndroid)
+            return false;
+        if (_managedTeardownCompleted)
+            return Handle == nint.Zero && _platformWindow == null;
+
+        _isClosing = true;
+        _isModal = false;
+        CompositionTarget.FrameStarting -= OnFrameStarting;
+        UpdateRenderableRegistration();
+        CompleteManagedTeardown(nativeHandle: Handle, nativeDestroyed: false);
+        return _managedTeardownCompleted && Handle == nint.Zero && _platformWindow == null;
     }
 
     /// <summary>
@@ -2972,6 +3055,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void CompleteManagedTeardownCore(nint nativeHandle, bool nativeDestroyed)
     {
+
+        // Tell the compositor to tear down any active text-input session while
+        // the platform window is still callable. This also covers Close()
+        // paths where the managed window keeps keyboard focus until teardown.
+        DisableLinuxImeContext(force: true);
 
         CompositionTarget.FrameStarting -= OnFrameStarting;
         UpdateRenderableRegistration();
@@ -3049,7 +3137,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (handleToRelease != nint.Zero && !nativeDestroyed)
         {
             if (OperatingSystem.IsLinux())
-                Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowDestroyed(this);
+                Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowDestroyed(this);
 
             if (_platformWindow != null)
             {
@@ -3057,10 +3145,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 _platformWindow.Dispose();
                 _platformWindow = null;
             }
-            else
+            else if (PlatformFactory.IsWindows)
             {
                 _ = DestroyWindow(handleToRelease);
             }
+            // A non-Windows synthetic or partially initialized Window has no
+            // IPlatformWindow wrapper to release. Its Handle is not an HWND and
+            // must never be passed to user32; managed teardown remains valid.
 
             // Let Application decide whether to shut down based on ShutdownMode
             if (Jalium.UI.Application.Current is { } app)
@@ -3143,6 +3234,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (!AllowsTransparency || Handle == nint.Zero)
             return;
+
+        if (_platformWindow != null)
+        {
+            _ = _platformWindow.SetOpacity(opacity);
+            return;
+        }
+
         byte alpha = (byte)(Math.Clamp(opacity, 0.0, 1.0) * 255);
         _ = SetLayeredWindowAttributes(Handle, 0, alpha, LWA_ALPHA);
     }
@@ -3174,6 +3272,67 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void RemoveOwnedWindow(Window child) => _ownedWindows.Remove(child);
 
+    private void CenterPlatformWindowOnScreen()
+    {
+        if (_platformWindow == null || Interop.NativeMethods.PlatformGetMonitorCount() <= 0)
+            return;
+
+        Interop.NativeMethods.NativeMonitorInfo selected = default;
+        bool hasSelected = false;
+        TryGetWindowScreenRect(out var windowRect);
+        double centerX = windowRect.X + windowRect.Width / 2;
+        double centerY = windowRect.Y + windowRect.Height / 2;
+
+        int count = Interop.NativeMethods.PlatformGetMonitorCount();
+        for (int index = 0; index < count; index++)
+        {
+            if (Interop.NativeMethods.PlatformGetMonitorInfo(index, out var candidate) != 0 ||
+                candidate.WorkWidth <= 0 || candidate.WorkHeight <= 0)
+            {
+                continue;
+            }
+
+            if (!hasSelected || candidate.IsPrimary != 0)
+            {
+                selected = candidate;
+                hasSelected = true;
+            }
+
+            if (centerX >= candidate.X && centerX < candidate.X + candidate.Width &&
+                centerY >= candidate.Y && centerY < candidate.Y + candidate.Height)
+            {
+                selected = candidate;
+                hasSelected = true;
+                break;
+            }
+        }
+
+        if (!hasSelected)
+            return;
+
+        int winW = Math.Max(1, _platformWindow.GetWidth());
+        int winH = Math.Max(1, _platformWindow.GetHeight());
+        int x = selected.WorkX + (selected.WorkWidth - winW) / 2;
+        int y = selected.WorkY + (selected.WorkHeight - winH) / 2;
+        _platformWindow.Move(x, y);
+    }
+
+    private void CenterPlatformWindowOnOwner(Window? owner)
+    {
+        if (_platformWindow == null || owner == null ||
+            !owner.TryGetWindowScreenRect(out var ownerRect) ||
+            ownerRect.Width <= 0 || ownerRect.Height <= 0)
+        {
+            return;
+        }
+
+        int winW = Math.Max(1, _platformWindow.GetWidth());
+        int winH = Math.Max(1, _platformWindow.GetHeight());
+        int x = (int)Math.Round(ownerRect.X + (ownerRect.Width - winW) / 2);
+        int y = (int)Math.Round(ownerRect.Y + (ownerRect.Height - winH) / 2);
+        _platformWindow.Move(x, y);
+    }
+
     private void ApplyWindowStartupLocation()
     {
         if (Handle == nint.Zero)
@@ -3181,11 +3340,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
-        // Cross-platform: skip Win32 monitor-based positioning
+        // Cross-platform positioning via the platform monitor ABI. Wayland has
+        // no client positioning (the native move is a no-op there and the
+        // compositor places windows); X11 honors it.
         if (_platformWindow != null)
         {
-            // On Linux/Android, startup location is handled by the window manager
-            // or defaults to (0,0). No monitor info APIs available.
+            switch (WindowStartupLocation)
+            {
+                case WindowStartupLocation.CenterScreen:
+                    CenterPlatformWindowOnScreen();
+                    break;
+
+                case WindowStartupLocation.CenterOwner:
+                    CenterPlatformWindowOnOwner(Owner ?? _modalOwner);
+                    break;
+            }
+
             return;
         }
 
@@ -3410,23 +3580,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         PlatformFactory.InitializePlatform();
         Dispatcher.EnsureNativeWake();
 
-        // Map window style
-        uint style = 0;
-        if (TitleBarStyle == WindowTitleBarStyle.Custom)
-            style |= 0x01; // JALIUM_WINDOW_STYLE_BORDERLESS
-        else
-            style |= 0x04 | 0x08; // TITLEBAR | CLOSABLE
-
-        if (ResizeMode != ResizeMode.NoResize && ResizeMode != ResizeMode.CanMinimize)
-            style |= 0x02; // RESIZABLE
-
-        style |= 0x10 | 0x20; // MINIMIZABLE | MAXIMIZABLE
-
-        if (Topmost)
-            style |= 0x40; // TOPMOST
-
-        if (AllowsTransparency)
-            style |= 0x100; // TRANSPARENT
+        uint style = ComputePlatformWindowStyle(
+            WindowStyle, ResizeMode, TitleBarStyle, Topmost, AllowsTransparency);
 
         // DPI
         _dpiScale = NativeMethods.PlatformGetSystemDpiScale();
@@ -3437,9 +3592,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         int x = double.IsNaN(Left) ? -1 : (int)(Left * _dpiScale);
         int y = double.IsNaN(Top) ? -1 : (int)(Top * _dpiScale);
 
+        nint platformOwnerHandle = (_modalOwner ?? Owner)?.Handle ?? nint.Zero;
         _platformWindow = PlatformFactory.CreateWindow(
             Title ?? string.Empty, x, y, physicalWidth, physicalHeight,
-            style, Owner?.Handle ?? nint.Zero);
+            style, platformOwnerHandle);
+        _hasLastPlatformImeContext = false;
 
         if (_platformWindow == null)
             throw new InvalidOperationException("Failed to create platform window.");
@@ -3453,6 +3610,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         // Connect platform event handler for input/resize/paint routing
         _platformWindow.SetEventHandler(OnPlatformEvent);
+        _ = _platformWindow.SetEnabled(IsEnabled);
+        _ = _platformWindow.SetShowInTaskbar(ShowInTaskbar);
+        if (platformOwnerHandle != nint.Zero)
+            _ = _platformWindow.SetOwner(platformOwnerHandle);
+        if (AllowsTransparency)
+            _ = _platformWindow.SetOpacity(Opacity);
+
+        if (PlatformFactory.IsAndroid)
+        {
+            _androidSurfaceAvailable = AndroidActivityBridge.NativeWindow != nint.Zero;
+        }
 
         // On Android/Linux the native window (OS surface) determines the actual size.
         // Always use the native surface dimensions on these platforms — any default
@@ -3499,13 +3667,253 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ScheduleRenderRecoveryRetry();
         }
 
+        UpdatePlatformSizeConstraints();
+        UpdatePlatformWindowIcon();
+
         OnSourceInitialized(EventArgs.Empty);
+    }
+
+    internal static uint ComputePlatformWindowStyle(
+        WindowStyle windowStyle,
+        ResizeMode resizeMode,
+        WindowTitleBarStyle titleBarStyle,
+        bool topmost,
+        bool allowsTransparency)
+    {
+        const uint Borderless = 0x01;
+        const uint Resizable = 0x02;
+        const uint Titlebar = 0x04;
+        const uint Closable = 0x08;
+        const uint Minimizable = 0x10;
+        const uint Maximizable = 0x20;
+        const uint TopmostStyle = 0x40;
+        const uint Transparent = 0x100;
+
+        uint style = windowStyle == WindowStyle.None || titleBarStyle == WindowTitleBarStyle.Custom
+            ? Borderless | Closable
+            : Titlebar | Closable;
+
+        if (resizeMode != ResizeMode.NoResize)
+            style |= Minimizable;
+        if (resizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip)
+            style |= Resizable | Maximizable;
+        if (topmost)
+            style |= TopmostStyle;
+        if (allowsTransparency)
+            style |= Transparent;
+        return style;
+    }
+
+    internal static WindowState MapPlatformWindowState(int nativeState) => nativeState switch
+    {
+        1 => WindowState.Minimized,
+        2 => WindowState.Maximized,
+        3 => WindowState.FullScreen,
+        _ => WindowState.Normal,
+    };
+
+    /// <summary>
+    /// Pushes WindowIcon pixels to the platform window (_NET_WM_ICON on X11 —
+    /// task bar / Alt-Tab); Wayland uses xdg-toplevel-icon-v1 when the
+    /// compositor advertises it. The custom title bar always draws the icon.
+    /// </summary>
+    internal void UpdatePlatformWindowIcon()
+    {
+        if (_platformWindow == null)
+            return;
+
+        if (WindowIcon is not Jalium.UI.Media.Imaging.BitmapSource bitmap ||
+            bitmap.PixelWidth <= 0 || bitmap.PixelHeight <= 0)
+        {
+            _ = _platformWindow.SetIcon(null, 0, 0);
+            return;
+        }
+
+        try
+        {
+            var width = bitmap.PixelWidth;
+            var height = bitmap.PixelHeight;
+            var bytes = new byte[checked(width * height * 4)];
+            bitmap.CopyPixels(new Int32Rect(0, 0, width, height), bytes, width * 4, 0);
+            var pixels = new uint[width * height];
+            Buffer.BlockCopy(bytes, 0, pixels, 0, bytes.Length);
+            _ = _platformWindow.SetIcon(pixels, width, height);
+        }
+        catch (Exception)
+        {
+            // The window icon is cosmetic; never let icon extraction break
+            // window creation or an icon property change.
+        }
+    }
+
+    /// <summary>
+    /// Pushes Min/Max Width/Height down to the platform window as WM-enforced
+    /// size hints (WM_NORMAL_HINTS on X11, xdg_toplevel min/max on Wayland).
+    /// Windows enforces these in the WM_GETMINMAXINFO handler instead.
+    /// </summary>
+    internal void UpdatePlatformSizeConstraints()
+    {
+        if (_platformWindow == null)
+            return;
+
+        var scale = _dpiScale;
+        if (double.IsNaN(scale) || double.IsInfinity(scale) || scale <= 0)
+            scale = 1.0;
+
+        static int ToPhysical(double dip, double scale)
+        {
+            if (double.IsNaN(dip) || double.IsInfinity(dip) || dip <= 0)
+                return 0;
+            return Math.Max(1, (int)Math.Round(dip * scale));
+        }
+
+        _platformWindow.SetMinMaxSize(
+            ToPhysical(MinWidth, scale),
+            ToPhysical(MinHeight, scale),
+            ToPhysical(MaxWidth, scale),
+            ToPhysical(MaxHeight, scale));
     }
 
     /// <summary>
     /// Handles platform events from the native platform library (Linux/Android).
     /// Maps cross-platform events to the same internal handlers used by WndProc on Windows.
     /// </summary>
+    internal void HandleExternalPopupPlatformEvent(PlatformEvent evt)
+    {
+        // Grabbing xdg_popups receive keyboard focus themselves.  Keyboard
+        // focus in Jalium remains a managed element in the owning Window, so
+        // forward only text/key composition events through the owner's normal
+        // dispatcher instead of duplicating focus state in PopupWindow.
+        switch (evt.Type)
+        {
+            case PlatformEventType.KeyDown:
+            case PlatformEventType.KeyUp:
+            case PlatformEventType.CharInput:
+            case PlatformEventType.CompositionStart:
+            case PlatformEventType.CompositionUpdate:
+            case PlatformEventType.CompositionEnd:
+            case PlatformEventType.DeleteSurroundingText:
+                OnPlatformEvent(evt);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Returns whether a client-local point belongs to the draggable caption
+    /// portion of the custom title bar (not its commands or caption buttons).
+    /// </summary>
+    internal bool IsSystemMenuCaptionPoint(Point clientPosition)
+    {
+        return HasSystemMenu &&
+               ComputeNcHitTestFromClientDip(
+                   clientPosition.X,
+                   clientPosition.Y,
+                   WindowState == WindowState.Maximized) == HTCAPTION;
+    }
+
+    /// <summary>
+    /// Shows the Linux system menu from an input event. Keeping this in the
+    /// mouse-up dispatch preserves the Wayland input serial required by
+    /// xdg_toplevel.show_window_menu.
+    /// </summary>
+    private bool TryShowSystemMenuAtClient(Point clientPosition)
+    {
+        if (!OperatingSystem.IsLinux() || _platformWindow == null ||
+            Handle == nint.Zero || !IsSystemMenuCaptionPoint(clientPosition))
+        {
+            return false;
+        }
+
+        return ShowPlatformOrFallbackSystemMenu(clientPosition);
+    }
+
+    /// <summary>
+    /// Shows the Linux system menu for the WPF-compatible public API, whose
+    /// position is expressed in physical screen coordinates.
+    /// </summary>
+    internal bool TryShowSystemMenuAtScreen(Point screenLocation)
+    {
+        if (!OperatingSystem.IsLinux() || _platformWindow == null ||
+            Handle == nint.Zero || !HasSystemMenu)
+        {
+            return false;
+        }
+
+        _platformWindow.GetPosition(out int originX, out int originY);
+        double scale = _dpiScale > 0 && double.IsFinite(_dpiScale) ? _dpiScale : 1.0;
+        var clientPosition = new Point(
+            (screenLocation.X - originX) / scale,
+            (screenLocation.Y - originY) / scale);
+        return ShowPlatformOrFallbackSystemMenu(clientPosition);
+    }
+
+    private bool ShowPlatformOrFallbackSystemMenu(Point clientPosition)
+    {
+        if (_platformWindow == null)
+            return false;
+
+        double scale = _dpiScale > 0 && double.IsFinite(_dpiScale) ? _dpiScale : 1.0;
+        int physicalX = ToSystemMenuPhysicalPixel(clientPosition.X, scale);
+        int physicalY = ToSystemMenuPhysicalPixel(clientPosition.Y, scale);
+        if (_platformWindow.ShowSystemMenu(physicalX, physicalY))
+            return true;
+
+        ShowFallbackSystemMenu(clientPosition);
+        return true;
+    }
+
+    private static int ToSystemMenuPhysicalPixel(double value, double scale)
+    {
+        double physical = value * scale;
+        if (!double.IsFinite(physical))
+            return 0;
+        if (physical >= int.MaxValue)
+            return int.MaxValue;
+        if (physical <= int.MinValue)
+            return int.MinValue;
+        return (int)Math.Round(physical);
+    }
+
+    private void ShowFallbackSystemMenu(Point clientPosition)
+    {
+        _fallbackSystemMenu?.Close();
+
+        bool isMaximized = WindowState == WindowState.Maximized;
+        bool isMinimized = WindowState == WindowState.Minimized;
+        bool canResize = ResizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip;
+        bool canMinimize = ResizeMode != ResizeMode.NoResize;
+
+        var menu = new ContextMenu
+        {
+            PlacementTarget = this,
+            StaysOpen = false
+        };
+
+        var restore = new MenuItem { Header = "Restore", IsEnabled = isMaximized || isMinimized };
+        restore.Click += (_, _) => WindowState = WindowState.Normal;
+        menu.Items.Add(restore);
+
+        var minimize = new MenuItem { Header = "Minimize", IsEnabled = canMinimize && !isMinimized };
+        minimize.Click += (_, _) => WindowState = WindowState.Minimized;
+        menu.Items.Add(minimize);
+
+        var maximize = new MenuItem { Header = "Maximize", IsEnabled = canResize && !isMaximized };
+        maximize.Click += (_, _) => WindowState = WindowState.Maximized;
+        menu.Items.Add(maximize);
+
+        var close = new MenuItem { Header = "Close" };
+        close.Click += (_, _) => Close();
+        menu.Items.Add(close);
+
+        _fallbackSystemMenu = menu;
+        menu.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_fallbackSystemMenu, menu))
+                _fallbackSystemMenu = null;
+        };
+        menu.Open(clientPosition);
+    }
+
     private void OnPlatformEvent(PlatformEvent evt)
     {
         switch (evt.Type)
@@ -3515,8 +3923,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 break;
 
             case PlatformEventType.Destroyed:
+                DisableLinuxImeContext(force: true);
                 if (OperatingSystem.IsLinux())
-                    Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowDestroyed(this);
+                    Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowDestroyed(this);
                 _ = _windows.Remove(Handle);
                 // External destruction (system shutdown / native teardown) may
                 // skip Close() — make sure we still pull out of the renderable
@@ -3541,10 +3950,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 Application.Current?.SetPlatformActivationState(true);
                 if (OperatingSystem.IsLinux())
-                    Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowActivated(this, active: true);
+                {
+                    Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowActivated(this, active: true);
+                    UpdateLinuxImeContext();
+                }
                 break;
 
             case PlatformEventType.FocusLost:
+                DisableLinuxImeContext(force: true);
                 if (IsActive)
                 {
                     SetIsActive(false);
@@ -3552,7 +3965,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
                 Application.Current?.SetPlatformActivationState(false);
                 if (OperatingSystem.IsLinux())
-                    Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowActivated(this, active: false);
+                    Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowActivated(this, active: false);
                 _inputDispatcher.ClearMousePressedChain();
                 break;
 
@@ -3639,6 +4052,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 break;
             }
 
+            case PlatformEventType.DeleteSurroundingText:
+                if (TryGetImeTarget(out _, out IImeSupport? deleteTarget) &&
+                    deleteTarget!.DeleteImeSurroundingText(
+                        evt.ImeDeleteBeforeUtf8ByteCount,
+                        evt.ImeDeleteAfterUtf8ByteCount))
+                {
+                    RefreshLinuxImeContext();
+                }
+                break;
+
             case PlatformEventType.DpiChanged:
             {
                 _dpiScale = evt.DpiX / 96.0;
@@ -3651,6 +4074,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 InvalidateMeasure();
                 break;
             }
+
+            case PlatformEventType.MonitorsChanged:
+                SystemParameters.NotifyStaticPropertyChanged(null);
+                RaisePlatformSystemSettingsChanged();
+                CompositionTarget.UpdateRefreshRate(DetectMonitorRefreshRate());
+                break;
 
             case PlatformEventType.MouseLeave:
                 _inputDispatcher.HandleMouseLeave();
@@ -3678,12 +4107,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 _isSyncingWindowState = true;
                 try
                 {
-                    var newState = evt.NewState switch
-                    {
-                        1 => WindowState.Minimized,
-                        2 => WindowState.Maximized,
-                        _ => WindowState.Normal,
-                    };
+                    var newState = MapPlatformWindowState(evt.NewState);
                     if (WindowState != newState)
                     {
                         WindowState = newState;
@@ -3805,6 +4229,159 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
+    /// <summary>
+    /// Stops all rendering against the current Android Surface and releases the
+    /// render target before SurfaceHolder.surfaceDestroyed is allowed to return.
+    /// Must run synchronously on the Jalium UI dispatcher.
+    /// </summary>
+    internal bool DetachAndroidSurface()
+    {
+        if (!PlatformFactory.IsAndroid)
+        {
+            return true;
+        }
+
+        try
+        {
+            _dispatcher?.VerifyAccess();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[AndroidSurface] Detach dispatcher check failed: {ex.Message}");
+            return false;
+        }
+
+        lock (_renderLifecycleGate)
+        {
+            _androidSurfaceAvailable = false;
+            unchecked { _renderLifecycleGeneration++; }
+        }
+
+        _hasPendingResize = false;
+        lock (_rtChannelLock) { _rtPendingFrame = null; }
+
+        // Android currently renders inline, but retain a hard join boundary in
+        // case a platform render worker is enabled later.  Returning while that
+        // worker is still in Present would violate SurfaceHolder.Callback's
+        // ownership contract.
+        if (!StopRenderThread())
+        {
+            if (_renderThread is not { } stalledRenderThread ||
+                stalledRenderThread == Thread.CurrentThread)
+            {
+                return false;
+            }
+
+            try
+            {
+                stalledRenderThread.Join();
+                _ = Interlocked.CompareExchange(ref _renderThread, null, stalledRenderThread);
+                lock (_rtChannelLock) { _rtPendingFrame = null; }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[AndroidSurface] Render worker drain failed: {ex.Message}");
+                return false;
+            }
+        }
+
+        bool detached = true;
+        try
+        {
+            // Retained backend handles must be retired while the old target is
+            // still alive; the drawing context is then closed before RT.Dispose.
+            Visual.ReleaseRetainedLayersRecursive(this);
+        }
+        catch (Exception ex)
+        {
+            detached = false;
+            Console.Error.WriteLine($"[AndroidSurface] Retained resource release failed: {ex.Message}");
+        }
+
+        try { ReleaseDrawingContextBeforeRenderTargetDisposal(clearAllCaches: false); }
+        catch (Exception ex)
+        {
+            detached = false;
+            Console.Error.WriteLine($"[AndroidSurface] Drawing context release failed: {ex.Message}");
+        }
+
+        try { StopFramePacer(); }
+        catch (Exception ex)
+        {
+            detached = false;
+            Console.Error.WriteLine($"[AndroidSurface] Frame pacer stop failed: {ex.Message}");
+        }
+
+        try { StopExternalPresentPacing(); }
+        catch (Exception ex)
+        {
+            detached = false;
+            Console.Error.WriteLine($"[AndroidSurface] Present pacing stop failed: {ex.Message}");
+        }
+
+        var renderTarget = RenderTarget;
+        RenderTarget = null;
+        try { renderTarget?.Dispose(); }
+        catch (Exception ex)
+        {
+            // Retain the failed target so a later lifecycle retry cannot report
+            // success merely because the first attempt dropped the only handle.
+            RenderTarget = renderTarget;
+            detached = false;
+            Console.Error.WriteLine($"[AndroidSurface] RenderTarget disposal failed: {ex.Message}");
+        }
+
+        // Only a fully drained render worker and successful resource teardown
+        // authorizes AndroidActivityBridge to release the ANativeWindow ref.
+        return detached && (_renderThread == null || !_renderThread.IsAlive);
+    }
+
+    /// <summary>
+    /// Marks a replacement Android Surface usable before the native RESIZE event
+    /// attempts to create its render target.
+    /// </summary>
+    internal void PrepareAndroidSurfaceAttach()
+    {
+        if (!PlatformFactory.IsAndroid)
+        {
+            return;
+        }
+
+        _dispatcher?.VerifyAccess();
+        lock (_renderLifecycleGate)
+        {
+            _androidSurfaceAvailable = true;
+            unchecked { _renderLifecycleGeneration++; }
+        }
+    }
+
+    /// <summary>
+    /// Recreates any target that the native resize callback could not create and
+    /// schedules a full repaint on the replacement Android Surface.
+    /// </summary>
+    internal void CompleteAndroidSurfaceAttach()
+    {
+        if (!PlatformFactory.IsAndroid || !_androidSurfaceAvailable || Handle == nint.Zero)
+        {
+            return;
+        }
+
+        _dispatcher?.VerifyAccess();
+        try
+        {
+            EnsureRenderTarget();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[AndroidSurface] RenderTarget recreation failed: {ex.Message}");
+            ScheduleRenderRecoveryRetry();
+        }
+
+        RequestFullInvalidation();
+        InvalidateMeasure();
+        InvalidateWindow();
+    }
+
     private static MouseButton MapPlatformMouseButton(int button) => button switch
     {
         0 => MouseButton.Left,
@@ -3825,18 +4402,44 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return result;
     }
 
-    private PointerInputData BuildPointerInputData(Platform.PlatformEvent evt)
+    internal PointerInputData BuildPointerInputData(PlatformEvent evt)
     {
+        const uint PointerFlagInRange = 1u << 0;
+        const uint PointerFlagInContact = 1u << 1;
+        const uint PointerFlagPrimary = 1u << 2;
+        const uint PointerFlagEraser = 1u << 3;
+        const uint PointerFlagInverted = 1u << 4;
+        const uint PointerFlagBarrel = 1u << 5;
+        const uint PointerButtonPrimary = 1u << 0;
+        const uint PointerButtonSecondary = 1u << 1;
+        const uint PointerButtonTertiary = 1u << 2;
+        const uint PointerButtonBarrel = 1u << 3;
+        const uint PointerButtonEraser = 1u << 4;
+        const int PointerToolEraser = 2;
+
         var position = new Point(evt.PointerX / _dpiScale, evt.PointerY / _dpiScale);
         var modifiers = MapPlatformModifiers(evt.Modifiers);
-        bool isDown = evt.Type == Platform.PlatformEventType.PointerDown;
-        bool isUp = evt.Type == Platform.PlatformEventType.PointerUp;
+        bool isDown = evt.Type == PlatformEventType.PointerDown;
+        bool isUp = evt.Type == PlatformEventType.PointerUp;
         bool isTouch = evt.PointerType == 1;
+        bool isInRange = (evt.PointerFlags & PointerFlagInRange) != 0;
+        bool isInContact = (evt.PointerFlags & PointerFlagInContact) != 0;
+        bool isPrimary = (evt.PointerFlags & PointerFlagPrimary) != 0;
+        bool primaryButton = (evt.PointerButtons & PointerButtonPrimary) != 0;
+        bool secondaryButton = (evt.PointerButtons & PointerButtonSecondary) != 0;
+        bool tertiaryButton = (evt.PointerButtons & PointerButtonTertiary) != 0;
+        bool barrelButton = (evt.PointerButtons & PointerButtonBarrel) != 0 ||
+                            (evt.PointerFlags & PointerFlagBarrel) != 0;
+        bool eraser = (evt.PointerFlags & PointerFlagEraser) != 0 ||
+                      (evt.PointerButtons & PointerButtonEraser) != 0 ||
+                      evt.PointerToolType == PointerToolEraser;
 
         var deviceType = isTouch ? PointerDeviceType.Touch
             : evt.PointerType == 0 ? PointerDeviceType.Mouse
             : PointerDeviceType.Pen;
-        float pressure = evt.Pressure > 0 ? evt.Pressure : (isDown || !isUp ? 0.5f : 0f);
+        float pressure = float.IsFinite(evt.Pressure)
+            ? Math.Clamp(evt.Pressure, 0f, 1f)
+            : 0f;
         var kind = evt.PointerType switch
         {
             0 => PointerInputKind.Mouse,
@@ -3847,27 +4450,53 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         var properties = new PointerPointProperties
         {
-            IsLeftButtonPressed = isDown || !isUp,
+            IsLeftButtonPressed = primaryButton,
+            IsRightButtonPressed = secondaryButton,
+            IsMiddleButtonPressed = tertiaryButton,
+            IsBarrelButtonPressed = barrelButton,
+            IsEraser = eraser,
+            IsInverted = (evt.PointerFlags & PointerFlagInverted) != 0,
             Pressure = pressure,
             XTilt = evt.TiltX,
             YTilt = evt.TiltY,
             Twist = evt.Twist,
-            PointerUpdateKind = isDown ? PointerUpdateKind.LeftButtonPressed
-                : isUp ? PointerUpdateKind.LeftButtonReleased
-                : PointerUpdateKind.Other,
-            IsPrimary = isTouch
+            PointerUpdateKind = GetPointerUpdateKind(
+                isDown, isUp, primaryButton, secondaryButton, tertiaryButton, barrelButton),
+            IsPrimary = isPrimary
         };
 
         var pointerPoint = new PointerPoint(
             evt.PointerId, position, deviceType,
-            isDown || !isUp, properties, (ulong)Environment.TickCount, 0);
+            isInContact, properties, (ulong)Environment.TickCount, 0);
 
         var stylusPoints = new StylusPointCollection(
             [new StylusPoint(position.X, position.Y, pressure)]);
 
         return new PointerInputData(
             evt.PointerId, kind, pointerPoint, position, modifiers,
-            IsInRange: true, IsCanceled: false, stylusPoints);
+            IsInRange: isInRange,
+            IsCanceled: evt.Type == PlatformEventType.PointerCancel,
+            stylusPoints);
+    }
+
+    private static PointerUpdateKind GetPointerUpdateKind(
+        bool isDown,
+        bool isUp,
+        bool primary,
+        bool secondary,
+        bool tertiary,
+        bool barrel)
+    {
+        if (!isDown && !isUp)
+            return PointerUpdateKind.Other;
+
+        if (secondary || barrel)
+            return isDown ? PointerUpdateKind.RightButtonPressed : PointerUpdateKind.RightButtonReleased;
+        if (tertiary)
+            return isDown ? PointerUpdateKind.MiddleButtonPressed : PointerUpdateKind.MiddleButtonReleased;
+        if (primary || isUp)
+            return isDown ? PointerUpdateKind.LeftButtonPressed : PointerUpdateKind.LeftButtonReleased;
+        return PointerUpdateKind.Other;
     }
 
     /// <summary>
@@ -4303,9 +4932,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void UpdateWindowStyle()
     {
-        if (Handle == nint.Zero || _platformWindow != null)
+        if (Handle == nint.Zero)
         {
-            return; // Win32 window styles not applicable on cross-platform
+            return;
+        }
+
+        if (_platformWindow != null)
+        {
+            bool resizable = ResizeMode is ResizeMode.CanResize or ResizeMode.CanResizeWithGrip;
+            _ = _platformWindow.SetResizable(resizable);
+
+            bool decorated = WindowStyle != WindowStyle.None &&
+                             TitleBarStyle != WindowTitleBarStyle.Custom;
+            if (!_platformWindow.SetDecorated(decorated))
+            {
+                // Core xdg-shell has no dynamic decoration toggle. Keep the
+                // managed title bar correct, but make that native limitation
+                // observable instead of reporting a fake success.
+                Debug.WriteLine("The active window system does not support changing native decorations at runtime.");
+            }
+
+            UpdatePlatformSizeConstraints();
+            return;
         }
 
         // While in fullscreen we don't want to re-apply the user's chosen frame
@@ -4505,7 +5153,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool ShouldUseCompositionRenderTarget()
     {
-        if (Handle == nint.Zero)
+        // WS_EX_NOREDIRECTIONBITMAP and GetWindowLong are Win32-only. A
+        // non-Windows Window can legitimately have a native handle before its
+        // managed render target is created, so Handle != 0 is not sufficient
+        // evidence that this is an HWND.
+        if (!PlatformFactory.IsWindows || Handle == nint.Zero)
         {
             return false;
         }
@@ -4575,6 +5227,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        if (PlatformFactory.IsAndroid && !_androidSurfaceAvailable)
+        {
+            return;
+        }
+
         // Swap chain uses physical pixel dimensions — bail if the window hasn't
         // been sized yet (0×0 swap chains are rejected by DXGI).
         int physicalWidth = (int)(Width * _dpiScale);
@@ -4590,41 +5247,43 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             : RenderBackend.Auto;
 
         var context = RenderContext.GetOrCreateCurrent(requestedBackend, forceReplace: forceNewContext);
+        bool retriedWithDefaultGpu = context.GpuPreference == GpuPreference.Auto;
 
-        try
+        while (true)
         {
-            if (_platformWindow != null)
+            try
             {
-                // Cross-platform path: use surface descriptor from platform window
-                var surface = _platformWindow.GetSurface();
-                RenderTarget = context.CreateRenderTarget(surface, physicalWidth, physicalHeight);
+                RenderTarget = CreateRenderTargetForPlatform(context, physicalWidth, physicalHeight);
+                break;
             }
-            else
+            catch (Exception ex)
             {
-                // Win32 path: use HWND-based render target
-                bool useComposition = ShouldUseCompositionRenderTarget();
-                if (useComposition)
+                if (!retriedWithDefaultGpu && context.GpuPreference != GpuPreference.Auto)
                 {
-                    RenderTarget = context.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
+                    retriedWithDefaultGpu = true;
+                    Console.Error.WriteLine($"[EnsureRenderTarget] GPU fallback: {ex.Message}");
+                    context = RenderContext.GetOrCreateCurrent(
+                        context.Backend, GpuPreference.Auto, forceReplace: true);
+                    continue;
                 }
-                else
+
+                // RenderBackend.Auto is a request, not the backend that actually
+                // won selection.  On Android it commonly resolves to Vulkan; if
+                // Vulkan context creation succeeds but VkSurface/swapchain creation
+                // fails on a device, advance from the *actual* context backend to
+                // Software instead of testing requestedBackend (which is Auto).
+                RenderBackend failedBackend = context.Backend;
+                if (!TryAdvanceRenderBackendFallback(failedBackend))
                 {
-                    RenderTarget = context.CreateRenderTarget(Handle, physicalWidth, physicalHeight);
+                    throw;
                 }
+
+                Console.Error.WriteLine(
+                    $"[EnsureRenderTarget] backend fallback {failedBackend} -> {_renderBackendOverride}: {ex.Message}");
+                context = RenderContext.GetOrCreateCurrent(
+                    _renderBackendOverride, GpuPreference.Auto, forceReplace: true);
+                retriedWithDefaultGpu = true;
             }
-        }
-        catch (Exception ex) when (context.GpuPreference != GpuPreference.Auto)
-        {
-            Console.Error.WriteLine($"[EnsureRenderTarget] GPU fallback: {ex.Message}");
-            // The preferred GPU couldn't create a render target. Fall back to default GPU.
-            context = RenderContext.GetOrCreateCurrent(requestedBackend, GpuPreference.Auto, forceReplace: true);
-            RenderTarget = CreateRenderTargetForPlatform(context, physicalWidth, physicalHeight);
-        }
-        catch (Exception ex) when (requestedBackend != RenderBackend.Auto && TryAdvanceRenderBackendFallback(requestedBackend))
-        {
-            Console.Error.WriteLine($"[EnsureRenderTarget] backend fallback: {ex.Message}");
-            var fallbackContext = RenderContext.GetOrCreateCurrent(_renderBackendOverride, GpuPreference.Auto, forceReplace: true);
-            RenderTarget = CreateRenderTargetForPlatform(fallbackContext, physicalWidth, physicalHeight);
         }
 
         // Set D2D DPI so DIP coordinates map correctly to physical pixels
@@ -4801,7 +5460,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return false;
     }
 
-    #region Property Changed Callbacks
 
     private static void OnTitleChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -4840,13 +5498,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 if (window._platformWindow != null)
                 {
-                    // Cross-platform backend: fullscreen not yet supported — fall
-                    // back to maximized so the request still produces a reasonable
-                    // visual result.
-                    var mapped = newState == WindowState.FullScreen
-                        ? WindowState.Maximized
-                        : newState;
-                    window._platformWindow.SetState(mapped);
+                    // X11 and xdg-shell both expose a native fullscreen state.
+                    window._platformWindow.SetState(newState);
                 }
                 else
                 {
@@ -4995,8 +5648,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (d is Window window && window.Handle != nint.Zero)
         {
-            // SetWindowPos with HWND_TOPMOST / HWND_NOTOPMOST
             bool topmost = e.NewValue is bool b && b;
+
+            if (window._platformWindow != null)
+            {
+                // X11 toggles _NET_WM_STATE_ABOVE; Wayland has no stacking
+                // control (compositor-owned) and reports unsupported.
+                _ = window._platformWindow.SetTopmost(topmost);
+                return;
+            }
+
+            // SetWindowPos with HWND_TOPMOST / HWND_NOTOPMOST
             nint insertAfter = topmost ? HWND_TOPMOST : HWND_NOTOPMOST;
             _ = SetWindowPos(window.Handle, insertAfter, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
@@ -5013,6 +5675,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (e.Property == WindowIconProperty && e.NewValue == null)
         {
             window._attemptedAutoWindowIcon = false;
+        }
+
+        if (e.Property == WindowIconProperty)
+        {
+            window.UpdatePlatformWindowIcon();
         }
 
         window.ApplyTitleBarPresentation();
@@ -5048,6 +5715,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (d is Window window && window.Handle != nint.Zero)
         {
             bool show = e.NewValue is true;
+            if (window._platformWindow != null)
+            {
+                _ = window._platformWindow.SetShowInTaskbar(show);
+                return;
+            }
+
             long exStyle = GetWindowLong(window.Handle, GWL_EXSTYLE);
             if (show)
             {
@@ -5066,9 +5739,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
-    #endregion
 
-    #region Native Window Management
 
     private const string WindowClassName = "JaliumUIWindow";
     private static bool _classRegistered;
@@ -5581,7 +6252,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         var peer = window.GetAutomationPeer();
                         if (peer != null)
                         {
-                            var result = Automation.Uia.UiaAccessibilityBridge.TryGetRootProvider(
+                            var result = Controls.Automation.Uia.UiaAccessibilityBridge.TryGetRootProvider(
                                 peer, hWnd, wParam, lParam);
                             if (result > 0)
                                 return result;
@@ -5596,7 +6267,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     return nint.Zero;
 
                 case WM_DESTROY:
-                    Automation.Uia.UiaAccessibilityBridge.NotifyWindowDestroyed(hWnd);
+                    Controls.Automation.Uia.UiaAccessibilityBridge.NotifyWindowDestroyed(hWnd);
                     // Native destruction can bypass Close. Release the same managed
                     // resources, but do not recursively destroy the HWND or post quit.
                     window.OnNativeDestroyed(hWnd);
@@ -5787,7 +6458,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         int ncHitTest = (int)wParam.ToInt64();
                         if (ncHitTest == HTCAPTION || ncHitTest == HTSYSMENU)
                         {
-                            window.ShowSystemMenu(ncRbX, ncRbY);
+                            window.ShowWin32SystemMenu(ncRbX, ncRbY);
                             return nint.Zero;
                         }
                     }
@@ -6905,9 +7576,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void PublishRetainedCacheStatsFromManaged()
     {
-        long records  = Jalium.UI.Visual.RetainedCacheRecordsTotal;
-        long replays  = Jalium.UI.Visual.RetainedCacheReplaysTotal;
-        long bypasses = Jalium.UI.Visual.RetainedCacheBypassesTotal;
+        long records  = Visual.RetainedCacheRecordsTotal;
+        long replays  = Visual.RetainedCacheReplaysTotal;
+        long bypasses = Visual.RetainedCacheBypassesTotal;
         long deltaR   = records  - _prevRetainedRecords;
         long deltaRP  = replays  - _prevRetainedReplays;
         long deltaB   = bypasses - _prevRetainedBypasses;
@@ -7325,7 +7996,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // schema-gap: if the capture hit content it can't represent (windowless
         // WebView punch, video surface, ink-layer blit, transition shader …),
         // discard it and direct-render so nothing is silently dropped.
-        if (drawing is Jalium.UI.Media.Rendering.Drawing dr && !dr.IsFullyRecordable)
+        if (drawing is Jalium.UI.Media.Rendering.RecordedDrawing dr && !dr.IsFullyRecordable)
         {
             Render(ctx);
             return;
@@ -7792,7 +8463,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // path for this window (latch so RT recreation can't resurrect the lossy
         // path) and STOP+JOIN the render thread before the UI resumes RT ownership.
         // Dirty state is preserved so the rescheduled inline frame repaints.
-        if (drawing is Jalium.UI.Media.Rendering.Drawing d && !d.IsFullyRecordable)
+        if (drawing is Jalium.UI.Media.Rendering.RecordedDrawing d && !d.IsFullyRecordable)
         {
             _renderThreadDisabledForSchemaGap = true;
             _ = TryCompleteRenderThreadSchemaFallback();
@@ -8282,6 +8953,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Close/WM_DESTROY both invalidate the lifecycle through
             // _managedTeardownStarted, so that is the authoritative teardown gate.
             if (_managedTeardownStarted || _isClosing) return;
+            if (PlatformFactory.IsAndroid && !_androidSurfaceAvailable) return;
             if (HasRenderFlag(RenderFlag_Rendering)) return;
             // A swap-chain resize is mid-flight (native ResizeBuffers can pump a
             // reentrant WM_PAINT through the kernel callback). Beginning a frame now
@@ -8411,7 +9083,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // D3D12 now uses retained-mode dirty rects by default.
             // If a specific driver shows stale-buffer artifacts, the old behavior can be
             // restored with JALIUM_D3D12_FORCE_FULL_REPLAY=1.
-            bool requiresFullReplay = frameRenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12;
+            bool supportsPartialPresentation = frameRenderTarget.SupportsPartialPresentation;
+            bool requiresFullReplay = !supportsPartialPresentation ||
+                (frameRenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12);
+            if (!supportsPartialPresentation)
+            {
+                // A target that cannot preserve/seed its presented contents must
+                // never consume a flush assembled from dirty-history only.  Any
+                // stale flush armed by the previous render target is invalid too.
+                _partialPresentsToFlush = 0;
+            }
             // _rtActive 只在 UI 线程翻转（Start/StopRenderThread），帧首读入局部对本帧
             // 稳定；swap 条件与后面的分支必须用同一个值，防止中途翻转把捕获集晾在
             // render-thread 路径上。
@@ -9216,6 +9897,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private void HandlePresentedFrameFlush(bool isFlushFrame)
     {
+        if (RenderTarget?.SupportsPartialPresentation != true)
+        {
+            _partialPresentsToFlush = 0;
+            return;
+        }
+
         if (isFlushFrame)
         {
             if (_partialPresentsToFlush > 0) _partialPresentsToFlush--;
@@ -9558,7 +10245,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // cap is now implicit: RenderFrame runs at most once per self-clocked tick, so
         // a 125 Hz hover burst still coalesces to one render per refresh interval.
         SetRenderFlag(RenderFlag_DirtyBetween);
-        Jalium.UI.CompositionTarget.RequestFrame();
+        Jalium.UI.Media.CompositionTarget.RequestFrame();
     }
 
     /// <summary>
@@ -9671,15 +10358,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void SetNativeCapture()
     {
-        if (Handle == nint.Zero) return;
-
-        if (_platformWindow != null)
-        {
-            // Cross-platform: mouse capture managed at the framework level.
-            // Native capture is a Win32 concept; on Linux/Android, pointer
-            // events continue delivery to the focused window automatically.
+        if (Handle == nint.Zero || !PlatformFactory.IsWindows)
             return;
-        }
 
         SetCapture(Handle);
     }
@@ -9689,8 +10369,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void ReleaseNativeCapture()
     {
-        if (_platformWindow != null)
-            return; // Cross-platform: no native capture to release
+        // Capture is framework-managed on the native platform backends. Test
+        // windows and re-entrant teardown can observe _platformWindow == null,
+        // so platform identity (not object initialization state) must guard the
+        // user32 call.
+        if (!PlatformFactory.IsWindows)
+            return;
 
         _ = ReleaseCapture();
     }
@@ -9715,9 +10399,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Derived classes can override to add custom rendering
     }
 
-    #endregion
 
-    #region Input Handling
 
     private static bool IsShellReservedVirtualKey(nint wParam)
     {
@@ -10023,7 +10705,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _inputDispatcher.HandleCharInput(c.ToString(), Environment.TickCount);
     }
 
-    #region IME Handling
 
     private void OnImeStartComposition()
     {
@@ -10174,6 +10855,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void UpdateInputMethodAssociation()
     {
+        if (OperatingSystem.IsLinux())
+        {
+            UpdateLinuxImeContext();
+            return;
+        }
+
         // IMM32 is the Windows IME transport. Linux input-method association is
         // handled by its platform backend and must never enter these P/Invokes.
         if (!OperatingSystem.IsWindows() || Handle == nint.Zero)
@@ -10222,6 +10909,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public void UpdateImeCompositionWindow()
     {
+        if (OperatingSystem.IsLinux())
+        {
+            UpdateLinuxImeContext();
+            return;
+        }
+
+        // imm32 exists only on Windows. Linux composition (XIM / text-input-v3)
+        // raises the same managed composition events, and EditControl calls this
+        // on every caret move while composing — an unguarded ImmGetContext threw
+        // DllNotFoundException from inside the native event callback.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         var target = Keyboard.FocusedElement as UIElement;
         if (target == null || target is not IImeSupport imeSupport)
         {
@@ -10271,7 +10973,71 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
-    #endregion
+
+    /// <summary>
+    /// Refreshes the native Linux text-input state after a focused editor's
+    /// text, selection, caret, or caret geometry changes. It is intentionally a
+    /// no-op on Windows so the existing IMM32 behavior remains unchanged.
+    /// </summary>
+    internal void RefreshLinuxImeContext()
+    {
+        if (OperatingSystem.IsLinux())
+            UpdateLinuxImeContext();
+    }
+
+    private void UpdateLinuxImeContext()
+    {
+        if (_platformWindow == null)
+            return;
+
+        PlatformImeContext context = CreatePlatformImeContext();
+        if (_hasLastPlatformImeContext && context == _lastPlatformImeContext)
+            return;
+
+        _lastPlatformImeContext = context;
+        _hasLastPlatformImeContext = true;
+        _platformWindow.UpdateImeContext(context);
+    }
+
+    private void DisableLinuxImeContext(bool force = false)
+    {
+        if (!OperatingSystem.IsLinux() || _platformWindow == null)
+            return;
+
+        PlatformImeContext context = PlatformImeContext.Disabled;
+        if (!force && _hasLastPlatformImeContext && context == _lastPlatformImeContext)
+            return;
+
+        _lastPlatformImeContext = context;
+        _hasLastPlatformImeContext = true;
+        _platformWindow.UpdateImeContext(context);
+    }
+
+    private PlatformImeContext CreatePlatformImeContext()
+    {
+        if (!IsActive || _isClosing ||
+            !TryGetImeTarget(out UIElement? target, out IImeSupport? support) ||
+            target == null || support == null)
+        {
+            return PlatformImeContext.Disabled;
+        }
+
+        ImeSurroundingTextSnapshot? surroundingText = null;
+        if (support.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot))
+            surroundingText = snapshot;
+
+        Rect caretRectangle = support.GetImeCaretRectangle();
+        Point targetOrigin = default;
+        if (target is FrameworkElement frameworkElement)
+            targetOrigin = frameworkElement.TransformToAncestor(null);
+
+        return PlatformImeContext.Create(
+            enabled: true,
+            surroundingText,
+            caretRectangle,
+            targetOrigin,
+            _dpiScale);
+    }
 
     private void OnMouseMove(nint wParam, nint lParam)
     {
@@ -11467,7 +12233,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     internal static void SetKeyStateProviderForTesting(Func<int, short>? provider)
     {
-        s_getKeyStateProvider = provider ?? GetKeyState;
+        s_getKeyStateProvider = provider ?? GetPlatformKeyState;
     }
 
     private static bool IsVirtualKeyDown(int nVirtKey)
@@ -11478,13 +12244,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     [LibraryImport("user32.dll")]
     private static partial short GetKeyState(int nVirtKey);
 
-    #endregion
+    private static short GetPlatformKeyState(int virtualKey) =>
+        PlatformFactory.IsWindows
+            ? GetKeyState(virtualKey)
+            : Jalium.UI.Interop.NativeMethods.InputGetKeyState(virtualKey);
 
-    #region Win32 Interop
-    private static Func<int, short> s_getKeyStateProvider = GetKeyState;
-    #endregion
+    // The native platform ABI preserves the Win32 high-bit/down convention,
+    // allowing every modifier and escape-state caller to share this provider.
+    private static Func<int, short> s_getKeyStateProvider = GetPlatformKeyState;
 
-    #region IInputDispatcherHost
 
     Window IInputDispatcherHost.Self => this;
     nint IInputDispatcherHost.Handle => Handle;
@@ -11590,19 +12358,691 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     void IInputDispatcherHost.SetPlatformCursor(int cursorType)
     {
-        _platformWindow?.SetCursor(cursorType);
+        _platformWindow?.SetCursor(MapCursorTypeToPlatformShape((CursorType)cursorType));
+    }
+
+    /// <summary>
+    /// Translates the managed <see cref="CursorType"/> enum (28 WPF-parity values)
+    /// into the native JaliumCursorShape ABI enum (12 values, jalium_platform.h).
+    /// The two enums share no numbering — passing the raw managed value shows the
+    /// wrong cursor for nearly every shape (Arrow renders as IBeam, SizeWE hides
+    /// the cursor, ...), so every platform-window cursor update must go through
+    /// this mapping.
+    /// </summary>
+    internal static int MapCursorTypeToPlatformShape(CursorType cursorType) => cursorType switch
+    {
+        CursorType.None => 11,                 // JALIUM_CURSOR_HIDDEN
+        CursorType.No => 9,                    // JALIUM_CURSOR_NOT_ALLOWED
+        CursorType.AppStarting => 10,          // JALIUM_CURSOR_WAIT (closest match)
+        CursorType.Cross => 3,                 // JALIUM_CURSOR_CROSSHAIR
+        CursorType.IBeam => 2,                 // JALIUM_CURSOR_IBEAM
+        CursorType.SizeAll => 8,               // JALIUM_CURSOR_RESIZE_ALL
+        CursorType.SizeNESW => 6,              // JALIUM_CURSOR_RESIZE_NESW
+        CursorType.SizeNS => 4,                // JALIUM_CURSOR_RESIZE_NS
+        CursorType.SizeNWSE => 7,              // JALIUM_CURSOR_RESIZE_NWSE
+        CursorType.SizeWE => 5,                // JALIUM_CURSOR_RESIZE_EW
+        CursorType.Wait => 10,                 // JALIUM_CURSOR_WAIT
+        CursorType.Hand => 1,                  // JALIUM_CURSOR_HAND
+        CursorType.Pen => 3,                   // JALIUM_CURSOR_CROSSHAIR (closest match)
+        CursorType.ScrollNS or CursorType.ScrollN or CursorType.ScrollS => 4,
+        CursorType.ScrollWE or CursorType.ScrollW or CursorType.ScrollE => 5,
+        CursorType.ScrollNW or CursorType.ScrollSE => 7,
+        CursorType.ScrollNE or CursorType.ScrollSW => 6,
+        CursorType.ScrollAll => 8,             // JALIUM_CURSOR_RESIZE_ALL
+        // Arrow, AppStarting fallback, Help, UpArrow, ArrowCD and anything new.
+        _ => 0,                                // JALIUM_CURSOR_ARROW
+    };
+
+    /// <summary>
+    /// Gets the pointer position in global screen coordinates (physical pixels).
+    /// Win32 and X11 expose that coordinate space. Wayland exposes only
+    /// surface-local pointer-event coordinates, so its native ABI reports
+    /// NotSupported and this method returns false; callers must then use the
+    /// local coordinates carried by the active input event or disable the
+    /// screen-space operation safely.
+    /// </summary>
+    internal static bool TryGetCursorScreenPoint(out Point screenPoint)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (Jalium.UI.Interop.Win32.Win32Methods.GetCursorPos(out var winPoint))
+            {
+                screenPoint = new Point(winPoint.X, winPoint.Y);
+                return true;
+            }
+
+            screenPoint = default;
+            return false;
+        }
+
+        try
+        {
+            if (Interop.NativeMethods.InputGetCursorPos(out var x, out var y) !=
+                JaliumResult.Ok)
+            {
+                screenPoint = default;
+                return false;
+            }
+            screenPoint = new Point(x, y);
+            return true;
+        }
+        catch (DllNotFoundException)
+        {
+            screenPoint = default;
+            return false;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            screenPoint = default;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Gets this window's rectangle in screen coordinates (physical pixels).
+    /// Windows reports the outer frame rect; platform windows report the client
+    /// origin plus client size — self-consistent within a platform, which is
+    /// what drag-delta math needs.
+    /// </summary>
+    internal bool TryGetWindowScreenRect(out Rect physicalRect)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (Handle != nint.Zero &&
+                Jalium.UI.Interop.Win32.Win32Methods.GetWindowRect(Handle, out var rc))
+            {
+                physicalRect = new Rect(rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
+                return true;
+            }
+        }
+        else if (_platformWindow != null)
+        {
+            _platformWindow.GetPosition(out var x, out var y);
+            var width = _platformWindow.GetWidth();
+            var height = _platformWindow.GetHeight();
+            if (width > 0 && height > 0)
+            {
+                physicalRect = new Rect(x, y, width, height);
+                return true;
+            }
+        }
+
+        physicalRect = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Gets the screen position (physical pixels) of this window's client-area
+    /// origin. Used to translate element rects into screen space.
+    /// </summary>
+    internal bool TryGetClientOriginOnScreen(out Point screenOrigin)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (Handle != nint.Zero)
+            {
+                var origin = new Jalium.UI.Interop.Win32.POINT { X = 0, Y = 0 };
+                if (Jalium.UI.Interop.Win32.Win32Methods.ClientToScreen(Handle, ref origin))
+                {
+                    screenOrigin = new Point(origin.X, origin.Y);
+                    return true;
+                }
+            }
+        }
+        else if (_platformWindow != null)
+        {
+            _platformWindow.GetPosition(out var x, out var y);
+            screenOrigin = new Point(x, y);
+            return true;
+        }
+
+        screenOrigin = default;
+        return false;
+    }
+
+    /// <summary>
+    /// Moves this window so its origin lands on the given screen point
+    /// (physical pixels), without resizing or activating it.
+    /// </summary>
+    internal bool TryMoveWindowToScreenPoint(int physicalX, int physicalY)
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (Handle == nint.Zero)
+                return false;
+
+            // SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE
+            return Jalium.UI.Interop.Win32.Win32Methods.SetWindowPos(
+                Handle, nint.Zero, physicalX, physicalY, 0, 0, 0x0001 | 0x0004 | 0x0010);
+        }
+
+        if (_platformWindow != null)
+        {
+            _platformWindow.Move(physicalX, physicalY);
+            return true;
+        }
+
+        return false;
     }
 
     void IInputDispatcherHost.UpdateInputMethodAssociation() => UpdateInputMethodAssociation();
 
-    bool IInputDispatcherHost.IsPopupWindow(nint hwnd) => Primitives.PopupWindow.IsPopupWindow(hwnd);
+    bool IInputDispatcherHost.IsPopupWindow(nint hwnd) => PopupWindow.IsPopupWindow(hwnd);
     bool IInputDispatcherHost.IsVirtualKeyDown(int nVirtKey) => IsVirtualKeyDown(nVirtKey);
     void IInputDispatcherHost.WakeRenderPipeline() => WakeRenderPipeline();
 
     Jalium.UI.Input.StylusPlugIns.RealTimeStylus IInputDispatcherHost.RealTimeStylus => _realTimeStylus;
 
-    #endregion
+
+
+    /// <summary>Identifies the <see cref="AllowsTransparency"/> dependency property.</summary>
+    public static readonly DependencyProperty AllowsTransparencyProperty =
+        DependencyProperty.Register(
+            nameof(AllowsTransparency),
+            typeof(bool),
+            typeof(Window),
+            new PropertyMetadata(false));
+
+    private static readonly DependencyPropertyKey IsActivePropertyKey =
+        DependencyProperty.RegisterReadOnly(
+            nameof(IsActive),
+            typeof(bool),
+            typeof(Window),
+            new PropertyMetadata(false));
+
+    /// <summary>Identifies the read-only <see cref="IsActive"/> dependency property.</summary>
+    public static readonly DependencyProperty IsActiveProperty = IsActivePropertyKey.DependencyProperty;
+
+    /// <summary>Identifies the <see cref="TaskbarItemInfo"/> dependency property.</summary>
+    public static readonly DependencyProperty TaskbarItemInfoProperty =
+        DependencyProperty.Register(
+            nameof(TaskbarItemInfo),
+            typeof(Jalium.UI.Shell.TaskbarItemInfo),
+            typeof(Window),
+            new PropertyMetadata(null));
+
+    /// <summary>Identifies the routed <see cref="DpiChanged"/> event.</summary>
+    public static readonly RoutedEvent DpiChangedEvent =
+        EventManager.RegisterRoutedEvent(
+            nameof(DpiChanged),
+            RoutingStrategy.Bubble,
+            typeof(DpiChangedEventHandler),
+            typeof(Window));
+
+#pragma warning disable WPF0001 // Window.ThemeMode mirrors WPF's experimental API.
+    private ThemeMode _themeMode = ThemeMode.None;
+
+    /// <summary>Gets or sets the theme mode requested for this window.</summary>
+    [Experimental("WPF0001")]
+    public ThemeMode ThemeMode
+    {
+        get => _themeMode;
+        set
+        {
+            if (_themeMode == value)
+            {
+                return;
+            }
+
+            _themeMode = value;
+            InvalidateVisual();
+        }
+    }
+#pragma warning restore WPF0001
+
+    /// <inheritdoc />
+    protected internal override IEnumerator LogicalChildren => base.LogicalChildren;
+
+    /// <inheritdoc />
+    protected override void OnManipulationBoundaryFeedback(ManipulationBoundaryFeedbackEventArgs e)
+    {
+        base.OnManipulationBoundaryFeedback(e);
+    }
+
+    private void SetIsActive(bool value) => SetValue(IsActivePropertyKey, value);
+
+
+
+    private const ushort VT_LPWSTR = 31;
+    private const int MaxAppUserModelIdLength = 128;
+    private const string AppUserModelIdPropertyName = "System.AppUserModel.ID";
+    private const string RelaunchCommandPropertyName = "System.AppUserModel.RelaunchCommand";
+    private const string RelaunchDisplayNamePropertyName = "System.AppUserModel.RelaunchDisplayNameResource";
+    private const string RelaunchIconPropertyName = "System.AppUserModel.RelaunchIconResource";
+    private static readonly Guid IPropertyStoreGuid = new("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+    private static readonly object s_taskbarIdentityLock = new();
+    private static string? s_processAppUserModelId;
+
+    private void PrepareTaskbarRelaunchIdentity()
+    {
+        var info = BuildTaskbarRelaunchInfo(Environment.ProcessPath, Environment.GetCommandLineArgs(), Title);
+        if (string.IsNullOrWhiteSpace(info.AppUserModelId))
+        {
+            return;
+        }
+
+        EnsureProcessAppUserModelId(info.AppUserModelId);
+    }
+
+    private void ApplyTaskbarRelaunchProperties()
+    {
+        if (Handle == nint.Zero)
+        {
+            return;
+        }
+
+        var info = BuildTaskbarRelaunchInfo(Environment.ProcessPath, Environment.GetCommandLineArgs(), Title);
+        if (string.IsNullOrWhiteSpace(info.AppUserModelId) ||
+            string.IsNullOrWhiteSpace(info.Command) ||
+            string.IsNullOrWhiteSpace(info.DisplayName) ||
+            !TryGetWindowPropertyStore(Handle, out var propertyStore))
+        {
+            return;
+        }
+
+        using (propertyStore)
+        {
+            if (!TrySetTaskbarProperty(propertyStore, AppUserModelIdPropertyName, info.AppUserModelId))
+            {
+                return;
+            }
+
+            var hasRelaunchCommand = TrySetTaskbarProperty(propertyStore, RelaunchCommandPropertyName, info.Command);
+            var hasRelaunchDisplayName = TrySetTaskbarProperty(propertyStore, RelaunchDisplayNamePropertyName, info.DisplayName);
+            if (!hasRelaunchCommand || !hasRelaunchDisplayName)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(info.IconResource))
+            {
+                _ = TrySetTaskbarProperty(propertyStore, RelaunchIconPropertyName, info.IconResource);
+            }
+
+            _ = propertyStore.Commit();
+        }
+    }
+
+    private static void EnsureProcessAppUserModelId(string appUserModelId)
+    {
+        if (string.IsNullOrWhiteSpace(appUserModelId))
+        {
+            return;
+        }
+
+        lock (s_taskbarIdentityLock)
+        {
+            if (string.Equals(s_processAppUserModelId, appUserModelId, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(s_processAppUserModelId))
+            {
+                return;
+            }
+
+            if (SetCurrentProcessExplicitAppUserModelID(appUserModelId) >= 0)
+            {
+                s_processAppUserModelId = appUserModelId;
+            }
+        }
+    }
+
+    internal static TaskbarRelaunchInfo BuildTaskbarRelaunchInfo(
+        string? processPath,
+        IReadOnlyList<string>? commandLineArgs,
+        string? windowTitle)
+    {
+        if (string.IsNullOrWhiteSpace(processPath))
+        {
+            return default;
+        }
+
+        var launcherPath = NormalizeLaunchPath(processPath)!;
+        var entryPath = ResolveEntryPointPath(launcherPath, commandLineArgs);
+        var displayNameSource = entryPath ?? launcherPath;
+        var displayName = BuildTaskbarDisplayName(displayNameSource, windowTitle);
+
+        List<string> parts =
+        [
+            QuoteCommandLineArgument(launcherPath)
+        ];
+
+        if (!string.IsNullOrWhiteSpace(entryPath))
+        {
+            parts.Add(QuoteCommandLineArgument(entryPath));
+        }
+
+        if (commandLineArgs != null)
+        {
+            for (int i = 1; i < commandLineArgs.Count; i++)
+            {
+                parts.Add(QuoteCommandLineArgument(commandLineArgs[i] ?? string.Empty));
+            }
+        }
+
+        return new TaskbarRelaunchInfo(
+            BuildTaskbarAppUserModelId(displayName),
+            string.Join(" ", parts),
+            displayName,
+            BuildTaskbarIconResource(displayNameSource));
+    }
+
+    private static bool TryGetWindowPropertyStore(nint hwnd, out PropertyStoreHandle propertyStore)
+    {
+        propertyStore = default;
+        if (hwnd == nint.Zero)
+        {
+            return false;
+        }
+
+        var propertyStoreGuid = IPropertyStoreGuid;
+        if (SHGetPropertyStoreForWindow(hwnd, ref propertyStoreGuid, out var propertyStorePointer) < 0 ||
+            propertyStorePointer == nint.Zero)
+        {
+            return false;
+        }
+
+        propertyStore = new PropertyStoreHandle(propertyStorePointer);
+        return true;
+    }
+
+    private static bool TrySetTaskbarProperty(PropertyStoreHandle propertyStore, string propertyName, string value)
+    {
+        if (propertyStore.IsInvalid ||
+            string.IsNullOrWhiteSpace(propertyName) ||
+            string.IsNullOrWhiteSpace(value) ||
+            PSGetPropertyKeyFromName(propertyName, out var propertyKey) < 0)
+        {
+            return false;
+        }
+
+        var propVariant = PROPVARIANT.FromString(value);
+        try
+        {
+            return propertyStore.SetValue(ref propertyKey, ref propVariant) >= 0;
+        }
+        finally
+        {
+            _ = PropVariantClear(ref propVariant);
+        }
+    }
+
+    private static string BuildTaskbarDisplayName(string path, string? windowTitle)
+    {
+        var fileName = string.Empty;
+        try
+        {
+            fileName = Path.GetFileNameWithoutExtension(path);
+        }
+        catch
+        {
+        }
+
+        if (!string.IsNullOrWhiteSpace(fileName))
+        {
+            return fileName;
+        }
+
+        if (!string.IsNullOrWhiteSpace(windowTitle))
+        {
+            return windowTitle;
+        }
+
+        return "Application";
+    }
+
+    private static string BuildTaskbarAppUserModelId(string displayName)
+    {
+        StringBuilder builder = new(Math.Min(displayName.Length + 4, MaxAppUserModelIdLength));
+        builder.Append("App.");
+
+        var previousWasSeparator = true;
+        foreach (var c in displayName)
+        {
+            if (char.IsLetterOrDigit(c))
+            {
+                builder.Append(c);
+                previousWasSeparator = false;
+            }
+            else if (!previousWasSeparator)
+            {
+                builder.Append('.');
+                previousWasSeparator = true;
+            }
+
+            if (builder.Length >= MaxAppUserModelIdLength)
+            {
+                break;
+            }
+        }
+
+        while (builder.Length > 4 && builder[^1] == '.')
+        {
+            builder.Length--;
+        }
+
+        if (builder.Length == 4)
+        {
+            builder.Append("Application");
+        }
+
+        return builder.ToString();
+    }
+
+    private static string? BuildTaskbarIconResource(string displayNameSource)
+    {
+        if (HasExecutableExtension(displayNameSource))
+        {
+            return $"{displayNameSource},0";
+        }
+
+        return null;
+    }
+
+    private static string? ResolveEntryPointPath(string launcherPath, IReadOnlyList<string>? commandLineArgs)
+    {
+        if (commandLineArgs == null || commandLineArgs.Count == 0 || string.IsNullOrWhiteSpace(commandLineArgs[0]))
+        {
+            return null;
+        }
+
+        var candidate = NormalizeLaunchPath(commandLineArgs[0]);
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return null;
+        }
+
+        if (PathsEqual(candidate, launcherPath))
+        {
+            return null;
+        }
+
+        return HasExecutableExtension(candidate) || candidate.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
+            ? candidate
+            : null;
+    }
+
+    private static string? NormalizeLaunchPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch
+        {
+            return path;
+        }
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        return string.Equals(left, right, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasExecutableExtension(string path)
+    {
+        return path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase);
+    }
+
+    internal static string QuoteCommandLineArgument(string argument)
+    {
+        argument ??= string.Empty;
+        if (argument.Length == 0)
+        {
+            return "\"\"";
+        }
+
+        var requiresQuotes = false;
+        foreach (var c in argument)
+        {
+            if (char.IsWhiteSpace(c) || c == '"')
+            {
+                requiresQuotes = true;
+                break;
+            }
+        }
+
+        if (!requiresQuotes)
+        {
+            return argument;
+        }
+
+        StringBuilder builder = new(argument.Length + 2);
+        builder.Append('"');
+
+        var backslashCount = 0;
+        foreach (var c in argument)
+        {
+            if (c == '\\')
+            {
+                backslashCount++;
+                continue;
+            }
+
+            if (c == '"')
+            {
+                builder.Append('\\', (backslashCount * 2) + 1);
+                builder.Append('"');
+                backslashCount = 0;
+                continue;
+            }
+
+            if (backslashCount > 0)
+            {
+                builder.Append('\\', backslashCount);
+                backslashCount = 0;
+            }
+
+            builder.Append(c);
+        }
+
+        if (backslashCount > 0)
+        {
+            builder.Append('\\', backslashCount * 2);
+        }
+
+        builder.Append('"');
+        return builder.ToString();
+    }
+
+    [LibraryImport("shell32.dll")]
+    private static partial int SHGetPropertyStoreForWindow(nint hwnd, ref Guid riid, out nint ppv);
+
+    [LibraryImport("shell32.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int SetCurrentProcessExplicitAppUserModelID(string appID);
+
+    [LibraryImport("propsys.dll", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial int PSGetPropertyKeyFromName(string pszCanonicalName, out PROPERTYKEY propkey);
+
+    [LibraryImport("ole32.dll")]
+    private static partial int PropVariantClear(ref PROPVARIANT pvar);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROPERTYKEY
+    {
+        public Guid fmtid;
+        public uint pid;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct PROPVARIANT
+    {
+        [FieldOffset(0)]
+        public ushort vt;
+
+        [FieldOffset(2)]
+        public ushort wReserved1;
+
+        [FieldOffset(4)]
+        public ushort wReserved2;
+
+        [FieldOffset(6)]
+        public ushort wReserved3;
+
+        [FieldOffset(8)]
+        public nint pszVal;
+
+        public static PROPVARIANT FromString(string value)
+        {
+            return new PROPVARIANT
+            {
+                vt = VT_LPWSTR,
+                pszVal = Marshal.StringToCoTaskMemUni(value)
+            };
+        }
+    }
+
+    private readonly unsafe struct PropertyStoreHandle : IDisposable
+    {
+        private readonly nint _instance;
+
+        public PropertyStoreHandle(nint instance)
+        {
+            _instance = instance;
+        }
+
+        public bool IsInvalid => _instance == nint.Zero;
+
+        public int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value)
+        {
+            var vtable = *(nint**)_instance;
+            var setValue = (delegate* unmanaged[Stdcall]<nint, PROPERTYKEY*, PROPVARIANT*, int>)vtable[6];
+            fixed (PROPERTYKEY* keyPtr = &key)
+            fixed (PROPVARIANT* valuePtr = &value)
+            {
+                return setValue(_instance, keyPtr, valuePtr);
+            }
+        }
+
+        public int Commit()
+        {
+            var vtable = *(nint**)_instance;
+            var commit = (delegate* unmanaged[Stdcall]<nint, int>)vtable[7];
+            return commit(_instance);
+        }
+
+        public void Dispose()
+        {
+            if (_instance == nint.Zero)
+            {
+                return;
+            }
+
+            var vtable = *(nint**)_instance;
+            var release = (delegate* unmanaged[Stdcall]<nint, uint>)vtable[2];
+            _ = release(_instance);
+        }
+    }
+
 }
+
 
 /// <summary>
 /// Specifies the state of a window.
@@ -11706,3 +13146,9 @@ public enum WindowStartupLocation
     /// </summary>
     CenterOwner
 }
+
+internal readonly record struct TaskbarRelaunchInfo(
+    string AppUserModelId,
+    string Command,
+    string DisplayName,
+    string? IconResource);

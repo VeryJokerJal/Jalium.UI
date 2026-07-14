@@ -1,6 +1,6 @@
 using Jalium.UI;
 using Jalium.UI.Input;
-using Jalium.UI.Input.Gestures;
+using Jalium.UI.Input.Internal.Gestures;
 
 namespace Jalium.UI.Tests;
 

@@ -3,6 +3,8 @@ using System.ComponentModel;
 using System.Globalization;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
+using IValueSerializerContext = Jalium.UI.Markup.IValueSerializerContext;
+using ValueSerializer = Jalium.UI.Markup.ValueSerializer;
 
 namespace Jalium.UI.Converters
 {
@@ -67,21 +69,46 @@ namespace Jalium.UI.Media
 {
     /// <summary>Represents a freezable collection of two-dimensional vectors.</summary>
     [TypeConverter(typeof(VectorCollectionConverter))]
-    public sealed class VectorCollection : AnimatableCollection<Vector>, IFormattable
+    public sealed class VectorCollection : Freezable, IList<Vector>, IList, IFormattable
     {
-        public VectorCollection()
-        {
-        }
+        private readonly AnimatableListStorage<Vector> _items;
 
-        public VectorCollection(int capacity)
-            : base(capacity)
-        {
-        }
+        public VectorCollection() => _items = CreateStorage();
+
+        public VectorCollection(int capacity) => _items = CreateStorage(capacity);
 
         public VectorCollection(IEnumerable<Vector> collection)
-            : base(collection)
         {
+            ArgumentNullException.ThrowIfNull(collection);
+            _items = CreateStorage(collection is ICollection<Vector> source ? source.Count : 0);
+            _items.AddRange(collection);
         }
+
+        public Vector this[int index] { get => _items[index]; set => _items[index] = value; }
+        object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<Vector>.Cast(value); }
+        public int Count => _items.Count;
+        bool ICollection<Vector>.IsReadOnly => _items.IsReadOnly;
+        bool IList.IsReadOnly => _items.IsReadOnly;
+        bool IList.IsFixedSize => _items.IsReadOnly;
+        bool ICollection.IsSynchronized => _items.IsSynchronized;
+        object ICollection.SyncRoot => this;
+        public void Add(Vector value) => _items.Add(value);
+        int IList.Add(object? value) { Add(AnimatableListStorage<Vector>.Cast(value)); return Count - 1; }
+        public void Clear() => _items.Clear();
+        public bool Contains(Vector value) => _items.Contains(value);
+        bool IList.Contains(object? value) => value is Vector vector && Contains(vector);
+        public void CopyTo(Vector[] array, int index) => _items.CopyTo(array, index);
+        void ICollection.CopyTo(Array array, int index) => _items.CopyTo(array, index);
+        public Enumerator GetEnumerator() => new(_items.GetEnumerator());
+        IEnumerator<Vector> IEnumerable<Vector>.GetEnumerator() => GetEnumerator();
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+        public int IndexOf(Vector value) => _items.IndexOf(value);
+        int IList.IndexOf(object? value) => value is Vector vector ? IndexOf(vector) : -1;
+        public void Insert(int index, Vector value) => _items.Insert(index, value);
+        void IList.Insert(int index, object? value) => Insert(index, AnimatableListStorage<Vector>.Cast(value));
+        public bool Remove(Vector value) => _items.Remove(value);
+        void IList.Remove(object? value) { if (value is Vector vector) Remove(vector); }
+        public void RemoveAt(int index) => _items.RemoveAt(index);
 
         public static VectorCollection Parse(string source)
         {
@@ -97,10 +124,34 @@ namespace Jalium.UI.Media
         public new VectorCollection Clone() => (VectorCollection)base.Clone();
         public new VectorCollection CloneCurrentValue() => (VectorCollection)base.CloneCurrentValue();
         protected override Freezable CreateInstanceCore() => new VectorCollection();
+        protected override bool FreezeCore(bool isChecking) => base.FreezeCore(isChecking) && _items.Freeze(isChecking);
+        protected override void CloneCore(Freezable source) { base.CloneCore(source); _items.CopyFrom(((VectorCollection)source)._items, AnimatableListCloneMode.Clone); }
+        protected override void CloneCurrentValueCore(Freezable source) { base.CloneCurrentValueCore(source); _items.CopyFrom(((VectorCollection)source)._items, AnimatableListCloneMode.CloneCurrentValue); }
+        protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((VectorCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
+        protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((VectorCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
+
+        private AnimatableListStorage<Vector> CreateStorage(int capacity = 0) => new(
+            () => ReadPreamble(),
+            () => WritePreamble(),
+            () => WritePostscript(),
+            (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
+            () => IsFrozen,
+            capacity);
 
         public override string ToString() => ToString(CultureInfo.CurrentCulture);
         public string ToString(IFormatProvider? provider) => string.Join(" ", this.Select(vector => vector.ToString(provider)));
         string IFormattable.ToString(string? format, IFormatProvider? formatProvider) => string.Join(" ", this.Select(vector => ((IFormattable)vector).ToString(format, formatProvider)));
+
+        public struct Enumerator : IEnumerator<Vector>
+        {
+            private List<Vector>.Enumerator _inner;
+            internal Enumerator(List<Vector>.Enumerator inner) => _inner = inner;
+            public Vector Current => _inner.Current;
+            object IEnumerator.Current => Current;
+            public bool MoveNext() => _inner.MoveNext();
+            public void Reset() => ((IEnumerator)_inner).Reset();
+            public void Dispose() => _inner.Dispose();
+        }
     }
 
     public sealed class VectorCollectionConverter : TypeConverter
@@ -286,7 +337,13 @@ namespace Jalium.UI.Media.Converters
     {
         public override bool CanConvertFromString(string value, IValueSerializerContext? context) => value is not null;
         public override bool CanConvertToString(object value, IValueSerializerContext? context) => value is MatrixTransform;
-        public override object ConvertFromString(string value, IValueSerializerContext? context) => new MatrixTransform(Matrix.Parse(value));
+        public override object ConvertFromString(string value, IValueSerializerContext? context)
+        {
+            ArgumentNullException.ThrowIfNull(value);
+            return string.Equals(value.Trim(), "Identity", StringComparison.OrdinalIgnoreCase)
+                ? new MatrixTransform(Matrix.Identity)
+                : new MatrixTransform(Matrix.Parse(value));
+        }
         public override string ConvertToString(object value, IValueSerializerContext? context) => value is MatrixTransform transform ? transform.Value.ToString(CultureInfo.InvariantCulture) : throw new ArgumentException("Value must be a MatrixTransform.", nameof(value));
     }
 }

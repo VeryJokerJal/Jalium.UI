@@ -2,6 +2,8 @@ using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
+using StatusBar = Jalium.UI.Controls.Primitives.StatusBar;
+using StatusBarItem = Jalium.UI.Controls.Primitives.StatusBarItem;
 
 namespace Jalium.UI.Tests;
 

@@ -56,6 +56,8 @@ public class WebBrowserAdapterTests
         browser.ObjectForScripting = null;
         Assert.Null(browser.ObjectForScripting);
         Assert.Throws<ArgumentException>(() => browser.ObjectForScripting = new HiddenScriptBridge());
+        Assert.Throws<ArgumentException>(() => browser.ObjectForScripting = new PrivateScriptBridge());
+        Assert.Throws<ArgumentException>(() => browser.ObjectForScripting = new GenericScriptBridge<int>());
     }
 
     [Fact]
@@ -129,6 +131,16 @@ public class WebBrowserAdapterTests
 
     [ComVisible(false)]
     public sealed class HiddenScriptBridge
+    {
+    }
+
+    [ComVisible(true)]
+    private sealed class PrivateScriptBridge
+    {
+    }
+
+    [ComVisible(true)]
+    public sealed class GenericScriptBridge<T>
     {
     }
 }

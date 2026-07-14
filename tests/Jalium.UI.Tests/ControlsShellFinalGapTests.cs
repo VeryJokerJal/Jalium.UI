@@ -3,7 +3,6 @@ using System.Reflection;
 using System.Runtime.Serialization;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
-using Jalium.UI.Controls.Printing;
 using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -102,7 +101,7 @@ public sealed class ControlsShellFinalGapTests
     public void ScrollContentPresenterOwnsContentScrollAndFindsItsAdornerLayer()
     {
         Assert.Equal(
-            "Jalium.UI.Controls.Primitives.ScrollContentPresenter",
+            "Jalium.UI.Controls.ScrollContentPresenter",
             typeof(ScrollContentPresenter).FullName);
         AssertField<DependencyProperty>(
             typeof(ScrollContentPresenter),
@@ -124,23 +123,34 @@ public sealed class ControlsShellFinalGapTests
     [Fact]
     public void StatusBarUsesContainerTemplateContractsAndSeparatorKey()
     {
-        Assert.Equal("Jalium.UI.Controls.StatusBar", typeof(StatusBar).FullName);
+        Assert.Equal("Jalium.UI.Controls.Primitives.StatusBar", typeof(StatusBar).FullName);
+        Assert.Equal("Jalium.UI.Controls.Primitives.StatusBarItem", typeof(StatusBarItem).FullName);
+        Assert.Null(typeof(StatusBar).Assembly.GetType("Jalium.UI.Controls.StatusBar"));
+        Assert.Null(typeof(StatusBar).Assembly.GetType("Jalium.UI.Controls.StatusBarItem"));
         AssertField<DependencyProperty>(typeof(StatusBar), nameof(StatusBar.ItemContainerTemplateSelectorProperty));
         AssertField<DependencyProperty>(typeof(StatusBar), nameof(StatusBar.UsesItemContainerTemplateProperty));
+        Assert.Same(MenuBase.ItemContainerTemplateSelectorProperty, StatusBar.ItemContainerTemplateSelectorProperty);
+        Assert.Same(MenuBase.UsesItemContainerTemplateProperty, StatusBar.UsesItemContainerTemplateProperty);
         Assert.Equal(typeof(ResourceKey), typeof(StatusBar).GetProperty(nameof(StatusBar.SeparatorStyleKey))!.PropertyType);
+        Assert.Null(typeof(StatusBar).GetProperty("SeparatorBrush", BindingFlags.Public | BindingFlags.Instance));
+        Assert.Null(typeof(StatusBar).GetField("SeparatorBrushProperty", BindingFlags.Public | BindingFlags.Static));
+        Assert.Null(typeof(StatusBarItem).GetProperty("Separator", BindingFlags.Public | BindingFlags.Instance));
+        Assert.Null(typeof(StatusBarItem).GetField("SeparatorProperty", BindingFlags.Public | BindingFlags.Static));
 
         var template = new ControlsItemContainerTemplate();
-        template.SetVisualTree(static () => new Jalium.UI.Controls.StatusBarItem());
+        template.SetVisualTree(static () => new Jalium.UI.Controls.Primitives.StatusBarItem());
         var statusBar = new ProbeStatusBar
         {
             UsesItemContainerTemplate = true,
             ItemContainerTemplateSelector = new FixedContainerTemplateSelector(template),
         };
 
-        Assert.IsType<Jalium.UI.Controls.StatusBarItem>(statusBar.CreateContainer("ready"));
+        Assert.IsType<Jalium.UI.Controls.Primitives.StatusBarItem>(statusBar.CreateContainer("ready"));
         ComponentResourceKey separatorKey = Assert.IsType<ComponentResourceKey>(StatusBar.SeparatorStyleKey);
         Assert.Equal(typeof(StatusBar), separatorKey.TypeInTargetAssembly);
         Assert.Equal(nameof(StatusBar.SeparatorStyleKey), separatorKey.ResourceId);
+        Assert.Same(typeof(StatusBar), Jalium.UI.Markup.XamlTypeRegistry.GetType(nameof(StatusBar)));
+        Assert.Same(typeof(StatusBarItem), Jalium.UI.Markup.XamlTypeRegistry.GetType(nameof(StatusBarItem)));
     }
 
     [Fact]

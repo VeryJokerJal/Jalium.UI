@@ -1,5 +1,6 @@
 ﻿using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 using Jalium.UI.Markup;
 
 namespace Jalium.UI.Controls;

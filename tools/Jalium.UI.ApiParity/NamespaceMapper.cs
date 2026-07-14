@@ -42,7 +42,6 @@ internal sealed class NamespaceMapper
         {
             Prefixes =
             [
-                new PrefixRule("System.Windows.Shapes", "Jalium.UI.Controls.Shapes"),
                 new PrefixRule("System.Windows", "Jalium.UI"),
                 new PrefixRule("System.Xaml", "Jalium.UI.Xaml"),
             ],

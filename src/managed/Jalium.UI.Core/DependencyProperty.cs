@@ -665,10 +665,10 @@ public class PropertyMetadata
     /// <see cref="FrameworkPropertyMetadata"/> or the 4-arg <see cref="PropertyMetadata"/>
     /// constructor so the value is locked at construction time.
     /// </remarks>
-    public bool Inherits
+    internal bool Inherits
     {
         get => _inherits;
-        internal set
+        set
         {
             ThrowIfSealed();
             _inherits = value;

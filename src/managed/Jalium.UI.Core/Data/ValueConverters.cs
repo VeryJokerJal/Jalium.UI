@@ -3,37 +3,6 @@ using System.Globalization;
 namespace Jalium.UI.Data;
 
 /// <summary>
-/// Converts a boolean value to a Visibility value.
-/// </summary>
-public sealed class BooleanToVisibilityConverter : IValueConverter
-{
-    /// <summary>
-    /// Gets or sets a value indicating whether to invert the conversion.
-    /// </summary>
-    public bool IsInverted { get; set; }
-
-    /// <summary>
-    /// Gets or sets the visibility to use when the value is false (or true if inverted).
-    /// </summary>
-    public Visibility FalseVisibility { get; set; } = Visibility.Collapsed;
-
-    /// <inheritdoc />
-    public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
-    {
-        var boolValue = value is bool b && b;
-        if (IsInverted) boolValue = !boolValue;
-        return boolValue ? Visibility.Visible : FalseVisibility;
-    }
-
-    /// <inheritdoc />
-    public object? ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture)
-    {
-        var isVisible = value is Visibility v && v == Visibility.Visible;
-        return IsInverted ? !isVisible : isVisible;
-    }
-}
-
-/// <summary>
 /// Inverts a boolean value.
 /// </summary>
 public sealed class InverseBooleanConverter : IValueConverter

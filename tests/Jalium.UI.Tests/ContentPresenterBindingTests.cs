@@ -4,6 +4,7 @@ using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Data;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 

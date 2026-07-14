@@ -2,7 +2,7 @@ using Jalium.UI.Media;
 using Jalium.UI.Media.Effects;
 using Jalium.UI.Media.Media3D;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Media;
 
 /// <summary>
 /// Provides utility methods that perform common tasks involving nodes in a visual tree.

@@ -8,7 +8,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Displays a flow document in page, two-page, or continuous-scroll mode.
 /// </summary>
-[ContentProperty("Document")]
+[Jalium.UI.Markup.ContentProperty("Document")]
 public class FlowDocumentReader : Control
 {
     private readonly FlowDocumentPageViewer _pageViewer;
@@ -529,9 +529,7 @@ public class FlowDocumentReader : Control
 
         _search.Attach(document);
         _pageViewer.Document = document;
-        _twoPageViewer.Document = document is null
-            ? null
-            : new FlowDocumentPageViewer.FlowDocumentPaginatorSource(document);
+        _twoPageViewer.Document = document;
         _scrollViewer.Document = document;
         SetValue(PageCountPropertyKey, FlowDocumentViewerSupport.GetPageCount(document));
         GoToPageCore(PageCount > 0 ? 1 : 0);

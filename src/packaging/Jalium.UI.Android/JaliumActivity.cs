@@ -4,6 +4,7 @@ using Android.App;
 using Android.OS;
 using Android.Views;
 using Jalium.UI.Controls.Platform;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI;
 
@@ -18,8 +19,11 @@ namespace Jalium.UI;
 public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
 {
     private SurfaceView? _surfaceView;
-    private Thread? _jaliumThread;
-    private static volatile bool s_appStarted;
+    private long _activityGeneration;
+
+    private static readonly object s_appThreadGate = new();
+    private static Thread? s_jaliumThread;
+    private static WeakReference<JaliumActivity>? s_pendingActivity;
 
     /// <summary>
     /// Builds the <see cref="JaliumApp"/> that drives this activity. Typically this
@@ -34,6 +38,8 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
     {
         base.OnCreate(savedInstanceState);
 
+        _activityGeneration = AndroidActivityBridge.RegisterActivity();
+
         var metrics = Resources!.DisplayMetrics!;
         float density = metrics.Density;
         int refreshRate = 60;
@@ -41,6 +47,17 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
             refreshRate = (int)WindowManager.DefaultDisplay.RefreshRate;
 
         AndroidActivityBridge.Initialize(density, refreshRate);
+
+        try
+        {
+            Java.Interop.JniEnvironment.References.GetJavaVM(out nint javaVm);
+            if (javaVm != nint.Zero)
+                AndroidActivityBridge.SetJniEnv(javaVm, Handle);
+        }
+        catch (Exception ex)
+        {
+            Android.Util.Log.Warn("JaliumUI", $"Unable to initialize JNI bridge: {ex.Message}");
+        }
 
         _surfaceView = new SurfaceView(this);
         _surfaceView.Holder!.SetFormat(Android.Graphics.Format.Rgba8888);
@@ -55,7 +72,7 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
     public void SurfaceChanged(ISurfaceHolder holder, Android.Graphics.Format format, int width, int height)
     {
         nint surface = holder.Surface!.Handle;
-        nint nativeWindow;
+        nint nativeWindow = nint.Zero;
         try
         {
             nativeWindow = ANativeWindow_fromSurface(Android.Runtime.JNIEnv.Handle, surface);
@@ -65,39 +82,188 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
             nativeWindow = nint.Zero;
         }
 
-        // Pass the surfaceChanged width/height straight through: they are the
-        // authoritative post-rotation surface dimensions. On a device rotation
-        // (configChanges keeps the Activity alive) this re-dispatches a RESIZE with
-        // the swapped dims so the UI re-lays-out for the new orientation.
-        AndroidActivityBridge.OnNativeWindowCreated(nativeWindow, width, height);
-
-        if (!s_appStarted)
+        bool accepted = false;
+        try
         {
-            s_appStarted = true;
-            _jaliumThread = new Thread(RunJaliumApp)
-            {
-                Name = "JaliumUI",
-                IsBackground = true
-            };
-            _jaliumThread.Start();
+            // Pass the authoritative post-rotation surface dimensions through.
+            // The bridge synchronously serializes replacement/resize onto the
+            // Jalium UI thread once its dispatcher is ready.
+            accepted = AndroidActivityBridge.OnNativeWindowCreated(
+                nativeWindow, width, height, _activityGeneration);
         }
+        catch (Exception ex)
+        {
+            // Never let a lifecycle exception escape Android's main Looper.
+            // The bridge has already put the window into a detached-safe state
+            // when an attach operation fails.
+            Android.Util.Log.Error("JaliumUI", $"SurfaceChanged failed: {ex}");
+        }
+        finally
+        {
+            // ANativeWindow_fromSurface() acquired this temporary reference.
+            // The native platform bridge acquires its own reference before the
+            // synchronous call returns, so the Activity must always release its
+            // copy (including stale-generation and failure paths).
+            if (nativeWindow != nint.Zero)
+            {
+                try { ANativeWindow_release(nativeWindow); }
+                catch (Exception ex) { Android.Util.Log.Error("JaliumUI", $"ANativeWindow_release failed: {ex}"); }
+            }
+        }
+
+        if (accepted)
+            EnsureJaliumThreadStarted();
     }
 
     public void SurfaceDestroyed(ISurfaceHolder holder)
     {
-        AndroidActivityBridge.OnNativeWindowDestroyed();
+        // This call is deliberately synchronous.  It does not return until the
+        // Jalium UI thread has stopped touching the Surface and disposed its RT.
+        try
+        {
+            _ = AndroidActivityBridge.OnNativeWindowDestroyed(_activityGeneration);
+        }
+        catch (Exception ex)
+        {
+            Android.Util.Log.Error("JaliumUI", $"SurfaceDestroyed failed: {ex}");
+        }
+    }
+
+    private void EnsureJaliumThreadStarted()
+    {
+        lock (s_appThreadGate)
+        {
+            s_pendingActivity = new WeakReference<JaliumActivity>(this);
+            if (s_jaliumThread?.IsAlive == true)
+                return;
+
+            if (AndroidActivityBridge.TryReserveUiThreadStart(_activityGeneration))
+                _ = StartJaliumThreadLocked(this);
+        }
+    }
+
+    private static bool StartJaliumThreadLocked(JaliumActivity activity)
+    {
+        var thread = new Thread(activity.RunJaliumApp)
+        {
+            Name = "JaliumUI",
+            IsBackground = true
+        };
+        s_jaliumThread = thread;
+        try
+        {
+            thread.Start();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            s_jaliumThread = null;
+            AndroidActivityBridge.CancelUiThreadStart(activity._activityGeneration);
+            Android.Util.Log.Error("JaliumUI", $"Unable to start JaliumUI thread: {ex}");
+            return false;
+        }
     }
 
     private void RunJaliumApp()
     {
+        Dispatcher? dispatcher = null;
+        JaliumApp? app = null;
+        ExitEventHandler? exitHandler = null;
+        bool bridgeReady = false;
         try
         {
-            using var app = CreateHostedApp();
+            // Activity callbacks must target this dedicated UI dispatcher, not
+            // Android's main thread (and not a stale dispatcher from a prior run).
+            Dispatcher.SetAsMainThread();
+            dispatcher = Dispatcher.CurrentDispatcher;
+            if (!AndroidActivityBridge.MarkUiThreadReady(_activityGeneration))
+            {
+                Android.Util.Log.Warn(
+                    "JaliumUI",
+                    $"UI thread start rejected for stale or unavailable Activity generation {_activityGeneration}.");
+                return;
+            }
+            bridgeReady = true;
+            app = CreateHostedApp();
+            exitHandler = static (_, _) =>
+                AndroidActivityBridge.MarkUiThreadStopping(terminalOnFailure: true);
+            app.Application.Exit += exitHandler;
             app.Run();
         }
         catch (Exception ex)
         {
             Android.Util.Log.Error("JaliumUI", $"JaliumApp.Run FATAL: {ex}");
+        }
+        finally
+        {
+            // Exit normally marks Stopping before Application.Cleanup. This is
+            // also a direct same-thread fallback for unexpected loop exits.
+            bool stoppedSafely;
+            if (bridgeReady)
+            {
+                stoppedSafely = AndroidActivityBridge.MarkUiThreadStopping(terminalOnFailure: true);
+                if (!stoppedSafely)
+                {
+                    // Publish Failed before host/application disposal. Those can
+                    // block, while Android's main thread may already be delivering
+                    // another synchronous Surface callback.
+                    AndroidActivityBridge.MarkUiThreadStopFailed();
+                }
+            }
+            else
+            {
+                AndroidActivityBridge.CancelUiThreadStart(_activityGeneration);
+                stoppedSafely = true;
+            }
+
+            if (app != null && exitHandler != null)
+            {
+                try { app.Application.Exit -= exitHandler; }
+                catch { /* application cleanup may already have detached state */ }
+            }
+
+            try { app?.Dispose(); }
+            catch (Exception ex) { Android.Util.Log.Error("JaliumUI", $"JaliumApp.Dispose failed: {ex}"); }
+
+            if (bridgeReady && stoppedSafely)
+            {
+                AndroidActivityBridge.MarkUiThreadStopped();
+            }
+            else if (bridgeReady)
+            {
+                Android.Util.Log.Error(
+                    "JaliumUI",
+                    "UI loop exited before Android Surface/Window teardown completed; replacement thread suppressed.");
+            }
+
+            if (dispatcher != null)
+            {
+                try { dispatcher.ClearAsMainThread(); }
+                catch (Exception ex) { Android.Util.Log.Error("JaliumUI", $"Dispatcher main-slot clear failed: {ex}"); }
+                try { dispatcher.DisposeCore(); }
+                catch (Exception ex) { Android.Util.Log.Error("JaliumUI", $"Dispatcher dispose failed: {ex}"); }
+            }
+
+            lock (s_appThreadGate)
+            {
+                if (ReferenceEquals(s_jaliumThread, Thread.CurrentThread))
+                    s_jaliumThread = null;
+
+                // If a new Activity appeared while the previous application was
+                // already shutting down, make sure its one SurfaceChanged callback
+                // is sufficient to start a replacement Jalium thread.
+                if (stoppedSafely &&
+                    s_pendingActivity?.TryGetTarget(out var pending) == true &&
+                    AndroidActivityBridge.IsCurrentActivity(pending._activityGeneration) &&
+                    AndroidActivityBridge.TryReserveUiThreadStart(pending._activityGeneration))
+                {
+                    _ = StartJaliumThreadLocked(pending);
+                }
+                else if (stoppedSafely)
+                {
+                    s_pendingActivity = null;
+                }
+            }
         }
     }
 
@@ -242,29 +408,36 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
     protected override void OnPause()
     {
         base.OnPause();
-        AndroidActivityBridge.OnPause();
+        AndroidActivityBridge.OnPause(_activityGeneration);
     }
 
     protected override void OnResume()
     {
         base.OnResume();
-        AndroidActivityBridge.OnResume();
+        AndroidActivityBridge.OnResume(_activityGeneration);
     }
 
     protected override void OnDestroy()
     {
-        AndroidActivityBridge.OnDestroy();
+        // Configuration replacement keeps the process-level Jalium application
+        // alive.  A late destroy from the old Activity generation must not shut
+        // down a newer Activity or detach its Surface.
+        if (!IsChangingConfigurations)
+            AndroidActivityBridge.OnDestroy(_activityGeneration);
         base.OnDestroy();
     }
 
     public override void OnLowMemory()
     {
         base.OnLowMemory();
-        AndroidActivityBridge.OnLowMemory();
+        AndroidActivityBridge.OnLowMemory(_activityGeneration);
     }
 
     #endregion
 
     [DllImport("android")]
     private static extern nint ANativeWindow_fromSurface(nint jniEnv, nint surface);
+
+    [DllImport("android")]
+    private static extern void ANativeWindow_release(nint nativeWindow);
 }

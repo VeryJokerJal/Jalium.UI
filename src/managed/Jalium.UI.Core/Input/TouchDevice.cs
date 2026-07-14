@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Input;
 

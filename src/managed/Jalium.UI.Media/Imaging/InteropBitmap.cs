@@ -4,7 +4,10 @@ namespace Jalium.UI.Media.Imaging;
 /// Provides interop support for unmanaged bitmap surfaces. This class wraps a shared
 /// memory section (HBITMAP or similar) and allows WPF-style rendering of native bitmaps.
 /// </summary>
-public sealed class InteropBitmap : BitmapSource
+// The WPF-compatible public surface lives in Jalium.UI.Interop.InteropBitmap.
+// Keep this small historical implementation available only to the in-assembly
+// imaging helpers; exposing both names makes a normal `using` set ambiguous.
+internal sealed class InteropBitmap : BitmapSource
 {
     private int _pixelWidth;
     private int _pixelHeight;

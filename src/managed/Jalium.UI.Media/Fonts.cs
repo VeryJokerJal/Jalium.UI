@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using Jalium.UI.Controls.Helpers;
 
 namespace Jalium.UI.Media;
 
@@ -69,14 +70,31 @@ public static class Fonts
 
     private static ICollection<FontFamily> GetSystemFontFamilies()
     {
-        var families = new List<FontFamily>();
-        // Common system fonts
-        families.Add(new FontFamily(Jalium.UI.FrameworkElement.DefaultFontFamilyName));
-        families.Add(new FontFamily("Arial"));
-        families.Add(new FontFamily("Times New Roman"));
-        families.Add(new FontFamily("Consolas"));
-        families.Add(new FontFamily("Courier New"));
-        return new ReadOnlyCollection<FontFamily>(families);
+        return BuildSystemFontFamilies(FontEnumerationHelper.EnumerateSystemFontFamilies());
+    }
+
+    internal static ICollection<FontFamily> BuildSystemFontFamilies(IEnumerable<string>? discoveredNames)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (discoveredNames != null)
+        {
+            foreach (string name in discoveredNames)
+            {
+                if (!string.IsNullOrWhiteSpace(name))
+                    names.Add(name.Trim());
+            }
+        }
+
+        // Native text/Fontconfig is optional in managed-only deployments. Do
+        // not invent an installed font inventory there; retain only the
+        // framework default so type initialization and font dialogs remain safe.
+        if (names.Count == 0)
+            names.Add(Jalium.UI.FrameworkElement.DefaultFontFamilyName);
+
+        string[] ordered = names.ToArray();
+        Array.Sort(ordered, StringComparer.CurrentCultureIgnoreCase);
+        return new ReadOnlyCollection<FontFamily>(
+            ordered.Select(static name => new FontFamily(name)).ToArray());
     }
 
     private static ICollection<Typeface> GetSystemTypefaces()
@@ -90,6 +108,10 @@ public static class Fonts
 /// </summary>
 public abstract class ImageMetadata : Freezable
 {
+    internal ImageMetadata()
+    {
+    }
+
     /// <summary>
     /// Creates a modifiable clone of this ImageMetadata.
     /// </summary>
@@ -97,14 +119,6 @@ public abstract class ImageMetadata : Freezable
 
     /// <summary>Creates a modifiable copy using current property values.</summary>
     public new virtual ImageMetadata CloneCurrentValue() => (ImageMetadata)base.CloneCurrentValue();
-}
-
-/// <summary>
-/// Provides metadata for bitmap images.
-/// </summary>
-public class BitmapMetadataBase : ImageMetadata
-{
-    protected override Freezable CreateInstanceCore() => new BitmapMetadataBase();
 }
 
 /// <summary>

@@ -1,16 +1,20 @@
 ﻿using Jalium.UI.Documents;
 using Jalium.UI.Input;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// A control that displays and allows editing of rich text content using a FlowDocument.
 /// </summary>
-public class RichTextBox : Control, IImeSupport
+public class RichTextBox : TextBoxBase, IImeSupport
 {
+    internal override bool UsesDefaultTextInputHandlers => false;
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -43,27 +47,27 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Whether the caret is currently visible (for blinking).
     /// </summary>
-    private bool _caretVisible = true;
+    private new bool _caretVisible = true;
 
     /// <summary>
     /// The current caret opacity (0.0 to 1.0) for smooth animation.
     /// </summary>
-    private double _caretOpacity = 1.0;
+    private new double _caretOpacity = 1.0;
 
     /// <summary>
     /// The last time the caret blinked.
     /// </summary>
-    private DateTime _lastCaretBlink;
+    private new DateTime _lastCaretBlink;
 
     /// <summary>
     /// The caret blink interval in milliseconds.
     /// </summary>
-    private const int CaretBlinkInterval = 530;
+    private new const int CaretBlinkInterval = 530;
 
     /// <summary>
     /// The duration of the fade animation in milliseconds.
     /// </summary>
-    private const int CaretFadeDuration = 150;
+    private new const int CaretFadeDuration = 150;
 
     /// <summary>
     /// Timer for caret animation.
@@ -81,22 +85,22 @@ public class RichTextBox : Control, IImeSupport
     /// RichTextBox — crucial because RichTextBox typically has a large visual
     /// surface (document body) that would otherwise be redrawn every 530ms.
     /// </summary>
-    private Rect _lastRenderedCaretRect = Rect.Empty;
+    private new Rect _lastRenderedCaretRect = Rect.Empty;
 
     /// <summary>
     /// Whether the user is currently selecting text.
     /// </summary>
-    private bool _isSelecting;
+    private new bool _isSelecting;
 
     /// <summary>
     /// The anchor point for selection extension.
     /// </summary>
-    private TextPointer? _selectionAnchor;
+    private new TextPointer? _selectionAnchor;
 
     /// <summary>
     /// Whether the current drag gesture should extend selection by whole words.
     /// </summary>
-    private bool _isWordSelecting;
+    private new bool _isWordSelecting;
 
     /// <summary>
     /// The starting document offset of the word selected by the double-click anchor.
@@ -111,34 +115,32 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// The horizontal scroll offset.
     /// </summary>
-    private double _horizontalOffset;
+    private new double _horizontalOffset;
 
     /// <summary>
     /// The vertical scroll offset.
     /// </summary>
-    private double _verticalOffset;
+    private new double _verticalOffset;
 
     /// <summary>
     /// The undo stack.
     /// </summary>
-    private readonly Stack<DocumentState> _undoStack = new();
+    private new readonly Stack<DocumentState> _undoStack = new();
 
     /// <summary>
     /// The redo stack.
     /// </summary>
-    private readonly Stack<DocumentState> _redoStack = new();
+    private new readonly Stack<DocumentState> _redoStack = new();
 
     /// <summary>
     /// Whether an undo/redo operation is in progress.
     /// </summary>
-    private bool _isUndoRedoing;
+    private new bool _isUndoRedoing;
 
     // Double/Triple click
     private DateTime _lastClickTime;
     private int _clickCount;
     private Point _lastClickPosition;
-    private const int DoubleClickTime = 500;
-    private const double DoubleClickDistance = 4;
 
     // Layout cache
     private FlowDocumentLayoutInfo? _layoutCache;
@@ -154,96 +156,6 @@ public class RichTextBox : Control, IImeSupport
 
     #region Dependency Properties
 
-    /// <summary>
-    /// Identifies the IsReadOnly dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
-    public static readonly DependencyProperty IsReadOnlyProperty =
-        DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(RichTextBox),
-            new PropertyMetadata(false, OnIsReadOnlyChangedStatic));
-
-    private static void OnIsReadOnlyChangedStatic(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is RichTextBox rtb && rtb.IsKeyboardFocused)
-        {
-            rtb.FindHostWindow()?.RefreshInputMethodAssociation();
-        }
-    }
-
-    private Window? FindHostWindow()
-    {
-        for (Visual? current = this; current != null; current = current.VisualParent)
-        {
-            if (current is Window w)
-                return w;
-        }
-        return null;
-    }
-
-    /// <summary>
-    /// Identifies the AcceptsTab dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
-    public static readonly DependencyProperty AcceptsTabProperty =
-        DependencyProperty.Register(nameof(AcceptsTab), typeof(bool), typeof(RichTextBox),
-            new PropertyMetadata(false));
-
-    /// <summary>
-    /// Identifies the SelectionBrush dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty SelectionBrushProperty =
-        DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(RichTextBox),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
-
-    /// <summary>
-    /// Identifies the CaretBrush dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public static readonly DependencyProperty CaretBrushProperty =
-        DependencyProperty.Register(nameof(CaretBrush), typeof(Brush), typeof(RichTextBox),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
-
-    /// <summary>
-    /// Identifies the IsUndoEnabled dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsUndoEnabledProperty =
-        DependencyProperty.Register(nameof(IsUndoEnabled), typeof(bool), typeof(RichTextBox),
-            new PropertyMetadata(true));
-
-    /// <summary>
-    /// Identifies the UndoLimit dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty UndoLimitProperty =
-        DependencyProperty.Register(nameof(UndoLimit), typeof(int), typeof(RichTextBox),
-            new PropertyMetadata(100));
-
-    /// <summary>
-    /// Identifies the HorizontalScrollBarVisibility dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty =
-        DependencyProperty.Register(nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(RichTextBox),
-            new PropertyMetadata(ScrollBarVisibility.Auto));
-
-    /// <summary>
-    /// Identifies the VerticalScrollBarVisibility dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
-        DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(RichTextBox),
-            new PropertyMetadata(ScrollBarVisibility.Auto));
-
-    /// <summary>
-    /// Identifies the IsSpellCheckEnabled dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public static readonly DependencyProperty IsSpellCheckEnabledProperty =
-        DependencyProperty.Register(nameof(IsSpellCheckEnabled), typeof(bool), typeof(RichTextBox),
-            new PropertyMetadata(false, OnSpellCheckEnabledChanged));
-
     /// <summary>Identifies the IsDocumentEnabled dependency property.</summary>
     public static readonly DependencyProperty IsDocumentEnabledProperty =
         DependencyProperty.Register(nameof(IsDocumentEnabled), typeof(bool), typeof(RichTextBox),
@@ -252,96 +164,6 @@ public class RichTextBox : Control, IImeSupport
     #endregion
 
     #region CLR Properties
-
-    /// <summary>
-    /// Gets or sets whether the control is read-only.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
-    public bool IsReadOnly
-    {
-        get => (bool)GetValue(IsReadOnlyProperty)!;
-        set => SetValue(IsReadOnlyProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets whether the control accepts Tab key for tab characters.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
-    public bool AcceptsTab
-    {
-        get => (bool)GetValue(AcceptsTabProperty)!;
-        set => SetValue(AcceptsTabProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the brush for text selection highlighting.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public Brush? SelectionBrush
-    {
-        get => (Brush?)GetValue(SelectionBrushProperty);
-        set => SetValue(SelectionBrushProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the brush for the caret.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public Brush? CaretBrush
-    {
-        get => (Brush?)GetValue(CaretBrushProperty);
-        set => SetValue(CaretBrushProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets whether undo is enabled.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsUndoEnabled
-    {
-        get => (bool)GetValue(IsUndoEnabledProperty)!;
-        set => SetValue(IsUndoEnabledProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the maximum number of undo entries.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public int UndoLimit
-    {
-        get => (int)GetValue(UndoLimitProperty)!;
-        set => SetValue(UndoLimitProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the horizontal scroll bar visibility.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public ScrollBarVisibility HorizontalScrollBarVisibility
-    {
-        get => (ScrollBarVisibility)GetValue(HorizontalScrollBarVisibilityProperty)!;
-        set => SetValue(HorizontalScrollBarVisibilityProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets the vertical scroll bar visibility.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public ScrollBarVisibility VerticalScrollBarVisibility
-    {
-        get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty)!;
-        set => SetValue(VerticalScrollBarVisibilityProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets whether spell checking is enabled.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public bool IsSpellCheckEnabled
-    {
-        get => (bool)GetValue(IsSpellCheckEnabledProperty)!;
-        set => SetValue(IsSpellCheckEnabledProperty, value);
-    }
 
     /// <summary>Gets or sets whether UI elements hosted in the document are enabled.</summary>
     public bool IsDocumentEnabled
@@ -403,20 +225,11 @@ public class RichTextBox : Control, IImeSupport
         }
     }
 
-    /// <summary>
-    /// Gets whether undo can be performed.
-    /// </summary>
-    public bool CanUndo => _undoStack.Count > 0;
+    internal override bool CanUndoCore => _undoStack.Count > 0;
 
-    /// <summary>
-    /// Gets whether redo can be performed.
-    /// </summary>
-    public bool CanRedo => _redoStack.Count > 0;
+    internal override bool CanRedoCore => _redoStack.Count > 0;
 
-    /// <summary>
-    /// Gets or sets the horizontal scroll offset.
-    /// </summary>
-    public double HorizontalOffset
+    internal override double HorizontalOffsetCore
     {
         get => _horizontalOffset;
         set
@@ -431,10 +244,7 @@ public class RichTextBox : Control, IImeSupport
         }
     }
 
-    /// <summary>
-    /// Gets or sets the vertical scroll offset.
-    /// </summary>
-    public double VerticalOffset
+    internal override double VerticalOffsetCore
     {
         get => _verticalOffset;
         set
@@ -452,7 +262,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets whether IME composition is currently active.
     /// </summary>
-    public bool IsImeComposing => _isImeComposing;
+    internal bool IsImeComposing => _isImeComposing;
 
     #endregion
 
@@ -469,6 +279,7 @@ public class RichTextBox : Control, IImeSupport
 
         Focusable = true;
         Cursor = Cursors.IBeam;
+        AcceptsReturn = true;
         _lastCaretBlink = DateTime.Now;
         _lastClickTime = DateTime.MinValue;
 
@@ -498,10 +309,7 @@ public class RichTextBox : Control, IImeSupport
 
     #region Public Methods
 
-    /// <summary>
-    /// Selects all content in the control.
-    /// </summary>
-    public void SelectAll()
+    internal override void SelectAllCore()
     {
         _selection = new TextSelection(_document.ContentStart, _document.ContentEnd);
         _caretPosition = _document.ContentEnd;
@@ -513,7 +321,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Clears the current selection.
     /// </summary>
-    public void ClearSelection()
+    internal override void ClearSelectionCore()
     {
         if (_caretPosition != null)
         {
@@ -524,38 +332,29 @@ public class RichTextBox : Control, IImeSupport
         }
     }
 
-    /// <summary>
-    /// Copies the selected content to the clipboard.
-    /// </summary>
-    public void Copy()
+    internal override void CopyCore()
     {
         if (_selection != null && !_selection.IsEmpty)
         {
-            Clipboard.SetText(_selection.Text);
+            WpfClipboard.SetText(_selection.Text);
         }
     }
 
-    /// <summary>
-    /// Cuts the selected content to the clipboard.
-    /// </summary>
-    public void Cut()
+    internal override void CutCore()
     {
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
 
-        Copy();
+        CopyCore();
         DeleteSelection();
     }
 
-    /// <summary>
-    /// Pastes content from the clipboard.
-    /// </summary>
-    public void Paste()
+    internal override void PasteCore()
     {
         if (IsReadOnly)
             return;
 
-        var clipboardText = Clipboard.GetText();
+        var clipboardText = WpfClipboard.GetText();
         if (!string.IsNullOrEmpty(clipboardText))
         {
             InsertText(clipboardText);
@@ -565,10 +364,10 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Undoes the last edit operation.
     /// </summary>
-    public void Undo()
+    internal override bool UndoCore()
     {
         if (!IsUndoEnabled || _undoStack.Count == 0)
-            return;
+            return false;
 
         _isUndoRedoing = true;
         try
@@ -587,15 +386,16 @@ public class RichTextBox : Control, IImeSupport
         InvalidateLayout();
         UpdateImeWindowIfComposing();
         InvalidateVisual();
+        return true;
     }
 
     /// <summary>
     /// Redoes the last undone operation.
     /// </summary>
-    public void Redo()
+    internal override bool RedoCore()
     {
         if (!IsUndoEnabled || _redoStack.Count == 0)
-            return;
+            return false;
 
         _isUndoRedoing = true;
         try
@@ -614,21 +414,14 @@ public class RichTextBox : Control, IImeSupport
         InvalidateLayout();
         UpdateImeWindowIfComposing();
         InvalidateVisual();
-    }
-
-    /// <summary>
-    /// Scrolls to make the caret visible.
-    /// </summary>
-    public void ScrollToCaretPosition()
-    {
-        EnsureCaretVisible();
+        return true;
     }
 
     /// <summary>
     /// Gets all text content as plain text.
     /// </summary>
     /// <returns>The plain text content of the document.</returns>
-    public string GetText()
+    protected override string GetText()
     {
         return _document.GetText();
     }
@@ -689,21 +482,21 @@ public class RichTextBox : Control, IImeSupport
     /// is used — UTF-8 when it is <see langword="null"/>. Legacy code pages such
     /// as <c>Encoding.GetEncoding(936)</c> (GBK) are supported.
     /// </summary>
-    public void LoadFromFile(string path, System.Text.Encoding? encoding = null)
+    internal void LoadFromFile(string path, System.Text.Encoding? encoding = null)
         => SetText(TextFile.ReadAllText(path, encoding));
 
     /// <summary>
     /// Writes the document's plain text to a file using <paramref name="encoding"/>
     /// — UTF-8 when it is <see langword="null"/>.
     /// </summary>
-    public void SaveToFile(string path, System.Text.Encoding? encoding = null)
+    internal void SaveToFile(string path, System.Text.Encoding? encoding = null)
         => TextFile.WriteAllText(path, GetText(), encoding);
 
     /// <summary>
     /// Sets the document content from plain text.
     /// </summary>
     /// <param name="text">The plain text to set.</param>
-    public void SetText(string text)
+    protected override void SetText(string text)
     {
         PushUndo();
         RestoreDocumentElementEnabledStates();
@@ -715,6 +508,126 @@ public class RichTextBox : Control, IImeSupport
         InvalidateLayout();
         UpdateImeWindowIfComposing();
         InvalidateVisual();
+    }
+
+    internal string GetPlainText() => GetText();
+
+    internal void SetPlainText(string text) => SetText(text);
+
+    /// <inheritdoc />
+    protected override double GetLineHeight()
+    {
+        var fontFamily = _document.FontFamily ?? FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = _document.FontSize > 0 ? _document.FontSize : (FontSize > 0 ? FontSize : 14);
+        return TextMeasurement.GetFontMetrics(fontFamily, fontSize).LineHeight;
+    }
+
+    /// <inheritdoc />
+    protected override double MeasureTextWidth(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return 0;
+
+        var fontFamily = _document.FontFamily ?? FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = _document.FontSize > 0 ? _document.FontSize : (FontSize > 0 ? FontSize : 14);
+        var formattedText = new FormattedText(text, fontFamily, fontSize)
+        {
+            FontWeight = FontWeight.ToOpenTypeWeight(),
+            FontStyle = FontStyle.ToOpenTypeStyle(),
+            FontStretch = FontStretch.ToOpenTypeStretch()
+        };
+
+        return TextMeasurement.MeasureText(formattedText) && formattedText.IsMeasured
+            ? formattedText.Width
+            : text.Length * fontSize * 0.6;
+    }
+
+    /// <inheritdoc />
+    protected override int GetLineCount() => GetPlainTextLines().Count;
+
+    /// <inheritdoc />
+    protected override (int lineIndex, int columnIndex) GetLineColumnFromCharIndex(int charIndex)
+    {
+        string text = GetText();
+        int index = Math.Clamp(charIndex, 0, text.Length);
+        var lines = GetPlainTextLines();
+        for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
+        {
+            var line = lines[lineIndex];
+            if (index <= line.Start + line.Length)
+                return (lineIndex, index - line.Start);
+
+            if (lineIndex + 1 < lines.Count && index < lines[lineIndex + 1].Start)
+                return (lineIndex, line.Length);
+        }
+
+        var last = lines[^1];
+        return (lines.Count - 1, last.Length);
+    }
+
+    /// <inheritdoc />
+    protected override int GetCharIndexFromLineColumn(int lineIndex, int columnIndex)
+    {
+        var lines = GetPlainTextLines();
+        if ((uint)lineIndex >= (uint)lines.Count)
+            return GetText().Length;
+
+        var line = lines[lineIndex];
+        return line.Start + Math.Clamp(columnIndex, 0, line.Length);
+    }
+
+    /// <inheritdoc />
+    protected override string GetLineTextInternal(int lineIndex)
+    {
+        var lines = GetPlainTextLines();
+        if ((uint)lineIndex >= (uint)lines.Count)
+            return string.Empty;
+
+        var line = lines[lineIndex];
+        return GetText().Substring(line.Start, line.Length);
+    }
+
+    /// <inheritdoc />
+    protected override int GetLineStartIndex(int lineIndex)
+    {
+        var lines = GetPlainTextLines();
+        return (uint)lineIndex < (uint)lines.Count ? lines[lineIndex].Start : 0;
+    }
+
+    /// <inheritdoc />
+    protected override int GetLineLengthInternal(int lineIndex)
+    {
+        var lines = GetPlainTextLines();
+        return (uint)lineIndex < (uint)lines.Count ? lines[lineIndex].Length : 0;
+    }
+
+    /// <inheritdoc />
+    internal override void RenderTextContent(DrawingContext drawingContext)
+    {
+        // RichTextBox owns its document renderer. The template content host is
+        // transparent; the document is painted by OnRender to keep TextPointer
+        // layout, embedded elements, selection, IME and caret in one pass.
+    }
+
+    private List<(int Start, int Length)> GetPlainTextLines()
+    {
+        string text = GetText();
+        var lines = new List<(int Start, int Length)>();
+        int start = 0;
+
+        for (int index = 0; index < text.Length; index++)
+        {
+            if (text[index] is not ('\r' or '\n'))
+                continue;
+
+            lines.Add((start, index - start));
+            if (text[index] == '\r' && index + 1 < text.Length && text[index + 1] == '\n')
+                index++;
+            start = index + 1;
+        }
+
+        lines.Add((start, text.Length - start));
+        return lines;
     }
 
     private void ValidateDocumentPosition(TextPointer position)
@@ -731,7 +644,7 @@ public class RichTextBox : Control, IImeSupport
             return;
 
         _spellCheckedText = text;
-        if (!IsSpellCheckEnabled || SpellChecker.Default is not { IsAvailable: true } checker || text.Length == 0)
+        if (!SpellCheck.GetIsEnabled(this) || SpellChecker.Default is not { IsAvailable: true } checker || text.Length == 0)
         {
             _spellingErrors.Clear();
             return;
@@ -772,17 +685,16 @@ public class RichTextBox : Control, IImeSupport
         InvalidateVisual();
     }
 
-    private static void OnSpellCheckEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    internal void OnSpellCheckSettingChanged(bool isEnabled)
     {
-        var richTextBox = (RichTextBox)d;
-        richTextBox._spellCheckedText = null;
-        richTextBox._spellingErrors.Clear();
-        if (e.NewValue is true)
+        _spellCheckedText = null;
+        _spellingErrors.Clear();
+        if (isEnabled)
         {
-            richTextBox.EnsureSpellingErrors();
+            EnsureSpellingErrors();
         }
 
-        richTextBox.InvalidateVisual();
+        InvalidateVisual();
     }
 
     private static void OnIsDocumentEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -893,7 +805,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Toggles bold formatting on the current selection.
     /// </summary>
-    public void ToggleBold()
+    internal void ToggleBold()
     {
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
@@ -913,7 +825,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Toggles italic formatting on the current selection.
     /// </summary>
-    public void ToggleItalic()
+    internal void ToggleItalic()
     {
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
@@ -933,7 +845,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Toggles underline formatting on the current selection.
     /// </summary>
-    public void ToggleUnderline()
+    internal void ToggleUnderline()
     {
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
@@ -970,7 +882,7 @@ public class RichTextBox : Control, IImeSupport
     /// Sets the font family on the current selection.
     /// </summary>
     /// <param name="fontFamily">The font family name.</param>
-    public void SetFontFamily(string fontFamily)
+    internal void SetFontFamily(string fontFamily)
     {
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
@@ -985,7 +897,7 @@ public class RichTextBox : Control, IImeSupport
     /// Sets the font size on the current selection.
     /// </summary>
     /// <param name="fontSize">The font size.</param>
-    public void SetFontSize(double fontSize)
+    internal void SetFontSize(double fontSize)
     {
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
@@ -1000,7 +912,7 @@ public class RichTextBox : Control, IImeSupport
     /// Sets the foreground color on the current selection.
     /// </summary>
     /// <param name="brush">The foreground brush.</param>
-    public void SetForeground(Brush brush)
+    internal void SetForeground(Brush brush)
     {
         if (IsReadOnly || _selection == null || _selection.IsEmpty)
             return;
@@ -1127,7 +1039,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Inserts text at the current caret position.
     /// </summary>
-    protected void InsertText(string textToInsert)
+    protected override void InsertText(string textToInsert)
     {
         if (IsReadOnly || string.IsNullOrEmpty(textToInsert))
             return;
@@ -1230,7 +1142,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Deletes the current selection.
     /// </summary>
-    protected void DeleteSelection()
+    protected override void DeleteSelection()
     {
         if (_selection == null || _selection.IsEmpty)
             return;
@@ -1241,7 +1153,7 @@ public class RichTextBox : Control, IImeSupport
         InvalidateVisual();
     }
 
-    private void DeleteSelectionInternal()
+    private new void DeleteSelectionInternal()
     {
         if (_selection == null || _selection.IsEmpty)
             return;
@@ -1260,7 +1172,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Pushes the current state to the undo stack.
     /// </summary>
-    protected void PushUndo()
+    protected new void PushUndo()
     {
         if (!IsUndoEnabled || _isUndoRedoing)
             return;
@@ -1309,7 +1221,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Resets the caret blink state.
     /// </summary>
-    protected void ResetCaretBlink()
+    protected new void ResetCaretBlink()
     {
         _caretVisible = true;
         _caretOpacity = 1.0;
@@ -1319,12 +1231,14 @@ public class RichTextBox : Control, IImeSupport
         {
             ScheduleNextCaretTick(_lastCaretBlink);
         }
+
+        RefreshLinuxImeContext();
     }
 
     /// <summary>
     /// Ensures the caret is visible by scrolling if necessary.
     /// </summary>
-    protected void EnsureCaretVisible()
+    protected override void EnsureCaretVisible()
     {
         if (_caretPosition == null)
         {
@@ -1379,9 +1293,11 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Called when the selection changes.
     /// </summary>
-    protected void OnSelectionChanged()
+    protected override void OnSelectionChanged()
     {
+        base.OnSelectionChanged();
         UpdateImeWindowIfComposing();
+        RefreshLinuxImeContext();
         // Raise selection changed event if needed
     }
 
@@ -1392,6 +1308,19 @@ public class RichTextBox : Control, IImeSupport
     {
         _layoutDirty = true;
         _layoutCache = null;
+        RefreshLinuxImeContext();
+    }
+
+    private void RefreshLinuxImeContext()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is Window window)
+            {
+                window.RefreshLinuxImeContext();
+                break;
+            }
+        }
     }
 
     #endregion
@@ -1633,7 +1562,7 @@ public class RichTextBox : Control, IImeSupport
         if (_isImeComposing)
             return;
 
-        UpdateCaretAnimation();
+        UpdateRichCaretAnimation();
 
         if (_caretOpacity < 0.01)
             return;
@@ -1807,7 +1736,7 @@ public class RichTextBox : Control, IImeSupport
         return fontSize * 1.5;
     }
 
-    private double UpdateCaretAnimation()
+    private double UpdateRichCaretAnimation()
     {
         var now = DateTime.Now;
         var elapsed = (now - _lastCaretBlink).TotalMilliseconds;
@@ -1867,7 +1796,7 @@ public class RichTextBox : Control, IImeSupport
         return ResolveThemeBrush("TextPrimary", s_defaultForegroundBrush, "TextFillColorPrimaryBrush");
     }
 
-    private Brush? ResolveSelectionBrush()
+    private new Brush? ResolveSelectionBrush()
     {
         if (HasLocalValue(SelectionBrushProperty))
             return SelectionBrush;
@@ -1876,7 +1805,7 @@ public class RichTextBox : Control, IImeSupport
             ?? ResolveThemeBrush("SelectionBackground", s_defaultSelectionBrush, "AccentFillColorSelectedTextBackgroundBrush");
     }
 
-    private Brush? ResolveCaretBrush()
+    private new Brush? ResolveCaretBrush()
     {
         if (HasLocalValue(CaretBrushProperty))
             return CaretBrush;
@@ -2278,9 +2207,12 @@ public class RichTextBox : Control, IImeSupport
             var now = DateTime.Now;
 
             var timeSinceLastClick = (now - _lastClickTime).TotalMilliseconds;
-            var distanceFromLastClick = Math.Abs(position.X - _lastClickPosition.X) + Math.Abs(position.Y - _lastClickPosition.Y);
+            var distanceFromLastClick = Math.Max(
+                Math.Abs(position.X - _lastClickPosition.X),
+                Math.Abs(position.Y - _lastClickPosition.Y));
 
-            if (timeSinceLastClick < DoubleClickTime && distanceFromLastClick < DoubleClickDistance)
+            if (timeSinceLastClick <= global::Jalium.UI.SystemParameters.DoubleClickTime &&
+                distanceFromLastClick <= global::Jalium.UI.SystemParameters.MouseDoubleClickDistance)
             {
                 _clickCount++;
             }
@@ -2387,7 +2319,7 @@ public class RichTextBox : Control, IImeSupport
     {
         var lineHeight = GetDefaultLineHeight();
         var delta = e.Delta > 0 ? -3 : 3;
-        VerticalOffset += delta * lineHeight;
+        VerticalOffsetCore += delta * lineHeight;
         e.Handled = true;
     }
 
@@ -3185,10 +3117,63 @@ public class RichTextBox : Control, IImeSupport
     #region IME Support
 
     /// <inheritdoc />
-    public bool IsImeAllowed => !IsReadOnly;
+    internal bool IsImeAllowed => !IsReadOnly;
 
     /// <inheritdoc />
-    public Point GetImeCaretPosition()
+    internal bool TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
+    {
+        if (IsReadOnly)
+        {
+            snapshot = default;
+            return false;
+        }
+
+        string text = _document.GetText();
+        int cursor = Math.Clamp(_caretPosition?.DocumentOffset ?? 0, 0, text.Length);
+        int anchor = cursor;
+        if (_selection is { IsEmpty: false })
+        {
+            int start = Math.Clamp(_selection.Start.DocumentOffset, 0, text.Length);
+            int end = Math.Clamp(_selection.End.DocumentOffset, start, text.Length);
+            bool activeAtStart = cursor <= start;
+            cursor = activeAtStart ? start : end;
+            anchor = activeAtStart ? end : start;
+        }
+
+        snapshot = new ImeSurroundingTextSnapshot(text, cursor, anchor);
+        return true;
+    }
+
+    /// <inheritdoc />
+    internal bool DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
+    {
+        if (IsReadOnly ||
+            !TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot) ||
+            !ImeTextEncoding.TryGetDeleteRange(
+                snapshot,
+                beforeUtf8ByteCount,
+                afterUtf8ByteCount,
+                out int start,
+                out int length))
+        {
+            return false;
+        }
+
+        if (length == 0)
+            return true;
+
+        TextPointer startPosition = _document.GetPositionAtOffset(start, LogicalDirection.Forward)
+            ?? _document.ContentStart;
+        TextPointer endPosition = _document.GetPositionAtOffset(start + length, LogicalDirection.Backward)
+            ?? _document.ContentEnd;
+        _selection = new TextSelection(startPosition, endPosition);
+        _caretPosition = endPosition;
+        DeleteSelection();
+        return true;
+    }
+
+    /// <inheritdoc />
+    internal Point GetImeCaretPosition()
     {
         var contentBounds = GetContentBounds();
         double lineHeight = GetDefaultLineHeight();
@@ -3214,7 +3199,15 @@ public class RichTextBox : Control, IImeSupport
     }
 
     /// <inheritdoc />
-    public void OnImeCompositionStart()
+    internal Rect GetImeCaretRectangle()
+    {
+        Point bottom = GetImeCaretPosition();
+        double height = Math.Max(1, GetDefaultLineHeight());
+        return new Rect(bottom.X, bottom.Y - height, 1, height);
+    }
+
+    /// <inheritdoc />
+    internal void OnImeCompositionStart()
     {
         _isImeComposing = true;
         _imeCompositionStart = _caretPosition?.DocumentOffset ?? 0;
@@ -3232,7 +3225,7 @@ public class RichTextBox : Control, IImeSupport
     }
 
     /// <inheritdoc />
-    public void OnImeCompositionUpdate(string compositionString, int cursorPosition)
+    internal void OnImeCompositionUpdate(string compositionString, int cursorPosition)
     {
         _imeCompositionString = compositionString ?? string.Empty;
         _imeCompositionCursor = Math.Clamp(cursorPosition, 0, _imeCompositionString.Length);
@@ -3241,7 +3234,7 @@ public class RichTextBox : Control, IImeSupport
     }
 
     /// <inheritdoc />
-    public void OnImeCompositionEnd(string? resultString)
+    internal void OnImeCompositionEnd(string? resultString)
     {
         // Result is routed via TextInput in Window.OnImeComposition — do NOT
         // InsertText here. Inserting both ways was the root cause of duplicate
@@ -3254,6 +3247,25 @@ public class RichTextBox : Control, IImeSupport
         _imeCompositionStart = _caretPosition?.DocumentOffset ?? 0;
         InvalidateVisual();
     }
+
+    bool IImeSupport.IsImeAllowed => IsImeAllowed;
+
+    bool IImeSupport.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot)
+        => TryGetImeSurroundingText(out snapshot);
+
+    bool IImeSupport.DeleteImeSurroundingText(int beforeUtf8ByteCount, int afterUtf8ByteCount)
+        => DeleteImeSurroundingText(beforeUtf8ByteCount, afterUtf8ByteCount);
+
+    Point IImeSupport.GetImeCaretPosition() => GetImeCaretPosition();
+
+    Rect IImeSupport.GetImeCaretRectangle() => GetImeCaretRectangle();
+
+    void IImeSupport.OnImeCompositionStart() => OnImeCompositionStart();
+
+    void IImeSupport.OnImeCompositionUpdate(string compositionString, int cursorPosition)
+        => OnImeCompositionUpdate(compositionString, cursorPosition);
+
+    void IImeSupport.OnImeCompositionEnd(string? resultString) => OnImeCompositionEnd(resultString);
 
     private void UpdateImeWindowIfComposing()
     {
@@ -3344,18 +3356,6 @@ public class RichTextBox : Control, IImeSupport
             i = GraphemeClusters.NextBoundary(text, i);
 
         return _document.GetPositionAtOffset(i, LogicalDirection.Forward);
-    }
-
-    #endregion
-
-    #region Property Changed
-
-    private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is RichTextBox richTextBox)
-        {
-            richTextBox.InvalidateVisual();
-        }
     }
 
     #endregion

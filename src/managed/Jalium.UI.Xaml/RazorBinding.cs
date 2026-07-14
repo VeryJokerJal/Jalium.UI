@@ -550,8 +550,7 @@ internal static class RazorBindingEngine
             return nameof(TextBlock.Text);
         }
 
-        return type.GetCustomAttribute<ContentPropertyAttribute>(inherit: true)?.Name
-            ?? type.GetCustomAttribute<Jalium.UI.ContentPropertyAttribute>(inherit: true)?.Name;
+        return type.GetCustomAttribute<ContentPropertyAttribute>(inherit: true)?.Name;
     }
 
     // Internal accessors so the SG-facing methods above can reuse the private helpers

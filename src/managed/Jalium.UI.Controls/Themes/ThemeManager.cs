@@ -621,6 +621,8 @@ public static class ThemeManager
     /// </summary>
     [DynamicDependency(DynamicallyAccessedMemberTypes.PublicMethods,
         DesktopBootstrapTypeName, DesktopAssemblyName)]
+    [UnconditionalSuppressMessage("Trimming", "IL2035:UnresolvedAssembly",
+        Justification = "Jalium.UI.Desktop is an optional Windows integration package and is intentionally absent from Linux-only deployments.")]
     [RequiresUnreferencedCode("Reflectively resolves the desktop bootstrap type and its public Initialize() method via Assembly.GetType. The type is preserved by the DynamicDependency above when the assembly is present.")]
     private static void EnsurePlatformIntegrationLoaded()
     {

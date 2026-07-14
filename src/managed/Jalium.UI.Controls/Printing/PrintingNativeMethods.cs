@@ -4,8 +4,8 @@ namespace Jalium.UI.Controls.Printing;
 
 /// <summary>
 /// Centralized Win32 P/Invoke declarations and interop structures used by the
-/// printing platform layer (<see cref="PrintDialog"/>, <see cref="PrintQueue"/>
-/// and <see cref="XpsDocumentWriter"/>).
+/// printing platform layer (<see cref="Jalium.UI.Controls.PrintDialog"/>,
+/// <see cref="PrintQueue"/> and <see cref="Jalium.UI.Xps.XpsDocumentWriter"/>).
 /// </summary>
 /// <remarks>
 /// The printing platform layer is only meaningful on Windows. Every caller is

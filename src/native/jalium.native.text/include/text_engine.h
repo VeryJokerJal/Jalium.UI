@@ -2,6 +2,7 @@
 
 #include "jalium_types.h"
 #include "jalium_backend.h"
+#include "jalium_text_api.h"
 
 #include <memory>
 #include <string>
@@ -24,7 +25,7 @@ class TextLayout;
 // - Glyph atlas management (CPU-side, 4096x4096 R8G8B8A8)
 // ============================================================================
 
-class TextEngine {
+class JALIUM_TEXT_API TextEngine {
 public:
     TextEngine();
     ~TextEngine();

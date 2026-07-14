@@ -21,23 +21,27 @@ const AtlasGlyphEntry& GlyphAtlas::GetOrInsert(
     uint64_t fontId,
     uint16_t glyphIndex,
     uint16_t fontSizePx,
-    uint8_t subpixelX)
+    uint8_t subpixelX,
+    GlyphAntialiasMode antialiasMode)
 {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Check cache
-    AtlasGlyphKey key{fontId, glyphIndex, fontSizePx, subpixelX};
+    AtlasGlyphKey key{fontId, glyphIndex, fontSizePx, subpixelX,
+                      static_cast<uint8_t>(antialiasMode)};
     auto it = cache_.find(key);
     if (it != cache_.end())
         return it->second;
 
     // Rasterize the glyph
     RasterizedGlyph rasterized = rasterizer.Rasterize(
-        face, glyphIndex, static_cast<float>(fontSizePx), subpixelX);
+        face, glyphIndex, static_cast<float>(fontSizePx), subpixelX, antialiasMode);
 
     AtlasGlyphEntry entry{};
     entry.bearingX = static_cast<int16_t>(rasterized.bearingX);
     entry.bearingY = static_cast<int16_t>(rasterized.bearingY);
+    if (rasterized.hasSubpixel) entry.flags |= ATLAS_GLYPH_LCD;
+    if (rasterized.isColor) entry.flags |= ATLAS_GLYPH_COLOR;
 
     if (rasterized.width > 0 && rasterized.height > 0)
     {

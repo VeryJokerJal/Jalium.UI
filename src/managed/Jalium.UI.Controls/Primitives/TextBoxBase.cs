@@ -6,6 +6,7 @@ using Jalium.UI.Media.Animation;
 using Jalium.UI.Threading;
 
 using static Jalium.UI.Input.Cursors;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -229,8 +230,6 @@ public abstract class TextBoxBase : Control
     private DateTime _lastClickTime;
     private int _clickCount;
     private Point _lastClickPosition;
-    private const int DoubleClickTime = 500;
-    private const double DoubleClickDistance = 4;
 
     // Context menu
     private Popup? _contextMenuPopup;
@@ -425,7 +424,7 @@ public abstract class TextBoxBase : Control
     /// Identifies the TextTrimming dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public static readonly DependencyProperty TextTrimmingProperty =
+    internal static readonly DependencyProperty TextTrimmingProperty =
         DependencyProperty.Register(nameof(TextTrimming), typeof(TextTrimming), typeof(TextBoxBase),
             new PropertyMetadata(TextTrimming.CharacterEllipsis, OnVisualPropertyChanged));
 
@@ -602,7 +601,7 @@ public abstract class TextBoxBase : Control
     /// Gets or sets the trimming behavior for visible text when it overflows the content area.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
-    public TextTrimming TextTrimming
+    internal TextTrimming TextTrimming
     {
         get => (TextTrimming)GetValue(TextTrimmingProperty)!;
         set => SetValue(TextTrimmingProperty, value);
@@ -611,17 +610,26 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets whether undo can be performed.
     /// </summary>
-    public bool CanUndo => _undoStack.Count > 0;
+    public bool CanUndo => CanUndoCore;
+
+    internal virtual bool CanUndoCore => _undoStack.Count > 0;
 
     /// <summary>
     /// Gets whether redo can be performed.
     /// </summary>
-    public bool CanRedo => _redoStack.Count > 0;
+    public bool CanRedo => CanRedoCore;
+
+    internal virtual bool CanRedoCore => _redoStack.Count > 0;
 
     /// <summary>
     /// Gets or sets the horizontal scroll offset.
     /// </summary>
     public double HorizontalOffset
+    {
+        get => HorizontalOffsetCore;
+    }
+
+    internal virtual double HorizontalOffsetCore
     {
         get => _horizontalOffset;
         set
@@ -639,6 +647,11 @@ public abstract class TextBoxBase : Control
     /// Gets or sets the vertical scroll offset.
     /// </summary>
     public double VerticalOffset
+    {
+        get => VerticalOffsetCore;
+    }
+
+    internal virtual double VerticalOffsetCore
     {
         get => _verticalOffset;
         set
@@ -786,6 +799,14 @@ public abstract class TextBoxBase : Control
     /// </summary>
     protected abstract int GetLineLengthInternal(int lineIndex);
 
+    /// <summary>
+    /// Controls whether this base class installs its plain-text input handlers.
+    /// Rich text editors use the same public TextBoxBase command surface but
+    /// maintain TextPointer-based editing state and therefore install their own
+    /// handlers instead.
+    /// </summary>
+    internal virtual bool UsesDefaultTextInputHandlers => true;
+
     #endregion
 
     #region Constructor
@@ -793,7 +814,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Initializes a new instance of the <see cref="TextBoxBase"/> class.
     /// </summary>
-    protected TextBoxBase()
+    internal TextBoxBase()
     {
         Focusable = true;
         Cursor = IBeam; // Text input cursor for text editing controls
@@ -801,13 +822,15 @@ public abstract class TextBoxBase : Control
         _lastCaretBlink = DateTime.Now;
         _lastClickTime = DateTime.MinValue;
 
-        // Register input event handlers
-        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
-        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
-        AddHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
-        AddHandler(MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
+        if (UsesDefaultTextInputHandlers)
+        {
+            AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+            AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+            AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+            AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+            AddHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
+            AddHandler(MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
+        }
     }
 
     #endregion
@@ -854,10 +877,6 @@ public abstract class TextBoxBase : Control
         {
             contentControl.Content = child;
         }
-        else if (host is ScrollViewer scrollViewer)
-        {
-            scrollViewer.Content = child;
-        }
         else if (host is Panel panel)
         {
             panel.Children.Add(child);
@@ -878,11 +897,6 @@ public abstract class TextBoxBase : Control
         {
             if (contentControl.Content == child)
                 contentControl.Content = null;
-        }
-        else if (host is ScrollViewer scrollViewer)
-        {
-            if (scrollViewer.Content == child)
-                scrollViewer.Content = null;
         }
         else if (host is Panel panel)
         {
@@ -949,7 +963,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the caret position (character index).
     /// </summary>
-    public int CaretIndex
+    internal int CaretIndexCore
     {
         get => _caretIndex;
         set
@@ -971,7 +985,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the starting position of selected text.
     /// </summary>
-    public int SelectionStart
+    internal int SelectionStartCore
     {
         get => _selectionStart;
         set
@@ -984,6 +998,7 @@ public abstract class TextBoxBase : Control
             {
                 _selectionStart = newValue;
                 InvalidateVisual();
+                NotifyImeContextChanged();
             }
         }
     }
@@ -991,7 +1006,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the number of characters selected.
     /// </summary>
-    public int SelectionLength
+    internal int SelectionLengthCore
     {
         get => _selectionLength;
         set
@@ -1007,6 +1022,7 @@ public abstract class TextBoxBase : Control
             {
                 _selectionLength = newValue;
                 InvalidateVisual();
+                NotifyImeContextChanged();
             }
         }
     }
@@ -1014,7 +1030,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets the selected text.
     /// </summary>
-    public string SelectedText
+    internal string SelectedTextCore
     {
         get
         {
@@ -1026,6 +1042,97 @@ public abstract class TextBoxBase : Control
             var length = Math.Min(_selectionLength, text.Length - start);
             return text.Substring(start, length);
         }
+        set
+        {
+            value ??= string.Empty;
+            var text = GetText();
+            int start = Math.Min(_selectionStart, text.Length);
+            int length = Math.Min(_selectionLength, text.Length - start);
+            PushUndo();
+            SetText(text[..start] + value + text[(start + length)..]);
+            _selectionStart = start;
+            _selectionLength = value.Length;
+            _caretIndex = start + value.Length;
+            OnSelectionChanged();
+            EnsureCaretVisible();
+        }
+    }
+
+    /// <summary>
+    /// Exposes the complete editable text and the active selection to an input
+    /// method. Indices remain UTF-16 here; the platform window converts them to
+    /// UTF-8 byte offsets at the native boundary.
+    /// </summary>
+    internal bool TryGetImeSurroundingTextCore(out ImeSurroundingTextSnapshot snapshot)
+    {
+        if (IsReadOnly)
+        {
+            snapshot = default;
+            return false;
+        }
+
+        string text = GetText();
+        int selectionStart = GraphemeClusters.Snap(
+            text, Math.Clamp(_selectionStart, 0, text.Length), forward: false);
+        int selectionEnd = GraphemeClusters.Snap(
+            text,
+            Math.Clamp(_selectionStart + _selectionLength, selectionStart, text.Length),
+            forward: true);
+
+        int cursor;
+        int anchor;
+        if (selectionEnd > selectionStart)
+        {
+            // TextBoxBase stores a normalized range plus the active caret end.
+            // Programmatic Select() places the caret at the trailing end.
+            bool activeAtStart = _caretIndex <= selectionStart;
+            cursor = activeAtStart ? selectionStart : selectionEnd;
+            anchor = activeAtStart ? selectionEnd : selectionStart;
+        }
+        else
+        {
+            cursor = GraphemeClusters.Snap(
+                text, Math.Clamp(_caretIndex, 0, text.Length), forward: false);
+            anchor = cursor;
+        }
+
+        snapshot = new ImeSurroundingTextSnapshot(text, cursor, anchor);
+        return true;
+    }
+
+    /// <summary>
+    /// Applies a native delete-surrounding request without splitting an emoji,
+    /// combining sequence, or other extended grapheme cluster.
+    /// </summary>
+    internal bool DeleteImeSurroundingTextCore(int beforeUtf8ByteCount, int afterUtf8ByteCount)
+    {
+        if (IsReadOnly ||
+            !TryGetImeSurroundingTextCore(out ImeSurroundingTextSnapshot snapshot) ||
+            !ImeTextEncoding.TryGetDeleteRange(
+                snapshot,
+                beforeUtf8ByteCount,
+                afterUtf8ByteCount,
+                out int start,
+                out int length))
+        {
+            return false;
+        }
+
+        if (length == 0)
+            return true;
+
+        PushUndo();
+        string text = snapshot.Text;
+        SetText(text.Remove(start, length));
+        _caretIndex = start;
+        _selectionAnchor = start;
+        _selectionStart = start;
+        _selectionLength = 0;
+        OnSelectionChanged();
+        ResetCaretBlink();
+        EnsureCaretVisible();
+        InvalidateVisual();
+        return true;
     }
 
     #endregion
@@ -1122,7 +1229,7 @@ public abstract class TextBoxBase : Control
             return;
         }
 
-        HorizontalOffset = Math.Max(0, HorizontalOffset - Math.Max(0, RenderSize.Width));
+        HorizontalOffsetCore = Math.Max(0, HorizontalOffset - Math.Max(0, RenderSize.Width));
     }
 
     /// <summary>Scrolls one horizontal page to the right.</summary>
@@ -1135,7 +1242,7 @@ public abstract class TextBoxBase : Control
             return;
         }
 
-        HorizontalOffset += Math.Max(0, RenderSize.Width);
+        HorizontalOffsetCore += Math.Max(0, RenderSize.Width);
     }
 
     /// <summary>Scrolls one vertical page upward.</summary>
@@ -1148,7 +1255,7 @@ public abstract class TextBoxBase : Control
             return;
         }
 
-        VerticalOffset = Math.Max(0, VerticalOffset - Math.Max(0, GetVerticalScrollViewportHeight()));
+        VerticalOffsetCore = Math.Max(0, VerticalOffset - Math.Max(0, GetVerticalScrollViewportHeight()));
     }
 
     /// <summary>Scrolls one vertical page downward.</summary>
@@ -1163,7 +1270,7 @@ public abstract class TextBoxBase : Control
 
         double viewport = Math.Max(0, GetVerticalScrollViewportHeight());
         double extent = GetVerticalScrollExtentHeight(Math.Round(GetLineHeight()));
-        VerticalOffset = Math.Min(Math.Max(0, extent - viewport), VerticalOffset + viewport);
+        VerticalOffsetCore = Math.Min(Math.Max(0, extent - viewport), VerticalOffset + viewport);
     }
 
     /// <summary>Scrolls to the beginning of the content.</summary>
@@ -1176,7 +1283,7 @@ public abstract class TextBoxBase : Control
             return;
         }
 
-        HorizontalOffset = 0;
+        HorizontalOffsetCore = 0;
     }
 
     /// <summary>Scrolls to the end of the content.</summary>
@@ -1195,7 +1302,7 @@ public abstract class TextBoxBase : Control
             maxWidth = Math.Max(maxWidth, MeasureTextWidth(GetLineTextInternal(index)));
         }
 
-        HorizontalOffset = Math.Max(0, maxWidth - RenderSize.Width);
+        HorizontalOffsetCore = Math.Max(0, maxWidth - RenderSize.Width);
     }
 
     /// <summary>Scrolls to a horizontal offset.</summary>
@@ -1213,7 +1320,7 @@ public abstract class TextBoxBase : Control
             return;
         }
 
-        HorizontalOffset = offset;
+        HorizontalOffsetCore = offset;
     }
 
     /// <summary>Scrolls to a vertical offset.</summary>
@@ -1231,7 +1338,7 @@ public abstract class TextBoxBase : Control
             return;
         }
 
-        VerticalOffset = offset;
+        VerticalOffsetCore = offset;
     }
 
     private void ScrollByHorizontalLine(int direction)
@@ -1251,7 +1358,7 @@ public abstract class TextBoxBase : Control
             return;
         }
 
-        HorizontalOffset = Math.Max(0, HorizontalOffset + (direction * 16.0));
+        HorizontalOffsetCore = Math.Max(0, HorizontalOffset + (direction * 16.0));
     }
 
     private void ScrollByVerticalLine(int direction)
@@ -1274,7 +1381,7 @@ public abstract class TextBoxBase : Control
         double lineHeight = Math.Round(GetLineHeight());
         double viewport = Math.Max(0, GetVerticalScrollViewportHeight());
         double extent = GetVerticalScrollExtentHeight(lineHeight);
-        VerticalOffset = Math.Clamp(
+        VerticalOffsetCore = Math.Clamp(
             VerticalOffset + (direction * lineHeight),
             0,
             Math.Max(0, extent - viewport));
@@ -1284,6 +1391,11 @@ public abstract class TextBoxBase : Control
     /// Selects all text in the text box.
     /// </summary>
     public void SelectAll()
+    {
+        SelectAllCore();
+    }
+
+    internal virtual void SelectAllCore()
     {
         var text = GetText();
         _selectionStart = 0;
@@ -1296,7 +1408,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Selects a range of text.
     /// </summary>
-    public void Select(int start, int length)
+    internal void SelectCore(int start, int length)
     {
         var text = GetText();
         // Snap both endpoints so a programmatic Select() that lands inside a
@@ -1314,7 +1426,12 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Clears the current selection.
     /// </summary>
-    public void ClearSelection()
+    internal void ClearSelection()
+    {
+        ClearSelectionCore();
+    }
+
+    internal virtual void ClearSelectionCore()
     {
         if (_selectionLength > 0)
         {
@@ -1329,10 +1446,15 @@ public abstract class TextBoxBase : Control
     /// </summary>
     public void Copy()
     {
-        var selectedText = SelectedText;
+        CopyCore();
+    }
+
+    internal virtual void CopyCore()
+    {
+        var selectedText = SelectedTextCore;
         if (!string.IsNullOrEmpty(selectedText))
         {
-            Clipboard.SetText(selectedText);
+            WpfClipboard.SetText(selectedText);
         }
     }
 
@@ -1341,10 +1463,15 @@ public abstract class TextBoxBase : Control
     /// </summary>
     public void Cut()
     {
+        CutCore();
+    }
+
+    internal virtual void CutCore()
+    {
         if (IsReadOnly || _selectionLength == 0)
             return;
 
-        Copy();
+        CopyCore();
         DeleteSelection();
     }
 
@@ -1353,10 +1480,15 @@ public abstract class TextBoxBase : Control
     /// </summary>
     public void Paste()
     {
+        PasteCore();
+    }
+
+    internal virtual void PasteCore()
+    {
         if (IsReadOnly)
             return;
 
-        var clipboardText = Clipboard.GetText();
+        var clipboardText = WpfClipboard.GetText();
         if (!string.IsNullOrEmpty(clipboardText))
         {
             // Filter out newlines if AcceptsReturn is false
@@ -1371,7 +1503,9 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Undoes the last edit operation.
     /// </summary>
-    public virtual bool Undo()
+    public bool Undo() => UndoCore();
+
+    internal virtual bool UndoCore()
     {
         if (!IsUndoEnabled || _undoStack.Count == 0)
             return false;
@@ -1399,7 +1533,9 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Redoes the last undone operation.
     /// </summary>
-    public virtual bool Redo()
+    public bool Redo() => RedoCore();
+
+    internal virtual bool RedoCore()
     {
         if (!IsUndoEnabled || _redoStack.Count == 0)
             return false;
@@ -1427,7 +1563,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Scrolls to make the caret visible.
     /// </summary>
-    public void ScrollToCaretPosition()
+    internal void ScrollToCaretPosition()
     {
         EnsureCaretVisible();
     }
@@ -1590,6 +1726,8 @@ public abstract class TextBoxBase : Control
         {
             ScheduleNextCaretTick(_lastCaretBlink);
         }
+
+        NotifyImeContextChanged();
     }
 
     /// <summary>
@@ -1806,6 +1944,7 @@ public abstract class TextBoxBase : Control
         }
 
         OnSelectionChanged(new RoutedEventArgs(SelectionChangedEvent, this));
+        NotifyImeContextChanged();
     }
 
     /// <summary>
@@ -1824,6 +1963,12 @@ public abstract class TextBoxBase : Control
     {
         ArgumentNullException.ThrowIfNull(e);
         RaiseEvent(e);
+        NotifyImeContextChanged();
+    }
+
+    private void NotifyImeContextChanged()
+    {
+        FindHostWindow()?.RefreshLinuxImeContext();
     }
 
     /// <summary>
@@ -1858,7 +2003,7 @@ public abstract class TextBoxBase : Control
         {
             int column = (int)hitResult.TextPosition;
             if (hitResult.IsTrailingHit != 0)
-                column++;
+                column = GraphemeClusters.NextBoundary(lineText, column);
             return lineStart + Math.Clamp(column, 0, lineText.Length);
         }
 
@@ -2058,9 +2203,12 @@ public abstract class TextBoxBase : Control
 
             // Detect double/triple click
             var timeSinceLastClick = (now - _lastClickTime).TotalMilliseconds;
-            var distanceFromLastClick = Math.Abs(position.X - _lastClickPosition.X) + Math.Abs(position.Y - _lastClickPosition.Y);
+            var distanceFromLastClick = Math.Max(
+                Math.Abs(position.X - _lastClickPosition.X),
+                Math.Abs(position.Y - _lastClickPosition.Y));
 
-            if (timeSinceLastClick < DoubleClickTime && distanceFromLastClick < DoubleClickDistance)
+            if (timeSinceLastClick <= global::Jalium.UI.SystemParameters.DoubleClickTime &&
+                distanceFromLastClick <= global::Jalium.UI.SystemParameters.MouseDoubleClickDistance)
             {
                 _clickCount++;
             }
@@ -2227,7 +2375,7 @@ public abstract class TextBoxBase : Control
         if (Math.Abs(newOffset - oldOffset) <= 0.001)
             return;
 
-        VerticalOffset = newOffset;
+        VerticalOffsetCore = newOffset;
         e.Handled = true;
     }
 
@@ -2906,7 +3054,7 @@ public abstract class TextBoxBase : Control
 
         var hasSelection = _selectionLength > 0;
         var hasText = GetText().Length > 0;
-        var hasClipboard = !string.IsNullOrEmpty(Clipboard.GetText());
+        var hasClipboard = !string.IsNullOrEmpty(WpfClipboard.GetText());
 
         var panel = new StackPanel { MinWidth = 140 };
 

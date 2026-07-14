@@ -1,11 +1,12 @@
 using System.Collections.ObjectModel;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Media.Imaging;
 
 /// <summary>
 /// Encodes a collection of BitmapFrame objects to an image stream.
 /// </summary>
-public abstract class BitmapEncoder
+public abstract class BitmapEncoder : DispatcherObject
 {
     private IList<BitmapFrame> _frames = new List<BitmapFrame>();
 

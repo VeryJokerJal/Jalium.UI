@@ -1,6 +1,7 @@
 using Jalium.UI.Media;
+using Jalium.UI.Controls.Primitives;
 
-namespace Jalium.UI.Controls.Primitives;
+namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Used within the template of an item control to specify the place in the control's

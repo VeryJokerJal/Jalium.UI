@@ -1,4 +1,5 @@
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Interop;
 

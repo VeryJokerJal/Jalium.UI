@@ -177,7 +177,7 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
     /// stores the bare metadata name (e.g. <c>Jalium.UI.Media.Color</c>) and the codegen
     /// adds <c>global::</c> at emit time. Returning the prefixed form would break
     /// <c>HasIllegalTemplateShape</c>'s string-equality checks for the template type set
-    /// (<c>Jalium.UI.ControlTemplate</c> etc.).
+    /// (<c>Jalium.UI.Controls.ControlTemplate</c> etc.).
     /// </para>
     /// </remarks>
     private static void AugmentResolvedTypeNames(JalxamlAstNode node, XmlnsTypeResolver resolver)
@@ -734,11 +734,11 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
         // Mirror JalxamlCodeGenerator.IsTemplateClrType — no shared API today, the list is
         // tiny and stable.
         var name = node.ResolvedClrTypeName;
-        bool isTpl = name == "Jalium.UI.ControlTemplate" ||
+        bool isTpl = name == "Jalium.UI.Controls.ControlTemplate" ||
                      name == "Jalium.UI.DataTemplate" ||
                      name == "Jalium.UI.HierarchicalDataTemplate" ||
                      name == "Jalium.UI.Controls.ItemsPanelTemplate" ||
-                     name == "Jalium.UI.ItemContainerTemplate";
+                     name == "Jalium.UI.Controls.ItemContainerTemplate";
         if (isTpl && node.Children.Count > 1)
             return node;
         foreach (var child in node.Children)

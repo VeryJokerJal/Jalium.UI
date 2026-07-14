@@ -13,7 +13,7 @@ namespace Jalium.UI.Media;
 /// Shared WPF-style storage for the mutable Animatable media collections.
 /// </summary>
 [EditorBrowsable(EditorBrowsableState.Never)]
-public abstract class AnimatableCollection<T> : Animatable, IList<T>, IList
+internal abstract class AnimatableCollection<T> : Animatable, IList<T>, IList
 {
     private readonly List<T> _items;
 
@@ -436,11 +436,44 @@ public sealed class PathSegmentCollection : Animatable, IList<PathSegment>, ILis
 
 /// <summary>Represents an animatable collection of two-dimensional points.</summary>
 [TypeConverter("Jalium.UI.Media.PointCollectionConverter, Jalium.UI.Media")]
-public sealed class PointCollection : AnimatableCollection<Point>, IFormattable
+public sealed class PointCollection : Freezable, IList<Point>, IList, IFormattable
 {
-    public PointCollection() { }
-    public PointCollection(int capacity) : base(capacity) { }
-    public PointCollection(IEnumerable<Point> collection) : base(collection) { }
+    private readonly AnimatableListStorage<Point> _items;
+
+    public PointCollection() => _items = CreateStorage();
+    public PointCollection(int capacity) => _items = CreateStorage(capacity);
+    public PointCollection(IEnumerable<Point> collection)
+    {
+        ArgumentNullException.ThrowIfNull(collection);
+        _items = CreateStorage(collection is ICollection<Point> source ? source.Count : 0);
+        _items.AddRange(collection);
+    }
+
+    public Point this[int index] { get => _items[index]; set => _items[index] = value; }
+    object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<Point>.Cast(value); }
+    public int Count => _items.Count;
+    bool ICollection<Point>.IsReadOnly => _items.IsReadOnly;
+    bool IList.IsReadOnly => _items.IsReadOnly;
+    bool IList.IsFixedSize => _items.IsReadOnly;
+    bool ICollection.IsSynchronized => _items.IsSynchronized;
+    object ICollection.SyncRoot => this;
+    public void Add(Point value) => _items.Add(value);
+    int IList.Add(object? value) { Add(AnimatableListStorage<Point>.Cast(value)); return Count - 1; }
+    public void Clear() => _items.Clear();
+    public bool Contains(Point value) => _items.Contains(value);
+    bool IList.Contains(object? value) => value is Point point && Contains(point);
+    public void CopyTo(Point[] array, int index) => _items.CopyTo(array, index);
+    void ICollection.CopyTo(Array array, int index) => _items.CopyTo(array, index);
+    public Enumerator GetEnumerator() => new(_items.GetEnumerator());
+    IEnumerator<Point> IEnumerable<Point>.GetEnumerator() => GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    public int IndexOf(Point value) => _items.IndexOf(value);
+    int IList.IndexOf(object? value) => value is Point point ? IndexOf(point) : -1;
+    public void Insert(int index, Point value) => _items.Insert(index, value);
+    void IList.Insert(int index, object? value) => Insert(index, AnimatableListStorage<Point>.Cast(value));
+    public bool Remove(Point value) => _items.Remove(value);
+    void IList.Remove(object? value) { if (value is Point point) Remove(point); }
+    public void RemoveAt(int index) => _items.RemoveAt(index);
 
     public static PointCollection Parse(string source)
     {
@@ -462,15 +495,35 @@ public sealed class PointCollection : AnimatableCollection<Point>, IFormattable
     public new PointCollection Clone() => (PointCollection)base.Clone();
     public new PointCollection CloneCurrentValue() => (PointCollection)base.CloneCurrentValue();
     protected override Freezable CreateInstanceCore() => new PointCollection();
-    protected override void CloneCore(Freezable source) => base.CloneCore(source);
-    protected override void CloneCurrentValueCore(Freezable source) => base.CloneCurrentValueCore(source);
-    protected override void GetAsFrozenCore(Freezable source) => base.GetAsFrozenCore(source);
-    protected override void GetCurrentValueAsFrozenCore(Freezable source) => base.GetCurrentValueAsFrozenCore(source);
+    protected override bool FreezeCore(bool isChecking) => base.FreezeCore(isChecking) && _items.Freeze(isChecking);
+    protected override void CloneCore(Freezable source) { base.CloneCore(source); _items.CopyFrom(((PointCollection)source)._items, AnimatableListCloneMode.Clone); }
+    protected override void CloneCurrentValueCore(Freezable source) { base.CloneCurrentValueCore(source); _items.CopyFrom(((PointCollection)source)._items, AnimatableListCloneMode.CloneCurrentValue); }
+    protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((PointCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
+    protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((PointCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
+
+    private AnimatableListStorage<Point> CreateStorage(int capacity = 0) => new(
+        () => ReadPreamble(),
+        () => WritePreamble(),
+        () => WritePostscript(),
+        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
+        () => IsFrozen,
+        capacity);
 
     public override string ToString() => ToString(CultureInfo.CurrentCulture);
     public string ToString(IFormatProvider? provider) => string.Join(" ", this.Select(point =>
         string.Format(provider, "{0},{1}", point.X, point.Y)));
     string IFormattable.ToString(string? format, IFormatProvider? provider) => ToString(provider);
+
+    public struct Enumerator : IEnumerator<Point>
+    {
+        private List<Point>.Enumerator _inner;
+        internal Enumerator(List<Point>.Enumerator inner) => _inner = inner;
+        public Point Current => _inner.Current;
+        object IEnumerator.Current => Current;
+        public bool MoveNext() => _inner.MoveNext();
+        public void Reset() => ((IEnumerator)_inner).Reset();
+        public void Dispose() => _inner.Dispose();
+    }
 }
 
 /// <summary>Converts path figure collections to and from path markup.</summary>

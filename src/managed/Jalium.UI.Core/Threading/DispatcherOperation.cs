@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using Jalium.UI;
 
 namespace Jalium.UI.Threading;
 
@@ -21,14 +20,14 @@ public class DispatcherOperation
     internal LinkedListNode<DispatcherOperation>? Node { get; set; }
 
     internal DispatcherOperation(
-        Jalium.UI.Dispatcher dispatcher,
-        Jalium.UI.DispatcherPriority priority,
+        DispatcherCore dispatcher,
+        DispatcherPriority priority,
         Action action,
         bool critical,
         bool observed)
     {
-        Dispatcher = Jalium.UI.Threading.Dispatcher.FromLegacy(dispatcher);
-        _priority = Jalium.UI.Threading.Dispatcher.FromLegacyPriority(priority);
+        Dispatcher = Jalium.UI.Threading.Dispatcher.FromCore(dispatcher);
+        _priority = priority;
         _action = action;
         _critical = critical;
         _observed = observed;
@@ -95,7 +94,7 @@ public class DispatcherOperation
         _completedEvent?.Set();
         _taskSource.TrySetCanceled();
         Aborted?.Invoke(this, EventArgs.Empty);
-        Dispatcher.HooksInternal?.RaiseOperationAborted(Dispatcher.LegacyDispatcher, this);
+        Dispatcher.HooksInternal?.RaiseOperationAborted(Dispatcher.CoreDispatcher, this);
     }
 
     /// <summary>Waits indefinitely for the operation to complete.</summary>
@@ -162,7 +161,7 @@ public class DispatcherOperation
             _completedEvent?.Set();
             _taskSource.TrySetResult();
             Completed?.Invoke(this, EventArgs.Empty);
-            Dispatcher.HooksInternal?.RaiseOperationCompleted(Dispatcher.LegacyDispatcher, this);
+            Dispatcher.HooksInternal?.RaiseOperationCompleted(Dispatcher.CoreDispatcher, this);
         }
         catch (Exception ex)
         {
@@ -173,7 +172,7 @@ public class DispatcherOperation
             _completedEvent?.Set();
             _taskSource.TrySetException(ex);
             Completed?.Invoke(this, EventArgs.Empty);
-            Dispatcher.HooksInternal?.RaiseOperationCompleted(Dispatcher.LegacyDispatcher, this);
+            Dispatcher.HooksInternal?.RaiseOperationCompleted(Dispatcher.CoreDispatcher, this);
 
             // Fire-and-forget (and critical) operations have no observer to surface the error to,
             // so propagate to the dispatcher pump (critical => crash; otherwise UnhandledException).
@@ -201,8 +200,8 @@ public class DispatcherOperation<TResult> : DispatcherOperation
     private readonly Task<TResult> _typedTask;
 
     internal DispatcherOperation(
-        Jalium.UI.Dispatcher dispatcher,
-        Jalium.UI.DispatcherPriority priority,
+        DispatcherCore dispatcher,
+        DispatcherPriority priority,
         Func<TResult> callback)
         : base(
             dispatcher,
@@ -257,9 +256,9 @@ public enum DispatcherOperationStatus
 /// </summary>
 public struct DispatcherProcessingDisabled : IDisposable
 {
-    private Jalium.UI.Dispatcher? _dispatcher;
+    private DispatcherCore? _dispatcher;
 
-    internal DispatcherProcessingDisabled(Jalium.UI.Dispatcher dispatcher)
+    internal DispatcherProcessingDisabled(DispatcherCore dispatcher)
     {
         _dispatcher = dispatcher;
     }
@@ -292,12 +291,12 @@ public struct DispatcherProcessingDisabled : IDisposable
 /// </summary>
 public readonly struct DispatcherPriorityAwaitable
 {
-    private readonly Jalium.UI.Dispatcher _dispatcher;
-    private readonly Jalium.UI.DispatcherPriority _priority;
+    private readonly DispatcherCore _dispatcher;
+    private readonly DispatcherPriority _priority;
 
     internal DispatcherPriorityAwaitable(
-        Jalium.UI.Dispatcher dispatcher,
-        Jalium.UI.DispatcherPriority priority)
+        DispatcherCore dispatcher,
+        DispatcherPriority priority)
     {
         _dispatcher = dispatcher;
         _priority = priority;
@@ -312,12 +311,12 @@ public readonly struct DispatcherPriorityAwaitable
 /// </summary>
 public readonly struct DispatcherPriorityAwaiter : INotifyCompletion
 {
-    private readonly Jalium.UI.Dispatcher _dispatcher;
-    private readonly Jalium.UI.DispatcherPriority _priority;
+    private readonly DispatcherCore _dispatcher;
+    private readonly DispatcherPriority _priority;
 
     internal DispatcherPriorityAwaiter(
-        Jalium.UI.Dispatcher dispatcher,
-        Jalium.UI.DispatcherPriority priority)
+        DispatcherCore dispatcher,
+        DispatcherPriority priority)
     {
         _dispatcher = dispatcher;
         _priority = priority;
@@ -340,24 +339,13 @@ public readonly struct DispatcherPriorityAwaiter : INotifyCompletion
 /// <summary>
 /// Provides data for Dispatcher unhandled exception events.
 /// </summary>
-public sealed class DispatcherUnhandledExceptionEventArgs : EventArgs
+public sealed class DispatcherUnhandledExceptionEventArgs : DispatcherEventArgs
 {
-    /// <summary>Initializes a new instance.</summary>
-    public DispatcherUnhandledExceptionEventArgs(Dispatcher dispatcher, Exception exception)
+    internal DispatcherUnhandledExceptionEventArgs(DispatcherCore dispatcher, Exception exception)
+        : base(Dispatcher.FromCore(dispatcher))
     {
-        Dispatcher = dispatcher;
         Exception = exception;
     }
-
-    internal DispatcherUnhandledExceptionEventArgs(
-        Jalium.UI.Dispatcher dispatcher,
-        Exception exception)
-        : this(Jalium.UI.Threading.Dispatcher.FromLegacy(dispatcher), exception)
-    {
-    }
-
-    /// <summary>Gets the dispatcher that caught the exception.</summary>
-    public Dispatcher Dispatcher { get; }
 
     /// <summary>Gets the exception that was raised.</summary>
     public Exception Exception { get; }
@@ -369,24 +357,13 @@ public sealed class DispatcherUnhandledExceptionEventArgs : EventArgs
 /// <summary>
 /// Provides data for Dispatcher unhandled exception filter events.
 /// </summary>
-public sealed class DispatcherUnhandledExceptionFilterEventArgs : EventArgs
+public sealed class DispatcherUnhandledExceptionFilterEventArgs : DispatcherEventArgs
 {
-    /// <summary>Initializes a new instance.</summary>
-    public DispatcherUnhandledExceptionFilterEventArgs(Dispatcher dispatcher, Exception exception)
+    internal DispatcherUnhandledExceptionFilterEventArgs(DispatcherCore dispatcher, Exception exception)
+        : base(Dispatcher.FromCore(dispatcher))
     {
-        Dispatcher = dispatcher;
         Exception = exception;
     }
-
-    internal DispatcherUnhandledExceptionFilterEventArgs(
-        Jalium.UI.Dispatcher dispatcher,
-        Exception exception)
-        : this(Jalium.UI.Threading.Dispatcher.FromLegacy(dispatcher), exception)
-    {
-    }
-
-    /// <summary>Gets the dispatcher that caught the exception.</summary>
-    public Dispatcher Dispatcher { get; }
 
     /// <summary>Gets the exception that was raised.</summary>
     public Exception Exception { get; }

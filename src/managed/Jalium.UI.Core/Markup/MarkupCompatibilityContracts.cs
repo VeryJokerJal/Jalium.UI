@@ -202,15 +202,21 @@ public abstract class ValueSerializer
         return CanRoundTripString(converter) ? new TypeConverterValueSerializer(converter) : GetSerializerFor(descriptor.PropertyType, context);
     }
 
-    public static ValueSerializer? GetSerializerFor(Type type) => GetSerializerFor(type, null);
+    public static ValueSerializer? GetSerializerFor(Type? type) => GetSerializerFor(type, null);
 
     [UnconditionalSuppressMessage("Trimming", "IL2026", Justification = "ValueSerializer is an explicitly reflection-based component-model API.")]
     [UnconditionalSuppressMessage("Trimming", "IL2067", Justification = "ValueSerializer intentionally accepts arbitrary runtime types for component-model conversion.")]
-    public static ValueSerializer? GetSerializerFor(Type type, IValueSerializerContext? context)
+    public static ValueSerializer? GetSerializerFor(Type? type, IValueSerializerContext? context)
     {
-        ArgumentNullException.ThrowIfNull(type);
+        if (type is null)
+        {
+            return null;
+        }
+
         ValueSerializer? contextual = context?.GetValueSerializerFor(type);
         if (contextual is not null) return contextual;
+        ValueSerializer? mediaSerializer = global::Jalium.UI.Media.MediaValueSerializerRegistry.GetSerializerFor(type);
+        if (mediaSerializer is not null) return mediaSerializer;
         if (type == typeof(DateTime)) return new DateTimeValueSerializer();
         TypeConverter converter = TypeDescriptor.GetConverter(type);
         return CanRoundTripString(converter) ? new TypeConverterValueSerializer(converter) : null;

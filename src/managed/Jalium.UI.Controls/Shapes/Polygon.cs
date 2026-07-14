@@ -1,18 +1,18 @@
 ﻿using Jalium.UI.Media;
 
-namespace Jalium.UI.Controls.Shapes;
+namespace Jalium.UI.Shapes;
 
 /// <summary>
 /// Draws a polygon, which is a connected series of lines that form a closed shape.
 /// </summary>
-public class Polygon : Shape
+public sealed class Polygon : Shape
 {
     /// <summary>
     /// Identifies the Points dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PointsProperty =
-        DependencyProperty.Register(nameof(Points), typeof(PointCollection), typeof(Polygon),
+        DependencyProperty.Register(nameof(Points), typeof(Jalium.UI.Media.PointCollection), typeof(Polygon),
             new PropertyMetadata(null, OnGeometryPropertyChanged));
 
     /// <summary>
@@ -27,9 +27,9 @@ public class Polygon : Shape
     /// Gets or sets a collection that contains the vertex points of the polygon.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public PointCollection? Points
+    public Jalium.UI.Media.PointCollection? Points
     {
-        get => (PointCollection?)GetValue(PointsProperty);
+        get => (Jalium.UI.Media.PointCollection?)GetValue(PointsProperty);
         set => SetValue(PointsProperty, value);
     }
 
@@ -137,7 +137,7 @@ public class Polygon : Shape
     /// <inheritdoc />
     protected override Geometry? DefiningGeometry => EnsureGeometry();
 
-    private static Rect GetBounds(PointCollection points)
+    private static Rect GetBounds(Jalium.UI.Media.PointCollection points)
     {
         if (points.Count == 0)
             return Rect.Empty;

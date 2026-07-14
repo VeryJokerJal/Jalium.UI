@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Globalization;
 using Jalium.UI.Media.Animation;
 
@@ -101,27 +102,76 @@ public sealed class GeometryModel3D : Model3D
 }
 
 /// <summary>Represents an ordered collection of 3-D models.</summary>
-public sealed class Model3DCollection : FreezableCollection<Model3D>
+public sealed class Model3DCollection : Animatable, IList<Model3D>, IList
 {
-    public Model3DCollection()
-    {
-    }
+    private readonly AnimatableListStorage<Model3D> _items;
 
-    public Model3DCollection(int capacity)
-        : base(capacity)
-    {
-    }
+    public Model3DCollection() => _items = CreateStorage();
+
+    public Model3DCollection(int capacity) => _items = CreateStorage(capacity);
 
     public Model3DCollection(IEnumerable<Model3D> collection)
-        : base(collection)
     {
+        ArgumentNullException.ThrowIfNull(collection);
+        _items = CreateStorage(collection is ICollection<Model3D> source ? source.Count : 0);
+        _items.AddRange(collection);
     }
+
+    public Model3D this[int index] { get => _items[index]; set => _items[index] = value; }
+    object? IList.this[int index] { get => this[index]; set => this[index] = AnimatableListStorage<Model3D>.Cast(value); }
+    public int Count => _items.Count;
+    bool ICollection<Model3D>.IsReadOnly => _items.IsReadOnly;
+    bool IList.IsReadOnly => _items.IsReadOnly;
+    bool IList.IsFixedSize => _items.IsReadOnly;
+    bool ICollection.IsSynchronized => _items.IsSynchronized;
+    object ICollection.SyncRoot => this;
+    public void Add(Model3D value) => _items.Add(value);
+    int IList.Add(object? value) { Add(AnimatableListStorage<Model3D>.Cast(value)); return Count - 1; }
+    public void Clear() => _items.Clear();
+    public bool Contains(Model3D value) => _items.Contains(value);
+    bool IList.Contains(object? value) => value is Model3D model && Contains(model);
+    public void CopyTo(Model3D[] array, int index) => _items.CopyTo(array, index);
+    void ICollection.CopyTo(Array array, int index) => _items.CopyTo(array, index);
+    public Enumerator GetEnumerator() => new(_items.GetEnumerator());
+    IEnumerator<Model3D> IEnumerable<Model3D>.GetEnumerator() => GetEnumerator();
+    IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    public int IndexOf(Model3D value) => _items.IndexOf(value);
+    int IList.IndexOf(object? value) => value is Model3D model ? IndexOf(model) : -1;
+    public void Insert(int index, Model3D value) => _items.Insert(index, value);
+    void IList.Insert(int index, object? value) => Insert(index, AnimatableListStorage<Model3D>.Cast(value));
+    public bool Remove(Model3D value) => _items.Remove(value);
+    void IList.Remove(object? value) { if (value is Model3D model) Remove(model); }
+    public void RemoveAt(int index) => _items.RemoveAt(index);
 
     public new Model3DCollection Clone() => (Model3DCollection)base.Clone();
 
     public new Model3DCollection CloneCurrentValue() => (Model3DCollection)base.CloneCurrentValue();
 
     protected override Freezable CreateInstanceCore() => new Model3DCollection();
+    protected override bool FreezeCore(bool isChecking) => base.FreezeCore(isChecking) && _items.Freeze(isChecking);
+    protected override void CloneCore(Freezable source) { base.CloneCore(source); _items.CopyFrom(((Model3DCollection)source)._items, AnimatableListCloneMode.Clone); }
+    protected override void CloneCurrentValueCore(Freezable source) { base.CloneCurrentValueCore(source); _items.CopyFrom(((Model3DCollection)source)._items, AnimatableListCloneMode.CloneCurrentValue); }
+    protected override void GetAsFrozenCore(Freezable source) { base.GetAsFrozenCore(source); _items.CopyFrom(((Model3DCollection)source)._items, AnimatableListCloneMode.GetAsFrozen); }
+    protected override void GetCurrentValueAsFrozenCore(Freezable source) { base.GetCurrentValueAsFrozenCore(source); _items.CopyFrom(((Model3DCollection)source)._items, AnimatableListCloneMode.GetCurrentValueAsFrozen); }
+
+    private AnimatableListStorage<Model3D> CreateStorage(int capacity = 0) => new(
+        () => ReadPreamble(),
+        () => WritePreamble(),
+        () => WritePostscript(),
+        (oldValue, newValue) => OnFreezablePropertyChanged(oldValue, newValue),
+        () => IsFrozen,
+        capacity);
+
+    public struct Enumerator : IEnumerator<Model3D>
+    {
+        private List<Model3D>.Enumerator _inner;
+        internal Enumerator(List<Model3D>.Enumerator inner) => _inner = inner;
+        public Model3D Current => _inner.Current;
+        object IEnumerator.Current => Current;
+        public bool MoveNext() => _inner.MoveNext();
+        public void Reset() => ((IEnumerator)_inner).Reset();
+        public void Dispose() => _inner.Dispose();
+    }
 }
 
 /// <summary>Uses a collection of models as one model.</summary>

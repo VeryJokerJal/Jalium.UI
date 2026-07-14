@@ -27,7 +27,7 @@ namespace Jalium.UI.Rendering;
 /// pipeline can use it interchangeably with the live context.
 /// </para>
 /// </remarks>
-public interface IRenderCacheHost
+internal interface IRenderCacheHost
 {
     /// <summary>
     /// Starts a recording scope for a visual's <c>OnRender</c>. The returned

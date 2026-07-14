@@ -28,7 +28,6 @@ public enum TickBarPlacement
     /// </summary>
     Bottom
 }
-
 /// <summary>
 /// Represents a control that draws a set of tick marks for a Slider control.
 /// </summary>
@@ -72,7 +71,7 @@ public class TickBar : FrameworkElement
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty TicksProperty =
-        DependencyProperty.Register(nameof(Ticks), typeof(DoubleCollection), typeof(TickBar),
+        DependencyProperty.Register(nameof(Ticks), typeof(Jalium.UI.Media.DoubleCollection), typeof(TickBar),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
     /// <summary>
@@ -169,9 +168,9 @@ public class TickBar : FrameworkElement
     /// Gets or sets a set of tick marks to display.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public DoubleCollection? Ticks
+    public Jalium.UI.Media.DoubleCollection? Ticks
     {
-        get => (DoubleCollection?)GetValue(TicksProperty);
+        get => (Jalium.UI.Media.DoubleCollection?)GetValue(TicksProperty);
         set => SetValue(TicksProperty, value);
     }
 
@@ -419,50 +418,4 @@ public class TickBar : FrameworkElement
     }
 
     #endregion
-}
-
-/// <summary>
-/// Represents a collection of double values.
-/// </summary>
-public sealed class DoubleCollection : List<double>
-{
-    /// <summary>
-    /// Initializes a new instance of the <see cref="DoubleCollection"/> class.
-    /// </summary>
-    public DoubleCollection()
-    {
-    }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="DoubleCollection"/> class with the specified values.
-    /// </summary>
-    /// <param name="values">The values to add to the collection.</param>
-    public DoubleCollection(IEnumerable<double> values) : base(values)
-    {
-    }
-
-    /// <summary>
-    /// Parses a string representation into a DoubleCollection.
-    /// </summary>
-    /// <param name="source">The string to parse (comma or space separated).</param>
-    /// <returns>A new DoubleCollection.</returns>
-    public static DoubleCollection Parse(string source)
-    {
-        var collection = new DoubleCollection();
-        if (string.IsNullOrWhiteSpace(source))
-            return collection;
-
-        var separators = new[] { ',', ' ' };
-        var parts = source.Split(separators, StringSplitOptions.RemoveEmptyEntries);
-
-        foreach (var part in parts)
-        {
-            if (double.TryParse(part.Trim(), out var value))
-            {
-                collection.Add(value);
-            }
-        }
-
-        return collection;
-    }
 }

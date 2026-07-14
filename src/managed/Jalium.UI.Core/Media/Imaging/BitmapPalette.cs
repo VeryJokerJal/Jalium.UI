@@ -1,6 +1,8 @@
+using Jalium.UI.Threading;
+
 namespace Jalium.UI.Media.Imaging;
 
-public sealed class BitmapPalette
+public sealed class BitmapPalette : DispatcherObject
 {
     public BitmapPalette(IList<Color> colors)
     {

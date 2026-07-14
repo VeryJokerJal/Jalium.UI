@@ -151,8 +151,13 @@ JALIUM_API JaliumResult jalium_text_format_hit_test_point(
         text, textLength, maxWidth, maxHeight, pointX, pointY, result);
 #else
     auto wstr = jalium::ManagedToWString(text, textLength);
-    return reinterpret_cast<jalium::TextFormat*>(format)->HitTestPoint(
+    JaliumResult status = reinterpret_cast<jalium::TextFormat*>(format)->HitTestPoint(
         wstr.c_str(), static_cast<uint32_t>(wstr.size()), maxWidth, maxHeight, pointX, pointY, result);
+    if (status == JALIUM_OK) {
+        result->textPosition = jalium::ManagedWStringIndexToUtf16Index(
+            text, textLength, result->textPosition);
+    }
+    return status;
 #endif
 }
 
@@ -169,8 +174,16 @@ JALIUM_API JaliumResult jalium_text_format_hit_test_text_position(
         text, textLength, maxWidth, maxHeight, textPosition, isTrailingHit, result);
 #else
     auto wstr = jalium::ManagedToWString(text, textLength);
-    return reinterpret_cast<jalium::TextFormat*>(format)->HitTestTextPosition(
-        wstr.c_str(), static_cast<uint32_t>(wstr.size()), maxWidth, maxHeight, textPosition, isTrailingHit, result);
+    uint32_t wideTextPosition = jalium::ManagedUtf16IndexToWStringIndex(
+        text, textLength, textPosition);
+    JaliumResult status = reinterpret_cast<jalium::TextFormat*>(format)->HitTestTextPosition(
+        wstr.c_str(), static_cast<uint32_t>(wstr.size()), maxWidth, maxHeight,
+        wideTextPosition, isTrailingHit, result);
+    if (status == JALIUM_OK) {
+        result->textPosition = jalium::ManagedWStringIndexToUtf16Index(
+            text, textLength, result->textPosition);
+    }
+    return status;
 #endif
 }
 

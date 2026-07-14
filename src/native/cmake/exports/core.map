@@ -1,0 +1,14 @@
+JALIUM_CORE_ABI_1 {
+    global:
+        jalium_*;
+        _ZN6jalium*;
+        _ZNK6jalium*;
+        _ZTI*6jalium*;
+        _ZTS*6jalium*;
+        _ZTV*6jalium*;
+        _ZTT*6jalium*;
+        _ZTh*6jalium*;
+        _ZTv*6jalium*;
+    local:
+        *;
+};

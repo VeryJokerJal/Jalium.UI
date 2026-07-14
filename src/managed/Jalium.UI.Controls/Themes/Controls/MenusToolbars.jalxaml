@@ -152,12 +152,6 @@
         <Setter Property="BorderThickness" Value="0,1,0,0" />
         <Setter Property="Padding" Value="8,0,8,0" />
         <Setter Property="Height" Value="24" />
-        <Setter Property="SeparatorBrush" Value="{ThemeResource ControlBorder}" />
-    </Style>
-
-    <Style TargetType="StatusBarItem">
-        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
-        <Setter Property="Padding" Value="8,2,8,2" />
     </Style>
 
     <!-- ============================================== -->

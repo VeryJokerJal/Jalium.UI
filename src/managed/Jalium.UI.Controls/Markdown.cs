@@ -3,6 +3,7 @@ using System.Linq;
 using System.Text;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using WpfClipboard = global::Jalium.UI.Clipboard;
 
 namespace Jalium.UI.Controls;
 
@@ -30,7 +31,7 @@ public sealed class MarkdownLinkClickedEventArgs : EventArgs
 /// <summary>
 /// Displays Markdown content using a native parser and renderer.
 /// </summary>
-[ContentProperty(nameof(Text))]
+[Jalium.UI.Markup.ContentProperty(nameof(Text))]
 public class Markdown : Control
 {
     /// <inheritdoc />
@@ -876,18 +877,18 @@ public class Markdown : Control
         }
 
         var plain = HasSelection ? BuildSelectedText() : MarkdownSerializer.ToPlainText(blocks);
-        var data = new ClipboardDataObject();
+        var data = new global::Jalium.UI.DataObject();
         data.SetData(DataFormats.Text, plain);
         data.SetData(DataFormats.Html, MarkdownSerializer.ToHtmlFragment(blocks));
         data.SetData(DataFormats.Rtf, MarkdownSerializer.ToRtf(blocks));
-        Clipboard.SetDataObject(data);
+        WpfClipboard.SetDataObject(data, copy: true);
     }
 
     /// <summary>
     /// Copies the selection (or the whole document) as plain text without Markdown markers.
     /// </summary>
     public void CopyAsPlainText()
-        => Clipboard.SetText(HasSelection ? BuildSelectedText() : GetPlainText());
+        => WpfClipboard.SetText(HasSelection ? BuildSelectedText() : GetPlainText());
 
     /// <summary>
     /// Copies the selection (or the whole document) as Markdown source (text with markers).
@@ -895,7 +896,7 @@ public class Markdown : Control
     public void CopyAsMarkdownText()
     {
         var markdown = HasSelection ? MarkdownSerializer.ToMarkdown(GetTouchedBlocks()) : GetMarkdownText();
-        Clipboard.SetText(markdown);
+        WpfClipboard.SetText(markdown);
     }
 
     /// <summary>

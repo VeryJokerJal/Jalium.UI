@@ -1,7 +1,9 @@
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using Jalium.UI.Controls;
+using Jalium.UI.Media;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Data;
 using Jalium.UI.Documents;
@@ -253,16 +255,32 @@ public static class HotReloadRuntime
             return;
         }
 
-        if (target is ScrollViewer targetScroll && source is ScrollViewer sourceScroll)
+        if (target is BulletDecorator targetBullet && source is BulletDecorator sourceBullet)
         {
-            // ScrollViewer : Control (NOT ContentControl) — its Content is a CLR UIElement?
-            // property, invisible to both copy paths, so without this branch the entire scrolled
-            // subtree (the common page-root wrapper) never updates on hot reload.
+            // Bullet and Child are ordinary WPF CLR properties. Patch both slots explicitly before
+            // the general Decorator branch so the bullet subtree is not silently skipped.
             PatchSingleChildContainer(
-                targetScroll,
-                sourceScroll,
-                static scroll => scroll.Content,
-                static (scroll, child) => scroll.Content = child,
+                targetBullet,
+                sourceBullet,
+                static decorator => decorator.Bullet,
+                static (decorator, child) => decorator.Bullet = child,
+                counters);
+            PatchSingleChildContainer(
+                targetBullet,
+                sourceBullet,
+                static decorator => decorator.Child,
+                static (decorator, child) => decorator.Child = child,
+                counters);
+            return;
+        }
+
+        if (target is Viewbox targetViewbox && source is Viewbox sourceViewbox)
+        {
+            PatchSingleChildContainer(
+                targetViewbox,
+                sourceViewbox,
+                static viewbox => viewbox.Child,
+                static (viewbox, child) => viewbox.Child = child,
                 counters);
             return;
         }
@@ -270,7 +288,7 @@ public static class HotReloadRuntime
         if (target is Decorator targetDecorator && source is Decorator sourceDecorator)
         {
             // Decorator base family (AdornerDecorator / InkPresenter / PopupRoot / PopupWindow):
-            // Child is a UIElement DP, skipped by CopyDependencyProperties' UIElement guard.
+            // Child is an ordinary WPF CLR property, skipped by the generic DP copy path.
             PatchSingleChildContainer(
                 targetDecorator,
                 sourceDecorator,
@@ -291,15 +309,6 @@ public static class HotReloadRuntime
             return;
         }
 
-        if (target is Viewbox targetViewbox && source is Viewbox sourceViewbox)
-        {
-            PatchSingleChildContainer(
-                targetViewbox,
-                sourceViewbox,
-                static viewbox => viewbox.Child,
-                static (viewbox, child) => viewbox.Child = child,
-                counters);
-        }
     }
 
     /// <summary>
@@ -344,8 +353,8 @@ public static class HotReloadRuntime
             PatchDefinitionList(targetGrid.ColumnDefinitions, sourceGrid.ColumnDefinitions, counters);
         }
 
-        var existingChildren = targetPanel.Children.ToList();
-        var sourceChildren = sourcePanel.Children.ToList();
+        var existingChildren = targetPanel.Children.Cast<UIElement>().ToList();
+        var sourceChildren = sourcePanel.Children.Cast<UIElement>().ToList();
         var used = new HashSet<UIElement>();
         var merged = new List<UIElement>(sourceChildren.Count);
         var grafted = new HashSet<UIElement>();
@@ -456,15 +465,15 @@ public static class HotReloadRuntime
     /// Merges a source content-item collection into the target in place: items are matched (by x:Name,
     /// then position) and patched recursively; the collection is only rebuilt when the set/order
     /// actually changed (rebuilding would lose selection / scroll / focus). Works on any
-    /// <see cref="IList{Object}"/> content collection — ItemsControl.Items (ItemCollection) and
+    /// <see cref="IList"/> content collection — ItemsControl.Items (ItemCollection) and
     /// NavigationView.MenuItems (ObservableCollection&lt;object&gt;) alike; neither's Add/Clear performs
     /// AddVisualChild, so grafting per-instance source items across live instances is safe.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Recurses into ApplyElementPatch which mirrors DPs/CLR properties via reflection.")]
-    private static void PatchObjectCollection(IList<object> targetList, IList<object> sourceList, PatchCounters counters)
+    private static void PatchObjectCollection(IList targetList, IList sourceList, PatchCounters counters)
     {
-        var existingItems = new List<object>(targetList);
-        var sourceItems = new List<object>(sourceList);
+        var existingItems = targetList.Cast<object>().ToList();
+        var sourceItems = sourceList.Cast<object>().ToList();
 
         var used = new HashSet<object>(ReferenceEqualityComparer.Instance);
         var merged = new List<object>(sourceItems.Count);

@@ -3,7 +3,7 @@ namespace Jalium.UI.Interactivity;
 /// <summary>
 /// Represents an attachable object that encapsulates a unit of functionality.
 /// </summary>
-public abstract class TriggerAction : DependencyObject, IAttachedObject
+public abstract class BehaviorTriggerAction : DependencyObject, IAttachedObject
 {
     private DependencyObject? _associatedObject;
     private bool _isHosted;
@@ -101,7 +101,7 @@ public abstract class TriggerAction : DependencyObject, IAttachedObject
 /// Represents an attachable object that encapsulates a unit of functionality, with a type constraint on the associated object.
 /// </summary>
 /// <typeparam name="T">The type of object this action can be attached to.</typeparam>
-public abstract class TriggerAction<T> : TriggerAction where T : DependencyObject
+public abstract class BehaviorTriggerAction<T> : BehaviorTriggerAction where T : DependencyObject
 {
     /// <summary>
     /// Gets the object to which this action is attached.

@@ -1,11 +1,12 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Media;
 
-namespace Jalium.UI.Media;
+namespace Jalium.UI.Media.Imaging;
 
 /// <summary>
-/// Provides a BitmapSource that can be written to and updated.
+/// WPF-compatible mutable bitmap source with Jalium pixel-editing extensions.
 /// </summary>
-public class WriteableBitmap : Imaging.BitmapSource
+public sealed partial class WriteableBitmap : BitmapSource
 {
     private byte[] _backBuffer;
     private readonly int _pixelWidth;

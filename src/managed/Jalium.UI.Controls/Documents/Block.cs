@@ -572,8 +572,8 @@ public class List : Block
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty MarkerStyleProperty =
-        DependencyProperty.Register(nameof(MarkerStyle), typeof(TextMarkerStyle), typeof(List),
-            new PropertyMetadata(TextMarkerStyle.Disc));
+        DependencyProperty.Register(nameof(MarkerStyle), typeof(Jalium.UI.TextMarkerStyle), typeof(List),
+            new PropertyMetadata(Jalium.UI.TextMarkerStyle.Disc));
 
     /// <summary>
     /// Identifies the MarkerOffset dependency property.
@@ -600,9 +600,9 @@ public class List : Block
     /// Gets or sets the marker style.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public TextMarkerStyle MarkerStyle
+    public Jalium.UI.TextMarkerStyle MarkerStyle
     {
-        get => (TextMarkerStyle)(GetValue(MarkerStyleProperty) ?? TextMarkerStyle.Disc);
+        get => (Jalium.UI.TextMarkerStyle)(GetValue(MarkerStyleProperty) ?? Jalium.UI.TextMarkerStyle.Disc);
         set => SetValue(MarkerStyleProperty, value);
     }
 
@@ -822,23 +822,6 @@ public sealed class ListItem : TextElement
     [EditorBrowsable(EditorBrowsableState.Never)]
     public bool ShouldSerializeBlocks(XamlDesignerSerializationManager manager) =>
         manager != null && manager.XmlWriter == null;
-}
-
-/// <summary>
-/// Specifies the marker style for list items.
-/// </summary>
-public enum TextMarkerStyle
-{
-    None,
-    Disc,
-    Circle,
-    Square,
-    Box,
-    LowerRoman,
-    UpperRoman,
-    LowerLatin,
-    UpperLatin,
-    Decimal
 }
 
 /// <summary>

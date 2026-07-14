@@ -1,15 +1,19 @@
 using Jalium.UI.Media.Imaging;
+using Jalium.UI.Media;
 using Jalium.UI.Media.Native;
 using Jalium.UI.Markup;
 
-namespace Jalium.UI.Media;
+namespace Jalium.UI.Media.Imaging;
 
 /// <summary>
 /// Represents a bitmap image source. PNG / JPEG / WebP / GIF / BMP / HEIF input is
 /// decoded to BGRA8 pixels by the platform-native <see cref="INativeImageDecoder"/>
 /// (WIC on Windows, NDK <c>AImageDecoder</c> / <c>BitmapFactory</c> on Android).
 /// </summary>
-public class BitmapImage : Imaging.BitmapSource, IDisposable, IReclaimableResource, IUriContext
+/// <summary>
+/// WPF-compatible bitmap image with Jalium native-decoder and media-frame extensions.
+/// </summary>
+public sealed partial class BitmapImage : BitmapSource, IDisposable, IReclaimableResource
 {
     private static INativeImageDecoder? s_decoder;
     private static readonly object s_decoderLock = new();
@@ -70,7 +74,7 @@ public class BitmapImage : Imaging.BitmapSource, IDisposable, IReclaimableResour
     /// <summary>
     /// Gets or sets the URI source of the bitmap image.
     /// </summary>
-    public Uri? UriSource
+    private Uri? UriSourceCore
     {
         get => _uriSource;
         set
@@ -95,7 +99,7 @@ public class BitmapImage : Imaging.BitmapSource, IDisposable, IReclaimableResour
     }
 
     /// <summary>Gets or sets the base URI used by derived WPF-compatible facades.</summary>
-    protected Uri? BaseUriCore
+    private Uri? BaseUriCore
     {
         get => _baseUri;
         set
@@ -122,21 +126,6 @@ public class BitmapImage : Imaging.BitmapSource, IDisposable, IReclaimableResour
                 // occurs inside a Source property callback, so keep that callback event-driven.
             }
         }
-    }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="BitmapImage"/> class.
-    /// </summary>
-    public BitmapImage()
-    {
-    }
-
-    /// <summary>
-    /// Initializes a new instance of the <see cref="BitmapImage"/> class with the specified URI.
-    /// </summary>
-    public BitmapImage(Uri uriSource)
-    {
-        UriSource = uriSource;
     }
 
     /// <summary>
@@ -379,7 +368,7 @@ public class BitmapImage : Imaging.BitmapSource, IDisposable, IReclaimableResour
 
     private async Task LoadFromHttpAsync(Uri uri, CancellationToken cancellationToken)
     {
-        var dispatcher = Dispatcher.CurrentDispatcher;
+        var dispatcher = Jalium.UI.Threading.Dispatcher.CurrentDispatcher;
         try
         {
             using var httpClient = new System.Net.Http.HttpClient();
@@ -480,7 +469,7 @@ public class BitmapImage : Imaging.BitmapSource, IDisposable, IReclaimableResour
     }
 
     /// <summary>Loads encoded image data from a caller-owned stream.</summary>
-    protected void LoadFromStreamSource(Stream stream)
+    private void LoadFromStreamSource(Stream stream)
     {
         ArgumentNullException.ThrowIfNull(stream);
         if (!stream.CanRead)
@@ -494,7 +483,7 @@ public class BitmapImage : Imaging.BitmapSource, IDisposable, IReclaimableResour
     }
 
     /// <summary>Copies the decoded and source state into a clone.</summary>
-    protected void CopyBitmapStateFrom(BitmapImage source)
+    private void CopyBitmapStateFrom(BitmapImage source)
     {
         ArgumentNullException.ThrowIfNull(source);
         _nativeHandle = source._nativeHandle;
@@ -508,7 +497,7 @@ public class BitmapImage : Imaging.BitmapSource, IDisposable, IReclaimableResour
     }
 
     /// <summary>Applies WPF BitmapImage crop, rotation, and decode-size options.</summary>
-    protected void ApplyDecodeOptions(Int32Rect sourceRect, int decodePixelWidth, int decodePixelHeight, Rotation rotation)
+    private void ApplyDecodeOptions(Int32Rect sourceRect, int decodePixelWidth, int decodePixelHeight, Rotation rotation)
     {
         if (_rawPixelData is null || PixelWidth <= 0 || PixelHeight <= 0)
         {

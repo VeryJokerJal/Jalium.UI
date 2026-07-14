@@ -26,11 +26,17 @@ public sealed class NativeCameraSource : INativeCameraSource
     {
         ArgumentException.ThrowIfNullOrEmpty(deviceId);
         ObjectDisposedException.ThrowIf(_disposed, this);
+        if (requestedWidth < 0) throw new ArgumentOutOfRangeException(nameof(requestedWidth));
+        if (requestedHeight < 0) throw new ArgumentOutOfRangeException(nameof(requestedHeight));
+        if (!double.IsFinite(requestedFps) || requestedFps < 0)
+            throw new ArgumentOutOfRangeException(nameof(requestedFps));
 
+        CloseHandle();
         var status = NativeMediaInterop.jalium_camera_open(
             deviceId, (uint)requestedWidth, (uint)requestedHeight, requestedFps,
-            NativeMediaInterop.ToNative(requestedFormat), out _handle);
+            NativeMediaInterop.ToNative(requestedFormat), out var handle);
         NativeMediaException.ThrowIfFailed(status, "jalium_camera_open");
+        _handle = handle;
     }
 
     /// <inheritdoc />
@@ -62,11 +68,7 @@ public sealed class NativeCameraSource : INativeCameraSource
     public void Stop()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        if (_handle != nint.Zero)
-        {
-            NativeMediaInterop.jalium_camera_close(_handle);
-            _handle = nint.Zero;
-        }
+        CloseHandle();
     }
 
     /// <inheritdoc />
@@ -74,6 +76,11 @@ public sealed class NativeCameraSource : INativeCameraSource
     {
         if (_disposed) return;
         _disposed = true;
+        CloseHandle();
+    }
+
+    private void CloseHandle()
+    {
         if (_handle != nint.Zero)
         {
             NativeMediaInterop.jalium_camera_close(_handle);

@@ -3,6 +3,7 @@ using Jalium.UI.Tests.TestHelpers;
 using Jalium.UI.Controls;
 using Jalium.UI.Hosting;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Tests;
 

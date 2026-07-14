@@ -3,7 +3,7 @@ namespace Jalium.UI.Controls.Ribbon;
 /// <summary>
 /// Displays a set of related items in a Ribbon control.
 /// </summary>
-[ContentProperty("Items")]
+[Jalium.UI.Markup.ContentProperty("Items")]
 public class RibbonGallery : ItemsControl
 {
     /// <summary>
@@ -12,7 +12,7 @@ public class RibbonGallery : ItemsControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedItemProperty =
         DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(RibbonGallery),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnSelectionPropertyChanged));
 
     /// <summary>
     /// Identifies the SelectedValue dependency property.
@@ -20,7 +20,7 @@ public class RibbonGallery : ItemsControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedValueProperty =
         DependencyProperty.Register(nameof(SelectedValue), typeof(object), typeof(RibbonGallery),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnSelectionPropertyChanged));
 
     /// <summary>
     /// Gets or sets the selected item.
@@ -69,19 +69,22 @@ public class RibbonGallery : ItemsControl
     {
         SelectionChanged?.Invoke(this, new RoutedEventArgs());
     }
+
+    private static void OnSelectionPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is RibbonGallery gallery)
+        {
+            gallery.OnSelectionChanged();
+        }
+    }
 }
 
 /// <summary>
 /// Represents a category within a RibbonGallery.
 /// </summary>
-[ContentProperty("Items")]
-public class RibbonGalleryCategory : ItemsControl
+[Jalium.UI.Markup.ContentProperty("Items")]
+public class RibbonGalleryCategory : HeaderedItemsControl
 {
-    /// <summary>
-    /// Gets or sets the header of the category.
-    /// </summary>
-    public object? Header { get; set; }
-
     /// <summary>
     /// Gets or sets the minimum number of columns for this category.
     /// </summary>

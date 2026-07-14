@@ -41,6 +41,11 @@ public class CurrentChangingEventArgs : EventArgs
 }
 
 /// <summary>
+/// Represents the method that handles the <see cref="ICollectionView.CurrentChanging"/> event.
+/// </summary>
+public delegate void CurrentChangingEventHandler(object? sender, CurrentChangingEventArgs e);
+
+/// <summary>
 /// Defines a property and direction used to sort a collection view.
 /// </summary>
 public struct SortDescription
@@ -177,6 +182,7 @@ public abstract class GroupDescription : INotifyPropertyChanged
     private readonly ObservableCollection<object> _groupNames = new();
     private SortDescriptionCollection? _sortDescriptions;
     private IComparer? _customSort;
+    private bool _sortDescriptionsInGrouping;
 
     protected GroupDescription()
     {
@@ -215,13 +221,30 @@ public abstract class GroupDescription : INotifyPropertyChanged
         }
     }
 
-    protected virtual event PropertyChangedEventHandler? PropertyChanged;
-
-    event PropertyChangedEventHandler? INotifyPropertyChanged.PropertyChanged
+    /// <summary>
+    /// Gets or sets whether Jalium applies the sort descriptions while ordering nested groups.
+    /// This is a Jalium-specific grouping option retained on the canonical component-model type.
+    /// </summary>
+    public bool SortDescriptionsInGrouping
     {
-        add => PropertyChanged += value;
-        remove => PropertyChanged -= value;
+        get => _sortDescriptionsInGrouping;
+        set
+        {
+            if (_sortDescriptionsInGrouping == value)
+            {
+                return;
+            }
+
+            _sortDescriptionsInGrouping = value;
+            OnPropertyChanged(new PropertyChangedEventArgs(nameof(SortDescriptionsInGrouping)));
+        }
     }
+
+    /// <summary>
+    /// Occurs when a property value changes. This public event retains Jalium's
+    /// additional grouping notification surface on the canonical type.
+    /// </summary>
+    public virtual event PropertyChangedEventHandler? PropertyChanged;
 
     public bool ShouldSerializeGroupNames() => _groupNames.Count > 0;
 
@@ -230,6 +253,10 @@ public abstract class GroupDescription : INotifyPropertyChanged
     public abstract object GroupNameFromItem(object item, int level, CultureInfo culture);
 
     public virtual bool NamesMatch(object groupName, object itemName) => Equals(groupName, itemName);
+
+    /// <summary>Raises a property-changed notification by property name.</summary>
+    protected virtual void OnPropertyChanged(string propertyName) =>
+        OnPropertyChanged(new PropertyChangedEventArgs(propertyName));
 
     protected virtual void OnPropertyChanged(PropertyChangedEventArgs e) => PropertyChanged?.Invoke(this, e);
 
@@ -342,6 +369,15 @@ public class PropertyChangedEventManager : WeakEventManager
         CurrentManager.Add(source, propertyName, listener, null);
     }
 
+    /// <summary>
+    /// Adds a listener for all property changes. This retains Jalium's
+    /// non-filtered listener convenience overload on the canonical manager.
+    /// </summary>
+    public static void AddListener(
+        INotifyPropertyChanged source,
+        IWeakEventListener listener) =>
+        AddListener(source, listener, string.Empty);
+
     public static void RemoveListener(
         INotifyPropertyChanged source,
         IWeakEventListener listener,
@@ -351,6 +387,14 @@ public class PropertyChangedEventManager : WeakEventManager
         ArgumentNullException.ThrowIfNull(listener);
         CurrentManager.Remove(source, propertyName, listener, null);
     }
+
+    /// <summary>
+    /// Removes a listener registered for all property changes.
+    /// </summary>
+    public static void RemoveListener(
+        INotifyPropertyChanged source,
+        IWeakEventListener listener) =>
+        RemoveListener(source, listener, string.Empty);
 
     public static void AddHandler(
         INotifyPropertyChanged source,

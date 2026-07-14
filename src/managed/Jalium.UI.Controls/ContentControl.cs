@@ -1,5 +1,6 @@
 using System.Globalization;
 using Jalium.UI.Markup;
+using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Controls;
