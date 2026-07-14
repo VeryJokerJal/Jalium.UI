@@ -4,10 +4,10 @@ using Jalium.UI.Media;
 namespace Jalium.UI.Tests;
 
 /// <summary>
-/// Guards canonical WPF namespace ownership so historical compatibility types cannot
+/// Guards canonical namespace ownership so historical compatibility types cannot
 /// quietly become public again.
 /// </summary>
-public sealed class WpfCanonicalTypeConflictTests
+public sealed class CanonicalTypeConflictTests
 {
     [Fact]
     public void ControlsTypes_AreNotPublishedFromThePrimitivesNamespace()
@@ -41,7 +41,7 @@ public sealed class WpfCanonicalTypeConflictTests
     }
 
     [Fact]
-    public void BlurEffect_NameIsReservedForTheCanonicalWpfElementEffect()
+    public void BlurEffect_NameIsReservedForTheCanonicalElementEffect()
     {
         Type[] exported = typeof(FrameworkElement).Assembly.GetExportedTypes();
 
