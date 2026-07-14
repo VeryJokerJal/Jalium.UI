@@ -6,7 +6,7 @@ using Jalium.UI.Markup;
 namespace Jalium.UI.Controls;
 
 /// <summary>
-/// Converts an alternation index to the corresponding item in <see cref="Values"/>.
+/// Converts an alternation index to the selected item in <see cref="Values"/>.
 /// </summary>
 [ContentProperty(nameof(Values))]
 public class AlternationConverter : IValueConverter
