@@ -5,12 +5,12 @@ using JaliumCommandManager = Jalium.UI.Input.CommandManager;
 
 namespace Jalium.UI.Tests;
 
-public sealed class WpfUtilityTypeShapeParityTests
+public sealed class UtilityTypeShapeParityTests
 {
     [Fact]
-    public void CommandManagerUsesTheWpfSealedUtilityTypeShape()
+    public void CommandManagerUsesTheCanonicalSealedUtilityTypeShape()
     {
-        AssertWpfUtilityType(
+        AssertCanonicalUtilityType(
             typeof(JaliumCommandManager),
             nameof(JaliumCommandManager.InvalidateRequerySuggested),
             nameof(JaliumCommandManager.RequerySuggested),
@@ -18,24 +18,24 @@ public sealed class WpfUtilityTypeShapeParityTests
     }
 
     [Fact]
-    public void BrushesUsesTheWpfSealedUtilityTypeShape()
+    public void BrushesUsesTheCanonicalSealedUtilityTypeShape()
     {
-        AssertWpfUtilityType(
+        AssertCanonicalUtilityType(
             typeof(JaliumBrushes),
             nameof(JaliumBrushes.Black),
             nameof(JaliumBrushes.Transparent));
     }
 
     [Fact]
-    public void ColorsUsesTheWpfSealedUtilityTypeShape()
+    public void ColorsUsesTheCanonicalSealedUtilityTypeShape()
     {
-        AssertWpfUtilityType(
+        AssertCanonicalUtilityType(
             typeof(JaliumColors),
             nameof(JaliumColors.Black),
             nameof(JaliumColors.Transparent));
     }
 
-    private static void AssertWpfUtilityType(Type type, params string[] requiredStaticMembers)
+    private static void AssertCanonicalUtilityType(Type type, params string[] requiredStaticMembers)
     {
         Assert.True(type.IsPublic, type.FullName);
         Assert.True(type.IsClass, type.FullName);

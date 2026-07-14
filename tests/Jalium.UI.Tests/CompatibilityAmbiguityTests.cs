@@ -3,10 +3,10 @@ using Jalium.UI;
 
 namespace Jalium.UI.Tests;
 
-public sealed class WpfCompatibilityAmbiguityTests
+public sealed class CompatibilityAmbiguityTests
 {
     [Fact]
-    public void RetiredWpfAliasesAreNeitherExportedNorForwarded()
+    public void RetiredCompatibilityAliasesAreNeitherExportedNorForwarded()
     {
         var retiredNames = new HashSet<string>(StringComparer.Ordinal)
         {
