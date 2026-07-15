@@ -163,14 +163,52 @@ jobs:
       - name: Run managed tests
         run: |
           payload="src/native/bin/native/${{ matrix.rid }}/Release"
+          results="${{ runner.temp }}/managed-test-results"
+          filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable"
+          mkdir -p "$results"
           xvfb-run -a env \
+            JALIUM_WINDOW_SYSTEM=x11 \
+            JALIUM_RENDER_BACKEND=software \
+            LD_LIBRARY_PATH="$payload" \
+            dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
+              -c Release --no-restore --disable-build-servers -m:1 \
+              -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
+              -p:GeneratePackageOnBuild=false \
+              --filter "$filter" \
+              --blame-crash --blame-crash-dump-type mini \
+              --diag "$results/vstest-${{ matrix.rid }}.log" \
+              --results-directory "$results" \
+              --logger "trx;LogFileName=linux-${{ matrix.rid }}.trx"
+
+      - name: Run managed Vulkan window smoke in an isolated test host
+        run: |
+          payload="src/native/bin/native/${{ matrix.rid }}/Release"
+          results="${{ runner.temp }}/managed-test-results"
+          filter="FullyQualifiedName~Jalium.UI.Tests.VulkanBackendSmokeTests|FullyQualifiedName=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable|FullyQualifiedName=Jalium.UI.Tests.ThemeRuntimeSwitchTests.ApplyBrandTheme_ShouldReevaluateEachLiveRoot_ExactlyOnce|FullyQualifiedName=Jalium.UI.Tests.SplashScreenTests.SplashScreen_AutoClose_ShouldWaitForMainWindowToLoad"
+          timeout 120s xvfb-run -a env \
             JALIUM_WINDOW_SYSTEM=x11 \
             LD_LIBRARY_PATH="$payload" \
             dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
-              -c Release --no-restore -m:1 \
+              -c Release --no-build --no-restore --disable-build-servers -m:1 \
               -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
               -p:GeneratePackageOnBuild=false \
-              --logger "trx;LogFileName=linux-${{ matrix.arch }}.trx"
+              --filter "$filter" \
+              --blame-crash --blame-crash-dump-type mini \
+              --diag "$results/vstest-vulkan-${{ matrix.rid }}.log" \
+              --results-directory "$results" \
+              --logger "trx;LogFileName=linux-vulkan-${{ matrix.rid }}.trx" \
+              --logger "console;verbosity=detailed"
+
+      - name: Bootstrap current Jalium.UI.Build package for source consumers
+        run: |
+          mkdir -p packages
+          dotnet pack src/managed/Jalium.UI.Build/Jalium.UI.Build.csproj \
+            -c Release -m:1 \
+            -p:JaliumBuildRoot="${{ runner.temp }}/jalium-build-bootstrap" \
+            -p:BuildJaliumNativeProjects=false \
+            -p:BuildJaliumNativeStaticProjects=false \
+            -p:GeneratePackageOnBuild=false \
+            -p:PackageOutputPath="$GITHUB_WORKSPACE/packages"
 
       - name: Build Linux sample (keeps the app-facing path from rotting)
         run: >
@@ -362,6 +400,13 @@ jobs:
           path: ${{ runner.temp }}/packages/*.nupkg
           if-no-files-found: error
 
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: managed-test-diagnostics-${{ matrix.rid }}
+          path: ${{ runner.temp }}/managed-test-results*
+          if-no-files-found: ignore
+
   musl:
     name: musl ${{ matrix.arch }}
     strategy:
@@ -454,14 +499,46 @@ jobs:
                 "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
 
               managed_root="/artifacts/jalium-managed-${{ matrix.rid }}"
+              managed_results="/artifacts/managed-test-results-${{ matrix.rid }}"
+              managed_filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable"
+              mkdir -p "$managed_results"
               xvfb-run -a env \
+                JALIUM_WINDOW_SYSTEM=x11 \
+                JALIUM_RENDER_BACKEND=software \
+                LD_LIBRARY_PATH="$payload" \
+                dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
+                  -c Release --disable-build-servers -m:1 \
+                  -p:JaliumBuildRoot="$managed_root" \
+                  -p:GeneratePackageOnBuild=false \
+                  --filter "$managed_filter" \
+                  --blame-crash --blame-crash-dump-type mini \
+                  --diag "$managed_results/vstest-${{ matrix.rid }}.log" \
+                  --results-directory "$managed_results" \
+                  --logger "trx;LogFileName=linux-${{ matrix.rid }}.trx"
+
+              vulkan_filter="FullyQualifiedName~Jalium.UI.Tests.VulkanBackendSmokeTests|FullyQualifiedName=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable|FullyQualifiedName=Jalium.UI.Tests.ThemeRuntimeSwitchTests.ApplyBrandTheme_ShouldReevaluateEachLiveRoot_ExactlyOnce|FullyQualifiedName=Jalium.UI.Tests.SplashScreenTests.SplashScreen_AutoClose_ShouldWaitForMainWindowToLoad"
+              timeout 120s xvfb-run -a env \
                 JALIUM_WINDOW_SYSTEM=x11 \
                 LD_LIBRARY_PATH="$payload" \
                 dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
-                  -c Release -m:1 \
+                  -c Release --no-build --no-restore --disable-build-servers -m:1 \
                   -p:JaliumBuildRoot="$managed_root" \
                   -p:GeneratePackageOnBuild=false \
-                  --logger "trx;LogFileName=linux-${{ matrix.rid }}.trx"
+                  --filter "$vulkan_filter" \
+                  --blame-crash --blame-crash-dump-type mini \
+                  --diag "$managed_results/vstest-vulkan-${{ matrix.rid }}.log" \
+                  --results-directory "$managed_results" \
+                  --logger "trx;LogFileName=linux-vulkan-${{ matrix.rid }}.trx" \
+                  --logger "console;verbosity=detailed"
+
+              mkdir -p packages
+              dotnet pack src/managed/Jalium.UI.Build/Jalium.UI.Build.csproj \
+                -c Release -m:1 \
+                -p:JaliumBuildRoot="/artifacts/jalium-build-bootstrap-${{ matrix.rid }}" \
+                -p:BuildJaliumNativeProjects=false \
+                -p:BuildJaliumNativeStaticProjects=false \
+                -p:GeneratePackageOnBuild=false \
+                -p:PackageOutputPath=/work/packages
 
               dotnet build samples/Jalium.UI.LinuxDemo/Jalium.UI.LinuxDemo.csproj \
                 -c Release -m:1 \
@@ -547,6 +624,13 @@ jobs:
                 "/artifacts/consumer-${{ matrix.rid }}" \
                 "$package_version" aot
             '
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: managed-test-diagnostics-${{ matrix.rid }}
+          path: ${{ runner.temp }}/managed-test-results*
+          if-no-files-found: ignore
 
       - uses: actions/upload-artifact@v7
         with:
