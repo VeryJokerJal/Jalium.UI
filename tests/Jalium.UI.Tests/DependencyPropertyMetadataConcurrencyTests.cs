@@ -67,7 +67,15 @@ public sealed class DependencyPropertyMetadataConcurrencyTests
         Assert.Same(baseMetadata, property.GetMetadata(typeof(DerivedOwner)));
 
         var overrideMetadata = new BlockingApplyMetadata("derived");
-        var overrideTask = Task.Run(() => property.OverrideMetadata(typeof(DerivedOwner), overrideMetadata));
+        // Use dedicated workers for blocking concurrency probes. Under the full Linux suite the
+        // shared ThreadPool can be temporarily saturated by other blocking tests, which can leave
+        // a Task.Run worker unscheduled for the entire assertion timeout and turn this test into a
+        // scheduler-load check instead of a metadata-publication check.
+        var overrideTask = Task.Factory.StartNew(
+            () => property.OverrideMetadata(typeof(DerivedOwner), overrideMetadata),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
         Task<MetadataObservation>? lookupTask = null;
         var lookupCompletedWhileApplyWasBlocked = false;
 
@@ -76,12 +84,16 @@ public sealed class DependencyPropertyMetadataConcurrencyTests
             Assert.True(overrideMetadata.ApplyStarted.Wait(TestTimeout));
 
             var lookupStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            lookupTask = Task.Run(() =>
-            {
-                lookupStarted.SetResult(true);
-                var metadata = property.GetMetadata(typeof(DerivedOwner));
-                return new MetadataObservation(metadata, overrideMetadata.PublicIsSealed);
-            });
+            lookupTask = Task.Factory.StartNew(
+                () =>
+                {
+                    lookupStarted.SetResult(true);
+                    var metadata = property.GetMetadata(typeof(DerivedOwner));
+                    return new MetadataObservation(metadata, overrideMetadata.PublicIsSealed);
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
 
             await lookupStarted.Task.WaitAsync(TestTimeout);
             lookupCompletedWhileApplyWasBlocked =
@@ -112,30 +124,38 @@ public sealed class DependencyPropertyMetadataConcurrencyTests
         using var mergeEntrants = new CountdownEvent(2);
         var firstMetadata = new CoordinatedMergeMetadata("first", mergeEntrants);
         var secondMetadata = new CoordinatedMergeMetadata("second", mergeEntrants);
-        var start = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var start = new ManualResetEventSlim(initialState: false);
 
-        async Task<Exception?> TryOverrideAsync(PropertyMetadata metadata)
+        Task<Exception?> TryOverrideOnDedicatedThread(PropertyMetadata metadata)
         {
-            await start.Task.ConfigureAwait(false);
+            return Task.Factory.StartNew<Exception?>(
+                () =>
+                {
+                    if (!start.Wait(TestTimeout))
+                        return new TimeoutException("Timed out waiting to start the metadata override.");
 
-            try
-            {
-                property.OverrideMetadata(typeof(DerivedOwner), metadata);
-                return null;
-            }
-            catch (Exception exception)
-            {
-                return exception;
-            }
+                    try
+                    {
+                        property.OverrideMetadata(typeof(DerivedOwner), metadata);
+                        return null;
+                    }
+                    catch (Exception exception)
+                    {
+                        return exception;
+                    }
+                },
+                CancellationToken.None,
+                TaskCreationOptions.LongRunning,
+                TaskScheduler.Default);
         }
 
         var attempts = new[]
         {
-            TryOverrideAsync(firstMetadata),
-            TryOverrideAsync(secondMetadata),
+            TryOverrideOnDedicatedThread(firstMetadata),
+            TryOverrideOnDedicatedThread(secondMetadata),
         };
 
-        start.SetResult(true);
+        start.Set();
         var outcomes = await Task.WhenAll(attempts).WaitAsync(TestTimeout);
 
         Assert.Equal(1, outcomes.Count(static outcome => outcome is null));
