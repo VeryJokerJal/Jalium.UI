@@ -164,6 +164,10 @@ internal sealed class LayoutManager
                     {
                         if (!element.IsMeasureValid)
                         {
+                            // Zombie guard — see IsInSameTreeAsRoot for the contract.
+                            if (!IsInSameTreeAsRoot(element, root))
+                                continue;
+
                             var measureSize = element == root
                                 ? availableSize
                                 : element.PreviousAvailableSize;
@@ -188,6 +192,10 @@ internal sealed class LayoutManager
                     {
                         if (!element.IsArrangeValid)
                         {
+                            // Zombie guard — see IsInSameTreeAsRoot for the contract.
+                            if (!IsInSameTreeAsRoot(element, root))
+                                continue;
+
                             var rect = element == root
                                 ? new Rect(0, 0, availableSize.Width, availableSize.Height)
                                 : element.PreviousFinalRect;
@@ -284,5 +292,38 @@ internal sealed class LayoutManager
 
         _depthCache[element] = depth;
         return depth;
+    }
+
+    /// <summary>
+    /// True when <paramref name="element"/> still belongs to the same visual tree as
+    /// <paramref name="root"/> (identical tree tops walking <see cref="DependencyObject.VisualParent"/>).
+    ///
+    /// The sorted snapshots outlive the queues: an entry detached by an EARLIER entry's
+    /// Measure/Arrange in the same drain (template re-apply, items-host teardown) is out of
+    /// reach of the detach-time queue removal, yet would still be processed — a "zombie"
+    /// measure/arrange with real side effects (e.g. a retired items host stealing containers).
+    /// Because detached (FrameworkElement-derived) elements cannot re-enqueue (FindLayoutManager
+    /// resolves no host), the drained snapshot is the only path that can layout them, so it must re-check
+    /// connectivity per element AT PROCESSING TIME — a check at drain/sort time would miss
+    /// mid-pass detaches, and memoizing per drain would go equally stale.
+    ///
+    /// Tree-top identity is deliberate, NOT "element reaches root": PopupWindow calls
+    /// UpdateLayout with its content child as root, so live ancestors (the popup host itself)
+    /// sit ABOVE root while PropagateInvalidMeasureUp queues them — they must keep processing.
+    ///
+    /// Skipped elements are skipped, never removed or revalidated: if one re-attaches,
+    /// OnVisualParentChanged re-invalidates and re-enqueues it, so nothing is starved.
+    /// </summary>
+    private static bool IsInSameTreeAsRoot(UIElement element, UIElement root)
+    {
+        Visual top = element;
+        while (top.VisualParent is { } parent)
+            top = parent;
+
+        Visual rootTop = root;
+        while (rootTop.VisualParent is { } parent)
+            rootTop = parent;
+
+        return ReferenceEquals(top, rootTop);
     }
 }

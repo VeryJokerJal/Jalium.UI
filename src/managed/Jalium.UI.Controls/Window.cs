@@ -2,6 +2,8 @@ using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Themes;
+using Jalium.UI.Diagnostics;
 using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
@@ -1463,7 +1465,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void ApplyTitleBarPresentation()
     {
-        EnsureAutoWindowIcon();
+        using (StartupDiagnostics.Begin("Window.AutoIconInitialize", blocksUiThread: true))
+        {
+            EnsureAutoWindowIcon();
+        }
         
         if (TitleBar == null)
         {
@@ -1507,30 +1512,87 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         _attemptedAutoWindowIcon = true;
-        var icon = TryCreateDefaultWindowIcon();
-        if (icon != null)
+        var dispatcher = Dispatcher;
+        var extractionTask = Task.Run(static () =>
         {
-            SetValue(WindowIconProperty, icon);
+            using var extraction = StartupDiagnostics.Begin(
+                "Window.AutoIconExtract",
+                blocksUiThread: false);
+            return TryExtractDefaultWindowIconPixels();
+        });
+        _ = QueueAutoWindowIconApplyAsync(
+            extractionTask,
+            dispatcher,
+            new WeakReference<Window>(this));
+    }
+
+    private static async Task QueueAutoWindowIconApplyAsync(
+        Task<Controls.Helpers.ProcessIconPixels?> extractionTask,
+        Dispatcher dispatcher,
+        WeakReference<Window> windowReference)
+    {
+        Controls.Helpers.ProcessIconPixels? iconPixels;
+        try
+        {
+            iconPixels = await extractionTask.ConfigureAwait(false);
+        }
+        catch
+        {
+            return;
+        }
+
+        if (iconPixels == null || iconPixels.Value.Pixels.Length == 0)
+            return;
+
+        try
+        {
+            _ = dispatcher.BeginInvoke(
+                DispatcherPriority.Background,
+                () =>
+                {
+                    if (windowReference.TryGetTarget(out var window))
+                        window.ApplyAutoWindowIcon(iconPixels.Value);
+                });
+        }
+        catch
+        {
+            // The dispatcher may already be shutting down. The icon is non-critical.
         }
     }
 
-    private static ImageSource? TryCreateDefaultWindowIcon()
+    private void ApplyAutoWindowIcon(Controls.Helpers.ProcessIconPixels iconPixels)
+    {
+        if (WindowIcon != null || _managedTeardownStarted || _isClosing)
+            return;
+
+        using var apply = StartupDiagnostics.Begin(
+            "Window.AutoIconDecodeAndApply",
+            blocksUiThread: true);
+        try
+        {
+            var icon = BitmapImage.FromPixels(
+                iconPixels.Pixels,
+                iconPixels.Width,
+                iconPixels.Height,
+                iconPixels.Stride);
+            if (WindowIcon == null)
+                SetValue(WindowIconProperty, icon);
+        }
+        catch
+        {
+            // Default icon discovery is best-effort and must not affect the window.
+        }
+    }
+
+    private static Controls.Helpers.ProcessIconPixels? TryExtractDefaultWindowIconPixels()
     {
         try
         {
             var processPath = Environment.ProcessPath;
             if (string.IsNullOrWhiteSpace(processPath) || !System.IO.File.Exists(processPath))
-            {
                 return null;
-            }
 
-            var pngBytes = Controls.Helpers.IconHelper.ExtractProcessIconAsPng(processPath);
-            if (pngBytes == null || pngBytes.Length == 0)
-            {
-                return null;
-            }
-
-            return BitmapImage.FromBytes(pngBytes);
+            return Controls.Helpers.IconHelper.ExtractProcessIconPixels(processPath);
         }
         catch
         {
@@ -2421,17 +2483,45 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
 
+    // Theme version this window's tree was last synced against. A window created and
+    // populated while unshown is not yet a live root (it has no HWND and is absent from
+    // _windows), so a theme switch that lands before Show() never reaches it via the
+    // Application resource broadcast. Show() compares this snapshot against
+    // ThemeManager.CurrentThemeVersion and re-evaluates implicit styles once if the
+    // theme moved on in the meantime, healing templates latched at construction.
+    private int _lastThemeSyncVersion = Jalium.UI.Controls.Themes.ThemeManager.CurrentThemeVersion;
+
     /// <summary>
     /// Shows the window.
     /// </summary>
     public virtual void Show()
     {
+        using var show = StartupDiagnostics.Begin("Window.Show", blocksUiThread: true);
+        bool isMainWindow = ReferenceEquals(Application.Current?.MainWindow, this);
+
         // Ensure implicit styles are applied to the entire visual tree.
         // This handles the case where elements (e.g., TitleBar) were created in the
         // Window constructor BEFORE the theme was loaded by the Xaml module initializer.
         // In non-AOT mode, the theme loads lazily when XamlReader is first accessed
         // (during InitializeComponent), but TitleBar is created earlier in Window().
-        EnsureImplicitStyles();
+        using (StartupDiagnostics.Begin("Window.EnsureImplicitStyles", blocksUiThread: true))
+        {
+            EnsureImplicitStyles();
+        }
+
+        // Heal a theme switch that landed while this window was unshown. EnsureImplicitStyles
+        // above only styles still-unstyled elements (ApplyImplicitStyleIfNeeded early-returns
+        // once a style is latched); it does not replace a style baked in at construction
+        // against the previous theme. NotifyResourcesChangedFromRoot re-evaluates the whole
+        // subtree, swapping stale ControlTemplates for the current theme's instances. Gated
+        // on the version so the common construct-then-show path (no intervening theme change)
+        // stays a no-op and never pays for a redundant tree walk.
+        int themeVersion = Jalium.UI.Controls.Themes.ThemeManager.CurrentThemeVersion;
+        if (_lastThemeSyncVersion != themeVersion)
+        {
+            NotifyResourcesChangedFromRoot();
+            _lastThemeSyncVersion = themeVersion;
+        }
 
         _dispatcher = Dispatcher.CurrentDispatcher;
         CompositionTarget.FrameStarting += OnFrameStarting;
@@ -2441,7 +2531,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // which resets WindowState back to Normal.
         var desiredState = WindowState;
 
-        EnsureHandle();
+        using (StartupDiagnostics.Begin("Window.EnsureHandle", blocksUiThread: true))
+        {
+            EnsureHandle();
+        }
 
         // Detect monitor refresh rate and update CompositionTarget for adaptive frame rate
         var refreshRate = DetectMonitorRefreshRate();
@@ -2481,27 +2574,35 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         //      doesn't appear for 400 ms" or "window opens white for 500 ms".
         PrepareInitialRenderTargetSize(desiredState);
 
-        PaintInitialBackgroundFrame();
-
-        if (_platformWindow != null)
+        using (StartupDiagnostics.Begin("Window.InitialBackgroundFrame", blocksUiThread: true))
         {
-            _platformWindow.Show();
-            if (desiredState != WindowState.Normal)
-                _platformWindow.SetState(desiredState);
+            PaintInitialBackgroundFrame();
         }
-        else
+
+        using (StartupDiagnostics.Begin("Window.NativeShow", blocksUiThread: true))
         {
-            _ = ShowWindow(Handle, showCmd);
-            // Fullscreen needs a second step on Win32: strip the frame + resize
-            // to cover the monitor. Done AFTER ShowWindow so the HWND has valid
-            // window rect / monitor assignment.  The pre-show background frame
-            // above already covered the target monitor dimensions, so
-            // EnterFullScreen's WM_SIZE arrives at the correct size.
-            if (desiredState == WindowState.FullScreen)
+            if (_platformWindow != null)
             {
-                EnterFullScreen();
+                _platformWindow.Show();
+                if (desiredState != WindowState.Normal)
+                    _platformWindow.SetState(desiredState);
+            }
+            else
+            {
+                _ = ShowWindow(Handle, showCmd);
+                // Fullscreen needs a second step on Win32: strip the frame + resize
+                // to cover the monitor. Done AFTER ShowWindow so the HWND has valid
+                // window rect / monitor assignment.  The pre-show background frame
+                // above already covered the target monitor dimensions, so
+                // EnterFullScreen's WM_SIZE arrives at the correct size.
+                if (desiredState == WindowState.FullScreen)
+                {
+                    EnterFullScreen();
+                }
             }
         }
+        if (isMainWindow)
+            StartupDiagnostics.Mark("MainWindowNativeShowReturned", blocksUiThread: true);
 
         // Now that the surface is on-screen, register with CompositionTarget so
         // its frame timer thread can run. ShowWindow with SW_SHOW after a hidden
@@ -2516,21 +2617,35 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // and full render, but the window is already on screen showing the
         // pre-show background frame, so the wait reads as "content appearing"
         // rather than "app stuck loading".
-        TryRenderInitialFrame();
+        using (StartupDiagnostics.Begin("Window.InitialLayoutAndRender", blocksUiThread: true))
+        {
+            TryRenderInitialFrame();
+        }
+        if (isMainWindow)
+            StartupDiagnostics.Mark("MainWindowInitialRenderReturned", blocksUiThread: true);
 
         // SWP_FRAMECHANGED for custom title bar was already applied in EnsureHandle
         // (combined with DPI adjustment), so no additional call is needed here.
         // Removing the duplicate saves a DWM roundtrip (~10-50ms).
 
-        SetLoadedState(true);
+        using (StartupDiagnostics.Begin("Window.LoadedTree", blocksUiThread: true))
+        {
+            SetLoadedState(true);
+        }
 
         if (!_contentRendered)
         {
             _contentRendered = true;
-            OnContentRendered(EventArgs.Empty);
+            using (StartupDiagnostics.Begin("Window.ContentRenderedHandlers", blocksUiThread: true))
+            {
+                OnContentRendered(EventArgs.Empty);
+            }
         }
 
-        OnShown(EventArgs.Empty);
+        using (StartupDiagnostics.Begin("Window.ShownHandlers", blocksUiThread: true))
+        {
+            OnShown(EventArgs.Empty);
+        }
 
         if (OperatingSystem.IsLinux())
             Controls.Automation.AtSpi.AtSpiAccessibilityBridge.NotifyWindowCreated(this);
@@ -5246,9 +5361,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ? _renderBackendOverride
             : RenderBackend.Auto;
 
-        var context = RenderContext.GetOrCreateCurrent(requestedBackend, forceReplace: forceNewContext);
+        RenderContext context;
+        using (StartupDiagnostics.Begin("Window.RenderContextWaitOrCreate", blocksUiThread: true))
+        {
+            context = RenderContext.GetOrCreateCurrent(requestedBackend, forceReplace: forceNewContext);
+        }
         bool retriedWithDefaultGpu = context.GpuPreference == GpuPreference.Auto;
 
+        using var renderTargetCreation = StartupDiagnostics.Begin(
+            "Window.RenderTargetCreate",
+            blocksUiThread: true);
         while (true)
         {
             try

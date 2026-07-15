@@ -610,6 +610,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     internal Rect MinimapRectForTesting => _minimapRect;
 
     internal Rect MinimapViewportRectForTesting => _minimapViewportRect;
+    internal bool ViewLayoutInitializedForTesting => _view.LineHeight > 0;
 
     internal bool IsScrollAnimatingForTesting => _isScrollAnimating;
 
@@ -2910,8 +2911,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         InvalidateSemanticOccurrenceCaches();
         _activeFindResult = null;
         _hasSearchQuery = false;
-        EnsureViewLayoutMetrics();
-        UpdateScrollBarLayout(RenderSize);
+        UpdateViewLayoutForRenderableSize();
         UpdateFollowingBottomStateAfterVerticalChange(userInitiated: false);
         UpdateActiveBracketPair();
         UpdateFoldingState();
@@ -3709,8 +3709,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             editor._selection.AnchorOffset = Math.Clamp(editor._selection.AnchorOffset, 0, editor._document.TextLength);
             editor._selection.ActiveOffset = Math.Clamp(editor._selection.ActiveOffset, 0, editor._document.TextLength);
             editor.UpdateActiveBracketPair();
-            editor.EnsureViewLayoutMetrics();
-            editor.UpdateScrollBarLayout(editor.RenderSize);
+            editor.UpdateViewLayoutForRenderableSize();
             editor._view.InvalidateVisibleLines();
             editor.UpdateFollowingBottomStateAfterVerticalChange(userInitiated: false);
             editor.InvalidateVisual();
@@ -3817,8 +3816,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         InvalidateSemanticOccurrenceCaches();
         UpdateActiveBracketPair();
         ScheduleFoldingRefreshFromDocumentChange();
-        EnsureViewLayoutMetrics();
-        UpdateScrollBarLayout(RenderSize);
+        UpdateViewLayoutForRenderableSize();
 
         if (AutoFollowBottom && _isFollowingBottom)
         {
@@ -5287,6 +5285,19 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             _view.ViewportWidth = RenderSize.Width;
         if (RenderSize.Height > 0)
             _view.ViewportHeight = RenderSize.Height;
+    }
+
+    private void UpdateViewLayoutForRenderableSize()
+    {
+        // Text and document data are commonly assigned while a control tree is being
+        // constructed. Native font discovery is only useful once the editor has an
+        // actual viewport; doing it earlier serializes font initialization onto app
+        // startup even for editors that begin outside the visible scroll viewport.
+        if (RenderSize.Width <= 0 || RenderSize.Height <= 0)
+            return;
+
+        EnsureViewLayoutMetrics();
+        UpdateScrollBarLayout(RenderSize);
     }
 
     private void UpdateScrollBarLayout(Size viewportSize)

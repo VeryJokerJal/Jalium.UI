@@ -397,6 +397,15 @@ public static class ThemeManager
     public static bool IsInitialized => _initialized;
 
     /// <summary>
+    /// Monotonic counter bumped once per applied theme/accent/typography change
+    /// (see <see cref="ForceThemeRefresh"/>). A <see cref="Window"/> snapshots it when
+    /// its content is first styled and compares it in <see cref="Window.Show"/>, so a
+    /// theme swap that landed while the window was unshown — hence unreachable by the
+    /// <see cref="Application"/> resource broadcast — is healed the moment it is shown.
+    /// </summary>
+    internal static int CurrentThemeVersion => _themeVersion;
+
+    /// <summary>
     /// Resets the theme system, allowing re-initialization.
     /// Primarily for testing purposes.
     /// </summary>

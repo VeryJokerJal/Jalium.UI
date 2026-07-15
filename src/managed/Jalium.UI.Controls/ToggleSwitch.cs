@@ -226,6 +226,23 @@ public class ToggleSwitch : Control
         ApplySpringValues();
     }
 
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        // Release the cached parts before the tree is discarded. StopSpringAnimation detaches the
+        // CompositionTarget.Rendering tick and balances the CompositionTarget.Subscribe() refcount
+        // — otherwise the spring loop keeps the global compositor pinned alive and every tick
+        // writes Width/Height/CornerRadius/Margin into the detached _switchThumb/_switchTrack.
+        base.OnTemplateContentClearing();
+
+        StopSpringAnimation();
+
+        _switchTrack = null;
+        _switchThumb = null;
+        _contentPresenter = null;
+        _headerPresenter = null;
+    }
+
     #endregion
 
     #region Spring Helpers

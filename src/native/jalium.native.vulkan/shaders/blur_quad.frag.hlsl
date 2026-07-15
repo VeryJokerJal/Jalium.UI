@@ -106,19 +106,82 @@ float3 LinearToSrgb(float3 l)
 // mathematically identical to convolving with the single 2-D RADIAL kernel
 //     w(dx,dy) = exp(-0.5 * (dx^2 + dy^2) / sigma^2)
 //              = exp(-0.5*dx^2/sigma^2) * exp(-0.5*dy^2/sigma^2).
-// So this SINGLE fragment pass produces the SAME output pixels as the D3D12
-// two-pass compute — no intermediate texture / second render pass needed on the
-// Vulkan fragment path (the goal is matching pixels, not matching mechanism).
+// The Vulkan path now executes those same horizontal and vertical passes via
+// a per-frame scratch image, matching both the pixels and linear sample cost.
+// Each pass performs only (2R+1) samples instead of a quadratic 2-D kernel.
 // The former box kernel (uniform weights, radius clamp 12) diverged from the
 // Gaussian skirt the wider the radius (effect-blur 8/16/30 FAIL 22.4%).
 //
 // One tap == one SOURCE pixel: texelStep is 1/pixelWidth, 1/pixelHeight
 // (blurInfo1.z, blurInfo1.w) — matching D3D12's k = -kernelRadius..kernelRadius
-// integer-pixel stepping. Taps are clamped to [0, uvScale] so they never read
-// past the isolated element into the black upload apron (D3D12 clamps to the
+// integer-pixel stepping. Taps clamp to texel centres inside uvScale, so they
+// never read past the isolated element into the unused upload allocation.
 // region edge; without this the blurred skirt would darken toward the bounds).
 // ============================================================================
 #define MAX_KERNEL_RADIUS 64
+
+float4 SampleLinear(float2 uv, float2 uvLo, float2 uvHi)
+{
+    float4 sampleColor = blurTexture.Sample(blurSampler, clamp(uv, uvLo, uvHi));
+    sampleColor.rgb = SrgbToLinear(sampleColor.rgb);
+    return sampleColor;
+}
+
+float4 Gaussian1D(float2 uv, float2 axisStep, float2 uvLo, float2 uvHi,
+                  int kernelRadius, float sigma)
+{
+    float4 sum = SampleLinear(uv, uvLo, uvHi);
+    float weightSum = 1.0f;
+
+    // Generate Gaussian weights with a recurrence. This pays for one exp per
+    // pixel instead of one exp per tap:
+    //   w(i+1) / w(i) = exp(-(2i+1) / (2*sigma^2)).
+    const float baseRatio = exp(-0.5f / (sigma * sigma));
+    const float ratioStep = baseRatio * baseRatio;
+    float ratio = baseRatio;
+    float weight = 1.0f;
+    [loop]
+    for (int i = 1; i <= MAX_KERNEL_RADIUS; ++i) {
+        if (i > kernelRadius) break;
+        weight *= ratio;
+        ratio *= ratioStep;
+        const float2 offset = axisStep * float(i);
+        sum += (SampleLinear(uv - offset, uvLo, uvHi) +
+                SampleLinear(uv + offset, uvLo, uvHi)) * weight;
+        weightSum += 2.0f * weight;
+    }
+    return sum / max(weightSum, 0.0001f);
+}
+
+float Binomial5Weight(int offset)
+{
+    const int distance = abs(offset);
+    return distance == 0 ? 6.0f : (distance == 1 ? 4.0f : 1.0f);
+}
+
+// Allocation or format failures should not bring back an unbounded R^2 shader.
+// This 5x5 binomial approximation spans the requested radius and is capped at
+// 25 taps; the normal path uses the exact separable kernel above.
+float4 BoundedGaussian2D(float2 uv, float2 texelStep, float2 uvLo, float2 uvHi,
+                         float radius)
+{
+    if (radius <= 0.001f) return SampleLinear(uv, uvLo, uvHi);
+    const float2 stride = texelStep * (radius * 0.5f);
+    float4 sum = 0.0f;
+    float weightSum = 0.0f;
+    [unroll]
+    for (int y = -2; y <= 2; ++y) {
+        const float wy = Binomial5Weight(y);
+        [unroll]
+        for (int x = -2; x <= 2; ++x) {
+            const float weight = wy * Binomial5Weight(x);
+            sum += SampleLinear(uv + float2(float(x), float(y)) * stride,
+                                uvLo, uvHi) * weight;
+            weightSum += weight;
+        }
+    }
+    return sum / weightSum;
+}
 
 float4 main(PsInput input) : SV_Target
 {
@@ -126,12 +189,7 @@ float4 main(PsInput input) : SV_Target
         discard;
     }
 
-    const float radius = max(0.0f, gPushConstants.blurInfo2.x);
-    int kernelRadius = (int)min(radius, (float)MAX_KERNEL_RADIUS);
-    if (kernelRadius < 1) kernelRadius = 1;
-    float sigma = radius / 3.0f;          // match D2D/D3D12 convention: radius ~ 3*sigma
-    if (sigma < 0.5f) sigma = 0.5f;
-    const float twoSigma2 = 2.0f * sigma * sigma;
+    const float radius = clamp(gPushConstants.blurInfo2.x, 0.0f, (float)MAX_KERNEL_RADIUS);
 
     // One source texel along each axis (matches D3D12's per-pixel k stepping).
     // texelStep MUST be 1/uploadWidth in UV so each tap advances exactly one
@@ -146,27 +204,34 @@ float4 main(PsInput input) : SV_Target
 
     // Never sample past the isolated capture region (top-left [0, uvScale] of the
     // shared upload image); the apron beyond it is uninitialised/black.
-    const float2 uvLo = float2(0.0f, 0.0f);
-    const float2 uvHi = float2(gPushConstants.blurInfo1.x, gPushConstants.blurInfo1.y);
+    // Clamp to texel centres inside the valid capture. The shared upload image
+    // is grow-only, so sampling [0, uvScale] inclusively can blend stale pixels
+    // from the unused allocation immediately to the right/bottom.
+    const float2 uvScale = float2(gPushConstants.blurInfo1.x, gPushConstants.blurInfo1.y);
+    const float2 uvLo = texelStep * 0.5f;
+    const float2 uvHi = max(uvLo, uvScale - texelStep * 0.5f);
 
-    // Accumulate in linear space to avoid perceptual darkening at blur edges.
-    // Separable Gaussian as a single 2-D radial pass (identical result).
-    float4 sum = 0.0f;
-    float weightSum = 0.0f;
-    [loop]
-    for (int dy = -kernelRadius; dy <= kernelRadius; ++dy) {
-        [loop]
-        for (int dx = -kernelRadius; dx <= kernelRadius; ++dx) {
-            float w = exp(-(float(dx * dx + dy * dy)) / twoSigma2);
-            float2 uv = clamp(input.uv + float2(float(dx), float(dy)) * texelStep, uvLo, uvHi);
-            float4 s = blurTexture.Sample(blurSampler, uv);
-            s.rgb = SrgbToLinear(s.rgb);
-            sum += s * w;
-            weightSum += w;
-        }
+    float2 sampleUv = input.uv;
+    if (gPushConstants.geometryFlags.y > 0.5f) {
+        const float2 panelUv = (input.position.xy - gPushConstants.rect.xy) /
+            max(gPushConstants.rect.zw, float2(0.0001f, 0.0001f));
+        sampleUv = panelUv * uvScale;
     }
 
-    float4 color = (weightSum > 0.0f) ? (sum / weightSum) : blurTexture.Sample(blurSampler, clamp(input.uv, uvLo, uvHi));
+    const float passMode = gPushConstants.blurInfo2.w;
+    float4 color;
+    if (passMode > 0.5f) {
+        const int kernelRadius = min(MAX_KERNEL_RADIUS, max(1, (int)ceil(radius)));
+        const float sigma = max(radius / 3.0f, 0.5f);
+        const float2 axisStep = passMode < 1.5f
+            ? float2(texelStep.x, 0.0f)
+            : float2(0.0f, texelStep.y);
+        color = radius <= 0.001f
+            ? SampleLinear(sampleUv, uvLo, uvHi)
+            : Gaussian1D(sampleUv, axisStep, uvLo, uvHi, kernelRadius, sigma);
+    } else {
+        color = BoundedGaussian2D(sampleUv, texelStep, uvLo, uvHi, radius);
+    }
     color.rgb = LinearToSrgb(color.rgb);
 
     // The blurred source is PREMULTIPLIED (the offscreen/upload content is premul),

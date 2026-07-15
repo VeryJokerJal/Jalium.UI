@@ -182,6 +182,104 @@ public sealed class VulkanRetainedLayerParityTests
     }
 
     /// <summary>
+    /// Vulkan currently captures retained layers from its surface-sized shared offscreen
+    /// image. A layer crossing any surface edge cannot be captured completely and must be
+    /// refused so the managed renderer falls back to direct subtree emission. Accepting a
+    /// clipped capture would later stretch that fragment over the full composite bounds.
+    /// </summary>
+    [RequiresBackendFact(RenderBackend.Vulkan)]
+    public void RealizeLayerBegin_PartiallyOutsideSurface_ShouldFallBack()
+    {
+        using var window = new HiddenNativeWindow(Width, Height);
+        using var context = new RenderContext(RenderBackend.Vulkan);
+        using var rt = context.CreateRenderTarget(window.Hwnd, Width, Height);
+        Assert.True(rt.IsValid);
+
+        if (!rt.SupportsRetainedLayers())
+        {
+            return;
+        }
+
+        Assert.True(rt.TryBeginDraw());
+        rt.Clear(0.12f, 0.12f, 0.18f);
+
+        Assert.Equal(nint.Zero, rt.RealizeLayerBegin(nint.Zero, -1f, 20f, 40f, 40f));
+        Assert.Equal(nint.Zero, rt.RealizeLayerBegin(nint.Zero, 220f, 20f, 40f, 40f));
+        Assert.Equal(nint.Zero, rt.RealizeLayerBegin(nint.Zero, 20f, -1f, 40f, 40f));
+        Assert.Equal(nint.Zero, rt.RealizeLayerBegin(nint.Zero, 20f, 220f, 40f, 40f));
+        Assert.Equal(nint.Zero, rt.RealizeLayerBegin(nint.Zero, 0f, 0f, Width, Height + 1f));
+
+        Assert.Equal(JaliumResult.Ok, rt.TryEndDraw());
+    }
+
+    /// <summary>
+    /// An ancestor clip controls where the cached layer is composited, but must not be
+    /// baked into the layer texture itself. NavigationViewItem exercises this contract
+    /// while its children panel reveals moving child items: the first capture can occur
+    /// while only a thin strip is visible, then the same layer is moved into full view.
+    /// </summary>
+    [RequiresBackendFact(RenderBackend.Vulkan)]
+    public void RealizeLayerBegin_AncestorClip_ShouldNotTruncateCachedContent()
+    {
+        using var window = new HiddenNativeWindow(Width, Height);
+        using var context = new RenderContext(RenderBackend.Vulkan);
+        using var a = context.CreateSolidBrush(0.90f, 0.25f, 0.15f, 1f);
+        using var b = context.CreateSolidBrush(0.15f, 0.55f, 0.90f, 1f);
+        Assert.True(a.IsValid && b.IsValid);
+
+        byte[] baseline = RenderBaseline(context, window.Hwnd, a, b, 1.0f);
+        byte[] viaLayer = new byte[Width * Height * 4];
+        using var rt = context.CreateRenderTarget(window.Hwnd, Width, Height);
+        Assert.True(rt.IsValid);
+        if (!rt.SupportsRetainedLayers()) return;
+
+        nint layer = nint.Zero;
+        try
+        {
+            for (int frame = 0; frame < 2; frame++)
+            {
+                Assert.True(rt.TryBeginDraw());
+                rt.Clear(0.12f, 0.12f, 0.18f);
+
+                if (frame == 0)
+                {
+                    // Simulate an expanding panel whose current viewport exposes only
+                    // the first 18 pixels of a 130-pixel-tall child layer.
+                    rt.PushClip(60f, 60f, 140f, 18f);
+                    layer = rt.RealizeLayerBegin(nint.Zero, 60f, 60f, 140f, 130f);
+                    Assert.NotEqual(nint.Zero, layer);
+                    DrawSubtreeContent(rt, a, b);
+                    rt.RealizeLayerEnd(layer);
+                    rt.PopClip();
+                }
+
+                if (layer != nint.Zero)
+                {
+                    // The panel has finished expanding, so composite without its former
+                    // reveal clip. The full cached child must now be available.
+                    rt.CompositeLayer(layer, 60f, 60f, 140f, 130f, 1.0f);
+                }
+                else
+                {
+                    DrawSubtreeContent(rt, a, b);
+                }
+
+                if (frame == 1) Assert.Equal(JaliumResult.Ok, rt.RequestReadback());
+                Assert.Equal(JaliumResult.Ok, rt.TryEndDraw());
+            }
+            Assert.Equal(JaliumResult.Ok, rt.FetchReadback(viaLayer, (uint)(Width * 4), out _, out _));
+        }
+        finally
+        {
+            if (layer != nint.Zero) rt.DestroyRetainedLayer(layer);
+        }
+
+        var (maxDiff, diffCount) = Compare(baseline, viaLayer);
+        Assert.True(maxDiff <= 1,
+            $"ancestor-clipped retained capture differs from direct draw: maxDiff={maxDiff}, diffPixels~={diffCount / 4}");
+    }
+
+    /// <summary>
     /// Composite opacity path: a layer captured at FULL opacity then composited at 0.6 must
     /// match the same content drawn directly at 0.6.
     ///

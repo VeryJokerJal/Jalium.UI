@@ -238,6 +238,108 @@ public class ThemeRuntimeSwitchTests
         }
     }
 
+    [Fact]
+    public void ApplyTheme_ShouldReapplyImplicitStyles_InSecondaryWindows()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var mainButton = new Button { Content = "Main" };
+            var mainRoot = new StackPanel();
+            mainRoot.Children.Add(mainButton);
+            app.MainWindow = new Window { Content = mainRoot };
+
+            var secondaryButton = new Button { Content = "Secondary" };
+            var secondaryRoot = new StackPanel();
+            secondaryRoot.Children.Add(secondaryButton);
+            var secondaryWindow = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native,
+                Width = 160,
+                Height = 120,
+                Content = secondaryRoot,
+            };
+
+            secondaryWindow.Show();
+            try
+            {
+                var mainTemplateBefore = mainButton.Template;
+                var secondaryTemplateBefore = secondaryButton.Template;
+                Assert.NotNull(mainTemplateBefore);
+                Assert.NotNull(secondaryTemplateBefore);
+
+                ThemeManager.ApplyTheme(ThemeVariant.Light);
+
+                // Theme switch replaces the generic dictionary, so implicit styles must be
+                // re-evaluated in every live window — the refreshed styles carry brand-new
+                // ControlTemplate instances.
+                Assert.NotSame(mainTemplateBefore, mainButton.Template);
+                Assert.NotSame(secondaryTemplateBefore, secondaryButton.Template);
+            }
+            finally
+            {
+                secondaryWindow.Close();
+            }
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ApplyTheme_ShouldHealImplicitStyles_WhenSecondaryWindowShownAfterSwitch()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            app.MainWindow = new Window { Content = new StackPanel() };
+
+            // Pre-instantiate a secondary window WITH content before the theme switch,
+            // but leave it unshown — so it is not a live root and the broadcast in
+            // Application.OnApplicationResourcesChanged cannot reach it.
+            var button = new Button { Content = "Deferred" };
+            var deferredRoot = new StackPanel();
+            deferredRoot.Children.Add(button);
+            var deferredWindow = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native,
+                Width = 160,
+                Height = 120,
+                Content = deferredRoot,
+            };
+
+            var templateBefore = button.Template;
+            Assert.NotNull(templateBefore);
+
+            ThemeManager.ApplyTheme(ThemeVariant.Light);
+
+            // The broadcast cannot reach an unshown window, so its template stays stale.
+            Assert.Same(templateBefore, button.Template);
+
+            // Show() must detect the missed theme version and heal the subtree.
+            deferredWindow.Show();
+            try
+            {
+                Assert.NotSame(templateBefore, button.Template);
+            }
+            finally
+            {
+                deferredWindow.Close();
+            }
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
     private static Color GetBrushColor(Brush? brush)
     {
         return Assert.IsType<SolidColorBrush>(brush).Color;

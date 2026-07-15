@@ -909,6 +909,32 @@ public class TreeViewItem : HeaderedItemsControl
     }
 
     /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        // base clears ItemsControl's ItemsPresenter registration; then release our own parts so
+        // the expand/collapse animation and header state no longer resolve into the discarded tree.
+        base.OnTemplateContentClearing();
+
+        StopExpandAnimation();
+
+        if (_headerBorder != null)
+        {
+            _headerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+            _headerBorder.RemoveHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter));
+            _headerBorder.RemoveHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave));
+            _headerBorder.RemoveHandler(TouchDownEvent, new RoutedEventHandler(OnHeaderTouchDown));
+            _headerBorder.RemoveHandler(TouchMoveEvent, new RoutedEventHandler(OnHeaderTouchMove));
+            _headerBorder.RemoveHandler(TouchUpEvent, new RoutedEventHandler(OnHeaderTouchUp));
+        }
+
+        _headerBorder = null;
+        _indentSpacer = null;
+        _expanderBorder = null;
+        _expanderArrow = null;
+        _itemsHost = null;
+    }
+
+    /// <inheritdoc />
     protected override void OnVisualParentChanged(Visual? oldParent)
     {
         base.OnVisualParentChanged(oldParent);

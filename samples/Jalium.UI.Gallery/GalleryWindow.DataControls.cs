@@ -10,14 +10,24 @@ namespace Jalium.UI.Gallery;
 /// </summary>
 internal static partial class GalleryWindow
 {
-    public static UIElement BuildDataControlsSection() => Section(
+    public static UIElement BuildDataControlsSection() => SectionFromCards(
         "Collections & Data",
         "Lists, grids and trees over tiny in-memory sample data.",
-        Card("ListBox", ListBoxDemo()),
-        Card("ListView", ListViewDemo()),
-        Card("DataGrid", DataGridDemo(), width: 480),
-        Card("TreeView", TreeViewDemo()),
-        Card("TreeDataGrid", Placeholder("TreeDataGrid", "Hierarchical, expandable rows combined with grid columns.")));
+        CreateDataControlCards());
+
+    private static DeferredCard[] CreateDataControlCards() =>
+    [
+        new("Gallery.Card.DataControls.ListBox", "ListBox", ListBoxDemo),
+        new("Gallery.Card.DataControls.ListView", "ListView", ListViewDemo),
+        new("Gallery.Card.DataControls.DataGrid", "DataGrid", DataGridDemo, Width: 480),
+        new("Gallery.Card.DataControls.TreeView", "TreeView", TreeViewDemo),
+        new(
+            "Gallery.Card.DataControls.TreeDataGrid",
+            "TreeDataGrid",
+            static () => Placeholder(
+                "TreeDataGrid",
+                "Hierarchical, expandable rows combined with grid columns.")),
+    ];
 
     private static UIElement ListBoxDemo()
     {

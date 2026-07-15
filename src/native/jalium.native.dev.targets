@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    The checked-in shared vcxproj files are convenient for focused Visual
+    Studio builds and intentionally keep their legacy bin/native/<Config>
+    output. Invalidate the canonical CMake completion stamp before such a
+    build so project-reference consumers cannot silently keep using an older
+    bin/native/win-x64/<Config> payload. Interop then uses the freshly built
+    legacy DLLs for development. Only the aggregate CMake target is allowed to
+    recreate the canonical completion stamp.
+  -->
+  <PropertyGroup>
+    <_JaliumCanonicalNativeStamp>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)bin\native\win-x64\$(Configuration)\.jalium-native-complete'))</_JaliumCanonicalNativeStamp>
+  </PropertyGroup>
+
+  <Target Name="JaliumInvalidateCanonicalNativePayloadForDevBuild"
+          BeforeTargets="PrepareForBuild"
+          Condition="'$(DesignTimeBuild)' != 'true' and '$(ConfigurationType)' == 'DynamicLibrary' and '$(Platform)' == 'x64'">
+    <Delete Files="$(_JaliumCanonicalNativeStamp)" />
+    <Message Text="Invalidated canonical native payload stamp before focused vcxproj build: $(_JaliumCanonicalNativeStamp)" Importance="low" />
+  </Target>
+</Project>

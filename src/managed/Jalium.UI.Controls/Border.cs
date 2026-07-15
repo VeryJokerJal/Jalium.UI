@@ -40,6 +40,10 @@ public class Border : Decorator
     private bool _lgPushedNativeTextTransform;
     private float _lgHighlightBoost;
 
+    // GetExtraDirtyPadding can run on a background dirty-registration thread,
+    // so publish the UI-thread-computed ink extent through an atomic field.
+    private volatile int _liquidGlassDirtyPadding = 32;
+
     // Liquid glass fusion: screen-space rect cached from last render
     internal Rect _lgScreenRect;
     internal float _lgAvgCornerRadius;
@@ -428,6 +432,16 @@ public class Border : Decorator
     }
 
     /// <inheritdoc />
+    protected internal override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
+    {
+        base.OnRenderSizeChanged(sizeInfo);
+        // FrameworkElement applies layout rounding after ArrangeOverride. Publish
+        // padding from the final RenderSize so the shader and dirty bounds use the
+        // same dimensions even at fractional DPI/layout sizes.
+        UpdateLiquidGlassDirtyPadding(sizeInfo.NewSize);
+    }
+
+    /// <inheritdoc />
     internal override Geometry? GetLayoutClip()
     {
         if (!ClipToBounds)
@@ -555,6 +569,45 @@ public class Border : Decorator
                 new Point(cx + a, cy), true, false);
         }
         return geo;
+    }
+
+    /// <summary>
+    /// Computes the exact SDF rectangle submitted to the liquid-glass shader.
+    /// Dirty-bound tracking calls this same method so it cannot drift from the
+    /// animated geometry painted by either native backend.
+    /// </summary>
+    internal Rect ComputeLiquidGlassRect(Rect rect)
+    {
+        if (!LiquidGlass || !LiquidGlassInteractive)
+            return rect;
+
+        double scaleX = _lgSpringX.Position;
+        double scaleY = _lgSpringY.Position;
+        double offX = _lgSpringOffX.Position;
+        double offY = _lgSpringOffY.Position;
+        bool hasSpring = scaleX != 1.0 || scaleY != 1.0 ||
+                         offX != 0 || offY != 0 ||
+                         _lgSpringX.Velocity != 0 || _lgSpringY.Velocity != 0 ||
+                         _lgSpringOffX.Velocity != 0 || _lgSpringOffY.Velocity != 0;
+        if (!hasSpring)
+            return rect;
+
+        double rectWidth = Math.Max(rect.Width, 1.0);
+        double rectHeight = Math.Max(rect.Height, 1.0);
+        double shapeScaleX = (rectWidth + Math.Abs(offX)) / rectWidth * scaleX *
+                             (1.0 - Math.Abs(offY) / rectHeight * LgPerpendicularCompress);
+        double shapeScaleY = (rectHeight + Math.Abs(offY)) / rectHeight * scaleY *
+                             (1.0 - Math.Abs(offX) / rectWidth * LgPerpendicularCompress);
+        shapeScaleX = Math.Clamp(shapeScaleX, 0.1, 3.2);
+        shapeScaleY = Math.Clamp(shapeScaleY, 0.1, 3.2);
+
+        double deformedWidth = rect.Width * shapeScaleX;
+        double deformedHeight = rect.Height * shapeScaleY;
+        return new Rect(
+            rect.Width / 2.0 - deformedWidth / 2.0 + offX * LgDragAsymmetry,
+            rect.Height / 2.0 - deformedHeight / 2.0 + offY * LgDragAsymmetry,
+            Math.Max(1, deformedWidth),
+            Math.Max(1, deformedHeight));
     }
 
     /// <inheritdoc />
@@ -692,18 +745,7 @@ public class Border : Decorator
                 TryWireLgWindowTracking();
 
             // Compute the deformed glass rect for the SDF shader
-            var glassRect = rect;
-            if (lgHasSpring)
-            {
-                double newW = rect.Width * lgSx;
-                double newH = rect.Height * lgSy;
-                double cx = rect.Width / 2.0;
-                double cy = rect.Height / 2.0;
-                glassRect = new Rect(
-                    cx - newW / 2.0 + lgShiftX,
-                    cy - newH / 2.0 + lgShiftY,
-                    Math.Max(1, newW), Math.Max(1, newH));
-            }
+            var glassRect = ComputeLiquidGlassRect(rect);
 
             var avgRadius = (float)((cornerRadius.TopLeft + cornerRadius.TopRight +
                                      cornerRadius.BottomRight + cornerRadius.BottomLeft) / 4.0);
@@ -1179,14 +1221,40 @@ public class Border : Decorator
     // off-limits — same contract as UIElement._effectForDirtyBounds).
     private volatile bool _liquidGlassForDirtyBounds;
 
-    // The native liquid-glass quad expands 32 DIPs past the element rect for the
+    // The native liquid-glass quad expands 32 DIPs past the deformed glass rect for the
     // outer shadow + fusion-bridge bleed (kLiquidGlassVS padding). The dirty
     // pipeline must track that ring or a moving/animating glass panel leaves the
     // shadow behind (its ink is clamped to the tracked dirty region).
-    private const double LiquidGlassDirtyPadding = 32.0;
+    private const double LiquidGlassNativePadding = 32.0;
 
     internal override double GetExtraDirtyPadding()
-        => _liquidGlassForDirtyBounds ? LiquidGlassDirtyPadding : 0.0;
+        => _liquidGlassForDirtyBounds ? _liquidGlassDirtyPadding : 0.0;
+
+    private void UpdateLiquidGlassDirtyPadding(Size size)
+    {
+        int padding = (int)LiquidGlassNativePadding;
+        if (_liquidGlassForDirtyBounds)
+        {
+            var glassRect = ComputeLiquidGlassRect(new Rect(size));
+            double leftOverflow = Math.Max(0, LiquidGlassNativePadding - glassRect.Left);
+            double topOverflow = Math.Max(0, LiquidGlassNativePadding - glassRect.Top);
+            double rightOverflow = Math.Max(
+                0,
+                glassRect.Right + LiquidGlassNativePadding - size.Width);
+            double bottomOverflow = Math.Max(
+                0,
+                glassRect.Bottom + LiquidGlassNativePadding - size.Height);
+            double required = Math.Max(
+                Math.Max(leftOverflow, topOverflow),
+                Math.Max(rightOverflow, bottomOverflow));
+            if (double.IsFinite(required))
+            {
+                padding = (int)Math.Min(int.MaxValue, Math.Ceiling(required));
+            }
+        }
+
+        _liquidGlassDirtyPadding = Math.Max((int)LiquidGlassNativePadding, padding);
+    }
 
     private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -1221,6 +1289,12 @@ public class Border : Decorator
             if (e.Property == LiquidGlassInteractiveProperty)
             {
                 border.UpdateLiquidGlassPressTracking((bool)(e.NewValue ?? false));
+            }
+
+            if (e.Property == LiquidGlassProperty ||
+                e.Property == LiquidGlassInteractiveProperty)
+            {
+                border.UpdateLiquidGlassDirtyPadding(border.RenderSize);
             }
 
             border.InvalidateVisual();
@@ -1320,6 +1394,7 @@ public class Border : Decorator
             _lgSpringOffY.Velocity = 0;
         }
 
+        UpdateLiquidGlassDirtyPadding(RenderSize);
         InvalidateVisual();
     }
 
@@ -1474,6 +1549,7 @@ public class Border : Decorator
         bool settledOffX = _lgSpringOffX.Step(dt, LgOffsetStiffness, LgOffsetDamping, 200);
         bool settledOffY = _lgSpringOffY.Step(dt, LgOffsetStiffness, LgOffsetDamping, 200);
 
+        UpdateLiquidGlassDirtyPadding(RenderSize);
         InvalidateVisual();
 
         if (settledX && settledY && settledOffX && settledOffY && !_lgPressed)

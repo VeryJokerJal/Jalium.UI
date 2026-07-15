@@ -10,7 +10,7 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 
 ## 项目状态
 
-- 积极开发中 —— v26.10.6（小版本之间 API 仍可能演进）
+- 积极开发中 —— v26.10.7（小版本之间 API 仍可能演进）
 - 主要目标平台：Windows 10/11（x64、ARM64）
 - 跨平台：Android（arm64-v8a、x86_64）、Linux（X11/Wayland；Vulkan 或软件渲染）、macOS（Metal）
 - 运行时目标：.NET 10（`net10.0-windows`、`net10.0-android`、`net10.0`）

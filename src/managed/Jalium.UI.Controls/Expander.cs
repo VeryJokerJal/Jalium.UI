@@ -178,6 +178,27 @@ public class Expander : HeaderedContentControl
         }
     }
 
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        // Release the cached parts before the tree is discarded. The expand/collapse animation
+        // (ExpandCollapseAnimator drives _contentBorder/_chevron via _animationTimer) and the
+        // header-border click handler otherwise keep resolving into the detached template tree.
+        base.OnTemplateContentClearing();
+
+        _animationTimer?.Stop();
+        _animationTimer = null;
+
+        if (_headerBorder != null)
+        {
+            _headerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnHeaderMouseDown));
+        }
+
+        _headerBorder = null;
+        _contentBorder = null;
+        _chevron = null;
+    }
+
     #endregion
 
     #region Input Handling

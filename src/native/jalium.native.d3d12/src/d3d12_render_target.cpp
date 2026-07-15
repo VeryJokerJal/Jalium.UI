@@ -2230,8 +2230,15 @@ void* D3D12RenderTarget::RealizeLayerBegin(void* existingLayer, float x, float y
 {
     if (!isDrawing_ || !directRenderer_) return nullptr;
     FlushVelloIfNeeded();
-    return directRenderer_->BeginRetainedLayerCapture(
+    auto* layer = directRenderer_->BeginRetainedLayerCapture(
         reinterpret_cast<D3D12RetainedLayer*>(existingLayer), x, y, w, h);
+    if (layer) {
+        // DirectRenderer isolated its parent clip stacks. Keep Impeller's
+        // sticky per-batch clip mirror in lockstep so path geometry captured
+        // during a reveal animation is not cached as a transparent fragment.
+        SyncScissorToImpeller();
+    }
+    return layer;
 }
 
 void D3D12RenderTarget::RealizeLayerEnd(void* layer)
@@ -2239,6 +2246,8 @@ void D3D12RenderTarget::RealizeLayerEnd(void* layer)
     if (!isDrawing_ || !directRenderer_) return;
     FlushVelloIfNeeded();
     directRenderer_->EndRetainedLayerCapture(reinterpret_cast<D3D12RetainedLayer*>(layer));
+    // Restore the parent clip mirror before managed records CompositeLayer.
+    SyncScissorToImpeller();
 }
 
 void D3D12RenderTarget::CompositeLayer(void* layer, float x, float y, float w, float h, float opacity)

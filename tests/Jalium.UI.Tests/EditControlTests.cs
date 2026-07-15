@@ -40,6 +40,21 @@ public class EditControlTests
     }
 
     [Fact]
+    public void TextAssignedBeforeViewport_DefersNativeViewLayout()
+    {
+        var editor = new EditControl
+        {
+            Text = "public static void Main() { }",
+        };
+
+        Assert.False(editor.ViewLayoutInitializedForTesting);
+
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+
+        Assert.True(editor.ViewLayoutInitializedForTesting);
+    }
+
+    [Fact]
     public void Language_Xml_ShouldUseXmlTagFolding()
     {
         var editor = new EditControl();

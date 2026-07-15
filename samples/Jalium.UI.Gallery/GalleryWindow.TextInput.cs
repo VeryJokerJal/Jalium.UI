@@ -5,32 +5,38 @@ namespace Jalium.UI.Gallery;
 
 internal static partial class GalleryWindow
 {
-    public static UIElement BuildTextInputSection() => Section(
-        "Text Input", "Single/multi-line, masked, numeric, auto-complete and combo entry.",
-        Card("TextBox", BuildTextBoxes(), width: 300),
-        Card("PasswordBox", new PasswordBox
+    public static UIElement BuildTextInputSection() => SectionFromCards(
+        "Text Input",
+        "Single/multi-line, masked, numeric, auto-complete and combo entry.",
+        CreateTextInputCards());
+
+    private static DeferredCard[] CreateTextInputCards() =>
+    [
+        new("Gallery.Card.TextInput.TextBox", "TextBox", BuildTextBoxes, Width: 300),
+        new("Gallery.Card.TextInput.PasswordBox", "PasswordBox", static () => new PasswordBox
         {
             Password = "S3cr3t!",
             Width = 200,
-            HorizontalAlignment = HorizontalAlignment.Left
+            HorizontalAlignment = HorizontalAlignment.Left,
         }),
-        Card("NumberBox", new NumberBox
+        new("Gallery.Card.TextInput.NumberBox", "NumberBox", static () => new NumberBox
         {
             Value = 42,
             Minimum = 0,
             Maximum = 100,
             SmallChange = 1,
             Width = 200,
-            HorizontalAlignment = HorizontalAlignment.Left
+            HorizontalAlignment = HorizontalAlignment.Left,
         }),
-        Card("AutoCompleteBox", new AutoCompleteBox
+        new("Gallery.Card.TextInput.AutoCompleteBox", "AutoCompleteBox", static () => new AutoCompleteBox
         {
             Text = "Cascadia",
             PlaceholderText = "Type a font...",
             Width = 200,
-            HorizontalAlignment = HorizontalAlignment.Left
+            HorizontalAlignment = HorizontalAlignment.Left,
         }),
-        Card("ComboBox", BuildComboBox()));
+        new("Gallery.Card.TextInput.ComboBox", "ComboBox", BuildComboBox),
+    ];
 
     private static UIElement BuildTextBoxes()
     {

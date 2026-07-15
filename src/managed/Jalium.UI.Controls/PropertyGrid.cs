@@ -452,6 +452,46 @@ public class PropertyGrid : Control
         RebuildView();
     }
 
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        // Release the cached template parts before the tree is discarded. Critically, a surviving
+        // _propertiesPanel makes EnsurePropertiesPanel short-circuit (it returns early when
+        // _propertiesPanel != null), so the programmatic fallback tree is never rebuilt and the
+        // control renders blank after the template is cleared; RebuildView would also realize
+        // property rows into the detached panel. Deliberately does NOT touch _fallbackRoot: it is
+        // the templateless fallback visual (added via AddVisualChild and backing the overridden
+        // VisualChildrenCount), not a template PART — nulling it here would desync the cached
+        // visual-children count ahead of its RemoveVisualChild.
+        base.OnTemplateContentClearing();
+
+        _descriptionAnimationTimer?.Stop();
+
+        if (_searchBox != null)
+        {
+            _searchBox.TextChanged -= OnSearchBoxTextChanged;
+        }
+        if (_categorizedButton != null)
+        {
+            _categorizedButton.Click -= OnCategorizedButtonClick;
+        }
+        if (_alphabeticalButton != null)
+        {
+            _alphabeticalButton.Click -= OnAlphabeticalButtonClick;
+        }
+
+        _toolBar = null;
+        _searchBoxBorder = null;
+        _searchBox = null;
+        _categorizedButton = null;
+        _alphabeticalButton = null;
+        _propertiesHost = null;
+        _propertiesPanel = null;
+        _descriptionArea = null;
+        _descriptionTitle = null;
+        _descriptionText = null;
+    }
+
     private void OnCategorizedButtonClick(object? sender, RoutedEventArgs e)
     {
         SortMode = PropertyGridSortMode.Categorized;

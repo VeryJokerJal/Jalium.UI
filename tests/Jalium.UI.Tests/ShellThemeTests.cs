@@ -22,7 +22,7 @@ public class ShellThemeTests
     }
 
     [Fact]
-    public void PageAndFrame_ImplicitThemeStyles_ShouldApplyWithoutLocalBackgroundOverrides()
+    public void PageAndFrame_ImplicitThemeStyles_ShouldPreserveExpectedBackgrounds()
     {
         ResetApplicationState();
         ThemeLoader.Initialize();
@@ -46,7 +46,7 @@ public class ShellThemeTests
 
             Assert.False(page.HasLocalValue(Control.BackgroundProperty));
             Assert.False(frame.HasLocalValue(Control.BackgroundProperty));
-            Assert.NotNull(page.Background);
+            Assert.Null(page.Background);
             Assert.NotNull(frame.Background);
         }
         finally

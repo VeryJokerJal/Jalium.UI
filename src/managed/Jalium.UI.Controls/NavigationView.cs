@@ -443,6 +443,30 @@ public class NavigationView : ContentControl
         RefreshFooterItems();
     }
 
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        base.OnTemplateContentClearing();
+
+        // Release the cached parts before the tree is discarded. RefreshMenuItems /
+        // RefreshFooterItems only guard against null, so a surviving _menuItemsPanel /
+        // _footerItemsPanel keeps hosting items in the detached, invisible tree.
+        if (_paneHeaderHost != null)
+            _paneHeaderHost.SizeChanged -= OnPaneRegionSizeChanged;
+        if (_paneFooterRegion != null)
+            _paneFooterRegion.SizeChanged -= OnPaneRegionSizeChanged;
+
+        _rootGrid = null;
+        _paneContainer = null;
+        _contentContainer = null;
+        _paneHeaderHost = null;
+        _paneFooterHost = null;
+        _paneFooterRegion = null;
+        _menuItemsPanel = null;
+        _footerItemsPanel = null;
+        _paneScrollViewer = null;
+    }
+
     protected override void OnVisualParentChanged(Visual? oldParent)
     {
         base.OnVisualParentChanged(oldParent);

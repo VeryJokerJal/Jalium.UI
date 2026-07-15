@@ -1339,7 +1339,8 @@ uint64_t VulkanGlyphAtlas::HashInstanceKey(uint64_t layoutKey,
                                            float dpiScale,
                                            int32_t aaMode,
                                            int32_t hintingMode,
-                                           float scaleX, float scaleY) noexcept
+                                           float scaleX, float scaleY,
+                                           bool crispAxisAligned) noexcept
 {
     uint64_t h = 0xCBF29CE484222325ull;  // FNV-1a 64-bit
     auto mix = [&h](const void* p, size_t n) {
@@ -1348,6 +1349,11 @@ uint64_t VulkanGlyphAtlas::HashInstanceKey(uint64_t layoutKey,
     };
     mix(&layoutKey, sizeof(layoutKey));
     mix(&dpiScale, sizeof(dpiScale));
+    // The crisp path floors the pen while the smooth path retains its
+    // continuous position.  The resulting cached quad positions differ even
+    // when every other layout/raster key is identical.
+    const uint8_t crispByte = crispAxisAligned ? 1 : 0;
+    mix(&crispByte, sizeof(crispByte));
     // Per-axis transform scale changes the rasterized (deformed) bitmap + atlas
     // slots/UVs for the SAME layout, so it must key the memo: a run cached at one
     // deformation must not be served at another (it would be the wrong stretch).
@@ -1378,7 +1384,8 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
     int32_t aaMode,
     int32_t hintingMode,
     float scaleX,
-    float scaleY)
+    float scaleY,
+    bool crispAxisAligned)
 {
     if (!layout || !initialized_) return 0;
 
@@ -1516,7 +1523,7 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
     if (layoutKey != 0) {
         const uint64_t ck = HashInstanceKey(layoutKey, dpiScale_,
                                             effectiveAaMode, effectiveHintingMode,
-                                            sxR, syR);
+                                            sxR, syR, crispAxisAligned);
         auto mit = instMap_.find(ck);
         if (mit != instMap_.end()) {
             if (mit->second->run.gen == atlasGeneration_) {
@@ -1651,12 +1658,14 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
                 // 1:1 against the already-deformed crisp bitmap.
                 // 1:1 text snaps the pen to the integer pixel grid (the sub-pixel
                 // phase is baked into the bitmap via subpixelX) for crisp stable
-                // text. DEFORMED text keeps the pen CONTINUOUS (no floor): each
-                // glyph would otherwise cross integer boundaries at a different
-                // sub-pixel instant as the deform animates, so adjacent glyphs jump
-                // at different times (the "left s still, right s moved" jitter).
-                // The bilinear text PSO samples this continuous position smoothly.
-                float penXForPos = deformed ? penXPhysical : std::floor(penXPhysical);
+                // text. Deformed text keeps the pen CONTINUOUS here: truncating in
+                // the base raster space and then applying a non-unit axis scale can
+                // amplify the phase error beyond half a physical pixel. Fixed,
+                // axis-aligned runs are snapped once, in final physical space, by
+                // RenderText after the actual transform scale is applied.
+                float penXForPos = deformed
+                    ? penXPhysical
+                    : std::floor(penXPhysical);
                 float glyphX = penXForPos * invDpi + entry.bearingX * invDpi * invRasterX;
                 float glyphY = run.baselineY - offsetY - entry.bearingY * invDpi * invRasterY;
 
@@ -1711,7 +1720,7 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
         built.gen = atlasGeneration_;
         const uint64_t ck = HashInstanceKey(layoutKey, dpiScale_,
                                             effectiveAaMode, effectiveHintingMode,
-                                            sxR, syR);
+                                            sxR, syR, crispAxisAligned);
         if (auto ex = instMap_.find(ck); ex != instMap_.end()) {
             instLru_.erase(ex->second);
             instMap_.erase(ex);

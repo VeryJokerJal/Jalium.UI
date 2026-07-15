@@ -57,6 +57,44 @@ public class LiquidGlassInteractionTests
     }
 
     [Fact]
+    public void LiquidGlassBorder_DraggedDirtyBounds_ShouldCoverDeformedNativeQuad()
+    {
+        UIElement.ForceReleaseMouseCapture();
+
+        try
+        {
+            var glass = CreateInteractiveLiquidGlassHost(out var child, width: 252, height: 46);
+            child.AddHandler(UIElement.MouseDownEvent, new RoutedEventHandler((_, e) => e.Handled = true));
+
+            WireLiquidGlassTracking(glass);
+
+            var pressPoint = new Point(126, 23);
+            child.RaiseEvent(CreateMouseDown(pressPoint));
+            InvokeWindowMouseMove(glass, new Point(126, 123), MouseButtonState.Pressed);
+
+            double width = glass.RenderSize.Width;
+            double height = glass.RenderSize.Height;
+            var deformedGlassRect = glass.ComputeLiquidGlassRect(new Rect(glass.RenderSize));
+            Assert.True(deformedGlassRect.Bottom > height);
+            var expectedInkBounds = glass.MapLocalRectToScreen(new Rect(
+                deformedGlassRect.X - 32,
+                deformedGlassRect.Y - 32,
+                deformedGlassRect.Width + 64,
+                deformedGlassRect.Height + 64));
+
+            var dirtyBounds = glass.GetDirtyRenderBounds();
+            Assert.True(dirtyBounds.Left <= expectedInkBounds.Left);
+            Assert.True(dirtyBounds.Top <= expectedInkBounds.Top);
+            Assert.True(dirtyBounds.Right >= expectedInkBounds.Right);
+            Assert.True(dirtyBounds.Bottom >= expectedInkBounds.Bottom);
+        }
+        finally
+        {
+            UIElement.ForceReleaseMouseCapture();
+        }
+    }
+
+    [Fact]
     public void LiquidGlassBorder_ShouldKeepTrackingHover_JustOutsideBounds()
     {
         var glass = CreateLiquidGlassHost();
@@ -82,18 +120,21 @@ public class LiquidGlassInteractionTests
         Assert.False(GetPrivateField<bool>(glass, "_lgMouseOver"));
     }
 
-    private static Border CreateInteractiveLiquidGlassHost(out Border child)
+    private static Border CreateInteractiveLiquidGlassHost(
+        out Border child,
+        double width = 160,
+        double height = 56)
     {
         child = new Border
         {
-            Width = 160,
-            Height = 56
+            Width = width,
+            Height = height
         };
 
         var glass = new Border
         {
-            Width = 160,
-            Height = 56,
+            Width = width,
+            Height = height,
             LiquidGlass = true,
             LiquidGlassInteractive = true,
             Child = child
@@ -102,13 +143,13 @@ public class LiquidGlassInteractionTests
         var window = new Window
         {
             TitleBarStyle = WindowTitleBarStyle.Native,
-            Width = 160,
-            Height = 56,
+            Width = width,
+            Height = height,
             Content = glass
         };
 
-        window.Measure(new Size(160, 56));
-        window.Arrange(new Rect(0, 0, 160, 56));
+        window.Measure(new Size(width, height));
+        window.Arrange(new Rect(0, 0, width, height));
         return glass;
     }
 

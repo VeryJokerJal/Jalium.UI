@@ -1206,6 +1206,9 @@ private:
     //     exclusive with offscreen capture to avoid nested RT redirects) ---
     bool inRetainedCapture_ = false;
     class D3D12RetainedLayer* activeRealizeLayer_ = nullptr;
+    // Parent rounded clips belong to the final composite, not the layer's
+    // cached pixels. Saved independently from the offscreen-capture state.
+    std::vector<RoundedClipState> savedRetainedRoundedClipStack_;
 
     // --- Active capture target (offscreen OR retained) ---
     // Stashed by BeginOffscreenCapture / BeginRetainedLayerCapture and consumed

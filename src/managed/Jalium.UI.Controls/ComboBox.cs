@@ -475,6 +475,42 @@ public class ComboBox : Selector
         UpdateSelectionBoxItem();
     }
 
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        // base clears ItemsControl's ItemsPresenter (ComboBox's presenter lives in PART_Popup,
+        // TemplatedParent == this, so the base membership test reaches it); then release our own
+        // parts so the open/close popup animation and the editable-text sync no longer resolve
+        // into the discarded tree once the template is cleared and never re-applied.
+        base.OnTemplateContentClearing();
+
+        _popupAnimTimer?.Stop();
+        _popupAnimTimer = null;
+        _arrowAnimTimer?.Stop();
+        _arrowAnimTimer = null;
+
+        if (_toggleButton != null)
+        {
+            _toggleButton.Checked -= OnToggleButtonChecked;
+            _toggleButton.Unchecked -= OnToggleButtonUnchecked;
+        }
+        if (_popup != null)
+        {
+            _popup.Closed -= OnPopupClosed;
+        }
+        if (_editableTextBox != null)
+        {
+            _editableTextBox.TextChanged -= OnEditableTextBoxTextChanged;
+        }
+
+        _toggleButton = null;
+        _popup = null;
+        _editableTextBox = null;
+        _selectionPresenter = null;
+        _dropDownArea = null;
+        _arrowPath = null;
+    }
+
     private void OnToggleButtonChecked(object? sender, RoutedEventArgs e)
     {
         IsDropDownOpen = true;

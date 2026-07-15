@@ -60,6 +60,10 @@ public class NavigationViewItem : ContentControl
 
     private Border? _indentSpacer;
     private Shapes.Path? _chevron;
+    private PathGeometry? _chevronBase;
+    private double _chevronCenterX;
+    private double _chevronCenterY;
+    private double _chevronAngle;
     private StackPanel? _childrenPanel;
     private Threading.DispatcherTimer? _expandAnimTimer;
 
@@ -220,11 +224,27 @@ public class NavigationViewItem : ContentControl
         _indentSpacer = GetTemplateChild("PART_IndentSpacer") as Border;
         _chevron = GetTemplateChild("PART_Chevron") as Shapes.Path;
         _childrenPanel = GetTemplateChild("PART_ChildrenPanel") as StackPanel;
+        BuildChevronBase();
 
         // Sync initial state
         UpdateIndent();
         UpdateChevronVisibility();
         SyncExpandedVisualState();
+    }
+
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        base.OnTemplateContentClearing();
+
+        // Release the cached parts before the tree is discarded. NavigationView populates child
+        // items through GetChildrenPanel(); if _childrenPanel keeps pointing at the detached tree,
+        // children realize into an invisible panel and the expand animation drives a dead element.
+        StopExpandAnimation();
+
+        _indentSpacer = null;
+        _chevron = null;
+        _childrenPanel = null;
     }
 
     /// <inheritdoc />
@@ -557,12 +577,12 @@ public class NavigationViewItem : ContentControl
 
     private double GetCurrentChevronAngle()
     {
-        if (_chevron?.RenderTransform is RotateTransform rotateTransform)
+        if (_chevronBase == null && _chevron?.RenderTransform is RotateTransform rotateTransform)
         {
             return rotateTransform.Angle;
         }
 
-        return IsExpanded ? 90 : 0;
+        return _chevronAngle;
     }
 
     private void SetChevronAngle(double angle)
@@ -572,16 +592,84 @@ public class NavigationViewItem : ContentControl
             return;
         }
 
-        // 绝对像素轴心，避免 RenderTransformOrigin 相对单位在 Stretch 缩放/布局未稳定时算偏
-        // （与 TreeView.SetExpanderAngle / ComboBox / Expander 同策）。RenderTransformOrigin 保持默认 (0,0)。
+        _chevronAngle = angle;
+        if (_chevronBase == null)
+        {
+            SetChevronRenderTransformAngle(angle);
+            return;
+        }
+
+        // Bake the rotation into the path. The native filled-path pipeline can
+        // offset small glyphs outside their layout box when given a rotation
+        // matrix, making the expanded chevron appear to vanish.
+        _chevron.Data = PathGeometryTransformHelper.Rotate(
+            _chevronBase,
+            angle,
+            _chevronCenterX,
+            _chevronCenterY);
+    }
+
+    private void SetChevronRenderTransformAngle(double angle)
+    {
+        if (_chevron == null)
+        {
+            return;
+        }
+
+        // Preserve the established behavior for custom templates whose Chevron
+        // is auto-sized or uses a non-Uniform stretch mode. Baking those cases
+        // would change their layout contract merely to work around the fixed-size
+        // glyph issue in the default template.
         var rotateTransform = _chevron.RenderTransform as RotateTransform ?? new RotateTransform();
-        var w = _chevron.ActualWidth > 0 ? _chevron.ActualWidth : _chevron.Width;
-        var h = _chevron.ActualHeight > 0 ? _chevron.ActualHeight : _chevron.Height;
-        rotateTransform.CenterX = (double.IsNaN(w) || w <= 0) ? 4 : w / 2;
-        rotateTransform.CenterY = (double.IsNaN(h) || h <= 0) ? 4 : h / 2;
+        var width = _chevron.ActualWidth > 0 ? _chevron.ActualWidth : _chevron.Width;
+        var height = _chevron.ActualHeight > 0 ? _chevron.ActualHeight : _chevron.Height;
+        rotateTransform.CenterX = double.IsNaN(width) || width <= 0 ? 4 : width / 2;
+        rotateTransform.CenterY = double.IsNaN(height) || height <= 0 ? 4 : height / 2;
         rotateTransform.Angle = angle;
         _chevron.RenderTransform = rotateTransform;
         _chevron.InvalidateVisual();
+    }
+
+    private void BuildChevronBase()
+    {
+        _chevronBase = null;
+        _chevronAngle = 0;
+
+        if (_chevron?.Data is not Geometry geometry)
+        {
+            return;
+        }
+
+        var hasFixedWidth = !double.IsNaN(_chevron.Width) && _chevron.Width > 0;
+        var hasFixedHeight = !double.IsNaN(_chevron.Height) && _chevron.Height > 0;
+        if (!hasFixedWidth || !hasFixedHeight || _chevron.Stretch != Stretch.Uniform)
+        {
+            return;
+        }
+
+        var source = PathGeometryTransformHelper.CloneWithTransformBaked(geometry);
+        if (source.Figures.Count == 0)
+        {
+            return;
+        }
+
+        var sourceBounds = source.Bounds;
+        if (sourceBounds.Width <= 0 || sourceBounds.Height <= 0)
+        {
+            // Path has dedicated Stretch handling for single-axis geometry.
+            // Keep that path intact instead of replacing it with an unscaled
+            // baked clone and changing a custom template's layout.
+            return;
+        }
+
+        var width = _chevron.Width;
+        var height = _chevron.Height;
+
+        _chevronBase = PathGeometryTransformHelper.StretchUniform(source, width, height);
+        _chevronCenterX = width / 2.0;
+        _chevronCenterY = height / 2.0;
+        _chevron.Stretch = Stretch.None;
+        _chevron.RenderTransform = null;
     }
 
     private ClothChild[] CollectClothChildren(double targetHeight)

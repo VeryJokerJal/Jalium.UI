@@ -302,6 +302,13 @@ public class Control : FrameworkElement
     private readonly Dictionary<string, FrameworkElement> _templateRegisteredNames =
         new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// The root of the currently expanded template tree (null before a template is applied or
+    /// after it is cleared). Used by <see cref="ItemsPresenter.AttachToOwner"/> to reject a
+    /// presenter left over from a template instance this control has since replaced.
+    /// </summary>
+    internal FrameworkElement? TemplateRootInternal => _templateRoot;
+
     #endregion
 
     #region CLR Properties
@@ -590,6 +597,13 @@ public class Control : FrameworkElement
 
     private void ClearTemplateContent()
     {
+        // Let subclasses release references into the template tree that is about to be
+        // discarded. This must happen for every teardown path (Template replaced at
+        // runtime, theme switch swapping the theme template, Template cleared to null,
+        // and the defensive clear at the start of ApplyTemplateCore) — a cached part
+        // that survives the teardown keeps resolving into a detached tree.
+        OnTemplateContentClearing();
+
         // Detach template triggers
         if (_appliedTemplateTriggers != null)
         {
@@ -627,6 +641,19 @@ public class Control : FrameworkElement
         _templateRegisteredNames.Clear();
     }
 
+    /// <summary>
+    /// Called at the start of tearing down the currently expanded template content,
+    /// before the old template tree is detached. Subclasses that cache references to
+    /// elements inside the expanded tree (e.g. ItemsControl's ItemsPresenter) must drop
+    /// and decommission them here; the tree is discarded right after this call, and any
+    /// cached part that lingers resolves into a detached, invisible tree. May be invoked
+    /// when no template content exists (first application) — implementations must
+    /// tolerate that and stay idempotent.
+    /// </summary>
+    internal virtual void OnTemplateContentClearing()
+    {
+    }
+
     private void RegisterTemplateName(string name, FrameworkElement element)
     {
         if (_templateRegisteredNames.TryGetValue(name, out var existing))
@@ -647,12 +674,16 @@ public class Control : FrameworkElement
 
     internal static void SetTemplatedParentRecursive(FrameworkElement element, FrameworkElement parent)
     {
-        SetTemplatedParentRecursive(element, parent, new HashSet<FrameworkElement>(ReferenceEqualityComparer.Instance));
+        // The first element of the walk is the root of this expanded template instance; every
+        // ItemsPresenter reached from here is stamped with it so a discarded presenter can be
+        // told apart from the live one (see ItemsPresenter.AttachToOwner).
+        SetTemplatedParentRecursive(element, parent, element, new HashSet<FrameworkElement>(ReferenceEqualityComparer.Instance));
     }
 
     private static void SetTemplatedParentRecursive(
         FrameworkElement element,
         FrameworkElement parent,
+        FrameworkElement templateRoot,
         HashSet<FrameworkElement> visited)
     {
         if (!visited.Add(element))
@@ -661,6 +692,13 @@ public class Control : FrameworkElement
         }
 
         element.SetTemplatedParent(parent);
+
+        // Stamp the presenter with its template instance root so a stray measure of a discarded
+        // presenter cannot hijack the owner's live registration.
+        if (element is ItemsPresenter itemsPresenter)
+        {
+            itemsPresenter.TemplateInstanceRoot = templateRoot;
+        }
 
         // Register name if set
         if (!string.IsNullOrEmpty(element.Name))
@@ -682,7 +720,7 @@ public class Control : FrameworkElement
         {
             if (element is ContentControl nestedContentControl && nestedContentControl.Content is FrameworkElement nestedContentChild)
             {
-                SetTemplatedParentRecursive(nestedContentChild, parent, visited);
+                SetTemplatedParentRecursive(nestedContentChild, parent, templateRoot, visited);
             }
 
             return;
@@ -694,26 +732,26 @@ public class Control : FrameworkElement
         {
             if (element.GetVisualChild(i) is FrameworkElement child)
             {
-                SetTemplatedParentRecursive(child, parent, visited);
+                SetTemplatedParentRecursive(child, parent, templateRoot, visited);
             }
         }
 
         // Special handling for Popup - its Child is not a visual child but needs TemplatedParent
         if (element is Popup popup && popup.Child is FrameworkElement popupChild)
         {
-            SetTemplatedParentRecursive(popupChild, parent, visited);
+            SetTemplatedParentRecursive(popupChild, parent, templateRoot, visited);
         }
 
         // Special handling for Border - its Child might not be in visual tree yet
         if (element is Border border && border.Child is FrameworkElement borderChild)
         {
-            SetTemplatedParentRecursive(borderChild, parent, visited);
+            SetTemplatedParentRecursive(borderChild, parent, templateRoot, visited);
         }
 
         // Special handling for ContentControl - its content might not be in visual tree yet
         if (element is ContentControl contentControl && contentControl.Content is FrameworkElement contentChild)
         {
-            SetTemplatedParentRecursive(contentChild, parent, visited);
+            SetTemplatedParentRecursive(contentChild, parent, templateRoot, visited);
         }
 
         // Special handling for Panel - ensure all children are processed
@@ -723,7 +761,7 @@ public class Control : FrameworkElement
             {
                 if (panelChild is FrameworkElement panelChildElement)
                 {
-                    SetTemplatedParentRecursive(panelChildElement, parent, visited);
+                    SetTemplatedParentRecursive(panelChildElement, parent, templateRoot, visited);
                 }
             }
         }
