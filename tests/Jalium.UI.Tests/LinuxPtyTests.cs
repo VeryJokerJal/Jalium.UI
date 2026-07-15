@@ -12,16 +12,16 @@ namespace Jalium.UI.Tests;
 public sealed class LinuxPtyTests
 {
     [Fact]
-    public void UnixPty_RunsShellCommand_CapturesOutputAndExitCode()
+    public async Task UnixPty_RunsShellCommand_CapturesOutputAndExitCode()
     {
         if (!OperatingSystem.IsLinux())
             return;
 
         using var process = new TerminalProcess();
         var output = new StringBuilder();
-        var outputSignal = new ManualResetEventSlim(false);
-        var exitSignal = new ManualResetEventSlim(false);
-        var exitCode = int.MinValue;
+        var outputSignal = NewSignal();
+        var exitSignal = new TaskCompletionSource<int>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
 
         process.OutputReceived += chunk =>
         {
@@ -29,34 +29,33 @@ public sealed class LinuxPtyTests
             {
                 output.Append(chunk);
                 if (output.ToString().Contains("hello-from-pty", StringComparison.Ordinal))
-                    outputSignal.Set();
+                    outputSignal.TrySetResult(true);
             }
         };
         process.ProcessExited += code =>
         {
-            exitCode = code;
-            exitSignal.Set();
+            exitSignal.TrySetResult(code);
         };
 
         process.Start("/bin/sh", "-c \"echo hello-from-pty\"");
 
-        Assert.True(outputSignal.Wait(TimeSpan.FromSeconds(10)),
+        Assert.True(await WaitForSignalAsync(outputSignal.Task),
             $"pty output did not arrive; got: {Snapshot(output)}");
-        Assert.True(exitSignal.Wait(TimeSpan.FromSeconds(10)),
+        Assert.True(await WaitForSignalAsync(exitSignal.Task),
             "shell did not exit after completing its command");
-        Assert.Equal(0, exitCode);
+        Assert.Equal(0, await exitSignal.Task);
     }
 
     [Fact]
-    public void UnixPty_InteractiveShell_EchoesInputAndExits()
+    public async Task UnixPty_InteractiveShell_EchoesInputAndExits()
     {
         if (!OperatingSystem.IsLinux())
             return;
 
         using var process = new TerminalProcess();
         var output = new StringBuilder();
-        var markerSignal = new ManualResetEventSlim(false);
-        var exitSignal = new ManualResetEventSlim(false);
+        var markerSignal = NewSignal();
+        var exitSignal = NewSignal();
 
         process.OutputReceived += chunk =>
         {
@@ -64,10 +63,10 @@ public sealed class LinuxPtyTests
             {
                 output.Append(chunk);
                 if (output.ToString().Contains("interactive-42", StringComparison.Ordinal))
-                    markerSignal.Set();
+                    markerSignal.TrySetResult(true);
             }
         };
-        process.ProcessExited += _ => exitSignal.Set();
+        process.ProcessExited += _ => exitSignal.TrySetResult(true);
 
         process.Start("/bin/sh", workingDirectory: "/tmp");
         Assert.True(process.IsRunning);
@@ -76,23 +75,23 @@ public sealed class LinuxPtyTests
         process.NotifyResize(100, 30);
 
         process.WriteInput("echo interactive-$((6*7))\n");
-        Assert.True(markerSignal.Wait(TimeSpan.FromSeconds(10)),
+        Assert.True(await WaitForSignalAsync(markerSignal.Task),
             $"interactive marker missing; got: {Snapshot(output)}");
 
         process.WriteInput("exit\n");
-        Assert.True(exitSignal.Wait(TimeSpan.FromSeconds(10)),
+        Assert.True(await WaitForSignalAsync(exitSignal.Task),
             "shell did not exit after 'exit'");
     }
 
     [Fact]
-    public void UnixPty_SpawnsWithControllingTerminal()
+    public async Task UnixPty_SpawnsWithControllingTerminal()
     {
         if (!OperatingSystem.IsLinux())
             return;
 
         using var process = new TerminalProcess();
         var output = new StringBuilder();
-        var signal = new ManualResetEventSlim(false);
+        var signal = NewSignal();
 
         process.OutputReceived += chunk =>
         {
@@ -103,14 +102,27 @@ public sealed class LinuxPtyTests
                 // terminal; "not a tty" would mean the controlling-terminal
                 // wiring (setsid + first-open) regressed.
                 if (output.ToString().Contains("/dev/pts/", StringComparison.Ordinal))
-                    signal.Set();
+                    signal.TrySetResult(true);
             }
         };
 
         process.Start("/bin/sh", "-c tty");
 
-        Assert.True(signal.Wait(TimeSpan.FromSeconds(10)),
+        Assert.True(await WaitForSignalAsync(signal.Task),
             $"expected a /dev/pts/N path from `tty`; got: {Snapshot(output)}");
+    }
+
+    private static TaskCompletionSource<bool> NewSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static async Task<bool> WaitForSignalAsync(Task signal)
+    {
+        var completed = await Task.WhenAny(signal, Task.Delay(TimeSpan.FromSeconds(10)));
+        if (!ReferenceEquals(completed, signal))
+            return false;
+
+        await signal;
+        return true;
     }
 
     private static string Snapshot(StringBuilder output)

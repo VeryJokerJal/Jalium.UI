@@ -1,4 +1,12 @@
+FROM alpine:3.24 AS certificates
+
 FROM ubuntu:20.04
+
+# Ubuntu's minimal 20.04 image has no CA bundle, while its default mirrors use
+# plain HTTP. Seed the standard Mozilla bundle from Alpine's official image so
+# apt can use HTTPS from its very first index download; the Ubuntu
+# ca-certificates package replaces/refreshes it during the install below.
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 ARG JALIUM_INSTALL_DOTNET=0
 ARG JALIUM_DOTNET_SDK_VERSION=10.0.301
@@ -7,6 +15,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH="/usr/share/dotnet:${PATH}"
 
 RUN set -eux; \
+    sed -i \
+      -e 's|http://archive.ubuntu.com|https://archive.ubuntu.com|g' \
+      -e 's|http://security.ubuntu.com|https://security.ubuntu.com|g' \
+      -e 's|http://ports.ubuntu.com|https://ports.ubuntu.com|g' \
+      /etc/apt/sources.list; \
     attempt=1; \
     while :; do \
       if apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true update \
