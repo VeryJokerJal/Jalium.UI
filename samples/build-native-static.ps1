@@ -41,9 +41,11 @@ if (-not (Test-Path $aotProj)) {
 
 # -- Locate MSBuild.exe -----------------------------------------------------
 $vswhereCandidates = @(
-    "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
-    "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe"
-) | Where-Object { Test-Path $_ }
+    @(
+        "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe",
+        "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe"
+    ) | Where-Object { Test-Path $_ }
+)
 
 if (-not $vswhereCandidates) {
     throw "vswhere.exe not found. Install Visual Studio Installer or add MSBuild.exe to PATH manually."
