@@ -631,6 +631,13 @@ struct CallbackState
     std::atomic<int> calls{0};
 };
 
+struct ThreadRecordingCallbackState
+{
+    std::atomic<int> calls{0};
+    std::atomic<bool> ranOnWrongThread{false};
+    std::thread::id ownerThread;
+};
+
 struct WindowCallbackState
 {
     std::atomic<int> paintCalls{0};
@@ -1089,6 +1096,14 @@ void QuitCallback(void* userData)
     auto* state = static_cast<CallbackState*>(userData);
     state->calls.fetch_add(1, std::memory_order_release);
     jalium_platform_quit(0);
+}
+
+void ThreadRecordingCallback(void* userData)
+{
+    auto* state = static_cast<ThreadRecordingCallbackState*>(userData);
+    if (std::this_thread::get_id() != state->ownerThread)
+        state->ranOnWrongThread.store(true, std::memory_order_release);
+    state->calls.fetch_add(1, std::memory_order_release);
 }
 
 struct SelfDestroyDispatcherState
@@ -1653,6 +1668,51 @@ void TestDispatcherInPollingLoopAndSelfDestroy()
 
     Check(state.calls.load(std::memory_order_acquire) == 1,
           "poll_events invokes dispatcher callback and callback may destroy itself");
+}
+
+void TestDispatcherEventLoopThreadAffinity()
+{
+    JaliumDispatcher* ownerDispatcher = nullptr;
+    Check(jalium_dispatcher_create(&ownerDispatcher) == JALIUM_OK && ownerDispatcher,
+          "create dispatcher on the Linux platform thread");
+    if (!ownerDispatcher) return;
+
+    ThreadRecordingCallbackState state;
+    state.ownerThread = std::this_thread::get_id();
+    jalium_dispatcher_set_callback(
+        ownerDispatcher, ThreadRecordingCallback, &state);
+
+    int32_t workerPollCount = -1;
+    JaliumResult workerCreateResult = JALIUM_OK;
+    JaliumDispatcher* workerDispatcher = nullptr;
+    std::thread worker([&]
+    {
+        jalium_dispatcher_wake(ownerDispatcher);
+        workerPollCount = jalium_platform_poll_events();
+        workerCreateResult = jalium_dispatcher_create(&workerDispatcher);
+    });
+    worker.join();
+
+    Check(workerPollCount == 0,
+          "a foreign Linux thread does not drain the platform event loop");
+    Check(workerCreateResult == JALIUM_ERROR_INVALID_STATE && !workerDispatcher,
+          "a foreign Linux thread cannot register a dispatcher with the platform loop");
+    Check(state.calls.load(std::memory_order_acquire) == 0,
+          "a foreign Linux poll does not invoke the owner dispatcher's callback");
+
+    for (int attempt = 0;
+         attempt < 100 && state.calls.load(std::memory_order_acquire) == 0;
+         ++attempt)
+    {
+        (void)jalium_platform_poll_events();
+        std::this_thread::sleep_for(1ms);
+    }
+
+    Check(state.calls.load(std::memory_order_acquire) == 1,
+          "the Linux platform thread drains its dispatcher wake exactly once");
+    Check(!state.ranOnWrongThread.load(std::memory_order_acquire),
+          "the Linux dispatcher callback runs on its owning platform thread");
+    jalium_dispatcher_destroy(ownerDispatcher);
 }
 
 void TestTimerCallbackAndWaitModes()
@@ -2710,6 +2770,7 @@ int main(int argc, char** argv)
         TestInProcessXdndSourceRoundTrip();
     TestDispatcherInBlockingLoop();
     TestDispatcherInPollingLoopAndSelfDestroy();
+    TestDispatcherEventLoopThreadAffinity();
     TestTimerCallbackAndWaitModes();
     TestEventSourceDestructionClosesFileDescriptors();
 
