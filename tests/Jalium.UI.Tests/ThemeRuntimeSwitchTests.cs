@@ -340,6 +340,125 @@ public class ThemeRuntimeSwitchTests
         }
     }
 
+    [Fact]
+    public void ApplyTheme_ShouldCoalesceDictionarySwaps_IntoSingleResourceBroadcast()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var root = new StackPanel();
+            var button = new Button { Content = "Probe" };
+            root.Children.Add(button);
+            app.MainWindow = new Window { Content = root };
+
+            // Application.ResourcesChanged is raised exactly once per full-refresh broadcast
+            // (Application.OnApplicationResourcesChanged), which is what drives the whole-tree
+            // implicit-style re-evaluation walk across every live window and popup. The per-key
+            // theme-version bump in ForceThemeRefresh is a targeted refresh and is deliberately
+            // NOT counted here.
+            var broadcasts = 0;
+            EventHandler handler = (_, _) => broadcasts++;
+            app.ResourcesChanged += handler;
+
+            ThemeManager.ApplyTheme(ThemeVariant.Light);
+
+            app.ResourcesChanged -= handler;
+
+            // ApplyTheme replaces BOTH the generic and the accent dictionary. Without batching
+            // each swap fires its own broadcast (2 full-tree re-computations); DeferNotifications
+            // coalesces them into one.
+            Assert.Equal(1, broadcasts);
+            Assert.Equal(ThemeVariant.Light, ThemeManager.CurrentTheme);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ApplyBrandTheme_ShouldReevaluateEachLiveRoot_ExactlyOnce()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            // Main window with a probe element.
+            var mainButton = new Button { Content = "Main" };
+            var mainRoot = new StackPanel();
+            mainRoot.Children.Add(mainButton);
+            app.MainWindow = new Window { Content = mainRoot };
+
+            // A live secondary window (shown, hence reachable by the resource broadcast) with
+            // its own probe element, so we can assert the multi-window fan-out cost directly.
+            var secondaryButton = new Button { Content = "Secondary" };
+            var secondaryRoot = new StackPanel();
+            secondaryRoot.Children.Add(secondaryButton);
+            var secondaryWindow = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native,
+                Width = 160,
+                Height = 120,
+                Content = secondaryRoot,
+            };
+
+            secondaryWindow.Show();
+            try
+            {
+                // Number of full-tree broadcasts fired by the whole brand-theme application.
+                var broadcasts = 0;
+                EventHandler broadcastHandler = (_, _) => broadcasts++;
+                app.ResourcesChanged += broadcastHandler;
+
+                // Each broadcast walks every live root's subtree once, raising ResourcesChanged
+                // on every element it visits. Counting a probe in each window measures how many
+                // times that window's tree is re-evaluated by a single ApplyBrandTheme call.
+                var mainReevaluations = 0;
+                var secondaryReevaluations = 0;
+                mainButton.ResourcesChanged += (_, _) => mainReevaluations++;
+                secondaryButton.ResourcesChanged += (_, _) => secondaryReevaluations++;
+
+                ThemeManager.ApplyBrandTheme(new BrandThemeOptions
+                {
+                    Theme = ThemeVariant.Light,
+                    AccentColor = Color.FromRgb(0x40, 0xB8, 0x5A),
+                    DisplayFontFamily = "Georgia",
+                    BodyFontFamily = "Calibri",
+                    MonoFontFamily = "Consolas",
+                });
+
+                app.ResourcesChanged -= broadcastHandler;
+
+                // ApplyBrandTheme internally replaces the generic, accent AND typography
+                // dictionaries (four ReplaceManagedDictionary calls across ApplyTheme + ApplyAccent
+                // + ApplyTypography). Every one of those swaps used to fire its own whole-tree
+                // broadcast, so a single brand switch re-evaluated each live window/popup FOUR
+                // times. Batching them under one DeferNotifications scope collapses that to one.
+                Assert.Equal(1, broadcasts);
+                Assert.Equal(1, mainReevaluations);
+                Assert.Equal(1, secondaryReevaluations);
+
+                // Sanity: the brand theme actually took effect, so the single broadcast is not a
+                // degenerate "nothing changed" no-op.
+                Assert.Equal(ThemeVariant.Light, ThemeManager.CurrentTheme);
+                Assert.Equal("Calibri", ThemeManager.CurrentBodyFontFamily);
+            }
+            finally
+            {
+                secondaryWindow.Close();
+            }
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
     private static Color GetBrushColor(Brush? brush)
     {
         return Assert.IsType<SolidColorBrush>(brush).Color;

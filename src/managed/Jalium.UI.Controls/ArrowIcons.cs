@@ -66,10 +66,10 @@ public static class ArrowIcons
 
     #region Cached Geometries
 
-    private static readonly Lazy<PathGeometry> _upArrow = new(() => ParseSvgPath(UpArrowPath));
-    private static readonly Lazy<PathGeometry> _downArrow = new(() => ParseSvgPath(DownArrowPath));
-    private static readonly Lazy<PathGeometry> _leftArrow = new(() => ParseSvgPath(LeftArrowPath));
-    private static readonly Lazy<PathGeometry> _rightArrow = new(() => ParseSvgPath(RightArrowPath));
+    private static readonly Lazy<PathGeometry> _upArrow = new(() => ParseFrozenSvgPath(UpArrowPath));
+    private static readonly Lazy<PathGeometry> _downArrow = new(() => ParseFrozenSvgPath(DownArrowPath));
+    private static readonly Lazy<PathGeometry> _leftArrow = new(() => ParseFrozenSvgPath(LeftArrowPath));
+    private static readonly Lazy<PathGeometry> _rightArrow = new(() => ParseFrozenSvgPath(RightArrowPath));
 
     #endregion
 
@@ -193,6 +193,13 @@ public static class ArrowIcons
     /// </remarks>
     /// <exception cref="FormatException">The string is not valid path markup.</exception>
     internal static PathGeometry ParseSvgPath(string data) => PathMarkupParser.Parse(data);
+
+    private static PathGeometry ParseFrozenSvgPath(string data)
+    {
+        var geometry = ParseSvgPath(data);
+        geometry.Freeze();
+        return geometry;
+    }
 
     #endregion
 }

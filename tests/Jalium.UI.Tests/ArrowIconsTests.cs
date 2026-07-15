@@ -28,6 +28,7 @@ public class ArrowIconsTests
     {
         var geometry = ArrowIcons.GetGeometry(direction);
 
+        Assert.True(geometry.IsFrozen, "Cached built-in arrows must be frozen for cross-thread use.");
         var figure = Assert.Single(geometry.Figures);
         Assert.True(figure.IsClosed, "Arrow outline must be a closed figure.");
         Assert.True(figure.IsFilled, "Arrow outline must be filled.");
