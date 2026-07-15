@@ -59,6 +59,20 @@ cmake --version
 "${CXX:-c++}" --version | head -n 1
 bash "$script_dir/build-native.sh" "$rid" "$configuration"
 
+# Use a build-local GStreamer registry so release validation cannot inherit a
+# stale or partially initialized cache from the container. Prewarming the
+# elements also turns decoder/demuxer discovery failures into an explicit
+# dependency error instead of a generic unsupported-format result in the media
+# smoke test.
+export GST_REGISTRY="$build_dir/gstreamer-registry.bin"
+rm -f "$GST_REGISTRY" "$GST_REGISTRY.lock"
+for element in avdec_h264 h264parse matroskademux souphttpsrc avdec_aac aacparse; do
+  if ! gst-inspect-1.0 "$element" >/dev/null; then
+    echo "Required GStreamer element is unavailable: $element" >&2
+    exit 1
+  fi
+done
+
 xvfb-run -a ctest --test-dir "$build_dir" --output-on-failure
 
 runtime="/tmp/jalium-weston-$rid"

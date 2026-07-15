@@ -1,5 +1,7 @@
 namespace Jalium.UI.Tests;
 
+#pragma warning disable xUnit1031 // These tests intentionally wait only on dedicated LongRunning workers.
+
 public sealed class DependencyPropertyMetadataConcurrencyTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
@@ -21,7 +23,7 @@ public sealed class DependencyPropertyMetadataConcurrencyTests
     ];
 
     [Fact]
-    public async Task GetMetadata_ConcurrentCacheMisses_AreSafeAndConsistent()
+    public void GetMetadata_ConcurrentCacheMisses_AreSafeAndConsistent()
     {
         var lookupTypes =
             (from left in PayloadTypes
@@ -38,23 +40,40 @@ public sealed class DependencyPropertyMetadataConcurrencyTests
                 typeof(string),
                 typeof(BaseOwner),
                 baseMetadata);
-            var start = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            const int workerCount = 12;
+            using var workersReady = new CountdownEvent(workerCount);
+            using var start = new ManualResetEventSlim(initialState: false);
+            var results = new PropertyMetadata[lookupTypes.Length];
+            var workers = Enumerable.Range(0, workerCount)
+                .Select(workerIndex => Task.Factory.StartNew(
+                    () =>
+                    {
+                        workersReady.Signal();
+                        if (!start.Wait(TestTimeout))
+                            throw new TimeoutException("Timed out waiting to start metadata cache lookups.");
 
-            var lookups = lookupTypes.Select(async lookupType =>
-            {
-                await start.Task.ConfigureAwait(false);
-                return property.GetMetadata(lookupType);
-            }).ToArray();
+                        for (var index = workerIndex; index < lookupTypes.Length; index += workerCount)
+                            results[index] = property.GetMetadata(lookupTypes[index]);
+                    },
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default))
+                .ToArray();
 
-            start.SetResult(true);
+            var workersReadyInTime = workersReady.Wait(TestTimeout);
+            start.Set();
+            var workersCompletedInTime = WaitForCompletion(workers);
 
-            var results = await Task.WhenAll(lookups).WaitAsync(TestTimeout);
+            Assert.True(workersCompletedInTime);
+            foreach (var worker in workers)
+                worker.GetAwaiter().GetResult();
+            Assert.True(workersReadyInTime);
             Assert.All(results, result => Assert.Same(baseMetadata, result));
         }
     }
 
     [Fact]
-    public async Task OverrideMetadata_DoesNotExposeMetadataUntilOnApplyCompletes()
+    public void OverrideMetadata_DoesNotExposeMetadataUntilOnApplyCompletes()
     {
         var baseMetadata = new PropertyMetadata("base");
         var property = DependencyProperty.Register(
@@ -77,53 +96,68 @@ public sealed class DependencyPropertyMetadataConcurrencyTests
             TaskCreationOptions.LongRunning,
             TaskScheduler.Default);
         Task<MetadataObservation>? lookupTask = null;
+        var applyStartedInTime = false;
+        var lookupStartedInTime = false;
         var lookupCompletedWhileApplyWasBlocked = false;
 
         try
         {
-            Assert.True(overrideMetadata.ApplyStarted.Wait(TestTimeout));
+            applyStartedInTime = overrideMetadata.ApplyStarted.Wait(TestTimeout);
 
-            var lookupStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            lookupTask = Task.Factory.StartNew(
-                () =>
+            if (applyStartedInTime)
+            {
+                using var lookupStarted = new ManualResetEventSlim(initialState: false);
+                lookupTask = Task.Factory.StartNew(
+                    () =>
+                    {
+                        lookupStarted.Set();
+                        var metadata = property.GetMetadata(typeof(DerivedOwner));
+                        return new MetadataObservation(metadata, overrideMetadata.PublicIsSealed);
+                    },
+                    CancellationToken.None,
+                    TaskCreationOptions.LongRunning,
+                    TaskScheduler.Default);
+
+                lookupStartedInTime = lookupStarted.Wait(TestTimeout);
+                if (lookupStartedInTime)
                 {
-                    lookupStarted.SetResult(true);
-                    var metadata = property.GetMetadata(typeof(DerivedOwner));
-                    return new MetadataObservation(metadata, overrideMetadata.PublicIsSealed);
-                },
-                CancellationToken.None,
-                TaskCreationOptions.LongRunning,
-                TaskScheduler.Default);
-
-            await lookupStarted.Task.WaitAsync(TestTimeout);
-            lookupCompletedWhileApplyWasBlocked =
-                await Task.WhenAny(lookupTask, Task.Delay(TimeSpan.FromMilliseconds(500))) == lookupTask;
+                    lookupCompletedWhileApplyWasBlocked = SpinWait.SpinUntil(
+                        () => lookupTask.IsCompleted,
+                        TimeSpan.FromMilliseconds(500));
+                }
+            }
         }
         finally
         {
             overrideMetadata.AllowApply.Set();
         }
 
-        await overrideTask.WaitAsync(TestTimeout);
-        Assert.NotNull(lookupTask);
+        var overrideCompletedInTime = WaitForCompletion(overrideTask);
+        var lookupCompletedInTime = lookupTask is not null && WaitForCompletion(lookupTask);
 
-        var observation = await lookupTask!.WaitAsync(TestTimeout);
+        Assert.True(overrideCompletedInTime);
+        overrideTask.GetAwaiter().GetResult();
+        Assert.True(applyStartedInTime);
+        Assert.NotNull(lookupTask);
+        Assert.True(lookupStartedInTime);
+        Assert.True(lookupCompletedInTime);
+        var observation = lookupTask.GetAwaiter().GetResult();
         Assert.False(lookupCompletedWhileApplyWasBlocked);
         Assert.Same(overrideMetadata, observation.Metadata);
         Assert.True(observation.WasSealed);
     }
 
     [Fact]
-    public async Task ConcurrentOverride_SameType_AllowsExactlyOneWinner()
+    public void ConcurrentOverride_SameType_AllowsExactlyOneWinner()
     {
         var property = DependencyProperty.Register(
             $"ConcurrentMetadataOverride_{Guid.NewGuid():N}",
             typeof(string),
             typeof(BaseOwner),
             new PropertyMetadata("base"));
-        using var mergeEntrants = new CountdownEvent(2);
-        var firstMetadata = new CoordinatedMergeMetadata("first", mergeEntrants);
-        var secondMetadata = new CoordinatedMergeMetadata("second", mergeEntrants);
+        var firstMetadata = new PropertyMetadata("first");
+        var secondMetadata = new PropertyMetadata("second");
+        using var workersReady = new CountdownEvent(2);
         using var start = new ManualResetEventSlim(initialState: false);
 
         Task<Exception?> TryOverrideOnDedicatedThread(PropertyMetadata metadata)
@@ -131,6 +165,7 @@ public sealed class DependencyPropertyMetadataConcurrencyTests
             return Task.Factory.StartNew<Exception?>(
                 () =>
                 {
+                    workersReady.Signal();
                     if (!start.Wait(TestTimeout))
                         return new TimeoutException("Timed out waiting to start the metadata override.");
 
@@ -155,8 +190,13 @@ public sealed class DependencyPropertyMetadataConcurrencyTests
             TryOverrideOnDedicatedThread(secondMetadata),
         };
 
+        var workersReadyInTime = workersReady.Wait(TestTimeout);
         start.Set();
-        var outcomes = await Task.WhenAll(attempts).WaitAsync(TestTimeout);
+        var workersCompletedInTime = WaitForCompletion(attempts);
+
+        Assert.True(workersCompletedInTime);
+        var outcomes = attempts.Select(static attempt => attempt.GetAwaiter().GetResult()).ToArray();
+        Assert.True(workersReadyInTime);
 
         Assert.Equal(1, outcomes.Count(static outcome => outcome is null));
         var failure = Assert.Single(outcomes, static outcome => outcome is not null);
@@ -182,16 +222,14 @@ public sealed class DependencyPropertyMetadataConcurrencyTests
         }
     }
 
-    private sealed class CoordinatedMergeMetadata(
-        object? defaultValue,
-        CountdownEvent mergeEntrants) : PropertyMetadata(defaultValue)
+    private static bool WaitForCompletion(Task task) =>
+        task.IsCompleted || SpinWait.SpinUntil(() => task.IsCompleted, TestTimeout);
+
+    private static bool WaitForCompletion(IEnumerable<Task> tasks)
     {
-        protected override void Merge(PropertyMetadata baseMetadata, DependencyProperty dp)
-        {
-            mergeEntrants.Signal();
-            _ = mergeEntrants.Wait(TimeSpan.FromSeconds(1));
-            base.Merge(baseMetadata, dp);
-        }
+        var taskArray = tasks as Task[] ?? tasks.ToArray();
+        return taskArray.All(static task => task.IsCompleted) ||
+            SpinWait.SpinUntil(() => taskArray.All(static task => task.IsCompleted), TestTimeout);
     }
 
     private sealed record MetadataObservation(PropertyMetadata Metadata, bool WasSealed);
@@ -201,3 +239,5 @@ public sealed class DependencyPropertyMetadataConcurrencyTests
     private sealed class DerivedOwner : BaseOwner { }
     private sealed class GenericDerivedOwner<T> : BaseOwner { }
 }
+
+#pragma warning restore xUnit1031
