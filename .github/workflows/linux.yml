@@ -40,19 +40,30 @@ jobs:
 
       - name: Install native dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang cmake ninja-build pkg-config file python3 binutils zlib1g-dev \
-            libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
-            libsm6 libice6 xvfb xclip xdotool x11-utils \
-            libwayland-dev wayland-protocols libxkbcommon-dev wl-clipboard weston \
-            libvulkan-dev mesa-vulkan-drivers vulkan-tools \
-            libfontconfig1-dev fonts-dejavu-core fonts-noto-cjk \
-            dbus-x11 at-spi2-core libglib2.0-bin \
-            xdg-desktop-portal xdg-desktop-portal-gtk libnotify4 \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true update && \
+               sudo apt-get -o Acquire::Retries=5 -o Acquire::ForceIPv4=true \
+                 install -y --no-install-recommends \
+                   build-essential clang cmake ninja-build pkg-config file python3 binutils zlib1g-dev \
+                   libx11-dev libxext-dev libxrandr-dev libxi-dev libxcursor-dev \
+                   libsm6 libice6 xvfb xclip xdotool x11-utils \
+                   libwayland-dev wayland-protocols libxkbcommon-dev wl-clipboard weston \
+                   libvulkan-dev mesa-vulkan-drivers vulkan-tools \
+                   libfontconfig1-dev fonts-dejavu-core fonts-noto-cjk \
+                   dbus-x11 at-spi2-core libglib2.0-bin \
+                   xdg-desktop-portal xdg-desktop-portal-gtk libnotify4 \
+                   libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+                   gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+                   gstreamer1.0-plugins-bad gstreamer1.0-libav ffmpeg; then
+              break
+            fi
+            if [[ "$attempt" == 5 ]]; then
+              exit 1
+            fi
+            sudo apt-get clean
+            sudo rm -rf /var/lib/apt/lists/*
+            sleep "$((attempt * 10))"
+          done
 
       - uses: actions/setup-dotnet@v5
         with:
