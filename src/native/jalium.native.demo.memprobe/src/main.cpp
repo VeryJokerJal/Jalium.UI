@@ -42,6 +42,7 @@
 #include "jalium_api.h"
 #include "jalium_bitmap_stats.h"
 #include "jalium_path_stats.h"
+#include "jalium_string_util.h"
 
 // d3d12 后端 dll 导出的初始化入口。链接 jalium.native.d3d12 的导入库会把该
 // dll 拉进进程，其 DllMain 在 DLL_PROCESS_ATTACH 时就注册了 D3D12 后端工厂；
@@ -513,8 +514,10 @@ int main(int argc, char** argv) {
 
     JaliumAdapterInfo ai{};
     if (jalium_context_get_adapter_info(ctx, &ai) == JALIUM_OK) {
+        const std::wstring adapterName = jalium::FixedUtf16ToWide(ai.name);
         std::wprintf(L"[memprobe] GPU: %ls  (VRAM %.0f MB)\n",
-                     ai.name, (double)ai.dedicatedVideoMemory / (1024.0 * 1024.0));
+                     adapterName.c_str(),
+                     (double)ai.dedicatedVideoMemory / (1024.0 * 1024.0));
     }
 
     // 3) 创建 render target
