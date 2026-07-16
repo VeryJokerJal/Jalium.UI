@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -159,6 +159,11 @@ public class ListBox : Selector
     /// <inheritdoc />
     protected override Panel CreateItemsPanel()
     {
+         if (ItemsPanel != null)
+        {
+            var panel = ItemsPanel.CreatePanel() as Panel;
+            if (panel != null) return panel;
+        }
         return new VirtualizingStackPanel { Orientation = Orientation.Vertical };
     }
 

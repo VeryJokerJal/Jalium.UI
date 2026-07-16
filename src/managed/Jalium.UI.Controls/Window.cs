@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
@@ -6264,7 +6264,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             return WndProcCore(hWnd, msg, wParam, lParam);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             // Never allow managed exceptions to escape the native window procedure.
             // If they do, the OS callback chain can become unstable and future
