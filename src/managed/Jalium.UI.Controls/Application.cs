@@ -1130,7 +1130,12 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
 
     private const string ComponentSeparator = ";component/";
     private static readonly CookieContainer s_cookieContainer = new();
-    private static readonly HttpClient s_remoteClient = CreateRemoteClient();
+    // Generated XAML module initializers assign the loader hooks below before the
+    // Android NativeAOT host has attached Java.Interop to the VM. Constructing an
+    // HttpClientHandler here would eagerly instantiate AndroidMessageHandler, which
+    // queries Android.OS.Build.VERSION and fails because no JniRuntime exists yet.
+    // Keep the handler lazy so type initialization remains platform-neutral.
+    private static readonly Lazy<HttpClient> s_remoteClient = new(CreateRemoteClient);
 
     /// <summary>
     /// Runtime hook installed by Jalium.UI.Xaml for loading XAML into an existing object.
@@ -1257,7 +1262,7 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
                 nameof(uriRemote));
         }
 
-        using var response = s_remoteClient.GetAsync(uriRemote, HttpCompletionOption.ResponseHeadersRead)
+        using var response = s_remoteClient.Value.GetAsync(uriRemote, HttpCompletionOption.ResponseHeadersRead)
             .GetAwaiter()
             .GetResult();
         if (response.StatusCode == HttpStatusCode.NotFound)
