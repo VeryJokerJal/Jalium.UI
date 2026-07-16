@@ -1,6 +1,7 @@
 #include "d3d12_backend.h"
 #include "d3d12_render_target.h"
 #include "d3d12_resources.h"
+#include "jalium_string_util.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cstdio>
@@ -194,10 +195,8 @@ JaliumResult D3D12Backend::GetAdapterInfo(JaliumAdapterInfo* out) const {
     *out = JaliumAdapterInfo{};
     if (!adapterDescValid_) return JALIUM_ERROR_NOT_SUPPORTED;
 
-    // 名字：DXGI_ADAPTER_DESC1::Description 是 128 wide-char 定长缓冲；
-    // JaliumAdapterInfo::name 也是 wchar_t[128]，直接 wcsncpy_s 即可。
-    wcsncpy_s(out->name, _countof(out->name),
-              adapterDesc_.Description, _TRUNCATE);
+    // DXGI 提供 wchar_t[128]；公共 ABI 则固定使用两字节 UTF-16。
+    WideToFixedUtf16(adapterDesc_.Description, out->name);
 
     // 类型分类：
     //   - SOFTWARE flag → Software（WARP）

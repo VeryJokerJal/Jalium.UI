@@ -179,6 +179,39 @@ void TestFormatModePropagation()
           "single-alpha Vulkan staging can explicitly degrade ClearType to grayscale");
 }
 
+void TestLongWordWrapMakesForwardProgress()
+{
+    jalium::TextEngine engine;
+    Check(engine.Initialize() == JALIUM_OK, "long-word wrap text engine initializes");
+    std::unique_ptr<jalium::TextFormat> format(
+        engine.CreateTextFormat(L"DejaVu Sans", 22.0f, 400, 0));
+    Check(format != nullptr, "long-word wrap format created");
+    if (!format) return;
+
+    const std::wstring text = L"prefix " + std::wstring(80, L'W');
+    JaliumTextMetrics metrics{};
+    format->SetWordWrapping(JALIUM_WORD_WRAP);
+    // Keep a future regression bounded: the old no-progress loop reaches this
+    // cap and fails the exact line-count assertion instead of exhausting RAM.
+    format->SetMaxLines(4);
+    Check(format->MeasureText(
+              text.c_str(), static_cast<uint32_t>(text.size()), 80.0f, 1000.0f, &metrics) == JALIUM_OK,
+          "word wrapping a long token completes");
+    Check(metrics.lineCount == 2,
+          "word wrapping emits the prefix and overflowing token exactly once");
+    Check(metrics.width > 80.0f,
+          "word wrapping preserves overflow semantics for an unbreakable token");
+
+    metrics = {};
+    format->SetWordWrapping(JALIUM_WORD_WRAP_EMERGENCY);
+    format->SetMaxLines(0);
+    Check(format->MeasureText(
+              text.c_str(), static_cast<uint32_t>(text.size()), 80.0f, 1000.0f, &metrics) == JALIUM_OK,
+          "emergency wrapping a long token completes");
+    Check(metrics.lineCount > 2,
+          "emergency wrapping breaks an unbreakable token across lines");
+}
+
 bool TestColorFont(const char* environmentName, const char* label)
 {
     const char* path = std::getenv(environmentName);
@@ -222,6 +255,7 @@ int main()
     TestAntialiasPixels();
     TestFontconfigClusterFallback();
     TestFormatModePropagation();
+    TestLongWordWrapMakesForwardProgress();
     const bool testedBitmap = TestColorFont("JALIUM_COLOR_EMOJI_FONT", "CBDT/CBLC font loads");
     const bool testedColr = TestColorFont("JALIUM_COLR_FONT", "COLR/CPAL font loads");
     if (failures != 0) return 1;

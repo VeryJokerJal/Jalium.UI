@@ -1142,6 +1142,8 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     // Reset scissor stack
     while (!scissorStack_.empty()) scissorStack_.pop();
     roundedClipStack_.clear();
+    savedScissorStack_ = {};
+    savedRetainedRoundedClipStack_.clear();
 
     // Reset pre-glass snapshot flag for fused panels
     preGlassSnapshotCaptured_ = false;
@@ -1157,6 +1159,10 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     pathMsaaUsedThisFrame_ = false;
     inOffscreenCapture_ = false;
     inRetainedCapture_ = false;  // 防御：与 inOffscreenCapture_ 对称复位，兜底 retained-capture 标志在 resize/abort 时泄漏成 true（详见 EndRetainedLayerCapture），否则 effect capture 永久失败
+    activeRealizeLayer_ = nullptr;
+    captureRtv_ = {};
+    captureViewportW_ = 0;
+    captureViewportH_ = 0;
     glyphAtlasUsedThisFrame_ = false;
     fr.constantsRingOffset = 0;  // reset ring buffer for this frame
 
@@ -1286,6 +1292,14 @@ void D3D12DirectRenderer::AbortFrame()
     pathMsaaUsedThisFrame_ = false;
     inOffscreenCapture_ = false;
     inRetainedCapture_ = false;  // 防御：与 inOffscreenCapture_ 对称复位，兜底 retained-capture 标志在 resize/abort 时泄漏成 true（详见 EndRetainedLayerCapture），否则 effect capture 永久失败
+    activeRealizeLayer_ = nullptr;
+    captureRtv_ = {};
+    captureViewportW_ = 0;
+    captureViewportH_ = 0;
+    while (!scissorStack_.empty()) scissorStack_.pop();
+    roundedClipStack_.clear();
+    savedScissorStack_ = {};
+    savedRetainedRoundedClipStack_.clear();
     glyphAtlasUsedThisFrame_ = false;
 
     // An armed / completed back-buffer readback dies with the aborted frame:
@@ -1910,7 +1924,13 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
                              std::abs(t.m21) <= 1e-3f * scaleRef;
     const bool scaled = (std::abs(scaleX - 1.0f) > 0.001f ||
                          std::abs(scaleY - 1.0f) > 0.001f);
-    const bool crispAxisAligned = axisAligned && scaled;
+    // Fixed/Auto axis-aligned text is a display bitmap, including the common
+    // identity-transform case.  At high DPI the atlas texels are already
+    // generated at fontSize*dpiScale_, so leaving the final quad at a
+    // fractional PHYSICAL-pixel origin only shifts that pixel-exact bitmap off
+    // the screen grid.  Snap it just like axis-aligned scaled text.  Animated
+    // hinting intentionally stays continuous and uses the smooth sampler.
+    const bool crispAxisAligned = axisAligned && hintingMode != 2;
 
     // Collect glyph instances and text decorations
     std::vector<D3D12GlyphAtlas::TextDecorationRect> decorations;
@@ -1932,17 +1952,19 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     // rasterized at rasterScale, the magnified quad stays crisp instead of
     // mosaicking (rasterScale rounds the magnitude up, so the bitmap is never
     // upscaled past 1:1 — at most a slightly hi-res atlas is minified).
-    if (count > 0 && scaled) {
+    if (count > 0) {
         const float dpi = dpiScale_ > 0.0f ? dpiScale_ : 1.0f;
         const float invDpi = 1.0f / dpi;
         for (uint32_t i = startIdx; i < startIdx + count; i++) {
             auto& g = textInstances_[i];
-            // Scale position relative to the transformed text origin
-            g.posX = tx + (g.posX - tx) * scaleX;
-            g.posY = ty + (g.posY - ty) * scaleY;
-            // Scale glyph quad size
-            g.sizeX *= scaleX;
-            g.sizeY *= scaleY;
+            if (scaled) {
+                // Scale position relative to the transformed text origin.
+                g.posX = tx + (g.posX - tx) * scaleX;
+                g.posY = ty + (g.posY - ty) * scaleY;
+                // Scale glyph quad size.
+                g.sizeX *= scaleX;
+                g.sizeY *= scaleY;
+            }
             // Axis-aligned scale: snap the quad's TOP-LEFT to the integer PHYSICAL
             // pixel grid. posX/posY are DIP (the pipeline applies dpiScale_ when it
             // maps to NDC via screenSize == viewport/dpi), so snap in physical
@@ -1964,12 +1986,12 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     if (count > 0) {
         DrawBatch candidate;
         candidate.type = DrawBatchType::Text;
-        // PSO selection: only genuine rotation / skew uses the bilinear text PSO
-        // (its continuously-moving sub-pixel edges would shimmer under point
-        // sampling). 1:1 text AND axis-aligned scaled text (rasterized at exact
-        // scale + integer-snapped above) stay on the crisp POINT PSO so their
-        // stems are pixel-exact instead of softened by a half-texel bilinear tap.
-        candidate.smoothText = scaled && !axisAligned;
+        // PSO selection: rotation / skew and Animated hinting use the bilinear
+        // text PSO so continuously-moving sub-pixel edges do not shimmer.
+        // Fixed/Auto axis-aligned text (identity or scaled) was rasterized at
+        // display resolution and integer-snapped above, so it stays on the
+        // crisp POINT PSO without a second filtering pass.
+        candidate.smoothText = !crispAxisAligned;
         candidate.instanceOffset = startIdx;
         candidate.instanceCount = count;
         candidate.hasScissor = !scissorStack_.empty();
@@ -5063,6 +5085,11 @@ D3D12RetainedLayer* D3D12DirectRenderer::BeginRetainedLayerCapture(
     // starts at (0,0); save and clear, exactly like BeginOffscreenCapture.
     savedScissorStack_ = std::move(scissorStack_);
     scissorStack_ = {};
+    // The rounded SDF mask is a second, independent clip channel. It must be
+    // isolated with the hardware scissor or the parent's transient reveal clip
+    // becomes permanently baked into the retained texture.
+    savedRetainedRoundedClipStack_ = std::move(roundedClipStack_);
+    roundedClipStack_.clear();
 
     // Shift screen coords → layer-local coords (content drawn at world (x,y)
     // lands at the texture origin).
@@ -5095,7 +5122,18 @@ void D3D12DirectRenderer::EndRetainedLayerCapture(D3D12RetainedLayer* layer)
     // inRetainedCapture_) return false`) 全部失败 → glow/阴影等 effect 永久失效
     // （[BeginEffectCapture] FAILED）。原代码 `if(!inFrame_||!inRetainedCapture_) return` 在
     // !inFrame_ 时直接退出、漏掉了下面 :4242 的复位，这就是 bug。
-    if (!inFrame_) { inRetainedCapture_ = false; activeRealizeLayer_ = nullptr; return; }
+    if (!inFrame_) {
+        inRetainedCapture_ = false;
+        activeRealizeLayer_ = nullptr;
+        captureRtv_ = {};
+        captureViewportW_ = 0;
+        captureViewportH_ = 0;
+        scissorStack_ = std::move(savedScissorStack_);
+        savedScissorStack_ = {};
+        roundedClipStack_ = std::move(savedRetainedRoundedClipStack_);
+        savedRetainedRoundedClipStack_.clear();
+        return;
+    }
 
     // Pop the layer-local offset transform.
     PopTransform();
@@ -5114,6 +5152,8 @@ void D3D12DirectRenderer::EndRetainedLayerCapture(D3D12RetainedLayer* layer)
         captureViewportH_ = 0;
         scissorStack_ = std::move(savedScissorStack_);
         savedScissorStack_ = {};
+        roundedClipStack_ = std::move(savedRetainedRoundedClipStack_);
+        savedRetainedRoundedClipStack_.clear();
         float dipWl = (float)viewportWidth_ / dpiScale_;
         float dipHl = (float)viewportHeight_ / dpiScale_;
         currentFrameConstants_.screenWidth = dipWl;
@@ -5158,6 +5198,8 @@ void D3D12DirectRenderer::EndRetainedLayerCapture(D3D12RetainedLayer* layer)
     // Restore the scissor stack saved during BeginRetainedLayerCapture.
     scissorStack_ = std::move(savedScissorStack_);
     savedScissorStack_ = {};
+    roundedClipStack_ = std::move(savedRetainedRoundedClipStack_);
+    savedRetainedRoundedClipStack_.clear();
 }
 
 void D3D12DirectRenderer::CompositeRetainedLayer(

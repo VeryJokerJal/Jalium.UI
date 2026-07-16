@@ -84,7 +84,11 @@ else
 fi
 app_pid=$!
 
+root_path=/org/a11y/atspi/accessible/root
 app_bus=""
+trace_bus=""
+root_name=""
+children=""
 for _ in $(seq 1 150); do
   if ! kill -0 "$app_pid" 2>/dev/null; then
     echo "Accessibility smoke app exited before registration:" >&2
@@ -94,33 +98,45 @@ for _ in $(seq 1 150); do
 
   children="$(gdbus call --address "$a11y_address" \
     --dest org.a11y.atspi.Registry \
-    --object-path /org/a11y/atspi/accessible/root \
+    --object-path "$root_path" \
     --method org.a11y.atspi.Accessible.GetChildren 2>/dev/null || true)"
+
+  trace_bus="$(sed -n 's/.*registered application bus=\([^ ]*\) root=.*/\1/p' "$app_log" | tail -n 1)"
+  root_name=""
+  registry_has_trace_bus=false
+  if [[ -n "$trace_bus" ]]; then
+    root_name="$(gdbus call --address "$a11y_address" \
+      --dest "$trace_bus" \
+      --object-path "$root_path" \
+      --method org.freedesktop.DBus.Properties.Get \
+      org.a11y.atspi.Accessible Name 2>/dev/null || true)"
+  fi
+
   while IFS= read -r reference; do
     candidate_bus="$(printf '%s' "$reference" | cut -d"'" -f2)"
     candidate_path="$(printf '%s' "$reference" | cut -d"'" -f4)"
-    name="$(gdbus call --address "$a11y_address" \
-      --dest "$candidate_bus" \
-      --object-path "$candidate_path" \
-      --method org.freedesktop.DBus.Properties.Get \
-      org.a11y.atspi.Accessible Name 2>/dev/null || true)"
-    if [[ "$name" == *"Jalium.UI.LinuxAccessibilitySmoke"* ]]; then
-      app_bus="$candidate_bus"
+    if [[ -n "$trace_bus" && "$candidate_bus" == "$trace_bus" && "$candidate_path" == "$root_path" ]]; then
+      registry_has_trace_bus=true
       break
     fi
-  done < <(printf '%s\n' "$children" | grep -o "('[^']*', objectpath '[^']*')" || true)
+  done < <(printf '%s\n' "$children" | grep -oE "\('[^']*', (objectpath )?'[^']*'\)" || true)
 
+  if [[ "$registry_has_trace_bus" == true && "$root_name" == *"Jalium.UI.LinuxAccessibilitySmoke"* ]]; then
+    app_bus="$trace_bus"
+  fi
   [[ -n "$app_bus" ]] && break
   sleep 0.1
 done
 
 if [[ -z "$app_bus" ]]; then
   echo "Jalium application root did not appear in the AT-SPI registry:" >&2
+  echo "Last Registry GetChildren reply: ${children:-<empty>}" >&2
+  echo "Last traced application bus: ${trace_bus:-<none>}" >&2
+  echo "Last direct root Name reply: ${root_name:-<empty>}" >&2
   cat "$app_log" >&2
   exit 6
 fi
 
-root_path=/org/a11y/atspi/accessible/root
 root_role="$(gdbus call --address "$a11y_address" --dest "$app_bus" \
   --object-path "$root_path" --method org.a11y.atspi.Accessible.GetRole)"
 [[ "$root_role" == *"75"* ]] || { echo "Unexpected application role: $root_role" >&2; exit 7; }

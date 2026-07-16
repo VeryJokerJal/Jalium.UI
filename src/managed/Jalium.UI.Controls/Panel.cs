@@ -474,6 +474,12 @@ public class UIElementCollection : System.Collections.IList
     ///    different panel, detach it first. This mirrors WPF's logical-tree
     ///    reparent semantics and keeps transient container handoffs between
     ///    virtualizing panels from throwing "Visual already has a parent".
+    ///    The logical half matters just as much as the visual one: a container
+    ///    handed off between two items hosts (e.g. a retired fallback panel and
+    ///    its replacement created from the control template) still carries the
+    ///    old host as its logical parent, and the subsequent SetLogicalParent
+    ///    would throw "The logical child already has a parent". Migrate the
+    ///    logical link here so the handoff is complete before re-parenting.
     ///
     /// Returns <c>true</c> when the caller should proceed to add; <c>false</c>
     /// when the collection already contains the element.
@@ -492,6 +498,27 @@ public class UIElementCollection : System.Collections.IList
         {
             item.DetachFromVisualParent();
         }
+
+        // Automatic reparent, logical half: release the element from a stale logical
+        // parent so SetLogicalParent can claim it for this collection's parent. Only a
+        // DIFFERENT previous owner is released — when the element already belongs to
+        // this collection's logical parent, AddLogicalChild is an idempotent no-op and
+        // Loaded state must not be cycled. Two hosts deliberately keep the child's
+        // original logical parent and must not trigger the migration: panels that opt
+        // into PreserveExistingLogicalParents (MenuPopupScrollHost — releasing here
+        // would both break the menu's logical tree and defeat the SetLogicalParent
+        // guard), and collections constructed without a logical parent
+        // (ToolBarOverflowPanel — overflow items logically stay with the ToolBar, and
+        // SetLogicalParent is a no-op for them anyway).
+        if (_logicalParent != null &&
+            _panelParent?.PreserveExistingLogicalParents != true &&
+            item is FrameworkElement element &&
+            element.LogicalParentInternal is { } oldLogicalParent &&
+            !ReferenceEquals(oldLogicalParent, _logicalParent))
+        {
+            oldLogicalParent.RemoveLogicalChild(item);
+        }
+
         return true;
     }
 

@@ -7,6 +7,7 @@ using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Diagnostics;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Markup;
@@ -130,6 +131,10 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
                 return;
 
             _mainWindow = value;
+            if (value != null)
+            {
+                StartupDiagnostics.Mark("MainWindowAssigned", blocksUiThread: true);
+            }
             MainWindowChanged?.Invoke(this, EventArgs.Empty);
         }
     }
@@ -365,6 +370,10 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             throw new InvalidOperationException("Only one Application instance can be created.");
         }
 
+        using var construction = StartupDiagnostics.Begin(
+            "Application.Construct",
+            blocksUiThread: true);
+
         if (!PlatformFactory.IsWindows)
         {
             // DispatcherObject's base constructor has already captured the thread
@@ -378,13 +387,17 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         // Touch native GPU state only when an actual application is being created.
         // This still overlaps device creation with theme and MainWindow construction,
         // while build tools and managed-only hosts can load the framework safely.
-        GpuPrewarmInitializer.Prewarm();
+        using (StartupDiagnostics.Begin("Application.ScheduleGpuPrewarm", blocksUiThread: true))
+        {
+            GpuPrewarmInitializer.Prewarm();
+        }
 
         _current = this;
         CurrentChanged?.Invoke(this, EventArgs.Empty);
 
         // Initialize the dispatcher for the main UI thread
         Dispatcher.SetAsMainThread();
+        StartupDiagnostics.NotifyUiThreadRegistered();
         // Install a SynchronizationContext so async/await resumes on the UI dispatcher thread.
         // WebView2 initialization relies on UI-thread affinity across awaits.
         SynchronizationContext.SetSynchronizationContext(
@@ -392,7 +405,10 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
                 Dispatcher.MainDispatcher ?? Dispatcher.CurrentDispatcher));
 
         // Initialize keyboard/focus system
-        Keyboard.Initialize();
+        using (StartupDiagnostics.Begin("Application.KeyboardInitialize", blocksUiThread: true))
+        {
+            Keyboard.Initialize();
+        }
 
         // Subscribe to Android lifecycle events
         if (PlatformFactory.IsAndroid)
@@ -409,19 +425,25 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         ResourceLookup.AncestorRedirectLookup = ResolveResourceAncestorRedirect;
 
         // Initialize default theme (loads default styles for all controls)
-        ThemeManager.Initialize(this);
+        using (StartupDiagnostics.Begin("Application.ThemeInitialize", blocksUiThread: true))
+        {
+            ThemeManager.Initialize(this);
+        }
 
         // Initialize validation adorner integration
-        ValidationAdornerIntegration.Initialize();
+        using (StartupDiagnostics.Begin("Application.ControlServicesInitialize", blocksUiThread: true))
+        {
+            ValidationAdornerIntegration.Initialize();
 
-        // Force ToolTip static constructor to register show/hide delegates early
-        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(ToolTip).TypeHandle);
+            // Force ToolTip static constructor to register show/hide delegates early
+            System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(ToolTip).TypeHandle);
 
-        // ContextMenuService opens context menus from class handlers registered
-        // in its static constructor. Nothing in a code-only app ever touches the
-        // type (FrameworkElement.ContextMenu is the property's real owner), so
-        // without this right-click/press-and-hold menus silently never open.
-        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(ContextMenuService).TypeHandle);
+            // ContextMenuService opens context menus from class handlers registered
+            // in its static constructor. Nothing in a code-only app ever touches the
+            // type (FrameworkElement.ContextMenu is the property's real owner), so
+            // without this right-click/press-and-hold menus silently never open.
+            System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(ContextMenuService).TypeHandle);
+        }
 
         // Follow the desktop light/dark preference on Linux
         // (org.freedesktop.portal.Settings). Off the UI thread: the portal read
@@ -491,7 +513,10 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         }
 
         // Optional ultra-low visible memory mode (off by default).
-        _workingSetTrimController = WorkingSetTrimController.TryCreateFromEnvironment();
+        using (StartupDiagnostics.Begin("Application.WorkingSetPolicyInitialize", blocksUiThread: true))
+        {
+            _workingSetTrimController = WorkingSetTrimController.TryCreateFromEnvironment();
+        }
 
         // UIA accessibility bridge is registered lazily on the first
         // WM_GETOBJECT (UiaRootObjectId) — see Window.WndProc. Constructing
@@ -507,7 +532,10 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         // Auto-call InitializeComponent() on derived classes to load their JALXAML resources.
         // This mirrors WPF behavior where Application subclass resources are loaded automatically.
         // The source generator emits InitializeComponent() as a private method, so use reflection.
-        CallInitializeComponent();
+        using (StartupDiagnostics.Begin("Application.InitializeComponent", blocksUiThread: true))
+        {
+            CallInitializeComponent();
+        }
     }
 
     [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:RequiresUnreferencedCode",
@@ -635,9 +663,58 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         ResourceLookup.InvalidateResourceCache();
         ResourcesChanged?.Invoke(this, EventArgs.Empty);
 
-        if (MainWindow is FrameworkElement root)
+        // A full refresh (theme swap replacing merged dictionaries) invalidates implicit
+        // styles everywhere, so the re-evaluation walk must start from every live visual
+        // root — not just MainWindow. Live secondary windows and external popup surfaces
+        // (ContextMenu/ToolTip/Flyout hosts) are detached roots that would otherwise keep
+        // the retired theme's templates. Closed-but-alive popups hang off their host
+        // window's logical tree and are reached by the per-window walk below. A window
+        // that is not yet shown is unreachable here (it has no HWND and is absent from
+        // the live-window registry); it self-heals against the current theme version in
+        // Window.Show instead.
+        //
+        // Each root is refreshed in isolation: this runs synchronously inside the
+        // dictionary mutation that raised the change (ThemeManager.ReplaceManagedDictionary),
+        // so a handler or implicit-style Apply that throws in one window/popup must not
+        // propagate out — that would abort the switch for the remaining roots and leave
+        // ThemeManager's dictionary fields desynced from Application.Resources.
+        var mainWindow = MainWindow;
+        if (mainWindow is not FrameworkElement root)
+            return;
+
+        // The native-window registries are process-wide. A newly constructed
+        // Application with no MainWindow must not broadcast into windows left by a
+        // previous/test Application instance; doing so can also materialize this
+        // application's lazy Resources dictionary while it is being set to null.
+        SafeNotifyResourcesChangedFromRoot(root);
+
+        foreach (var window in Window.SnapshotOpenWindows())
         {
-            root.NotifyResourcesChangedFromRoot();
+            if (!ReferenceEquals(window, mainWindow))
+            {
+                SafeNotifyResourcesChangedFromRoot(window);
+            }
+        }
+
+        foreach (var popupWindow in PopupWindow.SnapshotOpenPopupWindows())
+        {
+            SafeNotifyResourcesChangedFromRoot(popupWindow);
+        }
+
+        static void SafeNotifyResourcesChangedFromRoot(FrameworkElement root)
+        {
+            try
+            {
+                root.NotifyResourcesChangedFromRoot();
+            }
+            catch (Exception ex)
+            {
+                // Isolate a faulty subtree and keep broadcasting to the rest. Swallowing
+                // here (rather than propagating) is what preserves the ThemeManager
+                // field/collection invariant described above.
+                System.Diagnostics.Debug.WriteLine(
+                    $"Jalium.UI: resources-changed broadcast to a window root was isolated after an exception: {ex}");
+            }
         }
     }
 
@@ -656,12 +733,36 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
     {
         ArgumentNullException.ThrowIfNull(args);
 
-        OnStartup(new StartupEventArgs(args));
-
-        var startupWindow = ResolveStartupWindow();
-        if (startupWindow != null && startupWindow.Handle == nint.Zero)
+        using (StartupDiagnostics.Begin("Application.StartupHandlers", blocksUiThread: true))
         {
-            startupWindow.Show();
+            OnStartup(new StartupEventArgs(args));
+        }
+
+        Window? startupWindow;
+        using (StartupDiagnostics.Begin("Application.ResolveStartupWindow", blocksUiThread: true))
+        {
+            startupWindow = ResolveStartupWindow();
+        }
+        if (startupWindow != null)
+        {
+            if (startupWindow.Handle == nint.Zero)
+            {
+                using (StartupDiagnostics.Begin("Application.ShowMainWindow", blocksUiThread: true))
+                {
+                    startupWindow.Show();
+                }
+
+                StartupDiagnostics.Mark("MainWindowShowReturned", blocksUiThread: true);
+            }
+
+            if (StartupDiagnostics.IsEnabled)
+            {
+                _ = startupWindow.Dispatcher.BeginInvoke(
+                    DispatcherPriority.Input,
+                    () => StartupDiagnostics.Mark(
+                        "MainWindowFirstInputReady",
+                        blocksUiThread: false));
+            }
         }
 
         var exitCode = 0;

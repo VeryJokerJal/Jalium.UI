@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using Jalium.UI.Diagnostics;
 using Jalium.UI.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -107,20 +108,26 @@ public sealed class AppBuilder : IHostApplicationBuilder
             Configuration = settings?.Configuration,
             DisableDefaults = settings?.DisableDefaults ?? false,
         };
-        _hostBuilder = new HostApplicationBuilder(hostSettings);
+        using (StartupDiagnostics.Begin("AppBuilder.HostDefaults", blocksUiThread: true))
+        {
+            _hostBuilder = new HostApplicationBuilder(hostSettings);
+        }
         Args = settings?.Args;
 
         // Core Jalium services are always available — keeps consumer code
         // from having to opt-in for basic MVVM and options support. Users can
         // still call ConfigureJalium() to bind appsettings.json, or override
         // individual registrations.
-        _hostBuilder.Services.TryAddSingleton<ViewRegistry>();
-        _hostBuilder.Services.TryAddSingleton<IViewFactory, ViewFactory>();
-        _hostBuilder.Services.TryAddSingleton<DeveloperToolsOptions>();
-        _hostBuilder.Services.TryAddSingleton<ResourceReclamationOptions>();
-        _hostBuilder.Services.TryAddSingleton<ResourceReclaimer>();
-        _hostBuilder.Services.AddOptions<JaliumRuntimeOptions>()
-            .Bind(_hostBuilder.Configuration.GetSection(JaliumRuntimeOptions.SectionName));
+        using (StartupDiagnostics.Begin("AppBuilder.RegisterCoreServices", blocksUiThread: true))
+        {
+            _hostBuilder.Services.TryAddSingleton<ViewRegistry>();
+            _hostBuilder.Services.TryAddSingleton<IViewFactory, ViewFactory>();
+            _hostBuilder.Services.TryAddSingleton<DeveloperToolsOptions>();
+            _hostBuilder.Services.TryAddSingleton<ResourceReclamationOptions>();
+            _hostBuilder.Services.TryAddSingleton<ResourceReclaimer>();
+            _hostBuilder.Services.AddOptions<JaliumRuntimeOptions>()
+                .Bind(_hostBuilder.Configuration.GetSection(JaliumRuntimeOptions.SectionName));
+        }
     }
 
     /// <summary>
@@ -219,7 +226,11 @@ public sealed class AppBuilder : IHostApplicationBuilder
 
         _isBuilt = true;
 
-        var host = _hostBuilder.Build();
+        IHost host;
+        using (StartupDiagnostics.Begin("AppBuilder.BuildHost", blocksUiThread: true))
+        {
+            host = _hostBuilder.Build();
+        }
         return new JaliumApp(host, _configureApplication.ToArray(), Args);
     }
 }

@@ -348,9 +348,10 @@ struct SolidRectPushConstants {
     float rect[4];
     float color[4];
     float screenSize[2];
-    // Was padding[2]; now (shadowMode, shadowSigma) for the analytic erf drop
-    // shadow (both shaders read it under this name). shadowMode == 0 keeps every
-    // existing caller byte-identical (the shaders gate the shadow branch on it).
+    // Was padding[2]; now (effectMode, effectParameter) while retaining the
+    // original shadowParams name in both shaders: > 0.5 is analytic erf shadow
+    // with sigma, < -0.5 is analytic SuperEllipse fill with exponent n, and 0
+    // keeps every ordinary SolidRect caller byte-identical.
     float shadowParams[2];
     float roundedClipRect[4];
     float roundedClipRadius[2];
@@ -922,8 +923,10 @@ public:
     VkPipeline textClearTypePipeline = VK_NULL_HANDLE;  // ClearType dual-source variant (opt-in; null => grayscale fallback)
     VkDescriptorSetLayout textDescriptorSetLayout = VK_NULL_HANDLE;
     VkDescriptorPool textDescriptorPool = VK_NULL_HANDLE;
-    // Alias of the current in-flight slot's set (PerFrameState::textDescriptorSet).
+    // Aliases of the current in-flight slot's text sets. Static axis-aligned
+    // glyphs bind the point set; Animated/rotated glyphs bind the smooth set.
     VkDescriptorSet textDescriptorSet = VK_NULL_HANDLE;
+    VkDescriptorSet textDescriptorSetSmooth = VK_NULL_HANDLE;
 #endif
     VkPipelineLayout blurPipelineLayout = VK_NULL_HANDLE;
     VkPipeline blurPipeline = VK_NULL_HANDLE;
@@ -1020,6 +1023,12 @@ public:
     uint32_t        effectOffscreenW = 0, effectOffscreenH = 0;
     VkDescriptorPool effectOffscreenDescPool = VK_NULL_HANDLE;       // 1-set pool for the composite/effect descriptor
     VkDescriptorSet  effectOffscreenDescriptorSet = VK_NULL_HANDLE;  // set0 (SAMPLED_IMAGE@0 + SAMPLER@1) bound to effectOffscreenView
+    // Separable-blur scratch.  The render pass is shared, while each in-flight
+    // frame owns its own image/view/framebuffer/descriptor in PerFrameState so
+    // frame N+1 never overwrites the horizontal result still sampled by frame N.
+    // Each scratch grows only to the largest effect capture seen by that slot
+    // and is allocated lazily when a Blur or Backdrop reaches replay.
+    VkRenderPass blurTempRenderPassClear = VK_NULL_HANDLE;
     // Real Vello GPU compute pipeline (lazy; only when scalarBlockLayoutSupported)
     // plus the fullscreen-triangle pipeline that composites its RGBA32F output
     // image onto the swap chain with premultiplied SrcOver blend.
@@ -1284,6 +1293,13 @@ public:
         uint32_t uploadHeight = 0;
         VkDescriptorSet frameDescriptorSet = VK_NULL_HANDLE;
         VkDescriptorSet frameDescriptorSetNearest = VK_NULL_HANDLE;
+        VkImage blurTempImage = VK_NULL_HANDLE;
+        VkDeviceMemory blurTempMemory = VK_NULL_HANDLE;
+        VkImageView blurTempView = VK_NULL_HANDLE;
+        VkFramebuffer blurTempFramebuffer = VK_NULL_HANDLE;
+        VkDescriptorSet blurTempDescriptorSet = VK_NULL_HANDLE;
+        uint32_t blurTempWidth = 0;
+        uint32_t blurTempHeight = 0;
         // Per-slot text/transition descriptor sets, aliased through
         // BeginFrame/CommitCurrentFrame exactly like frameDescriptorSet.
         // Both sets are rewritten by vkUpdateDescriptorSets during command
@@ -1293,6 +1309,7 @@ public:
         // owns its own copy and only ever rewrites it after its fence wait.
 #ifdef _WIN32
         VkDescriptorSet textDescriptorSet = VK_NULL_HANDLE;
+        VkDescriptorSet textDescriptorSetSmooth = VK_NULL_HANDLE;
 #endif
         VkDescriptorSet transitionDescriptorSet = VK_NULL_HANDLE;
         bool submitted = false;
@@ -1508,6 +1525,11 @@ public:
     bool EnsureEffectOffscreenResources(VkExtent2D extent);
     /// Destroy all offscreen effect RT resources. Safe to call repeatedly / when off.
     void DestroyEffectOffscreenResources();
+    /// Lazy-create the current frame slot's COLOR_ATTACHMENT|SAMPLED scratch
+    /// used by the horizontal half of the separable Gaussian blur.
+    bool EnsureBlurTempResources(VkExtent2D extent);
+    /// Destroy the shared blur render pass and every frame slot's scratch image.
+    void DestroyBlurTempResources();
     uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const;
     bool UpdateFrameDescriptorSet();
     bool UpdateTransitionDescriptorSet();
@@ -1521,8 +1543,8 @@ public:
     // TRANSFER_DST|SAMPLED. Early-outs when the cached image already matches.
     bool EnsureTextAtlasImage(uint32_t w, uint32_t h);
     void DestroyTextAtlasImage();
-    // Point textDescriptorSet at the atlas image + shared sampler + the glyph
-    // SSBO slice [glyphOffset, glyphOffset+glyphRange) of the staging buffer.
+    // Point both text descriptor sets at the atlas image + their point/linear
+    // sampler + the glyph SSBO slice of the staging buffer.
     bool UpdateTextDescriptorSet(VkDeviceSize glyphOffset, VkDeviceSize glyphRange);
     // Grow-only host-visible staging buffer for the glyph-atlas dirty-band copy
     // (B4b). Clones EnsureStagingCapacity (HOST_VISIBLE|COHERENT, persistently
@@ -3565,6 +3587,7 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
         // pools died in the same DestroyGraphicsResources call.
 #ifdef _WIN32
         s.textDescriptorSet = VK_NULL_HANDLE;
+        s.textDescriptorSetSmooth = VK_NULL_HANDLE;
 #endif
         s.transitionDescriptorSet = VK_NULL_HANDLE;
     }
@@ -4164,7 +4187,10 @@ bool VulkanRenderTarget::Impl::CaptureLiveSceneToUpload(uint32_t imageIndex,
     colorBack.image = images[imageIndex];
     colorBack.subresourceRange = range;
     colorBack.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    colorBack.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    // The following LOAD render pass both reads the preserved attachment and
+    // writes the newly composited pixels.
+    colorBack.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                              VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &colorBack);
     return true;
@@ -4274,7 +4300,9 @@ bool VulkanRenderTarget::Impl::CaptureOffscreenToUpload(const VkImageSubresource
     offscreenBack.image = effectOffscreenImage;
     offscreenBack.subresourceRange = range;
     offscreenBack.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    offscreenBack.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    offscreenBack.dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                                  VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                        0, 0, nullptr, 0, nullptr, 1, &offscreenBack);
@@ -4462,18 +4490,17 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
     }
 
     if (frameDescriptorPool == VK_NULL_HANDLE) {
-        // ×2: each per-frame slot allocates TWO sets from this pool — the
-        // linear/aniso frameDescriptorSet and its NearestNeighbor twin
-        // (same upload image, framePointSampler at binding 1).
+        // Three sets per frame slot: linear upload, nearest upload, and the
+        // lazily created separable-blur scratch descriptor.
         VkDescriptorPoolSize poolSizes[2] {};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        poolSizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 2;
+        poolSizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * 3;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-        poolSizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 2;
+        poolSizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * 3;
 
         VkDescriptorPoolCreateInfo poolInfo {};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT * 2;
+        poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT * 3;
         poolInfo.poolSizeCount = 2;
         poolInfo.pPoolSizes = poolSizes;
         if (createDescriptorPool(device, &poolInfo, nullptr, &frameDescriptorPool) != VK_SUCCESS || frameDescriptorPool == VK_NULL_HANDLE) {
@@ -5368,17 +5395,21 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
     }
 
     if (textDescriptorPool == VK_NULL_HANDLE) {
+        // Each in-flight frame owns two immutable-sampler variants of the same
+        // atlas/SSBO binding: point for pixel-snapped display text and linear
+        // for continuously moving Animated/rotated text.
+        constexpr uint32_t kTextSetsPerFrame = 2;
         VkDescriptorPoolSize poolSizes[3] {};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        poolSizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT;
+        poolSizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT * kTextSetsPerFrame;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-        poolSizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT;
+        poolSizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT * kTextSetsPerFrame;
         poolSizes[2].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        poolSizes[2].descriptorCount = MAX_FRAMES_IN_FLIGHT;
+        poolSizes[2].descriptorCount = MAX_FRAMES_IN_FLIGHT * kTextSetsPerFrame;
 
         VkDescriptorPoolCreateInfo poolInfo {};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
+        poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT * kTextSetsPerFrame;
         poolInfo.poolSizeCount = 3;
         poolInfo.pPoolSizes = poolSizes;
         if (createDescriptorPool(device, &poolInfo, nullptr, &textDescriptorPool) != VK_SUCCESS || textDescriptorPool == VK_NULL_HANDLE) {
@@ -5386,15 +5417,23 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         }
     }
 
-    if (textDescriptorSet == VK_NULL_HANDLE) {
+    if (textDescriptorSet == VK_NULL_HANDLE || textDescriptorSetSmooth == VK_NULL_HANDLE) {
+        VkDescriptorSetLayout textLayouts[2] = {
+            textDescriptorSetLayout,
+            textDescriptorSetLayout
+        };
+        VkDescriptorSet textSets[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
         VkDescriptorSetAllocateInfo allocateInfo {};
         allocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocateInfo.descriptorPool = textDescriptorPool;
-        allocateInfo.descriptorSetCount = 1;
-        allocateInfo.pSetLayouts = &textDescriptorSetLayout;
-        if (allocateDescriptorSets(device, &allocateInfo, &textDescriptorSet) != VK_SUCCESS || textDescriptorSet == VK_NULL_HANDLE) {
+        allocateInfo.descriptorSetCount = 2;
+        allocateInfo.pSetLayouts = textLayouts;
+        if (allocateDescriptorSets(device, &allocateInfo, textSets) != VK_SUCCESS ||
+            textSets[0] == VK_NULL_HANDLE || textSets[1] == VK_NULL_HANDLE) {
             return false;
         }
+        textDescriptorSet = textSets[0];
+        textDescriptorSetSmooth = textSets[1];
     }
 
     if (textPipelineLayout == VK_NULL_HANDLE) {
@@ -6608,51 +6647,59 @@ bool VulkanRenderTarget::Impl::UpdateFrameDescriptorSet()
 bool VulkanRenderTarget::Impl::UpdateTextDescriptorSet(VkDeviceSize glyphOffset, VkDeviceSize glyphRange)
 {
     if (textDescriptorSet == VK_NULL_HANDLE ||
+        textDescriptorSetSmooth == VK_NULL_HANDLE ||
         textAtlasImageView == VK_NULL_HANDLE ||
+        framePointSampler == VK_NULL_HANDLE ||
         frameSampler == VK_NULL_HANDLE ||
         stagingBuffer == VK_NULL_HANDLE) {
         // Not ready yet (atlas image / staging buffer absent): treat as "nothing
         // to write" rather than a hard failure, mirroring UpdateFrameDescriptorSet.
-        return textDescriptorSet == VK_NULL_HANDLE;
+        return textDescriptorSet == VK_NULL_HANDLE && textDescriptorSetSmooth == VK_NULL_HANDLE;
     }
 
     VkDescriptorImageInfo atlasImageInfo {};
     atlasImageInfo.imageView = textAtlasImageView;
     atlasImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-    VkDescriptorImageInfo samplerImageInfo {};
-    samplerImageInfo.sampler = frameSampler;
-    // Spec says imageView is ignored for VK_DESCRIPTOR_TYPE_SAMPLER, but the
-    // NVIDIA driver dereferences it anyway (null + offset → AV); hand it the
-    // atlas view so the driver sees a valid handle (same workaround as
-    // UpdateFrameDescriptorSet).
-    samplerImageInfo.imageView = textAtlasImageView;
-    samplerImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo samplerImageInfos[2] {};
+    samplerImageInfos[0].sampler = framePointSampler;
+    samplerImageInfos[1].sampler = frameSampler;
+    for (auto& samplerImageInfo : samplerImageInfos) {
+        // Spec says imageView is ignored for VK_DESCRIPTOR_TYPE_SAMPLER, but
+        // the NVIDIA driver dereferences it anyway (null + offset → AV); hand
+        // it the atlas view so the driver sees a valid handle.
+        samplerImageInfo.imageView = textAtlasImageView;
+        samplerImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
 
     VkDescriptorBufferInfo glyphBufferInfo {};
     glyphBufferInfo.buffer = stagingBuffer;
     glyphBufferInfo.offset = glyphOffset;
     glyphBufferInfo.range = glyphRange;
 
-    VkWriteDescriptorSet writes[3] {};
-    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[0].dstSet = textDescriptorSet;
-    writes[0].dstBinding = 0;
-    writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writes[0].pImageInfo = &atlasImageInfo;
-    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[1].dstSet = textDescriptorSet;
-    writes[1].dstBinding = 1;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    writes[1].pImageInfo = &samplerImageInfo;
-    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[2].dstSet = textDescriptorSet;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[2].pBufferInfo = &glyphBufferInfo;
+    VkDescriptorSet sets[2] = { textDescriptorSet, textDescriptorSetSmooth };
+    VkWriteDescriptorSet writes[6] {};
+    for (uint32_t setIndex = 0; setIndex < 2; ++setIndex) {
+        const uint32_t writeBase = setIndex * 3;
+        writes[writeBase + 0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[writeBase + 0].dstSet = sets[setIndex];
+        writes[writeBase + 0].dstBinding = 0;
+        writes[writeBase + 0].descriptorCount = 1;
+        writes[writeBase + 0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        writes[writeBase + 0].pImageInfo = &atlasImageInfo;
+        writes[writeBase + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[writeBase + 1].dstSet = sets[setIndex];
+        writes[writeBase + 1].dstBinding = 1;
+        writes[writeBase + 1].descriptorCount = 1;
+        writes[writeBase + 1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        writes[writeBase + 1].pImageInfo = &samplerImageInfos[setIndex];
+        writes[writeBase + 2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[writeBase + 2].dstSet = sets[setIndex];
+        writes[writeBase + 2].dstBinding = 2;
+        writes[writeBase + 2].descriptorCount = 1;
+        writes[writeBase + 2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[writeBase + 2].pBufferInfo = &glyphBufferInfo;
+    }
     updateDescriptorSets(device, static_cast<uint32_t>(std::size(writes)), writes, 0, nullptr);
     return true;
 }
@@ -7082,6 +7129,7 @@ void VulkanRenderTarget::Impl::DestroyTransitionImages()
 
 void VulkanRenderTarget::Impl::DestroyGraphicsResources()
 {
+    DestroyBlurTempResources();
     // Stencil-then-cover scratch is swap-chain-extent-sized + bound to its own
     // render pass, so it must be rebuilt on resize/teardown like the rest.
     // (Self-guards on device == VK_NULL_HANDLE: just nulls handles when the
@@ -7105,6 +7153,7 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
         textClearTypePipeline = VK_NULL_HANDLE;
         textPipelineLayout = VK_NULL_HANDLE;
         textDescriptorSet = VK_NULL_HANDLE;
+        textDescriptorSetSmooth = VK_NULL_HANDLE;
         textDescriptorPool = VK_NULL_HANDLE;
         textDescriptorSetLayout = VK_NULL_HANDLE;
 #endif
@@ -7350,6 +7399,7 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     textClearTypePipeline = VK_NULL_HANDLE;
     textPipelineLayout = VK_NULL_HANDLE;
     textDescriptorSet = VK_NULL_HANDLE;
+    textDescriptorSetSmooth = VK_NULL_HANDLE;
     textDescriptorPool = VK_NULL_HANDLE;
     textDescriptorSetLayout = VK_NULL_HANDLE;
 #endif
@@ -7409,6 +7459,7 @@ void VulkanRenderTarget::Impl::BeginFrame()
     frameDescriptorSetNearest = s.frameDescriptorSetNearest;
 #ifdef _WIN32
     textDescriptorSet = s.textDescriptorSet;
+    textDescriptorSetSmooth = s.textDescriptorSetSmooth;
 #endif
     transitionDescriptorSet = s.transitionDescriptorSet;
     submitted = s.submitted;
@@ -7435,6 +7486,7 @@ void VulkanRenderTarget::Impl::CommitCurrentFrame()
     s.frameDescriptorSetNearest = frameDescriptorSetNearest;
 #ifdef _WIN32
     s.textDescriptorSet = textDescriptorSet;
+    s.textDescriptorSetSmooth = textDescriptorSetSmooth;
 #endif
     s.transitionDescriptorSet = transitionDescriptorSet;
     s.submitted = submitted;
@@ -7542,6 +7594,7 @@ void VulkanRenderTarget::Impl::DestroyPerFrameResources()
     frameDescriptorSetNearest = VK_NULL_HANDLE;
 #ifdef _WIN32
     textDescriptorSet = VK_NULL_HANDLE;
+    textDescriptorSetSmooth = VK_NULL_HANDLE;
 #endif
     transitionDescriptorSet = VK_NULL_HANDLE;
     submitted = false;
@@ -8796,6 +8849,244 @@ void VulkanRenderTarget::Impl::DestroyEffectOffscreenResources()
     effectOffscreenDescriptorSet = VK_NULL_HANDLE;
     effectOffscreenLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     effectOffscreenW = 0; effectOffscreenH = 0;
+}
+
+bool VulkanRenderTarget::Impl::EnsureBlurTempResources(VkExtent2D requestedExtent)
+{
+    if (device == VK_NULL_HANDLE || requestedExtent.width == 0 || requestedExtent.height == 0 ||
+        frameDescriptorSetLayout == VK_NULL_HANDLE || frameDescriptorPool == VK_NULL_HANDLE ||
+        frameSampler == VK_NULL_HANDLE || !createImage || !getImageMemoryRequirements ||
+        !allocateMemory || !bindImageMemory || !createImageView || !createRenderPass ||
+        !createFramebuffer || !allocateDescriptorSets || !updateDescriptorSets) {
+        return false;
+    }
+
+    if (blurTempRenderPassClear == VK_NULL_HANDLE) {
+        VkAttachmentDescription attachment {};
+        attachment.format = format;
+        attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        attachment.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+        VkAttachmentReference colorRef { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+        VkSubpassDescription subpass {};
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorRef;
+
+        VkSubpassDependency dependencies[2] {};
+        FillSharedColorPassDependencies(dependencies);
+        VkRenderPassCreateInfo renderPassInfo {};
+        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+        renderPassInfo.attachmentCount = 1;
+        renderPassInfo.pAttachments = &attachment;
+        renderPassInfo.subpassCount = 1;
+        renderPassInfo.pSubpasses = &subpass;
+        renderPassInfo.dependencyCount = 2;
+        renderPassInfo.pDependencies = dependencies;
+        if (createRenderPass(device, &renderPassInfo, nullptr, &blurTempRenderPassClear) != VK_SUCCESS ||
+            blurTempRenderPassClear == VK_NULL_HANDLE) {
+            return false;
+        }
+    }
+
+    auto& slot = perFrameStates_[currentFrame_];
+    if (slot.blurTempImage != VK_NULL_HANDLE &&
+        slot.blurTempWidth >= requestedExtent.width && slot.blurTempHeight >= requestedExtent.height &&
+        slot.blurTempFramebuffer != VK_NULL_HANDLE && slot.blurTempDescriptorSet != VK_NULL_HANDLE) {
+        return true;
+    }
+
+    // Grow but do not shrink within a swapchain generation. Different effects
+    // often alternate capture sizes; exact-size reallocation would turn that
+    // into descriptor/image churn every frame. UVs always use the actual stored
+    // dimensions, so unused capacity is harmless.
+    const uint32_t targetWidth = std::max(requestedExtent.width, slot.blurTempWidth);
+    const uint32_t targetHeight = std::max(requestedExtent.height, slot.blurTempHeight);
+
+    // Build the replacement completely before touching the live slot. In
+    // particular, vkUpdateDescriptorSets on NVIDIA may dereference the
+    // descriptor's PREVIOUS image view, so that view must stay alive until the
+    // descriptor points at the new one. The slot fence has already been
+    // observed, therefore the old objects can be destroyed immediately after
+    // that update without a renderer-wide idle wait.
+    VkImage newImage = VK_NULL_HANDLE;
+    VkDeviceMemory newMemory = VK_NULL_HANDLE;
+    VkImageView newView = VK_NULL_HANDLE;
+    VkFramebuffer newFramebuffer = VK_NULL_HANDLE;
+    auto cleanupNewResources = [&]() {
+        if (newFramebuffer != VK_NULL_HANDLE && destroyFramebuffer) {
+            destroyFramebuffer(device, newFramebuffer, nullptr);
+            newFramebuffer = VK_NULL_HANDLE;
+        }
+        if (newView != VK_NULL_HANDLE && destroyImageView) {
+            destroyImageView(device, newView, nullptr);
+            newView = VK_NULL_HANDLE;
+        }
+        if (newImage != VK_NULL_HANDLE && destroyImage) {
+            destroyImage(device, newImage, nullptr);
+            newImage = VK_NULL_HANDLE;
+        }
+        if (newMemory != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, newMemory, nullptr);
+            newMemory = VK_NULL_HANDLE;
+        }
+    };
+
+    VkImageCreateInfo imageInfo {};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.format = format;
+    imageInfo.extent = { targetWidth, targetHeight, 1 };
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (createImage(device, &imageInfo, nullptr, &newImage) != VK_SUCCESS ||
+        newImage == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    VkMemoryRequirements memoryRequirements {};
+    getImageMemoryRequirements(device, newImage, &memoryRequirements);
+    const uint32_t memoryType = FindMemoryType(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (memoryType == VK_QUEUE_FAMILY_IGNORED) {
+        cleanupNewResources();
+        return false;
+    }
+    VkMemoryAllocateInfo allocateInfo {};
+    allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocateInfo.allocationSize = memoryRequirements.size;
+    allocateInfo.memoryTypeIndex = memoryType;
+    if (allocateMemory(device, &allocateInfo, nullptr, &newMemory) != VK_SUCCESS ||
+        newMemory == VK_NULL_HANDLE ||
+        bindImageMemory(device, newImage, newMemory, 0) != VK_SUCCESS) {
+        cleanupNewResources();
+        return false;
+    }
+
+    VkImageViewCreateInfo viewInfo {};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = newImage;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.layerCount = 1;
+    if (createImageView(device, &viewInfo, nullptr, &newView) != VK_SUCCESS ||
+        newView == VK_NULL_HANDLE) {
+        cleanupNewResources();
+        return false;
+    }
+
+    VkFramebufferCreateInfo framebufferInfo {};
+    framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebufferInfo.renderPass = blurTempRenderPassClear;
+    framebufferInfo.attachmentCount = 1;
+    framebufferInfo.pAttachments = &newView;
+    framebufferInfo.width = targetWidth;
+    framebufferInfo.height = targetHeight;
+    framebufferInfo.layers = 1;
+    if (createFramebuffer(device, &framebufferInfo, nullptr, &newFramebuffer) != VK_SUCCESS ||
+        newFramebuffer == VK_NULL_HANDLE) {
+        cleanupNewResources();
+        return false;
+    }
+
+    VkDescriptorSet replacementDescriptorSet = slot.blurTempDescriptorSet;
+    if (replacementDescriptorSet == VK_NULL_HANDLE) {
+        VkDescriptorSetAllocateInfo descriptorAllocateInfo {};
+        descriptorAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        descriptorAllocateInfo.descriptorPool = frameDescriptorPool;
+        descriptorAllocateInfo.descriptorSetCount = 1;
+        descriptorAllocateInfo.pSetLayouts = &frameDescriptorSetLayout;
+        if (allocateDescriptorSets(device, &descriptorAllocateInfo, &replacementDescriptorSet) != VK_SUCCESS ||
+            replacementDescriptorSet == VK_NULL_HANDLE) {
+            cleanupNewResources();
+            return false;
+        }
+    }
+
+    VkDescriptorImageInfo sampledImageInfo {};
+    sampledImageInfo.imageView = newView;
+    sampledImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkDescriptorImageInfo samplerInfo {};
+    samplerInfo.sampler = frameSampler;
+    samplerInfo.imageView = newView;
+    samplerInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    VkWriteDescriptorSet writes[2] {};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = replacementDescriptorSet;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[0].pImageInfo = &sampledImageInfo;
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = replacementDescriptorSet;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    writes[1].pImageInfo = &samplerInfo;
+    updateDescriptorSets(device, 2, writes, 0, nullptr);
+
+    if (slot.blurTempFramebuffer != VK_NULL_HANDLE && destroyFramebuffer) {
+        destroyFramebuffer(device, slot.blurTempFramebuffer, nullptr);
+    }
+    if (slot.blurTempView != VK_NULL_HANDLE && destroyImageView) {
+        destroyImageView(device, slot.blurTempView, nullptr);
+    }
+    if (slot.blurTempImage != VK_NULL_HANDLE && destroyImage) {
+        destroyImage(device, slot.blurTempImage, nullptr);
+    }
+    if (slot.blurTempMemory != VK_NULL_HANDLE && freeMemory) {
+        freeMemory(device, slot.blurTempMemory, nullptr);
+    }
+    slot.blurTempImage = newImage;
+    slot.blurTempMemory = newMemory;
+    slot.blurTempView = newView;
+    slot.blurTempFramebuffer = newFramebuffer;
+    slot.blurTempDescriptorSet = replacementDescriptorSet;
+    slot.blurTempWidth = targetWidth;
+    slot.blurTempHeight = targetHeight;
+    return true;
+}
+
+void VulkanRenderTarget::Impl::DestroyBlurTempResources()
+{
+    for (auto& slot : perFrameStates_) {
+        if (device != VK_NULL_HANDLE) {
+            if (slot.blurTempFramebuffer != VK_NULL_HANDLE && destroyFramebuffer) {
+                destroyFramebuffer(device, slot.blurTempFramebuffer, nullptr);
+            }
+            if (slot.blurTempView != VK_NULL_HANDLE && destroyImageView) {
+                destroyImageView(device, slot.blurTempView, nullptr);
+            }
+            if (slot.blurTempImage != VK_NULL_HANDLE && destroyImage) {
+                destroyImage(device, slot.blurTempImage, nullptr);
+            }
+            if (slot.blurTempMemory != VK_NULL_HANDLE && freeMemory) {
+                freeMemory(device, slot.blurTempMemory, nullptr);
+            }
+        }
+        slot.blurTempFramebuffer = VK_NULL_HANDLE;
+        slot.blurTempView = VK_NULL_HANDLE;
+        slot.blurTempImage = VK_NULL_HANDLE;
+        slot.blurTempMemory = VK_NULL_HANDLE;
+        slot.blurTempDescriptorSet = VK_NULL_HANDLE;
+        slot.blurTempWidth = 0;
+        slot.blurTempHeight = 0;
+    }
+    if (device != VK_NULL_HANDLE && blurTempRenderPassClear != VK_NULL_HANDLE && destroyRenderPass) {
+        destroyRenderPass(device, blurTempRenderPassClear, nullptr);
+    }
+    blurTempRenderPassClear = VK_NULL_HANDLE;
 }
 
 // ── C7 retained-layer GPU image pool ─────────────────────────────────────────
@@ -10821,6 +11112,17 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
 
         if (command.kind == GpuReplayCommandKind::Backdrop) {
+            if (command.backdrop.captureLiveScene) {
+                if (command.backdrop.pixelWidth == 0 || command.backdrop.pixelHeight == 0 ||
+                    command.backdrop.sourceW <= 0 || command.backdrop.sourceH <= 0) {
+                    EndFrame();
+                    return false;
+                }
+                maxBackdropWidth = std::max(maxBackdropWidth, command.backdrop.pixelWidth);
+                maxBackdropHeight = std::max(maxBackdropHeight, command.backdrop.pixelHeight);
+                hasBackdropCommands = true;
+                continue;
+            }
             const size_t expectedSize = static_cast<size_t>(command.backdrop.pixelWidth) * static_cast<size_t>(command.backdrop.pixelHeight) * 4u;
             if (command.backdrop.pixelWidth == 0 || command.backdrop.pixelHeight == 0 || command.backdrop.pixels.size() != expectedSize) {
                 EndFrame();
@@ -11046,6 +11348,19 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         return false;
     }
 
+    // A failed scratch allocation is not fatal: the fragment shaders retain a
+    // bounded 5x5 fallback. Normal live effects use this per-frame image for
+    // the horizontal pass, reducing an O(radius^2) kernel to O(radius).
+    const VkExtent2D requestedBlurTempExtent {
+        std::max(maxBackdropWidth, maxBlurWidth),
+        std::max(maxBackdropHeight, maxBlurHeight)
+    };
+    const bool blurTempReady =
+        (hasBackdropCommands || hasBlurCommands) &&
+        requestedBlurTempExtent.width > 0 && requestedBlurTempExtent.height > 0 &&
+        blurPipeline != VK_NULL_HANDLE &&
+        EnsureBlurTempResources(requestedBlurTempExtent);
+
 #ifdef _WIN32
     // Glyph SSBO is now guaranteed resident (EnsureStagingCapacity ran in one of
     // the branches above whenever hasTextCommands). Size the atlas VkImage to the
@@ -11135,7 +11450,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                     bmDst[p * 4 + 3] = bmA;
                 }
             }
-        } else if (command.kind == GpuReplayCommandKind::Backdrop) {
+        } else if (command.kind == GpuReplayCommandKind::Backdrop && !command.backdrop.captureLiveScene) {
             const size_t pixelBytes = static_cast<size_t>(command.backdrop.pixelWidth) * static_cast<size_t>(command.backdrop.pixelHeight) * 4u;
             std::memcpy(stagingBytes + backdropStagingBase + backdropOffsets[index], command.backdrop.pixels.data(), pixelBytes);
         } else if (command.kind == GpuReplayCommandKind::LiquidGlass) {
@@ -11587,6 +11902,67 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         renderPassInfo.pClearValues = &renderPassClearValue;
         cmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
         cmdSetViewport(commandBuffer, 0, 1, &viewport);
+    };
+
+    // Blur the valid top-left upload region horizontally into this frame
+    // slot's scratch image. The second (vertical) pass is issued by the effect
+    // command itself, so a radius-R blur costs about 4R samples instead of the
+    // former (2R+1)^2 samples per output pixel.
+    auto runHorizontalBlurPass = [&](uint32_t sourceWidth, uint32_t sourceHeight, float radius) {
+        auto& slot = perFrameStates_[currentFrame_];
+        if (!blurTempReady || radius <= 0.0f || sourceWidth == 0 || sourceHeight == 0 ||
+            sourceWidth > slot.blurTempWidth || sourceHeight > slot.blurTempHeight ||
+            frameDescriptorSet == VK_NULL_HANDLE || slot.blurTempDescriptorSet == VK_NULL_HANDLE ||
+            slot.blurTempFramebuffer == VK_NULL_HANDLE || blurTempRenderPassClear == VK_NULL_HANDLE) {
+            return false;
+        }
+
+        VkRenderPassBeginInfo blurPassInfo {};
+        blurPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+        blurPassInfo.renderPass = blurTempRenderPassClear;
+        blurPassInfo.framebuffer = slot.blurTempFramebuffer;
+        // Clear only the region this pass overwrites. The scratch grows but
+        // does not shrink, and clearing its historical maximum for every small
+        // effect would reintroduce avoidable fill bandwidth.
+        blurPassInfo.renderArea.extent = { sourceWidth, sourceHeight };
+        blurPassInfo.clearValueCount = 1;
+        blurPassInfo.pClearValues = &renderPassClearValue;
+        cmdBeginRenderPass(commandBuffer, &blurPassInfo, VK_SUBPASS_CONTENTS_INLINE);
+        VkViewport blurViewport = viewport;
+        blurViewport.y = static_cast<float>(slot.blurTempHeight);
+        blurViewport.width = static_cast<float>(slot.blurTempWidth);
+        blurViewport.height = -static_cast<float>(slot.blurTempHeight);
+        cmdSetViewport(commandBuffer, 0, 1, &blurViewport);
+
+        VkRect2D blurScissor {};
+        blurScissor.extent.width = sourceWidth;
+        blurScissor.extent.height = sourceHeight;
+        cmdSetScissor(commandBuffer, 0, 1, &blurScissor);
+
+        BlurPushConstants horizontal {};
+        horizontal.rect[2] = static_cast<float>(sourceWidth);
+        horizontal.rect[3] = static_cast<float>(sourceHeight);
+        horizontal.blurInfo1[0] = uploadWidth == 0 ? 1.0f
+            : static_cast<float>(sourceWidth) / static_cast<float>(uploadWidth);
+        horizontal.blurInfo1[1] = uploadHeight == 0 ? 1.0f
+            : static_cast<float>(sourceHeight) / static_cast<float>(uploadHeight);
+        horizontal.blurInfo1[2] = 1.0f / static_cast<float>(sourceWidth);
+        horizontal.blurInfo1[3] = 1.0f / static_cast<float>(sourceHeight);
+        horizontal.blurInfo2[0] = radius;
+        horizontal.blurInfo2[1] = 1.0f;
+        horizontal.blurInfo2[3] = 1.0f; // horizontal separable pass
+        horizontal.screenSize[0] = static_cast<float>(slot.blurTempWidth);
+        horizontal.screenSize[1] = static_cast<float>(slot.blurTempHeight);
+
+        cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
+        cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            blurPipelineLayout, 0, 1, &frameDescriptorSet, 0, nullptr);
+        cmdPushConstants(commandBuffer, blurPipelineLayout,
+            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+            0, sizeof(horizontal), &horizontal);
+        cmdDraw(commandBuffer, 6, 1, 0, 0);
+        cmdEndRenderPass(commandBuffer);
+        return true;
     };
 
     // Composite the offscreen effect RT 1:1 into the main frame (full-screen
@@ -12390,6 +12766,9 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             uploadImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
 
+            const bool useSeparableBlur = runHorizontalBlurPass(
+                command.blur.pixelWidth, command.blur.pixelHeight, command.blur.radius);
+
             beginLoadRenderPass();
             cmdSetScissor(commandBuffer, 0, 1, &commandScissor);
             BlurPushConstants pushConstants {};
@@ -12397,13 +12776,22 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             pushConstants.rect[1] = command.blur.y;
             pushConstants.rect[2] = command.blur.w;
             pushConstants.rect[3] = command.blur.h;
-            pushConstants.blurInfo1[0] = uploadWidth == 0 ? 1.0f : static_cast<float>(command.blur.pixelWidth) / static_cast<float>(uploadWidth);
-            pushConstants.blurInfo1[1] = uploadHeight == 0 ? 1.0f : static_cast<float>(command.blur.pixelHeight) / static_cast<float>(uploadHeight);
+            const auto& blurTempSlot = perFrameStates_[currentFrame_];
+            const uint32_t sampledWidth = useSeparableBlur ? blurTempSlot.blurTempWidth : uploadWidth;
+            const uint32_t sampledHeight = useSeparableBlur ? blurTempSlot.blurTempHeight : uploadHeight;
+            pushConstants.blurInfo1[0] = sampledWidth == 0 ? 1.0f : static_cast<float>(command.blur.pixelWidth) / static_cast<float>(sampledWidth);
+            pushConstants.blurInfo1[1] = sampledHeight == 0 ? 1.0f : static_cast<float>(command.blur.pixelHeight) / static_cast<float>(sampledHeight);
             pushConstants.blurInfo1[2] = command.blur.pixelWidth == 0 ? 0.0f : 1.0f / static_cast<float>(command.blur.pixelWidth);
             pushConstants.blurInfo1[3] = command.blur.pixelHeight == 0 ? 0.0f : 1.0f / static_cast<float>(command.blur.pixelHeight);
             pushConstants.blurInfo2[0] = command.blur.radius;
             pushConstants.blurInfo2[1] = command.blur.opacity;
             pushConstants.blurInfo2[2] = command.blur.alphaOnlyTint ? 1.0f : 0.0f;
+            pushConstants.blurInfo2[3] = useSeparableBlur ? 2.0f : 0.0f;
+            // Live/offscreen captures contain the command's screen-space AABB.
+            // A transformed quad must derive its source coordinates from
+            // SV_Position instead of stretching the AABB through local UVs.
+            pushConstants.geometryFlags[1] =
+                (command.blur.captureLiveScene || command.blur.captureOffscreen) ? 1.0f : 0.0f;
             pushConstants.blurTint[0] = command.blur.tintR;
             pushConstants.blurTint[1] = command.blur.tintG;
             pushConstants.blurTint[2] = command.blur.tintB;
@@ -12431,7 +12819,10 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 pushConstants.geometryFlags[0] = 1.0f;
             }
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipeline);
-            cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipelineLayout, 0, 1, &frameDescriptorSet, 0, nullptr);
+            const VkDescriptorSet blurSourceDescriptor = useSeparableBlur
+                ? perFrameStates_[currentFrame_].blurTempDescriptorSet
+                : frameDescriptorSet;
+            cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, blurPipelineLayout, 0, 1, &blurSourceDescriptor, 0, nullptr);
             cmdPushConstants(commandBuffer, blurPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
             cmdDraw(commandBuffer, 6, 1, 0, 0);
             cmdEndRenderPass(commandBuffer);
@@ -12439,12 +12830,22 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
 
         if (command.kind == GpuReplayCommandKind::Backdrop) {
-            // Prefer the live rendered scene (real refraction/blur source); fall
-            // back to the CPU-pixel upload when TRANSFER_SRC capture is
-            // unavailable (then the source is the GPU-path pixelBuffer_ snapshot).
-            const bool backdropLiveSource = CaptureLiveSceneToUpload(imageIndex, subresourceRange, extent,
-                                          command.backdrop.pixelWidth, command.backdrop.pixelHeight);
-            if (!backdropLiveSource) {
+            // In-app backdrops record no CPU snapshot. Capture only their panel
+            // plus Gaussian apron, downsampling large radii while blitting.
+            bool backdropLiveSource = false;
+            if (command.backdrop.captureLiveScene) {
+                backdropLiveSource = CaptureLiveSceneToUpload(
+                    imageIndex, subresourceRange, extent,
+                    command.backdrop.pixelWidth, command.backdrop.pixelHeight,
+                    command.backdrop.sourceX, command.backdrop.sourceY,
+                    command.backdrop.sourceW, command.backdrop.sourceH);
+                if (!backdropLiveSource) {
+                    // No full-window CPU copy is carried by this command. Keep
+                    // the already-rendered background instead of sampling stale
+                    // data if the live blit unexpectedly becomes unavailable.
+                    continue;
+                }
+            } else {
             VkImageMemoryBarrier uploadToTransfer {};
             uploadToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             uploadToTransfer.oldLayout = uploadImageLayout;
@@ -12483,6 +12884,18 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             uploadImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             }
 
+            const bool useSeparableBackdrop = runHorizontalBlurPass(
+                command.backdrop.pixelWidth,
+                command.backdrop.pixelHeight,
+                command.backdrop.blurRadius);
+            const auto& backdropTempSlot = perFrameStates_[currentFrame_];
+            const uint32_t sampledWidth = useSeparableBackdrop ? backdropTempSlot.blurTempWidth : uploadWidth;
+            const uint32_t sampledHeight = useSeparableBackdrop ? backdropTempSlot.blurTempHeight : uploadHeight;
+            const float validUvScaleX = sampledWidth == 0 ? 1.0f
+                : static_cast<float>(command.backdrop.pixelWidth) / static_cast<float>(sampledWidth);
+            const float validUvScaleY = sampledHeight == 0 ? 1.0f
+                : static_cast<float>(command.backdrop.pixelHeight) / static_cast<float>(sampledHeight);
+
             beginLoadRenderPass();
             cmdSetScissor(commandBuffer, 0, 1, &commandScissor);
             BackdropPushConstants pushConstants {};
@@ -12490,10 +12903,12 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             pushConstants.rect[1] = command.backdrop.y;
             pushConstants.rect[2] = command.backdrop.w;
             pushConstants.rect[3] = command.backdrop.h;
-            pushConstants.backdropInfo1[0] = std::max(std::max(command.backdrop.cornerRadiusTL, command.backdrop.cornerRadiusTR), std::max(command.backdrop.cornerRadiusBR, command.backdrop.cornerRadiusBL));
+            // The sign is the separable-pass flag; abs(x) is the valid capture
+            // width inside the grow-only sampled allocation.
+            pushConstants.backdropInfo1[0] = useSeparableBackdrop ? -validUvScaleX : validUvScaleX;
             pushConstants.backdropInfo1[1] = command.backdrop.blurRadius;
-            pushConstants.backdropInfo1[2] = command.backdrop.pixelWidth == 0 ? 0.0f : 1.0f / static_cast<float>(command.backdrop.pixelWidth);
-            pushConstants.backdropInfo1[3] = command.backdrop.pixelHeight == 0 ? 0.0f : 1.0f / static_cast<float>(command.backdrop.pixelHeight);
+            pushConstants.backdropInfo1[2] = sampledWidth == 0 ? 0.0f : 1.0f / static_cast<float>(sampledWidth);
+            pushConstants.backdropInfo1[3] = sampledHeight == 0 ? 0.0f : 1.0f / static_cast<float>(sampledHeight);
             pushConstants.tintColor[0] = command.backdrop.tintR;
             pushConstants.tintColor[1] = command.backdrop.tintG;
             pushConstants.tintColor[2] = command.backdrop.tintB;
@@ -12518,12 +12933,18 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             pushConstants.cornerRadii[3] = command.backdrop.cornerRadiusBL;
             // Repurposed padding slots: uvRemap offset (padding.xy) + scale
             // (padding2.xy). The frag samples srcUv = offset + uv*scale so the
-            // in-app panel reads its own sub-rect of the full-frame uploadImage
-            // (identity 0,0,1,1 for the desktop path leaves sampling unchanged).
-            pushConstants.padding[0] = command.backdrop.uvOffsetX;
-            pushConstants.padding[1] = command.backdrop.uvOffsetY;
-            pushConstants.padding2[0] = command.backdrop.uvScaleX;
-            pushConstants.padding2[1] = command.backdrop.uvScaleY;
+            // panel reads its own sub-rect, then validUvScale maps that capture
+            // into the actual grow-only upload/scratch allocation.
+            pushConstants.padding[0] = command.backdrop.uvOffsetX * validUvScaleX;
+            pushConstants.padding[1] = command.backdrop.uvOffsetY * validUvScaleY;
+            pushConstants.padding2[0] = command.backdrop.uvScaleX * validUvScaleX;
+            pushConstants.padding2[1] = command.backdrop.uvScaleY * validUvScaleY;
+            // The sign is an otherwise-free screen-space-source flag. All
+            // in-app backdrop snapshots use AABB/screen coordinates, including
+            // the CPU fallback; desktop captures remain quad-local.
+            pushConstants.geometryFlags[1] = command.backdrop.sampleScreenSpace
+                ? -validUvScaleY
+                : validUvScaleY;
             if (command.hasCustomQuad) {
                 pushConstants.quadPoint01[0] = command.quadPoint0X;
                 pushConstants.quadPoint01[1] = command.quadPoint0Y;
@@ -12536,7 +12957,10 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 pushConstants.geometryFlags[0] = 1.0f;
             }
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backdropPipeline);
-            cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backdropPipelineLayout, 0, 1, &frameDescriptorSet, 0, nullptr);
+            const VkDescriptorSet backdropSourceDescriptor = useSeparableBackdrop
+                ? perFrameStates_[currentFrame_].blurTempDescriptorSet
+                : frameDescriptorSet;
+            cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, backdropPipelineLayout, 0, 1, &backdropSourceDescriptor, 0, nullptr);
             cmdPushConstants(commandBuffer, backdropPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pushConstants), &pushConstants);
             cmdDraw(commandBuffer, 6, 1, 0, 0);
             cmdEndRenderPass(commandBuffer);
@@ -12877,10 +13301,13 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
 #ifdef _WIN32
         if (command.kind == GpuReplayCommandKind::TextRun) {
             // Dedicated text-glyph pipeline. The glyph SSBO + atlas image were
-            // uploaded above; textDescriptorSet binds the whole glyph region at
-            // textGlyphStagingBase, so SV_InstanceID = firstInstance + local
-            // indexes gGlyphs[] at the right glyph. 6 verts = one quad per glyph.
-            if (textPipeline == VK_NULL_HANDLE || textDescriptorSet == VK_NULL_HANDLE ||
+            // uploaded above; the selected descriptor binds the whole glyph
+            // region at textGlyphStagingBase, so SV_InstanceID = firstInstance
+            // + local indexes gGlyphs[] at the right glyph. 6 verts = one quad.
+            const VkDescriptorSet selectedTextSet = command.textRun.smoothText
+                ? textDescriptorSetSmooth
+                : textDescriptorSet;
+            if (textPipeline == VK_NULL_HANDLE || selectedTextSet == VK_NULL_HANDLE ||
                 stagingBuffer == VK_NULL_HANDLE || command.textRun.glyphCount == 0) {
                 continue;
             }
@@ -12914,7 +13341,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             }
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                 (command.textRun.clearType && textClearTypePipeline != VK_NULL_HANDLE) ? textClearTypePipeline : textPipeline);
-            cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, textPipelineLayout, 0, 1, &textDescriptorSet, 0, nullptr);
+            cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  textPipelineLayout, 0, 1, &selectedTextSet, 0, nullptr);
             cmdPushConstants(commandBuffer, textPipelineLayout,
                              VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                              0, sizeof(pc), &pc);
@@ -14067,6 +14495,7 @@ void VulkanRenderTarget::Impl::Destroy()
     textDescriptorSetLayout = VK_NULL_HANDLE;
     textDescriptorPool = VK_NULL_HANDLE;
     textDescriptorSet = VK_NULL_HANDLE;
+    textDescriptorSetSmooth = VK_NULL_HANDLE;
     textAtlasImage = VK_NULL_HANDLE;
     textAtlasImageMemory = VK_NULL_HANDLE;
     textAtlasImageView = VK_NULL_HANDLE;
@@ -16557,12 +16986,13 @@ bool VulkanRenderTarget::TryRecordGpuLiquidGlassCommand(const std::vector<uint8_
 
 bool VulkanRenderTarget::TryRecordGpuBackdropCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL, float tintR, float tintG, float tintB, float tintOpacity, float saturation, float noiseIntensity, float luminosity, bool remapSourceUv)
 {
-    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || pixels.empty() || pixelWidth == 0 || pixelHeight == 0 || w == 0.0f || h == 0.0f) {
+    const bool captureLiveScene = remapSourceUv && impl_ && impl_->sceneCaptureBlitSupported;
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || pixelWidth == 0 || pixelHeight == 0 || w == 0.0f || h == 0.0f) {
         return false;
     }
 
     const size_t expectedSize = static_cast<size_t>(pixelWidth) * static_cast<size_t>(pixelHeight) * 4u;
-    if (pixels.size() != expectedSize) {
+    if (!captureLiveScene && (pixels.empty() || pixels.size() != expectedSize)) {
         return false;
     }
 
@@ -16585,16 +17015,70 @@ bool VulkanRenderTarget::TryRecordGpuBackdropCommand(const std::vector<uint8_t>&
     ApplyTransform(transform, x + w, y + h, p2x, p2y);
     ApplyTransform(transform, x, y + h, p3x, p3y);
 
+    float sxB = std::sqrt(transform.m11 * transform.m11 + transform.m12 * transform.m12);
+    float syB = std::sqrt(transform.m21 * transform.m21 + transform.m22 * transform.m22);
+    if (sxB <= 0.0f) sxB = 1.0f;
+    if (syB <= 0.0f) syB = 1.0f;
+    const float effectScale = std::min(sxB, syB);
+
     GpuReplayCommand replayCommand {};
     replayCommand.kind = GpuReplayCommandKind::Backdrop;
-    replayCommand.backdrop.pixelWidth = pixelWidth;
-    replayCommand.backdrop.pixelHeight = pixelHeight;
-    replayCommand.backdrop.pixels = pixels;
+    replayCommand.backdrop.captureLiveScene = captureLiveScene;
+    replayCommand.backdrop.sampleScreenSpace = remapSourceUv;
     replayCommand.backdrop.x = std::min(std::min(p0x, p1x), std::min(p2x, p3x));
     replayCommand.backdrop.y = std::min(std::min(p0y, p1y), std::min(p2y, p3y));
     replayCommand.backdrop.w = std::max(std::max(p0x, p1x), std::max(p2x, p3x)) - replayCommand.backdrop.x;
     replayCommand.backdrop.h = std::max(std::max(p0y, p1y), std::max(p2y, p3y)) - replayCommand.backdrop.y;
-    replayCommand.backdrop.blurRadius = blurRadius;
+    const float physicalBlurRadius = std::clamp(blurRadius * effectScale, 0.0f, 64.0f);
+    replayCommand.backdrop.blurRadius = physicalBlurRadius;
+
+    if (captureLiveScene) {
+        // Capture only the panel plus the complete Gaussian apron. Large radii
+        // use the standard UI-blur downsample tiers; the two separable passes
+        // run in that reduced pixel space and the final sampler upsamples
+        // linearly, avoiding both a full-frame blit and a radius-squared shader.
+        const int32_t apron = static_cast<int32_t>(std::ceil(physicalBlurRadius)) + 1;
+        const int32_t surfaceW = std::max(1, width_);
+        const int32_t surfaceH = std::max(1, height_);
+        const int32_t sourceX0 = std::clamp(
+            static_cast<int32_t>(std::floor(replayCommand.backdrop.x)) - apron, 0, surfaceW);
+        const int32_t sourceY0 = std::clamp(
+            static_cast<int32_t>(std::floor(replayCommand.backdrop.y)) - apron, 0, surfaceH);
+        const int32_t sourceX1 = std::clamp(
+            static_cast<int32_t>(std::ceil(replayCommand.backdrop.x + replayCommand.backdrop.w)) + apron, 0, surfaceW);
+        const int32_t sourceY1 = std::clamp(
+            static_cast<int32_t>(std::ceil(replayCommand.backdrop.y + replayCommand.backdrop.h)) + apron, 0, surfaceH);
+        replayCommand.backdrop.sourceX = sourceX0;
+        replayCommand.backdrop.sourceY = sourceY0;
+        replayCommand.backdrop.sourceW = std::max(1, sourceX1 - sourceX0);
+        replayCommand.backdrop.sourceH = std::max(1, sourceY1 - sourceY0);
+
+        const uint32_t downsample = physicalBlurRadius >= 32.0f ? 4u
+            : (physicalBlurRadius >= 12.0f ? 2u : 1u);
+        replayCommand.backdrop.pixelWidth =
+            (static_cast<uint32_t>(replayCommand.backdrop.sourceW) + downsample - 1u) / downsample;
+        replayCommand.backdrop.pixelHeight =
+            (static_cast<uint32_t>(replayCommand.backdrop.sourceH) + downsample - 1u) / downsample;
+        replayCommand.backdrop.blurRadius = physicalBlurRadius / static_cast<float>(downsample);
+
+        // Normalized within the valid capture, not within the grow-only upload
+        // allocation. Replay multiplies by capture/allocation scale after the
+        // actual upload dimensions are known.
+        replayCommand.backdrop.uvOffsetX =
+            (replayCommand.backdrop.x - static_cast<float>(sourceX0)) /
+            static_cast<float>(replayCommand.backdrop.sourceW);
+        replayCommand.backdrop.uvOffsetY =
+            (replayCommand.backdrop.y - static_cast<float>(sourceY0)) /
+            static_cast<float>(replayCommand.backdrop.sourceH);
+        replayCommand.backdrop.uvScaleX =
+            replayCommand.backdrop.w / static_cast<float>(replayCommand.backdrop.sourceW);
+        replayCommand.backdrop.uvScaleY =
+            replayCommand.backdrop.h / static_cast<float>(replayCommand.backdrop.sourceH);
+    } else {
+        replayCommand.backdrop.pixelWidth = pixelWidth;
+        replayCommand.backdrop.pixelHeight = pixelHeight;
+        replayCommand.backdrop.pixels = pixels;
+    }
     // Corner radii arrive in the caller's local (DIP-ish) units while the rect
     // above went through the transform. Bake the same scale into the radii —
     // min(sx, sy) keeps the corner circular, mirroring D3D12
@@ -16603,15 +17087,10 @@ bool VulkanRenderTarget::TryRecordGpuBackdropCommand(const std::vector<uint8_t>&
     // against the [-1,1]-normalized quad space, which discarded the whole
     // backdrop once any radius exceeded ~2 DIP.)
     {
-        float sxB = std::sqrt(transform.m11 * transform.m11 + transform.m12 * transform.m12);
-        float syB = std::sqrt(transform.m21 * transform.m21 + transform.m22 * transform.m22);
-        if (sxB <= 0.0f) sxB = 1.0f;
-        if (syB <= 0.0f) syB = 1.0f;
-        const float radiusScaleB = std::min(sxB, syB);
-        replayCommand.backdrop.cornerRadiusTL = std::max(0.0f, cornerRadiusTL) * radiusScaleB;
-        replayCommand.backdrop.cornerRadiusTR = std::max(0.0f, cornerRadiusTR) * radiusScaleB;
-        replayCommand.backdrop.cornerRadiusBR = std::max(0.0f, cornerRadiusBR) * radiusScaleB;
-        replayCommand.backdrop.cornerRadiusBL = std::max(0.0f, cornerRadiusBL) * radiusScaleB;
+        replayCommand.backdrop.cornerRadiusTL = std::max(0.0f, cornerRadiusTL) * effectScale;
+        replayCommand.backdrop.cornerRadiusTR = std::max(0.0f, cornerRadiusTR) * effectScale;
+        replayCommand.backdrop.cornerRadiusBR = std::max(0.0f, cornerRadiusBR) * effectScale;
+        replayCommand.backdrop.cornerRadiusBL = std::max(0.0f, cornerRadiusBL) * effectScale;
     }
     replayCommand.backdrop.tintR = tintR;
     replayCommand.backdrop.tintG = tintG;
@@ -16623,7 +17102,7 @@ bool VulkanRenderTarget::TryRecordGpuBackdropCommand(const std::vector<uint8_t>&
     if (replayCommand.backdrop.w <= kEpsilon || replayCommand.backdrop.h <= kEpsilon) {
         return false;
     }
-    if (remapSourceUv && pixelWidth > 0 && pixelHeight > 0) {
+    if (remapSourceUv && !captureLiveScene && pixelWidth > 0 && pixelHeight > 0) {
         // In-app backdrop: uploadImage is the FULL captured frame, so map the
         // panel quad's uv [0,1] onto the sub-rect it occupies in the frame.
         // Mirrors D3D12 TryDrawSnapshotBackdropQuad's uvRemap (offset+scale).
@@ -16857,6 +17336,90 @@ bool VulkanRenderTarget::TryRecordGpuRotatedLocalRoundedRectCommand(const CpuTra
 
 bool VulkanRenderTarget::TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush)
 {
+    // SuperEllipse fills use the same analytic SDF as D3D12 instead of the
+    // single-sample FilledPolygon fallback.  Border.Shape brackets this call
+    // with SetShapeType(1, n), including when CornerRadius is zero, so this
+    // check must precede the square-rect fast path below.
+    if (currentShapeType_ == 1) {
+        if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
+            return false;
+        }
+        if (w == 0.0f || h == 0.0f) {
+            return true;
+        }
+        if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+            return false;
+        }
+
+        // The SolidRect pipeline carries a single colour.  Keep true gradients
+        // on TryRecordGradientFanInOrder rather than replacing them with their
+        // approximate average colour.
+        uint8_t b = 0, g = 0, r = 0, a = 0;
+        if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
+            return false;
+        }
+
+        const auto transform = GetCurrentTransform();
+        constexpr float kEpsilon = 0.0001f;
+        if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
+            // The analytic branch below evaluates SV_Position against an
+            // axis-aligned rect. Rotated/skewed squircles retain the existing
+            // polygon fallback until the local-position SDF path also carries
+            // a SuperEllipse mode.
+            return false;
+        }
+
+        GpuReplayCommand replayCommand {};
+        replayCommand.kind = GpuReplayCommandKind::SolidRect;
+        if (!TryPopulateReplayClip(replayCommand)) {
+            return false;
+        }
+
+        const float x0 = x * transform.m11 + transform.dx;
+        const float y0 = y * transform.m22 + transform.dy;
+        const float x1 = (x + w) * transform.m11 + transform.dx;
+        const float y1 = (y + h) * transform.m22 + transform.dy;
+
+        replayCommand.solidRect.x = std::min(x0, x1);
+        replayCommand.solidRect.y = std::min(y0, y1);
+        replayCommand.solidRect.w = std::fabs(x1 - x0);
+        replayCommand.solidRect.h = std::fabs(y1 - y0);
+        replayCommand.solidRect.r = static_cast<float>(r) / 255.0f;
+        replayCommand.solidRect.g = static_cast<float>(g) / 255.0f;
+        replayCommand.solidRect.b = static_cast<float>(b) / 255.0f;
+        replayCommand.solidRect.a = (static_cast<float>(a) / 255.0f) *
+            std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
+        if (replayCommand.solidRect.w <= kEpsilon ||
+            replayCommand.solidRect.h <= kEpsilon ||
+            replayCommand.solidRect.a <= 0.0f) {
+            return true;
+        }
+        if (replayCommand.scissorRight <= replayCommand.scissorLeft ||
+            replayCommand.scissorBottom <= replayCommand.scissorTop) {
+            return true;
+        }
+
+        // A negative shadowMode is an internal SolidRect effect tag for the
+        // analytic SuperEllipse branch; shadowSigma carries exponent n.  The
+        // exact shape rect uses the otherwise-free innerRoundedClipRect slot,
+        // leaving roundedClipRect available for an ancestor rounded clip. The
+        // shader multiplies both coverages. solidRect is expanded by one pixel
+        // so the outside half of the fwidth AA ramp is rasterized.
+        replayCommand.shadowMode = -1.0f;
+        replayCommand.shadowSigma = std::max(currentShapeExponent_, 2.0f);
+        replayCommand.hasInnerRoundedClip = true;
+        replayCommand.innerRoundedClipLeft = replayCommand.solidRect.x;
+        replayCommand.innerRoundedClipTop = replayCommand.solidRect.y;
+        replayCommand.innerRoundedClipRight = replayCommand.solidRect.x + replayCommand.solidRect.w;
+        replayCommand.innerRoundedClipBottom = replayCommand.solidRect.y + replayCommand.solidRect.h;
+        replayCommand.solidRect.x -= 1.0f;
+        replayCommand.solidRect.y -= 1.0f;
+        replayCommand.solidRect.w += 2.0f;
+        replayCommand.solidRect.h += 2.0f;
+        RecordReplayCommand(replayCommand);
+        return true;
+    }
+
     if (rx <= 0.0f && ry <= 0.0f) {
         return TryRecordGpuSolidRectCommand(x, y, w, h, brush);
     }
@@ -17257,10 +17820,14 @@ bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectFillCommand(float x, fl
     if (maxRadius <= 0.0f) {
         return TryRecordGpuSolidRectCommand(x, y, w, h, brush);
     }
+    const size_t originalCount = gpuReplayCommands_.size();
     if (!TryRecordGpuRoundedRectFillCommand(x, y, w, h, maxRadius, maxRadius, brush)) {
         return false;
     }
-    if (gpuReplayCommands_.empty()) return true;  // record was dropped (cull / no-op).
+    // A successful recorder can still be a culled/no-op draw. In that case
+    // the previous replay command belongs to a different element and must not
+    // receive this primitive's per-corner radii.
+    if (gpuReplayCommands_.size() == originalCount) return true;
     GpuReplayCommand& cmd = gpuReplayCommands_.back();
     if (cmd.kind != GpuReplayCommandKind::SolidRect || !cmd.hasRoundedClip) {
         return true;  // record fell into a fast path that doesn't honour per-corner.
@@ -17298,10 +17865,13 @@ bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectStrokeCommand(float x, 
     }
 
     const float maxRadius = std::max({ tl, tr, br, bl, 0.0f });
+    const size_t originalCount = gpuReplayCommands_.size();
     if (!TryRecordGpuRoundedRectStrokeCommand(x, y, w, h, maxRadius, maxRadius, strokeWidth, brush)) {
         return false;
     }
-    if (gpuReplayCommands_.empty()) return true;
+    // Empty-scissor/transparent strokes return success without appending a
+    // command. Do not rewrite the preceding sibling command in that case.
+    if (gpuReplayCommands_.size() == originalCount) return true;
     GpuReplayCommand& cmd = gpuReplayCommands_.back();
     if (cmd.kind != GpuReplayCommandKind::SolidRect || !cmd.hasRoundedClip) {
         return true;
@@ -17958,6 +18528,9 @@ void* VulkanRenderTarget::RealizeLayerBegin(void* existingLayer, float x, float 
     if (std::fabs(t.m12) > kEpsilon || std::fabs(t.m21) > kEpsilon) {
         return nullptr;
     }
+    if (std::fabs(t.m11) <= kEpsilon || std::fabs(t.m22) <= kEpsilon) {
+        return nullptr;
+    }
     float px0 = 0.0f, py0 = 0.0f, px1 = 0.0f, py1 = 0.0f;
     ApplyTransform(t, x, y, px0, py0);
     ApplyTransform(t, x + w, y + h, px1, py1);
@@ -17965,10 +18538,15 @@ void* VulkanRenderTarget::RealizeLayerBegin(void* existingLayer, float x, float 
     int32_t physY = static_cast<int32_t>(std::floor(std::min(py0, py1)));
     int32_t physX1 = static_cast<int32_t>(std::ceil(std::max(px0, px1)));
     int32_t physY1 = static_cast<int32_t>(std::ceil(std::max(py0, py1)));
-    physX = std::clamp(physX, 0, width_);
-    physY = std::clamp(physY, 0, height_);
-    physX1 = std::clamp(physX1, 0, width_);
-    physY1 = std::clamp(physY1, 0, height_);
+    // The retained-layer contract composites the captured texture back into the
+    // caller's full w x h destination. Cropping a partially off-surface capture
+    // here would therefore stretch the visible fragment across the full element
+    // (for example, a tall expanded NavigationViewItem). Until Vulkan has a
+    // layer-local, element-sized render target like D3D12, reject captures that
+    // cannot be realized in full and let managed rendering take the direct path.
+    if (physX < 0 || physY < 0 || physX1 > width_ || physY1 > height_) {
+        return nullptr;
+    }
     if (physX1 <= physX || physY1 <= physY) {
         return nullptr;
     }
@@ -18002,6 +18580,14 @@ void* VulkanRenderTarget::RealizeLayerBegin(void* existingLayer, float x, float 
         st.physY = physY;
         st.physW = physX1 - physX;
         st.physH = physY1 - physY;
+        // Parent clips (notably NavigationViewItem's animated children-panel
+        // clip) must be applied when the layer is composited, not baked into
+        // the persistent texture. Otherwise a child first realized while only
+        // partly revealed stays transparent/cropped until hover dirties it.
+        // Clearing here also mirrors D3D12 BeginRetainedLayerCapture; clips
+        // pushed from inside child.Render after this point still take effect.
+        st.savedClips = std::move(clipStack_);
+        clipStack_.clear();
         retainedCaptureStack_.push_back(std::move(st));
 
         GpuReplayCommand mark {};
@@ -18033,6 +18619,8 @@ void* VulkanRenderTarget::RealizeLayerBegin(void* existingLayer, float x, float 
     st.physW = physX1 - physX;
     st.physH = physY1 - physY;
     st.layer = layer;
+    st.savedClips = std::move(clipStack_);
+    clipStack_.clear();
     retainedCaptureStack_.push_back(std::move(st));
     ResizeCpuCanvas();
     ClearCpuCanvas(0, 0, 0, 0);
@@ -18070,6 +18658,10 @@ void VulkanRenderTarget::RealizeLayerEnd(void* layer)
         mark.solidRect.w = static_cast<float>(st.physW);
         mark.solidRect.h = static_cast<float>(st.physH);
         gpuReplayCommands_.push_back(mark);
+        // The capture subtree has balanced any clips it pushed. Restore the
+        // parent's clip stack before managed records CompositeLayer so the
+        // layer is clipped at its live position without corrupting its cache.
+        clipStack_ = std::move(st.savedClips);
         return;
     }
 
@@ -18095,6 +18687,7 @@ void VulkanRenderTarget::RealizeLayerEnd(void* layer)
     gpuReplayCommands_ = std::move(st.savedReplayCommands);
     gpuReplaySupported_ = st.savedReplaySupported;
     gpuReplayHasClear_ = st.savedReplayHasClear;
+    clipStack_ = std::move(st.savedClips);
 }
 
 void VulkanRenderTarget::CompositeLayer(void* layer, float x, float y, float w, float h, float opacity)
@@ -18703,6 +19296,29 @@ bool VulkanRenderTarget::TryFillSuperEllipseInOrder(float x, float y, float w, f
     BuildSuperEllipsePolygon(x, y, w, h, tl, tr, br, bl, poly);  // squircle boundary (local, convex)
     const uint32_t n = static_cast<uint32_t>(poly.size() / 2);
     if (n < 3) return false;
+
+    // Solid squircles take the analytic SolidRect SDF path.  This is evaluated
+    // before the gradient fan / polygon fallbacks so the common Border
+    // background gets continuous fwidth coverage instead of a 0/1 edge from
+    // the single-sample triangle pipeline.
+    if (TryRecordGpuRoundedRectFillCommand(x, y, w, h, 0.0f, 0.0f, brush)) {
+        if (cpuRasterNeeded_) {
+            const auto transform = GetCurrentTransform();
+            std::vector<float> world;
+            world.reserve(poly.size());
+            for (uint32_t i = 0; i < n; ++i) {
+                float wx = 0.0f, wy = 0.0f;
+                ApplyTransform(transform, poly[i * 2], poly[i * 2 + 1], wx, wy);
+                world.push_back(wx);
+                world.push_back(wy);
+            }
+            uint8_t b = 0, g = 0, r = 0, a = 0;
+            if (TryGetSolidBrushColor(brush, b, g, r, a)) {
+                RasterizePolygon(world, /*NonZero*/ 1, b, g, r, a);
+            }
+        }
+        return true;
+    }
 
     // Gradient squircle → in-order vertex-colour fan (true gradient, no occlusion).
     if (TryRecordGradientFanInOrder(poly, x + w * 0.5f, y + h * 0.5f, brush)) {
@@ -20503,6 +21119,14 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     ApplyTransform(transform, x, y, tx, ty);
     const float txScaleX = std::sqrt(transform.m11 * transform.m11 + transform.m12 * transform.m12);
     const float txScaleY = std::sqrt(transform.m21 * transform.m21 + transform.m22 * transform.m22);
+    const float scaleRef = std::max({txScaleX, txScaleY, 1.0f});
+    const bool axisAligned = std::abs(transform.m12) <= 1e-3f * scaleRef &&
+                             std::abs(transform.m21) <= 1e-3f * scaleRef;
+    const int32_t hintingMode = format->GetTextHintingMode();
+    // Vulkan's root transform already includes dpi/96, so the quads below end
+    // in PHYSICAL pixels. Fixed/Auto axis-aligned text can therefore be snapped
+    // and point-sampled exactly; Animated or rotated/skewed text stays smooth.
+    const bool crispAxisAligned = axisAligned && hintingMode != 2;
     const float effectiveA = (static_cast<float>(a) / 255.0f) * GetCurrentOpacity();
     if (effectiveA <= 0.0f) {
         return;
@@ -20586,8 +21210,9 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         instances, &decorations,
         layoutKey,
         /*aaMode=*/effectiveAaMode,
-        /*hintingMode=*/format->GetTextHintingMode(),  // honor TextOptions.TextHintingMode (was hardcoded 0); parity with D3D12
-        /*scaleX=*/glyphRasterScaleX, /*scaleY=*/glyphRasterScaleY);
+        /*hintingMode=*/hintingMode,
+        /*scaleX=*/glyphRasterScaleX, /*scaleY=*/glyphRasterScaleY,
+        /*crispAxisAligned=*/crispAxisAligned);
     if (count == 0 || instances.empty()) {
         return;
     }
@@ -20595,13 +21220,19 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // Re-magnify each base-DIP quad by the transform's axis scales around the
     // transformed origin (tx, ty) — byte-identical to D3D12 AddText. Identity
     // transform (scale 1) leaves the quads untouched.
-    if (std::abs(txScaleX - 1.0f) > 0.001f || std::abs(txScaleY - 1.0f) > 0.001f) {
-        for (uint32_t i = startIdx; i < startIdx + count && i < instances.size(); ++i) {
-            auto& gi = instances[i];
+    const bool scaled = std::abs(txScaleX - 1.0f) > 0.001f ||
+                        std::abs(txScaleY - 1.0f) > 0.001f;
+    for (uint32_t i = startIdx; i < startIdx + count && i < instances.size(); ++i) {
+        auto& gi = instances[i];
+        if (scaled) {
             gi.posX = tx + (gi.posX - tx) * txScaleX;
             gi.posY = ty + (gi.posY - ty) * txScaleY;
             gi.sizeX *= txScaleX;
             gi.sizeY *= txScaleY;
+        }
+        if (crispAxisAligned) {
+            gi.posX = std::round(gi.posX);
+            gi.posY = std::round(gi.posY);
         }
     }
 
@@ -20638,6 +21269,7 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     cmd.textRun.glyphs = std::move(glyphFloats);
     cmd.textRun.glyphCount = glyphCount;
     cmd.textRun.clearType = runClearType;
+    cmd.textRun.smoothText = !crispAxisAligned;
     if (!TryPopulateReplayClip(cmd)) {
         return;
     }
@@ -20950,11 +21582,10 @@ void VulkanRenderTarget::DrawBackdropFilterEx(float x, float y, float w, float h
         return;
     }
 
-    // Backdrop reads pixelBuffer_ to record the GPU command's source pixels and
-    // to apply the CPU fallback blur. EnsureCpuRasterization brings pixelBuffer_
-    // up to date when we're already on the CPU path; on the GPU replay path it
-    // intentionally does nothing because committing to CPU rasterization
-    // mid-frame would force every Draw* through the slow CPU path.
+    // The CPU fallback reads pixelBuffer_. The normal GPU path records a live
+    // scene capture rectangle and deliberately carries no full-window pixel
+    // copy. EnsureCpuRasterization only updates the buffer when replay has
+    // already fallen back to CPU.
     EnsureCpuRasterization();
 
     if (pixelBuffer_.empty()) {
@@ -20966,12 +21597,9 @@ void VulkanRenderTarget::DrawBackdropFilterEx(float x, float y, float w, float h
 
     PushTemporaryClip(x, y, w, h, cornerRadiusTL, cornerRadiusTL);
 
-    // Always record the GPU command. backdrop_quad.frag.hlsl enforces a
-    // non-zero alpha floor (`max(blurred.a, 0.08 + tintAlpha*0.25)`), so
-    // even when the GPU replay path leaves pixelBuffer_ as initial zeros
-    // the shader still composites a visible tint/glass overlay. PR #114
-    // codex review (P1) flagged that the previous GPU-path short-circuit
-    // dropped this overlay entirely.
+    // Always record the GPU command. On transfer-capable Vulkan devices replay
+    // captures only the panel plus its blur apron; otherwise the existing CPU
+    // snapshot remains the compatibility fallback.
     if (!TryRecordGpuBackdropCommand(
             pixelBuffer_,
             static_cast<uint32_t>(width_),

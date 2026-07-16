@@ -33,7 +33,8 @@ if [[ "$machine" != "$expected_machine" ]]; then
 fi
 
 if [[ "$rid" == linux-musl-* ]]; then
-  if ! ldd --version 2>&1 | grep -qi musl; then
+  ldd_version="$(ldd --version 2>&1 || true)"
+  if ! grep -qi musl <<<"$ldd_version"; then
     echo "$rid static AOT validation must run in a musl environment." >&2
     exit 1
   fi

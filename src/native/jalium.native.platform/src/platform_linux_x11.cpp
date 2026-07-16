@@ -137,6 +137,27 @@ static int          g_wakeEventFd = -1;   // eventfd for cross-thread wake
 static std::atomic<bool> g_quitRequested{false};
 static std::atomic<int32_t> g_exitCode{0};
 static std::atomic<uint64_t> g_dragSessionCounter{1};
+static std::mutex g_platformThreadMutex;
+static std::thread::id g_platformThread;
+
+static bool IsPlatformThread()
+{
+    std::lock_guard<std::mutex> lock(g_platformThreadMutex);
+    return g_platformThread != std::thread::id{} &&
+           g_platformThread == std::this_thread::get_id();
+}
+
+static void SetPlatformThread()
+{
+    std::lock_guard<std::mutex> lock(g_platformThreadMutex);
+    g_platformThread = std::this_thread::get_id();
+}
+
+static void ClearPlatformThread()
+{
+    std::lock_guard<std::mutex> lock(g_platformThreadMutex);
+    g_platformThread = std::thread::id{};
+}
 
 #ifdef JALIUM_HAS_XINPUT2
 static int g_xinputOpcode = -1;
@@ -1456,13 +1477,6 @@ static int32_t ProcessReadyFd(int fd)
 #ifdef JALIUM_HAS_WAYLAND
     if (fd == g_waylandRepeatFd)
         return ProcessWaylandRepeatReady();
-
-    if (fd == g_waylandFd && g_waylandDisplay)
-    {
-        if (wl_display_dispatch(g_waylandDisplay) >= 0) return 1;
-        g_quitRequested.store(true, std::memory_order_release);
-        return 0;
-    }
 #endif
 
     uint64_t wakeCount = 0;
@@ -1507,20 +1521,129 @@ static int32_t ProcessEpollEvents(int timeoutMilliseconds)
 {
     if (g_epollFd < 0) return 0;
 
+    int32_t processed = 0;
+    int effectiveTimeout = timeoutMilliseconds;
+#ifdef JALIUM_HAS_WAYLAND
+    bool waylandReadPrepared = false;
+    if (g_waylandDisplay && g_waylandFd >= 0 &&
+        !g_quitRequested.load(std::memory_order_acquire))
+    {
+        // libwayland's multi-queue contract requires preparing the read before
+        // waiting for fd readiness. Mesa's Vulkan WSI attaches a private queue
+        // to this same wl_display; polling first and then dispatching the
+        // default queue can consume Mesa's bytes and wait forever for an event
+        // on the wrong queue.
+        int pending = wl_display_dispatch_pending(g_waylandDisplay);
+        if (pending < 0)
+        {
+            g_quitRequested.store(true, std::memory_order_release);
+            return processed;
+        }
+        processed += pending;
+        if (pending > 0)
+            effectiveTimeout = 0;
+        if (g_quitRequested.load(std::memory_order_acquire))
+            return processed;
+
+        while (wl_display_prepare_read(g_waylandDisplay) != 0)
+        {
+            pending = wl_display_dispatch_pending(g_waylandDisplay);
+            if (pending < 0)
+            {
+                g_quitRequested.store(true, std::memory_order_release);
+                return processed;
+            }
+            processed += pending;
+            if (pending > 0)
+                effectiveTimeout = 0;
+            if (g_quitRequested.load(std::memory_order_acquire))
+                return processed;
+        }
+        waylandReadPrepared = true;
+
+        int flushResult;
+        do
+        {
+            flushResult = wl_display_flush(g_waylandDisplay);
+        }
+        while (flushResult < 0 && errno == EINTR);
+        if (flushResult < 0 && errno != EAGAIN && errno != EWOULDBLOCK)
+        {
+            wl_display_cancel_read(g_waylandDisplay);
+            g_quitRequested.store(true, std::memory_order_release);
+            return processed;
+        }
+    }
+#endif
+
     struct epoll_event events[32];
     int ready;
     do
     {
-        ready = epoll_wait(g_epollFd, events, 32, timeoutMilliseconds);
+        ready = epoll_wait(g_epollFd, events, 32, effectiveTimeout);
     }
     while (ready < 0 && errno == EINTR &&
            !g_quitRequested.load(std::memory_order_acquire));
+    const int epollError = ready < 0 ? errno : 0;
 
-    if (ready <= 0) return 0;
+#ifdef JALIUM_HAS_WAYLAND
+    bool waylandReadable = false;
+    bool waylandConnectionFailed =
+        ready < 0 && epollError != EINTR;
+    if (ready > 0 && waylandReadPrepared)
+    {
+        for (int index = 0; index < ready; ++index)
+        {
+            if (events[index].data.fd != g_waylandFd) continue;
+            waylandReadable |= (events[index].events & EPOLLIN) != 0;
+            waylandConnectionFailed |=
+                (events[index].events & (EPOLLERR | EPOLLHUP)) != 0;
+        }
+    }
 
-    int32_t processed = 0;
+    if (waylandReadPrepared)
+    {
+        if (waylandReadable)
+        {
+            const int readResult = wl_display_read_events(g_waylandDisplay);
+            if (readResult < 0)
+                waylandConnectionFailed = true;
+        }
+        else
+        {
+            wl_display_cancel_read(g_waylandDisplay);
+        }
+        waylandReadPrepared = false;
+
+        if (!waylandConnectionFailed)
+        {
+            const int pending = wl_display_dispatch_pending(g_waylandDisplay);
+            if (pending < 0)
+                waylandConnectionFailed = true;
+            else
+                processed += pending;
+        }
+        if (waylandConnectionFailed)
+            g_quitRequested.store(true, std::memory_order_release);
+    }
+#endif
+
+    if (ready < 0)
+    {
+        if (epollError != EINTR)
+            g_quitRequested.store(true, std::memory_order_release);
+        return processed;
+    }
+    if (ready == 0) return processed;
+
     for (int index = 0; index < ready; ++index)
+    {
+#ifdef JALIUM_HAS_WAYLAND
+        if (events[index].data.fd == g_waylandFd)
+            continue;
+#endif
         processed += ProcessReadyFd(events[index].data.fd);
+    }
     return processed;
 }
 
@@ -5036,11 +5159,13 @@ JaliumResult jalium_platform_init_impl()
     }
     g_quitRequested.store(false, std::memory_order_release);
     g_exitCode.store(0, std::memory_order_release);
+    SetPlatformThread();
     return JALIUM_OK;
 }
 
 void jalium_platform_shutdown_impl()
 {
+    ClearPlatformThread();
     g_quitRequested.store(true, std::memory_order_release);
     (void)SignalEventFd(g_wakeEventFd);
 
@@ -7130,6 +7255,8 @@ int32_t jalium_platform_run_message_loop(void)
 {
     if (g_windowSystem == LinuxWindowSystem::Disabled || g_epollFd < 0)
         return g_exitCode.load(std::memory_order_acquire);
+    if (!IsPlatformThread())
+        return static_cast<int32_t>(JALIUM_ERROR_INVALID_STATE);
 
     g_quitRequested.store(false, std::memory_order_release);
 
@@ -7167,6 +7294,7 @@ int32_t jalium_platform_poll_events(void)
 {
     int32_t count = 0;
     if (g_windowSystem == LinuxWindowSystem::Disabled || g_epollFd < 0) return count;
+    if (!IsPlatformThread()) return count;
 
     // Drive native callback sources even when an embedder owns the outer loop.
     count += ProcessEpollEvents(0);
@@ -7209,6 +7337,7 @@ JaliumResult jalium_dispatcher_create(JaliumDispatcher** outDispatcher)
     if (!outDispatcher) return JALIUM_ERROR_INVALID_ARGUMENT;
     *outDispatcher = nullptr;
     if (g_epollFd < 0) return JALIUM_ERROR_INVALID_STATE;
+    if (!IsPlatformThread()) return JALIUM_ERROR_INVALID_STATE;
 
     auto disp = new JaliumDispatcher();
     const int eventFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);

@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Jalium.UI.Media.Native;
 using Jalium.UI.Media.Pipeline;
 using Xunit;
@@ -104,7 +105,25 @@ public class MiniAudioDeviceTests
     }
 
     [Fact]
-    public void PlaybackEnded_FiresAfterSubmitAndSignal()
+    public void PlaybackEndedDispatch_DoesNotDependOnThreadPool()
+    {
+        var device = (MiniAudioDevice)RuntimeHelpers.GetUninitializedObject(typeof(MiniAudioDevice));
+        using var fired = new ManualResetEventSlim();
+        bool ranOnThreadPool = true;
+        device.PlaybackEnded += (_, _) =>
+        {
+            ranOnThreadPool = Thread.CurrentThread.IsThreadPoolThread;
+            fired.Set();
+        };
+
+        device.QueuePlaybackEnded();
+
+        Assert.True(fired.Wait(TimeSpan.FromSeconds(10)));
+        Assert.False(ranOnThreadPool);
+    }
+
+    [Fact]
+    public async Task PlaybackEnded_FiresAfterSubmitAndSignal()
     {
         using var device = TryOpenDevice();
         if (device is null) return;
@@ -113,19 +132,28 @@ public class MiniAudioDeviceTests
         try { device.Start(); }
         catch (NativeMediaException) { return; }
 
-        using var fired = new System.Threading.ManualResetEventSlim(false);
-        device.PlaybackEnded += (_, _) => fired.Set();
+        var fired = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        EventHandler handler = (_, _) => fired.TrySetResult();
+        device.PlaybackEnded += handler;
 
-        // 提交一小段(~50 ms)PCM,然后告诉设备没后续数据。等 ring 排空后 ended 事件 fire。
-        const int frames = SampleRate / 20; // 50 ms
-        var silence = new float[frames * Channels];
-        int written = device.Submit(silence);
-        Assert.True(written > 0);
+        try
+        {
+            // 提交一小段(~50 ms)PCM,然后告诉设备没后续数据。等 ring 排空后 ended 事件 fire。
+            const int frames = SampleRate / 20; // 50 ms
+            var silence = new float[frames * Channels];
+            int written = device.Submit(silence);
+            Assert.True(written > 0);
 
-        device.SignalEndOfStream();
+            device.SignalEndOfStream();
 
-        // 给驱动 + 回调充足时间(典型 buffer ~10ms,加上 ThreadPool hop)。
-        bool ok = fired.Wait(TimeSpan.FromSeconds(3));
-        Assert.True(ok, "PlaybackEnded 应该在 ring drain 后 fire。");
+            // Do not block the xUnit worker while the managed callback is queued to the
+            // ThreadPool. The full Linux suite can otherwise turn this into a worker
+            // starvation check instead of an audio-ring drain check.
+            await fired.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            device.PlaybackEnded -= handler;
+        }
     }
 }

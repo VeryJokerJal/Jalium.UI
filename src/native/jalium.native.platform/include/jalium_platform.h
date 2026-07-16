@@ -408,10 +408,14 @@ typedef void (*JaliumTimerCallback)(void* userData);
 
 /// Initializes the platform subsystem. Must be called once before any other
 /// platform API calls. Safe to call multiple times (ref-counted).
+/// On Linux, the first successful caller owns the display and event loop until
+/// the matching final shutdown.
 JALIUM_PLATFORM_API JaliumResult jalium_platform_init(void);
 
 /// Shuts down the platform subsystem. Must be called once for each
 /// successful jalium_platform_init() call.
+/// On Linux, the final matching shutdown must run on the platform initialization
+/// thread because it releases the owned X11/Wayland display resources.
 JALIUM_PLATFORM_API void jalium_platform_shutdown(void);
 
 /// Returns the current host platform identifier.
@@ -535,11 +539,15 @@ JALIUM_PLATFORM_API void jalium_window_get_position(
 
 /// Runs the platform event loop. Blocks until jalium_platform_quit() is called.
 /// Dispatches events to window callbacks.
-/// @return The exit code passed to jalium_platform_quit().
+/// On Linux, must be called from the thread that initialized the platform.
+/// @return The exit code passed to jalium_platform_quit(), or
+/// JALIUM_ERROR_INVALID_STATE when called from a foreign Linux thread.
 JALIUM_PLATFORM_API int32_t jalium_platform_run_message_loop(void);
 
 /// Runs one iteration of the event loop without blocking. Returns the number
 /// of events processed (0 if none were pending).
+/// On Linux, only the platform initialization thread processes events; calls
+/// from other threads return 0.
 JALIUM_PLATFORM_API int32_t jalium_platform_poll_events(void);
 
 /// Signals the event loop to exit with the given exit code.
@@ -551,8 +559,11 @@ JALIUM_PLATFORM_API void jalium_platform_quit(int32_t exitCode);
 
 /// Creates a new dispatcher for the calling thread.
 /// Used to wake the event loop from another thread.
+/// On Linux, the caller must be the platform initialization thread because the
+/// X11/Wayland event loop has a single owner.
 /// @param outDispatcher Receives the created dispatcher handle.
-/// @return JALIUM_OK on success.
+/// @return JALIUM_OK on success, or JALIUM_ERROR_INVALID_STATE when the Linux
+/// caller does not own the platform event loop.
 JALIUM_PLATFORM_API JaliumResult jalium_dispatcher_create(
     JaliumDispatcher** outDispatcher);
 

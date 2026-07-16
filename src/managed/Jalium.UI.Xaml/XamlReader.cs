@@ -161,6 +161,7 @@ public partial class XamlReader
     private object StartAsyncLoad(Func<object> load)
     {
         ArgumentNullException.ThrowIfNull(load);
+        SynchronizationContext? completionContext = SynchronizationContext.Current;
         CancelAsync();
         var cancellation = new CancellationTokenSource();
         _asyncCancellation = cancellation;
@@ -172,17 +173,20 @@ public partial class XamlReader
         }
         catch (Exception exception)
         {
-            QueueCompletion(cancellation, exception);
+            QueueCompletion(cancellation, exception, completionContext);
             throw;
         }
 
-        QueueCompletion(cancellation, error: null);
+        QueueCompletion(cancellation, error: null, completionContext);
         return result;
     }
 
-    private void QueueCompletion(CancellationTokenSource cancellation, Exception? error)
+    private void QueueCompletion(
+        CancellationTokenSource cancellation,
+        Exception? error,
+        SynchronizationContext? completionContext)
     {
-        ThreadPool.QueueUserWorkItem(_ =>
+        void Complete(object? _)
         {
             bool cancelled = cancellation.IsCancellationRequested;
             if (ReferenceEquals(Interlocked.CompareExchange(ref _asyncCancellation, null, cancellation), cancellation))
@@ -192,7 +196,16 @@ public partial class XamlReader
 
             LoadCompleted?.Invoke(this,
                 new System.ComponentModel.AsyncCompletedEventArgs(error, cancelled, userState: null));
-        });
+        }
+
+        if (completionContext is not null)
+        {
+            completionContext.Post(Complete, state: null);
+        }
+        else
+        {
+            ThreadPool.QueueUserWorkItem(Complete);
+        }
     }
 
     private static Uri? TryGetBaseUri(XmlReader reader)
@@ -3326,7 +3339,7 @@ public partial class XamlReader
                 {
                     existing.MergedDictionaries.Add(merged);
                 }
-                foreach (KeyValuePair<object, object?> entry in dictionaryValue)
+                foreach (System.Collections.DictionaryEntry entry in dictionaryValue)
                 {
                     existing[entry.Key] = entry.Value;
                 }

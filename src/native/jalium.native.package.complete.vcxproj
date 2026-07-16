@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>MakeFileProj</Keyword>
+    <ProjectGuid>{F0C59CB9-4F8E-4B8B-92E7-8F772F8A3D62}</ProjectGuid>
+    <RootNamespace>jaliumnativepackagecomplete</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>Makefile</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <ImportGroup Label="ExtensionSettings" />
+  <ImportGroup Label="Shared" />
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+
+  <PropertyGroup Label="UserMacros" />
+
+  <PropertyGroup>
+    <!-- Always let CMake perform its own dependency check when VS invokes
+         Build; the completion stamp alone is not a sufficient up-to-date
+         input for native source and shader changes. -->
+    <DisableFastUpToDateCheck>true</DisableFastUpToDateCheck>
+    <JaliumNativeCMakeBuildDir Condition="'$(JaliumNativeCMakeBuildDir)' == ''">$(ProjectDir)out\build\windows-x64-vs</JaliumNativeCMakeBuildDir>
+    <_JaliumNativeConfigureCommand>cmake -S &quot;$(ProjectDir).&quot; -B &quot;$(JaliumNativeCMakeBuildDir)&quot; -A x64 -DJALIUM_NATIVE_RID=win-x64 -DJALIUM_BUILD_VULKAN=ON -DJALIUM_BUILD_STATIC=OFF -DJALIUM_BUILD_DEMOS=OFF</_JaliumNativeConfigureCommand>
+    <_JaliumNativeBuildCommand>cmake --build &quot;$(JaliumNativeCMakeBuildDir)&quot; --config $(Configuration) --target jalium.native.package.complete --parallel</_JaliumNativeBuildCommand>
+    <NMakeBuildCommandLine>$(_JaliumNativeConfigureCommand) &amp;&amp; $(_JaliumNativeBuildCommand)</NMakeBuildCommandLine>
+    <NMakeReBuildCommandLine>$(_JaliumNativeConfigureCommand) &amp;&amp; $(_JaliumNativeBuildCommand) --clean-first</NMakeReBuildCommandLine>
+    <NMakeCleanCommandLine>if exist &quot;$(JaliumNativeCMakeBuildDir)\CMakeCache.txt&quot; cmake --build &quot;$(JaliumNativeCMakeBuildDir)&quot; --config $(Configuration) --target clean</NMakeCleanCommandLine>
+    <NMakeOutput>$(ProjectDir)bin\native\win-x64\$(Configuration)\.jalium-native-complete</NMakeOutput>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets" />
+</Project>

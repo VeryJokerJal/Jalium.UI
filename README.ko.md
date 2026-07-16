@@ -10,7 +10,7 @@ WPF 스타일의 객체 모델, Razor 구문 확장을 갖춘 JALXAML 마크업,
 
 ## 프로젝트 상태
 
-- 활발히 개발 중 — v26.10.6 (마이너 버전 간에 API가 변경될 수 있음)
+- 활발히 개발 중 — v26.10.7 (마이너 버전 간에 API가 변경될 수 있음)
 - 주요 대상: Windows 10/11 (x64, ARM64)
 - 크로스 플랫폼: Android (arm64-v8a, x86_64), Linux (X11/Wayland, Vulkan 또는 소프트웨어), macOS (Metal)
 - 런타임 대상: .NET 10 (`net10.0-windows`, `net10.0-android`, `net10.0`)

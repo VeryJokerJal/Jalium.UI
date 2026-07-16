@@ -1,5 +1,6 @@
 #include "vulkan_backend.h"
 
+#include "jalium_string_util.h"
 #include "vulkan_render_target.h"
 #include "vulkan_runtime.h"
 
@@ -102,24 +103,9 @@ void VulkanBackend::RegisterAdapterInfo(VkPhysicalDevice physicalDevice,
 
     JaliumAdapterInfo info{};
 
-    // VkPhysicalDeviceProperties::deviceName 是定长 char[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]
-    // (= 256, UTF-8)。Jalium 用 wchar_t[128]，做 UTF-8→UTF-16 转换 + 截断。
-    // 在 Windows 上用 MultiByteToWideChar；其它平台用 std::mbstowcs 作为最简兜底
-    // （足够覆盖 ASCII GPU 名字，特殊字符会被替换为 '?' 但不会越界）。
-#if defined(_WIN32)
-    int wlen = MultiByteToWideChar(
-        CP_UTF8, 0, props.deviceName, -1, nullptr, 0);
-    if (wlen > 0) {
-        const int cap = static_cast<int>(_countof(info.name));
-        if (wlen > cap) wlen = cap;
-        MultiByteToWideChar(CP_UTF8, 0, props.deviceName, -1, info.name, wlen);
-        info.name[cap - 1] = L'\0';
-    }
-#else
-    std::mbstowcs(info.name, props.deviceName,
-                  sizeof(info.name) / sizeof(info.name[0]) - 1);
-    info.name[sizeof(info.name) / sizeof(info.name[0]) - 1] = L'\0';
-#endif
+    // VkPhysicalDeviceProperties::deviceName 是定长 UTF-8 char[256]。
+    // 公共 ABI 固定使用两字节 UTF-16，避免 wchar_t 在 Linux 上变成四字节。
+    Utf8ToFixedUtf16(props.deviceName, info.name);
 
     // adapterType: 直接映射 VkPhysicalDeviceType → JaliumGpuAdapterType。
     switch (props.deviceType) {

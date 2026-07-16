@@ -424,7 +424,13 @@ JaliumTextFormat::LayoutResult JaliumTextFormat::PerformLayout(
             {
                 // Word wrap: scan back to last word boundary
                 size_t breakAt = i;
-                for (size_t j = i; j > 0; j--)
+                // Only search the glyphs that belong to the current line. If
+                // we scan into an already-emitted line, a long unbroken word
+                // can repeatedly rediscover that previous line's trailing
+                // space. breakAt then equals currentLine.startIndex, no input
+                // is consumed, and the loop appends empty lines until the
+                // process runs out of memory.
+                for (size_t j = i; j > currentLine.startIndex; j--)
                 {
                     uint32_t ci = run.glyphs[j - 1].cluster;
                     if (ci < textLength && (text[ci] == L' ' || text[ci] == L'\t'))

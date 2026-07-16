@@ -249,6 +249,27 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     /// </summary>
     internal static bool IsPopupWindow(nint hwnd) => _popupWindows.ContainsKey(hwnd);
 
+    /// <summary>
+    /// Snapshots the set of currently-open <see cref="PopupWindow"/> instances.
+    /// The returned array is a copy — safe to iterate even if popups close
+    /// (and unregister themselves) during traversal.
+    /// </summary>
+    /// <remarks>
+    /// Used by <see cref="Application"/> to broadcast application-resource changes:
+    /// external popup surfaces are detached visual roots, so a theme swap has to
+    /// reach them explicitly or their content keeps stale implicit styles.
+    /// </remarks>
+    internal static PopupWindow[] SnapshotOpenPopupWindows()
+    {
+        var result = new PopupWindow[_popupWindows.Count];
+        var i = 0;
+        foreach (var popup in _popupWindows.Values)
+        {
+            result[i++] = popup;
+        }
+        return result;
+    }
+
     #region IWindowHost
 
     public void InvalidateWindow()

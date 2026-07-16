@@ -49,7 +49,10 @@
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\SpellCheckerComActivationTests.cs" />
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\UiaComWrappersTests.cs" />
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\VulkanEffectGpuRtSmokeTests.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\VulkanPerCornerReplayTests.cs" />
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\VulkanRetainedLayerParityTests.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\VulkanStrokeAlignmentTests.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\VulkanSuperEllipseAntialiasingTests.cs" />
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\WindowTaskbarRelaunchTests.cs" />
 
     <Compile Include="..\Jalium.UI.Tests\**\*.cs"

@@ -33,17 +33,17 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- Versioning -->
-    <Version>26.10.6</Version>
-    <AssemblyVersion>26.10.6.0</AssemblyVersion>
-    <FileVersion>26.10.6.0</FileVersion>
+    <Version>26.10.7</Version>
+    <AssemblyVersion>26.10.7.0</AssemblyVersion>
+    <FileVersion>26.10.7.0</FileVersion>
 
     <!-- NuGet Package Metadata -->
     <Authors>Jal</Authors>
     <Company>Jal</Company>
     <Product>Jalium UI</Product>
     <Copyright>Copyright (c) Jal</Copyright>
-    <PackageProjectUrl>https://github.com/jalium/jalium-ui</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/jalium/jalium-ui</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/VeryJokerJal/Jalium.UI</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/VeryJokerJal/Jalium.UI</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>

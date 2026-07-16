@@ -3,6 +3,7 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
+using Jalium.UI.Interop;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
 
@@ -148,12 +149,79 @@ public class TreeAndNavigationExpandStateTests
             Assert.NotNull(chevron);
             Assert.Equal(Visibility.Visible, childrenPanel!.Visibility);
             Assert.Equal(Visibility.Visible, chevron!.Visibility);
-            Assert.Equal(90d, GetAngle(chevron), 3);
+            Assert.Equal(90d, GetNavigationChevronAngle(item), 3);
+            Assert.False(chevron.RenderTransform is RotateTransform);
+            AssertChevronGeometryIsVisible(chevron);
         }
         finally
         {
             ResetApplicationState();
         }
+    }
+
+    [Fact]
+    public void NavigationViewItem_AutoSizedCustomChevron_ShouldKeepOriginalLayoutPath()
+    {
+        var geometry = Assert.IsType<PathGeometry>(Geometry.Parse("M 0,0 L 4,2 L 0,4 Z"));
+        var geometryTransform = new TranslateTransform(3, 5);
+        geometry.Transform = geometryTransform;
+        var chevron = new Jalium.UI.Shapes.Path
+        {
+            Data = geometry,
+            Stretch = Stretch.Uniform
+        };
+        var item = new NavigationViewItem();
+        SetPrivateField(item, "_chevron", chevron);
+
+        InvokePrivateMethod(item, "BuildChevronBase");
+        item.IsExpanded = true;
+
+        Assert.Null(GetPrivateField<PathGeometry>(item, "_chevronBase"));
+        Assert.True(double.IsNaN(chevron.Width));
+        Assert.True(double.IsNaN(chevron.Height));
+        Assert.Same(geometry, chevron.Data);
+        Assert.Same(geometryTransform, geometry.Transform);
+        var rotate = Assert.IsType<RotateTransform>(chevron.RenderTransform);
+        Assert.Equal(90d, rotate.Angle, 3);
+    }
+
+    [Fact]
+    public void NavigationViewItem_SingleAxisCustomChevron_ShouldKeepPathStretchHandling()
+    {
+        var geometry = Assert.IsType<PathGeometry>(Geometry.Parse("M 0,0 L 0,4"));
+        var chevron = new Jalium.UI.Shapes.Path
+        {
+            Data = geometry,
+            Width = 8,
+            Height = 8,
+            Stretch = Stretch.Uniform
+        };
+        var item = new NavigationViewItem();
+        SetPrivateField(item, "_chevron", chevron);
+
+        InvokePrivateMethod(item, "BuildChevronBase");
+        item.IsExpanded = true;
+
+        Assert.Null(GetPrivateField<PathGeometry>(item, "_chevronBase"));
+        Assert.Equal(Stretch.Uniform, chevron.Stretch);
+        Assert.Same(geometry, chevron.Data);
+        var rotate = Assert.IsType<RotateTransform>(chevron.RenderTransform);
+        Assert.Equal(90d, rotate.Angle, 3);
+    }
+
+    [Fact]
+    public void PathGeometryTransformHelper_CloneWithTransformBaked_ShouldApplyGeometryTransform()
+    {
+        var geometry = Assert.IsType<PathGeometry>(Geometry.Parse("M 0,0 L 2,0 L 2,1 L 0,1 Z"));
+        geometry.Transform = new MatrixTransform(new Matrix(2, 0, 0, 3, 5, 7));
+
+        var baked = PathGeometryTransformHelper.CloneWithTransformBaked(geometry);
+
+        Assert.Null(baked.Transform);
+        Assert.Equal(5d, baked.Bounds.X, 3);
+        Assert.Equal(7d, baked.Bounds.Y, 3);
+        Assert.Equal(4d, baked.Bounds.Width, 3);
+        Assert.Equal(3d, baked.Bounds.Height, 3);
     }
 
     [Fact]
@@ -188,7 +256,9 @@ public class TreeAndNavigationExpandStateTests
             Assert.Equal(Visibility.Visible, childrenPanel!.Visibility);
             Assert.NotNull(expandAnimTimer);
             Assert.True(expandAnimTimer!.IsEnabled);
-            Assert.InRange(GetAngle(chevron!), 0d, 90d);
+            Assert.InRange(GetNavigationChevronAngle(item), 0d, 90d);
+            Assert.False(chevron!.RenderTransform is RotateTransform);
+            AssertChevronGeometryIsVisible(chevron);
 
             expandAnimTimer.Stop();
         }
@@ -221,7 +291,9 @@ public class TreeAndNavigationExpandStateTests
 
             Assert.NotNull(chevron);
             Assert.Equal(Visibility.Visible, chevron!.Visibility);
-            Assert.Equal(90d, GetAngle(chevron), 3);
+            Assert.Equal(90d, GetNavigationChevronAngle(root), 3);
+            Assert.False(chevron.RenderTransform is RotateTransform);
+            AssertChevronGeometryIsVisible(chevron);
         }
         finally
         {
@@ -771,6 +843,40 @@ public class TreeAndNavigationExpandStateTests
     private static double GetAngle(Jalium.UI.Shapes.Path path)
     {
         return path.RenderTransform is RotateTransform rotate ? rotate.Angle : 0;
+    }
+
+    private static double GetNavigationChevronAngle(NavigationViewItem item)
+    {
+        var field = typeof(NavigationViewItem).GetField("_chevronAngle", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return (double)(field!.GetValue(item) ?? 0d);
+    }
+
+    private static void AssertChevronGeometryIsVisible(Jalium.UI.Shapes.Path chevron)
+    {
+        var geometry = Assert.IsType<PathGeometry>(chevron.Data);
+        Assert.NotEmpty(geometry.Figures);
+        Assert.True(geometry.Bounds.Width > 0);
+        Assert.True(geometry.Bounds.Height > 0);
+        Assert.InRange(geometry.Bounds.X, -0.01, chevron.Width + 0.01);
+        Assert.InRange(geometry.Bounds.Y, -0.01, chevron.Height + 0.01);
+        Assert.InRange(geometry.Bounds.Right, -0.01, chevron.Width + 0.01);
+        Assert.InRange(geometry.Bounds.Bottom, -0.01, chevron.Height + 0.01);
+
+        var brush = chevron.Fill ?? new SolidColorBrush(Color.FromRgb(255, 255, 255));
+        var drawing = new GeometryDrawing(brush, null, geometry);
+        var pixelWidth = Math.Max(1, (int)Math.Ceiling(chevron.Width));
+        var pixelHeight = Math.Max(1, (int)Math.Ceiling(chevron.Height));
+        var pixels = SoftwareVectorRasterizer.Rasterize(
+            drawing,
+            pixelWidth,
+            pixelHeight,
+            new Rect(0, 0, pixelWidth, pixelHeight));
+
+        Assert.NotNull(pixels);
+        Assert.True(
+            pixels!.Where((_, index) => index % 4 == 3).Any(alpha => alpha > 0),
+            "Expanded navigation chevron must rasterize at least one non-transparent pixel.");
     }
 
     private static Point GetRenderOffset(UIElement element)

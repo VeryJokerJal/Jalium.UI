@@ -14,7 +14,7 @@
     <!-- Page Style -->
     <!-- ============================================== -->
     <Style TargetType="Page">
-        <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
+        <Setter Property="Background" Value="{x:Null}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
     </Style>
 

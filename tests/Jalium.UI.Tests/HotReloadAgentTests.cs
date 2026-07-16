@@ -41,12 +41,42 @@ public class HotReloadAgentTests
             Assert.NotNull(second);
             Assert.Equal(0, second!.Value.Failed);
             Assert.Equal(333, target.Width);
+
+            // Queue two clients at once. On Unix the second connection can already be in the
+            // listening socket backlog while the first frame is still being handled.
+            var queued = new[]
+            {
+                SendFrameOnDedicatedThread(pipeName, "444"),
+                SendFrameOnDedicatedThread(pipeName, "555"),
+            };
+#pragma warning disable xUnit1031 // Dedicated LongRunning clients do not depend on the xUnit worker being blocked here.
+            Assert.True(Task.WaitAll(queued, TimeSpan.FromSeconds(10)), "queued hot-reload clients timed out");
+#pragma warning restore xUnit1031
+            Assert.All(queued, task =>
+            {
+                Assert.NotNull(task.Result);
+                Assert.Equal(0, task.Result!.Value.Failed);
+                Assert.True(task.Result.Value.Updated >= 1, $"expected ≥1 updated, got {task.Result.Value.Updated}");
+            });
+            Assert.Contains(target.Width, new[] { 444d, 555d });
         }
         finally
         {
             Environment.SetEnvironmentVariable(HotReloadAgent.PipeEnvironmentVariable, null);
         }
     }
+
+    private static Task<(int Updated, int Fallback, int Failed, string Message)?> SendFrameOnDedicatedThread(
+        string pipeName, string width) =>
+        Task.Factory.StartNew(
+            () => SendFrame(
+                pipeName,
+                typeof(ScrollViewer).FullName!,
+                "f.jalxaml",
+                $"""<ScrollViewer xmlns="{Pres}" Width="{width}" />"""),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+            TaskScheduler.Default);
 
     /// 与 IDE 客户端同款协议：三个 length-prefixed 串 → 读 "updated|fallback|failed|message"。
     /// agent 线程刚起，连接带重试（总预算 ~5s）。

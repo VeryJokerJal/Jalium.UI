@@ -987,6 +987,26 @@ public class TreeSelector : ItemsControl
         SetDropDownArrowAngle(IsDropDownOpen ? 180 : 0);
     }
 
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        // base clears ItemsControl's ItemsPresenter; then release our own parts. UpdateDisplay
+        // otherwise keeps realizing tag chips into the detached _tagsPanel and writing display /
+        // placeholder text and the dropdown open state into the discarded tree.
+        base.OnTemplateContentClearing();
+
+        DetachTriggerHandlers();
+
+        _triggerBorder = null;
+        _displayText = null;
+        _tagsPanel = null;
+        _searchTextBox = null;
+        _placeholderText = null;
+        _clearButton = null;
+        _dropDownArrow = null;
+        _popup = null;
+    }
+
     private void AttachTriggerHandlers()
     {
         if (_triggerBorder != null)
@@ -1686,6 +1706,32 @@ public class TreeSelectorItem : HeaderedItemsControl
         UpdateCheckBoxVisibility();
         UpdateHeaderVisualState();
         SyncCheckBoxFromState();
+    }
+
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        // base clears ItemsControl's ItemsPresenter registration; then release our own parts so
+        // the header/expander state no longer resolves into the discarded template tree.
+        base.OnTemplateContentClearing();
+
+        if (_headerBorder != null)
+        {
+            _headerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnHeaderMouseDown));
+            _headerBorder.RemoveHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter));
+            _headerBorder.RemoveHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave));
+        }
+        if (_checkBox != null)
+        {
+            _checkBox.Click -= OnCheckBoxClick;
+        }
+
+        _headerBorder = null;
+        _indentSpacer = null;
+        _expanderBorder = null;
+        _expanderArrow = null;
+        _checkBox = null;
+        _itemsHost = null;
     }
 
     internal Panel? GetItemsHostPanel()

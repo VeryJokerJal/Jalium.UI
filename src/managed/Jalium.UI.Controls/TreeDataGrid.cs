@@ -442,6 +442,27 @@ public class TreeDataGrid : Control, IColumnHeaderHost
         RefreshRows();
     }
 
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        base.OnTemplateContentClearing();
+
+        // Release the cached template parts before the tree is discarded — the row/header refresh
+        // paths only guard against null, so a surviving reference resolves into the detached tree.
+        if (_dataScrollViewer != null)
+        {
+            _dataScrollViewer.ScrollChanged -= OnDataScrollViewerScrollChanged;
+            _dataScrollViewer.SizeChanged -= OnDataScrollViewerSizeChanged;
+        }
+
+        _columnHeadersHost = null;
+        _rowsHost = null;
+        _columnHeadersBorder = null;
+        _columnHeadersScrollViewer = null;
+        _dataScrollViewer = null;
+        _dragOverlay = null;
+    }
+
     private void OnDataScrollViewerScrollChanged(object sender, ScrollChangedEventArgs e)
     {
         SyncColumnHeadersHorizontalScroll();

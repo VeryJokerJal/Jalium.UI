@@ -365,7 +365,8 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
         {
             if (contentChild.Parent is not null && !ReferenceEquals(contentChild.Parent, this))
             {
-                throw new InvalidOperationException("The logical child already has a parent.");
+                throw new InvalidOperationException(
+                    $"The logical child already has a parent (child: {contentChild.GetType().Name}, current parent: {contentChild.Parent.GetType().Name}, attempted parent: {GetType().Name}).");
             }
 
             contentChild._logicalParent = this;
@@ -381,7 +382,8 @@ public class FrameworkContentElement : ContentElement, IFrameworkInputElement, I
             if (contentElement.GetUIParentCore() is not null &&
                 !ReferenceEquals(contentElement.GetUIParentCore(), this))
             {
-                throw new InvalidOperationException("The logical child already has a parent.");
+                throw new InvalidOperationException(
+                    $"The logical child already has a parent (child: {contentElement.GetType().Name}, current parent: {contentElement.GetUIParentCore()!.GetType().Name}, attempted parent: {GetType().Name}).");
             }
 
             contentElement.SetContentParent(this);

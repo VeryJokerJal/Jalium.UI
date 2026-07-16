@@ -20,6 +20,16 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
     private IScrollInfo? CurrentScrollInfo => _itemsPanel as IScrollInfo;
 
     /// <summary>
+    /// The template root of the expanded template instance this presenter belongs to, stamped
+    /// while <see cref="Control.SetTemplatedParentRecursive(FrameworkElement, FrameworkElement)"/>
+    /// walks the freshly loaded tree. It lets <see cref="AttachToOwner"/> tell a presenter that
+    /// still belongs to the owner's current template apart from one left behind in a discarded
+    /// template tree (see the guard there). Null when the presenter was never reached by that
+    /// walk — e.g. an <see cref="ItemsPresenter"/> authored directly in a data template.
+    /// </summary>
+    internal FrameworkElement? TemplateInstanceRoot { get; set; }
+
+    /// <summary>
     /// Gets the panel that hosts the items.
     /// </summary>
     internal Panel? ItemsPanel => _itemsPanel;
@@ -88,17 +98,36 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
     /// <summary>
     /// Discards the current items panel so that the next measure pass
     /// will create a new one from the owner's <see cref="ItemsControl.ItemsPanel"/> template.
+    /// The retired panel is fully decommissioned (children cleared, items-host flag and
+    /// generator/owner references dropped) so a stale queued measure cannot make it realize
+    /// containers that now belong to the replacement panel.
     /// </summary>
-    internal void InvalidatePanel()
+    /// <param name="invalidateMeasure">
+    /// Pass false when the presenter itself is being discarded together with its template
+    /// tree — re-queueing a detached presenter for layout would only let a zombie measure
+    /// re-create a panel on it.
+    /// </param>
+    internal void InvalidatePanel(bool invalidateMeasure = true)
     {
         if (_itemsPanel != null)
         {
-            _itemsPanel.Children.Clear();
-            RemoveVisualChild(_itemsPanel);
+            var panel = _itemsPanel;
+            ItemsControl.RetireItemsHostPanel(panel);
+
+            // Clear the field BEFORE detaching: RemoveVisualChild re-syncs the cached
+            // DependencyObject.VisualChildrenCount from the overridden property, which
+            // reads _itemsPanel. Clearing afterwards leaves the cache at 1 while the
+            // live count is 0, and the next cached-count subtree walk (e.g.
+            // RemoveSubtreeFromLayoutManager when the surrounding template tree is
+            // discarded) dereferences GetVisualChild(0) on an empty presenter and throws.
             _itemsPanel = null;
+            RemoveVisualChild(panel);
         }
 
-        InvalidateMeasure();
+        if (invalidateMeasure)
+        {
+            InvalidateMeasure();
+        }
     }
 
     /// <summary>Called when the owning items-panel template changes.</summary>
@@ -119,6 +148,22 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
     /// </summary>
     internal void AttachToOwner()
     {
+        // Reject a presenter that belongs to a template instance the owner has already discarded.
+        // Such a presenter is never retired by ItemsControl.OnTemplateContentClearing (that only
+        // inspects the registered presenter, and this one was replaced before it was ever
+        // measured/registered) and nothing clears its TemplatedParent — so without this guard a
+        // stray measure would walk up TemplatedParent, find the control and hijack the live
+        // registration through SetItemsPresenter, repointing ItemsHost at the dead tree and, for
+        // item-is-own-container items, reparenting live containers into the discarded panel.
+        // Fail open when unmarked (data-template-authored presenters walk up the visual parent
+        // chain instead and never carry a template-instance root).
+        if (TemplateInstanceRoot != null &&
+            TemplatedParent is Control templatedHost &&
+            !ReferenceEquals(TemplateInstanceRoot, templatedHost.TemplateRootInternal))
+        {
+            return;
+        }
+
         // Find the ItemsControl ancestor
         var parent = TemplatedParent ?? VisualParent;
         while (parent != null)

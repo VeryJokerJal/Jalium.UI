@@ -6,8 +6,9 @@ struct PushConstants
     float4 rect;
     float4 color;
     float2 screenSize;
-    // (shadowMode, shadowSigma): analytic erf drop shadow. shadowMode == 0 keeps
-    // every other SolidRect primitive byte-identical (the shadow branch is gated).
+    // (effectMode, effectParameter), retaining the historical shadowParams name:
+    // > 0.5 = analytic erf shadow with sigma, < -0.5 = analytic SuperEllipse
+    // fill with exponent n, 0 = ordinary SolidRect.
     float2 shadowParams;
     float4 roundedClipRect;
     float2 roundedClipRadius;
@@ -20,6 +21,8 @@ struct PushConstants
     // being non-zero (sum > 0). Callers that want uniform radii leave
     // those fields zero and the shader uses roundedClipRadius.
     float2 clipFlags;
+    // Also carries exact SuperEllipse bounds when shadowParams.x < -0.5; the
+    // outer roundedClipRect then remains free for an ancestor clip.
     float4 innerRoundedClipRect;
     float2 innerRoundedClipRadius;
     float2 padding2;
@@ -80,6 +83,16 @@ float sdRoundedBoxLocal(float2 p, float2 b, float4 r)
     return min(max(q.x, q.y), 0.0f) + length(max(q, 0.0f)) - r.x;
 }
 
+// Axis-aligned SuperEllipse signed pseudo-distance. This is kept byte-for-byte
+// equivalent to D3D12 sdf_rect.ps.hlsl so Border.Shape=SuperEllipse has the same
+// silhouette and derivative-based edge coverage on both backends.
+float sdSuperEllipseRect(float2 p, float2 halfSize, float n)
+{
+    float2 q = abs(p) / max(halfSize, float2(0.001f, 0.001f));
+    float d = pow(pow(q.x, n) + pow(q.y, n), 1.0f / n) - 1.0f;
+    return d * min(halfSize.x, halfSize.y);
+}
+
 // Coverage of a pixel against a rounded rectangle, on [0, 1].
 //   ≥ 1.0 → fully inside (a clip "yes")
 //     0   → fully outside (a clip "no")
@@ -101,11 +114,12 @@ float CoverageRoundRect(float2 pixel, float4 rect, float2 radius)
     const float rx = max(radius.x, 0.0f);
     const float ry = max(radius.y, 0.0f);
 
-    // Cheap reject: more than 1 pixel outside the AABB → no contribution at all.
-    if (pixel.x < left - 1.0f || pixel.y < top - 1.0f ||
-        pixel.x > right + 1.0f || pixel.y > bottom + 1.0f) {
-        return 0.0f;
-    }
+    // Do not return before evaluating the distance-field derivative below.
+    // Fragments just outside the expanded quad still run as helper lanes for
+    // fwidth().  Discarding only one side's helper lane makes the derivative
+    // undefined and can remove that side's outer AA sample at fractional X/Y.
+    // The draw quad is already bounded to a 1 px apron, and the SDF naturally
+    // resolves farther samples to zero, so an AABB reject is unnecessary.
 
     // Square (rx == 0 || ry == 0): cheap, just an AABB SDF.
     if (rx <= 0.0f || ry <= 0.0f) {
@@ -218,6 +232,50 @@ float sdRoundBoxUniform(float2 p, float2 halfSize, float radius)
 
 float4 main(PsInput input) : SV_Target
 {
+    // Analytic SuperEllipse fill (shadowParams.x < -0.5). The command stores
+    // the exact shape bounds in innerRoundedClipRect and exponent n in
+    // shadowParams.y; its draw quad has a 1px apron so the outside half of this
+    // smooth coverage ramp is not clipped by triangle top-left raster rules.
+    // Keep every helper lane alive through fwidth(), just like rounded clips.
+    if (gPushConstants.shadowParams.x < -0.5f) {
+        const float2 rc0 = gPushConstants.innerRoundedClipRect.xy;
+        const float2 rc1 = gPushConstants.innerRoundedClipRect.zw;
+        const float2 halfSize = (rc1 - rc0) * 0.5f;
+        const float2 center = (rc0 + rc1) * 0.5f;
+        const float exponent = max(gPushConstants.shadowParams.y, 2.0f);
+        const float dist = sdSuperEllipseRect(input.position.xy - center, halfSize, exponent);
+        const float aa = max(fwidth(dist), 0.0001f);
+        float coverage = 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, dist);
+
+        // roundedClipRect remains independent and carries an ancestor rounded
+        // include/exclude clip. Preserve the old FilledPolygon behaviour and
+        // D3D12 parity by multiplying that coverage into the shape instead of
+        // degrading the ancestor to its rectangular scissor.
+        if (gPushConstants.clipFlags.x > 0.5f) {
+            const float perCornerSum =
+                  dot(gPushConstants.perCornerRadiusX, float4(1.0f, 1.0f, 1.0f, 1.0f))
+                + dot(gPushConstants.perCornerRadiusY, float4(1.0f, 1.0f, 1.0f, 1.0f));
+            float clipCoverage;
+            if (perCornerSum > 0.001f) {
+                clipCoverage = CoveragePerCornerRoundRect(input.position.xy,
+                                                           gPushConstants.roundedClipRect,
+                                                           gPushConstants.perCornerRadiusX,
+                                                           gPushConstants.perCornerRadiusY);
+            } else {
+                clipCoverage = CoverageRoundRect(input.position.xy,
+                                                  gPushConstants.roundedClipRect,
+                                                  gPushConstants.roundedClipRadius);
+            }
+            if (gPushConstants.clipFlags.x > 1.5f) {
+                clipCoverage = 1.0f - clipCoverage;
+            }
+            coverage *= clipCoverage;
+        }
+
+        if (coverage <= 0.0f) discard;
+        return float4(input.color.rgb, input.color.a * coverage);
+    }
+
     // Analytic erf drop shadow (shadowParams.x > 0.5): a single over-blend with a
     // continuous gaussian falloff of the shadow rect's SDF, replacing the N-layer
     // concentric-rect halo (D3D12 DrawDropShadowEffect parity). The shadow rect +
@@ -328,7 +386,6 @@ float4 main(PsInput input) : SV_Target
         if (gPushConstants.clipFlags.x > 1.5f) {
             coverage = 1.0f - coverage;
         }
-        if (coverage <= 0.0f) discard;
     }
 
     // Inner rounded clip used by border strokes (the "hole" in the middle
@@ -361,8 +418,12 @@ float4 main(PsInput input) : SV_Target
                                          gPushConstants.innerRoundedClipRadius);
         }
         coverage = saturate(coverage - innerCov);
-        if (coverage <= 0.0f) discard;
     }
+
+    // Keep every helper lane alive until all outer/inner fwidth operations
+    // have completed.  A derivative evaluated after a neighbouring lane was
+    // discarded is undefined and can make one edge lose its AA sample.
+    if (coverage <= 0.0f) discard;
 
     // The SolidRect pipeline uses non-premultiplied alpha blending
     // (SRC_ALPHA / ONE_MINUS_SRC_ALPHA). Scale only the alpha channel by

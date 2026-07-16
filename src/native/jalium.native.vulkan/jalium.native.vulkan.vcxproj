@@ -72,7 +72,7 @@
            as the system code page (936/GBK) and emits C4819. Mirrors the
            CMake build's global add_compile_options(/utf-8) root fix. -->
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;$(VulkanSdkRoot)\Include;$(JaliumSdkRoot)\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;$(VulkanSdkRoot)\Include;$(ProjectDir)..\thirdparty\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -95,7 +95,7 @@
            as the system code page (936/GBK) and emits C4819. Mirrors the
            CMake build's global add_compile_options(/utf-8) root fix. -->
       <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;$(VulkanSdkRoot)\Include;$(JaliumSdkRoot)\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;$(VulkanSdkRoot)\Include;$(ProjectDir)..\thirdparty\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
     </ClCompile>
     <Link>
@@ -164,6 +164,7 @@
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="..\jalium.native.dev.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
 </Project>
