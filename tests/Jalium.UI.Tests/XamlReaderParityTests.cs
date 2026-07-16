@@ -48,6 +48,38 @@ public sealed class XamlReaderParityTests
     }
 
     [Fact]
+    public void InstanceReaderPostsCompletionToCapturedSynchronizationContext()
+    {
+        var originalContext = SynchronizationContext.Current;
+        var completionContext = new QueuedSynchronizationContext();
+        var reader = new MarkupXamlReader();
+        AsyncCompletedEventArgs? completion = null;
+        reader.LoadCompleted += (_, args) => completion = args;
+
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(completionContext);
+            using var stream = new MemoryStream(Encoding.UTF8.GetBytes("<Grid />"));
+            Assert.IsType<Grid>(reader.LoadAsync(stream));
+            reader.CancelAsync();
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(originalContext);
+        }
+
+        Assert.Null(completion);
+        Assert.Equal(1, completionContext.PendingCount);
+
+        completionContext.RunNext();
+
+        Assert.NotNull(completion);
+        Assert.True(completion.Cancelled);
+        Assert.Null(completion.Error);
+        Assert.Equal(0, completionContext.PendingCount);
+    }
+
+    [Fact]
     public void XamlParseExceptionCarriesWpfLineAndContextSurface()
     {
         var inner = new InvalidOperationException("inner");
@@ -109,5 +141,23 @@ public sealed class XamlReaderParityTests
         var declaration = new Jalium.UI.Xaml.NamespaceDeclaration("urn:test", "t");
         Assert.Equal("t", declaration.Prefix);
         Assert.Equal("urn:test", declaration.Namespace);
+    }
+
+    private sealed class QueuedSynchronizationContext : SynchronizationContext
+    {
+        private readonly Queue<(SendOrPostCallback Callback, object? State)> _callbacks = new();
+
+        public int PendingCount => _callbacks.Count;
+
+        public override void Post(SendOrPostCallback d, object? state)
+        {
+            _callbacks.Enqueue((d, state));
+        }
+
+        public void RunNext()
+        {
+            (SendOrPostCallback callback, object? state) = _callbacks.Dequeue();
+            callback(state);
+        }
     }
 }
