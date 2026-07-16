@@ -28,55 +28,46 @@ public sealed class XamlReaderParityTests
     }
 
     [Fact]
-    public async Task InstanceReaderRaisesAsyncCompletionAndSupportsCancellation()
-    {
-        var reader = new MarkupXamlReader();
-        var completed = new TaskCompletionSource<AsyncCompletedEventArgs>(
-            TaskCreationOptions.RunContinuationsAsynchronously);
-        reader.LoadCompleted += (_, args) =>
-        {
-            completed.TrySetResult(args);
-        };
-
-        using var stream = new MemoryStream(Encoding.UTF8.GetBytes("<Grid />"));
-        Assert.IsType<Grid>(reader.LoadAsync(stream));
-        AsyncCompletedEventArgs eventArgs = await completed.Task.WaitAsync(TimeSpan.FromSeconds(30));
-        Assert.False(eventArgs.Cancelled);
-        Assert.Null(eventArgs.Error);
-
-        reader.CancelAsync();
-    }
-
-    [Fact]
-    public void InstanceReaderPostsCompletionToCapturedSynchronizationContext()
+    public void InstanceReaderRaisesAsyncCompletionAndSupportsCancellation()
     {
         var originalContext = SynchronizationContext.Current;
         var completionContext = new QueuedSynchronizationContext();
         var reader = new MarkupXamlReader();
-        AsyncCompletedEventArgs? completion = null;
-        reader.LoadCompleted += (_, args) => completion = args;
+        var completions = new List<AsyncCompletedEventArgs>();
+        reader.LoadCompleted += (_, args) => completions.Add(args);
 
         try
         {
             SynchronizationContext.SetSynchronizationContext(completionContext);
-            using var stream = new MemoryStream(Encoding.UTF8.GetBytes("<Grid />"));
-            Assert.IsType<Grid>(reader.LoadAsync(stream));
+
+            using var successfulStream = new MemoryStream(Encoding.UTF8.GetBytes("<Grid />"));
+            Assert.IsType<Grid>(reader.LoadAsync(successfulStream));
+            Assert.Empty(completions);
+            Assert.Equal(1, completionContext.PendingCount);
+
+            completionContext.RunNext();
+
+            AsyncCompletedEventArgs successfulCompletion = Assert.Single(completions);
+            Assert.False(successfulCompletion.Cancelled);
+            Assert.Null(successfulCompletion.Error);
+
+            using var cancelledStream = new MemoryStream(Encoding.UTF8.GetBytes("<Grid />"));
+            Assert.IsType<Grid>(reader.LoadAsync(cancelledStream));
             reader.CancelAsync();
+            Assert.Single(completions);
+            Assert.Equal(1, completionContext.PendingCount);
+
+            completionContext.RunNext();
+
+            Assert.Equal(2, completions.Count);
+            Assert.True(completions[1].Cancelled);
+            Assert.Null(completions[1].Error);
+            Assert.Equal(0, completionContext.PendingCount);
         }
         finally
         {
             SynchronizationContext.SetSynchronizationContext(originalContext);
         }
-
-        Assert.Null(completion);
-        Assert.Equal(1, completionContext.PendingCount);
-
-        completionContext.RunNext();
-
-        Assert.NotNull(completion);
-        Assert.True(completion.Cancelled);
-        Assert.Null(completion.Error);
-        Assert.Equal(0, completionContext.PendingCount);
     }
 
     [Fact]
