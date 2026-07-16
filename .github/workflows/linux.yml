@@ -166,10 +166,12 @@ jobs:
           results="${{ runner.temp }}/managed-test-results"
           filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable"
           mkdir -p "$results"
+          # Managed outputs already contain the validated native payload. A
+          # second copy via LD_LIBRARY_PATH gives musl separate core/plugin
+          # instances, so backend registration lands in the wrong instance.
           xvfb-run -a env \
             JALIUM_WINDOW_SYSTEM=x11 \
             JALIUM_RENDER_BACKEND=software \
-            LD_LIBRARY_PATH="$payload" \
             dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
               -c Release --no-restore --disable-build-servers -m:1 \
               -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
@@ -187,7 +189,6 @@ jobs:
           filter="FullyQualifiedName~Jalium.UI.Tests.VulkanBackendSmokeTests|FullyQualifiedName=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable|FullyQualifiedName=Jalium.UI.Tests.ThemeRuntimeSwitchTests.ApplyBrandTheme_ShouldReevaluateEachLiveRoot_ExactlyOnce|FullyQualifiedName=Jalium.UI.Tests.SplashScreenTests.SplashScreen_AutoClose_ShouldWaitForMainWindowToLoad"
           timeout 120s xvfb-run -a env \
             JALIUM_WINDOW_SYSTEM=x11 \
-            LD_LIBRARY_PATH="$payload" \
             dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
               -c Release --no-build --no-restore --disable-build-servers -m:1 \
               -p:JaliumBuildRoot="${{ runner.temp }}/jalium-managed" \
@@ -273,7 +274,6 @@ jobs:
           test -f "$smoke"
           xvfb-run -a env \
             JALIUM_WINDOW_SYSTEM=x11 \
-            LD_LIBRARY_PATH="$payload" \
             dotnet "$smoke"
 
       # AT-SPI requires the real org.a11y.Bus service. One architecture is
@@ -502,10 +502,12 @@ jobs:
               managed_results="/artifacts/managed-test-results-${{ matrix.rid }}"
               managed_filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable"
               mkdir -p "$managed_results"
+              # Managed outputs already contain the validated native payload.
+              # Do not load a second core/plugin copy through LD_LIBRARY_PATH:
+              # musl treats those as distinct backend registries.
               xvfb-run -a env \
                 JALIUM_WINDOW_SYSTEM=x11 \
                 JALIUM_RENDER_BACKEND=software \
-                LD_LIBRARY_PATH="$payload" \
                 dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
                   -c Release --disable-build-servers -m:1 \
                   -p:JaliumBuildRoot="$managed_root" \
@@ -519,7 +521,6 @@ jobs:
               vulkan_filter="FullyQualifiedName~Jalium.UI.Tests.VulkanBackendSmokeTests|FullyQualifiedName=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable|FullyQualifiedName=Jalium.UI.Tests.ThemeRuntimeSwitchTests.ApplyBrandTheme_ShouldReevaluateEachLiveRoot_ExactlyOnce|FullyQualifiedName=Jalium.UI.Tests.SplashScreenTests.SplashScreen_AutoClose_ShouldWaitForMainWindowToLoad"
               timeout 120s xvfb-run -a env \
                 JALIUM_WINDOW_SYSTEM=x11 \
-                LD_LIBRARY_PATH="$payload" \
                 dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
                   -c Release --no-build --no-restore --disable-build-servers -m:1 \
                   -p:JaliumBuildRoot="$managed_root" \
@@ -551,7 +552,6 @@ jobs:
                 JALIUM_WINDOW_SYSTEM=x11 \
                 JALIUM_RENDER_BACKEND=software \
                 JALIUM_DEMO_AUTOCLOSE_MS=4000 \
-                LD_LIBRARY_PATH="$payload" \
                 dotnet "$demo" | tee "/artifacts/demo-${{ matrix.rid }}.log"
               grep -q "\[demo\] ready" "/artifacts/demo-${{ matrix.rid }}.log"
 
@@ -578,7 +578,6 @@ jobs:
               test -f "$clipboard_smoke"
               timeout 20s xvfb-run -a env \
                 JALIUM_WINDOW_SYSTEM=x11 \
-                LD_LIBRARY_PATH="$payload" \
                 dotnet "$clipboard_smoke"
 
               production_output_root="/artifacts/native-production-${{ matrix.rid }}"
