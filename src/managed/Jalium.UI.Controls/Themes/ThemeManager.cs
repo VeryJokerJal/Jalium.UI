@@ -228,6 +228,16 @@ public static class ThemeManager
 
         if (_application != null)
         {
+            // The generic + accent swaps each mutate Application.Resources.MergedDictionaries and
+            // would otherwise fire an independent whole-tree resource broadcast — two full
+            // implicit-style re-evaluations across every live window and popup for one theme
+            // switch. Coalesce them into a single clean broadcast. Because ReplaceManagedDictionary
+            // publishes the backing fields (_genericThemeDictionary / _accentDictionary)
+            // synchronously, both are already in place when the one deferred notification fires on
+            // scope exit, honoring the "fields before collection" theme publish-order invariant
+            // instead of relying on the accent swap's second broadcast to correct a stale read.
+            using var notifications = _application.Resources.DeferNotifications();
+
             var refreshedGeneric = LoadGenericTheme();
             if (refreshedGeneric != null)
             {
@@ -301,6 +311,17 @@ public static class ThemeManager
         _suppressRefresh = true;
         try
         {
+            // ApplyTheme + ApplyAccent + ApplyTypography swap up to four managed dictionaries.
+            // _suppressRefresh already folds their DynamicResource RefreshAll passes into the
+            // single ForceThemeRefresh below; this outer DeferNotifications does the same for the
+            // implicit-style broadcast so the whole brand-theme application re-evaluates every
+            // live window/popup subtree exactly once instead of four times. Deferrals are
+            // reference-counted, so the inner scope ApplyTheme opens nests under this one and only
+            // the outermost dispose raises the coalesced notification — by which point every theme
+            // field (CurrentTheme / CurrentAccentColor / typography plus the dictionary fields) has
+            // already been published.
+            using var notifications = _application?.Resources.DeferNotifications();
+
             ApplyTheme(options.Theme);
             ApplyAccent(options.AccentColor);
             ApplyTypography(
@@ -395,6 +416,15 @@ public static class ThemeManager
     /// Gets a value indicating whether the theme has been initialized.
     /// </summary>
     public static bool IsInitialized => _initialized;
+
+    /// <summary>
+    /// Monotonic counter bumped once per applied theme/accent/typography change
+    /// (see <see cref="ForceThemeRefresh"/>). A <see cref="Window"/> snapshots it when
+    /// its content is first styled and compares it in <see cref="Window.Show"/>, so a
+    /// theme swap that landed while the window was unshown — hence unreachable by the
+    /// <see cref="Application"/> resource broadcast — is healed the moment it is shown.
+    /// </summary>
+    internal static int CurrentThemeVersion => _themeVersion;
 
     /// <summary>
     /// Resets the theme system, allowing re-initialization.

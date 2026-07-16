@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -283,13 +284,38 @@ typedef struct JaliumTextMetrics {
 
 /// Information about the selected GPU adapter.
 typedef struct JaliumAdapterInfo {
-    wchar_t name[128];              ///< Adapter description string
+    uint16_t name[128];             ///< Null-terminated UTF-16 adapter description; fixed-width on every platform
     int32_t adapterType;            ///< JaliumGpuAdapterType value
     uint64_t dedicatedVideoMemory;  ///< Dedicated video memory in bytes
     uint64_t sharedSystemMemory;    ///< Shared system memory in bytes
     uint32_t vendorId;              ///< PCI vendor ID
     uint32_t deviceId;              ///< PCI device ID
 } JaliumAdapterInfo;
+
+#if INTPTR_MAX == INT64_MAX
+#if defined(__cplusplus)
+#define JALIUM_ABI_STATIC_ASSERT(condition, message) static_assert(condition, message)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define JALIUM_ABI_STATIC_ASSERT(condition, message) _Static_assert(condition, message)
+#endif
+#ifdef JALIUM_ABI_STATIC_ASSERT
+JALIUM_ABI_STATIC_ASSERT(sizeof(JaliumAdapterInfo) == 288,
+                         "JaliumAdapterInfo must match the managed 64-bit ABI");
+JALIUM_ABI_STATIC_ASSERT(offsetof(JaliumAdapterInfo, name) == 0,
+                         "JaliumAdapterInfo.name offset changed");
+JALIUM_ABI_STATIC_ASSERT(offsetof(JaliumAdapterInfo, adapterType) == 256,
+                         "JaliumAdapterInfo.adapterType offset changed");
+JALIUM_ABI_STATIC_ASSERT(offsetof(JaliumAdapterInfo, dedicatedVideoMemory) == 264,
+                         "JaliumAdapterInfo.dedicatedVideoMemory offset changed");
+JALIUM_ABI_STATIC_ASSERT(offsetof(JaliumAdapterInfo, sharedSystemMemory) == 272,
+                         "JaliumAdapterInfo.sharedSystemMemory offset changed");
+JALIUM_ABI_STATIC_ASSERT(offsetof(JaliumAdapterInfo, vendorId) == 280,
+                         "JaliumAdapterInfo.vendorId offset changed");
+JALIUM_ABI_STATIC_ASSERT(offsetof(JaliumAdapterInfo, deviceId) == 284,
+                         "JaliumAdapterInfo.deviceId offset changed");
+#undef JALIUM_ABI_STATIC_ASSERT
+#endif
+#endif
 
 /// Per-render-target swap chain / present configuration.<br/>
 /// Surfaces 后端实际采用的 present 路径（FLIP vs BLT、是否走 tearing / frame-latency

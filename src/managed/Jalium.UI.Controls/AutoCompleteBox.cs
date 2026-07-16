@@ -445,6 +445,23 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         SyncPopupOpenState();
     }
 
+    /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        base.OnTemplateContentClearing();
+
+        // Release the cached parts before the tree is discarded. The dropdown builder only guards
+        // against null, so a surviving _dropDownItemsPanel keeps realizing suggestion items into
+        // the detached popup subtree once the template is cleared.
+        if (_popup != null)
+        {
+            _popup.Closed -= OnPopupClosed;
+        }
+
+        _popup = null;
+        _dropDownItemsPanel = null;
+    }
+
     private void OnGotFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         InputMethod.SetTarget(this);

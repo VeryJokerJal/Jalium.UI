@@ -1,6 +1,7 @@
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Helpers;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
 
@@ -202,6 +203,30 @@ public class TitleBarHitTestTests
 
         Assert.Same(explicitIcon, window.WindowIcon);
         Assert.Same(explicitIcon, titleBar.WindowIcon);
+    }
+
+    [Fact]
+    public void ProcessIconExtraction_ReturnsPixelsReadyForDirectBitmapCreation()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var processPath = Assert.IsType<string>(Environment.ProcessPath);
+        var extracted = Assert.IsType<ProcessIconPixels>(
+            IconHelper.ExtractProcessIconPixels(processPath));
+
+        Assert.True(extracted.Width > 0);
+        Assert.True(extracted.Height > 0);
+        Assert.Equal(extracted.Width * 4, extracted.Stride);
+        Assert.True(extracted.Pixels.Length >= extracted.Stride * extracted.Height);
+
+        using var bitmap = BitmapImage.FromPixels(
+            extracted.Pixels,
+            extracted.Width,
+            extracted.Height,
+            extracted.Stride);
+        Assert.Equal(extracted.Width, bitmap.PixelWidth);
+        Assert.Equal(extracted.Height, bitmap.PixelHeight);
     }
 
     [Fact]

@@ -3326,7 +3326,7 @@ public partial class XamlReader
                 {
                     existing.MergedDictionaries.Add(merged);
                 }
-                foreach (KeyValuePair<object, object?> entry in dictionaryValue)
+                foreach (System.Collections.DictionaryEntry entry in dictionaryValue)
                 {
                     existing[entry.Key] = entry.Value;
                 }

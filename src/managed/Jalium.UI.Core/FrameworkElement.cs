@@ -865,41 +865,61 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         // Use iterative BFS with an explicit stack to avoid deep recursion overhead
         // and to allow early pruning of subtrees that don't need notification.
         var stack = s_subtreeStack ??= new List<FrameworkElement>(32);
+
+        // Snapshot the current depth. A ResourcesChanged handler (public event) or an
+        // implicit-style Apply can re-enter this method or throw; capturing a baseline
+        // and unwinding to it in the finally makes nested calls operate on their own
+        // slice and guarantees a mid-walk exception cannot strand descendants in the
+        // [ThreadStatic] list — otherwise the next caller reuses (??=) a dirty stack
+        // and re-styles stale, possibly-detached elements at the wrong time.
+        int baseline = stack.Count;
         stack.Add(this);
 
-        while (stack.Count > 0)
+        try
         {
-            var current = stack[stack.Count - 1];
-            stack.RemoveAt(stack.Count - 1);
-
-            if (current.ResourcesChanged != null)
+            while (stack.Count > baseline)
             {
-                current.ResourcesChanged.Invoke(current, EventArgs.Empty);
-            }
+                var current = stack[stack.Count - 1];
+                stack.RemoveAt(stack.Count - 1);
 
-            if (current.Style == null)
-            {
-                current.ReEvaluateImplicitStyle();
-            }
-
-            var childCount = current.VisualChildrenCount;
-            for (int i = 0; i < childCount; i++)
-            {
-                if (current.GetVisualChild(i) is FrameworkElement child)
+                if (current.ResourcesChanged != null)
                 {
-                    stack.Add(child);
+                    current.ResourcesChanged.Invoke(current, EventArgs.Empty);
                 }
-            }
 
-            if (current._logicalChildren != null)
-            {
-                foreach (var logicalChild in current._logicalChildren.OfType<FrameworkElement>())
+                if (current.Style == null)
                 {
-                    if (logicalChild.VisualParent == null)
+                    current.ReEvaluateImplicitStyle();
+                }
+
+                var childCount = current.VisualChildrenCount;
+                for (int i = 0; i < childCount; i++)
+                {
+                    if (current.GetVisualChild(i) is FrameworkElement child)
                     {
-                        stack.Add(logicalChild);
+                        stack.Add(child);
                     }
                 }
+
+                if (current._logicalChildren != null)
+                {
+                    foreach (var logicalChild in current._logicalChildren.OfType<FrameworkElement>())
+                    {
+                        if (logicalChild.VisualParent == null)
+                        {
+                            stack.Add(logicalChild);
+                        }
+                    }
+                }
+            }
+        }
+        finally
+        {
+            // Normal exit already leaves Count == baseline; an exception mid-walk
+            // unwinds the residue here so the shared stack stays clean for reuse.
+            if (stack.Count > baseline)
+            {
+                stack.RemoveRange(baseline, stack.Count - baseline);
             }
         }
     }
@@ -2069,6 +2089,13 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
     internal FrameworkElement? FrameworkParent => _logicalParent ?? VisualParent as FrameworkElement;
 
+    /// <summary>
+    /// The pure logical parent (no visual-parent fallback, unlike <see cref="Parent"/>).
+    /// Used by <see cref="Controls.UIElementCollection"/> to migrate logical ownership when a
+    /// child is handed off between panels (the logical half of automatic reparenting).
+    /// </summary>
+    internal FrameworkElement? LogicalParentInternal => _logicalParent;
+
     public static FlowDirection GetFlowDirection(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -2135,7 +2162,8 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         {
             if (element._logicalParent != null && !ReferenceEquals(element._logicalParent, this))
             {
-                throw new InvalidOperationException("The logical child already has a parent.");
+                throw new InvalidOperationException(
+                    $"The logical child already has a parent (child: {element.GetType().Name}, current parent: {element._logicalParent.GetType().Name}, attempted parent: {GetType().Name}).");
             }
 
             element._logicalParent = this;

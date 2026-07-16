@@ -1,3 +1,5 @@
+head=2ad05c3d1916704f20281db67a619854d8e8b513
+dirty=0
 abis=arm64-v8a;x86_64
 configuration=Release
 android_api=24

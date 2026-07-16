@@ -417,6 +417,16 @@ private:
         uint32_t pixelWidth = 0;
         uint32_t pixelHeight = 0;
         std::vector<uint8_t> pixels;
+        // Normal in-app backdrops sample the live GPU scene.  In that mode no
+        // full-window CPU snapshot is carried by the command; replay captures
+        // only sourceX/sourceY/sourceW/sourceH (including the blur apron) and
+        // optionally downsamples it into the shared upload image.
+        bool captureLiveScene = false;
+        bool sampleScreenSpace = false;
+        int32_t sourceX = 0;
+        int32_t sourceY = 0;
+        int32_t sourceW = 0;
+        int32_t sourceH = 0;
         float x = 0.0f;
         float y = 0.0f;
         float w = 0.0f;
@@ -575,6 +585,7 @@ private:
         std::vector<float> glyphs;     // 12 floats per glyph instance
         uint32_t glyphCount = 0;
         bool clearType = false;        // select dual-source ClearType pipeline at replay
+        bool smoothText = false;       // linear for Animated/rotated text; point for pixel-snapped display text
     };
 
     // Painter-order marker for the engine (Impeller / Vello CPU-tessellation)
@@ -660,16 +671,18 @@ private:
         int32_t scissorTop = 0;
         int32_t scissorRight = 0;
         int32_t scissorBottom = 0;
-        // Soft drop-shadow (SolidRect only): render the rounded rect carried in
+        // SolidRect analytic-effect tag. Positive mode is soft drop-shadow:
+        // render the rounded rect carried in
         // roundedClip{Left..RadiusY} with an ANALYTIC gaussian (erf) falloff of
         // the rect's own SDF instead of a hard rounded fill/clip — a single
         // over-blend replacing the N-layer concentric-rect halo (D3D12
         // DrawDropShadowEffect / sdf_rect shadowMode parity). The VS grows the
         // quad by 3*sigma+1px so the tail isn't clipped; the FS takes the erf
-        // branch. shadowMode == 0 (default) is a byte-identical no-op for every
-        // other SolidRect caller.
-        float shadowMode = 0.0f;    // > 0.5 -> erf gaussian shadow branch
-        float shadowSigma = 0.0f;   // gaussian sigma (screen px) = blurRadius/3
+        // branch. Negative mode is a SuperEllipse fill: exact bounds ride in
+        // innerRoundedClipRect and the parameter carries exponent n. Mode 0
+        // (default) is a byte-identical no-op for every other SolidRect caller.
+        float shadowMode = 0.0f;    // > 0.5 shadow, < -0.5 SuperEllipse
+        float shadowSigma = 0.0f;   // shadow sigma or SuperEllipse exponent
         bool hasRoundedClip = false;
         // Inverse rounded clip (an ancestor PushRoundedRectClipExclude): the
         // shader keeps 1 - coverage, masking the rect's INTERIOR. Only the
@@ -1079,6 +1092,10 @@ private:
     struct RetainedCaptureState {
         std::vector<uint8_t> savedPixels;
         std::vector<GpuReplayCommand> savedReplayCommands;
+        // Ancestor clips belong to the final composite, not to the layer's
+        // cached pixels. Keep them out of the capture exactly as D3D12 does;
+        // clips pushed by the captured subtree itself remain active.
+        std::vector<ClipState> savedClips;
         bool savedReplaySupported = false;
         bool savedReplayHasClear = false;
         // True when this capture opened the GPU offscreen region (RealizeLayerBegin's

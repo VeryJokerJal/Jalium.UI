@@ -734,6 +734,10 @@ void ImpellerD3D12Engine::BeginFrame(uint32_t viewportWidth, uint32_t viewportHe
     batches_.clear();
     encodedPathCount_ = 0;
     flatPoints_.clear();
+    // Clip mirrors are sticky between Set/Clear calls. A frame abandoned in
+    // the middle of a capture must not leak either parent clip into the next.
+    ClearScissorRect();
+    ClearRoundedClip();
 }
 
 void ImpellerD3D12Engine::SetScissorRect(float left, float top, float right, float bottom) {

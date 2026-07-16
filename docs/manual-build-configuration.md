@@ -163,6 +163,11 @@ dotnet build .\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj `
 msbuild .\src\native\Jalium.Native.sln /m /p:Configuration=Debug /p:Platform=x64 /v:minimal
 ```
 
+该解决方案默认通过 CMake 的 `jalium.native.package.complete` 聚合目标生成共享库，
+输出到 `src/native/bin/native/win-x64/<Config>` 并写入完整载荷戳。Gallery 在下次
+生成或 F5 时会自动复制最新 DLL。若只生成某个手写 shared `vcxproj`，构建会先
+撤销旧的完整载荷戳，使项目引用在开发期间改用本次生成的 legacy DLL。
+
 ### 6.3 Android 构建
 
 ```bash

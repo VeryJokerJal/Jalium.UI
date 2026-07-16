@@ -10,7 +10,7 @@ WPF スタイルのオブジェクトモデル、Razor 構文拡張を備えた 
 
 ## プロジェクトの状況
 
-- 活発に開発中 — v26.10.6（API はマイナーバージョン間でも変化する可能性があります）
+- 活発に開発中 — v26.10.7（API はマイナーバージョン間でも変化する可能性があります）
 - 主要ターゲット: Windows 10/11（x64、ARM64）
 - クロスプラットフォーム: Android（arm64-v8a、x86_64）、Linux（X11/Wayland、Vulkan または Software）、macOS（Metal）
 - ランタイムターゲット: .NET 10（`net10.0-windows`、`net10.0-android`、`net10.0`）

@@ -528,9 +528,9 @@
 
     Knobs:
       <JaliumIncludeBrowserAot>true|false</JaliumIncludeBrowserAot>
-          default false. Set true to include WebView2 browser support — note
-          this requires WebView2Loader.dll alongside the exe (browser is not
-          a true single-exe scenario).
+          default false. Set true to include WebView2 browser support. The
+          package supplies WebView2LoaderStatic.lib, so the loader is linked
+          into the NativeAOT executable without a sidecar loader DLL.
   -->
   <Target Name="ConfigureJaliumNativeAot"
           BeforeTargets="SetupOSSpecificProps"

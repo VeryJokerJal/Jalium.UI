@@ -137,6 +137,27 @@ static int          g_wakeEventFd = -1;   // eventfd for cross-thread wake
 static std::atomic<bool> g_quitRequested{false};
 static std::atomic<int32_t> g_exitCode{0};
 static std::atomic<uint64_t> g_dragSessionCounter{1};
+static std::mutex g_platformThreadMutex;
+static std::thread::id g_platformThread;
+
+static bool IsPlatformThread()
+{
+    std::lock_guard<std::mutex> lock(g_platformThreadMutex);
+    return g_platformThread != std::thread::id{} &&
+           g_platformThread == std::this_thread::get_id();
+}
+
+static void SetPlatformThread()
+{
+    std::lock_guard<std::mutex> lock(g_platformThreadMutex);
+    g_platformThread = std::this_thread::get_id();
+}
+
+static void ClearPlatformThread()
+{
+    std::lock_guard<std::mutex> lock(g_platformThreadMutex);
+    g_platformThread = std::thread::id{};
+}
 
 #ifdef JALIUM_HAS_XINPUT2
 static int g_xinputOpcode = -1;
@@ -5036,11 +5057,13 @@ JaliumResult jalium_platform_init_impl()
     }
     g_quitRequested.store(false, std::memory_order_release);
     g_exitCode.store(0, std::memory_order_release);
+    SetPlatformThread();
     return JALIUM_OK;
 }
 
 void jalium_platform_shutdown_impl()
 {
+    ClearPlatformThread();
     g_quitRequested.store(true, std::memory_order_release);
     (void)SignalEventFd(g_wakeEventFd);
 
@@ -7130,6 +7153,8 @@ int32_t jalium_platform_run_message_loop(void)
 {
     if (g_windowSystem == LinuxWindowSystem::Disabled || g_epollFd < 0)
         return g_exitCode.load(std::memory_order_acquire);
+    if (!IsPlatformThread())
+        return static_cast<int32_t>(JALIUM_ERROR_INVALID_STATE);
 
     g_quitRequested.store(false, std::memory_order_release);
 
@@ -7167,6 +7192,7 @@ int32_t jalium_platform_poll_events(void)
 {
     int32_t count = 0;
     if (g_windowSystem == LinuxWindowSystem::Disabled || g_epollFd < 0) return count;
+    if (!IsPlatformThread()) return count;
 
     // Drive native callback sources even when an embedder owns the outer loop.
     count += ProcessEpollEvents(0);
@@ -7209,6 +7235,7 @@ JaliumResult jalium_dispatcher_create(JaliumDispatcher** outDispatcher)
     if (!outDispatcher) return JALIUM_ERROR_INVALID_ARGUMENT;
     *outDispatcher = nullptr;
     if (g_epollFd < 0) return JALIUM_ERROR_INVALID_STATE;
+    if (!IsPlatformThread()) return JALIUM_ERROR_INVALID_STATE;
 
     auto disp = new JaliumDispatcher();
     const int eventFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);

@@ -181,12 +181,54 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
     /// </summary>
     internal void SetItemsPresenter(ItemsPresenter presenter)
     {
+        // Defence in depth alongside the primary guard in ItemsPresenter.AttachToOwner (its only
+        // caller): never let a presenter from a template instance its host has already discarded
+        // overwrite the live registration. Mirror AttachToOwner's guard exactly — compare against
+        // the presenter's own templated host, and fail open when it is not a Control (a
+        // data-template-authored or Page-hosted presenter carries no template-instance root to
+        // match, so it must never be rejected here).
+        if (presenter.TemplateInstanceRoot != null &&
+            presenter.TemplatedParent is Control templatedHost &&
+            !ReferenceEquals(presenter.TemplateInstanceRoot, templatedHost.TemplateRootInternal))
+        {
+            return;
+        }
+
         _itemsPresenter = presenter;
         if (presenter.ItemsPanel != null && _itemContainerGenerator != null)
         {
             AttachGeneratorToPanel(presenter.ItemsPanel, _itemContainerGenerator);
         }
         RefreshItems();
+    }
+
+    /// <summary>
+    /// Releases the ItemsPresenter when the template tree containing it is discarded
+    /// (Template replaced at runtime, theme switch, or Template cleared). Without this,
+    /// <see cref="ItemsHost"/> keeps resolving to the panel inside the discarded tree:
+    /// items realize into a detached, invisible panel (blank list once the template is
+    /// cleared, because the fallback host is never built), and the still-armed old panel
+    /// can replay a stale queued measure that steals containers from the replacement
+    /// panel through the shared generator — the same zombie-measure mechanism
+    /// <see cref="RetireItemsHostPanel"/> exists to close.
+    /// </summary>
+    internal override void OnTemplateContentClearing()
+    {
+        base.OnTemplateContentClearing();
+
+        // Only a presenter owned by THIS control's template is affected. TemplatedParent
+        // is the membership test that matches SetTemplatedParentRecursive: it covers
+        // presenters reached through Popup/Border/ContentControl hops (which are not pure
+        // visual descendants of the template root), while a nested ItemsControl's own
+        // presenter has that nested control as its TemplatedParent and is left alone.
+        if (_itemsPresenter != null && ReferenceEquals(_itemsPresenter.TemplatedParent, this))
+        {
+            // invalidateMeasure: false — the presenter leaves the tree together with the
+            // discarded template; queueing it for layout would only let a zombie measure
+            // re-create a panel on the dead presenter.
+            _itemsPresenter.InvalidatePanel(invalidateMeasure: false);
+            _itemsPresenter = null;
+        }
     }
 
     #endregion
@@ -311,12 +353,15 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
         }
 
         // Also clear the old fallback panel if we switched to a template panel
-        // This ensures items previously parented to the fallback are properly disconnected
+        // This ensures items previously parented to the fallback are properly disconnected.
+        // Clear the field before detaching — RemoveVisualChild re-syncs the cached
+        // visual-children count from the overridden property, which reads _fallbackItemsHost.
         if (_fallbackItemsHost != null && _fallbackItemsHost != panel)
         {
-            _fallbackItemsHost.Children.Clear();
-            RemoveVisualChild(_fallbackItemsHost);
+            var fallback = _fallbackItemsHost;
+            RetireItemsHostPanel(fallback);
             _fallbackItemsHost = null;
+            RemoveVisualChild(fallback);
         }
 
         // Mark the host panel and stamp the owner UNCONDITIONALLY (regardless of pipeline /
@@ -400,6 +445,33 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
         {
             virtualizingPanel.SetItemContainerGenerator(generator);
         }
+    }
+
+    /// <summary>
+    /// Fully decommissions an items-host panel that is being replaced (fallback panel superseded
+    /// by a template panel, or a panel discarded on ItemsPanel template change). Clearing the
+    /// children releases their visual and logical parents; dropping the items-host flag and the
+    /// generator/owner references disarms the panel so a stale InvalidateMeasure queued before the
+    /// swap cannot make the retired panel realize containers again. Without this, a "zombie"
+    /// measure on the retired panel pulls live containers out of the shared ItemContainerGenerator
+    /// and re-parents them away from the active panel (historically crashing with "The logical
+    /// child already has a parent" when the tab hosting the list was selected the first time).
+    /// </summary>
+    internal static void RetireItemsHostPanel(Panel panel)
+    {
+        panel.Children.Clear();
+
+        // Disarm BEFORE dropping the items-host flag: IsItemsHost=false raises
+        // OnIsItemsHostChanged synchronously, and an override that forces layout from
+        // that callback would otherwise observe a retired panel whose generator is
+        // still live — exactly the zombie-realize window this method exists to close.
+        if (panel is VirtualizingPanel virtualizingPanel)
+        {
+            virtualizingPanel.SetItemContainerGenerator(null);
+            virtualizingPanel.ItemsOwner = null;
+        }
+
+        panel.IsItemsHost = false;
     }
 
     private void AddItemToPanel(object item)
@@ -575,7 +647,14 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
         if (d is ItemsControl itemsControl)
         {
             itemsControl.OnItemsPanelChanged((ItemsPanelTemplate?)e.OldValue, (ItemsPanelTemplate?)e.NewValue);
-            itemsControl._fallbackItemsHost = null;
+            if (itemsControl._fallbackItemsHost != null)
+            {
+                // Field cleared before detaching — see the matching note in RefreshItems.
+                var fallback = itemsControl._fallbackItemsHost;
+                RetireItemsHostPanel(fallback);
+                itemsControl._fallbackItemsHost = null;
+                itemsControl.RemoveVisualChild(fallback);
+            }
             if (itemsControl._itemsPresenter != null)
             {
                 itemsControl._itemsPresenter.NotifyTemplateChanged(

@@ -5,6 +5,12 @@ using static Jalium.UI.Interop.Win32.Win32GdiMethods;
 
 namespace Jalium.UI.Controls.Helpers;
 
+internal readonly record struct ProcessIconPixels(
+    byte[] Pixels,
+    int Width,
+    int Height,
+    int Stride);
+
 /// <summary>
 /// Extracts an application icon from an executable and encodes it as PNG
 /// using only Win32 P/Invoke — no System.Drawing dependency.
@@ -13,16 +19,27 @@ internal static partial class IconHelper
 {
     internal static byte[]? ExtractProcessIconAsPng(string exePath)
     {
-        if (!OperatingSystem.IsWindows())
-        {
+        var pixels = ExtractProcessIconPixels(exePath);
+        if (pixels == null)
             return null;
-        }
 
-        return ExtractProcessIconAsPngWindows(exePath);
+        var rgbaPixels = (byte[])pixels.Value.Pixels.Clone();
+        for (var i = 0; i < rgbaPixels.Length; i += 4)
+            (rgbaPixels[i], rgbaPixels[i + 2]) = (rgbaPixels[i + 2], rgbaPixels[i]);
+
+        return EncodePng(pixels.Value.Width, pixels.Value.Height, rgbaPixels);
+    }
+
+    internal static ProcessIconPixels? ExtractProcessIconPixels(string exePath)
+    {
+        if (!OperatingSystem.IsWindows())
+            return null;
+
+        return ExtractProcessIconPixelsWindows(exePath);
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private static byte[]? ExtractProcessIconAsPngWindows(string exePath)
+    private static ProcessIconPixels? ExtractProcessIconPixelsWindows(string exePath)
     {
         nint hIcon = 0;
         bool isSharedIcon = false;
@@ -56,7 +73,7 @@ internal static partial class IconHelper
                 }
             }
 
-            return IconHandleToPng(hIcon);
+            return IconHandleToPixels(hIcon);
         }
         finally
         {
@@ -65,7 +82,7 @@ internal static partial class IconHelper
     }
 
     [System.Runtime.Versioning.SupportedOSPlatform("windows")]
-    private static byte[]? IconHandleToPng(nint hIcon)
+    private static ProcessIconPixels? IconHandleToPixels(nint hIcon)
     {
         if (!GetIconInfo(hIcon, out var iconInfo))
         {
@@ -155,13 +172,7 @@ internal static partial class IconHelper
                 }
             }
 
-            // Convert BGRA to RGBA in-place.
-            for (var i = 0; i < pixelData.Length; i += 4)
-            {
-                (pixelData[i], pixelData[i + 2]) = (pixelData[i + 2], pixelData[i]);
-            }
-
-            return EncodePng(width, height, pixelData);
+            return new ProcessIconPixels(pixelData, width, height, width * 4);
         }
         finally
         {

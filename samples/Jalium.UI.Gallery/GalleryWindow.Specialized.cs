@@ -12,23 +12,68 @@ namespace Jalium.UI.Gallery;
 /// </summary>
 internal static partial class GalleryWindow
 {
-    public static UIElement BuildSpecializedSection() => Section(
+    public static UIElement BuildSpecializedSection() => SectionFromCards(
         "Media & Specialized",
         "Drawing, codes, viewers, editors and resource-backed hosts.",
-        Card("QRCode", QrCodeDemo(), width: 0),
-        Card("InkCanvas", InkCanvasDemo(), width: 0),
-        Card("DiffViewer", DiffViewerDemo(), width: 480),
-        Card("JsonTreeViewer", JsonTreeViewerDemo(), width: 340),
-        Card("PropertyGrid", PropertyGridDemo(), width: 340),
-        Card("HexEditor", HexEditorDemo(), width: 480),
-        Card("Image", Placeholder("Image", "Displays an ImageSource; supports Stretch modes and pinch-zoom.")),
-        Card("WebView", Placeholder("WebView", "Embedded Chromium browser surface that navigates to a URL or HTML string.")),
-        Card("Terminal", Placeholder("Terminal", "Hosts an interactive shell / PTY session with ANSI color rendering.")),
-        Card("CameraView", Placeholder("CameraView", "Live preview from a connected camera device.")),
-        Card("MediaElement", Placeholder("MediaElement", "Plays audio and video from a media file or stream.")),
-        Card("MapView", Placeholder("MapView", "Pannable, zoomable map backed by network tile services.")),
-        Card("Viewport3D", Placeholder("Viewport3D", "Renders 3D scene content with cameras, lights and meshes.")),
-        Card("MiniMap", Placeholder("MiniMap", "Bird's-eye overview of a larger scrollable surface.")));
+        CreateSpecializedCards());
+
+    private static DeferredCard[] CreateSpecializedCards() =>
+    [
+        new("Gallery.Card.Specialized.QRCode", "QRCode", QrCodeDemo, Width: 0),
+        new("Gallery.Card.Specialized.InkCanvas", "InkCanvas", InkCanvasDemo, Width: 0),
+        new("Gallery.Card.Specialized.DiffViewer", "DiffViewer", DiffViewerDemo, Width: 480),
+        new("Gallery.Card.Specialized.JsonTreeViewer", "JsonTreeViewer", JsonTreeViewerDemo, Width: 340),
+        new("Gallery.Card.Specialized.PropertyGrid", "PropertyGrid", PropertyGridDemo, Width: 340),
+        new("Gallery.Card.Specialized.HexEditor", "HexEditor", HexEditorDemo, Width: 480),
+        new(
+            "Gallery.Card.Specialized.Image",
+            "Image",
+            static () => Placeholder(
+                "Image",
+                "Displays an ImageSource; supports Stretch modes and pinch-zoom.")),
+        new(
+            "Gallery.Card.Specialized.WebView",
+            "WebView",
+            static () => Placeholder(
+                "WebView",
+                "Embedded Chromium browser surface that navigates to a URL or HTML string.")),
+        new(
+            "Gallery.Card.Specialized.Terminal",
+            "Terminal",
+            static () => Placeholder(
+                "Terminal",
+                "Hosts an interactive shell / PTY session with ANSI color rendering.")),
+        new(
+            "Gallery.Card.Specialized.CameraView",
+            "CameraView",
+            static () => Placeholder(
+                "CameraView",
+                "Live preview from a connected camera device.")),
+        new(
+            "Gallery.Card.Specialized.MediaElement",
+            "MediaElement",
+            static () => Placeholder(
+                "MediaElement",
+                "Plays audio and video from a media file or stream.")),
+        new(
+            "Gallery.Card.Specialized.MapView",
+            "MapView",
+            static () => Placeholder(
+                "MapView",
+                "Pannable, zoomable map backed by network tile services.")),
+        new(
+            "Gallery.Card.Specialized.Viewport3D",
+            "Viewport3D",
+            static () => Placeholder(
+                "Viewport3D",
+                "Renders 3D scene content with cameras, lights and meshes.")),
+        new(
+            "Gallery.Card.Specialized.MiniMap",
+            "MiniMap",
+            static () => Placeholder(
+                "MiniMap",
+                "Bird's-eye overview of a larger scrollable surface.")),
+    ];
 
     // QRCode renders its foreground (default black) onto its Background. On the
     // dark card a default QR would be invisible, so we present it on a white

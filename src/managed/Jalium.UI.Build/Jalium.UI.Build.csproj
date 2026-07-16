@@ -137,19 +137,27 @@
          these into <NativeLibrary> + <DirectPInvoke> at the consumer side. -->
     <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.core.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.core.static.lib')" />
     <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.d3d12.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.d3d12.static.lib')" />
+    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.vulkan.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.vulkan.static.lib')" />
     <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.software.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.software.static.lib')" />
     <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.platform.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.platform.static.lib')" />
+    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.media.core.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.media.core.static.lib')" />
+    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.media.windows.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.media.windows.static.lib')" />
     <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.aot.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.aot.static.lib')" />
     <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.browser.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.browser.static.lib')" />
+    <Content Include="..\..\native\jalium.native.browser\third_party\webview2\lib\x64\WebView2LoaderStatic.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\jalium.native.browser\third_party\webview2\lib\x64\WebView2LoaderStatic.lib') and Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.browser.static.lib')" />
   </ItemGroup>
 
   <!-- Also surface the new static projects to the BeforeBuild static-builder
        so a top-level 'msbuild Jalium.UI.Build.csproj' (full MSBuild only)
-       produces every archive consumed by ConfigureJaliumNativeAot. -->
+       produces the default archive closure. Vulkan remains opt-in because it
+       requires the Vulkan SDK; the release helper builds the complete set. -->
   <ItemGroup>
     <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.software\jalium.native.software.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.software\jalium.native.software.static.vcxproj')" />
     <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.platform\jalium.native.platform.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.platform\jalium.native.platform.static.vcxproj')" />
+    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.media.core\jalium.native.media.core.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.media.core\jalium.native.media.core.static.vcxproj')" />
+    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.media.windows\jalium.native.media.windows.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.media.windows\jalium.native.media.windows.static.vcxproj')" />
     <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.aot\jalium.native.aot.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.aot\jalium.native.aot.static.vcxproj')" />
+    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.vulkan\jalium.native.vulkan.static.vcxproj" Condition="'$(JaliumIncludeVulkanAot)' == 'true' and Exists('$(JaliumNativeRootPath)\jalium.native.vulkan\jalium.native.vulkan.static.vcxproj')" />
   </ItemGroup>
 
   <!-- Fail the pack when a packed .static.lib is stale relative to git

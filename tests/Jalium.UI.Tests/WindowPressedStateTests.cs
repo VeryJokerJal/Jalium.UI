@@ -583,10 +583,11 @@ public class WindowPressedStateTests
     public void SetFocus_ShouldWakeRenderPipeline()
     {
         ResetInputState();
+        Window? window = null;
 
         try
         {
-            var (window, _, _) = CreateWindowTree();
+            (window, _, _) = CreateWindowTree();
             SetWindowDispatcherForTest(window, Dispatcher.GetForCurrentThread());
             SetWindowHandleForTest(window, (nint)1);
 
@@ -596,6 +597,8 @@ public class WindowPressedStateTests
         }
         finally
         {
+            if (window is not null)
+                SetWindowHandleForTest(window, nint.Zero);
             ResetInputState();
         }
     }

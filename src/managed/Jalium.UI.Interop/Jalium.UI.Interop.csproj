@@ -87,8 +87,8 @@
     <Content Include="@(_JaliumLinuxNativeLibrary->'$(JaliumNativeOutputRoot)/linux-musl-arm64/$(JaliumNativeConfiguration)/%(Identity)')" Pack="true" PackagePath="runtimes/linux-musl-arm64/native" Visible="false" />
   </ItemGroup>
 
-  <!-- The legacy bin/native/<Config> layout (checked-in Jalium.Native.sln /
-       vcxproj output) is intentionally NOT packable anymore: it carries no
+  <!-- The legacy bin/native/<Config> layout (focused builds of the checked-in
+       shared vcxproj files) is intentionally NOT packable anymore: it carries no
        completion stamp, so neither completeness nor freshness can be proven,
        and it has shipped stale binaries before. Packing win-x64 requires the
        stamped CMake layout; project-reference dev runs (the None groups

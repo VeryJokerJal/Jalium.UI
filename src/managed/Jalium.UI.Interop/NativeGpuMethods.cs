@@ -32,6 +32,9 @@ public enum GpuAdapterType
 [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
 public struct AdapterInfo
 {
+    /// <summary>
+    /// Adapter description stored by the native ABI as 128 fixed-width UTF-16 code units.
+    /// </summary>
     [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
     public string Name;
 

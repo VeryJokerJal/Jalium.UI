@@ -59,6 +59,32 @@ cmake --version
 "${CXX:-c++}" --version | head -n 1
 bash "$script_dir/build-native.sh" "$rid" "$configuration"
 
+# Ubuntu 20.04's glibc 2.31 can exhaust static TLS when an arm64 GStreamer
+# plugin loads libgomp late. Load it at process startup for every validation
+# command below, including gst-inspect, ctest, and the media smoke tests.
+if [[ "$rid" == linux-arm64 ]]; then
+  libgomp="$(gcc -print-file-name=libgomp.so.1)"
+  if [[ ! -f "$libgomp" ]]; then
+    echo "Could not locate libgomp.so.1 for arm64 GStreamer validation." >&2
+    exit 1
+  fi
+  export LD_PRELOAD="$libgomp${LD_PRELOAD:+:$LD_PRELOAD}"
+fi
+
+# Use a build-local GStreamer registry so release validation cannot inherit a
+# stale or partially initialized cache from the container. Prewarming the
+# elements also turns decoder/demuxer discovery failures into an explicit
+# dependency error instead of a generic unsupported-format result in the media
+# smoke test.
+export GST_REGISTRY="$build_dir/gstreamer-registry.bin"
+rm -f "$GST_REGISTRY" "$GST_REGISTRY.lock"
+for element in avdec_h264 h264parse matroskademux souphttpsrc avdec_aac aacparse; do
+  if ! gst-inspect-1.0 "$element" >/dev/null; then
+    echo "Required GStreamer element is unavailable: $element" >&2
+    exit 1
+  fi
+done
+
 xvfb-run -a ctest --test-dir "$build_dir" --output-on-failure
 
 runtime="/tmp/jalium-weston-$rid"

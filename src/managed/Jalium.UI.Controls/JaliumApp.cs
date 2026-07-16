@@ -1,5 +1,6 @@
 using System.Linq;
 using Jalium.UI.Controls;
+using Jalium.UI.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -146,6 +147,10 @@ public sealed class JaliumApp : IHost
     {
         if (_application != null) return;
 
+        using var initialization = StartupDiagnostics.Begin(
+            "JaliumApp.InitializeApplication",
+            blocksUiThread: true);
+
         // Only one Application may exist per process. If a factory is registered we trust it
         // (UseApplication(Application instance) passes a pre-constructed instance, so Current
         // is already set); otherwise we create the default Application and its constructor
@@ -157,7 +162,11 @@ public sealed class JaliumApp : IHost
                 "call app.UseApplication(...) to bind an existing instance, or do not construct Application directly.");
         }
 
-        var application = _applicationFactory?.Invoke() ?? new Application();
+        Application application;
+        using (StartupDiagnostics.Begin("JaliumApp.ConstructApplication", blocksUiThread: true))
+        {
+            application = _applicationFactory?.Invoke() ?? new Application();
+        }
 
         if (!ReferenceEquals(application, Application.Current))
         {
@@ -166,17 +175,24 @@ public sealed class JaliumApp : IHost
                 "The Application singleton must be the one produced by the factory.");
         }
 
-        application.AttachHost(
-            _host.Services,
-            _host.Services.GetRequiredService<IConfiguration>(),
-            _host.Services.GetRequiredService<IHostEnvironment>());
-
-        foreach (var configure in _configureApplication)
+        using (StartupDiagnostics.Begin("JaliumApp.AttachHost", blocksUiThread: true))
         {
-            configure(application);
+            application.AttachHost(
+                _host.Services,
+                _host.Services.GetRequiredService<IConfiguration>(),
+                _host.Services.GetRequiredService<IHostEnvironment>());
+        }
+
+        for (int i = 0; i < _configureApplication.Length; i++)
+        {
+            using var configureScope = StartupDiagnostics.Begin(
+                "JaliumApp.ConfigureApplication",
+                blocksUiThread: true);
+            _configureApplication[i](application);
         }
 
         _application = application;
+        StartupDiagnostics.Mark("ApplicationInitialized", blocksUiThread: true);
     }
 
     // ── Host lifecycle ──────────────────────────────────────────────────────
@@ -265,11 +281,15 @@ public sealed class JaliumApp : IHost
 
         EnsureApplication();
 
-        RunHostOperationBlocking(() => _host.StartAsync(CancellationToken.None));
+        using (StartupDiagnostics.Begin("JaliumApp.HostStart", blocksUiThread: true))
+        {
+            RunHostOperationBlocking(() => _host.StartAsync(CancellationToken.None));
+        }
 
         int exitCode;
         try
         {
+            StartupDiagnostics.Mark("ApplicationRunEntering", blocksUiThread: true);
             exitCode = _application!.Run(args);
         }
         finally

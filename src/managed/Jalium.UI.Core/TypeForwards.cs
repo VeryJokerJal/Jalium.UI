@@ -194,6 +194,8 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Diagnostics.ResourceDictionaryUnloadedEventArgs))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Diagnostics.RoutedEventDiagnostics))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Diagnostics.StaticResourceResolvedEventArgs))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.Diagnostics.StartupDiagnostics))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.Diagnostics.StartupTraceScope))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Diagnostics.VisualDiagnostics))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Diagnostics.VisualTreeChangeEventArgs))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Diagnostics.VisualTreeChangeType))]

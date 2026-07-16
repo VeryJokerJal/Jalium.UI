@@ -1,5 +1,8 @@
+using Jalium.UI.Automation;
 using Jalium.UI.Controls;
+using Jalium.UI.Diagnostics;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Gallery;
 
@@ -21,6 +24,39 @@ namespace Jalium.UI.Gallery;
 /// </summary>
 internal static partial class GalleryWindow
 {
+    private const int TotalSectionCount = 16;
+
+    private static readonly DeferredSection[] s_deferredSections =
+    [
+        new("Gallery.Section.Selection", BuildSelectionSection),
+        new(
+            "Gallery.Section.TextInput",
+            "Text Input",
+            "Single/multi-line, masked, numeric, auto-complete and combo entry.",
+            CreateTextInputCards()),
+        new("Gallery.Section.TextDisplay", BuildTextDisplaySection),
+        new("Gallery.Section.Editors", BuildEditorsSection),
+        new("Gallery.Section.Status", BuildStatusSection),
+        new("Gallery.Section.Pickers", BuildPickersSection),
+        new(
+            "Gallery.Section.DataControls",
+            "Collections & Data",
+            "Lists, grids and trees over tiny in-memory sample data.",
+            CreateDataControlCards()),
+        new("Gallery.Section.Containers", BuildContainersSection),
+        new("Gallery.Section.Panels", BuildPanelsSection),
+        new("Gallery.Section.Navigation", BuildNavigationSection),
+        new("Gallery.Section.Flyouts", BuildFlyoutsSection),
+        new("Gallery.Section.Charts", BuildChartsSection),
+        new("Gallery.Section.Diagrams", BuildDiagramsSection),
+        new(
+            "Gallery.Section.Specialized",
+            "Media & Specialized",
+            "Drawing, codes, viewers, editors and resource-backed hosts.",
+            CreateSpecializedCards()),
+        new("Gallery.Section.Dialogs", BuildDialogsSection),
+    ];
+
     // ── Dark-theme-matched chrome palette ───────────────────────────────────
     internal static readonly Brush PageBackground   = new SolidColorBrush(Color.FromRgb(0x1B, 0x1B, 0x1B));
     internal static readonly Brush CardBackground    = new SolidColorBrush(Color.FromRgb(0x2B, 0x2B, 0x2B));
@@ -30,66 +66,271 @@ internal static partial class GalleryWindow
     internal static readonly Brush TextSecondary     = new SolidColorBrush(Color.FromRgb(0xA8, 0xA8, 0xA8));
     internal static readonly Brush Accent            = new SolidColorBrush(Color.FromRgb(0x4C, 0xC2, 0x7A)); // bright green accent
 
-    /// <summary>Builds the gallery window with every control section.</summary>
+    /// <summary>
+    /// Builds an immediately usable gallery window. The first interactive section is
+    /// available for the initial frame; the remaining catalog sections are added at
+    /// background dispatcher priority after the message pump starts.
+    /// </summary>
     public static Window Build()
     {
-        var window = new Window
+        Window window;
+        using (StartupDiagnostics.Begin("Gallery.CreateWindow", blocksUiThread: true))
         {
-            Title = "Jalium.UI — Control Gallery",
-            Width = 1280,
-            Height = 900,
-            Background = PageBackground,
+            window = new Window
+            {
+                Title = "Jalium.UI — Control Gallery",
+                Width = 1280,
+                Height = 900,
+                Background = PageBackground,
+            };
+        }
+
+        StackPanel content;
+        TextBlock loadingStatus;
+        using (StartupDiagnostics.Begin("Gallery.BuildInitialContent", blocksUiThread: true))
+        {
+            // Vertical stack of category sections.
+            content = new StackPanel
+            {
+                Orientation = Orientation.Vertical,
+                Spacing = 8,
+                Margin = new Thickness(28, 20, 28, 40),
+            };
+
+            content.Children.Add(PageHeader());
+            content.Children.Add(BuildSection("Gallery.Section.Buttons", BuildButtonsSection));
+
+            loadingStatus = new TextBlock
+            {
+                Text = $"Loading the remaining control groups… (1/{TotalSectionCount})",
+                FontSize = 12,
+                Foreground = TextSecondary,
+                Margin = new Thickness(0, 6, 0, 0),
+            };
+            AutomationProperties.SetAutomationId(loadingStatus, "GalleryStartupStatus");
+            AutomationProperties.SetName(loadingStatus, loadingStatus.Text);
+            content.Children.Add(loadingStatus);
+        }
+
+        using (StartupDiagnostics.Begin("Gallery.AttachInitialContent", blocksUiThread: true))
+        {
+            var scroller = new ScrollViewer
+            {
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+                Content = content,
+            };
+
+            window.Content = scroller;
+        }
+
+        var deferredLoadCancellation = new CancellationTokenSource();
+        var deferredLoadStarted = false;
+        window.Shown += (_, _) =>
+        {
+            if (deferredLoadStarted)
+                return;
+
+            deferredLoadStarted = true;
+            _ = LoadDeferredSectionsAsync(
+                content,
+                loadingStatus,
+                deferredLoadCancellation.Token);
+        };
+        window.Closed += (_, _) =>
+        {
+            deferredLoadCancellation.Cancel();
+            deferredLoadCancellation.Dispose();
         };
 
-        // Vertical stack of category sections.
-        var content = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Spacing = 8,
-            Margin = new Thickness(28, 20, 28, 40),
-        };
-
-        content.Children.Add(PageHeader());
-
-        foreach (var section in CollectSections())
-            content.Children.Add(section);
-
-        var scroller = new ScrollViewer
-        {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = content,
-        };
-
-        window.Content = scroller;
         return window;
     }
 
-    /// <summary>
-    /// Returns every category section in display order. Each entry is produced by a
-    /// <c>Build&lt;Category&gt;Section()</c> method defined in a partial file.
-    /// Filled in once the per-category files are generated.
-    /// </summary>
-    private static IEnumerable<UIElement> CollectSections()
+    private static async Task LoadDeferredSectionsAsync(
+        StackPanel content,
+        TextBlock loadingStatus,
+        CancellationToken cancellationToken)
     {
-        // Each section lives in its own GalleryWindow.<Category>.cs partial file.
-        yield return BuildButtonsSection();
-        yield return BuildSelectionSection();
-        yield return BuildTextInputSection();
-        yield return BuildTextDisplaySection();
-        yield return BuildEditorsSection();
-        yield return BuildStatusSection();
-        yield return BuildPickersSection();
-        yield return BuildDataControlsSection();
-        yield return BuildContainersSection();
-        yield return BuildPanelsSection();
-        yield return BuildNavigationSection();
-        yield return BuildFlyoutsSection();
-        yield return BuildChartsSection();
-        yield return BuildDiagramsSection();
-        yield return BuildSpecializedSection();
-        yield return BuildDialogsSection();
+        using var deferredLoad = StartupDiagnostics.Begin(
+            "Gallery.DeferredSections",
+            blocksUiThread: false);
+
+        var loadedCount = 1;
+        var failureCount = 0;
+        StartupDiagnostics.Mark("Gallery.DeferredSectionsStarted", blocksUiThread: false);
+
+        try
+        {
+            foreach (var descriptor in s_deferredSections)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                loadingStatus.Text =
+                    $"Loading control groups… ({loadedCount}/{TotalSectionCount})";
+                AutomationProperties.SetName(loadingStatus, loadingStatus.Text);
+
+                // Input, rendering, and the first dispatcher responsiveness probe all
+                // run at higher priority. This also presents the loading state before
+                // the next group is constructed on the UI-affine object model.
+                await Dispatcher.Yield(DispatcherPriority.Background);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                try
+                {
+                    if (descriptor.Cards == null)
+                    {
+                        content.Children.Add(BuildSection(
+                            descriptor.StageName,
+                            descriptor.Factory!));
+                    }
+                    else
+                    {
+                        failureCount += await LoadProgressiveSectionAsync(
+                            content,
+                            loadingStatus,
+                            descriptor,
+                            cancellationToken);
+                    }
+
+                    loadedCount++;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception exception)
+                {
+                    failureCount++;
+                    StartupDiagnostics.Mark(
+                        "Gallery.DeferredSectionFailed",
+                        blocksUiThread: true);
+                    Console.Error.WriteLine(
+                        $"[Gallery startup] Deferred section '{descriptor.StageName}' failed: {exception}");
+                }
+            }
+
+            loadingStatus.Text = failureCount == 0
+                ? $"All {TotalSectionCount} control groups loaded."
+                : $"Loaded {loadedCount}/{TotalSectionCount} control groups; {failureCount} items failed.";
+            AutomationProperties.SetName(loadingStatus, loadingStatus.Text);
+
+            if (failureCount == 0)
+                content.Children.Remove(loadingStatus);
+
+            StartupDiagnostics.Mark("Gallery.DeferredSectionsCompleted", blocksUiThread: false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            StartupDiagnostics.Mark("Gallery.DeferredSectionsCanceled", blocksUiThread: false);
+        }
+        catch (Exception exception)
+        {
+            // This task is intentionally fire-and-forget from the Shown event. Keep an
+            // unexpected infrastructure failure observable and contained so it cannot
+            // become an unobserved task exception or take down the already usable shell.
+            StartupDiagnostics.Mark("Gallery.DeferredSectionsFailed", blocksUiThread: false);
+            Console.Error.WriteLine(
+                $"[Gallery startup] Deferred loading stopped unexpectedly: {exception}");
+
+            try
+            {
+                loadingStatus.Text = "Some control groups could not be loaded.";
+                AutomationProperties.SetName(loadingStatus, loadingStatus.Text);
+            }
+            catch
+            {
+                // Reporting is best-effort if the visual tree is already tearing down.
+            }
+        }
     }
+
+    private static async Task<int> LoadProgressiveSectionAsync(
+        StackPanel content,
+        TextBlock loadingStatus,
+        DeferredSection descriptor,
+        CancellationToken cancellationToken)
+    {
+        using var section = StartupDiagnostics.Begin(
+            descriptor.StageName,
+            blocksUiThread: false);
+
+        var (sectionRoot, cardsHost) = CreateSectionChrome(
+            descriptor.Title!,
+            descriptor.Subtitle!);
+        content.Children.Add(sectionRoot);
+
+        var failureCount = 0;
+        foreach (var card in descriptor.Cards!)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            loadingStatus.Text = $"Loading {descriptor.Title}… {card.Title}";
+            AutomationProperties.SetName(loadingStatus, loadingStatus.Text);
+
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                using var cardConstruction = StartupDiagnostics.Begin(
+                    card.StageName,
+                    blocksUiThread: true);
+                cardsHost.Children.Add(Card(
+                    card.Title,
+                    card.Factory(),
+                    card.Width,
+                    card.MinHeight));
+            }
+            catch (Exception exception)
+            {
+                failureCount++;
+                StartupDiagnostics.Mark("Gallery.DeferredCardFailed", blocksUiThread: true);
+                Console.Error.WriteLine(
+                    $"[Gallery startup] Deferred card '{card.StageName}' failed: {exception}");
+            }
+        }
+
+        return failureCount;
+    }
+
+    private static UIElement BuildSection(string stageName, Func<UIElement> factory)
+    {
+        using var section = StartupDiagnostics.Begin(stageName, blocksUiThread: true);
+        return factory();
+    }
+
+    private sealed class DeferredSection
+    {
+        public DeferredSection(string stageName, Func<UIElement> factory)
+        {
+            StageName = stageName;
+            Factory = factory;
+        }
+
+        public DeferredSection(
+            string stageName,
+            string title,
+            string subtitle,
+            DeferredCard[] cards)
+        {
+            StageName = stageName;
+            Title = title;
+            Subtitle = subtitle;
+            Cards = cards;
+        }
+
+        public string StageName { get; }
+        public Func<UIElement>? Factory { get; }
+        public string? Title { get; }
+        public string? Subtitle { get; }
+        public DeferredCard[]? Cards { get; }
+    }
+
+    private readonly record struct DeferredCard(
+        string StageName,
+        string Title,
+        Func<UIElement> Factory,
+        double Width = 300,
+        double MinHeight = 0);
 
     // ── Reusable chrome helpers (used by every section file) ─────────────────
 
@@ -119,7 +360,35 @@ internal static partial class GalleryWindow
     /// </summary>
     internal static UIElement Section(string title, string subtitle, params UIElement[] cards)
     {
-        var outer = new StackPanel { Orientation = Orientation.Vertical, Spacing = 10, Margin = new Thickness(0, 18, 0, 6) };
+        var (outer, flow) = CreateSectionChrome(title, subtitle);
+        foreach (var card in cards)
+            flow.Children.Add(card);
+
+        return outer;
+    }
+
+    private static UIElement SectionFromCards(
+        string title,
+        string subtitle,
+        IReadOnlyList<DeferredCard> cards)
+    {
+        var (outer, flow) = CreateSectionChrome(title, subtitle);
+        foreach (var card in cards)
+            flow.Children.Add(Card(card.Title, card.Factory(), card.Width, card.MinHeight));
+
+        return outer;
+    }
+
+    private static (StackPanel Outer, WrapPanel CardsHost) CreateSectionChrome(
+        string title,
+        string subtitle)
+    {
+        var outer = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            Spacing = 10,
+            Margin = new Thickness(0, 18, 0, 6),
+        };
 
         // Header row: accent bar + title (+ optional subtitle).
         var headerRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 10 };
@@ -129,10 +398,25 @@ internal static partial class GalleryWindow
             Width = 4,
             CornerRadius = new CornerRadius(2),
         });
-        var titleStack = new StackPanel { Orientation = Orientation.Vertical, VerticalAlignment = VerticalAlignment.Center };
-        titleStack.Children.Add(new TextBlock { Text = title, FontSize = 20, FontWeight = FontWeights.SemiBold, Foreground = TextPrimary });
+        var titleStack = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        titleStack.Children.Add(new TextBlock
+        {
+            Text = title,
+            FontSize = 20,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = TextPrimary,
+        });
         if (!string.IsNullOrEmpty(subtitle))
-            titleStack.Children.Add(new TextBlock { Text = subtitle, FontSize = 12, Foreground = TextSecondary });
+            titleStack.Children.Add(new TextBlock
+            {
+                Text = subtitle,
+                FontSize = 12,
+                Foreground = TextSecondary,
+            });
         headerRow.Children.Add(titleStack);
         outer.Children.Add(headerRow);
 
@@ -142,11 +426,8 @@ internal static partial class GalleryWindow
             HorizontalSpacing = 12,
             VerticalSpacing = 12,
         };
-        foreach (var card in cards)
-            flow.Children.Add(card);
         outer.Children.Add(flow);
-
-        return outer;
+        return (outer, flow);
     }
 
     /// <summary>

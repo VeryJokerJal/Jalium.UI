@@ -1093,6 +1093,30 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
     }
 
     /// <inheritdoc />
+    internal override void OnTemplateContentClearing()
+    {
+        base.OnTemplateContentClearing();
+
+        // Release the cached template parts before the tree is discarded. The row-refresh and
+        // column-header paths only guard against null, so a reference that survives the teardown
+        // keeps resolving into the detached tree — rows silently realize into an invisible panel
+        // once the template is cleared and never re-applied.
+        if (_dataScrollViewer != null)
+        {
+            _dataScrollViewer.ScrollChanged -= OnDataScrollViewerScrollChanged;
+            _dataScrollViewer.SizeChanged -= OnDataScrollViewerSizeChanged;
+        }
+
+        _columnHeadersHost = null;
+        _rowsHost = null;
+        _columnHeadersBorder = null;
+        _rowHeaderCorner = null;
+        _columnHeadersScrollViewer = null;
+        _dataScrollViewer = null;
+        _dragOverlay = null;
+    }
+
+    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
         var measured = base.MeasureOverride(availableSize);

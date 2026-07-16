@@ -71,6 +71,31 @@ public sealed class XamlReaderParityTests
     }
 
     [Fact]
+    public void XamlBuilderMergesNonEmptyResourceDictionaryProperty()
+    {
+        XamlBuilderInitializer.Register();
+
+        var parent = new Border();
+        ResourceDictionary existing = parent.Resources;
+        var merged = new ResourceDictionary { ["MergedBrush"] = "merged" };
+        var child = new ResourceDictionary { ["LocalBrush"] = "local" };
+        child.MergedDictionaries.Add(merged);
+        XamlBuildContext context = XamlBuilder.BeginComponent(
+            parent,
+            sourceAssembly: typeof(XamlReaderParityTests).Assembly);
+
+        XamlBuilder.ApplyPropertyElementChild(
+            parent,
+            nameof(FrameworkElement.Resources),
+            child,
+            context);
+
+        Assert.Same(existing, parent.Resources);
+        Assert.Equal("local", parent.Resources["LocalBrush"]);
+        Assert.Same(merged, Assert.Single(parent.Resources.MergedDictionaries));
+    }
+
+    [Fact]
     public void SystemXamlReaderAndSchemaTypesProvideUsableNodeSurface()
     {
         var schema = new Jalium.UI.Xaml.XamlSchemaContext([typeof(Grid).Assembly]);

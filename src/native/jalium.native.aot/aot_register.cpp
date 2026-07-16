@@ -38,6 +38,28 @@ extern uint32_t              jalium_media_supported_video_codecs(void);
 extern jalium_media_status_t jalium_audio_initialize(void);
 extern void                  jalium_audio_shutdown(void);
 
+#if !defined(__ANDROID__)
+// NativeAOT can retain AndroidActivityBridge metadata even when publishing for
+// another OS. Direct P/Invokes from that bridge must still resolve at link time,
+// so the static aggregation archive supplies inert Android lifecycle/input
+// entry points on non-Android targets. Android static builds use the real
+// implementations from jalium.native.platform instead.
+void jalium_android_set_native_window(void*, int32_t, int32_t) {}
+void jalium_android_set_density(float) {}
+void jalium_android_set_refresh_rate(int32_t) {}
+void jalium_android_on_pause(void) {}
+void jalium_android_on_resume(void) {}
+void jalium_android_on_destroy(void) {}
+void jalium_android_on_low_memory(void) {}
+void jalium_android_set_jni_env(void*, void*) {}
+void jalium_android_set_safe_area_insets(float, float, float, float) {}
+void jalium_android_set_keyboard_visible(int32_t, int32_t) {}
+void jalium_android_set_orientation(int32_t) {}
+void jalium_android_inject_touch(int32_t, float, float, float, int32_t, int32_t, int32_t) {}
+void jalium_android_inject_key(int32_t, int32_t, int32_t, int32_t, int32_t) {}
+void jalium_android_inject_char(uint32_t) {}
+#endif
+
 // Sole AOT aggregation entry. Managed code P/Invokes this once before any
 // jalium_context_create. JALIUM_API collapses to nothing under JALIUM_STATIC,
 // so the symbol is just an extern "C" function in the .lib that NativeAOT

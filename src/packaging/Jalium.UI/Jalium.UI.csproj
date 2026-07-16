@@ -24,7 +24,7 @@
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <Authors>Supper Jal</Authors>
     <PackageProjectUrl>https://github.com/VeryJokerJal/Jalium-UI-Gallery</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/VeryJokerJal/Jalium-UI-Gallery</RepositoryUrl>
+    <RepositoryUrl>https://github.com/VeryJokerJal/Jalium.UI</RepositoryUrl>
     <PackageTags>jalium;ui;xaml;jalxaml;wpf;windows;directx;gpu</PackageTags>
   </PropertyGroup>
 

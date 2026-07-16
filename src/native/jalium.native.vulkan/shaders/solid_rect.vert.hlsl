@@ -3,8 +3,9 @@ struct PushConstants
     float4 rect;
     float4 color;
     float2 screenSize;
-    // (shadowMode, shadowSigma) for the analytic erf drop shadow. shadowMode == 0
-    // is a byte-identical no-op for every other primitive.
+    // (effectMode, effectParameter), retaining the historical shadowParams name:
+    // > 0.5 = analytic erf shadow with sigma, < -0.5 = analytic SuperEllipse
+    // fill with exponent n, 0 = ordinary SolidRect.
     float2 shadowParams;
     float4 roundedClipRect;
     float2 roundedClipRadius;

@@ -210,7 +210,11 @@ public:
         int32_t aaMode = 0,
         int32_t hintingMode = 0,
         float scaleX = 1.0f,
-        float scaleY = 1.0f);
+        float scaleY = 1.0f,
+        // Axis-aligned display text floors the physical pen before the caller
+        // snaps the final quad and samples it with POINT filtering.  Animated,
+        // rotated, or skewed text leaves this false to retain continuous motion.
+        bool crispAxisAligned = false);
 
     // ── B4 GPU-uploader accessors ──
     //
@@ -355,7 +359,8 @@ private:
                                     float dpiScale,
                                     int32_t aaMode,
                                     int32_t hintingMode,
-                                    float scaleX, float scaleY) noexcept;
+                                    float scaleX, float scaleY,
+                                    bool crispAxisAligned) noexcept;
 
     // Simple row-based atlas packer
     uint16_t packX_ = 0;
