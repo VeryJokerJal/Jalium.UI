@@ -139,6 +139,14 @@
   <ItemGroup>
     <None Include="build\Jalium.UI.Interop.targets" Pack="true" PackagePath="build" />
     <None Include="buildTransitive\Jalium.UI.Interop.targets" Pack="true" PackagePath="buildTransitive" />
+    <!-- NuGet considers linux-<arch> compatible with android-<arch> during
+         restore. Exact empty Android native groups stop those glibc assets
+         from shadowing the 16 KB-aligned libraries carried by the Android
+         entry package's AAR. -->
+    <None Update="PackageAssets\_._"
+          Pack="true"
+          PackagePath="runtimes/android-arm64/native/_._;runtimes/android-x64/native/_._"
+          Visible="false" />
   </ItemGroup>
 
   <!-- Fail the pack when any native binary on disk is stale relative to git
