@@ -86,29 +86,60 @@ public static class HotReloadAgent
                 using var server = new NamedPipeServerStream(
                     pipeName, PipeDirection.InOut, 1,
                     PipeTransmissionMode.Byte, PipeOptions.None);
-                server.WaitForConnection();
-
-                // Read the whole request frame under a time budget so a slow / truncated client cannot
-                // pin this (single) accept thread forever. HotReloadProtocol already rejects oversized
-                // or garbage frames via its length caps + magic/version check.
-                var request = ReadRequestWithTimeout(server, ReadFrameTimeout);
-
-                var result = ApplyOnUiThread(request.XClass, request.FilePath, request.Content);
-                HotReloadProtocol.WriteResult(server, result);
-                // Unix named pipes do not expose the Windows drain operation;
-                // disposing the connected stream after the write is sufficient.
-                if (OperatingSystem.IsWindows())
+                while (true)
                 {
-                    try { server.WaitForPipeDrain(); } catch { }
+                    // Keep one server (and therefore one Unix listening socket) alive across clients.
+                    // Recreating it after every frame leaves a short window where a queued client can
+                    // connect to the old socket just before disposal and then receive ECONNRESET.
+                    server.WaitForConnection();
+                    var restartServer = false;
+                    try
+                    {
+                        // Read the whole request frame under a time budget so a slow / truncated client cannot
+                        // pin this (single) accept thread forever. HotReloadProtocol already rejects oversized
+                        // or garbage frames via its length caps + magic/version check.
+                        var request = ReadRequestWithTimeout(server, ReadFrameTimeout);
+
+                        var result = ApplyOnUiThread(request.XClass, request.FilePath, request.Content);
+                        HotReloadProtocol.WriteResult(server, result);
+                        if (OperatingSystem.IsWindows())
+                        {
+                            try { server.WaitForPipeDrain(); } catch { }
+                        }
+                    }
+                    catch (TimeoutException ex)
+                    {
+                        // A timed-out reader may still be unwinding against this PipeStream. Retire the
+                        // whole server after disconnecting so it can never consume bytes from a later
+                        // connection accepted by the same instance.
+                        restartServer = true;
+                        System.Diagnostics.Debug.WriteLine($"[Jalium.HotReload] connection dropped: {ex.GetType().Name}: {ex.Message}");
+                    }
+                    catch (Exception ex)
+                    {
+                        // The reader has completed (or the write failed), so this connection can be
+                        // dropped without tearing down the persistent listener or its queued clients.
+                        System.Diagnostics.Debug.WriteLine($"[Jalium.HotReload] connection dropped: {ex.GetType().Name}: {ex.Message}");
+                    }
+                    finally
+                    {
+                        if (server.IsConnected)
+                        {
+                            server.Disconnect();
+                        }
+                    }
+
+                    if (restartServer)
+                    {
+                        break;
+                    }
                 }
             }
             catch (Exception ex)
             {
-                // Connection-level failure (IDE disconnected mid-frame, malformed payload, read timeout):
-                // drop this connection and keep accepting — the agent must outlive any one client.
-                // Trace it so a genuine protocol/transport defect is not indistinguishable from a
-                // benign client disconnect when diagnosing in a debugger.
-                System.Diagnostics.Debug.WriteLine($"[Jalium.HotReload] connection dropped: {ex.GetType().Name}: {ex.Message}");
+                // A listener/disconnect failure invalidates this server instance. Dispose it and recreate
+                // the endpoint so the agent still outlives transport-level failures.
+                System.Diagnostics.Debug.WriteLine($"[Jalium.HotReload] server restarting: {ex.GetType().Name}: {ex.Message}");
             }
         }
     }
