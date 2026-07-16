@@ -114,13 +114,21 @@ public static class HotReloadAgent
     }
 
     /// <summary>
-    /// Reads a complete request frame with an overall time budget. The frame read runs on a worker so a
+    /// Reads a complete request frame with an overall time budget. The frame read runs on a dedicated worker so a
     /// client that connects then stalls mid-frame can't block the accept loop indefinitely; on timeout we
     /// throw and the caller drops the connection (disposing the pipe unblocks the worker's pending read).
     /// </summary>
     private static (string XClass, string FilePath, string Content) ReadRequestWithTimeout(Stream stream, TimeSpan timeout)
     {
-        var task = Task.Run(() => HotReloadProtocol.ReadRequest(stream));
+        // The listener already blocks synchronously below. Do not queue the actual pipe read to the
+        // shared ThreadPool: a busy UI/test process can starve that work item past the timeout even
+        // though the client has already sent a complete frame, causing us to close the Unix pipe and
+        // surface ECONNRESET to the client. LongRunning gives this bounded read its own worker.
+        var task = Task.Factory.StartNew(
+            () => HotReloadProtocol.ReadRequest(stream),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+            TaskScheduler.Default);
         if (!task.Wait(timeout))
         {
             throw new TimeoutException("Timed out reading the hot-reload request frame.");

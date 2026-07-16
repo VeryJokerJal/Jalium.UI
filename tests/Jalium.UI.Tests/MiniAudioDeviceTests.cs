@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using Jalium.UI.Media.Native;
 using Jalium.UI.Media.Pipeline;
 using Xunit;
@@ -101,6 +102,24 @@ public class MiniAudioDeviceTests
             d1.Dispose();
             d2?.Dispose();
         }
+    }
+
+    [Fact]
+    public void PlaybackEndedDispatch_DoesNotDependOnThreadPool()
+    {
+        var device = (MiniAudioDevice)RuntimeHelpers.GetUninitializedObject(typeof(MiniAudioDevice));
+        using var fired = new ManualResetEventSlim();
+        bool ranOnThreadPool = true;
+        device.PlaybackEnded += (_, _) =>
+        {
+            ranOnThreadPool = Thread.CurrentThread.IsThreadPoolThread;
+            fired.Set();
+        };
+
+        device.QueuePlaybackEnded();
+
+        Assert.True(fired.Wait(TimeSpan.FromSeconds(10)));
+        Assert.False(ranOnThreadPool);
     }
 
     [Fact]

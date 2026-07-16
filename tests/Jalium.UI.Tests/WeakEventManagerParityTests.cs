@@ -73,21 +73,25 @@ public sealed class WeakEventManagerParityTests
         using var writerStarted = new ManualResetEventSlim();
         using var writerEntered = new ManualResetEventSlim();
 
-        Task writer = Task.Run(() =>
-        {
-            writerStarted.Set();
-            using (manager.AcquireWriteLock())
+        Task writer = Task.Factory.StartNew(
+            () =>
             {
-                writerEntered.Set();
-            }
-        });
+                writerStarted.Set();
+                using (manager.AcquireWriteLock())
+                {
+                    writerEntered.Set();
+                }
+            },
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning,
+            TaskScheduler.Default);
 
-        Assert.True(writerStarted.Wait(TimeSpan.FromSeconds(2)));
+        Assert.True(writerStarted.Wait(TimeSpan.FromSeconds(10)));
         Assert.False(writerEntered.Wait(TimeSpan.FromMilliseconds(50)));
 
         readLock.Dispose();
-        Assert.True(writerEntered.Wait(TimeSpan.FromSeconds(2)));
-        await writer.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(writerEntered.Wait(TimeSpan.FromSeconds(10)));
+        await writer.WaitAsync(TimeSpan.FromSeconds(10));
     }
 
     [Fact]

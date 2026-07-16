@@ -6,7 +6,7 @@ namespace Jalium.UI.Media.Native;
 /// <summary>
 /// 由 miniaudio 后端支撑的 <see cref="INativeAudioDevice"/> 实现。所有控制
 /// 函数对 pump 线程线程安全;<see cref="PlaybackEnded"/> 在 native 音频回调
-/// 线程触发,实现端立即 marshal 到 ThreadPool,但订阅者仍应避免长任务。
+/// 线程触发,实现端立即 marshal 到专用 dispatcher,但订阅者仍应避免长任务。
 /// </summary>
 public sealed class MiniAudioDevice : INativeAudioDevice
 {
@@ -24,6 +24,9 @@ public sealed class MiniAudioDevice : INativeAudioDevice
     /// </summary>
     private static readonly NativeAudioInterop.PlaybackEndedNative s_endedCallback = OnEndedFromNative;
     private static readonly nint s_endedCallbackPtr = Marshal.GetFunctionPointerForDelegate(s_endedCallback);
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<MiniAudioDevice> s_endedQueue = new();
+    private static readonly System.Threading.AutoResetEvent s_endedSignal = new(false);
+    private static readonly System.Threading.Thread s_endedDispatcher = StartEndedDispatcher();
 
     private nint _handle;
     private int _sampleRate;
@@ -48,8 +51,8 @@ public sealed class MiniAudioDevice : INativeAudioDevice
         _sampleRate = sampleRate;
         _channels = channels;
 
-        // Weak 引用 + ThreadPool hop 避免回调线程持有 device 强引用导致
-        // 析构受阻;ThreadPool 跳出后才 raise 用户事件。
+        // Weak 引用避免 native 回调长期持有 device 强引用导致析构受阻;
+        // callback 仅排队,专用 dispatcher 跳出音频线程后才 raise 用户事件。
         _selfHandle = GCHandle.Alloc(this, GCHandleType.Weak);
 
         var config = new NativeAudioInterop.NativeAudioDeviceConfig
@@ -182,15 +185,35 @@ public sealed class MiniAudioDevice : INativeAudioDevice
         if (!gch.IsAllocated) return;
         if (gch.Target is not MiniAudioDevice self) return;
 
-        System.Threading.ThreadPool.UnsafeQueueUserWorkItem(
-            static state =>
+        self.QueuePlaybackEnded();
+    }
+
+    internal void QueuePlaybackEnded()
+    {
+        s_endedQueue.Enqueue(this);
+        s_endedSignal.Set();
+    }
+
+    private static System.Threading.Thread StartEndedDispatcher()
+    {
+        var thread = new System.Threading.Thread(static () =>
+        {
+            while (true)
             {
-                var d = (MiniAudioDevice)state!;
-                if (System.Threading.Volatile.Read(ref d._disposed) != 0) return;
-                try { d.PlaybackEnded?.Invoke(d, System.EventArgs.Empty); } catch { /* swallow */ }
-            },
-            self,
-            preferLocal: false);
+                s_endedSignal.WaitOne();
+                while (s_endedQueue.TryDequeue(out MiniAudioDevice? device))
+                {
+                    if (System.Threading.Volatile.Read(ref device._disposed) != 0) continue;
+                    try { device.PlaybackEnded?.Invoke(device, System.EventArgs.Empty); } catch { /* swallow */ }
+                }
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "Jalium audio event dispatcher",
+        };
+        thread.Start();
+        return thread;
     }
 }
 
