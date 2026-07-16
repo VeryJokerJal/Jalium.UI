@@ -144,11 +144,18 @@ internal class TerminalProcess : IDisposable
         // never bleed into the new one.
         _decoder = _encoding.GetDecoder();
 
-        // Start reading output from ConPTY
-        _readTask = Task.Run(() => ReadOutputLoop(_cts.Token));
+        // A pty read blocks until output arrives or the session is closed. Keep
+        // that wait off the shared ThreadPool so output delivery cannot stall
+        // behind unrelated blocking work in the host process.
+        var readCancellationToken = _cts.Token;
+        _readTask = Task.Factory.StartNew(
+            () => ReadOutputLoop(readCancellationToken),
+            CancellationToken.None,
+            TaskCreationOptions.LongRunning | TaskCreationOptions.DenyChildAttach,
+            TaskScheduler.Default);
 
         // Monitor process exit
-        _exitMonitorTask = Task.Run(() => MonitorProcessExit(_cts.Token));
+        _exitMonitorTask = Task.Run(() => MonitorProcessExit(readCancellationToken));
     }
 
     /// <summary>
