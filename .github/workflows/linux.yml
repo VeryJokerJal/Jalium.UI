@@ -498,6 +498,7 @@ jobs:
                 WAYLAND_DISPLAY=wayland-ci \
                 JALIUM_WINDOW_SYSTEM=wayland \
                 LD_LIBRARY_PATH="$payload" \
+                timeout --signal=TERM --kill-after=10s 120s \
                 "$payload/jalium.native.platform.tests" --wayland-vulkan-smoke
 
               managed_root="/artifacts/jalium-managed-${{ matrix.rid }}"

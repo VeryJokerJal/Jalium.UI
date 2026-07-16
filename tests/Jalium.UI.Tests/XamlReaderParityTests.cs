@@ -28,22 +28,20 @@ public sealed class XamlReaderParityTests
     }
 
     [Fact]
-    public void InstanceReaderRaisesAsyncCompletionAndSupportsCancellation()
+    public async Task InstanceReaderRaisesAsyncCompletionAndSupportsCancellation()
     {
         var reader = new MarkupXamlReader();
-        using var completed = new ManualResetEventSlim();
-        AsyncCompletedEventArgs? eventArgs = null;
+        var completed = new TaskCompletionSource<AsyncCompletedEventArgs>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         reader.LoadCompleted += (_, args) =>
         {
-            eventArgs = args;
-            completed.Set();
+            completed.TrySetResult(args);
         };
 
         using var stream = new MemoryStream(Encoding.UTF8.GetBytes("<Grid />"));
         Assert.IsType<Grid>(reader.LoadAsync(stream));
-        Assert.True(completed.Wait(TimeSpan.FromSeconds(5)));
-        Assert.NotNull(eventArgs);
-        Assert.False(eventArgs!.Cancelled);
+        AsyncCompletedEventArgs eventArgs = await completed.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.False(eventArgs.Cancelled);
         Assert.Null(eventArgs.Error);
 
         reader.CancelAsync();

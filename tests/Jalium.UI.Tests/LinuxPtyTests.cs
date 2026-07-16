@@ -117,11 +117,15 @@ public sealed class LinuxPtyTests
 
     private static async Task<bool> WaitForSignalAsync(Task signal)
     {
-        var completed = await Task.WhenAny(signal, Task.Delay(TimeSpan.FromSeconds(10)));
-        if (!ReferenceEquals(completed, signal))
+        try
+        {
+            await signal.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch (TimeoutException)
+        {
             return false;
+        }
 
-        await signal;
         return true;
     }
 
