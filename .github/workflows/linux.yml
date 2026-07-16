@@ -186,7 +186,9 @@ jobs:
         run: |
           payload="src/native/bin/native/${{ matrix.rid }}/Release"
           results="${{ runner.temp }}/managed-test-results"
-          filter="FullyQualifiedName~Jalium.UI.Tests.VulkanBackendSmokeTests|FullyQualifiedName=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable|FullyQualifiedName=Jalium.UI.Tests.ThemeRuntimeSwitchTests.ApplyBrandTheme_ShouldReevaluateEachLiveRoot_ExactlyOnce|FullyQualifiedName=Jalium.UI.Tests.SplashScreenTests.SplashScreen_AutoClose_ShouldWaitForMainWindowToLoad"
+          # Theme and Splash lifecycle coverage already runs in the software
+          # suite above; keep this gate limited to Vulkan-specific coverage.
+          filter="FullyQualifiedName~Jalium.UI.Tests.VulkanBackendSmokeTests|FullyQualifiedName=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable"
           timeout 120s xvfb-run -a env \
             JALIUM_WINDOW_SYSTEM=x11 \
             dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
@@ -518,7 +520,9 @@ jobs:
                   --results-directory "$managed_results" \
                   --logger "trx;LogFileName=linux-${{ matrix.rid }}.trx"
 
-              vulkan_filter="FullyQualifiedName~Jalium.UI.Tests.VulkanBackendSmokeTests|FullyQualifiedName=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable|FullyQualifiedName=Jalium.UI.Tests.ThemeRuntimeSwitchTests.ApplyBrandTheme_ShouldReevaluateEachLiveRoot_ExactlyOnce|FullyQualifiedName=Jalium.UI.Tests.SplashScreenTests.SplashScreen_AutoClose_ShouldWaitForMainWindowToLoad"
+              # Theme and Splash lifecycle coverage already runs in the
+              # software suite above; keep this gate Vulkan-specific.
+              vulkan_filter="FullyQualifiedName~Jalium.UI.Tests.VulkanBackendSmokeTests|FullyQualifiedName=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable"
               timeout 120s xvfb-run -a env \
                 JALIUM_WINDOW_SYSTEM=x11 \
                 dotnet test tests/Jalium.UI.Linux.Tests/Jalium.UI.Linux.Tests.csproj \
