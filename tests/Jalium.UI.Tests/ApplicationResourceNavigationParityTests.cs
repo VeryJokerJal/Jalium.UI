@@ -14,6 +14,17 @@ namespace Jalium.UI.Tests;
 public sealed class ApplicationResourceNavigationParityTests
 {
     [Fact]
+    public void ApplicationTypeInitialization_DoesNotCreateRemoteHttpHandler()
+    {
+        var field = typeof(Application).GetField(
+            "s_remoteClient",
+            BindingFlags.NonPublic | BindingFlags.Static);
+
+        var remoteClient = Assert.IsType<Lazy<HttpClient>>(field!.GetValue(null));
+        Assert.False(remoteClient.IsValueCreated);
+    }
+
+    [Fact]
     public void Application_ExposesCanonicalResourceAndNavigationContracts()
     {
         Assert.Equal(typeof(StreamResourceInfo),

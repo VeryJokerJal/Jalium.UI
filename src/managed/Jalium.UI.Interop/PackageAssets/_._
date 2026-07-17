@@ -1,0 +1,1 @@
+Jalium.UI.Interop intentionally has no Android native assets; Jalium.UI.Android supplies them through its AAR.

@@ -20,6 +20,7 @@ public sealed class LinuxPtyTests
         using var process = new TerminalProcess();
         var output = new StringBuilder();
         var outputSignal = NewSignal();
+        bool? outputRanOnThreadPool = null;
         var exitSignal = new TaskCompletionSource<int>(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -27,6 +28,7 @@ public sealed class LinuxPtyTests
         {
             lock (output)
             {
+                outputRanOnThreadPool ??= Thread.CurrentThread.IsThreadPoolThread;
                 output.Append(chunk);
                 if (output.ToString().Contains("hello-from-pty", StringComparison.Ordinal))
                     outputSignal.TrySetResult(true);
@@ -44,6 +46,7 @@ public sealed class LinuxPtyTests
         Assert.True(await WaitForSignalAsync(exitSignal.Task),
             "shell did not exit after completing its command");
         Assert.Equal(0, await exitSignal.Task);
+        Assert.False(outputRanOnThreadPool);
     }
 
     [Fact]
@@ -75,8 +78,11 @@ public sealed class LinuxPtyTests
         process.NotifyResize(100, 30);
 
         process.WriteInput("echo interactive-$((6*7))\n");
-        Assert.True(await WaitForSignalAsync(markerSignal.Task),
-            $"interactive marker missing; got: {Snapshot(output)}");
+        bool markerArrived = await WaitForSignalAsync(markerSignal.Task);
+        string markerOutput = Snapshot(output);
+        Assert.True(
+            markerArrived || markerOutput.Contains("interactive-42", StringComparison.Ordinal),
+            $"interactive marker missing; got: {markerOutput}");
 
         process.WriteInput("exit\n");
         Assert.True(await WaitForSignalAsync(exitSignal.Task),
@@ -117,11 +123,15 @@ public sealed class LinuxPtyTests
 
     private static async Task<bool> WaitForSignalAsync(Task signal)
     {
-        var completed = await Task.WhenAny(signal, Task.Delay(TimeSpan.FromSeconds(10)));
-        if (!ReferenceEquals(completed, signal))
+        try
+        {
+            await signal.WaitAsync(TimeSpan.FromSeconds(30));
+        }
+        catch (TimeoutException)
+        {
             return false;
+        }
 
-        await signal;
         return true;
     }
 

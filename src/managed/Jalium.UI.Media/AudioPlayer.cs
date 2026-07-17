@@ -599,7 +599,7 @@ public sealed class AudioPlayer : IDisposable
 
     private void OnDevicePlaybackEnded(object? sender, EventArgs e)
     {
-        // PlaybackEnded 已在 MiniAudioDevice 内部 hop 到 ThreadPool,这里直接 fire。
+        // PlaybackEnded 已在 MiniAudioDevice 内部 hop 到专用事件线程,这里直接 fire。
         lock (_lock) _state = NativePlaybackState.Ended;
         try { MediaEnded?.Invoke(this, EventArgs.Empty); }
         catch { /* subscriber exception isolated */ }
