@@ -372,6 +372,13 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
         if (panel is VirtualizingPanel ownerStampPanel)
         {
             ownerStampPanel.ItemsOwner = this;
+            if (_itemsPresenter != null)
+            {
+                if (ownerStampPanel.TemplatedParent!= _itemsPresenter)
+                {
+                    ownerStampPanel.SetTemplatedParent(_itemsPresenter);
+                }
+            }
         }
 
         if (ShouldUseVirtualizingPipeline(panel))
