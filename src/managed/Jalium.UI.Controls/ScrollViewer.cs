@@ -2471,13 +2471,17 @@ public partial class ScrollViewer : ContentControl
         UpdateScrollBarMetrics();
     }
 
-    private Size GetContentMargin()
+    private (double Width, double Height) GetContentMargin()
     {
         if (ContentElement is not FrameworkElement frameworkElement)
-            return default(Size);
+            return default;
 
         var margin = frameworkElement.Margin;
-        return new Size(
+        // The per-axis sums can legitimately be negative (negative margins are valid
+        // and shrink the scrollable extent), so they must not round-trip through
+        // Size — its constructor throws on negative dimensions. The extent addition
+        // in SyncExtentFromScrollInfo clamps the combined result to zero.
+        return (
             CoerceFiniteMargin(margin.Left) + CoerceFiniteMargin(margin.Right),
             CoerceFiniteMargin(margin.Top) + CoerceFiniteMargin(margin.Bottom));
     }
