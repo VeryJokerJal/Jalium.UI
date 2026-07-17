@@ -57,6 +57,34 @@ public class ScrollViewerScrollBarMetricsTests
     }
 
     [Fact]
+    public void ScrollViewer_WithNegativeContentMargin_ShouldNotThrowAndShrinkExtent()
+    {
+        // Regression: GetContentMargin used to funnel the per-axis margin sums
+        // through the Size constructor, which throws on negatives. A content
+        // element with e.g. Margin="-9,0,-9,0" (horizontal sum -18) crashed the
+        // layout pass instead of shrinking the scrollable extent.
+        var content = new StackPanel
+        {
+            Margin = new Thickness(-9, 0, -9, 0)
+        };
+        content.Children.Add(new Border { Height = 120 });
+        content.Children.Add(new Border { Height = 120 });
+
+        var viewer = new ScrollViewer
+        {
+            Content = content,
+            Width = 160,
+            Height = 160,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
+
+        viewer.Measure(new Size(160, 160));
+        viewer.Arrange(new Rect(0, 0, 160, 160));
+
+        Assert.Equal(240, viewer.ExtentHeight, precision: 3);
+    }
+
+    [Fact]
     public void ConfigureScrollBar_NonFiniteMetrics_ShouldClampToSafeDefaults()
     {
         var scrollBar = new ScrollBar

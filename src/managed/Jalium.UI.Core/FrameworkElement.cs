@@ -1143,9 +1143,12 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         var availableWidth = Math.Max(0, finalRect.Width - marginWidth);
         var availableHeight = Math.Max(0, finalRect.Height - marginHeight);
 
-        // Get the desired size (set during Measure)
-        var desiredWidth = DesiredSize.Width - marginWidth;
-        var desiredHeight = DesiredSize.Height - marginHeight;
+        // Get the desired size (set during Measure). DesiredSize can be stale relative
+        // to the current margin (margin changed after the last measure, or the element
+        // was never measured — e.g. a template rebuild arranged before its measure pass),
+        // so the subtraction must clamp to zero like WPF does; Size throws on negatives.
+        var desiredWidth = Math.Max(0, DesiredSize.Width - marginWidth);
+        var desiredHeight = Math.Max(0, DesiredSize.Height - marginHeight);
 
         // Determine arrange size based on alignment
         // When alignment is Stretch, use available size; otherwise use desired size (clamped to available)
