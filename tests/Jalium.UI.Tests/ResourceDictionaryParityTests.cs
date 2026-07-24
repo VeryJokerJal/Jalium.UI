@@ -198,6 +198,30 @@ public sealed class ResourceDictionaryParityTests
         Assert.Equal(3, changeCount);
     }
 
+    [Fact]
+    public void RepeatedUncachedResourceLookupReusesCycleDetectionStorage()
+    {
+        var key = new object();
+        var value = new object();
+        var element = new FrameworkElement();
+        element.Resources[key] = value;
+
+        ResourceLookup.InvalidateResourceCache();
+        Assert.Same(value, ResourceLookup.FindResource(element, key));
+
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 1000; i++)
+        {
+            ResourceLookup.InvalidateResourceCache();
+            Assert.Same(value, ResourceLookup.FindResource(element, key));
+        }
+
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+        Assert.True(
+            allocatedBytes < 32 * 1024,
+            $"Warm resource lookup allocated {allocatedBytes:N0} bytes.");
+    }
+
     private sealed class TransformingResourceDictionary : ResourceDictionary
     {
         private readonly bool _canCache;

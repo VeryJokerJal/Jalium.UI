@@ -104,6 +104,54 @@ public class TitleBarHitTestTests
         Assert.Equal(HTCLIENT, rightHit);
     }
 
+    [Theory]
+    [InlineData(0, 90)]
+    [InlineData(5.999, 90)]
+    [InlineData(294, 90)]
+    [InlineData(299.999, 90)]
+    [InlineData(150, 0)]
+    [InlineData(150, 5.999)]
+    [InlineData(150, 174)]
+    [InlineData(150, 179.999)]
+    public void ComputeNcHitTest_WhenPointIsInsideClientEdge_ShouldNotResize(double x, double y)
+    {
+        var window = new Window
+        {
+            Width = 300,
+            Height = 180,
+            IsShowTitleBar = false,
+            ResizeMode = ResizeMode.CanResize
+        };
+
+        LayoutWindow(window, 300, 180);
+
+        Assert.Equal(HTCLIENT, window.ComputeNcHitTestFromClientDip(x, y, isMaximized: false));
+    }
+
+    [Fact]
+    public void ComputeNcHitTest_WhenPointIsInOuterFrame_ShouldResize()
+    {
+        const int HTLEFT = 10;
+        const int HTRIGHT = 11;
+        const int HTTOP = 12;
+        const int HTBOTTOM = 15;
+
+        var window = new Window
+        {
+            Width = 300,
+            Height = 180,
+            IsShowTitleBar = false,
+            ResizeMode = ResizeMode.CanResize
+        };
+
+        LayoutWindow(window, 300, 180);
+
+        Assert.Equal(HTLEFT, window.ComputeNcHitTestFromClientDip(-1, 90, isMaximized: false));
+        Assert.Equal(HTRIGHT, window.ComputeNcHitTestFromClientDip(300, 90, isMaximized: false));
+        Assert.Equal(HTTOP, window.ComputeNcHitTestFromClientDip(150, -1, isMaximized: false));
+        Assert.Equal(HTBOTTOM, window.ComputeNcHitTestFromClientDip(150, 180, isMaximized: false));
+    }
+
     [Fact]
     public void Arrange_WhenTitleBarHidden_ContentStartsAtTop()
     {

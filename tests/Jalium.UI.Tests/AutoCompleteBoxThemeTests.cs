@@ -49,8 +49,8 @@ public class AutoCompleteBoxThemeTests
             Assert.NotNull(autoCompleteBox.BorderBrush);
             Assert.NotNull(autoCompleteBox.SelectionBrush);
             Assert.NotNull(autoCompleteBox.CaretBrush);
-            Assert.Equal(32, autoCompleteBox.MinHeight);
-            Assert.True(autoCompleteBox.RenderSize.Height >= 32);
+            Assert.Equal(36, autoCompleteBox.MinHeight);
+            Assert.True(autoCompleteBox.RenderSize.Height >= 36);
         }
         finally
         {

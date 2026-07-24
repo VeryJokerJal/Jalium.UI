@@ -1,4 +1,4 @@
-﻿<ResourceDictionary
+<ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
@@ -9,16 +9,18 @@
         <Setter Property="Background" Value="{ThemeResource ControlBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="12,6,12,6" />
-        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Padding" Value="14,7,14,7" />
+        <Setter Property="CornerRadius" Value="10" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="MinWidth" Value="60" />
-        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="MinHeight" Value="36" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ToggleButton">
                 <Border Name="RootBorder"
+                        TransitionProperty="None"
+                        Shape="RoundedRectangle"
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
@@ -39,65 +41,66 @@
                         </ContentPresenter.Resources>
                     </ContentPresenter>
                 </Border>
+                <ControlTemplate.Triggers>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="False" />
+                            <Condition Property="IsMouseOver" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="RootBorder" Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
+                        <Setter TargetName="RootBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+                    </MultiTrigger>
+                    <Trigger Property="IsChecked" Value="True">
+                        <Setter TargetName="RootBorder" Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
+                        <Setter TargetName="RootBorder" Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
+                    </Trigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="True" />
+                            <Condition Property="IsMouseOver" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="RootBorder" Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
+                        <Setter TargetName="RootBorder" Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="False" />
+                            <Condition Property="IsPressed" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="RootBorder" Property="Background" Value="{ThemeResource ButtonBackgroundPressed}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="True" />
+                            <Condition Property="IsPressed" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="RootBorder" Property="Background" Value="{ThemeResource AccentBrushPressed}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsKeyboardFocused" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="RootBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                    </MultiTrigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter TargetName="RootBorder" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                        <Setter TargetName="RootBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
-            <!-- Unchecked + Hover -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="False" />
-                    <Condition Property="IsMouseOver" Value="True" />
-                    <Condition Property="IsEnabled" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
-            </MultiTrigger>
-
-            <!-- Unchecked + Pressed -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="False" />
-                    <Condition Property="IsPressed" Value="True" />
-                    <Condition Property="IsEnabled" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ButtonBackgroundPressed}" />
-            </MultiTrigger>
-
-            <!-- Checked (accent fill, like a segmented toggle) -->
             <Trigger Property="IsChecked" Value="True">
-                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
                 <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
             </Trigger>
-
-            <!-- Checked + Hover -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="True" />
-                    <Condition Property="IsMouseOver" Value="True" />
-                    <Condition Property="IsEnabled" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
-            </MultiTrigger>
-
-            <!-- Checked + Pressed (no dedicated pressed accent token; revert to base checked fill) -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="True" />
-                    <Condition Property="IsPressed" Value="True" />
-                    <Condition Property="IsEnabled" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
-            </MultiTrigger>
-
-            <!-- Disabled (highest priority) -->
             <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
                 <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -109,16 +112,20 @@
         <Setter Property="Background" Value="{ThemeResource ToggleUncheckedBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorder}" />
         <Setter Property="BorderThickness" Value="1.5" />
-        <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="MinHeight" Value="20" />
+        <Setter Property="CornerRadius" Value="5" />
+        <Setter Property="MinHeight" Value="24" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">
             <ControlTemplate TargetType="CheckBox">
-                <Border Name="RootBorder" Background="Transparent">
+                <Grid Name="RootBorder" Background="Transparent">
                     <StackPanel Orientation="Horizontal">
                         <!-- CheckBox Box -->
                         <Grid Width="18" Height="18" VerticalAlignment="Center">
                             <Border Name="CheckBoxBorder"
+                                    TransitionProperty="Background, BorderBrush"
+                                    TransitionDuration="0:0:0.12"
+                                    TransitionTimingFunction="Recommended"
+                                    Shape="RoundedRectangle"
                                     Background="{TemplateBinding Background}"
                                     BorderBrush="{TemplateBinding BorderBrush}"
                                     BorderThickness="{TemplateBinding BorderThickness}"
@@ -140,14 +147,15 @@
                                           HorizontalAlignment="Center"
                                           VerticalAlignment="Center"
                                           Opacity="0" />
-                                    <Border Name="IndeterminateMark"
-                                            Width="8"
-                                            Height="2"
-                                            Background="{ThemeResource TextOnAccent}"
-                                            HorizontalAlignment="Center"
-                                            VerticalAlignment="Center"
-                                            CornerRadius="1"
-                                            Opacity="0" />
+                                    <Rectangle Name="IndeterminateMark"
+                                               Width="8"
+                                               Height="2"
+                                               Fill="{ThemeResource TextOnAccent}"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center"
+                                               RadiusX="1"
+                                               RadiusY="1"
+                                               Opacity="0" />
                                 </Grid>
                             </Border>
                         </Grid>
@@ -156,68 +164,87 @@
                         <ContentPresenter Margin="8,0,0,0"
                                           VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
                     </StackPanel>
-                </Border>
+                </Grid>
+                <ControlTemplate.Triggers>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="False" />
+                            <Condition Property="IsMouseOver" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="CheckBoxBorder" Property="Background" Value="{ThemeResource ToggleUncheckedBackgroundHover}" />
+                        <Setter TargetName="CheckBoxBorder" Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorderHover}" />
+                    </MultiTrigger>
+                    <Trigger Property="IsChecked" Value="{x:Null}">
+                        <Setter TargetName="CheckBoxBorder" Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
+                        <Setter TargetName="CheckBoxBorder" Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
+                        <Setter TargetName="IndeterminateMark" Property="Opacity" Value="1" />
+                    </Trigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="{x:Null}" />
+                            <Condition Property="IsMouseOver" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="CheckBoxBorder" Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
+                        <Setter TargetName="CheckBoxBorder" Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
+                    </MultiTrigger>
+                    <Trigger Property="IsChecked" Value="True">
+                        <Setter TargetName="CheckBoxBorder" Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
+                        <Setter TargetName="CheckBoxBorder" Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
+                        <Setter TargetName="CheckMark" Property="Opacity" Value="1" />
+                    </Trigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="True" />
+                            <Condition Property="IsMouseOver" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="CheckBoxBorder" Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
+                        <Setter TargetName="CheckBoxBorder" Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="False" />
+                            <Condition Property="IsPressed" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="CheckBoxBorder" Property="Background" Value="{ThemeResource ControlBackgroundPressed}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="True" />
+                            <Condition Property="IsPressed" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="CheckBoxBorder" Property="Background" Value="{ThemeResource AccentBrushPressed}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="{x:Null}" />
+                            <Condition Property="IsPressed" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="CheckBoxBorder" Property="Background" Value="{ThemeResource AccentBrushPressed}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsKeyboardFocused" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="CheckBoxBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                    </MultiTrigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter TargetName="CheckBoxBorder" Property="Background" Value="{ThemeResource ToggleDisabledBackground}" />
+                        <Setter TargetName="CheckBoxBorder" Property="BorderBrush" Value="{ThemeResource ToggleDisabledBorder}" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
-            <!-- Unchecked + Hover -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="False" />
-                    <Condition Property="IsMouseOver" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ToggleUncheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorderHover}" />
-            </MultiTrigger>
-
-            <!-- Indeterminate (not hovered) -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="{x:Null}" />
-                    <Condition Property="IsMouseOver" Value="False" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
-            </MultiTrigger>
-
-            <!-- Indeterminate + Hover -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="{x:Null}" />
-                    <Condition Property="IsMouseOver" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
-            </MultiTrigger>
-
-            <!-- Checked (not hovered) -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="True" />
-                    <Condition Property="IsMouseOver" Value="False" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
-                <Setter TargetName="CheckMark" Property="Opacity" Value="1" />
-            </MultiTrigger>
-
-            <!-- Checked + Hover -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="True" />
-                    <Condition Property="IsMouseOver" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
-                <Setter TargetName="CheckMark" Property="Opacity" Value="1" />
-            </MultiTrigger>
-
-            <!-- Disabled state (highest priority) -->
             <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{ThemeResource ToggleDisabledBackground}" />
                 <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleDisabledBorder}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -233,7 +260,7 @@
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">
             <ControlTemplate TargetType="RadioButton">
-                <Border Name="RootBorder" Background="Transparent">
+                <Grid Name="RootBorder" Background="Transparent">
                     <StackPanel Orientation="Horizontal">
                         <!-- RadioButton Circle Container -->
                         <Grid Width="18"
@@ -241,19 +268,29 @@
                               VerticalAlignment="Center">
                             <!-- Use a Border with full corner radius for circle effect -->
                             <Border Name="OuterCircle"
+                                    TransitionProperty="Background, BorderBrush"
+                                    TransitionDuration="0:0:0.12"
+                                    TransitionTimingFunction="Recommended"
                                     Background="{TemplateBinding Background}"
-                                    BorderBrush="{TemplateBinding BorderBrush}"
-                                    BorderThickness="1.5"
-                                    CornerRadius="9">
-
-                                <!-- Inner Circle (Radio Dot) -->
-                                <Ellipse Name="RadioDot"
-                                         Width="8"
-                                         Height="8"
-                                         Fill="{ThemeResource TextOnAccent}"
-                                         HorizontalAlignment="Center"
-                                         VerticalAlignment="Center"
-                                         Opacity="0" />
+                                     BorderBrush="{TemplateBinding BorderBrush}"
+                                     BorderThickness="1.5"
+                                     CornerRadius="9">
+                                <Grid>
+                                    <Ellipse Name="PressedOverlay"
+                                             IsHitTestVisible="False"
+                                             Fill="{ThemeResource ControlBackgroundPressed}"
+                                             HorizontalAlignment="Stretch"
+                                             VerticalAlignment="Stretch"
+                                             Opacity="0" />
+                                    <!-- Inner Circle (Radio Dot) -->
+                                    <Ellipse Name="RadioDot"
+                                             Width="8"
+                                             Height="8"
+                                             Fill="{ThemeResource TextOnAccent}"
+                                             HorizontalAlignment="Center"
+                                             VerticalAlignment="Center"
+                                             Opacity="0" />
+                                </Grid>
                             </Border>
                         </Grid>
 
@@ -261,48 +298,65 @@
                         <ContentPresenter Margin="8,0,0,0"
                                           VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
                     </StackPanel>
-                </Border>
+                </Grid>
+                <ControlTemplate.Triggers>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="False" />
+                            <Condition Property="IsMouseOver" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="OuterCircle" Property="Background" Value="{ThemeResource ToggleUncheckedBackgroundHover}" />
+                        <Setter TargetName="OuterCircle" Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorderHover}" />
+                    </MultiTrigger>
+                    <Trigger Property="IsChecked" Value="True">
+                        <Setter TargetName="OuterCircle" Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
+                        <Setter TargetName="OuterCircle" Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
+                        <Setter TargetName="RadioDot" Property="Opacity" Value="1" />
+                    </Trigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="True" />
+                            <Condition Property="IsMouseOver" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="OuterCircle" Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
+                        <Setter TargetName="OuterCircle" Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsPressed" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="PressedOverlay" Property="Opacity" Value="1" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsChecked" Value="True" />
+                            <Condition Property="IsPressed" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="PressedOverlay" Property="Fill" Value="{ThemeResource AccentBrushPressed}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsKeyboardFocused" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="OuterCircle" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                    </MultiTrigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter TargetName="PressedOverlay" Property="Opacity" Value="0" />
+                        <Setter TargetName="OuterCircle" Property="Background" Value="{ThemeResource ToggleDisabledBackground}" />
+                        <Setter TargetName="OuterCircle" Property="BorderBrush" Value="{ThemeResource ToggleDisabledBorder}" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
-            <!-- Unchecked + Hover -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="False" />
-                    <Condition Property="IsMouseOver" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ToggleUncheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorderHover}" />
-            </MultiTrigger>
-
-            <!-- Checked (not hovered) -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="True" />
-                    <Condition Property="IsMouseOver" Value="False" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
-                <Setter TargetName="RadioDot" Property="Opacity" Value="1" />
-            </MultiTrigger>
-
-            <!-- Checked + Hover -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsChecked" Value="True" />
-                    <Condition Property="IsMouseOver" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
-                <Setter TargetName="RadioDot" Property="Opacity" Value="1" />
-            </MultiTrigger>
-
-            <!-- Disabled state (highest priority) -->
             <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{ThemeResource ToggleDisabledBackground}" />
                 <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
-                <Setter Property="BorderBrush" Value="{ThemeResource ToggleDisabledBorder}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -315,14 +369,14 @@
         <Setter Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorder}" />
         <Setter Property="OnBackground" Value="{ThemeResource ToggleCheckedBackground}" />
         <Setter Property="OffBackground" Value="{ThemeResource ToggleUncheckedBackground}" />
-        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="MinHeight" Value="36" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ToggleSwitch">
                 <StackPanel Orientation="Vertical" Background="Transparent">
                     <!-- Header -->
                     <ContentPresenter Name="PART_Header"
                                       Content="{TemplateBinding Header}"
-                                      Margin="0,0,0,4"
+                                      Margin="0,0,0,6"
                                       Visibility="Collapsed"
                                       FontFamily="{TemplateBinding FontFamily}"
                                       FontSize="{TemplateBinding FontSize}"
@@ -343,14 +397,13 @@
                                     BorderThickness="1">
 
                                 <!-- Switch Thumb -->
-                                <Border Name="PART_SwitchThumb"
-                                        Width="14"
-                                        Height="14"
-                                        CornerRadius="7"
-                                        Background="{ThemeResource SliderThumb}"
-                                        HorizontalAlignment="Left"
-                                        VerticalAlignment="Top"
-                                        Margin="3,2,0,0" />
+                                <Ellipse Name="PART_SwitchThumb"
+                                         Width="14"
+                                         Height="14"
+                                         Fill="{ThemeResource SliderThumb}"
+                                         HorizontalAlignment="Left"
+                                         VerticalAlignment="Top"
+                                         Margin="3,2,0,0" />
                             </Border>
                         </Grid>
 
@@ -365,10 +418,49 @@
                                           Foreground="{TemplateBinding Foreground}" />
                     </StackPanel>
                 </StackPanel>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsOn" Value="True">
+                        <Setter TargetName="PART_SwitchTrack" Property="Background" Value="{TemplateBinding OnBackground}" />
+                        <Setter TargetName="PART_SwitchTrack" Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
+                    </Trigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsOn" Value="False" />
+                            <Condition Property="IsMouseOver" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="PART_SwitchTrack" Property="Background" Value="{ThemeResource ToggleUncheckedBackgroundHover}" />
+                        <Setter TargetName="PART_SwitchTrack" Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorderHover}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsOn" Value="True" />
+                            <Condition Property="IsMouseOver" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="PART_SwitchTrack" Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
+                        <Setter TargetName="PART_SwitchTrack" Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
+                    </MultiTrigger>
+                    <MultiTrigger>
+                        <MultiTrigger.Conditions>
+                            <Condition Property="IsKeyboardFocused" Value="True" />
+                            <Condition Property="IsEnabled" Value="True" />
+                        </MultiTrigger.Conditions>
+                        <Setter TargetName="PART_SwitchTrack" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                    </MultiTrigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter TargetName="PART_SwitchTrack" Property="Background" Value="{ThemeResource ToggleDisabledBackground}" />
+                        <Setter TargetName="PART_SwitchTrack" Property="BorderBrush" Value="{ThemeResource ToggleDisabledBorder}" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
             </ControlTemplate>
         </Setter>
 
-        <!-- All other visual states (IsOn, hover, disabled colors) managed by code-behind spring animation -->
+        <Style.Triggers>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
 </ResourceDictionary>

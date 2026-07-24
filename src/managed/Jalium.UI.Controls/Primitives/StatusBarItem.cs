@@ -68,8 +68,9 @@ public class StatusBarItem : ContentControl
     {
         if (_contentVisual != null)
         {
-            RemoveVisualChild(_contentVisual);
+            var visual = _contentVisual;
             _contentVisual = null;
+            RemoveVisualChild(visual);
         }
 
         if (newContent is UIElement element)

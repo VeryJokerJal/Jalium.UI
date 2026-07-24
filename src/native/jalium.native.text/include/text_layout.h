@@ -114,8 +114,9 @@ private:
 
     struct LayoutResult {
         std::vector<LayoutLine> lines;
-        float totalWidth;
-        float totalHeight;
+        float totalWidth = 0;
+        float totalWidthIncludingTrailingWhitespace = 0;
+        float totalHeight = 0;
     };
 
     LayoutResult PerformLayout(

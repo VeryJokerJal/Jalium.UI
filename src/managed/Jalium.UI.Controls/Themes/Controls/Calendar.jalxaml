@@ -9,13 +9,24 @@
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="8,4,8,4" />
-        <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="Padding" Value="10,6" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="TransitionProperty" Value="Background, BorderBrush" />
+        <Setter Property="TransitionDuration" Value="0:0:0.12" />
+        <Setter Property="TransitionTimingFunction" Value="Recommended" />
 
         <Style.Triggers>
-            <Trigger Property="IsKeyboardFocused" Value="True">
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+            </Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
                 <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -27,13 +38,24 @@
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="8,4,8,4" />
-        <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="Padding" Value="10,6" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="TransitionProperty" Value="Background, BorderBrush" />
+        <Setter Property="TransitionDuration" Value="0:0:0.12" />
+        <Setter Property="TransitionTimingFunction" Value="Recommended" />
 
         <Style.Triggers>
-            <Trigger Property="IsKeyboardFocused" Value="True">
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+            </Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
                 <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -46,11 +68,19 @@
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8" />
-        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="CornerRadius" Value="14" />
+        <Setter Property="TransitionProperty" Value="Background, BorderBrush" />
+        <Setter Property="TransitionDuration" Value="0:0:0.12" />
+        <Setter Property="TransitionTimingFunction" Value="Recommended" />
 
         <Style.Triggers>
             <Trigger Property="IsKeyboardFocused" Value="True">
                 <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -62,11 +92,24 @@
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="8" />
+        <Setter Property="Padding" Value="10,6" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="TransitionProperty" Value="Background, BorderBrush" />
+        <Setter Property="TransitionDuration" Value="0:0:0.12" />
+        <Setter Property="TransitionTimingFunction" Value="Recommended" />
 
         <Style.Triggers>
-            <Trigger Property="IsKeyboardFocused" Value="True">
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+            </Trigger>
+            <Trigger Property="IsKeyboardFocusWithin" Value="True">
                 <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -78,7 +121,10 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="Padding" Value="4" />
+        <Setter Property="Padding" Value="8,5" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="MinHeight" Value="30" />
+        <Setter Property="TransitionProperty" Value="None" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
 
@@ -86,15 +132,33 @@
             <Trigger Property="IsMouseOver" Value="True">
                 <Setter Property="Background" Value="{ThemeResource HighlightBackground}" />
             </Trigger>
-            <Trigger Property="IsPressed" Value="True">
-                <Setter Property="Background" Value="{ThemeResource ControlBackgroundPressed}" />
-            </Trigger>
             <Trigger Property="HasSelectedDays" Value="True">
                 <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
-                <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
             </Trigger>
             <Trigger Property="IsInactive" Value="True">
                 <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundPressed}" />
+            </Trigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="HasSelectedDays" Value="True" />
+                    <Condition Property="IsPressed" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{ThemeResource AccentBrushPressed}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
+            </MultiTrigger>
+            <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                <Setter Property="BorderThickness" Value="1" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="Transparent" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="Opacity" Value="0.55" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -106,8 +170,10 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="8" />
         <Setter Property="Width" Value="32" />
         <Setter Property="Height" Value="32" />
+        <Setter Property="TransitionProperty" Value="None" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
 
@@ -121,6 +187,7 @@
             </Trigger>
             <Trigger Property="IsSelected" Value="True">
                 <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
             </Trigger>
             <Trigger Property="IsBlackedOut" Value="True">
                 <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
@@ -130,6 +197,27 @@
             </Trigger>
             <Trigger Property="IsHighlighted" Value="True">
                 <Setter Property="Background" Value="{ThemeResource HighlightBackground}" />
+            </Trigger>
+            <Trigger Property="IsPressed" Value="True">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundPressed}" />
+            </Trigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsSelected" Value="True" />
+                    <Condition Property="IsPressed" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{ThemeResource AccentBrushPressed}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
+            </MultiTrigger>
+            <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                <Setter Property="BorderThickness" Value="2" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="Transparent" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="Opacity" Value="0.55" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -141,6 +229,22 @@
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="8" />
+        <Setter Property="CornerRadius" Value="14" />
+        <Setter Property="TransitionProperty" Value="Background, BorderBrush" />
+        <Setter Property="TransitionDuration" Value="0:0:0.12" />
+        <Setter Property="TransitionTimingFunction" Value="Recommended" />
+
+        <Style.Triggers>
+            <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -150,8 +254,12 @@
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="8,6,8,6" />
-        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Padding" Value="10,7" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="TransitionProperty" Value="Background, BorderBrush" />
+        <Setter Property="TransitionDuration" Value="0:0:0.12" />
+        <Setter Property="TransitionTimingFunction" Value="Recommended" />
         <Setter Property="TextWrapping" Value="NoWrap" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
 
@@ -164,6 +272,7 @@
             </Trigger>
             <Trigger Property="IsEnabled" Value="False">
                 <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
                 <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </Trigger>
         </Style.Triggers>

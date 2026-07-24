@@ -67,6 +67,7 @@ using System.Runtime.CompilerServices;
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.BaseValueSource))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.BaselineAlignment))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.BindingCondition))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.ClipEdges))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.CoerceValueCallback))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Collections.ObservableCollection<>))]
 [assembly: TypeForwardedTo(typeof(global::Jalium.UI.Collections.ReadOnlyObservableCollection<>))]

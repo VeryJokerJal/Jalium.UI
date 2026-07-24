@@ -11,8 +11,9 @@ public enum BorderShape
     RoundedRectangle = 0,
 
     /// <summary>
-    /// Superellipse (squircle) shape with smooth continuous curvature.
-    /// The exponent is controlled by SuperEllipseN (default 4, iOS-style).
+    /// Continuous-corner rectangle whose four local corner patches use the
+    /// superellipse exponent. CornerRadius bounds each patch; the sides between
+    /// patches remain straight. SuperEllipseN defaults to 4 (iOS-style).
     /// </summary>
     SuperEllipse = 1,
 }

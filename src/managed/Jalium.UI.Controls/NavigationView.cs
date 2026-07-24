@@ -23,11 +23,11 @@ public class NavigationView : ContentControl
     private bool _isUpdatingSelection;
     private StackPanel? _menuItemsPanel;
     private StackPanel? _footerItemsPanel;
-    private Border? _paneContainer;
-    private Border? _contentContainer;
-    private Border? _paneHeaderHost;
-    private Border? _paneFooterHost;
-    private Border? _paneFooterRegion;
+    private Panel? _paneContainer;
+    private Panel? _contentContainer;
+    private ContentPresenter? _paneHeaderHost;
+    private ContentPresenter? _paneFooterHost;
+    private Panel? _paneFooterRegion;
     private Grid? _rootGrid;
     private ScrollViewer? _paneScrollViewer;
 
@@ -421,11 +421,11 @@ public class NavigationView : ContentControl
         base.OnApplyTemplate();
 
         _rootGrid = GetTemplateChild("PART_RootGrid") as Grid;
-        _paneContainer = GetTemplateChild("PART_PaneContainer") as Border;
-        _contentContainer = GetTemplateChild("PART_ContentContainer") as Border;
-        _paneHeaderHost = GetTemplateChild("PART_PaneHeaderHost") as Border;
-        _paneFooterHost = GetTemplateChild("PART_PaneFooterHost") as Border;
-        _paneFooterRegion = GetTemplateChild("PART_PaneFooterRegion") as Border;
+        _paneContainer = GetTemplateChild("PART_PaneContainer") as Panel;
+        _contentContainer = GetTemplateChild("PART_ContentContainer") as Panel;
+        _paneHeaderHost = GetTemplateChild("PART_PaneHeaderHost") as ContentPresenter;
+        _paneFooterHost = GetTemplateChild("PART_PaneFooterHost") as ContentPresenter;
+        _paneFooterRegion = GetTemplateChild("PART_PaneFooterRegion") as Panel;
         _menuItemsPanel = GetTemplateChild("PART_MenuItemsHost") as StackPanel;
         _footerItemsPanel = GetTemplateChild("PART_FooterItemsHost") as StackPanel;
         _paneScrollViewer = GetTemplateChild("PART_PaneScrollViewer") as ScrollViewer;
@@ -655,7 +655,7 @@ public class NavigationView : ContentControl
         if (_paneHeaderHost == null)
             return;
 
-        _paneHeaderHost.Child = PaneHeader;
+        _paneHeaderHost.Content = PaneHeader;
         _paneHeaderHost.Visibility = PaneHeader == null ? Visibility.Collapsed : Visibility.Visible;
         UpdatePaneScrollInsets();
     }
@@ -665,7 +665,7 @@ public class NavigationView : ContentControl
         if (_paneFooterHost == null)
             return;
 
-        _paneFooterHost.Child = PaneFooter;
+        _paneFooterHost.Content = PaneFooter;
         _paneFooterHost.Visibility = PaneFooter == null ? Visibility.Collapsed : Visibility.Visible;
         UpdatePaneFooterRegionVisibility();
         UpdatePaneScrollInsets();
@@ -700,7 +700,6 @@ public class NavigationView : ContentControl
         // Let header/footer be transparent so they inherit the pane background
         // seamlessly instead of applying a separate acrylic layer that causes
         // a visible color mismatch.
-        _paneHeaderHost.Background = null;
         _paneHeaderHost.BackdropEffect = null;
         _paneFooterRegion.Background = null;
         _paneFooterRegion.BackdropEffect = null;

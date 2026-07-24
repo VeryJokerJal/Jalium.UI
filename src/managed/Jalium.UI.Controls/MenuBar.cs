@@ -41,8 +41,8 @@ public class MenuBar : Control
         EnsurePanel();
         _panel!.Measure(availableSize);
         return new Size(
-            Math.Min(_panel.DesiredSize.Width, availableSize.Width),
-            Math.Clamp(_panel.DesiredSize.Height, 32, availableSize.Height));
+            ControlRenderGeometry.GetAvailableLength(_panel.DesiredSize.Width, availableSize.Width),
+            ControlRenderGeometry.GetAvailableLength(Math.Max(_panel.DesiredSize.Height, 32), availableSize.Height));
     }
 
     /// <inheritdoc />

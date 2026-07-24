@@ -11,11 +11,11 @@
          a templated Border child would render *after* OnRender (children
          render on top) and occlude the map surface. -->
     <Style TargetType="MapView">
-        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
-        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeColorDefaultBrush}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="CornerRadius" Value="12" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="MinWidth" Value="200" />
         <Setter Property="MinHeight" Value="200" />
@@ -32,11 +32,11 @@
     <!-- ============================================== -->
     <!-- A small overview map typically overlaid on a MapView. -->
     <Style TargetType="MiniMap">
-        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
-        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeColorDefaultBrush}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="CornerRadius" Value="10" />
         <Setter Property="Width" Value="150" />
         <Setter Property="Height" Value="100" />
 

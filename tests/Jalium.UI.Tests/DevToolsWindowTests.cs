@@ -182,6 +182,41 @@ public class DevToolsWindowTests
     }
 
     [Fact]
+    public void DeleteElement_UndoDelete_RestoresPanelChildAtOriginalIndex()
+    {
+        ResetApplicationState();
+        _ = new Application();
+
+        try
+        {
+            var first = new Button { Content = "First" };
+            var deleted = new Button { Content = "Deleted" };
+            var last = new Button { Content = "Last" };
+            var panel = new StackPanel { Children = { first, deleted, last } };
+            var host = new Window { Title = "Host", Content = panel };
+            var devTools = new DevToolsWindow(host);
+            try
+            {
+                InvokePrivate(devTools, "DeleteElement", deleted);
+                Assert.Equal([first, last], panel.Children.Cast<UIElement>().ToArray());
+
+                InvokePrivate(devTools, "UndoDelete");
+
+                Assert.Equal([first, deleted, last], panel.Children.Cast<UIElement>().ToArray());
+                Assert.Same(panel, deleted.VisualParent);
+                Assert.Null(GetPrivateFieldOrNull(devTools, "_deleteRecord"));
+            }
+            finally
+            {
+                devTools.CloseDevTools();
+            }
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+    [Fact]
     public void DevToolsWindow_ShouldGroupDependencyPropertiesByCategory()
     {
         ResetApplicationState();

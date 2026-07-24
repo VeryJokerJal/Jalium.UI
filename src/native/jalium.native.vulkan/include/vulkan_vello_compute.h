@@ -30,6 +30,7 @@
 #include "jalium_vello_encode.h"
 
 #include <cstdint>
+#include <vector>
 
 namespace jalium {
 
@@ -66,6 +67,14 @@ public:
     // could not be allocated — the caller then skips the composite.
     bool Record(VkCommandBuffer cmd, const VelloScene& scene, uint32_t frameIdx);
 
+    // Called only after the render target has observed this slot's submit fence
+    // and successfully reset its external Vello-composite descriptor pool. The
+    // compute pool is reset next; only after BOTH pools no longer contain stale
+    // descriptors do we release scratch/output generations retired to this slot.
+    // A failed reset leaves every retired object alive and makes Record fail
+    // closed for this slot.
+    bool PrepareFrameSlot(uint32_t frameIdx);
+
     // Valid after a successful Record(): the RGBA32F image the fine stage wrote,
     // its view, a NEAREST sampler suitable for a 1:1 composite blit, and the
     // image extent (== the scene viewport).
@@ -77,6 +86,12 @@ public:
     // Releases every GPU object. MUST be called while the VkDevice is still
     // alive (the render target invokes this before Impl tears the device down).
     void Destroy();
+
+    // Fail-closed teardown for an indeterminate live device. Forgetting the
+    // device makes Destroy a no-op; the Vulkan allocations intentionally stay
+    // owned by the quarantined device generation until process exit, while the
+    // C++ container itself can still be reclaimed safely.
+    void AbandonDeviceResources() noexcept;
 
     // Logical resource roles bound across the 13 stages, and a single (binding,
     // type, role) tuple. Public so the file-scope per-stage binding tables in
@@ -106,20 +121,30 @@ private:
         void*          mapped   = nullptr; // non-null for HOST_VISIBLE buffers
     };
 
+    struct RetiredOutputImage {
+        VkImage        image  = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        VkImageView    view   = VK_NULL_HANDLE;
+    };
+
+    static constexpr uint32_t kNoRetireSlot = UINT32_MAX;
+
     uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags props) const;
     bool CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
                       VkMemoryPropertyFlags memProps, GpuBuffer& out);
     // Grows `buf` to at least `bytes` (keeping >= existing capacity). Host-visible
     // buffers stay mapped. Returns false on failure.
     bool EnsureBuffer(GpuBuffer& buf, VkDeviceSize bytes,
-                      VkBufferUsageFlags usage, VkMemoryPropertyFlags memProps);
+                      VkBufferUsageFlags usage, VkMemoryPropertyFlags memProps,
+                      uint32_t retireSlot = kNoRetireSlot);
     void DestroyBuffer(GpuBuffer& buf);
+    void DestroyOutputImage(RetiredOutputImage& image);
 
     bool CreatePipelines();
     bool CreateOutputSampler();
     bool CreateDummyImage();
-    bool EnsureOutputImage(uint32_t width, uint32_t height);
-    bool EnsureScratch(const VelloScene& scene);
+    bool EnsureOutputImage(uint32_t width, uint32_t height, uint32_t retireSlot);
+    bool EnsureScratch(const VelloScene& scene, uint32_t retireSlot);
     bool UploadInputs(const VelloScene& scene, uint32_t frameIdx);
     // Allocates 13 fresh descriptor sets from this frame's (reset) pool and
     // writes every binding from the stage tables. Returns false on alloc failure.
@@ -182,6 +207,14 @@ private:
     // referenced by the other frame's command buffer.
     VkDescriptorPool descriptorPools_[kFramesInFlight] = {};
     VkDescriptorSet  stageSets_[kStageCount] = {};   // valid only during a Record
+    bool              frameSlotPrepared_[kFramesInFlight] = {};
+
+    // A Record on slot N runs only after N's fence, so the sole possible user
+    // of the replaced shared generation is the other in-flight slot. Park the
+    // old handles in that slot's bucket; PrepareFrameSlot destroys the bucket
+    // after its fence and both descriptor-pool resets have succeeded.
+    std::vector<GpuBuffer> retiredBuffers_[kFramesInFlight];
+    std::vector<RetiredOutputImage> retiredOutputImages_[kFramesInFlight];
 
     // Single shared device-local scratch buffers (cross-frame access serialized
     // by the leading barrier in Record). clipBic_/clipEl_ only back the retained

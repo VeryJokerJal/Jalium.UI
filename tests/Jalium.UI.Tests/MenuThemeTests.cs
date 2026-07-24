@@ -43,7 +43,7 @@ public class MenuThemeTests
             Assert.False(menu.HasLocalValue(FrameworkElement.HeightProperty));
             Assert.NotNull(menu.Background);
             Assert.NotNull(menu.Foreground);
-            Assert.Equal(28, menu.Height);
+            Assert.Equal(32, menu.Height);
         }
         finally
         {
@@ -72,9 +72,11 @@ public class MenuThemeTests
             Assert.False(contextMenu.HasLocalValue(Control.BackgroundProperty));
             Assert.False(contextMenu.HasLocalValue(Control.BorderBrushProperty));
             Assert.False(contextMenu.HasLocalValue(Control.PaddingProperty));
+            Assert.False(contextMenu.HasLocalValue(Control.CornerRadiusProperty));
             Assert.NotNull(contextMenu.Background);
             Assert.NotNull(contextMenu.BorderBrush);
-            Assert.Equal(2, contextMenu.Padding.Left);
+            Assert.Equal(5, contextMenu.Padding.Left);
+            Assert.Equal(14, contextMenu.CornerRadius.TopLeft);
         }
         finally
         {
@@ -183,8 +185,8 @@ public class MenuThemeTests
 
             Assert.False(menuItem.HasLocalValue(FrameworkElement.HeightProperty));
             Assert.False(menuItem.HasLocalValue(Control.PaddingProperty));
-            Assert.Equal(28, menuItem.Height);
-            Assert.Equal(8, menuItem.Padding.Left);
+            Assert.Equal(32, menuItem.Height);
+            Assert.Equal(10, menuItem.Padding.Left);
         }
         finally
         {

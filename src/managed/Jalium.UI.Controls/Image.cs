@@ -10,6 +10,28 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Image : FrameworkElement, IUriContext
 {
+    private sealed class SourceFailureListener
+    {
+        private readonly WeakReference<Image> _owner;
+
+        public SourceFailureListener(Image owner)
+        {
+            _owner = new WeakReference<Image>(owner);
+        }
+
+        public void OnLoadFailed(ImageSource source, Exception exception)
+        {
+            if (_owner.TryGetTarget(out var owner))
+            {
+                owner.OnSourceLoadFailed(source, exception);
+            }
+            else
+            {
+                source.LoadFailed -= OnLoadFailed;
+            }
+        }
+    }
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -32,6 +54,8 @@ public class Image : FrameworkElement, IUriContext
 
     private Uri? _baseUri;
     private bool _hasDpiChangedEverFired;
+    private ImageSource? _failureEventSource;
+    private SourceFailureListener? _failureEventListener;
 
     /// <summary>Identifies the routed event raised when the image DPI changes.</summary>
     public static readonly RoutedEvent DpiChangedEvent =
@@ -152,7 +176,30 @@ public class Image : FrameworkElement, IUriContext
         ClipToBounds = true;
         AddHandler(ManipulationDeltaEvent, new RoutedEventHandler(OnManipulationDeltaHandler));
         AddHandler(ManipulationCompletedEvent, new RoutedEventHandler(OnManipulationCompletedHandler));
+        Loaded += OnImageLoaded;
+        Unloaded += OnImageUnloaded;
     }
+
+    private void OnImageLoaded(object? sender, RoutedEventArgs e)
+    {
+        if (Source is not { } source)
+        {
+            return;
+        }
+
+        AttachFailureListener(source);
+        if (source.LoadFailure is { } failure)
+        {
+            OnSourceLoadFailed(source, failure);
+            return;
+        }
+
+        InvalidateMeasure();
+        InvalidateVisual();
+    }
+
+    private void OnImageUnloaded(object? sender, RoutedEventArgs e) =>
+        DetachFailureListener();
 
     // ── Pinch-to-zoom / pan ─────────────────────────────────────────────
 
@@ -291,7 +338,7 @@ public class Image : FrameworkElement, IUriContext
             // Unsubscribe from old source's async load / frame events
             if (e.OldValue is ImageSource oldSource)
             {
-                oldSource.LoadFailed -= image.OnSourceLoadFailed;
+                image.DetachFailureListener(oldSource);
             }
 
             if (e.OldValue is BitmapImage oldBitmap)
@@ -307,7 +354,7 @@ public class Image : FrameworkElement, IUriContext
             // Subscribe to new source's async load / frame events
             if (e.NewValue is ImageSource newSource)
             {
-                newSource.LoadFailed += image.OnSourceLoadFailed;
+                image.AttachFailureListener(newSource);
                 image.ApplySourceBaseUri(newSource);
                 if (!ReferenceEquals(image.Source, newSource))
                 {
@@ -324,6 +371,35 @@ public class Image : FrameworkElement, IUriContext
             image.InvalidateMeasure();
             image.InvalidateVisual();
         }
+    }
+
+    private void AttachFailureListener(ImageSource source)
+    {
+        if (ReferenceEquals(_failureEventSource, source) && _failureEventListener != null)
+        {
+            return;
+        }
+
+        DetachFailureListener();
+        var listener = new SourceFailureListener(this);
+        _failureEventSource = source;
+        _failureEventListener = listener;
+        source.LoadFailed += listener.OnLoadFailed;
+    }
+
+    private void DetachFailureListener(ImageSource? expectedSource = null)
+    {
+        var source = _failureEventSource;
+        var listener = _failureEventListener;
+        if (source == null || listener == null ||
+            (expectedSource != null && !ReferenceEquals(source, expectedSource)))
+        {
+            return;
+        }
+
+        source.LoadFailed -= listener.OnLoadFailed;
+        _failureEventSource = null;
+        _failureEventListener = null;
     }
 
     private void ApplySourceBaseUri(ImageSource? source)

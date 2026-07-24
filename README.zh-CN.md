@@ -1,20 +1,35 @@
+<div align="center">
+
 # Jalium.UI
 
-[English](README.md) | **简体中文** | [日本語](README.ja.md) | [한국어](README.ko.md)
+**面向 .NET 10 的 GPU 加速 UI 框架**
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/VeryJokerJal/Jalium.UI)
+受 WPF 启发的 API、带 Razor 扩展的 JALXAML，以及 Windows、Linux、Android 原生渲染。
 
-Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
-它融合了 WPF 风格的对象模型、带 Razor 语法扩展的 JALXAML 标记语言，
-以及平台原生的渲染后端（DirectX 12、Vulkan、Metal、软件渲染）。
+[![NuGet](https://img.shields.io/nuget/v/Jalium.UI?style=flat-square&logo=nuget&label=NuGet)](https://www.nuget.org/packages/Jalium.UI)
+[![Release](https://img.shields.io/github/v/release/VeryJokerJal/Jalium.UI?style=flat-square&logo=github&label=Release)](https://github.com/VeryJokerJal/Jalium.UI/releases/latest)
+[![Linux CI](https://img.shields.io/github/actions/workflow/status/VeryJokerJal/Jalium.UI/linux.yml?branch=master&style=flat-square&logo=linux&label=Linux)](https://github.com/VeryJokerJal/Jalium.UI/actions/workflows/linux.yml)
+[![License](https://img.shields.io/github/license/VeryJokerJal/Jalium.UI?style=flat-square&label=License)](LICENSE)
+[![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-6f42c1?style=flat-square)](https://deepwiki.com/VeryJokerJal/Jalium.UI)
+
+[English](README.md) · **简体中文** · [日本語](README.ja.md) · [한국어](README.ko.md)
+
+[快速上手](#快速上手c) · [能力概览](#能力概览) · [源码构建](#从源码构建) · [文档](#文档) · [社区](#社区)
+
+</div>
 
 ## 项目状态
 
-- 积极开发中 —— v26.10.7（小版本之间 API 仍可能演进）
-- 主要目标平台：Windows 10/11（x64、ARM64）
-- 跨平台：Android（arm64-v8a、x86_64）、Linux（X11/Wayland；Vulkan 或软件渲染）、macOS（Metal）
-- 运行时目标：.NET 10（`net10.0-windows`、`net10.0-android`、`net10.0`）
-- 渲染：DirectX 12（Windows）、Vulkan（Linux/Android）、Metal（macOS）、软件渲染回退
+> [!IMPORTANT]
+> Jalium.UI 仍在积极开发中，当前源码与发行版本线为 **v26.10.7**；
+> 小版本之间 API 仍可能演进。请确保所有 `Jalium.UI.*` 包使用相同版本。
+
+| 平台 | 入口包与运行时 | 窗口系统 | 渲染器 | 当前范围 |
+| --- | --- | --- | --- | --- |
+| Windows 10/11 | `Jalium.UI.Desktop` · `win-x64`、`win-arm64` 包布局 | Win32 | DirectX 12、软件渲染；可选 Vulkan | x64 是主要源码构建目标；已有 ARM64 打包路径，但尚无同等级 CI 验证 |
+| Linux 桌面 | `Jalium.UI.Linux` · glibc/musl x64/Arm64 布局 | X11、Wayland | Vulkan、软件渲染 | 已提供；各 RID 的验证程度见[状态矩阵](docs/linux-parity-status.md) |
+| Android 7.0+（API 24+） | `Jalium.UI.Android` · `arm64-v8a`、`x86_64` | Android 原生 Activity | Vulkan、软件渲染 | 已提供平台包 |
+| macOS | 暂无入口包 | 尚未实现 | 仅有 Metal 渲染器源码 | 尚非发行目标 |
 
 ## 为什么选择 Jalium.UI
 
@@ -38,12 +53,13 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 
 | 包 | 职责 |
 | --- | --- |
-| `Jalium.UI.Core` | 依赖属性系统、可视化树、布局、路由事件、绑定、动画 |
-| `Jalium.UI.Media` | 画笔、几何图形、绘图图元、文本排版、图像处理、视频、视觉特效 |
-| `Jalium.UI.Input` | 鼠标、键盘、触摸、触控笔输入抽象与路由 |
+| `Jalium.UI.Managed` | Core、Media、Input、Interop 与 Controls API 的统一托管实现程序集 |
+| `Jalium.UI.Core` | 由 `Jalium.UI.Managed` 支撑的核心 API 兼容门面 |
+| `Jalium.UI.Media` | 由 `Jalium.UI.Managed` 支撑的媒体与动画 API 兼容门面 |
+| `Jalium.UI.Input` | 由 `Jalium.UI.Managed` 支撑的输入 API 兼容门面 |
 | `Jalium.UI.Interop` | 托管/原生桥接、P/Invoke、运行时原生依赖打包 |
 | `Jalium.UI.Gpu` | GPU 资源管理、渲染图、材质、着色器、后端抽象 |
-| `Jalium.UI.Controls` | 控件、面板、模板、窗口化、主题、停靠、图表、宿主 |
+| `Jalium.UI.Controls` | 控件、窗口、主题、停靠、图表与宿主 API 的兼容门面 |
 | `Jalium.UI.Xaml` | JALXAML 解析/加载管线、Razor 语法支持、热重载、标记服务 |
 | `Jalium.UI.Build` | 用于 JALXAML 编译工作流的 MSBuild 任务与构建资产 |
 | `Jalium.UI.Xaml.SourceGenerator` | 用于 XAML/代码隐藏集成的 Roslyn 源生成器 |
@@ -56,18 +72,19 @@ Jalium.UI 是一个面向 .NET 10 的 GPU 加速跨平台 UI 框架。
 
 | 模块 | 平台 | 职责 |
 | --- | --- | --- |
-| `jalium.native.core` | 全部 | 原生核心运行时、后端注册表、上下文管理 |
+| `jalium.native.core` | Windows、Linux、Android | 原生核心运行时、后端注册表、上下文管理 |
 | `jalium.native.d3d12` | Windows | DirectX 12 渲染目标与 Vello GPU 管线 |
-| `jalium.native.vulkan` | Linux、Android | Vulkan 渲染后端 |
-| `jalium.native.metal` | macOS | Metal 渲染后端 |
-| `jalium.native.software` | 全部 | 基于 CPU 的软件渲染回退 |
-| `jalium.native.platform` | 全部 | 平台抽象（窗口、输入、事件） |
-| `jalium.native.text` | Linux、Android、macOS | 自研文本引擎（sfnt/cmap/glyf/CFF + OT shaper；Linux 上仅用 fontconfig 做字体发现） |
+| `jalium.native.vulkan` | Windows（可选）、Linux、Android | Vulkan 渲染后端 |
+| `jalium.native.metal` | 仅源码 | Metal 渲染器实现；macOS 窗口/平台宿主尚未实现 |
+| `jalium.native.software` | Windows、Linux、Android | 基于 CPU 的软件渲染回退 |
+| `jalium.native.platform` | Windows、Linux、Android | 窗口、输入与事件的平台抽象 |
+| `jalium.native.text` | Linux、Android | 自研文本引擎（sfnt/cmap/glyf/CFF + OT shaper；Linux 上仅用 fontconfig 做字体发现） |
 | `jalium.native.browser` | Windows | WebView2 浏览器集成 |
-| `jalium.native.media.core` | 全部 | 跨平台媒体 C ABI + 共享音频（miniaudio / dr_libs / minimp3 / stb_vorbis） |
+| `jalium.native.media.core` | Windows、Linux、Android | 跨平台媒体 C ABI + 共享音频（miniaudio / dr_libs / minimp3 / stb_vorbis） |
 | `jalium.native.media.windows` | Windows | Media Foundation 视频 / 摄像头 / AAC 解码器 + WIC 图像处理 |
+| `jalium.native.media.linux` | Linux | 基于 GStreamer 的媒体与摄像头集成 |
 | `jalium.native.media.android` | Android | Android 图像 / 视频 / 摄像头解码器 + 通过 NDK 的 YUV SIMD（NEON） |
-| `jalium.native.aot` | 全部 | NativeAOT 聚合器（硬链接 media、text、各后端） |
+| `jalium.native.aot` | Windows、Linux、Android | NativeAOT 聚合器（硬链接 media、text、各后端） |
 
 ### 平台包
 
@@ -248,19 +265,13 @@ JALXAML 源生成器会在构建时降级以下内容，使热路径中
   暴露的控件库时，源生成器会在编译期解析出 CLR 类型，
   而非回退到运行时反射（有助于裁剪 / AOT）。
 
-`Setter.Value` 系有意不降级。
+`Setter.Value` 不会在编译期降级，这是有意设计。
 
 有关语法细节与规则，请参阅 [`docs/razor-syntax.md`](docs/razor-syntax.md)。
 
 ## 安装
 
-### 推荐方式（元包）
-
-```bash
-dotnet add package Jalium.UI
-```
-
-### 平台专用
+### 选择平台（应用推荐）
 
 ```bash
 # Windows 桌面
@@ -271,6 +282,14 @@ dotnet add package Jalium.UI.Android
 
 # Linux 桌面
 dotnet add package Jalium.UI.Linux
+```
+
+### 共享元包
+
+类库只需要共享框架技术栈、并由最终应用选择平台入口包时，可使用通用元包：
+
+```bash
+dotnet add package Jalium.UI
 ```
 
 ### 细粒度安装（进阶）
@@ -290,37 +309,40 @@ dotnet add package Jalium.UI.Xaml.SourceGenerator
 ## 快速上手（C#）
 
 ```csharp
+using Jalium.UI;
 using Jalium.UI.Controls;
 
-var app = new Application();
-
-var window = new Window
+var builder = AppBuilder.CreateBuilder(args);
+builder.ConfigureApplication(app =>
 {
-    Title = "Hello Jalium.UI",
-    Width = 960,
-    Height = 640,
-    Content = new StackPanel
+    app.MainWindow = new Window
     {
-        Margin = new Thickness(24),
-        Children =
+        Title = "Hello Jalium.UI",
+        Width = 960,
+        Height = 640,
+        Content = new StackPanel
         {
-            new TextBlock { Text = "Jalium.UI", FontSize = 28 },
-            new TextBlock { Text = "GPU-accelerated .NET UI framework", Margin = new Thickness(0, 8, 0, 16) },
-            new Button { Content = "Start" }
+            Margin = new Thickness(24),
+            Children =
+            {
+                new TextBlock { Text = "Jalium.UI", FontSize = 28 },
+                new TextBlock { Text = "GPU-accelerated .NET UI framework", Margin = new Thickness(0, 8, 0, 16) },
+                new Button { Content = "Start" }
+            }
         }
-    }
-};
+    };
+});
 
-app.Run(window);
+using var jalium = builder.Build();
+return jalium.Run();
 ```
 
 ## 快速上手（JALXAML 运行时解析）
 
 ```csharp
+using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Markup;
-
-var app = new Application();
 
 var xaml = """
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="JALXAML Window" Width="800" Height="500">
@@ -333,43 +355,51 @@ var xaml = """
 </Window>
 """;
 
-var window = (Window)XamlReader.Parse(xaml);
-app.Run(window);
+var builder = AppBuilder.CreateBuilder(args);
+builder.ConfigureApplication(app =>
+{
+    app.MainWindow = (Window)XamlReader.Parse(xaml);
+});
+
+using var jalium = builder.Build();
+return jalium.Run();
 ```
 
 ## 从源码构建
 
 ### 前置条件
 
-- .NET 10 SDK
-- 安装了 C++ 工作负载的 Visual Studio（用于 Windows 原生模块）
-- CMake、Ninja、Clang/GCC 以及 X11/Wayland 开发包（用于 Linux 原生模块；参见 [Linux 指南](docs/linux.md)）
-- Vulkan SDK（可选，用于 Vulkan 后端）
-- Android NDK（可选，用于 Android 构建）
+- 与 [`global.json`](global.json) 兼容的 .NET 10 SDK（仓库当前固定到预发布 feature band）
+- CMake 3.25+ 与支持 C++20 的工具链
+- 带 C++ 工作负载和 v145 工具集的 Visual Studio（用于标准 Windows x64 原生解决方案）
+- 该标准 Windows 原生解决方案需要 Vulkan SDK；精简的自定义配置可关闭 Vulkan
+- 用于 Linux 的 Ninja、Clang/GCC 与 X11/Wayland 开发包（参见 [Linux 指南](docs/linux.md)）
+- 默认 Android 构建使用 NDK 27.2.12479018（可通过 `JALIUM_ANDROID_NDK_VERSION` 有意覆盖）
 
 ### 构建
 
 ```bash
-# 构建完整框架
+# 构建托管元包及其项目依赖
 dotnet build src/packaging/Jalium.UI/Jalium.UI.csproj -c Release
 
-# 运行测试
-dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release
-
-# 构建原生模块（在 VS 开发人员命令提示符中）
+# 构建 Windows 原生模块（在 Visual Studio 开发人员命令提示符中）
 msbuild src/native/Jalium.Native.sln /m /p:Configuration=Release /p:Platform=x64
 
-# 构建 Linux 原生模块（glibc 或 musl 主机）
-bash eng/linux/build-native.sh linux-x64 Release
+# 在匹配的 glibc 或 musl 主机上构建 Linux 原生载荷及原生测试目标
+JALIUM_NATIVE_BUILD_TESTS=1 bash eng/linux/build-native.sh linux-x64 Release
 
-# 为 Android 构建
-bash src/native/build-android-deps.sh  # Android 原生依赖
-bash src/native/build-android.sh       # 原生库
+# 构建 Android 包所需的两个 ABI（默认 NDK 27.2.12479018）
+bash src/native/build-android.sh all
 ```
+
+> [!NOTE]
+> 请在保留 LF 行尾的 Linux/WSL checkout 中运行 shell 脚本。若 Windows
+> checkout 将它们转换为 CRLF，Bash 会在 Jalium 构建开始前拒绝执行。
 
 ### NuGet 打包
 
 ```bash
+# 打包共享元包；平台发行管线会先构建带完整性标记的原生载荷
 dotnet pack src/packaging/Jalium.UI/Jalium.UI.csproj -c Release -o artifacts/nuget
 ```
 
@@ -381,12 +411,13 @@ dotnet pack src/packaging/Jalium.UI/Jalium.UI.csproj -c Release -o artifacts/nug
 Jalium.UI/
   src/
     managed/
-      Jalium.UI.Core/          # 依赖属性系统、可视化树、布局
-      Jalium.UI.Media/         # 画笔、几何图形、绘图、文本、图像处理、视频
-      Jalium.UI.Input/         # 输入抽象与路由
-      Jalium.UI.Interop/       # 原生桥接与 P/Invoke
+      Jalium.UI.Managed/       # 统一托管实现程序集
+      Jalium.UI.Core/          # Core 兼容门面
+      Jalium.UI.Media/         # Media 兼容门面
+      Jalium.UI.Input/         # Input 兼容门面
+      Jalium.UI.Interop/       # 原生桥接、P/Invoke 与 RID 资产
       Jalium.UI.Gpu/           # GPU 资源、渲染图、着色器
-      Jalium.UI.Controls/      # 控件、面板、主题、停靠、图表、宿主
+      Jalium.UI.Controls/      # Controls 兼容门面
       Jalium.UI.Xaml/          # JALXAML 解析器、Razor 支持、热重载
       Jalium.UI.Build/         # 用于 JALXAML 编译的 MSBuild 任务
       Jalium.UI.Xaml.SourceGenerator/  # Roslyn 源生成器
@@ -395,34 +426,32 @@ Jalium.UI/
       jalium.native.core/      # 原生运行时核心、后端注册表
       jalium.native.d3d12/     # DirectX 12 + Vello GPU 后端
       jalium.native.vulkan/    # Vulkan 后端
-      jalium.native.metal/     # Metal 后端（macOS）
+      jalium.native.metal/     # Metal 渲染器源码（尚无 macOS 宿主）
       jalium.native.software/  # CPU 软件渲染器
       jalium.native.platform/  # 平台抽象层
       jalium.native.text/      # 自研文本引擎（非 Windows）
       jalium.native.browser/   # WebView2 集成
       jalium.native.media.core/     # 跨平台媒体 C ABI + 共享音频
       jalium.native.media.windows/  # Media Foundation 视频 / 摄像头 + WIC
+      jalium.native.media.linux/    # GStreamer 媒体 / 摄像头集成
       jalium.native.media.android/  # Android 媒体解码器 + YUV SIMD
       jalium.native.aot/       # NativeAOT 聚合器（硬链接 media/text/各后端）
     packaging/
       Jalium.UI/               # 主元包
       Jalium.UI.Desktop/       # Windows 桌面包（win-x64 / win-arm64）
       Jalium.UI.Android/       # Android 包
-  samples/                     # Gallery、DesktopDemo、AndroidDemo、HostingDemo、
-                               #   MillionScroll、AotWindowDemo、BorderlessDemo、
-                               #   TransparentBackdropDemo
+      Jalium.UI.Linux/         # Linux 桌面包（x64/Arm64、glibc/musl）
+  samples/                     # Gallery 以及 Windows、Linux、Android、AOT 示例
   tools/
     Jalium.UI.HotReload.Watcher/  # 独立的 JALXAML 热重载文件监视器
+    Jalium.UI.ApiParity/          # 基于元数据的兼容性验证器
   tests/
-    Jalium.UI.Tests/           # xUnit 测试套件（70+ 个测试类）
-    Jalium.UI.ShaderDemo/      # 着色器特效演示
-    Jalium.UI.ParityHarness/   # 后端一致性测试台
-    Jalium.UI.DeviceLostHarness/  # 设备丢失恢复测试台
-    Jalium.UI.NuGetTest.Desktop/  # 打包桌面版冒烟测试
-    Jalium.UI.NuGetTest.Android/  # 打包 Android 版冒烟测试
-  docs/                        # razor-syntax、drawing-api、manual-build-configuration、
-                               #   render-thread-design、present-pacing-design、
-                               #   shell-drag-drop（另有 design/ 与 reference/）
+    Jalium.UI.Tests/              # 主 xUnit 测试套件
+    Jalium.UI.Linux.Tests/        # Linux 专项托管测试
+    Jalium.UI.NuGetTest.*/        # 打包消费端门禁
+    Jalium.UI.*Smoke/             # Linux 集成冒烟应用
+  docs/                           # 语法、绘图、构建、Linux 与性能指南
+  eng/linux/                      # Linux 构建、打包与验证脚本
 ```
 
 ## 文档
@@ -434,9 +463,7 @@ Jalium.UI/
 | [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | 手动构建配置指南 |
 | [`docs/linux.md`](docs/linux.md) | Linux 桌面指南（运行时依赖、窗口系统、打包） |
 | [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | 经验证的 Linux 支持矩阵、证据与剩余边界 |
-| [`docs/render-thread-design.md`](docs/render-thread-design.md) | 渲染线程架构 |
-| [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | 呈现节奏 / 帧调度 |
-| [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | Shell 拖放集成 |
+| [`docs/gallery-startup-performance.md`](docs/gallery-startup-performance.md) | Gallery 启动跟踪、基线与可交互就绪度测量 |
 
 ## Visual Studio 扩展说明
 

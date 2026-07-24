@@ -72,7 +72,7 @@ internal static class GraphemeClusters
     /// <paramref name="text"/>, always including <c>0</c> and <c>text.Length</c>.
     /// The array is shared, memoised state — callers must treat it as read-only.
     /// </summary>
-    private static int[] GetBoundaries(string? text)
+    internal static int[] GetBoundaries(string? text)
     {
         if (string.IsNullOrEmpty(text))
         {

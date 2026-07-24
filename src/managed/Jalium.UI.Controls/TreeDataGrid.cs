@@ -370,7 +370,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
     private StackPanel? _columnHeadersHost;
     private StackPanel? _rowsHost;
-    private Border? _columnHeadersBorder;
+    private FrameworkElement? _columnHeadersBorder;
     private ScrollViewer? _columnHeadersScrollViewer;
     private ScrollViewer? _dataScrollViewer;
     private readonly Dictionary<int, TreeDataGridRow> _realizedRows = new();
@@ -426,7 +426,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
         _columnHeadersHost = GetTemplateChild("PART_ColumnHeadersHost") as StackPanel;
         _rowsHost = GetTemplateChild("PART_RowsHost") as StackPanel;
-        _columnHeadersBorder = GetTemplateChild("PART_ColumnHeadersBorder") as Border;
+        _columnHeadersBorder = GetTemplateChild("PART_ColumnHeadersBorder") as FrameworkElement;
         _columnHeadersScrollViewer = GetTemplateChild("PART_ColumnHeadersScrollViewer") as ScrollViewer;
         _dataScrollViewer = GetTemplateChild("PART_DataScrollViewer") as ScrollViewer;
         _dragOverlay = GetTemplateChild("PART_DragOverlay") as Canvas;

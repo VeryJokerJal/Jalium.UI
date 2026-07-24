@@ -13,6 +13,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class RichTextBox : TextBoxBase, IImeSupport
 {
+    private InputMethodWeakSubscription<RichTextBox>? _imeSubscription;
     internal override bool UsesDefaultTextInputHandlers => false;
 
     /// <inheritdoc />
@@ -283,9 +284,8 @@ public class RichTextBox : TextBoxBase, IImeSupport
         _lastCaretBlink = DateTime.Now;
         _lastClickTime = DateTime.MinValue;
 
-        InputMethod.CompositionStarted += OnImeCompositionStarted;
-        InputMethod.CompositionUpdated += OnImeCompositionUpdated;
-        InputMethod.CompositionEnded += OnImeCompositionEnded;
+        Loaded += OnImeOwnerLoaded;
+        Unloaded += OnImeOwnerUnloaded;
 
         // Register input event handlers
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
@@ -2171,6 +2171,30 @@ public class RichTextBox : TextBoxBase, IImeSupport
         }
     }
 
+    private void OnImeOwnerLoaded(object? sender, RoutedEventArgs e)
+    {
+        EnsureImeSubscriptionAttached();
+    }
+
+    private void EnsureImeSubscriptionAttached()
+    {
+        _imeSubscription ??= new InputMethodWeakSubscription<RichTextBox>(
+            this,
+            static (owner, source, args) => owner.OnImeCompositionStarted(source, args),
+            static (owner, source, args) => owner.OnImeCompositionUpdated(source, args),
+            static (owner, source, args) => owner.OnImeCompositionEnded(source, args));
+        _imeSubscription.Attach();
+    }
+
+    private void OnImeOwnerUnloaded(object? sender, RoutedEventArgs e)
+    {
+        _imeSubscription?.Detach();
+        if (ReferenceEquals(InputMethod.CurrentTarget, this))
+        {
+            InputMethod.SetTarget(null);
+        }
+    }
+
     private void OnImeCompositionStarted(object? sender, EventArgs e)
     {
         if (InputMethod.CurrentTarget == this)
@@ -2501,6 +2525,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
         if (isFocused)
         {
+            EnsureImeSubscriptionAttached();
             InputMethod.SetTarget(this);
             ResetCaretBlink();
             StartCaretTimer();

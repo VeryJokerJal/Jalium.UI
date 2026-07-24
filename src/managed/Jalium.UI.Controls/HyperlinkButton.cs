@@ -73,12 +73,6 @@ public class HyperlinkButton : ButtonBase
 
     #endregion
 
-    #region Template Parts
-
-    private Border? _underlineBorder;
-
-    #endregion
-
     #region Constructor
 
     /// <summary>
@@ -87,17 +81,6 @@ public class HyperlinkButton : ButtonBase
     public HyperlinkButton()
     {
         Cursor = Hand; // Hand cursor for clickable hyperlinks
-    }
-
-    #endregion
-
-    #region Template
-
-    /// <inheritdoc />
-    public override void OnApplyTemplate()
-    {
-        base.OnApplyTemplate();
-        _underlineBorder = GetTemplateChild("UnderlineBorder") as Border;
     }
 
     #endregion
@@ -171,6 +154,8 @@ public class HyperlinkButton : ButtonBase
         // Direct rendering fallback when no template
         var padding = Padding;
 
+        // Negative Padding is legal; the Size constructor is not — clamp every
+        // content+chrome summation sink.
         if (Content is string text)
         {
             var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
@@ -178,19 +163,19 @@ public class HyperlinkButton : ButtonBase
             var formattedText = new FormattedText(text, fontFamily, fontSize);
             TextMeasurement.MeasureText(formattedText);
             return new Size(
-                formattedText.Width + padding.TotalWidth,
-                formattedText.Height + padding.TotalHeight);
+                Math.Max(0, formattedText.Width + padding.TotalWidth),
+                Math.Max(0, formattedText.Height + padding.TotalHeight));
         }
 
         if (Content is UIElement element)
         {
             element.Measure(availableSize);
             return new Size(
-                element.DesiredSize.Width + padding.TotalWidth,
-                element.DesiredSize.Height + padding.TotalHeight);
+                Math.Max(0, element.DesiredSize.Width + padding.TotalWidth),
+                Math.Max(0, element.DesiredSize.Height + padding.TotalHeight));
         }
 
-        return new Size(padding.TotalWidth, padding.TotalHeight);
+        return new Size(Math.Max(0, padding.TotalWidth), Math.Max(0, padding.TotalHeight));
     }
 
     /// <inheritdoc />

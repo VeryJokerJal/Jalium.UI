@@ -222,12 +222,11 @@ PsOutput main(PsInput input)
 #ifndef JALIUM_CLEARTYPE
     // Grayscale / AA text: atlas R channel is coverage; colour is premultiplied.
     float coverage = atlasTexture.Sample(atlasSampler, input.uv).r;
-    // Contrast enhancement — same curve and constants as the D3D12
-    // bitmap_text.ps.hlsl monochrome path, which applies it to grayscale
-    // AND ClearType coverage alike. Without it every default-weight glyph
-    // renders visibly lighter than on D3D12 (parity gap A3).
-    float contrast = saturate(coverage * 1.2f - 0.1f);
-    coverage = lerp(coverage, contrast, 0.3f);
+    // Monotonic enhanced contrast, shared with D3D12. It is
+    // monotonic and never erases faint antialias coverage, so small stems
+    // remain visible at small sizes and during deformation.
+    coverage = saturate(coverage +
+        coverage * (1.0f - coverage) * 0.5f);
     // Rounded clip attenuates the coverage so the clip edge inherits the
     // glyph AA instead of a hard cut.
     coverage *= clipCoverage;
@@ -237,9 +236,9 @@ PsOutput main(PsInput input)
 #else
     // ClearType: atlas RGB is per-channel sub-pixel coverage (mirror D3D12).
     float3 coverage = atlasTexture.Sample(atlasSampler, input.uv).rgb;
-    // Per-channel contrast enhancement for ClearType sharpness (D3D12 parity).
-    float3 contrast = saturate(coverage * 1.2f - 0.1f);
-    coverage = lerp(coverage, contrast, 0.3f);
+    // Per-channel enhanced contrast (D3D12 parity).
+    coverage = saturate(coverage +
+        coverage * (1.0f - coverage) * 0.5f);
     // The rounded-clip mask attenuates per-channel coverage + max coverage so
     // the clip-edge AA and the glyph ClearType sub-pixel AA stack naturally
     // instead of a 1px hard cut (D3D12 bitmap_text.ps.hlsl parity).

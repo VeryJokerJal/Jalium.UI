@@ -41,10 +41,10 @@ public class ProgressBarThemeTests
             Assert.False(progressBar.HasLocalValue(FrameworkElement.HeightProperty));
             Assert.False(progressBar.HasLocalValue(Control.BackgroundProperty));
             Assert.False(progressBar.HasLocalValue(ProgressBar.ProgressBrushProperty));
-            Assert.Equal(8, progressBar.Height);
+            Assert.Equal(6, progressBar.Height);
             Assert.NotNull(progressBar.Background);
             Assert.NotNull(progressBar.ProgressBrush);
-            Assert.True(progressBar.RenderSize.Height >= 8);
+            Assert.True(progressBar.RenderSize.Height >= 6);
         }
         finally
         {

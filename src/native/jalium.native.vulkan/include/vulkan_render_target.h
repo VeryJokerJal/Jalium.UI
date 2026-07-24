@@ -5,8 +5,10 @@
 #include "jalium_rendering_engine.h"
 #include "jalium_path_cache.h"
 #include "vulkan_impeller_engine.h"
+#include "vulkan_render_lifecycle.h"
 #include "vulkan_vello_engine.h"
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -15,6 +17,7 @@
 namespace jalium {
 
 class VulkanBackend;
+class VulkanInkImageGeneration;
 class VulkanImportedVideoSurface;
 
 class VulkanRenderTarget : public RenderTarget {
@@ -159,18 +162,7 @@ public:
     void DrawLiquidGlass(float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost, int shapeType, float shapeExponent, int neighborCount, float fusionRadius, const float* neighborData) override;
 
     /// Override: set rendering engine with hot-switch support.
-    JaliumResult SetRenderingEngine(JaliumRenderingEngine engine) override {
-        JaliumRenderingEngine resolved = ResolveRenderingEngine(engine, JALIUM_BACKEND_VULKAN);
-        pendingEngine_ = resolved;
-        if (!isDrawing_) {
-            activeEngine_ = resolved;
-        }
-        // Lazy-construct the engine that the user just opted into so the
-        // first frame after a switch already has a valid encoder.
-        if (resolved == JALIUM_ENGINE_IMPELLER) EnsureImpellerEngine();
-        else if (resolved == JALIUM_ENGINE_VELLO) EnsureVelloEngine();
-        return JALIUM_OK;
-    }
+    JaliumResult SetRenderingEngine(JaliumRenderingEngine engine) override;
 
     /// Override: report glyph atlas / path / texture usage for DevTools Perf tab.
     JaliumResult QueryGpuStats(JaliumGpuStats* out) const override;
@@ -548,12 +540,11 @@ private:
     };
 
     // Composites a resident ink-layer image (InkCanvas committed-ink layer)
-    // onto the frame. Holds a non-owning pointer to the VulkanInkLayerBitmap
-    // (kept alive for the frame by the managed InkCanvas); DrawReplayFrame reads
-    // its VkImageView and samples it through the bitmap pipeline. Stored as
-    // void* so the GpuReplayCommand structs stay free of Vulkan types.
+    // onto the frame. The recorded command owns the exact immutable allocation
+    // generation it sampled; Resize may publish another generation without
+    // changing this command's image view or lifetime.
     struct GpuInkLayerCommand {
-        void*    inkLayer = nullptr;     // VulkanInkLayerBitmap* (non-owning)
+        std::shared_ptr<const VulkanInkImageGeneration> imageGeneration;
         // Transformed axis-aligned draw rect (same convention as GpuBitmapCommand:
         // x/y = bbox min, w/h = bbox extent). The sampled UV always spans the
         // whole ink image (uvScale = 1), since the descriptor binds that image.
@@ -678,11 +669,11 @@ private:
         // over-blend replacing the N-layer concentric-rect halo (D3D12
         // DrawDropShadowEffect / sdf_rect shadowMode parity). The VS grows the
         // quad by 3*sigma+1px so the tail isn't clipped; the FS takes the erf
-        // branch. Negative mode is a SuperEllipse fill: exact bounds ride in
-        // innerRoundedClipRect and the parameter carries exponent n. Mode 0
-        // (default) is a byte-identical no-op for every other SolidRect caller.
-        float shadowMode = 0.0f;    // > 0.5 shadow, < -0.5 SuperEllipse
-        float shadowSigma = 0.0f;   // shadow sigma or SuperEllipse exponent
+        // branch. Internal negative modes are analytic continuous-corner
+        // geometry: -1 fill, -2 stroke; the parameter carries exponent n.
+        // Mode 0 is a no-op for every other SolidRect caller.
+        float shadowMode = 0.0f;    // > 0.5 shadow, -1 continuous fill, -2 stroke
+        float shadowSigma = 0.0f;   // shadow sigma or continuous-corner exponent
         bool hasRoundedClip = false;
         // Inverse rounded clip (an ancestor PushRoundedRectClipExclude): the
         // shader keeps 1 - coverage, masking the rect's INTERIOR. Only the
@@ -723,13 +714,12 @@ private:
         // drives the shader's LOCAL-space rounded-coverage path (geometryFlags.y)
         // instead of the screen-space CoverageRoundRect clip. The transformed,
         // AA-expanded oriented quad rides in hasCustomQuad + quadPoint0..3; the
-        // LOCAL (pre-transform, px) geometry below is forwarded into the FREE
-        // inner rounded-clip push-constant slots so the push-constant block does
-        // NOT grow. hasRoundedClip / hasInnerRoundedClip stay false on this path
-        // (their screen-space clip writes would conflict). All radii are CIRCULAR
-        // (one value per corner), in (TL, TR, BR, BL) order, matching the D3D12
-        // sdRoundedBox SDF this path mirrors.
+        // LOCAL (pre-transform, px) geometry below reuses the inner rounded-clip
+        // push-constant slots so the block does not grow. The outer rounded-clip
+        // slot remains independent and may carry an ancestor include/exclude clip.
+        // All local radii are circular, in (TL, TR, BR, BL) order.
         bool hasLocalRoundedCoverage = false;
+        float localContinuousCornerExponent = 0.0f; // > 0 selects the shared Lame-corner SDF
         float localOuterW = 0.0f;   // pre-transform OUTER rect width  (px)
         float localOuterH = 0.0f;   // pre-transform OUTER rect height (px)
         float localInnerW = 0.0f;   // pre-transform INNER rect width  (0 = fill, no inner subtraction)
@@ -935,11 +925,15 @@ private:
     bool TryRecordGpuTransitionSingleSlotCommand(int slot, float x, float y, float w, float h, float opacity);
     bool TryRecordGpuSolidRectCommand(float x, float y, float w, float h, Brush* brush);
     bool TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush);
+    bool TryRecordGpuSuperEllipseFillCommand(float x, float y, float w, float h,
+        float tl, float tr, float br, float bl, Brush* brush);
     // Analytic erf gaussian drop-shadow rounded rect (single over-blend; D3D12
     // DrawDropShadowEffect parity). sigma = blurRadius/3; colour STRAIGHT.
     bool TryRecordGpuShadowRectCommand(float x, float y, float w, float h,
         float radius, float r, float g, float b, float a, float sigma);
     bool TryRecordGpuRoundedRectStrokeCommand(float x, float y, float w, float h, float rx, float ry, float strokeWidth, Brush* brush);
+    bool TryRecordGpuSuperEllipseStrokeCommand(float x, float y, float w, float h,
+        float tl, float tr, float br, float bl, float strokeWidth, Brush* brush);
     // Rotated / skewed rounded-rect STROKE (strokeWidth > 0) or FILL
     // (strokeWidth <= 0), recorded as an AA-expanded oriented quad whose
     // fragment shader evaluates a per-corner rounded-box SDF in LOCAL space
@@ -1025,13 +1019,33 @@ private:
         uint64_t shaderHash, const float* constants, uint32_t constantFloatCount,
         bool sampleOffscreen = false, bool patchUvInfo = false);
     void TouchFrame() const;
+    void FinishDrawSession() noexcept;
+    bool ApplyPendingVSyncRequest();
+    bool ApplyPendingPathMsaaRequest();
 
     VulkanBackend* backend_ = nullptr;
     JaliumSurfaceDescriptor surface_{};
     bool isComposition_ = false;
-    bool isDrawing_ = false;
+    vulkan_lifecycle::Gate lifecycleGate_;
+    vulkan_lifecycle::IdleReclaimGate idleReclaimGate_;
+    std::atomic<bool> isDrawing_{false};
+    // -1 means no request; 0/1 carries the latest request across an open frame.
+    std::atomic<int32_t> pendingVSyncEnabled_{-1};
+    // Deferred hot-switch request; Vulkan engine creation is a destructive
+    // device operation and must never race an open render frame.
+    std::atomic<int32_t> pendingEngineRequest_{-1};
+    // -1 = no request; otherwise 0 (analytic-only) or 1/2/4/8. The public
+    // setter may run on the UI thread, but the native fields and engines are
+    // changed only after BeginDraw owns the lifecycle frame boundary.
+    std::atomic<int32_t> pendingPathMsaaSampleCount_{-1};
     bool fullInvalidation_ = true;
     float clearColor_[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    // SetDpi is issued by the UI/window thread while rendering may be running
+    // on the render worker.  Keep requests atomic and snapshot them only at a
+    // BeginDraw boundary so BeginDraw/EndDraw always agree about whether a
+    // root DPI transform was pushed.
+    std::atomic<float> pendingDpiX_{96.0f};
+    std::atomic<float> pendingDpiY_{96.0f};
     float dpiX_ = 96.0f;
     float dpiY_ = 96.0f;
     std::vector<JaliumRect> dirtyRects_;
@@ -1145,14 +1159,10 @@ private:
     int currentShapeType_ = 0;
     float currentShapeExponent_ = 4.0f;
 
-    // Tessellates the SuperEllipse boundary for (x,y,w,h) at currentShapeExponent_
-    // into a closed polygon (x,y interleaved, first/last vertex NOT repeated):
-    // the full-rect Lamé curve |X/(w/2)|^n + |Y/(h/2)|^n = 1, matching D3D12's
-    // sdSuperEllipseRect and the managed Border layout clip. The per-corner
-    // radius parameters are ignored on purpose (the shared shape contract
-    // derives curvature from the exponent alone — CornerRadius defaults to 0
-    // for Shape=SuperEllipse, and an earlier per-corner-arc variant therefore
-    // rendered square-cornered rectangles that only Vulkan displayed).
+    // Tessellates straight sides plus four radius-bounded local Lame corners into
+    // a closed polygon (x,y interleaved, first/last vertex not repeated). Radial
+    // screen-angle sampling avoids corner-axis singularities and adapts the sample
+    // count to each corner's screen-space size.
     void BuildSuperEllipsePolygon(float x, float y, float w, float h,
                                   float tl, float tr, float br, float bl,
                                   std::vector<float>& outPts) const;

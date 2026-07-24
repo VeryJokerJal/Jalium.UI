@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using Jalium.UI.Data;
 using Jalium.UI.Input;
 using Jalium.UI.Markup;
@@ -589,6 +590,14 @@ public class Setter : SetterBase, ISupportInitialize
             return;
         }
 
+        // 走到这里说明本 setter 要写"非 dynamic-resource"的值。下层样式（典型为主题默认
+        // 样式，它与本样式共用 StyleSetter 层）可能已在同一 DP 上建立 {ThemeResource}
+        // 订阅——不清掉的话，下一次资源刷新会把主题值重新灌进层里，覆盖我们即将写入的值。
+        // 订阅若来自 local SetDynamicResource 则层不匹配、不受影响（且 local 值存在时
+        // 上面的 HasLocalValue 早已短路）。
+        DynamicResourceBindingOperations.ClearDynamicResource(
+            target, actualProperty, DependencyObject.LayerValueSource.StyleSetter);
+
         // Setter.Value 可以是一个 BindingBase（典型场景：jalxaml 里写
         // <Setter Property="Foo" Value="{TemplateBinding Bar}" /> 或 RelativeSource Binding）。
         // 之前会把整个 BindingBase 当成属性值塞进 layer，OnRender 时强转成 Brush 等
@@ -880,7 +889,7 @@ public abstract class TriggerBase : DependencyObject
     /// Tracks which properties this trigger has set for each element.
     /// Used to properly decrement the active count in shared storage.
     /// </summary>
-    private readonly HashSet<(FrameworkElement, DependencyProperty)> _activeSetters = new();
+    private readonly ConditionalWeakTable<FrameworkElement, HashSet<DependencyProperty>> _activeSetters = new();
 
     /// <summary>
     /// Gets or sets the parent style that contains this trigger.
@@ -1013,7 +1022,7 @@ public abstract class TriggerBase : DependencyObject
             // Track that this trigger conceptually owns this property — even if we end up
             // skipping the write below, we still need to remember the ownership so that
             // RemoveTriggerSetters can later re-apply ours when the later sibling deactivates.
-            _activeSetters.Add(key);
+            TrackActiveSetter(target, actualProperty);
 
             // Honor WPF precedence: defer to any active later sibling.
             if (laterSiblingOwned.Contains(key))
@@ -1317,7 +1326,7 @@ public abstract class TriggerBase : DependencyObject
             if (actualProperty == null) continue;
 
             var key = (target, actualProperty);
-            if (!_activeSetters.Contains(key)) continue;
+            if (!IsSetterActive(target, actualProperty)) continue;
 
             ownSetters.Add((target, actualProperty, setter));
             ownKeys.Add(key);
@@ -1374,7 +1383,7 @@ public abstract class TriggerBase : DependencyObject
         foreach (var (target, actualProperty, setter) in ownSetters)
         {
             var key = (target, actualProperty);
-            _activeSetters.Remove(key);
+            UntrackActiveSetter(target, actualProperty);
 
             // Tear down any binding/dynamic-resource that *we* established.
             // ApplyTriggerSetters skips SetBinding/SetDynamicResource when suppressed by a
@@ -1469,12 +1478,23 @@ public abstract class TriggerBase : DependencyObject
     /// </summary>
     protected void ClearPreTriggerValues(FrameworkElement element)
     {
-        // Clear this trigger's tracking
-        var keysToRemove = _activeSetters.Where(k => k.Item1 == element).ToList();
-        foreach (var key in keysToRemove)
-        {
-            _activeSetters.Remove(key);
-        }
+        _activeSetters.Remove(element);
+    }
+
+    private void TrackActiveSetter(FrameworkElement target, DependencyProperty property)
+        => _activeSetters.GetOrCreateValue(target).Add(property);
+
+    private bool IsSetterActive(FrameworkElement target, DependencyProperty property)
+        => _activeSetters.TryGetValue(target, out var properties) && properties.Contains(property);
+
+    private void UntrackActiveSetter(FrameworkElement target, DependencyProperty property)
+    {
+        if (!_activeSetters.TryGetValue(target, out var properties))
+            return;
+
+        properties.Remove(property);
+        if (properties.Count == 0)
+            _activeSetters.Remove(target);
     }
 }
 
@@ -1498,7 +1518,7 @@ public sealed class Trigger : TriggerBase, ISupportInitialize
         public FrameworkElement? SourceElement;
     }
 
-    private readonly Dictionary<FrameworkElement, ElementState> _elementStates = new();
+    private readonly ConditionalWeakTable<FrameworkElement, ElementState> _elementStates = new();
     private DependencyProperty? _property;
     private object? _value;
     private string? _sourceName;
@@ -1704,7 +1724,8 @@ public sealed class Trigger : TriggerBase, ISupportInitialize
 
         // Create per-element state
         var state = new ElementState();
-        _elementStates[element] = state;
+        _elementStates.Remove(element);
+        _elementStates.Add(element, state);
 
         // 解析 SourceName：null/空 → 监听 templated parent 自己；否则去命名部件。
         // 解析失败（命名部件未找到）→ 整条 trigger 不挂，避免无声错位。
@@ -2136,7 +2157,7 @@ public sealed class MultiTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
         public FrameworkElement?[] ConditionSources = Array.Empty<FrameworkElement?>();
     }
 
-    private readonly Dictionary<FrameworkElement, ElementState> _elementStates = new();
+    private readonly ConditionalWeakTable<FrameworkElement, ElementState> _elementStates = new();
 
     /// <summary>
     /// Gets the collection of conditions that must all be true for the trigger to activate.
@@ -2180,7 +2201,8 @@ public sealed class MultiTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
     {
         // Create per-element state
         var state = new ElementState();
-        _elementStates[element] = state;
+        _elementStates.Remove(element);
+        _elementStates.Add(element, state);
 
         // 解析每条 Condition 的 source（SourceName=null → templated parent 自己）。
         // 收集去重后的源元素集合，handler 订阅到每个唯一源——任何一个源的相关 DP 变化
@@ -2332,7 +2354,7 @@ public sealed class DataTrigger : TriggerBase
         public BindingExpressionBase? BindingExpression;
     }
 
-    private readonly Dictionary<FrameworkElement, ElementState> _elementStates = new();
+    private readonly ConditionalWeakTable<FrameworkElement, ElementState> _elementStates = new();
     private BindingBase? _binding;
     private object? _value;
 
@@ -2406,7 +2428,8 @@ public sealed class DataTrigger : TriggerBase
     {
         // Create per-element state
         var state = new ElementState();
-        _elementStates[element] = state;
+        _elementStates.Remove(element);
+        _elementStates.Add(element, state);
 
         var shadowProp = ShadowProperty;
 
@@ -2657,7 +2680,7 @@ public sealed class MultiDataTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
         public List<DependencyProperty> ShadowProperties = new();
     }
 
-    private readonly Dictionary<FrameworkElement, ElementState> _elementStates = new();
+    private readonly ConditionalWeakTable<FrameworkElement, ElementState> _elementStates = new();
 
     // Counter for generating unique shadow property names
     private static int _propertyCounter;
@@ -2704,7 +2727,8 @@ public sealed class MultiDataTrigger : TriggerBase, Jalium.UI.Markup.IAddChild
     {
         // Create per-element state
         var state = new ElementState();
-        _elementStates[element] = state;
+        _elementStates.Remove(element);
+        _elementStates.Add(element, state);
 
         // Create shadow properties for each condition
         foreach (var condition in Conditions)

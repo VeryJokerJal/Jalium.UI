@@ -1,4 +1,5 @@
 using Jalium.UI.Controls.Virtualization;
+using System.Reflection;
 
 namespace Jalium.UI.Tests;
 
@@ -115,4 +116,33 @@ public class ItemHeightIndexTests
         Assert.Equal(totalBefore, index.TotalHeight, precision: 3);
         Assert.Equal(offsetBefore, index.GetOffsetForIndex(300), precision: 3);
     }
+
+    [Fact]
+    public void ResetSameCountReusesBuffersAndClearsMeasurements()
+    {
+        const int count = 1024;
+        var index = new ItemHeightIndex(28d);
+        index.Reset(count, 28d);
+
+        var measuredHeights = GetBuffer<float>(index, "_measuredHeights");
+        var blockSums = GetBuffer<double>(index, "_blockSums");
+        var blockPrefixes = GetBuffer<double>(index, "_blockPrefixes");
+        var blockUnmeasured = GetBuffer<int>(index, "_blockUnmeasured");
+
+        index.SetMeasuredHeight(17, 72d);
+        index.Reset(count, 32d);
+
+        Assert.Same(measuredHeights, GetBuffer<float>(index, "_measuredHeights"));
+        Assert.Same(blockSums, GetBuffer<double>(index, "_blockSums"));
+        Assert.Same(blockPrefixes, GetBuffer<double>(index, "_blockPrefixes"));
+        Assert.Same(blockUnmeasured, GetBuffer<int>(index, "_blockUnmeasured"));
+        Assert.Equal(32d, index.GetHeightAt(17));
+        Assert.Equal(count * 32d, index.TotalHeight);
+        Assert.Equal(17 * 32d, index.GetOffsetForIndex(17));
+    }
+
+    private static T[] GetBuffer<T>(ItemHeightIndex index, string fieldName) =>
+        (T[])typeof(ItemHeightIndex)
+            .GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(index)!;
 }

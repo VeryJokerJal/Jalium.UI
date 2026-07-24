@@ -1,4 +1,4 @@
-﻿<ResourceDictionary
+<ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
@@ -8,11 +8,11 @@
     <!-- A tree-based JSON data viewer with search, expand/collapse,
          and path display functionality. -->
     <Style TargetType="JsonTreeViewer">
-        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Background" Value="{ThemeResource LayerFillColorDefaultBrush}" />
         <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
-        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeColorDefaultBrush}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="CornerRadius" Value="12" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="MinWidth" Value="200" />
@@ -20,6 +20,7 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="JsonTreeViewer">
                 <Border Name="RootBorder"
+                        Shape="RoundedRectangle"
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
@@ -34,13 +35,11 @@
                         </Grid.RowDefinitions>
 
                         <!-- Toolbar -->
-                        <Border Name="PART_ToolBar"
-                                Grid.Row="0"
-                                Background="{ThemeResource ControlBackground}"
-                                BorderBrush="{ThemeResource ControlBorder}"
-                                BorderThickness="0,0,0,1"
-                                Padding="4,2,4,2">
-                            <StackPanel Orientation="Horizontal">
+                        <Grid Grid.Row="0"
+                              Background="{ThemeResource LayerFillColorAltBrush}">
+                            <StackPanel Name="PART_ToolBar"
+                                        Orientation="Horizontal"
+                                        Margin="4,2,4,2">
                                 <Button Name="PART_ExpandAllButton"
                                         Content="Expand All"
                                         Margin="0,0,4,0"
@@ -59,38 +58,44 @@
                                         MinWidth="0"
                                         MinHeight="0" />
                             </StackPanel>
-                        </Border>
+                            <Rectangle Height="1"
+                                       VerticalAlignment="Bottom"
+                                       Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
+                                       IsHitTestVisible="False" />
+                        </Grid>
 
                         <!-- Search Box -->
-                        <Border Name="PART_SearchBox"
-                                Grid.Row="1"
-                                Background="{ThemeResource ControlBackground}"
-                                BorderBrush="{ThemeResource ControlBorder}"
-                                BorderThickness="0,0,0,1"
-                                Padding="4">
-                            <TextBox Name="PART_SearchTextBox"
+                        <Grid Grid.Row="1"
+                              Background="{ThemeResource LayerFillColorAltBrush}">
+                            <TextBox Name="PART_SearchBox"
+                                     Margin="4"
                                      PlaceholderText="Search..."
                                      BorderThickness="1" />
-                        </Border>
+                            <Rectangle Height="1"
+                                       VerticalAlignment="Bottom"
+                                       Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
+                                       IsHitTestVisible="False" />
+                        </Grid>
 
                         <!-- Tree View -->
                         <TreeView Name="PART_TreeView"
                                   Grid.Row="2"
-                                  Background="Transparent"
+                                  Background="{ThemeResource ControlFillColorTransparentBrush}"
                                   BorderThickness="0"
                                   Padding="0" />
 
                         <!-- Status Bar -->
-                        <Border Name="PART_StatusBar"
-                                Grid.Row="3"
-                                Background="{ThemeResource ControlBackground}"
-                                BorderBrush="{ThemeResource ControlBorder}"
-                                BorderThickness="0,1,0,0"
-                                Padding="8,4,8,4">
+                        <Grid Grid.Row="3"
+                              Background="{ThemeResource LayerFillColorAltBrush}">
+                            <Rectangle Height="1"
+                                       VerticalAlignment="Top"
+                                       Fill="{ThemeResource DividerStrokeColorDefaultBrush}"
+                                       IsHitTestVisible="False" />
                             <TextBlock Name="PART_StatusText"
+                                       Margin="8,4,8,4"
                                        Foreground="{ThemeResource TextSecondary}"
                                        FontSize="11" />
-                        </Border>
+                        </Grid>
                     </Grid>
                 </Border>
             </ControlTemplate>

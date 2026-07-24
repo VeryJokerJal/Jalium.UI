@@ -349,7 +349,7 @@ JaliumResult VulkanBackend::CheckDeviceStatus()
             it = registeredGenerations_.erase(it);
             continue;
         }
-        if (generation->IsLost()) {
+        if (!generation->IsUsable()) {
             anyLost = true;
         }
         ++it;
@@ -359,7 +359,7 @@ JaliumResult VulkanBackend::CheckDeviceStatus()
 
 void VulkanBackend::RegisterDeviceContext(std::shared_ptr<VulkanDeviceGeneration> generation)
 {
-    if (!generation || !generation->ctx.valid) return;
+    if (!generation || !generation->IsUsable() || !generation->ctx.valid) return;
     std::lock_guard<std::mutex> lk(inkMutex_);
 
     // Track (weakly) for CheckDeviceStatus loss aggregation — BEFORE the
@@ -427,7 +427,7 @@ std::shared_ptr<VulkanDeviceGeneration>
 VulkanBackend::AcquireExternalImportGeneration()
 {
     std::lock_guard<std::mutex> lk(inkMutex_);
-    if (!deviceGeneration_ || deviceGeneration_->IsLost() ||
+    if (!deviceGeneration_ || !deviceGeneration_->IsUsable() ||
         !deviceGeneration_->ctx.valid ||
         !deviceGeneration_->ctx.dmaBufImportEnabled) {
         return nullptr;
@@ -437,17 +437,17 @@ VulkanBackend::AcquireExternalImportGeneration()
 
 std::shared_ptr<VulkanBrushPipeline> VulkanBackend::EnsureBrushPipeline()
 {
-    if (brushPipeline_ && brushPipeline_->IsReady()) return brushPipeline_;
-    if (brushPipelineAttempted_) return nullptr;
     if (!deviceGeneration_ || !deviceGeneration_->ctx.valid ||
         deviceGeneration_->ctx.device == VK_NULL_HANDLE ||
-        deviceGeneration_->IsLost()) {
+        !deviceGeneration_->IsUsable()) {
         // No device yet, or the registered generation is lost — building GPU
         // objects on it would fail call by call. The recovery chain registers
         // the replacement render target's healthy generation, which also
         // resets brushPipelineAttempted_.
         return nullptr;
     }
+    if (brushPipeline_ && brushPipeline_->IsReady()) return brushPipeline_;
+    if (brushPipelineAttempted_) return nullptr;
     brushPipelineAttempted_ = true;
     auto pipeline = std::make_shared<VulkanBrushPipeline>(deviceGeneration_);
     if (!pipeline->Initialize()) {

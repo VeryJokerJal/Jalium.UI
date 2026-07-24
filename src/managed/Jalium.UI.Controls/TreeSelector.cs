@@ -1439,9 +1439,6 @@ public class TreeSelectorItem : HeaderedItemsControl
 
     private const double IndentSize = 16;
 
-    private static readonly SolidColorBrush s_fallbackHoverBackgroundBrush = new(Themes.ThemeColors.ControlBackgroundHover);
-    private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Themes.ThemeColors.SelectionBackground);
-    private static readonly SolidColorBrush s_fallbackSelectedHoverBackgroundBrush = new(Themes.ThemeColors.AccentPressed);
 
     private TreeSelector? _parentSelector;
     /// <summary>
@@ -1467,14 +1464,13 @@ public class TreeSelectorItem : HeaderedItemsControl
     internal TreeSelectorItem? ParentItem { get; set; }
 
     private int _level;
-    private bool _isHeaderMouseOver;
     private bool _suppressCheckCallback;
 
     #region Template Parts
 
     private Border? _headerBorder;
-    private Border? _indentSpacer;
-    private Border? _expanderBorder;
+    private FrameworkElement? _indentSpacer;
+    private FrameworkElement? _expanderBorder;
     private Shapes.Path? _expanderArrow;
     private CheckBox? _checkBox;
     private FrameworkElement? _itemsHost;
@@ -1493,7 +1489,7 @@ public class TreeSelectorItem : HeaderedItemsControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(TreeSelectorItem),
-            new PropertyMetadata(false, OnIsSelectedChanged));
+            new PropertyMetadata(false));
 
     /// <summary>Identifies the IsChecked dependency property (supports tri-state).</summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
@@ -1674,8 +1670,6 @@ public class TreeSelectorItem : HeaderedItemsControl
         if (_headerBorder != null)
         {
             _headerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnHeaderMouseDown));
-            _headerBorder.RemoveHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter));
-            _headerBorder.RemoveHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave));
         }
         if (_checkBox != null)
         {
@@ -1683,8 +1677,8 @@ public class TreeSelectorItem : HeaderedItemsControl
         }
 
         _headerBorder = GetTemplateChild("PART_HeaderBorder") as Border;
-        _indentSpacer = GetTemplateChild("PART_IndentSpacer") as Border;
-        _expanderBorder = GetTemplateChild("PART_ExpanderBorder") as Border;
+        _indentSpacer = GetTemplateChild("PART_IndentSpacer") as FrameworkElement;
+        _expanderBorder = GetTemplateChild("PART_ExpanderBorder") as FrameworkElement;
         _expanderArrow = GetTemplateChild("PART_ExpanderArrow") as Shapes.Path;
         _checkBox = GetTemplateChild("PART_CheckBox") as CheckBox;
         _itemsHost = GetTemplateChild("PART_ItemsHost") as FrameworkElement;
@@ -1692,8 +1686,6 @@ public class TreeSelectorItem : HeaderedItemsControl
         if (_headerBorder != null)
         {
             _headerBorder.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnHeaderMouseDown), true);
-            _headerBorder.AddHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter), true);
-            _headerBorder.AddHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave), true);
         }
         if (_checkBox != null)
         {
@@ -1704,7 +1696,6 @@ public class TreeSelectorItem : HeaderedItemsControl
         UpdateExpanderVisibility();
         UpdateExpandedVisualState();
         UpdateCheckBoxVisibility();
-        UpdateHeaderVisualState();
         SyncCheckBoxFromState();
     }
 
@@ -1718,8 +1709,6 @@ public class TreeSelectorItem : HeaderedItemsControl
         if (_headerBorder != null)
         {
             _headerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnHeaderMouseDown));
-            _headerBorder.RemoveHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter));
-            _headerBorder.RemoveHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave));
         }
         if (_checkBox != null)
         {
@@ -1791,37 +1780,6 @@ public class TreeSelectorItem : HeaderedItemsControl
             : Visibility.Collapsed;
     }
 
-    private void UpdateHeaderVisualState()
-    {
-        if (_headerBorder == null) return;
-
-        if (IsSelected && _isHeaderMouseOver)
-        {
-            _headerBorder.Background = ResolveSelectedHoverBackgroundBrush();
-        }
-        else if (IsSelected)
-        {
-            _headerBorder.Background = ResolveSelectedBackgroundBrush();
-        }
-        else if (_isHeaderMouseOver)
-        {
-            _headerBorder.Background = ResolveHoverBackgroundBrush();
-        }
-        else
-        {
-            _headerBorder.ClearValue(Border.BackgroundProperty);
-        }
-    }
-
-    private Brush ResolveHoverBackgroundBrush()
-        => TryFindResource("ControlBackgroundHover") as Brush ?? s_fallbackHoverBackgroundBrush;
-
-    private Brush ResolveSelectedBackgroundBrush()
-        => TryFindResource("SelectionBackground") as Brush ?? s_fallbackSelectedBackgroundBrush;
-
-    private Brush ResolveSelectedHoverBackgroundBrush()
-        => TryFindResource("AccentBrushPressed") as Brush ?? s_fallbackSelectedHoverBackgroundBrush;
-
     private void SyncCheckBoxFromState()
     {
         if (_checkBox == null) return;
@@ -1881,20 +1839,6 @@ public class TreeSelectorItem : HeaderedItemsControl
 
         ParentSelector?.HandleItemActivated(this, isCtrl, isShift);
         e.Handled = true;
-    }
-
-    private void OnHeaderMouseEnter(object sender, MouseEventArgs e)
-    {
-        if (_isHeaderMouseOver) return;
-        _isHeaderMouseOver = true;
-        UpdateHeaderVisualState();
-    }
-
-    private void OnHeaderMouseLeave(object sender, MouseEventArgs e)
-    {
-        if (!_isHeaderMouseOver) return;
-        _isHeaderMouseOver = false;
-        UpdateHeaderVisualState();
     }
 
     private void OnCheckBoxClick(object sender, RoutedEventArgs e)
@@ -1995,14 +1939,6 @@ public class TreeSelectorItem : HeaderedItemsControl
         }
     }
 
-    private static void OnIsSelectedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is TreeSelectorItem item)
-        {
-            item.UpdateHeaderVisualState();
-        }
-    }
-
     private static void OnIsCheckedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is TreeSelectorItem item)
@@ -2017,10 +1953,5 @@ public class TreeSelectorItem : HeaderedItemsControl
     }
 
     /// <inheritdoc />
-    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
-    {
-        // TreeSelectorItem hover visuals are header-local; do not invalidate the whole subtree.
-    }
-
     #endregion
 }

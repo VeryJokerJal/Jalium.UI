@@ -595,18 +595,30 @@ public class ListCollectionView : CollectionView,
     /// <summary>
     /// Returns an enumerator over effective items, including the placeholder.
     /// </summary>
-    protected IEnumerator InternalGetEnumerator() => GetDisplayItems().GetEnumerator();
+    protected IEnumerator InternalGetEnumerator() =>
+        HasDisplayOverlay ? GetDisplayItems().GetEnumerator() : InternalList.GetEnumerator();
 
     /// <summary>
     /// Gets an item's effective index, including the placeholder.
     /// </summary>
-    protected int InternalIndexOf(object item) => GetDisplayItems().IndexOf(item);
+    protected int InternalIndexOf(object item) =>
+        HasDisplayOverlay ? GetDisplayItems().IndexOf(item) : InternalList.IndexOf(item);
 
     /// <summary>
     /// Gets an effective item, including the placeholder.
     /// </summary>
     protected object InternalItemAt(int index)
     {
+        if (!HasDisplayOverlay)
+        {
+            if ((uint)index >= (uint)InternalList.Count)
+            {
+                throw new ArgumentOutOfRangeException(nameof(index));
+            }
+
+            return InternalList[index]!;
+        }
+
         var displayItems = GetDisplayItems();
         if ((uint)index >= (uint)displayItems.Count)
         {
@@ -652,7 +664,7 @@ public class ListCollectionView : CollectionView,
     /// <summary>
     /// Gets the effective count, including the placeholder.
     /// </summary>
-    protected int InternalCount => GetDisplayItems().Count;
+    protected int InternalCount => HasDisplayOverlay ? GetDisplayItems().Count : InternalList.Count;
 
     /// <inheritdoc />
     protected override IEnumerator GetEnumerator()
@@ -727,8 +739,31 @@ public class ListCollectionView : CollectionView,
         return items;
     }
 
+    // Virtualizing panels query Count and GetItemAt repeatedly during layout. The ordinary
+    // effective list already has the correct display order, so only materialize an overlay
+    // while an editable placeholder or pending new item changes that order.
+    private bool HasDisplayOverlay =>
+        _newItem != null || NewItemPlaceholderPosition != NewItemPlaceholderPosition.None;
+
     private void SynchronizeCurrencyWithDisplay()
     {
+        if (!HasDisplayOverlay)
+        {
+            var count = InternalList.Count;
+            var directCurrentItem = base.CurrentItem;
+            if (directCurrentItem != null)
+            {
+                var position = InternalList.IndexOf(directCurrentItem);
+                SetCurrent(position >= 0 ? directCurrentItem : null, position, count);
+            }
+            else
+            {
+                SetCurrent(null, base.CurrentPosition >= count ? count : -1, count);
+            }
+
+            return;
+        }
+
         var items = GetDisplayItems();
         var currentItem = base.CurrentItem;
         if (currentItem != null)

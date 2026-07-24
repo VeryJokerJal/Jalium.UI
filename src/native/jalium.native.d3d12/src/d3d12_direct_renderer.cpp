@@ -3,6 +3,7 @@
 #include "d3d12_vello.h"
 #include "d3d12_shader_source.h"
 #include "d3d12_shader_bytecode.h"
+#include "d3d12_liquid_glass_bytecode.h"
 #include <d3dcompiler.h>
 #include <cassert>
 #include <algorithm>
@@ -405,6 +406,7 @@ void D3D12DirectRenderer::Shutdown()
     // GPU idle was waited above — the readback buffer can release inline.
     readbackBuffer_.Reset();
     readbackBufferCapacity_ = 0;
+    readbackDataSize_ = 0;
     readbackPending_ = false;
     readbackReady_ = false;
 
@@ -984,20 +986,6 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
         }
     }
 
-    if (glyphAtlasFenceValue_ > 0 &&
-        fence_->GetCompletedValue() < glyphAtlasFenceValue_) {
-        ResetEvent(fenceEvent_);
-        fence_->SetEventOnCompletion(glyphAtlasFenceValue_, fenceEvent_);
-        LARGE_INTEGER waitStart = QpcNow();
-        WaitForSingleObject(fenceEvent_, 50);
-        LARGE_INTEGER waitEnd = QpcNow();
-        accumulatingFrameWaitNs_ += QpcDiffNs(waitStart, waitEnd);
-        if (fence_->GetCompletedValue() < glyphAtlasFenceValue_) {
-            lastFrameGpuWaitNs_ = accumulatingFrameWaitNs_;
-            return false;
-        }
-    }
-
     // BeginFrame proceeded past the wait: flush the accumulator and stamp
     // the present-to-ready wall clock for the previously presented frame.
     lastFrameGpuWaitNs_ = accumulatingFrameWaitNs_;
@@ -1164,6 +1152,7 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     captureViewportW_ = 0;
     captureViewportH_ = 0;
     glyphAtlasUsedThisFrame_ = false;
+    glyphAtlasUploadRecordedThisFrame_ = false;
     fr.constantsRingOffset = 0;  // reset ring buffer for this frame
 
     // Keep the in-place blur temps sized to the (monotonically ratcheted)
@@ -1301,6 +1290,7 @@ void D3D12DirectRenderer::AbortFrame()
     savedScissorStack_ = {};
     savedRetainedRoundedClipStack_.clear();
     glyphAtlasUsedThisFrame_ = false;
+    glyphAtlasUploadRecordedThisFrame_ = false;
 
     // An armed / completed back-buffer readback dies with the aborted frame:
     // its copy commands (if any were recorded) were discarded with the list,
@@ -1418,7 +1408,19 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
         return JALIUM_ERROR_INVALID_STATE;
     }
     ID3D12CommandList* lists[] = { commandList_.Get() };
-    backend_->GetCommandQueue()->ExecuteCommandLists(1, lists);
+    ID3D12CommandQueue* commandQueue = backend_->GetCommandQueue();
+    // Read-only sampling can overlap across in-flight frames. If this frame
+    // actually recorded an atlas upload, order that GPU mutation after the
+    // most recent text submission without blocking the CPU in BeginFrame.
+    if (glyphAtlasUploadRecordedThisFrame_ && glyphAtlasFenceValue_ > 0 &&
+        fence_->GetCompletedValue() < glyphAtlasFenceValue_) {
+        HRESULT waitHr = commandQueue->Wait(fence_.Get(), glyphAtlasFenceValue_);
+        if (FAILED(waitHr)) {
+            LogDeviceRemovedReason("CommandQueue::Wait(glyph atlas)", device_, waitHr);
+            return JALIUM_ERROR_DEVICE_LOST;
+        }
+    }
+    commandQueue->ExecuteCommandLists(1, lists);
 
     // Present — timed separately (presentStartQpc → presentBlockNs) because
     // under a slow compositor (occlusion throttling, remote/virtual displays)
@@ -1601,6 +1603,7 @@ bool D3D12DirectRenderer::RecordBackBufferReadbackCopy()
     readbackWidth_ = static_cast<uint32_t>(bbDesc.Width);
     readbackHeight_ = static_cast<uint32_t>(bbDesc.Height);
     readbackRowPitch_ = footprint.Footprint.RowPitch;
+    readbackDataSize_ = totalBytes;
 
     auto toCopySource = MakeTransitionBarrier(
         backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -1627,7 +1630,7 @@ JaliumResult D3D12DirectRenderer::FetchBackBufferReadback(
 {
     if (outWidth) *outWidth = 0;
     if (outHeight) *outHeight = 0;
-    if (!readbackReady_ || !readbackBuffer_ || !fence_ ||
+    if (!readbackReady_ || !readbackBuffer_ || !fence_ || readbackDataSize_ == 0 ||
         readbackWidth_ == 0 || readbackHeight_ == 0) {
         return JALIUM_ERROR_INVALID_STATE;
     }
@@ -1662,7 +1665,10 @@ JaliumResult D3D12DirectRenderer::FetchBackBufferReadback(
     }
 
     void* mapped = nullptr;
-    D3D12_RANGE readRange = { 0, static_cast<SIZE_T>(readbackRowPitch_) * readbackHeight_ };
+    // totalBytes is not generally rowPitch * height: the final row has no
+    // trailing pitch padding. Mapping the larger range fails for widths whose
+    // RGBA row size is not 256-byte aligned (for example 176 px).
+    D3D12_RANGE readRange = { 0, static_cast<SIZE_T>(readbackDataSize_) };
     HRESULT hr = readbackBuffer_->Map(0, &readRange, &mapped);
     if (FAILED(hr) || !mapped) return JALIUM_ERROR_UNKNOWN;
 
@@ -1899,13 +1905,11 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     // Apply current opacity
     float effectiveA = a * currentOpacity_;
 
-    // Per-axis transform scale this text will undergo on screen. We hand these to
-    // GenerateGlyphs so each glyph is rasterized ALREADY-deformed (scaleX wide,
-    // scaleY tall) via a DWRITE_MATRIX — so a liquid-glass squeeze stays crisp
-    // (thin stems survive: no d->c / r->l) instead of point-minifying an isotropic
-    // atlas. GenerateGlyphs quantizes these internally for the cache; the quads
-    // come back BASE-DIP and the post-transform scaling below restores on-screen
-    // size 1:1 against the deformed bitmap.
+    // Per-axis transform scale this text will undergo on screen. GenerateGlyphs
+    // folds the final vertical ppem into DirectWrite's em size and leaves only
+    // the X:Y aspect in its glyph transform. The resulting bitmap is already at
+    // the final deformed resolution; emitted quads return in base-DIP and the
+    // post-transform below restores their on-screen size.
     float scaleX = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
     float scaleY = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
 
@@ -1945,13 +1949,12 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     }
 
     // Apply transform scaling to each glyph instance.
-    // GenerateGlyphs emits BASE-DIP quads (any rasterScale magnification was
-    // divided back out) positioned relative to the transformed origin (tx,ty).
+    // GenerateGlyphs emits BASE-DIP quads (the effective atlas raster scales
+    // were divided back out) positioned relative to the transformed origin.
     // Scaling position + size by the transform's axis scales here magnifies the
     // base-DIP quad to its on-screen size; because the atlas bitmap was already
-    // rasterized at rasterScale, the magnified quad stays crisp instead of
-    // mosaicking (rasterScale rounds the magnitude up, so the bitmap is never
-    // upscaled past 1:1 — at most a slightly hi-res atlas is minified).
+    // rasterized for the quantized final transform, the magnified quad stays
+    // crisp instead of mosaicking.
     if (count > 0) {
         const float dpi = dpiScale_ > 0.0f ? dpiScale_ : 1.0f;
         const float invDpi = 1.0f / dpi;
@@ -2793,7 +2796,7 @@ void D3D12DirectRenderer::UploadInstances()
         auto handle = srvCpuBase;
         handle.ptr += srvDescriptorSize_;
         if (glyphAtlas_) {
-            glyphAtlas_->FlushToGpu(commandList_.Get());
+            glyphAtlasUploadRecordedThisFrame_ |= glyphAtlas_->FlushToGpu(commandList_.Get());
             // Flush records CopyTextureRegion into the still-open main list.
             // Bind the one-shot upload allocation to this frame slot's actual
             // submission fence; the backend graveyard can be overtaken by an
@@ -6311,33 +6314,19 @@ bool D3D12DirectRenderer::CreateLiquidGlassResources()
 {
     if (!device_ || lgResourcesReady_) return lgResourcesReady_;
 
-    // --- Compile shaders ---
-    UINT compileFlags = 0;
-#ifdef _DEBUG
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#else
-    compileFlags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
-#endif
-
-    auto compileShader = [&](const char* source, size_t sourceLen, const char* debugName,
-                             const char* target, ID3DBlob** blob) -> bool {
-        ComPtr<ID3DBlob> errors;
-        HRESULT hr = D3DCompile(source, sourceLen, debugName,
-                                nullptr, nullptr, "main", target,
-                                compileFlags, 0, blob, &errors);
-        if (FAILED(hr) && errors) {
-            OutputDebugStringA("LiquidGlass shader error: ");
-            OutputDebugStringA((const char*)errors->GetBufferPointer());
-        }
-        return SUCCEEDED(hr);
+    // Use build-time bytecode so the first LiquidGlass draw never spends
+    // hundreds of milliseconds running the O3 HLSL compiler on the UI thread.
+    auto wrapBytecode = [](const unsigned char* data, unsigned int size, ID3DBlob** blob) -> bool {
+        HRESULT hr = D3DCreateBlob(size, blob);
+        if (FAILED(hr)) return false;
+        memcpy((*blob)->GetBufferPointer(), data, size);
+        return true;
     };
 
-    using namespace shader_source;
+    using namespace liquid_glass_shader_bytecode;
 
-    if (!compileShader(kLiquidGlassVS, sizeof(kLiquidGlassVS) - 1, "liquid_glass.vs.hlsl", "vs_5_1", &lgVS_))
-        return false;
-    if (!compileShader(kLiquidGlassPS, sizeof(kLiquidGlassPS) - 1, "liquid_glass.ps.hlsl", "ps_5_1", &lgPS_))
-        return false;
+    if (!wrapBytecode(kLiquidGlassVS, kLiquidGlassVSSize, &lgVS_)) return false;
+    if (!wrapBytecode(kLiquidGlassPS, kLiquidGlassPSSize, &lgPS_)) return false;
 
     // --- Root signature for liquid glass ---
     // [0] Root CBV b0 — FrameConstants (screenSize, invScreenSize)

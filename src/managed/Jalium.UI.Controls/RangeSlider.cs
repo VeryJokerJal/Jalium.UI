@@ -271,10 +271,10 @@ public class RangeSlider : Control
     private ActiveThumb _activeDrag = ActiveThumb.None;
     private ActiveThumb _focusedThumb = ActiveThumb.Start;
 
-    private Border? _trackBorder;
-    private Border? _selectionRangeBorder;
-    private Border? _startThumbBorder;
-    private Border? _endThumbBorder;
+    private FrameworkElement? _trackBorder;
+    private FrameworkElement? _selectionRangeBorder;
+    private FrameworkElement? _startThumbBorder;
+    private FrameworkElement? _endThumbBorder;
 
     #endregion
 
@@ -310,10 +310,10 @@ public class RangeSlider : Control
     {
         base.OnApplyTemplate();
 
-        _trackBorder = GetTemplateChild("PART_Track") as Border;
-        _selectionRangeBorder = GetTemplateChild("PART_SelectionRange") as Border;
-        _startThumbBorder = GetTemplateChild("PART_StartThumb") as Border;
-        _endThumbBorder = GetTemplateChild("PART_EndThumb") as Border;
+        _trackBorder = GetTemplateChild("PART_Track") as FrameworkElement;
+        _selectionRangeBorder = GetTemplateChild("PART_SelectionRange") as FrameworkElement;
+        _startThumbBorder = GetTemplateChild("PART_StartThumb") as FrameworkElement;
+        _endThumbBorder = GetTemplateChild("PART_EndThumb") as FrameworkElement;
 
         UpdateLayoutGeometry();
     }
@@ -602,14 +602,14 @@ public class RangeSlider : Control
 
         if (Orientation == Orientation.Horizontal)
         {
-            var trackWidth = RenderSize.Width - ThumbSize;
+            var trackWidth = ControlRenderGeometry.GetTrackLength(RenderSize.Width, ThumbSize);
             var thumbX = percentage * trackWidth;
             var thumbY = (RenderSize.Height - ThumbSize) / 2;
             return new Rect(thumbX, thumbY, ThumbSize, ThumbSize);
         }
         else
         {
-            var trackHeight = RenderSize.Height - ThumbSize;
+            var trackHeight = ControlRenderGeometry.GetTrackLength(RenderSize.Height, ThumbSize);
             var thumbY = (1 - percentage) * trackHeight;
             var thumbX = (RenderSize.Width - ThumbSize) / 2;
             return new Rect(thumbX, thumbY, ThumbSize, ThumbSize);
@@ -658,17 +658,7 @@ public class RangeSlider : Control
     {
         var trackBrush = TrackBrush ?? s_trackBrush;
 
-        Rect trackRect;
-        if (Orientation == Orientation.Horizontal)
-        {
-            var trackY = (bounds.Height - TrackThickness) / 2;
-            trackRect = new Rect(ThumbSize / 2, trackY, bounds.Width - ThumbSize, TrackThickness);
-        }
-        else
-        {
-            var trackX = (bounds.Width - TrackThickness) / 2;
-            trackRect = new Rect(trackX, ThumbSize / 2, TrackThickness, bounds.Height - ThumbSize);
-        }
+        var trackRect = ControlRenderGeometry.GetCenteredTrackRect(bounds, Orientation, ThumbSize, TrackThickness);
 
         dc.DrawRoundedRectangle(trackBrush, null, trackRect, 2, 2);
     }
@@ -685,22 +675,20 @@ public class RangeSlider : Control
         var endPercent = (RangeEnd - Minimum) / range;
         var fillBrush = s_accentBrush;
 
+        var trackRect = ControlRenderGeometry.GetCenteredTrackRect(bounds, Orientation, ThumbSize, TrackThickness);
+
         Rect filledRect;
         if (Orientation == Orientation.Horizontal)
         {
-            var trackY = (bounds.Height - TrackThickness) / 2;
-            var trackWidth = bounds.Width - ThumbSize;
-            var startX = ThumbSize / 2 + startPercent * trackWidth;
-            var endX = ThumbSize / 2 + endPercent * trackWidth;
-            filledRect = new Rect(startX, trackY, Math.Max(0, endX - startX), TrackThickness);
+            var startX = trackRect.X + startPercent * trackRect.Width;
+            var endX = trackRect.X + endPercent * trackRect.Width;
+            filledRect = new Rect(startX, trackRect.Y, Math.Max(0, endX - startX), trackRect.Height);
         }
         else
         {
-            var trackX = (bounds.Width - TrackThickness) / 2;
-            var trackHeight = bounds.Height - ThumbSize;
-            var startY = ThumbSize / 2 + (1 - startPercent) * trackHeight;
-            var endY = ThumbSize / 2 + (1 - endPercent) * trackHeight;
-            filledRect = new Rect(trackX, endY, TrackThickness, Math.Max(0, startY - endY));
+            var startY = trackRect.Y + (1 - startPercent) * trackRect.Height;
+            var endY = trackRect.Y + (1 - endPercent) * trackRect.Height;
+            filledRect = new Rect(trackRect.X, endY, trackRect.Width, Math.Max(0, startY - endY));
         }
 
         dc.DrawRoundedRectangle(fillBrush, null, filledRect, 2, 2);
@@ -714,6 +702,8 @@ public class RangeSlider : Control
             return;
         }
 
+        var trackRect = ControlRenderGeometry.GetCenteredTrackRect(bounds, Orientation, ThumbSize, TrackThickness);
+
         var tickCount = (int)Math.Round(range / TickFrequency);
         for (var i = 0; i <= tickCount; i++)
         {
@@ -723,12 +713,12 @@ public class RangeSlider : Control
 
             if (Orientation == Orientation.Horizontal)
             {
-                var x = ThumbSize / 2 + (bounds.Width - ThumbSize) * percentage;
+                var x = trackRect.X + trackRect.Width * percentage;
                 dc.DrawLine(s_tickPen, new Point(x, bounds.Height - 6), new Point(x, bounds.Height - 2));
             }
             else
             {
-                var y = ThumbSize / 2 + (bounds.Height - ThumbSize) * (1 - percentage);
+                var y = trackRect.Y + trackRect.Height * (1 - percentage);
                 dc.DrawLine(s_tickPen, new Point(bounds.Width - 6, y), new Point(bounds.Width - 2, y));
             }
         }

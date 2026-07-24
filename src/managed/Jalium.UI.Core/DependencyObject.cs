@@ -13,14 +13,18 @@ public class DependencyObject : DispatcherObject
     [ThreadStatic]
     private static HashSet<(DependencyObject owner, DependencyProperty property)>? t_activeCoercions;
 
-    private readonly Dictionary<DependencyProperty, object?> _localValues = new();
-    private readonly Dictionary<DependencyProperty, object?> _parentTemplateValues = new();
-    private readonly Dictionary<DependencyProperty, object?> _styleTriggerValues = new();
-    private readonly Dictionary<DependencyProperty, object?> _templateTriggerValues = new();
-    private readonly Dictionary<DependencyProperty, object?> _styleSetterValues = new();
-    private readonly Dictionary<DependencyProperty, (object? value, BaseValueSource source)> _currentValues = new();
-    private readonly Dictionary<DependencyProperty, BindingExpressionBase> _bindings = new();
-    private readonly Dictionary<DependencyProperty, AnimatedPropertyValue> _animatedValues = new();
+    // Most dependency objects use only one value layer, while short-lived render objects often
+    // use none at all. Allocating every layer here made each Geometry/PathSegment carry eight empty
+    // dictionaries. Keep the cold layers absent until their first write.
+    private Dictionary<DependencyProperty, object?>? _localValues;
+    private Dictionary<DependencyProperty, object?>? _parentTemplateValues;
+    private Dictionary<DependencyProperty, object?>? _styleTriggerValues;
+    private Dictionary<DependencyProperty, object?>? _templateTriggerValues;
+    private Dictionary<DependencyProperty, object?>? _styleSetterValues;
+    private Dictionary<DependencyProperty, (object? value, BaseValueSource source)>? _currentValues;
+    private Dictionary<DependencyProperty, BindingExpressionBase>? _bindings;
+    private Dictionary<DependencyProperty, AnimatedPropertyValue>? _animatedValues;
+    private Dictionary<DependencyProperty, Brush>? _mutableRenderBrushValues;
 
     // Source-compatibility shims for Jalium's historical public Visual tree surface. They are
     // deliberately fields (and a callable delegate field), so metadata verification sees only
@@ -104,7 +108,77 @@ public class DependencyObject : DispatcherObject
         StyleSetter
     }
 
-    private delegate bool ValueMutation();
+    private enum ValueMutationKind : byte
+    {
+        SetLocalCore,
+        SetLocalDirect,
+        SetCurrent,
+        SetLayer,
+        ClearLocal,
+        ClearLayer,
+    }
+
+    private readonly struct ValueMutation
+    {
+        private ValueMutation(
+            ValueMutationKind kind,
+            object? value = null,
+            BaseValueSource baseSource = BaseValueSource.Unknown,
+            LayerValueSource layerSource = default)
+        {
+            Kind = kind;
+            Value = value;
+            BaseSource = baseSource;
+            LayerSource = layerSource;
+        }
+
+        private ValueMutationKind Kind { get; }
+        private object? Value { get; }
+        private BaseValueSource BaseSource { get; }
+        private LayerValueSource LayerSource { get; }
+
+        public static ValueMutation ForSetLocalCore(object? value) =>
+            new(ValueMutationKind.SetLocalCore, value);
+
+        public static ValueMutation ForSetLocalDirect(object? value) =>
+            new(ValueMutationKind.SetLocalDirect, value);
+
+        public static ValueMutation ForSetCurrent(object? value, BaseValueSource source) =>
+            new(ValueMutationKind.SetCurrent, value, source);
+
+        public static ValueMutation ForSetLayer(object? value, LayerValueSource source) =>
+            new(ValueMutationKind.SetLayer, value, layerSource: source);
+
+        public static ValueMutation ForClearLocal() => new(ValueMutationKind.ClearLocal);
+
+        public static ValueMutation ForClearLayer(LayerValueSource source) =>
+            new(ValueMutationKind.ClearLayer, layerSource: source);
+
+        public bool Apply(DependencyObject owner, DependencyProperty dp)
+        {
+            switch (Kind)
+            {
+                case ValueMutationKind.SetLocalCore:
+                    owner.SetLocalValueCore(dp, Value);
+                    return true;
+                case ValueMutationKind.SetLocalDirect:
+                    (owner._localValues ??= new())[dp] = Value;
+                    return true;
+                case ValueMutationKind.SetCurrent:
+                    (owner._currentValues ??= new())[dp] = (Value, BaseSource);
+                    return true;
+                case ValueMutationKind.SetLayer:
+                    owner.SetLayerValueCore(dp, Value, LayerSource);
+                    return true;
+                case ValueMutationKind.ClearLocal:
+                    return owner.ClearLocalValueCore(dp);
+                case ValueMutationKind.ClearLayer:
+                    return owner.ClearLayerValueCore(dp, LayerSource);
+                default:
+                    throw new InvalidOperationException("Unknown dependency-property mutation.");
+            }
+        }
+    }
 
     /// <summary>
     /// Gets the cached dependency-object type descriptor for this instance.
@@ -128,7 +202,75 @@ public class DependencyObject : DispatcherObject
     public virtual object? GetValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        return GetValueState(dp).Value;
+        object? value = GetValueState(dp).Value;
+
+        // Keep the ubiquitous non-brush GetValue path allocation-free and free of reflection-
+        // based type checks. We only enter owner bookkeeping for a mutable brush, or when a
+        // previously registered brush must be detached because this property's value changed.
+        if (value is Brush { IsFrozen: false }
+            || (_mutableRenderBrushValues?.ContainsKey(dp) ?? false))
+        {
+            return TrackMutableRenderBrushValue(dp, value);
+        }
+
+        return value;
+    }
+
+    /// <summary>
+    /// Tracks mutable brushes consumed by a visual dependency property so an in-place brush
+    /// mutation can invalidate only the visuals that actually use that brush. The association
+    /// is weak on the brush side; this per-owner map supplies the per-property reference count
+    /// needed when one brush is used by several properties on the same element.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="FrameworkElement.GetValue(DependencyProperty)"/> also calls this helper for
+    /// inherited values, whose lookup path does not otherwise pass through this implementation.
+    /// </remarks>
+    internal object? TrackMutableRenderBrushValue(DependencyProperty dp, object? value)
+    {
+        Brush? newBrush = value as Brush;
+        if (newBrush?.IsFrozen == true)
+        {
+            // Frozen brushes cannot raise a future Changed notification, so retaining an owner
+            // registration for them only adds memory and lookup work.
+            newBrush = null;
+        }
+
+        Brush? oldBrush = null;
+        bool hadOldBrush = _mutableRenderBrushValues?.TryGetValue(dp, out oldBrush) == true;
+        if (newBrush is null && !hadOldBrush)
+        {
+            return value;
+        }
+
+        if (this is not UIElement renderOwner
+            || !typeof(Brush).IsAssignableFrom(dp.PropertyType))
+        {
+            return value;
+        }
+
+        if (ReferenceEquals(oldBrush, newBrush))
+        {
+            return value;
+        }
+
+        if (oldBrush is not null)
+        {
+            oldBrush.RemoveRenderOwner(renderOwner);
+            _mutableRenderBrushValues!.Remove(dp);
+        }
+
+        if (newBrush is not null)
+        {
+            (_mutableRenderBrushValues ??= new Dictionary<DependencyProperty, Brush>())[dp] = newBrush;
+            newBrush.AddRenderOwner(renderOwner);
+        }
+        else if (_mutableRenderBrushValues?.Count == 0)
+        {
+            _mutableRenderBrushValues = null;
+        }
+
+        return value;
     }
 
     /// <summary>
@@ -139,7 +281,7 @@ public class DependencyObject : DispatcherObject
     public bool HasLocalValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        return _localValues.ContainsKey(dp);
+        return _localValues?.ContainsKey(dp) == true;
     }
 
     /// <summary>
@@ -150,7 +292,7 @@ public class DependencyObject : DispatcherObject
     public object? ReadLocalValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        if (_localValues.TryGetValue(dp, out var value))
+        if (_localValues?.TryGetValue(dp, out var value) == true)
         {
             return value;
         }
@@ -175,11 +317,7 @@ public class DependencyObject : DispatcherObject
         ValidateValueOrThrow(dp, value);
         MutateValue(
             dp,
-            () =>
-            {
-                SetLocalValueCore(dp, value);
-                return true;
-            },
+            ValueMutation.ForSetLocalCore(value),
             notifyBinding: true,
             allowAutoTransition: true);
     }
@@ -254,33 +392,21 @@ public class DependencyObject : DispatcherObject
             case BaseValueSource.Local:
                 MutateValue(
                     dp,
-                    () =>
-                    {
-                        _localValues[dp] = value;
-                        return true;
-                    },
+                    ValueMutation.ForSetLocalDirect(value),
                     notifyBinding: false,
                     allowAutoTransition);
                 return;
             case BaseValueSource.ParentTemplate:
                 MutateValue(
                     dp,
-                    () =>
-                    {
-                        SetLayerValueCore(dp, value, LayerValueSource.ParentTemplate);
-                        return true;
-                    },
+                    ValueMutation.ForSetLayer(value, LayerValueSource.ParentTemplate),
                     notifyBinding: false,
                     allowAutoTransition);
                 return;
             case BaseValueSource.StyleTrigger:
                 MutateValue(
                     dp,
-                    () =>
-                    {
-                        SetLayerValueCore(dp, value, LayerValueSource.StyleTrigger);
-                        return true;
-                    },
+                    ValueMutation.ForSetLayer(value, LayerValueSource.StyleTrigger),
                     notifyBinding: false,
                     allowAutoTransition);
                 return;
@@ -288,11 +414,7 @@ public class DependencyObject : DispatcherObject
             case BaseValueSource.ParentTemplateTrigger:
                 MutateValue(
                     dp,
-                    () =>
-                    {
-                        SetLayerValueCore(dp, value, LayerValueSource.TemplateTrigger);
-                        return true;
-                    },
+                    ValueMutation.ForSetLayer(value, LayerValueSource.TemplateTrigger),
                     notifyBinding: false,
                     allowAutoTransition);
                 return;
@@ -300,37 +422,25 @@ public class DependencyObject : DispatcherObject
             case BaseValueSource.DefaultStyle:
                 MutateValue(
                     dp,
-                    () =>
-                    {
-                        SetLayerValueCore(dp, value, LayerValueSource.StyleSetter);
-                        return true;
-                    },
+                    ValueMutation.ForSetLayer(value, LayerValueSource.StyleSetter),
                     notifyBinding: false,
                     allowAutoTransition);
                 return;
             case BaseValueSource.Default:
             case BaseValueSource.Inherited:
+                var keepSource = baseSource == BaseValueSource.Inherited
+                    ? BaseValueSource.Inherited
+                    : BaseValueSource.Default;
                 MutateValue(
                     dp,
-                    () =>
-                    {
-                        var keepSource = baseSource == BaseValueSource.Inherited
-                            ? BaseValueSource.Inherited
-                            : BaseValueSource.Default;
-                        _currentValues[dp] = (value, keepSource);
-                        return true;
-                    },
+                    ValueMutation.ForSetCurrent(value, keepSource),
                     notifyBinding: false,
                     allowAutoTransition);
                 return;
             default:
                 MutateValue(
                     dp,
-                    () =>
-                    {
-                        _localValues[dp] = value;
-                        return true;
-                    },
+                    ValueMutation.ForSetLocalDirect(value),
                     notifyBinding: false,
                     allowAutoTransition);
                 return;
@@ -367,7 +477,7 @@ public class DependencyObject : DispatcherObject
 
         // Create and activate the binding expression
         var expression = binding.CreateBindingExpression(this, dp);
-        _bindings[dp] = expression;
+        (_bindings ??= new())[dp] = expression;
         expression.Activate();
 
         return expression;
@@ -381,7 +491,7 @@ public class DependencyObject : DispatcherObject
     internal BindingExpressionBase? GetBindingExpression(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        return _bindings.GetValueOrDefault(dp);
+        return _bindings?.GetValueOrDefault(dp);
     }
 
     /// <summary>
@@ -392,10 +502,10 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
 
-        if (_bindings.TryGetValue(dp, out var expression))
+        if (_bindings?.TryGetValue(dp, out var expression) == true)
         {
             expression.Deactivate();
-            _bindings.Remove(dp);
+            RemoveStoredValue(ref _bindings, dp);
         }
     }
 
@@ -404,11 +514,17 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     public void ClearAllBindings()
     {
-        foreach (var expression in _bindings.Values)
+        var bindings = _bindings;
+        if (bindings is null)
+            return;
+
+        foreach (var expression in bindings.Values)
         {
             expression.Deactivate();
         }
-        _bindings.Clear();
+        bindings.Clear();
+        if (ReferenceEquals(_bindings, bindings))
+            _bindings = null;
     }
 
     /// <summary>
@@ -417,7 +533,10 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     internal void ReactivateBindings()
     {
-        foreach (var expression in _bindings.Values)
+        if (_bindings is not { } bindings)
+            return;
+
+        foreach (var expression in bindings.Values)
         {
             // Only reactivate if not already active (deferred bindings that couldn't activate earlier)
             if (!expression.IsActive)
@@ -448,7 +567,7 @@ public class DependencyObject : DispatcherObject
         CheckSealedAccess();
         MutateValue(
             dp,
-            () => ClearLocalValueCore(dp),
+            ValueMutation.ForClearLocal(),
             notifyBinding: false,
             allowAutoTransition: true);
     }
@@ -467,9 +586,9 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     public LocalValueEnumerator GetLocalValueEnumerator()
     {
-        var entries = _localValues
+        var entries = _localValues?
             .Select(static pair => new LocalValueEntry(pair.Key, pair.Value))
-            .ToArray();
+            .ToArray() ?? Array.Empty<LocalValueEntry>();
         return new LocalValueEnumerator(entries);
     }
 
@@ -479,7 +598,7 @@ public class DependencyObject : DispatcherObject
     public void InvalidateProperty(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        if (_bindings.TryGetValue(dp, out BindingExpressionBase? binding))
+        if (_bindings?.TryGetValue(dp, out BindingExpressionBase? binding) == true)
         {
             binding.UpdateTarget();
         }
@@ -493,7 +612,7 @@ public class DependencyObject : DispatcherObject
     protected internal virtual bool ShouldSerializeProperty(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        return _localValues.ContainsKey(dp);
+        return _localValues?.ContainsKey(dp) == true;
     }
 
     /// <summary>
@@ -502,19 +621,19 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     internal void PromoteLocalValuesToLayer(LayerValueSource source)
     {
-        if (_localValues.Count == 0)
+        if (_localValues is not { Count: > 0 } localValues)
             return;
 
         var mappedSource = MapLayerValueSource(source);
-        var entries = _localValues.ToArray();
+        var entries = localValues.ToArray();
 
         foreach (var (dp, localValue) in entries)
         {
             var oldValue = GetValue(dp);
 
-            _localValues.Remove(dp);
-            if (_currentValues.TryGetValue(dp, out var current) && current.source == mappedSource)
-                _currentValues.Remove(dp);
+            localValues.Remove(dp);
+            if (_currentValues?.TryGetValue(dp, out var current) == true && current.source == mappedSource)
+                RemoveStoredValue(ref _currentValues, dp);
 
             // Never promote a null local onto a non-nullable value-type layer (mirrors the
             // SetLayerValueCore backstop, which this direct-write loop bypasses): drop it so the
@@ -526,16 +645,16 @@ public class DependencyObject : DispatcherObject
                 switch (source)
                 {
                     case LayerValueSource.ParentTemplate:
-                        _parentTemplateValues[dp] = localValue;
+                        (_parentTemplateValues ??= new())[dp] = localValue;
                         break;
                     case LayerValueSource.StyleTrigger:
-                        _styleTriggerValues[dp] = localValue;
+                        (_styleTriggerValues ??= new())[dp] = localValue;
                         break;
                     case LayerValueSource.TemplateTrigger:
-                        _templateTriggerValues[dp] = localValue;
+                        (_templateTriggerValues ??= new())[dp] = localValue;
                         break;
                     case LayerValueSource.StyleSetter:
-                        _styleSetterValues[dp] = localValue;
+                        (_styleSetterValues ??= new())[dp] = localValue;
                         break;
                     default:
                         throw new ArgumentOutOfRangeException(nameof(source), source, null);
@@ -546,6 +665,9 @@ public class DependencyObject : DispatcherObject
             if (!Equals(oldValue, newValue))
                 OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
         }
+
+        if (localValues.Count == 0 && ReferenceEquals(_localValues, localValues))
+            _localValues = null;
     }
 
     /// <summary>
@@ -616,16 +738,16 @@ public class DependencyObject : DispatcherObject
 
         var oldValue = GetValue(dp);
 
-        if (!_animatedValues.ContainsKey(dp))
+        var animatedValues = _animatedValues ??= new();
+        if (!animatedValues.TryGetValue(dp, out var existing))
         {
             // Store base value for restoration when animation ends
             var (baseValue, baseSource) = GetUncoercedBaseValueInternal(dp);
-            _animatedValues[dp] = new AnimatedPropertyValue(baseValue, baseSource, value, holdEndValue);
+            animatedValues[dp] = new AnimatedPropertyValue(baseValue, baseSource, value, holdEndValue);
         }
         else
         {
-            var existing = _animatedValues[dp];
-            _animatedValues[dp] = existing with { CurrentValue = value, HoldEndValue = holdEndValue };
+            animatedValues[dp] = existing with { CurrentValue = value, HoldEndValue = holdEndValue };
         }
 
         if (Equals(oldValue, value))
@@ -674,10 +796,10 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
 
-        if (_animatedValues.TryGetValue(dp, out var animated))
+        if (_animatedValues?.TryGetValue(dp, out var animated) == true)
         {
             var oldValue = animated.CurrentValue;
-            _animatedValues.Remove(dp);
+            RemoveStoredValue(ref _animatedValues, dp);
 
             if (animated.HoldEndValue)
             {
@@ -729,10 +851,10 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
 
-        if (_animatedValues.TryGetValue(dp, out var animated))
+        if (_animatedValues?.TryGetValue(dp, out var animated) == true)
         {
             var oldValue = animated.CurrentValue;
-            _animatedValues.Remove(dp);
+            RemoveStoredValue(ref _animatedValues, dp);
 
             var newValue = GetValue(dp);
 
@@ -753,11 +875,11 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     internal void DiscardAllAnimatedValues()
     {
-        if (_animatedValues.Count == 0)
+        if (_animatedValues is not { Count: > 0 } animatedValues)
             return;
 
-        var keys = new DependencyProperty[_animatedValues.Count];
-        _animatedValues.Keys.CopyTo(keys, 0);
+        var keys = new DependencyProperty[animatedValues.Count];
+        animatedValues.Keys.CopyTo(keys, 0);
 
         foreach (var dp in keys)
         {
@@ -773,7 +895,7 @@ public class DependencyObject : DispatcherObject
     internal bool HasAnimatedValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        return _animatedValues.ContainsKey(dp);
+        return _animatedValues?.ContainsKey(dp) == true;
     }
 
     /// <summary>
@@ -785,7 +907,7 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
 
-        if (_animatedValues.TryGetValue(dp, out var animated))
+        if (_animatedValues?.TryGetValue(dp, out var animated) == true)
         {
             return animated.BaseValue;
         }
@@ -802,20 +924,20 @@ public class DependencyObject : DispatcherObject
             state.IsExpression,
             state.IsAnimated,
             state.IsCoerced,
-            _currentValues.ContainsKey(dp));
+            _currentValues?.ContainsKey(dp) == true);
     }
 
     internal bool HasValueAboveInherited(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        if (_animatedValues.ContainsKey(dp) || _localValues.ContainsKey(dp))
+        if (_animatedValues?.ContainsKey(dp) == true || _localValues?.ContainsKey(dp) == true)
             return true;
 
-        return _parentTemplateValues.ContainsKey(dp)
-               || _styleTriggerValues.ContainsKey(dp)
-               || _templateTriggerValues.ContainsKey(dp)
-               || _styleSetterValues.ContainsKey(dp)
-               || _currentValues.ContainsKey(dp);
+        return _parentTemplateValues?.ContainsKey(dp) == true
+               || _styleTriggerValues?.ContainsKey(dp) == true
+               || _templateTriggerValues?.ContainsKey(dp) == true
+               || _styleSetterValues?.ContainsKey(dp) == true
+               || _currentValues?.ContainsKey(dp) == true;
     }
 
     internal void SetLayerValue(DependencyProperty dp, object? value, LayerValueSource source)
@@ -826,11 +948,7 @@ public class DependencyObject : DispatcherObject
         ArgumentNullException.ThrowIfNull(dp);
         MutateValue(
             dp,
-            () =>
-            {
-                SetLayerValueCore(dp, value, source);
-                return true;
-            },
+            ValueMutation.ForSetLayer(value, source),
             notifyBinding: false,
             allowAutoTransition: allowAutoTransition);
     }
@@ -843,7 +961,7 @@ public class DependencyObject : DispatcherObject
         ArgumentNullException.ThrowIfNull(dp);
         MutateValue(
             dp,
-            () => ClearLayerValueCore(dp, source),
+            ValueMutation.ForClearLayer(source),
             notifyBinding: false,
             allowAutoTransition: allowAutoTransition);
     }
@@ -852,10 +970,10 @@ public class DependencyObject : DispatcherObject
     {
         var (baseValue, source) = GetUncoercedBaseValueInternal(dp);
         bool isAnimated = false;
-        bool isExpression = _bindings.ContainsKey(dp);
+        bool isExpression = _bindings?.ContainsKey(dp) == true;
 
         object? effectiveValue = baseValue;
-        if (_animatedValues.TryGetValue(dp, out var animated))
+        if (_animatedValues?.TryGetValue(dp, out var animated) == true)
         {
             effectiveValue = animated.CurrentValue;
             isAnimated = true;
@@ -901,22 +1019,22 @@ public class DependencyObject : DispatcherObject
 
     internal virtual (object? value, BaseValueSource source) GetUncoercedBaseValueInternal(DependencyProperty dp)
     {
-        if (_localValues.TryGetValue(dp, out var local))
+        if (_localValues?.TryGetValue(dp, out var local) == true)
             return (local, BaseValueSource.Local);
 
-        if (_templateTriggerValues.TryGetValue(dp, out var templateTrigger))
+        if (_templateTriggerValues?.TryGetValue(dp, out var templateTrigger) == true)
             return (templateTrigger, BaseValueSource.TemplateTrigger);
 
-        if (_styleTriggerValues.TryGetValue(dp, out var styleTrigger))
+        if (_styleTriggerValues?.TryGetValue(dp, out var styleTrigger) == true)
             return (styleTrigger, BaseValueSource.StyleTrigger);
 
-        if (_parentTemplateValues.TryGetValue(dp, out var parentTemplate))
+        if (_parentTemplateValues?.TryGetValue(dp, out var parentTemplate) == true)
             return (parentTemplate, BaseValueSource.ParentTemplate);
 
-        if (_styleSetterValues.TryGetValue(dp, out var styleSetter))
+        if (_styleSetterValues?.TryGetValue(dp, out var styleSetter) == true)
             return (styleSetter, BaseValueSource.Style);
 
-        if (_currentValues.TryGetValue(dp, out var current))
+        if (_currentValues?.TryGetValue(dp, out var current) == true)
             return current;
 
         // GetEffectiveDefaultValue (not the raw metadata DefaultValue) guarantees a non-nullable
@@ -928,7 +1046,7 @@ public class DependencyObject : DispatcherObject
     private ValueState GetBaseValueState(DependencyProperty dp, bool forceCoerce = false)
     {
         var (baseValue, source) = GetUncoercedBaseValueInternal(dp);
-        bool isExpression = _bindings.ContainsKey(dp);
+        bool isExpression = _bindings?.ContainsKey(dp) == true;
         object? effectiveValue = baseValue;
         bool isCoerced = false;
         PropertyMetadata metadata = dp.GetMetadata(GetType());
@@ -966,20 +1084,19 @@ public class DependencyObject : DispatcherObject
     private void MutateValue(DependencyProperty dp, ValueMutation mutateCore, bool notifyBinding, bool allowAutoTransition)
     {
         ArgumentNullException.ThrowIfNull(dp);
-        ArgumentNullException.ThrowIfNull(mutateCore);
 
         if (allowAutoTransition && TryMutateValueWithAutomaticTransition(dp, mutateCore, notifyBinding))
             return;
 
         var oldValue = GetValue(dp);
-        if (!mutateCore())
+        if (!mutateCore.Apply(this, dp))
             return;
 
         var newValue = GetValue(dp);
         if (!Equals(oldValue, newValue))
         {
             OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
-            if (notifyBinding && _bindings.TryGetValue(dp, out var binding))
+            if (notifyBinding && _bindings?.TryGetValue(dp, out var binding) == true)
             {
                 binding.UpdateSource();
             }
@@ -1001,7 +1118,7 @@ public class DependencyObject : DispatcherObject
 
         SetAnimatedValue(dp, oldDisplayedValue, holdEndValue: false);
 
-        if (!mutateCore())
+        if (!mutateCore.Apply(this, dp))
         {
             if (!hadAutomaticTransition)
             {
@@ -1029,7 +1146,7 @@ public class DependencyObject : DispatcherObject
         }
         else if (uiElement.TryStartAutomaticTransition(dp, oldDisplayedValue, newBaseValue))
         {
-            if (notifyBinding && _bindings.TryGetValue(dp, out var binding))
+            if (notifyBinding && _bindings?.TryGetValue(dp, out var binding) == true)
             {
                 binding.UpdateSource();
             }
@@ -1042,7 +1159,7 @@ public class DependencyObject : DispatcherObject
             ClearAnimatedValue(dp);
         }
 
-        if (notifyBinding && _bindings.TryGetValue(dp, out var fallbackBinding))
+        if (notifyBinding && _bindings?.TryGetValue(dp, out var fallbackBinding) == true)
         {
             fallbackBinding.UpdateSource();
         }
@@ -1066,15 +1183,15 @@ public class DependencyObject : DispatcherObject
             return;
         }
 
-        if (_currentValues.TryGetValue(dp, out var current) && current.source == BaseValueSource.Local)
+        if (_currentValues?.TryGetValue(dp, out var current) == true && current.source == BaseValueSource.Local)
         {
-            _currentValues.Remove(dp);
+            RemoveStoredValue(ref _currentValues, dp);
         }
 
-        _localValues[dp] = value;
+        (_localValues ??= new())[dp] = value;
     }
 
-    private bool ClearLocalValueCore(DependencyProperty dp) => _localValues.Remove(dp);
+    private bool ClearLocalValueCore(DependencyProperty dp) => RemoveStoredValue(ref _localValues, dp);
 
     // A null can never be the effective value of a non-nullable value-type dependency property:
     // the generated CLR accessor unboxes it (e.g. (Thickness)GetValue(BorderThicknessProperty)) and
@@ -1102,24 +1219,24 @@ public class DependencyObject : DispatcherObject
         }
 
         var mappedSource = MapLayerValueSource(source);
-        if (_currentValues.TryGetValue(dp, out var current) && current.source == mappedSource)
+        if (_currentValues?.TryGetValue(dp, out var current) == true && current.source == mappedSource)
         {
-            _currentValues.Remove(dp);
+            RemoveStoredValue(ref _currentValues, dp);
         }
 
         switch (source)
         {
             case LayerValueSource.ParentTemplate:
-                _parentTemplateValues[dp] = value;
+                (_parentTemplateValues ??= new())[dp] = value;
                 break;
             case LayerValueSource.StyleTrigger:
-                _styleTriggerValues[dp] = value;
+                (_styleTriggerValues ??= new())[dp] = value;
                 break;
             case LayerValueSource.TemplateTrigger:
-                _templateTriggerValues[dp] = value;
+                (_templateTriggerValues ??= new())[dp] = value;
                 break;
             case LayerValueSource.StyleSetter:
-                _styleSetterValues[dp] = value;
+                (_styleSetterValues ??= new())[dp] = value;
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(source), source, null);
@@ -1130,12 +1247,26 @@ public class DependencyObject : DispatcherObject
     {
         return source switch
         {
-            LayerValueSource.ParentTemplate => _parentTemplateValues.Remove(dp),
-            LayerValueSource.StyleTrigger => _styleTriggerValues.Remove(dp),
-            LayerValueSource.TemplateTrigger => _templateTriggerValues.Remove(dp),
-            LayerValueSource.StyleSetter => _styleSetterValues.Remove(dp),
+            LayerValueSource.ParentTemplate => RemoveStoredValue(ref _parentTemplateValues, dp),
+            LayerValueSource.StyleTrigger => RemoveStoredValue(ref _styleTriggerValues, dp),
+            LayerValueSource.TemplateTrigger => RemoveStoredValue(ref _templateTriggerValues, dp),
+            LayerValueSource.StyleSetter => RemoveStoredValue(ref _styleSetterValues, dp),
             _ => throw new ArgumentOutOfRangeException(nameof(source), source, null)
         };
+    }
+
+    private static bool RemoveStoredValue<TValue>(
+        ref Dictionary<DependencyProperty, TValue>? values,
+        DependencyProperty dp)
+    {
+        var existing = values;
+        if (existing is null || !existing.Remove(dp))
+            return false;
+
+        if (existing.Count == 0 && ReferenceEquals(values, existing))
+            values = null;
+
+        return true;
     }
 
     private static BaseValueSource MapLayerValueSource(LayerValueSource source) =>
@@ -1157,7 +1288,7 @@ public class DependencyObject : DispatcherObject
     // Transform…) 的属性几乎都经 CLR 包装器 SetValue 落到 _localValues，因此 base 克隆
     // 枚举 _localValues 即与 WPF 行为一致。返回 (dp, 原始 base 值) 包含显式 null。
     internal KeyValuePair<DependencyProperty, object?>[] GetLocalValueEntriesInternal()
-        => _localValues.ToArray();
+        => _localValues?.ToArray() ?? Array.Empty<KeyValuePair<DependencyProperty, object?>>();
 
     // CloneCurrentValue / FreezeCore 需要"所有高于默认值的有效属性"集合，对应 WPF 的
     // EffectiveValues 数组（不含纯默认值）。排除纯 Inherited 值，避免把继承值烤进克隆体
@@ -1165,27 +1296,36 @@ public class DependencyObject : DispatcherObject
     internal DependencyProperty[] GetEffectiveSetPropertiesInternal()
     {
         var set = new HashSet<DependencyProperty>();
-        foreach (var k in _localValues.Keys) set.Add(k);
-        foreach (var k in _parentTemplateValues.Keys) set.Add(k);
-        foreach (var k in _styleTriggerValues.Keys) set.Add(k);
-        foreach (var k in _templateTriggerValues.Keys) set.Add(k);
-        foreach (var k in _styleSetterValues.Keys) set.Add(k);
-        foreach (var kv in _currentValues)
+        if (_localValues is not null)
+            foreach (var k in _localValues.Keys) set.Add(k);
+        if (_parentTemplateValues is not null)
+            foreach (var k in _parentTemplateValues.Keys) set.Add(k);
+        if (_styleTriggerValues is not null)
+            foreach (var k in _styleTriggerValues.Keys) set.Add(k);
+        if (_templateTriggerValues is not null)
+            foreach (var k in _templateTriggerValues.Keys) set.Add(k);
+        if (_styleSetterValues is not null)
+            foreach (var k in _styleSetterValues.Keys) set.Add(k);
+        if (_currentValues is not null)
         {
-            if (kv.Value.source != BaseValueSource.Inherited)
-                set.Add(kv.Key);
+            foreach (var kv in _currentValues)
+            {
+                if (kv.Value.source != BaseValueSource.Inherited)
+                    set.Add(kv.Key);
+            }
         }
-        foreach (var k in _animatedValues.Keys) set.Add(k);
+        if (_animatedValues is not null)
+            foreach (var k in _animatedValues.Keys) set.Add(k);
         var result = new DependencyProperty[set.Count];
         set.CopyTo(result);
         return result;
     }
 
     // True 当该属性绑定了表达式（WPF 中表达式不可冻结、且 base 克隆需特殊复制）。
-    internal bool HasBindingInternal(DependencyProperty dp) => _bindings.ContainsKey(dp);
+    internal bool HasBindingInternal(DependencyProperty dp) => _bindings?.ContainsKey(dp) == true;
 
     internal IReadOnlyCollection<BindingExpressionBase> GetBindingExpressionsInternal() =>
-        _bindings.Values.ToArray();
+        _bindings?.Values.ToArray() ?? Array.Empty<BindingExpressionBase>();
 
     /// <summary>
     /// 值写入守卫钩子。基类不封闭；Freezable 冻结后重写为抛异常，使属性系统层面（而非

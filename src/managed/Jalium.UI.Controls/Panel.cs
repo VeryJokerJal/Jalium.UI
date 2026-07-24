@@ -131,14 +131,42 @@ public abstract class Panel : FrameworkElement
 
     private void EnsureZOrderMap()
     {
-        if (!_zOrderDirty && _zOrderMap != null && _zOrderMap.Length == Children.Count)
+        if (!_zOrderDirty && (_zOrderMap == null || _zOrderMap.Length == Children.Count))
             return;
 
         try
         {
             var children = Children;
             var count = children.Count;
-            var map = new int[count];
+
+            // Child order is already the stable Z-order whenever ZIndex values are
+            // nondecreasing. This is by far the most common case (all values are zero),
+            // so avoid allocating sorting buffers for every panel in the visual tree.
+            var previousZIndex = int.MinValue;
+            var requiresSort = false;
+            for (int i = 0; i < count; i++)
+            {
+                var zIndex = GetZIndex(children[i]);
+                if (zIndex < previousZIndex)
+                {
+                    requiresSort = true;
+                    break;
+                }
+
+                previousZIndex = zIndex;
+            }
+
+            if (!requiresSort)
+            {
+                _zOrderMap = null;
+                _zOrderDirty = false;
+                return;
+            }
+
+            if (_zOrderMap == null || _zOrderMap.Length != count)
+                _zOrderMap = new int[count];
+
+            var map = _zOrderMap;
 
             // Pre-fetch all ZIndex values to avoid repeated DP reads during sort
             if (_zIndexValues == null || _zIndexValues.Length < count)
@@ -158,7 +186,6 @@ public abstract class Panel : FrameworkElement
                 return za != zb ? za.CompareTo(zb) : a.CompareTo(b);
             });
 
-            _zOrderMap = map;
             _zOrderDirty = false;
         }
         catch (ArgumentOutOfRangeException)
@@ -181,7 +208,10 @@ public abstract class Panel : FrameworkElement
 
         EnsureZOrderMap();
 
-        var map = _zOrderMap!;
+        var map = _zOrderMap;
+        if (map == null)
+            return (uint)index < (uint)children.Count ? children[index] : null;
+
         if ((uint)index >= (uint)map.Length)
             return null;
 
@@ -527,12 +557,13 @@ public class UIElementCollection : System.Collections.IList
     /// </summary>
     public virtual void Clear()
     {
-        foreach (var item in _items)
+        for (int i = _items.Count - 1; i >= 0; i--)
         {
+            var item = _items[i];
+            _items.RemoveAt(i);
             RemoveVisualChild(item);
             ClearLogicalParent(item);
         }
-        _items.Clear();
         // WPF parity: once the children have been detached en masse, let a virtualizing panel
         // drop its realized bookkeeping. External Children.Clear() callers (ItemsControl
         // RefreshItems, fallback teardown, app code) would otherwise leave _realizedContainers

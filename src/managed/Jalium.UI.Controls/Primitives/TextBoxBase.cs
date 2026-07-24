@@ -2198,6 +2198,11 @@ public abstract class TextBoxBase : Control
 
             Focus();
 
+            // Requesting on every press (not just focus change) re-shows the
+            // system soft keyboard after the user dismissed it with Back while
+            // this editor kept focus. No-op off Android.
+            FindHostWindow()?.EnsureAndroidSoftKeyboard();
+
             var position = e.GetPosition(this);
             var now = DateTime.Now;
 

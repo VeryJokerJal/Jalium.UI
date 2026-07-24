@@ -10,7 +10,7 @@ namespace Jalium.UI.Media.Media3D;
 public abstract class Visual3D : DependencyObject, IAnimatable
 {
     private readonly Visual3DCollection _children;
-    private readonly Dictionary<DependencyProperty, AnimationClock> _animationClocks = new();
+    private Dictionary<DependencyProperty, AnimationClock>? _animationClocks;
     private DependencyObject? _visual3DParent;
     private Model3D? _visual3DModel;
 
@@ -32,7 +32,7 @@ public abstract class Visual3D : DependencyObject, IAnimatable
         set => SetValue(TransformProperty, value);
     }
 
-    public bool HasAnimatedProperties => _animationClocks.Count != 0;
+    public bool HasAnimatedProperties => _animationClocks?.Count > 0;
 
     protected Model3D? Visual3DModel
     {
@@ -180,7 +180,8 @@ public abstract class Visual3D : DependencyObject, IAnimatable
 
         if (clock is null)
         {
-            _animationClocks.Remove(dp);
+            if (_animationClocks is { } clocks && clocks.Remove(dp) && clocks.Count == 0)
+                _animationClocks = null;
             return;
         }
 
@@ -195,7 +196,7 @@ public abstract class Visual3D : DependencyObject, IAnimatable
             throw new ArgumentException("The animation does not target the dependency property's value type.", nameof(clock));
         }
 
-        _animationClocks[dp] = clock;
+        (_animationClocks ??= new())[dp] = clock;
         if (!clock.IsRunning)
         {
             clock.Begin();

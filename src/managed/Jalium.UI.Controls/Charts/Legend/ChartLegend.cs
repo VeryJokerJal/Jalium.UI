@@ -158,9 +158,11 @@ public class ChartLegend : Control
             totalHeight = maxLineHeight;
         }
 
+        // Negative Padding is legal; the Size constructor is not — clamp at the
+        // summation sink.
         return new Size(
-            totalWidth + Padding.Left + Padding.Right,
-            totalHeight + Padding.Top + Padding.Bottom);
+            Math.Max(0, totalWidth + Padding.Left + Padding.Right),
+            Math.Max(0, totalHeight + Padding.Top + Padding.Bottom));
     }
 
     #endregion

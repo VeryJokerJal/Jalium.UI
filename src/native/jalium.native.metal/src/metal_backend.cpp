@@ -61,7 +61,9 @@ JaliumResult MetalTextFormat::MeasureText(
     CGFloat descent = CTFontGetDescent(font);
     CGFloat leading = CTFontGetLeading(font);
 
-    metrics->width = (float)suggestedSize.width;
+    const float suggestedWidth = (float)suggestedSize.width;
+    metrics->width = suggestedWidth;
+    metrics->widthIncludingTrailingWhitespace = suggestedWidth;
     metrics->height = (float)suggestedSize.height;
     metrics->lineHeight = (float)(ascent + descent + leading);
     metrics->baseline = (float)ascent;
@@ -89,6 +91,7 @@ JaliumResult MetalTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     CGFloat leading = CTFontGetLeading(font);
 
     metrics->width = 0;
+    metrics->widthIncludingTrailingWhitespace = 0;
     metrics->height = 0;
     metrics->lineHeight = (float)(ascent + descent + leading);
     metrics->baseline = (float)ascent;

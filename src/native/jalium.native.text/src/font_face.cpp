@@ -14,7 +14,11 @@ using font::SfntTables;
 static constexpr uint16_t kFsSelUseTypoMetrics = 0x0080;
 
 std::unique_ptr<FontFace> FontFace::Parse(std::vector<uint8_t> bytes, int faceIndex) {
-    if (bytes.size() < 12) return nullptr;
+    return Parse(std::make_shared<const std::vector<uint8_t>>(std::move(bytes)), faceIndex);
+}
+
+std::unique_ptr<FontFace> FontFace::Parse(std::shared_ptr<const std::vector<uint8_t>> bytes, int faceIndex) {
+    if (!bytes || bytes->size() < 12) return nullptr;
     auto face = std::unique_ptr<FontFace>(new FontFace());
     face->bytes_ = std::move(bytes);
     if (!face->ParseInternal(faceIndex) || !face->valid_) return nullptr;
@@ -25,7 +29,7 @@ FontFace::~FontFace() = default;
 
 bool FontFace::ParseInternal(int faceIndex) {
     faceIndex_ = faceIndex;
-    ByteReader file(bytes_.data(), bytes_.size());
+    ByteReader file(bytes_->data(), bytes_->size());
     if (!tables_.Parse(file, faceIndex)) return false;
 
     ByteReader head = tables_.Table(font::kTag_head);
@@ -53,7 +57,8 @@ bool FontFace::ParseInternal(int faceIndex) {
         if (c->Parse(cmapTable)) cmap_ = std::move(c);
     }
 
-    // Outline source: glyf (TrueType) or CFF. Absence leaves GetGlyphContours a no-op.
+    // Outline source: glyf (TrueType), CFF, or CFF2 (variable fonts, rendered
+    // at the default instance — Android 16 ships NotoSansCJK as a CFF2 OTC).
     if (tables_.outlineFormat == font::OutlineFormat::TrueType) {
         ByteReader glyfT = tables_.Table(font::kTag_glyf);
         ByteReader locaT = tables_.Table(font::kTag_loca);
@@ -63,7 +68,19 @@ bool FontFace::ParseInternal(int faceIndex) {
         ByteReader cffT = tables_.Table(font::kTag_CFF);
         auto p = std::make_unique<font::CffFontProgram>();
         if (p->Parse(cffT, numGlyphs_)) cff_ = std::move(p);
+    } else if (tables_.outlineFormat == font::OutlineFormat::CFF2) {
+        ByteReader cff2T = tables_.Table(font::kTag_CFF2);
+        auto p = std::make_unique<font::CffFontProgram>();
+        if (p->Parse(cff2T, numGlyphs_, /*isCff2*/ true)) cff_ = std::move(p);
     }
+
+    // A face with no outline source and no color-bitmap tables can never draw
+    // anything, yet its cmap would still win fallback selection (which checks
+    // coverage only) and every cluster mapped to it would render blank. Fail
+    // the parse so face creation returns nullptr and selection moves to the
+    // next candidate. CBDT/CBLC (and COLR) faces stay valid: the rasterizer
+    // serves those from color records without outlines.
+    if (!glyf_ && !cff_ && !HasColorTables()) return false;
 
     valid_ = true;
     return true;

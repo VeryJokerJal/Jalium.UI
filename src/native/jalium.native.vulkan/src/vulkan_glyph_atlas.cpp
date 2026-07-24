@@ -158,6 +158,54 @@ static void ResampleBgraNearestBox(const uint8_t* src, uint32_t srcW, uint32_t s
     }
 }
 
+// DirectWrite can grid-fit a heavily squeezed small glyph to a single opaque
+// column. Enhanced contrast cannot make that column look wider because there
+// is no neighbouring coverage to enhance. Preserve a fractional amount of
+// adjacent coverage inside the glyph's existing bounds so paired stems (U/H,
+// CJK verticals) do not collapse, without changing advances or atlas geometry.
+static void PreserveSqueezedStemCoverage(
+    std::vector<uint8_t>& alpha,
+    int width,
+    int height,
+    size_t channels,
+    float horizontalPpem,
+    float horizontalAspect)
+{
+    if (width < 3 || height <= 0 || channels == 0 ||
+        horizontalAspect >= 1.0f || horizontalPpem >= 16.0f) {
+        return;
+    }
+
+    const float compression = std::clamp(1.0f - horizontalAspect, 0.0f, 1.0f);
+    const float smallText = std::clamp(
+        (16.0f - horizontalPpem) / 8.0f, 0.0f, 1.0f);
+    const float spread = std::min(0.35f, compression * smallText);
+    if (spread < 0.04f) {
+        return;
+    }
+
+    const std::vector<uint8_t> source = alpha;
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            for (size_t channel = 0; channel < channels; ++channel) {
+                const size_t index =
+                    ((size_t)y * (size_t)width + (size_t)x) * channels + channel;
+                uint8_t neighbour = 0;
+                if (x > 0) {
+                    neighbour = source[index - channels];
+                }
+                if (x + 1 < width) {
+                    neighbour = std::max(
+                        neighbour, source[index + channels]);
+                }
+                const uint8_t preserved = (uint8_t)std::lround(
+                    (float)neighbour * spread);
+                alpha[index] = std::max(source[index], preserved);
+            }
+        }
+    }
+}
+
 // Copies a top-down 32bpp BGRA region out of a GDI memory DC (used by the GDI
 // bitmap-render-target fallback path in RasterizeGlyph). Returns false on any
 // GDI failure — the caller then drops back to leaving the glyph entry invalid.
@@ -656,6 +704,17 @@ bool VulkanGlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
     glyphRun.glyphCount = 1;
     glyphRun.glyphIndices = &key.glyphIndex;
 
+    // key.fontSize is the FINAL vertical ppem. Keep Y at identity and let
+    // the matrix carry only the X:Y aspect ratio. Hinting at the final ppem
+    // avoids magnifying one-pixel CJK ink-box differences and preserves
+    // compressed Latin stems.
+    const float glyphAspectX = key.scaleXQ /
+        (float)std::max<uint8_t>(key.scaleYQ, 1);
+    const DWRITE_MATRIX glyphXform {
+        glyphAspectX, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f
+    };
+    const bool hasGlyphXform = key.scaleXQ != key.scaleYQ;
+
     // ── Primary path: IDWriteGlyphRunAnalysis ──
     // Use CLEARTYPE_3x1 alpha texture for ClearType mode, ALIASED_1x1 for
     // Grayscale / Aliased. The alpha texture format dictates whether DirectWrite
@@ -708,7 +767,7 @@ bool VulkanGlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
             HRESULT recHr = fontFace3->GetRecommendedRenderingMode(
                 (float)key.fontSize,
                 96.0f, 96.0f,                         // pixelsPerDip = 1.0
-                nullptr,                              // no transform
+                hasGlyphXform ? &glyphXform : nullptr,
                 FALSE,                                // not sideways
                 DWRITE_OUTLINE_THRESHOLD_ANTIALIASED,
                 DWRITE_MEASURING_MODE_NATURAL,
@@ -745,15 +804,6 @@ bool VulkanGlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
         const size_t bytesPerPixel = grayscale ? 1u : 3u;
 
         Microsoft::WRL::ComPtr<IDWriteGlyphRunAnalysis> analysis;
-        // Per-axis transform (liquid-glass deform etc.): rasterize the glyph
-        // ALREADY-deformed (scaleX wide, scaleY tall) so it stays crisp displayed
-        // 1:1 — no point-minification of an isotropic atlas erasing thin stems
-        // (d->c, r->l). 8/8 == 1.0x -> identity -> nullptr (normal text path).
-        const DWRITE_MATRIX glyphXform {
-            key.scaleXQ / (float)kGlyphScaleQuant, 0.0f, 0.0f, key.scaleYQ / (float)kGlyphScaleQuant, 0.0f, 0.0f
-        };
-        const bool hasGlyphXform = (key.scaleXQ != (uint8_t)kGlyphScaleQuant ||
-                                    key.scaleYQ != (uint8_t)kGlyphScaleQuant);
         HRESULT hr = useGdiFallback ? E_FAIL : dwriteFactory3_->CreateGlyphRunAnalysis(
             &glyphRun,
             hasGlyphXform ? &glyphXform : nullptr,
@@ -782,6 +832,14 @@ bool VulkanGlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
             hr = analysis->CreateAlphaTexture(textureType,
                 &bounds, alphaValues.data(), bufferSize);
             if (FAILED(hr)) { entry.valid = false; return false; }
+
+            PreserveSqueezedStemCoverage(
+                alphaValues,
+                glyphW,
+                glyphH,
+                bytesPerPixel,
+                key.fontSize * glyphAspectX,
+                glyphAspectX);
 
             uint16_t atlasX, atlasY;
             if (!AllocateAtlasRect((uint16_t)glyphW, (uint16_t)glyphH, atlasX, atlasY)) {
@@ -840,7 +898,9 @@ bool VulkanGlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
     key.fontFace->GetMetrics(&fontMetrics);
 
     float scale = (float)key.fontSize / fontMetrics.designUnitsPerEm;
-    int glyphW = (int)std::ceil((metrics.advanceWidth - metrics.leftSideBearing - metrics.rightSideBearing) * scale) + 4;
+    int glyphW = (int)std::ceil(
+        (metrics.advanceWidth - metrics.leftSideBearing - metrics.rightSideBearing) *
+        scale * glyphAspectX) + 4;
     int glyphH = (int)std::ceil((metrics.advanceHeight - metrics.topSideBearing - metrics.bottomSideBearing) * scale) + 2;
 
     if (glyphW <= 0 || glyphH <= 0 || glyphW > 512 || glyphH > 512) {
@@ -859,8 +919,13 @@ bool VulkanGlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
     RECT clearRect = { 0, 0, glyphW, glyphH };
     FillRect(hdc, &clearRect, (HBRUSH)GetStockObject(BLACK_BRUSH));
 
+    // Explicit Aliased text uses this GDI path. Keep it on the same
+    // aspect-only transform and cache-key semantics as the analysis path.
+    bitmapRenderTarget_->SetCurrentTransform(hasGlyphXform ? &glyphXform : nullptr);
+
     float subpixelOffset = key.subpixelX / 8.0f;  // 1/8-pixel buckets (match primary path)
-    float originX = -(metrics.leftSideBearing * scale) + 2 + subpixelOffset;
+    float originX = -(metrics.leftSideBearing * scale) +
+                    (2.0f + subpixelOffset) / glyphAspectX;
     float originY = (metrics.verticalOriginY - metrics.topSideBearing) * scale + 1;
 
     bitmapRenderTarget_->DrawGlyphRun(originX, originY, DWRITE_MEASURING_MODE_NATURAL,
@@ -898,7 +963,8 @@ bool VulkanGlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
     entry.y = atlasY;
     entry.w = (uint16_t)glyphW;
     entry.h = (uint16_t)glyphH;
-    entry.bearingX = (int16_t)std::round(metrics.leftSideBearing * scale - 2);
+    entry.bearingX = (int16_t)std::round(
+        metrics.leftSideBearing * scale * glyphAspectX - 2);
     entry.bearingY = (int16_t)std::round((metrics.verticalOriginY - metrics.topSideBearing) * scale + 1);
     entry.valid = true;
 
@@ -957,6 +1023,12 @@ bool VulkanGlyphAtlas::RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entr
     // the emitted glyphX — using /4.0f here shifts colour/emoji glyphs in
     // buckets 4..7 a full pixel right of the surrounding monochrome text.
     const float subpixelOffset = key.subpixelX / 8.0f;
+    const float glyphAspectX = key.scaleXQ /
+        (float)std::max<uint8_t>(key.scaleYQ, 1);
+    const DWRITE_MATRIX glyphXform {
+        glyphAspectX, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f
+    };
+    const bool hasGlyphXform = key.scaleXQ != key.scaleYQ;
 
     // Translate into per-layer sub-runs. DWRITE_E_NOCOLOR signals "this
     // specific glyph has no colour layers" — common when a colour font holds
@@ -1107,7 +1179,7 @@ bool VulkanGlyphAtlas::RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entr
             Microsoft::WRL::ComPtr<IDWriteGlyphRunAnalysis> analysis;
             if (FAILED(dwriteFactory4_->CreateGlyphRunAnalysis(
                     &layer->glyphRun,
-                    nullptr,
+                    hasGlyphXform ? &glyphXform : nullptr,
                     DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
                     DWRITE_MEASURING_MODE_NATURAL,
                     DWRITE_GRID_FIT_MODE_DEFAULT,
@@ -1227,7 +1299,8 @@ bool VulkanGlyphAtlas::RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entr
             // Scale to the requested em (the strike's ppem rarely matches the
             // current font size exactly). Aspect-preserving by definition.
             const float scale = (float)key.fontSize / (float)imgData.pixelsPerEm;
-            uint32_t dstW = std::max<uint32_t>(1, (uint32_t)std::round(srcW * scale));
+            uint32_t dstW = std::max<uint32_t>(
+                1, (uint32_t)std::round(srcW * scale * glyphAspectX));
             uint32_t dstH = std::max<uint32_t>(1, (uint32_t)std::round(srcH * scale));
             if ((int)dstW > canvasSize) dstW = (uint32_t)canvasSize;
             if ((int)dstH > canvasSize) dstH = (uint32_t)canvasSize;
@@ -1244,9 +1317,11 @@ bool VulkanGlyphAtlas::RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entr
             // Position the scaled bitmap. horizontalLeftOrigin is in strike
             // pixel coordinates from the baseline; scale it down to the dst
             // em so the bitmap sits the same way at any font size.
-            const float baseOrigX = (float)originX_px + layer->baselineOriginX;
+            const float baseOrigX = (float)originX_px +
+                                    layer->baselineOriginX * glyphAspectX;
             const float baseOrigY = (float)originY_px + layer->baselineOriginY;
-            const int leftX = (int)std::round(baseOrigX + imgData.horizontalLeftOrigin.x * scale);
+            const int leftX = (int)std::round(
+                baseOrigX + imgData.horizontalLeftOrigin.x * scale * glyphAspectX);
             const int topY  = (int)std::round(baseOrigY + imgData.horizontalLeftOrigin.y * scale);
 
             for (uint32_t yy = 0; yy < dstH; ++yy) {
@@ -1389,16 +1464,11 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
 {
     if (!layout || !initialized_) return 0;
 
-    // Quantize per-axis transform scale to 1/kGlyphScaleQuant steps (value ==
-    // kGlyphScaleQuant means 1.0x == identity raster == normal-text path). The
-    // glyph is rasterized at the FINAL deformed pixel size via a DWRITE_MATRIX
-    // (e.g. a liquid-glass squeeze scaleX≈0.63 -> a correctly-thin CRISP stem;
-    // stretch scaleY≈2.17 -> tall crisp glyph), instead of point-minifying an
-    // isotropic atlas (which dropped thin stems: d->c, r->l). Quantization bounds
-    // the cache to a few buckets during a smooth drag; AddText post-scales the
-    // quad by the ACTUAL scale, so the in-bucket residual is a small magnification
-    // (finer quant -> smaller residual -> less thin-stroke shimmer during motion),
-    // never an erased stroke. Near-1.0 scales fold to identity -> normal path.
+    // Quantize the final per-axis transform to 1/kGlyphScaleQuant steps. The Y
+    // bucket is folded into fontEmSize below, so DirectWrite selects and hints
+    // at the FINAL screen ppem. The glyph matrix then carries only X:Y, keeping
+    // anisotropic deformation without stretching small-size hinting decisions.
+    // The two original buckets stay in GlyphKey so their aspect ratio is exact.
     if (!(scaleX > 0.0f)) scaleX = 1.0f;   // NaN / degenerate guard
     if (!(scaleY > 0.0f)) scaleY = 1.0f;
     auto quantScale = [](float s) -> uint8_t {
@@ -1570,23 +1640,30 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
 
     for (auto& run : collector.runs) {
         float penX = run.baselineX;
-        // Rasterize at the BASE physical em = round(fontSize * dpiScale). The
-        // transform scale is NOT folded into the em — instead the per-axis
-        // deformation (sxR, syR) is applied as a DWRITE_MATRIX inside
-        // RasterizeGlyph, so the cached bitmap is already the FINAL deformed shape
-        // and stays crisp when displayed 1:1 (point sampling is exact at 1:1).
-        // This is what fixes the anisotropic squeeze dropping thin stems (d->c):
-        // a 0.63x-wide glyph is rasterized correctly thin, not minified away.
-        // Advances/penX stay in base layout units; the quad geometry is divided by
-        // the per-axis raster scale and AddText re-applies the actual transform.
+        // Quantize the ordinary DPI-scaled ppem exactly as the identity path
+        // has always done, then fold the vertical deformation into the em.
+        // RasterizeGlyph uses scaleXQ/scaleYQ only as a horizontal aspect
+        // matrix, so grid fitting sees the final vertical pixel size.
         float scaledSize = run.fontSize * dpiScale_;
         if (scaledSize <= 0) continue;
-        uint16_t fontSize = (uint16_t)std::round(scaledSize);
-        if (fontSize < 1) fontSize = 1;
+        long basePpemLong = std::lround(scaledSize);
+        basePpemLong = std::clamp(basePpemLong, 1L, 65535L);
+        const uint16_t basePpem = (uint16_t)basePpemLong;
+
+        long finalPpemLong = std::lround(basePpem * syR);
+        finalPpemLong = std::clamp(finalPpemLong, 1L, 65535L);
+        const uint16_t fontSize = (uint16_t)finalPpemLong;
+
+        // Rounding final ppem slightly changes the effective Y scale. Derive
+        // both divisors from the exact cached raster so clean transforms map
+        // atlas texels to screen pixels without an avoidable resample.
+        const float rasterScaleY = fontSize / (float)basePpem;
+        const float glyphAspectX = scaleXQ / (float)scaleYQ;
+        const float rasterScaleX = rasterScaleY * glyphAspectX;
 
         float invDpi = 1.0f / dpiScale_;
-        float invRasterX = 1.0f / sxR;   // map deformed-X atlas geometry back to base-DIP
-        float invRasterY = 1.0f / syR;   // (AddText post-scales by the actual transform)
+        float invRasterX = 1.0f / rasterScaleX;
+        float invRasterY = 1.0f / rasterScaleY;
         const bool deformed = (scaleXQ != (uint8_t)kGlyphScaleQuant ||
                                scaleYQ != (uint8_t)kGlyphScaleQuant);
 
@@ -1623,7 +1700,9 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
             key.glyphIndex = run.glyphIndices[i];
             key.fontSize = fontSize;
             key.subpixelX = subpixelQuant;
-            key.scaleXQ = scaleXQ;   // per-axis deformation -> RasterizeGlyph DWRITE_MATRIX
+            // Y is folded into fontSize; RasterizeGlyph treats the two scale
+            // buckets as an X:Y aspect ratio.
+            key.scaleXQ = scaleXQ;
             key.scaleYQ = scaleYQ;
             // The effective AA + hinting modes are baked into the key so the
             // same glyph rasterized in ClearType for one element doesn't get
@@ -1651,11 +1730,9 @@ uint32_t VulkanGlyphAtlas::GenerateGlyphs(
             if (entry.valid && entry.w > 0 && entry.h > 0) {
                 // Position the glyph quad at the integer-pixel pen + bearing.
                 // The pen term is base-DIP (penX was shaped at run.fontSize);
-                // entry.* are the DEFORMED bitmap's physical px (rasterized via the
-                // per-axis DWRITE_MATRIX sxR/syR), so divide X by sxR and Y by syR
-                // to land the quad in base-DIP. AddText then post-scales the quad
-                // by the ACTUAL transform, reproducing the on-screen deformed size
-                // 1:1 against the already-deformed crisp bitmap.
+                // entry.* are the final-ppem bitmap's physical pixels. Divide
+                // them by the exact effective raster scales derived above to
+                // return to base-DIP; RenderText reapplies the actual transform.
                 // 1:1 text snaps the pen to the integer pixel grid (the sub-pixel
                 // phase is baked into the bitmap via subpixelX) for crisp stable
                 // text. Deformed text keeps the pen CONTINUOUS here: truncating in

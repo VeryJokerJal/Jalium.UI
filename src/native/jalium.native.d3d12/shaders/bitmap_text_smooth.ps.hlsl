@@ -49,9 +49,11 @@ PsOutput main(PsInput input)
     // Monochrome (ClearType / Grayscale) path — .rgb is per-channel coverage.
     float3 coverage = atlas.rgb;
 
-    // Contrast enhancement per channel (matches the point path).
-    float3 contrast = saturate(coverage * 1.2 - 0.1);
-    coverage = lerp(coverage, contrast, 0.3);
+    // Monotonic enhanced contrast (matches the point path).
+    // It strengthens partially covered edge pixels without erasing faint
+    // coverage, keeping compressed stems present during deformation.
+    coverage = saturate(coverage +
+        coverage * (1.0 - coverage) * 0.5);
 
     coverage *= clipCoverage;
     float maxCoverage = max(coverage.r, max(coverage.g, coverage.b));

@@ -494,14 +494,16 @@ public class FlowchartDiagram : ChartBase
             extraV += TitleFontSize + 8;
         }
 
+        // Negative PlotAreaMargin is legal; the Size constructor is not — clamp both
+        // summation sinks.
         if (_contentWidth <= 0 || _contentHeight <= 0)
         {
             // No nodes: still report the space needed for the title and margins so a titled
             // (but empty) diagram does not collapse to zero.
-            return new Size(extraH, extraV);
+            return new Size(Math.Max(0, extraH), Math.Max(0, extraV));
         }
 
-        return new Size(_contentWidth + extraH, _contentHeight + extraV);
+        return new Size(Math.Max(0, _contentWidth + extraH), Math.Max(0, _contentHeight + extraV));
     }
 
     #endregion

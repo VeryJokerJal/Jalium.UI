@@ -106,6 +106,8 @@ public partial class DevToolsWindow : Window
     // Toolbar state
     private bool _isPickerActive;
     private DevToolsUi.DevToolsButton? _pickerButton;
+    private DevToolsUi.DevToolsButton? _deleteButton;
+    private DevToolsUi.DevToolsButton? _undoDeleteButton;
 
     // ── Inspector flat virtualized list state ──
     private readonly BulkObservableCollection<InspectorRow> _rows = new();
@@ -340,8 +342,39 @@ public partial class DevToolsWindow : Window
         toolbar.Children.Add(DevToolsUi.Button("Collapse", () => CollapseAll(), icon: "⊖"));
         toolbar.Children.Add(DevToolsUi.VerticalDivider());
         toolbar.Children.Add(DevToolsUi.Button("Copy",     () => CopyElementInfo(), icon: "⧉"));
+        toolbar.Children.Add(DevToolsUi.VerticalDivider());
+        _deleteButton = DevToolsUi.Button("Delete", DeleteSelectedElement,
+            DevToolsUi.ButtonStyle.Danger, icon: "✕");
+        toolbar.Children.Add(_deleteButton);
+        _undoDeleteButton = DevToolsUi.Button("Undo", UndoDelete, icon: "↩");
+        toolbar.Children.Add(_undoDeleteButton);
+        UpdateMutationButtons();
 
         return DevToolsUi.Toolbar(toolbar);
+    }
+
+    private void DeleteSelectedElement()
+    {
+        if (_selectedVisual != null && CanDeleteElement(_selectedVisual, out _))
+            DeleteElement(_selectedVisual);
+    }
+
+    private void UpdateMutationButtons()
+    {
+        string reason = "Select a removable element";
+        bool canDelete = _selectedVisual != null && CanDeleteElement(_selectedVisual, out reason);
+        SetToolbarActionEnabled(_deleteButton, canDelete,
+            canDelete ? "Delete selected element (Delete)" : reason ?? "Select a removable element");
+        SetToolbarActionEnabled(_undoDeleteButton, _deleteRecord != null,
+            _deleteRecord == null ? "Nothing to restore" : $"Restore {_deleteRecord.Label} (Ctrl+Z)");
+    }
+
+    private static void SetToolbarActionEnabled(DevToolsUi.DevToolsButton? button, bool enabled, string toolTip)
+    {
+        if (button == null) return;
+        button.IsHitTestVisible = enabled;
+        button.Opacity = enabled ? 1.0 : 0.42;
+        button.ToolTip = toolTip;
     }
 
     private void OnRefreshClick(object sender, RoutedEventArgs e) => RefreshVisualTree();
@@ -744,6 +777,11 @@ public partial class DevToolsWindow : Window
             CloseDevTools();
             e.Handled = true;
         }
+        else if (e.Key == Key.Delete && _selectedVisual != null && CanDeleteElement(_selectedVisual, out _))
+        {
+            DeleteSelectedElement();
+            e.Handled = true;
+        }
         else if (e.IsControlDown)
         {
             switch (e.Key)
@@ -768,6 +806,13 @@ public partial class DevToolsWindow : Window
                 case Key.E:
                     if (e.IsShiftDown) CollapseAll(); else ExpandAll();
                     e.Handled = true;
+                    break;
+                case Key.Z:
+                    if (_deleteRecord != null)
+                    {
+                        UndoDelete();
+                        e.Handled = true;
+                    }
                     break;
             }
         }
@@ -1136,6 +1181,7 @@ public partial class DevToolsWindow : Window
             // expensive properties-panel rebuild + overlay update in that case.
             if (ReferenceEquals(row.Visual, _selectedVisual)) return;
             _selectedVisual = row.Visual;
+            UpdateMutationButtons();
             UpdatePropertiesPanel(row.Visual);
             _overlay?.HighlightElement(row.Visual as UIElement);
         }
@@ -1258,6 +1304,8 @@ public partial class DevToolsWindow : Window
             AddBool("IsEnabled", uiElement.IsEnabled, v => ForceSetValue(uiElement, UIElement.IsEnabledProperty, v));
             AddNum("Opacity", uiElement.Opacity, "F2", v => ForceSetValue(uiElement, UIElement.OpacityProperty, (double)v));
             AddBool("ClipToBounds", uiElement.ClipToBounds, v => uiElement.ClipToBounds = v);
+            AddEnum("ClipToBoundsEdges", uiElement.ClipToBoundsEdges,
+                v => uiElement.ClipToBoundsEdges = (ClipEdges)v);
             AddBool("Focusable", uiElement.Focusable, v => uiElement.Focusable = v);
             AddBool("IsMouseOver", uiElement.IsMouseOver);
             AddBool("IsKeyboardFocused", uiElement.IsKeyboardFocused);
@@ -4757,24 +4805,28 @@ public partial class DevToolsWindow : Window
         }
 
         RefreshVisualTree();
+        UpdateMutationButtons();
     }
 
     /// <summary>
     /// Restores the most-recently-deleted element and re-selects it. Invoked through
-    /// <see cref="Defer"/>. The undo slot is consumed whether or not the re-insertion
-    /// finds a valid slot, so a failed restore cannot loop.
+    /// <see cref="Defer"/>. The undo slot is consumed only after restoration succeeds;
+    /// a transient container failure therefore remains retryable instead of silently
+    /// discarding the user's only recovery action.
     /// </summary>
     private void UndoDelete()
     {
         var record = _deleteRecord;
-        _deleteRecord = null;
         if (record == null) return;
 
         UIElement? revealed = record.Restore();
+        _deleteRecord = null;
         RefreshVisualTree();
 
         if (revealed != null && revealed.VisualParent != null)
             RevealInInspector(revealed);
+
+        UpdateMutationButtons();
     }
 
     #endregion

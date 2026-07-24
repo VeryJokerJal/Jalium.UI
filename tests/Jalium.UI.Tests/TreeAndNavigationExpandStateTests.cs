@@ -39,7 +39,7 @@ public class TreeAndNavigationExpandStateTests
             item.ApplyTemplate();
 
             var itemsHost = GetPrivateField<FrameworkElement>(item, "_itemsHost");
-            var expanderBorder = GetPrivateField<Border>(item, "_expanderBorder");
+            var expanderBorder = GetPrivateField<FrameworkElement>(item, "_expanderBorder");
             var expanderArrow = GetPrivateField<Jalium.UI.Shapes.Path>(item, "_expanderArrow");
 
             Assert.NotNull(itemsHost);
@@ -71,7 +71,7 @@ public class TreeAndNavigationExpandStateTests
             item.Items.Add(new TreeViewItem { Header = "Child" });
 
             var itemsHost = GetPrivateField<FrameworkElement>(item, "_itemsHost");
-            var expanderBorder = GetPrivateField<Border>(item, "_expanderBorder");
+            var expanderBorder = GetPrivateField<FrameworkElement>(item, "_expanderBorder");
             var expanderArrow = GetPrivateField<Jalium.UI.Shapes.Path>(item, "_expanderArrow");
 
             Assert.NotNull(itemsHost);
@@ -504,7 +504,7 @@ public class TreeAndNavigationExpandStateTests
             Assert.NotNull(parentHeader);
             Assert.NotNull(childHeader);
 
-            childHeader!.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = childHeader });
+            childHeader!.SetIsMouseOver(true);
 
             Assert.Same(hoverBrush, childHeader.Background);
             Assert.NotSame(hoverBrush, parentHeader!.Background);
@@ -535,10 +535,10 @@ public class TreeAndNavigationExpandStateTests
             Assert.NotNull(header);
             Assert.Same(selectionBrush, header!.Background);
 
-            header.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = header });
+            header.SetIsMouseOver(true);
             Assert.Same(selectedHoverBrush, header.Background);
 
-            header.RaiseEvent(new MouseEventArgs(UIElement.MouseLeaveEvent) { Source = header });
+            header.SetIsMouseOver(false);
             Assert.Same(selectionBrush, header.Background);
         }
         finally

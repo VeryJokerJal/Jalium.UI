@@ -137,9 +137,9 @@ public class ToastNotificationTests
 
             Assert.False(toast.HasLocalValue(Control.PaddingProperty));
             Assert.False(toast.HasLocalValue(Control.CornerRadiusProperty));
-            Assert.Equal(12, toast.Padding.Left);
-            Assert.Equal(8, toast.Padding.Top);
-            Assert.Equal(8, toast.CornerRadius.TopLeft);
+            Assert.Equal(14, toast.Padding.Left);
+            Assert.Equal(10, toast.Padding.Top);
+            Assert.Equal(14, toast.CornerRadius.TopLeft);
         }
         finally
         {

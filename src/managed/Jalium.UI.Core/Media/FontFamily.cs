@@ -11,9 +11,9 @@ public sealed class FontFamily
 {
     private readonly string _source;
     private readonly Uri? _baseUri;
-    private readonly FamilyTypefaceCollection _typefaces;
-    private readonly FontFamilyMapCollection _familyMaps;
-    private readonly LanguageSpecificStringDictionary _familyNames;
+    private FamilyTypefaceCollection? _typefaces;
+    private FontFamilyMapCollection? _familyMaps;
+    private LanguageSpecificStringDictionary? _familyNames;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="FontFamily"/> class using the default font family.
@@ -46,9 +46,6 @@ public sealed class FontFamily
 
         _source = familyName ?? string.Empty;
         _baseUri = baseUri;
-        _typefaces = new FamilyTypefaceCollection();
-        _familyMaps = new FontFamilyMapCollection();
-        _familyNames = new LanguageSpecificStringDictionary();
     }
 
     /// <summary>
@@ -80,19 +77,26 @@ public sealed class FontFamily
     /// <summary>
     /// Gets the collection of typefaces that make up this font family.
     /// </summary>
-    public FamilyTypefaceCollection FamilyTypefaces => _typefaces;
+    public FamilyTypefaceCollection FamilyTypefaces => _typefaces ??= new FamilyTypefaceCollection();
 
     /// <summary>Gets the composite-font mappings associated with this family.</summary>
-    public FontFamilyMapCollection FamilyMaps => _familyMaps;
+    public FontFamilyMapCollection FamilyMaps => _familyMaps ??= new FontFamilyMapCollection();
 
     /// <summary>Gets the localized names associated with this family.</summary>
-    public LanguageSpecificStringDictionary FamilyNames => _familyNames;
+    public LanguageSpecificStringDictionary FamilyNames =>
+        _familyNames ??= new LanguageSpecificStringDictionary();
 
     /// <summary>Returns the typefaces represented by <see cref="FamilyTypefaces"/>.</summary>
     public ICollection<Typeface> GetTypefaces()
     {
-        var result = new List<Typeface>(_typefaces.Count);
-        foreach (FamilyTypeface familyTypeface in _typefaces)
+        var typefaces = _typefaces;
+        var result = new List<Typeface>(typefaces?.Count ?? 0);
+        if (typefaces is null)
+        {
+            return result;
+        }
+
+        foreach (FamilyTypeface familyTypeface in typefaces)
         {
             result.Add(new Typeface(this, familyTypeface.Style, familyTypeface.Weight, familyTypeface.Stretch));
         }

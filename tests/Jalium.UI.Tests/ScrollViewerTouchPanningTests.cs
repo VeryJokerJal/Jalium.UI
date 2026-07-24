@@ -111,6 +111,189 @@ public class ScrollViewerTouchPanningTests
         Assert.False(GetPrivateField<bool>(viewer, "_isPointerPanningActive"));
     }
 
+    [Fact]
+    public void MovePackets_BeforeFrame_ShouldAccumulateWithoutLosingDistance()
+    {
+        var viewer = CreateConfiguredViewer(verticalOffset: 300);
+        viewer.PanningMode = PanningMode.VerticalOnly;
+
+        viewer.RaiseEvent(CreatePointerDown(26, new Point(0, 100), timestamp: 0));
+        viewer.RaiseEvent(CreatePointerMove(26, new Point(0, 90), timestamp: 10));
+        viewer.RaiseEvent(CreatePointerMove(26, new Point(0, 70), timestamp: 20));
+        viewer.RaiseEvent(CreatePointerMove(26, new Point(0, 55), timestamp: 30));
+
+        Assert.Equal(300, viewer.VerticalOffset, precision: 3);
+        Assert.True(GetPrivateField<bool>(viewer, "_hasPendingPointerPanningDelta"));
+        Assert.Equal(45, GetPrivateField<double>(viewer, "_pendingPointerPanningVerticalDelta"), precision: 3);
+
+        viewer.RaiseEvent(CreatePointerUp(26, new Point(0, 55), timestamp: 40));
+
+        Assert.Equal(345, viewer.VerticalOffset, precision: 3);
+        Assert.False(GetPrivateField<bool>(viewer, "_hasPendingPointerPanningDelta"));
+    }
+
+    [Fact]
+    public void CompositionFrame_ShouldApplyAccumulatedDeltaOnlyOnce()
+    {
+        var viewer = CreateConfiguredViewer(verticalOffset: 300);
+        viewer.PanningMode = PanningMode.VerticalOnly;
+        int scrollChangedCount = 0;
+        viewer.ScrollChanged += (_, _) => scrollChangedCount++;
+
+        viewer.RaiseEvent(CreatePointerDown(27, new Point(0, 100), timestamp: 0));
+        viewer.RaiseEvent(CreatePointerMove(27, new Point(0, 90), timestamp: 10));
+        viewer.RaiseEvent(CreatePointerMove(27, new Point(0, 70), timestamp: 20));
+
+        Assert.Equal(0, scrollChangedCount);
+        InvokePrivate(viewer, "OnPointerPanningCoalesceTick", null, EventArgs.Empty);
+
+        Assert.Equal(330, viewer.VerticalOffset, precision: 3);
+        Assert.Equal(1, scrollChangedCount);
+
+        InvokePrivate(viewer, "OnPointerPanningCoalesceTick", null, EventArgs.Empty);
+
+        Assert.Equal(330, viewer.VerticalOffset, precision: 3);
+        Assert.Equal(1, scrollChangedCount);
+        viewer.RaiseEvent(CreatePointerUp(27, new Point(0, 70), timestamp: 30));
+    }
+
+    [Fact]
+    public void MoveVelocity_ShouldContinueUsingEachEventTimestamp()
+    {
+        var viewer = CreateConfiguredViewer(verticalOffset: 300);
+        viewer.PanningMode = PanningMode.VerticalOnly;
+
+        viewer.RaiseEvent(CreatePointerDown(28, new Point(0, 100), timestamp: 0));
+        viewer.RaiseEvent(CreatePointerMove(28, new Point(0, 90), timestamp: 10));
+        viewer.RaiseEvent(CreatePointerMove(28, new Point(0, 80), timestamp: 20));
+
+        Assert.Equal(-0.5775, GetPrivateField<double>(viewer, "_pointerPanningVelocityY"), precision: 4);
+        viewer.RaiseEvent(CreatePointerCancel(28, new Point(0, 80), timestamp: 30));
+    }
+
+    [Fact]
+    public void PointerCancel_ShouldDiscardPendingFrameDelta()
+    {
+        var viewer = CreateConfiguredViewer(verticalOffset: 300);
+        viewer.PanningMode = PanningMode.VerticalOnly;
+
+        viewer.RaiseEvent(CreatePointerDown(29, new Point(0, 100), timestamp: 0));
+        viewer.RaiseEvent(CreatePointerMove(29, new Point(0, 60), timestamp: 10));
+        viewer.RaiseEvent(CreatePointerCancel(29, new Point(0, 60), timestamp: 20));
+
+        Assert.False(GetPrivateField<bool>(viewer, "_hasPendingPointerPanningDelta"));
+        InvokePrivate(viewer, "OnPointerPanningCoalesceTick", null, EventArgs.Empty);
+        Assert.Equal(300, viewer.VerticalOffset, precision: 3);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NestedViewer_InnerConsumesMove_ReleaseOrCancelCleansBothCandidates(bool cancel)
+    {
+        var (outer, inner, source) = CreateNestedConfiguredViewers(
+            outerVerticalOffset: 300,
+            innerVerticalOffset: 300);
+        const uint pointerId = 30;
+
+        source.RaiseEvent(CreatePointerDown(pointerId, new Point(100, 100), timestamp: 0));
+        source.RaiseEvent(CreatePointerMove(pointerId, new Point(100, 70), timestamp: 10));
+
+        Assert.True(GetPrivateField<bool>(inner, "_isPointerPanningActive"));
+
+        if (cancel)
+        {
+            source.RaiseEvent(CreatePointerCancel(pointerId, new Point(100, 70), timestamp: 20));
+            Assert.Equal(300, inner.VerticalOffset, precision: 3);
+        }
+        else
+        {
+            source.RaiseEvent(CreatePointerUp(pointerId, new Point(100, 70), timestamp: 20));
+            Assert.True(inner.VerticalOffset > 300);
+        }
+
+        Assert.False(GetPrivateField<bool>(inner, "_isPointerPanningActive"));
+        Assert.False(GetPrivateField<bool>(outer, "_isPointerPanningActive"));
+        Assert.False(GetPrivateField<bool>(inner, "_hasPendingPointerPanningDelta"));
+        Assert.False(GetPrivateField<bool>(outer, "_hasPendingPointerPanningDelta"));
+        Assert.Equal(300, outer.VerticalOffset, precision: 3);
+    }
+
+    [Fact]
+    public void NestedViewer_InnerReachesBottom_ContinuedDragChainsToOuterWithoutInnerRubberBand()
+    {
+        var (outer, inner, source) = CreateNestedConfiguredViewers(
+            outerVerticalOffset: 300,
+            innerVerticalOffset: 790,
+            innerExtentHeight: 1000,
+            innerViewportHeight: 200);
+        const uint pointerId = 31;
+
+        source.RaiseEvent(CreatePointerDown(pointerId, new Point(100, 100), timestamp: 0));
+        source.RaiseEvent(CreatePointerMove(pointerId, new Point(100, 80), timestamp: 10));
+
+        // Model the display frame that commits the first packet at the inner boundary.
+        InvokePrivate(inner, "OnPointerPanningCoalesceTick", null, EventArgs.Empty);
+        Assert.Equal(inner.ScrollableHeight, inner.VerticalOffset, precision: 3);
+        Assert.Equal(0, GetPrivateField<double>(inner, "_overscrollY"), precision: 3);
+
+        source.RaiseEvent(CreatePointerMove(pointerId, new Point(100, 50), timestamp: 20));
+        source.RaiseEvent(CreatePointerUp(pointerId, new Point(100, 50), timestamp: 30));
+
+        Assert.Equal(inner.ScrollableHeight, inner.VerticalOffset, precision: 3);
+        Assert.Equal(0, GetPrivateField<double>(inner, "_overscrollY"), precision: 3);
+        Assert.True(outer.VerticalOffset > 300);
+        Assert.False(GetPrivateField<bool>(inner, "_isPointerPanningActive"));
+        Assert.False(GetPrivateField<bool>(outer, "_isPointerPanningActive"));
+    }
+
+    [Fact]
+    public void NestedViewer_OneMoveCrossesBoundary_RemainderScrollsOuter()
+    {
+        var (outer, inner, source) = CreateNestedConfiguredViewers(
+            outerVerticalOffset: 300,
+            innerVerticalOffset: 790,
+            innerExtentHeight: 1000,
+            innerViewportHeight: 200);
+        const uint pointerId = 33;
+
+        source.RaiseEvent(CreatePointerDown(pointerId, new Point(100, 100), timestamp: 0));
+        source.RaiseEvent(CreatePointerMove(pointerId, new Point(100, 50), timestamp: 10));
+        source.RaiseEvent(CreatePointerUp(pointerId, new Point(100, 50), timestamp: 20));
+
+        Assert.Equal(inner.ScrollableHeight, inner.VerticalOffset, precision: 3);
+        Assert.Equal(340, outer.VerticalOffset, precision: 3);
+        Assert.Equal(0, GetPrivateField<double>(inner, "_overscrollY"), precision: 3);
+        Assert.False(GetPrivateField<bool>(inner, "_isPointerPanningActive"));
+        Assert.False(GetPrivateField<bool>(outer, "_isPointerPanningActive"));
+    }
+
+    [Fact]
+    public void NestedViewer_HorizontalInnerDoesNotStealDominantVerticalDragFromOuter()
+    {
+        var (outer, inner, source) = CreateNestedConfiguredViewers(
+            outerVerticalOffset: 300,
+            innerHorizontalOffset: 300,
+            innerExtentWidth: 1000,
+            innerViewportWidth: 200,
+            innerExtentHeight: 200,
+            innerViewportHeight: 200);
+        inner.PanningMode = PanningMode.HorizontalOnly;
+        outer.PanningMode = PanningMode.VerticalOnly;
+        const uint pointerId = 32;
+
+        source.RaiseEvent(CreatePointerDown(pointerId, new Point(100, 100), timestamp: 0));
+        // One DIP of horizontal contact noise must not let the horizontal child
+        // steal a clearly vertical drag from its scrollable vertical ancestor.
+        source.RaiseEvent(CreatePointerMove(pointerId, new Point(99, 70), timestamp: 10));
+        source.RaiseEvent(CreatePointerUp(pointerId, new Point(99, 70), timestamp: 20));
+
+        Assert.Equal(300, inner.HorizontalOffset, precision: 3);
+        Assert.True(outer.VerticalOffset > 300);
+        Assert.False(GetPrivateField<bool>(inner, "_isPointerPanningActive"));
+        Assert.False(GetPrivateField<bool>(outer, "_isPointerPanningActive"));
+    }
+
     private static ScrollViewer CreateConfiguredViewer(
         double horizontalOffset = 0,
         double verticalOffset = 0,
@@ -136,6 +319,81 @@ public class ScrollViewerTouchPanningTests
         SetPrivateField(viewer, "_smoothTargetX", horizontalOffset);
         SetPrivateField(viewer, "_smoothTargetY", verticalOffset);
         return viewer;
+    }
+
+    private static (ScrollViewer Outer, ScrollViewer Inner, Border Source) CreateNestedConfiguredViewers(
+        double outerVerticalOffset,
+        double innerVerticalOffset = 0,
+        double innerHorizontalOffset = 0,
+        double innerExtentWidth = 200,
+        double innerExtentHeight = 2000,
+        double innerViewportWidth = 200,
+        double innerViewportHeight = 200)
+    {
+        var source = new Border { Width = 200, Height = 200 };
+        var inner = new ScrollViewer
+        {
+            Content = source,
+            Width = 200,
+            Height = 200,
+            IsScrollInertiaEnabled = false,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Visible,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
+            PanningMode = PanningMode.VerticalOnly
+        };
+        var outer = new ScrollViewer
+        {
+            Content = inner,
+            Width = 200,
+            Height = 200,
+            IsScrollInertiaEnabled = false,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Visible,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Visible,
+            PanningMode = PanningMode.VerticalOnly
+        };
+
+        outer.Measure(new Size(200, 200));
+        outer.Arrange(new Rect(0, 0, 200, 200));
+
+        ConfigureViewerMetrics(
+            inner,
+            horizontalOffset: innerHorizontalOffset,
+            verticalOffset: innerVerticalOffset,
+            extentWidth: innerExtentWidth,
+            extentHeight: innerExtentHeight,
+            viewportWidth: innerViewportWidth,
+            viewportHeight: innerViewportHeight);
+        ConfigureViewerMetrics(
+            outer,
+            horizontalOffset: 0,
+            verticalOffset: outerVerticalOffset,
+            extentWidth: 200,
+            extentHeight: 2000,
+            viewportWidth: 200,
+            viewportHeight: 200);
+
+        return (outer, inner, source);
+    }
+
+    private static void ConfigureViewerMetrics(
+        ScrollViewer viewer,
+        double horizontalOffset,
+        double verticalOffset,
+        double extentWidth,
+        double extentHeight,
+        double viewportWidth,
+        double viewportHeight)
+    {
+        SetPrivateField(viewer, "_extentWidth", extentWidth);
+        SetPrivateField(viewer, "_extentHeight", extentHeight);
+        SetPrivateField(viewer, "_viewportWidth", viewportWidth);
+        SetPrivateField(viewer, "_viewportHeight", viewportHeight);
+        SetPrivateField(viewer, "_horizontalOffset", horizontalOffset);
+        SetPrivateField(viewer, "_verticalOffset", verticalOffset);
+        SetPrivateField(viewer, "_requestedHorizontalOffset", horizontalOffset);
+        SetPrivateField(viewer, "_requestedVerticalOffset", verticalOffset);
+        SetPrivateField(viewer, "_smoothTargetX", horizontalOffset);
+        SetPrivateField(viewer, "_smoothTargetY", verticalOffset);
     }
 
     private static void RaisePanGesture(ScrollViewer viewer, Point start, Point move, uint pointerId)
@@ -200,5 +458,12 @@ public class ScrollViewerTouchPanningTests
         var value = field!.GetValue(viewer);
         Assert.NotNull(value);
         return (T)value!;
+    }
+
+    private static object? InvokePrivate(ScrollViewer viewer, string methodName, params object?[] arguments)
+    {
+        var method = typeof(ScrollViewer).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return method!.Invoke(viewer, arguments);
     }
 }

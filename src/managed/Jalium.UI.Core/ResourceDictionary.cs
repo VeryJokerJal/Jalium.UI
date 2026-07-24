@@ -965,7 +965,18 @@ public static class ResourceLookup
     private static Dictionary<(int, object), object?>? t_resourceCache;
     [ThreadStatic]
     private static int t_cacheGeneration;
-    private static volatile int s_globalCacheGeneration;
+    [ThreadStatic]
+    private static Stack<HashSet<object>>? t_resourceChainPool;
+    private static int s_globalCacheGeneration;
+    private const int MaxPooledResourceChainDepth = 128;
+    private const int MaxPooledResourceChainsPerThread = 4;
+
+    /// <summary>
+    /// Gets the current global resource-cache generation. Recycling containers use this only as
+    /// a validity stamp; normal callers should continue to invalidate through
+    /// <see cref="InvalidateResourceCache"/>.
+    /// </summary>
+    internal static int CacheGeneration => Volatile.Read(ref s_globalCacheGeneration);
 
     /// <summary>
     /// Invalidates the resource lookup cache. Called when resource dictionaries change.
@@ -988,7 +999,7 @@ public static class ResourceLookup
 
         // Check cache
         var cache = t_resourceCache ??= new Dictionary<(int, object), object?>();
-        var gen = s_globalCacheGeneration;
+        var gen = Volatile.Read(ref s_globalCacheGeneration);
         if (t_cacheGeneration != gen)
         {
             cache.Clear();
@@ -1003,7 +1014,17 @@ public static class ResourceLookup
                 return cached;
             }
 
-            var result = FindResourceCore(element, resourceKey, new HashSet<object>());
+            var resourceChain = RentResourceChain();
+            object? result;
+            try
+            {
+                result = FindResourceCore(element, resourceKey, resourceChain);
+            }
+            finally
+            {
+                ReturnResourceChain(resourceChain);
+            }
+
             // Only cache if the cache hasn't grown too large
             if (cache.Count < 4096)
             {
@@ -1012,7 +1033,15 @@ public static class ResourceLookup
             return result;
         }
 
-        return FindResourceCore(element, resourceKey, new HashSet<object>());
+        var uncachedResourceChain = RentResourceChain();
+        try
+        {
+            return FindResourceCore(element, resourceKey, uncachedResourceChain);
+        }
+        finally
+        {
+            ReturnResourceChain(uncachedResourceChain);
+        }
     }
 
     /// <summary>
@@ -1031,11 +1060,37 @@ public static class ResourceLookup
             return null;
         }
 
-        return FindResourceCoreWithSource(
-            element,
-            resourceKey,
-            new HashSet<object>(),
-            out sourceDictionary);
+        var resourceChain = RentResourceChain();
+        try
+        {
+            return FindResourceCoreWithSource(
+                element,
+                resourceKey,
+                resourceChain,
+                out sourceDictionary);
+        }
+        finally
+        {
+            ReturnResourceChain(resourceChain);
+        }
+    }
+
+    private static HashSet<object> RentResourceChain()
+    {
+        var pool = t_resourceChainPool;
+        return pool is { Count: > 0 } ? pool.Pop() : new HashSet<object>();
+    }
+
+    private static void ReturnResourceChain(HashSet<object> resourceChain)
+    {
+        var shouldPool = resourceChain.Count <= MaxPooledResourceChainDepth;
+        resourceChain.Clear();
+        if (!shouldPool)
+            return;
+
+        var pool = t_resourceChainPool ??= new Stack<HashSet<object>>(2);
+        if (pool.Count < MaxPooledResourceChainsPerThread)
+            pool.Push(resourceChain);
     }
 
     private static object? FindResourceCore(

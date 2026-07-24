@@ -2,37 +2,37 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <!-- Editor Syntax Colors -->
-    <SolidColorBrush x:Key="EditorSyntaxPlainText" Color="#D4D4D4" />
-    <SolidColorBrush x:Key="EditorSyntaxKeyword" Color="#569CD6" />
-    <SolidColorBrush x:Key="EditorSyntaxControlKeyword" Color="#C586C0" />
-    <SolidColorBrush x:Key="EditorSyntaxTypeName" Color="#4EC9B0" />
-    <SolidColorBrush x:Key="EditorSyntaxString" Color="#CE9178" />
-    <SolidColorBrush x:Key="EditorSyntaxCharacter" Color="#D7BA7D" />
-    <SolidColorBrush x:Key="EditorSyntaxNumber" Color="#B5CEA8" />
-    <SolidColorBrush x:Key="EditorSyntaxComment" Color="#6A9955" />
-    <SolidColorBrush x:Key="EditorSyntaxXmlDoc" Color="#608B4E" />
-    <SolidColorBrush x:Key="EditorSyntaxPreprocessor" Color="#9B9B9B" />
-    <SolidColorBrush x:Key="EditorSyntaxOperator" Color="#D4D4D4" />
-    <SolidColorBrush x:Key="EditorSyntaxPunctuation" Color="#4FC1FF" />
-    <SolidColorBrush x:Key="EditorSyntaxIdentifier" Color="#D4D4D4" />
-    <SolidColorBrush x:Key="EditorSyntaxLocalVariable" Color="#9CDCFE" />
-    <SolidColorBrush x:Key="EditorSyntaxParameter" Color="#9CDCFE" />
-    <SolidColorBrush x:Key="EditorSyntaxField" Color="#9CDCFE" />
-    <SolidColorBrush x:Key="EditorSyntaxProperty" Color="#9CDCFE" />
-    <SolidColorBrush x:Key="EditorSyntaxMethod" Color="#DCDCAA" />
-    <SolidColorBrush x:Key="EditorSyntaxNamespace" Color="#4EC9B0" />
-    <SolidColorBrush x:Key="EditorSyntaxAttribute" Color="#C586C0" />
-    <SolidColorBrush x:Key="EditorSyntaxBindingKeyword" Color="#FFC44F" />
-    <SolidColorBrush x:Key="EditorSyntaxBindingParameter" Color="#FF915A" />
-    <SolidColorBrush x:Key="EditorSyntaxBindingPath" Color="#5BD6C9" />
-    <SolidColorBrush x:Key="EditorSyntaxBindingOperator" Color="#90D6FF" />
-    <SolidColorBrush x:Key="EditorSyntaxError" Color="#F44747" />
+    <!-- Xcode-inspired editor syntax colors -->
+    <SolidColorBrush x:Key="EditorSyntaxPlainText" Color="#F5F5F7" />
+    <SolidColorBrush x:Key="EditorSyntaxKeyword" Color="#FC5FA3" />
+    <SolidColorBrush x:Key="EditorSyntaxControlKeyword" Color="#FC5FA3" />
+    <SolidColorBrush x:Key="EditorSyntaxTypeName" Color="#5DD8FF" />
+    <SolidColorBrush x:Key="EditorSyntaxString" Color="#FC6A5D" />
+    <SolidColorBrush x:Key="EditorSyntaxCharacter" Color="#D0BF69" />
+    <SolidColorBrush x:Key="EditorSyntaxNumber" Color="#D0BF69" />
+    <SolidColorBrush x:Key="EditorSyntaxComment" Color="#7F8C98" />
+    <SolidColorBrush x:Key="EditorSyntaxXmlDoc" Color="#8FA88F" />
+    <SolidColorBrush x:Key="EditorSyntaxPreprocessor" Color="#FD8F3F" />
+    <SolidColorBrush x:Key="EditorSyntaxOperator" Color="#F5F5F7" />
+    <SolidColorBrush x:Key="EditorSyntaxPunctuation" Color="#AEAEB2" />
+    <SolidColorBrush x:Key="EditorSyntaxIdentifier" Color="#F5F5F7" />
+    <SolidColorBrush x:Key="EditorSyntaxLocalVariable" Color="#F5F5F7" />
+    <SolidColorBrush x:Key="EditorSyntaxParameter" Color="#F5F5F7" />
+    <SolidColorBrush x:Key="EditorSyntaxField" Color="#67B7A4" />
+    <SolidColorBrush x:Key="EditorSyntaxProperty" Color="#67B7A4" />
+    <SolidColorBrush x:Key="EditorSyntaxMethod" Color="#67B7A4" />
+    <SolidColorBrush x:Key="EditorSyntaxNamespace" Color="#5DD8FF" />
+    <SolidColorBrush x:Key="EditorSyntaxAttribute" Color="#FC5FA3" />
+    <SolidColorBrush x:Key="EditorSyntaxBindingKeyword" Color="#FC5FA3" />
+    <SolidColorBrush x:Key="EditorSyntaxBindingParameter" Color="#FD8F3F" />
+    <SolidColorBrush x:Key="EditorSyntaxBindingPath" Color="#0A84FF" />
+    <SolidColorBrush x:Key="EditorSyntaxBindingOperator" Color="#AEAEB2" />
+    <SolidColorBrush x:Key="EditorSyntaxError" Color="#FF453A" />
 
     <!-- Terminal Colors -->
-    <SolidColorBrush x:Key="TerminalBackground" Color="#0C0C0C" />
-    <SolidColorBrush x:Key="TerminalForeground" Color="#CCCCCC" />
-    <SolidColorBrush x:Key="TerminalCaret" Color="#CCCCCC" />
-    <SolidColorBrush x:Key="TerminalSelectionBackground" Color="#264F78" />
+    <SolidColorBrush x:Key="TerminalBackground" Color="#1C1C1E" />
+    <SolidColorBrush x:Key="TerminalForeground" Color="#F5F5F7" />
+    <SolidColorBrush x:Key="TerminalCaret" Color="#30D158" />
+    <SolidColorBrush x:Key="TerminalSelectionBackground" Color="#594A90E2" />
 
 </ResourceDictionary>

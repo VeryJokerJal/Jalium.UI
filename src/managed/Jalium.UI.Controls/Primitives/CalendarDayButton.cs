@@ -237,25 +237,27 @@ public sealed class CalendarDayButton : Button
         var dc = drawingContext;
 
         var rect = new Rect(RenderSize);
-        var inset = new Rect(2, 2, rect.Width - 4, rect.Height - 4);
+        var inset = ControlRenderGeometry.GetContentRect(rect, new Thickness(2));
+        var radiusX = inset.Width / 2.0;
+        var radiusY = inset.Height / 2.0;
 
         // Draw selection background
         if (IsSelected)
         {
             dc.DrawEllipse(ResolveSelectedBackgroundBrush(), null, new Point(rect.Width / 2, rect.Height / 2),
-                inset.Width / 2, inset.Height / 2);
+                radiusX, radiusY);
         }
         else if (IsHighlighted || IsPressed)
         {
             dc.DrawEllipse(ResolveHighlightBackgroundBrush(), null, new Point(rect.Width / 2, rect.Height / 2),
-                inset.Width / 2, inset.Height / 2);
+                radiusX, radiusY);
         }
 
         // Draw today indicator (ring around the day)
         if (IsToday && !IsSelected)
         {
             dc.DrawEllipse(null, ResolveTodayRingPen(), new Point(rect.Width / 2, rect.Height / 2),
-                inset.Width / 2 - 1, inset.Height / 2 - 1);
+                Math.Max(0, radiusX - 1), Math.Max(0, radiusY - 1));
         }
 
         // Draw day number

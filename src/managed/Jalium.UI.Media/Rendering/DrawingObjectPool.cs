@@ -177,20 +177,11 @@ internal static class DrawingObjectPool
                 s_formattedTexts.Clear();
             }
 
-            // Build a fresh value-carrying snapshot so mutation of the
-            // user's FormattedText after record does not corrupt the pool.
-            // Width / Height on the canonical copy are left at their defaults;
-            // they get filled in by the first DrawText call and reused after.
-            var snapshot = new FormattedText(text.Text, text.FontFamily, text.FontSize)
-            {
-                Foreground = canonicalFg,
-                MaxTextWidth = text.MaxTextWidth,
-                MaxTextHeight = text.MaxTextHeight,
-                Trimming = text.Trimming,
-                FontWeight = text.FontWeight,
-                FontStyle = text.FontStyle,
-                FontStretch = text.FontStretch,
-            };
+            // Snapshot the already-computed value state. Reconstructing the
+            // FormattedText here used to repeat character-format creation and
+            // approximate layout for every pool miss (the common case for
+            // virtualized rows whose text is unique).
+            var snapshot = text.CreateRenderSnapshot(canonicalFg);
 
             s_formattedTexts[hash] = snapshot;
             return snapshot;

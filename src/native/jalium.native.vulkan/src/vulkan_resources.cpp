@@ -681,9 +681,9 @@ JaliumResult VulkanTextFormat::MeasureText(
             return JALIUM_ERROR_UNKNOWN;
         }
 
-        // Use widthIncludingTrailingWhitespace so trailing spaces count toward
-        // measurement (caret positioning / selection highlighting of spaces).
-        metrics->width = textMetrics.widthIncludingTrailingWhitespace;
+        // Layout excludes trailing spaces; caret and selection still need them.
+        metrics->width = textMetrics.width;
+        metrics->widthIncludingTrailingWhitespace = textMetrics.widthIncludingTrailingWhitespace;
         metrics->height = textMetrics.height;
         metrics->lineCount = textMetrics.lineCount;
 
@@ -736,7 +736,9 @@ JaliumResult VulkanTextFormat::MeasureText(
     // Fallback: approximate metrics if no text engine available
     if (metrics->width == 0.0f && textLength > 0) {
         const float approxCharWidth = fontSize_ * 0.55f;
-        metrics->width = std::min(maxWidth, approxCharWidth * static_cast<float>(textLength));
+        const float approximateWidth = std::min(maxWidth, approxCharWidth * static_cast<float>(textLength));
+        metrics->width = approximateWidth;
+        metrics->widthIncludingTrailingWhitespace = approximateWidth;
         metrics->height = std::min(maxHeight, fontSize_ * 1.2f);
         metrics->lineCount = 1;
     }

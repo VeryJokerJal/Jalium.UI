@@ -28,8 +28,10 @@ public class TreeDataGridThemeTests
 
         try
         {
-            var controlBackgroundPressed = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackgroundPressed"]);
-            var controlBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackground"]);
+            var alternatingRowBackground = Assert.IsAssignableFrom<Brush>(
+                app.Resources["SubtleFillColorSecondaryBrush"]);
+            var headerBackground = Assert.IsAssignableFrom<Brush>(
+                app.Resources["LayerFillColorAltBrush"]);
 
             var treeDataGrid = new TreeDataGrid();
             var host = new StackPanel { Width = 400, Height = 200 };
@@ -41,10 +43,10 @@ public class TreeDataGridThemeTests
             Assert.True(app.Resources.TryGetValue(typeof(TreeDataGrid), out var styleObj));
             Assert.IsType<Style>(styleObj);
 
-            AssertBrushMatches(controlBackgroundPressed, treeDataGrid.AlternatingRowBackground);
+            AssertBrushMatches(alternatingRowBackground, treeDataGrid.AlternatingRowBackground);
 
-            var headersBorder = Assert.IsType<Border>(treeDataGrid.FindName("PART_ColumnHeadersBorder"));
-            AssertBrushMatches(controlBackground, headersBorder.Background);
+            var headersSurface = Assert.IsType<Grid>(treeDataGrid.FindName("PART_ColumnHeadersBorder"));
+            AssertBrushMatches(headerBackground, headersSurface.Background);
         }
         finally
         {
@@ -70,7 +72,8 @@ public class TreeDataGridThemeTests
             host.Measure(new Size(400, 60));
             host.Arrange(new Rect(0, 0, 400, 60));
 
-            AssertBrushMatches(accentBrush, row.Background);
+            var rowBorder = Assert.IsType<Border>(row.FindName("PART_RowBorder"));
+            AssertBrushMatches(accentBrush, rowBorder.Background);
             AssertBrushMatches(accentText, row.Foreground);
         }
         finally

@@ -20,6 +20,15 @@ public class Border : Decorator
     private Pen? _cachedBorderPen;
     private Brush? _cachedBorderBrush;
     private double _cachedBorderWidth;
+    private PathGeometry? _cachedAsymmetricStrokeGeometry;
+    private AsymmetricStrokeGeometryKey? _cachedAsymmetricStrokeGeometryKey;
+
+    private readonly record struct AsymmetricStrokeGeometryKey(
+        Rect Rect,
+        Thickness Border,
+        CornerRadius CornerRadius,
+        bool IsSuperEllipse,
+        double Exponent);
 
     // Liquid glass mouse-following highlight (window-level tracking)
     private Point _lgLightLocal;
@@ -316,7 +325,8 @@ public class Border : Decorator
     }
 
     /// <summary>
-    /// Gets or sets the border shape (RoundedRectangle or SuperEllipse).
+    /// Gets or sets the border shape. SuperEllipse replaces each rounded corner
+    /// with a local continuous curve bounded by <see cref="CornerRadius"/>.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public BorderShape Shape
@@ -340,6 +350,55 @@ public class Border : Decorator
 
     #region Layout
 
+    private Thickness GetSnappedBorderThickness()
+    {
+        var border = BorderThickness;
+        return new Thickness(
+            SnapLayoutValue(border.Left),
+            SnapLayoutValue(border.Top),
+            SnapLayoutValue(border.Right),
+            SnapLayoutValue(border.Bottom));
+    }
+
+    private static Rect GetInnerRect(Rect outerRect, Thickness border)
+    {
+        var left = outerRect.Left + border.Left;
+        var top = outerRect.Top + border.Top;
+        var right = outerRect.Right - border.Right;
+        var bottom = outerRect.Bottom - border.Bottom;
+        return new Rect(
+            left,
+            top,
+            Math.Max(0, right - left),
+            Math.Max(0, bottom - top));
+    }
+
+    private static CornerRadius GetInnerCornerRadius(
+        CornerRadius outerRadius,
+        Thickness border)
+    {
+        return new CornerRadius(
+            Math.Max(0, outerRadius.TopLeft - Math.Max(border.Left, border.Top)),
+            Math.Max(0, outerRadius.TopRight - Math.Max(border.Top, border.Right)),
+            Math.Max(0, outerRadius.BottomRight - Math.Max(border.Right, border.Bottom)),
+            Math.Max(0, outerRadius.BottomLeft - Math.Max(border.Bottom, border.Left)));
+    }
+
+    private static Thickness GetHalfThickness(Thickness thickness) =>
+        new(
+            thickness.Left * 0.5,
+            thickness.Top * 0.5,
+            thickness.Right * 0.5,
+            thickness.Bottom * 0.5);
+
+    private static Rect GetBackgroundRect(Rect outerRect, Thickness border) =>
+        GetInnerRect(outerRect, GetHalfThickness(border));
+
+    private static CornerRadius GetBackgroundCornerRadius(
+        CornerRadius outerRadius,
+        Thickness border) =>
+        GetInnerCornerRadius(outerRadius, GetHalfThickness(border));
+
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
@@ -347,15 +406,11 @@ public class Border : Decorator
         // 否则 MeasureOverride 用 raw 1px、ArrangeOverride 用 snapped(如 DPI=1.5 时 ≈1.333px),
         // 子元素 measure 时以为自己有 N-2px 空间,arrange 实际只拿到 N-2.667px,
         // 子内容刚好溢出 ScrollViewer viewport,会冒出 0.5–0.7px 的虚假滚动条。
-        var rawBorder = BorderThickness;
-        var snappedLeft = SnapLayoutValue(rawBorder.Left);
-        var snappedTop = SnapLayoutValue(rawBorder.Top);
-        var snappedRight = SnapLayoutValue(rawBorder.Right);
-        var snappedBottom = SnapLayoutValue(rawBorder.Bottom);
+        var border = GetSnappedBorderThickness();
 
         var padding = Padding;
-        var totalHorizontal = snappedLeft + snappedRight + padding.Left + padding.Right;
-        var totalVertical = snappedTop + snappedBottom + padding.Top + padding.Bottom;
+        var totalHorizontal = border.Left + border.Right + padding.Left + padding.Right;
+        var totalVertical = border.Top + border.Bottom + padding.Top + padding.Bottom;
 
         var childAvailable = new Size(
             Math.Max(0, availableSize.Width - totalHorizontal),
@@ -370,15 +425,17 @@ public class Border : Decorator
             childSize = child.DesiredSize;
         }
 
+        // Negative Padding/BorderThickness are legal (Thickness deliberately does not
+        // validate); the Size constructor is not — clamp at the summation sink.
         return new Size(
-            childSize.Width + totalHorizontal,
-            childSize.Height + totalVertical);
+            Math.Max(0, childSize.Width + totalHorizontal),
+            Math.Max(0, childSize.Height + totalVertical));
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var rawBorder = BorderThickness;
+        var border = GetSnappedBorderThickness();
         var padding = Padding;
 
         UIElement? child = Child;
@@ -393,15 +450,10 @@ public class Border : Decorator
             // inner rect = full - 4 — matching what OnRender computes).
             // Padding is *not* snapped; it stays in DIPs since the user
             // expressed it in DIPs and it's the same on every frame.
-            var snappedLeft = SnapLayoutValue(rawBorder.Left);
-            var snappedTop = SnapLayoutValue(rawBorder.Top);
-            var snappedRight = SnapLayoutValue(rawBorder.Right);
-            var snappedBottom = SnapLayoutValue(rawBorder.Bottom);
-
-            var leftInset = snappedLeft + padding.Left;
-            var topInset = snappedTop + padding.Top;
-            var rightInset = snappedRight + padding.Right;
-            var bottomInset = snappedBottom + padding.Bottom;
+            var leftInset = border.Left + padding.Left;
+            var topInset = border.Top + padding.Top;
+            var rightInset = border.Right + padding.Right;
+            var bottomInset = border.Bottom + padding.Bottom;
 
             // right / bottom 不要再 SnapLayoutValue —— 那是按"最近物理像素四舍五入",
             // 当 finalSize 小数部分 < 0.5 时会向下取整,childRect 比 MeasureOverride 用
@@ -444,7 +496,8 @@ public class Border : Decorator
     /// <inheritdoc />
     internal override Geometry? GetLayoutClip()
     {
-        if (!ClipToBounds)
+        var clipEdges = ClipToBoundsEdges;
+        if (!ClipToBounds || clipEdges == ClipEdges.None)
             return null;
 
         // Clip to the Border's *inner* shape — the same rect + per-corner radii
@@ -468,35 +521,23 @@ public class Border : Decorator
         //   shape exactly. Result: stroke draws full width; child fragments
         //   stop at the stroke's inner edge; nothing leaks into or past the
         //   BorderThickness ring.
-        var rawBorder = BorderThickness;
-        var snappedLeft = SnapLayoutValue(rawBorder.Left);
-        var snappedTop = SnapLayoutValue(rawBorder.Top);
-        var snappedRight = SnapLayoutValue(rawBorder.Right);
-        var snappedBottom = SnapLayoutValue(rawBorder.Bottom);
-
-        var innerLeft = snappedLeft;
-        var innerTop = snappedTop;
-        var innerRight = _renderSize.Width - snappedRight;
-        var innerBottom = _renderSize.Height - snappedBottom;
-        var clipRect = new Rect(
-            innerLeft,
-            innerTop,
-            Math.Max(0, innerRight - innerLeft),
-            Math.Max(0, innerBottom - innerTop));
-
-        if (Shape == BorderShape.SuperEllipse)
-        {
-            return CreateSuperEllipseGeometry(clipRect, SuperEllipseN);
-        }
+        var border = GetSnappedBorderThickness();
+        var clipRect = GetInnerRect(new Rect(_renderSize), border);
+        var geometryRect = ExpandBoundsClip(clipRect, clipEdges);
 
         var cornerRadius = CornerRadius;
         // Per-corner inner radius — same WPF formula OnRender uses for the
         // Background fill, so the layout clip matches the Background outline.
-        var innerRadius = new CornerRadius(
-            Math.Max(0, cornerRadius.TopLeft - Math.Max(snappedLeft, snappedTop)),
-            Math.Max(0, cornerRadius.TopRight - Math.Max(snappedTop, snappedRight)),
-            Math.Max(0, cornerRadius.BottomRight - Math.Max(snappedRight, snappedBottom)),
-            Math.Max(0, cornerRadius.BottomLeft - Math.Max(snappedBottom, snappedLeft)));
+        var innerRadius = GetInnerCornerRadius(cornerRadius, border);
+        innerRadius = MaskClipCornerRadius(innerRadius, clipEdges);
+
+        // A superellipse is a closed four-sided contour. Once one or more sides
+        // are open, retain the selected adjacent corner radii on the rectangular
+        // half-plane clip below instead of closing the contour at a distant edge.
+        if (Shape == BorderShape.SuperEllipse && clipEdges == ClipEdges.All)
+        {
+            return CreateSuperEllipseGeometry(geometryRect, innerRadius, SuperEllipseN);
+        }
 
         var maxRadius = Math.Max(
             Math.Max(innerRadius.TopLeft, innerRadius.TopRight),
@@ -504,10 +545,18 @@ public class Border : Decorator
 
         if (maxRadius > 0)
         {
-            return new RectangleGeometry(clipRect, innerRadius);
+            return new RectangleGeometry(geometryRect, innerRadius)
+            {
+                BoundsClipEdges = clipEdges,
+                BoundsClipRect = clipRect
+            };
         }
 
-        return new RectangleGeometry(clipRect);
+        return new RectangleGeometry(geometryRect)
+        {
+            BoundsClipEdges = clipEdges,
+            BoundsClipRect = clipRect
+        };
     }
 
     #endregion
@@ -529,46 +578,74 @@ public class Border : Decorator
     /// </summary>
     protected override bool ParticipatesInRenderCache => !LiquidGlass;
 
-    private static StreamGeometry CreateSuperEllipseGeometry(Rect rect, double n)
+    private static StreamGeometry CreateSuperEllipseGeometry(
+        Rect rect,
+        CornerRadius cornerRadius,
+        double n)
     {
-        var geo = new StreamGeometry();
-        using (var ctx = geo.Open())
+        var geometry = new StreamGeometry();
+        if (rect.Width <= 0 || rect.Height <= 0)
         {
-            double cx = rect.X + rect.Width / 2;
-            double cy = rect.Y + rect.Height / 2;
-            double a = rect.Width / 2;
-            double b = rect.Height / 2;
-
-            // Bezier kappa: matches the superellipse midpoint at the diagonal
-            double k = (Math.Pow(0.5, 1.0 / n) - 0.5) / 0.375;
-
-            ctx.BeginFigure(new Point(cx + a, cy), true, true);
-
-            // Right 閳?Bottom
-            ctx.BezierTo(
-                new Point(cx + a, cy + b * k),
-                new Point(cx + a * k, cy + b),
-                new Point(cx, cy + b), true, false);
-
-            // Bottom 閳?Left
-            ctx.BezierTo(
-                new Point(cx - a * k, cy + b),
-                new Point(cx - a, cy + b * k),
-                new Point(cx - a, cy), true, false);
-
-            // Left 閳?Top
-            ctx.BezierTo(
-                new Point(cx - a, cy - b * k),
-                new Point(cx - a * k, cy - b),
-                new Point(cx, cy - b), true, false);
-
-            // Top 閳?Right
-            ctx.BezierTo(
-                new Point(cx + a * k, cy - b),
-                new Point(cx + a, cy - b * k),
-                new Point(cx + a, cy), true, false);
+            return geometry;
         }
-        return geo;
+
+        var exponent = n >= 2.0 && n <= 16.0 ? n : 4.0;
+        var radii = cornerRadius.Normalize(rect.Width, rect.Height);
+
+        using (var context = geometry.Open())
+        {
+            var started = false;
+
+            void AddPoint(Point point)
+            {
+                if (!started)
+                {
+                    context.BeginFigure(point, isFilled: true, isClosed: true);
+                    started = true;
+                }
+                else
+                {
+                    context.LineTo(point, isStroked: true, isSmoothJoin: true);
+                }
+            }
+
+            void AddCorner(double centerX, double centerY, double radius,
+                double startAngle, double endAngle)
+            {
+                if (radius <= 0)
+                {
+                    AddPoint(new Point(centerX, centerY));
+                    return;
+                }
+
+                var segments = Math.Clamp(
+                    (int)Math.Ceiling(radius * Math.PI / 0.5), 6, 64);
+                for (var i = 0; i <= segments; i++)
+                {
+                    var angle = startAngle + (endAngle - startAngle) * i / segments;
+                    var directionX = Math.Cos(angle);
+                    var directionY = Math.Sin(angle);
+                    var denominator = Math.Pow(
+                        Math.Pow(Math.Abs(directionX), exponent) +
+                        Math.Pow(Math.Abs(directionY), exponent),
+                        1.0 / exponent);
+                    var radialDistance = radius / denominator;
+                    AddPoint(new Point(
+                        centerX + directionX * radialDistance,
+                        centerY + directionY * radialDistance));
+                }
+            }
+
+            AddCorner(rect.Left + radii.TopLeft, rect.Top + radii.TopLeft,
+                radii.TopLeft, Math.PI, 1.5 * Math.PI);
+            AddCorner(rect.Right - radii.TopRight, rect.Top + radii.TopRight,
+                radii.TopRight, 1.5 * Math.PI, 2.0 * Math.PI);
+            AddCorner(rect.Right - radii.BottomRight, rect.Bottom - radii.BottomRight,
+                radii.BottomRight, 0.0, 0.5 * Math.PI);
+            AddCorner(rect.Left + radii.BottomLeft, rect.Bottom - radii.BottomLeft,
+                radii.BottomLeft, 0.5 * Math.PI, Math.PI);
+        }
+        return geometry;
     }
 
     /// <summary>
@@ -616,7 +693,7 @@ public class Border : Decorator
         var dc = drawingContext;
 
         var rect = new Rect(RenderSize);
-        var rawBorder = BorderThickness;
+        var border = GetSnappedBorderThickness();
         var cornerRadius = CornerRadius;
 
         // Snap each side of BorderThickness to physical pixels so the stroke,
@@ -631,15 +708,9 @@ public class Border : Decorator
         //
         // Snapping per side rather than collapsing to a single uniform value
         // preserves asymmetric-thickness behaviour; rendering will only ever
-        // disagree with rawBorder by sub-pixel amounts that the layout
-        // pipeline already discarded.
-        var border = new Thickness(
-            SnapLayoutValue(rawBorder.Left),
-            SnapLayoutValue(rawBorder.Top),
-            SnapLayoutValue(rawBorder.Right),
-            SnapLayoutValue(rawBorder.Bottom));
-        var borderWidth = Math.Max(border.Left, Math.Max(border.Top, Math.Max(border.Right, border.Bottom)));
-        var halfBorder = borderWidth / 2;
+        // differ from the raw value only by sub-pixel amounts that the layout
+        // pipeline already discarded. The shared helper applies that snapped
+        // thickness once for every managed rendering path.
 
         // Compute elastic deformation parameters for spring press interaction.
         //
@@ -905,30 +976,21 @@ public class Border : Decorator
             // default and render an ordinary rounded rectangle.
             dc.SetShapeType(1, (float)seN);
 
-            // Pass the element's REAL CornerRadius (not min(w,h)/2). A squircle is
-            // a rounded rect with continuous-curvature corners of that radius +
-            // straight edges; min(w,h)/2 would collapse a wide/short element into a
-            // flattened oval (the "squished" shape). The native squircle tessellator
-            // clamps each corner to the half-extent.
-            if (Background != null && !LiquidGlass)
-            {
-                var backgroundRect = new Rect(
-                    rect.X + halfBorder,
-                    rect.Y + halfBorder,
-                    Math.Max(0, rect.Width - borderWidth),
-                    Math.Max(0, rect.Height - borderWidth));
-                dc.DrawRoundedRectangle(Background, null, backgroundRect, cornerRadius);
-            }
+            // Fill through the stroke centre line. Fill and stroke are separate
+            // antialiased native draws; making their edges meet exactly at the
+            // stroke's inner edge under-covers that shared pixel and leaks the
+            // surface colour through as a pale corner seam.
+            var backgroundRect = GetBackgroundRect(rect, border);
+            var backgroundRadius = GetBackgroundCornerRadius(cornerRadius, border);
 
-            if (BorderBrush != null && borderWidth > 0)
+            if (Background != null && !LiquidGlass &&
+                backgroundRect.Width > 0 && backgroundRect.Height > 0)
             {
-                var pen = GetOrCreateBorderPen(BorderBrush, borderWidth);
-                var borderRect = new Rect(
-                    rect.X + halfBorder,
-                    rect.Y + halfBorder,
-                    Math.Max(0, rect.Width - borderWidth),
-                    Math.Max(0, rect.Height - borderWidth));
-                dc.DrawRoundedRectangle(null, pen, borderRect, cornerRadius);
+                dc.DrawRoundedRectangle(
+                    Background,
+                    null,
+                    backgroundRect,
+                    backgroundRadius);
             }
 
             dc.SetShapeType(0, 4.0f);
@@ -939,69 +1001,40 @@ public class Border : Decorator
             //
             // The native renderer's stroke path centres the pen on the rect's
             // edge — half the pen sits inside the rect, half sits outside.
-            // We deliberately draw the *Background* on the inner rect (the
-            // child's arranged rect, inset by BorderThickness on each side)
-            // rather than on the stroke's centre rect: the inner-half of the
-            // stroke would otherwise overpaint Background pixels that the
-            // child needs to read against (text antialiasing, hover-state
-            // tints, etc.), which manifests as the border colour bleeding
-            // into the content area.
-            //
-            // Stroke uses the maximum side as a single pen thickness — this
-            // is correct when BorderThickness is uniform; for asymmetric
-            // thicknesses the four sides receive the max width on every
-            // side, which the child's arranged rect masks on the thinner
-            // sides as it renders on top of the stroke. (Asymmetric thickness
-            // with a fully-transparent child is the only case where this
-            // shortcut shows; non-uniform per-side stroke would need a
-            // path-fill ring which the native compound-fill pipeline doesn't
-            // exactly match the SDF stroke renderer for sub-pixel AA yet.)
-            // Inner rect for Background fill / inner-radius compute. Originally
-            // this snapped all four sides to physical pixels via SnapLayoutValue,
-            // paired with ArrangeCore also snapping _visualBounds origin so that
-            // the fill and the child landed on the same integer rows/columns.
-            //
-            // Now that ArrangeCore lets origins stay as continuous floats (to
-            // unblock smooth spring/transition animations), this snap MUST also
-            // go: rounding `rect.Width - border.Right` quantises animated widths
-            // like 14.967 → 15 each frame, producing the very 1px jitter the
-            // float-origin change was meant to eliminate. BorderThickness itself
-            // is still snapped per-side (see line ~606) so static borders stay
-            // pixel-aligned; only the *fractional remainder* now passes through.
-            var innerLeft = rect.X + border.Left;
-            var innerTop = rect.Y + border.Top;
-            var innerRight = rect.X + rect.Width - border.Right;
-            var innerBottom = rect.Y + rect.Height - border.Bottom;
+            // Uniform strokes use the centred SDF fast path; asymmetric strokes
+            // use an exact outer-minus-inner ring. The background reaches their
+            // centre line, creating a half-stroke underlap. Source-over
+            // composition of two AA edges that merely touch produces only 75%
+            // combined coverage at a nominal 50%/50% sample; the underlap keeps
+            // the interior opaque while the later stroke remains the visible top
+            // layer. Child layout and clipping still use the full-border inner
+            // rect, so the content box does not grow.
 
-            var innerRect = new Rect(
-                innerLeft,
-                innerTop,
-                Math.Max(0, innerRight - innerLeft),
-                Math.Max(0, innerBottom - innerTop));
+            var backgroundRect = GetBackgroundRect(rect, border);
 
             if (Background != null && !LiquidGlass)
             {
-                var innerRadius = new CornerRadius(
-                    Math.Max(0, cornerRadius.TopLeft - Math.Max(border.Left, border.Top)),
-                    Math.Max(0, cornerRadius.TopRight - Math.Max(border.Top, border.Right)),
-                    Math.Max(0, cornerRadius.BottomRight - Math.Max(border.Right, border.Bottom)),
-                    Math.Max(0, cornerRadius.BottomLeft - Math.Max(border.Bottom, border.Left)));
+                var backgroundRadius =
+                    GetBackgroundCornerRadius(cornerRadius, border);
 
-                if (innerRect.Width > 0 && innerRect.Height > 0)
+                if (backgroundRect.Width > 0 && backgroundRect.Height > 0)
                 {
-                    dc.DrawRoundedRectangle(Background, null, innerRect, innerRadius);
+                    dc.DrawRoundedRectangle(
+                        Background,
+                        null,
+                        backgroundRect,
+                        backgroundRadius);
                 }
             }
 
-            // Standard rounded rect 路径下，stroke 绘制延迟到 OnPostRender。
+            // Stroke 绘制延迟到 OnPostRender，Standard 与 SuperEllipse 共用该时序。
             // 原因：Visual.Render 顺序为 OnRender → children → OnPostRender；
             // 若 stroke 在 OnRender 中绘制，children 在其上渲染 Background 时
             // 亚像素抗锯齿区域会盖住 stroke 内半部分（视觉表现："上面 stroke
             // 看起来 1px、下面看起来 2px"，取决于 child Background 颜色与
             // stroke 颜色的对比度）。把 stroke 推到 OnPostRender 保证它始终
             // 是当前 Border subtree 的最上层。
-            // SuperEllipse 路径仍在 OnRender 中绘制（其 children 一般是文字
-            // 或图标，不会出现整片 Background 覆盖到 stroke 边缘的情况）。
+            // 两种形状都会在 children 之后绘制 stroke。
         }
 
         // The ScaleTransform pushed AFTER DrawLiquidGlass stays active for children.
@@ -1018,8 +1051,8 @@ public class Border : Decorator
     ///      抗锯齿区域会盖住 stroke 内半边（视觉表现："上面 stroke 看起来
     ///      1px、下面看起来 2px"，取决于 child Background 与 stroke 颜色对比度）。
     ///      把 stroke 放到 OnPostRender 保证它始终是当前 Border subtree 的最上层。
-    ///      SuperEllipse 路径的 stroke 已经在 OnRender 中由原生渲染器特殊处理，
-    ///      此处不再重画。
+    ///      Standard 与 SuperEllipse 的 stroke 均在此处绘制，确保形状之间
+    ///      使用相同的覆盖与变换时序。
     ///      在 Liquid Glass 模式下 stroke 必须在 Pop 之前画——这样描边和子内容
     ///      共享同一个 lgContentSx/lgContentSy 形变矩阵，跟外层 SDF 玻璃保持
     ///      一致的轮廓。否则 stroke 按原 RenderSize 静止绘制，外层玻璃和
@@ -1056,7 +1089,7 @@ public class Border : Decorator
 
     /// <summary>
     /// 把 BorderBrush stroke 画在 children 之上，避免 child 的 Background 把 stroke
-    /// 内半边覆盖掉。仅对 Standard rounded rect 路径生效。
+    /// 内半边覆盖掉。Standard rounded rect 与 SuperEllipse 使用同一路径。
     ///
     /// 对称 BorderThickness（四边相同）走 pen-stroke 快路径，GPU SDF stroke 边缘更锐利。
     /// 非对称 BorderThickness 走 donut-geometry-fill 慢路径：用 outer 圆角矩形 +
@@ -1066,18 +1099,26 @@ public class Border : Decorator
     private void DrawStrokeAboveChildren(DrawingContext dc)
     {
         if (BorderBrush == null) return;
-        if (Shape == BorderShape.SuperEllipse) return;
+        var isSuperEllipse = Shape == BorderShape.SuperEllipse;
 
-        var rawBorder = BorderThickness;
-        var border = new Thickness(
-            SnapLayoutValue(rawBorder.Left),
-            SnapLayoutValue(rawBorder.Top),
-            SnapLayoutValue(rawBorder.Right),
-            SnapLayoutValue(rawBorder.Bottom));
+        var border = GetSnappedBorderThickness();
         if (border.Left <= 0 && border.Top <= 0 && border.Right <= 0 && border.Bottom <= 0) return;
 
         var rect = new Rect(RenderSize);
         var cornerRadius = CornerRadius;
+
+        // A zero-radius asymmetric border is exactly the union of four rectangles.
+        // Row separators commonly use only the bottom side; keeping that case out of
+        // PathGeometry avoids rebuilding and flattening an outer-minus-inner ring for
+        // every realized row on every scrolling frame.
+        if (cornerRadius.TopLeft <= 0 &&
+            cornerRadius.TopRight <= 0 &&
+            cornerRadius.BottomRight <= 0 &&
+            cornerRadius.BottomLeft <= 0)
+        {
+            DrawRectangularBorderSides(dc, BorderBrush, rect, border);
+            return;
+        }
 
         var isUniform =
             AreApproximatelyEqual(border.Left, border.Top) &&
@@ -1103,7 +1144,9 @@ public class Border : Decorator
                 Math.Max(0, cornerRadius.BottomRight - halfBorder),
                 Math.Max(0, cornerRadius.BottomLeft - halfBorder));
 
+            if (isSuperEllipse) dc.SetShapeType(1, (float)SuperEllipseN);
             dc.DrawRoundedRectangle(null, pen, borderRect, strokeRadius);
+            if (isSuperEllipse) dc.SetShapeType(0, 4.0f);
             return;
         }
 
@@ -1113,33 +1156,135 @@ public class Border : Decorator
         //   FillRule.EvenOdd → 两个嵌套 figure 的"差"被填充 = 边框 ring。
         // 每条边的实际可见厚度即 (outer 外缘 - inner 内缘)，所以
         // BorderThickness=(1,0,1,1) 在 top 上 inner 与 outer 共边，top 边自动为 0。
-        var innerLeft = rect.X + border.Left;
-        var innerTop = rect.Y + border.Top;
-        var innerRight = rect.X + rect.Width - border.Right;
-        var innerBottom = rect.Y + rect.Height - border.Bottom;
-        var innerRect = new Rect(
-            innerLeft,
-            innerTop,
-            Math.Max(0, innerRight - innerLeft),
-            Math.Max(0, innerBottom - innerTop));
+        var innerRect = GetInnerRect(rect, border);
 
         // Inner 圆角 = 外圆角减去相邻两边里较大的 thickness（WPF Border 同公式）。
-        var innerCorners = new CornerRadius(
-            Math.Max(0, cornerRadius.TopLeft - Math.Max(border.Left, border.Top)),
-            Math.Max(0, cornerRadius.TopRight - Math.Max(border.Top, border.Right)),
-            Math.Max(0, cornerRadius.BottomRight - Math.Max(border.Right, border.Bottom)),
-            Math.Max(0, cornerRadius.BottomLeft - Math.Max(border.Bottom, border.Left)));
+        var innerCorners = GetInnerCornerRadius(cornerRadius, border);
 
-        var ring = new PathGeometry { FillRule = FillRule.EvenOdd };
-        ring.Figures.Add(BuildRoundedRectFigure(rect, cornerRadius));
-        if (innerRect.Width > 0 && innerRect.Height > 0)
-        {
-            ring.Figures.Add(BuildRoundedRectFigure(innerRect, innerCorners));
-        }
+        var ring = GetOrCreateAsymmetricStrokeGeometry(
+            rect,
+            border,
+            cornerRadius,
+            innerRect,
+            innerCorners,
+            isSuperEllipse,
+            SuperEllipseN);
 
         dc.DrawGeometry(BorderBrush, null, ring);
     }
 
+    private PathGeometry GetOrCreateAsymmetricStrokeGeometry(
+        Rect rect,
+        Thickness border,
+        CornerRadius cornerRadius,
+        Rect innerRect,
+        CornerRadius innerCorners,
+        bool isSuperEllipse,
+        double exponent)
+    {
+        var effectiveExponent = isSuperEllipse
+            ? exponent >= 2.0 && exponent <= 16.0 ? exponent : 4.0
+            : 0.0;
+        var key = new AsymmetricStrokeGeometryKey(
+            rect,
+            border,
+            cornerRadius,
+            isSuperEllipse,
+            effectiveExponent);
+
+        if (_cachedAsymmetricStrokeGeometry is { } cachedGeometry &&
+            _cachedAsymmetricStrokeGeometryKey is { } cachedKey &&
+            cachedKey == key)
+        {
+            return cachedGeometry;
+        }
+
+        var ring = new PathGeometry { FillRule = FillRule.EvenOdd };
+        ring.Figures.Add(isSuperEllipse
+            ? BuildSuperEllipseFigure(rect, cornerRadius, effectiveExponent)
+            : BuildRoundedRectFigure(rect, cornerRadius));
+        if (innerRect.Width > 0 && innerRect.Height > 0)
+        {
+            ring.Figures.Add(isSuperEllipse
+                ? BuildSuperEllipseFigure(innerRect, innerCorners, effectiveExponent)
+                : BuildRoundedRectFigure(innerRect, innerCorners));
+        }
+
+        ring.Freeze();
+        _cachedAsymmetricStrokeGeometryKey = key;
+        _cachedAsymmetricStrokeGeometry = ring;
+        return ring;
+    }
+
+    private static void DrawRectangularBorderSides(
+        DrawingContext dc,
+        Brush borderBrush,
+        Rect rect,
+        Thickness border)
+    {
+        if (rect.Width <= 0 || rect.Height <= 0)
+        {
+            return;
+        }
+
+        var topHeight = Math.Min(Math.Max(0, border.Top), rect.Height);
+        var bottomHeight = Math.Min(Math.Max(0, border.Bottom), rect.Height - topHeight);
+        var middleTop = rect.Top + topHeight;
+        var middleHeight = Math.Max(0, rect.Height - topHeight - bottomHeight);
+
+        if (topHeight > 0)
+        {
+            dc.DrawRectangle(borderBrush, null, new Rect(rect.Left, rect.Top, rect.Width, topHeight));
+        }
+
+        if (bottomHeight > 0)
+        {
+            dc.DrawRectangle(
+                borderBrush,
+                null,
+                new Rect(rect.Left, rect.Bottom - bottomHeight, rect.Width, bottomHeight));
+        }
+
+        if (middleHeight <= 0)
+        {
+            return;
+        }
+
+        var leftWidth = Math.Min(Math.Max(0, border.Left), rect.Width);
+        var rightWidth = Math.Min(Math.Max(0, border.Right), rect.Width - leftWidth);
+        if (leftWidth > 0)
+        {
+            dc.DrawRectangle(borderBrush, null, new Rect(rect.Left, middleTop, leftWidth, middleHeight));
+        }
+
+        if (rightWidth > 0)
+        {
+            dc.DrawRectangle(
+                borderBrush,
+                null,
+                new Rect(rect.Right - rightWidth, middleTop, rightWidth, middleHeight));
+        }
+    }
+
+    private static PathFigure BuildSuperEllipseFigure(
+        Rect rect,
+        CornerRadius cornerRadius,
+        double exponent)
+    {
+        var geometry = CreateSuperEllipseGeometry(rect, cornerRadius, exponent);
+        var path = geometry.GetPathGeometry();
+        if (path == null || path.Figures.Count == 0)
+        {
+            return new PathFigure
+            {
+                StartPoint = new Point(rect.Left, rect.Top),
+                IsClosed = true,
+                IsFilled = true,
+            };
+        }
+
+        return path.Figures[0].Clone();
+    }
     /// <summary>
     /// 构造一个闭合圆角矩形 PathFigure：起点位于 top 边左侧（top-left 圆角后），
     /// 顺时针绕一圈回到起点。圆角用 ArcSegment（与 Jalium.UI 内部其它圆角几何

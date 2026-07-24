@@ -1,4 +1,5 @@
 #include "vulkan_lcd_staging.h"
+#include "vulkan_render_lifecycle.h"
 
 #include <array>
 #include <cstdint>
@@ -20,6 +21,56 @@ void Check(bool condition, const char* message)
 
 int main()
 {
+    using jalium::vulkan_lifecycle::Gate;
+    using jalium::vulkan_lifecycle::IdleReclaimGate;
+    using jalium::vulkan_lifecycle::ShouldAutoRepairSwapchain;
+
+    Gate lifecycle;
+    Check(lifecycle.TryBeginFrame(), "idle target starts a frame");
+    Check(!lifecycle.TryEnterExclusive(),
+          "resize cannot enter while BeginDraw is in progress");
+    Check(lifecycle.CommitBeginFrame(), "BeginDraw commits the drawing state");
+    Check(!lifecycle.TryBeginFrame(), "a second BeginDraw is rejected");
+    Check(!lifecycle.TryEnterExclusive(), "resize is busy during an open frame");
+    Check(lifecycle.TryEndFrame(), "EndDraw exclusively claims the open frame");
+    Check(!lifecycle.TryEndFrame(), "a concurrent EndDraw is rejected");
+    Check(!lifecycle.TryEnterExclusive(), "resize is busy while EndDraw presents");
+    Check(lifecycle.CompleteEndFrame(), "EndDraw releases the target");
+    Check(lifecycle.TryEnterExclusive(), "resize enters between frames");
+    Check(!lifecycle.TryBeginFrame(), "BeginDraw is rejected during resize");
+    Check(lifecycle.LeaveExclusive(), "resize releases the target");
+
+    Gate abortedBegin;
+    Check(abortedBegin.TryBeginFrame(), "failed BeginDraw claims the target");
+    Check(abortedBegin.AbortBeginFrame(), "failed BeginDraw returns to idle");
+    Check(abortedBegin.TryEnterExclusive(),
+          "resize proceeds after a failed BeginDraw was unwound");
+    Check(abortedBegin.LeaveExclusive(), "failed-Begin test releases resize");
+
+    Check(!ShouldAutoRepairSwapchain(true, true, false),
+          "Windows waits while the surface still disagrees with the target size");
+    Check(ShouldAutoRepairSwapchain(true, true, true),
+          "Windows repairs a final OUT_OF_DATE after the surface size stabilizes");
+    Check(ShouldAutoRepairSwapchain(true, false, false),
+          "Windows variable-extent WSI can rebuild directly at the target size");
+    Check(ShouldAutoRepairSwapchain(false, true, false),
+          "non-Windows WSI keeps in-place swapchain repair");
+
+    IdleReclaimGate idleReclaim;
+    constexpr int64_t idleWindow = 2'000'000'000LL;
+    Check(!idleReclaim.TryClaim(3'000'000'000LL, idleWindow),
+          "a never-rendered target has nothing to reclaim");
+    idleReclaim.NoteActivity(1'000'000'000LL);
+    Check(!idleReclaim.TryClaim(2'999'999'999LL, idleWindow),
+          "an actively rendered target is not reclaimed by the periodic scan");
+    Check(idleReclaim.TryClaim(3'000'000'000LL, idleWindow),
+          "a genuinely idle target is reclaimed once");
+    Check(!idleReclaim.TryClaim(4'000'000'000LL, idleWindow),
+          "repeated scans in one idle period are cheap no-ops");
+    idleReclaim.NoteActivity(5'000'000'000LL);
+    Check(idleReclaim.TryClaim(7'000'000'000LL, idleWindow),
+          "fresh activity opens one later reclaim period");
+
     std::array<uint8_t, 4> staged = {0, 0, 0, 0};
     const std::array<uint8_t, 4> atlas = {240, 128, 32, 240};
     jalium::vulkan_lcd::AccumulateAtlasCoverage(staged.data(), atlas.data());

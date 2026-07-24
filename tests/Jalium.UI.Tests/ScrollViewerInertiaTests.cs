@@ -193,6 +193,30 @@ public class ScrollViewerInertiaTests
     }
 
     [Fact]
+    public void ScrollViewer_ThumbTrackEndScroll_WithStaleAppliedValue_CommitsPendingPointerPosition()
+    {
+        var viewer = CreateConfiguredViewer(
+            initialVerticalOffset: 0,
+            extentHeight: 2000,
+            viewportHeight: 100,
+            extentWidth: 100,
+            viewportWidth: 100,
+            width: 200,
+            height: 120);
+
+        var verticalBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
+        verticalBar.RaiseEvent(new ScrollEventArgs(ScrollBar.ScrollEvent, ScrollEventType.ThumbTrack, 500.0) { Source = verticalBar });
+
+        // A layout metrics refresh used to write the still-applied content offset back into the
+        // ScrollBar immediately before release. The pending ThumbTrack value is the actual pointer
+        // position and must win only for this stale EndScroll shape.
+        verticalBar.RaiseEvent(new ScrollEventArgs(ScrollBar.ScrollEvent, ScrollEventType.EndScroll, 0.0) { Source = verticalBar });
+
+        Assert.Equal(500.0, viewer.VerticalOffset, precision: 3);
+        Assert.False(GetPrivateField<bool>(viewer, "_hasPendingDragVerticalScroll"));
+    }
+
+    [Fact]
     public void ScrollViewer_PageClick_ShouldApplyImmediately()
     {
         var viewer = CreateConfiguredViewer(

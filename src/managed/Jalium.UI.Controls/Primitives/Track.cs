@@ -165,10 +165,13 @@ public class Track : FrameworkElement
         {
             if (_thumb != value)
             {
-                if (_thumb != null)
+                var oldThumb = _thumb;
+                _thumb = null;
+
+                if (oldThumb != null)
                 {
-                    RemoveVisualChild(_thumb);
-                    DetachThumbDragHandlers(_thumb);
+                    RemoveVisualChild(oldThumb);
+                    DetachThumbDragHandlers(oldThumb);
                 }
 
                 _thumb = value;
@@ -194,9 +197,12 @@ public class Track : FrameworkElement
         {
             if (_decreaseButton != value)
             {
-                if (_decreaseButton != null)
+                var oldButton = _decreaseButton;
+                _decreaseButton = null;
+
+                if (oldButton != null)
                 {
-                    RemoveVisualChild(_decreaseButton);
+                    RemoveVisualChild(oldButton);
                 }
 
                 _decreaseButton = value;
@@ -221,9 +227,12 @@ public class Track : FrameworkElement
         {
             if (_increaseButton != value)
             {
-                if (_increaseButton != null)
+                var oldButton = _increaseButton;
+                _increaseButton = null;
+
+                if (oldButton != null)
                 {
-                    RemoveVisualChild(_increaseButton);
+                    RemoveVisualChild(oldButton);
                 }
 
                 _increaseButton = value;

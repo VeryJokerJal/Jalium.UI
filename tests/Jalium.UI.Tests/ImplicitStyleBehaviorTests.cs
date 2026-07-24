@@ -19,16 +19,16 @@ public class ImplicitStyleBehaviorTests
     }
 
     [Fact]
-    public void ImplicitStyle_OverrideWithoutBasedOn_ShouldNotKeepDefaultTemplate()
+    public void ImplicitStyle_OverrideWithoutBasedOn_KeepsThemeTemplate()
     {
         ResetApplicationState();
         var app = new Application();
 
         try
         {
+            var overrideBackground = new SolidColorBrush(Color.FromRgb(0x11, 0x22, 0x33));
             var overrideStyle = new Style(typeof(ComboBox));
-            overrideStyle.Setters.Add(new Setter(Control.BackgroundProperty, new SolidColorBrush(Color.FromRgb(0x11, 0x22, 0x33))));
-            overrideStyle.Setters.Add(new Setter(Control.ForegroundProperty, new SolidColorBrush(Color.FromRgb(0xEE, 0xEE, 0xEE))));
+            overrideStyle.Setters.Add(new Setter(Control.BackgroundProperty, overrideBackground));
             app.Resources[typeof(ComboBox)] = overrideStyle;
 
             var host = new StackPanel { Width = 400, Height = 200 };
@@ -39,7 +39,11 @@ public class ImplicitStyleBehaviorTests
             host.Arrange(new Rect(0, 0, 400, 200));
 
             Assert.Null(overrideStyle.BasedOn);
-            Assert.Null(comboBox.Template);
+            // The user style's own setter wins…
+            Assert.Same(overrideBackground, comboBox.Background);
+            // …but the theme default style still supplies everything the user style
+            // does not set — the control keeps its default Template and renders.
+            Assert.NotNull(comboBox.Template);
         }
         finally
         {

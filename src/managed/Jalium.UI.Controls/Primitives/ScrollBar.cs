@@ -1,5 +1,6 @@
 ﻿using Jalium.UI.Data;
 using Jalium.UI.Input;
+using Jalium.UI.Input.Internal.Gestures;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
@@ -88,6 +89,17 @@ public class ScrollBar : RangeBase
         DependencyProperty.Register(nameof(IsThumbSlim), typeof(bool), typeof(ScrollBar),
             new PropertyMetadata(false, OnThumbPresentationPropertyChanged));
 
+    /// <summary>
+    /// Identifies the IsOverlayStyle dependency property.
+    /// Overlay scroll bars use a compact edge indicator without track chrome or
+    /// line buttons. The default is enabled on mobile operating systems.
+    /// </summary>
+    internal static readonly DependencyProperty IsOverlayStyleProperty =
+        DependencyProperty.Register(nameof(IsOverlayStyle), typeof(bool), typeof(ScrollBar),
+            new PropertyMetadata(
+                OperatingSystem.IsAndroid() || OperatingSystem.IsIOS(),
+                OnOverlayStyleChanged));
+
     #endregion
 
     #region Routed Events
@@ -152,8 +164,19 @@ public class ScrollBar : RangeBase
         set => SetValue(IsThumbSlimProperty, value);
     }
 
+    /// <summary>
+    /// Gets or sets whether this scroll bar uses the compact mobile overlay style.
+    /// </summary>
+    internal bool IsOverlayStyle
+    {
+        get => (bool)GetValue(IsOverlayStyleProperty)!;
+        set => SetValue(IsOverlayStyleProperty, value);
+    }
+
     /// <summary>Gets the track that owns the thumb and page buttons.</summary>
     public Track Track => _track!;
+
+    internal bool IsThumbDragging => _isDragging;
 
     #endregion
 
@@ -175,6 +198,18 @@ public class ScrollBar : RangeBase
     private bool _hasTrackPagingTarget;
     private double _trackPagingTargetValue;
     private bool _hasCustomLineButtonStyle;
+    private bool _hasOverlayThumbPaddingSnapshot;
+    private bool _overlayThumbHadLocalPadding;
+    private Thickness _overlayThumbLocalPadding;
+    private bool _hasOverlayTrackPresentationSnapshot;
+    private bool _overlayTrackHadLocalOpacity;
+    private double _overlayTrackLocalOpacity;
+    private bool _overlayTrackHadLocalHitTestVisibility;
+    private bool _overlayTrackLocalHitTestVisibility;
+    private GestureRecognizer? _overlayThumbGestureRecognizer;
+    private int _overlayThumbTouchId = -1;
+    private bool _isOverlayThumbTouchDragUnlocked;
+    private bool _isOverlayLongPressExpanded;
     private DispatcherTimer? _autoHideVisualTimer;
     private long _autoHideVisualAnimStartTick;
     private double _autoHideVisualAnimFrom;
@@ -190,6 +225,11 @@ public class ScrollBar : RangeBase
     private const string ArrowBrushKey = "ScrollBarArrow";
     private const double SlimThumbThickness = 2.0;
     private const double ExpandedThumbInset = 4.0;
+    private const double OverlayIndicatorThickness = 2.0;
+    private const double OverlayExpandedIndicatorThickness = 8.0;
+    private const double OverlayIndicatorEdgeInset = 2.0;
+    private const double OverlayTrackEndInset = 3.0;
+    private const double OverlayMinThumbLength = 40.0;
     // Smallest diameter the thumb is allowed to collapse to when content is huge and it bottoms
     // out as a round dot. Keeps the dot visible/grabbable on very thin scroll bars where the
     // expanded cross-axis thickness would otherwise drop below this.
@@ -373,6 +413,10 @@ public class ScrollBar : RangeBase
         _track.Thumb.DragStarted += OnThumbDragStarted;
         _track.Thumb.DragDelta += OnThumbDragDelta;
         _track.Thumb.DragCompleted += OnThumbDragCompleted;
+        _track.Thumb.AddHandler(TouchDownEvent, new RoutedEventHandler(OnOverlayThumbTouchDown), handledEventsToo: true);
+        _track.Thumb.AddHandler(TouchMoveEvent, new RoutedEventHandler(OnOverlayThumbTouchMove), handledEventsToo: true);
+        _track.Thumb.AddHandler(TouchUpEvent, new RoutedEventHandler(OnOverlayThumbTouchUp), handledEventsToo: true);
+        _track.Thumb.AddHandler(LostTouchCaptureEvent, new RoutedEventHandler(OnOverlayThumbLostTouchCapture), handledEventsToo: true);
 
         _track.DecreaseRepeatButton = new RepeatButton
         {
@@ -451,6 +495,7 @@ public class ScrollBar : RangeBase
         if (VisualParent == null)
         {
             StopAutoHideVisualTimer();
+            CompleteOverlayThumbGesture();
         }
         ApplySelfStyle();
         ApplyPartStyles();
@@ -480,19 +525,20 @@ public class ScrollBar : RangeBase
 
             if (_track.Thumb != null)
             {
-                // The minimum thumb length on the scroll axis is the thumb's expanded cross-axis
-                // thickness, so at extreme content ratios (e.g. a million rows) the thumb bottoms
-                // out as a round dot (length == thickness, fully rounded) instead of a long thin
-                // sliver. For normal ratios the proportional length wins and it reads as a pill.
-                var dotDiameter = ComputeThumbDotDiameter();
+                // Desktop keeps the extreme-ratio thumb as a round dot. Mobile keeps
+                // at least 40 DIPs on the scroll axis as well, producing a genuine
+                // finger-sized target while the padded template remains a slim pill.
+                var minimumThumbLength = IsOverlayStyle
+                    ? OverlayMinThumbLength
+                    : ComputeThumbDotDiameter();
                 if (Orientation == Orientation.Vertical)
                 {
-                    _track.Thumb.MinHeight = dotDiameter;
+                    _track.Thumb.MinHeight = minimumThumbLength;
                     _track.Thumb.MinWidth = 0;
                 }
                 else
                 {
-                    _track.Thumb.MinWidth = dotDiameter;
+                    _track.Thumb.MinWidth = minimumThumbLength;
                     _track.Thumb.MinHeight = 0;
                 }
             }
@@ -715,6 +761,7 @@ public class ScrollBar : RangeBase
             border.SetTemplateBinding(Border.BorderBrushProperty, BorderBrushProperty);
             border.SetTemplateBinding(Border.BorderThicknessProperty, BorderThicknessProperty);
             border.SetTemplateBinding(Border.CornerRadiusProperty, CornerRadiusProperty);
+            border.SetTemplateBinding(FrameworkElement.MarginProperty, PaddingProperty);
             return border;
         });
 
@@ -797,7 +844,7 @@ public class ScrollBar : RangeBase
         if (Orientation == Orientation.Vertical)
         {
             var width = double.IsNaN(Width) || Width <= 0 ? DefaultThickness : Width;
-            var buttonHeight = width; // Square buttons
+            var buttonHeight = IsOverlayStyle ? 0.0 : width; // Square desktop buttons
 
             _lineUpButton?.Measure(new Size(width, buttonHeight));
             _lineDownButton?.Measure(new Size(width, buttonHeight));
@@ -814,7 +861,7 @@ public class ScrollBar : RangeBase
         else
         {
             var height = double.IsNaN(Height) || Height <= 0 ? DefaultThickness : Height;
-            var buttonWidth = height; // Square buttons
+            var buttonWidth = IsOverlayStyle ? 0.0 : height; // Square desktop buttons
 
             _lineUpButton?.Measure(new Size(buttonWidth, height));
             _lineDownButton?.Measure(new Size(buttonWidth, height));
@@ -839,9 +886,39 @@ public class ScrollBar : RangeBase
         var crossAxisSize = Orientation == Orientation.Vertical ? finalSize.Width : finalSize.Height;
         ApplyAutoHideVisualState(_autoHideCollapseProgress, crossAxisSize, suppressArrangeInvalidation: true);
 
+        if (IsOverlayStyle)
+        {
+            // Mobile scroll bars are edge indicators, not desktop chrome. Keep a
+            // widened transparent host for a finger-sized Thumb target, while the
+            // visual track spans almost the full axis near the outer edge.
+            _lineUpButton?.Arrange(default);
+            _lineDownButton?.Arrange(default);
+
+            if (Orientation == Orientation.Vertical)
+            {
+                var endInset = Math.Min(OverlayTrackEndInset, Math.Max(0, finalSize.Height / 2));
+                _track?.Arrange(new Rect(
+                    0,
+                    endInset,
+                    Math.Max(0, finalSize.Width),
+                    Math.Max(0, finalSize.Height - endInset * 2)));
+            }
+            else
+            {
+                var endInset = Math.Min(OverlayTrackEndInset, Math.Max(0, finalSize.Width / 2));
+                _track?.Arrange(new Rect(
+                    endInset,
+                    0,
+                    Math.Max(0, finalSize.Width - endInset * 2),
+                    Math.Max(0, finalSize.Height)));
+            }
+
+            return finalSize;
+        }
+
         if (Orientation == Orientation.Vertical)
         {
-            var buttonSize = finalSize.Width;
+            var buttonSize = ControlRenderGeometry.GetAvailableLength(finalSize.Width, finalSize.Height / 2.0);
             var trackHeight = Math.Max(0, finalSize.Height - buttonSize * 2);
 
             _lineUpButton?.Arrange(new Rect(0, 0, finalSize.Width, buttonSize));
@@ -850,7 +927,7 @@ public class ScrollBar : RangeBase
         }
         else
         {
-            var buttonSize = finalSize.Height;
+            var buttonSize = ControlRenderGeometry.GetAvailableLength(finalSize.Height, finalSize.Width / 2.0);
             var trackWidth = Math.Max(0, finalSize.Width - buttonSize * 2);
 
             _lineUpButton?.Arrange(new Rect(0, 0, buttonSize, finalSize.Height));
@@ -1055,6 +1132,16 @@ public class ScrollBar : RangeBase
 
     private void OnThumbDragDelta(object sender, DragDeltaEventArgs e)
     {
+        // Thumb starts its shared touch-drag behavior on TouchDown. Mobile overlay
+        // scroll bars deliberately keep those deltas locked until the hold gesture
+        // succeeds; mouse dragging and non-overlay scroll bars remain immediate.
+        if (IsOverlayStyle &&
+            _overlayThumbTouchId >= 0 &&
+            !_isOverlayThumbTouchDragUnlocked)
+        {
+            return;
+        }
+
         if (_track != null)
         {
             if (!_isDragging)
@@ -1100,6 +1187,136 @@ public class ScrollBar : RangeBase
         {
             Focus();
         }
+    }
+
+    private void OnOverlayThumbTouchDown(object sender, RoutedEventArgs e)
+    {
+        if (!IsOverlayStyle ||
+            e is not TouchEventArgs touchArgs ||
+            sender is not Thumb thumb ||
+            !thumb.IsEnabled ||
+            !TouchHelper.GetIsTouchInteractive(thumb))
+        {
+            return;
+        }
+
+        if (_overlayThumbTouchId >= 0)
+        {
+            // Thumb ignores additional contacts while captured; keep the Hold
+            // recognizer bound to that same owner instead of collapsing and
+            // replacing the active 8-DIP gesture.
+            return;
+        }
+
+        CompleteOverlayThumbGesture();
+        _overlayThumbTouchId = touchArgs.TouchDevice.Id;
+        _isOverlayThumbTouchDragUnlocked = false;
+        EnsureOverlayThumbGestureRecognizer().ProcessDownEvent(
+            CreateOverlayPointerPoint(touchArgs, isInContact: true));
+    }
+
+    private void OnOverlayThumbTouchMove(object sender, RoutedEventArgs e)
+    {
+        if (!IsOverlayStyle ||
+            e is not TouchEventArgs touchArgs ||
+            touchArgs.TouchDevice.Id != _overlayThumbTouchId ||
+            _overlayThumbGestureRecognizer == null)
+        {
+            return;
+        }
+
+        _overlayThumbGestureRecognizer.ProcessMoveEvents(
+            [CreateOverlayPointerPoint(touchArgs, isInContact: true)]);
+    }
+
+    private void OnOverlayThumbTouchUp(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs || touchArgs.TouchDevice.Id != _overlayThumbTouchId)
+            return;
+
+        _overlayThumbGestureRecognizer?.ProcessUpEvent(
+            CreateOverlayPointerPoint(touchArgs, isInContact: false));
+        CompleteOverlayThumbGesture();
+    }
+
+    private void OnOverlayThumbLostTouchCapture(object sender, RoutedEventArgs e)
+    {
+        if (e is TouchEventArgs touchArgs && touchArgs.TouchDevice.Id == _overlayThumbTouchId)
+        {
+            CompleteOverlayThumbGesture();
+        }
+    }
+
+    private GestureRecognizer EnsureOverlayThumbGestureRecognizer()
+    {
+        if (_overlayThumbGestureRecognizer != null)
+            return _overlayThumbGestureRecognizer;
+
+        _overlayThumbGestureRecognizer = new GestureRecognizer(Dispatcher)
+        {
+            // Hold only: moving before the threshold cancels expansion, while
+            // dragging after a completed hold keeps the wider indicator active.
+            GestureSettings = GestureSettings.Hold
+        };
+        _overlayThumbGestureRecognizer.Holding += OnOverlayThumbHolding;
+        return _overlayThumbGestureRecognizer;
+    }
+
+    private void OnOverlayThumbHolding(object? sender, HoldingEventArgs e)
+    {
+        if (e.HoldingState == HoldingState.Started &&
+            IsOverlayStyle &&
+            _overlayThumbTouchId >= 0)
+        {
+            // Unlock from the finger's current position. Thumb has continued to
+            // update its previous pointer position while ScrollBar ignored the
+            // pre-hold deltas, so the first accepted move does not jump.
+            _isOverlayThumbTouchDragUnlocked = true;
+            _thumbDragStartValue = Value;
+            _thumbDragAccumulatedHorizontal = 0;
+            _thumbDragAccumulatedVertical = 0;
+            StartAutoHideVisualTransition(0.0);
+            SetOverlayLongPressExpanded(true);
+        }
+    }
+
+    private static PointerPoint CreateOverlayPointerPoint(TouchEventArgs e, bool isInContact)
+    {
+        return new PointerPoint(
+            unchecked((uint)e.TouchDevice.Id),
+            e.GetTouchPoint(null).Position,
+            PointerDeviceType.Touch,
+            isInContact,
+            new PointerPointProperties
+            {
+                IsPrimary = true,
+                PointerUpdateKind = PointerUpdateKind.Other
+            },
+            unchecked((ulong)Math.Max(0, e.Timestamp)),
+            0);
+    }
+
+    private void CompleteOverlayThumbGesture()
+    {
+        _overlayThumbGestureRecognizer?.CompleteGesture();
+        _overlayThumbTouchId = -1;
+        _isOverlayThumbTouchDragUnlocked = false;
+        SetOverlayLongPressExpanded(false);
+    }
+
+    private void SetOverlayLongPressExpanded(bool expanded)
+    {
+        expanded &= IsOverlayStyle;
+        if (_isOverlayLongPressExpanded == expanded)
+            return;
+
+        _isOverlayLongPressExpanded = expanded;
+        ApplyAutoHideVisualState(_autoHideCollapseProgress);
+    }
+
+    internal void AdvanceOverlayLongPressClockForTesting(long milliseconds)
+    {
+        _overlayThumbGestureRecognizer?.AdvanceClockForTesting(milliseconds);
     }
 
     private void RaiseScrollEvent(ScrollEventType scrollType)
@@ -1156,6 +1373,26 @@ public class ScrollBar : RangeBase
         // No action needed here — avoids duplicate animation starts.
     }
 
+    private static void OnOverlayStyleChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not ScrollBar scrollBar)
+            return;
+
+        if (!scrollBar.IsOverlayStyle)
+        {
+            scrollBar.CompleteOverlayThumbGesture();
+        }
+
+        scrollBar.UpdateTrackBindings();
+        scrollBar.ApplyAutoHideVisualState(
+            scrollBar._autoHideCollapseProgress,
+            null,
+            suppressArrangeInvalidation: true);
+        scrollBar.InvalidateMeasure();
+        scrollBar.InvalidateArrange();
+        scrollBar.InvalidateVisual();
+    }
+
     private void EnsureAutoHideVisualTimer()
     {
         if (_autoHideVisualTimer != null)
@@ -1177,6 +1414,15 @@ public class ScrollBar : RangeBase
             _autoHideCollapseProgress = targetProgress;
             ApplyAutoHideVisualState(_autoHideCollapseProgress);
             StopAutoHideVisualTimer();
+            return;
+        }
+
+        // Arrange can ask for the same state on every layout pass. Do not
+        // restart an in-flight fade toward that target or a busy layout loop
+        // could keep the indicator partially visible indefinitely.
+        if (_autoHideVisualTimer is { IsEnabled: true } &&
+            Math.Abs(_autoHideVisualAnimTo - targetProgress) <= 0.001)
+        {
             return;
         }
 
@@ -1215,56 +1461,94 @@ public class ScrollBar : RangeBase
     {
         collapseProgress = Math.Clamp(collapseProgress, 0.0, 1.0);
         _autoHideCollapseProgress = collapseProgress;
-        _chromeOpacity = 1.0 - collapseProgress;
+        _chromeOpacity = IsOverlayStyle ? 0.0 : 1.0 - collapseProgress;
 
         if (_lineUpButton != null && _lineDownButton != null)
         {
-            // Use Visibility.Collapsed when fully collapsed so the rendering pipeline
-            // skips the buttons entirely (Opacity alone may not hide them reliably).
-            var fullyCollapsed = collapseProgress >= 0.999;
-
-            if (_hasCustomLineButtonStyle)
+            if (IsOverlayStyle)
             {
-                var targetVisibility = fullyCollapsed ? Visibility.Collapsed : Visibility.Visible;
-                if (_lineUpButton.Visibility != targetVisibility)
-                    _lineUpButton.Visibility = targetVisibility;
-                if (_lineDownButton.Visibility != targetVisibility)
-                    _lineDownButton.Visibility = targetVisibility;
-
-                if (!fullyCollapsed)
-                {
-                    var arrowOpacity = 1.0 - collapseProgress;
-                    _lineUpButton.Opacity = arrowOpacity;
-                    _lineDownButton.Opacity = arrowOpacity;
-                }
+                _lineUpButton.Visibility = Visibility.Collapsed;
+                _lineDownButton.Visibility = Visibility.Collapsed;
+                _lineUpButton.Opacity = 0;
+                _lineDownButton.Opacity = 0;
+                _lineUpButton.IsHitTestVisible = false;
+                _lineDownButton.IsHitTestVisible = false;
             }
             else
             {
-                // Keep fallback mode line buttons transparent to avoid default square overlays.
-                _lineUpButton.Opacity = 0;
-                _lineDownButton.Opacity = 0;
-                if (fullyCollapsed)
+                _lineUpButton.IsHitTestVisible = true;
+                _lineDownButton.IsHitTestVisible = true;
+
+                // Use Visibility.Collapsed when fully collapsed so the rendering pipeline
+                // skips the buttons entirely (Opacity alone may not hide them reliably).
+                var fullyCollapsed = collapseProgress >= 0.999;
+
+                if (_hasCustomLineButtonStyle)
                 {
-                    if (_lineUpButton.Visibility != Visibility.Collapsed)
-                        _lineUpButton.Visibility = Visibility.Collapsed;
-                    if (_lineDownButton.Visibility != Visibility.Collapsed)
-                        _lineDownButton.Visibility = Visibility.Collapsed;
+                    var targetVisibility = fullyCollapsed ? Visibility.Collapsed : Visibility.Visible;
+                    if (_lineUpButton.Visibility != targetVisibility)
+                        _lineUpButton.Visibility = targetVisibility;
+                    if (_lineDownButton.Visibility != targetVisibility)
+                        _lineDownButton.Visibility = targetVisibility;
+
+                    if (!fullyCollapsed)
+                    {
+                        var arrowOpacity = 1.0 - collapseProgress;
+                        _lineUpButton.Opacity = arrowOpacity;
+                        _lineDownButton.Opacity = arrowOpacity;
+                    }
                 }
                 else
                 {
-                    if (_lineUpButton.Visibility != Visibility.Visible)
-                        _lineUpButton.Visibility = Visibility.Visible;
-                    if (_lineDownButton.Visibility != Visibility.Visible)
-                        _lineDownButton.Visibility = Visibility.Visible;
+                    // Keep fallback mode line buttons transparent to avoid default square overlays.
+                    _lineUpButton.Opacity = 0;
+                    _lineDownButton.Opacity = 0;
+                    if (fullyCollapsed)
+                    {
+                        if (_lineUpButton.Visibility != Visibility.Collapsed)
+                            _lineUpButton.Visibility = Visibility.Collapsed;
+                        if (_lineDownButton.Visibility != Visibility.Collapsed)
+                            _lineDownButton.Visibility = Visibility.Collapsed;
+                    }
+                    else
+                    {
+                        if (_lineUpButton.Visibility != Visibility.Visible)
+                            _lineUpButton.Visibility = Visibility.Visible;
+                        if (_lineDownButton.Visibility != Visibility.Visible)
+                            _lineDownButton.Visibility = Visibility.Visible;
+                    }
                 }
             }
         }
 
+        if (_track?.DecreaseRepeatButton != null && _track.IncreaseRepeatButton != null)
+        {
+            // Touch panning should remain available across the transparent overlay
+            // gutter. Only the thumb itself stays interactive in mobile mode.
+            _track.DecreaseRepeatButton.IsHitTestVisible = !IsOverlayStyle;
+            _track.IncreaseRepeatButton.IsHitTestVisible = !IsOverlayStyle;
+        }
+
         if (_track != null)
         {
+            if (IsOverlayStyle)
+            {
+                ApplyOverlayTrackPresentation(
+                    _track,
+                    opacity: 1.0 - collapseProgress,
+                    isHitTestVisible: collapseProgress < 0.999);
+            }
+            else
+            {
+                RestoreTrackPresentationAfterOverlay(_track);
+            }
+
             var expandedThickness = ComputeExpandedThumbCrossAxisThickness(crossAxisSize);
-            var thumbThickness = Lerp(expandedThickness, SlimThumbThickness, collapseProgress);
-            thumbThickness = Math.Max(SlimThumbThickness, thumbThickness);
+            var thumbThickness = IsOverlayStyle
+                ? expandedThickness
+                : Math.Max(
+                    SlimThumbThickness,
+                    Lerp(expandedThickness, SlimThumbThickness, collapseProgress));
             var currentThickness = _track.ThumbCrossAxisThickness;
 
             if (!double.IsFinite(currentThickness) || Math.Abs(currentThickness - thumbThickness) > 0.001)
@@ -1274,6 +1558,22 @@ public class ScrollBar : RangeBase
                 {
                     _track.RefreshThumbVisualLayout();
                 }
+            }
+
+            if (IsOverlayStyle && _track.Thumb != null)
+            {
+                var indicatorThickness = _isOverlayLongPressExpanded
+                    ? OverlayExpandedIndicatorThickness
+                    : OverlayIndicatorThickness;
+                ApplyOverlayThumbInsets(
+                    _track.Thumb,
+                    thumbThickness,
+                    indicatorThickness,
+                    suppressArrangeInvalidation);
+            }
+            else if (_track.Thumb != null)
+            {
+                RestoreThumbPaddingAfterOverlay(_track.Thumb);
             }
         }
 
@@ -1303,7 +1603,125 @@ public class ScrollBar : RangeBase
             crossAxisSize = DefaultThickness;
         }
 
+        if (IsOverlayStyle)
+        {
+            // The Thumb itself fills the mobile hit strip. Its template uses
+            // Padding to render only a 2-DIP idle / 8-DIP long-press indicator.
+            return crossAxisSize;
+        }
+
         return Math.Max(SlimThumbThickness, crossAxisSize - ExpandedThumbInset);
+    }
+
+    private void ApplyOverlayThumbInsets(
+        Thumb thumb,
+        double crossAxisSize,
+        double indicatorThickness,
+        bool suppressArrangeInvalidation)
+    {
+        if (!_hasOverlayThumbPaddingSnapshot)
+        {
+            _overlayThumbHadLocalPadding = thumb.HasLocalValue(PaddingProperty);
+            if (_overlayThumbHadLocalPadding && thumb.ReadLocalValue(PaddingProperty) is Thickness localPadding)
+            {
+                _overlayThumbLocalPadding = localPadding;
+            }
+
+            _hasOverlayThumbPaddingSnapshot = true;
+        }
+
+        crossAxisSize = Math.Max(0, crossAxisSize);
+        var edgeInset = Math.Min(OverlayIndicatorEdgeInset, crossAxisSize);
+        indicatorThickness = Math.Min(
+            Math.Max(0, indicatorThickness),
+            Math.Max(0, crossAxisSize - edgeInset));
+        var leadingInset = Math.Max(0, crossAxisSize - edgeInset - indicatorThickness);
+
+        var padding = Orientation == Orientation.Vertical
+            ? new Thickness(leadingInset, 0, edgeInset, 0)
+            : new Thickness(0, leadingInset, 0, edgeInset);
+
+        if (thumb.Padding != padding)
+        {
+            thumb.Padding = padding;
+            if (!suppressArrangeInvalidation)
+            {
+                _track?.RefreshThumbVisualLayout();
+            }
+        }
+    }
+
+    private void RestoreThumbPaddingAfterOverlay(Thumb thumb)
+    {
+        if (!_hasOverlayThumbPaddingSnapshot)
+            return;
+
+        if (_overlayThumbHadLocalPadding)
+        {
+            thumb.Padding = _overlayThumbLocalPadding;
+        }
+        else
+        {
+            thumb.ClearValue(PaddingProperty);
+        }
+
+        _hasOverlayThumbPaddingSnapshot = false;
+        _overlayThumbHadLocalPadding = false;
+        _overlayThumbLocalPadding = default;
+    }
+
+    private void ApplyOverlayTrackPresentation(Track track, double opacity, bool isHitTestVisible)
+    {
+        if (!_hasOverlayTrackPresentationSnapshot)
+        {
+            _overlayTrackHadLocalOpacity = track.HasLocalValue(UIElement.OpacityProperty);
+            if (_overlayTrackHadLocalOpacity && track.ReadLocalValue(UIElement.OpacityProperty) is double localOpacity)
+            {
+                _overlayTrackLocalOpacity = localOpacity;
+            }
+
+            _overlayTrackHadLocalHitTestVisibility = track.HasLocalValue(UIElement.IsHitTestVisibleProperty);
+            if (_overlayTrackHadLocalHitTestVisibility &&
+                track.ReadLocalValue(UIElement.IsHitTestVisibleProperty) is bool localHitTestVisibility)
+            {
+                _overlayTrackLocalHitTestVisibility = localHitTestVisibility;
+            }
+
+            _hasOverlayTrackPresentationSnapshot = true;
+        }
+
+        track.Opacity = Math.Clamp(opacity, 0.0, 1.0);
+        track.IsHitTestVisible = isHitTestVisible;
+    }
+
+    private void RestoreTrackPresentationAfterOverlay(Track track)
+    {
+        if (!_hasOverlayTrackPresentationSnapshot)
+            return;
+
+        if (_overlayTrackHadLocalOpacity)
+        {
+            track.Opacity = _overlayTrackLocalOpacity;
+        }
+        else
+        {
+            track.ClearValue(UIElement.OpacityProperty);
+        }
+
+        if (_overlayTrackHadLocalHitTestVisibility)
+        {
+            track.IsHitTestVisible = _overlayTrackLocalHitTestVisibility;
+        }
+        else
+        {
+            track.ClearValue(UIElement.IsHitTestVisibleProperty);
+        }
+
+        _hasOverlayTrackPresentationSnapshot = false;
+        _overlayTrackHadLocalOpacity = false;
+        _overlayTrackLocalOpacity = default;
+        _overlayTrackHadLocalHitTestVisibility = false;
+        _overlayTrackLocalHitTestVisibility = default;
     }
 
     // Diameter of the round dot the thumb collapses to at extreme content ratios. It matches the
@@ -1338,10 +1756,16 @@ public class ScrollBar : RangeBase
         _thumbDragStartValue = Value;
         _thumbDragAccumulatedHorizontal = 0;
         _thumbDragAccumulatedVertical = 0;
+
+        if (IsOverlayStyle)
+        {
+            StartAutoHideVisualTransition(0.0);
+        }
     }
 
     private void EndThumbDrag()
     {
+        CompleteOverlayThumbGesture();
         _isDragging = false;
         _thumbDragAccumulatedHorizontal = 0;
         _thumbDragAccumulatedVertical = 0;
@@ -1375,6 +1799,57 @@ public class ScrollBar : RangeBase
     #endregion
 
     #region Rendering
+
+    /// <inheritdoc />
+    protected override HitTestResult? HitTestCore(Point point)
+    {
+        var result = base.HitTestCore(point);
+        if (!IsOverlayStyle || result?.VisualHit is not Visual hitVisual)
+        {
+            return result;
+        }
+
+        // The widened mobile host must not steal taps from content underneath.
+        // Only the proportional Thumb segment is interactive; empty track and
+        // chrome pass through to the next sibling in the ScrollViewer.
+        for (Visual? current = hitVisual; current != null && !ReferenceEquals(current, this); current = current.VisualParent)
+        {
+            if (ReferenceEquals(current, _track?.Thumb))
+            {
+                // The Thumb fills the wider overlay layout host so the 8-DIP
+                // long-press visual has room to expand inward. That transparent
+                // layout space is not a touch target: only the original 2-DIP
+                // strip may start interaction. After Hold, touch capture keeps
+                // the active contact dragging even when it leaves that strip.
+                return IsPointWithinOverlayIndicator(point) ? result : null;
+            }
+        }
+
+        return null;
+    }
+
+    private bool IsPointWithinOverlayIndicator(Point point)
+    {
+        var crossAxisSize = Orientation == Orientation.Vertical
+            ? RenderSize.Width
+            : RenderSize.Height;
+        if (!double.IsFinite(crossAxisSize) || crossAxisSize <= 0)
+            return false;
+
+        var edgeInset = Math.Min(OverlayIndicatorEdgeInset, crossAxisSize);
+        var indicatorThickness = Math.Min(
+            OverlayIndicatorThickness,
+            Math.Max(0, crossAxisSize - edgeInset));
+        var indicatorStart = Math.Max(0, crossAxisSize - edgeInset - indicatorThickness);
+        var indicatorEnd = indicatorStart + indicatorThickness;
+        // FrameworkElement.HitTestCore receives points in the parent coordinate
+        // space; normalize to this ScrollBar before comparing with RenderSize.
+        var crossAxisPoint = Orientation == Orientation.Vertical
+            ? point.X - VisualBounds.X
+            : point.Y - VisualBounds.Y;
+
+        return crossAxisPoint >= indicatorStart && crossAxisPoint <= indicatorEnd;
+    }
 
     /// <inheritdoc />
     protected override void OnRender(DrawingContext drawingContext)

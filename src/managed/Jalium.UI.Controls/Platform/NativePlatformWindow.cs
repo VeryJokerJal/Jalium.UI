@@ -470,6 +470,7 @@ internal sealed partial class NativePlatformWindow : IPlatformWindow
                     evt.PointerFlags = (uint)idata[9];
                     evt.PointerToolType = idata[10];
                     evt.PointerButtons = (uint)idata[11];
+                    evt.PointerTimestampMillis = *(long*)((byte*)data + 48);
                     break;
 
                 case PlatformEventType.SafeAreaChanged:

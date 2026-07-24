@@ -241,6 +241,39 @@ public class HitTestVisibilityTests
         Assert.Same(topBar, topBarHit);
     }
 
+    [Fact]
+    public void ClipToBoundsRejectsOutsidePointBeforeWalkingChildSubtree()
+    {
+        var child = new CountingBorder
+        {
+            Width = 20,
+            Height = 20,
+            Background = new SolidColorBrush(Color.Black)
+        };
+        Canvas.SetLeft(child, 50);
+
+        var canvas = new Canvas
+        {
+            Width = 40,
+            Height = 30,
+            ClipToBounds = true
+        };
+        canvas.Children.Add(child);
+        canvas.Measure(new Size(40, 30));
+        canvas.Arrange(new Rect(0, 0, 40, 30));
+
+        Assert.Null(canvas.HitTest(new Point(55, 10)));
+        Assert.Equal(0, child.HitTestCount);
+
+        // Preserve the existing explicit-Clip precedence: a custom clip may
+        // deliberately expose content beyond the nominal RenderSize.
+        canvas.Clip = new RectangleGeometry(new Rect(0, 0, 80, 30));
+        var hit = canvas.HitTest(new Point(55, 10));
+
+        Assert.Same(child, hit?.VisualHit);
+        Assert.Equal(1, child.HitTestCount);
+    }
+
     private static UIElement? InvokeHitTestElement(Window window, Point point)
     {
         var method = typeof(Window).GetMethod("HitTestElement", BindingFlags.Instance | BindingFlags.NonPublic);

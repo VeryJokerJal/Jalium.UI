@@ -248,6 +248,8 @@ JaliumResult SoftwareTextFormat::MeasureText(
 
         TEXTMETRICW tm{};
         BOOL haveTm = GetTextMetricsW(hdc, &tm);
+        SIZE extentIncludingTrailingWhitespace{};
+        BOOL haveIncludingExtent = GetTextExtentPoint32W(hdc, text, static_cast<int>(textLength), &extentIncludingTrailingWhitespace);
 
         // DT_EXTERNALLEADING makes DrawText advance lines by
         // tmHeight + tmExternalLeading instead of bare tmHeight, matching how
@@ -272,6 +274,9 @@ JaliumResult SoftwareTextFormat::MeasureText(
             // GDI ruler is what lets the managed layout box match what
             // RenderTextWithGDI paints.
             metrics->width = (float)(rc.right - rc.left);
+            metrics->widthIncludingTrailingWhitespace = haveIncludingExtent
+                ? static_cast<float>(extentIncludingTrailingWhitespace.cx)
+                : metrics->width;
             metrics->height = (float)(rc.bottom - rc.top);
             metrics->lineHeight = (float)(tm.tmHeight + tm.tmExternalLeading);
             metrics->baseline = (float)tm.tmAscent;
@@ -305,6 +310,7 @@ JaliumResult SoftwareTextFormat::MeasureText(
     if (maxHeight > 0) totalHeight = std::min(totalHeight, maxHeight);
 
     metrics->width = totalWidth;
+    metrics->widthIncludingTrailingWhitespace = totalWidth;
     metrics->height = totalHeight;
     metrics->lineHeight = lineHeight;
     metrics->baseline = ascent;
@@ -1430,9 +1436,19 @@ JaliumResult SoftwareRenderTarget::EndDraw()
     }
 #endif
 #ifdef __ANDROID__
-    // Present to Android ANativeWindow
-    LOGI_SW("EndDraw: platform=%d, handle0=%p, fb=%dx%d",
-            surfaceDescriptor_.platform, (void*)surfaceDescriptor_.handle0, width_, height_);
+    // Present to Android ANativeWindow. Success-path logging is throttled to
+    // the first few frames per render target (surface bring-up diagnostics
+    // only — the previous unconditional per-frame LOGI_SW triple flooded
+    // logcat at present rate, and a function-level static spent the budget
+    // once per process, leaving rebuilt RTs undiagnosed); failure paths keep
+    // logging unconditionally.
+    const bool logPresent = presentLogFramesLeft_ > 0;
+    if (logPresent)
+    {
+        --presentLogFramesLeft_;
+        LOGI_SW("EndDraw: platform=%d, handle0=%p, fb=%dx%d",
+                surfaceDescriptor_.platform, (void*)surfaceDescriptor_.handle0, width_, height_);
+    }
     if (surfaceDescriptor_.platform == JALIUM_PLATFORM_ANDROID &&
         surfaceDescriptor_.handle0 != 0)
     {
@@ -1440,35 +1456,55 @@ JaliumResult SoftwareRenderTarget::EndDraw()
 
         ANativeWindow_Buffer buffer;
         int lockResult = ANativeWindow_lock(nativeWindow, &buffer, nullptr);
-        LOGI_SW("ANativeWindow_lock result=%d, buffer=%dx%d stride=%d", lockResult, buffer.width, buffer.height, buffer.stride);
-        if (lockResult >= 0)
+        if (lockResult < 0)
         {
-            auto* dst = static_cast<uint8_t*>(buffer.bits);
-            const auto* src = fb_.pixels.data();
-            int32_t copyHeight = std::min(height_, buffer.height);
-            int32_t copyWidth = std::min(width_, buffer.width);
-            uint32_t dstStride = buffer.stride * 4; // stride is in pixels
-
-            // BGRA → RGBA channel swap + copy (ANativeWindow uses RGBA)
-            for (int32_t y = 0; y < copyHeight; y++)
-            {
-                const uint8_t* srcRow = src + y * width_ * 4;
-                uint8_t* dstRow = dst + y * dstStride;
-                for (int32_t x = 0; x < copyWidth; x++)
-                {
-                    dstRow[x * 4 + 0] = srcRow[x * 4 + 2]; // R ← B
-                    dstRow[x * 4 + 1] = srcRow[x * 4 + 1]; // G ← G
-                    dstRow[x * 4 + 2] = srcRow[x * 4 + 0]; // B ← R
-                    dstRow[x * 4 + 3] = srcRow[x * 4 + 3]; // A ← A
-                }
-            }
-
-            ANativeWindow_unlockAndPost(nativeWindow);
-            LOGI_SW("ANativeWindow_unlockAndPost done");
-        }
-        else
-        {
+            // The frame never reached the surface. Falling through to
+            // JALIUM_OK here (as this branch used to) made managed clear its
+            // damage and let the render loop go idle on a frame nobody saw —
+            // once the CompositionTarget keep-alive expired the window stayed
+            // black with nothing left to trigger a repaint. Report the
+            // dropped present like the Linux desktop paths above so managed
+            // keeps the damage and retries.
             LOGE_SW("ANativeWindow_lock failed: %d", lockResult);
+            return JALIUM_ERROR_PRESENT_FAILED;
+        }
+        if (logPresent)
+        {
+            LOGI_SW("ANativeWindow_lock result=%d, buffer=%dx%d stride=%d",
+                    lockResult, buffer.width, buffer.height, buffer.stride);
+        }
+
+        auto* dst = static_cast<uint8_t*>(buffer.bits);
+        const auto* src = fb_.pixels.data();
+        int32_t copyHeight = std::min(height_, buffer.height);
+        int32_t copyWidth = std::min(width_, buffer.width);
+        uint32_t dstStride = buffer.stride * 4; // stride is in pixels
+
+        // BGRA → RGBA channel swap + copy (ANativeWindow uses RGBA)
+        for (int32_t y = 0; y < copyHeight; y++)
+        {
+            const uint8_t* srcRow = src + y * width_ * 4;
+            uint8_t* dstRow = dst + y * dstStride;
+            for (int32_t x = 0; x < copyWidth; x++)
+            {
+                dstRow[x * 4 + 0] = srcRow[x * 4 + 2]; // R ← B
+                dstRow[x * 4 + 1] = srcRow[x * 4 + 1]; // G ← G
+                dstRow[x * 4 + 2] = srcRow[x * 4 + 0]; // B ← R
+                dstRow[x * 4 + 3] = srcRow[x * 4 + 3]; // A ← A
+            }
+        }
+
+        int unlockResult = ANativeWindow_unlockAndPost(nativeWindow);
+        if (unlockResult < 0)
+        {
+            // Same fake-success hazard as a failed lock: the buffer was never
+            // posted, so the frame is not on screen.
+            LOGE_SW("ANativeWindow_unlockAndPost failed: %d", unlockResult);
+            return JALIUM_ERROR_PRESENT_FAILED;
+        }
+        if (logPresent)
+        {
+            LOGI_SW("ANativeWindow_unlockAndPost done");
         }
     }
 #endif
@@ -3120,16 +3156,48 @@ void SoftwareRenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w,
     auto* sb = dynamic_cast<SoftwareBitmap*>(bitmap);
     if (!sb || sb->pixels_.empty()) return;
 
-    float tx, ty;
-    currentTransform_.Apply(x, y, tx, ty);
     if (w <= 0.0f || h <= 0.0f) return;
 
-    // Keep the destination origin in float and bilinear-sample the source, so an
-    // animated image translates smoothly sub-pixel instead of snapping its
-    // top-left to a whole pixel; boundary pixels are weighted by analytic edge
-    // coverage. The destination extent stays the caller's w/h (matching the
-    // previous behaviour) — only the origin handling changes.
-    float left = tx, top = ty, right = tx + w, bottom = ty + h;
+    // Bitmap destinations are expressed in DIPs, just like every other drawing
+    // primitive. Transform all four corners so the root DPI scale (and any
+    // element transform) applies to the extent as well as the origin. The old
+    // path transformed only (x, y), leaving w/h in physical pixels; at Android
+    // densities that rendered images at roughly 1 / density of their layout
+    // slot while Borders and other transformed primitives remained full-size.
+    float quad[8];
+    currentTransform_.Apply(x,     y,     quad[0], quad[1]);
+    currentTransform_.Apply(x + w, y,     quad[2], quad[3]);
+    currentTransform_.Apply(x + w, y + h, quad[4], quad[5]);
+    currentTransform_.Apply(x,     y + h, quad[6], quad[7]);
+
+    float left = quad[0], top = quad[1], right = quad[0], bottom = quad[1];
+    for (size_t i = 2; i < 8; i += 2) {
+        left = std::min(left, quad[i]);
+        top = std::min(top, quad[i + 1]);
+        right = std::max(right, quad[i]);
+        bottom = std::max(bottom, quad[i + 1]);
+    }
+    if (!std::isfinite(left) || !std::isfinite(top) ||
+        !std::isfinite(right) || !std::isfinite(bottom) ||
+        right <= left || bottom <= top)
+        return;
+
+    // Device pixels are mapped back into the untransformed destination before
+    // UV calculation. This preserves image orientation under negative scales
+    // and makes rotation/shear correct instead of stretching the AABB itself.
+    const float* m = currentTransform_.m;
+    const float determinant = m[0] * m[3] - m[1] * m[2];
+    if (!std::isfinite(determinant) || std::abs(determinant) < 1.0e-8f)
+        return;
+    const float invDeterminant = 1.0f / determinant;
+    const SoftwareTransform inverse = {{
+        m[3] * invDeterminant,
+        -m[1] * invDeterminant,
+        -m[2] * invDeterminant,
+        m[0] * invDeterminant,
+        (m[2] * m[5] - m[3] * m[4]) * invDeterminant,
+        (m[1] * m[4] - m[0] * m[5]) * invDeterminant
+    }};
     int32_t px0 = std::max(0, (int32_t)std::floor(left));
     int32_t py0 = std::max(0, (int32_t)std::floor(top));
     int32_t px1 = std::min(width_, (int32_t)std::ceil(right));
@@ -3140,28 +3208,50 @@ void SoftwareRenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w,
     if (sw <= 0 || shh <= 0) return;
     const float invW = 1.0f / w, invH = 1.0f / h;
     const float globalOpacity = opacity * currentOpacity_;
+    const bool axisAligned = std::abs(m[1]) < 1.0e-6f && std::abs(m[2]) < 1.0e-6f;
+
+    auto isInsideDestination = [&](float deviceX, float deviceY) {
+        float localX, localY;
+        inverse.Apply(deviceX, deviceY, localX, localY);
+        return localX >= x && localX < x + w && localY >= y && localY < y + h;
+    };
 
     for (int32_t dy = py0; dy < py1; dy++) {
-        float covY = std::min((float)dy + 1.0f, bottom) - std::max((float)dy, top);
-        if (covY <= 0.0f) continue;
-        if (covY > 1.0f) covY = 1.0f;
-        float v = ((float)dy + 0.5f - top) * invH * (float)shh - 0.5f;
-        float v0f = std::floor(v);
-        int32_t v0 = std::clamp((int32_t)v0f, 0, shh - 1);
-        int32_t v1 = std::clamp((int32_t)v0f + 1, 0, shh - 1);
-        float fv = v - v0f;
-
         for (int32_t dx = px0; dx < px1; dx++) {
             if (!clipStack_.empty() && IsClipped((float)dx + 0.5f, (float)dy + 0.5f)) continue;
-            float covX = std::min((float)dx + 1.0f, right) - std::max((float)dx, left);
-            if (covX <= 0.0f) continue;
-            if (covX > 1.0f) covX = 1.0f;
 
-            float u = ((float)dx + 0.5f - left) * invW * (float)sw - 0.5f;
+            float coverage;
+            if (axisAligned) {
+                const float covX = std::clamp(
+                    std::min((float)dx + 1.0f, right) - std::max((float)dx, left),
+                    0.0f, 1.0f);
+                const float covY = std::clamp(
+                    std::min((float)dy + 1.0f, bottom) - std::max((float)dy, top),
+                    0.0f, 1.0f);
+                coverage = covX * covY;
+            } else {
+                // Keep transformed bitmap edges antialiased without charging
+                // the common DPI/translation path for extra samples.
+                coverage = 0.25f * (
+                    (isInsideDestination((float)dx + 0.25f, (float)dy + 0.25f) ? 1.0f : 0.0f) +
+                    (isInsideDestination((float)dx + 0.75f, (float)dy + 0.25f) ? 1.0f : 0.0f) +
+                    (isInsideDestination((float)dx + 0.25f, (float)dy + 0.75f) ? 1.0f : 0.0f) +
+                    (isInsideDestination((float)dx + 0.75f, (float)dy + 0.75f) ? 1.0f : 0.0f));
+            }
+            if (coverage <= 0.0f) continue;
+
+            float localX, localY;
+            inverse.Apply((float)dx + 0.5f, (float)dy + 0.5f, localX, localY);
+            float u = (localX - x) * invW * (float)sw - 0.5f;
+            float v = (localY - y) * invH * (float)shh - 0.5f;
             float u0f = std::floor(u);
+            float v0f = std::floor(v);
             int32_t u0 = std::clamp((int32_t)u0f, 0, sw - 1);
             int32_t u1 = std::clamp((int32_t)u0f + 1, 0, sw - 1);
+            int32_t v0 = std::clamp((int32_t)v0f, 0, shh - 1);
+            int32_t v1 = std::clamp((int32_t)v0f + 1, 0, shh - 1);
             float fu = u - u0f;
+            float fv = v - v0f;
 
             auto texel = [&](int32_t sxc, int32_t syc, float& tb, float& tg, float& tr, float& ta) {
                 size_t i = ((size_t)syc * (size_t)sw + (size_t)sxc) * 4;
@@ -3182,7 +3272,7 @@ void SoftwareRenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w,
             float sr  = r00 * w00 + r10 * w10 + r01 * w01 + r11 * w11;
             float sa  = a00 * w00 + a10 * w10 + a01 * w01 + a11 * w11;
 
-            float alpha = sa * globalOpacity * covX * covY;
+            float alpha = sa * globalOpacity * coverage;
             uint8_t fa = (uint8_t)std::clamp(alpha + 0.5f, 0.0f, 255.0f);
             if (fa == 0) continue;
             fb_.BlendPixel(dx, dy,

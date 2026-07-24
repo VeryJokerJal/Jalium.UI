@@ -124,6 +124,101 @@ public class PrimitiveThemeTests
     }
 
     [Fact]
+    public void Button_LocalBackground_Hover_UsesTemplateTriggerOnRootBorder()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var accent = new SolidColorBrush(Color.FromRgb(8, 148, 138));
+            var button = new Button
+            {
+                Content = "Open demo",
+                Background = accent,
+                BorderBrush = accent,
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10),
+                Width = 336,
+                Height = 38
+            };
+            var host = new StackPanel { Width = 360, Height = 64 };
+            host.Children.Add(button);
+
+            host.Measure(new Size(360, 64));
+            host.Arrange(new Rect(0, 0, 360, 64));
+            button.ApplyTemplate();
+            button.SetIsMouseOver(true);
+
+            var rootBorder = Assert.IsType<Border>(button.FindName("RootBorder"));
+            var hover = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackgroundHover"]);
+            Assert.Same(accent, button.Background);
+            Assert.Same(hover, rootBorder.Background);
+            Assert.Null(button.FindName("HoverOverlay"));
+
+            button.SetIsMouseOver(false);
+
+            Assert.Same(accent, button.Background);
+            Assert.Same(accent, rootBorder.Background);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void Button_ActiveHoverTrigger_ShouldRefreshAcrossThemeSwitch()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            ThemeManager.ApplyTheme(ThemeVariant.Dark);
+
+            var accent = new SolidColorBrush(Color.FromRgb(8, 148, 138));
+            var button = new Button
+            {
+                Content = "Open demo",
+                Background = accent,
+                BorderBrush = accent,
+                Width = 336,
+                Height = 38
+            };
+            var host = new StackPanel { Width = 360, Height = 64 };
+            host.Children.Add(button);
+
+            host.Measure(new Size(360, 64));
+            host.Arrange(new Rect(0, 0, 360, 64));
+            button.ApplyTemplate();
+            button.SetIsMouseOver(true);
+
+            var rootBorder = Assert.IsType<Border>(button.FindName("RootBorder"));
+            var darkHover = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackgroundHover"]);
+            Assert.Same(darkHover, rootBorder.Background);
+
+            ThemeManager.ApplyTheme(ThemeVariant.Light);
+
+            var lightHover = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackgroundHover"]);
+            Assert.NotSame(darkHover, lightHover);
+            Assert.Same(lightHover, rootBorder.Background);
+            Assert.Same(accent, button.Background);
+
+            button.SetIsMouseOver(false);
+
+            Assert.Same(accent, button.Background);
+            Assert.Same(accent, rootBorder.Background);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
     public void FocusableTemplates_ShouldExposeNamedFocusChrome()
     {
         ResetApplicationState();
@@ -186,8 +281,8 @@ public class PrimitiveThemeTests
             Assert.IsType<Style>(styleObj);
 
             Assert.False(slider.HasLocalValue(FrameworkElement.HeightProperty));
-            Assert.Equal(24, slider.Height);
-            Assert.True(slider.RenderSize.Height >= 24);
+            Assert.Equal(32, slider.Height);
+            Assert.True(slider.RenderSize.Height >= 32);
         }
         finally
         {
@@ -211,7 +306,7 @@ public class PrimitiveThemeTests
             host.Arrange(new Rect(0, 0, 8, 8));
             host.Measure(new Size(8, 8));
 
-            var selectionRange = Assert.IsType<Border>(slider.FindName("PART_SelectionRange"));
+            var selectionRange = Assert.IsType<Jalium.UI.Shapes.Rectangle>(slider.FindName("PART_SelectionRange"));
             Assert.True(selectionRange.Width >= 0);
             Assert.True(selectionRange.Height >= 0 || double.IsNaN(selectionRange.Height));
         }

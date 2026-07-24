@@ -138,6 +138,7 @@ public class TransitioningContentControl : ContentControl, TransitionHost
 
             // Start transition
             _isTransitioning = true;
+            SyncVisualChildrenCount();
             _overlayOpacity = 1.0;
             _overlayTransform = null;
             _overlayClip = null;
@@ -634,6 +635,7 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     private void OnTransitionCompleted()
     {
         _isTransitioning = false;
+        SyncVisualChildrenCount();
         _activeTransition = null;
         _outgoingElement = null;
         _activeParticles = null;

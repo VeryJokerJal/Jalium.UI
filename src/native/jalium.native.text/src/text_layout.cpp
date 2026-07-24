@@ -8,6 +8,7 @@
 
 #include <cstring>
 #include <cwchar>
+#include <cwctype>
 #include <cmath>
 #include <algorithm>
 #include <functional>
@@ -341,6 +342,7 @@ JaliumTextFormat::LayoutResult JaliumTextFormat::PerformLayout(
     if (!text || textLength == 0 || !face_)
     {
         layout.totalWidth = 0;
+        layout.totalWidthIncludingTrailingWhitespace = 0;
         layout.totalHeight = lineHeight_;
         return layout;
     }
@@ -523,11 +525,27 @@ JaliumTextFormat::LayoutResult JaliumTextFormat::PerformLayout(
     }
 
     // Calculate totals
-    float maxLineWidth = 0;
-    for (const auto& line : layout.lines)
-        maxLineWidth = std::max(maxLineWidth, line.width);
+    float maxLineWidth = 0.0f;
+    float maxLineWidthIncludingTrailingWhitespace = 0.0f;
+    for (const auto& line : layout.lines) {
+        maxLineWidthIncludingTrailingWhitespace = std::max(
+            maxLineWidthIncludingTrailingWhitespace,
+            line.width);
+
+        float trimmedWidth = line.width;
+        for (auto glyph = line.glyphs.rbegin(); glyph != line.glyphs.rend(); ++glyph) {
+            const uint32_t characterIndex = glyph->cluster;
+            if (characterIndex >= textLength || !std::iswspace(text[characterIndex])) {
+                break;
+            }
+            trimmedWidth -= glyph->advanceX;
+        }
+
+        maxLineWidth = std::max(maxLineWidth, std::max(0.0f, trimmedWidth));
+    }
 
     layout.totalWidth = maxLineWidth;
+    layout.totalWidthIncludingTrailingWhitespace = maxLineWidthIncludingTrailingWhitespace;
     layout.totalHeight = layout.lines.size() * effectiveLineHeight;
 
     return layout;
@@ -589,6 +607,7 @@ JaliumResult JaliumTextFormat::MeasureText(
     auto layout = PerformLayout(text, textLength, maxWidth, maxHeight);
 
     metrics->width = layout.totalWidth;
+    metrics->widthIncludingTrailingWhitespace = layout.totalWidthIncludingTrailingWhitespace;
     metrics->height = layout.totalHeight;
     metrics->lineHeight = lineHeight_;
     metrics->baseline = ascent_;
@@ -605,6 +624,7 @@ JaliumResult JaliumTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     if (!metrics) return JALIUM_ERROR_INVALID_ARGUMENT;
 
     metrics->width = 0;
+    metrics->widthIncludingTrailingWhitespace = 0;
     metrics->height = lineHeight_;
     metrics->lineHeight = lineHeight_;
     metrics->baseline = ascent_;

@@ -102,7 +102,6 @@ public class ProgressBar : Primitives.RangeBase
 
     #region Template Parts
 
-    private Border? _trackBorder;
     private Border? _indicatorBorder;
 
     #endregion
@@ -136,7 +135,6 @@ public class ProgressBar : Primitives.RangeBase
     {
         base.OnApplyTemplate();
 
-        _trackBorder = GetTemplateChild("PART_Track") as Border;
         _indicatorBorder = GetTemplateChild("PART_Indicator") as Border;
 
         UpdateIndicator();
@@ -145,9 +143,6 @@ public class ProgressBar : Primitives.RangeBase
     private void UpdateIndicator()
     {
         if (_indicatorBorder == null) return;
-
-        _indicatorBorder.Background = ResolveProgressBrush();
-        _indicatorBorder.CornerRadius = ResolveCornerRadius();
 
         var isVertical = Orientation == Orientation.Vertical;
 

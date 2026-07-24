@@ -1,4 +1,5 @@
 #include "rounded_clip.hlsli"
+#include "../../jalium.native.core/shaders/continuous_corner.hlsli"
 
 struct PsInput
 {
@@ -17,16 +18,9 @@ struct PsInput
     nointerpolation float4 stop12BA    : TEXCOORD9;
     nointerpolation float4 stop23GB    : TEXCOORD10;
     nointerpolation float4 stop3Color  : TEXCOORD11;
-    nointerpolation float3 shapeParams : TEXCOORD12; // x=shapeType, y=shapeN, z=shadowMode
+    nointerpolation float4 shapeParams : TEXCOORD12; // x=shapeType, y=shapeN, z=shadowMode, w=paintMode
     nointerpolation float  shadowSigma : TEXCOORD13; // gaussian sigma (screen px), used when shadowMode>0.5
 };
-
-float sdSuperEllipseRect(float2 p, float2 halfSize, float n)
-{
-    float2 q = abs(p) / max(halfSize, float2(0.001, 0.001));
-    float d = pow(pow(q.x, n) + pow(q.y, n), 1.0 / n) - 1.0;
-    return d * min(halfSize.x, halfSize.y);
-}
 
 float sdRoundedBox(float2 p, float2 b, float4 r)
 {
@@ -92,20 +86,22 @@ float4 main(PsInput input) : SV_Target
     float2 halfSize = input.rectSize * 0.5;
     float2 p = input.localPos - halfSize;
 
-    float4 r = float4(
-        input.cornerRadius.z,
-        input.cornerRadius.y,
-        input.cornerRadius.x,
-        input.cornerRadius.w);
-
     float maxR = min(halfSize.x, halfSize.y);
-    r = min(r, maxR);
+    float4 cornerRadii = min(max(input.cornerRadius, 0.0), maxR);
+    float4 r = float4(
+        cornerRadii.z,
+        cornerRadii.y,
+        cornerRadii.x,
+        cornerRadii.w);
 
     float dist;
     if (input.shapeParams.z > 0.5)
         dist = sdRoundedBox(p, halfSize, r);            // shadow forced to rounded-box SDF (orthogonal to SuperEllipse)
+    else if (input.shapeParams.x > 1.5)
+        dist = JaliumSdFullSuperellipse(p, halfSize, input.shapeParams.y); // internal true ellipse/full Lam? primitive
     else if (input.shapeParams.x > 0.5)
-        dist = sdSuperEllipseRect(p, halfSize, input.shapeParams.y);
+        dist = JaliumSdContinuousCornerRect(
+            p, halfSize, cornerRadii, cornerRadii, input.shapeParams.y);
     else
         dist = sdRoundedBox(p, halfSize, r);
 
@@ -124,7 +120,14 @@ float4 main(PsInput input) : SV_Target
         return outc;
     }
 
-    float aa = max(fwidth(dist), 0.0001);
+    float aa;
+    if (input.shapeParams.x > 1.5 && input.shapeParams.z <= 0.5)
+        aa = JaliumFullSuperellipseAaWidth(p, halfSize, input.shapeParams.y);
+    else if (input.shapeParams.x > 0.5 && input.shapeParams.z <= 0.5)
+        aa = JaliumContinuousCornerAaWidth(
+            p, halfSize, cornerRadii, cornerRadii, input.shapeParams.y);
+    else
+        aa = JaliumSdfAaWidth(dist);
     float fillAlpha = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, dist);
 
     float4 fill;
@@ -155,9 +158,71 @@ float4 main(PsInput input) : SV_Target
     float4 color;
     if (input.borderWidth > 0.0)
     {
-        float fillMask = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, dist + input.borderWidth);
-        float borderMask = fillAlpha - fillMask;
-        color = fill * fillMask + input.borderColor * max(borderMask, 0.0);
+        // Native stroke instances transport the outer bounds/radii. Rebuild the
+        // original centre line once, then evaluate both stroke edges from that
+        // single distance field. Subtracting independently antialiased outer and
+        // inner masks makes a 1px ring optically thicker at rounded corners.
+        const float halfStroke = input.borderWidth * 0.5;
+        const float2 centerHalf =
+            max(halfSize - halfStroke, float2(0.0001, 0.0001));
+        const float centerMaxR = min(centerHalf.x, centerHalf.y);
+        const float4 centerCornerRadii = min(
+            max(cornerRadii - halfStroke, 0.0),
+            centerMaxR);
+        const float4 centerR = float4(
+            centerCornerRadii.z,
+            centerCornerRadii.y,
+            centerCornerRadii.x,
+            centerCornerRadii.w);
+
+        float centerDist;
+        float centerAa;
+        if (input.shapeParams.x > 1.5)
+        {
+            centerDist = JaliumSdFullSuperellipse(
+                p, centerHalf, input.shapeParams.y);
+            centerAa = JaliumFullSuperellipseAaWidth(
+                p, centerHalf, input.shapeParams.y);
+        }
+        else if (input.shapeParams.x > 0.5)
+        {
+            centerDist = JaliumSdContinuousCornerRect(
+                p,
+                centerHalf,
+                centerCornerRadii,
+                centerCornerRadii,
+                input.shapeParams.y);
+            centerAa = JaliumContinuousCornerAaWidth(
+                p,
+                centerHalf,
+                centerCornerRadii,
+                centerCornerRadii,
+                input.shapeParams.y);
+        }
+        else
+        {
+            centerDist = sdRoundedBox(p, centerHalf, centerR);
+            centerAa = JaliumSdfAaWidth(centerDist);
+        }
+
+        const float strokeDistance = abs(centerDist) - halfStroke;
+        const float borderMask =
+            1.0 - smoothstep(
+                -centerAa * 0.5,
+                centerAa * 0.5,
+                strokeDistance);
+        const float innerDistance = centerDist + halfStroke;
+        const float fillMask =
+            1.0 - smoothstep(
+                -centerAa * 0.5,
+                centerAa * 0.5,
+                innerDistance);
+
+        // paintMode=1 is an outline-only gradient. It keeps gradient outlines
+        // on the same analytic band instead of approximating them with a path.
+        color = (input.shapeParams.w > 0.5)
+            ? fill * borderMask
+            : fill * fillMask + input.borderColor * borderMask;
         color.a = max(color.a, 0.0);
     }
     else

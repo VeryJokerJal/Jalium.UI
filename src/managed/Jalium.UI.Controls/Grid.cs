@@ -14,6 +14,14 @@ public class Grid : Panel
     private SharedSizeScopeState? _sharedSizeState;
     private RowDefinitionCollection? _rowDefinitions;
     private ColumnDefinitionCollection? _columnDefinitions;
+    private RowDefinition[]? _effectiveRowDefinitions;
+    private ColumnDefinition[]? _effectiveColumnDefinitions;
+    private double[]? _rowHeights;
+    private double[]? _columnWidths;
+    private double[]? _rowStarValues;
+    private double[]? _columnStarValues;
+    private double[]? _rowContent;
+    private double[]? _columnContent;
 
     #region Attached Properties
 
@@ -258,9 +266,9 @@ public class Grid : Panel
         set => SetValue(ShowGridLinesProperty, value);
     }
 
-    public bool ShouldSerializeColumnDefinitions() => ColumnDefinitions.Count > 0;
+    public bool ShouldSerializeColumnDefinitions() => _columnDefinitions is { Count: > 0 };
 
-    public bool ShouldSerializeRowDefinitions() => RowDefinitions.Count > 0;
+    public bool ShouldSerializeRowDefinitions() => _rowDefinitions is { Count: > 0 };
 
     private static double SanitizeSpacing(double value) =>
         (double.IsNaN(value) || double.IsInfinity(value) || value < 0) ? 0 : value;
@@ -273,6 +281,8 @@ public class Grid : Panel
 
     internal void OnDefinitionChanged()
     {
+        _effectiveRowDefinitions = null;
+        _effectiveColumnDefinitions = null;
         _sharedSizeState?.Remove(this);
         _sharedSizeState = null;
         InvalidateMeasure();
@@ -290,12 +300,16 @@ public class Grid : Panel
         // 让所有 Row/ColumnDefinition 知道自己的 owner Grid，这样 Width/Height 等
         // 运行时被改变时（例如 OpenTabsCol.Width = new GridLength(160)）能反向通知
         // Grid 重新 layout — 否则 framework 完全不知道 column/row 尺寸变了。
-        for (int i = 0; i < RowDefinitions.Count; i++) RowDefinitions[i].OwnerGrid = this;
-        for (int i = 0; i < ColumnDefinitions.Count; i++) ColumnDefinitions[i].OwnerGrid = this;
+        var explicitRows = _rowDefinitions;
+        var explicitColumns = _columnDefinitions;
+        var explicitRowCount = explicitRows?.Count ?? 0;
+        var explicitColumnCount = explicitColumns?.Count ?? 0;
+        for (int i = 0; i < explicitRowCount; i++) explicitRows![i].OwnerGrid = this;
+        for (int i = 0; i < explicitColumnCount; i++) explicitColumns![i].OwnerGrid = this;
 
         // Ensure at least one row and column
-        var rowCount = Math.Max(1, RowDefinitions.Count);
-        var columnCount = Math.Max(1, ColumnDefinitions.Count);
+        var rowCount = Math.Max(1, explicitRowCount);
+        var columnCount = Math.Max(1, explicitColumnCount);
 
         var rowSpacing = SanitizeSpacing(RowSpacing);
         var columnSpacing = SanitizeSpacing(ColumnSpacing);
@@ -303,10 +317,10 @@ public class Grid : Panel
         var totalColumnSpacing = Math.Max(0, columnCount - 1) * columnSpacing;
 
         // Initialize row and column sizes
-        var rowHeights = new double[rowCount];
-        var columnWidths = new double[columnCount];
-        var rowStarValues = new double[rowCount];
-        var columnStarValues = new double[columnCount];
+        var rowHeights = GetClearedBuffer(ref _rowHeights, rowCount);
+        var columnWidths = GetClearedBuffer(ref _columnWidths, columnCount);
+        var rowStarValues = GetClearedBuffer(ref _rowStarValues, rowCount);
+        var columnStarValues = GetClearedBuffer(ref _columnStarValues, columnCount);
 
         // Content (max child desired) per track. A star track FILLS its proportional allocation
         // when arranged, but at measure time it must report only the size its content needs — same
@@ -315,8 +329,8 @@ public class Grid : Panel
         // inside content-sizing parents (WrapPanel / horizontal StackPanel / auto-sized
         // Border|Button). These arrays capture the content size so the final return can use it for
         // star tracks measured under a finite constraint; ArrangeOverride still fills from finalSize.
-        var rowContent = new double[rowCount];
-        var columnContent = new double[columnCount];
+        var rowContent = GetClearedBuffer(ref _rowContent, rowCount);
+        var columnContent = GetClearedBuffer(ref _columnContent, columnCount);
 
         // Get definitions (use default if not defined)
         var rowDefs = GetEffectiveRowDefinitions(rowCount);
@@ -626,8 +640,8 @@ public class Grid : Panel
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var rowCount = Math.Max(1, RowDefinitions.Count);
-        var columnCount = Math.Max(1, ColumnDefinitions.Count);
+        var rowCount = Math.Max(1, _rowDefinitions?.Count ?? 0);
+        var columnCount = Math.Max(1, _columnDefinitions?.Count ?? 0);
 
         var rowSpacing = SanitizeSpacing(RowSpacing);
         var columnSpacing = SanitizeSpacing(ColumnSpacing);
@@ -639,10 +653,10 @@ public class Grid : Panel
         var columnDefs = GetEffectiveColumnDefinitions(columnCount);
 
         // Calculate final row heights and column widths
-        var rowHeights = new double[rowCount];
-        var columnWidths = new double[columnCount];
-        var rowStarValues = new double[rowCount];
-        var columnStarValues = new double[columnCount];
+        var rowHeights = GetClearedBuffer(ref _rowHeights, rowCount);
+        var columnWidths = GetClearedBuffer(ref _columnWidths, columnCount);
+        var rowStarValues = GetClearedBuffer(ref _rowStarValues, rowCount);
+        var columnStarValues = GetClearedBuffer(ref _columnStarValues, columnCount);
 
         double fixedRowHeight = 0;
         double fixedColumnWidth = 0;
@@ -979,26 +993,49 @@ public class Grid : Panel
 
     private RowDefinition[] GetEffectiveRowDefinitions(int count)
     {
+        if (_effectiveRowDefinitions is { } cached && cached.Length == count)
+        {
+            return cached;
+        }
+
         var defs = new RowDefinition[count];
+        var explicitDefinitions = _rowDefinitions;
+        var explicitCount = explicitDefinitions?.Count ?? 0;
         for (int i = 0; i < count; i++)
         {
-            defs[i] = i < RowDefinitions.Count
-                ? RowDefinitions[i]
-                : new RowDefinition { Height = GridLength.Star };
+            // RowDefinition already defaults to 1*; setting Height to the same
+            // value would unnecessarily allocate a local dependency-property store.
+            defs[i] = i < explicitCount ? explicitDefinitions![i] : new RowDefinition();
         }
-        return defs;
+        return _effectiveRowDefinitions = defs;
     }
 
     private ColumnDefinition[] GetEffectiveColumnDefinitions(int count)
     {
+        if (_effectiveColumnDefinitions is { } cached && cached.Length == count)
+        {
+            return cached;
+        }
+
         var defs = new ColumnDefinition[count];
+        var explicitDefinitions = _columnDefinitions;
+        var explicitCount = explicitDefinitions?.Count ?? 0;
         for (int i = 0; i < count; i++)
         {
-            defs[i] = i < ColumnDefinitions.Count
-                ? ColumnDefinitions[i]
-                : new ColumnDefinition { Width = GridLength.Star };
+            defs[i] = i < explicitCount ? explicitDefinitions![i] : new ColumnDefinition();
         }
-        return defs;
+        return _effectiveColumnDefinitions = defs;
+    }
+
+    private static double[] GetClearedBuffer(ref double[]? buffer, int count)
+    {
+        if (buffer is null || buffer.Length != count)
+        {
+            return buffer = new double[count];
+        }
+
+        Array.Clear(buffer);
+        return buffer;
     }
 
     private sealed class SharedSizeScopeState

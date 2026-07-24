@@ -20,6 +20,8 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     private readonly Dictionary<int, ItemContainerMap> _realizedItems = new();
     private readonly Dictionary<DependencyObject, int> _containerToIndex = new(ReferenceEqualityComparer.Instance);
     private readonly ContainerRecyclePool _recyclePool = new();
+    private readonly HashSet<DependencyObject> _poolEntriesWithPreservedContent =
+        new(ReferenceEqualityComparer.Instance);
 
     private GeneratorStatus _status = GeneratorStatus.NotStarted;
     private int _generatorCurrentIndex;
@@ -327,6 +329,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// </remarks>
     public void RemoveAll()
     {
+        ClearPreservedPoolContent();
         _realizedItems.Clear();
         _containerToIndex.Clear();
         _recyclePool.Clear();
@@ -341,7 +344,11 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         var startIndex = IndexFromGeneratorPosition(position);
         for (int i = 0; i < count; i++)
         {
-            RemoveIndexInternal(startIndex + i, recycle: true);
+            // A virtualization recycle is immediately eligible for another logical item.
+            // Preserve Content/ContentTemplate so ContentPresenter can swap DataContext on the
+            // existing template subtree instead of rebuilding it. Collection mutations use the
+            // default clear-before-pool path below because their old item is semantically gone.
+            RemoveIndexInternal(startIndex + i, recycle: true, clearContainerBeforePool: false);
         }
     }
 
@@ -383,9 +390,9 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         {
             container = recycled;
 
-            // The container was content-cleared (ClearContainerForItem) before it entered the pool.
-            // Flag as newly realized so the caller (VirtualizingStackPanel) invokes
-            // PrepareItemContainer and rebinds it to the new item.
+            // Whether it was cleared by a collection mutation or preserved by a viewport recycle,
+            // the caller must prepare/rebind it to the new item. In the preserved case the same
+            // ContentTemplate lets ContentPresenter keep its existing visual subtree.
             isNewlyRealized = true;
         }
         else
@@ -415,9 +422,17 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     {
         while (_recyclePool.TryPop(_preferredContainerType!, out container) && container != null)
         {
+            var retainedGeneratedContent = _poolEntriesWithPreservedContent.Remove(container);
             if (container is not Visual visual || visual.VisualParent == null)
             {
                 return true;
+            }
+
+            // The panel still owns this entry, so it cannot be reused from the pool. Release the
+            // retained logical item before dropping the pool opportunity.
+            if (retainedGeneratedContent && container is FrameworkElement attachedElement)
+            {
+                _host.ClearPreservedContainerContentInternal(attachedElement);
             }
         }
 
@@ -427,7 +442,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
     internal bool RecycleIndex(int index)
     {
-        return RemoveIndexInternal(index, recycle: true);
+        return RemoveIndexInternal(index, recycle: true, clearContainerBeforePool: false);
     }
 
     internal bool RemoveIndex(int index)
@@ -450,6 +465,11 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// </summary>
     internal void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
     {
+        // Viewport-recycled entries may retain a generated template subtree for a direct next-item
+        // rebind. Once the logical collection mutates, release those old item references; the
+        // clean containers can remain in the type pool and be prepared normally later.
+        ClearPreservedPoolContent();
+
         switch (e.Action)
         {
             case NotifyCollectionChangedAction.Add:
@@ -647,7 +667,10 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         MarkSortedCacheDirty();
     }
 
-    private bool RemoveIndexInternal(int index, bool recycle)
+    private bool RemoveIndexInternal(
+        int index,
+        bool recycle,
+        bool clearContainerBeforePool = true)
     {
         if (!_realizedItems.TryGetValue(index, out var map))
         {
@@ -670,14 +693,22 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
             if (recycle)
             {
-                // Clear FIRST, then pool, so the recycle pool only ever holds clean containers that
-                // no longer alias the previous item's content/selection. This single choke point
-                // covers RecycleIndex, OnItemRemoved/Replaced/Moved, OnReset and the
-                // IRecyclingItemContainerGenerator.Recycle surface, for both VirtualizingStackPanel
-                // and VirtualizingWrapPanel.
+                // Collection mutations clear stale item/selection state before pooling. Viewport
+                // recycling deliberately preserves Content + ContentTemplate: Prepare on the next
+                // item changes the DataContext in-place, retaining the template visual subtree.
                 if (map.Container is FrameworkElement containerElement)
                 {
-                    _host.ClearContainerForItemInternal(containerElement, map.Item);
+                    if (clearContainerBeforePool)
+                    {
+                        _host.ClearContainerForItemInternal(containerElement, map.Item);
+                    }
+                    else
+                    {
+                        if (_host.RecycleContainerForItemInternal(containerElement, map.Item))
+                        {
+                            _poolEntriesWithPreservedContent.Add(map.Container);
+                        }
+                    }
                 }
 
                 _recyclePool.Push(map.Container);
@@ -686,6 +717,26 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
         MarkSortedCacheDirty();
         return true;
+    }
+
+    private void ClearPreservedPoolContent()
+    {
+        if (_poolEntriesWithPreservedContent.Count == 0)
+        {
+            return;
+        }
+
+        // Snapshot because clearing content can execute user bindings and re-enter collection
+        // logic. Remove membership before callbacks so nested passes remain idempotent.
+        var entries = _poolEntriesWithPreservedContent.ToArray();
+        _poolEntriesWithPreservedContent.Clear();
+        foreach (var entry in entries)
+        {
+            if (entry is FrameworkElement element)
+            {
+                _host.ClearPreservedContainerContentInternal(element);
+            }
+        }
     }
 
     private List<int> GetSortedRealizedIndices()

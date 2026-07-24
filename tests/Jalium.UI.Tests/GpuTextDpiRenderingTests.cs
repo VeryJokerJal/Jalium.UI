@@ -22,6 +22,101 @@ public sealed class GpuTextDpiRenderingTests
     public void Vulkan_FixedAliasedText_TracksDpiAndSnapsToPhysicalPixels() =>
         AssertHighDpiTextContract(RenderBackend.Vulkan);
 
+    [RequiresWindowsBackendFact(RenderBackend.D3D12)]
+    public void D3D12_AnisotropicSmallText_PreservesGlyphHeightAndStems() =>
+        AssertAnisotropicSmallTextContract(RenderBackend.D3D12);
+
+    [RequiresWindowsBackendFact(RenderBackend.Vulkan)]
+    public void Vulkan_AnisotropicSmallText_PreservesGlyphHeightAndStems() =>
+        AssertAnisotropicSmallTextContract(RenderBackend.Vulkan);
+
+    private static void AssertAnisotropicSmallTextContract(RenderBackend backend)
+    {
+        using var window = new HiddenNativeWindow(Width, Height);
+        using var context = new RenderContext(backend);
+        using var target = context.CreateRenderTarget(window.Hwnd, Width, Height);
+        using var brush = context.CreateSolidBrush(1f, 1f, 1f, 1f);
+        using var format = context.CreateTextFormat("Microsoft YaHei UI", 14f);
+
+        format.SetTextRenderingMode(2);
+        format.SetTextHintingMode(1);
+        float[] transform = [0.63f, 0f, 0f, 2.17f, 0f, 0f];
+        var father = RenderCapture(target, brush, format, dpi: 96f, x: 24f, y: 6f,
+            text: "父", transform: transform);
+        var child = RenderCapture(target, brush, format, dpi: 96f, x: 24f, y: 6f,
+            text: "子", transform: transform);
+        var latinU = RenderCapture(target, brush, format, dpi: 96f, x: 24f, y: 6f,
+            text: "U", transform: transform);
+        var regularU = RenderCapture(target, brush, format, dpi: 96f, x: 24f, y: 6f,
+            text: "U");
+
+        Assert.True(father.Bounds.Height > 0 && child.Bounds.Height > 0,
+            $"{backend}: transformed CJK glyphs produced no visible pixels.");
+        Assert.InRange(
+            Math.Abs(father.Bounds.Height - child.Bounds.Height),
+            0,
+            2);
+
+        var (leftStem, rightStem) = MeasureUpperStemWidths(latinU);
+        var (regularLeftStem, regularRightStem) = MeasureUpperStemWidths(regularU);
+        const double minimumStemWidth = 1.25;
+        Assert.True(leftStem >= minimumStemWidth && rightStem >= minimumStemWidth,
+            $"{backend}: squeezed U stems collapsed " +
+            $"(left={leftStem:F2}px, right={rightStem:F2}px).");
+        Assert.True(
+            Math.Min(leftStem, rightStem) / Math.Max(leftStem, rightStem) >= 0.8,
+            $"{backend}: U stem coverage became asymmetric " +
+            $"(left={leftStem:F2}px, right={rightStem:F2}px).");
+
+        const double minimumRegularStemWidth = 1.35;
+        Assert.True(
+            regularLeftStem >= minimumRegularStemWidth &&
+            regularRightStem >= minimumRegularStemWidth,
+            $"{backend}: regular U stems rendered too lightly " +
+            $"(left={regularLeftStem:F2}px, right={regularRightStem:F2}px).");
+    }
+
+    private static (double Left, double Right) MeasureUpperStemWidths(TextCapture capture)
+    {
+        var bounds = capture.Bounds;
+        Assert.True(bounds.Width >= 4 && bounds.Height >= 4,
+            $"U glyph bounds were too small to inspect ({bounds.Width}x{bounds.Height}).");
+
+        // Use only the upper 60% of U, before its bottom curve joins the two
+        // stems. Summed coverage / row count is the equivalent full-coverage
+        // width in physical pixels, so a one-column stem measures about 1.0.
+        var firstY = bounds.Y;
+        var lastYExclusive = firstY + Math.Max(2, (int)Math.Floor(bounds.Height * 0.6));
+        var middleX = bounds.X + bounds.Width / 2;
+        var left = MeasureEquivalentInkWidth(
+            capture.Pixels, bounds.X, middleX, firstY, lastYExclusive);
+        var right = MeasureEquivalentInkWidth(
+            capture.Pixels, middleX, bounds.X + bounds.Width, firstY, lastYExclusive);
+        return (left, right);
+    }
+
+    private static double MeasureEquivalentInkWidth(
+        byte[] pixels,
+        int firstX,
+        int lastXExclusive,
+        int firstY,
+        int lastYExclusive)
+    {
+        long intensitySum = 0;
+        for (var y = firstY; y < lastYExclusive; y++)
+        {
+            for (var x = firstX; x < lastXExclusive; x++)
+            {
+                var offset = (y * Width + x) * 4;
+                intensitySum += Math.Max(
+                    pixels[offset],
+                    Math.Max(pixels[offset + 1], pixels[offset + 2]));
+            }
+        }
+
+        return intensitySum / (255.0 * (lastYExclusive - firstY));
+    }
+
     private static void AssertHighDpiTextContract(RenderBackend backend)
     {
         using var window = new HiddenNativeWindow(Width, Height);
@@ -83,7 +178,9 @@ public sealed class GpuTextDpiRenderingTests
         NativeTextFormat format,
         float dpi,
         float x,
-        float y)
+        float y,
+        string text = TestText,
+        float[]? transform = null)
     {
         target.SetDpi(dpi, dpi);
         for (var frame = 0; frame < 2; frame++)
@@ -95,7 +192,15 @@ public sealed class GpuTextDpiRenderingTests
             target.SetFullInvalidation();
             Assert.True(target.TryBeginDraw());
             target.Clear(0f, 0f, 0f);
-            target.DrawText(TestText, format, x, y, 230f, 60f, brush);
+            if (transform is not null)
+            {
+                target.PushTransform(transform);
+            }
+            target.DrawText(text, format, x, y, 230f, 60f, brush);
+            if (transform is not null)
+            {
+                target.PopTransform();
+            }
             if (frame == 1)
             {
                 Assert.Equal(JaliumResult.Ok, target.RequestReadback());

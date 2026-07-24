@@ -12,7 +12,10 @@
 #include <android/configuration.h>
 
 #include <sys/eventfd.h>
+#include <sys/timerfd.h>
 #include <unistd.h>
+#include <errno.h>
+#include <limits.h>
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -20,7 +23,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
+#include <unordered_map>
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "JaliumPlatform", __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, "JaliumPlatform", __VA_ARGS__)
@@ -102,32 +107,54 @@ static void ReplaceOwnedNativeWindow(ANativeWindow*& slot, ANativeWindow* next)
         ANativeWindow_release(previous);
 }
 
-// Tracked globally so the message loop can re-register it with the correct looper.
-static JaliumDispatcher* g_dispatcher = nullptr;
-
 // ============================================================================
 // Dispatcher Structure
 // ============================================================================
 
 struct JaliumDispatcher {
-    int                     eventFd = -1;
-    JaliumDispatcherCallback callback = nullptr;
-    void*                   userData = nullptr;
+    std::atomic<int>                      eventFd{-1};
+    std::atomic<JaliumDispatcherCallback> callback{nullptr};
+    std::atomic<void*>                    userData{nullptr};
+    std::atomic<uint32_t>                 references{1};
+    std::atomic<bool>                     destroyed{false};
+    std::recursive_mutex                  callbackMutex;
+    pid_t                                 ownerTid = -1;
     // Acquired reference to the exact looper on which eventFd was registered.
     // It is never inferred from the process-wide current run-loop slot.
-    ALooper*                registeredLooper = nullptr;
+    ALooper*                              registeredLooper = nullptr;
 };
+
+// DispatcherCore is thread-affine, including Dispatcher instances created by
+// worker-side DispatcherObjects. Resolve the application message loop's wake
+// fd by its owner thread instead of using a process-wide first/last-wins slot.
+// A newly-created dispatcher replaces an older entry for the same TID. That
+// makes TID reuse safe even when a retired worker's managed Dispatcher is
+// still reachable; destroying the older handle cannot erase the replacement.
+// g_looperMutex guards this registry and registeredLooper.
+static std::unordered_map<pid_t, JaliumDispatcher*> g_dispatchersByThread;
+
+static void ReleaseDispatcher(JaliumDispatcher* dispatcher)
+{
+    if (dispatcher &&
+        dispatcher->references.fetch_sub(1, std::memory_order_acq_rel) == 1)
+    {
+        delete dispatcher;
+    }
+}
 
 // ============================================================================
 // Timer Structure
 // ============================================================================
 
 struct JaliumTimer {
-    int                 timerFd = -1;  // Not used on Android; use AChoreographer
+    int                 timerFd = -1;
+    int                 destroyEventFd = -1;
     JaliumTimerCallback callback = nullptr;
     void*               userData = nullptr;
-    bool                repeating = false;
-    int64_t             intervalUs = 0;
+    std::mutex          stateMutex;
+    std::condition_variable waitersDrained;
+    uint32_t            activeWaiters = 0;
+    bool                destroyed = false;
 };
 
 // ============================================================================
@@ -825,6 +852,8 @@ extern "C" int32_t jalium_android_on_input_event(AInputEvent* event)
             if (metaState & AMETA_CTRL_ON) evt.pointer.modifiers |= JALIUM_MOD_CTRL;
             if (metaState & AMETA_ALT_ON) evt.pointer.modifiers |= JALIUM_MOD_ALT;
             if (metaState & AMETA_META_ON) evt.pointer.modifiers |= JALIUM_MOD_META;
+            evt.pointer.timestampMillis =
+                AMotionEvent_getEventTime(event) / 1000000LL;
 
             g_mainWindow->DispatchEvent(evt);
         }
@@ -865,7 +894,8 @@ extern "C" int32_t jalium_android_on_input_event(AInputEvent* event)
 // action: 0=DOWN, 1=UP, 2=MOVE, 3=CANCEL (matches Android MotionEvent actions)
 extern "C" void jalium_android_inject_touch(
     int32_t pointerId, float x, float y, float pressure,
-    int32_t action, int32_t pointerType, int32_t modifiers)
+    int32_t action, int32_t pointerType, int32_t modifiers,
+    int64_t eventTimeMillis)
 {
     if (!g_mainWindow) return;
 
@@ -914,6 +944,7 @@ extern "C" void jalium_android_inject_touch(
         ? JALIUM_POINTER_TOOL_PEN
         : (pointerType == JALIUM_POINTER_MOUSE
             ? JALIUM_POINTER_TOOL_MOUSE : JALIUM_POINTER_TOOL_UNKNOWN);
+    evt.pointer.timestampMillis = eventTimeMillis;
 
     g_mainWindow->DispatchEvent(evt);
 }
@@ -976,46 +1007,71 @@ int32_t jalium_platform_run_message_loop(void)
         return JALIUM_ERROR_INITIALIZATION_FAILED;
     }
 
-    // Reset before publishing the wake target. A quit racing after publication
-    // must never be overwritten by loop startup.
-    g_quitRequested.store(false, std::memory_order_release);
-
     JaliumDispatcher* dispatcher = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_looperMutex);
-        dispatcher = g_dispatcher;
-        if (dispatcher && dispatcher->eventFd >= 0)
+        const pid_t currentTid = gettid();
+        const auto iterator = g_dispatchersByThread.find(currentTid);
+        if (iterator == g_dispatchersByThread.end() ||
+            iterator->second->destroyed.load(std::memory_order_acquire))
         {
-            if (dispatcher->registeredLooper)
-            {
-                LOGE("jalium_platform_run_message_loop: dispatcher fd=%d is already registered on looper=%p",
-                     dispatcher->eventFd, dispatcher->registeredLooper);
-                return JALIUM_ERROR_INITIALIZATION_FAILED;
-            }
-
-            if (ALooper_addFd(threadLooper, dispatcher->eventFd, LOOPER_ID_DISPATCHER,
-                              ALOOPER_EVENT_INPUT, DispatcherLooperCallback, dispatcher) < 0)
-            {
-                LOGE("jalium_platform_run_message_loop: failed to register dispatcher fd=%d",
-                     dispatcher->eventFd);
-                return JALIUM_ERROR_INITIALIZATION_FAILED;
-            }
-
-            ALooper_acquire(threadLooper);
-            dispatcher->registeredLooper = threadLooper;
+            LOGE("jalium_platform_run_message_loop: no dispatcher for owner tid=%d",
+                 static_cast<int>(currentTid));
+            return JALIUM_ERROR_INVALID_STATE;
         }
+
+        dispatcher = iterator->second;
+        const int dispatcherFd = dispatcher->eventFd.load(std::memory_order_acquire);
+        if (dispatcherFd < 0)
+        {
+            LOGE("jalium_platform_run_message_loop: dispatcher for tid=%d has no event fd",
+                 static_cast<int>(currentTid));
+            return JALIUM_ERROR_INVALID_STATE;
+        }
+
+        if (dispatcher->registeredLooper)
+        {
+            LOGE("jalium_platform_run_message_loop: dispatcher fd=%d is already registered on looper=%p",
+                 dispatcherFd, dispatcher->registeredLooper);
+            return JALIUM_ERROR_INITIALIZATION_FAILED;
+        }
+
+        if (g_runLooper)
+        {
+            LOGE("jalium_platform_run_message_loop: another application loop is already active on looper=%p",
+                 g_runLooper);
+            return JALIUM_ERROR_INVALID_STATE;
+        }
+
+        // Reset only after proving that this thread can publish the next loop.
+        // A rejected concurrent loop must never clear the active loop's quit.
+        g_quitRequested.store(false, std::memory_order_release);
+
+        // The loop reference keeps the callback data alive even if a foreign
+        // thread disposes this Dispatcher while the ALooper is polling.
+        dispatcher->references.fetch_add(1, std::memory_order_relaxed);
+        if (ALooper_addFd(threadLooper, dispatcherFd, LOOPER_ID_DISPATCHER,
+                          ALOOPER_EVENT_INPUT, DispatcherLooperCallback, dispatcher) < 0)
+        {
+            LOGE("jalium_platform_run_message_loop: failed to register dispatcher fd=%d",
+                 dispatcherFd);
+            ReleaseDispatcher(dispatcher);
+            return JALIUM_ERROR_INITIALIZATION_FAILED;
+        }
+
+        ALooper_acquire(threadLooper);
+        dispatcher->registeredLooper = threadLooper;
 
         // Publish a separately-acquired ref for cross-thread quit/wake. A
         // previous loop is never used for fd removal and cannot clear a newer
         // loop's publication when it eventually exits.
         ALooper_acquire(threadLooper);
-        ALooper* previous = g_runLooper;
         g_runLooper = threadLooper;
-        if (previous)
-            ALooper_release(previous);
     }
 
-    LOGI("jalium_platform_run_message_loop: starting loop on looper=%p", threadLooper);
+    LOGI("jalium_platform_run_message_loop: starting loop on looper=%p, owner tid=%d, dispatcher fd=%d",
+         threadLooper, static_cast<int>(dispatcher->ownerTid),
+         dispatcher->eventFd.load(std::memory_order_acquire));
 
     while (!g_quitRequested.load(std::memory_order_acquire))
     {
@@ -1040,6 +1096,10 @@ int32_t jalium_platform_run_message_loop(void)
         if (dispatcher && dispatcher->registeredLooper == threadLooper)
         {
             dispatcherLooper = dispatcher->registeredLooper;
+            const int dispatcherFd =
+                dispatcher->eventFd.load(std::memory_order_acquire);
+            if (dispatcherFd >= 0)
+                ALooper_removeFd(dispatcherLooper, dispatcherFd);
             dispatcher->registeredLooper = nullptr;
         }
         if (g_runLooper == threadLooper)
@@ -1053,12 +1113,10 @@ int32_t jalium_platform_run_message_loop(void)
     // In particular, an exiting old loop never removes a newly-created
     // dispatcher's numerically-reused eventfd from a replacement looper.
     if (dispatcherLooper)
-    {
-        ALooper_removeFd(dispatcherLooper, dispatcher->eventFd);
         ALooper_release(dispatcherLooper);
-    }
     if (publishedLooper)
         ALooper_release(publishedLooper);
+    ReleaseDispatcher(dispatcher);
 
     return g_exitCode.load(std::memory_order_acquire);
 }
@@ -1079,12 +1137,13 @@ int32_t jalium_platform_poll_events(void)
 
 void jalium_platform_quit(int32_t exitCode)
 {
-    g_exitCode.store(exitCode, std::memory_order_release);
-    g_quitRequested.store(true, std::memory_order_release);
-
     ALooper* runLooper = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_looperMutex);
+        // Serialize quit publication with the message loop's reset/publish
+        // sequence so a startup race cannot overwrite an accepted quit.
+        g_exitCode.store(exitCode, std::memory_order_release);
+        g_quitRequested.store(true, std::memory_order_release);
         if (g_runLooper)
         {
             ALooper_acquire(g_runLooper);
@@ -1105,69 +1164,123 @@ void jalium_platform_quit(int32_t exitCode)
 static int DispatcherLooperCallback(int fd, int events, void* data)
 {
     auto disp = static_cast<JaliumDispatcher*>(data);
-    if (disp && (events & ALOOPER_EVENT_INPUT))
+    if (!disp || !(events & ALOOPER_EVENT_INPUT))
+        return 1;
+
+    const int activeFd = disp->eventFd.load(std::memory_order_acquire);
+    if (disp->destroyed.load(std::memory_order_acquire) || activeFd != fd)
+        return 0;
+
+    uint64_t value;
+    while (read(fd, &value, sizeof(value)) < 0 && errno == EINTR)
     {
-        uint64_t val;
-        read(fd, &val, sizeof(val));
-        if (disp->callback)
-            disp->callback(disp->userData);
     }
-    return 1; // Continue receiving callbacks
+
+    std::lock_guard<std::recursive_mutex> callbackLock(disp->callbackMutex);
+    if (!disp->destroyed.load(std::memory_order_acquire))
+    {
+        const auto callback = disp->callback.load(std::memory_order_acquire);
+        if (callback)
+            callback(disp->userData.load(std::memory_order_acquire));
+    }
+    return disp->destroyed.load(std::memory_order_acquire) ? 0 : 1;
 }
 
 JaliumResult jalium_dispatcher_create(JaliumDispatcher** outDispatcher)
 {
     if (!outDispatcher) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *outDispatcher = nullptr;
 
     auto disp = new JaliumDispatcher();
-    disp->eventFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (disp->eventFd < 0)
+    disp->ownerTid = gettid();
+    const int eventFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    disp->eventFd.store(eventFd, std::memory_order_release);
+    if (eventFd < 0)
     {
         delete disp;
         return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     }
 
-    // Do NOT register on any looper yet. The JaliumUI thread's looper does not
-    // exist until jalium_platform_run_message_loop calls ALooper_prepare().
-    LOGI("jalium_dispatcher_create: fd=%d created (deferred registration until message loop)", disp->eventFd);
-
     {
         std::lock_guard<std::mutex> lock(g_looperMutex);
-        g_dispatcher = disp;
+        const auto [iterator, inserted] =
+            g_dispatchersByThread.emplace(disp->ownerTid, disp);
+        if (!inserted)
+        {
+            LOGI("jalium_dispatcher_create: replacing stale dispatcher fd=%d for owner tid=%d",
+                 iterator->second->eventFd.load(std::memory_order_acquire),
+                 static_cast<int>(disp->ownerTid));
+            iterator->second = disp;
+        }
     }
+
+    // Do NOT register on any looper yet. The JaliumUI thread's looper does not
+    // exist until jalium_platform_run_message_loop calls ALooper_prepare().
+    LOGI("jalium_dispatcher_create: fd=%d created for owner tid=%d (deferred registration until message loop)",
+         eventFd, static_cast<int>(disp->ownerTid));
+
     *outDispatcher = disp;
     return JALIUM_OK;
 }
 
 void jalium_dispatcher_destroy(JaliumDispatcher* dispatcher)
 {
-    if (!dispatcher) return;
-    ALooper* registeredLooper = nullptr;
+    if (!dispatcher ||
+        dispatcher->destroyed.exchange(true, std::memory_order_acq_rel))
     {
-        std::lock_guard<std::mutex> lock(g_looperMutex);
-        registeredLooper = dispatcher->registeredLooper;
-        dispatcher->registeredLooper = nullptr;
-        if (g_dispatcher == dispatcher)
-            g_dispatcher = nullptr;
+        return;
     }
 
-    if (dispatcher->eventFd >= 0)
     {
-        if (registeredLooper)
-            ALooper_removeFd(registeredLooper, dispatcher->eventFd);
-        close(dispatcher->eventFd);
+        // Wait for an in-flight managed callback. recursive_mutex also permits
+        // the callback to dispose its own Dispatcher without deadlocking.
+        std::lock_guard<std::recursive_mutex> callbackLock(dispatcher->callbackMutex);
+        dispatcher->callback.store(nullptr, std::memory_order_release);
+        dispatcher->userData.store(nullptr, std::memory_order_release);
     }
+
+    ALooper* registeredLooper = nullptr;
+    int eventFd = -1;
+    {
+        std::lock_guard<std::mutex> lock(g_looperMutex);
+        const auto iterator = g_dispatchersByThread.find(dispatcher->ownerTid);
+        if (iterator != g_dispatchersByThread.end() && iterator->second == dispatcher)
+        {
+            g_dispatchersByThread.erase(iterator);
+        }
+
+        registeredLooper = dispatcher->registeredLooper;
+        dispatcher->registeredLooper = nullptr;
+        eventFd = dispatcher->eventFd.exchange(-1, std::memory_order_acq_rel);
+        if (registeredLooper && eventFd >= 0)
+            ALooper_removeFd(registeredLooper, eventFd);
+    }
+
+    if (eventFd >= 0)
+        close(eventFd);
     if (registeredLooper)
         ALooper_release(registeredLooper);
-    delete dispatcher;
+    ReleaseDispatcher(dispatcher);
 }
 
 void jalium_dispatcher_wake(JaliumDispatcher* dispatcher)
 {
-    if (dispatcher && dispatcher->eventFd >= 0)
+    if (!dispatcher) return;
+
+    std::lock_guard<std::mutex> lock(g_looperMutex);
+    if (!dispatcher->destroyed.load(std::memory_order_acquire))
     {
-        uint64_t val = 1;
-        write(dispatcher->eventFd, &val, sizeof(val));
+        const int eventFd = dispatcher->eventFd.load(std::memory_order_acquire);
+        if (eventFd >= 0)
+        {
+            const uint64_t value = 1;
+            ssize_t written;
+            do
+            {
+                written = write(eventFd, &value, sizeof(value));
+            }
+            while (written < 0 && errno == EINTR);
+        }
     }
 }
 
@@ -1175,22 +1288,52 @@ void jalium_dispatcher_set_callback(JaliumDispatcher* dispatcher,
                                      JaliumDispatcherCallback callback, void* userData)
 {
     if (!dispatcher) return;
-    dispatcher->callback = callback;
-    dispatcher->userData = userData;
+    std::lock_guard<std::recursive_mutex> callbackLock(dispatcher->callbackMutex);
+    if (dispatcher->destroyed.load(std::memory_order_acquire)) return;
+    if (callback)
+    {
+        dispatcher->userData.store(userData, std::memory_order_release);
+        dispatcher->callback.store(callback, std::memory_order_release);
+    }
+    else
+    {
+        dispatcher->callback.store(nullptr, std::memory_order_release);
+        dispatcher->userData.store(userData, std::memory_order_release);
+    }
 }
 
 // ============================================================================
 // High-Resolution Timer
 // ============================================================================
 
-// On Android, prefer AChoreographer for frame-aligned timing.
-// For general-purpose timers, use clock_nanosleep.
+// timerfd_settime atomically replaces an outstanding deadline. In particular,
+// arming a parked one-second frame timer for 1 us makes a thread blocked in
+// poll() observable immediately; a relative clock_nanosleep cannot be
+// interrupted that way. A separate eventfd provides deterministic destruction
+// without relying on cross-thread close() semantics or fd reuse.
 
 JaliumResult jalium_timer_create(JaliumTimer** outTimer)
 {
     if (!outTimer) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *outTimer = nullptr;
 
     auto timer = new JaliumTimer();
+    timer->timerFd = timerfd_create(
+        CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    if (timer->timerFd < 0)
+    {
+        delete timer;
+        return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    }
+
+    timer->destroyEventFd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (timer->destroyEventFd < 0)
+    {
+        close(timer->timerFd);
+        delete timer;
+        return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    }
+
     *outTimer = timer;
     return JALIUM_OK;
 }
@@ -1198,44 +1341,157 @@ JaliumResult jalium_timer_create(JaliumTimer** outTimer)
 void jalium_timer_destroy(JaliumTimer* timer)
 {
     if (!timer) return;
+
+    int timerFd = -1;
+    int destroyEventFd = -1;
+    {
+        std::unique_lock<std::mutex> lock(timer->stateMutex);
+        if (timer->destroyed) return;
+
+        timer->destroyed = true;
+        timer->callback = nullptr;
+        timer->userData = nullptr;
+
+        // Keep the cancellation fd readable until every waiter has observed
+        // it. This wakes all concurrent pollers and avoids a close-vs-poll
+        // race where a recycled descriptor could be mistaken for this timer.
+        const uint64_t value = 1;
+        ssize_t written;
+        do
+        {
+            written = write(timer->destroyEventFd, &value, sizeof(value));
+        }
+        while (written < 0 && errno == EINTR);
+
+        timer->waitersDrained.wait(lock, [timer]
+        {
+            return timer->activeWaiters == 0;
+        });
+
+        timerFd = timer->timerFd;
+        destroyEventFd = timer->destroyEventFd;
+        timer->timerFd = -1;
+        timer->destroyEventFd = -1;
+    }
+
+    if (timerFd >= 0) close(timerFd);
+    if (destroyEventFd >= 0) close(destroyEventFd);
     delete timer;
 }
 
 void jalium_timer_arm(JaliumTimer* timer, int64_t intervalMicroseconds)
 {
-    if (!timer) return;
-    timer->intervalUs = intervalMicroseconds;
-    timer->repeating = false;
+    if (!timer || intervalMicroseconds <= 0) return;
+
+    std::lock_guard<std::mutex> lock(timer->stateMutex);
+    if (timer->destroyed || timer->timerFd < 0) return;
+
+    struct itimerspec specification{};
+    specification.it_value.tv_sec = intervalMicroseconds / 1000000;
+    specification.it_value.tv_nsec =
+        (intervalMicroseconds % 1000000) * 1000;
+    if (timerfd_settime(timer->timerFd, 0, &specification, nullptr) != 0)
+        LOGE("jalium_timer_arm: timerfd_settime failed: %s", strerror(errno));
 }
 
 void jalium_timer_arm_repeating(JaliumTimer* timer, int64_t intervalMicroseconds)
 {
-    if (!timer) return;
-    timer->intervalUs = intervalMicroseconds;
-    timer->repeating = true;
+    if (!timer || intervalMicroseconds <= 0) return;
+
+    std::lock_guard<std::mutex> lock(timer->stateMutex);
+    if (timer->destroyed || timer->timerFd < 0) return;
+
+    struct itimerspec specification{};
+    specification.it_value.tv_sec = intervalMicroseconds / 1000000;
+    specification.it_value.tv_nsec =
+        (intervalMicroseconds % 1000000) * 1000;
+    specification.it_interval = specification.it_value;
+    if (timerfd_settime(timer->timerFd, 0, &specification, nullptr) != 0)
+    {
+        LOGE("jalium_timer_arm_repeating: timerfd_settime failed: %s",
+             strerror(errno));
+    }
 }
 
 void jalium_timer_disarm(JaliumTimer* timer)
 {
-    if (timer) timer->intervalUs = 0;
+    if (!timer) return;
+
+    std::lock_guard<std::mutex> lock(timer->stateMutex);
+    if (timer->destroyed || timer->timerFd < 0) return;
+
+    struct itimerspec specification{};
+    if (timerfd_settime(timer->timerFd, 0, &specification, nullptr) != 0)
+        LOGE("jalium_timer_disarm: timerfd_settime failed: %s", strerror(errno));
 }
 
 void jalium_timer_set_callback(JaliumTimer* timer, JaliumTimerCallback callback, void* userData)
 {
     if (!timer) return;
+
+    std::lock_guard<std::mutex> lock(timer->stateMutex);
+    if (timer->destroyed) return;
     timer->callback = callback;
     timer->userData = userData;
 }
 
 int32_t jalium_timer_wait(JaliumTimer* timer, uint32_t timeoutMs)
 {
-    if (!timer || timer->intervalUs <= 0) return 0;
+    if (!timer) return 0;
 
-    struct timespec ts;
-    ts.tv_sec = timer->intervalUs / 1000000;
-    ts.tv_nsec = (timer->intervalUs % 1000000) * 1000;
-    clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, nullptr);
-    return 1;
+    int timerFd = -1;
+    int destroyEventFd = -1;
+    {
+        std::lock_guard<std::mutex> lock(timer->stateMutex);
+        if (timer->destroyed || timer->timerFd < 0 ||
+            timer->destroyEventFd < 0)
+        {
+            return 0;
+        }
+
+        ++timer->activeWaiters;
+        timerFd = timer->timerFd;
+        destroyEventFd = timer->destroyEventFd;
+    }
+
+    struct pollfd descriptors[2]{};
+    descriptors[0].fd = timerFd;
+    descriptors[0].events = POLLIN;
+    descriptors[1].fd = destroyEventFd;
+    descriptors[1].events = POLLIN;
+
+    const int timeout = timeoutMs == 0
+        ? -1
+        : static_cast<int>(std::min<uint32_t>(timeoutMs, INT_MAX));
+    int pollResult;
+    do
+    {
+        pollResult = poll(descriptors, 2, timeout);
+    }
+    while (pollResult < 0 && errno == EINTR);
+
+    int32_t fired = 0;
+    if (pollResult > 0 && !(descriptors[1].revents & POLLIN) &&
+        (descriptors[0].revents & POLLIN))
+    {
+        uint64_t expirations = 0;
+        ssize_t bytesRead;
+        do
+        {
+            bytesRead = read(timerFd, &expirations, sizeof(expirations));
+        }
+        while (bytesRead < 0 && errno == EINTR);
+        fired = bytesRead == static_cast<ssize_t>(sizeof(expirations)) &&
+                expirations != 0 ? 1 : 0;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(timer->stateMutex);
+        --timer->activeWaiters;
+        if (timer->destroyed && timer->activeWaiters == 0)
+            timer->waitersDrained.notify_all();
+    }
+    return fired;
 }
 
 // ============================================================================

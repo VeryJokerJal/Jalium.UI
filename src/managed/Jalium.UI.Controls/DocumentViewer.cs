@@ -837,12 +837,12 @@ public class DocumentViewer : DocumentViewerBase
 
     private void RefreshPageViews()
     {
-        foreach (var pageView in _pageViews)
+        for (int i = _pageViews.Count - 1; i >= 0; i--)
         {
+            var pageView = _pageViews[i];
+            _pageViews.RemoveAt(i);
             RemoveVisualChild(pageView);
         }
-
-        _pageViews.Clear();
         if (_paginator != null && PageCount > 0)
         {
             foreach (var pageNumber in GetDisplayedPageNumbers())

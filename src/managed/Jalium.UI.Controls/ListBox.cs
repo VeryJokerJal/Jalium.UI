@@ -1094,9 +1094,6 @@ public class ListBox : Selector
 /// </summary>
 public class ListBoxItem : ContentControl
 {
-    private static readonly SolidColorBrush s_fallbackHoverBackgroundBrush = new(Themes.ThemeColors.HighlightBackground);
-    private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Themes.ThemeColors.SelectionBackground);
-
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -1163,9 +1160,6 @@ public class ListBoxItem : ContentControl
     /// </summary>
     internal ListBox? ParentListBox { get; set; }
 
-    private Border? _backgroundBorder;
-    private bool _isItemMouseOver;
-
     #endregion
 
     #region Constructor
@@ -1181,12 +1175,9 @@ public class ListBoxItem : ContentControl
 
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         Focusable = true;
-        ResourcesChanged += OnResourcesChangedHandler;
-
         // Register input event handlers
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
-        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
         AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
         AddHandler(TouchMoveEvent, new RoutedEventHandler(OnTouchMoveHandler));
         AddHandler(TouchUpEvent, new RoutedEventHandler(OnTouchUpHandler));
@@ -1247,14 +1238,6 @@ public class ListBoxItem : ContentControl
 
     #endregion
 
-    public override void OnApplyTemplate()
-    {
-        base.OnApplyTemplate();
-
-        _backgroundBorder = GetTemplateChild("PART_BackgroundBorder") as Border;
-        UpdateContainerVisualState();
-    }
-
     #region Input Handling
 
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
@@ -1276,25 +1259,10 @@ public class ListBoxItem : ContentControl
 
     private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
-        if (!_isItemMouseOver)
-        {
-            _isItemMouseOver = true;
-            UpdateContainerVisualState();
-        }
-
         // If left mouse button is down while entering, perform drag selection
         if (e.LeftButton == MouseButtonState.Pressed)
         {
             ParentListBox?.HandleDragSelect(this);
-        }
-    }
-
-    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
-    {
-        if (_isItemMouseOver)
-        {
-            _isItemMouseOver = false;
-            UpdateContainerVisualState();
         }
     }
 
@@ -1315,8 +1283,6 @@ public class ListBoxItem : ContentControl
             {
                 item.OnUnselected(new RoutedEventArgs(UnselectedEvent, item));
             }
-
-            item.UpdateContainerVisualState();
         }
     }
 
@@ -1328,36 +1294,4 @@ public class ListBoxItem : ContentControl
     /// <summary>Raises the <see cref="Unselected"/> routed event.</summary>
     protected virtual void OnUnselected(RoutedEventArgs e) => RaiseEvent(e);
 
-    private void UpdateContainerVisualState()
-    {
-        if (_backgroundBorder == null)
-        {
-            return;
-        }
-
-        if (IsSelected)
-        {
-            _backgroundBorder.Background = ResolveSelectedBackgroundBrush();
-            return;
-        }
-
-        if (_isItemMouseOver)
-        {
-            _backgroundBorder.Background = ResolveHoverBackgroundBrush();
-            return;
-        }
-
-        _backgroundBorder.ClearValue(Border.BackgroundProperty);
-    }
-
-    private Brush ResolveHoverBackgroundBrush()
-        => TryFindResource("HighlightBackground") as Brush ?? s_fallbackHoverBackgroundBrush;
-
-    private Brush ResolveSelectedBackgroundBrush()
-        => TryFindResource("SelectionBackground") as Brush ?? s_fallbackSelectedBackgroundBrush;
-
-    private void OnResourcesChangedHandler(object? sender, EventArgs e)
-    {
-        UpdateContainerVisualState();
-    }
 }

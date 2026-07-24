@@ -61,8 +61,8 @@ public class ToolTipAndTreeThemeTests
             item.ApplyTemplate();
 
             Assert.False(item.HasLocalValue(Control.PaddingProperty));
-            Assert.Equal(4, item.Padding.Left);
-            Assert.Equal(2, item.Padding.Top);
+            Assert.Equal(6, item.Padding.Left);
+            Assert.Equal(3, item.Padding.Top);
         }
         finally
         {
@@ -83,13 +83,11 @@ public class ToolTipAndTreeThemeTests
             item.Style = Assert.IsType<Style>(app.Resources[typeof(ListBoxItem)]);
             item.ApplyTemplate();
 
-            var backgroundBorder = GetPrivateField<Border>(item, "_backgroundBorder");
+            var backgroundBorder = Assert.IsType<Border>(item.FindName("PART_BackgroundBorder"));
             var hoverBrush = Assert.IsAssignableFrom<Brush>(app.Resources["HighlightBackground"]);
             var selectionBrush = Assert.IsAssignableFrom<Brush>(app.Resources["SelectionBackground"]);
 
-            Assert.NotNull(backgroundBorder);
-
-            item.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = item });
+            item.SetIsMouseOver(true);
             Assert.Same(hoverBrush, backgroundBorder.Background);
 
             item.IsSelected = true;

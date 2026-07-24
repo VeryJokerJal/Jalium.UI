@@ -58,7 +58,7 @@ public class NavigationViewItem : ContentControl
 
     #region Template Parts
 
-    private Border? _indentSpacer;
+    private FrameworkElement? _indentSpacer;
     private Shapes.Path? _chevron;
     private PathGeometry? _chevronBase;
     private double _chevronCenterX;
@@ -221,7 +221,7 @@ public class NavigationViewItem : ContentControl
         base.OnApplyTemplate();
         StopExpandAnimation();
 
-        _indentSpacer = GetTemplateChild("PART_IndentSpacer") as Border;
+        _indentSpacer = GetTemplateChild("PART_IndentSpacer") as FrameworkElement;
         _chevron = GetTemplateChild("PART_Chevron") as Shapes.Path;
         _childrenPanel = GetTemplateChild("PART_ChildrenPanel") as StackPanel;
         BuildChevronBase();

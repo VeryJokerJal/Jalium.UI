@@ -1,3 +1,5 @@
+#include "../../jalium.native.core/shaders/continuous_corner.hlsli"
+
 // Liquid glass — pixel shader.
 //
 // Full port of the D3D12 authority (kLiquidGlassPS in d3d12_shader_source.h):
@@ -166,20 +168,22 @@ float2 gradSdRoundedRect(float2 coord, float2 halfSize, float radius)
     return len > 0.001f ? g / len : float2(0, 1);
 }
 
-float sdSuperEllipse(float2 coord, float2 halfSize, float n)
+float sdContinuousCorner(float2 coord, float2 halfSize, float radius, float n)
 {
-    float2 p = abs(coord) / max(halfSize, float2(0.001f, 0.001f));
-    float d = pow(pow(p.x, n) + pow(p.y, n), 1.0f / n) - 1.0f;
-    return d * min(halfSize.x, halfSize.y);
+    return JaliumSdContinuousCornerRectUniform(
+        coord,
+        halfSize,
+        min(max(radius, 0.0f), min(halfSize.x, halfSize.y)),
+        n);
 }
 
-float2 gradSdSuperEllipse(float2 coord, float2 halfSize, float n)
+float2 gradSdContinuousCorner(float2 coord, float2 halfSize, float radius, float n)
 {
     const float e = 0.5f;
-    float dx = sdSuperEllipse(coord + float2(e, 0), halfSize, n)
-             - sdSuperEllipse(coord - float2(e, 0), halfSize, n);
-    float dy = sdSuperEllipse(coord + float2(0, e), halfSize, n)
-             - sdSuperEllipse(coord - float2(0, e), halfSize, n);
+    float dx = sdContinuousCorner(coord + float2(e, 0), halfSize, radius, n)
+             - sdContinuousCorner(coord - float2(e, 0), halfSize, radius, n);
+    float dy = sdContinuousCorner(coord + float2(0, e), halfSize, radius, n)
+             - sdContinuousCorner(coord - float2(0, e), halfSize, radius, n);
     float2 g = float2(dx, dy);
     float len = length(g);
     return len > 0.001f ? g / len : float2(0, 1);
@@ -188,14 +192,14 @@ float2 gradSdSuperEllipse(float2 coord, float2 halfSize, float n)
 float sdShape(float2 coord, float2 halfSize, float radius, float shapeType, float shapeN)
 {
     if (shapeType > 0.5f)
-        return sdSuperEllipse(coord, halfSize, shapeN);
+        return sdContinuousCorner(coord, halfSize, radius, shapeN);
     return sdRoundedRect(coord, halfSize, radius);
 }
 
 float2 gradShape(float2 coord, float2 halfSize, float radius, float shapeType, float shapeN)
 {
     if (shapeType > 0.5f)
-        return gradSdSuperEllipse(coord, halfSize, shapeN);
+        return gradSdContinuousCorner(coord, halfSize, radius, shapeN);
     return gradSdRoundedRect(coord, halfSize, radius);
 }
 
@@ -344,7 +348,8 @@ float4 main(PsInput input) : SV_Target
         if (nCount > 0) {
             grad = gradCombinedSd(pixelCoord, glassCenter, halfSize, r, shapeType, shapeN);
         } else {
-            float gradR = min(r * 1.5f, min(halfSize.x, halfSize.y));
+            float gradR = shapeType > 0.5f ? r
+                : min(r * 1.5f, min(halfSize.x, halfSize.y));
             grad = normalize(gradShape(centered, halfSize, gradR, shapeType, shapeN));
         }
 
@@ -408,7 +413,8 @@ float4 main(PsInput input) : SV_Target
         if (nCount > 0) {
             hlGrad = gradCombinedSd(pixelCoord, glassCenter, halfSize, r, shapeType, shapeN);
         } else {
-            float gradR2 = min(r * 1.5f, min(halfSize.x, halfSize.y));
+            float gradR2 = shapeType > 0.5f ? r
+                : min(r * 1.5f, min(halfSize.x, halfSize.y));
             hlGrad = normalize(gradShape(centered, halfSize, gradR2, shapeType, shapeN));
         }
 

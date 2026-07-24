@@ -369,9 +369,19 @@ public sealed class UICompiler
 
         // 如果元素设置了 ClipToBounds，将其边界压入裁剪栈
         bool pushedClip = false;
-        if (element.ClipToBounds)
+        if (element.ClipToBounds && element.ClipToBoundsEdges != ClipEdges.None)
         {
-            var elementBounds = CompileBounds(element);
+            var clipLimit = _clipStack.Count > 0
+                ? _clipStack.Peek()
+                : new Rect(
+                    0,
+                    0,
+                    (float)Options.ViewportWidth,
+                    (float)Options.ViewportHeight);
+            var elementBounds = ExpandBoundsClip(
+                CompileBounds(element),
+                element.ClipToBoundsEdges,
+                clipLimit);
             // 与当前裁剪区域取交集
             var clipRect = _clipStack.Count > 0
                 ? _clipStack.Peek().Intersect(elementBounds)
@@ -1430,6 +1440,29 @@ public sealed class UICompiler
         );
     }
 
+    private static Rect ExpandBoundsClip(Rect bounds, ClipEdges edges, Rect limit)
+    {
+        if (edges == ClipEdges.All)
+        {
+            return bounds;
+        }
+
+        var left = (edges & ClipEdges.Left) != 0
+            ? bounds.X
+            : Math.Min(bounds.X, limit.X);
+        var top = (edges & ClipEdges.Top) != 0
+            ? bounds.Y
+            : Math.Min(bounds.Y, limit.Y);
+        var right = (edges & ClipEdges.Right) != 0
+            ? bounds.X + bounds.Width
+            : Math.Max(bounds.X + bounds.Width, limit.X + limit.Width);
+        var bottom = (edges & ClipEdges.Bottom) != 0
+            ? bounds.Y + bounds.Height
+            : Math.Max(bounds.Y + bounds.Height, limit.Y + limit.Height);
+
+        return new Rect(left, top, right - left, bottom - top);
+    }
+
     private CornerRadius CompileCornerRadius(ElementNode element)
     {
         return new CornerRadius(
@@ -1872,6 +1905,7 @@ public sealed class ElementNode
 
     // 裁剪
     public bool ClipToBounds { get; init; }
+    public ClipEdges ClipToBoundsEdges { get; init; } = ClipEdges.All;
 
     // 交互
     public bool IsInteractive { get; init; }
@@ -2378,6 +2412,8 @@ public sealed class JalxamlParser
             ClipToBounds = GetAttributeValue(element, "ClipToBounds") == "True"
                 || elementType == ElementType.ScrollViewer
                 || elementType == ElementType.ListBox,
+            ClipToBoundsEdges = ParseClipToBoundsEdges(
+                GetAttributeValue(element, "ClipToBoundsEdges")),
 
             // 交互属性
             IsInteractive = HasEventHandler(element),
@@ -2726,6 +2762,19 @@ public sealed class JalxamlParser
             "vertical" => Orientation.Vertical,
             _ => Orientation.Vertical
         };
+    }
+
+    private static ClipEdges ParseClipToBoundsEdges(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return ClipEdges.All;
+        }
+
+        return Enum.TryParse<ClipEdges>(value, ignoreCase: true, out var edges) &&
+               (edges & ~ClipEdges.All) == 0
+            ? edges
+            : ClipEdges.All;
     }
 
     private static Dock ParseDock(string? value)

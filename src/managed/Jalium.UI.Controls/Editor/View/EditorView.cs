@@ -492,8 +492,9 @@ internal sealed class EditorView
             UpdateGutterWidth();
             EnsureLineMap();
 
-            double textAreaLeft = showLineNumbers ? TextAreaLeft : 0;
-            double textAreaWidth = renderSize.Width - textAreaLeft;
+            double textAreaLeft = showLineNumbers
+                ? Jalium.UI.Controls.ControlRenderGeometry.GetAvailableLength(TextAreaLeft, renderSize.Width) : 0;
+            double textAreaWidth = Math.Max(0, renderSize.Width - textAreaLeft);
 
             // Render gutter background
             if (showLineNumbers && _gutterWidth > 0)
@@ -1066,7 +1067,9 @@ internal sealed class EditorView
 
         var formatted = new FormattedText(prefixText, fontFamily, fontSize);
         TextMeasurement.MeasureText(formatted);
-        return formatted.Width > 0 ? formatted.Width : 0;
+        return formatted.WidthIncludingTrailingWhitespace > 0
+            ? formatted.WidthIncludingTrailingWhitespace
+            : 0;
     }
 
     private string GetMeasurementFontFamily()

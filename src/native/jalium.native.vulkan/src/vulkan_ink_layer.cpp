@@ -4,6 +4,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -433,12 +434,14 @@ VulkanBrushPipeline::VulkanBrushPipeline(std::shared_ptr<VulkanDeviceGeneration>
 
 VulkanBrushPipeline::~VulkanBrushPipeline() {
     if (!fns_) return;
+    if (!gen_) return;
+    std::lock_guard<std::recursive_mutex> driverLock(gen_->driverCallMutex);
     VkDevice device = ctx_.device;
     if (device == VK_NULL_HANDLE) return;
     // gen_ keeps the VkDevice alive until after these destroys, so the handles
     // below always target a live device — possibly a *lost* one, on which
     // destruction stays legal but waiting would only return DEVICE_LOST.
-    if (!DeviceLost() && fns_->deviceWaitIdle) fns_->deviceWaitIdle(device);
+    if (!gen_->TryDrainForDestruction()) return;
     if (inkRenderPass_ != VK_NULL_HANDLE) fns_->destroyRenderPass(device, inkRenderPass_, nullptr);
     if (pipelineLayout_ != VK_NULL_HANDLE) fns_->destroyPipelineLayout(device, pipelineLayout_, nullptr);
     if (descriptorSetLayout_ != VK_NULL_HANDLE) fns_->destroyDescriptorSetLayout(device, descriptorSetLayout_, nullptr);
@@ -446,11 +449,14 @@ VulkanBrushPipeline::~VulkanBrushPipeline() {
 }
 
 bool VulkanBrushPipeline::Initialize() {
+    if (!gen_) return false;
+    std::lock_guard<std::recursive_mutex> driverLock(gen_->driverCallMutex);
+    if (!gen_->IsUsable()) return false;
     if (ready_) return true;
     if (attempted_) return false;
     attempted_ = true;
 
-    if (!ctx_.valid || ctx_.device == VK_NULL_HANDLE || DeviceLost()) return false;
+    if (!ctx_.valid || ctx_.device == VK_NULL_HANDLE) return false;
     if (!fns_->Load(ctx_)) {
         INK_LOG("device function table load failed");
         return false;
@@ -560,7 +566,9 @@ bool VulkanBrushPipeline::Initialize() {
 
 std::unique_ptr<VulkanBrushShader> VulkanBrushPipeline::CreateBrushShader(
     const char* shaderKey, const char* brushMainHlsl, VulkanBrushBlendMode blendMode) {
-    if (!Initialize() || !brushMainHlsl || DeviceLost()) return nullptr;
+    if (!brushMainHlsl || !gen_) return nullptr;
+    std::lock_guard<std::recursive_mutex> driverLock(gen_->driverCallMutex);
+    if (!gen_->IsUsable() || !Initialize()) return nullptr;
     VkDevice device = ctx_.device;
 
     std::string psSource;
@@ -669,13 +677,17 @@ VulkanBrushShader::VulkanBrushShader(std::shared_ptr<VulkanBrushPipeline> owner,
 
 VulkanBrushShader::~VulkanBrushShader() {
     if (!owner_) return;
+    const auto& generation = owner_->Generation();
+    if (!generation) return;
+    std::lock_guard<std::recursive_mutex> driverLock(
+        generation->driverCallMutex);
     const VkInkFunctions& fns = owner_->Fns();
     VkDevice device = owner_->Context().device;
     if (device == VK_NULL_HANDLE) return;
     // owner_ (shared) keeps pipeline + device generation alive; the device is
     // live here even after the creating render target died. Skip the wait on a
     // lost generation, destroy regardless (legal on a lost device).
-    if (!owner_->DeviceLost() && fns.deviceWaitIdle) fns.deviceWaitIdle(device);
+    if (!generation->TryDrainForDestruction()) return;
     if (pipeline_ != VK_NULL_HANDLE) fns.destroyPipeline(device, pipeline_, nullptr);
     if (fragmentModule_ != VK_NULL_HANDLE) fns.destroyShaderModule(device, fragmentModule_, nullptr);
 }
@@ -683,21 +695,106 @@ VulkanBrushShader::~VulkanBrushShader() {
 // ───────────────────────────────────────────────────────────────────────────
 // VulkanInkLayerBitmap
 // ───────────────────────────────────────────────────────────────────────────
+VulkanInkImageGeneration::VulkanInkImageGeneration(
+    std::shared_ptr<VulkanBrushPipeline> pipeline)
+    : pipeline_(std::move(pipeline)),
+      fns_(pipeline_ ? &pipeline_->Fns() : nullptr)
+{
+}
+
+VulkanInkImageGeneration::~VulkanInkImageGeneration()
+{
+    // No device-wide wait belongs here. Recording commands and submitted frame
+    // slots own shared references; the last reference can disappear only after
+    // every referencing fence has been observed (or after a lost device, where
+    // destruction is legal and waiting would only re-enter the dead driver).
+    if (gpuResidentBytesAccounted_ != 0) {
+        bitmap_stats::AddGpuResidentBytes(-gpuResidentBytesAccounted_);
+        gpuResidentBytesAccounted_ = 0;
+    }
+    if (!fns_ || !pipeline_) return;
+    const auto& generation = pipeline_->Generation();
+    if (!generation) return;
+    std::lock_guard<std::recursive_mutex> driverLock(
+        generation->driverCallMutex);
+    if (generation->IsAbandoned()) return;
+    const VkDevice device = pipeline_->Context().device;
+    if (device == VK_NULL_HANDLE) return;
+    if (framebuffer_ != VK_NULL_HANDLE) {
+        fns_->destroyFramebuffer(device, framebuffer_, nullptr);
+    }
+    if (imageView_ != VK_NULL_HANDLE) {
+        fns_->destroyImageView(device, imageView_, nullptr);
+    }
+    if (image_ != VK_NULL_HANDLE) {
+        fns_->destroyImage(device, image_, nullptr);
+    }
+    if (imageMemory_ != VK_NULL_HANDLE) {
+        fns_->freeMemory(device, imageMemory_, nullptr);
+    }
+}
+
 VulkanInkLayerBitmap::VulkanInkLayerBitmap(std::shared_ptr<VulkanBrushPipeline> pipeline)
     : pipeline_(std::move(pipeline)), fns_(pipeline_ ? &pipeline_->Fns() : nullptr) {}
 
+std::shared_ptr<const VulkanInkImageGeneration>
+VulkanInkLayerBitmap::AcquireImageGeneration() const
+{
+    std::lock_guard<std::mutex> generationLock(imageGenerationMutex_);
+    return imageGeneration_;
+}
+
+uint32_t VulkanInkLayerBitmap::Width() const
+{
+    const auto generation = AcquireImageGeneration();
+    return generation ? generation->Width() : 0;
+}
+
+uint32_t VulkanInkLayerBitmap::Height() const
+{
+    const auto generation = AcquireImageGeneration();
+    return generation ? generation->Height() : 0;
+}
+
+VkImage VulkanInkLayerBitmap::Image() const
+{
+    const auto generation = AcquireImageGeneration();
+    return generation ? generation->Image() : VK_NULL_HANDLE;
+}
+
+VkImageView VulkanInkLayerBitmap::ImageView() const
+{
+    const auto generation = AcquireImageGeneration();
+    return generation ? generation->ImageView() : VK_NULL_HANDLE;
+}
+
+VkImageLayout VulkanInkLayerBitmap::ImageLayout() const
+{
+    std::lock_guard<std::mutex> generationLock(imageGenerationMutex_);
+    return imageGeneration_ ? imageGeneration_->imageLayout_
+                            : VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
 VulkanInkLayerBitmap::~VulkanInkLayerBitmap() {
-    // pipeline_ (shared) keeps the device generation alive: every handle below
-    // targets a live VkDevice even when the creating render target — or the
-    // whole device generation — went away first. On a lost generation skip the
-    // wait (it would just return DEVICE_LOST) but still destroy everything;
-    // that is legal on a lost-but-not-freed device and releases the driver's
-    // bookkeeping.
-    if (!DeviceLost() && fns_ && fns_->deviceWaitIdle && pipeline_ &&
-        pipeline_->Context().device != VK_NULL_HANDLE) {
-        fns_->deviceWaitIdle(pipeline_->Context().device);
+    std::lock_guard<std::mutex> operationLock(operationMutex_);
+    const auto generation = pipeline_ ? pipeline_->Generation() : nullptr;
+    std::unique_lock<std::recursive_mutex> driverLock;
+    if (generation) {
+        driverLock = std::unique_lock<std::recursive_mutex>(
+            generation->driverCallMutex);
     }
-    ReleaseResources();
+    const bool mayDestroyGpuObjects =
+        generation && generation->TryDrainForDestruction();
+    // pipeline_ keeps the device generation alive. A lost generation still
+    // permits child destruction; a future fail-closed/abandoned generation
+    // guard belongs immediately before the scratch destroys below.
+    {
+        // Revoke the public generation. Recorded commands and in-flight frame
+        // slots keep independent leases until their submission fence completes.
+        std::lock_guard<std::mutex> generationLock(imageGenerationMutex_);
+        ReleaseResources();
+    }
+    if (!mayDestroyGpuObjects) return;
     VkDevice device = pipeline_ ? pipeline_->Context().device : VK_NULL_HANDLE;
     if (fns_ && device != VK_NULL_HANDLE) {
         DestroyBuffer(cbBuffer_, cbMemory_, cbMapped_, cbCapacity_);
@@ -711,7 +808,13 @@ VulkanInkLayerBitmap::~VulkanInkLayerBitmap() {
 }
 
 bool VulkanInkLayerBitmap::Initialize(uint32_t width, uint32_t height) {
-    if (!pipeline_ || !pipeline_->IsReady() || !fns_ || DeviceLost()) return false;
+    std::lock_guard<std::mutex> operationLock(operationMutex_);
+    if (!pipeline_ || !fns_) return false;
+    const auto& generation = pipeline_->Generation();
+    if (!generation) return false;
+    std::lock_guard<std::recursive_mutex> driverLock(
+        generation->driverCallMutex);
+    if (!generation->IsUsable() || !pipeline_->IsReady()) return false;
     VkDevice device = pipeline_->Context().device;
 
     // One-time scratch: command pool + buffer, fence, descriptor pool + set.
@@ -754,37 +857,56 @@ bool VulkanInkLayerBitmap::Initialize(uint32_t width, uint32_t height) {
         if (fns_->allocateDescriptorSets(device, &dsAlloc, &descriptorSet_) != VK_SUCCESS) return false;
     }
 
-    if (!CreateResources(width, height)) return false;
-    Clear(0.0f, 0.0f, 0.0f, 0.0f);
+    std::lock_guard<std::mutex> generationLock(imageGenerationMutex_);
+    auto candidate = CreateResources(width, height);
+    if (!candidate) return false;
+    BindOperationGeneration(candidate);
+    if (!ClearCurrent(0.0f, 0.0f, 0.0f, 0.0f)) {
+        BindOperationGeneration(nullptr);
+        return false;
+    }
+    imageGeneration_ = std::move(candidate);
     return true;
 }
 
 bool VulkanInkLayerBitmap::Resize(uint32_t width, uint32_t height) {
+    std::lock_guard<std::mutex> operationLock(operationMutex_);
+    if (!pipeline_ || !fns_) return false;
+    const auto& deviceGeneration = pipeline_->Generation();
+    if (!deviceGeneration) return false;
+    std::lock_guard<std::recursive_mutex> driverLock(
+        deviceGeneration->driverCallMutex);
+    if (!deviceGeneration->IsUsable()) return false;
+    std::lock_guard<std::mutex> generationLock(imageGenerationMutex_);
     if (width == width_ && height == height_) return true;
     if (!fns_ || DeviceLost()) return false;  // lost generation → caller keeps the old extent / skips
-    VkDevice device = pipeline_->Context().device;
-    if (fns_->deviceWaitIdle) {
-        // Classify the drain result: a device that died since the entry check
-        // latches here, so the destroy/recreate below is skipped and every
-        // later ink op fails fast instead of probing the dead driver.
-        VkResult vr = fns_->deviceWaitIdle(device);
-        if (vr != VK_SUCCESS) {
-            NoteResult(vr);
-            if (DeviceLost()) return false;
-        }
+
+    // Build and clear the candidate while publication is locked. A recorder
+    // can still own the old generation, but cannot observe the candidate until
+    // it is complete and SHADER_READ_ONLY_OPTIMAL.
+    auto candidate = CreateResources(width, height);
+    if (!candidate) return false;
+    const auto previous = imageGeneration_;
+    BindOperationGeneration(candidate);
+    if (!ClearCurrent(0.0f, 0.0f, 0.0f, 0.0f)) {
+        BindOperationGeneration(previous);
+        return false;
     }
-    ReleaseResources();
-    if (!CreateResources(width, height)) return false;
-    Clear(0.0f, 0.0f, 0.0f, 0.0f);  // bumps the content version on success
+    imageGeneration_ = std::move(candidate);
     BumpContentVersion();           // and bump regardless — the extent changed
     return true;
 }
 
-bool VulkanInkLayerBitmap::CreateResources(uint32_t width, uint32_t height) {
-    if (width == 0 || height == 0) return false;
+std::shared_ptr<VulkanInkImageGeneration>
+VulkanInkLayerBitmap::CreateResources(uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0) return nullptr;
+    auto generation = std::shared_ptr<VulkanInkImageGeneration>(
+        new (std::nothrow) VulkanInkImageGeneration(pipeline_));
+    if (!generation) return nullptr;
+
     VkDevice device = pipeline_->Context().device;
-    width_ = width;
-    height_ = height;
+    generation->width_ = width;
+    generation->height_ = height;
 
     VkImageCreateInfo imgInfo{};
     imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -799,67 +921,70 @@ bool VulkanInkLayerBitmap::CreateResources(uint32_t width, uint32_t height) {
                     VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (fns_->createImage(device, &imgInfo, nullptr, &image_) != VK_SUCCESS) return false;
-    imageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (fns_->createImage(device, &imgInfo, nullptr, &generation->image_) != VK_SUCCESS) return nullptr;
 
     VkMemoryRequirements req{};
-    fns_->getImageMemoryRequirements(device, image_, &req);
+    fns_->getImageMemoryRequirements(device, generation->image_, &req);
     uint32_t typeIndex = fns_->FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (typeIndex == UINT32_MAX) return false;
+    if (typeIndex == UINT32_MAX) return nullptr;
     VkMemoryAllocateInfo alloc{};
     alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     alloc.allocationSize = req.size;
     alloc.memoryTypeIndex = typeIndex;
-    if (fns_->allocateMemory(device, &alloc, nullptr, &imageMemory_) != VK_SUCCESS) return false;
-    if (fns_->bindImageMemory(device, image_, imageMemory_, 0) != VK_SUCCESS) return false;
+    if (fns_->allocateMemory(device, &alloc, nullptr, &generation->imageMemory_) != VK_SUCCESS) return nullptr;
+    if (fns_->bindImageMemory(device, generation->image_, generation->imageMemory_, 0) != VK_SUCCESS) return nullptr;
 
     VkImageViewCreateInfo viewInfo{};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = image_;
+    viewInfo.image = generation->image_;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = kInkFormat;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.layerCount = 1;
-    if (fns_->createImageView(device, &viewInfo, nullptr, &imageView_) != VK_SUCCESS) return false;
+    if (fns_->createImageView(device, &viewInfo, nullptr, &generation->imageView_) != VK_SUCCESS) return nullptr;
 
     VkFramebufferCreateInfo fbInfo{};
     fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
     fbInfo.renderPass = pipeline_->InkRenderPass();
     fbInfo.attachmentCount = 1;
-    fbInfo.pAttachments = &imageView_;
+    fbInfo.pAttachments = &generation->imageView_;
     fbInfo.width = width;
     fbInfo.height = height;
     fbInfo.layers = 1;
-    if (fns_->createFramebuffer(device, &fbInfo, nullptr, &framebuffer_) != VK_SUCCESS) return false;
+    if (fns_->createFramebuffer(device, &fbInfo, nullptr, &generation->framebuffer_) != VK_SUCCESS) return nullptr;
 
     // DevTools bitmap telemetry: the resident ink-layer image is part of the
     // Vulkan approximation of "GPU-resident bitmap bytes" (upload image +
     // glyph atlas image + ink layer images — Vulkan has no per-bitmap
     // resident textures, see the EnsureUploadImage accounting note).
-    gpuResidentBytesAccounted_ = static_cast<int64_t>(width) * height * 4;
-    bitmap_stats::AddGpuResidentBytes(gpuResidentBytesAccounted_);
+    generation->gpuResidentBytesAccounted_ =
+        static_cast<int64_t>(width) * height * 4;
+    bitmap_stats::AddGpuResidentBytes(generation->gpuResidentBytesAccounted_);
 
-    return true;
+    return generation;
+}
+
+void VulkanInkLayerBitmap::BindOperationGeneration(
+    const std::shared_ptr<VulkanInkImageGeneration>& generation)
+{
+    operationGeneration_ = generation.get();
+    framebuffer_ = generation ? generation->framebuffer_ : VK_NULL_HANDLE;
+    imageView_ = generation ? generation->imageView_ : VK_NULL_HANDLE;
+    image_ = generation ? generation->image_ : VK_NULL_HANDLE;
+    imageMemory_ = generation ? generation->imageMemory_ : VK_NULL_HANDLE;
+    imageLayout_ = generation ? generation->imageLayout_
+                              : VK_IMAGE_LAYOUT_UNDEFINED;
+    width_ = generation ? generation->width_ : 0;
+    height_ = generation ? generation->height_ : 0;
 }
 
 void VulkanInkLayerBitmap::ReleaseResources() {
-    if (!fns_) return;
-    // Balance the AddGpuResidentBytes made when CreateResources succeeded.
-    // Runs even when the device handle is gone below — a destroyed / lost
-    // device released the memory with it, so the global counter must drop
-    // either way.
-    if (gpuResidentBytesAccounted_ != 0) {
-        bitmap_stats::AddGpuResidentBytes(-gpuResidentBytesAccounted_);
-        gpuResidentBytesAccounted_ = 0;
-    }
-    VkDevice device = pipeline_->Context().device;
-    if (device == VK_NULL_HANDLE) return;
-    if (framebuffer_ != VK_NULL_HANDLE) { fns_->destroyFramebuffer(device, framebuffer_, nullptr); framebuffer_ = VK_NULL_HANDLE; }
-    if (imageView_ != VK_NULL_HANDLE) { fns_->destroyImageView(device, imageView_, nullptr); imageView_ = VK_NULL_HANDLE; }
-    if (image_ != VK_NULL_HANDLE) { fns_->destroyImage(device, image_, nullptr); image_ = VK_NULL_HANDLE; }
-    if (imageMemory_ != VK_NULL_HANDLE) { fns_->freeMemory(device, imageMemory_, nullptr); imageMemory_ = VK_NULL_HANDLE; }
-    imageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    // Dropping this reference is the only release action performed by the
+    // bitmap. VulkanInkImageGeneration owns the handles and destroys them only
+    // after replay commands and all fence-gated frame leases are gone.
+    BindOperationGeneration(nullptr);
+    imageGeneration_.reset();
 }
 
 void VulkanInkLayerBitmap::DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory,
@@ -908,18 +1033,37 @@ bool VulkanInkLayerBitmap::BeginCommands() {
     VkCommandBufferBeginInfo begin{};
     begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (fns_->resetCommandBuffer) fns_->resetCommandBuffer(cmdBuffer_, 0);
-    return fns_->beginCommandBuffer(cmdBuffer_, &begin) == VK_SUCCESS;
+    if (fns_->resetCommandBuffer) {
+        const VkResult resetResult = fns_->resetCommandBuffer(cmdBuffer_, 0);
+        if (resetResult != VK_SUCCESS) {
+            NoteResult(resetResult);
+            return false;
+        }
+    }
+    const VkResult beginResult = fns_->beginCommandBuffer(cmdBuffer_, &begin);
+    if (beginResult != VK_SUCCESS) {
+        NoteResult(beginResult);
+        return false;
+    }
+    return true;
 }
 
 void VulkanInkLayerBitmap::NoteResult(VkResult result) {
-    if (result == VK_ERROR_DEVICE_LOST && pipeline_ && pipeline_->Generation()) {
-        pipeline_->Generation()->MarkLost();
-    }
+    if (result == VK_SUCCESS) return;
+    const auto generation = pipeline_ ? pipeline_->Generation() : nullptr;
+    if (!generation) return;
+    // Always preserve the global driverCallMutex -> queueMutex order. All
+    // indeterminate failures are quarantined while the queue state is stable.
+    std::lock_guard<std::recursive_mutex> driverLock(
+        generation->driverCallMutex);
+    std::lock_guard<std::mutex> queueLock(generation->queueMutex);
+    if (result == VK_ERROR_DEVICE_LOST) generation->MarkLost();
+    else generation->MarkAbandoned();
 }
 
 bool VulkanInkLayerBitmap::SubmitAndWait() {
-    if (DeviceLost()) return false;
+    const auto generation = pipeline_ ? pipeline_->Generation() : nullptr;
+    if (!generation || !generation->IsUsable()) return false;
     VkResult vr = fns_->endCommandBuffer(cmdBuffer_);
     if (vr != VK_SUCCESS) { NoteResult(vr); return false; }
     VkDevice device = pipeline_->Context().device;
@@ -933,14 +1077,36 @@ bool VulkanInkLayerBitmap::SubmitAndWait() {
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmdBuffer_;
-    vr = fns_->queueSubmit(pipeline_->Context().graphicsQueue, 1, &submit, fence_);
-    if (vr != VK_SUCCESS) { NoteResult(vr); return false; }
+    {
+        std::lock_guard<std::mutex> queueLock(generation->queueMutex);
+        // A render-target teardown can quarantine the shared generation while
+        // this operation waits for the externally-synchronised queue. Recheck
+        // under the queue lock so no submission enters an abandoned driver.
+        if (!generation->IsUsable()) return false;
+        vr = fns_->queueSubmit(
+            pipeline_->Context().graphicsQueue, 1, &submit, fence_);
+        if (vr != VK_SUCCESS) {
+            if (vr == VK_ERROR_DEVICE_LOST) generation->MarkLost();
+            else generation->MarkAbandoned();
+            return false;
+        }
+    }
     // The wait must not be fire-and-forget: a DEVICE_LOST here means the
     // dispatch never completed — report failure (the managed caller ignores
     // the code, so this stroke just doesn't reach the GPU layer) and latch
     // the generation so later ink ops fail fast.
-    vr = fns_->waitForFences(device, 1, &fence_, VK_TRUE, UINT64_MAX);
-    if (vr != VK_SUCCESS) { NoteResult(vr); return false; }
+    // Never park the UI/render thread inside the driver indefinitely. A simple
+    // ink clear/dispatch should complete well below this bound; if it does not,
+    // the submitted command may still own every referenced handle. Quarantine
+    // unknown/timeout outcomes so their destructors intentionally make no
+    // further Vulkan calls.
+    constexpr uint64_t kInkFenceTimeoutNs = 1'000'000'000ull;
+    vr = fns_->waitForFences(device, 1, &fence_, VK_TRUE,
+                             kInkFenceTimeoutNs);
+    if (vr != VK_SUCCESS) {
+        NoteResult(vr);
+        return false;
+    }
     return true;
 }
 
@@ -961,11 +1127,25 @@ void VulkanInkLayerBitmap::BarrierToLayout(VkImageLayout newLayout,
     barrier.dstAccessMask = dstAccess;
     fns_->cmdPipelineBarrier(cmdBuffer_, srcStage, dstStage, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     imageLayout_ = newLayout;
+    if (operationGeneration_) {
+        operationGeneration_->imageLayout_ = newLayout;
+    }
 }
 
 void VulkanInkLayerBitmap::Clear(float r, float g, float b, float a) {
-    if (!fns_ || image_ == VK_NULL_HANDLE || DeviceLost()) return;
-    if (!BeginCommands()) return;
+    std::lock_guard<std::mutex> operationLock(operationMutex_);
+    const auto generation = pipeline_ ? pipeline_->Generation() : nullptr;
+    if (!generation) return;
+    std::lock_guard<std::recursive_mutex> driverLock(
+        generation->driverCallMutex);
+    if (!generation->IsUsable()) return;
+    std::lock_guard<std::mutex> generationLock(imageGenerationMutex_);
+    (void)ClearCurrent(r, g, b, a);
+}
+
+bool VulkanInkLayerBitmap::ClearCurrent(float r, float g, float b, float a) {
+    if (!fns_ || image_ == VK_NULL_HANDLE || DeviceLost()) return false;
+    if (!BeginCommands()) return false;
 
     BarrierToLayout(VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
@@ -983,17 +1163,25 @@ void VulkanInkLayerBitmap::Clear(float r, float g, float b, float a) {
                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 
-    if (SubmitAndWait()) {
-        BumpContentVersion();
-    }
+    if (!SubmitAndWait()) return false;
+    BumpContentVersion();
+    return true;
 }
 
 int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
                                         const void* strokePoints, uint32_t pointCount,
                                         const void* managedConstants,
                                         const void* extraParams, uint32_t extraParamsSize) {
+    std::lock_guard<std::mutex> operationLock(operationMutex_);
     if (!fns_ || !shader || !strokePoints || !managedConstants || pointCount < 2)
         return JALIUM_INK_DISPATCH_ERROR_INVALID_ARG;
+    const auto deviceGeneration = pipeline_ ? pipeline_->Generation() : nullptr;
+    if (!deviceGeneration) return JALIUM_INK_DISPATCH_ERROR_STALE_CONTEXT;
+    std::lock_guard<std::recursive_mutex> driverLock(
+        deviceGeneration->driverCallMutex);
+    if (!deviceGeneration->IsUsable())
+        return JALIUM_INK_DISPATCH_ERROR_STALE_CONTEXT;
+    std::lock_guard<std::mutex> generationLock(imageGenerationMutex_);
     if (image_ == VK_NULL_HANDLE || framebuffer_ == VK_NULL_HANDLE)
         return JALIUM_INK_DISPATCH_ERROR_INVALID_STATE;
     // Lost generation → refuse before touching buffers/descriptors. Retrying
@@ -1086,7 +1274,10 @@ int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
         }
     }
 
-    if (!BeginCommands()) return JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+    if (!BeginCommands()) {
+        return DeviceLost() ? JALIUM_INK_DISPATCH_ERROR_STALE_CONTEXT
+                            : JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
+    }
 
     BarrierToLayout(VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -1126,10 +1317,10 @@ int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
 
     if (!SubmitAndWait()) {
-        // SubmitAndWait latches the generation on VK_ERROR_DEVICE_LOST
-        // (NoteResult → MarkLost). Classify AFTER the call: a submit that
-        // died with the device is a generation failure (rebuild), anything
-        // else (end/reset/submit hiccup) is transient (retry same handles).
+        // SubmitAndWait classifies every driver failure before returning.
+        // DEVICE_LOST is latched; all other indeterminate results quarantine
+        // the generation, so the caller rebuilds instead of retrying handles
+        // whose in-flight ownership is no longer provable.
         return DeviceLost() ? JALIUM_INK_DISPATCH_ERROR_STALE_CONTEXT
                             : JALIUM_INK_DISPATCH_ERROR_TRANSIENT;
     }
@@ -1138,6 +1329,13 @@ int VulkanInkLayerBitmap::DispatchBrush(VulkanBrushShader* shader,
 }
 
 bool VulkanInkLayerBitmap::ReadbackBgra(std::vector<uint8_t>& outBgra) {
+    std::lock_guard<std::mutex> operationLock(operationMutex_);
+    const auto generation = pipeline_ ? pipeline_->Generation() : nullptr;
+    if (!generation) return false;
+    std::lock_guard<std::recursive_mutex> driverLock(
+        generation->driverCallMutex);
+    if (!generation->IsUsable()) return false;
+    std::lock_guard<std::mutex> generationLock(imageGenerationMutex_);
     if (!fns_ || !fns_->cmdCopyImageToBuffer || image_ == VK_NULL_HANDLE) return false;
     if (width_ == 0 || height_ == 0 || DeviceLost()) return false;
     const VkDeviceSize bytes = static_cast<VkDeviceSize>(width_) * height_ * 4u;

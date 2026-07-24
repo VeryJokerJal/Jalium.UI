@@ -15,6 +15,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class AutoCompleteBox : TextBoxBase, IImeSupport
 {
+    private InputMethodWeakSubscription<AutoCompleteBox>? _imeSubscription;
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -410,9 +411,8 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         Cursor = Jalium.UI.Input.Cursors.IBeam;
 
         // Subscribe to IME events
-        InputMethod.CompositionStarted += OnImeCompositionStarted;
-        InputMethod.CompositionUpdated += OnImeCompositionUpdated;
-        InputMethod.CompositionEnded += OnImeCompositionEnded;
+        Loaded += OnImeOwnerLoaded;
+        Unloaded += OnImeOwnerUnloaded;
 
         // Subscribe to focus events
         AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotFocusHandler));
@@ -493,6 +493,25 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         if (IsDropDownOpen)
         {
             SetValue(IsDropDownOpenProperty, false);
+        }
+    }
+
+    private void OnImeOwnerLoaded(object? sender, RoutedEventArgs e)
+    {
+        _imeSubscription ??= new InputMethodWeakSubscription<AutoCompleteBox>(
+            this,
+            static (owner, source, args) => owner.OnImeCompositionStarted(source, args),
+            static (owner, source, args) => owner.OnImeCompositionUpdated(source, args),
+            static (owner, source, args) => owner.OnImeCompositionEnded(source, args));
+        _imeSubscription.Attach();
+    }
+
+    private void OnImeOwnerUnloaded(object? sender, RoutedEventArgs e)
+    {
+        _imeSubscription?.Detach();
+        if (ReferenceEquals(InputMethod.CurrentTarget, this))
+        {
+            InputMethod.SetTarget(null);
         }
     }
 
@@ -1280,7 +1299,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
 
         for (var i = 0; i < FilteredItems.Count && y < dropDownTop + dropDownHeight; i++)
         {
-            var itemRect = new Rect(1, y, RenderSize.Width - 2, ItemHeight);
+            var itemRect = ControlRenderGeometry.GetContentRect(new Rect(0, y, RenderSize.Width, ItemHeight), new Thickness(1, 0));
 
             // Draw selection background
             if (i == _selectedSuggestionIndex)

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Runtime.CompilerServices;
 using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Media;
@@ -9,6 +10,14 @@ namespace Jalium.UI.Media;
 public abstract partial class Brush : Animatable, IFormattable
 {
     private static readonly Transform s_identityTransform = CreateIdentityTransform();
+    private WeakReference<UIElement>? _singleRenderOwner;
+    private int _singleRenderOwnerReferenceCount;
+    private ConditionalWeakTable<UIElement, RenderOwnerRegistration>? _renderOwners;
+
+    private sealed class RenderOwnerRegistration
+    {
+        public int ReferenceCount { get; set; }
+    }
 
     public static readonly DependencyProperty OpacityProperty =
         DependencyProperty.Register(nameof(Opacity), typeof(double), typeof(Brush), new PropertyMetadata(1d));
@@ -48,6 +57,108 @@ public abstract partial class Brush : Animatable, IFormattable
     public override string ToString() => ToString(CultureInfo.CurrentCulture);
     public string ToString(IFormatProvider? provider) => GetType().Name;
     string IFormattable.ToString(string? format, IFormatProvider? provider) => ToString(provider);
+
+    /// <summary>
+    /// Adds a weak visual owner for in-place brush change invalidation. A single element can
+    /// consume the same brush through multiple dependency properties, hence the reference count.
+    /// </summary>
+    internal void AddRenderOwner(UIElement owner)
+    {
+        if (IsFrozen)
+        {
+            return;
+        }
+
+        if (_renderOwners is { } owners)
+        {
+            var registration = owners.GetValue(owner, static _ => new RenderOwnerRegistration());
+            registration.ReferenceCount++;
+            return;
+        }
+
+        if (_singleRenderOwner is null)
+        {
+            _singleRenderOwner = new WeakReference<UIElement>(owner);
+            _singleRenderOwnerReferenceCount = 1;
+            return;
+        }
+
+        if (!_singleRenderOwner.TryGetTarget(out var existingOwner))
+        {
+            _singleRenderOwner.SetTarget(owner);
+            _singleRenderOwnerReferenceCount = 1;
+            return;
+        }
+
+        if (ReferenceEquals(existingOwner, owner))
+        {
+            _singleRenderOwnerReferenceCount++;
+            return;
+        }
+
+        // The overwhelmingly common case is a brush owned by one visual; keep that path to one
+        // WeakReference. Promote to an ephemeron table only when a brush is genuinely shared.
+        owners = new ConditionalWeakTable<UIElement, RenderOwnerRegistration>();
+        owners.Add(existingOwner, new RenderOwnerRegistration
+        {
+            ReferenceCount = _singleRenderOwnerReferenceCount
+        });
+        owners.Add(owner, new RenderOwnerRegistration { ReferenceCount = 1 });
+        _renderOwners = owners;
+        _singleRenderOwner = null;
+        _singleRenderOwnerReferenceCount = 0;
+    }
+
+    /// <summary>Removes one dependency-property use of this brush from a visual owner.</summary>
+    internal void RemoveRenderOwner(UIElement owner)
+    {
+        if (_renderOwners is { } owners)
+        {
+            if (owners.TryGetValue(owner, out var registration)
+                && --registration.ReferenceCount == 0)
+            {
+                owners.Remove(owner);
+            }
+            return;
+        }
+
+        if (_singleRenderOwner is not null
+            && _singleRenderOwner.TryGetTarget(out var singleOwner)
+            && ReferenceEquals(singleOwner, owner)
+            && --_singleRenderOwnerReferenceCount == 0)
+        {
+            _singleRenderOwner = null;
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnChanged()
+    {
+        InvalidateRenderOwners();
+        base.OnChanged();
+    }
+
+    private void InvalidateRenderOwners()
+    {
+        if (_renderOwners is { } owners)
+        {
+            foreach (var owner in owners)
+            {
+                owner.Key.InvalidateVisual();
+            }
+            return;
+        }
+
+        if (_singleRenderOwner?.TryGetTarget(out var singleOwner) == true)
+        {
+            singleOwner.InvalidateVisual();
+        }
+        else
+        {
+            _singleRenderOwner = null;
+            _singleRenderOwnerReferenceCount = 0;
+        }
+    }
 
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {

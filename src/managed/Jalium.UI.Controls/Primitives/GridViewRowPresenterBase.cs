@@ -186,12 +186,12 @@ public abstract class GridViewRowPresenterBase : FrameworkElement, IWeakEventLis
     /// </summary>
     protected void ClearPresenterChildren()
     {
-        foreach (var child in _presenterChildren)
+        for (int i = _presenterChildren.Count - 1; i >= 0; i--)
         {
+            var child = _presenterChildren[i];
+            _presenterChildren.RemoveAt(i);
             RemoveVisualChild(child);
         }
-
-        _presenterChildren.Clear();
     }
 
     private void SubscribeColumns(Controls.GridViewColumnCollection? columns)

@@ -6,6 +6,8 @@ struct PushConstants
     float4 roundedClipRect;
     float2 roundedClipRadius;
     float2 clipFlags;
+    float4 perCornerRadiusX;
+    float4 perCornerRadiusY;
 };
 
 [[vk::push_constant]]

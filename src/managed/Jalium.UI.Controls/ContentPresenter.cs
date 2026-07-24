@@ -124,6 +124,34 @@ public class ContentPresenter : FrameworkElement
     // reused (DataContext swap) instead of rebuilt — see OnContentChanged.
     private DataTemplate? _generatedFromTemplate;
 
+    /// <summary>
+    /// Releases the presented visual before the owning control discards this
+    /// presenter's template tree.
+    /// </summary>
+    /// <remarks>
+    /// A visual supplied through <see cref="ContentControl.Content"/> is owned by
+    /// the control, not by one particular expansion of its control template. If
+    /// the old presenter keeps that visual parented after its template root is
+    /// detached, the replacement presenter can render the same instance through
+    /// its cached field while the instance's <see cref="Visual.VisualParent"/>
+    /// still points into the retired tree. Routed input and layout invalidation
+    /// then stop at that detached root. Detaching here lets the next presenter
+    /// establish the real parent chain.
+    /// </remarks>
+    internal void ReleaseContentElementForTemplateTeardown()
+    {
+        if (_contentElement == null)
+            return;
+
+        var element = _contentElement;
+        _contentElement = null;
+        _generatedFromTemplate = null;
+        if (ReferenceEquals(element.VisualParent, this))
+        {
+            RemoveVisualChild(element);
+        }
+    }
+
     #endregion
 
     #region Constructor
@@ -180,22 +208,74 @@ public class ContentPresenter : FrameworkElement
         // Remove old content element
         if (_contentElement != null)
         {
-            RemoveVisualChild(_contentElement);
+            var element = _contentElement;
             _contentElement = null;
             _generatedFromTemplate = null;
+            RemoveVisualChild(element);
         }
 
         // Add new content
         if (newContent != null)
         {
             _contentElement = CreateContentElement(newContent);
-            if (_contentElement != null && _contentElement.VisualParent == null)
+            if (_contentElement != null)
             {
-                AddVisualChild(_contentElement);
+                ReclaimContentFromRetiredTemplatePresenter(_contentElement);
+                if (_contentElement.VisualParent == null)
+                {
+                    AddVisualChild(_contentElement);
+                }
             }
         }
 
         InvalidateMeasure();
+    }
+
+    private void ReclaimContentFromRetiredTemplatePresenter(FrameworkElement contentElement)
+    {
+        if (contentElement.VisualParent is not ContentPresenter previousPresenter ||
+            ReferenceEquals(previousPresenter, this) ||
+            TemplatedParent is not Control owner ||
+            !ReferenceEquals(previousPresenter.TemplatedParent, owner))
+        {
+            return;
+        }
+
+        // During template expansion Control assigns _templateRoot before it sets
+        // TemplatedParent recursively. Therefore this presenter can distinguish
+        // the current expansion from a presenter retained by the discarded
+        // expansion of the same control. Only reclaim from that retired tree;
+        // two live presenters in one template must not steal a UIElement from
+        // each other.
+        var currentRoot = owner.TemplateRootInternal;
+        if (currentRoot == null || IsVisualDescendantOf(previousPresenter, currentRoot))
+            return;
+
+        previousPresenter.ReleaseSpecificContentElement(contentElement);
+    }
+
+    private void ReleaseSpecificContentElement(FrameworkElement contentElement)
+    {
+        if (!ReferenceEquals(_contentElement, contentElement) ||
+            !ReferenceEquals(contentElement.VisualParent, this))
+        {
+            return;
+        }
+
+        _contentElement = null;
+        _generatedFromTemplate = null;
+        RemoveVisualChild(contentElement);
+    }
+
+    private static bool IsVisualDescendantOf(Visual descendant, Visual ancestor)
+    {
+        for (Visual? current = descendant; current != null; current = current.VisualParent)
+        {
+            if (ReferenceEquals(current, ancestor))
+                return true;
+        }
+
+        return false;
     }
 
     private static void OnContentTemplateChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

@@ -43,8 +43,8 @@ public class NumberBoxThemeTests
             Assert.False(numberBox.HasLocalValue(FrameworkElement.HeightProperty));
             Assert.NotNull(numberBox.SelectionBrush);
             Assert.NotNull(numberBox.CaretBrush);
-            Assert.Equal(32, numberBox.MinHeight);
-            Assert.True(numberBox.RenderSize.Height >= 32);
+            Assert.Equal(36, numberBox.MinHeight);
+            Assert.True(numberBox.RenderSize.Height >= 36);
         }
         finally
         {

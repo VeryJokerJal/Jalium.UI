@@ -92,10 +92,12 @@
     <ClInclude Include="include\vulkan_text_glyph_shaders.h" />
     <ClInclude Include="include\vulkan_impeller_engine.h" />
     <ClInclude Include="include\vulkan_ink_layer.h" />
+    <ClInclude Include="include\vulkan_render_lifecycle.h" />
     <ClInclude Include="include\vulkan_render_target.h" />
     <ClInclude Include="include\vulkan_resources.h" />
     <ClInclude Include="include\vulkan_runtime.h" />
     <ClInclude Include="include\vulkan_shader_compiler.h" />
+    <ClInclude Include="include\vulkan_vello_compute.h" />
     <ClInclude Include="include\vulkan_vello_engine.h" />
   </ItemGroup>
   <ItemGroup>
@@ -111,6 +113,15 @@
     <ClCompile Include="src\vulkan_vello_compute.cpp" />
     <ClCompile Include="src\vulkan_vello_engine.cpp" />
     <ClCompile Include="src\vulkan_video_surface.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\liquid_glass_quad.frag.hlsl" />
+    <None Include="shaders\liquid_glass_quad.vert.hlsl" />
+    <None Include="shaders\solid_rect.frag.hlsl" />
+    <None Include="shaders\solid_rect.vert.hlsl" />
+    <None Include="..\jalium.native.core\shaders\continuous_corner.hlsli">
+      <Link>shaders\continuous_corner.hlsli</Link>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\jalium.native.core\jalium.native.core.static.vcxproj">

@@ -58,8 +58,9 @@ void TestDragEventAbi()
           "rich pointer ABI preserves every existing field offset");
     Check(offsetof(JaliumPlatformEvent, pointer.flags) == 52 &&
               offsetof(JaliumPlatformEvent, pointer.toolType) == 56 &&
-              offsetof(JaliumPlatformEvent, pointer.buttons) == 60,
-          "rich pointer flags, tool type, and buttons fit inside the union");
+              offsetof(JaliumPlatformEvent, pointer.buttons) == 60 &&
+              offsetof(JaliumPlatformEvent, pointer.timestampMillis) == 64,
+          "rich pointer fields and event timestamp fit inside the union");
     Check(JALIUM_EVENT_DELETE_SURROUNDING_TEXT == 46 &&
               offsetof(JaliumPlatformEvent,
                        deleteSurrounding.beforeUtf8Bytes) == 16 &&

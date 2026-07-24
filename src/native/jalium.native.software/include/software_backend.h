@@ -535,6 +535,15 @@ private:
     // Platform-neutral surface descriptor for non-Windows present
     JaliumSurfaceDescriptor surfaceDescriptor_{};
 
+#ifdef __ANDROID__
+    // Android surface bring-up diagnostics: the first few EndDraw presents
+    // log unconditionally, then go quiet. Per render target — a rebuilt RT is
+    // a fresh instance, so every surface bring-up gets its own burst; the
+    // former function-level static spent the budget once per process and left
+    // later RTs (backend fallback, surface recreation) with no diagnostics.
+    uint32_t presentLogFramesLeft_ = 5;
+#endif
+
 #ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
     std::unique_ptr<WaylandShmPresenter> waylandPresenter_;
 #endif

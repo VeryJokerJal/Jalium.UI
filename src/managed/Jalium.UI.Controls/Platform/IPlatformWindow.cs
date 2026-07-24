@@ -225,6 +225,7 @@ internal struct PlatformEvent
     public uint PointerFlags;
     public int PointerToolType;
     public uint PointerButtons;
+    public long PointerTimestampMillis;
 
     // State
     public int NewState;

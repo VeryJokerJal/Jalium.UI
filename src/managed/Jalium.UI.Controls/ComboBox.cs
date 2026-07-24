@@ -1733,9 +1733,6 @@ public class ComboBox : Selector
 /// </summary>
 public class ComboBoxItem : ListBoxItem
 {
-    private static readonly SolidColorBrush s_fallbackHoverBackgroundBrush = new(Themes.ThemeColors.HighlightBackground);
-    private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Themes.ThemeColors.SelectionBackground);
-
     #region Dependency Properties
 
     /// <summary>
@@ -1747,7 +1744,7 @@ public class ComboBoxItem : ListBoxItem
             nameof(IsHighlighted),
             typeof(bool),
             typeof(ComboBoxItem),
-            new PropertyMetadata(false, OnIsHighlightedChanged));
+            new PropertyMetadata(false));
 
     /// <summary>
     /// Identifies the read-only <see cref="IsHighlighted"/> dependency property.
@@ -1776,7 +1773,6 @@ public class ComboBoxItem : ListBoxItem
 
     private bool _isPressed;
     private bool _isItemMouseOver;
-    private Border? _backgroundBorder;
 
     /// <summary>
     /// Directly invokes the click action - used by Popup for reliable click handling.
@@ -1794,8 +1790,6 @@ public class ComboBoxItem : ListBoxItem
         // Use ControlTemplate-based rendering (defined in SelectionControls.jalxaml)
         UseTemplateContentManagement();
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
-        ResourcesChanged += OnResourcesChangedHandler;
-
         // Set up mouse event handlers for click behavior and hover tracking
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler), handledEventsToo: true);
         AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler), handledEventsToo: true);
@@ -1854,14 +1848,6 @@ public class ComboBoxItem : ListBoxItem
         }
     }
 
-    /// <inheritdoc />
-    public override void OnApplyTemplate()
-    {
-        base.OnApplyTemplate();
-        _backgroundBorder = GetTemplateChild("PART_BackgroundBorder") as Border;
-        UpdateContainerVisualState();
-    }
-
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
@@ -1894,7 +1880,6 @@ public class ComboBoxItem : ListBoxItem
         if (!_isItemMouseOver)
         {
             _isItemMouseOver = true;
-            UpdateContainerVisualState();
         }
     }
 
@@ -1908,7 +1893,6 @@ public class ComboBoxItem : ListBoxItem
         if (_isItemMouseOver)
         {
             _isItemMouseOver = false;
-            UpdateContainerVisualState();
         }
     }
 
@@ -1935,44 +1919,4 @@ public class ComboBoxItem : ListBoxItem
         }
     }
 
-    private static void OnIsHighlightedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is ComboBoxItem item)
-        {
-            item.UpdateContainerVisualState();
-        }
-    }
-
-    private void UpdateContainerVisualState()
-    {
-        if (_backgroundBorder == null)
-        {
-            return;
-        }
-
-        if (IsSelected)
-        {
-            _backgroundBorder.Background = ResolveSelectedBackgroundBrush();
-            return;
-        }
-
-        if (_isItemMouseOver || IsHighlighted)
-        {
-            _backgroundBorder.Background = ResolveHoverBackgroundBrush();
-            return;
-        }
-
-        _backgroundBorder.ClearValue(Border.BackgroundProperty);
-    }
-
-    private Brush ResolveHoverBackgroundBrush()
-        => TryFindResource("HighlightBackground") as Brush ?? s_fallbackHoverBackgroundBrush;
-
-    private Brush ResolveSelectedBackgroundBrush()
-        => TryFindResource("SelectionBackground") as Brush ?? s_fallbackSelectedBackgroundBrush;
-
-    private void OnResourcesChangedHandler(object? sender, EventArgs e)
-    {
-        UpdateContainerVisualState();
-    }
 }

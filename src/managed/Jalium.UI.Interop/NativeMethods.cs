@@ -57,6 +57,9 @@ public struct TextMetrics
 
     /// <summary>The number of lines in the layout.</summary>
     public uint LineCount;
+
+    /// <summary>The width including trailing whitespace advances.</summary>
+    public float WidthIncludingTrailingWhitespace;
 }
 
 /// <summary>
@@ -1783,7 +1786,7 @@ internal static partial class NativeMethods
     [LibraryImport(PlatformLib, EntryPoint = "jalium_android_inject_touch")]
     internal static partial void AndroidInjectTouch(
         int pointerId, float x, float y, float pressure,
-        int action, int pointerType, int modifiers);
+        int action, int pointerType, int modifiers, long eventTimeMillis);
 
     [LibraryImport(PlatformLib, EntryPoint = "jalium_android_inject_key")]
     internal static partial void AndroidInjectKey(

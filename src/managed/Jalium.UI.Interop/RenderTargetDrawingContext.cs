@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Diagnostics;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using Jalium.UI;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Imaging;
@@ -13,6 +14,23 @@ namespace Jalium.UI.Interop;
 /// </summary>
 public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetDrawingContext, IClipBoundsDrawingContext, IOpacityDrawingContext, IEffectDrawingContext, ITransformDrawingContext, ICacheableDrawingContext, ILayerCompositingDrawingContext
 {
+    private static readonly ConditionalWeakTable<PathGeometry, FrozenPathGeometryInfo>
+        s_frozenPathGeometryInfo = new();
+
+    private sealed class FrozenPathGeometryInfo
+    {
+        public FrozenPathGeometryInfo(PathGeometry geometry)
+        {
+            Bounds = geometry.Bounds;
+            FillFigures = geometry.Figures.Where(static figure => figure.IsFilled).ToArray();
+            HasNestedFillFigures = FillFigures.Length > 1 && FiguresHaveNesting(FillFigures);
+        }
+
+        public Rect Bounds { get; }
+        public PathFigure[] FillFigures { get; }
+        public bool HasNestedFillFigures { get; }
+    }
+
     private const int MaxBrushCacheSize = 256;
     private const int MaxTextFormatCacheSize = 64;
     private const int MaxBitmapCacheSize = 64;
@@ -27,7 +45,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     private readonly RenderTarget _renderTarget;
     private readonly RenderContext _context;
     private readonly Dictionary<Brush, NativeBrush> _brushCache = new();
-    private readonly Dictionary<string, NativeTextFormat> _textFormatCache = new();
+    private readonly Dictionary<TextFormatCacheKey, NativeTextFormat> _textFormatCache = new();
     private readonly Dictionary<ImageSource, BitmapCacheEntry> _bitmapCache = new();
     private readonly Stack<DrawingState> _stateStack = new();
 
@@ -116,6 +134,15 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     private long _brushCacheSequence;
     private long _textFormatCacheSequence;
     private bool _closed;
+
+    private readonly record struct TextFormatCacheKey(
+        string FontFamily,
+        double FontSize,
+        int FontWeight,
+        int FontStyle,
+        int TextRenderingMode,
+        int TextFormattingMode,
+        int TextHintingMode);
 
     private sealed class BitmapCacheEntry
     {
@@ -391,6 +418,64 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         double maxY = Math.Max(Math.Max(ay, by), Math.Max(cy, ey));
 
         return new Rect(minX, minY, Math.Max(0, maxX - minX), Math.Max(0, maxY - minY));
+    }
+
+    /// <summary>
+    /// Resolves omitted layout-clip edges against the currently visible drawing
+    /// extent. Keeping the resulting rectangle near the render target avoids the
+    /// float cancellation caused by encoding a half-plane as a billion-pixel rect.
+    /// </summary>
+    internal static Rect ResolveBoundsClip(Rect bounds, ClipEdges edges, Rect limit)
+    {
+        if (bounds.IsEmpty || edges == ClipEdges.All || limit.IsEmpty)
+        {
+            return bounds;
+        }
+
+        var left = (edges & ClipEdges.Left) != 0
+            ? bounds.Left
+            : Math.Min(bounds.Left, limit.Left);
+        var top = (edges & ClipEdges.Top) != 0
+            ? bounds.Top
+            : Math.Min(bounds.Top, limit.Top);
+        var right = (edges & ClipEdges.Right) != 0
+            ? bounds.Right
+            : Math.Max(bounds.Right, limit.Right);
+        var bottom = (edges & ClipEdges.Bottom) != 0
+            ? bounds.Bottom
+            : Math.Max(bounds.Bottom, limit.Bottom);
+
+        return new Rect(left, top, right - left, bottom - top);
+    }
+
+    private Rect GetBoundsClipLimit()
+    {
+        var current = CurrentClipBounds;
+        if (current is { IsEmpty: false } currentBounds)
+        {
+            return currentBounds;
+        }
+
+        var viewport = new Rect(
+            0,
+            0,
+            _renderTarget.Width / _renderTarget.DpiScaleX,
+            _renderTarget.Height / _renderTarget.DpiScaleY);
+        if (_nativeTransformDepth <= 0)
+        {
+            return viewport;
+        }
+
+        var matrix = new Jalium.UI.Media.Matrix(
+            _currentNativeMatrix[0], _currentNativeMatrix[1],
+            _currentNativeMatrix[2], _currentNativeMatrix[3],
+            _currentNativeMatrix[4], _currentNativeMatrix[5]);
+        return matrix.TryInvert(out var inverse)
+            ? TransformRectAabb(
+                viewport,
+                inverse.M11, inverse.M12, inverse.M21, inverse.M22,
+                inverse.OffsetX, inverse.OffsetY)
+            : viewport;
     }
 
     // ── ILayerCompositingDrawingContext (retained GPU layer fast path) ──
@@ -1303,7 +1388,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// conservative test: a genuine hole always has its bbox nested, so a real
     /// hole is never mis-routed to separate fills.
     /// </summary>
-    private static bool FiguresHaveNesting(List<PathFigure> figures)
+    private static bool FiguresHaveNesting(IReadOnlyList<PathFigure> figures)
     {
         int n = figures.Count;
         if (n < 2) return false;
@@ -1347,15 +1432,37 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
 
         // Compute geometry bounds once for gradient brush coordinate mapping.
         long boundsTickStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
-        var geoBounds = pathGeom.Bounds;
+        var frozenInfo = pathGeom.IsFrozen
+            ? s_frozenPathGeometryInfo.GetValue(
+                pathGeom,
+                static geometry => new FrozenPathGeometryInfo(geometry))
+            : null;
+        var geoBounds = frozenInfo?.Bounds ?? pathGeom.Bounds;
         if (_svgDiagActive)
             _svgBoundsCalcTicks += Stopwatch.GetTimestamp() - boundsTickStart;
 
         // For fill: use compound path rendering when there are multiple figures
         // (enables proper hole/fill rule handling in the native triangulator)
-        var fillFigures = brush != null
-            ? pathGeom.Figures.Where(f => f.IsFilled).ToList()
-            : null;
+        IReadOnlyList<PathFigure>? fillFigures = null;
+        if (brush != null)
+        {
+            if (frozenInfo is not null)
+            {
+                fillFigures = frozenInfo.FillFigures;
+            }
+            else
+            {
+                _fillFigureBuffer ??= new List<PathFigure>();
+                _fillFigureBuffer.Clear();
+                foreach (var figure in pathGeom.Figures)
+                {
+                    if (figure.IsFilled)
+                        _fillFigureBuffer.Add(figure);
+                }
+
+                fillFigures = _fillFigureBuffer;
+            }
+        }
 
         if (fillFigures != null && fillFigures.Count > 1)
         {
@@ -1371,7 +1478,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
             // independent single-figure fill, which has no cross-figure
             // winding interaction.  Compound fill is reserved for genuinely
             // nested figures (real holes), where it is needed and correct.
-            if (FiguresHaveNesting(fillFigures))
+            if (frozenInfo?.HasNestedFillFigures ?? FiguresHaveNesting(fillFigures))
             {
                 // Send all figures as a single compound path with MoveTo separators
                 DrawCompoundPathFill(brush!, fillFigures, pathGeom.FillRule, geoBounds);
@@ -1452,7 +1559,13 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// using tag 2 (MoveTo) to separate contours.  This enables the native
     /// triangulator to handle holes and fill rules correctly.
     /// </summary>
-    private void DrawCompoundPathFill(Brush brush, List<PathFigure> figures, FillRule fillRule, Rect geoBounds)
+    private List<PathFigure>? _fillFigureBuffer;
+
+    private void DrawCompoundPathFill(
+        Brush brush,
+        IReadOnlyList<PathFigure> figures,
+        FillRule fillRule,
+        Rect geoBounds)
     {
         if (_svgDiagActive)
             _svgDrawCompoundCount++;
@@ -1497,7 +1610,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         if (nativeBrush != null)
         {
             int rule = fillRule == FillRule.Nonzero ? 1 : 0;
-            _renderTarget.FillPath(startX, startY, cmds.ToArray(), nativeBrush, rule);
+            var commandArray = CopyPathCommands(cmds);
+            _renderTarget.FillPath(startX, startY, commandArray, cmds.Count, nativeBrush, rule);
         }
     }
 
@@ -1935,6 +2049,25 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     /// </summary>
     // Reusable command buffer for path rendering to reduce GC pressure.
     private List<float>? _pathCommandBuffer;
+    private float[]? _pathCommandArray;
+
+    private float[] CopyPathCommands(List<float> commands)
+    {
+        var required = commands.Count;
+        if (_pathCommandArray is null || _pathCommandArray.Length < required)
+        {
+            var capacity = 128;
+            while (capacity < required)
+            {
+                capacity = checked(capacity * 2);
+            }
+
+            _pathCommandArray = new float[capacity];
+        }
+
+        commands.CopyTo(_pathCommandArray, 0);
+        return _pathCommandArray;
+    }
 
     private void DrawPathFigureNative(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule, Rect geoBounds)
     {
@@ -1958,7 +2091,8 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         float startY = (float)(figure.StartPoint.Y + oy);
         float bx = (float)(geoBounds.X + ox), by = (float)(geoBounds.Y + oy);
         float bw = (float)geoBounds.Width, bh = (float)geoBounds.Height;
-        var cmdArray = cmds.ToArray();
+        var cmdArray = CopyPathCommands(cmds);
+        var commandCount = cmds.Count;
 
         if (_svgDiagActive)
             _svgPathBuildTicks += Stopwatch.GetTimestamp() - pathBuildStart;
@@ -1980,7 +2114,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                 {
                     int rule = fillRule == FillRule.Nonzero ? 1 : 0;
                     long nativeStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
-                    _renderTarget.FillPath(startX, startY, cmdArray, nativeBrush, rule);
+                    _renderTarget.FillPath(startX, startY, cmdArray, commandCount, nativeBrush, rule);
                     if (_svgDiagActive)
                         _svgNativeCallTicks += Stopwatch.GetTimestamp() - nativeStart;
                 }
@@ -2013,7 +2147,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
                     dashOff = (float)(pen.DashStyle.Offset * pen.Thickness);
                 }
                 long nativeStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
-                _renderTarget.StrokePath(startX, startY, cmdArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit, nativeLineCap, dashArray, dashOff);
+                _renderTarget.StrokePath(startX, startY, cmdArray, commandCount, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit, nativeLineCap, dashArray, dashOff);
                 if (_svgDiagActive)
                     _svgNativeCallTicks += Stopwatch.GetTimestamp() - nativeStart;
             }
@@ -2910,16 +3044,36 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
     {
         if (_closed || clipGeometry == null) return;
 
-        var bounds = clipGeometry.Bounds;
+        var rectangleGeometry = clipGeometry as RectangleGeometry;
+        var bounds = rectangleGeometry is
+            {
+                BoundsClipEdges: not ClipEdges.All,
+                BoundsClipRect.IsEmpty: false
+            }
+            ? rectangleGeometry.BoundsClipRect
+            : clipGeometry.Bounds;
+        var offsetBounds = new Rect(
+            bounds.X + Offset.X,
+            bounds.Y + Offset.Y,
+            bounds.Width,
+            bounds.Height);
+        if (rectangleGeometry is { BoundsClipEdges: not ClipEdges.All })
+        {
+            offsetBounds = ResolveBoundsClip(
+                offsetBounds,
+                rectangleGeometry.BoundsClipEdges,
+                GetBoundsClipLimit());
+        }
+
         // Snap clip edges to pixel grid by expanding outward (Floor start, Ceiling end).
         // Drawing operations (DrawRoundedRectangle etc.) pixel-snap their origin via Math.Round,
         // so the drawn stroke can land up to 0.5px outside the mathematical clip region.
         // Expanding to full-pixel boundaries ensures the clip always contains the entire
         // pixel-snapped content, preventing asymmetric border thickness artifacts.
-        var exactLeft = bounds.X + Offset.X;
-        var exactTop = bounds.Y + Offset.Y;
-        var exactRight = exactLeft + bounds.Width;
-        var exactBottom = exactTop + bounds.Height;
+        var exactLeft = offsetBounds.Left;
+        var exactTop = offsetBounds.Top;
+        var exactRight = offsetBounds.Right;
+        var exactBottom = offsetBounds.Bottom;
 
         var x = (float)Math.Floor(exactLeft);
         var y = (float)Math.Floor(exactTop);
@@ -2929,7 +3083,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         var clipRect = new Rect(exactLeft, exactTop, Math.Max(0, exactRight - exactLeft), Math.Max(0, exactBottom - exactTop));
         PushClipBounds(clipRect);
 
-        if (clipGeometry is RectangleGeometry rectGeom)
+        if (rectangleGeometry is { } rectGeom)
         {
             if (rectGeom.HasPerCornerRadii)
             {
@@ -3994,7 +4148,14 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         // canvas next to a Grayscale text panel inside a ClearType chrome)
         // must NOT share one cached handle: the second caller would otherwise
         // silently get the first caller's mode.
-        var key = $"{fontFamily}_{fontSize}_{fontWeight}_{fontStyle}_{textRenderingMode}_{textFormattingMode}_{textHintingMode}";
+        var key = new TextFormatCacheKey(
+            fontFamily,
+            fontSize,
+            fontWeight,
+            fontStyle,
+            textRenderingMode,
+            textFormattingMode,
+            textHintingMode);
 
         if (_textFormatCache.TryGetValue(key, out var cached) && cached.IsValid)
         {

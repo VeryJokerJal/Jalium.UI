@@ -46,12 +46,12 @@ public class StatusBarThemeTests
             Assert.False(statusBar.HasLocalValue(FrameworkElement.HeightProperty));
             Assert.NotNull(statusBar.Background);
             Assert.NotNull(statusBar.BorderBrush);
-            Assert.Equal(24, statusBar.Height);
+            Assert.Equal(26, statusBar.Height);
 
             Assert.False(item.HasLocalValue(Control.PaddingProperty));
             Assert.False(item.HasLocalValue(Control.ForegroundProperty));
-            Assert.Equal(8, item.Padding.Left);
-            Assert.Equal(2, item.Padding.Top);
+            Assert.Equal(10, item.Padding.Left);
+            Assert.Equal(3, item.Padding.Top);
             Assert.NotNull(item.Foreground);
             Assert.Equal(0, item.VisualChildrenCount);
             Assert.True(item.DesiredSize.Height >= 24);

@@ -70,7 +70,11 @@ internal sealed class MenuFlyoutPresenter : Control
             Math.Max(0, availableSize.Width - horizontalInset),
             Math.Max(0, availableSize.Height - verticalInset));
         _scrollHost.Measure(innerSize);
-        return new Size(_scrollHost.DesiredSize.Width + horizontalInset, _scrollHost.DesiredSize.Height + verticalInset);
+        // Negative BorderThickness/Padding are legal; the Size constructor is not —
+        // clamp at the summation sink.
+        return new Size(
+            Math.Max(0, _scrollHost.DesiredSize.Width + horizontalInset),
+            Math.Max(0, _scrollHost.DesiredSize.Height + verticalInset));
     }
 
     protected override Size ArrangeOverride(Size finalSize)

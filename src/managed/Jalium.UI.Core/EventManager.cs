@@ -7,6 +7,7 @@ public static class EventManager
 {
     private static readonly Dictionary<(Type, string), RoutedEvent> _registeredEvents = new();
     private static readonly Dictionary<RoutedEvent, List<ClassHandlerInfo>> _classHandlers = new();
+    private static readonly Dictionary<(RoutedEvent Event, Type TargetType), ClassHandlerInfo[]> _resolvedClassHandlers = new();
     private static readonly object _lock = new();
 
     /// <summary>
@@ -96,28 +97,57 @@ public static class EventManager
             }
 
             handlers.Add(new ClassHandlerInfo(classType, handler, handledEventsToo));
+            // Class handlers may be registered after a target type was first
+            // queried. Registration is rare, so invalidating the small cache is
+            // cheaper and simpler than finding every assignable target key.
+            _resolvedClassHandlers.Clear();
         }
     }
 
     /// <summary>
     /// Gets the class handlers for a routed event.
     /// </summary>
-    internal static IEnumerable<ClassHandlerInfo> GetClassHandlers(RoutedEvent routedEvent, Type targetType)
+    internal static ClassHandlerInfo[] GetClassHandlers(RoutedEvent routedEvent, Type targetType)
     {
         lock (_lock)
         {
-            if (!_classHandlers.TryGetValue(routedEvent, out var handlers))
+            var key = (routedEvent, targetType);
+            if (_resolvedClassHandlers.TryGetValue(key, out var cached))
             {
-                yield break;
+                return cached;
             }
 
+            if (!_classHandlers.TryGetValue(routedEvent, out var handlers))
+            {
+                return Array.Empty<ClassHandlerInfo>();
+            }
+
+            int matchingCount = 0;
             foreach (var handler in handlers)
             {
                 if (handler.ClassType.IsAssignableFrom(targetType))
                 {
-                    yield return handler;
+                    matchingCount++;
                 }
             }
+
+            if (matchingCount == 0)
+            {
+                return Array.Empty<ClassHandlerInfo>();
+            }
+
+            var resolved = new ClassHandlerInfo[matchingCount];
+            int resolvedIndex = 0;
+            foreach (var handler in handlers)
+            {
+                if (handler.ClassType.IsAssignableFrom(targetType))
+                {
+                    resolved[resolvedIndex++] = handler;
+                }
+            }
+
+            _resolvedClassHandlers[key] = resolved;
+            return resolved;
         }
     }
 

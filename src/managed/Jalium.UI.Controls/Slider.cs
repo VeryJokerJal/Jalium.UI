@@ -272,9 +272,9 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
 
     #region Template Parts
 
-    private Border? _trackBorder;
-    private Border? _selectionRangeBorder;
-    private Border? _thumbBorder;
+    private FrameworkElement? _trackBorder;
+    private FrameworkElement? _selectionRangeBorder;
+    private FrameworkElement? _thumbBorder;
 
     #endregion
 
@@ -377,9 +377,9 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
     {
         base.OnApplyTemplate();
 
-        _trackBorder = GetTemplateChild("PART_Track") as Border;
-        _selectionRangeBorder = GetTemplateChild("PART_SelectionRange") as Border;
-        _thumbBorder = GetTemplateChild("PART_Thumb") as Border;
+        _trackBorder = GetTemplateChild("PART_Track") as FrameworkElement;
+        _selectionRangeBorder = GetTemplateChild("PART_SelectionRange") as FrameworkElement;
+        _thumbBorder = GetTemplateChild("PART_Thumb") as FrameworkElement;
 
         UpdateSliderLayout();
     }
@@ -755,14 +755,14 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
 
         if (Orientation == Orientation.Horizontal)
         {
-            var trackWidth = RenderSize.Width - ThumbSize;
+            var trackWidth = ControlRenderGeometry.GetTrackLength(RenderSize.Width, ThumbSize);
             var thumbX = percentage * trackWidth;
             var thumbY = (RenderSize.Height - ThumbSize) / 2;
             return new Rect(thumbX, thumbY, ThumbSize, ThumbSize);
         }
         else
         {
-            var trackHeight = RenderSize.Height - ThumbSize;
+            var trackHeight = ControlRenderGeometry.GetTrackLength(RenderSize.Height, ThumbSize);
             var thumbY = (1 - percentage) * trackHeight;
             var thumbX = (RenderSize.Width - ThumbSize) / 2;
             return new Rect(thumbX, thumbY, ThumbSize, ThumbSize);
@@ -806,17 +806,7 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
     {
         var trackBrush = TrackBrush ?? s_trackBrush;
 
-        Rect trackRect;
-        if (Orientation == Orientation.Horizontal)
-        {
-            var trackY = (bounds.Height - TrackThickness) / 2;
-            trackRect = new Rect(ThumbSize / 2, trackY, bounds.Width - ThumbSize, TrackThickness);
-        }
-        else
-        {
-            var trackX = (bounds.Width - TrackThickness) / 2;
-            trackRect = new Rect(trackX, ThumbSize / 2, TrackThickness, bounds.Height - ThumbSize);
-        }
+        var trackRect = ControlRenderGeometry.GetCenteredTrackRect(bounds, Orientation, ThumbSize, TrackThickness);
 
         dc.DrawRoundedRectangle(trackBrush, null, trackRect, 2, 2);
     }
@@ -829,26 +819,24 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
         var lowPercentage = Math.Min(startPercentage, endPercentage);
         var highPercentage = Math.Max(startPercentage, endPercentage);
 
+        var trackRect = ControlRenderGeometry.GetCenteredTrackRect(bounds, Orientation, ThumbSize, TrackThickness);
+
         Rect filledRect;
         if (Orientation == Orientation.Horizontal)
         {
-            var trackY = (bounds.Height - TrackThickness) / 2;
-            var trackWidth = bounds.Width - ThumbSize;
             filledRect = new Rect(
-                ThumbSize / 2 + trackWidth * lowPercentage,
-                trackY,
-                trackWidth * (highPercentage - lowPercentage),
-                TrackThickness);
+                trackRect.X + trackRect.Width * lowPercentage,
+                trackRect.Y,
+                trackRect.Width * (highPercentage - lowPercentage),
+                trackRect.Height);
         }
         else
         {
-            var trackX = (bounds.Width - TrackThickness) / 2;
-            var trackHeight = bounds.Height - ThumbSize;
             filledRect = new Rect(
-                trackX,
-                ThumbSize / 2 + trackHeight * (1 - highPercentage),
-                TrackThickness,
-                trackHeight * (highPercentage - lowPercentage));
+                trackRect.X,
+                trackRect.Y + trackRect.Height * (1 - highPercentage),
+                trackRect.Width,
+                trackRect.Height * (highPercentage - lowPercentage));
         }
 
         dc.DrawRoundedRectangle(filledBrush, null, filledRect, 2, 2);
@@ -857,13 +845,15 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
     private void DrawTicks(DrawingContext dc, Rect bounds)
     {
         if (TickPlacement == TickPlacement.None || Maximum <= Minimum) return;
+        var trackRect = ControlRenderGeometry.GetCenteredTrackRect(bounds, Orientation, ThumbSize, TrackThickness);
+
         foreach (var value in GetTickValues())
         {
             var percentage = GetVisualPercentage(value);
 
             if (Orientation == Orientation.Horizontal)
             {
-                var x = ThumbSize / 2 + (bounds.Width - ThumbSize) * percentage;
+                var x = trackRect.X + trackRect.Width * percentage;
                 if (TickPlacement is TickPlacement.TopLeft or TickPlacement.Both)
                     dc.DrawLine(s_tickPen, new Point(x, 2), new Point(x, 6));
                 if (TickPlacement is TickPlacement.BottomRight or TickPlacement.Both)
@@ -871,7 +861,7 @@ public class Slider : Jalium.UI.Controls.Primitives.RangeBase
             }
             else
             {
-                var y = ThumbSize / 2 + (bounds.Height - ThumbSize) * (1 - percentage);
+                var y = trackRect.Y + trackRect.Height * (1 - percentage);
                 if (TickPlacement is TickPlacement.TopLeft or TickPlacement.Both)
                     dc.DrawLine(s_tickPen, new Point(2, y), new Point(6, y));
                 if (TickPlacement is TickPlacement.BottomRight or TickPlacement.Both)

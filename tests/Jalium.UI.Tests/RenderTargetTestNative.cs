@@ -15,7 +15,10 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
     public bool ThrowOnSupportsPartialPresentation { get; set; }
     public int BeginDrawCalls { get; private set; }
     public int EndDrawCalls { get; private set; }
+    public int ResizeCalls { get; private set; }
+    public List<(int Width, int Height)> ResizeSizes { get; } = new();
     public int DestroyCalls { get; private set; }
+    public Action<int, int>? OnResize { get; set; }
     public Action? OnDestroy { get; set; }
 
     public nint CreateForSurface(nint context, NativeSurfaceDescriptor surface, int width, int height)
@@ -32,7 +35,13 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
 
     public int GetContextLastError(nint context) => ContextLastError;
 
-    public int Resize(nint renderTarget, int width, int height) => ResizeResult;
+    public int Resize(nint renderTarget, int width, int height)
+    {
+        ResizeCalls++;
+        ResizeSizes.Add((width, height));
+        OnResize?.Invoke(width, height);
+        return ResizeResult;
+    }
 
     public int BeginDraw(nint renderTarget)
     {

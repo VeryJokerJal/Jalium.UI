@@ -31,6 +31,28 @@ public sealed class PropertyPathSurfaceParityTests
         Assert.Equal("two", path.ResolveValue(new Model()));
     }
 
+    [Fact]
+    public void SegmentCachesAvoidRepeatedSplitsAndInvalidateWithPath()
+    {
+        var path = new PropertyPath("First.Second");
+        var cachedProperty = typeof(PropertyPath).GetProperty(
+            "CachedPathSegments",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+        var first = (string[])cachedProperty.GetValue(path)!;
+        var second = (string[])cachedProperty.GetValue(path)!;
+        Assert.Same(first, second);
+
+        var publicCopy = path.PathSegments;
+        publicCopy[0] = "mutated";
+        Assert.Equal("First", path.PathSegments[0]);
+
+        path.Path = "Third.Fourth";
+        var changed = (string[])cachedProperty.GetValue(path)!;
+        Assert.NotSame(first, changed);
+        Assert.Equal(new[] { "Third", "Fourth" }, changed);
+    }
+
     private sealed class Model
     {
         public string First { get; } = "one";

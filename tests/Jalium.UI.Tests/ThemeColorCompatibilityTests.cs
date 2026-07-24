@@ -103,14 +103,14 @@ public class ThemeColorCompatibilityTests
             var darkMenuBackground = Assert.IsType<SolidColorBrush>(app.Resources["MenuFlyoutPresenterBackground"]);
             var darkCommandBarBackground = Assert.IsType<SolidColorBrush>(app.Resources["CommandBarBackground"]);
 
-            Assert.Equal(Color.FromRgb(255, 255, 255), darkTextPrimary.Color);
-            Assert.Equal(Color.FromRgb(0x45, 0x45, 0x45), darkControlBackground.Color);
+            Assert.Equal(Color.FromRgb(0xF5, 0xF5, 0xF7), darkTextPrimary.Color);
+            Assert.Equal(Color.FromRgb(0x2C, 0x2C, 0x2E), darkControlBackground.Color);
             Assert.Equal(darkControlBackground.Color, darkBackground.Color);
             Assert.Equal(darkTextPrimary.Color, darkForeground.Color);
-            Assert.Equal(Color.FromArgb(0x12, 0xFF, 0xFF, 0xFF), darkBorderBrush.Color);
-            Assert.Equal(Color.FromRgb(0x20, 0x20, 0x20), darkWindowBackground.Color);
-            Assert.Equal(Color.FromRgb(0x1C, 0x1C, 0x1C), darkMenuBackground.Color);
-            Assert.Equal(Color.FromRgb(0x1C, 0x1C, 0x1C), darkCommandBarBackground.Color);
+            Assert.Equal(Color.FromRgb(0x48, 0x48, 0x4A), darkBorderBrush.Color);
+            Assert.Equal(Color.FromRgb(0x1C, 0x1C, 0x1E), darkWindowBackground.Color);
+            Assert.Equal(Color.FromRgb(0x2C, 0x2C, 0x2E), darkMenuBackground.Color);
+            Assert.Equal(Color.FromRgb(0x2C, 0x2C, 0x2E), darkCommandBarBackground.Color);
 
             ThemeManager.ApplyTheme(ThemeVariant.Light);
 
@@ -123,12 +123,12 @@ public class ThemeColorCompatibilityTests
             var lightMenuBackground = Assert.IsType<SolidColorBrush>(app.Resources["MenuFlyoutPresenterBackground"]);
             var lightCommandBarBackground = Assert.IsType<SolidColorBrush>(app.Resources["CommandBarBackground"]);
 
-            Assert.Equal(Color.FromArgb(0xE4, 0x00, 0x00, 0x00), lightTextPrimary.Color);
+            Assert.Equal(Color.FromRgb(0x1D, 0x1D, 0x1F), lightTextPrimary.Color);
             Assert.Equal(Color.FromRgb(255, 255, 255), lightControlBackground.Color);
             Assert.Equal(lightControlBackground.Color, lightBackground.Color);
             Assert.Equal(lightTextPrimary.Color, lightForeground.Color);
-            Assert.Equal(Color.FromArgb(0x0F, 0x00, 0x00, 0x00), lightBorderBrush.Color);
-            Assert.Equal(Color.FromRgb(0xF3, 0xF3, 0xF3), lightWindowBackground.Color);
+            Assert.Equal(Color.FromRgb(0xD2, 0xD2, 0xD7), lightBorderBrush.Color);
+            Assert.Equal(Color.FromRgb(0xF5, 0xF5, 0xF7), lightWindowBackground.Color);
             Assert.Equal(Color.FromRgb(255, 255, 255), lightMenuBackground.Color);
             Assert.Equal(Color.FromRgb(255, 255, 255), lightCommandBarBackground.Color);
         }
@@ -150,7 +150,7 @@ public class ThemeColorCompatibilityTests
             var darkHover = Assert.IsType<SolidColorBrush>(app.Resources["ControlBackgroundHover"]);
             var darkPressed = Assert.IsType<SolidColorBrush>(app.Resources["ButtonBackgroundPressed"]);
 
-            Assert.Equal(Color.FromArgb(0x19, 0x00, 0x00, 0x00), darkPressed.Color);
+            Assert.Equal(Color.FromRgb(0x48, 0x48, 0x4A), darkPressed.Color);
             Assert.NotEqual(darkHover.Color, darkPressed.Color);
 
             ThemeManager.ApplyTheme(ThemeVariant.Light);
@@ -158,7 +158,7 @@ public class ThemeColorCompatibilityTests
             var lightHover = Assert.IsType<SolidColorBrush>(app.Resources["ControlBackgroundHover"]);
             var lightPressed = Assert.IsType<SolidColorBrush>(app.Resources["ButtonBackgroundPressed"]);
 
-            Assert.Equal(Color.FromArgb(0x06, 0x00, 0x00, 0x00), lightPressed.Color);
+            Assert.Equal(Color.FromRgb(0xE5, 0xE5, 0xEA), lightPressed.Color);
             Assert.NotEqual(lightHover.Color, lightPressed.Color);
         }
         finally
@@ -217,6 +217,34 @@ public class ThemeColorCompatibilityTests
     }
 
     [Fact]
+    public void SemanticStatusAndFocusColors_ShouldFollowApplePaletteAcrossThemes()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            Assert.Equal(Color.FromRgb(0x30, 0xD1, 0x58), Assert.IsType<Color>(app.Resources["SystemFillColorSuccess"]));
+            Assert.Equal(Color.FromRgb(0xFF, 0xD6, 0x0A), Assert.IsType<Color>(app.Resources["SystemFillColorCaution"]));
+            Assert.Equal(Color.FromRgb(0xFF, 0x45, 0x3A), Assert.IsType<Color>(app.Resources["SystemFillColorCritical"]));
+            Assert.Equal(Color.FromRgb(0x0A, 0x84, 0xFF), Assert.IsType<Color>(app.Resources["InfoBarInfo"]));
+            Assert.Equal(Color.FromRgb(0x1E, 0x79, 0x3F), Assert.IsType<Color>(app.Resources["FocusStrokeColorOuter"]));
+
+            ThemeManager.ApplyTheme(ThemeVariant.Light);
+
+            Assert.Equal(Color.FromRgb(0x34, 0xC7, 0x59), Assert.IsType<Color>(app.Resources["SystemFillColorSuccess"]));
+            Assert.Equal(Color.FromRgb(0xFF, 0x9F, 0x0A), Assert.IsType<Color>(app.Resources["SystemFillColorCaution"]));
+            Assert.Equal(Color.FromRgb(0xFF, 0x3B, 0x30), Assert.IsType<Color>(app.Resources["SystemFillColorCritical"]));
+            Assert.Equal(Color.FromRgb(0x00, 0x7A, 0xFF), Assert.IsType<Color>(app.Resources["InfoBarInfo"]));
+            Assert.Equal(Color.FromRgb(0x1E, 0x79, 0x3F), Assert.IsType<Color>(app.Resources["FocusStrokeColorOuter"]));
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+    [Fact]
     public void HighContrastCoreColorTokens_ShouldExist_AndMatchBrushes()
     {
         ResetApplicationState();
@@ -236,6 +264,51 @@ public class ThemeColorCompatibilityTests
             AssertColorMatchesBrush(app, "ControlFillColorDefault", "ControlFillColorDefaultBrush");
             AssertColorMatchesBrush(app, "ControlStrokeColorDefault", "ControlStrokeColorDefaultBrush");
             AssertColorMatchesBrush(app, "SolidBackgroundFillColorBase", "SolidBackgroundFillColorBaseBrush");
+            AssertColorMatchesBrush(app, "ControlFillColorTertiary", "ControlFillColorTertiaryBrush");
+            AssertColorMatchesBrush(app, "ControlFillColorTransparent", "ControlFillColorTransparentBrush");
+            AssertColorMatchesBrush(app, "ControlFillColorInputActive", "ControlFillColorInputActiveBrush");
+            AssertColorMatchesBrush(app, "ControlStrokeColorSecondary", "ControlStrokeColorSecondaryBrush");
+            AssertColorMatchesBrush(app, "ControlStrongStrokeColorDefault", "ControlStrongStrokeColorDefaultBrush");
+            AssertColorMatchesBrush(app, "DividerStrokeColorDefault", "DividerStrokeColorDefaultBrush");
+            AssertColorMatchesBrush(app, "SmokeFillColorDefault", "SmokeFillColorDefaultBrush");
+            AssertColorMatchesBrush(app, "LayerFillColorDefault", "LayerFillColorDefaultBrush");
+            AssertColorMatchesBrush(app, "LayerFillColorAlt", "LayerFillColorAltBrush");
+            AssertColorMatchesBrush(app, "LayerOnAcrylicFillColorDefault", "LayerOnAcrylicFillColorDefaultBrush");
+            AssertColorMatchesBrush(app, "SurfaceStrokeColorDefault", "SurfaceStrokeColorDefaultBrush");
+            AssertColorMatchesBrush(app, "SurfaceStrokeColorFlyout", "SurfaceStrokeColorFlyoutBrush");
+            AssertColorMatchesBrush(app, "SystemFillColorSuccess", "SystemFillColorSuccessBrush");
+            AssertColorMatchesBrush(app, "SystemFillColorCaution", "SystemFillColorCautionBrush");
+            AssertColorMatchesBrush(app, "SystemFillColorCritical", "SystemFillColorCriticalBrush");
+            AssertColorMatchesBrush(app, "SystemFillColorNeutral", "SystemFillColorNeutralBrush");
+
+            foreach (var key in new[]
+                     {
+                         "WindowBackground",
+                         "SurfaceBackground",
+                         "TooltipBackground",
+                         "MenuFlyoutPresenterBackground",
+                         "CommandBarBackground",
+                         "LayerFillColorDefaultBrush",
+                         "LayerOnAcrylicFillColorDefaultBrush"
+                     })
+            {
+                var brush = Assert.IsType<SolidColorBrush>(app.Resources[key]);
+                Assert.Equal((byte)0xFF, brush.Color.A);
+            }
+
+            foreach (var key in new[]
+                     {
+                         "LayerOnAcrylicFillColorDefault",
+                         "SurfaceStrokeColorFlyout",
+                         "ControlFillColorDefault",
+                         "ControlStrokeColorDefault",
+                         "SystemAccentColor",
+                         "TextFillColorSecondary",
+                         "TextOnAccentFillColorPrimary"
+                     })
+            {
+                AssertColorResourceExists(key);
+            }
         }
         finally
         {

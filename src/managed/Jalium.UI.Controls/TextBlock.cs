@@ -1,6 +1,7 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Documents;
 using System.Collections.ObjectModel;
+using System.Text;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Markup;
@@ -24,8 +25,8 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     private const int MaxTextWidthCacheEntries = 256;
     private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0x1E, 0x79, 0x3F));
 
-    private readonly Dictionary<string, double> _textWidthCache = new(StringComparer.Ordinal);
-    private readonly InlineCollection _inlines;
+    private readonly Dictionary<string, TextMeasurementCacheEntry> _textWidthCache = new(StringComparer.Ordinal);
+    private InlineCollection? _inlines;
     private string _displayText = string.Empty;
     private bool _synchronizingTextAndInlines;
     private bool _inlinesExplicitlyModified;
@@ -36,6 +37,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     private string? _layoutText;
     private List<FormattedText>? _cachedFormattedLines;
     private bool _formattedLinesCacheDirty = true;
+    private RectangleGeometry? _renderClipCache;
     // Foreground 是“绘制属性”而非“布局属性”：变了不需要重 layout，但必须同步到
     // _cachedFormattedLines 里每个 FormattedText.Foreground，否则 OnRender 用旧 brush。
     // 用单独的 dirty 标志驱动，平时 OnRender 0 开销，只在 Foreground 真变后下一帧同步一次。
@@ -238,7 +240,6 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     /// </summary>
     public TextBlock()
     {
-        _inlines = new InlineCollection(OnInlinesChanged);
         Focusable = true;
         KeyboardNavigation.SetIsTabStop(this, false);
 
@@ -295,7 +296,31 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     /// <summary>
     /// Gets the inline content displayed by this text block.
     /// </summary>
-    public InlineCollection Inlines => _inlines;
+    public InlineCollection Inlines
+    {
+        get
+        {
+            if (_inlines is null)
+            {
+                var inlines = new InlineCollection(OnInlinesChanged);
+                _inlines = inlines;
+                if (!_inlinesExplicitlyModified && _displayText.Length > 0)
+                {
+                    _synchronizingTextAndInlines = true;
+                    try
+                    {
+                        inlines.Add(new Run(_displayText));
+                    }
+                    finally
+                    {
+                        _synchronizingTextAndInlines = false;
+                    }
+                }
+            }
+
+            return _inlines;
+        }
+    }
 
     /// <summary>
     /// Gets or sets the foreground brush.
@@ -835,11 +860,13 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // Negative Padding is legal; the Size constructor is not — clamp both the
+        // empty-text fast path and the measured-text sink below.
         var horizontalPadding = Padding.Left + Padding.Right;
         var verticalPadding = Padding.Top + Padding.Bottom;
         if (string.IsNullOrEmpty(_displayText))
         {
-            return new Size(horizontalPadding, verticalPadding);
+            return new Size(Math.Max(0, horizontalPadding), Math.Max(0, verticalPadding));
         }
 
         EnsureLayout(GetLayoutConstraintWidth(availableSize.Width));
@@ -866,7 +893,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             measuredHeight = Math.Min(measuredHeight, availableSize.Height);
         }
 
-        return new Size(measuredWidth, measuredHeight);
+        return new Size(Math.Max(0, measuredWidth), Math.Max(0, measuredHeight));
     }
 
     /// <inheritdoc />
@@ -895,7 +922,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
             EnsureLayout(GetLayoutConstraintWidth(RenderSize.Width));
 
-            dc.PushClip(new RectangleGeometry(new Rect(RenderSize)));
+            dc.PushClip(GetRenderClip());
 
             if (_selectionLength > 0)
             {
@@ -947,8 +974,10 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
                     continue;
                 }
 
-                var lineText = _displayText.Substring(line.StartIndex, line.Length);
-                var formattedText = new FormattedText(lineText, fontFamily, fontSize)
+                var formattedText = line.FormattedText ?? new FormattedText(
+                    _displayText.Substring(line.StartIndex, line.Length),
+                    fontFamily,
+                    fontSize)
                 {
                     Foreground = Foreground,
                     // Each _layoutLines entry is already a final, pre-broken visual
@@ -968,6 +997,12 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
                     FontStretch = fontStretch,
                     Trimming = TextWrapping == TextWrapping.NoWrap ? TextTrimming : TextTrimming.None
                 };
+                // Layout already measured this exact fragment. Reuse that object
+                // and add only the drawing-specific constraints here.
+                formattedText.Foreground = Foreground;
+                formattedText.MaxTextWidth = double.MaxValue;
+                formattedText.MaxTextHeight = lineHeight;
+                formattedText.Trimming = TextWrapping == TextWrapping.NoWrap ? TextTrimming : TextTrimming.None;
                 // Pull TextOptions.{TextRenderingMode,TextFormattingMode,TextHintingMode}
                 // off the TextBlock so the native glyph atlas can honour per-element
                 // overrides. Defaults are Auto/Ideal/Auto — same effective behaviour
@@ -1169,8 +1204,8 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             {
                 var textBefore = lineText.Substring(0, startInLine);
                 var selectedText = lineText.Substring(startInLine, endInLine - startInLine);
-                var startX = lineOriginX + MeasureTextWidth(textBefore);
-                var width = Math.Max(1, Math.Round(MeasureTextWidth(selectedText)));
+                var startX = lineOriginX + MeasureTextWidth(textBefore, includeTrailingWhitespace: true);
+                var width = Math.Max(1, Math.Round(MeasureTextWidth(selectedText, includeTrailingWhitespace: true)));
 
                 dc.DrawRectangle(selectionBrush, null, new Rect(startX, y, width, lineHeight));
             }
@@ -1556,7 +1591,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
         for (int i = 0; i <= line.Length; i++)
         {
-            var width = MeasureTextWidth(lineText.Substring(0, i));
+            var width = MeasureTextWidth(lineText.Substring(0, i), includeTrailingWhitespace: true);
             if (width >= relativeX)
             {
                 columnIndex = i;
@@ -1685,7 +1720,13 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         if (TextWrapping == TextWrapping.NoWrap || double.IsInfinity(constraintWidth) || constraintWidth <= 0)
         {
             var lineText = lineLength > 0 ? _displayText.Substring(lineStart, lineLength) : string.Empty;
-            _layoutLines.Add(new TextLayoutLine(lineStart, lineLength, MeasureTextWidth(lineText), hasLineBreakAfter));
+            var measurement = MeasureText(lineText);
+            _layoutLines.Add(new TextLayoutLine(
+                lineStart,
+                lineLength,
+                measurement.Width,
+                hasLineBreakAfter,
+                measurement.FormattedText));
             return;
         }
 
@@ -1708,16 +1749,23 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
             var currentText = _displayText.Substring(currentStart, currentLength);
             var isLastFragment = consumed + currentLength >= lineLength;
+            var measurement = MeasureText(currentText);
             _layoutLines.Add(new TextLayoutLine(
                 currentStart,
                 currentLength,
-                MeasureTextWidth(currentText),
-                isLastFragment && hasLineBreakAfter));
+                measurement.Width,
+                isLastFragment && hasLineBreakAfter,
+                measurement.FormattedText));
 
             consumed += currentLength;
         }
     }
 
+    /// <summary>
+    /// Finds the logical length of the next visual line. Width fitting is done
+    /// only at grapheme boundaries; word-boundary selection then decides whether
+    /// to use a standard break, an emergency break, or an overflowing token.
+    /// </summary>
     private int FindWrapLength(int startIndex, int maxLength, double availableWidth)
     {
         if (maxLength <= 0)
@@ -1725,41 +1773,248 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             return 0;
         }
 
-        int low = 1;
-        int high = maxLength;
-        int best = 1;
+        var fittingLength = FindLargestFittingGraphemeLength(startIndex, maxLength, availableWidth);
+        if (fittingLength >= maxLength)
+        {
+            return maxLength;
+        }
 
+        var paragraphEnd = startIndex + maxLength;
+        var fittingEnd = startIndex + fittingLength;
+        var whitespaceLength = 0;
+        var whitespaceContentLength = 0;
+        _ = TryFindWhitespaceBreak(
+            startIndex,
+            fittingEnd,
+            paragraphEnd,
+            out whitespaceLength,
+            out whitespaceContentLength);
+        var standardLength = FindStandardBreakAtOrBefore(startIndex, fittingEnd, paragraphEnd);
+
+        if (whitespaceLength > 0 || standardLength > 0)
+        {
+            // Compare the visible boundary, not the consumed whitespace tail.
+            // This lets a later CJK/hyphen break win over an earlier space while
+            // still consuming all spaces when the whitespace break is selected.
+            return standardLength > whitespaceContentLength
+                ? standardLength
+                : whitespaceLength;
+        }
+
+        if (TextWrapping == TextWrapping.Wrap)
+        {
+            // Emergency wrapping must always make progress, but never split a
+            // surrogate pair, combining sequence, emoji modifier, or ZWJ emoji.
+            return fittingLength > 0
+                ? fittingLength
+                : GraphemeClusters.NextBoundary(_displayText, startIndex) - startIndex;
+        }
+
+        // WrapWithOverflow preserves an unbreakable token as one line. Search
+        // forward for its next legal boundary; if there is none, consume the
+        // remainder and allow that line to exceed the constraint.
+        return FindNextStandardBreak(startIndex, fittingEnd, paragraphEnd);
+    }
+
+    private int FindLargestFittingGraphemeLength(
+        int startIndex,
+        int maxLength,
+        double availableWidth)
+    {
+        var boundaries = GraphemeClusters.GetBoundaries(_displayText);
+        var paragraphEnd = startIndex + maxLength;
+        var startBoundaryIndex = Array.BinarySearch(boundaries, startIndex);
+        if (startBoundaryIndex < 0)
+        {
+            startBoundaryIndex = ~startBoundaryIndex;
+        }
+
+        var endBoundaryIndex = Array.BinarySearch(boundaries, paragraphEnd);
+        if (endBoundaryIndex < 0)
+        {
+            endBoundaryIndex = ~endBoundaryIndex - 1;
+        }
+
+        var low = startBoundaryIndex + 1;
+        var high = endBoundaryIndex;
+        var bestBoundaryIndex = startBoundaryIndex;
         while (low <= high)
         {
-            var mid = low + ((high - low) / 2);
-            var candidate = _displayText.Substring(startIndex, mid);
-            var width = MeasureTextWidth(candidate);
-
-            if (width <= availableWidth)
+            var midpoint = low + ((high - low) / 2);
+            var candidateLength = boundaries[midpoint] - startIndex;
+            var candidate = _displayText.Substring(startIndex, candidateLength);
+            if (MeasureTextWidth(candidate) <= availableWidth)
             {
-                best = mid;
-                low = mid + 1;
+                bestBoundaryIndex = midpoint;
+                low = midpoint + 1;
             }
             else
             {
-                high = mid - 1;
+                high = midpoint - 1;
             }
         }
 
-        if (best >= maxLength || TextWrapping == TextWrapping.WrapWithOverflow)
+        return boundaries[bestBoundaryIndex] - startIndex;
+    }
+
+    private bool TryFindWhitespaceBreak(
+        int lineStart,
+        int fittingEnd,
+        int paragraphEnd,
+        out int consumedLength,
+        out int contentLength)
+    {
+        consumedLength = 0;
+        contentLength = 0;
+        if (lineStart >= paragraphEnd)
         {
-            return best;
+            return false;
         }
 
-        for (int i = best - 1; i > 0; i--)
+        // Include the character immediately after the fitting prefix. A word
+        // that fits must remain on this line even when its following separator
+        // advance does not fit (the regression visible after "spacing,").
+        var searchIndex = Math.Min(fittingEnd, paragraphEnd - 1);
+        while (searchIndex >= lineStart && !IsBreakableWhitespace(_displayText[searchIndex]))
         {
-            if (char.IsWhiteSpace(_displayText[startIndex + i]))
+            searchIndex--;
+        }
+
+        if (searchIndex < lineStart)
+        {
+            return false;
+        }
+
+        var whitespaceStart = searchIndex;
+        while (whitespaceStart > lineStart && IsBreakableWhitespace(_displayText[whitespaceStart - 1]))
+        {
+            whitespaceStart--;
+        }
+
+        // Leading indentation is content, not a blank break opportunity.
+        if (whitespaceStart == lineStart)
+        {
+            return false;
+        }
+
+        var whitespaceEnd = searchIndex + 1;
+        while (whitespaceEnd < paragraphEnd && IsBreakableWhitespace(_displayText[whitespaceEnd]))
+        {
+            whitespaceEnd++;
+        }
+
+        consumedLength = whitespaceEnd - lineStart;
+        contentLength = whitespaceStart - lineStart;
+        return true;
+    }
+
+    private int FindStandardBreakAtOrBefore(int lineStart, int fittingEnd, int paragraphEnd)
+    {
+        var boundary = fittingEnd;
+        while (boundary > lineStart)
+        {
+            if (IsStandardLineBreakOpportunity(boundary, lineStart, paragraphEnd))
             {
-                return i + 1;
+                return boundary - lineStart;
             }
+            boundary = GraphemeClusters.PreviousBoundary(_displayText, boundary);
+        }
+        return 0;
+    }
+
+    private int FindNextStandardBreak(int lineStart, int searchStart, int paragraphEnd)
+    {
+        var boundary = Math.Max(lineStart, searchStart);
+        while (boundary < paragraphEnd)
+        {
+            if (IsBreakableWhitespace(_displayText[boundary]))
+            {
+                var whitespaceEnd = boundary + 1;
+                while (whitespaceEnd < paragraphEnd && IsBreakableWhitespace(_displayText[whitespaceEnd]))
+                {
+                    whitespaceEnd++;
+                }
+                return whitespaceEnd - lineStart;
+            }
+
+            if (boundary > lineStart && IsStandardLineBreakOpportunity(boundary, lineStart, paragraphEnd))
+            {
+                return boundary - lineStart;
+            }
+
+            var next = GraphemeClusters.NextBoundary(_displayText, boundary);
+            if (next <= boundary)
+            {
+                break;
+            }
+            boundary = next;
+        }
+        return paragraphEnd - lineStart;
+    }
+
+    private bool IsStandardLineBreakOpportunity(int boundary, int lineStart, int paragraphEnd)
+    {
+        if (boundary <= lineStart || boundary >= paragraphEnd)
+        {
+            return false;
         }
 
-        return best;
+        var previousStart = GraphemeClusters.PreviousBoundary(_displayText, boundary);
+        if (!Rune.TryGetRuneAt(_displayText, previousStart, out var previous) ||
+            !Rune.TryGetRuneAt(_displayText, boundary, out var next))
+        {
+            return false;
+        }
+
+        if (previous.Value is 0x00A0 or 0x202F or 0x2060 or 0xFEFF ||
+            next.Value is 0x00A0 or 0x202F or 0x2060 or 0xFEFF)
+        {
+            return false;
+        }
+
+        if (previous.Value is '-' or 0x058A or 0x05BE or 0x1400 or 0x1806 or
+            0x2010 or 0x2012 or 0x2013 or 0x2E17 or 0x2E1A or 0x2E40 or 0x301C or 0x30A0 or 0x200B)
+        {
+            return true;
+        }
+
+        return (IsCjkLineBreakRune(previous) || IsCjkLineBreakRune(next)) &&
+               !IsProhibitedLineEnd(previous) &&
+               !IsProhibitedLineStart(next);
+    }
+
+    private static bool IsBreakableWhitespace(char value)
+    {
+        return value is not '\r' and not '\n' and not '\u00A0' and not '\u202F' and not '\u2060' and not '\uFEFF' &&
+               char.IsWhiteSpace(value);
+    }
+
+    private static bool IsCjkLineBreakRune(Rune rune)
+    {
+        var value = rune.Value;
+        return value is >= 0x2E80 and <= 0x2FFF or
+               >= 0x3000 and <= 0x30FF or
+               >= 0x3100 and <= 0x31BF or
+               >= 0x31F0 and <= 0x31FF or
+               >= 0x3400 and <= 0x4DBF or
+               >= 0x4E00 and <= 0x9FFF or
+               >= 0xAC00 and <= 0xD7AF or
+               >= 0xF900 and <= 0xFAFF or
+               >= 0x20000 and <= 0x323AF;
+    }
+
+    private static bool IsProhibitedLineEnd(Rune rune)
+    {
+        return rune.Value is '(' or '[' or '{' or 0x2018 or 0x201C or
+            0x3008 or 0x300A or 0x300C or 0x300E or 0x3010 or 0x3014 or 0x3016 or 0x3018 or 0x301A;
+    }
+
+    private static bool IsProhibitedLineStart(Rune rune)
+    {
+        return rune.Value is ')' or ']' or '}' or '!' or ',' or '.' or ':' or ';' or '?' or
+            0x2019 or 0x201D or 0x2026 or 0x3001 or 0x3002 or 0x3009 or 0x300B or
+            0x300D or 0x300F or 0x3011 or 0x3015 or 0x3017 or 0x3019 or 0x301B or
+            0xFF01 or 0xFF09 or 0xFF0C or 0xFF0E or 0xFF1A or 0xFF1B or 0xFF1F or 0xFF3D or 0xFF5D;
     }
 
     private double GetLayoutConstraintWidth(double availableWidth)
@@ -1787,11 +2042,19 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         return Math.Max(0, width - Padding.Left - Padding.Right);
     }
 
-    private double MeasureTextWidth(string text)
+    private double MeasureTextWidth(string text, bool includeTrailingWhitespace = false)
+    {
+        var measurement = MeasureText(text);
+        return includeTrailingWhitespace
+            ? measurement.WidthIncludingTrailingWhitespace
+            : measurement.Width;
+    }
+
+    private TextMeasurementCacheEntry MeasureText(string text)
     {
         if (string.IsNullOrEmpty(text))
         {
-            return 0;
+            return default;
         }
 
         var fontFamily = FontFamily.Source;
@@ -1814,9 +2077,9 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             _cachedFontStretch = fontStretch;
         }
 
-        if (_textWidthCache.TryGetValue(text, out var width))
+        if (_textWidthCache.TryGetValue(text, out var cached))
         {
-            return width;
+            return cached;
         }
 
         var formattedText = new FormattedText(text, fontFamily, fontSize)
@@ -1826,14 +2089,27 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             FontStretch = fontStretch
         };
 
+        double width;
+        double widthIncludingTrailingWhitespace;
         if (TextMeasurement.MeasureText(formattedText) && formattedText.IsMeasured)
         {
             width = formattedText.Width;
+            widthIncludingTrailingWhitespace = Math.Max(
+                width,
+                formattedText.WidthIncludingTrailingWhitespace);
         }
         else
         {
-            width = EstimateTextWidth(text, fontSize);
+            widthIncludingTrailingWhitespace = EstimateTextWidth(text, fontSize);
+            width = EstimateTextWidth(
+                text,
+                fontSize,
+                GetTextLengthWithoutTrailingLayoutWhitespace(text));
         }
+        cached = new TextMeasurementCacheEntry(
+            width,
+            widthIncludingTrailingWhitespace,
+            formattedText);
 
         if (_textWidthCache.Count >= MaxTextWidthCacheEntries)
         {
@@ -1844,14 +2120,37 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             }
         }
 
-        _textWidthCache[text] = width;
-        return width;
+        _textWidthCache[text] = cached;
+        return cached;
     }
 
-    private static double EstimateTextWidth(string text, double fontSize)
+    private RectangleGeometry GetRenderClip()
+    {
+        var clipRect = new Rect(RenderSize);
+        if (_renderClipCache is null || _renderClipCache.Rect != clipRect)
+        {
+            var geometry = new RectangleGeometry(clipRect);
+            geometry.Freeze();
+            _renderClipCache = geometry;
+        }
+
+        return _renderClipCache;
+    }
+
+    private static int GetTextLengthWithoutTrailingLayoutWhitespace(string text)
+    {
+        var length = text.Length;
+        while (length > 0 && IsBreakableWhitespace(text[length - 1]))
+        {
+            length--;
+        }
+        return length;
+    }
+
+    private static double EstimateTextWidth(string text, double fontSize, int length = -1)
     {
         double width = 0;
-        foreach (var c in text)
+        foreach (var c in text.AsSpan(0, length < 0 ? text.Length : length))
         {
             if (c == '\t')
             {
@@ -1937,22 +2236,37 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private void SynchronizeInlinesFromText(string text)
     {
-        _synchronizingTextAndInlines = true;
-        try
+        if (_inlines is { } inlines)
         {
-            _inlines.Clear();
-            if (text.Length > 0)
+            _synchronizingTextAndInlines = true;
+            try
             {
-                _inlines.Add(new Run(text));
+                if (text.Length == 0)
+                {
+                    inlines.Clear();
+                }
+                else if (!_inlinesExplicitlyModified &&
+                         inlines.Count == 1 &&
+                         inlines[0] is Run implicitRun)
+                {
+                    // Keep a retained Inlines view live without replacing its
+                    // implicit Run on every Text binding update.
+                    implicitRun.Text = text;
+                }
+                else
+                {
+                    inlines.Clear();
+                    inlines.Add(new Run(text));
+                }
             }
+            finally
+            {
+                _synchronizingTextAndInlines = false;
+            }
+        }
 
-            _displayText = text;
-            _inlinesExplicitlyModified = false;
-        }
-        finally
-        {
-            _synchronizingTextAndInlines = false;
-        }
+        _displayText = text;
+        _inlinesExplicitlyModified = false;
     }
 
     private void OnInlinesChanged()
@@ -1962,7 +2276,7 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
             return;
         }
 
-        _displayText = _inlines.GetText();
+        _displayText = _inlines!.GetText();
         _inlinesExplicitlyModified = true;
         _synchronizingTextAndInlines = true;
         try
@@ -2114,12 +2428,18 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
 
     private readonly struct TextLayoutLine
     {
-        public TextLayoutLine(int startIndex, int length, double width, bool hasLineBreakAfter)
+        public TextLayoutLine(
+            int startIndex,
+            int length,
+            double width,
+            bool hasLineBreakAfter,
+            FormattedText? formattedText = null)
         {
             StartIndex = startIndex;
             Length = length;
             Width = width;
             HasLineBreakAfter = hasLineBreakAfter;
+            FormattedText = formattedText;
         }
 
         public int StartIndex { get; }
@@ -2129,6 +2449,13 @@ public class TextBlock : FrameworkElement, IAddChild, IServiceProvider, IContent
         public double Width { get; }
 
         public bool HasLineBreakAfter { get; }
+
+        public FormattedText? FormattedText { get; }
     }
+
+    private readonly record struct TextMeasurementCacheEntry(
+        double Width,
+        double WidthIncludingTrailingWhitespace,
+        FormattedText? FormattedText);
 }
 

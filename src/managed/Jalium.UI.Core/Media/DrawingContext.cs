@@ -1647,6 +1647,39 @@ public sealed class RectangleGeometry : Geometry
             new PropertyMetadata(0.0));
 
     private CornerRadius _cornerRadius;
+    private ClipEdges _boundsClipEdges = ClipEdges.All;
+    private Rect _boundsClipRect = Rect.Empty;
+
+    /// <summary>
+    /// Identifies which sides of <see cref="Rect"/> act as clip boundaries.
+    /// This is framework-internal metadata used by layout clips; ordinary
+    /// RectangleGeometry instances continue to clip on every side.
+    /// </summary>
+    internal ClipEdges BoundsClipEdges
+    {
+        get => _boundsClipEdges;
+        set
+        {
+            WritePreamble();
+            _boundsClipEdges = value;
+            WritePostscript();
+        }
+    }
+
+    /// <summary>
+    /// Stores the finite element bounds before open clip edges are expanded for
+    /// generic drawing-context compatibility.
+    /// </summary>
+    internal Rect BoundsClipRect
+    {
+        get => _boundsClipRect;
+        set
+        {
+            WritePreamble();
+            _boundsClipRect = value;
+            WritePostscript();
+        }
+    }
 
     /// <summary>
     /// Gets or sets the rectangle.
@@ -1755,12 +1788,96 @@ public sealed class RectangleGeometry : Geometry
     /// <inheritdoc />
     public override bool FillContains(Point point)
     {
-        if (RadiusX > 0 || RadiusY > 0)
+        var rect = Rect;
+        var clipEdges = BoundsClipEdges;
+        if (rect.IsEmpty || !double.IsFinite(point.X) || !double.IsFinite(point.Y) ||
+            ((clipEdges & ClipEdges.Left) != 0 && point.X < rect.Left) ||
+            ((clipEdges & ClipEdges.Top) != 0 && point.Y < rect.Top) ||
+            ((clipEdges & ClipEdges.Right) != 0 && point.X > rect.Right) ||
+            ((clipEdges & ClipEdges.Bottom) != 0 && point.Y > rect.Bottom))
         {
-            // For rounded rects, use flattened path hit test
-            return GetFlattenedPathGeometry().FillContains(point);
+            return false;
         }
-        return Rect.Contains(point);
+
+        // Rounded layout clips sit directly on the mouse-wheel hit-test hot path.
+        // Flattening four arcs into a temporary PathGeometry for every element and
+        // every input message is both needlessly expensive and allocation-heavy.
+        // Test the corner ellipses analytically instead; points in the rectangular
+        // center/edge bands are known to be inside already.
+        if (HasPerCornerRadii)
+        {
+            var radii = CornerRadius.Normalize(rect.Width, rect.Height);
+            return IsInsideCircularCorner(point, rect.Left, rect.Top,
+                       radii.TopLeft, left: true, top: true) &&
+                   IsInsideCircularCorner(point, rect.Right, rect.Top,
+                       radii.TopRight, left: false, top: true) &&
+                   IsInsideCircularCorner(point, rect.Right, rect.Bottom,
+                       radii.BottomRight, left: false, top: false) &&
+                   IsInsideCircularCorner(point, rect.Left, rect.Bottom,
+                       radii.BottomLeft, left: true, top: false);
+        }
+
+        var radiusX = double.IsFinite(RadiusX) && RadiusX > 0
+            ? Math.Min(RadiusX, rect.Width / 2.0)
+            : 0.0;
+        var radiusY = double.IsFinite(RadiusY) && RadiusY > 0
+            ? Math.Min(RadiusY, rect.Height / 2.0)
+            : 0.0;
+        if (radiusX <= 0 || radiusY <= 0)
+        {
+            return true;
+        }
+
+        double centerX;
+        if (point.X < rect.Left + radiusX)
+            centerX = rect.Left + radiusX;
+        else if (point.X > rect.Right - radiusX)
+            centerX = rect.Right - radiusX;
+        else
+            return true;
+
+        double centerY;
+        if (point.Y < rect.Top + radiusY)
+            centerY = rect.Top + radiusY;
+        else if (point.Y > rect.Bottom - radiusY)
+            centerY = rect.Bottom - radiusY;
+        else
+            return true;
+
+        var normalizedX = (point.X - centerX) / radiusX;
+        var normalizedY = (point.Y - centerY) / radiusY;
+        return normalizedX * normalizedX + normalizedY * normalizedY <= 1.0;
+    }
+
+    private static bool IsInsideCircularCorner(
+        Point point,
+        double cornerX,
+        double cornerY,
+        double radius,
+        bool left,
+        bool top)
+    {
+        if (radius <= 0)
+        {
+            return true;
+        }
+
+        var centerX = cornerX + (left ? radius : -radius);
+        var centerY = cornerY + (top ? radius : -radius);
+        var insideCornerSquare = left
+            ? point.X < centerX
+            : point.X > centerX;
+        insideCornerSquare &= top
+            ? point.Y < centerY
+            : point.Y > centerY;
+        if (!insideCornerSquare)
+        {
+            return true;
+        }
+
+        var dx = (point.X - centerX) / radius;
+        var dy = (point.Y - centerY) / radius;
+        return dx * dx + dy * dy <= 1.0;
     }
 
     /// <inheritdoc />
@@ -1858,13 +1975,19 @@ public sealed class RectangleGeometry : Geometry
     protected override void CloneCore(Freezable source)
     {
         base.CloneCore(source);
-        _cornerRadius = ((RectangleGeometry)source)._cornerRadius;
+        var rectangle = (RectangleGeometry)source;
+        _cornerRadius = rectangle._cornerRadius;
+        _boundsClipEdges = rectangle._boundsClipEdges;
+        _boundsClipRect = rectangle._boundsClipRect;
     }
 
     protected override void CloneCurrentValueCore(Freezable source)
     {
         base.CloneCurrentValueCore(source);
-        _cornerRadius = ((RectangleGeometry)source)._cornerRadius;
+        var rectangle = (RectangleGeometry)source;
+        _cornerRadius = rectangle._cornerRadius;
+        _boundsClipEdges = rectangle._boundsClipEdges;
+        _boundsClipRect = rectangle._boundsClipRect;
     }
 }
 

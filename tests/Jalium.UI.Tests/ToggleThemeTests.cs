@@ -49,7 +49,7 @@ public class ToggleThemeTests
             radioButton.ApplyTemplate();
 
             var checkMark = FindDescendant<ShapePath>(checkBox);
-            var radioDot = FindDescendant<Ellipse>(radioButton);
+            var radioDot = FindNamedDescendant<Ellipse>(radioButton, "RadioDot");
 
             Assert.NotNull(checkMark);
             Assert.NotNull(radioDot);
@@ -85,8 +85,10 @@ public class ToggleThemeTests
             checkBox.ApplyTemplate();
 
             var checkMark = FindDescendant<ShapePath>(checkBox);
-            var indeterminateMark = FindNamedDescendant<Border>(checkBox, "IndeterminateMark");
+            var indeterminateMark = FindNamedDescendant<Rectangle>(checkBox, "IndeterminateMark");
             var checkBoxBorder = FindNamedDescendant<Border>(checkBox, "CheckBoxBorder");
+            var uncheckedBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleUncheckedBackground"]);
+            var uncheckedBorder = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleUncheckedBorder"]);
             var checkedBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleCheckedBackground"]);
             var checkedBorder = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleCheckedBorder"]);
 
@@ -95,8 +97,8 @@ public class ToggleThemeTests
             Assert.NotNull(checkBoxBorder);
             Assert.Equal(0.0, checkMark.Opacity);
             Assert.Equal(1.0, indeterminateMark.Opacity);
-            Assert.Same(checkedBackground, checkBox.Background);
-            Assert.Same(checkedBorder, checkBox.BorderBrush);
+            Assert.Same(uncheckedBackground, checkBox.Background);
+            Assert.Same(uncheckedBorder, checkBox.BorderBrush);
             Assert.Same(checkedBackground, checkBoxBorder!.Background);
             Assert.Same(checkedBorder, checkBoxBorder.BorderBrush);
         }
@@ -107,7 +109,7 @@ public class ToggleThemeTests
     }
 
     [Fact]
-    public void ToggleSwitch_ShouldResolveBorderAndDisabledBrushesFromTheme()
+    public void ToggleSwitch_VisualStates_ShouldBeOwnedByTemplateTriggers()
     {
         ResetApplicationState();
         ThemeLoader.Initialize();
@@ -117,38 +119,30 @@ public class ToggleThemeTests
         {
             var uncheckedBorder = Assert.IsType<SolidColorBrush>(app.Resources["ToggleUncheckedBorder"]);
             var checkedBorder = Assert.IsType<LinearGradientBrush>(app.Resources["ToggleCheckedBorder"]);
-            var checkedBorderFallback = Assert.IsType<Color>(app.Resources["SystemColorHighlightColor"]);
+            var checkedBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleCheckedBackground"]);
             var disabledBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleDisabledBackground"]);
             var disabledBorder = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleDisabledBorder"]);
 
             var toggleSwitch = new ToggleSwitch();
+            toggleSwitch.Style = Assert.IsType<Style>(app.Resources[typeof(ToggleSwitch)]);
             var host = new StackPanel { Width = 320, Height = 80 };
             host.Children.Add(toggleSwitch);
 
             host.Measure(new Size(320, 80));
             host.Arrange(new Rect(0, 0, 320, 80));
+            toggleSwitch.ApplyTemplate();
 
-            var getOffBorderColorMethod = typeof(ToggleSwitch).GetMethod("GetOffBorderColor",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            var getOnBorderColorMethod = typeof(ToggleSwitch).GetMethod("GetOnBorderColor",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            var disabledBackgroundMethod = typeof(ToggleSwitch).GetMethod("ResolveDisabledTrackBackground",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-            var disabledBorderMethod = typeof(ToggleSwitch).GetMethod("ResolveDisabledTrackBorderBrush",
-                BindingFlags.Instance | BindingFlags.NonPublic);
-
-            Assert.NotNull(getOffBorderColorMethod);
-            Assert.NotNull(getOnBorderColorMethod);
-            Assert.NotNull(disabledBackgroundMethod);
-            Assert.NotNull(disabledBorderMethod);
-
-            Assert.Equal(uncheckedBorder.Color, (Color)getOffBorderColorMethod!.Invoke(toggleSwitch, null)!);
             Assert.Equal(2, checkedBorder.GradientStops.Count);
-            Assert.Equal(checkedBorderFallback, (Color)getOnBorderColorMethod!.Invoke(toggleSwitch, null)!);
-            Assert.Same(disabledBackground, disabledBackgroundMethod!.Invoke(toggleSwitch, null));
-            Assert.Same(disabledBorder, disabledBorderMethod!.Invoke(toggleSwitch, null));
-
             var track = Assert.IsType<Border>(toggleSwitch.FindName("PART_SwitchTrack"));
+            Assert.IsType<Ellipse>(toggleSwitch.FindName("PART_SwitchThumb"));
+            Assert.Same(toggleSwitch.OffBackground, track.Background);
+            Assert.Same(uncheckedBorder, track.BorderBrush);
+
+            toggleSwitch.IsOn = true;
+
+            Assert.Same(checkedBackground, track.Background);
+            Assert.Same(checkedBorder, track.BorderBrush);
+
             toggleSwitch.IsEnabled = false;
 
             Assert.Same(disabledBackground, track.Background);
@@ -213,6 +207,8 @@ public class ToggleThemeTests
             var checkedBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleCheckedBackground"]);
             var checkedBorder = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleCheckedBorder"]);
             var accentText = Assert.IsAssignableFrom<Brush>(app.Resources["TextOnAccent"]);
+            var controlBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackground"]);
+            var controlBorder = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBorder"]);
 
             var toggleButton = new ToggleButton { Content = "Toggle (on)", IsChecked = true };
             toggleButton.Style = Assert.IsType<Style>(app.Resources[typeof(ToggleButton)]);
@@ -228,8 +224,8 @@ public class ToggleThemeTests
 
             // The checked trigger paints the accent fill + accent border and switches the
             // foreground to the on-accent text brush (segmented-toggle look).
-            Assert.Same(checkedBackground, toggleButton.Background);
-            Assert.Same(checkedBorder, toggleButton.BorderBrush);
+            Assert.Same(controlBackground, toggleButton.Background);
+            Assert.Same(controlBorder, toggleButton.BorderBrush);
             Assert.Same(accentText, toggleButton.Foreground);
             Assert.Same(checkedBackground, rootBorder!.Background);
             Assert.Same(checkedBorder, rootBorder.BorderBrush);

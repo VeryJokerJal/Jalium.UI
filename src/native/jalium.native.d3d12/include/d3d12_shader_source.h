@@ -101,140 +101,9 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
 }
 )HLSL";
 
-static const char kSdfRectPS[] = R"HLSL(
-struct PsInput
-{
-    float4 clipPos      : SV_Position;
-    float2 localPos     : TEXCOORD0;
-    float2 rectSize     : TEXCOORD1;
-    float4 cornerRadius : TEXCOORD2;
-    float4 fillColor    : COLOR0;
-    float4 borderColor  : COLOR1;
-    float  borderWidth  : TEXCOORD3;
-    nointerpolation uint  gradientType : TEXCOORD4;
-    nointerpolation uint  stopCount    : TEXCOORD5;
-    nointerpolation float4 gradGeom    : TEXCOORD6;
-    nointerpolation float4 stop01PosR  : TEXCOORD7;
-    nointerpolation float4 stop01AG    : TEXCOORD8;
-    nointerpolation float4 stop12BA    : TEXCOORD9;
-    nointerpolation float4 stop23GB    : TEXCOORD10;
-    nointerpolation float4 stop3Color  : TEXCOORD11;
-    nointerpolation float2 shapeParams : TEXCOORD12;
-};
-
-float sdSuperEllipseRect(float2 p, float2 halfSize, float n)
-{
-    float2 q = abs(p) / max(halfSize, float2(0.001, 0.001));
-    float d = pow(pow(q.x, n) + pow(q.y, n), 1.0 / n) - 1.0;
-    return d * min(halfSize.x, halfSize.y);
-}
-
-float sdRoundedBox(float2 p, float2 b, float4 r)
-{
-    r.xy = (p.x > 0.0) ? r.xy : r.wz;
-    r.x  = (p.y > 0.0) ? r.x  : r.y;
-    float2 q = abs(p) - b + r.x;
-    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r.x;
-}
-
-float4 SampleGradient(PsInput input, float t)
-{
-    t = saturate(t);
-    uint count = input.stopCount;
-    if (count == 0) return float4(0, 0, 0, 0);
-
-    float  pos[4];
-    float4 col[4];
-
-    pos[0] = input.stop01PosR.x;
-    col[0] = float4(input.stop01PosR.yzw, input.stop01AG.x);
-    pos[1] = input.stop01AG.y;
-    col[1] = float4(input.stop01AG.zw, input.stop12BA.xy);
-    pos[2] = input.stop12BA.z;
-    col[2] = float4(input.stop12BA.w, input.stop23GB.xyz);
-    pos[3] = input.stop23GB.w;
-    col[3] = input.stop3Color;
-
-    if (t <= pos[0] || count == 1) return col[0];
-    if (t >= pos[count - 1]) return col[count - 1];
-
-    [unroll]
-    for (uint i = 0; i < 3; i++)
-    {
-        if (i + 1 < count && t >= pos[i] && t <= pos[i + 1])
-        {
-            float range = pos[i + 1] - pos[i];
-            float local = (range > 0.0) ? (t - pos[i]) / range : 0.0;
-            return lerp(col[i], col[i + 1], local);
-        }
-    }
-    return col[count - 1];
-}
-
-float4 main(PsInput input) : SV_Target
-{
-    float2 halfSize = input.rectSize * 0.5;
-    float2 p = input.localPos - halfSize;
-
-    float4 r = float4(
-        input.cornerRadius.z,
-        input.cornerRadius.y,
-        input.cornerRadius.x,
-        input.cornerRadius.w);
-
-    float maxR = min(halfSize.x, halfSize.y);
-    r = min(r, maxR);
-
-    float dist;
-    if (input.shapeParams.x > 0.5)
-        dist = sdSuperEllipseRect(p, halfSize, input.shapeParams.y);
-    else
-        dist = sdRoundedBox(p, halfSize, r);
-    float aa = max(fwidth(dist), 0.0001);
-    float fillAlpha = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, dist);
-
-    float4 fill;
-    if (input.gradientType == 1)
-    {
-        float2 start = input.gradGeom.xy;
-        float2 end_  = input.gradGeom.zw;
-        float2 dir   = end_ - start;
-        float lenSq  = dot(dir, dir);
-        float t = (lenSq > 0.0) ? dot(input.localPos - start, dir) / lenSq : 0.0;
-        fill = SampleGradient(input, t);
-        fill.rgb *= fill.a;
-    }
-    else if (input.gradientType == 2)
-    {
-        float2 center = input.gradGeom.xy;
-        float2 radius = input.gradGeom.zw;
-        float2 d = (input.localPos - center) / max(radius, float2(0.001, 0.001));
-        float t = length(d);
-        fill = SampleGradient(input, t);
-        fill.rgb *= fill.a;
-    }
-    else
-    {
-        fill = input.fillColor;
-    }
-
-    float4 color;
-    if (input.borderWidth > 0.0)
-    {
-        float fillMask = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, dist + input.borderWidth);
-        float borderMask = fillAlpha - fillMask;
-        color = fill * fillMask + input.borderColor * max(borderMask, 0.0);
-        color.a = max(color.a, 0.0);
-    }
-    else
-    {
-        color = fill * fillAlpha;
-    }
-
-    if (color.a < 1.0 / 255.0) discard;
-    return color;
-}
-)HLSL";
+// kSdfRectPS intentionally has no embedded duplicate: the active pixel shader
+// is precompiled from shaders/sdf_rect.ps.hlsl into d3d12_shader_bytecode.h.
+// Keeping one source of truth prevents the continuous-corner math from drifting.
 
 static const char kBitmapTextVS[] = R"HLSL(
 cbuffer FrameConstants : register(b0)
@@ -711,20 +580,39 @@ float2 gradSdRoundedRect(float2 coord, float2 halfSize, float radius)
     return len > 0.001 ? g / len : float2(0, 1);
 }
 
-float sdSuperEllipse(float2 coord, float2 halfSize, float n)
+float sdContinuousCornerRect(float2 coord, float2 halfSize, float radius, float exponent)
 {
-    float2 p = abs(coord) / max(halfSize, float2(0.001, 0.001));
-    float d = pow(pow(p.x, n) + pow(p.y, n), 1.0 / n) - 1.0;
-    return d * min(halfSize.x, halfSize.y);
+    // Straight sides plus one local quarter-Lame patch per corner. Applying a
+    // single Lame curve to a wide control visibly bows its entire top/bottom.
+    float2 b = max(halfSize, float2(0.0, 0.0));
+    float r = min(max(radius, 0.0), min(b.x, b.y));
+    float2 ap = abs(coord);
+    if (r <= 0.0001) {
+        float2 d = ap - b;
+        return min(max(d.x, d.y), 0.0) + length(max(d, 0.0));
+    }
+
+    float2 q = ap - (b - r.xx);
+    if (q.x <= 0.0 || q.y <= 0.0)
+        return max(ap.x - b.x, ap.y - b.y);
+
+    float n = (exponent >= 2.0 && exponent <= 16.0) ? exponent : 4.0;
+    float2 u = max(q / r, float2(0.0, 0.0));
+    float lp = pow(pow(u.x, n) + pow(u.y, n), 1.0 / n);
+    float lpPower = pow(max(lp, 0.0001), n - 1.0);
+    float2 gradient = float2(
+        pow(u.x, n - 1.0) / (r * lpPower),
+        pow(u.y, n - 1.0) / (r * lpPower));
+    return (lp - 1.0) / max(length(gradient), 0.0001);
 }
 
-float2 gradSdSuperEllipse(float2 coord, float2 halfSize, float n)
+float2 gradSdContinuousCornerRect(float2 coord, float2 halfSize, float radius, float n)
 {
     const float e = 0.5;
-    float dx = sdSuperEllipse(coord + float2(e, 0), halfSize, n)
-             - sdSuperEllipse(coord - float2(e, 0), halfSize, n);
-    float dy = sdSuperEllipse(coord + float2(0, e), halfSize, n)
-             - sdSuperEllipse(coord - float2(0, e), halfSize, n);
+    float dx = sdContinuousCornerRect(coord + float2(e, 0), halfSize, radius, n)
+             - sdContinuousCornerRect(coord - float2(e, 0), halfSize, radius, n);
+    float dy = sdContinuousCornerRect(coord + float2(0, e), halfSize, radius, n)
+             - sdContinuousCornerRect(coord - float2(0, e), halfSize, radius, n);
     float2 g = float2(dx, dy);
     float len = length(g);
     return len > 0.001 ? g / len : float2(0, 1);
@@ -733,14 +621,14 @@ float2 gradSdSuperEllipse(float2 coord, float2 halfSize, float n)
 float sdShape(float2 coord, float2 halfSize, float radius)
 {
     if (shapeType > 0.5)
-        return sdSuperEllipse(coord, halfSize, shapeN);
+        return sdContinuousCornerRect(coord, halfSize, radius, shapeN);
     return sdRoundedRect(coord, halfSize, radius);
 }
 
 float2 gradShape(float2 coord, float2 halfSize, float radius)
 {
     if (shapeType > 0.5)
-        return gradSdSuperEllipse(coord, halfSize, shapeN);
+        return gradSdContinuousCornerRect(coord, halfSize, radius, shapeN);
     return gradSdRoundedRect(coord, halfSize, radius);
 }
 
@@ -883,7 +771,7 @@ float4 main(PsInput input) : SV_Target
     }
 
     // Anti-aliased glass mask — use fwidth for proper 1px AA regardless of SDF gradient magnitude.
-    // sdSuperEllipse has non-unit gradient near corners, so fixed smoothstep would be too wide.
+    // fwidth keeps the one-pixel transition stable through corner and fusion gradients.
     float glassMask = 1.0 - smoothstep(-aaW, aaW, sd);
 
     // === REFRACTION ===
@@ -897,7 +785,7 @@ float4 main(PsInput input) : SV_Target
         if (nCount > 0) {
             grad = gradCombinedSd(pixelCoord, glassCenter, halfSize, r);
         } else {
-            float gradR = min(r * 1.5, min(halfSize.x, halfSize.y));
+            float gradR = (shapeType > 0.5) ? r : min(r * 1.5, min(halfSize.x, halfSize.y));
             grad = normalize(gradShape(centered, halfSize, gradR));
         }
 
@@ -976,7 +864,7 @@ float4 main(PsInput input) : SV_Target
         if (nCount > 0) {
             hlGrad = gradCombinedSd(pixelCoord, glassCenter, halfSize, r);
         } else {
-            float gradR2 = min(r * 1.5, min(halfSize.x, halfSize.y));
+            float gradR2 = (shapeType > 0.5) ? r : min(r * 1.5, min(halfSize.x, halfSize.y));
             hlGrad = normalize(gradShape(centered, halfSize, gradR2));
         }
 

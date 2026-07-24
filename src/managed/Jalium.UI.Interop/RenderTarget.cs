@@ -88,6 +88,7 @@ public sealed class RenderTarget : IDisposable
     // serialized by the render-thread idle drain, but the field still needs an
     // acquire/release fence across that barrier (FIX #4).
     private volatile bool _isDrawing;
+    private volatile int _drawingThreadId;
     // Starts in the released state. A finalizable object is eligible for
     // finalization even when its constructor throws, so RegisterRenderTarget
     // must succeed before this flips to 0. Otherwise the finalizer for a
@@ -114,6 +115,10 @@ public sealed class RenderTarget : IDisposable
     /// </summary>
     public bool IsDrawing => _isDrawing;
 
+    /// <summary>Gets whether the active drawing session belongs to the calling thread.</summary>
+    internal bool IsDrawingOwnedByCurrentThread =>
+        _isDrawing && _drawingThreadId == Environment.CurrentManagedThreadId;
+
     /// <summary>
     /// Gets the backend associated with this render target.
     /// </summary>
@@ -128,6 +133,10 @@ public sealed class RenderTarget : IDisposable
     /// Gets or sets the height.
     /// </summary>
     public int Height { get; private set; }
+
+    internal double DpiScaleX => _dpiX > 0 ? _dpiX / 96.0 : 1.0;
+
+    internal double DpiScaleY => _dpiY > 0 ? _dpiY / 96.0 : 1.0;
 
     /// <summary>
     /// Gets whether the native backend preserves back-buffer contents across presents,
@@ -280,8 +289,8 @@ public sealed class RenderTarget : IDisposable
         // Busy = the native backend refused this resize because a command list is
         // still open and references the back buffers it would free (cross-thread
         // render in flight, or a frame left open). NOT a failure: do not throw and
-        // do not update Width/Height — the caller re-stashes and retries at the next
-        // safe point (see Window.ApplyRenderTargetResize). Avoids the #921
+        // do not update Width/Height — the caller keeps the versioned request pending
+        // for the next safe point (see Window.ApplyRenderTargetResize). Avoids the #921
         // OBJECT_DELETED_WHILE_STILL_IN_USE use-after-free.
         if (result == JaliumResult.Busy)
             return result;
@@ -309,6 +318,7 @@ public sealed class RenderTarget : IDisposable
         // "managed-side fail" branch like TryBeginDraw.
         RenderDiagnostics.OnBeginDrawAttempt(success: resultCode == (int)JaliumResult.Ok);
         ThrowIfNativeFailure("Begin", resultCode);
+        _drawingThreadId = Environment.CurrentManagedThreadId;
         _isDrawing = true;
     }
 
@@ -320,7 +330,7 @@ public sealed class RenderTarget : IDisposable
     public bool TryBeginDraw()
     {
         ThrowIfDisposed();
-        if (_isDrawing) return true;
+        if (_isDrawing) return IsDrawingOwnedByCurrentThread;
 
         long t0 = ApiStart();
         int resultCode = _native.BeginDraw(_handle);
@@ -332,6 +342,7 @@ public sealed class RenderTarget : IDisposable
         RenderDiagnostics.OnBeginDrawAttempt(success);
         if (success)
         {
+            _drawingThreadId = Environment.CurrentManagedThreadId;
             _isDrawing = true;
             return true;
         }
@@ -364,6 +375,7 @@ public sealed class RenderTarget : IDisposable
         finally
         {
             _isDrawing = false;
+            _drawingThreadId = 0;
             ApiEnd("EndDraw", t0);
         }
 
@@ -387,6 +399,7 @@ public sealed class RenderTarget : IDisposable
         finally
         {
             _isDrawing = false;
+            _drawingThreadId = 0;
             ApiEnd("EndDraw", t0);
         }
 
@@ -1918,6 +1931,7 @@ public sealed class RenderTarget : IDisposable
                 try { _ = _native.EndDraw(_handle); } catch { }
             }
             _isDrawing = false;
+            _drawingThreadId = 0;
 
             if (_handle != nint.Zero &&
                 (_ownerContext == null || _ownerContext.IsNativeBackendAlive))
@@ -1950,6 +1964,7 @@ public sealed class RenderTarget : IDisposable
         finally
         {
             _isDrawing = false;
+            _drawingThreadId = 0;
             _disposed = true;
             _handle = nint.Zero;
             ReleaseOwnerContextReference();

@@ -16,6 +16,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public sealed class PasswordBox : Control, IImeSupport
 {
+    private InputMethodWeakSubscription<PasswordBox>? _imeSubscription;
     #region Automation
 
     /// <inheritdoc />
@@ -556,9 +557,8 @@ public sealed class PasswordBox : Control, IImeSupport
         AddHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
 
         // Subscribe to IME events
-        InputMethod.CompositionStarted += OnImeCompositionStarted;
-        InputMethod.CompositionUpdated += OnImeCompositionUpdated;
-        InputMethod.CompositionEnded += OnImeCompositionEnded;
+        Loaded += OnImeOwnerLoaded;
+        Unloaded += OnImeOwnerUnloaded;
 
         // Subscribe to focus events for IME target management
         AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotFocusHandler));
@@ -1414,6 +1414,10 @@ public sealed class PasswordBox : Control, IImeSupport
         {
             Focus();
 
+            // Re-show the system soft keyboard on tap even when focus is
+            // unchanged (e.g. after a Back dismissal). No-op off Android.
+            FindHostWindow()?.EnsureAndroidSoftKeyboard();
+
             var position = e.GetPosition(this);
             var now = DateTime.Now;
 
@@ -1780,6 +1784,25 @@ public sealed class PasswordBox : Control, IImeSupport
     private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         if (InputMethod.CurrentTarget == this)
+        {
+            InputMethod.SetTarget(null);
+        }
+    }
+
+    private void OnImeOwnerLoaded(object? sender, RoutedEventArgs e)
+    {
+        _imeSubscription ??= new InputMethodWeakSubscription<PasswordBox>(
+            this,
+            static (owner, source, args) => owner.OnImeCompositionStarted(source, args),
+            static (owner, source, args) => owner.OnImeCompositionUpdated(source, args),
+            static (owner, source, args) => owner.OnImeCompositionEnded(source, args));
+        _imeSubscription.Attach();
+    }
+
+    private void OnImeOwnerUnloaded(object? sender, RoutedEventArgs e)
+    {
+        _imeSubscription?.Detach();
+        if (ReferenceEquals(InputMethod.CurrentTarget, this))
         {
             InputMethod.SetTarget(null);
         }

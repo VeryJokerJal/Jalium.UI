@@ -66,4 +66,26 @@ public class CrossPlatformPointerStateTests
         Assert.Equal(45, properties.Twist);
         Assert.Equal(PointerUpdateKind.RightButtonPressed, properties.PointerUpdateKind);
     }
+
+    [Fact]
+    public void BuildPointerInputData_UsesPlatformEventTimeWithoutRestamping()
+    {
+        const long EventTimeMillis = 4_500_000_123;
+        var window = new Window();
+        var platformEvent = new PlatformEvent
+        {
+            Type = PlatformEventType.PointerMove,
+            PointerId = 29,
+            PointerType = 1,
+            PointerFlags = (1u << 0) | (1u << 1),
+            PointerTimestampMillis = EventTimeMillis
+        };
+
+        PointerInputData data = window.BuildPointerInputData(platformEvent);
+
+        Assert.Equal((ulong)EventTimeMillis, data.Point.Timestamp);
+        Assert.Equal(
+            unchecked((int)EventTimeMillis),
+            Window.ToPointerInputTimestamp(EventTimeMillis));
+    }
 }

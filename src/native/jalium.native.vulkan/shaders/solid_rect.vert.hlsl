@@ -90,13 +90,14 @@ VsOutput main(uint vertexId : SV_VertexID)
         // matching LOCAL position per vertex so the fragment shader can evaluate
         // the rounded-rect SDF in pre-transform space. The local rect dimensions
         // ride in innerRoundedClipRect.xy = (localOuterW, localOuterH); the
-        // per-axis AA pad rides in roundedClipRadius.xy = (expandX, expandY)
-        // (both fields are free on this path — clipFlags.x/.y are never set, so
-        // the screen-space clip branches that normally consume them are inert).
-        // No push-constant growth: we only re-purpose existing slots.
+        // per-axis AA pad rides in padding2.xy so roundedClipRadius stays
+        // available to an ancestor rounded clip.
+        // padding2 is local-only on this path; roundedClipRadius and clipFlags
+        // remain available for an independent ancestor include/exclude clip.
+        // No push-constant growth: existing slots carry the local geometry.
         if (gPushConstants.geometryFlags.y > 0.5f) {
             const float2 localOuter = gPushConstants.innerRoundedClipRect.xy;
-            const float2 expand     = gPushConstants.roundedClipRadius.xy;
+            const float2 expand     = gPushConstants.padding2.xy;
             // Corner order matches the CPU producer's quad winding exactly:
             // 0=TL, 1=TR, 2=BR, 3=BL, each grown OUTWARD by `expand` so the SDF
             // outer AA ramp is not clipped by the tight quad edge under rotation.

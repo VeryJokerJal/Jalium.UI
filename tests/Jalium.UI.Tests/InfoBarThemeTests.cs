@@ -44,10 +44,10 @@ public class InfoBarThemeTests
 
             Assert.False(infoBar.HasLocalValue(Control.PaddingProperty));
             Assert.False(infoBar.HasLocalValue(Control.CornerRadiusProperty));
-            Assert.Equal(12, infoBar.Padding.Left);
-            Assert.Equal(8, infoBar.Padding.Top);
-            Assert.Equal(4, infoBar.CornerRadius.TopLeft);
-            Assert.True(infoBar.RenderSize.Height >= 48);
+            Assert.Equal(14, infoBar.Padding.Left);
+            Assert.Equal(10, infoBar.Padding.Top);
+            Assert.Equal(12, infoBar.CornerRadius.TopLeft);
+            Assert.True(infoBar.RenderSize.Height >= 52);
         }
         finally
         {

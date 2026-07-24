@@ -167,6 +167,42 @@ public sealed class PanelParityTests
         Assert.Equal(Orientation.Horizontal, orientedPanel.LogicalOrientationPublic);
     }
 
+    [Fact]
+    public void VisualChildOrderingAvoidsAMapUntilZIndexRequiresSorting()
+    {
+        var panel = new ProbePanel();
+        var first = new Border();
+        var second = new Border();
+        var third = new Border();
+        panel.Children.Add(first);
+        panel.Children.Add(second);
+        panel.Children.Add(third);
+
+        Assert.Same(first, panel.GetOrderedChild(0));
+        Assert.Same(second, panel.GetOrderedChild(1));
+        Assert.Same(third, panel.GetOrderedChild(2));
+        Assert.Null(GetZOrderMap(panel));
+
+        Panel.SetZIndex(first, 2);
+
+        Assert.Same(second, panel.GetOrderedChild(0));
+        Assert.Same(third, panel.GetOrderedChild(1));
+        Assert.Same(first, panel.GetOrderedChild(2));
+        Assert.NotNull(GetZOrderMap(panel));
+
+        Panel.SetZIndex(first, 0);
+
+        Assert.Same(first, panel.GetOrderedChild(0));
+        Assert.Same(second, panel.GetOrderedChild(1));
+        Assert.Same(third, panel.GetOrderedChild(2));
+        Assert.Null(GetZOrderMap(panel));
+    }
+
+    private static int[]? GetZOrderMap(Panel panel) =>
+        (int[]?)typeof(Panel)
+            .GetField("_zOrderMap", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(panel);
+
     private static void AssertProtectedInternalVirtualProperty(string name, Type propertyType)
     {
         var property = typeof(Panel).GetProperty(
@@ -210,6 +246,8 @@ public sealed class PanelParityTests
         public Orientation OverrideLogicalOrientation { get; init; } = Orientation.Vertical;
 
         public UIElementCollection ExposedInternalChildren => InternalChildren;
+
+        public Visual? GetOrderedChild(int index) => GetVisualChild(index);
 
         public object[] GetLogicalChildren()
         {

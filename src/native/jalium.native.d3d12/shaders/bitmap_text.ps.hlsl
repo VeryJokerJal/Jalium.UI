@@ -53,9 +53,12 @@ PsOutput main(PsInput input)
     // .a is max coverage.
     float3 coverage = atlas.rgb;
 
-    // Apply contrast enhancement per channel for ClearType sharpness
-    float3 contrast = saturate(coverage * 1.2 - 0.1);
-    coverage = lerp(coverage, contrast, 0.3);
+    // Monotonic enhanced contrast for the configured DirectWrite coverage.
+    // Unlike the previous
+    // linear threshold, this never removes low coverage from an antialiased
+    // edge (which made small vertical stems look one pixel thinner).
+    coverage = saturate(coverage +
+        coverage * (1.0 - coverage) * 0.5);
 
     // 圆角裁剪以 alpha mask 形式衰减每通道覆盖率 + max coverage，让
     // 圆角边缘的子像素 AA 与字形 ClearType AA 自然叠加，不再 1px 硬切。

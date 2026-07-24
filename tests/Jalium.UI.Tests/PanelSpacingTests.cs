@@ -197,6 +197,139 @@ public class PanelSpacingTests
         Assert.Equal(0, b.VisualBounds.X);
     }
 
+    [Fact]
+    public void WrapPanel_VerticalOrientation_AppliesItemAndLineSpacingOnCorrectAxes()
+    {
+        var panel = new WrapPanel
+        {
+            Orientation = Orientation.Vertical,
+            HorizontalSpacing = 11,
+            VerticalSpacing = 5,
+        };
+        var a = new FixedElement(20, 30);
+        var b = new FixedElement(30, 30);
+        var c = new FixedElement(15, 30);
+        panel.Children.Add(a);
+        panel.Children.Add(b);
+        panel.Children.Add(c);
+
+        // Two 30px-tall items plus the 5px primary gap fit exactly. The third item
+        // wraps into a second column after the first column's 30px thickness and
+        // the 11px secondary gap.
+        panel.Measure(new Size(200, 65));
+        panel.Arrange(new Rect(0, 0, 200, 65));
+
+        Assert.Equal(0, a.VisualBounds.X);
+        Assert.Equal(0, a.VisualBounds.Y);
+        Assert.Equal(30, a.VisualBounds.Width);
+        Assert.Equal(0, b.VisualBounds.X);
+        Assert.Equal(35, b.VisualBounds.Y);
+        Assert.Equal(41, c.VisualBounds.X);
+        Assert.Equal(0, c.VisualBounds.Y);
+    }
+
+    [Fact]
+    public void WrapPanel_FixedItemSize_DrivesWrappingAndArrangedBounds()
+    {
+        var panel = new WrapPanel
+        {
+            ItemWidth = 40,
+            ItemHeight = 24,
+            HorizontalSpacing = 5,
+            VerticalSpacing = 7,
+        };
+        var a = new FixedElement(5, 8);
+        var b = new FixedElement(60, 50);
+        var c = new FixedElement(10, 12);
+        panel.Children.Add(a);
+        panel.Children.Add(b);
+        panel.Children.Add(c);
+
+        // Two fixed cells plus their gap fit exactly in 85px; the third wraps.
+        panel.Measure(new Size(85, 200));
+        panel.Arrange(new Rect(0, 0, 85, 200));
+
+        Assert.Equal(new Rect(0, 0, 40, 24), a.VisualBounds);
+        Assert.Equal(new Rect(45, 0, 40, 24), b.VisualBounds);
+        Assert.Equal(new Rect(0, 31, 40, 24), c.VisualBounds);
+        Assert.Equal(55, panel.DesiredSize.Height);
+    }
+
+    [Fact]
+    public void WrapPanel_ArrangeOverride_SteadyStateDoesNotAllocate()
+    {
+        var panel = new ArrangeProbeWrapPanel
+        {
+            ItemWidth = 40,
+            ItemHeight = 24,
+            HorizontalSpacing = 5,
+            VerticalSpacing = 7,
+        };
+        for (int i = 0; i < 12; i++)
+        {
+            panel.Children.Add(new FixedElement(10 + i, 12 + i));
+        }
+
+        var arrangeSize = new Size(175, 200);
+        panel.Measure(arrangeSize);
+
+        // Warm the JIT and establish child arrange rects before measuring the hot path.
+        for (int i = 0; i < 100; i++)
+        {
+            panel.InvokeArrangeOverride(arrangeSize);
+        }
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 100; i++)
+        {
+            panel.InvokeArrangeOverride(arrangeSize);
+        }
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.Equal(0, allocated);
+    }
+
+    [Fact]
+    public void WrapPanel_ParentWidthResize_ReusesNaturalChildMeasure()
+    {
+        var panel = new WrapPanel
+        {
+            HorizontalSpacing = 4,
+            VerticalSpacing = 4,
+        };
+        var children = new List<MeasureCountingElement>();
+        for (int i = 0; i < 100; i++)
+        {
+            var child = new MeasureCountingElement(40, 24);
+            children.Add(child);
+            panel.Children.Add(child);
+        }
+
+        panel.Measure(new Size(300, 400));
+        panel.Arrange(new Rect(0, 0, 300, panel.DesiredSize.Height));
+        Assert.All(children, child => Assert.Equal(1, child.MeasureCount));
+
+        // The panel must recompute wrapping at the new width, but a natural-size
+        // child still receives the same Infinity constraint and short-circuits.
+        panel.Measure(new Size(340, 400));
+        panel.Arrange(new Rect(0, 0, 340, panel.DesiredSize.Height));
+
+        Assert.All(children, child => Assert.Equal(1, child.MeasureCount));
+    }
+
+    [Fact]
+    public void WrapPanel_AutoItemSize_UsesNaturalInfinityConstraint()
+    {
+        var panel = new WrapPanel();
+        var child = new MeasureCountingElement(40, 24);
+        panel.Children.Add(child);
+
+        panel.Measure(new Size(300, 200));
+
+        Assert.True(double.IsPositiveInfinity(child.LastAvailableSize.Width));
+        Assert.True(double.IsPositiveInfinity(child.LastAvailableSize.Height));
+    }
+
     #endregion
 
     #region DockPanel
@@ -290,5 +423,30 @@ public class PanelSpacingTests
         }
 
         protected override Size MeasureOverride(Size availableSize) => new(_width, _height);
+    }
+
+    private sealed class MeasureCountingElement : FrameworkElement
+    {
+        private readonly Size _desired;
+
+        public MeasureCountingElement(double width, double height)
+        {
+            _desired = new Size(width, height);
+        }
+
+        public int MeasureCount { get; private set; }
+        public Size LastAvailableSize { get; private set; }
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            MeasureCount++;
+            LastAvailableSize = availableSize;
+            return _desired;
+        }
+    }
+
+    private sealed class ArrangeProbeWrapPanel : WrapPanel
+    {
+        public Size InvokeArrangeOverride(Size finalSize) => base.ArrangeOverride(finalSize);
     }
 }

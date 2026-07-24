@@ -35,7 +35,7 @@ public sealed class DependencyProperty
     /// <summary>
     /// Cache for <see cref="GetMetadata(Type)"/> lookups to avoid repeated type-hierarchy walks.
     /// </summary>
-    private readonly Dictionary<Type, PropertyMetadata> _metadataCache = new();
+    private readonly ConcurrentDictionary<Type, PropertyMetadata> _metadataCache = new();
 
     /// <summary>
     /// Serializes metadata-map mutations with cache lookups. A per-property lock keeps unrelated
@@ -481,10 +481,17 @@ public sealed class DependencyProperty
     {
         ArgumentNullException.ThrowIfNull(forType);
 
+        // Metadata is immutable once published and overrides are exceptionally
+        // rare compared with GetValue. Keep the steady-state cache hit outside
+        // _metadataSync so every dependency-property read on the UI/render path
+        // does not contend with unrelated threads querying the same property.
+        if (_metadataCache.TryGetValue(forType, out var cached))
+            return cached;
+
         lock (_metadataSync)
         {
-            // Fast path: check cache
-            if (_metadataCache.TryGetValue(forType, out var cached))
+            // Another reader may have populated this miss while we waited.
+            if (_metadataCache.TryGetValue(forType, out cached))
                 return cached;
 
             // Walk up the type hierarchy

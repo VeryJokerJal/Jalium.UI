@@ -145,9 +145,9 @@ public class Decorator : FrameworkElement, Jalium.UI.Markup.IAddChild
                 }
                 catch
                 {
+                    _child = null;
                     RemoveVisualChild(value);
                     RemoveLogicalChild(value);
-                    _child = null;
                     throw;
                 }
             }

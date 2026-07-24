@@ -58,15 +58,11 @@ static constexpr int kGlyphScaleQuant = 16;
 struct GlyphKey {
     IDWriteFontFace* fontFace;
     uint16_t glyphIndex;
-    uint16_t fontSize;      // BASE physical pixel size = round(fontSize*dpi), NO transform scale
+    uint16_t fontSize;      // FINAL vertical ppem (DPI and scaleY already folded in)
     uint8_t  subpixelX;     // sub-pixel X offset quantized to 1/8 pixel (0..7)
-    // Per-axis transform scale, quantized to 1/kGlyphScaleQuant steps (value =
-    // round(scale*kGlyphScaleQuant); kGlyphScaleQuant == 1.0x == unscaled). The
-    // glyph is rasterized at the FINAL deformed pixel size via a
-    // DWRITE_MATRIX(scaleX,0,0,scaleY) so e.g. a liquid-glass squeeze
-    // (scaleX≈0.63, scaleY≈2.17) produces an already-compressed crisp bitmap —
-    // instead of point-minifying an isotropic atlas (which dropped thin stems:
-    // d→c, r→l). Both == kGlyphScaleQuant means identity == normal text path.
+    // Quantized per-axis transform buckets. scaleY is folded into fontSize so
+    // DirectWrite grid-fits at the final vertical ppem; RasterizeGlyph uses
+    // scaleXQ/scaleYQ only as the remaining horizontal aspect ratio.
     uint8_t  scaleXQ = (uint8_t)kGlyphScaleQuant;
     uint8_t  scaleYQ = (uint8_t)kGlyphScaleQuant;
     // Per-glyph rendering mode resolved from the source TextFormat's
@@ -169,15 +165,12 @@ public:
     /// against the global setting on every call (since aaMode=0 / Auto is the
     /// signal that nobody asked for an explicit override).
     ///
-    /// `rasterScale` (>= 1.0, default 1.0) is the effective magnification the
-    /// caller's transform will apply to this text (max of the transform's two
-    /// axis scales, quantized + capped by the caller). The glyph is rasterized
-    /// at fontSize * dpiScale * rasterScale so a magnified glyph samples a
-    /// high-resolution atlas bitmap instead of a stretched base-size one (which
-    /// is what made scaled text mosaic). The emitted quad geometry is divided
-    /// back down to BASE-DIP space, so the caller's existing post-transform
-    /// quad scaling reproduces the correct on-screen size. rasterScale is part
-    /// of the per-layout memo key (it changes the atlas slots / UVs).
+    /// `scaleX`/`scaleY` is the per-axis magnification the caller's transform
+    /// applies to this text. The final vertical ppem is used as DirectWrite's
+    /// em size, while only scaleX/scaleY remains in its glyph transform. This
+    /// keeps hinting tied to the final pixel grid and avoids magnifying
+    /// per-glyph ink-box differences. Emitted geometry is divided back to
+    /// base-DIP space before the caller reapplies the actual transform.
     uint32_t GenerateGlyphs(
         IDWriteTextLayout* layout,
         float originX, float originY,
@@ -198,8 +191,10 @@ public:
         bool crispAxisAligned = false);
 
     /// Uploads any pending glyph data to the GPU atlas texture.
-    /// Must be called before rendering text in a frame.
-    void FlushToGpu(ID3D12GraphicsCommandList* cmdList);
+    /// Must be called before rendering text in a frame. Returns true only when
+    /// a CopyTextureRegion was recorded, allowing the renderer to distinguish
+    /// read-only atlas sampling from an actual GPU mutation.
+    bool FlushToGpu(ID3D12GraphicsCommandList* cmdList);
 
     /// Moves upload allocations referenced by the currently open command list
     /// into the caller's frame-fence keepalive collection. FlushToGpu keeps the

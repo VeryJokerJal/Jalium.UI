@@ -260,6 +260,14 @@ public class Thumb : Control
     {
         if (!IsEnabled || e is not TouchEventArgs touchArgs) return;
         if (!TouchHelper.GetIsTouchInteractive(this)) return;
+        if (_activeTouchId >= 0)
+        {
+            // One Thumb has one drag owner. A second contact must not replace
+            // the captured finger or restart DragStarted mid-gesture.
+            e.Handled = true;
+            return;
+        }
+
         _activeTouchId = touchArgs.TouchDevice.Id;
         CaptureTouch(touchArgs.TouchDevice);
         Focus();

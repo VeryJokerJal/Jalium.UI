@@ -11,6 +11,10 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class ThemeRuntimeSwitchTests
 {
+    private static readonly FieldInfo s_isRenderDirtyField =
+        typeof(Visual).GetField("_isRenderDirty", BindingFlags.Instance | BindingFlags.NonPublic)
+        ?? throw new InvalidOperationException("Visual._isRenderDirty field not found.");
+
     private static void ResetApplicationState()
     {
         var currentField = typeof(Application).GetField("_current",
@@ -239,7 +243,7 @@ public class ThemeRuntimeSwitchTests
     }
 
     [Fact]
-    public void ApplyTheme_ShouldReapplyImplicitStyles_InSecondaryWindows()
+    public void ApplyTheme_ShouldPreserveTemplates_AndUpdateResources_InSecondaryWindows()
     {
         ResetApplicationState();
         ThemeLoader.Initialize();
@@ -268,16 +272,19 @@ public class ThemeRuntimeSwitchTests
             {
                 var mainTemplateBefore = mainButton.Template;
                 var secondaryTemplateBefore = secondaryButton.Template;
+                var mainBackgroundBefore = GetBrushColor(mainButton.Background);
+                var secondaryBackgroundBefore = GetBrushColor(secondaryButton.Background);
                 Assert.NotNull(mainTemplateBefore);
                 Assert.NotNull(secondaryTemplateBefore);
 
                 ThemeManager.ApplyTheme(ThemeVariant.Light);
 
-                // Theme switch replaces the generic dictionary, so implicit styles must be
-                // re-evaluated in every live window — the refreshed styles carry brand-new
-                // ControlTemplate instances.
-                Assert.NotSame(mainTemplateBefore, mainButton.Template);
-                Assert.NotSame(secondaryTemplateBefore, secondaryButton.Template);
+                // Templates are theme-invariant and their palette setters are ThemeResources.
+                // Switching variants must update both roots without rebuilding either template.
+                Assert.Same(mainTemplateBefore, mainButton.Template);
+                Assert.Same(secondaryTemplateBefore, secondaryButton.Template);
+                Assert.NotEqual(mainBackgroundBefore, GetBrushColor(mainButton.Background));
+                Assert.NotEqual(secondaryBackgroundBefore, GetBrushColor(secondaryButton.Background));
             }
             finally
             {
@@ -291,7 +298,55 @@ public class ThemeRuntimeSwitchTests
     }
 
     [Fact]
-    public void ApplyTheme_ShouldHealImplicitStyles_WhenSecondaryWindowShownAfterSwitch()
+    public void ApplyTheme_ShouldUpdateSecondaryWindow_WhenMainWindowIsNull()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            Assert.Null(app.MainWindow);
+
+            var button = new Button { Content = "Secondary only" };
+            var root = new StackPanel();
+            root.Children.Add(button);
+            var secondaryWindow = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native,
+                Width = 160,
+                Height = 120,
+                Content = root,
+            };
+
+            secondaryWindow.Show();
+            try
+            {
+                Assert.Null(app.MainWindow);
+                Assert.Contains(secondaryWindow, app.Windows.Cast<Window>());
+
+                var templateBefore = button.Template;
+                var backgroundBefore = GetBrushColor(button.Background);
+                Assert.NotNull(templateBefore);
+
+                ThemeManager.ApplyTheme(ThemeVariant.Light);
+
+                Assert.Same(templateBefore, button.Template);
+                Assert.NotEqual(backgroundBefore, GetBrushColor(button.Background));
+            }
+            finally
+            {
+                secondaryWindow.Close();
+            }
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ApplyTheme_ShouldUpdateUnshownWindow_WithoutRebuildingItsTemplate()
     {
         ResetApplicationState();
         ThemeLoader.Initialize();
@@ -316,18 +371,20 @@ public class ThemeRuntimeSwitchTests
             };
 
             var templateBefore = button.Template;
+            var backgroundBefore = GetBrushColor(button.Background);
             Assert.NotNull(templateBefore);
 
             ThemeManager.ApplyTheme(ThemeVariant.Light);
 
-            // The broadcast cannot reach an unshown window, so its template stays stale.
+            // The global ThemeResource registry includes unshown trees, so their palette is
+            // current before Show() and the already-built template remains reusable.
             Assert.Same(templateBefore, button.Template);
+            Assert.NotEqual(backgroundBefore, GetBrushColor(button.Background));
 
-            // Show() must detect the missed theme version and heal the subtree.
             deferredWindow.Show();
             try
             {
-                Assert.NotSame(templateBefore, button.Template);
+                Assert.Same(templateBefore, button.Template);
             }
             finally
             {
@@ -341,7 +398,7 @@ public class ThemeRuntimeSwitchTests
     }
 
     [Fact]
-    public void ApplyTheme_ShouldCoalesceDictionarySwaps_IntoSingleResourceBroadcast()
+    public void ApplyTheme_ShouldReuseGenericDictionary_AndUseSingleLightweightBroadcast()
     {
         ResetApplicationState();
         ThemeLoader.Initialize();
@@ -354,24 +411,134 @@ public class ThemeRuntimeSwitchTests
             root.Children.Add(button);
             app.MainWindow = new Window { Content = root };
 
-            // Application.ResourcesChanged is raised exactly once per full-refresh broadcast
-            // (Application.OnApplicationResourcesChanged), which is what drives the whole-tree
-            // implicit-style re-evaluation walk across every live window and popup. The per-key
-            // theme-version bump in ForceThemeRefresh is a targeted refresh and is deliberately
-            // NOT counted here.
+            var buttonStyleBefore = app.Resources[typeof(Button)];
+            var buttonTemplateBefore = button.Template;
             var broadcasts = 0;
             EventHandler handler = (_, _) => broadcasts++;
             app.ResourcesChanged += handler;
 
-            ThemeManager.ApplyTheme(ThemeVariant.Light);
+            var originalLoader = ThemeManager.XamlLoader;
+            Assert.NotNull(originalLoader);
+            var genericLoads = 0;
+            ThemeManager.XamlLoader = (stream, path, assembly) =>
+            {
+                genericLoads++;
+                return originalLoader(stream, path, assembly);
+            };
+
+            try
+            {
+                ThemeManager.ApplyTheme(ThemeVariant.Light);
+            }
+            finally
+            {
+                ThemeManager.XamlLoader = originalLoader;
+            }
 
             app.ResourcesChanged -= handler;
 
-            // ApplyTheme replaces BOTH the generic and the accent dictionary. Without batching
-            // each swap fires its own broadcast (2 full-tree re-computations); DeferNotifications
-            // coalesces them into one.
+            Assert.Equal(0, genericLoads);
             Assert.Equal(1, broadcasts);
+            Assert.Same(buttonStyleBefore, app.Resources[typeof(Button)]);
+            Assert.Same(buttonTemplateBefore, button.Template);
             Assert.Equal(ThemeVariant.Light, ThemeManager.CurrentTheme);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ApplyTheme_WithCurrentVariant_ShouldBeNoOp()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            app.MainWindow = new Window { Content = new Button() };
+            var versionBefore = ThemeManager.CurrentThemeVersion;
+            var broadcasts = 0;
+            EventHandler handler = (_, _) => broadcasts++;
+            app.ResourcesChanged += handler;
+
+            ThemeManager.ApplyTheme(ThemeManager.CurrentTheme);
+
+            app.ResourcesChanged -= handler;
+            Assert.Equal(0, broadcasts);
+            Assert.Equal(versionBefore, ThemeManager.CurrentThemeVersion);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ApplyTheme_ShouldRefreshNonVisualThemeResources()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+        var host = new Border();
+        var brush = new SolidColorBrush();
+
+        try
+        {
+            app.MainWindow = new Window { Content = host };
+            DynamicResourceBindingOperations.SetDynamicResourceForNonVisual(
+                host,
+                brush,
+                SolidColorBrush.ColorProperty,
+                "TextFillColorPrimary");
+            var before = brush.Color;
+
+            ThemeManager.ApplyTheme(ThemeVariant.Light);
+
+            Assert.NotEqual(before, brush.Color);
+        }
+        finally
+        {
+            DynamicResourceBindingOperations.ClearDynamicResourceForNonVisual(
+                brush,
+                SolidColorBrush.ColorProperty);
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ApplyTheme_ShouldInvalidateThemeConsumers_NotResourceIndependentElements()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var themed = new Button { Content = "Themed" };
+            var independent = new Border
+            {
+                Background = new SolidColorBrush(Color.FromRgb(0x12, 0x34, 0x56))
+            };
+            var root = new StackPanel();
+            root.Children.Add(themed);
+            root.Children.Add(independent);
+            app.MainWindow = new Window { Content = root };
+
+            // Materialize the themed value and the independent brush-owner registration before
+            // clearing the retained-render flags. Only the former should change with the variant.
+            var themedBackgroundBefore = GetBrushColor(themed.Background);
+            _ = independent.Background;
+            s_isRenderDirtyField.SetValue(themed, false);
+            s_isRenderDirtyField.SetValue(independent, false);
+
+            ThemeManager.ApplyTheme(ThemeVariant.Light);
+
+            Assert.NotEqual(themedBackgroundBefore, GetBrushColor(themed.Background));
+            Assert.True((bool)s_isRenderDirtyField.GetValue(themed)!);
+            Assert.False((bool)s_isRenderDirtyField.GetValue(independent)!);
         }
         finally
         {
