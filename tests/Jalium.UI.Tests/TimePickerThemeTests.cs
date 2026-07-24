@@ -43,8 +43,8 @@ public class TimePickerThemeTests
             Assert.False(timePicker.HasLocalValue(FrameworkElement.HeightProperty));
             Assert.NotNull(timePicker.Background);
             Assert.NotNull(timePicker.BorderBrush);
-            Assert.Equal(32, timePicker.MinHeight);
-            Assert.True(timePicker.RenderSize.Height >= 32);
+            Assert.Equal(36, timePicker.MinHeight);
+            Assert.True(timePicker.RenderSize.Height >= 36);
         }
         finally
         {

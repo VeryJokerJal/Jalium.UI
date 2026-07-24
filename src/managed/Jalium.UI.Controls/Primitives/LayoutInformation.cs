@@ -16,10 +16,12 @@ public static class LayoutInformation
     {
         ArgumentNullException.ThrowIfNull(element);
 
-        // If ClipToBounds is true, return the render size
-        if (element.ClipToBounds)
+        if (element.ClipToBounds &&
+            element.ClipToBoundsEdges != ClipEdges.None)
         {
-            return new Rect(element.RenderSize);
+            return UIElement.ExpandBoundsClip(
+                new Rect(element.RenderSize),
+                element.ClipToBoundsEdges);
         }
 
         return Rect.Empty;

@@ -40,6 +40,19 @@ public class RenderTargetDrawingContextPixelSnapTests
         Assert.Equal(expected, InvokeTextScaleDeformationDecision(m11, m12, m21, m22, scaleX, scaleY));
     }
 
+    [Fact]
+    public void TextFormatCacheUsesAnAllocationFreeValueKey()
+    {
+        var cacheField = typeof(RenderTargetDrawingContext).GetField(
+            "_textFormatCache",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+        Assert.NotNull(cacheField);
+        var keyType = cacheField!.FieldType.GetGenericArguments()[0];
+        Assert.True(keyType.IsValueType);
+        Assert.NotEqual(typeof(string), keyType);
+    }
+
     private static float InvokeSnapCoordinate(double value)
     {
         var method = typeof(RenderTargetDrawingContext).GetMethod(

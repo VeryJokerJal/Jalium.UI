@@ -1,20 +1,20 @@
-﻿<ResourceDictionary
+<ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- ============================================== -->
     <!-- TextBox Style -->
     <!-- ============================================== -->
-    <!-- Template provides the chrome (background, border). PART_ContentHost is a Border
-         where the control inserts its TextBoxContentHost for text rendering. -->
+    <!-- Template provides the chrome. PART_ContentHost is a panel where the control
+         inserts its TextBoxContentHost for text rendering. -->
     <Style TargetType="TextBox">
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="8,6,8,6" />
+        <Setter Property="Padding" Value="10,7,10,7" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
-        <Setter Property="CornerRadius" Value="8" />
-        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="MinHeight" Value="36" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextWrapping" Value="NoWrap" />
@@ -24,26 +24,35 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="TextBox">
                 <Border Name="OuterBorder"
+                        TransitionProperty="BorderBrush"
+                        TransitionDuration="0:0:0.12"
+                        TransitionTimingFunction="Recommended"
+                        Shape="RoundedRectangle"
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
                         CornerRadius="{TemplateBinding CornerRadius}">
                     <!-- PART_ContentHost: The control will insert TextBoxContentHost here -->
-                    <Border Name="PART_ContentHost"
-                            Padding="{TemplateBinding Padding}" />
+                    <Grid Name="PART_ContentHost"
+                          Margin="{TemplateBinding Padding}" />
                 </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+                    </Trigger>
+                    <Trigger Property="IsFocused" Value="True">
+                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter TargetName="OuterBorder" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
-            <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
-            </Trigger>
-            <Trigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
-            </Trigger>
             <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
                 <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </Trigger>
         </Style.Triggers>
@@ -64,10 +73,13 @@
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="8,6,8,6" />
+        <Setter Property="Padding" Value="10,7,10,7" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
-        <Setter Property="CornerRadius" Value="8" />
-        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="TransitionProperty" Value="Background, BorderBrush" />
+        <Setter Property="TransitionDuration" Value="0:0:0.12" />
+        <Setter Property="TransitionTimingFunction" Value="Recommended" />
         <Setter Property="PasswordChar" Value="*" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
@@ -83,6 +95,7 @@
             <Trigger Property="IsEnabled" Value="False">
                 <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
                 <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -94,16 +107,20 @@
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="8,6,8,6" />
+        <Setter Property="Padding" Value="10,7,10,7" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
-        <Setter Property="CornerRadius" Value="8" />
-        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="MinHeight" Value="36" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         <Setter Property="Template">
             <ControlTemplate TargetType="NumberBox">
                 <Border Name="OuterBorder"
+                        TransitionProperty="BorderBrush"
+                        TransitionDuration="0:0:0.12"
+                        TransitionTimingFunction="Recommended"
+                        Shape="RoundedRectangle"
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
@@ -111,12 +128,12 @@
                     <Grid Name="PART_LayoutRoot">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="32" />
+                            <ColumnDefinition Width="36" />
                         </Grid.ColumnDefinitions>
                         <!-- Text content area -->
-                        <Border Name="PART_ContentHost"
-                                Grid.Column="0"
-                                Padding="{TemplateBinding Padding}" />
+                        <Grid Name="PART_ContentHost"
+                              Grid.Column="0"
+                              Margin="{TemplateBinding Padding}" />
                         <!-- Spin buttons stacked vertically -->
                         <Grid Grid.Column="1">
                             <Grid.RowDefinitions>
@@ -127,6 +144,7 @@
                                           Grid.Row="0"
                                           Background="{ThemeResource ControlBackground}"
                                           BorderThickness="0"
+                                          CornerRadius="0"
                                           Padding="0"
                                           VerticalAlignment="Stretch"
                                           HorizontalAlignment="Stretch">
@@ -144,6 +162,7 @@
                                           Grid.Row="1"
                                           Background="{ThemeResource ControlBackground}"
                                           BorderThickness="0"
+                                          CornerRadius="0"
                                           Padding="0"
                                           VerticalAlignment="Stretch"
                                           HorizontalAlignment="Stretch">
@@ -160,18 +179,23 @@
                         </Grid>
                     </Grid>
                 </Border>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+                    </Trigger>
+                    <Trigger Property="IsFocused" Value="True">
+                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter TargetName="OuterBorder" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
-            <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
-            </Trigger>
-            <Trigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
-            </Trigger>
             <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
                 <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </Trigger>
         </Style.Triggers>
@@ -184,10 +208,10 @@
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="Padding" Value="8,6,8,6" />
+        <Setter Property="Padding" Value="10,7,10,7" />
         <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
-        <Setter Property="CornerRadius" Value="8" />
-        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="MinHeight" Value="36" />
         <Setter Property="MaxDropDownHeight" Value="200" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
@@ -196,12 +220,16 @@
             <ControlTemplate TargetType="AutoCompleteBox">
                 <Grid>
                     <Border Name="OuterBorder"
+                            TransitionProperty="BorderBrush"
+                            TransitionDuration="0:0:0.12"
+                            TransitionTimingFunction="Recommended"
+                            Shape="RoundedRectangle"
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{TemplateBinding CornerRadius}">
-                        <Border Name="PART_ContentHost"
-                                Padding="{TemplateBinding Padding}" />
+                        <Grid Name="PART_ContentHost"
+                              Margin="{TemplateBinding Padding}" />
                     </Border>
 
                     <Popup Name="PART_Popup"
@@ -209,33 +237,40 @@
                            StaysOpen="False"
                            Placement="Bottom"
                            PlacementTarget="{Binding RelativeSource={RelativeSource AncestorType=AutoCompleteBox}}">
-                        <Border Name="PART_DropDownBorder"
-                                Background="{ThemeResource SurfaceBackground}"
-                                BorderBrush="{ThemeResource ControlBorder}"
-                                BorderThickness="1"
-                                CornerRadius="{TemplateBinding CornerRadius}"
-                                Margin="0,4,0,0">
+                        <Grid Name="PART_DropDownBorder"
+                              Margin="0,6,0,0">
+                            <Rectangle Fill="{ThemeResource SurfaceBackground}"
+                                       Stroke="{ThemeResource ControlBorder}"
+                                       StrokeThickness="1"
+                                       RadiusX="14"
+                                       RadiusY="14" />
                             <ScrollViewer Name="PART_DropDownScrollViewer"
+                                          Margin="1"
                                           MaxHeight="{TemplateBinding MaxDropDownHeight}"
                                           VerticalScrollBarVisibility="Auto"
                                           HorizontalScrollBarVisibility="Disabled">
                                 <StackPanel Name="PART_DropDownItemsHost" />
                             </ScrollViewer>
-                        </Border>
+                        </Grid>
                     </Popup>
                 </Grid>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="IsMouseOver" Value="True">
+                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+                    </Trigger>
+                    <Trigger Property="IsFocused" Value="True">
+                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+                    </Trigger>
+                    <Trigger Property="IsEnabled" Value="False">
+                        <Setter TargetName="OuterBorder" Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                        <Setter TargetName="OuterBorder" Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
-            <Trigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
-            </Trigger>
-            <Trigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
-            </Trigger>
             <Trigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
                 <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </Trigger>
         </Style.Triggers>
@@ -249,12 +284,26 @@
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="4" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
+        <Setter Property="CornerRadius" Value="10" />
+        <Setter Property="MinHeight" Value="36" />
+        <Setter Property="TransitionProperty" Value="Background, BorderBrush" />
+        <Setter Property="TransitionDuration" Value="0:0:0.12" />
+        <Setter Property="TransitionTimingFunction" Value="Recommended" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
 
         <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
+            </Trigger>
             <Trigger Property="IsKeyboardFocused" Value="True">
                 <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
             </Trigger>
         </Style.Triggers>
     </Style>
@@ -267,6 +316,7 @@
         <Setter Property="Foreground" Value="{ThemeResource EditorSyntaxPlainText}" />
         <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="10" />
         <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
         <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
@@ -280,6 +330,13 @@
              that would only appear on top/bottom (the gutter and minimap mask the
              left/right edges, making a partial accent-coloured border look broken).
              No IsKeyboardFocused trigger here on purpose. -->
+        <Style.Triggers>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
+            </Trigger>
+        </Style.Triggers>
     </Style>
 
 </ResourceDictionary>

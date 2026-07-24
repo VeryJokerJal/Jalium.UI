@@ -221,7 +221,9 @@ public static partial class SystemParameters
     public static bool IsTabletPC => GetMetricBool(SM_TABLETPC, false);
 
     // Visual and accessibility effects.
-    public static bool ClientAreaAnimation => GetSpiBool(SPI_GETCLIENTAREAANIMATION, true);
+    public static bool ClientAreaAnimation => OperatingSystem.IsLinux()
+        ? LinuxDesktopSettings.AnimationsEnabled
+        : GetSpiBool(SPI_GETCLIENTAREAANIMATION, true);
     public static bool DropShadow => GetSpiBool(SPI_GETDROPSHADOW, true);
     public static bool FlatMenu => GetSpiBool(SPI_GETFLATMENU, true);
     public static int ForegroundFlashCount => (int)GetSpiUInt(SPI_GETFOREGROUNDFLASHCOUNT, 3);
@@ -232,7 +234,9 @@ public static partial class SystemParameters
     public static bool SelectionFade => GetSpiBool(SPI_GETSELECTIONFADE, true);
     public static bool StylusHotTracking => HotTracking;
     public static bool ToolTipAnimation => GetSpiBool(SPI_GETTOOLTIPANIMATION, true);
-    public static bool UIEffects => GetSpiBool(SPI_GETUIEFFECTS, true);
+    public static bool UIEffects => OperatingSystem.IsLinux()
+        ? LinuxDesktopSettings.AnimationsEnabled
+        : GetSpiBool(SPI_GETUIEFFECTS, true);
 
     public static double CaretWidth => PixelDip(GetSpiUInt(SPI_GETCARETWIDTH, 1));
     public static bool IsGlassEnabled => GetIsGlassEnabled();

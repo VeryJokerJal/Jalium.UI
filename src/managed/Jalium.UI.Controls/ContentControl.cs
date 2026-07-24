@@ -225,8 +225,9 @@ public partial class ContentControl : Control, IAddChild
             // Direct content management
             if (_contentElement != null)
             {
-                RemoveVisualChild(_contentElement);
+                var element = _contentElement;
                 _contentElement = null;
+                RemoveVisualChild(element);
             }
 
             if (content is UIElement newElement)
@@ -392,9 +393,11 @@ public partial class ContentControl : Control, IAddChild
 
                 _contentElement.Measure(contentAvailable);
 
+                // Negative Padding/BorderThickness are legal; the Size constructor is
+                // not — clamp at the summation sink.
                 return new Size(
-                    _contentElement.DesiredSize.Width + padding.TotalWidth + border.TotalWidth,
-                    _contentElement.DesiredSize.Height + padding.TotalHeight + border.TotalHeight);
+                    Math.Max(0, _contentElement.DesiredSize.Width + padding.TotalWidth + border.TotalWidth),
+                    Math.Max(0, _contentElement.DesiredSize.Height + padding.TotalHeight + border.TotalHeight));
             }
             return default(Size);
         }

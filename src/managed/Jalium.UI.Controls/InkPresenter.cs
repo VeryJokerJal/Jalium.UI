@@ -69,8 +69,8 @@ public class InkPresenter : Decorator
             return;
         }
 
-        AddVisualChild(visual);
         _attachedVisuals.Add(visual);
+        AddVisualChild(visual);
         InvalidateVisual();
     }
 

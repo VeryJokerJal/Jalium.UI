@@ -53,14 +53,14 @@ public class GroupBox : HeaderedContentControl
 
     #region Template Parts
 
-    private Border? _headerBorder;
+    private Panel? _headerBorder;
     private Border? _contentBorder;
 
     /// <inheritdoc />
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
-        _headerBorder = GetTemplateChild("PART_HeaderBorder") as Border;
+        _headerBorder = GetTemplateChild("PART_HeaderBorder") as Panel;
         _contentBorder = GetTemplateChild("PART_ContentBorder") as Border;
         UpdateHeaderVisibility();
         UpdateHeaderBackground();

@@ -1350,9 +1350,9 @@ public partial class Popup : FrameworkElement
     {
         element.InvalidateMeasure();
         element.InvalidateArrange();
-        for (int i = 0; i < element.VisualChildrenCount; i++)
+        for (int i = 0; i < element.InternalVisualChildrenCount; i++)
         {
-            if (element.GetVisualChild(i) is UIElement child)
+            if (element.InternalGetVisualChild(i) is UIElement child)
                 InvalidateSubtree(child);
         }
     }
@@ -1365,9 +1365,9 @@ public partial class Popup : FrameworkElement
             fe.ReactivateBindings();
         }
 
-        for (int i = 0; i < element.VisualChildrenCount; i++)
+        for (int i = 0; i < element.InternalVisualChildrenCount; i++)
         {
-            if (element.GetVisualChild(i) is UIElement child)
+            if (element.InternalGetVisualChild(i) is UIElement child)
                 PreparePopupSubtree(child);
         }
     }

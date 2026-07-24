@@ -93,12 +93,15 @@ VulkanImportedVideoSurface* VulkanImportedVideoSurface::Create(
     const JaliumVideoSurfaceDescriptor& descriptor)
 {
 #if defined(__linux__) && !defined(__ANDROID__)
-    if (!generation || generation->IsLost() || !generation->ctx.valid ||
+    if (!generation || !generation->IsUsable() || !generation->ctx.valid ||
         !generation->ctx.dmaBufImportEnabled || descriptor.plane_count != 1 ||
         descriptor.planes[0].fd < 0 || descriptor.width == 0 ||
         descriptor.height == 0) {
         return nullptr;
     }
+    std::unique_lock<std::recursive_mutex> driverLock(
+        generation->driverCallMutex);
+    if (!generation->IsUsable()) return nullptr;
 
     VkFormat vkFormat = VK_FORMAT_UNDEFINED;
     bool forceOpaqueAlpha = false;
@@ -265,12 +268,15 @@ VulkanImportedVideoSurface* VulkanImportedVideoSurface::Create(
         destroyImage(context.device, image, nullptr);
         return nullptr;
     }
-    surface->generation_ = std::move(generation);
+    surface->generation_ = generation;
     surface->width_ = descriptor.width;
     surface->height_ = descriptor.height;
     surface->image_ = image;
     surface->view_ = view;
     surface->memory_ = memory;
+    // The Vulkan import is complete. Do not hold the driver barrier while
+    // invoking producer-owned lifetime callbacks.
+    driverLock.unlock();
     if (descriptor.lifetime_context != 0 &&
         descriptor.lifetime_retain_callback != 0 &&
         descriptor.lifetime_release_callback != 0) {
@@ -293,24 +299,30 @@ VulkanImportedVideoSurface* VulkanImportedVideoSurface::Create(
 
 VulkanImportedVideoSurface::~VulkanImportedVideoSurface()
 {
-    if (generation_ && generation_->ctx.device != VK_NULL_HANDLE) {
-        const auto& context = generation_->ctx;
-        auto destroyImageView = LoadVideoDeviceProc<PFN_vkDestroyImageView>(
-            context, "vkDestroyImageView");
-        auto destroyImage = LoadVideoDeviceProc<PFN_vkDestroyImage>(
-            context, "vkDestroyImage");
-        auto freeMemory = LoadVideoDeviceProc<PFN_vkFreeMemory>(
-            context, "vkFreeMemory");
-        if (view_ != VK_NULL_HANDLE && destroyImageView)
-            destroyImageView(context.device, view_, nullptr);
-        if (image_ != VK_NULL_HANDLE && destroyImage)
-            destroyImage(context.device, image_, nullptr);
-        if (memory_ != VK_NULL_HANDLE && freeMemory)
-            freeMemory(context.device, memory_, nullptr);
+    if (generation_) {
+        std::lock_guard<std::recursive_mutex> driverLock(
+            generation_->driverCallMutex);
+        if (!generation_->IsAbandoned() &&
+            generation_->ctx.device != VK_NULL_HANDLE) {
+            const auto& context = generation_->ctx;
+            auto destroyImageView = LoadVideoDeviceProc<PFN_vkDestroyImageView>(
+                context, "vkDestroyImageView");
+            auto destroyImage = LoadVideoDeviceProc<PFN_vkDestroyImage>(
+                context, "vkDestroyImage");
+            auto freeMemory = LoadVideoDeviceProc<PFN_vkFreeMemory>(
+                context, "vkFreeMemory");
+            if (view_ != VK_NULL_HANDLE && destroyImageView)
+                destroyImageView(context.device, view_, nullptr);
+            if (image_ != VK_NULL_HANDLE && destroyImage)
+                destroyImage(context.device, image_, nullptr);
+            if (memory_ != VK_NULL_HANDLE && freeMemory)
+                freeMemory(context.device, memory_, nullptr);
+        }
     }
     // The producer lifetime is independent from Vulkan device availability.
-    // A device-loss generation can no longer destroy GPU objects safely, but
-    // it must still return the held GstSample to the decoder pool.
+    // Producer ownership is independent of Vulkan quarantine. Even when GPU
+    // handles are intentionally leaked for an abandoned generation, return
+    // the held GstSample to the decoder pool.
     if (lifetimeContext_ != 0 && lifetimeReleaseCallback_ != 0) {
         auto release = DecodeLifetimeCallback(lifetimeReleaseCallback_);
         if (release) release(lifetimeContext_);
@@ -331,7 +343,7 @@ VkDevice VulkanImportedVideoSurface::DeviceHandle() const
 
 bool VulkanImportedVideoSurface::DeviceLost() const
 {
-    return !generation_ || generation_->IsLost();
+    return !generation_ || !generation_->IsUsable();
 }
 
 // ─── Backend factory ──────────────────────────────────────────────────────

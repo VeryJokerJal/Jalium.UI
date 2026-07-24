@@ -1,4 +1,5 @@
 using Jalium.UI;
+using System.Reflection;
 
 namespace Jalium.UI.Tests;
 
@@ -7,6 +8,46 @@ namespace Jalium.UI.Tests;
 /// </summary>
 public class DependencyPropertyTests
 {
+    [Fact]
+    public void ValueLayerStorage_ShouldRemainLazyAndReleaseTheLastLocalValue()
+    {
+        var obj = new TestDependencyObject();
+        _ = obj.GetValue(TestDependencyObject.NameProperty);
+
+        string[] layerFields =
+        {
+            "_localValues",
+            "_parentTemplateValues",
+            "_styleTriggerValues",
+            "_templateTriggerValues",
+            "_styleSetterValues",
+            "_currentValues",
+            "_bindings",
+            "_animatedValues"
+        };
+
+        foreach (var fieldName in layerFields)
+        {
+            Assert.Null(GetValueLayer(obj, fieldName));
+        }
+
+        obj.SetValue(TestDependencyObject.NameProperty, "local");
+
+        Assert.NotNull(GetValueLayer(obj, "_localValues"));
+        foreach (var fieldName in layerFields[1..])
+        {
+            Assert.Null(GetValueLayer(obj, fieldName));
+        }
+
+        obj.ClearValue(TestDependencyObject.NameProperty);
+        Assert.Null(GetValueLayer(obj, "_localValues"));
+    }
+
+    private static object? GetValueLayer(DependencyObject obj, string fieldName) =>
+        typeof(DependencyObject)
+            .GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(obj);
+
     [Fact]
     public void Register_ShouldCreateNewProperty()
     {

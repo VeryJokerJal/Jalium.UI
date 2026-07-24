@@ -33,8 +33,10 @@ public class DataGridThemeTests
 
         try
         {
-            var controlBackgroundPressed = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackgroundPressed"]);
-            var controlBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackground"]);
+            var alternatingRowBackground = Assert.IsAssignableFrom<Brush>(
+                app.Resources["SubtleFillColorSecondaryBrush"]);
+            var headerBackground = Assert.IsAssignableFrom<Brush>(
+                app.Resources["LayerFillColorAltBrush"]);
 
             var dataGrid = new DataGrid();
             var host = new StackPanel { Width = 400, Height = 200 };
@@ -46,10 +48,10 @@ public class DataGridThemeTests
             Assert.True(app.Resources.TryGetValue(typeof(DataGrid), out var styleObj));
             Assert.IsType<Style>(styleObj);
 
-            AssertBrushMatches(controlBackgroundPressed, dataGrid.AlternatingRowBackground);
+            AssertBrushMatches(alternatingRowBackground, dataGrid.AlternatingRowBackground);
 
-            var headersBorder = Assert.IsType<Border>(dataGrid.FindName("PART_ColumnHeadersBorder"));
-            AssertBrushMatches(controlBackground, headersBorder.Background);
+            var headersSurface = Assert.IsType<Grid>(dataGrid.FindName("PART_ColumnHeadersBorder"));
+            AssertBrushMatches(headerBackground, headersSurface.Background);
         }
         finally
         {
@@ -67,7 +69,8 @@ public class DataGridThemeTests
         {
             var accentBrush = Assert.IsAssignableFrom<Brush>(app.Resources["AccentBrush"]);
             var accentText = Assert.IsAssignableFrom<Brush>(app.Resources["TextOnAccent"]);
-            var controlBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackground"]);
+            var headerBackground = Assert.IsAssignableFrom<Brush>(
+                app.Resources["LayerFillColorAltBrush"]);
 
             var row = new DataGridRow { IsSelected = true };
             var header = new PrimitiveDataGridColumnHeader { Content = "Name" };
@@ -78,9 +81,10 @@ public class DataGridThemeTests
             host.Measure(new Size(400, 120));
             host.Arrange(new Rect(0, 0, 400, 120));
 
-            AssertBrushMatches(accentBrush, row.Background);
+            var rowBorder = Assert.IsType<Border>(row.FindName("PART_RowBorder"));
+            AssertBrushMatches(accentBrush, rowBorder.Background);
             AssertBrushMatches(accentText, row.Foreground);
-            AssertBrushMatches(controlBackground, header.Background);
+            AssertBrushMatches(headerBackground, header.Background);
         }
         finally
         {
@@ -148,13 +152,11 @@ public class DataGridThemeTests
             host.Arrange(new Rect(0, 0, 200, 80));
 
             var headerBorder = Assert.IsType<Border>(header.FindName("PART_HeaderBorder"));
-            var resizeGrip = Assert.IsType<Border>(header.FindName("PART_ResizeGrip"));
+            var resizeGrip = Assert.IsType<Jalium.UI.Shapes.Rectangle>(header.FindName("PART_ResizeGrip"));
 
             Assert.Equal(1, headerBorder.BorderThickness.Right);
             Assert.False(resizeGrip.IsHitTestVisible);
             Assert.Equal(8, resizeGrip.Width);
-            Assert.Equal(0, resizeGrip.BorderThickness.Left);
-            Assert.Equal(0, resizeGrip.BorderThickness.Right);
         }
         finally
         {

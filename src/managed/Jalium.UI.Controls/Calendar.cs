@@ -1074,7 +1074,7 @@ public class Calendar : Control
         bool isInactive,
         bool isHovered)
     {
-        var highlightRect = new Rect(rect.X + 4, rect.Y + 8, rect.Width - 8, rect.Height - 16);
+        var highlightRect = ControlRenderGeometry.GetContentRect(rect, new Thickness(4, 8, 4, 8));
         if (isSelected)
         {
             dc.DrawRoundedRectangle(ResolveCalendarBrush("AccentBrush", s_accentBrush), null,

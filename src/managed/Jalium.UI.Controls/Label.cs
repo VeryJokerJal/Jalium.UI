@@ -596,9 +596,11 @@ public class Label : ContentControl
 
         var contentSize = MeasureContent(contentAvailable);
 
+        // Negative Padding/BorderThickness are legal; the Size constructor is not —
+        // clamp at the summation sink.
         return new Size(
-            contentSize.Width + padding.TotalWidth + border.TotalWidth,
-            contentSize.Height + padding.TotalHeight + border.TotalHeight);
+            Math.Max(0, contentSize.Width + padding.TotalWidth + border.TotalWidth),
+            Math.Max(0, contentSize.Height + padding.TotalHeight + border.TotalHeight));
     }
 
     private Size MeasureContent(Size availableSize)

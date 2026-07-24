@@ -377,10 +377,10 @@ JaliumResult D3D12TextFormat::MeasureText(
         return JALIUM_ERROR_UNKNOWN;
     }
 
-    // Fill out the output metrics
-    // Use widthIncludingTrailingWhitespace to include trailing spaces in measurement
-    // This is important for caret positioning and selection highlighting of spaces
-    metrics->width = textMetrics.widthIncludingTrailingWhitespace;
+    // Keep WPF's two width concepts distinct: layout uses the trimmed width,
+    // while caret and selection calculations retain trailing-space advances.
+    metrics->width = textMetrics.width;
+    metrics->widthIncludingTrailingWhitespace = textMetrics.widthIncludingTrailingWhitespace;
     metrics->height = textMetrics.height;
     metrics->lineCount = textMetrics.lineCount;
 

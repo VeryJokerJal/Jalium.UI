@@ -157,6 +157,50 @@ public sealed class CollectionViewDataParityTests
     }
 
     [Fact]
+    public void ListCollectionView_UnshapedIndexedReadsDoNotMaterializeDisplayCopies()
+    {
+        const int itemCount = 100_000;
+        const int iterations = 16;
+        IList source = new ArrayList(Enumerable.Range(0, itemCount).Cast<object>().ToArray());
+        var view = new ListCollectionView(source);
+        var expected = source[itemCount - 1];
+
+        Assert.Equal(itemCount, view.Count);
+        Assert.Same(expected, view.GetItemAt(itemCount - 1));
+
+        var countChecksum = 0;
+        object? lastItem = null;
+        var allocatedBefore = GC.GetAllocatedBytesForCurrentThread();
+        for (var iteration = 0; iteration < iterations; iteration++)
+        {
+            countChecksum += view.Count;
+            lastItem = view.GetItemAt(itemCount - 1);
+        }
+
+        var allocatedBytes = GC.GetAllocatedBytesForCurrentThread() - allocatedBefore;
+
+        Assert.Equal(itemCount * iterations, countChecksum);
+        Assert.Same(expected, lastItem);
+        Assert.True(
+            allocatedBytes < 64 * 1024,
+            $"Unshaped indexed reads allocated {allocatedBytes:N0} bytes.");
+    }
+
+    [Fact]
+    public void ListCollectionView_UnshapedVirtualListDoesNotEnumerateSource()
+    {
+        var source = new VirtualListProbe(100_000);
+
+        var view = new ListCollectionView(source);
+
+        Assert.Equal(100_000, view.Count);
+        Assert.Equal(99_999, view.GetItemAt(99_999));
+        Assert.Equal(0, source.EnumeratorRequests);
+        Assert.Equal(0, source.CopyRequests);
+        Assert.InRange(source.IndexerReads, 1, 4);
+    }
+
+    [Fact]
     public void BindingListCollectionView_UsesBindingListTransactionsAndNotifications()
     {
         var source = new BindingList<Person>
@@ -349,6 +393,72 @@ public sealed class CollectionViewDataParityTests
         public ProbeCollectionView(IEnumerable source)
             : base(source)
         {
+        }
+    }
+
+    private sealed class VirtualListProbe(int count) : IList
+    {
+        public int EnumeratorRequests { get; private set; }
+
+        public int CopyRequests { get; private set; }
+
+        public int IndexerReads { get; private set; }
+
+        public int Count { get; } = count;
+
+        public bool IsFixedSize => true;
+
+        public bool IsReadOnly => true;
+
+        public bool IsSynchronized => false;
+
+        public object SyncRoot => this;
+
+        public object? this[int index]
+        {
+            get
+            {
+                if ((uint)index >= (uint)Count)
+                {
+                    throw new ArgumentOutOfRangeException(nameof(index));
+                }
+
+                IndexerReads++;
+                return index;
+            }
+            set => throw new NotSupportedException();
+        }
+
+        public int Add(object? value) => throw new NotSupportedException();
+
+        public void Clear() => throw new NotSupportedException();
+
+        public bool Contains(object? value) => IndexOf(value) >= 0;
+
+        public int IndexOf(object? value) => value is int index && (uint)index < (uint)Count ? index : -1;
+
+        public void Insert(int index, object? value) => throw new NotSupportedException();
+
+        public void Remove(object? value) => throw new NotSupportedException();
+
+        public void RemoveAt(int index) => throw new NotSupportedException();
+
+        public void CopyTo(Array array, int index)
+        {
+            CopyRequests++;
+            for (var itemIndex = 0; itemIndex < Count; itemIndex++)
+            {
+                array.SetValue(itemIndex, index + itemIndex);
+            }
+        }
+
+        public IEnumerator GetEnumerator()
+        {
+            EnumeratorRequests++;
+            for (var index = 0; index < Count; index++)
+            {
+                yield return index;
+            }
         }
     }
 

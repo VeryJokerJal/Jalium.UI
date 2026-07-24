@@ -105,6 +105,44 @@ bool TestReadbackContract()
     return true;
 }
 
+bool TestBitmapDestinationUsesDpiTransform()
+{
+    constexpr int32_t framebufferWidth = 48;
+    constexpr int32_t framebufferHeight = 36;
+
+    jalium::SoftwareBackend backend;
+    std::unique_ptr<jalium::RenderTarget> target(
+        backend.CreateRenderTarget(nullptr, framebufferWidth, framebufferHeight));
+    const uint8_t sourcePixels[] = {
+        0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF,
+        0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00, 0xFF, 0xFF
+    };
+    std::unique_ptr<jalium::Bitmap> bitmap(
+        backend.CreateBitmapFromPixels(sourcePixels, 2, 2, 2 * 4));
+    if (!target || !bitmap) return false;
+
+    target->SetDpi(288.0f, 288.0f);
+    if (target->BeginDraw() != JALIUM_OK) return false;
+    target->Clear(0, 0, 0, 0);
+    target->DrawBitmap(bitmap.get(), 2.0f, 3.0f, 10.0f, 6.0f, 1.0f);
+    if (target->EndDraw() != JALIUM_OK) return false;
+
+    auto* software = dynamic_cast<jalium::SoftwareRenderTarget*>(target.get());
+    if (!software) return false;
+    const auto& framebuffer = software->GetFramebuffer();
+    auto alphaAt = [&](int32_t px, int32_t py) {
+        return framebuffer.pixels[
+            (static_cast<size_t>(py) * framebuffer.width + px) * 4u + 3u];
+    };
+
+    // The 10x6 DIP destination starts at (2,3). At 3x DPI it must cover the
+    // physical rectangle [6,36) x [9,27), not the old 10x6-pixel rectangle.
+    return alphaAt(6, 9) == 255 &&
+           alphaAt(35, 26) == 255 &&
+           alphaAt(36, 20) == 0 &&
+           alphaAt(20, 27) == 0;
+}
+
 bool TestDashedStrokeUsesAnalyticCoverage()
 {
     jalium::SoftwareBackend backend;
@@ -182,10 +220,14 @@ int main()
         std::cerr << "FAIL: software two-phase BGRA readback contract\n";
         return 1;
     }
+    if (!TestBitmapDestinationUsesDpiTransform()) {
+        std::cerr << "FAIL: software bitmap destination ignored DPI transform\n";
+        return 1;
+    }
     if (!TestDashedStrokeUsesAnalyticCoverage()) {
         std::cerr << "FAIL: dashed software stroke did not preserve analytic AA/gaps\n";
         return 1;
     }
-    std::cout << "PASS: software text AA, frame readback, and dashed analytic stroke\n";
+    std::cout << "PASS: software text AA, frame readback, DPI bitmap transform, and dashed analytic stroke\n";
     return 0;
 }

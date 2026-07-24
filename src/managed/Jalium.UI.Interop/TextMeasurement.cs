@@ -15,19 +15,71 @@ public static class TextMeasurement
 
     private sealed class FormatCacheEntry
     {
-        public FormatCacheEntry(NativeTextFormat format, LinkedListNode<string> lruNode)
+        public FormatCacheEntry(NativeTextFormat format, LinkedListNode<FormatKey> lruNode)
         {
             Format = format;
             LruNode = lruNode;
         }
 
         public NativeTextFormat Format { get; }
-        public LinkedListNode<string> LruNode { get; }
+        public LinkedListNode<FormatKey> LruNode { get; }
     }
 
-    private static readonly Dictionary<string, FormatCacheEntry> _formatCache = new(StringComparer.Ordinal);
-    private static readonly LinkedList<string> _lruKeys = new();
+    private readonly struct FormatKey : IEquatable<FormatKey>
+    {
+        public FormatKey(int contextGeneration, string fontFamily, float fontSize, int fontWeight, int fontStyle)
+        {
+            ContextGeneration = contextGeneration;
+            FontFamily = fontFamily;
+            // Preserve the former "0.###" string-key coalescing without
+            // allocating the formatted string on every warm lookup.
+            FontSize = MathF.Round(fontSize, 3);
+            FontWeight = fontWeight;
+            FontStyle = fontStyle;
+        }
+
+        private int ContextGeneration { get; }
+        private string FontFamily { get; }
+        private float FontSize { get; }
+        private int FontWeight { get; }
+        private int FontStyle { get; }
+
+        public bool Equals(FormatKey other) =>
+            ContextGeneration == other.ContextGeneration &&
+            FontSize.Equals(other.FontSize) &&
+            FontWeight == other.FontWeight &&
+            FontStyle == other.FontStyle &&
+            string.Equals(FontFamily, other.FontFamily, StringComparison.Ordinal);
+
+        public override bool Equals(object? obj) => obj is FormatKey other && Equals(other);
+
+        public override int GetHashCode()
+        {
+            var hash = new HashCode();
+            hash.Add(ContextGeneration);
+            hash.Add(FontFamily, StringComparer.Ordinal);
+            hash.Add(FontSize);
+            hash.Add(FontWeight);
+            hash.Add(FontStyle);
+            return hash.ToHashCode();
+        }
+    }
+
+    private static readonly Dictionary<FormatKey, FormatCacheEntry> _formatCache = new();
+    private static readonly LinkedList<FormatKey> _lruKeys = new();
     private static readonly object _lock = new();
+    // CreateTextFormat 失败负缓存（key → 失败时刻 TickCount64，受 _lock 保护）。文本测量是每帧热路径：
+    // 一个持续失败的字体配置若不记录，就会每帧重复 P/Invoke + 抛异常 + 静默吞掉，既卡顿又零证据。
+    // 记录后：冷却期内直接返回 null（走近似度量回退），冷却期后允许一次重试；首次失败按 key 打一条
+    // Console.Error 日志（含字体族/字号/异常消息），重试再失败不重复打。key 含 context.Generation
+    // （见 BuildCacheKey），因此渲染上下文换代后负缓存自然失效、新上下文可重新尝试真实创建。
+    private const int MaxFailedFormatEntries = 64;
+    private const long FailedFormatRetryDelayMs = 5000;
+    private static readonly Dictionary<FormatKey, long> _failedFormatKeys = new();
+    // Immutable published snapshot for warm reads. Text measurement is a layout hot path, and
+    // taking the format-cache monitor for every TextBlock made virtualized scrolling serialize
+    // behind unrelated text work. Misses retain the bounded LRU under _lock.
+    private static Dictionary<FormatKey, NativeTextFormat> _formatReadCache = new();
 
     // 字体度量（行高 / ascent / descent / baseline 等）对固定 (字体族, 字号, 粗细, 样式) 是常量，
     // 但底层 GetFontMetrics 每次都 P/Invoke 进 DirectWrite。TextBlock.OnRender / MeasureOverride 每帧
@@ -35,8 +87,66 @@ public static class TextMeasurement
     // 且首帧布局多轮迭代时，会堆出几千~上万次 native 调用 → 明显卡顿。这里按配置缓存度量结果，
     // 把重复调用降为一次 O(1) 字典命中（度量是常量，缓存安全；上限防止长会话无界增长）。
     private const int MaxMetricsCacheEntries = 512;
-    private static readonly Dictionary<string, TextMetrics> _metricsCache = new(StringComparer.Ordinal);
-    private static readonly object _metricsLock = new();
+
+    private readonly struct FontMetricsKey : IEquatable<FontMetricsKey>
+    {
+        public FontMetricsKey(
+            int contextGeneration,
+            string fontFamily,
+            double fontSize,
+            int fontWeight,
+            int fontStyle)
+        {
+            ContextGeneration = contextGeneration;
+            FontFamily = fontFamily;
+            FontSize = fontSize;
+            FontWeight = fontWeight;
+            FontStyle = fontStyle;
+        }
+
+        private int ContextGeneration { get; }
+        private string FontFamily { get; }
+        private double FontSize { get; }
+        private int FontWeight { get; }
+        private int FontStyle { get; }
+
+        public bool Equals(FontMetricsKey other) =>
+            ContextGeneration == other.ContextGeneration &&
+            FontSize.Equals(other.FontSize) &&
+            FontWeight == other.FontWeight &&
+            FontStyle == other.FontStyle &&
+            string.Equals(FontFamily, other.FontFamily, StringComparison.Ordinal);
+
+        public override bool Equals(object? obj) => obj is FontMetricsKey other && Equals(other);
+
+        public override int GetHashCode()
+        {
+            var hash = new HashCode();
+            hash.Add(ContextGeneration);
+            hash.Add(FontFamily, StringComparer.Ordinal);
+            hash.Add(FontSize);
+            hash.Add(FontWeight);
+            hash.Add(FontStyle);
+            return hash.ToHashCode();
+        }
+    }
+
+    private sealed class MetricsCacheState
+    {
+        public MetricsCacheState(long epoch, Dictionary<FontMetricsKey, TextMetrics> entries)
+        {
+            Epoch = epoch;
+            Entries = entries;
+        }
+
+        internal long Epoch { get; }
+        internal Dictionary<FontMetricsKey, TextMetrics> Entries { get; }
+    }
+
+    // Published dictionaries are never mutated. Warm hits are therefore a plain
+    // lock-free dictionary lookup; rare misses copy and publish under the gate.
+    private static readonly object _metricsWriteLock = new();
+    private static MetricsCacheState _metricsCacheState = new(0, new());
 
     // 文本「测量结果」缓存。MeasureText 之前对每个 (文本, 字体, 字号, 粗细, 样式, 约束) 都要 P/Invoke 进
     // DirectWrite 做一次完整的 CreateTextLayout + 整形（昂贵）。虚拟化大列表滚动时，每个新实例化的行单元
@@ -163,7 +273,11 @@ public static class TextMeasurement
             }
         }
 
-        var metrics = format.MeasureText(formattedText.Text, (float)maxWidth, (float)maxHeight);
+        var metrics = NormalizeTrailingWhitespaceMetrics(
+            format,
+            formattedText.Text,
+            (float)maxWidth,
+            (float)maxHeight);
 
         lock (_measureLock)
         {
@@ -181,7 +295,11 @@ public static class TextMeasurement
 
     private static void ApplyMetrics(FormattedText formattedText, TextMetrics metrics)
     {
+        var widthIncludingTrailingWhitespace = Math.Max(
+            metrics.Width,
+            metrics.WidthIncludingTrailingWhitespace);
         formattedText.Width = metrics.Width;
+        formattedText.WidthIncludingTrailingWhitespace = widthIncludingTrailingWhitespace;
         formattedText.Height = metrics.Height;
         formattedText.LineHeight = metrics.LineHeight;
         formattedText.Ascent = metrics.Ascent;
@@ -190,6 +308,45 @@ public static class TextMeasurement
         formattedText.Baseline = metrics.Baseline;
         formattedText.LineCount = (int)metrics.LineCount;
         formattedText.IsMeasured = true;
+    }
+
+    private static TextMetrics NormalizeTrailingWhitespaceMetrics(
+        NativeTextFormat format,
+        string text,
+        float maxWidth,
+        float maxHeight)
+    {
+        var metrics = format.MeasureText(text, maxWidth, maxHeight);
+        var trailingStart = text.Length;
+        while (trailingStart > 0 && IsTrailingLayoutWhitespace(text[trailingStart - 1]))
+        {
+            trailingStart--;
+        }
+
+        if (trailingStart == text.Length ||
+            metrics.WidthIncludingTrailingWhitespace > metrics.Width)
+        {
+            return metrics;
+        }
+
+        // Older native binaries and backends that expose only one width report
+        // the trailing-space-inclusive value in Width. Recover WPF's trimmed
+        // Width without penalizing updated backends, which return two distinct
+        // values and leave through the fast path above.
+        var widthIncludingTrailingWhitespace = Math.Max(
+            metrics.Width,
+            metrics.WidthIncludingTrailingWhitespace);
+        metrics.Width = trailingStart == 0
+            ? 0
+            : format.MeasureText(text[..trailingStart], maxWidth, maxHeight).Width;
+        metrics.WidthIncludingTrailingWhitespace = widthIncludingTrailingWhitespace;
+        return metrics;
+    }
+
+    private static bool IsTrailingLayoutWhitespace(char value)
+    {
+        return value is not '\r' and not '\n' and not '\u00A0' and not '\u202F' and not '\u2060' and not '\uFEFF' &&
+               char.IsWhiteSpace(value);
     }
 
     private static void TouchMeasureKey(LinkedListNode<MeasureKey> node)
@@ -221,17 +378,28 @@ public static class TextMeasurement
     /// <returns>Text metrics containing font information.</returns>
     public static TextMetrics GetFontMetrics(string fontFamily, double fontSize, int fontWeight = 400, int fontStyle = 0)
     {
+        fontFamily ??= string.Empty;
         // 先查度量缓存（按配置常量缓存，命中即 O(1) 返回，免去每帧 native DWrite 调用）。
-        var key = MetricsKey(fontFamily, fontSize, fontWeight, fontStyle);
-        lock (_metricsLock)
+        // Capture the cache state before the context. RenderContext replacement
+        // publishes the new context before clearing text caches, so an in-flight
+        // lookup can at worst populate a retired cache epoch.
+        var capturedState = Volatile.Read(ref _metricsCacheState);
+        var context = RenderContext.Current;
+        FontMetricsKey key = default;
+        if (context != null)
         {
-            if (_metricsCache.TryGetValue(key, out var hit))
+            key = new FontMetricsKey(
+                context.Generation,
+                fontFamily,
+                fontSize,
+                fontWeight,
+                fontStyle);
+            if (capturedState.Entries.TryGetValue(key, out var hit))
             {
                 return hit;
             }
         }
 
-        var context = RenderContext.Current;
         if (context == null || !context.IsValid)
         {
             // 无渲染上下文：返回近似度量，且不缓存（上下文稍后可能就绪，下次应走真实度量）。
@@ -259,19 +427,38 @@ public static class TextMeasurement
         }
 
         var metrics = format.GetFontMetrics();
-        lock (_metricsLock)
+        lock (_metricsWriteLock)
         {
             // 上限保护：配置种类极少（一个 UI 通常就几种字体×字号），正常远不到上限；满了就不再增长。
-            if (_metricsCache.Count < MaxMetricsCacheEntries)
+            var currentState = Volatile.Read(ref _metricsCacheState);
+
+            // ClearCache published a newer epoch while native metrics were being
+            // resolved. Never repopulate it from this stale operation.
+            if (currentState.Epoch != capturedState.Epoch)
             {
-                _metricsCache[key] = metrics;
+                return metrics;
             }
+
+            if (currentState.Entries.TryGetValue(key, out var winner))
+            {
+                return winner;
+            }
+
+            if (currentState.Entries.Count >= MaxMetricsCacheEntries)
+            {
+                return metrics;
+            }
+
+            var nextEntries = new Dictionary<FontMetricsKey, TextMetrics>(currentState.Entries)
+            {
+                [key] = metrics
+            };
+            Volatile.Write(
+                ref _metricsCacheState,
+                new MetricsCacheState(currentState.Epoch, nextEntries));
         }
         return metrics;
     }
-
-    private static string MetricsKey(string fontFamily, double fontSize, int fontWeight, int fontStyle)
-        => string.Create(CultureInfo.InvariantCulture, $"{fontFamily}|{fontSize:R}|{fontWeight}|{fontStyle}");
 
     /// <summary>
     /// Gets the natural line height for a font using WPF-style calculation.
@@ -418,12 +605,18 @@ public static class TextMeasurement
     {
         lock (_lock)
         {
+            Volatile.Write(
+                ref _formatReadCache,
+                new Dictionary<FormatKey, NativeTextFormat>());
             foreach (var entry in _formatCache.Values)
             {
                 entry.Format.Dispose();
             }
             _formatCache.Clear();
             _lruKeys.Clear();
+            // 字体集已变化：旧的 CreateTextFormat 失败判定不再成立，清掉负缓存
+            // 让新字体集立即获得一次真实创建（而不是等冷却期满）。
+            _failedFormatKeys.Clear();
         }
 
         // Measured sizes depend on the (now-changed) fonts, so drop the result cache too.
@@ -436,9 +629,12 @@ public static class TextMeasurement
         // Font-face metrics (ascent / descent / lineHeight) are font-derived as well,
         // so a "fonts changed" clear must drop them too — otherwise GetFontMetrics /
         // GetLineHeight keep serving line heights resolved from the stale font set.
-        lock (_metricsLock)
+        lock (_metricsWriteLock)
         {
-            _metricsCache.Clear();
+            var currentState = Volatile.Read(ref _metricsCacheState);
+            Volatile.Write(
+                ref _metricsCacheState,
+                new MetricsCacheState(currentState.Epoch + 1, new()));
         }
     }
 
@@ -454,7 +650,13 @@ public static class TextMeasurement
             fontSize = 12;
         }
 
-        var key = BuildCacheKey(context.Generation, fontFamily, fontSize, fontWeight, fontStyle);
+        var key = new FormatKey(context.Generation, fontFamily, fontSize, fontWeight, fontStyle);
+
+        var readSnapshot = Volatile.Read(ref _formatReadCache);
+        if (readSnapshot.TryGetValue(key, out var readCached) && readCached.IsValid)
+        {
+            return readCached;
+        }
 
         lock (_lock)
         {
@@ -469,36 +671,81 @@ public static class TextMeasurement
                 RemoveCachedEntry(key, cached);
             }
 
+            long now = Environment.TickCount64;
+            if (_failedFormatKeys.TryGetValue(key, out var failedAtMs) &&
+                now - failedAtMs < FailedFormatRetryDelayMs)
+            {
+                // 冷却期内的已知失败配置：直接走调用方的近似度量回退，不再每帧
+                // 重复 P/Invoke + 抛异常。条目保留（不删除），冷却期满后放行一次
+                // 真实重试；重试再失败只刷新时间戳、不重复打日志。
+                return null;
+            }
+
             try
             {
                 var format = context.CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+                // 冷却期满后的重试成功了（或换代后同 key 恢复）——撤销负缓存。
+                _failedFormatKeys.Remove(key);
                 var lruNode = _lruKeys.AddLast(key);
                 _formatCache[key] = new FormatCacheEntry(format, lruNode);
                 TrimCacheIfNeeded();
+                PublishFormatReadCache();
                 return format;
             }
-            catch
+            catch (Exception ex)
             {
+                bool firstFailure = !_failedFormatKeys.ContainsKey(key);
+                if (firstFailure && _failedFormatKeys.Count >= MaxFailedFormatEntries)
+                {
+                    // 上限防御（大量不同失败配置或 generation 换代累积）：先清
+                    // 过期项，仍满则整体清空。自愈型缓存，最坏代价是每 key 多一
+                    // 次真实重试和一条重复日志。
+                    PruneExpiredFailedFormatKeysLocked(now);
+                    if (_failedFormatKeys.Count >= MaxFailedFormatEntries)
+                    {
+                        _failedFormatKeys.Clear();
+                    }
+                }
+
+                _failedFormatKeys[key] = now;
+                if (firstFailure)
+                {
+                    Console.Error.WriteLine(
+                        $"[TextMeasurement] CreateTextFormat failed for '{fontFamily}' " +
+                        $"{fontSize.ToString("0.###", CultureInfo.InvariantCulture)}px " +
+                        $"(weight={fontWeight}, style={fontStyle}); using approximate metrics: {ex.Message}");
+                }
+
                 return null;
             }
         }
     }
 
-    private static string BuildCacheKey(int contextGeneration, string fontFamily, float fontSize, int fontWeight, int fontStyle)
+    /// <summary>
+    /// Removes negative-cache entries whose retry cooldown has elapsed (stale
+    /// generations age out here too). Caller must hold <see cref="_lock"/>.
+    /// </summary>
+    private static void PruneExpiredFailedFormatKeysLocked(long nowMs)
     {
-        return string.Concat(
-            contextGeneration.ToString(CultureInfo.InvariantCulture),
-            "_",
-            fontFamily,
-            "_",
-            fontSize.ToString("0.###", CultureInfo.InvariantCulture),
-            "_",
-            fontWeight.ToString(CultureInfo.InvariantCulture),
-            "_",
-            fontStyle.ToString(CultureInfo.InvariantCulture));
+        List<FormatKey>? expired = null;
+        foreach (var pair in _failedFormatKeys)
+        {
+            if (nowMs - pair.Value >= FailedFormatRetryDelayMs)
+            {
+                (expired ??= new List<FormatKey>()).Add(pair.Key);
+            }
+        }
+
+        if (expired != null)
+        {
+            foreach (var expiredKey in expired)
+            {
+                _failedFormatKeys.Remove(expiredKey);
+            }
+        }
     }
 
-    private static void TouchCachedKey(LinkedListNode<string> node)
+    private static void TouchCachedKey(LinkedListNode<FormatKey> node)
     {
         if (!ReferenceEquals(node, _lruKeys.Last))
         {
@@ -521,7 +768,18 @@ public static class TextMeasurement
         }
     }
 
-    private static void RemoveCachedEntry(string key, FormatCacheEntry entry)
+    private static void PublishFormatReadCache()
+    {
+        var snapshot = new Dictionary<FormatKey, NativeTextFormat>(_formatCache.Count);
+        foreach (var pair in _formatCache)
+        {
+            snapshot[pair.Key] = pair.Value.Format;
+        }
+
+        Volatile.Write(ref _formatReadCache, snapshot);
+    }
+
+    private static void RemoveCachedEntry(FormatKey key, FormatCacheEntry entry)
     {
         _formatCache.Remove(key);
         _lruKeys.Remove(entry.LruNode);
@@ -541,12 +799,22 @@ public static class TextMeasurement
         // Count lines
         var lines = text.Split('\n');
         var maxLineWidth = 0.0;
+        var maxLineWidthIncludingTrailingWhitespace = 0.0;
 
         foreach (var line in lines)
         {
-            var lineWidth = line.Length * charWidth;
+            var trimmedLength = line.Length;
+            while (trimmedLength > 0 && IsTrailingLayoutWhitespace(line[trimmedLength - 1]))
+            {
+                trimmedLength--;
+            }
+
+            var lineWidth = trimmedLength * charWidth;
+            var lineWidthIncludingTrailingWhitespace = line.Length * charWidth;
             if (lineWidth > maxLineWidth)
                 maxLineWidth = lineWidth;
+            if (lineWidthIncludingTrailingWhitespace > maxLineWidthIncludingTrailingWhitespace)
+                maxLineWidthIncludingTrailingWhitespace = lineWidthIncludingTrailingWhitespace;
         }
 
         // Apply max width constraint
@@ -568,12 +836,15 @@ public static class TextMeasurement
                 }
             }
             formattedText.Width = Math.Min(maxLineWidth, maxWidth);
+            formattedText.WidthIncludingTrailingWhitespace = Math.Min(
+                maxLineWidthIncludingTrailingWhitespace, maxWidth);
             formattedText.Height = totalLines * lineHeight;
             formattedText.LineCount = totalLines;
         }
         else
         {
             formattedText.Width = maxLineWidth;
+            formattedText.WidthIncludingTrailingWhitespace = maxLineWidthIncludingTrailingWhitespace;
             formattedText.Height = lines.Length * lineHeight;
             formattedText.LineCount = lines.Length;
         }

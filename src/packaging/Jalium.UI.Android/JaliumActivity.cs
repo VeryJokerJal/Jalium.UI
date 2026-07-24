@@ -1,9 +1,13 @@
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using Android.App;
 using Android.OS;
 using Android.Views;
+using Android.Views.InputMethods;
+using Android.Widget;
 using Jalium.UI.Controls.Platform;
+using Jalium.UI.Input.TextInput;
 using Jalium.UI.Threading;
 
 namespace Jalium.UI;
@@ -16,14 +20,21 @@ namespace Jalium.UI;
 /// services, styles, and business logic.
 /// </summary>
 [SupportedOSPlatform("android24.0")]
-public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
+public abstract class JaliumActivity : Activity, ISurfaceHolderCallback, IAndroidSoftKeyboardController
 {
     private SurfaceView? _surfaceView;
     private long _activityGeneration;
 
+    private JaliumTextInputView? _inputView;
+    private InputMethodManager? _inputMethodManager;
+    private JaliumKeyboardObserver? _keyboardObserver;
+    private (TextInputContentType, bool, TextInputReturnKeyType, bool, bool, bool) _lastImeShape;
+    private bool _hasImeShape;
+
     private static readonly object s_appThreadGate = new();
     private static Thread? s_jaliumThread;
     private static WeakReference<JaliumActivity>? s_pendingActivity;
+    private static int s_consoleRedirectInstalled;
 
     /// <summary>
     /// Builds the <see cref="JaliumApp"/> that drives this activity. Typically this
@@ -37,6 +48,16 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
     protected override void OnCreate(Bundle? savedInstanceState)
     {
         base.OnCreate(savedInstanceState);
+
+        // Route Console.Out/Error into logcat before any framework code runs.
+        // Android drops managed stdout/stderr, and the rendering/lifecycle
+        // layers report their black-screen root causes exclusively through
+        // Console — without this redirect that evidence never leaves the device.
+        if (Interlocked.Exchange(ref s_consoleRedirectInstalled, 1) == 0)
+        {
+            Console.SetError(new AndroidLogTextWriter(Android.Util.LogPriority.Error));
+            Console.SetOut(new AndroidLogTextWriter(Android.Util.LogPriority.Info));
+        }
 
         _activityGeneration = AndroidActivityBridge.RegisterActivity();
 
@@ -62,7 +83,31 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
         _surfaceView = new SurfaceView(this);
         _surfaceView.Holder!.SetFormat(Android.Graphics.Format.Rgba8888);
         _surfaceView.Holder!.AddCallback(this);
-        SetContentView(_surfaceView);
+
+        // The render Surface and an invisible IME anchor share a FrameLayout.
+        // The anchor never receives touch (the Activity consumes it at dispatch);
+        // it exists only to host the system soft keyboard for self-drawn editors.
+        _inputView = new JaliumTextInputView(this);
+        _inputView.EditorAction += OnImeEditorAction;
+
+        var contentRoot = new FrameLayout(this);
+        contentRoot.AddView(
+            _surfaceView,
+            new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
+        contentRoot.AddView(
+            _inputView,
+            new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
+        SetContentView(contentRoot);
+
+        _inputMethodManager = (InputMethodManager?)GetSystemService(InputMethodService);
+        AndroidActivityBridge.SetSoftKeyboardController(this);
+
+        // Report keyboard height + safe-area insets so the framework can shrink
+        // content and keep the focused editor visible.
+        _keyboardObserver = new JaliumKeyboardObserver(this, contentRoot);
+        _keyboardObserver.Attach();
     }
 
     public void SurfaceCreated(ISurfaceHolder holder)
@@ -193,6 +238,30 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
         catch (Exception ex)
         {
             Android.Util.Log.Error("JaliumUI", $"JaliumApp.Run FATAL: {ex}");
+
+            // Swallowing this exception leaves a live process behind a
+            // permanently black Surface (every CreateHostedApp/Application/
+            // Window.Show failure funnels through here). Rethrow on the
+            // Android main thread instead so the process dies as a standard,
+            // diagnosable Android crash with the original stack intact.
+            var fatal = ExceptionDispatchInfo.Capture(ex);
+            bool postedToMainThread = false;
+            try
+            {
+                RunOnUiThread(() => fatal.Throw());
+                postedToMainThread = true;
+            }
+            catch
+            {
+                // Activity already torn down — no main-thread handler exists.
+            }
+
+            if (!postedToMainThread)
+            {
+                // Propagates out of this thread's entry point after the finally
+                // block below has released the bridge/dispatcher state.
+                fatal.Throw();
+            }
         }
         finally
         {
@@ -310,7 +379,8 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
                 {
                     AndroidActivityBridge.InjectTouch(
                         0, e.GetX(0), e.GetY(0), 0f,
-                        2, AndroidActivityBridge.PointerTypeMouse, GetModifiers(e));
+                        2, AndroidActivityBridge.PointerTypeMouse, GetModifiers(e),
+                        e.EventTime);
                     return true;
                 }
                 else if (actionMasked == (int)MotionEventActions.Scroll)
@@ -343,6 +413,7 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
             return;
 
         int modifiers = GetModifiers(e);
+        long eventTimeMillis = e.EventTime;
 
         if (bridgeAction == 2 || bridgeAction == 3)
         {
@@ -352,7 +423,8 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
                     e.GetPointerId(i),
                     e.GetX(i), e.GetY(i),
                     e.GetPressure(i),
-                    bridgeAction, MapToolType(e.GetToolType(i)), modifiers);
+                    bridgeAction, MapToolType(e.GetToolType(i)), modifiers,
+                    eventTimeMillis);
             }
         }
         else
@@ -361,7 +433,8 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
                 e.GetPointerId(pointerIndex),
                 e.GetX(pointerIndex), e.GetY(pointerIndex),
                 e.GetPressure(pointerIndex),
-                bridgeAction, MapToolType(e.GetToolType(pointerIndex)), modifiers);
+                bridgeAction, MapToolType(e.GetToolType(pointerIndex)), modifiers,
+                eventTimeMillis);
         }
     }
 
@@ -403,6 +476,69 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
 
     #endregion
 
+    #region Soft Keyboard
+
+    void IAndroidSoftKeyboardController.UpdateImeState(AndroidImeState state)
+    {
+        // Called on the Jalium UI thread; InputMethodManager work must run on the
+        // Android main thread.
+        RunOnUiThread(() => ApplyImeStateOnUi(state));
+    }
+
+    private void ApplyImeStateOnUi(AndroidImeState state)
+    {
+        if (_inputView == null || _inputMethodManager == null)
+            return;
+
+        _inputView.ApplyState(state);
+
+        if (state.Enabled)
+        {
+            if (!_inputView.IsFocused)
+                _inputView.RequestFocus();
+
+            // Re-read EditorInfo (keyboard type / Return key) only when the input
+            // shape changed; a mere caret/selection move just updates selection.
+            var shape = (state.ContentType, state.Multiline, state.ReturnKeyType,
+                state.ShowSuggestions, state.AutoCapitalization, state.Uppercase);
+            if (!_hasImeShape || !shape.Equals(_lastImeShape))
+            {
+                _hasImeShape = true;
+                _lastImeShape = shape;
+                _inputMethodManager.RestartInput(_inputView);
+            }
+
+            _inputMethodManager.ShowSoftInput(_inputView, ShowFlags.Implicit);
+            _inputMethodManager.UpdateSelection(
+                _inputView, state.SelectionStart, state.SelectionEnd, -1, -1);
+        }
+        else
+        {
+            _hasImeShape = false;
+            if (_inputView.WindowToken != null)
+            {
+                _inputMethodManager.HideSoftInputFromWindow(
+                    _inputView.WindowToken, HideSoftInputFlags.None);
+            }
+        }
+    }
+
+    private void OnImeEditorAction(TextInputReturnKeyType action)
+    {
+        // Next/Previous move focus to a sibling editor which re-shows the
+        // keyboard; terminal actions (Done/Go/Send/Search) dismiss it.
+        if (action is TextInputReturnKeyType.Next or TextInputReturnKeyType.Previous)
+            return;
+
+        if (_inputView?.WindowToken != null)
+        {
+            _inputMethodManager?.HideSoftInputFromWindow(
+                _inputView.WindowToken, HideSoftInputFlags.None);
+        }
+    }
+
+    #endregion
+
     #region Lifecycle
 
     protected override void OnPause()
@@ -424,6 +560,22 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
         // down a newer Activity or detach its Surface.
         if (!IsChangingConfigurations)
             AndroidActivityBridge.OnDestroy(_activityGeneration);
+
+        if (_inputView != null)
+            _inputView.EditorAction -= OnImeEditorAction;
+        _keyboardObserver?.Detach();
+        _keyboardObserver = null;
+
+        // Null these so any UpdateImeState already queued onto the main thread
+        // becomes a clean no-op instead of touching a detached view.
+        _inputView = null;
+        _inputMethodManager = null;
+
+        // On a configuration change the replacement Activity has already
+        // registered its own controller in OnCreate; don't clear it here.
+        if (!IsChangingConfigurations)
+            AndroidActivityBridge.SetSoftKeyboardController(null);
+
         base.OnDestroy();
     }
 

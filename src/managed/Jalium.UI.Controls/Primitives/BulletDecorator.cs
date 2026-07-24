@@ -69,9 +69,9 @@ public class BulletDecorator : Decorator
                 }
                 catch
                 {
+                    _bullet = null;
                     RemoveVisualChild(value);
                     RemoveLogicalChild(value);
-                    _bullet = null;
                     if (child != null && child.VisualParent == null)
                     {
                         AddVisualChild(child);

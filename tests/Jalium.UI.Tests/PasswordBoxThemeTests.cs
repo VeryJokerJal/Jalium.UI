@@ -44,8 +44,8 @@ public class PasswordBoxThemeTests
             Assert.NotNull(passwordBox.Background);
             Assert.NotNull(passwordBox.Foreground);
             Assert.NotNull(passwordBox.BorderBrush);
-            Assert.Equal(32, passwordBox.MinHeight);
-            Assert.True(passwordBox.RenderSize.Height >= 32);
+            Assert.Equal(36, passwordBox.MinHeight);
+            Assert.True(passwordBox.RenderSize.Height >= 36);
         }
         finally
         {

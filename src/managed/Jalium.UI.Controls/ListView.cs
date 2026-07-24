@@ -22,7 +22,7 @@ public class ListView : ListBox
     }
 
     private StackPanel? _columnHeadersHost;
-    private Border? _columnHeadersBorder;
+    private FrameworkElement? _columnHeadersBorder;
 
     /// <summary>
     /// Identifies the View dependency property.
@@ -56,7 +56,7 @@ public class ListView : ListBox
         base.OnApplyTemplate();
 
         _columnHeadersHost = GetTemplateChild("PART_ColumnHeadersHost") as StackPanel;
-        _columnHeadersBorder = GetTemplateChild("PART_ColumnHeadersBorder") as Border;
+        _columnHeadersBorder = GetTemplateChild("PART_ColumnHeadersBorder") as FrameworkElement;
 
         RefreshColumnHeaders();
     }

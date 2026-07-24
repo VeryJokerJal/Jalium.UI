@@ -339,6 +339,12 @@ private:
 
     // Brush → SdfRectInstance helpers
     bool FillBrushToInstance(Brush* brush, SdfRectInstance& inst);
+    // Keeps a continuous-corner gradient outline on the analytic SDF path.
+    // Returns false for ordinary rounded rectangles and non-gradient brushes,
+    // allowing their existing rendering routes to remain unchanged.
+    bool TryDrawContinuousGradientStroke(float x, float y, float w, float h,
+                                         float tl, float tr, float br, float bl,
+                                         Brush* brush, float strokeWidth);
     bool ExtractBrushColor(Brush* brush, float& r, float& g, float& b, float& a);
 
     // Brush → EngineBrushData (solid + linear/radial gradients), for the Impeller

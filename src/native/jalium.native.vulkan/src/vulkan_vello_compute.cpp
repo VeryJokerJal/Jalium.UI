@@ -198,24 +198,37 @@ bool VelloComputePipeline::CreateBuffer(VkDeviceSize size, VkBufferUsageFlags us
     bi.size = size;
     bi.usage = usage;
     bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (createBuffer_(device_, &bi, nullptr, &out.buffer) != VK_SUCCESS) return false;
+    if (createBuffer_(device_, &bi, nullptr, &out.buffer) != VK_SUCCESS) {
+        DestroyBuffer(out);
+        return false;
+    }
 
     VkMemoryRequirements req{};
     getBufferMemoryRequirements_(device_, out.buffer, &req);
     uint32_t typeIdx = FindMemoryType(req.memoryTypeBits, memProps);
-    if (typeIdx == UINT32_MAX) return false;
+    if (typeIdx == UINT32_MAX) {
+        DestroyBuffer(out);
+        return false;
+    }
 
     VkMemoryAllocateInfo ai{};
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = typeIdx;
-    if (allocateMemory_(device_, &ai, nullptr, &out.memory) != VK_SUCCESS) return false;
-    if (bindBufferMemory_(device_, out.buffer, out.memory, 0) != VK_SUCCESS) return false;
+    if (allocateMemory_(device_, &ai, nullptr, &out.memory) != VK_SUCCESS) {
+        DestroyBuffer(out);
+        return false;
+    }
+    if (bindBufferMemory_(device_, out.buffer, out.memory, 0) != VK_SUCCESS) {
+        DestroyBuffer(out);
+        return false;
+    }
 
     out.capacity = size;
     if (memProps & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
         if (mapMemory_(device_, out.memory, 0, VK_WHOLE_SIZE, 0, &out.mapped) != VK_SUCCESS) {
             out.mapped = nullptr;
+            DestroyBuffer(out);
             return false;
         }
     }
@@ -231,11 +244,44 @@ void VelloComputePipeline::DestroyBuffer(GpuBuffer& buf) {
 
 bool VelloComputePipeline::EnsureBuffer(GpuBuffer& buf, VkDeviceSize bytes,
                                         VkBufferUsageFlags usage,
-                                        VkMemoryPropertyFlags memProps) {
+                                        VkMemoryPropertyFlags memProps,
+                                        uint32_t retireSlot) {
     if (bytes == 0) bytes = 256;
     if (buf.buffer && buf.capacity >= bytes) return true;
-    DestroyBuffer(buf);
-    return CreateBuffer(bytes, usage, memProps, buf);
+
+    // Build first: an allocation/bind/map failure must leave the live
+    // generation completely untouched. Shared buffers cannot be destroyed at
+    // this point because the other in-flight slot may still execute descriptors
+    // that reference them.
+    GpuBuffer candidate{};
+    if (!CreateBuffer(bytes, usage, memProps, candidate)) {
+        DestroyBuffer(candidate);
+        return false;
+    }
+
+    if (buf.buffer || buf.memory) {
+        if (retireSlot < kFramesInFlight) {
+            try {
+                retiredBuffers_[retireSlot].push_back(buf);
+            } catch (...) {
+                DestroyBuffer(candidate);
+                return false;
+            }
+        } else {
+            // Per-frame input buffers are replaced only after their own slot
+            // fence and descriptor-pool reset, so they need no cross-slot hold.
+            DestroyBuffer(buf);
+        }
+    }
+    buf = candidate;
+    return true;
+}
+
+void VelloComputePipeline::DestroyOutputImage(RetiredOutputImage& image) {
+    if (image.view)   destroyImageView_(device_, image.view, nullptr);
+    if (image.image)  destroyImage_(device_, image.image, nullptr);
+    if (image.memory) freeMemory_(device_, image.memory, nullptr);
+    image = {};
 }
 
 bool VelloComputePipeline::Initialize(VkDevice device, VkPhysicalDevice physicalDevice,
@@ -425,15 +471,17 @@ bool VelloComputePipeline::CreateDummyImage() {
     return true;
 }
 
-bool VelloComputePipeline::EnsureOutputImage(uint32_t width, uint32_t height) {
+bool VelloComputePipeline::EnsureOutputImage(uint32_t width, uint32_t height,
+                                             uint32_t retireSlot) {
     if (width == 0) width = 1;
     if (height == 0) height = 1;
     if (outputImage_ && outputWidth_ == width && outputHeight_ == height) return true;
 
-    if (outputView_)  { destroyImageView_(device_, outputView_, nullptr); outputView_ = VK_NULL_HANDLE; }
-    if (outputImage_) { destroyImage_(device_, outputImage_, nullptr); outputImage_ = VK_NULL_HANDLE; }
-    if (outputMemory_){ freeMemory_(device_, outputMemory_, nullptr); outputMemory_ = VK_NULL_HANDLE; }
-    outputLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    // Transactional replacement: keep the current output (and every descriptor
+    // that references it) valid unless the complete image+memory+view candidate
+    // succeeds. The old generation is then retired to the only slot that can
+    // still be executing it.
+    RetiredOutputImage candidate{};
 
     VkImageCreateInfo ii{};
     ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -448,33 +496,67 @@ bool VelloComputePipeline::EnsureOutputImage(uint32_t width, uint32_t height) {
     // the per-frame vkCmdClearColorImage in Record().
     ii.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (createImage_(device_, &ii, nullptr, &outputImage_) != VK_SUCCESS) return false;
+    if (createImage_(device_, &ii, nullptr, &candidate.image) != VK_SUCCESS) {
+        DestroyOutputImage(candidate);
+        return false;
+    }
 
     VkMemoryRequirements req{};
-    getImageMemoryRequirements_(device_, outputImage_, &req);
+    getImageMemoryRequirements_(device_, candidate.image, &req);
     uint32_t typeIdx = FindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    if (typeIdx == UINT32_MAX) return false;
+    if (typeIdx == UINT32_MAX) {
+        DestroyOutputImage(candidate);
+        return false;
+    }
     VkMemoryAllocateInfo ai{};
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = req.size;
     ai.memoryTypeIndex = typeIdx;
-    if (allocateMemory_(device_, &ai, nullptr, &outputMemory_) != VK_SUCCESS) return false;
-    if (bindImageMemory_(device_, outputImage_, outputMemory_, 0) != VK_SUCCESS) return false;
+    if (allocateMemory_(device_, &ai, nullptr, &candidate.memory) != VK_SUCCESS) {
+        DestroyOutputImage(candidate);
+        return false;
+    }
+    if (bindImageMemory_(device_, candidate.image, candidate.memory, 0) != VK_SUCCESS) {
+        DestroyOutputImage(candidate);
+        return false;
+    }
 
     VkImageViewCreateInfo vi{};
     vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    vi.image = outputImage_;
+    vi.image = candidate.image;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
     vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
-    if (createImageView_(device_, &vi, nullptr, &outputView_) != VK_SUCCESS) return false;
+    if (createImageView_(device_, &vi, nullptr, &candidate.view) != VK_SUCCESS) {
+        DestroyOutputImage(candidate);
+        return false;
+    }
 
+    if (outputImage_ || outputMemory_ || outputView_) {
+        RetiredOutputImage old{ outputImage_, outputMemory_, outputView_ };
+        if (retireSlot < kFramesInFlight) {
+            try {
+                retiredOutputImages_[retireSlot].push_back(old);
+            } catch (...) {
+                DestroyOutputImage(candidate);
+                return false;
+            }
+        } else {
+            DestroyOutputImage(old);
+        }
+    }
+
+    outputImage_ = candidate.image;
+    outputMemory_ = candidate.memory;
+    outputView_ = candidate.view;
+    outputLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     outputWidth_ = width;
     outputHeight_ = height;
     return true;
 }
 
-bool VelloComputePipeline::EnsureScratch(const VelloScene& scene) {
+bool VelloComputePipeline::EnsureScratch(const VelloScene& scene,
+                                         uint32_t retireSlot) {
     const VkBufferUsageFlags storageDst =
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     const VkMemoryPropertyFlags devLocal = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
@@ -489,17 +571,17 @@ bool VelloComputePipeline::EnsureScratch(const VelloScene& scene) {
     const uint32_t clipWgs      = std::max<uint32_t>(Wg256(numClipOps), 1);
 
     bool ok = true;
-    ok &= EnsureBuffer(pathBbox_,        (VkDeviceSize)numPaths * kPathBboxStride,         storageDst, devLocal);
-    ok &= EnsureBuffer(lineSoup_,        (VkDeviceSize)numSegs * 64 * kLineSoupStride,     storageDst, devLocal);
-    ok &= EnsureBuffer(intersectedBbox_, (VkDeviceSize)numDrawObjs * kFloat4Stride,        storageDst, devLocal);
+    ok &= EnsureBuffer(pathBbox_,        (VkDeviceSize)numPaths * kPathBboxStride,         storageDst, devLocal, retireSlot);
+    ok &= EnsureBuffer(lineSoup_,        (VkDeviceSize)numSegs * 64 * kLineSoupStride,     storageDst, devLocal, retireSlot);
+    ok &= EnsureBuffer(intersectedBbox_, (VkDeviceSize)numDrawObjs * kFloat4Stride,        storageDst, devLocal, retireSlot);
     // clipBic_/clipEl_ back the retained (never-dispatched) clip_reduce /
     // clip_leaf descriptor sets — kept so the PSOs stay bindable, mirroring
     // D3D12 which retains its clip PSOs + Bic/ClipEl buffers. The clip bboxes
     // themselves are CPU-replayed and uploaded per frame (see UploadInputs).
-    ok &= EnsureBuffer(clipBic_,         (VkDeviceSize)clipWgs * kClipBicStride,           storageDst, devLocal);
-    ok &= EnsureBuffer(clipEl_,          (VkDeviceSize)numClipOps * kClipElStride,         storageDst, devLocal);
-    ok &= EnsureBuffer(binHeader_,       (VkDeviceSize)numBins * 256 * kBinHeaderStride,   storageDst, devLocal);
-    ok &= EnsureBuffer(velloPath_,       (VkDeviceSize)numDrawObjs * kVelloPathStride,     storageDst, devLocal);
+    ok &= EnsureBuffer(clipBic_,         (VkDeviceSize)clipWgs * kClipBicStride,           storageDst, devLocal, retireSlot);
+    ok &= EnsureBuffer(clipEl_,          (VkDeviceSize)numClipOps * kClipElStride,         storageDst, devLocal, retireSlot);
+    ok &= EnsureBuffer(binHeader_,       (VkDeviceSize)numBins * 256 * kBinHeaderStride,   storageDst, devLocal, retireSlot);
+    ok &= EnsureBuffer(velloPath_,       (VkDeviceSize)numDrawObjs * kVelloPathStride,     storageDst, devLocal, retireSlot);
     return ok;
 }
 
@@ -642,8 +724,9 @@ VkBuffer VelloComputePipeline::BufferForRes(Res res, uint32_t f) const {
 }
 
 bool VelloComputePipeline::BuildDescriptorSets(uint32_t frameIdx, const VelloScene& scene) {
-    if (resetDescriptorPool_(device_, descriptorPools_[frameIdx], 0) != VK_SUCCESS) return false;
-
+    // PrepareFrameSlot already reset this exact pool after its fence. Keeping
+    // reset at that single boundary is important: it is also the proof that
+    // retired shared generations may be released before Record starts.
     VkDescriptorSetLayout layouts[kStageCount];
     for (uint32_t s = 0; s < kStageCount; ++s) layouts[s] = setLayouts_[s];
     VkDescriptorSetAllocateInfo ai{};
@@ -705,12 +788,42 @@ bool VelloComputePipeline::BuildDescriptorSets(uint32_t frameIdx, const VelloSce
     return true;
 }
 
+bool VelloComputePipeline::PrepareFrameSlot(uint32_t frameIdx) {
+    if (!ready_ || !device_ || !resetDescriptorPool_) return false;
+    frameIdx %= kFramesInFlight;
+    if (descriptorPools_[frameIdx] == VK_NULL_HANDLE ||
+        resetDescriptorPool_(device_, descriptorPools_[frameIdx], 0) != VK_SUCCESS) {
+        // Do not release anything unless stale descriptors were conclusively
+        // removed. The caller skips Vello for this frame and retries when this
+        // slot next becomes available.
+        frameSlotPrepared_[frameIdx] = false;
+        return false;
+    }
+
+    for (auto& buffer : retiredBuffers_[frameIdx]) {
+        DestroyBuffer(buffer);
+    }
+    retiredBuffers_[frameIdx].clear();
+    for (auto& image : retiredOutputImages_[frameIdx]) {
+        DestroyOutputImage(image);
+    }
+    retiredOutputImages_[frameIdx].clear();
+    frameSlotPrepared_[frameIdx] = true;
+    return true;
+}
+
 bool VelloComputePipeline::Record(VkCommandBuffer cmd, const VelloScene& scene, uint32_t frameIdx) {
     if (!ready_ || scene.drawTags.empty()) return false;
     frameIdx %= kFramesInFlight;
+    if (!frameSlotPrepared_[frameIdx]) return false;
+    // One monolithic Vello scene is supported per frame (see the render-target
+    // painter-order note). Consume the preparation proof so an accidental
+    // second Record cannot mutate shared generations without another reset.
+    frameSlotPrepared_[frameIdx] = false;
+    const uint32_t retireSlot = (frameIdx + 1u) % kFramesInFlight;
 
-    if (!EnsureOutputImage(scene.viewportW, scene.viewportH)) return false;
-    if (!EnsureScratch(scene)) return false;
+    if (!EnsureOutputImage(scene.viewportW, scene.viewportH, retireSlot)) return false;
+    if (!EnsureScratch(scene, retireSlot)) return false;
     if (!UploadInputs(scene, frameIdx)) return false;
     if (!BuildDescriptorSets(frameIdx, scene)) return false;
 
@@ -885,6 +998,11 @@ void VelloComputePipeline::Destroy() {
     for (uint32_t f = 0; f < kFramesInFlight; ++f) {
         if (descriptorPools_[f]) destroyDescriptorPool_(device_, descriptorPools_[f], nullptr);
         descriptorPools_[f] = VK_NULL_HANDLE;
+        frameSlotPrepared_[f] = false;
+        for (auto& buffer : retiredBuffers_[f]) DestroyBuffer(buffer);
+        retiredBuffers_[f].clear();
+        for (auto& image : retiredOutputImages_[f]) DestroyOutputImage(image);
+        retiredOutputImages_[f].clear();
         DestroyBuffer(config_[f]); DestroyBuffer(pathSegment_[f]); DestroyBuffer(pathInfo_[f]);
         DestroyBuffer(pathDraw_[f]); DestroyBuffer(drawTag_[f]); DestroyBuffer(drawMonoid_[f]);
         DestroyBuffer(clipInp_[f]); DestroyBuffer(clipBbox_[f]); DestroyBuffer(gradientRamp_[f]);
@@ -907,7 +1025,49 @@ void VelloComputePipeline::Destroy() {
     outputView_ = VK_NULL_HANDLE; outputImage_ = VK_NULL_HANDLE; outputMemory_ = VK_NULL_HANDLE;
     outputSampler_ = VK_NULL_HANDLE; dummyView_ = VK_NULL_HANDLE; dummyImage_ = VK_NULL_HANDLE;
     dummyMemory_ = VK_NULL_HANDLE; dummySampler_ = VK_NULL_HANDLE;
+    outputLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    outputWidth_ = 0;
+    outputHeight_ = 0;
 
+    ready_ = false;
+    device_ = VK_NULL_HANDLE;
+}
+
+void VelloComputePipeline::AbandonDeviceResources() noexcept {
+    // The generation's completion state is unknown. Never call into Vulkan;
+    // forget every handle and host container so the C++ object can be reclaimed
+    // without a destructor later trying to tear down quarantined driver state.
+    auto forgetBuffer = [](GpuBuffer& buffer) noexcept { buffer = {}; };
+    for (uint32_t f = 0; f < kFramesInFlight; ++f) {
+        descriptorPools_[f] = VK_NULL_HANDLE;
+        frameSlotPrepared_[f] = false;
+        retiredBuffers_[f].clear();
+        retiredOutputImages_[f].clear();
+        forgetBuffer(config_[f]); forgetBuffer(pathSegment_[f]); forgetBuffer(pathInfo_[f]);
+        forgetBuffer(pathDraw_[f]); forgetBuffer(drawTag_[f]); forgetBuffer(drawMonoid_[f]);
+        forgetBuffer(clipInp_[f]); forgetBuffer(clipBbox_[f]); forgetBuffer(gradientRamp_[f]);
+    }
+    forgetBuffer(bump_); forgetBuffer(pathBbox_); forgetBuffer(lineSoup_);
+    forgetBuffer(intersectedBbox_); forgetBuffer(clipBic_); forgetBuffer(clipEl_);
+    forgetBuffer(binHeader_); forgetBuffer(binData_); forgetBuffer(velloPath_);
+    forgetBuffer(velloTile_); forgetBuffer(segCount_); forgetBuffer(velloSegment_);
+    forgetBuffer(ptcl_); forgetBuffer(indirect1_); forgetBuffer(indirect2_);
+    for (auto& module : modules_) module = VK_NULL_HANDLE;
+    for (auto& layout : setLayouts_) layout = VK_NULL_HANDLE;
+    for (auto& layout : pipelineLayouts_) layout = VK_NULL_HANDLE;
+    for (auto& pipeline : pipelines_) pipeline = VK_NULL_HANDLE;
+    for (auto& set : stageSets_) set = VK_NULL_HANDLE;
+    outputImage_ = VK_NULL_HANDLE;
+    outputMemory_ = VK_NULL_HANDLE;
+    outputView_ = VK_NULL_HANDLE;
+    outputLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    outputWidth_ = 0;
+    outputHeight_ = 0;
+    outputSampler_ = VK_NULL_HANDLE;
+    dummyImage_ = VK_NULL_HANDLE;
+    dummyMemory_ = VK_NULL_HANDLE;
+    dummyView_ = VK_NULL_HANDLE;
+    dummySampler_ = VK_NULL_HANDLE;
     ready_ = false;
     device_ = VK_NULL_HANDLE;
 }

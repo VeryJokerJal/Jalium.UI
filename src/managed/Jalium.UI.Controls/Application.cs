@@ -3,6 +3,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using Microsoft.Win32;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
@@ -39,6 +40,7 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
     private bool _isActive;
     private IDisposable? _linuxSessionMonitor;
     private int _cleanupStarted;
+    private int _lastSystemColorScheme;
 #pragma warning disable WPF0001 // Backing storage for the experimental public ThemeMode API.
     private ThemeMode _themeMode = ThemeMode.None;
 #pragma warning restore WPF0001
@@ -50,6 +52,12 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
     // and does not require a display connection, so it remains safe to establish here.
     static Application()
     {
+        UIElement.AutomaticTransitionsEnabledProvider = static () =>
+            SystemParameters.ClientAreaAnimation && SystemParameters.UIEffects;
+
+        SystemParameters.StaticPropertyChanged += static (_, _) =>
+            Current?.ApplyWindowsSystemThemePreference();
+
         if (PlatformFactory.IsWindows)
         {
             _ = TryEnablePerMonitorDpiAwareness();
@@ -104,6 +112,68 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             {
                 ThemeManager.ApplyTheme(ThemeVariant.Dark);
             }
+            else if (value == Jalium.UI.ThemeMode.System)
+            {
+                if (OperatingSystem.IsWindows())
+                {
+                    ApplyWindowsSystemThemePreference();
+                }
+                else
+                {
+                    ApplyCachedSystemThemePreference();
+                }
+            }
+            else if (value == Jalium.UI.ThemeMode.None && !OperatingSystem.IsWindows())
+            {
+                ApplyCachedSystemThemePreference();
+            }
+        }
+    }
+
+    private void ApplyCachedSystemThemePreference()
+    {
+        var scheme = Volatile.Read(ref _lastSystemColorScheme);
+        if (scheme is 1 or 2)
+        {
+            ThemeManager.ApplyTheme(scheme == 1 ? ThemeVariant.Dark : ThemeVariant.Light);
+        }
+    }
+
+    private void ApplyWindowsSystemThemePreference()
+    {
+        if (!OperatingSystem.IsWindows() || _themeMode != ThemeMode.System)
+        {
+            return;
+        }
+
+        var scheme = ReadWindowsSystemColorScheme();
+        if (scheme is not (1 or 2))
+        {
+            return;
+        }
+
+        Volatile.Write(ref _lastSystemColorScheme, scheme);
+        ThemeManager.ApplyTheme(scheme == 1 ? ThemeVariant.Dark : ThemeVariant.Light);
+    }
+
+    private static int ReadWindowsSystemColorScheme()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return 0;
+        }
+
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+            return key?.GetValue("AppsUseLightTheme") is int appsUseLightTheme
+                ? appsUseLightTheme == 0 ? 1 : 2
+                : 0;
+        }
+        catch (Exception) when (!System.Diagnostics.Debugger.IsAttached)
+        {
+            return 0;
         }
     }
 
@@ -453,9 +523,11 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
             var dispatcher = Dispatcher;
             void ApplySystemScheme(uint scheme)
             {
-                // Explicit ThemeMode (Light/Dark) pins the theme; only the
-                // default "None" follows the system.
-                if (_themeMode != ThemeMode.None || scheme is not (1 or 2))
+                Volatile.Write(ref _lastSystemColorScheme, (int)scheme);
+
+                // Explicit Light/Dark modes pin the theme; None and System follow the desktop.
+                if ((_themeMode != ThemeMode.None && _themeMode != ThemeMode.System) ||
+                    scheme is not (1 or 2))
                     return;
 
                 var variant = scheme == 1 ? ThemeVariant.Dark : ThemeVariant.Light;
@@ -687,7 +759,6 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         // previous/test Application instance; doing so can also materialize this
         // application's lazy Resources dictionary while it is being set to null.
         SafeNotifyResourcesChangedFromRoot(root);
-
         foreach (var window in Window.SnapshotOpenWindows())
         {
             if (!ReferenceEquals(window, mainWindow))
@@ -714,6 +785,50 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
                 // field/collection invariant described above.
                 System.Diagnostics.Debug.WriteLine(
                     $"Jalium.UI: resources-changed broadcast to a window root was isolated after an exception: {ex}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// Publishes a theme-palette change without reapplying implicit styles. Theme dictionaries
+    /// keep the same Style and ControlTemplate instances across variants, but controls still
+    /// need their ResourcesChanged hooks (for manually cached brushes/state) and retained
+    /// drawing commands refreshed.
+    /// </summary>
+    internal void NotifyThemeResourcesChanged()
+    {
+        ResourceLookup.InvalidateResourceCache();
+        ResourcesChanged?.Invoke(this, EventArgs.Empty);
+
+        var mainWindow = MainWindow;
+        if (mainWindow is FrameworkElement root)
+        {
+            SafeNotifyThemeResourcesChangedFromRoot(root);
+        }
+
+        foreach (var window in Window.SnapshotOpenWindows())
+        {
+            if (!ReferenceEquals(window, mainWindow))
+            {
+                SafeNotifyThemeResourcesChangedFromRoot(window);
+            }
+        }
+
+        foreach (var popupWindow in PopupWindow.SnapshotOpenPopupWindows())
+        {
+            SafeNotifyThemeResourcesChangedFromRoot(popupWindow);
+        }
+
+        static void SafeNotifyThemeResourcesChangedFromRoot(FrameworkElement root)
+        {
+            try
+            {
+                root.NotifyThemeResourcesChangedFromRoot();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"Jalium.UI: theme-resources broadcast to a window root was isolated after an exception: {ex}");
             }
         }
     }

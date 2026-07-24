@@ -138,6 +138,34 @@ internal static class DynamicResourceBindingOperations
         }
     }
 
+    /// <summary>
+    /// Clears the dynamic-resource subscription on the property only when it belongs to the
+    /// given layer. Used when a higher-priority style setter writes a plain value: a lower
+    /// style layer (theme default style) may hold a live subscription on the same DP whose
+    /// next refresh would overwrite that value. Subscriptions from other layers (e.g. a
+    /// local SetDynamicResource) are left untouched.
+    /// </summary>
+    internal static void ClearDynamicResource(
+        FrameworkElement target,
+        DependencyProperty property,
+        DependencyObject.LayerValueSource layerSource)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(property);
+
+        if (!Subscriptions.TryGetValue(target, out var subscriptions))
+            return;
+
+        if (!subscriptions.TryGetValue(property, out var subscription))
+            return;
+
+        if (subscription.LayerSource != layerSource)
+            return;
+
+        target.ResourcesChanged -= subscription.Handler;
+        subscriptions.Remove(property);
+    }
+
     internal static void PromoteDynamicResourcesToLayer(
         FrameworkElement target,
         DependencyObject.LayerValueSource layerSource)
@@ -191,10 +219,27 @@ internal static class DynamicResourceBindingOperations
     }
 
     /// <summary>
+    /// Refreshes registrations that are not part of a loaded live-root broadcast. Loaded
+    /// elements receive the lightweight theme ResourcesChanged walk; detached and unshown
+    /// trees are completed through this global registry pass.
+    /// </summary>
+    internal static void RefreshUnloaded()
+    {
+        RefreshForKeysCore(changedKeys: null, unloadedOnly: true);
+    }
+
+    /// <summary>
     /// Refreshes only subscriptions whose resource key is in <paramref name="changedKeys"/>.
     /// Pass null to refresh ALL subscriptions (theme switch).
     /// </summary>
     internal static void RefreshForKeys(IReadOnlySet<object>? changedKeys)
+    {
+        RefreshForKeysCore(changedKeys, unloadedOnly: false);
+    }
+
+    private static void RefreshForKeysCore(
+        IReadOnlySet<object>? changedKeys,
+        bool unloadedOnly)
     {
         // Never enumerate ConditionalWeakTable directly here. Refreshing a resource can
         // instantiate a template, and template construction can register more dynamic
@@ -205,6 +250,9 @@ internal static class DynamicResourceBindingOperations
         foreach (var registration in registrations)
         {
             if (!registration.IsActive || !registration.Target.TryGetTarget(out var target))
+                continue;
+
+            if (unloadedOnly && target.IsLoaded)
                 continue;
 
             if (!Subscriptions.TryGetValue(target, out var subscriptions) || subscriptions.Count == 0)
@@ -225,6 +273,25 @@ internal static class DynamicResourceBindingOperations
                 }
 
                 RefreshDynamicResource(target, property);
+            }
+        }
+
+        // ThemeResource can also target Freezable-like dependency objects (for example a
+        // brush or transform) through a FrameworkElement host. A whole-tree resource
+        // broadcast used to refresh these indirectly via the host's ResourcesChanged event.
+        // The optimized theme path deliberately skips that expensive broadcast, so include
+        // non-visual subscriptions in the same finite global sweep.
+        foreach (var entry in NonVisualSubscriptions.ToArray())
+        {
+            foreach (var subscription in entry.Value.Values.ToArray())
+            {
+                if (unloadedOnly && subscription.Host.IsLoaded)
+                    continue;
+
+                if (changedKeys != null && !changedKeys.Contains(subscription.ResourceKey))
+                    continue;
+
+                RefreshNonVisualDynamicResource(entry.Key, subscription.Property);
             }
         }
     }

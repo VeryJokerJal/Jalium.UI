@@ -5,7 +5,7 @@ namespace Jalium.UI.Core.Platform;
 /// <summary>
 /// Cross-platform frame timer using the jalium.native.platform library.
 /// On Windows, wraps CreateWaitableTimerExW with HIGH_RESOLUTION.
-/// On Linux, wraps timerfd. On Android, wraps clock_nanosleep.
+/// On Linux and Android, wraps a re-armable timerfd.
 /// </summary>
 internal sealed partial class NativeFrameTimer : IFrameTimer
 {

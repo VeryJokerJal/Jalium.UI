@@ -730,9 +730,10 @@ public class TabControl : Selector
             return;
         }
 
-        _selectedContentPresenter.Content = null;
-        RemoveVisualChild(_selectedContentPresenter);
+        var presenter = _selectedContentPresenter;
         _selectedContentPresenter = null;
+        presenter.Content = null;
+        RemoveVisualChild(presenter);
     }
 
     internal void OnSelectedTabContentChanged(TabItem tabItem, object? _)
@@ -820,8 +821,8 @@ public class TabControl : Selector
 
     protected override Size ArrangeOverride(Size finalSize)
     {
-        double tabStripHeight = Math.Min(TabStripHeight, Math.Max(0, finalSize.Height));
-        double verticalTabStripWidth = Math.Min(120, Math.Max(0, finalSize.Width));
+        double tabStripHeight = ControlRenderGeometry.GetAvailableLength(TabStripHeight, finalSize.Height);
+        double verticalTabStripWidth = ControlRenderGeometry.GetAvailableLength(120, finalSize.Width);
 
         // Calculate tab strip rect
         Rect tabStripRect;
@@ -907,8 +908,8 @@ public class TabControl : Selector
         var dc = drawingContextObj;
 
         var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
-        double tabStripSize = TabStripHeight;
-        double verticalTabStripWidth = 120;
+        double tabStripSize = ControlRenderGeometry.GetAvailableLength(TabStripHeight, bounds.Height);
+        double verticalTabStripWidth = ControlRenderGeometry.GetAvailableLength(120, bounds.Width);
 
         // Draw background (content area)
         if (Background != null)

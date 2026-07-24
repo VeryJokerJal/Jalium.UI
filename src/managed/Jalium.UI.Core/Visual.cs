@@ -537,6 +537,18 @@ public abstract class Visual : DependencyObject
     }
 
     /// <summary>
+    /// Forces the cached <see cref="DependencyObject.VisualChildrenCount"/> shim to
+    /// re-read the live <see cref="VisualChildrenCount"/> override. Subclasses whose
+    /// override depends on state that flips WITHOUT an Add/RemoveVisualChild call
+    /// (e.g. a transition flag) must call this after mutating that state so the cached
+    /// bound stays consistent with <see cref="GetVisualChild"/>.
+    /// </summary>
+    protected void SyncVisualChildrenCount()
+    {
+        ((DependencyObject)this).VisualChildrenCount = VisualChildrenCount;
+    }
+
+    /// <summary>
     /// Called when the visual parent changes.
     /// </summary>
     /// <param name="oldParent">The previous parent visual, or null.</param>

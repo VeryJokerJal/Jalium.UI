@@ -184,6 +184,7 @@ public sealed class NativeTextFormat : IDisposable
         }
 
         var result = NativeMethods.TextFormatMeasureText(_handle, text, text.Length, maxWidth, maxHeight, out var metrics);
+
         if (result != 0)
         {
             // Fallback to approximate values on error
@@ -198,6 +199,12 @@ public sealed class NativeTextFormat : IDisposable
                 LineGap = 0,
                 LineCount = 1
             };
+        }
+        else if (metrics.WidthIncludingTrailingWhitespace < metrics.Width)
+        {
+            // Backends without a distinct trailing-whitespace metric fall back
+            // to their regular width instead of publishing an invalid zero.
+            metrics.WidthIncludingTrailingWhitespace = metrics.Width;
         }
         return metrics;
     }

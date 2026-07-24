@@ -65,6 +65,42 @@ public sealed class GeometryPathParityTests
     }
 
     [Fact]
+    public void RoundedRectangleFillContainsUsesAnalyticAllocationFreeCornerTests()
+    {
+        var elliptical = new RectangleGeometry(new Rect(0, 0, 100, 60), 20, 10);
+        Assert.False(elliptical.FillContains(new Point(1, 1)));
+        Assert.True(elliptical.FillContains(new Point(20, 0)));
+        Assert.True(elliptical.FillContains(new Point(50, 30)));
+        Assert.False(elliptical.FillContains(new Point(-1, 30)));
+
+        var perCorner = new RectangleGeometry(
+            new Rect(0, 0, 100, 100),
+            new CornerRadius(20, 0, 10, 5));
+        Assert.False(perCorner.FillContains(new Point(0, 0)));
+        Assert.True(perCorner.FillContains(new Point(100, 0)));
+        Assert.False(perCorner.FillContains(new Point(100, 100)));
+        Assert.False(perCorner.FillContains(new Point(0, 100)));
+        Assert.True(perCorner.FillContains(new Point(50, 50)));
+
+        // Adjacent oversized radii are normalized to the available bounds.
+        var normalized = new RectangleGeometry(
+            new Rect(0, 0, 100, 40),
+            new CornerRadius(80));
+        Assert.False(normalized.FillContains(new Point(0, 0)));
+        Assert.True(normalized.FillContains(new Point(20, 0)));
+
+        _ = perCorner.FillContains(new Point(7, 7));
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 1_000; i++)
+        {
+            _ = perCorner.FillContains(new Point(i % 101, (i * 7) % 101));
+        }
+        long after = GC.GetAllocatedBytesForCurrentThread();
+
+        Assert.Equal(0, after - before);
+    }
+
+    [Fact]
     public void PathCollectionsAreAnimatableDeepCloneAndFreezeChildren()
     {
         var segment = new BezierSegment(

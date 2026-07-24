@@ -49,10 +49,33 @@ internal sealed class ItemHeightIndex
     {
         _estimatedHeight = CoerceHeight(estimatedHeight);
         _count = Math.Max(0, count);
-        _measuredHeights = _count > 0 ? new float[_count] : [];
+
+        if (_count == 0)
+        {
+            _measuredHeights = [];
+            _blockSums = [];
+            _blockPrefixes = [0d];
+            _blockUnmeasured = [];
+            _measuredCount = 0;
+            _measuredTotal = 0;
+            _totalHeight = 0;
+            return;
+        }
+
+        if (_measuredHeights.Length != _count)
+        {
+            _measuredHeights = new float[_count];
+        }
+        else if (_measuredCount > 0)
+        {
+            // A reset discards measurements, but repeated pre-layout resets have no
+            // measured entries and can skip touching the million-item buffer entirely.
+            Array.Clear(_measuredHeights);
+        }
+
         _measuredCount = 0;
         _measuredTotal = 0;
-        RebuildBlockSums();
+        InitializeUnmeasuredBlockSums();
     }
 
     public void EnsureCount(int count)
@@ -396,9 +419,20 @@ internal sealed class ItemHeightIndex
         }
 
         var blockCount = (_count + BlockSize - 1) / BlockSize;
-        _blockSums = new double[blockCount];
-        _blockPrefixes = new double[blockCount + 1];
-        _blockUnmeasured = new int[blockCount];
+        if (_blockSums.Length != blockCount)
+            _blockSums = new double[blockCount];
+        else
+            Array.Clear(_blockSums);
+
+        if (_blockPrefixes.Length != blockCount + 1)
+            _blockPrefixes = new double[blockCount + 1];
+        else
+            _blockPrefixes[0] = 0;
+
+        if (_blockUnmeasured.Length != blockCount)
+            _blockUnmeasured = new int[blockCount];
+        else
+            Array.Clear(_blockUnmeasured);
 
         _measuredCount = 0;
         _measuredTotal = 0;
@@ -427,5 +461,32 @@ internal sealed class ItemHeightIndex
         {
             _blockPrefixes[i + 1] = _blockPrefixes[i] + _blockSums[i];
         }
+    }
+
+    private void InitializeUnmeasuredBlockSums()
+    {
+        var blockCount = (_count + BlockSize - 1) / BlockSize;
+        if (_blockSums.Length != blockCount)
+            _blockSums = new double[blockCount];
+
+        if (_blockPrefixes.Length != blockCount + 1)
+            _blockPrefixes = new double[blockCount + 1];
+
+        if (_blockUnmeasured.Length != blockCount)
+            _blockUnmeasured = new int[blockCount];
+
+        double running = 0;
+        for (int block = 0; block < blockCount; block++)
+        {
+            var itemCount = Math.Min(BlockSize, _count - block * BlockSize);
+            var blockHeight = itemCount * (double)_estimatedHeight;
+            _blockSums[block] = blockHeight;
+            _blockPrefixes[block] = running;
+            _blockUnmeasured[block] = itemCount;
+            running += blockHeight;
+        }
+
+        _blockPrefixes[blockCount] = running;
+        _totalHeight = running;
     }
 }

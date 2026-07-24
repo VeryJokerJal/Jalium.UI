@@ -41,6 +41,12 @@ target_link_libraries(${PROJECT_NAME}
         ole32      # CoInitializeEx / CoUninitialize（D3D12 后端 WIC 工厂依赖 COM）
 )
 
+# Link Vulkan into the same probe when the Windows dev build enables it.
+if(TARGET jalium.native.vulkan)
+    target_link_libraries(${PROJECT_NAME} PRIVATE jalium.native.vulkan)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE JALIUM_MEMPROBE_HAS_VULKAN=1)
+endif()
+
 set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "jalium.native.demo.memprobe"
     DEBUG_POSTFIX ""

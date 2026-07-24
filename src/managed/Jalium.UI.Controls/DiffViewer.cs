@@ -537,12 +537,21 @@ public class DiffViewer : Control
 
     private void RenderSideBySide(DrawingContext dc, Rect bounds)
     {
-        double halfWidth = (bounds.Width - (ShowMinimap ? MinimapWidth : 0) - 1) / 2.0;
-        double leftX = 0;
-        double rightX = halfWidth + 1;
+        var minimapWidth = ShowMinimap
+            ? ControlRenderGeometry.GetAvailableLength(MinimapWidth, bounds.Width)
+            : 0;
+        var contentWidth = bounds.Width - minimapWidth;
+        var separatorWidth = ControlRenderGeometry.GetAvailableLength(1, contentWidth);
+        var halfWidth = (contentWidth - separatorWidth) / 2.0;
+        var leftX = bounds.X;
+        var rightX = leftX + halfWidth + separatorWidth;
 
         // Draw separator
-        dc.DrawRectangle(s_defaultSeparatorBrush, null, new Rect(halfWidth, 0, 1, bounds.Height));
+        if (separatorWidth > 0)
+        {
+            dc.DrawRectangle(s_defaultSeparatorBrush, null,
+                new Rect(leftX + halfWidth, bounds.Y, separatorWidth, bounds.Height));
+        }
 
         // Draw left panel (original)
         RenderPanel(dc, leftX, halfWidth, isOriginalSide: true);
@@ -559,7 +568,10 @@ public class DiffViewer : Control
         var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 13;
 
-        double gutterW = _effectiveGutterWidth;
+        var gutterW = ShowLineNumbers
+            ? ControlRenderGeometry.GetAvailableLength(_effectiveGutterWidth, panelWidth)
+            : 0;
+        var contentWidth = panelWidth - gutterW;
         double textX = panelX + gutterW + 4; // 4px padding
 
         // Draw gutter background
@@ -580,7 +592,7 @@ public class DiffViewer : Control
             var lineBg = GetLineBrush(line.LineType, isOriginalSide);
             if (lineBg != null)
             {
-                dc.DrawRectangle(lineBg, null, new Rect(panelX + gutterW, y, panelWidth - gutterW, _lineHeight));
+                dc.DrawRectangle(lineBg, null, new Rect(panelX + gutterW, y, contentWidth, _lineHeight));
             }
 
             // Selection highlight
@@ -590,7 +602,7 @@ public class DiffViewer : Control
                 int selMax = Math.Max(_selectionStartLine, _selectionEndLine);
                 if (i >= selMin && i <= selMax)
                 {
-                    dc.DrawRectangle(selBrush, null, new Rect(panelX + gutterW, y, panelWidth - gutterW, _lineHeight));
+                    dc.DrawRectangle(selBrush, null, new Rect(panelX + gutterW, y, contentWidth, _lineHeight));
                 }
             }
 
@@ -639,7 +651,10 @@ public class DiffViewer : Control
         var fontFamily = FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 13;
 
-        double gutterW = _effectiveGutterWidth;
+        var gutterW = ShowLineNumbers
+            ? ControlRenderGeometry.GetAvailableLength(_effectiveGutterWidth, bounds.Width)
+            : 0;
+        var contentWidth = bounds.Width - gutterW;
         double indicatorX = gutterW + 2;
         double textX = gutterW + 20 + 4;
 
@@ -661,7 +676,7 @@ public class DiffViewer : Control
             var lineBg = GetLineBrushUnified(line.LineType);
             if (lineBg != null)
             {
-                dc.DrawRectangle(lineBg, null, new Rect(gutterW, y, bounds.Width - gutterW, _lineHeight));
+                dc.DrawRectangle(lineBg, null, new Rect(gutterW, y, contentWidth, _lineHeight));
             }
 
             // Selection highlight
@@ -671,7 +686,7 @@ public class DiffViewer : Control
                 int selMax = Math.Max(_selectionStartLine, _selectionEndLine);
                 if (i >= selMin && i <= selMax)
                 {
-                    dc.DrawRectangle(selBrush, null, new Rect(gutterW, y, bounds.Width - gutterW, _lineHeight));
+                    dc.DrawRectangle(selBrush, null, new Rect(gutterW, y, contentWidth, _lineHeight));
                 }
             }
 

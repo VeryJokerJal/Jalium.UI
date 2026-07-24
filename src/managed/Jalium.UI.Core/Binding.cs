@@ -1225,7 +1225,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (ResolvedSource is not IDataErrorInfo dataErrorInfo || _binding.Path == null)
             return true;
 
-        var propertyName = _binding.Path.PathSegments.LastOrDefault() ?? _binding.Path.Path;
+        var propertyName = _binding.Path.CachedPathSegments.LastOrDefault() ?? _binding.Path.Path;
         var error = dataErrorInfo[propertyName];
 
         if (!string.IsNullOrEmpty(error))
@@ -1245,7 +1245,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (_notifyDataErrorInfo == null || _binding.Path == null)
             return;
 
-        var propertyName = _binding.Path.PathSegments.LastOrDefault() ?? _binding.Path.Path;
+        var propertyName = _binding.Path.CachedPathSegments.LastOrDefault() ?? _binding.Path.Path;
         var errors = _notifyDataErrorInfo.GetErrors(propertyName);
 
         if (errors != null)
@@ -1602,7 +1602,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (ResolvedSource == null || _binding.Path == null)
             return;
 
-        var segments = _binding.Path.PathSegments;
+        var segments = _binding.Path.CachedPathSegments;
         if (segments.Length == 0)
             return;
 
@@ -1635,12 +1635,12 @@ public sealed class BindingExpression : BindingExpressionBase
         if (root == null)
             return _binding.FallbackValue;
 
-        if (_binding.Path == null || _binding.Path.PathSegments.Length == 0)
+        if (_binding.Path == null || _binding.Path.CachedPathSegments.Length == 0)
             return root;
 
         // Navigate the path
         object? current = root;
-        foreach (var segment in _binding.Path.PathSegments)
+        foreach (var segment in _binding.Path.CachedPathSegments)
         {
             if (current == null)
                 return _binding.FallbackValue;
@@ -1942,7 +1942,7 @@ public sealed class BindingExpression : BindingExpressionBase
         UnsubscribeFromIntermediates();
 
         if (_binding.Path == null) return;
-        var segments = _binding.Path.PathSegments;
+        var segments = _binding.Path.CachedPathSegments;
         if (segments.Length <= 1) return; // No intermediates for simple paths
 
         _intermediateSubscriptions = new();
@@ -2002,7 +2002,7 @@ public sealed class BindingExpression : BindingExpressionBase
         if (_binding.Path == null)
             return;
 
-        var propertyName = _binding.Path.PathSegments.LastOrDefault() ?? _binding.Path.Path;
+        var propertyName = _binding.Path.CachedPathSegments.LastOrDefault() ?? _binding.Path.Path;
 
         // Check if the changed property matches our binding path
         if (string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == propertyName)
@@ -2028,12 +2028,12 @@ public sealed class BindingExpression : BindingExpressionBase
 
         // Check if the changed property is in our path
         if (string.IsNullOrEmpty(e.PropertyName) ||
-            _binding.Path.PathSegments.Length > 0 && _binding.Path.PathSegments[0] == e.PropertyName)
+            _binding.Path.CachedPathSegments.Length > 0 && _binding.Path.CachedPathSegments[0] == e.PropertyName)
         {
             // For nested paths (e.g., Address.City), when the top-level property changes
             // (e.g., Address), we need to re-resolve the entire property chain and
             // re-subscribe to the new intermediate objects
-            if (_binding.Path.PathSegments.Length > 1)
+            if (_binding.Path.CachedPathSegments.Length > 1)
             {
                 ResolveSourceProperty();
                 SubscribeToIntermediates();
@@ -2049,10 +2049,10 @@ public sealed class BindingExpression : BindingExpressionBase
             return;
 
         // Check if the changed property matches our path
-        if (_binding.Path.PathSegments.Length > 0 && _binding.Path.PathSegments[0] == dp.Name)
+        if (_binding.Path.CachedPathSegments.Length > 0 && _binding.Path.CachedPathSegments[0] == dp.Name)
         {
             // For nested paths, re-resolve the property chain and re-subscribe intermediates
-            if (_binding.Path.PathSegments.Length > 1)
+            if (_binding.Path.CachedPathSegments.Length > 1)
             {
                 ResolveSourceProperty();
                 SubscribeToIntermediates();

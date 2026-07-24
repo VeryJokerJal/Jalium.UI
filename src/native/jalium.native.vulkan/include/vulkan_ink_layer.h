@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -108,6 +109,20 @@ struct VulkanDeviceContext {
 struct VulkanDeviceGeneration {
     VulkanDeviceContext   ctx{};
     std::atomic<bool>     lost{false};
+    // Fail-closed quarantine for an indeterminate live device. Unlike a
+    // DEVICE_LOST generation, its child handles must not be destroyed because
+    // the GPU may still reference them.
+    std::atomic<bool>     abandoned{false};
+    // High-level lifecycle barrier for every call into this device generation.
+    // Callers acquire this before queueMutex and recheck IsUsable() while held.
+    // Recursive locking is intentional: helpers classify failures through
+    // MarkLost/MarkAbandoned and destructors call TryDrainForDestruction while
+    // their complete Vulkan operation already owns the barrier.
+    mutable std::recursive_mutex driverCallMutex;
+    // Vulkan requires host access to a VkQueue, and device-wide idle waits,
+    // to be externally synchronized across render targets and ink work that
+    // share this generation.
+    std::mutex            queueMutex;
     PFN_vkDeviceWaitIdle  deviceWaitIdle  = nullptr;
     PFN_vkDestroyDevice   destroyDevice   = nullptr;
     PFN_vkDestroyInstance destroyInstance = nullptr;
@@ -116,23 +131,65 @@ struct VulkanDeviceGeneration {
     VulkanDeviceGeneration(const VulkanDeviceGeneration&)            = delete;
     VulkanDeviceGeneration& operator=(const VulkanDeviceGeneration&) = delete;
 
-    void MarkLost()      { lost.store(true, std::memory_order_release); }
-    bool IsLost()  const { return lost.load(std::memory_order_acquire); }
+    void MarkLost() {
+        std::lock_guard<std::recursive_mutex> driverLock(driverCallMutex);
+        lost.store(true, std::memory_order_release);
+    }
+    bool IsLost() const { return lost.load(std::memory_order_acquire); }
+    void MarkAbandoned() {
+        std::lock_guard<std::recursive_mutex> driverLock(driverCallMutex);
+        abandoned.store(true, std::memory_order_release);
+    }
+    bool IsAbandoned() const {
+        return abandoned.load(std::memory_order_acquire);
+    }
+    bool IsUsable() const { return !IsLost() && !IsAbandoned(); }
+
+    // Prove child-handle destruction safe. DEVICE_LOST is authoritative and
+    // permits teardown; a missing wait entry point or any other failure
+    // quarantines the generation instead of guessing that the device is idle.
+    bool TryDrainForDestruction()
+    {
+        std::lock_guard<std::recursive_mutex> driverLock(driverCallMutex);
+        if (IsAbandoned()) return false;
+        if (IsLost() || ctx.device == VK_NULL_HANDLE) return true;
+
+        std::lock_guard<std::mutex> queueLock(queueMutex);
+        if (IsAbandoned()) return false;
+        if (IsLost()) return true;
+        if (!deviceWaitIdle) {
+            MarkAbandoned();
+            return false;
+        }
+
+        const VkResult result = deviceWaitIdle(ctx.device);
+        if (result == VK_SUCCESS) return true;
+        if (result == VK_ERROR_DEVICE_LOST) {
+            MarkLost();
+            return true;
+        }
+        MarkAbandoned();
+        return false;
+    }
 
     ~VulkanDeviceGeneration()
     {
-        if (ctx.device != VK_NULL_HANDLE && destroyDevice) {
+        std::lock_guard<std::recursive_mutex> driverLock(driverCallMutex);
+        if (IsAbandoned()) return;
+        if (ctx.device != VK_NULL_HANDLE) {
             // Ink work is always fence-waited before its objects die, and the
             // creating Impl::Destroy already drained the RT's own work, so the
             // queue is idle here in practice; the extra wait is a cheap belt
             // for exotic interleavings. On a lost device the wait would only
             // poke the dead driver, so skip it — vkDestroyDevice on a lost
             // device is legal and required.
-            if (!IsLost() && deviceWaitIdle) {
-                deviceWaitIdle(ctx.device);
+            if (!destroyDevice || !TryDrainForDestruction()) {
+                MarkAbandoned();
+                return;
             }
             destroyDevice(ctx.device, nullptr);
         }
+        if (IsAbandoned()) return;
         if (ctx.instance != VK_NULL_HANDLE && destroyInstance) {
             destroyInstance(ctx.instance, nullptr);
         }
@@ -183,7 +240,8 @@ public:
     // "Removed" discriminator: true once the creating device generation
     // observed VK_ERROR_DEVICE_LOST. GPU work must fail fast; handle
     // destruction stays legal (the generation keeps the device alive).
-    bool DeviceLost() const { return gen_ && gen_->IsLost(); }
+    bool DeviceLost() const { return !gen_ || !gen_->IsUsable(); }
+    bool DeviceAbandoned() const { return gen_ && gen_->IsAbandoned(); }
 
 private:
     // gen_ must precede ctx_: the constructor initializes ctx_ from gen_->ctx
@@ -234,6 +292,52 @@ private:
     std::string          shaderKey_;
 };
 
+// One immutable allocation generation of a persistent ink image. The image
+// handles and extent never change after publication; only imageLayout_ changes
+// while the owning bitmap performs a synchronous clear/brush/readback command.
+//
+// Replay commands retain this object when they are recorded and the submitting
+// frame slot retains it until that slot's fence is observed. Resize can
+// therefore publish a replacement immediately without vkDeviceWaitIdle, and
+// destruction of the old VkImage cannot race an already-recorded or in-flight
+// replay command.
+class VulkanInkImageGeneration final {
+public:
+    ~VulkanInkImageGeneration();
+
+    VulkanInkImageGeneration(const VulkanInkImageGeneration&) = delete;
+    VulkanInkImageGeneration& operator=(const VulkanInkImageGeneration&) = delete;
+
+    uint32_t    Width()        const { return width_; }
+    uint32_t    Height()       const { return height_; }
+    VkImage     Image()        const { return image_; }
+    VkImageView ImageView()    const { return imageView_; }
+    VkDevice    DeviceHandle() const {
+        return pipeline_ ? pipeline_->Context().device : VK_NULL_HANDLE;
+    }
+    bool DeviceLost() const { return pipeline_ && pipeline_->DeviceLost(); }
+    bool DeviceAbandoned() const {
+        return pipeline_ && pipeline_->DeviceAbandoned();
+    }
+
+private:
+    friend class VulkanInkLayerBitmap;
+
+    explicit VulkanInkImageGeneration(
+        std::shared_ptr<VulkanBrushPipeline> pipeline);
+
+    std::shared_ptr<VulkanBrushPipeline> pipeline_;
+    const VkInkFunctions* fns_ = nullptr;
+    VkImage         image_       = VK_NULL_HANDLE;
+    VkDeviceMemory  imageMemory_ = VK_NULL_HANDLE;
+    VkImageView     imageView_   = VK_NULL_HANDLE;
+    VkFramebuffer   framebuffer_ = VK_NULL_HANDLE;
+    VkImageLayout   imageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
+    uint32_t        width_       = 0;
+    uint32_t        height_      = 0;
+    int64_t         gpuResidentBytesAccounted_ = 0;
+};
+
 // Persistent RGBA8 ink layer. Owns its image / view / framebuffer plus the
 // scratch needed to dispatch a brush synchronously. Holds a shared reference
 // to the pipeline (and through it the device generation): the managed
@@ -275,11 +379,17 @@ public:
                       const void* managedConstants,
                       const void* extraParams, uint32_t extraParamsSize);
 
-    uint32_t      Width()       const { return width_; }
-    uint32_t      Height()      const { return height_; }
-    VkImage       Image()       const { return image_; }
-    VkImageView   ImageView()   const { return imageView_; }
-    VkImageLayout ImageLayout() const { return imageLayout_; }
+    uint32_t      Width()       const;
+    uint32_t      Height()      const;
+    VkImage       Image()       const;
+    VkImageView   ImageView()   const;
+    VkImageLayout ImageLayout() const;
+
+    // Atomically captures the currently-published allocation generation.
+    // Callers must carry this reference through command recording and, after
+    // queue submission, until the corresponding frame fence completes.
+    std::shared_ptr<const VulkanInkImageGeneration>
+        AcquireImageGeneration() const;
 
     // Generation discrimination for consumers (BlitInkLayer): the device this
     // bitmap's image lives on, and whether that device generation is lost.
@@ -288,6 +398,9 @@ public:
     // devices — and must skip a lost generation entirely.
     VkDevice DeviceHandle() const { return pipeline_ ? pipeline_->Context().device : VK_NULL_HANDLE; }
     bool     DeviceLost()   const { return pipeline_ && pipeline_->DeviceLost(); }
+    bool     DeviceAbandoned() const {
+        return pipeline_ && pipeline_->DeviceAbandoned();
+    }
 
     // Monotonic content revision, bumped after every successful mutation
     // (Clear / DispatchBrush / Resize). The foreign-device blit fallback keys
@@ -302,8 +415,12 @@ public:
     bool ReadbackBgra(std::vector<uint8_t>& outBgra);
 
 private:
-    bool CreateResources(uint32_t width, uint32_t height);
+    std::shared_ptr<VulkanInkImageGeneration>
+        CreateResources(uint32_t width, uint32_t height);
+    void BindOperationGeneration(
+        const std::shared_ptr<VulkanInkImageGeneration>& generation);
     void ReleaseResources();
+    bool ClearCurrent(float r, float g, float b, float a);
     bool EnsureBuffer(VkBuffer& buffer, VkDeviceMemory& memory, void*& mapped,
                       VkDeviceSize& capacity, VkDeviceSize required, VkBufferUsageFlags usage);
     void DestroyBuffer(VkBuffer& buffer, VkDeviceMemory& memory, void*& mapped, VkDeviceSize& capacity);
@@ -312,9 +429,9 @@ private:
     void BarrierToLayout(VkImageLayout newLayout,
                          VkPipelineStageFlags srcStage, VkAccessFlags srcAccess,
                          VkPipelineStageFlags dstStage, VkAccessFlags dstAccess);
-    // Latches the generation's lost flag when a submit/wait reports
-    // VK_ERROR_DEVICE_LOST, so every later ink op on this generation fails
-    // fast instead of poking the dead driver again.
+    // Classifies a failed driver result while holding driverCallMutex and then
+    // queueMutex. DEVICE_LOST is latched; every other result quarantines the
+    // generation so later operations and destructors fail closed.
     void NoteResult(VkResult result);
 
     std::shared_ptr<VulkanBrushPipeline> pipeline_;  // shared keep-alive (pipeline + device generation)
@@ -322,6 +439,21 @@ private:
     std::atomic<uint64_t> contentVersion_{1};        // see ContentVersion()
     void BumpContentVersion() { contentVersion_.fetch_add(1, std::memory_order_acq_rel); }
 
+    // Serializes the bitmap-owned command buffer/fence and mapped scratch.
+    // Backend calls already use VulkanBackend::inkMutex_; this second gate is
+    // required for render-target readback, which can arrive independently.
+    mutable std::mutex operationMutex_;
+    // Resize holds this publication gate until the fresh image has been
+    // cleared and returned to SHADER_READ_ONLY_OPTIMAL. A recorder therefore
+    // observes either the complete old generation or the complete new one.
+    mutable std::mutex imageGenerationMutex_;
+    std::shared_ptr<VulkanInkImageGeneration> imageGeneration_;
+    VulkanInkImageGeneration* operationGeneration_ = nullptr;
+
+    // Non-owning aliases of operationGeneration_'s handles. During resize they
+    // temporarily target an unpublished candidate while it is cleared; normal
+    // bitmap operations target imageGeneration_. Asynchronous consumers retain
+    // the shared generation returned by AcquireImageGeneration instead.
     VkImage         image_       = VK_NULL_HANDLE;
     VkDeviceMemory  imageMemory_ = VK_NULL_HANDLE;
     VkImageView     imageView_   = VK_NULL_HANDLE;
@@ -329,14 +461,6 @@ private:
     VkImageLayout   imageLayout_ = VK_IMAGE_LAYOUT_UNDEFINED;
     uint32_t        width_       = 0;
     uint32_t        height_      = 0;
-    // Bytes reported to bitmap_stats::AddGpuResidentBytes for image_.
-    // Set exactly when CreateResources fully succeeds, subtracted (and
-    // zeroed) by ReleaseResources — pairing through this member keeps the
-    // global counter balanced even when CreateResources fails halfway
-    // (image created but view/framebuffer failed → never accounted →
-    // ReleaseResources subtracts 0).
-    int64_t         gpuResidentBytesAccounted_ = 0;
-
     // Synchronous dispatch scratch.
     VkCommandPool   cmdPool_   = VK_NULL_HANDLE;
     VkCommandBuffer cmdBuffer_ = VK_NULL_HANDLE;

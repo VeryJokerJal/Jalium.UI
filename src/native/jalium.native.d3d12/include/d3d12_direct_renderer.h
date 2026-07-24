@@ -36,7 +36,7 @@ struct Transform2D {
 };
 
 // ============================================================================
-// Instance data layout for SDF rect shader (192 bytes, 16-byte aligned)
+// Instance data layout for SDF rect shader (224 bytes, 16-byte aligned)
 //
 // Supports solid fills and linear/radial gradient fills.
 // When gradientType == 0, fillR/G/B/A is used as a flat premultiplied color.
@@ -76,9 +76,10 @@ struct SdfRectInstance {
     float stop3Pos, stop3R, stop3G, stop3B, stop3A;
 
     // --- shape type (16 bytes) ---
-    float shapeType;            // 0 = RoundedRect (default), 1 = SuperEllipse
-    float shapeN;               // SuperEllipse exponent (e.g. 4.0 for squircle)
-    float _pad2, _pad3;
+    float shapeType;            // 0=rounded, 1=local continuous corners, 2=internal ellipse
+    float shapeN;               // SuperEllipse exponent (e.g. 4.0)
+    float paintMode;            // 0=normal fill/border, 1=gradient stroke only
+    float _pad3;
 
     // --- render transform (32 bytes, two 16-byte-aligned float4s) ---
     // Full 2x3 affine applied to the quad corners IN THE VERTEX SHADER. This
@@ -547,7 +548,11 @@ public:
     bool ResolveCurrentRoundedClip(float outRect[4], float outRadii[4]) const;
     void SetOpacity(float opacity) { currentOpacity_ = opacity; }
     float GetOpacity() const { return currentOpacity_; }
-    void SetShapeType(float type, float n) { currentShapeType_ = type; currentShapeN_ = n; }
+    void SetShapeType(float type, float n) {
+        currentShapeType_ = type >= 0.5f ? 1.0f : 0.0f;
+        // Comparisons reject NaN/Infinity as well as unstable exponents.
+        currentShapeN_ = (n >= 2.0f && n <= 16.0f) ? n : 4.0f;
+    }
     float GetShapeType() const { return currentShapeType_; }
     float GetShapeN() const { return currentShapeN_; }
 
@@ -765,6 +770,7 @@ private:
     bool readbackReady_ = false;
     ComPtr<ID3D12Resource> readbackBuffer_;
     uint64_t readbackBufferCapacity_ = 0;   // bytes
+    uint64_t readbackDataSize_ = 0;         // exact GetCopyableFootprints size
     uint32_t readbackWidth_ = 0;            // captured back-buffer pixels
     uint32_t readbackHeight_ = 0;
     uint32_t readbackRowPitch_ = 0;         // 256-aligned source row pitch
@@ -789,6 +795,9 @@ private:
     // submission and wait before mutating/reusing those resources.
     uint64_t glyphAtlasFenceValue_ = 0;
     bool glyphAtlasUsedThisFrame_ = false;
+    // Sampling is read-only and may overlap across in-flight frames. Only a
+    // recorded atlas upload needs an ordering dependency on the last reader.
+    bool glyphAtlasUploadRecordedThisFrame_ = false;
 
     // ── Frame-pacing instrumentation (DevTools Perf tab) ────────────────
     // The native side surfaces this through QueryGpuStats so DevTools can

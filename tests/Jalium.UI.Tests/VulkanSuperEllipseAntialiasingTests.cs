@@ -44,6 +44,24 @@ public sealed class VulkanSuperEllipseAntialiasingTests
         Assert.True(GetBlue(withClip, 32, 32) >= 250);
     }
 
+    [RequiresBackendFact(RenderBackend.Vulkan)]
+    public void Stroke_RespectsAncestorRoundedClip()
+    {
+        using var window = new HiddenNativeWindow(Width, Height);
+        using var context = new RenderContext(RenderBackend.Vulkan);
+        using var stroke = context.CreateSolidBrush(1f, 1f, 1f, 1f);
+
+        var withoutClip = RenderStrokeWithOptionalRoundedClip(
+            context, window.Hwnd, stroke, pushClip: false);
+        var withClip = RenderStrokeWithOptionalRoundedClip(
+            context, window.Hwnd, stroke, pushClip: true);
+
+        Assert.True(GetBlue(withoutClip, 16, 20) >= 120);
+        Assert.True(GetBlue(withClip, 16, 20) <= 10);
+        Assert.True(GetBlue(withClip, 32, 17) >= 120);
+        Assert.True(GetBlue(withClip, 32, 32) <= 10);
+    }
+
     private static void AssertGalleryTile(RenderContext context, nint hwnd, NativeBrush fill, float x, float y)
     {
         using var target = context.CreateRenderTarget(hwnd, Width, Height);
@@ -54,19 +72,19 @@ public sealed class VulkanSuperEllipseAntialiasingTests
             Assert.True(target.TryBeginDraw());
             target.Clear(0f, 0f, 0f);
 
-            // Matches the Gallery's 34x34 `Razor @{ for }` tiles. Border sets
-            // this state around the per-corner rounded-rectangle fill even
-            // though its CornerRadius remains at the default zero value.
+            // Matches the Gallery's 34x34 tiles. Border sets shape state around
+            // the rounded-rectangle transport call; SuperEllipse consumes the
+            // transported radii as four local continuous-corner patches.
             target.SetShapeType(type: 1, n: 4f);
             target.FillPerCornerRoundedRectangle(
                 x,
                 y,
                 width: 34f,
                 height: 34f,
-                tl: 0f,
-                tr: 0f,
-                br: 0f,
-                bl: 0f,
+                tl: 10f,
+                tr: 10f,
+                br: 10f,
+                bl: 10f,
                 fill);
             target.SetShapeType(type: 0, n: 4f);
 
@@ -141,10 +159,10 @@ public sealed class VulkanSuperEllipseAntialiasingTests
                 y: 8f,
                 width: 48f,
                 height: 48f,
-                tl: 0f,
-                tr: 0f,
-                br: 0f,
-                bl: 0f,
+                tl: 12f,
+                tr: 12f,
+                br: 12f,
+                bl: 12f,
                 fill);
             target.SetShapeType(type: 0, n: 4f);
 
@@ -157,6 +175,48 @@ public sealed class VulkanSuperEllipseAntialiasingTests
                 Assert.Equal(JaliumResult.Ok, target.RequestReadback());
             }
 
+            Assert.Equal(JaliumResult.Ok, target.TryEndDraw());
+        }
+
+        var pixels = new byte[Width * Height * 4];
+        Assert.Equal(JaliumResult.Ok, target.FetchReadback(pixels, Width * 4u, out _, out _));
+        return pixels;
+    }
+
+    private static byte[] RenderStrokeWithOptionalRoundedClip(
+        RenderContext context,
+        nint hwnd,
+        NativeBrush stroke,
+        bool pushClip)
+    {
+        using var target = context.CreateRenderTarget(hwnd, Width, Height);
+        Assert.True(target.IsValid);
+
+        for (var frame = 0; frame < 2; frame++)
+        {
+            Assert.True(target.TryBeginDraw());
+            target.Clear(0f, 0f, 0f);
+            if (pushClip)
+            {
+                target.PushRoundedRectClip(16f, 16f, 32f, 32f, 12f, 12f);
+            }
+
+            target.SetShapeType(type: 1, n: 4f);
+            target.DrawPerCornerRoundedRectangle(
+                8f, 8f, 48f, 48f,
+                12f, 12f, 12f, 12f,
+                stroke,
+                strokeWidth: 20f);
+            target.SetShapeType(type: 0, n: 4f);
+
+            if (pushClip)
+            {
+                target.PopClip();
+            }
+            if (frame == 1)
+            {
+                Assert.Equal(JaliumResult.Ok, target.RequestReadback());
+            }
             Assert.Equal(JaliumResult.Ok, target.TryEndDraw());
         }
 

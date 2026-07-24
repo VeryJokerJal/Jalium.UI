@@ -218,8 +218,28 @@ public abstract partial class CompositionTarget
         // extended the deadline lock-free.
         if (now >= previousDeadline && Volatile.Read(ref _subscriberCount) == 0)
         {
-            lock (_timerLock) { WakeLoopLocked(); }
+            lock (_timerLock)
+            {
+                WakeLoopLocked();
+            }
+
+            // A parked native loop wakes only to re-check ShouldTick, then its active branch
+            // waits a full refresh interval before posting. Dispatch once on this idle-to-active
+            // edge so a click-triggered repaint can reach the next present; _framePosted still
+            // coalesces races with the timer, and continuous work remains refresh-rate paced.
+            OnFrameTick(null);
         }
+    }
+
+    /// <summary>
+    /// Posts a frame immediately even when the keep-alive loop is already active. Intended for
+    /// rare, user-initiated bulk visual changes such as a theme switch; continuous invalidations
+    /// must use <see cref="RequestFrame"/> so they remain refresh-rate paced.
+    /// </summary>
+    internal static void RequestImmediateFrame()
+    {
+        RequestFrame();
+        OnFrameTick(null);
     }
 
     /// <summary>
@@ -289,6 +309,18 @@ public abstract partial class CompositionTarget
     /// Resumes rendering after a suspend. The next frame tick will dispatch normally.
     /// </summary>
     internal static void ResumeRendering() => _suspended = false;
+
+    /// <summary>
+    /// Clears a suspend that leaked across an Android UI-thread generation.
+    /// Pause/Resume reach <see cref="SuspendRendering"/>/<see cref="ResumeRendering"/>
+    /// through an async dispatch; when the old dispatcher is already stopping the
+    /// Resume dispatch is silently dropped, so a Pause-set flag would park every
+    /// frame tick of the NEXT session forever (black screen with a live process).
+    /// A new session necessarily starts in the foreground, so its startup path
+    /// (AndroidActivityBridge.MarkUiThreadReady) calls this unconditionally.
+    /// Android-only entry point; desktop never re-generations its UI thread.
+    /// </summary>
+    internal static void ResetSuspendedForNewSession() => _suspended = false;
 
     /// <summary>
     /// Updates the detected refresh rate. Called by Window when the monitor changes.
@@ -478,6 +510,18 @@ public abstract partial class CompositionTarget
             {
                 // Parked: arm a long interval; woken early by WakeLoopLocked's Arm(1).
                 _nativeTimer?.Arm(1_000_000L); // ~1 s in microseconds
+
+                // Close the check-then-park race: work can arrive after the
+                // ShouldTick() decision above but before this thread arms the
+                // parked deadline. In that ordering the long arm would overwrite
+                // WakeLoopLocked's immediate arm. Re-check after publishing the
+                // parked deadline so either this thread or the waking thread is
+                // guaranteed to leave an immediate deadline installed.
+                if (!_nativeTimerRunning || ShouldTick())
+                {
+                    _nativeTimer?.Arm(1);
+                }
+
                 _nativeTimer?.Wait(2000);
                 if (!_nativeTimerRunning) break;
             }

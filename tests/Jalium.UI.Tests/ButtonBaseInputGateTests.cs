@@ -138,6 +138,46 @@ public class ButtonBaseInputGateTests
         Assert.Equal(0, clicks);
     }
 
+    [Fact]
+    public void Button_TemplateReplacement_ReparentsVisualContent_AndTextStillClicks()
+    {
+        var label = new TextBlock { Text = "Switch theme" };
+        var content = new StackPanel();
+        content.Children.Add(label);
+        var button = new Button
+        {
+            Content = content,
+            Template = CreateContentPresenterTemplate()
+        };
+        button.Measure(new Size(180, 40));
+        button.Arrange(new Rect(0, 0, 180, 40));
+
+        // Runtime resource/style refreshes can replace a control template while
+        // preserving its UIElement Content. The replacement presenter must take
+        // real visual ownership instead of rendering an element whose parent
+        // still points into the discarded template tree.
+        button.Template = CreateContentPresenterTemplate();
+        button.Measure(new Size(180, 40));
+        button.Arrange(new Rect(0, 0, 180, 40));
+
+        Assert.True(IsVisualDescendantOf(label, button));
+
+        var clicks = 0;
+        button.Click += (_, _) => clicks++;
+        try
+        {
+            label.RaiseEvent(CreateMouseDown());
+            label.RaiseEvent(CreateMouseUp());
+        }
+        finally
+        {
+            if (button.IsMouseCaptured)
+                button.ReleaseMouseCapture();
+        }
+
+        Assert.Equal(1, clicks);
+    }
+
     // ── ClickMode.Hover gate (previously had no IsEnabled check at all) ─────────────────────────
 
     [Fact]
@@ -204,6 +244,27 @@ public class ButtonBaseInputGateTests
             xButton2: MouseButtonState.Released,
             modifiers: ModifierKeys.None,
             timestamp: 0);
+    }
+
+    private static ControlTemplate CreateContentPresenterTemplate()
+    {
+        var template = new ControlTemplate(typeof(Button));
+        template.SetVisualTree(static () => new Border
+        {
+            Child = new ContentPresenter()
+        });
+        return template;
+    }
+
+    private static bool IsVisualDescendantOf(Visual descendant, Visual ancestor)
+    {
+        for (Visual? current = descendant; current != null; current = current.VisualParent)
+        {
+            if (ReferenceEquals(current, ancestor))
+                return true;
+        }
+
+        return false;
     }
 
     /// <summary>Minimal visual-tree parent so a button has a VisualParent for the ancestor test.</summary>

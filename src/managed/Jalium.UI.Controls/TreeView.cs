@@ -524,9 +524,6 @@ public class TreeViewItem : HeaderedItemsControl
     private static readonly CubicEase s_arrowExpandEase = new() { EasingMode = EasingMode.EaseOut };
     private static readonly CubicEase s_collapseEase = new() { EasingMode = EasingMode.EaseInOut };
     private static readonly BackEase s_clothEase = new() { EasingMode = EasingMode.EaseOut, Amplitude = 1.05 };
-    private static readonly SolidColorBrush s_fallbackHoverBackgroundBrush = new(Themes.ThemeColors.ControlBackgroundHover);
-    private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Themes.ThemeColors.SelectionBackground);
-    private static readonly SolidColorBrush s_fallbackSelectedHoverBackgroundBrush = new(Themes.ThemeColors.AccentPressed);
 
     internal TreeView? ParentTreeView { get; set; }
     internal TreeViewItem? ParentItem { get; set; }
@@ -543,7 +540,6 @@ public class TreeViewItem : HeaderedItemsControl
     }
 
     private int _level;
-    private bool _isHeaderMouseOver;
 
     // Deferred child loading: store data source + template, create children only on expand
     private object? _deferredItemsSource;
@@ -560,8 +556,8 @@ public class TreeViewItem : HeaderedItemsControl
     #region Template Parts
 
     private Border? _headerBorder;
-    private Border? _indentSpacer;
-    private Border? _expanderBorder;
+    private FrameworkElement? _indentSpacer;
+    private FrameworkElement? _expanderBorder;
     private Shapes.Path? _expanderArrow;
     private FrameworkElement? _itemsHost; // ItemsPresenter from template (controls visibility/clipping)
     private Threading.DispatcherTimer? _expandAnimTimer;
@@ -734,7 +730,6 @@ public class TreeViewItem : HeaderedItemsControl
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         Focusable = true;
         ((System.Collections.Specialized.INotifyCollectionChanged)Items).CollectionChanged += OnChildItemsChanged;
-        ResourcesChanged += OnResourcesChangedHandler;
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
 
         // 把 wheel 事件转发给 ParentTreeView 内部的 ScrollViewer。
@@ -867,16 +862,14 @@ public class TreeViewItem : HeaderedItemsControl
         if (_headerBorder != null)
         {
             _headerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
-            _headerBorder.RemoveHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter));
-            _headerBorder.RemoveHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave));
             _headerBorder.RemoveHandler(TouchDownEvent, new RoutedEventHandler(OnHeaderTouchDown));
             _headerBorder.RemoveHandler(TouchMoveEvent, new RoutedEventHandler(OnHeaderTouchMove));
             _headerBorder.RemoveHandler(TouchUpEvent, new RoutedEventHandler(OnHeaderTouchUp));
         }
 
         _headerBorder = GetTemplateChild("PART_HeaderBorder") as Border;
-        _indentSpacer = GetTemplateChild("PART_IndentSpacer") as Border;
-        _expanderBorder = GetTemplateChild("PART_ExpanderBorder") as Border;
+        _indentSpacer = GetTemplateChild("PART_IndentSpacer") as FrameworkElement;
+        _expanderBorder = GetTemplateChild("PART_ExpanderBorder") as FrameworkElement;
         _expanderArrow = GetTemplateChild("PART_ExpanderArrow") as Shapes.Path;
         _itemsHost = GetTemplateChild("PART_ItemsHost") as FrameworkElement;
 
@@ -885,8 +878,6 @@ public class TreeViewItem : HeaderedItemsControl
         if (_headerBorder != null)
         {
             _headerBorder.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler), true);
-            _headerBorder.AddHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter), true);
-            _headerBorder.AddHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave), true);
             _headerBorder.AddHandler(TouchDownEvent, new RoutedEventHandler(OnHeaderTouchDown), true);
             _headerBorder.AddHandler(TouchMoveEvent, new RoutedEventHandler(OnHeaderTouchMove), true);
             _headerBorder.AddHandler(TouchUpEvent, new RoutedEventHandler(OnHeaderTouchUp), true);
@@ -905,7 +896,6 @@ public class TreeViewItem : HeaderedItemsControl
         // triggers RefreshItems — but only if IsExpanded (our override).
         // For collapsed items, children remain deferred until first expand.
 
-        UpdateHeaderVisualState();
     }
 
     /// <inheritdoc />
@@ -920,8 +910,6 @@ public class TreeViewItem : HeaderedItemsControl
         if (_headerBorder != null)
         {
             _headerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
-            _headerBorder.RemoveHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter));
-            _headerBorder.RemoveHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave));
             _headerBorder.RemoveHandler(TouchDownEvent, new RoutedEventHandler(OnHeaderTouchDown));
             _headerBorder.RemoveHandler(TouchMoveEvent, new RoutedEventHandler(OnHeaderTouchMove));
             _headerBorder.RemoveHandler(TouchUpEvent, new RoutedEventHandler(OnHeaderTouchUp));
@@ -1231,28 +1219,6 @@ public class TreeViewItem : HeaderedItemsControl
             current = VisualTreeHelper.GetParent(current);
         }
         return false;
-    }
-
-    private void OnHeaderMouseEnter(object sender, MouseEventArgs e)
-    {
-        if (_isHeaderMouseOver)
-        {
-            return;
-        }
-
-        _isHeaderMouseOver = true;
-        UpdateHeaderVisualState();
-    }
-
-    private void OnHeaderMouseLeave(object sender, MouseEventArgs e)
-    {
-        if (!_isHeaderMouseOver)
-        {
-            return;
-        }
-
-        _isHeaderMouseOver = false;
-        UpdateHeaderVisualState();
     }
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)
@@ -1660,84 +1626,6 @@ public class TreeViewItem : HeaderedItemsControl
     private static double Lerp(double from, double to, double progress) =>
         from + ((to - from) * progress);
 
-    private void UpdateHeaderVisualState()
-    {
-        if (_headerBorder == null)
-        {
-            return;
-        }
-
-        if (IsSelected && _isHeaderMouseOver)
-        {
-            _headerBorder.Background = ResolveSelectedHoverBackgroundBrush();
-            return;
-        }
-
-        if (IsSelected)
-        {
-            _headerBorder.Background = ResolveSelectedBackgroundBrush();
-            return;
-        }
-
-        if (_isHeaderMouseOver)
-        {
-            _headerBorder.Background = ResolveHoverBackgroundBrush();
-            return;
-        }
-
-        _headerBorder.ClearValue(Border.BackgroundProperty);
-    }
-
-    /// <summary>
-    /// 资源查找走 _headerBorder 而非 TreeViewItem 自己 —— template 内部的 part
-    /// 已 attach 到 visual tree, 它的 VisualParent 链直接经过 TreeView.Resources;
-    /// TreeViewItem 在某些时机（比如 ItemContainerGenerator 初次创建容器时）visual tree 可能
-    /// 没完全连通, this.TryFindResource 会跳到 Application.Resources 拿到主题默认 fallback
-    /// (#15FFFFFF 等), 错过用户在 TreeView.Resources 里的覆盖。
-    /// </summary>
-    private Brush ResolveResourceBrush(string key, Brush fallback)
-    {
-        // 优先级 1：直接从 ParentTreeView 的 Resources 拿 — TreeViewItem 持有 ParentTreeView 引用，
-        // 不依赖 visual tree（framework 在 ItemContainerGenerator 创建容器时
-        // 显式设置该字段），因此即使 visual ancestor 链断开也能正确解析用户在
-        // <TreeView.Resources> 里的覆盖。
-        if (ParentTreeView is { } tv)
-        {
-            // 沿 ParentTreeView 链向上 — 处理嵌套 TreeView 场景（虽然现在不嵌套）
-            FrameworkElement? cur = tv;
-            while (cur != null)
-            {
-                if (cur.Resources != null && cur.Resources.TryGetValue(key, out var v) && v is Brush direct)
-                {
-                    return direct;
-                }
-                cur = cur.VisualParent as FrameworkElement;
-            }
-        }
-
-        // 优先级 2：_headerBorder 走 visual tree 查找（保险路径）
-        if (_headerBorder?.TryFindResource(key) is Brush b1) return b1;
-
-        // 优先级 3：TreeViewItem 自身查找
-        if (TryFindResource(key) is Brush b2) return b2;
-
-        return fallback;
-    }
-
-    private Brush ResolveHoverBackgroundBrush()
-        => ResolveResourceBrush("ControlBackgroundHover", s_fallbackHoverBackgroundBrush);
-
-    private Brush ResolveSelectedBackgroundBrush()
-        => ResolveResourceBrush("SelectionBackground", s_fallbackSelectedBackgroundBrush);
-
-    private Brush ResolveSelectedHoverBackgroundBrush()
-        => ResolveResourceBrush("AccentBrushPressed", s_fallbackSelectedHoverBackgroundBrush);
-
-    private void OnResourcesChangedHandler(object? sender, EventArgs e)
-    {
-        UpdateHeaderVisualState();
-    }
-
     internal Panel? GetItemsHostPanel()
     {
         if (ItemsHost == null)
@@ -1863,8 +1751,6 @@ public class TreeViewItem : HeaderedItemsControl
                 tvi.OnSelected(new RoutedEventArgs(SelectedEvent, tvi));
             else
                 tvi.OnUnselected(new RoutedEventArgs(UnselectedEvent, tvi));
-
-            tvi.UpdateHeaderVisualState();
         }
     }
 
@@ -1923,13 +1809,6 @@ public class TreeViewItem : HeaderedItemsControl
         {
             ExpandSubtreeCore(descendant);
         }
-    }
-
-    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
-    {
-        // TreeView item visuals are driven by header-local hover state.
-        // Avoid invalidating the full expanded subtree whenever the pointer
-        // moves across descendants inside the item.
     }
 
     #region HierarchicalDataTemplate Support

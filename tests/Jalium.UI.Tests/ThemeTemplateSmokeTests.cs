@@ -10,8 +10,13 @@ namespace Jalium.UI.Tests;
 [Collection("Application")]
 public class ThemeTemplateSmokeTests
 {
-    [Fact]
-    public void CommonControlStyles_ShouldBePresent_AndTemplatesShouldApply()
+    private const string HighContrastThemeKey = "HighContrast";
+
+    [Theory]
+    [InlineData(nameof(ThemeVariant.Dark))]
+    [InlineData(nameof(ThemeVariant.Light))]
+    [InlineData(HighContrastThemeKey)]
+    public void CommonControlStyles_ShouldBePresent_AndTemplatesShouldApply(string themeKey)
     {
         ResetApplicationState();
         ThemeLoader.Initialize();
@@ -19,6 +24,8 @@ public class ThemeTemplateSmokeTests
 
         try
         {
+            ApplyThemeKey(themeKey);
+
             var splitButton = new SplitButton
             {
                 Content = "Run",
@@ -99,6 +106,22 @@ public class ThemeTemplateSmokeTests
         {
             ResetApplicationState();
         }
+    }
+
+    private static void ApplyThemeKey(string themeKey)
+    {
+        if (Enum.TryParse<ThemeVariant>(themeKey, ignoreCase: false, out var theme))
+        {
+            ThemeManager.ApplyTheme(theme);
+            Assert.Equal(theme, ThemeManager.CurrentTheme);
+        }
+        else
+        {
+            Assert.Equal(HighContrastThemeKey, themeKey);
+            ResourceDictionary.CurrentThemeKey = themeKey;
+        }
+
+        Assert.Equal(themeKey, ResourceDictionary.CurrentThemeKey as string);
     }
 
     private static void ResetApplicationState()

@@ -3,6 +3,34 @@ namespace Jalium.UI.Tests;
 public sealed class EventManagerParityTests
 {
     [Fact]
+    public void ClassHandlerResolutionIsCachedAndInvalidatedByRegistration()
+    {
+        var routedEvent = EventManager.RegisterRoutedEvent(
+            $"CachedClassHandler{Guid.NewGuid():N}",
+            RoutingStrategy.Bubble,
+            typeof(RoutedEventHandler),
+            typeof(ClassHandlerBase));
+        RoutedEventHandler firstHandler = static (_, _) => { };
+        RoutedEventHandler secondHandler = static (_, _) => { };
+        EventManager.RegisterClassHandler(typeof(ClassHandlerBase), routedEvent, firstHandler);
+
+        var first = EventManager.GetClassHandlers(routedEvent, typeof(ClassHandlerDerived));
+        var repeated = EventManager.GetClassHandlers(routedEvent, typeof(ClassHandlerDerived));
+
+        Assert.Same(first, repeated);
+        Assert.Single(first);
+        Assert.Same(firstHandler, first[0].Handler);
+
+        EventManager.RegisterClassHandler(typeof(ClassHandlerDerived), routedEvent, secondHandler);
+        var refreshed = EventManager.GetClassHandlers(routedEvent, typeof(ClassHandlerDerived));
+
+        Assert.NotSame(first, refreshed);
+        Assert.Equal(2, refreshed.Length);
+        Assert.Same(firstHandler, refreshed[0].Handler);
+        Assert.Same(secondHandler, refreshed[1].Handler);
+    }
+
+    [Fact]
     public void GetRoutedEventsReturnsDistinctSnapshotIncludingAddedOwners()
     {
         var name = $"ParityEvent{Guid.NewGuid():N}";
@@ -29,4 +57,8 @@ public sealed class EventManagerParityTests
     private sealed class FirstOwner;
 
     private sealed class SecondOwner;
+
+    private class ClassHandlerBase;
+
+    private sealed class ClassHandlerDerived : ClassHandlerBase;
 }

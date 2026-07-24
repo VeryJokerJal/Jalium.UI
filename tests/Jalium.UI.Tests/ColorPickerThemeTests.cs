@@ -41,7 +41,8 @@ public class ColorPickerThemeTests
             Assert.False(colorPicker.HasLocalValue(Control.BackgroundProperty));
             Assert.NotNull(colorPicker.Background);
             Assert.NotNull(colorPicker.BorderBrush);
-            Assert.Equal(8, colorPicker.Padding.Left);
+            Assert.Equal(10, colorPicker.Padding.Left);
+            Assert.Equal(6, colorPicker.Padding.Top);
         }
         finally
         {

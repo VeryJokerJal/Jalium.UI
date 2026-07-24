@@ -18,6 +18,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
     <ProjectReference Include="..\Jalium.UI.Managed\Jalium.UI.Managed.csproj" />
   </ItemGroup>

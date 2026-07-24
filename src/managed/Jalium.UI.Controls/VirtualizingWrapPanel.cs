@@ -41,6 +41,18 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         DependencyProperty.Register(nameof(ItemHeight), typeof(double), typeof(VirtualizingWrapPanel),
             new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
 
+    /// <summary>Identifies the horizontal spacing between item cells.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty HorizontalSpacingProperty =
+        DependencyProperty.Register(nameof(HorizontalSpacing), typeof(double), typeof(VirtualizingWrapPanel),
+            new PropertyMetadata(0.0, OnLayoutPropertyChanged));
+
+    /// <summary>Identifies the vertical spacing between item cells.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty VerticalSpacingProperty =
+        DependencyProperty.Register(nameof(VerticalSpacing), typeof(double), typeof(VirtualizingWrapPanel),
+            new PropertyMetadata(0.0, OnLayoutPropertyChanged));
+
     #endregion
 
     #region CLR Properties
@@ -69,6 +81,22 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         set => SetValue(ItemHeightProperty, value);
     }
 
+    /// <summary>Gets or sets the horizontal gap between item cells.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public double HorizontalSpacing
+    {
+        get => (double)GetValue(HorizontalSpacingProperty)!;
+        set => SetValue(HorizontalSpacingProperty, value);
+    }
+
+    /// <summary>Gets or sets the vertical gap between item cells.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public double VerticalSpacing
+    {
+        get => (double)GetValue(VerticalSpacingProperty)!;
+        set => SetValue(VerticalSpacingProperty, value);
+    }
+
     /// <summary>Virtualization mode (Standard / Recycling).</summary>
     public VirtualizationMode VirtualizationMode
     {
@@ -86,7 +114,21 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
     private Size _viewport;
     private double _itemWidth;     // resolved (DP value or first-item DesiredSize)
     private double _itemHeight;    // resolved
+    private bool _hasResolvedAutoItemSize;
     private int _itemsPerRow;
+    // The cross-axis size from the last completed Arrange is the authoritative viewport.
+    // Parent grids can issue speculative, much wider Measure probes while their columns are
+    // being resolved; accepting those probes here changes the wrap count and collapses the
+    // scroll extent in the middle of an active drag.
+    private double _arrangedCrossAxis;
+    // A persistent ScrollViewer gutter can Measure at one width and Arrange at another. If
+    // those widths straddle a wrap threshold, remember the exact pair so the next identical
+    // probe uses the committed Arrange width and the layout converges instead of invalidating
+    // Measure forever. A different probe is still accepted, which keeps real window shrinking
+    // responsive even when an outer non-IScrollInfo ScrollViewer has a stale content extent.
+    private double _measureProbeCrossAxis = double.NaN;
+    private double _correctiveMeasureCrossAxis = double.NaN;
+    private double _correctiveArrangeCrossAxis = double.NaN;
     private readonly List<int> _recycleBuffer = new();
 
     // Per-frame realize budget — large scroll jumps (dragging the thumb,
@@ -151,7 +193,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
     {
         get
         {
-            var s = Orientation == Orientation.Horizontal ? _itemHeight : _itemWidth;
+            var s = GetAxisStride();
             return s > 0 ? s : 24;
         }
     }
@@ -169,7 +211,13 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         }
 
         var itemCount = GetItemCount();
-        _viewport = CoerceViewport(availableSize);
+        // Grid/ScrollViewer can issue an intermediate measure with the full window width even
+        // though this panel's already-arranged viewport occupies only one grid column. Treating
+        // that transient width as the wrap width changes ItemsPerRow mid-scroll, collapses the
+        // estimated extent, and clamps the active offset. The owning ScrollViewer's viewport is
+        // the stable cross-axis constraint; the raw measure size still governs the scroll axis.
+        var layoutSize = StabilizeCrossAxisMeasureSize(availableSize);
+        _viewport = CoerceViewport(layoutSize);
 
         if (itemCount == 0)
         {
@@ -180,26 +228,18 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
 
         // Resolve item size — explicit ItemWidth/Height take priority;
         // otherwise we measure index 0 once and reuse the size.
-        ResolveItemSize(availableSize, itemCount);
+        ResolveItemSize(layoutSize, itemCount);
         if (_itemWidth <= 0 || _itemHeight <= 0)
         {
             // Could not determine — fall back to non-virtualizing measure.
             return MeasureNonVirtualized(availableSize);
         }
 
-        var crossAxis = Orientation == Orientation.Horizontal ? availableSize.Width : availableSize.Height;
-        var crossItemSize = Orientation == Orientation.Horizontal ? _itemWidth : _itemHeight;
-        if (double.IsInfinity(crossAxis) || crossAxis <= 0)
-        {
-            _itemsPerRow = 1;
-        }
-        else
-        {
-            _itemsPerRow = Math.Max(1, (int)Math.Floor(crossAxis / crossItemSize));
-        }
+        var crossAxis = Orientation == Orientation.Horizontal ? layoutSize.Width : layoutSize.Height;
+        _itemsPerRow = CalculateItemsPerRow(crossAxis);
 
         var totalRows = (itemCount + _itemsPerRow - 1) / _itemsPerRow;
-        var rowSize = Orientation == Orientation.Horizontal ? _itemHeight : _itemWidth;
+        var rowSize = GetAxisStride();
 
         var viewportAxisSize = GetViewportAxisSize();
         var owner = GetOwner();
@@ -208,7 +248,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         var cacheBefore = ToCachePixels(cache.CacheBeforeViewport, cacheUnit, viewportAxisSize, rowSize);
         var cacheAfter = ToCachePixels(cache.CacheAfterViewport, cacheUnit, viewportAxisSize, rowSize);
 
-        _scrollOffset = CoerceOffset(_scrollOffset, totalRows, rowSize);
+        _scrollOffset = CoerceOffset(_scrollOffset, totalRows);
         var windowStart = Math.Max(0, _scrollOffset - cacheBefore);
         var windowEnd = _scrollOffset + viewportAxisSize + cacheAfter;
 
@@ -217,6 +257,17 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
 
         var firstIndex = firstRow * _itemsPerRow;
         var lastIndex = Math.Min(itemCount - 1, (lastRow + 1) * _itemsPerRow - 1);
+
+        // On a disjoint jump, keeping the old window alive until after realization leaves
+        // the recycling pool empty while the new viewport is generated. Detach and pool the
+        // old window first so the incoming viewport can reuse those containers immediately.
+        // Preserve the existing realize-before-recycle order for overlapping windows, where
+        // already-realized containers are still useful in place.
+        if (VirtualizationMode == VirtualizationMode.Recycling &&
+            IsRealizationWindowDisjoint(firstIndex, lastIndex))
+        {
+            RecycleOutsideRange(firstIndex, lastIndex);
+        }
 
         // Per-frame realize budget — long-jump scrolls (drag thumb, wheel
         // burst spanning many rows) used to realize 40+ containers in one
@@ -267,7 +318,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         bool reachedAll = fwd >= 0 && bwd >= 0;
 
         RecycleOutsideRange(firstIndex, lastIndex);
-        UpdateExtent(totalRows, rowSize, availableSize);
+        UpdateExtent(totalRows, layoutSize);
 
         if (!reachedAll)
         {
@@ -280,7 +331,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
             }
         }
 
-        return CoerceDesiredSize(availableSize);
+        return CoerceDesiredSize(layoutSize);
     }
 
     /// <inheritdoc />
@@ -296,7 +347,48 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
             return finalSize;
         }
 
+        var measuredCrossAxis = Orientation == Orientation.Horizontal ? _viewport.Width : _viewport.Height;
         _viewport = CoerceViewport(finalSize);
+        var arrangedCrossAxis = Orientation == Orientation.Horizontal ? _viewport.Width : _viewport.Height;
+        _arrangedCrossAxis = arrangedCrossAxis;
+        if (IsUsableCrossAxis(_correctiveArrangeCrossAxis) &&
+            !AreClose(arrangedCrossAxis, _correctiveArrangeCrossAxis))
+        {
+            ClearCrossAxisCorrection();
+        }
+
+        if (CalculateItemsPerRow(arrangedCrossAxis) != _itemsPerRow)
+        {
+            // Re-measure only when the committed Arrange crosses a wrap-count boundary. A
+            // persistent Measure/Arrange width difference caused by an Auto scrollbar gutter
+            // is remembered so the corrective pass cannot repeat forever.
+            if (IsFiniteNonNegative(_measureProbeCrossAxis) &&
+                CalculateItemsPerRow(_measureProbeCrossAxis) !=
+                CalculateItemsPerRow(arrangedCrossAxis))
+            {
+                _correctiveMeasureCrossAxis = _measureProbeCrossAxis;
+                _correctiveArrangeCrossAxis = arrangedCrossAxis;
+            }
+            else
+            {
+                ClearCrossAxisCorrection();
+            }
+            InvalidateMeasure();
+        }
+        else if (!AreClose(measuredCrossAxis, arrangedCrossAxis))
+        {
+            // The row geometry is still valid, but IScrollInfo's cross-axis extent must follow
+            // the committed viewport so a harmless pixel difference cannot leave fake overflow.
+            _extent = Orientation == Orientation.Horizontal
+                ? new Size(arrangedCrossAxis, _extent.Height)
+                : new Size(_extent.Width, arrangedCrossAxis);
+            ScrollOwner?.InvalidateScrollInfo();
+
+            if (!AreClose(arrangedCrossAxis, _correctiveArrangeCrossAxis))
+            {
+                ClearCrossAxisCorrection();
+            }
+        }
 
         for (int i = 0; i < _realizedContainers.Count; i++)
         {
@@ -308,13 +400,13 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
             double x, y;
             if (Orientation == Orientation.Horizontal)
             {
-                x = col * _itemWidth;
-                y = row * _itemHeight - _scrollOffset;
+                x = col * (_itemWidth + GetCrossSpacing());
+                y = row * GetAxisStride() - _scrollOffset;
             }
             else
             {
-                x = row * _itemWidth - _scrollOffset;
-                y = col * _itemHeight;
+                x = row * GetAxisStride() - _scrollOffset;
+                y = col * (_itemHeight + GetCrossSpacing());
             }
 
             child.Arrange(new Rect(x, y, _itemWidth, _itemHeight));
@@ -334,10 +426,11 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         var itemCount = GetItemCount();
         if (index < 0 || index >= itemCount || _itemsPerRow <= 0) return;
 
-        var rowSize = Orientation == Orientation.Horizontal ? _itemHeight : _itemWidth;
+        var rowSize = GetAxisStride();
+        var itemAxisSize = GetAxisItemSize();
         int row = index / _itemsPerRow;
         double rowStart = row * rowSize;
-        double rowEnd = rowStart + rowSize;
+        double rowEnd = rowStart + itemAxisSize;
         double viewportAxis = GetViewportAxisSize();
 
         if (rowStart < _scrollOffset)
@@ -353,6 +446,7 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
     /// <inheritdoc />
     protected override void OnItemsChanged(object sender, ItemsChangedEventArgs args)
     {
+        ResetResolvedAutoItemSize();
         ClearRealizedContainers(recycle: true);
         InvalidateMeasure();
     }
@@ -388,6 +482,41 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
             return;
         }
 
+        // Auto-sized wrap items are documented as uniform. Once one item has supplied
+        // that uniform size, keep it until the item set, ItemWidth/ItemHeight, or a
+        // realized child's natural DesiredSize changes. The latter covers theme/font
+        // changes and asynchronously loaded image content without returning to the old
+        // index-zero re-probe on every scroll/resize.
+        // The old code remeasured index 0 with Infinity on every layout pass and then
+        // immediately measured it again with the resolved fixed size. After scrolling
+        // index 0 out of the cache window it was also realized and recycled every frame.
+        if (_hasResolvedAutoItemSize)
+        {
+            if (!wExplicit || !hExplicit)
+            {
+                for (int index = 0; index < _realizedContainers.Count; index++)
+                {
+                    var realized = _realizedContainers.Values[index];
+                    if (realized.IsMeasureValid)
+                    {
+                        continue;
+                    }
+
+                    realized.Measure(new Size(
+                        wExplicit ? dpW : double.PositiveInfinity,
+                        hExplicit ? dpH : double.PositiveInfinity));
+                    var desired = realized.DesiredSize;
+                    _itemWidth = wExplicit ? dpW : Math.Max(1, desired.Width);
+                    _itemHeight = hExplicit ? dpH : Math.Max(1, desired.Height);
+                    return;
+                }
+            }
+
+            if (wExplicit) _itemWidth = dpW;
+            if (hExplicit) _itemHeight = dpH;
+            return;
+        }
+
         // Need to measure index 0 to derive size. Realize it temporarily.
         var probe = RealizeContainer(0);
         if (probe == null) { _itemWidth = _itemHeight = 0; return; }
@@ -398,6 +527,14 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         var ds = probe.DesiredSize;
         _itemWidth = wExplicit ? dpW : Math.Max(1, ds.Width);
         _itemHeight = hExplicit ? dpH : Math.Max(1, ds.Height);
+        _hasResolvedAutoItemSize = true;
+    }
+
+    private void ResetResolvedAutoItemSize()
+    {
+        _hasResolvedAutoItemSize = false;
+        _itemWidth = 0;
+        _itemHeight = 0;
     }
 
     // Realizes (firstIndex..lastIndex) inclusive, but stops early when the
@@ -475,6 +612,10 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         {
             var index = _recycleBuffer[i];
             var child = _realizedContainers[index];
+            if (isRecycling && child is FrameworkElement container)
+            {
+                container.PrepareForVirtualizationRecycle(this);
+            }
             var visualIndex = Children.IndexOf(child);
             if (visualIndex >= 0) RemoveInternalChildRange(visualIndex, 1);
             _realizedContainers.Remove(index);
@@ -485,6 +626,20 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
                 else Generator.RemoveIndex(index);
             }
         }
+    }
+
+    private bool IsRealizationWindowDisjoint(int firstIndex, int lastIndex)
+    {
+        for (var i = 0; i < _realizedContainers.Count; i++)
+        {
+            var index = _realizedContainers.Keys[i];
+            if (index >= firstIndex && index <= lastIndex)
+            {
+                return false;
+            }
+        }
+
+        return _realizedContainers.Count > 0;
     }
 
     private void ClearRealizedContainers(bool recycle)
@@ -511,19 +666,72 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
 
     private void SetOffset(double offset)
     {
-        var totalRows = _itemsPerRow > 0
-            ? (GetItemCount() + _itemsPerRow - 1) / _itemsPerRow : 0;
-        var rowSize = Orientation == Orientation.Horizontal ? _itemHeight : _itemWidth;
-        var coerced = CoerceOffset(offset, totalRows, rowSize);
+        // Both the virtualized and non-virtualized paths maintain the authoritative extent.
+        // The latter does not need _itemsPerRow, so deriving the range from that field made its
+        // otherwise valid IScrollInfo implementation clamp every offset back to zero.
+        var axisExtent = Orientation == Orientation.Horizontal ? _extent.Height : _extent.Width;
+        var maxOffset = Math.Max(0, axisExtent - GetViewportAxisSize());
+        var coerced = double.IsNaN(offset) || double.IsInfinity(offset)
+            ? 0
+            : Math.Clamp(offset, 0, maxOffset);
         if (Math.Abs(coerced - _scrollOffset) <= 0.01) return;
         _scrollOffset = coerced;
-        InvalidateMeasure();
+
+        // Scrolling only changes the arranged origin while the new viewport is already
+        // covered by the current realization window. Avoid re-running Measure (and the
+        // generator/virtualization pipeline) for every pixel of a thumb drag; request a
+        // new realization pass only when an item required by the viewport is missing.
+        if (IsViewportRealized(coerced))
+        {
+            InvalidateArrange();
+        }
+        else
+        {
+            InvalidateMeasure();
+        }
     }
 
-    private double CoerceOffset(double offset, int totalRows, double rowSize)
+    private bool IsViewportRealized(double offset)
+    {
+        if (!ShouldVirtualize())
+        {
+            return true;
+        }
+
+        var itemCount = GetItemCount();
+        var rowSize = GetAxisStride();
+        var viewportAxisSize = GetViewportAxisSize();
+        if (itemCount <= 0 || _itemsPerRow <= 0 || rowSize <= 0 || viewportAxisSize <= 0)
+        {
+            return false;
+        }
+
+        var totalRows = (itemCount + _itemsPerRow - 1) / _itemsPerRow;
+        var firstRow = Math.Clamp((int)Math.Floor(offset / rowSize), 0, totalRows - 1);
+        var lastRow = Math.Clamp(
+            (int)Math.Floor((offset + viewportAxisSize) / rowSize),
+            firstRow,
+            totalRows - 1);
+        var firstIndex = firstRow * _itemsPerRow;
+        var lastIndex = Math.Min(itemCount - 1, (lastRow + 1) * _itemsPerRow - 1);
+
+        // Cache catch-up is budgeted and can temporarily leave holes, so checking only
+        // the first/last realized keys is not sufficient.
+        for (var index = firstIndex; index <= lastIndex; index++)
+        {
+            if (!_realizedContainers.ContainsKey(index))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private double CoerceOffset(double offset, int totalRows)
     {
         if (double.IsNaN(offset) || double.IsInfinity(offset)) return 0;
-        var maxOffset = Math.Max(0, totalRows * rowSize - GetViewportAxisSize());
+        var maxOffset = Math.Max(0, GetAxisExtent(totalRows) - GetViewportAxisSize());
         return Math.Clamp(offset, 0, maxOffset);
     }
 
@@ -533,28 +741,136 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
         return size > 0 ? size : 0;
     }
 
-    private void UpdateExtent(int totalRows, double rowSize, Size availableSize)
+    private void UpdateExtent(int totalRows, Size availableSize)
     {
-        var axisExtent = totalRows * rowSize;
+        var axisExtent = GetAxisExtent(totalRows);
+        var crossExtent = _itemsPerRow > 0
+            ? _itemsPerRow * (Orientation == Orientation.Horizontal ? _itemWidth : _itemHeight) +
+              (_itemsPerRow - 1) * GetCrossSpacing()
+            : 0;
         if (Orientation == Orientation.Horizontal)
         {
             var width = double.IsInfinity(availableSize.Width)
-                ? _itemWidth * _itemsPerRow : availableSize.Width;
+                ? crossExtent : availableSize.Width;
             _extent = new Size(width, axisExtent);
         }
         else
         {
             var height = double.IsInfinity(availableSize.Height)
-                ? _itemHeight * _itemsPerRow : availableSize.Height;
+                ? crossExtent : availableSize.Height;
             _extent = new Size(axisExtent, height);
         }
     }
+
+    private double GetAxisItemSize() =>
+        Orientation == Orientation.Horizontal ? _itemHeight : _itemWidth;
+
+    private double GetAxisSpacing() =>
+        SanitizeSpacing(Orientation == Orientation.Horizontal ? VerticalSpacing : HorizontalSpacing);
+
+    private double GetCrossSpacing() =>
+        SanitizeSpacing(Orientation == Orientation.Horizontal ? HorizontalSpacing : VerticalSpacing);
+
+    private double GetAxisStride() => GetAxisItemSize() + GetAxisSpacing();
+
+    private double GetAxisExtent(int totalRows) => totalRows <= 0
+        ? 0
+        : totalRows * GetAxisItemSize() + (totalRows - 1) * GetAxisSpacing();
+
+    private static double SanitizeSpacing(double value) =>
+        double.IsNaN(value) || double.IsInfinity(value) || value < 0 ? 0 : value;
+
+    private static bool AreClose(double left, double right) => Math.Abs(left - right) <= 0.01;
 
     private Size CoerceViewport(Size availableSize)
     {
         return new Size(
             CoerceFinite(availableSize.Width, _viewport.Width),
             CoerceFinite(availableSize.Height, _viewport.Height));
+    }
+
+    private Size StabilizeCrossAxisMeasureSize(Size availableSize)
+    {
+        var measureCrossAxis = Orientation == Orientation.Horizontal
+            ? availableSize.Width
+            : availableSize.Height;
+        _measureProbeCrossAxis = measureCrossAxis;
+
+        // Once arranged, do not let a speculative Measure enlarge the wrap width. The owning
+        // ScrollViewer's viewport can participate in the same transient parent layout, so an
+        // owner expansion is not enough to expand before this panel is really arranged. An owner
+        // shrink is authoritative, though: use it as a downward-only cap so stale wide Measure
+        // constraints cannot keep a resized window permanently wide.
+        var ownerCrossAxis = 0.0;
+        if (ScrollOwner != null)
+        {
+            ownerCrossAxis = Orientation == Orientation.Horizontal
+                ? ScrollOwner.ViewportWidth
+                : ScrollOwner.ViewportHeight;
+            if (!IsUsableCrossAxis(ownerCrossAxis))
+            {
+                ownerCrossAxis = Orientation == Orientation.Horizontal
+                    ? ScrollOwner.RenderSize.Width
+                    : ScrollOwner.RenderSize.Height;
+            }
+        }
+
+        var hasArrangedCrossAxis = IsUsableCrossAxis(_arrangedCrossAxis);
+        var hasOwnerCrossAxis = IsUsableCrossAxis(ownerCrossAxis);
+        var stableCrossAxis = hasArrangedCrossAxis && hasOwnerCrossAxis
+            ? Math.Min(_arrangedCrossAxis, ownerCrossAxis)
+            : hasArrangedCrossAxis
+                ? _arrangedCrossAxis
+                : ownerCrossAxis;
+
+        if (!IsUsableCrossAxis(stableCrossAxis))
+            return availableSize;
+
+        var repeatsCorrectiveProbe =
+            IsFiniteNonNegative(measureCrossAxis) &&
+            IsFiniteNonNegative(_correctiveMeasureCrossAxis) &&
+            IsUsableCrossAxis(_correctiveArrangeCrossAxis) &&
+            AreClose(measureCrossAxis, _correctiveMeasureCrossAxis) &&
+            AreClose(_arrangedCrossAxis, _correctiveArrangeCrossAxis) &&
+            (!hasOwnerCrossAxis || ownerCrossAxis + 0.01 >= _correctiveArrangeCrossAxis) &&
+            CalculateItemsPerRow(measureCrossAxis) !=
+            CalculateItemsPerRow(_correctiveArrangeCrossAxis);
+
+        var effectiveCrossAxis = repeatsCorrectiveProbe || double.IsInfinity(measureCrossAxis)
+            ? stableCrossAxis
+            : Math.Min(Math.Max(0, measureCrossAxis), stableCrossAxis);
+
+        return Orientation == Orientation.Horizontal
+            ? new Size(effectiveCrossAxis, availableSize.Height)
+            : new Size(availableSize.Width, effectiveCrossAxis);
+    }
+
+    private int CalculateItemsPerRow(double crossAxis)
+    {
+        var crossItemSize = Orientation == Orientation.Horizontal ? _itemWidth : _itemHeight;
+        var crossSpacing = GetCrossSpacing();
+        var stride = crossItemSize + crossSpacing;
+        if (!IsUsableCrossAxis(crossAxis) || !IsUsableCrossAxis(stride))
+            return 1;
+
+        var itemCount = Math.Max(1, GetItemCount());
+        var rawCount = Math.Floor((crossAxis + crossSpacing) / stride);
+        if (double.IsInfinity(rawCount) || rawCount >= itemCount)
+            return itemCount;
+
+        return Math.Max(1, (int)rawCount);
+    }
+
+    private static bool IsUsableCrossAxis(double value) =>
+        !double.IsNaN(value) && !double.IsInfinity(value) && value > 0;
+
+    private static bool IsFiniteNonNegative(double value) =>
+        !double.IsNaN(value) && !double.IsInfinity(value) && value >= 0;
+
+    private void ClearCrossAxisCorrection()
+    {
+        _correctiveMeasureCrossAxis = double.NaN;
+        _correctiveArrangeCrossAxis = double.NaN;
     }
 
     private static double CoerceFinite(double value, double fallback)
@@ -587,77 +903,135 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
 
     private Size MeasureNonVirtualized(Size availableSize)
     {
-        // Plain WrapPanel-style layout when virtualization is disabled or
-        // item sizes can't be resolved.
-        double rowAxis = 0;     // running cross-axis width per row
-        double maxRow = 0;
-        double totalAxis = 0;   // accumulated scroll-axis height
-        double rowMaxAxis = 0;  // tallest item in the current row
+        // Keep the same cell-size and spacing contract as the virtualized path so
+        // toggling IsVirtualizing changes realization, not geometry.
+        var previousExtent = _extent;
+        var previousViewport = _viewport;
+        var previousOffset = _scrollOffset;
+        _viewport = CoerceViewport(availableSize);
+        double lineCross = 0;
+        double maxCross = 0;
+        double totalAxis = 0;
+        double lineAxis = 0;
+        var availableCross = Orientation == Orientation.Horizontal
+            ? availableSize.Width
+            : availableSize.Height;
+        var crossSpacing = GetCrossSpacing();
+        var axisSpacing = GetAxisSpacing();
+        var explicitWidth = !double.IsNaN(ItemWidth) && ItemWidth > 0;
+        var explicitHeight = !double.IsNaN(ItemHeight) && ItemHeight > 0;
+        var childConstraint = new Size(
+            explicitWidth ? ItemWidth : double.PositiveInfinity,
+            explicitHeight ? ItemHeight : double.PositiveInfinity);
 
         foreach (UIElement child in Children)
         {
             child.Visibility = Visibility.Visible;
-            child.Measure(availableSize);
+            child.Measure(childConstraint);
             var ds = child.DesiredSize;
-            var cross = Orientation == Orientation.Horizontal ? ds.Width : ds.Height;
-            var axis  = Orientation == Orientation.Horizontal ? ds.Height : ds.Width;
-            var available = Orientation == Orientation.Horizontal ? availableSize.Width : availableSize.Height;
+            var width = explicitWidth ? ItemWidth : ds.Width;
+            var height = explicitHeight ? ItemHeight : ds.Height;
+            var cross = Orientation == Orientation.Horizontal ? width : height;
+            var axis = Orientation == Orientation.Horizontal ? height : width;
+            var requiredCross = lineCross > 0 ? crossSpacing + cross : cross;
 
-            if (rowAxis + cross > available && rowAxis > 0)
+            if (lineCross > 0 && lineCross + requiredCross > availableCross)
             {
-                totalAxis += rowMaxAxis;
-                maxRow = Math.Max(maxRow, rowAxis);
-                rowAxis = 0;
-                rowMaxAxis = 0;
+                maxCross = Math.Max(maxCross, lineCross);
+                if (totalAxis > 0)
+                {
+                    totalAxis += axisSpacing;
+                }
+                totalAxis += lineAxis;
+                lineCross = 0;
+                lineAxis = 0;
+                requiredCross = cross;
             }
-            rowAxis += cross;
-            rowMaxAxis = Math.Max(rowMaxAxis, axis);
-        }
-        totalAxis += rowMaxAxis;
-        maxRow = Math.Max(maxRow, rowAxis);
 
-        if (Orientation == Orientation.Horizontal)
-        {
-            _extent = new Size(maxRow, totalAxis);
-            return new Size(maxRow, Math.Min(totalAxis, availableSize.Height));
+            lineCross += requiredCross;
+            lineAxis = Math.Max(lineAxis, axis);
         }
-        _extent = new Size(totalAxis, maxRow);
-        return new Size(Math.Min(totalAxis, availableSize.Width), maxRow);
+
+        maxCross = Math.Max(maxCross, lineCross);
+        if (lineCross > 0)
+        {
+            if (totalAxis > 0)
+            {
+                totalAxis += axisSpacing;
+            }
+            totalAxis += lineAxis;
+        }
+
+        _extent = Orientation == Orientation.Horizontal
+            ? new Size(maxCross, totalAxis)
+            : new Size(totalAxis, maxCross);
+
+        // A viewport expansion or content shrink can reduce the legal range while the panel is
+        // already scrolled. Clamp against the freshly computed metrics before Arrange so content
+        // cannot remain stranded at a stale negative origin.
+        var axisExtent = Orientation == Orientation.Horizontal ? _extent.Height : _extent.Width;
+        var maxOffset = Math.Max(0, axisExtent - GetViewportAxisSize());
+        _scrollOffset = Math.Clamp(_scrollOffset, 0, maxOffset);
+
+        if (!AreClose(previousExtent.Width, _extent.Width) ||
+            !AreClose(previousExtent.Height, _extent.Height) ||
+            !AreClose(previousViewport.Width, _viewport.Width) ||
+            !AreClose(previousViewport.Height, _viewport.Height) ||
+            !AreClose(previousOffset, _scrollOffset))
+        {
+            ScrollOwner?.InvalidateScrollInfo();
+        }
+        return CoerceDesiredSize(availableSize);
     }
 
     private Size ArrangeNonVirtualized(Size finalSize)
     {
-        double rowAxis = 0;
-        double rowMaxAxis = 0;
+        _viewport = CoerceViewport(finalSize);
+        double lineCross = 0;
+        double lineAxis = 0;
         double offset = 0;
+        var availableCross = Orientation == Orientation.Horizontal ? finalSize.Width : finalSize.Height;
+        var crossSpacing = GetCrossSpacing();
+        var axisSpacing = GetAxisSpacing();
+        var explicitWidth = !double.IsNaN(ItemWidth) && ItemWidth > 0;
+        var explicitHeight = !double.IsNaN(ItemHeight) && ItemHeight > 0;
 
         foreach (UIElement child in Children)
         {
             var ds = child.DesiredSize;
-            var cross = Orientation == Orientation.Horizontal ? ds.Width : ds.Height;
-            var axis  = Orientation == Orientation.Horizontal ? ds.Height : ds.Width;
-            var available = Orientation == Orientation.Horizontal ? finalSize.Width : finalSize.Height;
+            var width = explicitWidth ? ItemWidth : ds.Width;
+            var height = explicitHeight ? ItemHeight : ds.Height;
+            var cross = Orientation == Orientation.Horizontal ? width : height;
+            var axis = Orientation == Orientation.Horizontal ? height : width;
+            var requiredCross = lineCross > 0 ? crossSpacing + cross : cross;
 
-            if (rowAxis + cross > available && rowAxis > 0)
+            if (lineCross > 0 && lineCross + requiredCross > availableCross)
             {
-                offset += rowMaxAxis;
-                rowAxis = 0;
-                rowMaxAxis = 0;
+                offset += lineAxis + axisSpacing;
+                lineCross = 0;
+                lineAxis = 0;
+                requiredCross = cross;
             }
 
             double x, y, w, h;
             if (Orientation == Orientation.Horizontal)
             {
-                x = rowAxis; y = offset - _scrollOffset; w = cross; h = axis;
+                x = lineCross + (lineCross > 0 ? crossSpacing : 0);
+                y = offset - _scrollOffset;
+                w = width;
+                h = height;
             }
             else
             {
-                x = offset - _scrollOffset; y = rowAxis; w = axis; h = cross;
+                x = offset - _scrollOffset;
+                y = lineCross + (lineCross > 0 ? crossSpacing : 0);
+                w = width;
+                h = height;
             }
             child.Arrange(new Rect(x, y, w, h));
 
-            rowAxis += cross;
-            rowMaxAxis = Math.Max(rowMaxAxis, axis);
+            lineCross += requiredCross;
+            lineAxis = Math.Max(lineAxis, axis);
         }
         return finalSize;
     }
@@ -670,6 +1044,15 @@ public class VirtualizingWrapPanel : VirtualizingPanel, IScrollInfo
     {
         if (d is VirtualizingWrapPanel panel)
         {
+            if (e.Property == OrientationProperty)
+            {
+                panel._arrangedCrossAxis = 0;
+                panel.ClearCrossAxisCorrection();
+            }
+            if (e.Property == ItemWidthProperty || e.Property == ItemHeightProperty)
+            {
+                panel.ResetResolvedAutoItemSize();
+            }
             panel.InvalidateMeasure();
         }
     }

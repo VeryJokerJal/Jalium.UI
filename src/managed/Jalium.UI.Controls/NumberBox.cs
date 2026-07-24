@@ -13,6 +13,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class NumberBox : TextBoxBase, IImeSupport
 {
+    private InputMethodWeakSubscription<NumberBox>? _imeSubscription;
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -44,7 +45,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     // Template parts
     private RepeatButton? _upSpinButton;
     private RepeatButton? _downSpinButton;
-    private Border? _partContentHost;
+    private FrameworkElement? _partContentHost;
     private Grid? _layoutRoot;
 
     // Edit state
@@ -354,9 +355,8 @@ public class NumberBox : TextBoxBase, IImeSupport
         Cursor = Jalium.UI.Input.Cursors.IBeam;
 
         // Subscribe to IME events
-        InputMethod.CompositionStarted += OnImeCompositionStarted;
-        InputMethod.CompositionUpdated += OnImeCompositionUpdated;
-        InputMethod.CompositionEnded += OnImeCompositionEnded;
+        Loaded += OnImeOwnerLoaded;
+        Unloaded += OnImeOwnerUnloaded;
 
         // Subscribe to focus events
         AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotFocusHandler));
@@ -496,7 +496,7 @@ public class NumberBox : TextBoxBase, IImeSupport
 
         // Get template parts
         _layoutRoot = GetTemplateChild("PART_LayoutRoot") as Grid;
-        _partContentHost = GetTemplateChild("PART_ContentHost") as Border;
+        _partContentHost = GetTemplateChild("PART_ContentHost") as FrameworkElement;
         _upSpinButton = GetTemplateChild("PART_UpSpinButton") as RepeatButton;
         _downSpinButton = GetTemplateChild("PART_DownSpinButton") as RepeatButton;
 
@@ -522,12 +522,6 @@ public class NumberBox : TextBoxBase, IImeSupport
     private void UpdateTemplateCornerRadii()
     {
         var radius = CornerRadius;
-
-        // PART_ContentHost: left corners only (TopLeft, 0, 0, BottomLeft)
-        if (_partContentHost != null)
-        {
-            _partContentHost.CornerRadius = new CornerRadius(radius.TopLeft, 0, 0, radius.BottomLeft);
-        }
 
         // Both spin buttons carry the SAME left border so the divider between the
         // text area and the spin column is a single continuous vertical line over
@@ -591,6 +585,25 @@ public class NumberBox : TextBoxBase, IImeSupport
         _isEditing = false;
         CommitValue();
         InvalidateVisual();
+    }
+
+    private void OnImeOwnerLoaded(object? sender, RoutedEventArgs e)
+    {
+        _imeSubscription ??= new InputMethodWeakSubscription<NumberBox>(
+            this,
+            static (owner, source, args) => owner.OnImeCompositionStarted(source, args),
+            static (owner, source, args) => owner.OnImeCompositionUpdated(source, args),
+            static (owner, source, args) => owner.OnImeCompositionEnded(source, args));
+        _imeSubscription.Attach();
+    }
+
+    private void OnImeOwnerUnloaded(object? sender, RoutedEventArgs e)
+    {
+        _imeSubscription?.Detach();
+        if (ReferenceEquals(InputMethod.CurrentTarget, this))
+        {
+            InputMethod.SetTarget(null);
+        }
     }
 
     private void OnImeCompositionStarted(object? sender, EventArgs e)
@@ -1119,7 +1132,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         }
 
         // Input area rect
-        var inputRect = new Rect(0, headerHeight, bounds.Width, bounds.Height - headerHeight);
+        var inputRect = ControlRenderGeometry.GetContentRect(bounds, new Thickness(0, headerHeight, 0, 0));
         var strokeThickness = border.Left;
         var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
         var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
@@ -1144,17 +1157,24 @@ public class NumberBox : TextBoxBase, IImeSupport
 
         // Calculate regions for spin buttons
         var spinButtonWidth = SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Hidden ? 0 : SpinButtonWidth;
-        _textRect = new Rect(
-            padding.Left,
-            inputRect.Top + padding.Top,
-            inputRect.Width - spinButtonWidth - padding.Left - padding.Right,
-            inputRect.Height - padding.Top - padding.Bottom);
+        _textRect = ControlRenderGeometry.GetContentRect(
+            inputRect,
+            new Thickness(
+                padding.Left,
+                padding.Top,
+                padding.Right + spinButtonWidth,
+                padding.Bottom));
 
         // Draw spin buttons only in direct rendering mode (template provides buttons via PART_*)
         if (SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Inline && !HasContentHost)
         {
-            _upButtonRect = new Rect(inputRect.Right - SpinButtonWidth, inputRect.Top, SpinButtonWidth, inputRect.Height / 2);
-            _downButtonRect = new Rect(inputRect.Right - SpinButtonWidth, inputRect.Top + inputRect.Height / 2, SpinButtonWidth, inputRect.Height / 2);
+            var spinButtonRect = ControlRenderGeometry.GetTrailingRect(inputRect, SpinButtonWidth);
+            var upperHeight = spinButtonRect.Height / 2.0;
+            _upButtonRect = new Rect(
+                spinButtonRect.X, spinButtonRect.Y, spinButtonRect.Width, upperHeight);
+            _downButtonRect = new Rect(
+                spinButtonRect.X, spinButtonRect.Y + upperHeight,
+                spinButtonRect.Width, spinButtonRect.Height - upperHeight);
 
             DrawSpinButton(dc, _upButtonRect, true);
             DrawSpinButton(dc, _downButtonRect, false);

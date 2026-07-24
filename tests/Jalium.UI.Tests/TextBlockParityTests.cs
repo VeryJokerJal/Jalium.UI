@@ -2,11 +2,160 @@ using Jalium.UI.Controls;
 using Jalium.UI.Documents;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
+using System.Reflection;
 
 namespace Jalium.UI.Tests;
 
 public sealed class TextBlockParityTests
 {
+    [Fact]
+    public void PlainTextDefersInlineMaterializationAndReusesRetainedImplicitRun()
+    {
+        var inlinesField = typeof(TextBlock).GetField(
+            "_inlines",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var textBlock = new TextBlock { Text = "first" };
+
+        Assert.Null(inlinesField.GetValue(textBlock));
+
+        var retainedInlines = textBlock.Inlines;
+        var implicitRun = Assert.IsType<Run>(Assert.Single(retainedInlines));
+        Assert.Equal("first", implicitRun.Text);
+
+        textBlock.Text = "second";
+
+        Assert.Same(retainedInlines, textBlock.Inlines);
+        Assert.Same(implicitRun, Assert.Single(retainedInlines));
+        Assert.Equal("second", implicitRun.Text);
+    }
+
+    [Fact]
+    public void DrawingReusesFormattedTextCreatedDuringLayoutMeasurement()
+    {
+        var textBlock = new TextBlock { Text = "measured once" };
+        var finalSize = new Size(300, 80);
+        textBlock.Measure(finalSize);
+
+        var layoutLines = (System.Collections.IList)typeof(TextBlock)
+            .GetField("_layoutLines", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(textBlock)!;
+        var firstLine = Assert.Single(layoutLines.Cast<object>());
+        var measuredText = (FormattedText?)firstLine.GetType()
+            .GetProperty("FormattedText", BindingFlags.Instance | BindingFlags.Public)!
+            .GetValue(firstLine);
+
+        Assert.NotNull(measuredText);
+
+        textBlock.Arrange(new Rect(finalSize));
+        var context = new RecordingDrawingContext();
+        textBlock.Render(context);
+
+        Assert.Same(measuredText, Assert.Single(context.Texts).text);
+    }
+
+    [Fact]
+    public void RenderingReusesFrozenClipUntilRenderSizeChanges()
+    {
+        var textBlock = new TextBlock { Text = "clip" };
+
+        var first = Render(textBlock, new Size(300, 80));
+        var second = Render(textBlock, new Size(300, 80));
+        var resized = Render(textBlock, new Size(220, 60));
+
+        var firstClip = Assert.IsType<RectangleGeometry>(Assert.Single(first.Clips));
+        Assert.True(firstClip.IsFrozen);
+        Assert.Same(firstClip, Assert.Single(second.Clips));
+        Assert.NotSame(firstClip, Assert.Single(resized.Clips));
+    }
+
+    [Fact]
+    public void WrapKeepsACompleteWordWhenOnlyItsFollowingSpaceExceedsTheConstraint()
+    {
+        const string fittingPrefix = "Shared color, type, spacing, shape,";
+        var textBlock = new TextBlock
+        {
+            Text = fittingPrefix + " and motion decisions used throughout the Gallery.",
+            FontSize = 14,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var visibleWidth = InvokeMeasureTextWidth(textBlock, fittingPrefix, includeTrailingWhitespace: false);
+        var widthWithSpace = InvokeMeasureTextWidth(textBlock, fittingPrefix + " ", includeTrailingWhitespace: true);
+        Assert.True(widthWithSpace > visibleWidth);
+
+        var constraint = visibleWidth + ((widthWithSpace - visibleWidth) / 2);
+        var context = Render(textBlock, new Size(constraint, 200));
+
+        Assert.Equal(fittingPrefix + " ", context.Texts[0].text.Text);
+    }
+
+    [Fact]
+    public void WrapWithOverflowKeepsAnUnbreakableWordOnOneLine()
+    {
+        const string longWord = "supercalifragilisticexpialidocious";
+        var textBlock = new TextBlock
+        {
+            Text = longWord + " tail",
+            FontSize = 14,
+            TextWrapping = TextWrapping.WrapWithOverflow,
+        };
+        var narrowConstraint = InvokeMeasureTextWidth(textBlock, "super", includeTrailingWhitespace: false);
+
+        var context = Render(textBlock, new Size(narrowConstraint, 200));
+
+        Assert.Equal(new[] { longWord + " ", "tail" }, context.Texts.Select(item => item.text.Text));
+    }
+
+    [Fact]
+    public void EmergencyWrapNeverSplitsAnExtendedGraphemeCluster()
+    {
+        const string familyEmoji = "👨‍👩‍👧‍👦";
+        var textBlock = new TextBlock
+        {
+            Text = familyEmoji + "X",
+            FontSize = 14,
+            TextWrapping = TextWrapping.Wrap,
+        };
+        var emojiWidth = InvokeMeasureTextWidth(textBlock, familyEmoji, includeTrailingWhitespace: false);
+        Assert.True(emojiWidth > 0);
+
+        var context = Render(textBlock, new Size(Math.Max(0.1, emojiWidth / 2), 200));
+
+        Assert.Equal(new[] { familyEmoji, "X" }, context.Texts.Select(item => item.text.Text));
+    }
+
+    [Fact]
+    public void WrapWithOverflowUsesStandardCjkBreakOpportunities()
+    {
+        var textBlock = new TextBlock
+        {
+            Text = "你好世界",
+            FontSize = 14,
+            TextWrapping = TextWrapping.WrapWithOverflow,
+        };
+        var oneGlyphWidth = InvokeMeasureTextWidth(textBlock, "你", includeTrailingWhitespace: false);
+
+        var context = Render(textBlock, new Size(oneGlyphWidth * 1.1, 200));
+
+        Assert.True(context.Texts.Count > 1);
+        Assert.Equal(textBlock.Text, string.Concat(context.Texts.Select(item => item.text.Text)));
+    }
+
+    [Fact]
+    public void FormattedTextSeparatesVisibleAndTrailingWhitespaceWidths()
+    {
+        var formattedText = new FormattedText("word ", FrameworkElement.DefaultFontFamilyName, 14);
+
+        Assert.True(formattedText.WidthIncludingTrailingWhitespace > formattedText.Width);
+    }
+
+    [Fact]
+    public void FormattedTextDoesNotTrimNonBreakingSpace()
+    {
+        var formattedText = new FormattedText("word\u00A0", FrameworkElement.DefaultFontFamilyName, 14);
+
+        Assert.Equal(formattedText.WidthIncludingTrailingWhitespace, formattedText.Width);
+    }
+
     [Fact]
     public void DefaultsMatchWpfSurface()
     {
@@ -211,6 +360,17 @@ public sealed class TextBlockParityTests
         Assert.Throws<ArgumentNullException>(() => services.GetService(null!));
     }
 
+    private static double InvokeMeasureTextWidth(
+        TextBlock textBlock,
+        string text,
+        bool includeTrailingWhitespace)
+    {
+        var method = typeof(TextBlock).GetMethod(
+            "MeasureTextWidth",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        return Assert.IsType<double>(method.Invoke(textBlock, new object[] { text, includeTrailingWhitespace }));
+    }
+
     private static RecordingDrawingContext Render(TextBlock textBlock, Size? size = null)
     {
         var finalSize = size ?? new Size(300, 80);
@@ -226,6 +386,7 @@ public sealed class TextBlockParityTests
         public List<(FormattedText text, Point origin)> Texts { get; } = [];
         public List<(Pen pen, Point start, Point end)> Lines { get; } = [];
         public List<(Brush? brush, Pen? pen, Rect rectangle)> Rectangles { get; } = [];
+        public List<Geometry> Clips { get; } = [];
 
         public override void DrawLine(Pen pen, Point point0, Point point1) => Lines.Add((pen, point0, point1));
         public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle) => Rectangles.Add((brush, pen, rectangle));
@@ -236,7 +397,7 @@ public sealed class TextBlockParityTests
         public override void DrawImage(ImageSource imageSource, Rect rectangle) { }
         public override void DrawBackdropEffect(Rect rectangle, IBackdropEffect effect, CornerRadius cornerRadius) { }
         public override void PushTransform(Transform transform) { }
-        public override void PushClip(Geometry clipGeometry) { }
+        public override void PushClip(Geometry clipGeometry) => Clips.Add(clipGeometry);
         public override void PushOpacity(double opacity) { }
         public override void Pop() { }
         public override void Close() { }

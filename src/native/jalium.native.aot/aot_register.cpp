@@ -55,7 +55,7 @@ void jalium_android_set_jni_env(void*, void*) {}
 void jalium_android_set_safe_area_insets(float, float, float, float) {}
 void jalium_android_set_keyboard_visible(int32_t, int32_t) {}
 void jalium_android_set_orientation(int32_t) {}
-void jalium_android_inject_touch(int32_t, float, float, float, int32_t, int32_t, int32_t) {}
+void jalium_android_inject_touch(int32_t, float, float, float, int32_t, int32_t, int32_t, int64_t) {}
 void jalium_android_inject_key(int32_t, int32_t, int32_t, int32_t, int32_t) {}
 void jalium_android_inject_char(uint32_t) {}
 #endif

@@ -21,7 +21,7 @@ struct Instance
     float4 stop12BA;
     float4 stop23GB;
     float4 stop3Color;
-    float4 _pad;        // x=shapeType, y=shapeN, zw unused
+    float4 _pad;        // x=shapeType, y=shapeN, z=paintMode, w unused
     float4 xform0;      // m11, m12, m21, m22  (per-instance 2x3 affine)
     float4 xform1;      // dx, dy, _, _
 };
@@ -50,7 +50,7 @@ struct VsOutput
     nointerpolation float4 stop12BA    : TEXCOORD9;
     nointerpolation float4 stop23GB    : TEXCOORD10;
     nointerpolation float4 stop3Color  : TEXCOORD11;
-    nointerpolation float3 shapeParams : TEXCOORD12; // x = shapeType, y = shapeN, z = shadowMode
+    nointerpolation float4 shapeParams : TEXCOORD12; // x=shapeType, y=shapeN, z=shadowMode, w=paintMode
     nointerpolation float  shadowSigma : TEXCOORD13; // gaussian sigma (screen px)
 };
 
@@ -121,7 +121,7 @@ VsOutput main(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     o.stop12BA    = float4(inst.stop12BA.xy * op,    inst.stop12BA.z,            inst.stop12BA.w * op);
     o.stop23GB    = float4(inst.stop23GB.xy * op,    inst.stop23GB.z * op,       inst.stop23GB.w);
     o.stop3Color  = inst.stop3Color * op;
-    o.shapeParams = float3(inst._pad.xy, shadowMode); // shapeType, shapeN, shadowMode
+    o.shapeParams = float4(inst._pad.xy, shadowMode, inst._pad.z);
     o.shadowSigma = shadowSigma;                      // gaussian sigma (screen px)
 
     return o;

@@ -1,3 +1,4 @@
+using Jalium.UI.Controls;
 using Jalium.UI.Media;
 using Jalium.UI.Rendering;
 
@@ -172,6 +173,30 @@ public class DirtyRegionCullTests
 
         // No clipping ancestor → TryGetAncestorClipScreenBounds returns false → zero behavior change.
         Assert.Contains(row, host.DirtyElements);
+    }
+
+    [Fact]
+    public void EmptySuperEllipseAncestorClip_FallsBackWithoutConstructingEmptyRect()
+    {
+        var host = new RecordingCullHost();
+        var leaf = new TestLeaf();
+        var clip = new Border
+        {
+            ClipToBounds = true,
+            Shape = BorderShape.SuperEllipse,
+            BorderThickness = new Thickness(10),
+            Child = leaf,
+        };
+        host.AddChild(clip);
+
+        clip.Measure(new Size(10, 10));
+
+        // Border's inner superellipse collapses to an empty StreamGeometry. Arranging its
+        // child still walks ancestor clips for dirty-region culling and must conservatively
+        // fall back instead of reconstructing Rect.Empty through Rect's public constructor.
+        var exception = Record.Exception(() => clip.Arrange(new Rect(0, 0, 10, 10)));
+
+        Assert.Null(exception);
     }
 
     // ── Nested clip ──────────────────────────────────────────────────────────

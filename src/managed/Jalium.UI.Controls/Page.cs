@@ -352,15 +352,17 @@ public class Page : FrameworkElement, IAddChild, IWindowService
 
         if (_templateRoot is not null)
         {
-            _templateRoot.IsTemplatedRoot = false;
-            RemoveVisualChild(_templateRoot);
+            var root = _templateRoot;
             _templateRoot = null;
+            root.IsTemplatedRoot = false;
+            RemoveVisualChild(root);
         }
 
         if (_contentVisual is not null)
         {
-            RemoveVisualChild(_contentVisual);
+            var visual = _contentVisual;
             _contentVisual = null;
+            RemoveVisualChild(visual);
         }
     }
 

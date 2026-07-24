@@ -1,5 +1,3 @@
-using System.Collections;
-
 namespace Jalium.UI.Controls.Virtualization;
 
 /// <summary>
@@ -16,22 +14,7 @@ internal sealed class LogicalItemAccessor
 
     public int Count
     {
-        get
-        {
-            var source = _owner.ItemsSource ?? (IEnumerable)_owner.Items;
-            if (source is ICollection collection)
-            {
-                return collection.Count;
-            }
-
-            var count = 0;
-            foreach (var _ in source)
-            {
-                count++;
-            }
-
-            return count;
-        }
+        get => _owner.Items.Count;
     }
 
     public object? GetItemAt(int index)
@@ -41,24 +24,8 @@ internal sealed class LogicalItemAccessor
             return null;
         }
 
-        var source = _owner.ItemsSource ?? (IEnumerable)_owner.Items;
-        if (source is IList list)
-        {
-            return index < list.Count ? list[index] : null;
-        }
-
-        var i = 0;
-        foreach (var item in source)
-        {
-            if (i == index)
-            {
-                return item;
-            }
-
-            i++;
-        }
-
-        return null;
+        var items = _owner.Items;
+        return index < items.Count ? items.GetItemAt(index) : null;
     }
 
     public int IndexOf(object? item)
@@ -68,24 +35,7 @@ internal sealed class LogicalItemAccessor
             return -1;
         }
 
-        var source = _owner.ItemsSource ?? (IEnumerable)_owner.Items;
-        if (source is IList list)
-        {
-            return list.IndexOf(item);
-        }
-
-        var i = 0;
-        foreach (var current in source)
-        {
-            if (Equals(current, item))
-            {
-                return i;
-            }
-
-            i++;
-        }
-
-        return -1;
+        return _owner.Items.IndexOf(item);
     }
 }
 

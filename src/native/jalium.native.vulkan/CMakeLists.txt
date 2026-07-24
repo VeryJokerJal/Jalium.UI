@@ -29,6 +29,7 @@ set(HEADERS
     include/vulkan_glyph_atlas.h
     include/vulkan_impeller_engine.h
     include/vulkan_ink_layer.h
+    include/vulkan_render_lifecycle.h
     include/vulkan_render_target.h
     include/vulkan_resources.h
     include/vulkan_runtime.h
@@ -52,7 +53,21 @@ set(SOURCES
     src/vulkan_vello_compute.cpp
 )
 
-add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE} ${HEADERS} ${SOURCES})
+set(SHADER_SOURCES
+    shaders/liquid_glass_quad.frag.hlsl
+    shaders/liquid_glass_quad.vert.hlsl
+    shaders/solid_rect.frag.hlsl
+    shaders/solid_rect.vert.hlsl
+    ../jalium.native.core/shaders/continuous_corner.hlsli
+)
+set_source_files_properties(${SHADER_SOURCES} PROPERTIES HEADER_FILE_ONLY TRUE)
+source_group("Shaders" FILES ${SHADER_SOURCES})
+
+add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE}
+    ${HEADERS}
+    ${SOURCES}
+    ${SHADER_SOURCES}
+)
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC

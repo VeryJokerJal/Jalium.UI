@@ -427,7 +427,12 @@ public class MiniMap : FrameworkElement
         var radius = CornerRadius.TopLeft > 0 ? CornerRadius.TopLeft : 3;
         dc.DrawRoundedRectangle(bg, new Pen(border, borderThickness), bounds, radius, radius);
 
-        var contentArea = new Rect(2, 2, bounds.Width - 4, bounds.Height - 4);
+        var contentArea = ControlRenderGeometry.GetContentRect(bounds, new Thickness(2));
+        if (contentArea.Width <= 0 || contentArea.Height <= 0)
+        {
+            return;
+        }
+
         dc.PushClip(new RectangleGeometry(contentArea));
 
         // Draw content based on render mode
@@ -684,7 +689,13 @@ public class MiniMap : FrameworkElement
         {
             CaptureMouse();
             var position = e.GetPosition(this);
-            var contentArea = new Rect(2, 2, RenderSize.Width - 4, RenderSize.Height - 4);
+            var contentArea = ControlRenderGeometry.GetContentRect(new Rect(RenderSize), new Thickness(2));
+            if (contentArea.Width <= 0 || contentArea.Height <= 0)
+            {
+                ReleaseMouseCapture();
+                e.Handled = true;
+                return;
+            }
             var viewportRect = ComputeViewportRect(contentArea);
 
             if (viewportRect.Contains(position))
@@ -718,7 +729,11 @@ public class MiniMap : FrameworkElement
         if (_isDraggingViewport)
         {
             var position = e.GetPosition(this);
-            var contentArea = new Rect(2, 2, RenderSize.Width - 4, RenderSize.Height - 4);
+            var contentArea = ControlRenderGeometry.GetContentRect(new Rect(RenderSize), new Thickness(2));
+            if (contentArea.Width <= 0 || contentArea.Height <= 0)
+            {
+                return;
+            }
 
             // Calculate the new center based on drag
             double newX = position.X - _dragOffset.X;

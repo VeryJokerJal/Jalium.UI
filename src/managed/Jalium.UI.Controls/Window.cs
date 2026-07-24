@@ -7,6 +7,7 @@ using Jalium.UI.Diagnostics;
 using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
+using Jalium.UI.Input.TextInput;
 using Jalium.UI.Interop;
 using Jalium.UI.Interop.Win32;
 using Jalium.UI.Media;
@@ -332,6 +333,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private DispatcherTimer? _renderRecoveryRetryTimer;
     private int _consecutiveRecoverableRenderFailures;
     private int _renderRecoveryRetryDelayMs = RenderRecoveryRetryInitialDelayMs;
+    // Consecutive EndDraw InvalidState frames (Interlocked — bumped/cleared on
+    // whichever thread presents: UI inline or the render worker) and whether
+    // the CURRENT failure run already consumed its one render-target rebuild.
+    private int _consecutiveEndDrawInvalidStateFrames;
+    private bool _endDrawInvalidStateRebuildAttempted;
+    // Consecutive EndDraw PresentFailed frames — same Interlocked discipline
+    // and escalation ladder as the InvalidState pair above. Only the UI inline
+    // present path produces PresentFailed (native surfaces it exclusively
+    // under external pacing, which is never active while the render worker
+    // owns the target), but the reset runs on whichever thread presents.
+    private int _consecutivePresentFailedFrames;
+    private bool _presentFailedRebuildAttempted;
+    private long _lastFrameClockRenderTargetAttemptTicks;
     private RenderBackend _renderBackendOverride = RenderBackend.Auto;
     private bool _fullInvalidation = true;  // First frame is always full
     // FLIP_SEQUENTIAL with N buffers: buffer K's non-dirty area still has content
@@ -419,6 +433,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // present 的提交顺手吞掉。受 _dirtyLock 保护。
     private long _fullInvalidationSeq;
     private readonly object _dirtyLock = new(); // Protects _dirtyElements from cross-thread access
+    // A full frame will cover every layout displacement. This scope is enabled
+    // only around UI-thread UpdateLayout, before dirty capture, so arrange-time
+    // free rects can be skipped without dropping late or background changes.
+    private bool _elideUiThreadDirtyRectsDuringFullLayout;
     private int _appliedDwmTopMarginPhysical = -1;
     private bool _attemptedAutoWindowIcon;
     private bool _contentRendered;
@@ -437,6 +455,31 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private const int RenderRecoveryRetryInitialDelayMs = 120;
     private const int RenderRecoveryRetryMaxDelayMs = 2000;
     private const int DeviceLostBackendFallbackThreshold = 2;
+    // EndDraw returning InvalidState is normally a one-frame drop on a healthy
+    // device, but a driver that persistently fails lazy pipeline/shader creation
+    // (Vulkan folds those into INVALID_STATE) reports it EVERY frame and plain
+    // per-frame retry would spin black forever. Unit: consecutive FAILED FRAMES
+    // (any successfully presented frame resets the run). One full run rebuilds
+    // the render target; a second full run after that rebuild advances the
+    // backend fallback order (e.g. Vulkan → Software).
+    private const int EndDrawInvalidStateEscalationFrames = 30;
+    // EndDraw returning PresentFailed is normally a one-frame hiccup (mode
+    // change, resize race) on a healthy device, but a software backend whose
+    // per-present buffer lock keeps failing — or any other endless
+    // PRESENT_FAILED source — reports it EVERY frame, and the plain
+    // retry-without-escalation branch would loop black forever with zero log
+    // output. Same unit and escalation ladder as InvalidState above (rebuild,
+    // then backend fallback; a presented frame resets the run). The Vulkan
+    // swapchain-repair window emits PRESENT_FAILED for only a bounded handful
+    // of frames (≤8) before escalating itself to DEVICE_LOST, so this
+    // threshold can never preempt the dedicated device-loss recovery.
+    private const int PresentFailedEscalationFrames = 30;
+    // Frame-clock driven render-target recovery (see OnFrameStarting): minimum
+    // milliseconds between EnsureRenderTarget attempts while the target is
+    // missing. The DispatcherTimer retry chain bottoms out in
+    // System.Threading.Timer (thread pool) and never fires under pool
+    // starvation; the frame clock runs on its own dedicated thread and cannot.
+    private const int FrameClockRenderTargetRetryIntervalMs = 1000;
     private const string D3D12ForceWarpEnvironmentVariable = "JALIUM_D3D12_FORCE_WARP";
 
     private static bool IsEnvironmentSwitchEnabled(string variableName)
@@ -1416,9 +1459,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 fe.ApplyImplicitStyleIfNeeded();
             }
 
-            for (int i = 0; i < visual.VisualChildrenCount; i++)
+            for (int i = 0; i < visual.InternalVisualChildrenCount; i++)
             {
-                var child = visual.GetVisualChild(i);
+                var child = visual.InternalGetVisualChild(i);
                 if (child != null)
                     ApplyImplicitStylesRecursive(child);
             }
@@ -1719,10 +1762,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (canResize)
         {
-            isLeft = x < resizeBorder;
-            isRight = x >= windowWidth - resizeBorder;
-            isTop = y < resizeBorder;
-            isBottom = y >= windowHeight - resizeBorder;
+            // ScreenToClient reports native non-client frame coordinates outside
+            // the half-open client rect. Keep resize hits in that outer frame so
+            // controls next to a window edge never acquire a resize cursor.
+            isLeft = x < 0 && x >= -resizeBorder;
+            isRight = x >= windowWidth && x < windowWidth + resizeBorder;
+            isTop = y < 0 && y >= -resizeBorder;
+            isBottom = y >= windowHeight && y < windowHeight + resizeBorder;
 
             if (isTop && isLeft)
             {
@@ -4237,8 +4283,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             case PlatformEventType.PointerCancel:
             {
-                var pointerData = BuildPointerInputData(evt);
-                _inputDispatcher.HandlePointerCancel(pointerData, Environment.TickCount);
+                long eventTimeMillis = ResolvePointerEventTimeMillis(evt);
+                var pointerData = BuildPointerInputData(evt, eventTimeMillis);
+                _inputDispatcher.HandlePointerCancel(
+                    pointerData, ToPointerInputTimestamp(eventTimeMillis));
                 break;
             }
 
@@ -4304,6 +4352,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     _softKeyboardHeight = heightDip;
                     SoftKeyboardVisibilityChanged?.Invoke(this, EventArgs.Empty);
                     InvalidateMeasure();
+
+                    // The content area shrinks by the keyboard height on the next
+                    // layout pass; re-scroll the focused editor into the reduced
+                    // viewport once that pass completes so it is never occluded.
+                    if (visible)
+                        ScrollFocusedEditorIntoViewAfterLayout();
                 }
                 break;
             }
@@ -4335,10 +4389,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             case PlatformEventType.PointerUp:
             case PlatformEventType.PointerMove:
             {
-                var pointerData = BuildPointerInputData(evt);
+                long eventTimeMillis = ResolvePointerEventTimeMillis(evt);
+                var pointerData = BuildPointerInputData(evt, eventTimeMillis);
                 bool isDown = evt.Type == PlatformEventType.PointerDown;
                 bool isUp = evt.Type == PlatformEventType.PointerUp;
-                _inputDispatcher.HandlePointerInput(pointerData, isDown, isUp, Environment.TickCount);
+                _inputDispatcher.HandlePointerInput(
+                    pointerData, isDown, isUp,
+                    ToPointerInputTimestamp(eventTimeMillis));
                 break;
             }
         }
@@ -4518,6 +4575,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     }
 
     internal PointerInputData BuildPointerInputData(PlatformEvent evt)
+        => BuildPointerInputData(evt, ResolvePointerEventTimeMillis(evt));
+
+    private PointerInputData BuildPointerInputData(
+        PlatformEvent evt, long eventTimeMillis)
     {
         const uint PointerFlagInRange = 1u << 0;
         const uint PointerFlagInContact = 1u << 1;
@@ -4582,7 +4643,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         var pointerPoint = new PointerPoint(
             evt.PointerId, position, deviceType,
-            isInContact, properties, (ulong)Environment.TickCount, 0);
+            isInContact, properties, (ulong)eventTimeMillis, 0);
 
         var stylusPoints = new StylusPointCollection(
             [new StylusPoint(position.X, position.Y, pressure)]);
@@ -4593,6 +4654,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             IsCanceled: evt.Type == PlatformEventType.PointerCancel,
             stylusPoints);
     }
+
+    internal static long ResolvePointerEventTimeMillis(PlatformEvent evt)
+        => evt.PointerTimestampMillis > 0
+            ? evt.PointerTimestampMillis
+            : Environment.TickCount64;
+
+    internal static int ToPointerInputTimestamp(long eventTimeMillis)
+        => unchecked((int)eventTimeMillis);
 
     private static PointerUpdateKind GetPointerUpdateKind(
         bool isDown,
@@ -6631,8 +6700,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
                     window.OnSizeChanged(width, height);
 
-                    // For maximize/restore, post a deferred repaint message
-                    if (sizeType is SIZE_MAXIMIZED or SIZE_RESTORED)
+                    // Programmatic maximize/restore still gets the legacy deferred
+                    // repaint. During an interactive drag the frame clock owns
+                    // rendering so repeated SIZE_RESTORED messages cannot force a
+                    // synchronous frame for every mouse move.
+                    if (!window._isSizing && (sizeType is SIZE_MAXIMIZED or SIZE_RESTORED))
                     {
                         _ = PostMessage(hWnd, WM_APP_REPAINT, nint.Zero, nint.Zero);
                     }
@@ -6704,8 +6776,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
 
                 case WM_APP_REPAINT:
-                    // Deferred repaint after size change
-                    _ = RedrawWindow(hWnd, nint.Zero, nint.Zero, RDW_INVALIDATE | RDW_UPDATENOW);
+                    // A repaint posted before WM_ENTERSIZEMOVE may arrive after the
+                    // modal sizing loop has started. Keep that stale message from
+                    // bypassing frame-clock coalescing with RDW_UPDATENOW.
+                    if (window._isSizing)
+                    {
+                        window.RequestFullInvalidation();
+                        window.InvalidateWindow();
+                    }
+                    else
+                    {
+                        _ = RedrawWindow(hWnd, nint.Zero, nint.Zero, RDW_INVALIDATE | RDW_UPDATENOW);
+                    }
                     return nint.Zero;
 
                 case WM_SIZING:
@@ -6714,10 +6796,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // while our layout uses client-area size (from WM_SIZE). Mixing these
                     // two sources causes width oscillation during drag resize and makes
                     // title bar content appear to shift left/right.
-                    if (window._isSizing)
-                    {
-                        _ = RedrawWindow(hWnd, nint.Zero, nint.Zero, RDW_INVALIDATE | RDW_UPDATENOW);
-                    }
+                    // WM_SIZE already records the latest client size and wakes the
+                    // frame pipeline. Rendering synchronously here duplicates that
+                    // work and makes each mouse move wait for layout + ResizeBuffers.
                     break;
 
                 case WM_ENTERSIZEMOVE:
@@ -6760,22 +6841,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         }
                         window.ResumeRenderThread();
                     }
-                    // Do final resize to ensure correct buffer size (physical pixels)
-                    int finalPhysW = (int)(window.Width * window._dpiScale);
-                    int finalPhysH = (int)(window.Height * window._dpiScale);
-                    window.TryResizeRenderTarget(finalPhysW, finalPhysH, "ExitSizeMoveResize");
+                    // Flush any final size which did not reach a frame boundary.
+                    // Width/Height and layout were already updated by WM_SIZE; calling
+                    // OnSizeChanged again would invalidate the whole layout tree once
+                    // more at mouse-up.
+                    int finalPhysW = window._hasPendingResize
+                        ? window._pendingResizeWidth
+                        : (int)(window.Width * window._dpiScale);
+                    int finalPhysH = window._hasPendingResize
+                        ? window._pendingResizeHeight
+                        : (int)(window.Height * window._dpiScale);
+                    window.TryResizeRenderTarget(finalPhysW, finalPhysH, "ExitSizeMove");
                     // 强制重画一帧 _isSizing=false 的正常帧。拖拽期间每帧画的是 _isSizing=true 的
                     // backdrop 降级帧（折射型特效被简化/跳过），松手时 _isSizing 刚变 false，但
                     // 内容没变（无 dirty）、最后一帧已把 _fullInvalidation 清为 false、且本帧
                     // TryResizeRenderTarget 多半因尺寸已一致而 no-op（不重设 _fullInvalidation）——
-                    // 若不在此显式 RequestFullInvalidation，下面 RedrawWindow 触发的 RenderFrame 会在
+                    // 若不在此显式 RequestFullInvalidation，下面 InvalidateWindow 安排的 RenderFrame 会在
                     // "!_fullInvalidation && 无 dirty" 处 skip，屏幕停在 _isSizing=true 的降级坏帧
                     // （所有特效失效），直到鼠标移动经 InvalidateWindow 才恢复。这才是 resize 后
                     // "特效失效 + 需鼠标刷新" 的主因（与 TryBeginDrawOrScheduleRetry 的重试修复互补：
                     // 此处保证发起重画，那里保证重画帧 GPU 忙时也会重试到成功）。
                     window.RequestFullInvalidation();
-                    // Force a final repaint with correct buffer size
-                    _ = RedrawWindow(hWnd, nint.Zero, nint.Zero, RDW_INVALIDATE | RDW_UPDATENOW);
+                    window.InvalidateWindow();
                     return nint.Zero;
 
                 case WM_ERASEBKGND:
@@ -7007,6 +7094,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 case WM_SETTINGCHANGE:
                 case WM_THEMECHANGED:
                     window.OnSystemSettingsChanged(EventArgs.Empty);
+                    SystemParameters.NotifyStaticPropertyChanged(null);
                     break;
 
                 case WM_QUERYENDSESSION:
@@ -7072,7 +7160,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Must request full invalidation so RenderFrame takes the full-render path
         // instead of partial dirty-rect rendering (which would leave stale/black areas).
         RequestFullInvalidation();
-        InvalidateMeasure();
 
         bool widthChanged = previousWidth != Width;
         bool heightChanged = previousHeight != Height;
@@ -7099,15 +7186,43 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     // Fix: never touch the swap chain while a frame is in flight. A resize that
     // arrives at an unsafe moment is stashed and applied at the next safe point
     // (top of RenderFrame, before BeginDraw — see FlushPendingRenderTargetResize).
+    private enum RenderTargetResizeCommitResult
+    {
+        Completed,
+        Deferred,
+        Unavailable
+    }
+
     private bool _resizeInProgress;
     private bool _hasPendingResize;
     private int _pendingResizeWidth;
     private int _pendingResizeHeight;
+    private long _pendingResizeVersion;
+
+    private void QueueLatestRenderTargetResize(int physicalWidth, int physicalHeight)
+    {
+        _pendingResizeWidth = physicalWidth;
+        _pendingResizeHeight = physicalHeight;
+        unchecked { _pendingResizeVersion++; }
+        _hasPendingResize = true;
+
+        // RequestFullInvalidation records state but does not itself schedule a
+        // frame. Wake the normal frame pipeline so a Busy/park-failed resize
+        // cannot remain pending until the next unrelated input event.
+        RequestFullInvalidation();
+        InvalidateWindow();
+    }
 
     private void TryResizeRenderTarget(int physicalWidth, int physicalHeight, string stage)
     {
         if (physicalWidth <= 0 || physicalHeight <= 0)
             return;
+
+        // Latest-size-wins. Interactive WM_SIZE messages update managed layout
+        // immediately, but the expensive native resize is committed only at the
+        // next frame boundary. This keeps the modal sizing loop responsive and
+        // coalesces multiple mouse moves into one ResizeBuffers call per frame.
+        QueueLatestRenderTargetResize(physicalWidth, physicalHeight);
 
         // Defer if it is unsafe to touch the swap chain right now:
         //   • inside RenderFrame (a command list may be open), or
@@ -7115,24 +7230,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         //   • another resize's native call is already in flight (reentrancy).
         // Stash the LATEST requested size; a scheduled frame flushes it safely.
         var rt = RenderTarget;
-        if (_resizeInProgress || HasRenderFlag(RenderFlag_Rendering) || (rt != null && rt.IsDrawing))
+        if (_isSizing || _resizeInProgress || HasRenderFlag(RenderFlag_Rendering) || (rt != null && rt.IsDrawing))
         {
-            if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] DEFER {physicalWidth}x{physicalHeight} stage={stage} inProg={_resizeInProgress} rendering={HasRenderFlag(RenderFlag_Rendering)} drawing={rt?.IsDrawing}");
-            _pendingResizeWidth = physicalWidth;
-            _pendingResizeHeight = physicalHeight;
-            _hasPendingResize = true;
-            // Ensure a frame is scheduled to apply the pending size and repaint
-            // at the new dimensions even if the caller does not invalidate.
-            RequestFullInvalidation();
+            if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] DEFER {physicalWidth}x{physicalHeight} stage={stage} sizing={_isSizing} inProg={_resizeInProgress} rendering={HasRenderFlag(RenderFlag_Rendering)} drawing={rt?.IsDrawing}");
             return;
         }
 
-        if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] APPLY-DIRECT {physicalWidth}x{physicalHeight} stage={stage}");
-        ApplyRenderTargetResize(physicalWidth, physicalHeight, stage);
-
-        // A resize may have been deferred while we held _resizeInProgress above
-        // (native ResizeBuffers can pump a reentrant WM_SIZE). Drain the latest
-        // one now that the swap chain is idle again.
+        if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] FLUSH-LATEST {physicalWidth}x{physicalHeight} stage={stage}");
         FlushPendingRenderTargetResize();
     }
 
@@ -7154,16 +7258,35 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         int w = _pendingResizeWidth;
         int h = _pendingResizeHeight;
-        _hasPendingResize = false;
+        long version = _pendingResizeVersion;
         if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] FLUSH {w}x{h}");
-        ApplyRenderTargetResize(w, h, "PendingResize");
+        var result = ApplyRenderTargetResize(w, h, "PendingResize");
 
-        // ResizeBuffers discarded the back-buffer contents — force a full repaint
-        // at the new size so no stale/black pixels survive.
-        RequestFullInvalidation();
+        if (result == RenderTargetResizeCommitResult.Deferred)
+        {
+            // Keep the same request pending. The next frame boundary retries it
+            // without manufacturing an EndDraw for a draw session we do not own.
+            RequestFullInvalidation();
+            InvalidateWindow();
+            return;
+        }
+
+        // A reentrant WM_SIZE may have queued a newer size while ResizeBuffers
+        // pumped messages. Complete only the version we actually attempted.
+        if (_hasPendingResize && _pendingResizeVersion == version)
+        {
+            _hasPendingResize = false;
+        }
+
+        if (result == RenderTargetResizeCommitResult.Completed)
+        {
+            // ResizeBuffers discarded the back-buffer contents; force a full
+            // repaint at the committed size so no stale pixels survive.
+            RequestFullInvalidation();
+        }
     }
 
-    private void ApplyRenderTargetResize(int physicalWidth, int physicalHeight, string stage)
+    private RenderTargetResizeCommitResult ApplyRenderTargetResize(int physicalWidth, int physicalHeight, string stage)
     {
         var renderTarget = RenderTarget;
         if (renderTarget == null || !renderTarget.IsValid)
@@ -7174,7 +7297,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             EnsureRenderTarget();
             renderTarget = RenderTarget;
             if (renderTarget == null || !renderTarget.IsValid)
-                return;
+                return RenderTargetResizeCommitResult.Unavailable;
+        }
+
+        // Repeated same-size WM_SIZE/WM_EXITSIZEMOVE messages must not rebuild
+        // backends whose size is already authoritative. Vulkan owns this guard
+        // natively because an OUT_OF_DATE WSI can require a same-size rebuild.
+        if (renderTarget.Backend != RenderBackend.Vulkan &&
+            renderTarget.Width == physicalWidth && renderTarget.Height == physicalHeight)
+        {
+            if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] SKIP-SAME-SIZE {physicalWidth}x{physicalHeight} stage={stage}");
+            return RenderTargetResizeCommitResult.Completed;
         }
 
         // Reentrancy gate for the actual native call. While this is set, both
@@ -7191,25 +7324,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             ResumeRenderThread();
             _resizeInProgress = false;
-            // "Let a later tick retry" must actually arrange that retry: re-stash
-            // the size (FlushPendingRenderTargetResize cleared _hasPendingResize
-            // before calling us) and schedule a frame — otherwise the final
-            // EXITSIZEMOVE resize can be silently dropped and the swap chain
-            // stays at the stale size until the next external invalidation.
-            _pendingResizeWidth = physicalWidth;
-            _pendingResizeHeight = physicalHeight;
-            _hasPendingResize = true;
-            RequestFullInvalidation();
-            return;
+            if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] PARK-BUSY {physicalWidth}x{physicalHeight} stage={stage}");
+            return RenderTargetResizeCommitResult.Deferred;
         }
         try
         {
-            // Defensive: if a draw session is somehow still open, close it before
-            // touching the swap chain. The guards above should prevent this, but a
-            // half-open session here would corrupt the resize.
             if (renderTarget.IsDrawing)
             {
-                try { _ = renderTarget.TryEndDraw(); } catch { /* best effort */ }
+                if (!renderTarget.IsDrawingOwnedByCurrentThread)
+                {
+                    if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] DRAWING-OTHER-THREAD {physicalWidth}x{physicalHeight} stage={stage}");
+                    return RenderTargetResizeCommitResult.Deferred;
+                }
+
+                if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] CLOSE-OWNED-DRAW {physicalWidth}x{physicalHeight} stage={stage}");
+                renderTarget.EndDraw();
             }
 
             _debugHud.OnResize();
@@ -7217,21 +7346,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             var resizeResult = renderTarget.Resize(physicalWidth, physicalHeight);
             if (resizeResult == JaliumResult.Busy)
             {
-                // Native refused: a command list is still open and references the
-                // back buffers (a cross-thread render in flight, or a frame left
-                // open). Freeing them now would be the #921 use-after-free. Re-stash
-                // and retry at the next safe point — FlushPendingRenderTargetResize
-                // runs at the top of RenderFrame, before BeginDraw, when the list is
-                // provably closed. Mirrors the FIX #5 park-failure re-stash. The
-                // finally below still runs (ResumeRenderThread + _resizeInProgress
-                // = false), so the swap chain is never left wedged, and no present
-                // credit was consumed (no ResizeBuffers ran) so none is returned.
+                // Native still sees an open back-buffer reference. Preserve the
+                // pending version and retry only from another frame boundary.
                 if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] NATIVE-RESIZE BUSY→deferred {physicalWidth}x{physicalHeight} stage={stage}");
-                _pendingResizeWidth = physicalWidth;
-                _pendingResizeHeight = physicalHeight;
-                _hasPendingResize = true;
-                RequestFullInvalidation();
-                return;
+                return RenderTargetResizeCommitResult.Deferred;
             }
             if (ResizeTraceEnabled) Console.Error.WriteLine($"[resize-trace] NATIVE-RESIZE OK rt={renderTarget.Width}x{renderTarget.Height}");
             // ResizeBuffers leaves the frame-latency waitable's signal count in
@@ -7241,21 +7359,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // case Present briefly queues inside DXGI instead of deadlocking
             // the event-driven scheduler on a signal that never comes.
             ReturnSwapCreditAfterFailedPresent();
+            return RenderTargetResizeCommitResult.Completed;
         }
         catch (RenderPipelineException ex)
         {
             if (TryRecoverFromRenderPipelineFailure(ex, stage))
             {
-                return;
+                // Recovery replaced the render target — void any per-result
+                // EndDraw failure run recorded against the retired one.
+                ResetEndDrawInvalidStateTracking();
+                return RenderTargetResizeCommitResult.Completed;
             }
 
             if (IsRecoverableRenderPipelineException(ex))
             {
                 ScheduleRenderRecoveryRetry();
-                return;
+                return RenderTargetResizeCommitResult.Deferred;
             }
 
             LogRenderFailure(ex, stage);
+            return RenderTargetResizeCommitResult.Unavailable;
         }
         finally
         {
@@ -7502,6 +7625,191 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         ScheduleRenderAfterRecovery();
     }
 
+    /// <summary>
+    /// Counts one EndDraw InvalidState frame and reports whether the run of
+    /// consecutive failures just reached <see cref="EndDrawInvalidStateEscalationFrames"/>.
+    /// The count restarts on escalation, so the NEXT escalation again requires a
+    /// full uninterrupted run. Callable from the UI thread or the render worker.
+    /// </summary>
+    private bool NoteEndDrawInvalidStateFrame()
+    {
+        if (Interlocked.Increment(ref _consecutiveEndDrawInvalidStateFrames) <
+            EndDrawInvalidStateEscalationFrames)
+        {
+            return false;
+        }
+
+        Interlocked.Exchange(ref _consecutiveEndDrawInvalidStateFrames, 0);
+        return true;
+    }
+
+    /// <summary>
+    /// Counts one EndDraw PresentFailed frame and reports whether the run of
+    /// consecutive failures just reached <see cref="PresentFailedEscalationFrames"/>.
+    /// Same restart-on-escalation contract as <see cref="NoteEndDrawInvalidStateFrame"/>.
+    /// </summary>
+    private bool NotePresentFailedFrame()
+    {
+        if (Interlocked.Increment(ref _consecutivePresentFailedFrames) <
+            PresentFailedEscalationFrames)
+        {
+            return false;
+        }
+
+        Interlocked.Exchange(ref _consecutivePresentFailedFrames, 0);
+        return true;
+    }
+
+    /// <summary>
+    /// Shared reset point for the per-result EndDraw failure runs (InvalidState
+    /// and PresentFailed). Called on every successfully presented frame and
+    /// after a DeviceLost/ResourceCreationFailed recovery replaces the render
+    /// target — a fresh target must not inherit a retired target's failure run.
+    /// </summary>
+    private void ResetEndDrawInvalidStateTracking()
+    {
+        Interlocked.Exchange(ref _consecutiveEndDrawInvalidStateFrames, 0);
+        Interlocked.Exchange(ref _consecutivePresentFailedFrames, 0);
+        // Concurrency note: this reset CAN race the UI-thread escalation
+        // writers (RecoverFromPersistentEndDrawInvalidState /
+        // RecoverFromPersistentPresentFailed) — e.g. a render-worker success
+        // presented between a failure run reaching its threshold and the
+        // marshalled escalation actually running. The race is benign: at worst
+        // the rebuilt-once flag is cleared early (one extra render-target
+        // rebuild before the backend fallback rung) or set against an already
+        // healthy target (the next escalation needs a brand-new full failure
+        // run anyway). Neither outcome loses the escalation ladder — it only
+        // shifts it by one recovery cycle.
+        _endDrawInvalidStateRebuildAttempted = false;
+        _presentFailedRebuildAttempted = false;
+    }
+
+    /// <summary>
+    /// Escalation for a target whose EndDraw fails with InvalidState every
+    /// frame. First full failure run: dispose and recreate the render target
+    /// (same recovery funnel device loss uses). Second full run after that
+    /// rebuild: advance the backend fallback order (e.g. Vulkan → Software)
+    /// and rebuild on the fallback backend — EnsureRenderTarget enforces an
+    /// explicit backend override against the current context, so the fallback
+    /// takes effect without a forced context replace. UI thread only.
+    /// </summary>
+    private void RecoverFromPersistentEndDrawInvalidState()
+    {
+        if (Handle == nint.Zero || _isClosing)
+        {
+            return;
+        }
+
+        bool firstEscalation = !_endDrawInvalidStateRebuildAttempted;
+        if (firstEscalation)
+        {
+            Console.Error.WriteLine(
+                $"[EndDraw] {EndDrawInvalidStateEscalationFrames} consecutive InvalidState frames; rebuilding render target");
+        }
+        else
+        {
+            var failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
+            if (failedBackend != RenderBackend.Auto &&
+                TryAdvanceRenderBackendFallback(failedBackend))
+            {
+                Console.Error.WriteLine(
+                    $"[EndDraw] InvalidState persists after render-target rebuild; backend fallback {failedBackend} -> {_renderBackendOverride}");
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    "[EndDraw] InvalidState persists after render-target rebuild; no further backend fallback available");
+            }
+        }
+
+        lock (_dirtyLock)
+        {
+            MarkFullInvalidationLocked();
+        }
+
+        if (TryRecoverFromRenderPipelineFailure(JaliumResult.InvalidState, "End"))
+        {
+            // Arm the fallback rung only after the rebuild actually ran: a
+            // deferred recovery (park timeout, recovery already in progress,
+            // rebuild exception) leaves the old target's problem unsolved, and
+            // the NEXT full failure run must retry the rebuild rather than
+            // skip straight to a backend downgrade.
+            if (firstEscalation)
+            {
+                _endDrawInvalidStateRebuildAttempted = true;
+            }
+        }
+        else
+        {
+            ScheduleRenderRecoveryRetry(escalateBackoff: false);
+        }
+    }
+
+    /// <summary>
+    /// Escalation for a target whose EndDraw fails with PresentFailed every
+    /// frame (e.g. a software backend whose present-buffer lock keeps failing).
+    /// Mirrors <see cref="RecoverFromPersistentEndDrawInvalidState"/>: first
+    /// full failure run rebuilds the render target; a second full run after a
+    /// completed rebuild advances the backend fallback order. When no further
+    /// fallback exists (software is already the floor) the rebuild cadence
+    /// simply continues. UI thread only — PresentFailed is produced exclusively
+    /// by the inline (externally paced) present path.
+    /// </summary>
+    private void RecoverFromPersistentPresentFailed()
+    {
+        if (Handle == nint.Zero || _isClosing)
+        {
+            return;
+        }
+
+        bool firstEscalation = !_presentFailedRebuildAttempted;
+        if (firstEscalation)
+        {
+            Console.Error.WriteLine(
+                $"[Present] {PresentFailedEscalationFrames} consecutive PresentFailed frames; rebuilding render target");
+        }
+        else
+        {
+            var failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
+            if (failedBackend != RenderBackend.Auto &&
+                TryAdvanceRenderBackendFallback(failedBackend))
+            {
+                Console.Error.WriteLine(
+                    $"[Present] PresentFailed persists after render-target rebuild; backend fallback {failedBackend} -> {_renderBackendOverride}");
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    "[Present] PresentFailed persists after render-target rebuild; no further backend fallback available");
+            }
+        }
+
+        lock (_dirtyLock)
+        {
+            MarkFullInvalidationLocked();
+        }
+
+        // TryRecoverFromRenderPipelineFailure gates on the recoverable-result
+        // whitelist, which deliberately excludes PresentFailed so that a single
+        // PresentFailed frame stays a no-rebuild hiccup on every other path.
+        // Enter the shared rebuild funnel through its InvalidState door: the
+        // recovery this escalation needs is identical (park/join the render
+        // worker, dispose the target, EnsureRenderTarget honoring any backend
+        // override, no forced context replace).
+        if (TryRecoverFromRenderPipelineFailure(JaliumResult.InvalidState, "End"))
+        {
+            // Same completed-rebuild gate as the InvalidState escalation above.
+            if (firstEscalation)
+            {
+                _presentFailedRebuildAttempted = true;
+            }
+        }
+        else
+        {
+            ScheduleRenderRecoveryRetry(escalateBackoff: false);
+        }
+    }
+
     private void MarkRecoverableRenderFailure()
     {
         _consecutiveRecoverableRenderFailures = Math.Min(_consecutiveRecoverableRenderFailures + 1, 8);
@@ -7551,6 +7859,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (TryRecoverFromRenderPipelineFailure(exception, stage))
         {
+            // Same rule as the End-result funnel: a successful recovery just
+            // replaced the render target, so any InvalidState / PresentFailed
+            // run accumulated against the retired target is void.
+            ResetEndDrawInvalidStateTracking();
             return true;
         }
 
@@ -7810,6 +8122,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             Jalium.UI.Diagnostics.HoverTrace.Bump(Jalium.UI.Diagnostics.HoverTrace.PRESENT);
             _lastRenderTicks = Environment.TickCount64;
             ResetRenderRecoveryBackoff();
+            ResetEndDrawInvalidStateTracking();
             // Pre-arm the swap wait right after a successful present: the DWM
             // retire signal then converts to a credit as soon as it lands, so a
             // continuous animation's next tick finds the credit already in hand
@@ -7837,9 +8150,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // previous frame reached the screen) and schedule a retry. No
             // RT rebuild, no backoff escalation, no exception — any of those
             // would turn a one-frame hiccup into a visible stall.
+            //
+            // Unless it happens EVERY frame: a full run of consecutive failures
+            // escalates (log + render-target rebuild, then backend fallback —
+            // see RecoverFromPersistentPresentFailed), so a permanently failing
+            // present no longer spins black forever with zero evidence. The
+            // escalation log doubles as the throttled trace: one line per
+            // PresentFailedEscalationFrames-frame run. This branch deliberately
+            // leaves the DEVICE_LOST backoff counter and the InvalidState run
+            // untouched — their incidents are tracked independently.
             lock (_dirtyLock)
             {
                 MarkFullInvalidationLocked();
+            }
+
+            if (NotePresentFailedFrame())
+            {
+                RecoverFromPersistentPresentFailed();
+                return false;
             }
 
             ScheduleRenderRecoveryRetry(escalateBackoff: false);
@@ -7851,6 +8179,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // The native frame has already been aborted/closed. Preserve the
             // same render target and retry a full frame; recreating it here turns
             // a transient command-state collision into an observable recovery.
+            // A device that reports InvalidState EVERY frame never leaves this
+            // branch, though — a full run of consecutive failures escalates to
+            // an RT rebuild and then to a backend fallback.
+            if (NoteEndDrawInvalidStateFrame())
+            {
+                RecoverFromPersistentEndDrawInvalidState();
+                return false;
+            }
+
             ScheduleDroppedFrameRetry();
             return false;
         }
@@ -7864,7 +8201,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             MarkRecoverableRenderFailure();
 
-            if (!TryRecoverFromRenderPipelineFailure(endResult, "End"))
+            if (TryRecoverFromRenderPipelineFailure(endResult, "End"))
+            {
+                // A DeviceLost / ResourceCreationFailed recovery just replaced
+                // the render target. Clear the per-result failure runs so a
+                // stale InvalidState / PresentFailed streak from the retired
+                // target cannot count against the fresh one — "consecutive"
+                // must not span a device swap.
+                ResetEndDrawInvalidStateTracking();
+            }
+            else
             {
                 ScheduleRenderRecoveryRetry(escalateBackoff: false);
             }
@@ -7962,12 +8308,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     /// <summary>
     /// WM_PAINT handler. Used for OS-initiated repaints (window uncovered, initial show, resize).
-    /// Validates the update region via BeginPaint/EndPaint and delegates to RenderFrame.
+    /// Validates the update region via BeginPaint/EndPaint and delegates to RenderFrame
+    /// except while interactive resize is owned by the frame clock.
     /// </summary>
     private void OnPaint()
     { _debugHud.OnPaint();
         PAINTSTRUCT ps = new();
         _ = BeginPaint(Handle, out ps);
+        if (_isSizing)
+        {
+            // Validate the OS update region, but do not let a natural WM_PAINT
+            // bypass resize coalescing. The frame clock will apply the latest
+            // queued size and render once at its next safe point.
+            EndPaint(Handle, ref ps);
+            RequestFullInvalidation();
+            InvalidateWindow();
+            return;
+        }
         RenderFrame();
         EndPaint(Handle, ref ps);
     }
@@ -8434,6 +8791,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
             JaliumResult endResult = rt.TryEndDraw();   // non-throwing; Ok or failure result
             ended = endResult == JaliumResult.Ok;
+            if (ended)
+            {
+                // Interlocked + plain bool store — safe from this worker (see
+                // ResetEndDrawInvalidStateTracking for the ordering argument).
+                ResetEndDrawInvalidStateTracking();
+            }
             if (ended && _consecutiveRecoverableRenderFailures != 0)
             {
                 // Mirror the inline path's "successful present resets the
@@ -8449,7 +8812,38 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // End/InvalidState is a dropped frame on a healthy device, not a
                 // device-loss incident. Requeue a full capture on the SAME target;
                 // do not touch the recovery latch/backoff or rebuild the RT.
-                ScheduleDroppedFrameRetry();
+                // Unless it happens EVERY frame: a full run of consecutive
+                // failures escalates on the UI thread (the RT lifecycle owner —
+                // TryRecoverFromRenderPipelineFailure parks this worker before
+                // touching the target).
+                if (NoteEndDrawInvalidStateFrame())
+                {
+                    _dispatcher?.BeginInvokeCritical(RecoverFromPersistentEndDrawInvalidState);
+                }
+                else
+                {
+                    ScheduleDroppedFrameRetry();
+                }
+            }
+            else if (!ended && endResult == JaliumResult.PresentFailed)
+            {
+                // End/PresentFailed means the frame never reached the screen
+                // (native swapchain repair frame, surface hiccup) while this
+                // capture's dirty was already cleared at publish time — a
+                // static scene would otherwise never re-publish and native's
+                // BeginDraw repair would never get another frame to run in.
+                // Mirror the inline path: count the run (a full run rebuilds
+                // the RT / falls back on the UI thread) and re-invalidate so
+                // the scene re-records and re-publishes.
+                if (NotePresentFailedFrame())
+                {
+                    _dispatcher?.BeginInvokeCritical(RecoverFromPersistentPresentFailed);
+                }
+                else
+                {
+                    try { _dispatcher?.BeginInvokeCritical(() => { RequestFullInvalidation(); InvalidateWindow(); }); }
+                    catch { /* shutting down */ }
+                }
             }
             else if (!ended && IsRecoverableRenderPipelineFailure(endResult, "End"))
             {
@@ -9155,6 +9549,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 if (_renderFrameLogCount++ < 3)
                     Console.Error.WriteLine($"[RenderFrame] SKIP: RT still null/invalid after ensure");
+                // Without a reschedule this bail is the end of the retry chain:
+                // the banked dirty state never re-runs RenderFrame on its own,
+                // so a target that stays unavailable would leave the window
+                // black until some unrelated invalidation arrives. Keep the
+                // recovery timer armed until EnsureRenderTarget succeeds (no
+                // backoff escalation — creation failures must not advance the
+                // DeviceLost backend-fallback counter).
+                ScheduleRenderRecoveryRetry(escalateBackoff: false);
                 return;
             }
 
@@ -9191,7 +9593,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             // Perform layout before rendering (queue-based: only dirty elements).
             // UpdateLayout may trigger further invalidations via AddDirtyElement.
-            UpdateLayout();
+            UpdateLayoutForRender();
             if (!IsRenderLifecycleCurrent(frameLifecycleGeneration, frameRenderTarget))
                 return;
             _debugHud.MarkLayout();
@@ -9206,13 +9608,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // If a specific driver shows stale-buffer artifacts, the old behavior can be
             // restored with JALIUM_D3D12_FORCE_FULL_REPLAY=1.
             bool supportsPartialPresentation = frameRenderTarget.SupportsPartialPresentation;
+            bool requiresBackBufferConvergence = RequiresBackBufferConvergence(
+                frameRenderTarget.Backend,
+                supportsPartialPresentation);
             bool requiresFullReplay = !supportsPartialPresentation ||
                 (frameRenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12);
-            if (!supportsPartialPresentation)
+            if (!requiresBackBufferConvergence)
             {
-                // A target that cannot preserve/seed its presented contents must
-                // never consume a flush assembled from dirty-history only.  Any
-                // stale flush armed by the previous render target is invalid too.
+                // Vulkan seeds every acquired image from its canonical retained
+                // frame, so rotating through swap images needs no convergence
+                // replay. Clear any counter left by a previous D3D12 target.
                 _partialPresentsToFlush = 0;
             }
             // _rtActive 只在 UI 线程翻转（Start/StopRenderThread），帧首读入局部对本帧
@@ -9368,7 +9773,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // （ResizeBuffers 后 undefined）。present 前 seed 属过量声明、安全——
                 // 失败时脏集经 finally 归还且 _fullInvalidation 未被 Discard 清掉，
                 // 重试帧仍走 full。
-                SeedDirtyHistoryFullWindow(windowBounds);
+                if (requiresBackBufferConvergence)
+                {
+                    SeedDirtyHistoryFullWindow(windowBounds);
+                }
                 frameRenderTarget.SetFullInvalidation();
 
                 // TryBeginDraw: non-blocking.  If the GPU hasn't finished the
@@ -9463,13 +9871,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // FLIP_SEQUENTIAL buffer has its stale pixels repainted. Because
                     // aggregator absorbs redundant rects the fold is idempotent for
                     // regions that haven't changed.
-                    for (int h = 0; h < DirtyHistoryCount; h++)
+                    if (requiresBackBufferConvergence)
                     {
-                        var history = _dirtyHistory[h];
-                        if (history == null) continue;
-                        foreach (var r in history) aggregator.Add(r);
+                        for (int h = 0; h < DirtyHistoryCount; h++)
+                        {
+                            var history = _dirtyHistory[h];
+                            if (history == null) continue;
+                            foreach (var r in history) aggregator.Add(r);
+                        }
                     }
-                    if (LegacyPromoteBehavior)
+                    if (requiresBackBufferConvergence && LegacyPromoteBehavior)
                     {
                         // 逃生门：旧管线在 fold 时（present 前）推进 ring。BeginDraw 连败
                         // 两次会把仍被 N=3 收敛需要的 raw(K-1) 驱逐——正是新管线把提交挪
@@ -9522,7 +9933,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     if (DebugRender)
                         System.Diagnostics.Debug.WriteLine(
                             $"[RenderFrame] PROMOTE raw={judgedArea:F0}px² win={windowArea:F0}px² ratio={judgedArea / windowArea:P0} rawRects={rawSnapshot!.Length}");
-                    if (LegacyPromoteBehavior)
+                    if (requiresBackBufferConvergence && LegacyPromoteBehavior)
                     {
                         // 逃生门：旧管线 promote 前整 ring 重播为全窗（并重置写指针）——
                         // 第 K-1 帧刚写入的 raw 随即被覆盖，回路的第二半。
@@ -9548,7 +9959,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         OnRender(frameRenderTarget);
                         if (AbortRenderFrameIfLifecycleChanged(frameLifecycleGeneration, frameRenderTarget)) return;
                         if (!CompleteOwnedNativeDrawSession()) { return; }
-                        if (!LegacyPromoteBehavior)
+                        if (requiresBackBufferConvergence && !LegacyPromoteBehavior)
                         {
                             // painted(=全窗) ⊇ changed：以上界入 ring，不依赖"全树重放
                             // 逐像素确定"的假设（backdrop/LiquidGlass 采样实况屏幕）。
@@ -9624,7 +10035,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         // EndDraw/present 失败不再丢脏（旧代码 BeginDraw 后即清，EndDraw
                         // 失败只能靠 recovery 的整窗兜底）——return 交 finally 归还。
                         if (!CompleteOwnedNativeDrawSession()) { return; }
-                        if (!isFlushFrame && !LegacyPromoteBehavior)
+                        if (requiresBackBufferConvergence && !isFlushFrame && !LegacyPromoteBehavior)
                         {
                             // RC2：ring 语义 = "最近 DirtyHistoryCount 个已成功 present 帧
                             // 的变更集上界"。提交移到 present 成功之后，BeginDraw/EndDraw
@@ -10017,9 +10428,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// re-arms, so the counter strictly decreases to 0 — no render loop. UI-thread
     /// only (called from RenderFrame).
     /// </summary>
+    internal static bool RequiresBackBufferConvergence(
+        RenderBackend backend,
+        bool supportsPartialPresentation)
+        => supportsPartialPresentation && backend == RenderBackend.D3D12;
+
     private void HandlePresentedFrameFlush(bool isFlushFrame)
     {
-        if (RenderTarget?.SupportsPartialPresentation != true)
+        var renderTarget = RenderTarget;
+        if (renderTarget == null ||
+            !RequiresBackBufferConvergence(renderTarget.Backend, renderTarget.SupportsPartialPresentation))
         {
             _partialPresentsToFlush = 0;
             return;
@@ -10246,6 +10664,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             result.MeasureCount, result.ArrangeCount, result.Iterations);
     }
 
+    private void UpdateLayoutForRender()
+    {
+        bool elideDirtyRects;
+        lock (_dirtyLock)
+        {
+            elideDirtyRects = _fullInvalidation;
+        }
+
+        _elideUiThreadDirtyRectsDuringFullLayout = elideDirtyRects;
+        try
+        {
+            UpdateLayout();
+        }
+        finally
+        {
+            _elideUiThreadDirtyRectsDuringFullLayout = false;
+        }
+    }
+
     private static void PublishLayoutPassStatsFromTicks(
         long totalTicks, long measureTicks, long arrangeTicks,
         int measureCount, int arrangeCount, int iterations)
@@ -10315,6 +10752,51 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // (RequestFullInvalidation runs on resize anyway). Holding the dirty
         // flag avoids dropping invalidations that arrived during minimize.
         if (WindowState == WindowState.Minimized) return;
+
+        // A window whose render-target creation failed otherwise depends on the
+        // DispatcherTimer retry chain, which bottoms out in the thread pool and
+        // never fires while the pool is starved. This event is driven by the
+        // dedicated frame-clock thread and cannot starve, so also retry here,
+        // throttled to once per FrameClockRenderTargetRetryIntervalMs. Skipped
+        // while the Android Surface is detached — there is nothing to create.
+        if (RenderTarget == null &&
+            (!PlatformFactory.IsAndroid || _androidSurfaceAvailable))
+        {
+            long now = Environment.TickCount64;
+            if (now - _lastFrameClockRenderTargetAttemptTicks >= FrameClockRenderTargetRetryIntervalMs)
+            {
+                _lastFrameClockRenderTargetAttemptTicks = now;
+                try
+                {
+                    EnsureRenderTarget();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[OnFrameStarting] frame-clock render-target retry failed: {ex.Message}");
+                }
+
+                if (RenderTarget != null)
+                {
+                    Console.Error.WriteLine("[OnFrameStarting] render target recovered by frame-clock retry");
+                    RequestFullInvalidation();
+                    InvalidateMeasure();
+                    // Sets RenderFlag_DirtyBetween, which the check below turns
+                    // into a scheduled render this same frame.
+                    InvalidateWindow();
+                }
+            }
+
+            if (RenderTarget == null)
+            {
+                // Keep the frame clock alive while the target is still missing:
+                // its keep-alive window (CompositionTarget.KeepAliveMs, 250 ms)
+                // is shorter than the retry throttle above, so on a static UI
+                // with no animation subscribers the clock would otherwise park
+                // after this tick and no further FrameStarting — and therefore
+                // no further EnsureRenderTarget retry — would ever run.
+                Jalium.UI.Media.CompositionTarget.RequestFrame();
+            }
+        }
 
         if (HasRenderFlag(RenderFlag_DirtyBetween))
         {
@@ -10448,6 +10930,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     public void AddDirtyRect(Rect screenRect)
     {
         if (screenRect.IsEmpty || screenRect.Width <= 0 || screenRect.Height <= 0) return;
+        if (CheckAccess() && _elideUiThreadDirtyRectsDuringFullLayout) return;
         lock (_dirtyLock) { _dirtyFreeRects.Add(screenRect); }
     }
 
@@ -10596,9 +11079,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (root is Button btn && predicate(btn))
             return btn;
 
-        for (int i = 0; i < root.VisualChildrenCount; i++)
+        for (int i = 0; i < root.InternalVisualChildrenCount; i++)
         {
-            if (root.GetVisualChild(i) is UIElement child)
+            if (root.InternalGetVisualChild(i) is UIElement child)
             {
                 var found = FindButton(child, predicate);
                 if (found != null)
@@ -10977,6 +11460,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void UpdateInputMethodAssociation()
     {
+        if (PlatformFactory.IsAndroid)
+        {
+            // Android routes IME through the managed Activity (system soft
+            // keyboard), not the native platform library's IMM/text-input path.
+            UpdateAndroidImeContext();
+            return;
+        }
+
         if (OperatingSystem.IsLinux())
         {
             UpdateLinuxImeContext();
@@ -11105,6 +11596,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (OperatingSystem.IsLinux())
             UpdateLinuxImeContext();
+        else if (PlatformFactory.IsAndroid)
+            UpdateAndroidImeContext();
     }
 
     private void UpdateLinuxImeContext()
@@ -11123,6 +11616,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void DisableLinuxImeContext(bool force = false)
     {
+        if (PlatformFactory.IsAndroid)
+        {
+            DisableAndroidImeContext(force);
+            return;
+        }
+
         if (!OperatingSystem.IsLinux() || _platformWindow == null)
             return;
 
@@ -11159,6 +11658,312 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             caretRectangle,
             targetOrigin,
             _dpiScale);
+    }
+
+    // ========================================================================
+    // Android system soft keyboard (IME) integration
+    //
+    // Android's IME lives in the managed Activity layer (InputMethodManager +
+    // a virtual InputConnection), not in the native platform library. The
+    // focused editor's context is pushed here to AndroidActivityBridge, which
+    // forwards it to the registered IAndroidSoftKeyboardController. Composition
+    // and commit flow back through the InjectAndroidIme* methods below, mirroring
+    // the Linux CompositionUpdate/End handling so inline pre-edit still renders.
+    // ========================================================================
+
+    private AndroidImeState _lastAndroidImeState = AndroidImeState.Disabled;
+    private bool _hasLastAndroidImeState;
+    private string _androidComposingText = string.Empty;
+
+    private void UpdateAndroidImeContext()
+    {
+        if (!AndroidActivityBridge.HasSoftKeyboardController)
+            return;
+
+        AndroidImeState state = CreateAndroidImeState();
+
+        // While the IME is mid-composition the editable model is unchanged
+        // (pre-edit text lives outside it), so a surrounding-text re-sync would
+        // wrongly clear the input connection's composing region. Skip such
+        // pushes; still allow enable/disable transitions (e.g. focus changes).
+        if (InputMethod.IsComposing &&
+            _hasLastAndroidImeState &&
+            state.Enabled == _lastAndroidImeState.Enabled)
+        {
+            return;
+        }
+
+        if (!state.Enabled && InputMethod.IsComposing)
+            InputMethod.CancelComposition();
+
+        if (_hasLastAndroidImeState && state == _lastAndroidImeState)
+            return;
+
+        _lastAndroidImeState = state;
+        _hasLastAndroidImeState = true;
+        AndroidActivityBridge.UpdateSoftKeyboard(state);
+    }
+
+    private void DisableAndroidImeContext(bool force)
+    {
+        if (!AndroidActivityBridge.HasSoftKeyboardController)
+            return;
+
+        if (InputMethod.IsComposing)
+            InputMethod.CancelComposition();
+
+        AndroidImeState state = AndroidImeState.Disabled;
+        if (!force && _hasLastAndroidImeState && state == _lastAndroidImeState)
+            return;
+
+        _androidComposingText = string.Empty;
+        _lastAndroidImeState = state;
+        _hasLastAndroidImeState = true;
+        AndroidActivityBridge.UpdateSoftKeyboard(state);
+    }
+
+    /// <summary>
+    /// Forces the system soft keyboard to (re)appear for the focused editor even
+    /// when the resolved IME state is unchanged — used when the user taps an
+    /// already-focused field after dismissing the keyboard with the Back button.
+    /// </summary>
+    internal void EnsureAndroidSoftKeyboard()
+    {
+        if (!PlatformFactory.IsAndroid)
+            return;
+
+        // A live composition means the keyboard is already shown; forcing a
+        // re-push here would bypass the composition guard and disturb the pre-edit.
+        if (InputMethod.IsComposing)
+            return;
+
+        _hasLastAndroidImeState = false;
+        UpdateAndroidImeContext();
+    }
+
+    private AndroidImeState CreateAndroidImeState()
+    {
+        // IsActive tracks Win32/X11 window activation (a FocusGained platform
+        // event), which Android never raises — it has a single foreground
+        // Activity — so gate on it only off Android; otherwise the keyboard
+        // could never appear.
+        if (_isClosing ||
+            (!PlatformFactory.IsAndroid && !IsActive) ||
+            !TryGetImeTarget(out UIElement? target, out IImeSupport? support) ||
+            target == null || support == null)
+        {
+            return AndroidImeState.Disabled;
+        }
+
+        SoftKeyboardResolution resolution = SoftKeyboardResolver.Resolve(target);
+
+        // Resolve a Default Return key into a concrete action: a multiline field
+        // keeps Enter as a newline; a single-line field with a successor advances
+        // focus (requirement 8), otherwise it commits/dismisses.
+        TextInputReturnKeyType returnKey = resolution.ReturnKeyType;
+        if (returnKey == TextInputReturnKeyType.Default)
+        {
+            returnKey = resolution.Multiline
+                ? TextInputReturnKeyType.Return
+                : HasNextFocusable(target)
+                    ? TextInputReturnKeyType.Next
+                    : TextInputReturnKeyType.Done;
+        }
+
+        string surroundingText = string.Empty;
+        int selectionStart = 0;
+        int selectionEnd = 0;
+        if (support.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snapshot))
+        {
+            // Bound the text shared with the IME (parity with the Linux path) so a
+            // very large editor doesn't push its whole contents on every sync. For
+            // ordinary fields the window spans the full text with unchanged offsets.
+            if (!ImeTextEncoding.TryCreateUtf8SurroundingWindow(
+                    snapshot,
+                    ImeTextEncoding.MaximumSurroundingTextUtf8Bytes,
+                    out ImeSurroundingTextSnapshot window))
+            {
+                window = snapshot;
+            }
+
+            surroundingText = window.Text ?? string.Empty;
+            int a = Math.Clamp(window.CursorIndex, 0, surroundingText.Length);
+            int b = Math.Clamp(window.AnchorIndex, 0, surroundingText.Length);
+            selectionStart = Math.Min(a, b);
+            selectionEnd = Math.Max(a, b);
+        }
+
+        return new AndroidImeState(
+            Enabled: true,
+            ContentType: resolution.ContentType,
+            ReturnKeyType: returnKey,
+            Multiline: resolution.Multiline,
+            ShowSuggestions: resolution.ShowSuggestions,
+            AutoCapitalization: resolution.AutoCapitalization,
+            Lowercase: resolution.Lowercase,
+            Uppercase: resolution.Uppercase,
+            SurroundingText: surroundingText,
+            SelectionStart: selectionStart,
+            SelectionEnd: selectionEnd);
+    }
+
+    private static bool HasNextFocusable(UIElement target)
+    {
+        DependencyObject? next = FocusService.PredictFocus(target, FocusNavigationDirection.Next);
+        return next != null && !ReferenceEquals(next, target);
+    }
+
+    /// <summary>Applies IME composition (pre-edit) text from the Android input connection.</summary>
+    internal void InjectAndroidImeComposition(string compositionText, int caretOffset)
+    {
+        _androidComposingText = compositionText ?? string.Empty;
+        if (!InputMethod.IsComposing)
+            InputMethod.StartComposition();
+        InputMethod.UpdateComposition(
+            _androidComposingText,
+            Math.Clamp(caretOffset, 0, _androidComposingText.Length));
+    }
+
+    /// <summary>Commits final text from the Android input connection.</summary>
+    internal void InjectAndroidImeCommit(string text)
+    {
+        string result = text ?? string.Empty;
+        _androidComposingText = string.Empty;
+
+        // OnImeCompositionEnd only clears the inline pre-edit; the actual text is
+        // inserted through the char-input path, matching the Linux CompositionEnd.
+        if (InputMethod.IsComposing)
+            InputMethod.EndComposition(result.Length == 0 ? null : result);
+        if (result.Length != 0)
+            CommitAndroidImeText(result);
+    }
+
+    private void CommitAndroidImeText(string text)
+    {
+        // The char-input path filters control characters, so a newline committed
+        // by the IME (a multiline field's Enter key arrives as commitText("\n"))
+        // would be dropped. Deliver newlines as Enter key presses instead — the
+        // editor's AcceptsReturn logic then inserts them — and the rest as text.
+        int start = 0;
+        for (int i = 0; i < text.Length; i++)
+        {
+            char c = text[i];
+            if (c != '\n' && c != '\r')
+                continue;
+
+            if (i > start)
+                _inputDispatcher.HandleCharInput(text[start..i], Environment.TickCount);
+
+            Key enterKey = KeyInterop.KeyFromVirtualKey(0x0D);
+            _inputDispatcher.HandleKeyDown(enterKey, ModifierKeys.None, false, Environment.TickCount);
+            _inputDispatcher.HandleKeyUp(enterKey, ModifierKeys.None, Environment.TickCount);
+
+            if (c == '\r' && i + 1 < text.Length && text[i + 1] == '\n')
+                i++;
+            start = i + 1;
+        }
+
+        if (start < text.Length)
+            _inputDispatcher.HandleCharInput(text[start..], Environment.TickCount);
+    }
+
+    /// <summary>Finishes composition, committing the current pre-edit text as-is.</summary>
+    internal void InjectAndroidImeFinishComposing()
+    {
+        string result = _androidComposingText;
+        _androidComposingText = string.Empty;
+
+        // Only an active composition may be committed here. If composition already
+        // ended elsewhere (focus change, IsReadOnly toggle, cancel), the tracked
+        // pre-edit is stale and finishing must be a no-op — otherwise a routine
+        // finishComposingText() would re-insert it into the current editor.
+        if (!InputMethod.IsComposing)
+            return;
+
+        InputMethod.EndComposition(result.Length == 0 ? null : result);
+        if (result.Length != 0)
+            _inputDispatcher.HandleCharInput(result, Environment.TickCount);
+    }
+
+    /// <summary>
+    /// Deletes text around the cursor per the Android input connection. Counts are
+    /// UTF-16 code units; they are converted to the editor's UTF-8 delete contract.
+    /// </summary>
+    internal void InjectAndroidImeDeleteSurrounding(int beforeChars, int afterChars)
+    {
+        if (!TryGetImeTarget(out _, out IImeSupport? support) || support == null)
+            return;
+        if (!support.TryGetImeSurroundingText(out ImeSurroundingTextSnapshot snap))
+            return;
+
+        string text = snap.Text ?? string.Empty;
+        int selStart = Math.Clamp(Math.Min(snap.CursorIndex, snap.AnchorIndex), 0, text.Length);
+        int selEnd = Math.Clamp(Math.Max(snap.CursorIndex, snap.AnchorIndex), 0, text.Length);
+
+        // Android's deleteSurroundingText deletes around — but never inside — the
+        // selection. The editor's shared delete contract (Wayland semantics) also
+        // removes the selection, so restrict this to a collapsed caret where the
+        // two agree; a selected range is deleted via key events instead.
+        if (selStart != selEnd)
+            return;
+
+        int caret = selStart;
+        int beforeStart = Math.Clamp(caret - Math.Max(0, beforeChars), 0, text.Length);
+        int afterEnd = Math.Clamp(caret + Math.Max(0, afterChars), 0, text.Length);
+
+        int beforeBytes = ImeTextEncoding.GetUtf8ByteOffset(text, caret) -
+            ImeTextEncoding.GetUtf8ByteOffset(text, beforeStart);
+        int afterBytes = ImeTextEncoding.GetUtf8ByteOffset(text, afterEnd) -
+            ImeTextEncoding.GetUtf8ByteOffset(text, caret);
+
+        _ = support.DeleteImeSurroundingText(Math.Max(0, beforeBytes), Math.Max(0, afterBytes));
+    }
+
+    /// <summary>Runs the on-screen keyboard's action key on the focused editor.</summary>
+    internal void InjectAndroidImeEditorAction(TextInputReturnKeyType action)
+    {
+        switch (action)
+        {
+            case TextInputReturnKeyType.Next:
+                MoveAndroidImeFocus(FocusNavigationDirection.Next);
+                break;
+
+            case TextInputReturnKeyType.Previous:
+                MoveAndroidImeFocus(FocusNavigationDirection.Previous);
+                break;
+
+            default:
+                // Done / Go / Send / Search / Return: raise Enter so any handler
+                // bound to it (submit, search command) runs. The controller hides
+                // the keyboard for these terminal actions on the Android side.
+                Key enterKey = KeyInterop.KeyFromVirtualKey(0x0D);
+                _inputDispatcher.HandleKeyDown(enterKey, ModifierKeys.None, false, Environment.TickCount);
+                _inputDispatcher.HandleKeyUp(enterKey, ModifierKeys.None, Environment.TickCount);
+                break;
+        }
+    }
+
+    private static void MoveAndroidImeFocus(FocusNavigationDirection direction)
+    {
+        if (Keyboard.FocusedElement is UIElement current)
+            _ = FocusService.MoveFocus(current, direction);
+    }
+
+    private static void ScrollFocusedEditorIntoViewAfterLayout()
+    {
+        if (Keyboard.FocusedElement is not FrameworkElement focused)
+            return;
+
+        // Wait for exactly one layout pass (the keyboard-driven content shrink
+        // was just invalidated) before scrolling, so BringIntoView measures the
+        // reduced viewport rather than the full-height one.
+        EventHandler? handler = null;
+        handler = (_, _) =>
+        {
+            focused.LayoutUpdated -= handler;
+            focused.BringIntoView();
+        };
+        focused.LayoutUpdated += handler;
     }
 
     private void OnMouseMove(nint wParam, nint lParam)

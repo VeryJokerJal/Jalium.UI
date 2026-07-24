@@ -43,8 +43,8 @@ public class DatePickerThemeTests
 
             Assert.NotNull(datePicker.Background);
             Assert.NotNull(datePicker.BorderBrush);
-            Assert.Equal(32, datePicker.MinHeight);
-            Assert.True(datePicker.RenderSize.Height >= 32);
+            Assert.Equal(36, datePicker.MinHeight);
+            Assert.True(datePicker.RenderSize.Height >= 36);
         }
         finally
         {

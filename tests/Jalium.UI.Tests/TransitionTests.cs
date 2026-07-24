@@ -45,6 +45,62 @@ public class TransitionTests
     }
 
     [Fact]
+    public void AttachedElement_LocalSet_DoesNotStartAutomaticTransition_WhenSystemAnimationsAreDisabled()
+    {
+        var previousProvider = UIElement.AutomaticTransitionsEnabledProvider;
+        try
+        {
+            UIElement.AutomaticTransitionsEnabledProvider = static () => false;
+
+            var host = new TransitionHostPanel();
+            var element = new TransitionElement { TransitionProperty = "All" };
+            host.AddChild(element);
+            Dispatcher.GetForCurrentThread().ProcessQueue();
+
+            element.TestDouble = 10.0;
+
+            Assert.False(element.HasAnimatedValue(TransitionElement.TestDoubleProperty));
+            Assert.False(element.HasAutomaticTransition(TransitionElement.TestDoubleProperty));
+            Assert.Equal(10.0, element.TestDouble);
+        }
+        finally
+        {
+            UIElement.AutomaticTransitionsEnabledProvider = previousProvider;
+        }
+    }
+
+    [Fact]
+    public void AttachedElement_DefaultNone_DoesNotQuerySystemAnimationProvider()
+    {
+        var previousProvider = UIElement.AutomaticTransitionsEnabledProvider;
+        var providerCalls = 0;
+        try
+        {
+            UIElement.AutomaticTransitionsEnabledProvider = () =>
+            {
+                providerCalls++;
+                return true;
+            };
+
+            var host = new TransitionHostPanel();
+            var element = new TransitionElement();
+            host.AddChild(element);
+            Dispatcher.GetForCurrentThread().ProcessQueue();
+            providerCalls = 0;
+
+            element.TestDouble = 10.0;
+
+            Assert.Equal(0, providerCalls);
+            Assert.False(element.HasAutomaticTransition(TransitionElement.TestDoubleProperty));
+            Assert.Equal(10.0, element.TestDouble);
+        }
+        finally
+        {
+            UIElement.AutomaticTransitionsEnabledProvider = previousProvider;
+        }
+    }
+
+    [Fact]
     public void AttachedElement_LocalSet_StartsAutomaticTransition_WhenPropertyListedInCollectionExpression()
     {
         var host = new TransitionHostPanel();

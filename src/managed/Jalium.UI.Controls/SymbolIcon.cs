@@ -62,10 +62,11 @@ public class SymbolIcon : IconElement
     {
         var dc = drawingContext;
 
+        if (RenderSize.Width <= 0 || RenderSize.Height <= 0) return;
+
         var glyph = char.ConvertFromUtf32((int)Symbol);
         var foreground = GetEffectiveForeground();
         double fontSize = Math.Min(RenderSize.Width, RenderSize.Height);
-        if (fontSize <= 0) fontSize = 16;
 
         var ft = new FormattedText(glyph, SymbolFontFamily.Source, fontSize)
         {

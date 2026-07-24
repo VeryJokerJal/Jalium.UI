@@ -7,3 +7,7 @@ using Jalium.UI.Input;
 [assembly: TypeForwardedTo(typeof(InputScopeNameConverter))]
 [assembly: TypeForwardedTo(typeof(InputScopeNameValue))]
 [assembly: TypeForwardedTo(typeof(InputScopePhrase))]
+
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.Input.TextInput.TextInputOptions))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.Input.TextInput.TextInputContentType))]
+[assembly: TypeForwardedTo(typeof(global::Jalium.UI.Input.TextInput.TextInputReturnKeyType))]

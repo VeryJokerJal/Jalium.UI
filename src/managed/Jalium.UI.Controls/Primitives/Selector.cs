@@ -298,16 +298,7 @@ public abstract class Selector : ItemsControl
     /// </summary>
     protected int GetItemCount()
     {
-        var source = ItemsSource ?? Items;
-        if (source == null) return 0;
-
-        if (source is System.Collections.ICollection collection)
-            return collection.Count;
-
-        var count = 0;
-        foreach (var _ in source)
-            count++;
-        return count;
+        return Items.Count;
     }
 
     /// <summary>
@@ -317,21 +308,7 @@ public abstract class Selector : ItemsControl
     {
         if (index < 0) return null;
 
-        var source = ItemsSource ?? Items;
-        if (source == null) return null;
-
-        if (source is System.Collections.IList list && index < list.Count)
-            return list[index];
-
-        var currentIndex = 0;
-        foreach (var item in source)
-        {
-            if (currentIndex == index)
-                return item;
-            currentIndex++;
-        }
-
-        return null;
+        return index < Items.Count ? Items.GetItemAt(index) : null;
     }
 
     /// <summary>
@@ -341,21 +318,7 @@ public abstract class Selector : ItemsControl
     {
         if (item == null) return -1;
 
-        var source = ItemsSource ?? Items;
-        if (source == null) return -1;
-
-        if (source is System.Collections.IList list)
-            return list.IndexOf(item);
-
-        var index = 0;
-        foreach (var obj in source)
-        {
-            if (Equals(obj, item))
-                return index;
-            index++;
-        }
-
-        return -1;
+        return Items.IndexOf(item);
     }
 
     /// <summary>

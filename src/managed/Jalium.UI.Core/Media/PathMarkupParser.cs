@@ -205,8 +205,12 @@ public static class PathMarkupParser
                 }
                 case 'A': // Elliptical Arc
                 {
-                    double rx = ctx.ReadDouble();
-                    double ry = ctx.ReadDouble();
+                    // Per the SVG spec's out-of-range elliptical-arc handling
+                    // (SVG 1.1 §F.6.2 / SVG 2 §9.5.1): negative rx/ry are not an
+                    // error — take the absolute value. ArcSegment.Size cannot hold
+                    // a negative radius anyway (Size rejects negative dimensions).
+                    double rx = Math.Abs(ctx.ReadDouble());
+                    double ry = Math.Abs(ctx.ReadDouble());
                     double rotationAngle = ctx.ReadDouble();
                     bool isLargeArc = ctx.ReadFlag();
                     bool sweepClockwise = ctx.ReadFlag();

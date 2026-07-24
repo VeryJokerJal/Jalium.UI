@@ -58,6 +58,7 @@
       <PreprocessorDefinitions>JALIUM_STATIC;WIN32_LEAN_AND_MEAN;NOMINMAX;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
@@ -70,6 +71,7 @@
       <PreprocessorDefinitions>JALIUM_STATIC;WIN32_LEAN_AND_MEAN;NOMINMAX;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
       <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -79,6 +81,7 @@
     <ClInclude Include="include\d3d12_backend.h" />
     <ClInclude Include="include\d3d12_brush_shader.h" />
     <ClInclude Include="include\d3d12_direct_renderer.h" />
+    <ClInclude Include="include\d3d12_liquid_glass_bytecode.h" />
     <ClInclude Include="include\d3d12_glyph_atlas.h" />
     <ClInclude Include="include\d3d12_impeller_engine.h" />
     <ClInclude Include="include\d3d12_ink_layer.h" />
@@ -114,6 +117,14 @@
     <ClCompile Include="src\d3d12_video_surface.cpp" />
     <ClCompile Include="src\liquid_glass_effects.cpp" />
     <ClCompile Include="src\transition_shader_effect.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\rounded_clip.hlsli" />
+    <None Include="shaders\sdf_rect.ps.hlsl" />
+    <None Include="shaders\sdf_rect.vs.hlsl" />
+    <None Include="..\jalium.native.core\shaders\continuous_corner.hlsli">
+      <Link>shaders\continuous_corner.hlsli</Link>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\jalium.native.core\jalium.native.core.static.vcxproj">

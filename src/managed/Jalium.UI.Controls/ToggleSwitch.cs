@@ -36,18 +36,6 @@ public class ToggleSwitch : Control
 
     private const double DragThreshold = 3.0;
 
-    // Theme colors (matching Colors.jalxaml). On-state uses the midpoint of the
-    // #207245 -> #1C8043 gradient so that solid-color fallbacks match the themed
-    // LinearGradientBrush as closely as a single color allows.
-    private static readonly Color OffColor = Color.FromArgb(0xFF, 0x2D, 0x2D, 0x2D);
-    private static readonly Color OnColor = Color.FromArgb(0xFF, 0x1E, 0x79, 0x3F);
-    private static readonly Color OffBorderColor = Color.FromArgb(0xFF, 0x8C, 0x8C, 0x8C);
-    private static readonly Color OnBorderColor = Color.FromArgb(0xFF, 0x1E, 0x79, 0x3F);
-    private static readonly Color DisabledBgColor = Color.FromArgb(0xFF, 0x28, 0x28, 0x28);
-    private static readonly Color DisabledBorderColor = Color.FromArgb(0xFF, 0x46, 0x46, 0x46);
-    private static readonly SolidColorBrush s_disabledBgBrush = new(DisabledBgColor);
-    private static readonly SolidColorBrush s_disabledBorderBrush = new(DisabledBorderColor);
-
     #endregion
 
     #region Dependency Properties
@@ -147,7 +135,7 @@ public class ToggleSwitch : Control
     #region Template Parts
 
     private Border? _switchTrack;
-    private Border? _switchThumb;
+    private FrameworkElement? _switchThumb;
     private ContentPresenter? _contentPresenter;
     private ContentPresenter? _headerPresenter;
 
@@ -207,7 +195,7 @@ public class ToggleSwitch : Control
         base.OnApplyTemplate();
 
         _switchTrack = GetTemplateChild("PART_SwitchTrack") as Border;
-        _switchThumb = GetTemplateChild("PART_SwitchThumb") as Border;
+        _switchThumb = GetTemplateChild("PART_SwitchThumb") as FrameworkElement;
         _contentPresenter = GetTemplateChild("PART_ContentPresenter") as ContentPresenter;
         _headerPresenter = GetTemplateChild("PART_Header") as ContentPresenter;
 
@@ -232,7 +220,7 @@ public class ToggleSwitch : Control
         // Release the cached parts before the tree is discarded. StopSpringAnimation detaches the
         // CompositionTarget.Rendering tick and balances the CompositionTarget.Subscribe() refcount
         // — otherwise the spring loop keeps the global compositor pinned alive and every tick
-        // writes Width/Height/CornerRadius/Margin into the detached _switchThumb/_switchTrack.
+        // writes Width/Height/Margin into the detached _switchThumb/_switchTrack.
         base.OnTemplateContentClearing();
 
         StopSpringAnimation();
@@ -257,51 +245,6 @@ public class ToggleSwitch : Control
             _positionSpring.Position = target;
             _positionSpring.Velocity = 0;
         }
-    }
-
-    private Color GetOffColor()
-    {
-        return (OffBackground as SolidColorBrush)?.Color ?? OffColor;
-    }
-
-    private Color GetOnColor()
-    {
-        return (OnBackground as SolidColorBrush)?.Color ?? OnColor;
-    }
-
-    private Color GetOffBorderColor()
-    {
-        return ResolveThemeColor("ToggleUncheckedBorder", OffBorderColor);
-    }
-
-    private Color GetOnBorderColor()
-    {
-        return ResolveThemeColor("ToggleCheckedBorder", OnBorderColor);
-    }
-
-    private Brush ResolveDisabledTrackBackground()
-    {
-        return TryFindResource("ToggleDisabledBackground") as Brush ?? s_disabledBgBrush;
-    }
-
-    private Brush ResolveDisabledTrackBorderBrush()
-    {
-        return TryFindResource("ToggleDisabledBorder") as Brush ?? s_disabledBorderBrush;
-    }
-
-    private Color ResolveThemeColor(string resourceKey, Color fallback)
-    {
-        return (TryFindResource(resourceKey) as SolidColorBrush)?.Color ?? fallback;
-    }
-
-    private static Color LerpColor(Color a, Color b, double t)
-    {
-        t = Math.Clamp(t, 0.0, 1.0);
-        return Color.FromArgb(
-            (byte)(a.A + (b.A - a.A) * t),
-            (byte)(a.R + (b.R - a.R) * t),
-            (byte)(a.G + (b.G - a.G) * t),
-            (byte)(a.B + (b.B - a.B) * t));
     }
 
     private static double ComputeThumbMarginLeft(double progress, double thumbWidth)
@@ -360,10 +303,9 @@ public class ToggleSwitch : Control
         double thumbH = _thumbHeightSpring.Position;
         double progress = Math.Clamp(_positionSpring.Position, 0.0, 1.0);
 
-        // Thumb size and shape
+        // Thumb size. The template uses an Ellipse, so roundness is intrinsic.
         _switchThumb.Width = thumbW;
         _switchThumb.Height = thumbH;
-        _switchThumb.CornerRadius = new CornerRadius(thumbH / 2.0);
 
         // marginTop AND marginLeft must both stay as continuous doubles. The
         // previous code used _thumbWidthSpring.Target (a step value of 14 or
@@ -377,28 +319,6 @@ public class ToggleSwitch : Control
         double marginTop = (TrackInnerHeight - thumbH) / 2.0;
         _switchThumb.Margin = new Thickness(marginLeft, marginTop, 0, 0);
 
-        // Track colors (interpolate based on position)
-        if (!IsEnabled) return; // disabled colors handled separately
-
-        _switchTrack.Background = ResolveTrackBackground(progress);
-        _switchTrack.BorderBrush = new SolidColorBrush(LerpColor(GetOffBorderColor(), GetOnBorderColor(), progress));
-    }
-
-    // When the toggle is fully off or fully on, hand the themed Brush to the
-    // track directly so non-solid brushes (LinearGradientBrush, etc.) render
-    // faithfully. During the spring-driven transition we fall back to a single
-    // interpolated colour because cross-fading arbitrary brushes would require
-    // an extra layer in the template.
-    private Brush ResolveTrackBackground(double progress)
-    {
-        if (progress <= 0.001 && OffBackground != null)
-            return OffBackground;
-        if (progress >= 0.999 && OnBackground != null)
-            return OnBackground;
-
-        var offC = GetOffColor();
-        var onC = GetOnColor();
-        return new SolidColorBrush(LerpColor(offC, onC, progress));
     }
 
     #endregion
@@ -624,20 +544,13 @@ public class ToggleSwitch : Control
                 _hasDragged = false;
             }
 
-            // Apply disabled colors
-            if (_switchTrack != null)
-            {
-                _switchTrack.Background = ResolveDisabledTrackBackground();
-                _switchTrack.BorderBrush = ResolveDisabledTrackBorderBrush();
-            }
-
             _thumbWidthSpring.Target = ThumbDefaultSize;
             _thumbHeightSpring.Target = ThumbDefaultSize;
             StartSpringAnimation();
         }
         else
         {
-            // Re-enable: refresh colors via spring values
+            // Re-enable: refresh spring-driven geometry. Template triggers own colors.
             ApplySpringValues();
         }
     }

@@ -115,6 +115,7 @@
     <ClInclude Include="include\vulkan_text_glyph_shaders.h" />
     <ClInclude Include="include\vulkan_impeller_engine.h" />
     <ClInclude Include="include\vulkan_ink_layer.h" />
+    <ClInclude Include="include\vulkan_render_lifecycle.h" />
     <ClInclude Include="include\vulkan_render_target.h" />
     <ClInclude Include="include\vulkan_resources.h" />
     <ClInclude Include="include\vulkan_runtime.h" />
@@ -151,6 +152,9 @@
     <None Include="shaders\liquid_glass_quad.vert.hlsl" />
     <None Include="shaders\solid_rect.frag.hlsl" />
     <None Include="shaders\solid_rect.vert.hlsl" />
+    <None Include="..\jalium.native.core\shaders\continuous_corner.hlsli">
+      <Link>shaders\continuous_corner.hlsli</Link>
+    </None>
     <None Include="shaders\transition_quad.frag.hlsl" />
     <None Include="shaders\transition_quad.vert.hlsl" />
     <None Include="shaders\triangle_fill.frag.hlsl" />

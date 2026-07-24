@@ -17,20 +17,23 @@ public class WrapPanel : Panel
             new PropertyMetadata(Orientation.Horizontal, OnOrientationChanged));
 
     /// <summary>
-    /// Identifies the ItemWidth dependency property.
+    /// Identifies the ItemWidth dependency property. Shares the Width/Height value
+    /// contract (NaN = natural size, otherwise non-negative finite), so it reuses
+    /// <see cref="FrameworkElement.IsWidthHeightValid"/> — matching WPF's WrapPanel.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ItemWidthProperty =
         DependencyProperty.Register(nameof(ItemWidth), typeof(double), typeof(WrapPanel),
-            new PropertyMetadata(double.NaN, OnItemSizeChanged));
+            new PropertyMetadata(double.NaN, OnItemSizeChanged), FrameworkElement.IsWidthHeightValid);
 
     /// <summary>
-    /// Identifies the ItemHeight dependency property.
+    /// Identifies the ItemHeight dependency property. Same value contract as
+    /// <see cref="ItemWidthProperty"/>.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ItemHeightProperty =
         DependencyProperty.Register(nameof(ItemHeight), typeof(double), typeof(WrapPanel),
-            new PropertyMetadata(double.NaN, OnItemSizeChanged));
+            new PropertyMetadata(double.NaN, OnItemSizeChanged), FrameworkElement.IsWidthHeightValid);
 
     /// <summary>
     /// Identifies the HorizontalSpacing dependency property.
@@ -160,9 +163,14 @@ public class WrapPanel : Panel
             if (child is not FrameworkElement fe) continue;
 
             // Determine child constraint
+            // A WrapPanel determines wrapping from each child's natural DesiredSize; the
+            // panel's own changing viewport is not a child-size constraint. Keeping the
+            // natural axes at Infinity also means a window-width change can reuse every
+            // valid child measure and only recompute the cheap line breaks. This matches
+            // WPF and avoids remeasuring an entire off-screen card subtree on every resize.
             var childConstraint = new Size(
-                hasFixedWidth ? itemWidth : availableSize.Width,
-                hasFixedHeight ? itemHeight : availableSize.Height);
+                hasFixedWidth ? itemWidth : double.PositiveInfinity,
+                hasFixedHeight ? itemHeight : double.PositiveInfinity);
 
             fe.Measure(childConstraint);
 
@@ -259,77 +267,122 @@ public class WrapPanel : Panel
         double secondaryGap = orientation == Orientation.Horizontal ? vSpacing : hSpacing;
         double primaryLimit = orientation == Orientation.Horizontal ? finalSize.Width : finalSize.Height;
 
-        // First pass: calculate line layout honouring primary spacing.
-        var lineInfo = new List<LineInfo>();
-        var currentLine = new LineInfo();
+        // Stream completed lines directly into ArrangeLine. The previous implementation
+        // materialized a List<LineInfo>, one LineInfo per wrapped line, and a tuple list for
+        // every line on every arrange pass. ScrollViewer moves non-IScrollInfo content by
+        // arranging it at a new origin, so those short-lived objects landed directly in the
+        // scrolling and live-resize hot paths. A completed line already has all the state
+        // needed to arrange it, so retaining the whole layout is unnecessary.
+        int lineStartIndex = -1;
+        int itemsOnLine = 0;
+        double lineSize = 0;
+        double lineThickness = 0;
+        double secondaryOffset = 0;
 
-        foreach (UIElement child in Children)
+        for (int childIndex = 0; childIndex < Children.Count; childIndex++)
         {
-            if (child is not FrameworkElement fe) continue;
+            if (Children[childIndex] is not FrameworkElement fe) continue;
 
             var childWidth = hasFixedWidth ? itemWidth : fe.DesiredSize.Width;
             var childHeight = hasFixedHeight ? itemHeight : fe.DesiredSize.Height;
             var childPrimary = orientation == Orientation.Horizontal ? childWidth : childHeight;
             var childSecondary = orientation == Orientation.Horizontal ? childHeight : childWidth;
-            var prospective = currentLine.Elements.Count > 0
-                ? currentLine.Size + primaryGap + childPrimary
+            var prospective = itemsOnLine > 0
+                ? lineSize + primaryGap + childPrimary
                 : childPrimary;
 
-            if (currentLine.Elements.Count > 0 && prospective > primaryLimit)
+            if (itemsOnLine > 0 && prospective > primaryLimit)
             {
-                lineInfo.Add(currentLine);
-                currentLine = new LineInfo();
+                ArrangeLine(
+                    lineStartIndex,
+                    childIndex,
+                    secondaryOffset,
+                    lineThickness,
+                    orientation,
+                    hasFixedWidth,
+                    hasFixedHeight,
+                    itemWidth,
+                    itemHeight,
+                    primaryGap);
+
+                secondaryOffset += lineThickness + secondaryGap;
+                lineStartIndex = childIndex;
+                itemsOnLine = 0;
+                lineSize = 0;
+                lineThickness = 0;
             }
 
-            if (currentLine.Elements.Count > 0) currentLine.Size += primaryGap;
-            currentLine.Elements.Add((fe, childWidth, childHeight));
-            currentLine.Size += childPrimary;
-            currentLine.Thickness = Math.Max(currentLine.Thickness, childSecondary);
-        }
-
-        if (currentLine.Elements.Count > 0)
-        {
-            lineInfo.Add(currentLine);
-        }
-
-        // Second pass: arrange children.
-        double offset = 0;
-        for (int lineIndex = 0; lineIndex < lineInfo.Count; lineIndex++)
-        {
-            if (lineIndex > 0) offset += secondaryGap;
-
-            var line = lineInfo[lineIndex];
-            double pos = 0;
-            bool firstOnLine = true;
-            foreach (var (element, width, height) in line.Elements)
+            if (itemsOnLine == 0)
             {
-                if (!firstOnLine) pos += primaryGap;
-
-                Rect childRect;
-                if (orientation == Orientation.Horizontal)
-                {
-                    childRect = new Rect(pos, offset, width, line.Thickness);
-                    pos += width;
-                }
-                else
-                {
-                    childRect = new Rect(offset, pos, line.Thickness, height);
-                    pos += height;
-                }
-                element.Arrange(childRect);
-                firstOnLine = false;
-                // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
+                lineStartIndex = childIndex;
             }
-            offset += line.Thickness;
+            else
+            {
+                lineSize += primaryGap;
+            }
+
+            lineSize += childPrimary;
+            lineThickness = Math.Max(lineThickness, childSecondary);
+            itemsOnLine++;
+        }
+
+        if (itemsOnLine > 0)
+        {
+            ArrangeLine(
+                lineStartIndex,
+                Children.Count,
+                secondaryOffset,
+                lineThickness,
+                orientation,
+                hasFixedWidth,
+                hasFixedHeight,
+                itemWidth,
+                itemHeight,
+                primaryGap);
         }
 
         return finalSize;
     }
 
-    private class LineInfo
+    private void ArrangeLine(
+        int startIndex,
+        int endIndex,
+        double secondaryOffset,
+        double lineThickness,
+        Orientation orientation,
+        bool hasFixedWidth,
+        bool hasFixedHeight,
+        double itemWidth,
+        double itemHeight,
+        double primaryGap)
     {
-        public List<(FrameworkElement Element, double Width, double Height)> Elements { get; } = new();
-        public double Size { get; set; }
-        public double Thickness { get; set; }
+        double primaryOffset = 0;
+        bool firstOnLine = true;
+
+        for (int childIndex = startIndex; childIndex < endIndex; childIndex++)
+        {
+            if (Children[childIndex] is not FrameworkElement element) continue;
+
+            var width = hasFixedWidth ? itemWidth : element.DesiredSize.Width;
+            var height = hasFixedHeight ? itemHeight : element.DesiredSize.Height;
+
+            if (!firstOnLine) primaryOffset += primaryGap;
+
+            Rect childRect;
+            if (orientation == Orientation.Horizontal)
+            {
+                childRect = new Rect(primaryOffset, secondaryOffset, width, lineThickness);
+                primaryOffset += width;
+            }
+            else
+            {
+                childRect = new Rect(secondaryOffset, primaryOffset, lineThickness, height);
+                primaryOffset += height;
+            }
+
+            element.Arrange(childRect);
+            firstOnLine = false;
+            // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
+        }
     }
 }

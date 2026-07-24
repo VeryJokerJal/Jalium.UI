@@ -36,6 +36,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <cwchar>      // swprintf —— HUD 实时帧数文本
+#include <algorithm>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -49,6 +51,9 @@
 // 这里再显式调一次（幂等，原子 CAS 守护），同时强制产生链接引用、确保后端
 // dll 不会因为“没被引用”而被裁掉。
 extern "C" void jalium_d3d12_init();
+#if defined(JALIUM_MEMPROBE_HAS_VULKAN)
+extern "C" void jalium_vulkan_init();
+#endif
 
 // ---------------------------------------------------------------------------
 // 运行参数
@@ -65,6 +70,7 @@ struct Options {
     bool        blank         = false;    // true = 纯 clear 不画任何内容（最极简隔离路径）
     bool        hud           = false;    // true = 叠加实时帧数文本
     bool        forceInvalidate = true;   // 默认每帧 full invalidation，保证真 present
+    JaliumBackend backend     = JALIUM_BACKEND_D3D12;
     JaliumRenderingEngine engine = JALIUM_ENGINE_AUTO;
     std::string csvPath       = "memprobe.csv";
 
@@ -91,6 +97,7 @@ static void PrintUsage() {
         "  --warmup N        基线前丢弃的预热帧 (默认 600)\n"
         "  --width N         窗口宽 (默认 1280)\n"
         "  --height N        窗口高 (默认 800)\n"
+        "  --backend B       d3d12|vulkan (default d3d12)\n"
         "  --engine E        auto|vello|impeller (默认 auto)\n"
         "  --no-vsync        关闭 vsync 不限帧率 (慢泄漏排查用, 更快堆帧; 默认开 vsync)\n"
         "  --vsync           显式开启 vsync (默认即开)\n"
@@ -128,6 +135,12 @@ static bool ParseArgs(int argc, char** argv, Options& o) {
         else if (a == "--blank")         o.blank    = true;
         else if (a == "--hud")           o.hud      = true;
         else if (a == "--no-invalidate") o.forceInvalidate = false;
+        else if (a == "--backend") {
+            std::string b = next("--backend");
+            if (b == "d3d12" || b == "dx12") o.backend = JALIUM_BACKEND_D3D12;
+            else if (b == "vulkan" || b == "vk") o.backend = JALIUM_BACKEND_VULKAN;
+            else { std::fprintf(stderr, "[memprobe] unknown backend: %s\n", b.c_str()); return false; }
+        }
         else if (a == "--engine") {
             std::string e = next("--engine");
             if (e == "vello")         o.engine = JALIUM_ENGINE_VELLO;
@@ -153,10 +166,39 @@ static bool ParseArgs(int argc, char** argv, Options& o) {
 // 窗口
 // ---------------------------------------------------------------------------
 static bool g_running = true;
+static bool g_resizePending = false;
+static int32_t g_pendingWidth = 0;
+static int32_t g_pendingHeight = 0;
+static bool g_dpiPending = false;
+static UINT g_pendingDpiX = 96;
+static UINT g_pendingDpiY = 96;
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
         case WM_CLOSE:   DestroyWindow(hwnd); return 0;
+        case WM_SIZE:
+            if (wp != SIZE_MINIMIZED) {
+                const int32_t width = static_cast<int32_t>(LOWORD(lp));
+                const int32_t height = static_cast<int32_t>(HIWORD(lp));
+                if (width > 0 && height > 0) {
+                    g_pendingWidth = width;
+                    g_pendingHeight = height;
+                    g_resizePending = true;
+                }
+            }
+            return 0;
+        case WM_DPICHANGED: {
+            g_pendingDpiX = static_cast<UINT>(LOWORD(wp));
+            g_pendingDpiY = static_cast<UINT>(HIWORD(wp));
+            g_dpiPending = true;
+            auto* suggested = reinterpret_cast<RECT*>(lp);
+            SetWindowPos(hwnd, nullptr,
+                         suggested->left, suggested->top,
+                         suggested->right - suggested->left,
+                         suggested->bottom - suggested->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+            return 0;
+        }
         case WM_DESTROY: g_running = false; PostQuitMessage(0); return 0;
         default:         return DefWindowProcW(hwnd, msg, wp, lp);
     }
@@ -204,6 +246,8 @@ static bool PumpMessages() {
 struct Sample {
     uint64_t frame        = 0;
     double   elapsedSec   = 0.0;
+    double   intervalFps  = 0.0;
+    double   frameTimeMs  = 0.0;
     double   workingSetMB = 0.0;
     double   privateMB    = 0.0;
     // GPU telemetry
@@ -212,6 +256,13 @@ struct Sample {
     int64_t  gpuGlyphBytes   = 0;
     int32_t  gpuTextureCount = 0;
     int32_t  gpuPathEntries  = 0;
+    int64_t  frameGpuWaitNs        = 0;
+    int64_t  presentToReadyNs      = 0;
+    int64_t  frameWaitableWaitNs   = 0;
+    int64_t  presentBlockNs        = 0;
+    int64_t  totalGpuNs            = 0;
+    int32_t  gpuBatchCount         = 0;
+    int32_t  gpuTimingValid        = 0;
     // bitmap telemetry
     uint64_t bmpUploadCount  = 0;
     uint64_t bmpUploadBytes  = 0;
@@ -247,8 +298,19 @@ static Sample TakeSample(JaliumRenderTarget* rt, uint64_t frame, double elapsedS
         s.gpuGlyphBytes   = gpu.glyphBytes;
         s.gpuTextureCount = gpu.textureCount;
         s.gpuPathEntries  = gpu.pathEntries;
+        s.frameGpuWaitNs      = gpu.frameGpuWaitNs;
+        s.presentToReadyNs    = gpu.lastFramePresentToReadyNs;
+        s.frameWaitableWaitNs = gpu.frameWaitableWaitNs;
+        s.presentBlockNs      = gpu.presentBlockNs;
     }
 
+    JaliumGpuTimingStats timing{};
+    if (rt && jalium_render_target_query_gpu_timing(rt, &timing) == JALIUM_OK &&
+        timing.timingValid) {
+        s.totalGpuNs     = timing.totalGpuNs;
+        s.gpuBatchCount = timing.batchCount;
+        s.gpuTimingValid = 1;
+    }
     JaliumBitmapStats bmp{};
     jalium_query_bitmap_stats(&bmp);
     s.bmpUploadCount = bmp.uploadCount;
@@ -313,6 +375,7 @@ static void PrintSampleHeader() {
                 "pathMiss");
     std::printf("--------------------------------------------------------------"
                 "--------------------------------------------------\n");
+    std::printf("         perf | interval fps / CPU frame ms / GPU ms / fence + present waits\n");
 }
 
 static void PrintSample(const Sample& s) {
@@ -323,6 +386,12 @@ static void PrintSample(const Sample& s) {
                 BytesToMB(s.gpuGlyphBytes),
                 (unsigned long long)s.bmpUploadCount, BytesToMB(s.bmpGpuResident),
                 (unsigned long long)(s.pathFillMiss + s.pathStrokeMiss + s.pathGeomMiss));
+    const double gpuMs = s.gpuTimingValid ? (double)s.totalGpuNs / 1.0e6 : -1.0;
+    std::printf("         perf | fps=%8.1f cpu=%7.3fms gpu=%7.3fms wait=%7.3fms "
+                "ready=%7.3fms waitable=%7.3fms present=%7.3fms batches=%d\n",
+                s.intervalFps, s.frameTimeMs, gpuMs, (double)s.frameGpuWaitNs / 1.0e6,
+                (double)s.presentToReadyNs / 1.0e6, (double)s.frameWaitableWaitNs / 1.0e6,
+                (double)s.presentBlockNs / 1.0e6, s.gpuBatchCount);
     std::fflush(stdout);
 }
 
@@ -331,7 +400,7 @@ static void WriteCsvHeader(std::FILE* f) {
         "frame,elapsedSec,workingSetMB,privateMB,"
         "gpuTextureBytes,gpuPathBytes,gpuGlyphBytes,gpuTextureCount,gpuPathEntries,"
         "bmpUploadCount,bmpUploadBytes,bmpGpuResidentBytes,"
-        "pathFillMiss,pathStrokeMiss,pathGeomMiss,pathCacheEvict\n");
+        "pathFillMiss,pathStrokeMiss,pathGeomMiss,pathCacheEvict,intervalFps,frameTimeMs,frameGpuWaitNs,presentToReadyNs,frameWaitableWaitNs,presentBlockNs,totalGpuNs,gpuBatchCount,gpuTimingValid\n");
 }
 
 static void WriteCsvRow(std::FILE* f, const Sample& s) {
@@ -339,20 +408,76 @@ static void WriteCsvRow(std::FILE* f, const Sample& s) {
         "%llu,%.3f,%.4f,%.4f,"
         "%lld,%lld,%lld,%d,%d,"
         "%llu,%llu,%lld,"
-        "%llu,%llu,%llu,%llu\n",
+        "%llu,%llu,%llu,%llu,"
+        "%.3f,%.6f,%lld,%lld,%lld,%lld,%lld,%d,%d\n",
         (unsigned long long)s.frame, s.elapsedSec, s.workingSetMB, s.privateMB,
         (long long)s.gpuTextureBytes, (long long)s.gpuPathBytes,
         (long long)s.gpuGlyphBytes, s.gpuTextureCount, s.gpuPathEntries,
         (unsigned long long)s.bmpUploadCount, (unsigned long long)s.bmpUploadBytes,
         (long long)s.bmpGpuResident,
         (unsigned long long)s.pathFillMiss, (unsigned long long)s.pathStrokeMiss,
-        (unsigned long long)s.pathGeomMiss, (unsigned long long)s.pathCacheEvict);
+        (unsigned long long)s.pathGeomMiss, (unsigned long long)s.pathCacheEvict,
+        s.intervalFps, s.frameTimeMs, (long long)s.frameGpuWaitNs,
+        (long long)s.presentToReadyNs, (long long)s.frameWaitableWaitNs,
+        (long long)s.presentBlockNs, (long long)s.totalGpuNs, s.gpuBatchCount, s.gpuTimingValid);
     std::fflush(f);
 }
 
 // ---------------------------------------------------------------------------
 // 增长判定
 // ---------------------------------------------------------------------------
+static double Median(std::vector<double> values) {
+    if (values.empty()) return 0.0;
+    std::sort(values.begin(), values.end());
+    const size_t mid = values.size() / 2;
+    return values.size() % 2 ? values[mid] : (values[mid - 1] + values[mid]) * 0.5;
+}
+
+static void PrintPerformanceVerdict(const std::vector<Sample>& samples, uint64_t warmup) {
+    std::vector<double> frameMs;
+    std::vector<double> gpuMs;
+    for (const auto& s : samples) {
+        if (s.frame >= warmup && s.frameTimeMs > 0.0) frameMs.push_back(s.frameTimeMs);
+        if (s.frame >= warmup && s.gpuTimingValid && s.totalGpuNs > 0)
+            gpuMs.push_back((double)s.totalGpuNs / 1.0e6);
+    }
+
+    std::printf("\n================ performance trend ================\n");
+    if (frameMs.size() < 6) {
+        std::printf("verdict: insufficient post-warmup samples (need at least 6).\n");
+        std::printf("===================================================\n");
+        return;
+    }
+
+    const size_t window = std::max<size_t>(2, frameMs.size() / 3);
+    std::vector<double> early(frameMs.begin(), frameMs.begin() + window);
+    std::vector<double> late(frameMs.end() - window, frameMs.end());
+    const double earlyMedian = Median(std::move(early));
+    const double lateMedian = Median(std::move(late));
+    const double absoluteChangeMs = lateMedian - earlyMedian;
+    const double changePct = earlyMedian > 0.0
+        ? absoluteChangeMs * 100.0 / earlyMedian : 0.0;
+
+    std::sort(frameMs.begin(), frameMs.end());
+    const size_t p95Index = (frameMs.size() - 1) * 95 / 100;
+    const double p95Ms = frameMs[p95Index];
+    const double gpuMedianMs = Median(std::move(gpuMs));
+    std::printf("CPU frame interval: early median %.4f ms, late median %.4f ms, change %+.2f%% (%+.4f ms), p95 %.4f ms\n",
+                earlyMedian, lateMedian, changePct, absoluteChangeMs, p95Ms);
+    if (gpuMedianMs > 0.0)
+        std::printf("GPU timestamp median: %.4f ms\n", gpuMedianMs);
+    else
+        std::printf("GPU timestamp median: unavailable\n");
+
+    if (changePct <= 5.0 || absoluteChangeMs <= 0.10)
+        std::printf("verdict: [OK] no degradation above the 0.10 ms measurement floor.\n");
+    else if (changePct <= 15.0 || absoluteChangeMs <= 0.25)
+        std::printf("verdict: [SUSPECT] late-run frame time is moderately worse; extend the run.\n");
+    else
+        std::printf("verdict: [REGRESSION] late-run frame time is materially worse.\n");
+    std::printf("===================================================\n");
+}
+
 static void PrintVerdict(const std::vector<Sample>& samples,
                          uint64_t warmup,
                          const Sample& postTeardown) {
@@ -467,6 +592,9 @@ int main(int argc, char** argv) {
     // 控制台按 UTF-8 输出，中文诊断信息不乱码（源/执行字符集已由 /utf-8 统一）。
     SetConsoleOutputCP(CP_UTF8);
 
+    // Match the production Win32 platform before creating any HWND.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+
     std::printf("[memprobe] 启动期内存分阶段分解（定位固定占用花在哪步）:\n");
     MemStages stages;
     stages.Mark("process start");
@@ -480,7 +608,15 @@ int main(int argc, char** argv) {
 
     Options o;
     if (!ParseArgs(argc, argv, o)) return 2;
+    const char* backendName = o.backend == JALIUM_BACKEND_VULKAN ? "Vulkan" : "D3D12";
+#if !defined(JALIUM_MEMPROBE_HAS_VULKAN)
+    if (o.backend == JALIUM_BACKEND_VULKAN) {
+        std::fprintf(stderr, "[memprobe] Vulkan was not linked; configure with -DJALIUM_BUILD_VULKAN=ON.\n");
+        return 2;
+    }
+#endif
 
+    if (o.backend == JALIUM_BACKEND_D3D12) {
     std::printf("[memprobe] %s 内存排查 — 后端=D3D12 引擎=%s vsync=%s "
                 "invalidate=%s hud=%s\n",
                 o.blank ? "纯 clear 空窗口" : "Hello World 窗口",
@@ -489,6 +625,14 @@ int main(int argc, char** argv) {
                 o.vsync ? "on" : "off",
                 o.forceInvalidate ? "on" : "off",
                 o.hud ? "on" : "off");
+    } else {
+        std::printf("[memprobe] backend=Vulkan workload=%s engine=%s vsync=%s invalidate=%s hud=%s\n",
+                    o.blank ? "clear-only" : "text+primitive",
+                    o.engine == JALIUM_ENGINE_VELLO ? "vello"
+                      : o.engine == JALIUM_ENGINE_IMPELLER ? "impeller" : "auto",
+                    o.vsync ? "on" : "off", o.forceInvalidate ? "on" : "off",
+                    o.hud ? "on" : "off");
+    }
     std::printf("[memprobe] frames=%llu interval=%llu warmup=%llu %dx%d csv=%s\n",
                 (unsigned long long)o.frames, (unsigned long long)o.interval,
                 (unsigned long long)o.warmup, o.width, o.height, o.csvPath.c_str());
@@ -498,15 +642,47 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "[memprobe] CreateWindow 失败 (err=%lu)\n", GetLastError());
         return 1;
     }
+    RECT clientRect{};
+    if (!GetClientRect(hwnd, &clientRect)) {
+        std::fprintf(stderr, "[memprobe] GetClientRect failed (err=%lu)\n", GetLastError());
+        DestroyWindow(hwnd);
+        return 1;
+    }
+    const int32_t clientWidth = static_cast<int32_t>(clientRect.right - clientRect.left);
+    const int32_t clientHeight = static_cast<int32_t>(clientRect.bottom - clientRect.top);
+    if (clientWidth <= 0 || clientHeight <= 0) {
+        std::fprintf(stderr, "[memprobe] invalid client size %dx%d\n", clientWidth, clientHeight);
+        DestroyWindow(hwnd);
+        return 1;
+    }
+    o.width = clientWidth;
+    o.height = clientHeight;
+    UINT windowDpi = GetDpiForWindow(hwnd);
+    if (windowDpi == 0) windowDpi = 96;
+    g_pendingWidth = o.width;
+    g_pendingHeight = o.height;
+    g_resizePending = false;
+    g_pendingDpiX = windowDpi;
+    g_pendingDpiY = windowDpi;
+    g_dpiPending = false;
+    std::printf("[memprobe] window client=%dx%d dpi=%u\n", o.width, o.height, windowDpi);
     stages.Mark("after CreateWindow");
 
     // 1) 注册并加载 D3D12 后端
     jalium_d3d12_init();
-    stages.Mark("after d3d12_init(loadDll)");
+#if defined(JALIUM_MEMPROBE_HAS_VULKAN)
+    if (o.backend == JALIUM_BACKEND_VULKAN) jalium_vulkan_init();
+#endif
+
+    stages.Mark("after backend_init(loadDll)");
 
     // 2) 创建 context
-    JaliumContext* ctx = jalium_context_create(JALIUM_BACKEND_D3D12);
+    JaliumContext* ctx = jalium_context_create(o.backend);
     if (!ctx) {
+        if (o.backend == JALIUM_BACKEND_VULKAN) {
+            std::fprintf(stderr, "[memprobe] context_create(%s) failed.\n", backendName);
+            return 1;
+        }
         std::fprintf(stderr, "[memprobe] jalium_context_create(D3D12) 失败\n");
         return 1;
     }
@@ -532,7 +708,8 @@ int main(int argc, char** argv) {
     }
     stages.Mark("after render_target");
 
-    jalium_render_target_set_dpi(rt, 96.0f, 96.0f);
+    jalium_render_target_set_dpi(rt, static_cast<float>(windowDpi),
+                                 static_cast<float>(windowDpi));
     jalium_render_target_set_vsync(rt, o.vsync ? 1 : 0);
     if (o.engine != JALIUM_ENGINE_AUTO)
         jalium_render_target_set_engine(rt, o.engine);
@@ -567,12 +744,65 @@ int main(int argc, char** argv) {
     samples.reserve(1024);
 
     uint64_t frame = 0;
+    uint64_t transientRetries = 0;
+    uint64_t beginTransientRetries = 0;
+    uint64_t endTransientRetries = 0;
+    uint64_t resizeTransientRetries = 0;
+    uint64_t windowResizeCount = 0;
+    uint32_t consecutiveTransientRetries = 0;
+    constexpr uint32_t kMaxConsecutiveTransientRetries = 600;
+    const auto isTransient = [](JaliumResult result) {
+        return result == JALIUM_ERROR_PRESENT_FAILED || result == JALIUM_ERROR_BUSY;
+    };
     while (g_running) {
         if (!PumpMessages()) break;
         if (o.frames != 0 && frame >= o.frames) break;
 
+        if (g_dpiPending) {
+            windowDpi = g_pendingDpiX;
+            jalium_render_target_set_dpi(rt, static_cast<float>(g_pendingDpiX),
+                                         static_cast<float>(g_pendingDpiY));
+            g_dpiPending = false;
+            std::printf("[memprobe] applied WM_DPICHANGED dpi=%ux%u\n",
+                        g_pendingDpiX, g_pendingDpiY);
+        }
+
+        if (g_resizePending) {
+            const int32_t pendingWidth = g_pendingWidth;
+            const int32_t pendingHeight = g_pendingHeight;
+            JaliumResult rr = jalium_render_target_resize(rt, pendingWidth, pendingHeight);
+            if (rr != JALIUM_OK) {
+                if ((isTransient(rr) || rr == JALIUM_ERROR_INVALID_STATE) &&
+                    consecutiveTransientRetries < kMaxConsecutiveTransientRetries) {
+                    ++transientRetries;
+                    ++resizeTransientRetries;
+                    ++consecutiveTransientRetries;
+                    Sleep(1);
+                    continue;
+                }
+                std::fprintf(stderr,
+                             "[memprobe] WM_SIZE resize(%dx%d) failed %d; stopping\n",
+                             pendingWidth, pendingHeight, static_cast<int>(rr));
+                break;
+            }
+            o.width = pendingWidth;
+            o.height = pendingHeight;
+            g_resizePending = false;
+            consecutiveTransientRetries = 0;
+            ++windowResizeCount;
+            std::printf("[memprobe] applied WM_SIZE client=%dx%d\n", o.width, o.height);
+        }
+
         JaliumResult br = jalium_render_target_begin_draw(rt);
         if (br != JALIUM_OK) {
+            if ((isTransient(br) || br == JALIUM_ERROR_INVALID_STATE) &&
+                consecutiveTransientRetries < kMaxConsecutiveTransientRetries) {
+                ++transientRetries;
+                ++beginTransientRetries;
+                ++consecutiveTransientRetries;
+                Sleep(1);
+                continue;
+            }
             std::fprintf(stderr, "[memprobe] begin_draw 返回 %d，停止 (设备丢失?)\n", br);
             break;
         }
@@ -609,9 +839,18 @@ int main(int argc, char** argv) {
 
         JaliumResult er = jalium_render_target_end_draw(rt);
         if (er != JALIUM_OK) {
+            if (isTransient(er) &&
+                consecutiveTransientRetries < kMaxConsecutiveTransientRetries) {
+                ++transientRetries;
+                ++endTransientRetries;
+                ++consecutiveTransientRetries;
+                Sleep(1);
+                continue;
+            }
             std::fprintf(stderr, "[memprobe] end_draw 返回 %d，停止 (设备丢失?)\n", er);
             break;
         }
+        consecutiveTransientRetries = 0;
 
         ++frame;
 
@@ -625,6 +864,15 @@ int main(int argc, char** argv) {
             QueryPerformanceCounter(&tnow);
             double sec = (double)(tnow.QuadPart - t0.QuadPart) / (double)freq.QuadPart;
             Sample s = TakeSample(rt, frame, sec);
+            if (!samples.empty()) {
+                const double dt = sec - samples.back().elapsedSec;
+                const uint64_t df = frame - samples.back().frame;
+                if (dt > 0.0) s.intervalFps = static_cast<double>(df) / dt;
+            } else if (sec > 0.0) {
+                s.intervalFps = static_cast<double>(frame) / sec;
+            }
+            if (s.intervalFps > 0.0)
+                s.frameTimeMs = 1000.0 / s.intervalFps;
             PrintSample(s);
             if (csv) WriteCsvRow(csv, s);
             samples.push_back(s);
@@ -687,6 +935,12 @@ int main(int argc, char** argv) {
     }
 
     PrintVerdict(samples, o.warmup, post);
+    PrintPerformanceVerdict(samples, o.warmup);
+    std::printf("[memprobe] transient retries: total=%llu begin=%llu end=%llu resize=%llu; applied WM_SIZE=%llu\n",
+                (unsigned long long)transientRetries, (unsigned long long)beginTransientRetries,
+                (unsigned long long)endTransientRetries,
+                (unsigned long long)resizeTransientRetries,
+                (unsigned long long)windowResizeCount);
 
     std::printf("\n[memprobe] 结束：共 %llu 帧，CSV=%s\n",
                 (unsigned long long)frame, o.csvPath.c_str());

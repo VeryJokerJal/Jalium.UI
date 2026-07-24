@@ -93,60 +93,44 @@
        and it has shipped stale binaries before. Packing win-x64 requires the
        stamped CMake layout; project-reference dev runs (the None groups
        below) still fall back to the legacy layout. -->
-  <Target Name="JaliumFailLegacyNativeLayoutPack"
-          BeforeTargets="_IntermediatePack"
-          Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(JaliumNativePackRid)' == '' or '$(JaliumNativePackRid)' == 'win-x64') and !Exists('$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)/.jalium-native-complete') and Exists('$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/jalium.native.core.dll')">
-    <Error Condition="'$(JaliumAllowStaleNative)' != 'true'"
-           Text="win-x64 native binaries were found only in the legacy layout '$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)', which is no longer packed. Run a full CMake build that reaches jalium.native.package.complete (configure once with `cmake -S src/native -B src/native/build_x64_vs18`, then `cmake --build src/native/build_x64_vs18 --config $(JaliumNativeConfiguration)`) to produce the stamped payload at '$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)', or pass -p:JaliumAllowStaleNative=true to pack without a win-x64 payload." />
-    <Warning Condition="'$(JaliumAllowStaleNative)' == 'true'"
-             Text="JaliumAllowStaleNative=true: packing WITHOUT a win-x64 native payload; the legacy layout '$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)' is ignored." />
+  <Target Name="JaliumFailLegacyNativeLayoutPack" BeforeTargets="_IntermediatePack" Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(JaliumNativePackRid)' == '' or '$(JaliumNativePackRid)' == 'win-x64') and !Exists('$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)/.jalium-native-complete') and Exists('$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/jalium.native.core.dll')">
+    <Error Condition="'$(JaliumAllowStaleNative)' != 'true'" Text="win-x64 native binaries were found only in the legacy layout '$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)', which is no longer packed. Run a full CMake build that reaches jalium.native.package.complete (configure once with `cmake -S src/native -B src/native/build_x64_vs18`, then `cmake --build src/native/build_x64_vs18 --config $(JaliumNativeConfiguration)`) to produce the stamped payload at '$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)', or pass -p:JaliumAllowStaleNative=true to pack without a win-x64 payload." />
+    <Warning Condition="'$(JaliumAllowStaleNative)' == 'true'" Text="JaliumAllowStaleNative=true: packing WITHOUT a win-x64 native payload; the legacy layout '$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)' is ignored." />
   </Target>
 
   <!-- Preserve native copy behavior when Interop is consumed as a project
        reference. Only one effective RID is copied, avoiding same-name .so
        collisions when a package contains all four Linux payloads. -->
   <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and '$(_JaliumNativeRuntimeRid)' != '' and (Exists('$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/.jalium-native-complete') or '$(JaliumNativePayloadValidated)' == 'true')">
-    <None Include="$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/*.dll;$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/*.so"
-          Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" Pack="false" Visible="false" />
+    <None Include="$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/*.dll;$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/*.so" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Pack="false" Visible="false" />
   </ItemGroup>
   <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and '$(_JaliumNativeRuntimeRid)' == 'win-x64' and !Exists('$(JaliumNativeOutputRoot)/win-x64/$(JaliumNativeConfiguration)/.jalium-native-complete')">
-    <None Include="$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/*.dll"
-          Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" Pack="false" Visible="false" />
+    <None Include="$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/*.dll" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Pack="false" Visible="false" />
   </ItemGroup>
   <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and ('$(_JaliumNativeRuntimeRid)' == 'win-x64' or '$(_JaliumNativeRuntimeRid)' == 'win-arm64')">
-    <None Include="$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/$(_JaliumNativeRuntimeRid)/WebView2Loader.dll"
-          Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest"
-          CopyToPublishDirectory="PreserveNewest" Pack="false" Visible="false"
-          Condition="Exists('$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/$(_JaliumNativeRuntimeRid)/WebView2Loader.dll') and (Exists('$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/.jalium-native-complete') or ('$(_JaliumNativeRuntimeRid)' == 'win-x64' and Exists('$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/jalium.native.core.dll')))" />
+    <None Include="$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/$(_JaliumNativeRuntimeRid)/WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Pack="false" Visible="false" Condition="Exists('$(MSBuildThisFileDirectory)../../native/jalium.native.browser/redist/$(_JaliumNativeRuntimeRid)/WebView2Loader.dll') and (Exists('$(JaliumNativeOutputRoot)/$(_JaliumNativeRuntimeRid)/$(JaliumNativeConfiguration)/.jalium-native-complete') or ('$(_JaliumNativeRuntimeRid)' == 'win-x64' and Exists('$(JaliumNativeOutputRoot)/$(JaliumNativeConfiguration)/jalium.native.core.dll')))" />
   </ItemGroup>
 
   <!-- A single-RID CI pack is an explicit release request; fail instead of
        silently publishing a managed-only package when its native build is missing. -->
-  <Target Name="ValidateJaliumNativePackRid" BeforeTargets="_IntermediatePack"
-          Condition="'$(UseJaliumNativeAot)' != 'true' and '$(JaliumNativePackRid)' != ''">
+  <Target Name="ValidateJaliumNativePackRid" BeforeTargets="_IntermediatePack" Condition="'$(UseJaliumNativeAot)' != 'true' and '$(JaliumNativePackRid)' != ''">
     <PropertyGroup>
       <_JaliumNativePackStamp Condition="'$(JaliumNativePackRid)' == 'win-x64' or '$(JaliumNativePackRid)' == 'win-arm64' or '$(JaliumNativePackRid)' == 'linux-x64' or '$(JaliumNativePackRid)' == 'linux-arm64' or '$(JaliumNativePackRid)' == 'linux-musl-x64' or '$(JaliumNativePackRid)' == 'linux-musl-arm64'">$(JaliumNativeOutputRoot)/$(JaliumNativePackRid)/$(JaliumNativeConfiguration)/.jalium-native-complete</_JaliumNativePackStamp>
     </PropertyGroup>
-    <Error Condition="'$(_JaliumNativePackStamp)' == ''"
-           Text="Unsupported JaliumNativePackRid '$(JaliumNativePackRid)'. Supported values: win-x64, win-arm64, linux-x64, linux-arm64, linux-musl-x64, linux-musl-arm64." />
-    <Error Condition="!Exists('$(_JaliumNativePackStamp)')"
-           Text="A complete native payload for $(JaliumNativePackRid) was not found at '$(_JaliumNativePackStamp)'. Build that RID before packing (the unstamped legacy win-x64 layout is no longer accepted)." />
+    <Error Condition="'$(_JaliumNativePackStamp)' == ''" Text="Unsupported JaliumNativePackRid '$(JaliumNativePackRid)'. Supported values: win-x64, win-arm64, linux-x64, linux-arm64, linux-musl-x64, linux-musl-arm64." />
+    <Error Condition="!Exists('$(_JaliumNativePackStamp)')" Text="A complete native payload for $(JaliumNativePackRid) was not found at '$(_JaliumNativePackStamp)'. Build that RID before packing (the unstamped legacy win-x64 layout is no longer accepted)." />
   </Target>
 
   <!-- Ensure RID-specific native assets are copied on package restore. -->
   <ItemGroup>
     <None Include="build\Jalium.UI.Interop.targets" Pack="true" PackagePath="build" />
     <None Include="buildTransitive\Jalium.UI.Interop.targets" Pack="true" PackagePath="buildTransitive" />
+    <PackageReference Include="System.Security.Cryptography.Xml" Version="10.0.10" />
     <!-- NuGet considers linux-<arch> compatible with android-<arch> during
          restore. Exact empty Android native groups stop those glibc assets
          from shadowing the 16 KB-aligned libraries carried by the Android
          entry package's AAR. -->
-    <None Update="PackageAssets\_._"
-          Pack="true"
-          PackagePath="runtimes/android-arm64/native/_._;runtimes/android-x64/native/_._"
-          Visible="false" />
+    <None Update="PackageAssets\_._" Pack="true" PackagePath="runtimes/android-arm64/native/_._;runtimes/android-x64/native/_._" Visible="false" />
   </ItemGroup>
 
   <!-- Fail the pack when any native binary on disk is stale relative to git

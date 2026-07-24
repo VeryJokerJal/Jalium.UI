@@ -85,6 +85,72 @@ public class ScrollViewerScrollBarMetricsTests
     }
 
     [Fact]
+    public void PersistentlyOverflowingContent_ResizeUsesSingleMeasurePass()
+    {
+        var content = new OverflowMeasureProbe();
+        var viewer = new ScrollViewer
+        {
+            Content = content,
+            Width = 240,
+            Height = 160,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+
+        viewer.Measure(new Size(240, 160));
+        viewer.Arrange(new Rect(0, 0, 240, 160));
+        Assert.Equal(2, content.MeasureCount); // initial finite probe + overflow measure
+
+        var beforeResize = content.MeasureCount;
+        viewer.Width = 260;
+        viewer.Measure(new Size(260, 160));
+        viewer.Arrange(new Rect(0, 0, 260, 160));
+
+        Assert.Equal(beforeResize + 1, content.MeasureCount);
+        Assert.True(double.IsPositiveInfinity(content.LastAvailableSize.Height));
+        Assert.Equal(1000, viewer.ExtentHeight);
+    }
+
+    [Fact]
+    public void StickyOverflow_TransitionsBetweenOverflowAndFit()
+    {
+        var content = new MutableOverflowMeasureProbe { DesiredHeight = 1000 };
+        var viewer = new ScrollViewer
+        {
+            Content = content,
+            Width = 240,
+            Height = 160,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        };
+
+        viewer.Measure(new Size(240, 160));
+        viewer.Arrange(new Rect(0, 0, 240, 160));
+        Assert.Equal(2, content.MeasureCount);
+        Assert.Equal(1000, viewer.ExtentHeight);
+
+        content.DesiredHeight = 80;
+        // Detached test trees have no LayoutManager to propagate the child's invalidation.
+        viewer.InvalidateMeasure();
+        var beforeFit = content.MeasureCount;
+        viewer.Measure(new Size(240, 160));
+        viewer.Arrange(new Rect(0, 0, 240, 160));
+        Assert.Equal(beforeFit + 2, content.MeasureCount);
+        Assert.False(double.IsInfinity(content.LastAvailableSize.Height));
+        Assert.Equal(80, viewer.ExtentHeight);
+        Assert.Equal(0, viewer.ScrollableHeight);
+
+        content.DesiredHeight = 1000;
+        viewer.InvalidateMeasure();
+        var beforeOverflow = content.MeasureCount;
+        viewer.Measure(new Size(240, 160));
+        viewer.Arrange(new Rect(0, 0, 240, 160));
+        Assert.Equal(beforeOverflow + 2, content.MeasureCount);
+        Assert.True(double.IsPositiveInfinity(content.LastAvailableSize.Height));
+        Assert.Equal(1000, viewer.ExtentHeight);
+    }
+
+    [Fact]
     public void ConfigureScrollBar_NonFiniteMetrics_ShouldClampToSafeDefaults()
     {
         var scrollBar = new ScrollBar
@@ -132,6 +198,93 @@ public class ScrollViewerScrollBarMetricsTests
         Assert.Equal(Visibility.Visible, scrollBar.Visibility);
     }
 
+    [Fact]
+    public void ConfigureScrollBar_ActiveThumbDrag_DoesNotOverwritePointerValueWithTrailingContentOffset()
+    {
+        var scrollBar = new ScrollBar
+        {
+            Orientation = Orientation.Vertical,
+            Minimum = 0,
+            Maximum = 400,
+            Value = 300
+        };
+        var draggingField = typeof(ScrollBar).GetField("_isDragging", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(draggingField);
+        draggingField!.SetValue(scrollBar, true);
+
+        InvokeConfigureScrollBar(
+            scrollBar,
+            maxOffset: 400,
+            viewportSize: 120,
+            offset: 100,
+            visibilityMode: ScrollBarVisibility.Auto,
+            canScroll: true);
+
+        Assert.Equal(300, scrollBar.Value);
+    }
+
+    [Theory]
+    [InlineData(180.0)] // extent == viewport: raw scrollable range reaches zero
+    [InlineData(80.0)]  // extent < viewport: raw scrollable range becomes negative
+    public void UpdateScrollBarMetrics_ActiveVerticalThumbDrag_FreezesMetricsUntilRelease(
+        double transientExtentHeight)
+    {
+        const double initialExtentHeight = 520;
+        const double initialViewportHeight = 120;
+        const double initialPointerValue = 300;
+        const double transientViewportHeight = 180;
+
+        var viewer = new ScrollViewer
+        {
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            IsScrollBarAutoHideEnabled = false
+        };
+        var verticalScrollBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
+
+        SetPrivateField(viewer, "_extentHeight", initialExtentHeight);
+        SetPrivateField(viewer, "_viewportHeight", initialViewportHeight);
+        SetPrivateField(viewer, "_verticalOffset", initialPointerValue);
+        InvokeUpdateScrollBarMetrics(viewer);
+
+        Assert.Equal(400, verticalScrollBar.Maximum);
+        Assert.Equal(initialViewportHeight, verticalScrollBar.ViewportSize);
+        Assert.Equal(initialPointerValue, verticalScrollBar.Value);
+        Assert.Equal(Visibility.Visible, verticalScrollBar.Visibility);
+
+        // A virtualizing panel can briefly report a collapsed extent while a new realization
+        // window is being measured. The content offset may already have been coerced to zero,
+        // but the captured Thumb must keep its original pointer-to-range mapping until release.
+        SetPrivateField(verticalScrollBar, "_isDragging", true);
+        SetPrivateField(viewer, "_extentHeight", transientExtentHeight);
+        SetPrivateField(viewer, "_viewportHeight", transientViewportHeight);
+        SetPrivateField(viewer, "_verticalOffset", 0.0);
+        InvokeUpdateScrollBarMetrics(viewer);
+
+        Assert.Equal(0, viewer.ScrollableHeight);
+        Assert.Equal(400, verticalScrollBar.Maximum);
+        Assert.Equal(initialViewportHeight, verticalScrollBar.ViewportSize);
+        Assert.Equal(initialPointerValue, verticalScrollBar.Value);
+        Assert.Equal(Visibility.Visible, verticalScrollBar.Visibility);
+
+        // ScrollBar raises EndScroll after clearing its dragging flag. Even when the content is
+        // already at the final clamped offset (so ScrollToVerticalOffset is otherwise a no-op),
+        // release must publish the latest metrics that were held back during the drag.
+        SetPrivateField(verticalScrollBar, "_isDragging", false);
+        verticalScrollBar.RaiseEvent(new ScrollEventArgs(
+            ScrollBar.ScrollEvent,
+            ScrollEventType.EndScroll,
+            verticalScrollBar.Value)
+        {
+            Source = verticalScrollBar
+        });
+
+        Assert.Equal(0, verticalScrollBar.Maximum);
+        Assert.Equal(transientViewportHeight, verticalScrollBar.ViewportSize);
+        Assert.Equal(0, verticalScrollBar.Value);
+        Assert.Equal(Visibility.Collapsed, verticalScrollBar.Visibility);
+    }
+
     private static void InvokeConfigureScrollBar(
         ScrollBar scrollBar,
         double maxOffset,
@@ -146,8 +299,81 @@ public class ScrollViewerScrollBarMetricsTests
         method!.Invoke(null, [scrollBar, maxOffset, viewportSize, offset, visibilityMode, canScroll]);
     }
 
+    private static void InvokeUpdateScrollBarMetrics(ScrollViewer viewer)
+    {
+        var method = typeof(ScrollViewer).GetMethod(
+            "UpdateScrollBarMetrics",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        method!.Invoke(viewer, null);
+    }
+
+    private static T GetPrivateField<T>(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+
+        return Assert.IsType<T>(field!.GetValue(instance));
+    }
+
+    private static void SetPrivateField(object instance, string fieldName, object value)
+    {
+        var field = instance.GetType().GetField(
+            fieldName,
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+
+        field!.SetValue(instance, value);
+    }
+
     private sealed class ProbeScrollViewer : ScrollViewer
     {
         public UIElement? DirectContentElement => ContentElement;
+    }
+
+    private sealed class OverflowMeasureProbe : FrameworkElement
+    {
+        public int MeasureCount { get; private set; }
+        public Size LastAvailableSize { get; private set; }
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            MeasureCount++;
+            LastAvailableSize = availableSize;
+            return new Size(120, 1000);
+        }
+    }
+
+    private sealed class MutableOverflowMeasureProbe : FrameworkElement
+    {
+        private double _desiredHeight;
+
+        public int MeasureCount { get; private set; }
+        public Size LastAvailableSize { get; private set; }
+
+        public double DesiredHeight
+        {
+            get => _desiredHeight;
+            set
+            {
+                if (Math.Abs(_desiredHeight - value) <= 0.01)
+                {
+                    return;
+                }
+
+                _desiredHeight = value;
+                InvalidateMeasure();
+            }
+        }
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            MeasureCount++;
+            LastAvailableSize = availableSize;
+            return new Size(120, DesiredHeight);
+        }
     }
 }

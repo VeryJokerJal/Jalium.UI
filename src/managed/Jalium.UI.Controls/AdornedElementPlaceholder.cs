@@ -29,10 +29,12 @@ public class AdornedElementPlaceholder : FrameworkElement, Jalium.UI.Markup.IAdd
                 return;
             }
 
-            if (_child != null)
+            var oldChild = _child;
+            _child = null;
+            if (oldChild != null)
             {
-                RemoveVisualChild(_child);
-                RemoveLogicalChild(_child);
+                RemoveVisualChild(oldChild);
+                RemoveLogicalChild(oldChild);
             }
 
             _child = value;

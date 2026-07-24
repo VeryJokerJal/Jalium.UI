@@ -132,8 +132,8 @@ public class Expander : HeaderedContentControl
 
     #region Template Parts
 
-    private Border? _headerBorder;
-    private Border? _contentBorder;
+    private FrameworkElement? _headerBorder;
+    private FrameworkElement? _contentBorder;
     private Shapes.Path? _chevron;
     private DispatcherTimer? _animationTimer;
 
@@ -147,8 +147,8 @@ public class Expander : HeaderedContentControl
         }
 
         base.OnApplyTemplate();
-        _headerBorder = GetTemplateChild("PART_HeaderBorder") as Border;
-        _contentBorder = GetTemplateChild("PART_ContentBorder") as Border;
+        _headerBorder = GetTemplateChild("PART_HeaderBorder") as FrameworkElement;
+        _contentBorder = GetTemplateChild("PART_ContentBorder") as FrameworkElement;
         _chevron = GetTemplateChild("PART_Chevron") as Shapes.Path;
 
         // Subscribe to header border click

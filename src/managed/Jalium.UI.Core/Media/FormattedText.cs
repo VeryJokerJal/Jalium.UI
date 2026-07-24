@@ -39,6 +39,11 @@ public sealed partial class FormattedText
         set
         {
             ValidateMaxTextWidth(value, nameof(value));
+            if (_maxTextWidth.Equals(value))
+            {
+                return;
+            }
+
             _maxTextWidth = value;
             _maxTextWidths = null;
             RecomputeApproximateMetrics();
@@ -54,6 +59,11 @@ public sealed partial class FormattedText
         set
         {
             ValidateMaxTextHeight(value, nameof(value));
+            if (_maxTextHeight.Equals(value))
+            {
+                return;
+            }
+
             _maxTextHeight = value;
             RecomputeApproximateMetrics();
         }
@@ -175,7 +185,7 @@ public sealed partial class FormattedText
     private CultureInfo _culture = CultureInfo.CurrentCulture;
     private Typeface? _typeface;
     private NumberSubstitution? _numberSubstitution;
-    private CharacterFormat[] _characterFormats = [];
+    private CharacterFormat[]? _characterFormats;
     private FlowDirection _flowDirection;
     private TextAlignment _textAlignment;
 
@@ -309,7 +319,7 @@ public sealed partial class FormattedText
             for (int index = 0; index < Text.Length; index++)
             {
                 char character = Text[index];
-                if (char.IsWhiteSpace(character))
+                if (IsBreakableWhitespace(character))
                 {
                     longest = Math.Max(longest, current);
                     current = 0;
@@ -350,14 +360,7 @@ public sealed partial class FormattedText
         }
     }
 
-    public double WidthIncludingTrailingWhitespace
-    {
-        get
-        {
-            IReadOnlyList<LayoutLine> lines = CreateLayoutLines();
-            return lines.Count == 0 ? 0 : lines.Max(static line => line.WidthIncludingTrailingWhitespace);
-        }
-    }
+    public double WidthIncludingTrailingWhitespace { get; internal set; }
 
     public Geometry BuildGeometry(Point origin) => BuildHighlightGeometry(origin);
 
@@ -564,37 +567,108 @@ public sealed partial class FormattedText
 
     private void InitializeCompatibilityFormatting()
     {
-        _typeface = new Typeface(new FontFamily(FontFamily), FontStyles.Normal, FontWeights.Normal, FontStretches.Normal);
         InitializeCharacterFormats();
         RecomputeApproximateMetrics();
     }
 
+    /// <summary>
+    /// Creates the value snapshot retained by a recorded drawing without
+    /// reconstructing and laying out the same text a second time.
+    /// </summary>
+    internal FormattedText CreateRenderSnapshot(Brush? foreground)
+    {
+        var snapshot = (FormattedText)MemberwiseClone();
+
+        // Range-format mutations replace entries in the source array. Give the
+        // snapshot its own entry table while sharing the immutable-by-convention
+        // CharacterFormat instances; ApplyToRange clones a format before writing.
+        if (_characterFormats is { Length: > 0 } characterFormats)
+        {
+            snapshot._characterFormats = (CharacterFormat[])characterFormats.Clone();
+        }
+
+        // SetMaxTextWidths replaces its backing array, while GetMaxTextWidths
+        // returns a clone, so the current array is also safe to share.
+        snapshot.Foreground = foreground;
+        return snapshot;
+    }
+
     private void InitializeCharacterFormats()
     {
-        var typeface = _typeface ?? new Typeface(new FontFamily(FontFamily));
-        _characterFormats = new CharacterFormat[Text.Length];
-        for (int index = 0; index < _characterFormats.Length; index++)
+        // The renderer consumes the scalar font properties for ordinary text.
+        // Per-character formats (and the Typeface graph behind them) are only
+        // needed once a range-formatting API is used.
+        _characterFormats = null;
+    }
+
+    private CharacterFormat[] EnsureCharacterFormats()
+    {
+        if (_characterFormats is not null)
         {
-            _characterFormats[index] = new CharacterFormat
-            {
-                Culture = _culture,
-                FontFamily = typeface.FontFamily,
-                EmSize = FontSize,
-                Weight = typeface.Weight,
-                Style = typeface.Style,
-                Stretch = typeface.Stretch,
-                Foreground = Foreground,
-                NumberSubstitution = _numberSubstitution,
-            };
+            return _characterFormats;
         }
+
+        var typeface = _typeface ?? new Typeface(new FontFamily(FontFamily));
+        var characterFormats = new CharacterFormat[Text.Length];
+        if (characterFormats.Length == 0)
+        {
+            return _characterFormats = characterFormats;
+        }
+
+        // Simple text uses one immutable-by-convention format for every character.
+        // Range setters detach the affected entries in ApplyToRange, so the common
+        // rendering path does not need one heap object per character.
+        var defaultFormat = new CharacterFormat
+        {
+            Culture = _culture,
+            FontFamily = typeface.FontFamily,
+            EmSize = FontSize,
+            Weight = typeface.Weight,
+            Style = typeface.Style,
+            Stretch = typeface.Stretch,
+            Foreground = Foreground,
+            NumberSubstitution = _numberSubstitution,
+        };
+        Array.Fill(characterFormats, defaultFormat);
+        return _characterFormats = characterFormats;
     }
 
     private void ApplyToRange(int startIndex, int count, Action<CharacterFormat> apply)
     {
         ValidateRange(startIndex, count);
+        if (count == 0)
+        {
+            return;
+        }
+
+        CharacterFormat[] characterFormats = EnsureCharacterFormats();
+
+        // Preserve sharing when the selected run currently has one format. A later
+        // overlapping write will detach again, retaining per-character semantics.
+        var shared = characterFormats[startIndex];
+        var isSharedRun = true;
+        for (int index = startIndex + 1; index < startIndex + count; index++)
+        {
+            if (!ReferenceEquals(shared, characterFormats[index]))
+            {
+                isSharedRun = false;
+                break;
+            }
+        }
+
+        if (isSharedRun)
+        {
+            var updated = shared.Clone();
+            apply(updated);
+            Array.Fill(characterFormats, updated, startIndex, count);
+            return;
+        }
+
         for (int index = startIndex; index < startIndex + count; index++)
         {
-            apply(_characterFormats[index]);
+            var updated = characterFormats[index].Clone();
+            apply(updated);
+            characterFormats[index] = updated;
         }
     }
 
@@ -652,17 +726,111 @@ public sealed partial class FormattedText
 
     private void RecomputeApproximateMetrics()
     {
-        IReadOnlyList<LayoutLine> lines = CreateLayoutLines();
+        ComputeApproximateLayout(
+            out int computedLineCount,
+            out double maximumWidth,
+            out double maximumWidthIncludingTrailingWhitespace);
         double naturalHeight = GetNaturalLineHeight();
         LineHeight = naturalHeight;
         Ascent = FontSize * 0.8;
         Descent = FontSize * 0.2;
         LineGap = Math.Max(0, naturalHeight - Ascent - Descent);
         Baseline = Ascent;
-        LineCount = Math.Max(1, lines.Count);
-        Width = lines.Count == 0 ? 0 : lines.Max(static line => line.Width);
+        LineCount = Math.Max(1, computedLineCount);
+        Width = maximumWidth;
+        WidthIncludingTrailingWhitespace = maximumWidthIncludingTrailingWhitespace;
         Height = Math.Min(_maxTextHeight, LineCount * naturalHeight);
         IsMeasured = false;
+    }
+
+    private void ComputeApproximateLayout(
+        out int lineCount,
+        out double maximumWidth,
+        out double maximumWidthIncludingTrailingWhitespace)
+    {
+        lineCount = 0;
+        maximumWidth = 0;
+        maximumWidthIncludingTrailingWhitespace = 0;
+        if (Text.Length == 0)
+        {
+            return;
+        }
+
+        int lineStart = 0;
+        int lineIndex = 0;
+        double width = 0;
+        double widthWithoutTrailingWhitespace = 0;
+        for (int index = 0; index < Text.Length && lineCount < _maxLineCount; index++)
+        {
+            char character = Text[index];
+            if (character == '\r' || character == '\n')
+            {
+                AddApproximateLine(
+                    widthWithoutTrailingWhitespace,
+                    width,
+                    ref lineCount,
+                    ref maximumWidth,
+                    ref maximumWidthIncludingTrailingWhitespace);
+                int newlineLength = character == '\r' && index + 1 < Text.Length && Text[index + 1] == '\n' ? 2 : 1;
+                index += newlineLength - 1;
+                lineStart = index + 1;
+                lineIndex++;
+                width = 0;
+                widthWithoutTrailingWhitespace = 0;
+                continue;
+            }
+
+            double advance = GetCharacterAdvance(index);
+            double maximum = GetLineMaximum(lineIndex);
+            if (width > 0 && width + advance > maximum)
+            {
+                AddApproximateLine(
+                    widthWithoutTrailingWhitespace,
+                    width,
+                    ref lineCount,
+                    ref maximumWidth,
+                    ref maximumWidthIncludingTrailingWhitespace);
+                lineIndex++;
+                if (lineCount >= _maxLineCount)
+                {
+                    break;
+                }
+
+                lineStart = index;
+                width = 0;
+                widthWithoutTrailingWhitespace = 0;
+            }
+
+            width += advance;
+            if (!IsTrailingLayoutWhitespace(character))
+            {
+                widthWithoutTrailingWhitespace = width;
+            }
+        }
+
+        if (lineCount < _maxLineCount && lineStart <= Text.Length)
+        {
+            AddApproximateLine(
+                widthWithoutTrailingWhitespace,
+                width,
+                ref lineCount,
+                ref maximumWidth,
+                ref maximumWidthIncludingTrailingWhitespace);
+        }
+    }
+
+    private static void AddApproximateLine(
+        double width,
+        double widthIncludingTrailingWhitespace,
+        ref int lineCount,
+        ref double maximumWidth,
+        ref double maximumWidthIncludingTrailingWhitespace)
+    {
+        lineCount++;
+        maximumWidth = Math.Max(maximumWidth, width);
+        maximumWidthIncludingTrailingWhitespace = Math.Max(
+            maximumWidthIncludingTrailingWhitespace,
+            widthIncludingTrailingWhitespace);
     }
 
     private IReadOnlyList<LayoutLine> CreateLayoutLines()
@@ -707,7 +875,7 @@ public sealed partial class FormattedText
             }
 
             width += advance;
-            if (!char.IsWhiteSpace(character))
+            if (!IsTrailingLayoutWhitespace(character))
             {
                 widthWithoutTrailingWhitespace = width;
             }
@@ -749,12 +917,28 @@ public sealed partial class FormattedText
     private double GetNaturalLineHeight()
     {
         double largest = FontSize;
-        for (int index = 0; index < _characterFormats.Length; index++)
+        if (_characterFormats is not { } characterFormats)
         {
-            largest = Math.Max(largest, _characterFormats[index].EmSize);
+            return largest * 1.2;
+        }
+
+        for (int index = 0; index < characterFormats.Length; index++)
+        {
+            largest = Math.Max(largest, characterFormats[index].EmSize);
         }
 
         return largest * 1.2;
+    }
+
+    private static bool IsBreakableWhitespace(char value)
+    {
+        return value is '\r' or '\n' || IsTrailingLayoutWhitespace(value);
+    }
+
+    private static bool IsTrailingLayoutWhitespace(char value)
+    {
+        return value is not '\r' and not '\n' and not '\u00A0' and not '\u202F' and not '\u2060' and not '\uFEFF' &&
+               char.IsWhiteSpace(value);
     }
 
     private double GetCharacterAdvance(int index)
@@ -765,7 +949,9 @@ public sealed partial class FormattedText
         }
 
         char value = Text[index];
-        double emSize = _characterFormats.Length == Text.Length ? _characterFormats[index].EmSize : FontSize;
+        double emSize = _characterFormats is { Length: var length } characterFormats && length == Text.Length
+            ? characterFormats[index].EmSize
+            : FontSize;
         if (value == '\t')
         {
             return emSize * 2;
@@ -798,7 +984,7 @@ public sealed partial class FormattedText
     private sealed class CharacterFormat
     {
         public CultureInfo Culture { get; set; } = CultureInfo.CurrentCulture;
-        public FontFamily FontFamily { get; set; } = new();
+        public FontFamily FontFamily { get; set; } = null!;
         public double EmSize { get; set; }
         public FontWeight Weight { get; set; }
         public FontStyle Style { get; set; }
@@ -806,6 +992,19 @@ public sealed partial class FormattedText
         public Brush? Foreground { get; set; }
         public NumberSubstitution? NumberSubstitution { get; set; }
         public global::Jalium.UI.TextDecorationCollection? TextDecorations { get; set; }
+
+        public CharacterFormat Clone() => new()
+        {
+            Culture = Culture,
+            FontFamily = FontFamily,
+            EmSize = EmSize,
+            Weight = Weight,
+            Style = Style,
+            Stretch = Stretch,
+            Foreground = Foreground,
+            NumberSubstitution = NumberSubstitution,
+            TextDecorations = TextDecorations,
+        };
     }
 
     private readonly record struct LayoutLine(

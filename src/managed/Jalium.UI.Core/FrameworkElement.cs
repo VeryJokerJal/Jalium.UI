@@ -1,5 +1,6 @@
 ﻿using System.IO;
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -18,6 +19,15 @@ namespace Jalium.UI;
 [Markup.XmlLangProperty(nameof(Language))]
 public partial class FrameworkElement : UIElement, IFrameworkInputElement, Markup.IQueryAmbient, ISupportInitialize
 {
+    // Virtualizing panels detach generated containers into a recycle pool and later attach the
+    // same retained visual subtree back to the same panel. A normal reparent must recursively
+    // refresh styles/resources/bindings, but that work is redundant (and very expensive) when
+    // the resource scope is provably unchanged. The marker is opt-in and is set only by a
+    // recycling panel immediately before it removes a container.
+    private DependencyObject? _virtualizationRecycleParent;
+    private int _virtualizationRecycleResourceGeneration;
+    private ulong _virtualizationRecycleScopeFingerprint;
+
     /// <summary>
     /// The default font family name used across the UI framework.
     /// Initialized from the Windows system message font (NONCLIENTMETRICS.lfMessageFont).
@@ -169,12 +179,40 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     #region Dependency Properties
 
     /// <summary>
+    /// ValidateValueCallback for <see cref="WidthProperty"/>/<see cref="HeightProperty"/>:
+    /// NaN (auto) or a non-negative finite number. Mirrors WPF's
+    /// <c>FrameworkElement.IsWidthHeightValid</c> — rejecting the value at the property
+    /// boundary keeps a negative or infinite explicit size from flowing into layout math
+    /// and surfacing much later as a Size-constructor throw mid measure/arrange.
+    /// Also used by panels whose per-item size shares the same "NaN means auto" contract
+    /// (e.g. <c>WrapPanel.ItemWidth</c>/<c>ItemHeight</c>).
+    /// </summary>
+    internal static bool IsWidthHeightValid(object? value)
+        => value is double v && (double.IsNaN(v) || (v >= 0.0 && !double.IsPositiveInfinity(v)));
+
+    /// <summary>
+    /// ValidateValueCallback for <see cref="MinWidthProperty"/>/<see cref="MinHeightProperty"/>:
+    /// a non-negative finite number — unlike Width/Height, NaN is not a valid minimum.
+    /// Mirrors WPF's <c>FrameworkElement.IsMinWidthHeightValid</c>.
+    /// </summary>
+    internal static bool IsMinWidthHeightValid(object? value)
+        => value is double v && !double.IsNaN(v) && v >= 0.0 && !double.IsPositiveInfinity(v);
+
+    /// <summary>
+    /// ValidateValueCallback for <see cref="MaxWidthProperty"/>/<see cref="MaxHeightProperty"/>:
+    /// non-negative and not NaN; PositiveInfinity is the (default) "unconstrained" value.
+    /// Mirrors WPF's <c>FrameworkElement.IsMaxWidthHeightValid</c>.
+    /// </summary>
+    internal static bool IsMaxWidthHeightValid(object? value)
+        => value is double v && !double.IsNaN(v) && v >= 0.0;
+
+    /// <summary>
     /// Identifies the Width dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty WidthProperty =
         DependencyProperty.Register(nameof(Width), typeof(double), typeof(FrameworkElement),
-            new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
+            new PropertyMetadata(double.NaN, OnLayoutPropertyChanged), IsWidthHeightValid);
 
     /// <summary>
     /// Identifies the Height dependency property.
@@ -182,7 +220,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HeightProperty =
         DependencyProperty.Register(nameof(Height), typeof(double), typeof(FrameworkElement),
-            new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
+            new PropertyMetadata(double.NaN, OnLayoutPropertyChanged), IsWidthHeightValid);
 
     /// <summary>
     /// Identifies the MinWidth dependency property.
@@ -190,7 +228,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinWidthProperty =
         DependencyProperty.Register(nameof(MinWidth), typeof(double), typeof(FrameworkElement),
-            new PropertyMetadata(0.0, OnLayoutPropertyChanged));
+            new PropertyMetadata(0.0, OnLayoutPropertyChanged), IsMinWidthHeightValid);
 
     /// <summary>
     /// Identifies the MinHeight dependency property.
@@ -198,7 +236,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinHeightProperty =
         DependencyProperty.Register(nameof(MinHeight), typeof(double), typeof(FrameworkElement),
-            new PropertyMetadata(0.0, OnLayoutPropertyChanged));
+            new PropertyMetadata(0.0, OnLayoutPropertyChanged), IsMinWidthHeightValid);
 
     /// <summary>
     /// Identifies the MaxWidth dependency property.
@@ -206,7 +244,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxWidthProperty =
         DependencyProperty.Register(nameof(MaxWidth), typeof(double), typeof(FrameworkElement),
-            new PropertyMetadata(double.PositiveInfinity, OnLayoutPropertyChanged));
+            new PropertyMetadata(double.PositiveInfinity, OnLayoutPropertyChanged), IsMaxWidthHeightValid);
 
     /// <summary>
     /// Identifies the MaxHeight dependency property.
@@ -214,7 +252,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxHeightProperty =
         DependencyProperty.Register(nameof(MaxHeight), typeof(double), typeof(FrameworkElement),
-            new PropertyMetadata(double.PositiveInfinity, OnLayoutPropertyChanged));
+            new PropertyMetadata(double.PositiveInfinity, OnLayoutPropertyChanged), IsMaxWidthHeightValid);
 
     /// <summary>
     /// Identifies the Margin dependency property.
@@ -369,9 +407,28 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     internal readonly Dictionary<(FrameworkElement, DependencyProperty), (object? OriginalValue, int ActiveCount, object? SuspendedDynamicResourceKey)> _triggerOriginalValues = new();
 
     /// <summary>
-    /// The implicit style applied to this element based on its type.
+    /// The implicit style applied to this element based on its type. Never references
+    /// the theme default style — that lives in <see cref="_themeStyle"/> so an explicit
+    /// or implicit user style layers ON TOP of the theme defaults instead of replacing them.
     /// </summary>
     private Style? _implicitStyle;
+
+    /// <summary>
+    /// The theme default style (from the framework theme dictionary) currently applied
+    /// as the bottom layer of this element's style stack. WPF parity: an explicit
+    /// <see cref="Style"/> only overrides the properties it sets; everything else —
+    /// most critically the control Template — still comes from the theme default style.
+    /// </summary>
+    private Style? _themeStyle;
+
+    /// <summary>
+    /// Resolves the theme default style for a concrete element type. Injected by
+    /// Jalium.UI.Controls' ThemeManager (Core cannot reference the theme dictionaries
+    /// directly). Returns null when no theme is loaded or the type has no default style.
+    /// The FrameworkElement side walks the base-type chain; the resolver only needs to
+    /// answer for the exact type it is given.
+    /// </summary>
+    internal static Func<Type, Style?>? ThemeStyleResolver { get; set; }
 
     /// <summary>
     /// The element that owns the template in which this element is defined.
@@ -512,7 +569,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         {
             if (TryGetInheritedBaseValue(parent, dp, out var inheritedValue))
             {
-                return inheritedValue;
+                return TrackMutableRenderBrushValue(dp, inheritedValue);
             }
         }
 
@@ -860,7 +917,17 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         RaiseResourcesChangedInSubtree();
     }
 
-    private void RaiseResourcesChangedInSubtree()
+    /// <summary>
+    /// Notifies resource-dependent state after a theme-key change without reapplying the
+    /// structurally invariant implicit/theme styles. Controls can refresh manual palette caches
+    /// through ResourcesChanged while their existing templates remain intact.
+    /// </summary>
+    internal void NotifyThemeResourcesChangedFromRoot()
+    {
+        RaiseResourcesChangedInSubtree(reEvaluateImplicitStyles: false);
+    }
+
+    private void RaiseResourcesChangedInSubtree(bool reEvaluateImplicitStyles = true)
     {
         // Use iterative BFS with an explicit stack to avoid deep recursion overhead
         // and to allow early pruning of subtrees that don't need notification.
@@ -887,8 +954,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
                     current.ResourcesChanged.Invoke(current, EventArgs.Empty);
                 }
 
-                if (current.Style == null)
+                if (reEvaluateImplicitStyles)
                 {
+                    // General dictionary mutations can replace implicit/theme styles, so those
+                    // changes still require a full style-stack re-evaluation.
                     current.ReEvaluateImplicitStyle();
                 }
 
@@ -1258,7 +1327,14 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             // stored and may let descendants populate their screen-offset cache against
             // the old ancestor position. Bump the global epoch after the new bounds are
             // committed so those descendant caches cannot remain falsely current.
-            InvalidateScreenOffsetCache();
+            // The cache stores only the accumulated screen-space origin. Width/height
+            // are read live from RenderSize, so stretch-heavy window resizes must not
+            // invalidate every element's cached ancestor walk when X/Y stayed put.
+            if (_visualBounds.X != previousVisualBounds.X ||
+                _visualBounds.Y != previousVisualBounds.Y)
+            {
+                InvalidateScreenOffsetCache();
+            }
             SetRenderDirty();
         }
 
@@ -1306,6 +1382,18 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
         // Transform point to local coordinates (relative to this element)
         var localPoint = new Point(point.X - _visualBounds.X, point.Y - _visualBounds.Y);
+
+        // ClipToBounds is the common containment contract for ScrollViewer and
+        // rounded Border item trees. Reject points outside the selected bounds
+        // edges before constructing their layout geometry (and, for rounded
+        // clips, doing the exact corner test). An explicit Clip still takes
+        // precedence and may intentionally extend outside RenderSize.
+        if (ClipToBounds &&
+            !IsPointInsideClipToBoundsEdges(localPoint, new Rect(RenderSize)) &&
+            Clip == null)
+        {
+            return null;
+        }
 
         // Layout clip 是真正的"硬遮罩"——渲染时父对自己 + children 都 PushClip(GetLayoutClip())，
         // 视觉上看不见的内容就不该接收输入。典型场景：TextBox 被 ScrollViewer 滚出视口、
@@ -1477,10 +1565,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     /// </summary>
     private static void PropagateDataContextToDescendants(Visual parent, DependencyPropertyChangedEventArgs e)
     {
-        var childCount = parent.VisualChildrenCount;
+        var childCount = parent.InternalVisualChildrenCount;
         for (int i = 0; i < childCount; i++)
         {
-            var child = parent.GetVisualChild(i);
+            var child = parent.InternalGetVisualChild(i);
             if (child is FrameworkElement childElement)
             {
                 // Only propagate if the child doesn't have its own explicit (local) DataContext.
@@ -1528,29 +1616,7 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             var oldStyle = e.OldValue as Style;
             var newStyle = e.NewValue as Style;
 
-            // Remove implicit style if explicit style is being set
-            if (e.NewValue != null && element._implicitStyle != null)
-            {
-                element._implicitStyle.Remove(element);
-                element._implicitStyle = null;
-            }
-
-            // Remove old style
-            if (oldStyle != null)
-            {
-                oldStyle.Remove(element);
-            }
-
-            // Apply new style
-            if (newStyle != null)
-            {
-                newStyle.Apply(element);
-            }
-            else
-            {
-                // If explicit style is cleared, try to apply implicit style
-                element.ApplyImplicitStyleIfNeeded();
-            }
+            element.UpdateStyleStack(oldStyle, newStyle);
 
             element.OnStyleChanged(oldStyle, newStyle);
         }
@@ -1559,6 +1625,84 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
     #endregion
 
     #region Visual Parent Changed
+
+    /// <summary>
+    /// Marks this generated container for a possible same-scope virtualization reattach.
+    /// The next attach takes the fast path only when the exact parent, its ancestor chain,
+    /// and the resource generation all still match.
+    /// </summary>
+    internal void PrepareForVirtualizationRecycle(DependencyObject expectedParent)
+    {
+        if (!ReferenceEquals(VisualParent, expectedParent))
+        {
+            ClearVirtualizationRecycleMarker();
+            return;
+        }
+
+        _virtualizationRecycleParent = expectedParent;
+        _virtualizationRecycleResourceGeneration = ResourceLookup.CacheGeneration;
+        _virtualizationRecycleScopeFingerprint = ComputeResourceScopeFingerprint(expectedParent);
+    }
+
+    /// <summary>
+    /// Returns whether logical-tree removal/addition for this container keeps the same resource
+    /// scope. This lets the logical-tree helpers avoid globally flushing the resource cache for
+    /// a deliberate detach/reattach pair whose lookup path did not change.
+    /// </summary>
+    private bool CanPreserveVirtualizationResourceScope(DependencyObject parent)
+    {
+        return ReferenceEquals(_virtualizationRecycleParent, parent) &&
+               _virtualizationRecycleResourceGeneration == ResourceLookup.CacheGeneration &&
+               _virtualizationRecycleScopeFingerprint == ComputeResourceScopeFingerprint(parent);
+    }
+
+    private bool ConsumeVirtualizationReattachFastPath()
+    {
+        var parent = VisualParent;
+        var canUseFastPath = parent != null && CanPreserveVirtualizationResourceScope(parent);
+        ClearVirtualizationRecycleMarker();
+        return canUseFastPath;
+    }
+
+    private void ClearVirtualizationRecycleMarker()
+    {
+        _virtualizationRecycleParent = null;
+        _virtualizationRecycleResourceGeneration = 0;
+        _virtualizationRecycleScopeFingerprint = 0;
+    }
+
+    private static ulong ComputeResourceScopeFingerprint(DependencyObject parent)
+    {
+        // FNV-1a over the exact FrameworkParent chain. Resource dictionary mutations are
+        // guarded independently by CacheGeneration; this fingerprint detects a panel (or one
+        // of its ancestors) being moved to a different resource scope while a child is pooled.
+        const ulong offsetBasis = 14695981039346656037UL;
+        const ulong prime = 1099511628211UL;
+
+        var hash = offsetBasis;
+        var current = parent as FrameworkElement;
+        var depth = 0;
+        while (current != null && depth++ < 2048)
+        {
+            hash ^= unchecked((uint)RuntimeHelpers.GetHashCode(current));
+            hash *= prime;
+
+            FrameworkElement? next = null;
+            if (ResourceLookup.AncestorRedirectLookup != null)
+            {
+                next = ResourceLookup.AncestorRedirectLookup(current);
+                if (ReferenceEquals(next, current))
+                {
+                    next = null;
+                }
+            }
+
+            current = next ?? current.FrameworkParent;
+        }
+
+        hash ^= unchecked((uint)depth);
+        return hash * prime;
+    }
 
     /// <inheritdoc />
     protected internal override void OnVisualParentChanged(DependencyObject? oldParent)
@@ -1573,6 +1717,8 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         // after being added to the visual tree
         if (VisualParent != null)
         {
+            var isSameScopeVirtualizationReattach = ConsumeVirtualizationReattachFastPath();
+
             // Re-evaluate implicit styles for this entire subtree.
             // During XAML parsing, children are added bottom-up: a Button is added
             // to a StackPanel before the StackPanel is connected to the Window.
@@ -1581,7 +1727,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             // yet. When the subtree is later connected to the full tree, we must
             // re-evaluate so that closer-scope user-defined implicit styles take
             // precedence over theme styles.
-            ReEvaluateImplicitStylesRecursive(this);
+            if (!isSameScopeVirtualizationReattach)
+            {
+                ReEvaluateImplicitStylesRecursive(this);
+            }
 
             // Re-resolve dynamic resources for this entire subtree, for the SAME reason the
             // implicit-style pass above runs: attaching to a visual parent widens the
@@ -1594,17 +1743,26 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             // the shape simply draws nothing), since nothing re-resolves inline dynamic
             // resources on attach. This mirrors WPF, which re-evaluates resource references
             // when the tree changes.
-            RefreshDynamicResourcesRecursive(this);
+            if (!isSameScopeVirtualizationReattach)
+            {
+                RefreshDynamicResourcesRecursive(this);
+            }
 
             // Recursively reactivate bindings on this element and ALL descendants,
             // because descendants may have bindings that depend on DataContext
             // inherited from an ancestor that is now reachable via the visual tree
-            ReactivateBindingsRecursive(this);
+            if (!isSameScopeVirtualizationReattach)
+            {
+                ReactivateBindingsRecursive(this);
+            }
 
             // Reattaching only this root is not sufficient when descendants remain
             // "valid" with cached geometry from a prior host. Mark descendants dirty
             // so the next pass cannot skip their measure/arrange.
-            MarkDescendantLayoutInvalidForReattach(this);
+            if (!isSameScopeVirtualizationReattach)
+            {
+                MarkDescendantLayoutInvalidForReattach(this);
+            }
 
             // Reparented elements must be re-measured/re-arranged in the new host tree.
             InvalidateMeasure();
@@ -1670,10 +1828,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             layoutManager.Remove(element);
         }
 
-        var childCount = root.VisualChildrenCount;
+        var childCount = root.InternalVisualChildrenCount;
         for (int i = 0; i < childCount; i++)
         {
-            var child = root.GetVisualChild(i);
+            var child = root.InternalGetVisualChild(i);
             if (child != null)
             {
                 RemoveSubtreeFromLayoutManager(layoutManager, child);
@@ -1691,10 +1849,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             depObj.ReactivateBindings();
         }
 
-        var childCount = visual.VisualChildrenCount;
+        var childCount = visual.InternalVisualChildrenCount;
         for (int i = 0; i < childCount; i++)
         {
-            var child = visual.GetVisualChild(i);
+            var child = visual.InternalGetVisualChild(i);
             if (child != null)
             {
                 ReactivateBindingsRecursive(child);
@@ -1704,10 +1862,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
     private static void MarkDescendantLayoutInvalidForReattach(Visual root)
     {
-        var childCount = root.VisualChildrenCount;
+        var childCount = root.InternalVisualChildrenCount;
         for (int i = 0; i < childCount; i++)
         {
-            var child = root.GetVisualChild(i);
+            var child = root.InternalGetVisualChild(i);
             if (child != null)
             {
                 MarkSubtreeLayoutInvalid(child);
@@ -1722,10 +1880,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             uiElement.MarkMeasureInvalid();
         }
 
-        var childCount = visual.VisualChildrenCount;
+        var childCount = visual.InternalVisualChildrenCount;
         for (int i = 0; i < childCount; i++)
         {
-            var child = visual.GetVisualChild(i);
+            var child = visual.InternalGetVisualChild(i);
             if (child != null)
             {
                 MarkSubtreeLayoutInvalid(child);
@@ -1735,65 +1893,121 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
 
 
     /// <summary>
-    /// Applies an implicit style to this element if no explicit style is set.
+    /// Applies the style stack to this element if it hasn't been initialized yet.
     /// Called from OnVisualParentChanged and also by Window.Show() to handle
     /// elements created before the theme was loaded.
     /// </summary>
     internal void ApplyImplicitStyleIfNeeded()
     {
-        // Explicit style set — nothing to do.
-        if (Style != null)
+        // Fast path: the style stack was already initialized once. Re-evaluation
+        // after tree/resource changes is handled by ReEvaluateImplicitStyle().
+        if (_themeStyle != null || _implicitStyle != null)
             return;
 
-        // Already have an implicit style — skip first-time application.
-        // Re-evaluation after tree changes is handled by ReEvaluateImplicitStyle().
-        if (_implicitStyle != null)
-            return;
-
-        var implicitStyle = LookupImplicitStyle();
-        if (implicitStyle != null)
-        {
-            _implicitStyle = implicitStyle;
-            implicitStyle.Apply(this);
-            InvalidateVisual();
-        }
+        UpdateStyleStack(Style, Style);
     }
 
     /// <summary>
-    /// Re-evaluates the implicit style for this element after a tree change.
+    /// Re-evaluates the style stack for this element after a tree or resource change.
     /// If a closer-scope implicit style is now available (e.g., user-defined style
-    /// in Window.Resources after the subtree was connected), it replaces the
-    /// previously applied style (e.g., theme style from Application.Resources).
+    /// in Window.Resources after the subtree was connected), it replaces the previous
+    /// top-layer style; the theme default style is re-resolved as the bottom layer.
     /// </summary>
     private void ReEvaluateImplicitStyle()
     {
-        if (Style != null)
-            return;
+        UpdateStyleStack(Style, Style);
+    }
 
-        var newImplicit = LookupImplicitStyle();
-        if (newImplicit == null)
+    /// <summary>
+    /// Recomputes and re-applies this element's two-layer style stack:
+    /// theme default style (bottom) + explicit-or-implicit style (top).
+    /// The top layer is applied last so its setters win for the properties it sets,
+    /// while everything else (most critically the control Template) still falls back
+    /// to the theme default style — WPF's Style/ThemeStyle split.
+    /// </summary>
+    /// <param name="oldExplicit">The explicit Style before this update (for Style changes).</param>
+    /// <param name="newExplicit">The explicit Style after this update. For non-Style-change
+    /// re-evaluation both parameters are the current explicit Style.</param>
+    private void UpdateStyleStack(Style? oldExplicit, Style? newExplicit)
+    {
+        var newTheme = LookupThemeStyle();
+
+        // The implicit style only participates when no explicit style is set (WPF parity),
+        // and never duplicates the theme layer (LookupImplicitStyle can surface the theme
+        // style itself via the application resource chain).
+        Style? newImplicit = null;
+        if (newExplicit == null)
         {
-            if (_implicitStyle != null)
-            {
-                _implicitStyle.Remove(this);
-                _implicitStyle = null;
-                InvalidateVisual();
-            }
-            return;
+            var found = LookupImplicitStyle();
+            newImplicit = ReferenceEquals(found, newTheme) ? null : found;
         }
 
-        if (ReferenceEquals(_implicitStyle, newImplicit))
-            return; // Same style — no change needed.
+        // An explicit Style can literally be the theme style object (e.g. captured via
+        // a typed StaticResource). The theme layer already applies it — applying the
+        // same Style twice would double-attach its triggers and leak their handlers.
+        // Normalize both the old and new top the same way so the unchanged-check and
+        // the unwind below see what was actually applied.
+        var oldTop = oldExplicit ?? _implicitStyle;
+        if (ReferenceEquals(oldTop, _themeStyle))
+            oldTop = null;
 
-        // Different (closer-scope) implicit style found — swap.
-        if (_implicitStyle != null)
+        var newTop = newExplicit ?? newImplicit;
+        if (ReferenceEquals(newTop, newTheme))
+            newTop = null;
+
+        if (ReferenceEquals(_themeStyle, newTheme) && ReferenceEquals(oldTop, newTop))
+            return; // Stack unchanged.
+
+        // Unwind in LIFO order. Both layers write the same StyleSetter value layer, so
+        // removing the top style also clears any overlapping properties the theme style
+        // set — the theme layer must be re-applied afterwards, not just left in place.
+        oldTop?.Remove(this);
+        if (!ReferenceEquals(_themeStyle, oldTop))
         {
-            _implicitStyle.Remove(this);
+            _themeStyle?.Remove(this);
         }
 
+        _themeStyle = newTheme;
         _implicitStyle = newImplicit;
-        newImplicit.Apply(this);
+
+        newTheme?.Apply(this);
+        newTop?.Apply(this);
+
         InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Looks up the theme default style for this element through the injected
+    /// <see cref="ThemeStyleResolver"/> — first by <see cref="DefaultStyleKey"/>
+    /// (WPF's ThemeStyle lookup key when it is a type), then by walking up the
+    /// type hierarchy. <see cref="OverridesDefaultStyle"/> opts out entirely,
+    /// mirroring WPF.
+    /// </summary>
+    private Style? LookupThemeStyle()
+    {
+        var resolver = ThemeStyleResolver;
+        if (resolver == null)
+            return null;
+
+        if (OverridesDefaultStyle)
+            return null;
+
+        if (DefaultStyleKey is Type keyType)
+        {
+            var keyed = resolver(keyType);
+            if (keyed != null && IsStyleApplicable(keyed))
+                return keyed;
+        }
+
+        var currentType = GetType();
+        while (currentType != null && currentType != typeof(FrameworkElement))
+        {
+            var style = resolver(currentType);
+            if (style != null && IsStyleApplicable(style))
+                return style;
+            currentType = currentType.BaseType;
+        }
+        return null;
     }
 
     /// <summary>
@@ -1840,9 +2054,9 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             fe.ReEvaluateImplicitStyle();
         }
 
-        for (int i = 0; i < visual.VisualChildrenCount; i++)
+        for (int i = 0; i < visual.InternalVisualChildrenCount; i++)
         {
-            var child = visual.GetVisualChild(i);
+            var child = visual.InternalGetVisualChild(i);
             if (child != null)
             {
                 ReEvaluateImplicitStylesRecursive(child);
@@ -1865,9 +2079,9 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             DynamicResourceBindingOperations.RefreshElement(fe);
         }
 
-        for (int i = 0; i < visual.VisualChildrenCount; i++)
+        for (int i = 0; i < visual.InternalVisualChildrenCount; i++)
         {
-            var child = visual.GetVisualChild(i);
+            var child = visual.InternalGetVisualChild(i);
             if (child != null)
             {
                 RefreshDynamicResourcesRecursive(child);
@@ -2161,6 +2375,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             return;
         }
 
+        var preservesVirtualizationResourceScope =
+            child is FrameworkElement candidate &&
+            candidate.CanPreserveVirtualizationResourceScope(this);
+
         if (child is FrameworkElement element)
         {
             if (element._logicalParent != null && !ReferenceEquals(element._logicalParent, this))
@@ -2178,7 +2396,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         }
 
         _logicalChildren.Add(child);
-        ResourceLookup.InvalidateResourceCache();
+        if (!preservesVirtualizationResourceScope)
+        {
+            ResourceLookup.InvalidateResourceCache();
+        }
     }
 
     protected internal void RemoveLogicalChild(object? child)
@@ -2187,6 +2408,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
         {
             return;
         }
+
+        var preservesVirtualizationResourceScope =
+            child is FrameworkElement candidate &&
+            candidate.CanPreserveVirtualizationResourceScope(this);
 
         if (child is FrameworkElement element && ReferenceEquals(element._logicalParent, this))
         {
@@ -2198,7 +2423,10 @@ public partial class FrameworkElement : UIElement, IFrameworkInputElement, Marku
             element._logicalParent = null;
         }
 
-        ResourceLookup.InvalidateResourceCache();
+        if (!preservesVirtualizationResourceScope)
+        {
+            ResourceLookup.InvalidateResourceCache();
+        }
     }
 
     protected internal override DependencyObject? GetUIParentCore() => Parent;

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Input.TextInput;
 using Jalium.UI.Interop;
 using Jalium.UI.Threading;
 
@@ -19,6 +20,83 @@ internal static partial class BackendPreloader
 
     [LibraryImport(VulkanLib, EntryPoint = "jalium_vulkan_init")]
     internal static partial void VulkanInit();
+}
+
+/// <summary>
+/// Immutable Android pointer packet captured on the Activity thread. Event time
+/// is Android's monotonic uptime in milliseconds (<c>MotionEvent.EventTime</c>).
+/// </summary>
+internal readonly record struct AndroidTouchInput(
+    int PointerId,
+    float X,
+    float Y,
+    float Pressure,
+    int Action,
+    int PointerType,
+    int Modifiers,
+    long EventTimeMillis);
+
+/// <summary>
+/// Ordered pointer queue with latest-value coalescing for MOVE packets. A
+/// non-MOVE packet is an ordering barrier: MOVE nodes before it can no longer
+/// be updated by packets that arrived after it.
+/// </summary>
+internal sealed class AndroidTouchInputQueue
+{
+    private const int MoveAction = 2;
+    private readonly LinkedList<AndroidTouchInput> _events = new();
+    private readonly Dictionary<int, LinkedListNode<AndroidTouchInput>> _latestMoves = new();
+
+    internal int Count => _events.Count;
+
+    internal void Enqueue(AndroidTouchInput input)
+    {
+        if (input.Action == MoveAction)
+        {
+            if (_latestMoves.TryGetValue(input.PointerId, out var existing))
+            {
+                existing.Value = input;
+                return;
+            }
+
+            var node = _events.AddLast(input);
+            _latestMoves.Add(input.PointerId, node);
+            return;
+        }
+
+        // DOWN/UP/CANCEL packets are never coalesced. They also split MOVE
+        // coalescing into ordered epochs so a later MOVE cannot jump across a
+        // pointer-state transition belonging to this or another pointer.
+        _latestMoves.Clear();
+        _events.AddLast(input);
+    }
+
+    internal bool TryDequeue(out AndroidTouchInput input)
+    {
+        var node = _events.First;
+        if (node == null)
+        {
+            input = default;
+            return false;
+        }
+
+        _events.RemoveFirst();
+        input = node.Value;
+        if (input.Action == MoveAction &&
+            _latestMoves.TryGetValue(input.PointerId, out var latest) &&
+            ReferenceEquals(latest, node))
+        {
+            _latestMoves.Remove(input.PointerId);
+        }
+
+        return true;
+    }
+
+    internal void Clear()
+    {
+        _events.Clear();
+        _latestMoves.Clear();
+    }
 }
 
 /// <summary>
@@ -54,7 +132,10 @@ public static class AndroidActivityBridge
 
     private static readonly object s_lifecycleGate = new();
     private static readonly object s_stagedTransferGate = new();
+    private static readonly object s_touchInputGate = new();
     private static readonly ManualResetEventSlim s_stoppingDetachCompleted = new(initialState: true);
+    private static readonly AndroidTouchInputQueue s_touchInputQueue = new();
+    private static bool s_touchDrainScheduled;
     private static bool s_initialized;
     private static UiDispatchState s_uiDispatchState;
     private static bool s_stopTransactionCompleted;
@@ -78,6 +159,23 @@ public static class AndroidActivityBridge
     private static long s_stagedSurfaceActivityGeneration;
     private static float s_density = 1.0f;
     private static int s_refreshRate = 60;
+    private static IAndroidSoftKeyboardController? s_softKeyboardController;
+    // A Resume delivery raced the old dispatcher's stop/replacement window and
+    // was dropped (DispatchToUi returned false) while its Activity was still
+    // current. MarkUiThreadReady consumes it: the replacement UI thread replays
+    // the resume so the pause-side native/managed suspend state cannot leak
+    // into a session that is necessarily foreground. Guarded by s_lifecycleGate.
+    private static bool s_pendingResumeReplay;
+    // Bounded replay budget for a Surface attach that failed mid-transaction
+    // while the dispatcher stayed Running (see the attach-failure cleanup in
+    // OnNativeWindowCreatedCore). The Surface callback is consumed by then and
+    // the render gate is closed, so without a replay the app stays black until
+    // the next surfaceChanged — which may never come. Guarded by
+    // s_lifecycleGate; a successful attach voids the budget.
+    private const int MaxAttachRetryAttempts = 3;
+    private const int AttachRetryDelayMs = 500;
+    private static long s_attachRetryActivityGeneration;
+    private static int s_attachRetryCount;
 
     /// <summary>
     /// Initializes the Android bridge. Should be called from native activity startup.
@@ -140,6 +238,7 @@ public static class AndroidActivityBridge
             long stagedGeneration;
             float density;
             int refreshRate;
+            bool replayDroppedResume;
             UiDispatchState previousState;
             long previousUiThreadGeneration;
             lock (s_lifecycleGate)
@@ -182,7 +281,17 @@ public static class AndroidActivityBridge
                 }
                 density = s_density;
                 refreshRate = s_refreshRate;
+                // Consume-on-read: a failed session start re-parks the flag via
+                // the next dropped OnResume, so nothing is lost by clearing here.
+                replayDroppedResume = s_pendingResumeReplay;
+                s_pendingResumeReplay = false;
             }
+
+            // A fresh UI-thread session is necessarily foreground (its Surface
+            // exists). Clear a suspend flag that leaked from a Resume dispatch
+            // dropped during the previous dispatcher's stop window — otherwise
+            // every frame tick of this new session would be skipped forever.
+            Jalium.UI.Media.CompositionTarget.ResetSuspendedForNewSession();
 
             bool startupCallsCompleted = false;
             bool attached = false;
@@ -193,6 +302,23 @@ public static class AndroidActivityBridge
                 // a Window/RT.
                 NativeMethods.AndroidSetDensity(density);
                 NativeMethods.AndroidSetRefreshRate(refreshRate);
+
+                if (replayDroppedResume)
+                {
+                    // Replay the dropped Resume so the NATIVE pause state and any
+                    // Resumed subscribers observe the same recovery the managed
+                    // suspend flag just got. Failure here must not sink the whole
+                    // session start.
+                    try
+                    {
+                        NativeMethods.AndroidOnResume();
+                        RaiseSafely(Resumed, nameof(Resumed));
+                    }
+                    catch (Exception ex)
+                    {
+                        LogCallbackFailure("dropped resume replay", ex);
+                    }
+                }
 
                 if (stagedWindow != nint.Zero)
                 {
@@ -269,6 +395,10 @@ public static class AndroidActivityBridge
             if (surfaceGeneration != 0)
                 s_surfaceDestroyPendingGeneration = surfaceGeneration;
         }
+
+        // No packet from the retiring Activity/dispatcher may be replayed into
+        // a replacement application generation.
+        ResetTouchInputQueue();
 
         try
         {
@@ -382,6 +512,7 @@ public static class AndroidActivityBridge
             s_surfaceActivityGeneration = 0;
             s_surfaceDestroyPendingGeneration = 0;
         }
+        ResetTouchInputQueue();
     }
 
     /// <summary>
@@ -399,6 +530,7 @@ public static class AndroidActivityBridge
             s_startEligibleActivityGeneration = 0;
             s_startReservedActivityGeneration = 0;
         }
+        ResetTouchInputQueue();
         s_stoppingDetachCompleted.Set();
     }
 
@@ -452,7 +584,11 @@ public static class AndroidActivityBridge
         }
     }
 
-    private static bool DispatchToUi(Action callback, bool synchronous)
+    private static bool DispatchToUi(
+        Action callback,
+        bool synchronous,
+        DispatcherPriority asynchronousPriority = DispatcherPriority.Normal,
+        bool alwaysPost = false)
     {
         Dispatcher? dispatcher = null;
         DispatcherOperation? operation = null;
@@ -491,7 +627,7 @@ public static class AndroidActivityBridge
             if (dispatcher == null || dispatcher.HasShutdownStarted)
                 return false;
 
-            if (dispatcher.CheckAccess())
+            if (dispatcher.CheckAccess() && !alwaysPost)
             {
                 invokeDirect = true;
             }
@@ -502,7 +638,7 @@ public static class AndroidActivityBridge
                     // State validation and enqueue are one lifecycle transaction.
                     // MarkStopped cannot publish a dead dispatcher between them.
                     operation = dispatcher.BeginInvoke(
-                        synchronous ? DispatcherPriority.Send : DispatcherPriority.Normal,
+                        synchronous ? DispatcherPriority.Send : asynchronousPriority,
                         GuardedCallback);
                 }
                 catch (Exception ex)
@@ -718,7 +854,7 @@ public static class AndroidActivityBridge
 
     private static bool OnNativeWindowCreatedCore(
         nint nativeWindow, int width, int height, long activityGeneration,
-        bool retryRunningStage)
+        bool retryRunningStage, bool abortIfSurfaceAttached = false)
     {
         if (nativeWindow == nint.Zero)
         {
@@ -753,6 +889,18 @@ public static class AndroidActivityBridge
                     previousWindow = s_nativeWindow;
                     previousGeneration = s_surfaceActivityGeneration;
                     destroyPending = s_surfaceDestroyPendingGeneration != 0;
+                }
+
+                if (abortIfSurfaceAttached && previousWindow != nint.Zero)
+                {
+                    // Failed-attach replay only: the cleanup path had cleared
+                    // the owner record, so a non-zero owner here means a newer
+                    // surfaceChanged attached (or re-attached) a Surface while
+                    // the replay was pending. A stale replay must never tear
+                    // down that healthy Surface via the replacement path below.
+                    Console.Error.WriteLine(
+                        "[AndroidActivityBridge] Surface attach retry abandoned: a Surface is already attached.");
+                    return;
                 }
 
                 var window = Application.Current?.MainWindow;
@@ -806,6 +954,7 @@ public static class AndroidActivityBridge
 
                     if (cleanupDetached)
                     {
+                        bool cleanupReleased = false;
                         try
                         {
                             NativeMethods.AndroidSetNativeWindow(nint.Zero, 0, 0);
@@ -815,12 +964,26 @@ public static class AndroidActivityBridge
                                 s_surfaceActivityGeneration = 0;
                                 s_surfaceDestroyPendingGeneration = 0;
                             }
+                            cleanupReleased = true;
                         }
                         catch (Exception cleanupEx)
                         {
                             // Native ownership did not confirm release. Preserve
                             // the managed owner record and keep rendering gated.
                             LogCallbackFailure("failed native surface attach cleanup", cleanupEx);
+                        }
+
+                        if (cleanupReleased)
+                        {
+                            // The Surface callback is consumed and the render
+                            // gate is closed (_androidSurfaceAvailable false),
+                            // which also blocks OnFrameStarting's frame-clock
+                            // render-target recovery. Without a replay the app
+                            // stays black until the next surfaceChanged — which
+                            // may never arrive. Schedule a bounded, delayed
+                            // replay of this attach.
+                            ScheduleFailedAttachRetry(
+                                nativeWindow, width, height, activityGeneration);
                         }
                     }
                     return;
@@ -832,6 +995,10 @@ public static class AndroidActivityBridge
                     s_surfaceActivityGeneration = activityGeneration;
                     s_surfaceDestroyPendingGeneration = 0;
                     s_uiThreadActivityGeneration = activityGeneration;
+                    // A completed attach voids any pending failed-attach replay
+                    // budget: the next failure (if any) starts a fresh run.
+                    s_attachRetryActivityGeneration = 0;
+                    s_attachRetryCount = 0;
                     accepted = true;
                 }
 
@@ -875,12 +1042,132 @@ public static class AndroidActivityBridge
                 {
                     return OnNativeWindowCreatedCore(
                         nativeWindow, width, height, activityGeneration,
-                        retryRunningStage: false);
+                        retryRunningStage: false,
+                        abortIfSurfaceAttached: abortIfSurfaceAttached);
                 }
             }
         }
 
         return accepted;
+    }
+
+    /// <summary>
+    /// Schedules a bounded, delayed replay of a Surface attach that failed
+    /// mid-transaction while the dispatcher stayed Running. The cleanup path
+    /// has already consumed the Surface callback and closed the render gate,
+    /// so nothing else re-attempts the attach; the frame-clock recovery in
+    /// Window.OnFrameStarting is deliberately gated on the very availability
+    /// flag that the cleanup lowered. At most
+    /// <see cref="MaxAttachRetryAttempts"/> replays run per Activity
+    /// generation; a successful attach (this replay's or any newer
+    /// surfaceChanged's) voids the budget.
+    /// </summary>
+    private static void ScheduleFailedAttachRetry(
+        nint nativeWindow, int width, int height, long activityGeneration)
+    {
+        int attempt;
+        lock (s_lifecycleGate)
+        {
+            if (activityGeneration == 0 || activityGeneration != s_activeActivityGeneration)
+            {
+                return;
+            }
+
+            if (s_attachRetryActivityGeneration != activityGeneration)
+            {
+                s_attachRetryActivityGeneration = activityGeneration;
+                s_attachRetryCount = 0;
+            }
+
+            if (s_attachRetryCount >= MaxAttachRetryAttempts)
+            {
+                Console.Error.WriteLine(
+                    $"[AndroidActivityBridge] Surface attach still failing after {MaxAttachRetryAttempts} retries (activity generation {activityGeneration}); giving up, awaiting next surfaceChanged.");
+                return;
+            }
+
+            attempt = ++s_attachRetryCount;
+        }
+
+        // Hold our own ANativeWindow reference across the delay. The cleanup
+        // path just told native to release ITS reference and the bridge's
+        // direct attach path never takes one of its own, so without an acquire
+        // here the pointer could be freed (surfaceDestroyed) before the replay
+        // runs. This call site is still inside the failing attach transaction —
+        // either the synchronous surfaceChanged dispatch (Android's main thread
+        // is blocked in DispatchToUi, pinning the Surface) or MarkUiThreadReady's
+        // staged-consumption block (the staged acquire is released only in its
+        // finally) — so the acquire target is provably alive.
+        try
+        {
+            ANativeWindowAcquire(nativeWindow);
+        }
+        catch (Exception ex)
+        {
+            LogCallbackFailure("surface attach retry acquire", ex);
+            return;
+        }
+
+        Console.Error.WriteLine(
+            $"[AndroidActivityBridge] Scheduling surface attach retry {attempt}/{MaxAttachRetryAttempts} in {AttachRetryDelayMs} ms (activity generation {activityGeneration}).");
+
+        // Dedicated short-lived thread instead of a timer: every timer flavour
+        // bottoms out in the thread pool, which must be assumed starvable here
+        // (the same reason Window.OnFrameStarting grew a frame-clock recovery).
+        // The replay re-enters OnNativeWindowCreatedCore, whose synchronous
+        // DispatchToUi marshals onto the Jalium UI thread exactly like the
+        // original Android-main-thread caller.
+        var retryThread = new Thread(() =>
+        {
+            try
+            {
+                Thread.Sleep(AttachRetryDelayMs);
+
+                lock (s_lifecycleGate)
+                {
+                    if (activityGeneration != s_activeActivityGeneration)
+                    {
+                        Console.Error.WriteLine(
+                            $"[AndroidActivityBridge] Surface attach retry {attempt}/{MaxAttachRetryAttempts} abandoned: activity generation {activityGeneration} superseded.");
+                        return;
+                    }
+
+                    if (s_nativeWindow != nint.Zero || s_stagedNativeWindow != nint.Zero)
+                    {
+                        // A newer surfaceChanged already delivered a healthy
+                        // Surface (attached or staged for the next dispatcher);
+                        // replaying the failed one would tear it down or
+                        // displace it. abortIfSurfaceAttached below closes the
+                        // remaining race window on the attach side.
+                        Console.Error.WriteLine(
+                            $"[AndroidActivityBridge] Surface attach retry {attempt}/{MaxAttachRetryAttempts} abandoned: a replacement Surface is already present.");
+                        return;
+                    }
+                }
+
+                bool attached = OnNativeWindowCreatedCore(
+                    nativeWindow, width, height, activityGeneration,
+                    retryRunningStage: true, abortIfSurfaceAttached: true);
+                Console.Error.WriteLine(
+                    $"[AndroidActivityBridge] Surface attach retry {attempt}/{MaxAttachRetryAttempts} {(attached ? "succeeded" : "failed")} (activity generation {activityGeneration}).");
+                // On failure the replay's own attach-cleanup path has already
+                // chained the next ScheduleFailedAttachRetry or logged the
+                // terminal give-up; nothing more to do here.
+            }
+            catch (Exception ex)
+            {
+                LogCallbackFailure("surface attach retry", ex);
+            }
+            finally
+            {
+                ANativeWindowReleaseSafely(nativeWindow, "surface attach retry reference");
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "JaliumSurfaceAttachRetry",
+        };
+        retryThread.Start();
     }
 
     /// <summary>
@@ -1065,11 +1352,30 @@ public static class AndroidActivityBridge
 
     public static void OnResume(long activityGeneration)
     {
-        DispatchCurrentActivity(activityGeneration, () =>
+        bool dispatched = DispatchCurrentActivity(activityGeneration, () =>
         {
             NativeMethods.AndroidOnResume();
             RaiseSafely(Resumed, nameof(Resumed));
         }, synchronous: false);
+
+        if (dispatched)
+        {
+            return;
+        }
+
+        // The dispatcher was stopping or mid-replacement, so this resume was
+        // silently dropped. A pause that DID land has no counterpart then:
+        // rendering stays suspended into the next UI-thread generation and no
+        // later callback resets it. Park the resume for MarkUiThreadReady —
+        // but only while this Activity is still the current one (a stale
+        // generation's resume belongs to an Activity that already lost).
+        lock (s_lifecycleGate)
+        {
+            if (activityGeneration == s_activeActivityGeneration)
+            {
+                s_pendingResumeReplay = true;
+            }
+        }
     }
 
     /// <summary>Called when the activity is being destroyed.</summary>
@@ -1089,18 +1395,18 @@ public static class AndroidActivityBridge
         }, synchronous: true);
     }
 
-    private static void DispatchCurrentActivity(
+    private static bool DispatchCurrentActivity(
         long activityGeneration, Action callback, bool synchronous)
     {
         lock (s_lifecycleGate)
         {
             if (activityGeneration == 0 || activityGeneration != s_activeActivityGeneration)
             {
-                return;
+                return false;
             }
         }
 
-        DispatchToUi(() =>
+        return DispatchToUi(() =>
         {
             lock (s_lifecycleGate)
             {
@@ -1275,12 +1581,108 @@ public static class AndroidActivityBridge
     /// <param name="modifiers">Modifier key flags.</param>
     public static void InjectTouch(int pointerId, float x, float y, float pressure,
         int action, int pointerType, int modifiers)
+        => InjectTouch(
+            pointerId, x, y, pressure, action, pointerType, modifiers,
+            Environment.TickCount64);
+
+    /// <summary>
+    /// Injects a timestamped Android touch/pointer event into the Jalium input pipeline.
+    /// </summary>
+    /// <param name="eventTimeMillis">Android monotonic MotionEvent.EventTime in milliseconds.</param>
+    public static void InjectTouch(int pointerId, float x, float y, float pressure,
+        int action, int pointerType, int modifiers, long eventTimeMillis)
     {
-        if (!s_initialized) return;
-        _ = DispatchToUi(
-            () => NativeMethods.AndroidInjectTouch(
-                pointerId, x, y, pressure, action, pointerType, modifiers),
-            synchronous: false);
+        if (!s_initialized || (uint)action > 3u)
+            return;
+
+        bool scheduleDrain;
+        lock (s_touchInputGate)
+        {
+            s_touchInputQueue.Enqueue(new AndroidTouchInput(
+                pointerId, x, y, pressure, action, pointerType, modifiers,
+                eventTimeMillis));
+            scheduleDrain = !s_touchDrainScheduled;
+            if (scheduleDrain)
+                s_touchDrainScheduled = true;
+        }
+
+        if (scheduleDrain && !ScheduleTouchInputDrain())
+            ResetTouchInputQueue();
+    }
+
+    private static bool ScheduleTouchInputDrain()
+        => DispatchToUi(
+            DrainTouchInputQueue,
+            synchronous: false,
+            asynchronousPriority: DispatcherPriority.Normal,
+            alwaysPost: true);
+
+    private static void DrainTouchInputQueue()
+    {
+        int budget;
+        lock (s_touchInputGate)
+        {
+            budget = s_touchInputQueue.Count;
+            if (budget == 0)
+            {
+                s_touchDrainScheduled = false;
+                return;
+            }
+        }
+
+        // Process only the snapshot that existed when this dispatcher turn
+        // began. If input keeps arriving, queue one Normal-priority continuation.
+        // Frame callbacks use the same priority, so FIFO ordering lets a frame
+        // already in the dispatcher run before the next input batch.
+        while (budget-- > 0)
+        {
+            AndroidTouchInput input;
+            lock (s_touchInputGate)
+            {
+                if (!s_touchInputQueue.TryDequeue(out input))
+                    break;
+            }
+
+            try
+            {
+                NativeMethods.AndroidInjectTouch(
+                    input.PointerId,
+                    input.X,
+                    input.Y,
+                    input.Pressure,
+                    input.Action,
+                    input.PointerType,
+                    input.Modifiers,
+                    input.EventTimeMillis);
+            }
+            catch (Exception ex)
+            {
+                LogCallbackFailure("touch input injection", ex);
+            }
+        }
+
+        bool continueDrain;
+        lock (s_touchInputGate)
+        {
+            continueDrain = s_touchInputQueue.Count != 0;
+            if (!continueDrain)
+                s_touchDrainScheduled = false;
+        }
+
+        // Keep the single-flight latch set while posting the continuation.
+        // Producers can only update/append queue nodes; they never post a
+        // second drain operation while this one is in flight.
+        if (continueDrain && !ScheduleTouchInputDrain())
+            ResetTouchInputQueue();
+    }
+
+    private static void ResetTouchInputQueue()
+    {
+        lock (s_touchInputGate)
+        {
+            s_touchInputQueue.Clear();
+            s_touchDrainScheduled = false;
+        }
     }
 
     /// <summary>
@@ -1311,6 +1713,115 @@ public static class AndroidActivityBridge
         if (!s_initialized) return;
         _ = DispatchToUi(
             () => NativeMethods.AndroidInjectChar(codepoint),
+            synchronous: false);
+    }
+
+    // ========================================================================
+    // Soft Keyboard (IME) — Android system on-screen keyboard integration
+    // ========================================================================
+
+    /// <summary>
+    /// Registers (or clears with <see langword="null"/>) the controller that
+    /// drives the Android system soft keyboard. Called by the Android entry
+    /// package (<c>JaliumActivity</c>) once its Activity and text-input view
+    /// exist, and cleared on Activity destroy.
+    /// </summary>
+    public static void SetSoftKeyboardController(IAndroidSoftKeyboardController? controller)
+    {
+        lock (s_lifecycleGate)
+        {
+            s_softKeyboardController = controller;
+        }
+    }
+
+    /// <summary>
+    /// Pushes a new IME state toward the system soft keyboard. Invoked on the
+    /// Jalium UI thread by <see cref="Window"/>; the controller is responsible
+    /// for marshalling onto the Android main thread before touching any View or
+    /// InputMethodManager state.
+    /// </summary>
+    internal static void UpdateSoftKeyboard(AndroidImeState state)
+    {
+        IAndroidSoftKeyboardController? controller;
+        lock (s_lifecycleGate)
+        {
+            controller = s_softKeyboardController;
+        }
+
+        try
+        {
+            controller?.UpdateImeState(state);
+        }
+        catch (Exception ex)
+        {
+            LogCallbackFailure("soft keyboard update", ex);
+        }
+    }
+
+    /// <summary>Gets whether a soft-keyboard controller is currently registered.</summary>
+    internal static bool HasSoftKeyboardController
+    {
+        get { lock (s_lifecycleGate) { return s_softKeyboardController != null; } }
+    }
+
+    /// <summary>
+    /// Injects IME composition (pre-edit / underlined) text from the input
+    /// connection into the focused editor. Enables Chinese/CJK predictive input.
+    /// </summary>
+    /// <param name="compositionText">The current composition string.</param>
+    /// <param name="caretOffset">Caret offset within the composition string.</param>
+    public static void InjectImeComposition(string compositionText, int caretOffset)
+    {
+        if (!s_initialized) return;
+        string text = compositionText ?? string.Empty;
+        _ = DispatchToUi(
+            () => (Application.Current?.MainWindow)?.InjectAndroidImeComposition(text, caretOffset),
+            synchronous: false);
+    }
+
+    /// <summary>
+    /// Commits final text from the input connection, ending any active
+    /// composition first.
+    /// </summary>
+    public static void InjectImeCommit(string text)
+    {
+        if (!s_initialized) return;
+        string value = text ?? string.Empty;
+        _ = DispatchToUi(
+            () => (Application.Current?.MainWindow)?.InjectAndroidImeCommit(value),
+            synchronous: false);
+    }
+
+    /// <summary>Finishes composition, committing the current pre-edit text as-is.</summary>
+    public static void InjectImeFinishComposing()
+    {
+        if (!s_initialized) return;
+        _ = DispatchToUi(
+            () => (Application.Current?.MainWindow)?.InjectAndroidImeFinishComposing(),
+            synchronous: false);
+    }
+
+    /// <summary>
+    /// Deletes text around the cursor as requested by the IME. Counts are
+    /// UTF-16 code units (Android <c>InputConnection.deleteSurroundingText</c>).
+    /// </summary>
+    public static void InjectImeDeleteSurrounding(int beforeChars, int afterChars)
+    {
+        if (!s_initialized) return;
+        _ = DispatchToUi(
+            () => (Application.Current?.MainWindow)?.InjectAndroidImeDeleteSurrounding(beforeChars, afterChars),
+            synchronous: false);
+    }
+
+    /// <summary>
+    /// Runs the on-screen keyboard's action key (Next/Done/Search/Go/Send/…) on
+    /// the focused editor — advancing focus or submitting as appropriate.
+    /// </summary>
+    public static void InjectImeEditorAction(TextInputReturnKeyType action)
+    {
+        if (!s_initialized) return;
+        _ = DispatchToUi(
+            () => (Application.Current?.MainWindow)?.InjectAndroidImeEditorAction(action),
             synchronous: false);
     }
 

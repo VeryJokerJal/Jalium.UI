@@ -38,12 +38,18 @@ public class Separator : Control
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
     /// <summary>
-    /// Identifies the StrokeThickness dependency property.
+    /// Identifies the StrokeThickness dependency property. The value must be a
+    /// non-negative finite number (NaN is not a valid thickness): MeasureOverride
+    /// feeds it straight into the desired <see cref="Size"/>, whose constructor
+    /// rejects negative dimensions.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty StrokeThicknessProperty =
         DependencyProperty.Register(nameof(StrokeThickness), typeof(double), typeof(Separator),
-            new PropertyMetadata(1.0, OnLayoutPropertyChanged));
+            new PropertyMetadata(1.0, OnLayoutPropertyChanged), IsStrokeThicknessValid);
+
+    private static bool IsStrokeThicknessValid(object? value)
+        => value is double v && !double.IsNaN(v) && v >= 0.0 && !double.IsPositiveInfinity(v);
 
     #endregion
 

@@ -201,7 +201,9 @@ public class QRCode : Control
 
         if (_symbol == null)
         {
-            return new Size(chromeWidth, chromeHeight);
+            // Negative BorderThickness/Padding are legal; the Size constructor is
+            // not — clamp here and at the sized return below.
+            return new Size(Math.Max(0, chromeWidth), Math.Max(0, chromeHeight));
         }
 
         var idealSide = Math.Max(96, TotalModuleCount * 4);
@@ -231,7 +233,7 @@ public class QRCode : Control
         }
 
         side = Math.Max(TotalModuleCount, side);
-        return new Size(side + chromeWidth, side + chromeHeight);
+        return new Size(Math.Max(0, side + chromeWidth), Math.Max(0, side + chromeHeight));
     }
 
     /// <inheritdoc />

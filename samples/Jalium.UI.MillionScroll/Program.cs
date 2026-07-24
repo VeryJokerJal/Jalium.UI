@@ -1,8 +1,11 @@
 using System.Collections;
+using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Data;
+using Jalium.UI.Diagnostics;
 using Jalium.UI.Hosting;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -18,43 +21,92 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        var renderContext = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
-        renderContext.DefaultRenderingEngine = RenderingEngine.Impeller;
+        var options = MillionScrollRunOptions.Parse(args, DefaultRowCount);
+        var renderContext = RenderContext.GetOrCreateCurrent(options.Backend);
+        renderContext.DefaultRenderingEngine = options.Engine;
 
-        var rowCount = ReadRowCount(args, DefaultRowCount);
         var builder = AppBuilder.CreateBuilder(args);
-        builder.ConfigureApplication(app => app.MainWindow = MillionScrollWindow.Build(rowCount));
+        builder.ConfigureApplication(app => app.MainWindow = MillionScrollWindow.Build(
+            options, renderContext.Backend, renderContext.DefaultRenderingEngine));
 
         using var host = builder.Build();
         host.UseDeveloperTools();
         return host.Run();
     }
 
-    private static int ReadRowCount(string[] args, int fallback)
+}
+
+internal sealed record MillionScrollRunOptions(
+    int Rows,
+    RenderBackend Backend,
+    RenderingEngine Engine,
+    double BenchmarkSeconds,
+    double WarmupSeconds,
+    double ScrollSpeed,
+    string? OutputPath)
+{
+    public bool BenchmarkEnabled => BenchmarkSeconds > 0;
+
+    public static MillionScrollRunOptions Parse(string[] args, int defaultRows)
+    {
+        var rows = ParseInt(ReadOption(args, "--rows"), defaultRows, 1, 10_000_000);
+        var backend = ParseBackend(ReadOption(args, "--backend"));
+        var engine = ParseEngine(ReadOption(args, "--engine"));
+        var seconds = ParseDouble(ReadOption(args, "--benchmark-seconds"), 0, 0, 3_600);
+        var warmup = ParseDouble(ReadOption(args, "--warmup-seconds"), 2, 0, 300);
+        var speed = ParseDouble(ReadOption(args, "--speed"), 120, 1, 10_000);
+        var output = ReadOption(args, "--output");
+        if (seconds > 0 && string.IsNullOrWhiteSpace(output))
+        {
+            output = "million-scroll-benchmark.json";
+        }
+
+        return new MillionScrollRunOptions(rows, backend, engine, seconds, warmup, speed, output);
+    }
+
+    private static string? ReadOption(string[] args, string name)
     {
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
-            if (arg.StartsWith("--rows=", StringComparison.OrdinalIgnoreCase))
+            if (arg.StartsWith(name + "=", StringComparison.OrdinalIgnoreCase))
             {
-                return ClampRows(arg["--rows=".Length..], fallback);
+                return arg[(name.Length + 1)..];
             }
 
-            if (string.Equals(arg, "--rows", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            if (string.Equals(arg, name, StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
             {
-                return ClampRows(args[i + 1], fallback);
+                return args[i + 1];
             }
         }
 
-        return fallback;
+        return null;
     }
 
-    private static int ClampRows(string value, int fallback)
-    {
-        return int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
-            ? Math.Clamp(parsed, 1, 10_000_000)
+    private static int ParseInt(string? value, int fallback, int min, int max) =>
+        int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed)
+            ? Math.Clamp(parsed, min, max)
             : fallback;
-    }
+
+    private static double ParseDouble(string? value, double fallback, double min, double max) =>
+        double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) && double.IsFinite(parsed)
+            ? Math.Clamp(parsed, min, max)
+            : fallback;
+
+    private static RenderBackend ParseBackend(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "d3d12" or "dx12" => RenderBackend.D3D12,
+        "vulkan" or "vk" => RenderBackend.Vulkan,
+        "software" or "cpu" => RenderBackend.Software,
+        _ => RenderBackend.Auto,
+    };
+
+    private static RenderingEngine ParseEngine(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "vello" => RenderingEngine.Vello,
+        "impeller" => RenderingEngine.Impeller,
+        _ => RenderingEngine.Impeller,
+    };
 }
 
 internal sealed class MillionScrollWindow
@@ -75,20 +127,44 @@ internal sealed class MillionScrollWindow
     private readonly TextBlock _selectedText = MutedText("");
     private readonly DispatcherTimer _autoScrollTimer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly DispatcherTimer _hudTimer = new() { Interval = TimeSpan.FromMilliseconds(180) };
+    private readonly DispatcherTimer _benchmarkTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private readonly MillionScrollRunOptions _options;
+    private readonly RenderBackend _actualBackend;
+    private readonly RenderingEngine _actualEngine;
+    private readonly Stopwatch _benchmarkClock = new();
+    private readonly List<FrameHistory.Sample> _benchmarkSamples = [];
+    private readonly FrameHistory.Sample[] _historyBuffer = new FrameHistory.Sample[FrameHistory.Capacity];
 
     private ScrollViewer? _scrollViewer;
+    private Window? _window;
     private Button? _autoButton;
     private int _rowCount;
     private bool _autoScrollEnabled;
+    private bool _benchmarkStarted;
+    private bool _benchmarkMeasuring;
+    private long _lastCollectedFrame;
+    private long _benchmarkStartMemory;
+    private long _benchmarkStartAllocatedBytes;
+    private readonly int[] _benchmarkStartGc = new int[3];
+    private DateTimeOffset _measurementStartedUtc;
 
-    private MillionScrollWindow(int rowCount)
+    private MillionScrollWindow(
+        MillionScrollRunOptions options,
+        RenderBackend actualBackend,
+        RenderingEngine actualEngine)
     {
-        _rowCount = rowCount;
+        _options = options;
+        _actualBackend = actualBackend;
+        _actualEngine = actualEngine;
+        _rowCount = options.Rows;
     }
 
-    public static Window Build(int rowCount)
+    public static Window Build(
+        MillionScrollRunOptions options,
+        RenderBackend actualBackend,
+        RenderingEngine actualEngine)
     {
-        var controller = new MillionScrollWindow(rowCount);
+        var controller = new MillionScrollWindow(options, actualBackend, actualEngine);
         return controller.BuildWindow();
     }
 
@@ -102,6 +178,7 @@ internal sealed class MillionScrollWindow
             WindowStartupLocation = WindowStartupLocation.CenterScreen,
             Background = Solid(18, 22, 24),
         };
+        _window = window;
 
         _listBox.ItemsSource = new MillionRowSource(_rowCount);
         _listBox.ItemTemplate = CreateRowTemplate();
@@ -115,6 +192,7 @@ internal sealed class MillionScrollWindow
         {
             _scrollViewer = FindDescendant<ScrollViewer>(_listBox);
             RefreshHud();
+            StartBenchmarkIfRequested();
         };
         _listBox.SelectionChanged += (_, _) => UpdateSelectionText();
 
@@ -134,6 +212,7 @@ internal sealed class MillionScrollWindow
 
         _autoScrollTimer.Tick += (_, _) => TickAutoScroll();
         _hudTimer.Tick += (_, _) => RefreshHud();
+        _benchmarkTimer.Tick += (_, _) => TickBenchmark();
         _hudTimer.Start();
 
         return window;
@@ -158,7 +237,7 @@ internal sealed class MillionScrollWindow
 
         stack.Children.Add(new TextBlock
         {
-            Text = "D3D12 data run",
+            Text = $"{_actualBackend} / {_actualEngine}",
             FontSize = 13,
             Foreground = Solid(146, 158, 151),
         });
@@ -186,10 +265,11 @@ internal sealed class MillionScrollWindow
         stack.Children.Add(jumpRow);
 
         _speedSlider.Minimum = 1;
-        _speedSlider.Maximum = 240;
-        _speedSlider.Value = 40;
+        _speedSlider.Maximum = 10_000;
+        _speedSlider.Value = _options.BenchmarkEnabled ? _options.ScrollSpeed : 40;
         _speedSlider.Height = 34;
         _speedSlider.ValueChanged += (_, _) => UpdateSpeedText();
+        UpdateSpeedText();
 
         var speedPanel = new StackPanel { Orientation = Orientation.Vertical, Spacing = 6 };
         speedPanel.Children.Add(InlineLabel("Auto speed", _speedValueText));
@@ -398,6 +478,209 @@ internal sealed class MillionScrollWindow
 
         var next = scroller.VerticalOffset + Math.Max(1, _speedSlider.Value);
         scroller.ScrollToVerticalOffset(next >= scroller.ScrollableHeight ? 0 : next);
+    }
+
+    private void StartBenchmarkIfRequested()
+    {
+        if (!_options.BenchmarkEnabled || _benchmarkStarted || _window == null)
+        {
+            return;
+        }
+
+        _benchmarkStarted = true;
+        _autoScrollEnabled = true;
+        SetButtonText(_autoButton, "Stop auto scroll");
+        _autoScrollTimer.Start();
+        _benchmarkClock.Restart();
+        _benchmarkTimer.Start();
+
+        if (_options.WarmupSeconds <= 0)
+        {
+            BeginBenchmarkMeasurement();
+        }
+    }
+
+    private void TickBenchmark()
+    {
+        if (!_benchmarkMeasuring)
+        {
+            if (_benchmarkClock.Elapsed.TotalSeconds >= _options.WarmupSeconds)
+            {
+                BeginBenchmarkMeasurement();
+            }
+            return;
+        }
+
+        CollectBenchmarkSamples();
+        if (_benchmarkClock.Elapsed.TotalSeconds >= _options.BenchmarkSeconds)
+        {
+            FinishBenchmark();
+        }
+    }
+
+    private void BeginBenchmarkMeasurement()
+    {
+        if (_window == null || _benchmarkMeasuring)
+        {
+            return;
+        }
+
+        _benchmarkSamples.Clear();
+        _window.FrameHistory.Clear();
+        _lastCollectedFrame = 0;
+        _benchmarkStartMemory = GC.GetTotalMemory(false);
+        _benchmarkStartAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
+        for (var generation = 0; generation < _benchmarkStartGc.Length; generation++)
+        {
+            _benchmarkStartGc[generation] = GC.CollectionCount(generation);
+        }
+        _measurementStartedUtc = DateTimeOffset.UtcNow;
+        _benchmarkMeasuring = true;
+        _benchmarkClock.Restart();
+    }
+
+    private void CollectBenchmarkSamples()
+    {
+        if (_window == null)
+        {
+            return;
+        }
+
+        var history = _window.FrameHistory;
+        var totalFrames = history.TotalFrames;
+        var copied = history.CopyTo(_historyBuffer);
+        var newFrameCount = Math.Clamp(totalFrames - _lastCollectedFrame, 0, copied);
+        var first = copied - (int)newFrameCount;
+        for (var i = first; i < copied; i++)
+        {
+            _benchmarkSamples.Add(_historyBuffer[i]);
+        }
+        _lastCollectedFrame = totalFrames;
+    }
+
+    private void FinishBenchmark()
+    {
+        if (_window == null || !_benchmarkMeasuring)
+        {
+            return;
+        }
+
+        CollectBenchmarkSamples();
+        _benchmarkMeasuring = false;
+        _benchmarkTimer.Stop();
+        _autoScrollTimer.Stop();
+        _hudTimer.Stop();
+
+        var elapsedSeconds = Math.Max(0.001, _benchmarkClock.Elapsed.TotalSeconds);
+        var frameCount = _window.FrameHistory.TotalFrames;
+        var sampleCount = _benchmarkSamples.Count;
+        var third = Math.Max(1, sampleCount / 3);
+        var earlyMedian = Percentile(_benchmarkSamples, 0, Math.Min(third, sampleCount), 0.50, static sample => sample.TotalMs);
+        var lateStart = Math.Max(0, sampleCount - third);
+        var lateMedian = Percentile(_benchmarkSamples, lateStart, sampleCount - lateStart, 0.50, static sample => sample.TotalMs);
+        var trendPercent = earlyMedian > 0 ? (lateMedian - earlyMedian) * 100.0 / earlyMedian : 0;
+        var endMemory = GC.GetTotalMemory(false);
+        var endAllocatedBytes = GC.GetTotalAllocatedBytes(precise: false);
+        var benchmarkGcCollections = new int[_benchmarkStartGc.Length];
+        for (var generation = 0; generation < benchmarkGcCollections.Length; generation++)
+        {
+            benchmarkGcCollections[generation] = GC.CollectionCount(generation) - _benchmarkStartGc[generation];
+        }
+
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: true);
+        var retainedMemory = GC.GetTotalMemory(false);
+
+        var result = new
+        {
+            schemaVersion = 2,
+            startedUtc = _measurementStartedUtc,
+            backend = _actualBackend.ToString(),
+            engine = _actualEngine.ToString(),
+            rows = _rowCount,
+            scrollSpeedPixelsPerTick = _speedSlider.Value,
+            warmupSeconds = _options.WarmupSeconds,
+            elapsedSeconds,
+            renderedFrames = frameCount,
+            capturedSamples = sampleCount,
+            framesPerSecond = frameCount / elapsedSeconds,
+            frameMs = Distribution(_benchmarkSamples, static sample => sample.TotalMs),
+            layoutMs = Distribution(_benchmarkSamples, static sample => sample.LayoutMs),
+            renderMs = Distribution(_benchmarkSamples, static sample => sample.RenderMs),
+            presentMs = Distribution(_benchmarkSamples, static sample => sample.PresentMs),
+            trend = new
+            {
+                earlyMedianMs = earlyMedian,
+                lateMedianMs = lateMedian,
+                changePercent = trendPercent,
+            },
+            managedMemory = new
+            {
+                startBytes = _benchmarkStartMemory,
+                endBytes = endMemory,
+                deltaBytes = endMemory - _benchmarkStartMemory,
+                retainedAfterFullCollectionBytes = retainedMemory,
+                retainedDeltaBytes = retainedMemory - _benchmarkStartMemory,
+                allocatedBytes = endAllocatedBytes - _benchmarkStartAllocatedBytes,
+            },
+            gcCollections = new
+            {
+                gen0 = benchmarkGcCollections[0],
+                gen1 = benchmarkGcCollections[1],
+                gen2 = benchmarkGcCollections[2],
+            },
+            realizedContainers = _listBox.Host?.Children.Count ?? 0,
+            finalVerticalOffset = GetScrollViewer()?.VerticalOffset ?? 0,
+        };
+
+        try
+        {
+            var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+            var outputPath = Path.GetFullPath(_options.OutputPath ?? "million-scroll-benchmark.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+            File.WriteAllText(outputPath, json);
+            Console.WriteLine(json);
+            Console.WriteLine($"[MillionScroll] benchmark written to {outputPath}");
+            Application.Current?.Shutdown(sampleCount > 0 ? 0 : 2);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[MillionScroll] failed to write benchmark: {ex}");
+            Application.Current?.Shutdown(2);
+        }
+    }
+
+    private static object Distribution(
+        IReadOnlyList<FrameHistory.Sample> samples,
+        Func<FrameHistory.Sample, double> selector) => new
+    {
+        p50 = Percentile(samples, 0, samples.Count, 0.50, selector),
+        p95 = Percentile(samples, 0, samples.Count, 0.95, selector),
+        p99 = Percentile(samples, 0, samples.Count, 0.99, selector),
+        max = Percentile(samples, 0, samples.Count, 1.00, selector),
+    };
+
+    private static double Percentile(
+        IReadOnlyList<FrameHistory.Sample> samples,
+        int start,
+        int count,
+        double percentile,
+        Func<FrameHistory.Sample, double> selector)
+    {
+        if (count <= 0)
+        {
+            return 0;
+        }
+
+        var values = new double[count];
+        for (var i = 0; i < count; i++)
+        {
+            values[i] = selector(samples[start + i]);
+        }
+        Array.Sort(values);
+        var index = (int)Math.Ceiling(Math.Clamp(percentile, 0, 1) * values.Length) - 1;
+        return values[Math.Clamp(index, 0, values.Length - 1)];
     }
 
     private void RefreshHud()

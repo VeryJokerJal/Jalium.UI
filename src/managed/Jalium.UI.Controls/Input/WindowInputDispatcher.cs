@@ -107,10 +107,16 @@ internal sealed class WindowInputDispatcher
             _host.RequestTrackMouseLeave();
         }
 
-        // If an element has captured the mouse, it receives all mouse events
-        // Otherwise, find the target element via hit testing
-        UIElement? hitElement = _host.HitTestElement(position, "mouse-move");
-        if (Mouse.Captured is null && hitElement == _host.OverlayLayer && _host.OverlayLayer.HasLightDismissPopups)
+        // A Thumb owns direct capture for the whole drag. Hit testing here used to force every
+        // pending virtualized layout synchronously (EnsureLayoutValidForInput) before the move
+        // could reach the Thumb, multiplying one layout per physical mouse sample. Preserve the
+        // last hover target while captured and route directly; the first move after release
+        // refreshes hover normally.
+        var capturedThumb = Mouse.Captured as Primitives.Thumb;
+        UIElement? hitElement = capturedThumb != null
+            ? _lastMouseOverElement ?? UIElement.MouseDirectlyOverElement
+            : _host.HitTestElement(position, "mouse-move");
+        if (capturedThumb == null && hitElement == _host.OverlayLayer && _host.OverlayLayer.HasLightDismissPopups)
         {
             var topLevelMenuItem = HitTopLevelMenuItemBehindOverlay(position);
             if (topLevelMenuItem != null)
@@ -120,13 +126,16 @@ internal sealed class WindowInputDispatcher
         }
         // InputBlocked subtree (designer host etc.): redirect hit to the blocked ancestor itself,
         // so descendant controls never receive routed input events.
-        hitElement = RedirectInputBlocked(hitElement);
+        if (capturedThumb == null)
+        {
+            hitElement = RedirectInputBlocked(hitElement);
+        }
         Mouse.UpdateState(position, hitElement, buttons);
-        var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
+        var target = (UIElement?)capturedThumb ?? Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
         // Track mouse over state and raise MouseEnter/MouseLeave events
         var newMouseOverElement = hitElement;
-        if (newMouseOverElement != _lastMouseOverElement)
+        if (capturedThumb == null && newMouseOverElement != _lastMouseOverElement)
         {
             if (_lastMouseOverElement != null)
                 RaiseMouseLeaveChain(_lastMouseOverElement, newMouseOverElement, timestamp);
@@ -179,7 +188,7 @@ internal sealed class WindowInputDispatcher
             Mouse.SetCursor(overrideCursor);
             _host.SetPlatformCursor((int)overrideCursor.CursorType);
         }
-        else if (hitElement is FrameworkElement fe)
+        else if ((capturedThumb ?? hitElement) is FrameworkElement fe)
         {
             if (!fe.IsEnabled)
             {
@@ -361,21 +370,32 @@ internal sealed class WindowInputDispatcher
             return;
         }
 
-        var hitElement = _host.HitTestElement(position, "mouse-up");
-        hitElement = RedirectInputBlocked(hitElement);
-        UpdateMouseOverState(hitElement, timestamp);
+        // Release must reach a captured Thumb without first forcing an outstanding layout. That
+        // guarantees capture is dropped promptly even when the dragged viewport still has work
+        // queued, so the next click cannot appear to be ignored.
+        var capturedThumb = Mouse.Captured as Primitives.Thumb;
+        var hitElement = capturedThumb != null
+            ? _lastMouseOverElement ?? UIElement.MouseDirectlyOverElement
+            : RedirectInputBlocked(_host.HitTestElement(position, "mouse-up"));
+        if (capturedThumb == null)
+        {
+            UpdateMouseOverState(hitElement, timestamp);
+        }
         Mouse.UpdateState(position, hitElement, buttons);
-        Mouse.RaiseOutsideCapturedElementEvent(
-            false,
-            hitElement,
-            position,
-            button,
-            MouseButtonState.Released,
-            1,
-            buttons,
-            modifiers,
-            timestamp);
-        var target = Mouse.GetMouseTarget(hitElement) ?? _host.Self;
+        if (capturedThumb == null)
+        {
+            Mouse.RaiseOutsideCapturedElementEvent(
+                false,
+                hitElement,
+                position,
+                button,
+                MouseButtonState.Released,
+                1,
+                buttons,
+                modifiers,
+                timestamp);
+        }
+        var target = (UIElement?)capturedThumb ?? Mouse.GetMouseTarget(hitElement) ?? _host.Self;
 
         var currentState = MouseButtonState.Released;
 

@@ -116,6 +116,29 @@ public class ScrollBarThemeResourceTests
         }
     }
 
+    [Fact]
+    public void ScrollBar_ThumbInteractionBrushes_ShouldHaveDistinctContrast()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var normal = Assert.IsType<SolidColorBrush>(app.Resources["ScrollBarThumb"]);
+            var hover = Assert.IsType<SolidColorBrush>(app.Resources["ScrollBarThumbHover"]);
+            var active = Assert.IsType<SolidColorBrush>(app.Resources["ScrollBarThumbActive"]);
+
+            Assert.NotEqual(normal.Color, hover.Color);
+            Assert.NotEqual(hover.Color, active.Color);
+            Assert.NotEqual(normal.Color, active.Color);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
     private static Brush InvokePrivateBrushResolver(ScrollBar scrollBar, string methodName)
     {
         var method = typeof(ScrollBar).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);

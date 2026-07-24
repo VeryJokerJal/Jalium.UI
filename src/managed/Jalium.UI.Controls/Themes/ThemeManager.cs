@@ -34,7 +34,6 @@ public sealed class BrandThemeOptions
 /// </summary>
 public static class ThemeManager
 {
-    private const string ThemeRefreshVersionKey = "__ThemeManager.Version";
     private const string XamlAssemblyName = "Jalium.UI.Xaml";
     private const string ThemeLoaderTypeName = "Jalium.UI.Markup.ThemeLoader";
     private const string DesktopAssemblyName = "Jalium.UI.Desktop";
@@ -47,6 +46,16 @@ public static class ThemeManager
     private static ResourceDictionary? _accentDictionary;
     private static ResourceDictionary? _typographyDictionary;
     private static bool _suppressRefresh;
+
+    /// <summary>
+    /// Per-type cache for <see cref="ResolveThemeStyle"/>. Style-stack re-evaluation runs
+    /// for every element on tree attach and resource changes, so the resolver must be cheap;
+    /// entries are invalidated whenever the generic theme dictionary instance is replaced.
+    /// Published snapshots are never mutated, so the very hot read path is lock-free. Misses and
+    /// invalidation copy/publish under the write gate.
+    /// </summary>
+    private static readonly object _themeStyleCacheWriteGate = new();
+    private static Dictionary<Type, Style?> _themeStyleCache = new();
 
     /// <summary>
     /// Default brand primary accent (forest emerald, midpoint of the
@@ -63,6 +72,64 @@ public static class ThemeManager
     /// The resource name of the Generic theme file.
     /// </summary>
     public const string GenericThemeResourceName = "Jalium.UI.Controls.Themes.Generic.jalxaml";
+
+    static ThemeManager()
+    {
+        // Give Core a way to resolve theme default styles (the bottom layer of every
+        // element's style stack) without referencing the theme dictionaries directly.
+        // Registered in the static constructor so it is in place before any element
+        // evaluates its style stack; while no theme is loaded it just returns null.
+        FrameworkElement.ThemeStyleResolver = ResolveThemeStyle;
+        SystemParameters.StaticPropertyChanged += OnSystemParametersChanged;
+    }
+
+    /// <summary>
+    /// Resolves the theme default style for an exact element type from the generic
+    /// theme dictionary (the base-type walk happens in FrameworkElement).
+    /// </summary>
+    private static Style? ResolveThemeStyle(Type type)
+    {
+        var dictionary = _genericThemeDictionary;
+        if (dictionary == null)
+            return null;
+
+        var snapshot = Volatile.Read(ref _themeStyleCache);
+        if (snapshot.TryGetValue(type, out var cached))
+        {
+            return cached;
+        }
+
+        var style = dictionary.TryGetValue(type, out var value) ? value as Style : null;
+
+        lock (_themeStyleCacheWriteGate)
+        {
+            snapshot = Volatile.Read(ref _themeStyleCache);
+            if (snapshot.TryGetValue(type, out cached))
+            {
+                return cached;
+            }
+
+            var next = new Dictionary<Type, Style?>(snapshot)
+            {
+                [type] = style
+            };
+            Volatile.Write(ref _themeStyleCache, next);
+        }
+
+        return style;
+    }
+
+    /// <summary>
+    /// Drops all cached theme-style resolutions. Must be called whenever the generic
+    /// theme dictionary instance changes (theme swap, refresh, test reset).
+    /// </summary>
+    private static void InvalidateThemeStyleCache()
+    {
+        lock (_themeStyleCacheWriteGate)
+        {
+            Volatile.Write(ref _themeStyleCache, new Dictionary<Type, Style?>());
+        }
+    }
 
     /// <summary>
     /// Delegate for loading XAML content from a stream.
@@ -98,12 +165,12 @@ public static class ThemeManager
     /// <summary>
     /// Gets the current display font family.
     /// </summary>
-    public static string CurrentDisplayFontFamily { get; private set; } = "Segoe UI";
+    public static string CurrentDisplayFontFamily { get; private set; } = FrameworkElement.DefaultFontFamilyName;
 
     /// <summary>
     /// Gets the current body font family.
     /// </summary>
-    public static string CurrentBodyFontFamily { get; private set; } = "Segoe UI";
+    public static string CurrentBodyFontFamily { get; private set; } = FrameworkElement.DefaultFontFamilyName;
 
     /// <summary>
     /// Gets the current monospace font family.
@@ -135,7 +202,7 @@ public static class ThemeManager
         var previousApplication = _application;
         _application = app;
         SyncThemeFromCurrentThemeKey();
-        ResourceDictionary.CurrentThemeKey = CurrentTheme.ToString();
+        ResourceDictionary.CurrentThemeKey = GetEffectiveThemeKey();
 
         if (_initialized)
         {
@@ -181,6 +248,7 @@ public static class ThemeManager
         }
 
         _genericThemeDictionary = LoadGenericTheme();
+        InvalidateThemeStyleCache();
         if (_genericThemeDictionary != null)
         {
             Jalium.UI.Diagnostics.ResourceDictionaryDiagnostics.RegisterGenericResourceDictionary(
@@ -196,7 +264,9 @@ public static class ThemeManager
         app.Resources.MergedDictionaries.Add(_typographyDictionary);
 
         _initialized = true;
-        ForceThemeRefresh();
+        // Adding the managed dictionaries above already raises the normal resource change
+        // notification for any live root. Only detached/unshown bindings need completion.
+        ForceThemeRefresh(notifyLiveRoots: false);
     }
 
     /// <summary>
@@ -223,40 +293,33 @@ public static class ThemeManager
     /// </summary>
     public static void ApplyTheme(ThemeVariant theme)
     {
+        var themeChanged = CurrentTheme != theme;
         CurrentTheme = theme;
-        ResourceDictionary.CurrentThemeKey = theme.ToString();
 
-        if (_application != null)
+        var effectiveThemeKey = GetEffectiveThemeKey();
+        var themeKeyChanged = !Equals(ResourceDictionary.CurrentThemeKey, effectiveThemeKey);
+        if (!themeChanged && !themeKeyChanged)
         {
-            // The generic + accent swaps each mutate Application.Resources.MergedDictionaries and
-            // would otherwise fire an independent whole-tree resource broadcast — two full
-            // implicit-style re-evaluations across every live window and popup for one theme
-            // switch. Coalesce them into a single clean broadcast. Because ReplaceManagedDictionary
-            // publishes the backing fields (_genericThemeDictionary / _accentDictionary)
-            // synchronously, both are already in place when the one deferred notification fires on
-            // scope exit, honoring the "fields before collection" theme publish-order invariant
-            // instead of relying on the accent swap's second broadcast to correct a stale read.
-            using var notifications = _application.Resources.DeferNotifications();
-
-            var refreshedGeneric = LoadGenericTheme();
-            if (refreshedGeneric != null)
-            {
-                if (_genericThemeDictionary != null)
-                {
-                    Jalium.UI.Diagnostics.ResourceDictionaryDiagnostics.UnregisterGenericResourceDictionary(
-                        _genericThemeDictionary);
-                }
-
-                Jalium.UI.Diagnostics.ResourceDictionaryDiagnostics.RegisterGenericResourceDictionary(
-                    refreshedGeneric);
-                ReplaceManagedDictionary(ref _genericThemeDictionary, refreshedGeneric);
-            }
-
-            // Accent derived resources depend on current theme (notably disabled variants).
-            ReplaceManagedDictionary(ref _accentDictionary, BuildAccentDictionary(CurrentAccentColor));
+            return;
         }
 
-        ForceThemeRefresh();
+        // High contrast is an accessibility override. Remember the requested light/dark
+        // variant underneath it, but keep the active dictionary on HighContrast until the
+        // operating-system preference is released.
+        ResourceDictionary.CurrentThemeKey = effectiveThemeKey;
+
+        // Generic.jalxaml is structurally invariant across variants: its control styles and
+        // templates use ThemeResource for every palette-dependent value. Rebuilding that large
+        // dictionary used to allocate a second complete template graph, trigger a whole-window
+        // implicit-style walk, tear down live templates, and then refresh the same dynamic
+        // resources again. Keep the immutable structure and switch only the ThemeDictionaries
+        // lookup key. The accent dictionary also contains both variants, so this is now a
+        // single allocation-free resource sweep.
+        ForceThemeRefresh(notifyLiveRoots: true);
+        if (_application != null)
+        {
+            CompositionTarget.RequestImmediateFrame();
+        }
     }
 
     /// <summary>
@@ -270,7 +333,8 @@ public static class ThemeManager
             return;
 
         ReplaceManagedDictionary(ref _accentDictionary, BuildAccentDictionary(accent));
-        ForceThemeRefresh();
+        // The dictionary replacement already notified every live root.
+        ForceThemeRefresh(notifyLiveRoots: false);
     }
 
     /// <summary>
@@ -286,8 +350,8 @@ public static class ThemeManager
     /// </summary>
     public static void ApplyTypography(string display, string body, string mono, double bodyFontSize)
     {
-        CurrentDisplayFontFamily = NormalizeFontFamily(display, "Segoe UI");
-        CurrentBodyFontFamily = NormalizeFontFamily(body, "Segoe UI");
+        CurrentDisplayFontFamily = NormalizeFontFamily(display, FrameworkElement.DefaultFontFamilyName);
+        CurrentBodyFontFamily = NormalizeFontFamily(body, FrameworkElement.DefaultFontFamilyName);
         CurrentMonospaceFontFamily = NormalizeFontFamily(mono, "Cascadia Code");
         CurrentBodyFontSize = bodyFontSize > 0 ? bodyFontSize : FrameworkElement.DefaultFontSize;
 
@@ -298,7 +362,8 @@ public static class ThemeManager
             ref _typographyDictionary,
             BuildTypographyDictionary(CurrentDisplayFontFamily, CurrentBodyFontFamily, CurrentMonospaceFontFamily, CurrentBodyFontSize));
 
-        ForceThemeRefresh();
+        // The dictionary replacement already notified every live root.
+        ForceThemeRefresh(notifyLiveRoots: false);
     }
 
     /// <summary>
@@ -311,15 +376,10 @@ public static class ThemeManager
         _suppressRefresh = true;
         try
         {
-            // ApplyTheme + ApplyAccent + ApplyTypography swap up to four managed dictionaries.
-            // _suppressRefresh already folds their DynamicResource RefreshAll passes into the
-            // single ForceThemeRefresh below; this outer DeferNotifications does the same for the
-            // implicit-style broadcast so the whole brand-theme application re-evaluates every
-            // live window/popup subtree exactly once instead of four times. Deferrals are
-            // reference-counted, so the inner scope ApplyTheme opens nests under this one and only
-            // the outermost dispose raises the coalesced notification — by which point every theme
-            // field (CurrentTheme / CurrentAccentColor / typography plus the dictionary fields) has
-            // already been published.
+            // Accent and typography replace managed dictionaries. Fold those mutations into one
+            // implicit-style broadcast so every live root is re-evaluated exactly once. ApplyTheme
+            // only changes the active ThemeDictionary key; _suppressRefresh folds its lightweight
+            // palette walk into the same coalesced dictionary notification.
             using var notifications = _application?.Resources.DeferNotifications();
 
             ApplyTheme(options.Theme);
@@ -334,7 +394,8 @@ public static class ThemeManager
             _suppressRefresh = false;
         }
 
-        ForceThemeRefresh();
+        // Disposing the outer resource deferral already notified every live root once.
+        ForceThemeRefresh(notifyLiveRoots: false);
     }
 
     /// <summary>
@@ -447,11 +508,12 @@ public static class ThemeManager
         _typographyDictionary = null;
         _themeVersion = 0;
         _suppressRefresh = false;
+        InvalidateThemeStyleCache();
 
         CurrentTheme = ThemeVariant.Dark;
         CurrentAccentColor = DefaultPrimaryAccentColor;
-        CurrentDisplayFontFamily = "Segoe UI";
-        CurrentBodyFontFamily = "Segoe UI";
+        CurrentDisplayFontFamily = FrameworkElement.DefaultFontFamilyName;
+        CurrentBodyFontFamily = FrameworkElement.DefaultFontFamilyName;
         CurrentMonospaceFontFamily = "Cascadia Code";
         CurrentBodyFontSize = FrameworkElement.DefaultFontSize;
 
@@ -519,15 +581,29 @@ public static class ThemeManager
         }
     }
 
-    private static void ForceThemeRefresh()
+    private static void ForceThemeRefresh(bool notifyLiveRoots)
     {
         if (_application == null || _suppressRefresh)
             return;
 
-        DynamicResourceBindingOperations.RefreshAll();
+        if (notifyLiveRoots)
+        {
+            // CurrentThemeKey can change without mutating a dictionary. Publish one lightweight
+            // palette notification: dynamic bindings and manual resource caches update, and
+            // retained drawings are re-recorded, while styles/templates/layout remain intact.
+            _application.NotifyThemeResourcesChanged();
+        }
+        else
+        {
+            // A preceding dictionary mutation already performed the live-root broadcast.
+            ResourceLookup.InvalidateResourceCache();
+        }
+
+        // Detached and not-yet-shown trees are outside every live-root walk. Refresh only those
+        // registrations instead of sweeping the loaded tree a second time.
+        DynamicResourceBindingOperations.RefreshUnloaded();
 
         _themeVersion++;
-        _application.Resources[ThemeRefreshVersionKey] = _themeVersion;
     }
 
     private static ResourceDictionary BuildAccentDictionary(Color accent)
@@ -559,19 +635,8 @@ public static class ThemeManager
             brush.GradientStops.Add(new GradientStop(end, 1));
             return brush;
         }
-        var disabledBlendTarget = CurrentTheme == ThemeVariant.Dark
-            ? Color.FromRgb(0x66, 0x66, 0x66)
-            : Color.FromRgb(0xB8, 0xB8, 0xB8);
-        var disabled = Blend(accent, disabledBlendTarget, 0.58);
         var selection = Color.FromArgb(0x99, accent.R, accent.G, accent.B);
         var weakSelection = Color.FromArgb(0x4D, accent.R, accent.G, accent.B);
-        var accentFillDefault = CurrentTheme == ThemeVariant.Dark ? light2 : dark1;
-        var accentFillSecondary = Color.FromArgb(0xE6, accentFillDefault.R, accentFillDefault.G, accentFillDefault.B);
-        var accentFillTertiary = Color.FromArgb(0xCC, accentFillDefault.R, accentFillDefault.G, accentFillDefault.B);
-        var accentTextPrimary = CurrentTheme == ThemeVariant.Dark ? light3 : dark2;
-        var accentTextSecondary = CurrentTheme == ThemeVariant.Dark ? light3 : dark3;
-        var accentTextTertiary = CurrentTheme == ThemeVariant.Dark ? light2 : dark1;
-        var systemFillAttention = CurrentTheme == ThemeVariant.Dark ? light2 : accent;
 
         var dictionary = new ResourceDictionary
         {
@@ -582,34 +647,14 @@ public static class ThemeManager
             ["SystemAccentColorDark1"] = dark1,
             ["SystemAccentColorDark2"] = dark2,
             ["SystemAccentColorDark3"] = dark3,
-            ["AccentTextFillColorPrimary"] = accentTextPrimary,
-            ["AccentTextFillColorSecondary"] = accentTextSecondary,
-            ["AccentTextFillColorTertiary"] = accentTextTertiary,
-            ["AccentTextFillColorDisabled"] = disabled,
-            ["AccentFillColorDefault"] = accentFillDefault,
-            ["AccentFillColorSecondary"] = accentFillSecondary,
-            ["AccentFillColorTertiary"] = accentFillTertiary,
-            ["AccentFillColorDisabled"] = disabled,
             ["AccentFillColorSelectedTextBackground"] = accent,
-            ["SystemFillColorAttention"] = systemFillAttention,
             ["AccentBrush"] = Gradient(accent),
             ["AccentBrushHover"] = Gradient(hover),
             ["AccentBrushPressed"] = Gradient(pressed),
-            ["AccentBrushDisabled"] = Gradient(disabled),
-            ["AccentTextFillColorPrimaryBrush"] = new SolidColorBrush(accentTextPrimary),
-            ["AccentTextFillColorSecondaryBrush"] = new SolidColorBrush(accentTextSecondary),
-            ["AccentTextFillColorTertiaryBrush"] = new SolidColorBrush(accentTextTertiary),
-            ["AccentTextFillColorDisabledBrush"] = new SolidColorBrush(disabled),
-            ["AccentFillColorDefaultBrush"] = new SolidColorBrush(accentFillDefault),
-            ["AccentFillColorSecondaryBrush"] = new SolidColorBrush(accentFillSecondary),
-            ["AccentFillColorTertiaryBrush"] = new SolidColorBrush(accentFillTertiary),
-            ["AccentFillColorDisabledBrush"] = new SolidColorBrush(disabled),
             ["AccentFillColorSelectedTextBackgroundBrush"] = new SolidColorBrush(accent),
-            ["SystemFillColorAttentionBrush"] = new SolidColorBrush(systemFillAttention),
             ["SelectionBackground"] = new SolidColorBrush(selection),
             ["SelectionBackgroundWeak"] = new SolidColorBrush(weakSelection),
             ["AppBarButtonForeground"] = new SolidColorBrush(accent),
-            ["AppBarButtonForegroundDisabled"] = new SolidColorBrush(disabled),
             ["ProgressRingForeground"] = new SolidColorBrush(accent),
             ["BrandPrimaryAccentBrush"] = new SolidColorBrush(accent),
             ["BrandSecondaryAccentBrush"] = new SolidColorBrush(DefaultSecondaryAccentColor),
@@ -617,7 +662,110 @@ public static class ThemeManager
             ["BrandSecondaryAccentColor"] = DefaultSecondaryAccentColor
         };
 
+        dictionary.ThemeDictionaries[ThemeVariant.Dark.ToString()] = BuildVariant(ThemeVariant.Dark);
+        dictionary.ThemeDictionaries[ThemeVariant.Light.ToString()] = BuildVariant(ThemeVariant.Light);
+        dictionary.ThemeDictionaries["HighContrast"] = BuildHighContrastVariant();
+
         return dictionary;
+
+        ResourceDictionary BuildVariant(ThemeVariant theme)
+        {
+            var darkTheme = theme == ThemeVariant.Dark;
+            var disabledBlendTarget = darkTheme
+                ? Color.FromRgb(0x66, 0x66, 0x66)
+                : Color.FromRgb(0xB8, 0xB8, 0xB8);
+            var disabled = Blend(accent, disabledBlendTarget, 0.58);
+            var accentFillDefault = darkTheme ? light2 : dark1;
+            var accentFillSecondary = Color.FromArgb(
+                0xE6,
+                accentFillDefault.R,
+                accentFillDefault.G,
+                accentFillDefault.B);
+            var accentFillTertiary = Color.FromArgb(
+                0xCC,
+                accentFillDefault.R,
+                accentFillDefault.G,
+                accentFillDefault.B);
+            var accentTextPrimary = darkTheme ? light3 : dark2;
+            var accentTextSecondary = darkTheme ? light3 : dark3;
+            var accentTextTertiary = darkTheme ? light2 : dark1;
+            var systemFillAttention = darkTheme ? light2 : accent;
+
+            return new ResourceDictionary
+            {
+                ["AccentTextFillColorPrimary"] = accentTextPrimary,
+                ["AccentTextFillColorSecondary"] = accentTextSecondary,
+                ["AccentTextFillColorTertiary"] = accentTextTertiary,
+                ["AccentTextFillColorDisabled"] = disabled,
+                ["AccentFillColorDefault"] = accentFillDefault,
+                ["AccentFillColorSecondary"] = accentFillSecondary,
+                ["AccentFillColorTertiary"] = accentFillTertiary,
+                ["AccentFillColorDisabled"] = disabled,
+                ["SystemFillColorAttention"] = systemFillAttention,
+                ["AccentBrushDisabled"] = Gradient(disabled),
+                ["AccentTextFillColorPrimaryBrush"] = new SolidColorBrush(accentTextPrimary),
+                ["AccentTextFillColorSecondaryBrush"] = new SolidColorBrush(accentTextSecondary),
+                ["AccentTextFillColorTertiaryBrush"] = new SolidColorBrush(accentTextTertiary),
+                ["AccentTextFillColorDisabledBrush"] = new SolidColorBrush(disabled),
+                ["AccentFillColorDefaultBrush"] = new SolidColorBrush(accentFillDefault),
+                ["AccentFillColorSecondaryBrush"] = new SolidColorBrush(accentFillSecondary),
+                ["AccentFillColorTertiaryBrush"] = new SolidColorBrush(accentFillTertiary),
+                ["AccentFillColorDisabledBrush"] = new SolidColorBrush(disabled),
+                ["SystemFillColorAttentionBrush"] = new SolidColorBrush(systemFillAttention),
+                ["AppBarButtonForegroundDisabled"] = new SolidColorBrush(disabled),
+            };
+        }
+
+        static ResourceDictionary BuildHighContrastVariant()
+        {
+            var accentColor = Color.FromRgb(0xFF, 0xFF, 0x00);
+            var pressedColor = Color.White;
+            var disabledColor = Color.FromRgb(0x7F, 0x7F, 0x7F);
+            var onAccentColor = Color.Black;
+
+            return new ResourceDictionary
+            {
+                ["SystemAccentColor"] = accentColor,
+                ["SystemAccentColorLight1"] = accentColor,
+                ["SystemAccentColorLight2"] = accentColor,
+                ["SystemAccentColorLight3"] = accentColor,
+                ["SystemAccentColorDark1"] = accentColor,
+                ["SystemAccentColorDark2"] = accentColor,
+                ["SystemAccentColorDark3"] = accentColor,
+                ["AccentTextFillColorPrimary"] = accentColor,
+                ["AccentTextFillColorSecondary"] = accentColor,
+                ["AccentTextFillColorTertiary"] = accentColor,
+                ["AccentTextFillColorDisabled"] = disabledColor,
+                ["AccentFillColorDefault"] = accentColor,
+                ["AccentFillColorSecondary"] = accentColor,
+                ["AccentFillColorTertiary"] = accentColor,
+                ["AccentFillColorDisabled"] = disabledColor,
+                ["AccentFillColorSelectedTextBackground"] = accentColor,
+                ["SystemFillColorAttention"] = accentColor,
+                ["AccentBrush"] = new SolidColorBrush(accentColor),
+                ["AccentBrushHover"] = new SolidColorBrush(accentColor),
+                ["AccentBrushPressed"] = new SolidColorBrush(pressedColor),
+                ["AccentBrushDisabled"] = new SolidColorBrush(disabledColor),
+                ["AccentTextFillColorPrimaryBrush"] = new SolidColorBrush(accentColor),
+                ["AccentTextFillColorSecondaryBrush"] = new SolidColorBrush(accentColor),
+                ["AccentTextFillColorTertiaryBrush"] = new SolidColorBrush(accentColor),
+                ["AccentTextFillColorDisabledBrush"] = new SolidColorBrush(disabledColor),
+                ["AccentFillColorDefaultBrush"] = new SolidColorBrush(accentColor),
+                ["AccentFillColorSecondaryBrush"] = new SolidColorBrush(accentColor),
+                ["AccentFillColorTertiaryBrush"] = new SolidColorBrush(accentColor),
+                ["AccentFillColorDisabledBrush"] = new SolidColorBrush(disabledColor),
+                ["AccentFillColorSelectedTextBackgroundBrush"] = new SolidColorBrush(accentColor),
+                ["SystemFillColorAttentionBrush"] = new SolidColorBrush(accentColor),
+                ["SelectionBackground"] = new SolidColorBrush(accentColor),
+                ["SelectionBackgroundWeak"] = new SolidColorBrush(accentColor),
+                ["AppBarButtonForeground"] = new SolidColorBrush(accentColor),
+                ["AppBarButtonForegroundDisabled"] = new SolidColorBrush(disabledColor),
+                ["ProgressRingForeground"] = new SolidColorBrush(accentColor),
+                ["BrandPrimaryAccentBrush"] = new SolidColorBrush(accentColor),
+                ["BrandPrimaryAccentColor"] = accentColor,
+                ["TextOnAccent"] = new SolidColorBrush(onAccentColor),
+            };
+        }
     }
 
     private static ResourceDictionary BuildTypographyDictionary(string display, string body, string mono, double bodyFontSize)
@@ -741,6 +889,34 @@ public static class ThemeManager
         }
         catch (Exception)
         {
+        }
+    }
+
+    private static string GetEffectiveThemeKey()
+        => SystemParameters.HighContrast ? "HighContrast" : CurrentTheme.ToString();
+
+    private static void OnSystemParametersChanged(
+        object? sender,
+        System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (!string.IsNullOrEmpty(e.PropertyName) &&
+            !string.Equals(e.PropertyName, nameof(SystemParameters.HighContrast), StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var effectiveThemeKey = GetEffectiveThemeKey();
+        if (Equals(ResourceDictionary.CurrentThemeKey, effectiveThemeKey))
+        {
+            return;
+        }
+
+        ResourceDictionary.CurrentThemeKey = effectiveThemeKey;
+        ForceThemeRefresh(notifyLiveRoots: true);
+
+        if (_application != null)
+        {
+            CompositionTarget.RequestImmediateFrame();
         }
     }
 

@@ -648,6 +648,15 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             new PropertyMetadata(false, OnClipToBoundsChanged));
 
     /// <summary>
+    /// Identifies the ClipToBoundsEdges dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    public static readonly DependencyProperty ClipToBoundsEdgesProperty =
+        DependencyProperty.Register(nameof(ClipToBoundsEdges), typeof(ClipEdges), typeof(UIElement),
+            new PropertyMetadata(ClipEdges.All, OnClipToBoundsChanged),
+            IsValidClipToBoundsEdges);
+
+    /// <summary>
     /// Identifies the Clip dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
@@ -881,6 +890,21 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     }
 
     /// <summary>
+    /// Gets or sets the edges used when <see cref="ClipToBounds"/> is enabled.
+    /// </summary>
+    /// <remarks>
+    /// The default is <see cref="ClipEdges.All"/>, which preserves the existing
+    /// four-sided <see cref="ClipToBounds"/> behavior. This property is ignored
+    /// when <see cref="ClipToBounds"/> is <see langword="false"/>.
+    /// </remarks>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public ClipEdges ClipToBoundsEdges
+    {
+        get => (ClipEdges)GetValue(ClipToBoundsEdgesProperty)!;
+        set => SetValue(ClipToBoundsEdgesProperty, value);
+    }
+
+    /// <summary>
     /// Gets or sets the geometry used to define the outline of the contents of an element.
     /// The Clip geometry is applied to the element's rendering.
     /// </summary>
@@ -1110,6 +1134,10 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     protected Size _renderSize;
     private bool _isMeasureValid;
     private bool _isArrangeValid;
+    // 从未真正跑过 MeasureCore（Collapsed 短路测量不算）。Arrange 的 measure-dirty
+    // 守卫用它决定补测约束：测过用 _previousAvailableSize，从未测过时该字段还是
+    // default(0,0)，必须改用本次槽尺寸。对应 WPF 的 NeverMeasured。
+    private bool _neverMeasured = true;
     private Size _previousAvailableSize;
     private Rect _previousFinalRect;
     private IWindowHost? _cachedWindowHost;
@@ -1191,7 +1219,8 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// <summary>
     /// Returns a geometry for clipping the contents of this element.
     /// Override in derived classes to provide custom clipping (e.g., ScrollViewer).
-    /// When ClipToBounds is true, returns a RectangleGeometry matching the element's RenderSize.
+    /// When ClipToBounds is true, returns a RectangleGeometry matching the selected
+    /// <see cref="ClipToBoundsEdges"/> of the element's RenderSize.
     /// </summary>
     /// <returns>The clipping geometry, or null if no clipping should be applied.</returns>
     internal virtual Geometry? GetLayoutClip()
@@ -1201,11 +1230,82 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (clip != null)
             return clip;
 
-        if (ClipToBounds)
+        if (ClipToBounds && ClipToBoundsEdges != ClipEdges.None)
         {
-            return new RectangleGeometry(new Rect(0, 0, _renderSize.Width, _renderSize.Height));
+            var bounds = new Rect(0, 0, _renderSize.Width, _renderSize.Height);
+            return new RectangleGeometry(ExpandBoundsClip(bounds, ClipToBoundsEdges))
+            {
+                BoundsClipEdges = ClipToBoundsEdges,
+                BoundsClipRect = bounds
+            };
         }
         return null;
+    }
+
+    // Rect cannot encode an open side. Generic drawing contexts and layout/cull
+    // queries receive this finite half-plane approximation; the native drawing
+    // context uses BoundsClipRect metadata to resolve open sides against the
+    // current viewport before converting coordinates to float.
+    internal const double UnboundedClipExtent = 1.0e9;
+
+    /// <summary>
+    /// Expands the sides not selected by <paramref name="edges"/> so the returned
+    /// rectangle clips only the selected sides.
+    /// </summary>
+    internal static Rect ExpandBoundsClip(Rect bounds, ClipEdges edges)
+    {
+        if (bounds.IsEmpty || edges == ClipEdges.All)
+        {
+            return bounds;
+        }
+
+        var left = (edges & ClipEdges.Left) != 0
+            ? bounds.Left
+            : bounds.Left - UnboundedClipExtent;
+        var top = (edges & ClipEdges.Top) != 0
+            ? bounds.Top
+            : bounds.Top - UnboundedClipExtent;
+        var right = (edges & ClipEdges.Right) != 0
+            ? bounds.Right
+            : bounds.Right + UnboundedClipExtent;
+        var bottom = (edges & ClipEdges.Bottom) != 0
+            ? bounds.Bottom
+            : bounds.Bottom + UnboundedClipExtent;
+
+        return new Rect(left, top, right - left, bottom - top);
+    }
+
+    /// <summary>
+    /// Removes corner radii whose two adjoining edges are not both clipped.
+    /// </summary>
+    internal static CornerRadius MaskClipCornerRadius(CornerRadius radius, ClipEdges edges)
+    {
+        if (edges == ClipEdges.All)
+        {
+            return radius;
+        }
+
+        return new CornerRadius(
+            (edges & (ClipEdges.Left | ClipEdges.Top)) == (ClipEdges.Left | ClipEdges.Top)
+                ? radius.TopLeft : 0,
+            (edges & (ClipEdges.Top | ClipEdges.Right)) == (ClipEdges.Top | ClipEdges.Right)
+                ? radius.TopRight : 0,
+            (edges & (ClipEdges.Right | ClipEdges.Bottom)) == (ClipEdges.Right | ClipEdges.Bottom)
+                ? radius.BottomRight : 0,
+            (edges & (ClipEdges.Bottom | ClipEdges.Left)) == (ClipEdges.Bottom | ClipEdges.Left)
+                ? radius.BottomLeft : 0);
+    }
+
+    /// <summary>
+    /// Tests the selected bounds edges without allocating a clip geometry.
+    /// </summary>
+    internal bool IsPointInsideClipToBoundsEdges(Point point, Rect bounds)
+    {
+        var edges = ClipToBoundsEdges;
+        return ((edges & ClipEdges.Left) == 0 || point.X >= bounds.Left) &&
+               ((edges & ClipEdges.Top) == 0 || point.Y >= bounds.Top) &&
+               ((edges & ClipEdges.Right) == 0 || point.X <= bounds.Right) &&
+               ((edges & ClipEdges.Bottom) == 0 || point.Y <= bounds.Bottom);
     }
 
     /// <summary>
@@ -1847,8 +1947,25 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
                     // outer box here: larger-and-safe for round corners; identical to the render clip
                     // for Border's inset since RenderDirect pushes the same GetLayoutClip geometry.
                     var b = clip.Bounds;
+                    if (b.IsEmpty || b.Width <= 0 || b.Height <= 0 ||
+                        !double.IsFinite(b.X) || !double.IsFinite(b.Y) ||
+                        !double.IsFinite(b.Width) || !double.IsFinite(b.Height))
+                    {
+                        // An empty/degenerate clip is a valid transient result while a control's
+                        // inner box collapses during layout. It cannot be reconstructed through
+                        // Rect's public constructor (Rect.Empty uses negative-infinity extents),
+                        // and is not a safe basis for dirty-region culling. Fall back to full
+                        // registration, matching the existing zero-area policy below.
+                        return false;
+                    }
+
                     var o = ui.GetScreenBounds(); // ancestor screen origin (chain proven clean above)
-                    var screenClip = new Rect(o.X + b.X, o.Y + b.Y, b.Width, b.Height);
+                    var screenX = o.X + b.X;
+                    var screenY = o.Y + b.Y;
+                    if (o.IsEmpty || !double.IsFinite(screenX) || !double.IsFinite(screenY))
+                        return false;
+
+                    var screenClip = new Rect(screenX, screenY, b.Width, b.Height);
                     clipBounds = found ? Rect.Intersect(clipBounds, screenClip) : screenClip;
                     found = true;
                 }
@@ -1890,6 +2007,14 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (Visibility == Visibility.Collapsed)
         {
             _desiredSize = default;
+            // 仍然记下父级本次尝试的约束（WPF 的 Collapsed 分支同样如此）。这个字段的语义
+            // 是"上次父级给的约束"，不是"上次真正测量用的约束"：Arrange 的 measure-dirty
+            // 守卫和 LayoutManager 都拿它当补测约束，不记就会在 Collapsed→Visible 之后回退到
+            // 元素最后一次以 Visible 身份被测量时的陈旧约束——例如窗口变矮后 ScrollBar 转回
+            // 可见，会用早已不存在的旧高度把整棵模板子树白测一遍。
+            // 不会造成下面 bypass 误命中：Collapsed 期间恒在此 return、走不到那里；而
+            // Collapsed→Visible 必经 OnVisibilityChanged→InvalidateMeasure 清掉 _isMeasureValid。
+            _previousAvailableSize = availableSize;
             _isMeasureValid = true;
             return;
         }
@@ -1900,6 +2025,7 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
         var oldDesiredSize = _desiredSize;
         _previousAvailableSize = availableSize;
+        _neverMeasured = false;
 
         bool trace = LayoutDiagnostics.IsRecording;
         long startTicks = trace ? Stopwatch.GetTimestamp() : 0;
@@ -1943,9 +2069,71 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             return;
         }
 
+        // WPF 式 measure-dirty 守卫：父级可以在子级 measure 失效时直接 Arrange——模板
+        // 在 measure pass 之外被急切重建（Control.OnTemplateChanged 主题切换）、
+        // LayoutManager 同迭代内 measure 队列排干后元素又被 InvalidateMeasure、上一轮
+        // 布局异常弹出丢掉已排干的 measure 项而 arrange 队列保留。带着过期 DesiredSize
+        // 进 ArrangeCore 正是 desired-margin 负尺寸崩溃的源头，先补跑 Measure：测过用
+        // 上次真实约束；从未测过用槽尺寸（同尺寸 Measure+Arrange 语义等于"按槽定尺寸"，
+        // 与 WPF 一致）。本库 measure 失效必然连带 arrange 失效（InvalidateMeasure /
+        // MarkMeasureInvalid 双清），所以守卫放在 arrange-valid 短路之前不改变热路径。
+        if (!_isMeasureValid || _neverMeasured)
+        {
+            Measure(_neverMeasured ? finalRect.Size : _previousAvailableSize);
+        }
+
         // Short-circuit: if arrange is already valid and final rect hasn't changed, skip
         if (_isArrangeValid && _previousFinalRect == finalRect)
             return;
+
+        // A ScrollViewer moves non-IScrollInfo content by changing only the
+        // parent's arrange origin. When every size/alignment input is unchanged,
+        // rerunning ArrangeCore would recursively arrange the entire subtree even
+        // though its local geometry is identical. Translate the existing parent-
+        // space bounds instead and keep the retained drawing cache intact.
+        if (_isArrangeValid &&
+            _hasArrangedOnce &&
+            this is FrameworkElement translatedElement &&
+            !translatedElement.UseLayoutRounding &&
+            _desiredSize == _previousDesiredSize &&
+            finalRect.Width == _previousFinalRect.Width &&
+            finalRect.Height == _previousFinalRect.Height)
+        {
+            double deltaX = finalRect.X - _previousFinalRect.X;
+            double deltaY = finalRect.Y - _previousFinalRect.Y;
+            if (deltaX != 0 || deltaY != 0)
+            {
+                Rect translationOldDirtyBounds = GetDirtyRenderBounds();
+                Rect oldVisualBounds = translatedElement.VisualBounds;
+
+                _previousFinalRect = finalRect;
+                translatedElement.SetVisualBounds(new Rect(
+                    oldVisualBounds.X + deltaX,
+                    oldVisualBounds.Y + deltaY,
+                    oldVisualBounds.Width,
+                    oldVisualBounds.Height));
+
+                Rect translationNewDirtyBounds = GetDirtyRenderBounds();
+                if (translationNewDirtyBounds != translationOldDirtyBounds)
+                {
+                    var windowHost = GetWindowHostOrNull();
+                    if (windowHost != null)
+                    {
+                        bool cull = TryGetAncestorClipScreenBounds(out var clip)
+                                    && Rect.Intersect(translationNewDirtyBounds, clip).IsEmpty
+                                    && Rect.Intersect(translationOldDirtyBounds, clip).IsEmpty;
+                        if (!cull)
+                        {
+                            if (!translationOldDirtyBounds.IsEmpty)
+                                windowHost.AddDirtyRect(translationOldDirtyBounds);
+                            windowHost.AddDirtyElement(this);
+                        }
+                    }
+                }
+
+                return;
+            }
+        }
 
         // RC4-b 位移钩子前置短路：槽与期望尺寸都没变 ⇒ ArrangeCore 的 alignment 输入
         // 全部相同 ⇒ 槽内位置也不变，无位移可注册（alignment/margin 等属性变化自身走
@@ -1965,7 +2153,6 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
 
         var oldRenderSize = _renderSize;
         _previousFinalRect = finalRect;
-        InvalidateScreenOffsetCache();
 
         bool trace = LayoutDiagnostics.IsRecording;
         long startTicks = trace ? Stopwatch.GetTimestamp() : 0;
@@ -2435,6 +2622,9 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
             element.InvalidateVisual();
         }
     }
+
+    private static bool IsValidClipToBoundsEdges(object? value) =>
+        value is ClipEdges edges && (edges & ~ClipEdges.All) == 0;
 
     /// <summary>
     /// Generic callback for render-affecting properties (e.g., Opacity).
@@ -4979,23 +5169,29 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     /// </summary>
     internal void StopAnimationsForRecycleRecursive()
     {
+        // Only the detached subtree root can have received NotifyDetached: descendants retain
+        // their visual parent while the root is pooled. Cancel that one pending entry once;
+        // taking the AnimationManager lock for every descendant made large recycled templates
+        // spend most of their scroll time inside Monitor.Enter.
+        Animation.AnimationManager.CancelPendingDetach(this);
+        StopAnimationsForRecycleRecursiveCore();
+    }
+
+    private void StopAnimationsForRecycleRecursiveCore()
+    {
         StopAnimationsForRecycleLocal();
 
         for (int i = 0; i < VisualChildrenCount; i++)
         {
             if (GetVisualChild(i) is UIElement child)
             {
-                child.StopAnimationsForRecycleRecursive();
+                child.StopAnimationsForRecycleRecursiveCore();
             }
         }
     }
 
     private void StopAnimationsForRecycleLocal()
     {
-        // The animations are being stopped deterministically right now: any
-        // deferred detach re-check queued for this element is redundant.
-        Animation.AnimationManager.CancelPendingDetach(this);
-
         if (_activeAnimations != null && _activeAnimations.Count > 0)
         {
             // Per-call snapshot rented from the pool (never a shared buffer):
@@ -5521,11 +5717,20 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
     private string? _transitionPropertyLookupSource;
     private TransitionPropertyCollection? _transitionPropertyCollectionSubscription;
     private bool _transitionAllProperties;
-    private bool _transitionNoProperties;
+    // TransitionProperty defaults to None. Keep that state directly on each element so
+    // ordinary dependency-property writes can reject automatic transitions without
+    // consulting platform settings or resolving other transition properties.
+    private bool _transitionNoProperties = true;
     private int _transitionArmVersion;
     private bool _automaticTransitionsArmed;
 
     internal static Func<DependencyProperty, object?, object?, TimeSpan, TransitionTimingFunction, IAnimationTimeline?>? AutomaticTransitionAnimationFactory { get; set; }
+
+    /// <summary>
+    /// Allows the platform layer to disable non-essential automatic transitions when
+    /// reduced-motion or UI-effects accessibility settings are active.
+    /// </summary>
+    internal static Func<bool>? AutomaticTransitionsEnabledProvider { get; set; }
 
     /// <summary>
     /// Identifies the TransitionProperty dependency property.
@@ -5631,9 +5836,6 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (!_automaticTransitionsArmed)
             return false;
 
-        if (GetAutomaticTransitionAnimationFactory() == null)
-            return false;
-
         if (ReferenceEquals(dp, TransitionPropertyProperty) ||
             ReferenceEquals(dp, TransitionDurationProperty) ||
             ReferenceEquals(dp, TransitionTimingFunctionProperty))
@@ -5644,12 +5846,20 @@ public partial class UIElement : Visual, IInputElement, Animation.IFrameAnimatab
         if (ShouldSuppressAutomaticTransition(dp))
             return false;
 
-        var duration = GetTransitionDurationOrDefault();
-        if (duration <= TimeSpan.Zero)
+        if (_transitionNoProperties)
             return false;
 
         EnsureTransitionPropertyLookup();
         if (_transitionNoProperties)
+            return false;
+
+        if (AutomaticTransitionsEnabledProvider is { } transitionsEnabled && !transitionsEnabled())
+            return false;
+        if (GetAutomaticTransitionAnimationFactory() == null)
+            return false;
+
+        var duration = GetTransitionDurationOrDefault();
+        if (duration <= TimeSpan.Zero)
             return false;
 
         return _transitionAllProperties ||

@@ -536,7 +536,8 @@ public class DatePicker : Control
             headerHeight = headerFormatted.Height + 4;
         }
 
-        var inputRect = new Rect(0, headerHeight, rect.Width, rect.Height - headerHeight);
+        var inputRect = ControlRenderGeometry.GetContentRect(
+            rect, new Thickness(0, headerHeight, 0, 0));
         var strokeThickness = BorderThickness.Left;
         var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
         var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
@@ -582,7 +583,7 @@ public class DatePicker : Control
         dc.DrawText(textFormatted, new Point(padding.Left, textY));
 
         // Draw dropdown button
-        _dropdownButtonRect = new Rect(inputRect.Right - DropdownButtonWidth, inputRect.Top, DropdownButtonWidth, inputRect.Height);
+        _dropdownButtonRect = ControlRenderGeometry.GetTrailingRect(inputRect, DropdownButtonWidth);
         DrawDropdownButton(dc, _dropdownButtonRect);
     }
 

@@ -29,7 +29,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <cstdio>
@@ -68,6 +70,85 @@
 namespace jalium {
 
 namespace {
+
+template <typename F>
+class ScopeExit final {
+public:
+    explicit ScopeExit(F&& callback) noexcept
+        : callback_(std::forward<F>(callback))
+    {
+    }
+
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+
+    ScopeExit(ScopeExit&& other) noexcept
+        : callback_(std::move(other.callback_)), active_(other.active_)
+    {
+        other.active_ = false;
+    }
+
+    ~ScopeExit() noexcept
+    {
+        if (active_) {
+            callback_();
+        }
+    }
+
+    void Release() noexcept
+    {
+        active_ = false;
+    }
+
+private:
+    F callback_;
+    bool active_ = true;
+};
+
+template <typename F>
+ScopeExit<F> MakeScopeExit(F&& callback) noexcept
+{
+    return ScopeExit<F>(std::forward<F>(callback));
+}
+
+int64_t SteadyClockNanoseconds() noexcept
+{
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+constexpr int64_t kVulkanIdleReclaimDelayNanoseconds = 2'000'000'000LL;
+constexpr uint64_t kVulkanFrameFenceTimeoutNanoseconds = 1'000'000'000ULL;
+constexpr uint64_t kVulkanAcquireTimeoutNanoseconds = 250'000'000ULL;
+
+#ifdef __ANDROID__
+// High-volume Android replay diagnostics must stay opt-in. These traces run on
+// the render thread and can emit several logcat writes per primitive/glyph, so
+// leaving them enabled in a Release APK distorts the very frame timings they
+// are intended to diagnose.
+bool AndroidReplaySequenceTraceEnabled() noexcept
+{
+    static const bool enabled = []() {
+        const char* value = std::getenv("JALIUM_VK_REPLAY_TRACE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0' &&
+               value[0] != 'f' && value[0] != 'F' &&
+               value[0] != 'n' && value[0] != 'N';
+    }();
+    return enabled;
+}
+
+bool AndroidTextTraceEnabled() noexcept
+{
+    static const bool enabled = []() {
+        const char* value = std::getenv("JALIUM_VK_TEXT_TRACE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0' &&
+               value[0] != 'f' && value[0] != 'F' &&
+               value[0] != 'n' && value[0] != 'N';
+    }();
+    return enabled;
+}
+#endif
 
 template <typename T>
 T LoadInstanceProc(PFN_vkGetInstanceProcAddr getProc, VkInstance instance, const char* name)
@@ -436,7 +517,9 @@ struct TriangleFillPushConstants {
 //   float2 padding;
 //   float4 roundedClipRect;
 //   float2 roundedClipRadius;
-//   float2 clipFlags;      // clipFlags.x toggles the rounded-clip test
+//   float2 clipFlags;      // x: 0=off, 1=include, 2=inverse
+//   float4 perCornerRadiusX;
+//   float4 perCornerRadiusY;
 // Vertices are passed PRE-TRANSFORMED in screen / pixel space — the vc
 // shader does not multiply by any matrix, so callers must apply the active
 // transform CPU-side before recording.
@@ -447,7 +530,11 @@ struct TriangleFillVcPushConstants {
     float roundedClipRect[4];
     float roundedClipRadius[2];
     float clipFlags[2];
+    float perCornerRadiusX[4];
+    float perCornerRadiusY[4];
 };
+static_assert(sizeof(TriangleFillVcPushConstants) == 96,
+    "TriangleFillVcPushConstants must match triangle_fill_vc.{vert,frag}.hlsl (96 bytes)");
 
 struct TransitionPushConstants {
     float rect[4];
@@ -779,6 +866,100 @@ public:
         return result;
     }
 
+    VkResult WaitDeviceIdleSynchronized(const char* where)
+    {
+        if (device == VK_NULL_HANDLE || !deviceWaitIdle) {
+            if (device != VK_NULL_HANDLE && deviceGeneration) {
+                deviceGeneration->MarkAbandoned();
+            }
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        if (deviceGeneration && deviceGeneration->IsAbandoned()) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        VkResult result = VK_ERROR_INITIALIZATION_FAILED;
+        if (deviceGeneration) {
+            std::lock_guard<std::mutex> queueLock(deviceGeneration->queueMutex);
+            // The generation may have been quarantined while this caller was
+            // waiting for the queue lock. Revalidate inside the serialized
+            // boundary before issuing any driver call.
+            if (!deviceGeneration->IsUsable()) {
+                return deviceGeneration->IsLost()
+                    ? NoteVk(VK_ERROR_DEVICE_LOST, where)
+                    : VK_ERROR_INITIALIZATION_FAILED;
+            }
+            result = NoteVk(deviceWaitIdle(device), where);
+            if (result != VK_SUCCESS && result != VK_ERROR_DEVICE_LOST) {
+                // Publish quarantine before releasing the queue boundary. A
+                // waiter that acquires it next must never submit into the
+                // indeterminate generation between the failed wait and latch.
+                deviceGeneration->MarkAbandoned();
+            }
+        } else {
+            result = NoteVk(deviceWaitIdle(device), where);
+        }
+        return result;
+    }
+
+    VkResult QueueSubmitSynchronized(uint32_t submitCount,
+                                     const VkSubmitInfo* submits,
+                                     VkFence fence,
+                                     const char* where)
+    {
+        if (queue == VK_NULL_HANDLE || !queueSubmit) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        if (deviceGeneration && deviceGeneration->IsAbandoned()) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        if (deviceGeneration) {
+            std::lock_guard<std::mutex> queueLock(deviceGeneration->queueMutex);
+            if (!deviceGeneration->IsUsable()) {
+                return deviceGeneration->IsLost()
+                    ? NoteVk(VK_ERROR_DEVICE_LOST, where)
+                    : VK_ERROR_INITIALIZATION_FAILED;
+            }
+            return NoteVk(queueSubmit(queue, submitCount, submits, fence), where);
+        }
+        return NoteVk(queueSubmit(queue, submitCount, submits, fence), where);
+    }
+
+    VkResult QueuePresentSynchronized(const VkPresentInfoKHR* presentInfo,
+                                      const char* where)
+    {
+        if (queue == VK_NULL_HANDLE || !queuePresent) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        if (deviceGeneration && deviceGeneration->IsAbandoned()) {
+            return VK_ERROR_INITIALIZATION_FAILED;
+        }
+        if (deviceGeneration) {
+            std::lock_guard<std::mutex> queueLock(deviceGeneration->queueMutex);
+            if (!deviceGeneration->IsUsable()) {
+                return deviceGeneration->IsLost()
+                    ? NoteVk(VK_ERROR_DEVICE_LOST, where)
+                    : VK_ERROR_INITIALIZATION_FAILED;
+            }
+            return NoteVk(queuePresent(queue, presentInfo), where);
+        }
+        return NoteVk(queuePresent(queue, presentInfo), where);
+    }
+
+    // A successfully acquired image must eventually be consumed by a queue
+    // submit that waits imageAvailable. If recording/reset/submit fails first,
+    // that binary semaphore remains signaled and the image remains acquired;
+    // both objects must be replaced before another acquire is attempted.
+    void MarkSwapchainUnusable(const char* where)
+    {
+        swapchainRecreatePending = true;
+        if (!swapchainUnusable) {
+            swapchainUnusable = true;
+            ++swapchainRepairFailures;
+        }
+        VK_LOG("[Vulkan] %s: swapchain marked unusable (failure streak %u)",
+               where ? where : "unknown", swapchainRepairFailures);
+    }
+
     // Unified gate predicate (the Vulkan analogue of D3D12's
     // CheckFrameDeviceAlive): folds in losses first observed by the ink
     // subsystem, which latches only the shared generation — e.g. a stylus
@@ -789,6 +970,10 @@ public:
     bool DeviceUsable()
     {
         if (deviceLost) {
+            return false;
+        }
+        if (deviceGeneration && deviceGeneration->IsAbandoned()) {
+            deviceLost = true;
             return false;
         }
         if (deviceGeneration && deviceGeneration->IsLost()) {
@@ -834,16 +1019,9 @@ public:
     uint32_t textAtlasWidth = 0;
     uint32_t textAtlasHeight = 0;
     std::unique_ptr<VulkanGlyphAtlas> glyphAtlas_;
-    // Dedicated host-visible staging buffer for the glyph-atlas dirty-band upload
-    // (B4b). Separate from the per-frame `stagingBuffer` (which now also carries
-    // the glyph SSBO) so the atlas pixel upload and the glyph-instance SSBO never
-    // alias the same bytes within a frame. Grow-only + persistently mapped, single
-    // instance tied to the device — torn down with the atlas image at device
-    // teardown. See EnsureTextAtlasStaging.
-    VkBuffer textAtlasStagingBuffer = VK_NULL_HANDLE;
-    VkDeviceMemory textAtlasStagingMemory = VK_NULL_HANDLE;
-    void* textAtlasStagingMapped = nullptr;
-    VkDeviceSize textAtlasStagingCapacity = 0;
+    // Glyph-atlas dirty-band staging lives in the per-frame slots below,
+    // separate from the general staging buffer so transfers and glyph SSBO data
+    // never alias. Every slot is torn down with the atlas at device teardown.
 #endif
     VkSampler frameSampler = VK_NULL_HANDLE;
     // Point-filter twin of frameSampler (VK_FILTER_NEAREST min/mag + NEAREST
@@ -1082,6 +1260,8 @@ public:
     void*            customShaderConstantsMapped[2] = {};
     VkDeviceSize     customShaderConstantsCapacity[2] = {};
 
+    bool ResetCustomShaderDescriptorPoolForCompletedSlot(
+        uint32_t frameIdx, const char* where);
     bool EnsureCustomShaderBase();
     // Builds (and caches by hash) a custom-shader-effect pipeline. When
     // prebuiltPsSpirv is non-null the pixel shader comes from that embedded
@@ -1152,6 +1332,71 @@ public:
     // Alias of PerFrameState::fencePending (see the struct for semantics).
     bool fencePending = false;
     bool initialized = false;
+    // A same-size Resize may normally return immediately, but not after WSI
+    // reported OUT_OF_DATE/SUBOPTIMAL or a swapchain rebuild failed.  Only a
+    // fully successful RecreateSwapchain clears this latch.
+    bool swapchainRecreatePending = false;
+    // Hard WSI invalidation: acquire/present returned OUT_OF_DATE, so every
+    // further acquire on this swapchain is dead weight until it is rebuilt.
+    // Kept separate from swapchainRecreatePending because SUBOPTIMAL also
+    // latches pending (rebuild folded into the next resize) while presents
+    // keep landing on screen — e.g. Android surfaces held at preTransform
+    // IDENTITY report SUBOPTIMAL on every present while rotated, and treating
+    // that as unusable would rebuild (deviceWaitIdle + full teardown) every
+    // frame. Only this flag drives BeginDraw's same-extent repair; a fully
+    // successful RecreateSwapchain clears it.
+    //
+    // ── Swapchain-repair state machine (BeginDraw / EndDraw) ────────────
+    //   normal frame          → EndDraw JALIUM_OK; failure streak reset to 0
+    //                           (the ONLY reset point — see below).
+    //   OUT_OF_DATE frame     → unusable latched, streak +1; EndDraw reports
+    //                           PRESENT_FAILED: managed keeps its damage,
+    //                           marks full invalidation and retries (~120 ms)
+    //                           WITHOUT resetting its DEVICE_LOST escalation
+    //                           counter. (Acknowledging these frames as OK
+    //                           used to reset that counter every frame,
+    //                           making the "2 consecutive DEVICE_LOST →
+    //                           Software fallback" defense unreachable, and
+    //                           cleared managed damage so a static UI never
+    //                           re-rendered to run the repair at all.)
+    //   BeginDraw repair OK   → swapchain rebuilt in place; the frame being
+    //                           recorded was decided against the OLD
+    //                           swapchain (possibly clipped to partial
+    //                           damage), so repairJustCompleted makes
+    //                           EndDraw skip the present and report
+    //                           PRESENT_FAILED → the NEXT frame repaints in
+    //                           full onto the fresh swapchain and re-seeds
+    //                           the retained-frame baseline.
+    //   BeginDraw repair FAIL → streak +1; EndDraw reports PRESENT_FAILED.
+    //   streak >= limit       → EndDraw reports DEVICE_LOST: managed
+    //                           rebuilds the context; the PRESENT_FAILED
+    //                           frames in between never reset its escalation
+    //                           counter, so a second DEVICE_LOST round falls
+    //                           back to Software.
+    bool swapchainUnusable = false;
+    // Consecutive swapchain failure events that never reached a truly
+    // presented frame: +1 when acquire/present freshly latches unusable
+    // (a repeat OUT_OF_DATE on an already-latched swapchain — minimized
+    // window — does not re-count) and +1 per failed/blocked BeginDraw repair
+    // attempt. Reset ONLY by an EndDraw whose frame really presented (ok,
+    // usable, not the repair frame) — deliberately NOT by RecreateSwapchain,
+    // so a thrash loop ("rebuild succeeds, next acquire is OUT_OF_DATE
+    // again") still accumulates. Once the streak reaches
+    // kSwapchainRepairFailureLimit, EndDraw stops classifying the frame as
+    // transient and reports DEVICE_LOST so the managed recovery chain
+    // rebuilds the context (and can fall back to Software) instead of
+    // burning retries on a surface that is not coming back.
+    static constexpr uint32_t kSwapchainRepairFailureLimit = 8;
+    uint32_t swapchainRepairFailures = 0;
+    // One-frame marker: BeginDraw's same-extent repair succeeded while the
+    // frame was already being recorded against partial-damage decisions made
+    // for the OLD swapchain. EndDraw consumes it, skips the draw/present
+    // (fresh swapchain images carry undefined contents; replaying a
+    // partial-damage recording onto them would present a clear-color frame
+    // with only the dirty region painted and seed the retained-frame
+    // baseline with it) and reports PRESENT_FAILED so managed repaints the
+    // next frame in full.
+    bool swapchainRepairJustCompleted = false;
 
     // ── Present-info cache (for VulkanRenderTarget::GetPresentInfo) ────
     // Captured at the tail of RecreateSwapchain so the host doesn't pay a
@@ -1180,12 +1425,14 @@ public:
     // across every DrawFrame / DrawReplayFrame attempt for one logical
     // frame; when the attempt succeeds we flush the accumulator into
     // lastFrameWaitNs_, which QueryGpuStats hands to DevTools as
-    // frameGpuWaitNs. Failed attempts (e.g. waitForFences returns
-    // VK_TIMEOUT — currently unreachable because we pass UINT64_MAX, but
-    // kept for symmetry with the D3D12 timeout-retry path) keep the
-    // accumulator nonzero so the next attempt continues appending.
+    // frameGpuWaitNs. A bounded fence timeout quarantines the generation;
+    // acquire timeout remains a recoverable skipped-present event.
     uint64_t accumulatingWaitNs = 0;
     uint64_t lastFrameWaitNs = 0;
+    // Set only when a bounded WSI acquire times out without acquiring an
+    // image. EndDraw reports PRESENT_FAILED so managed retains damage and
+    // retries, without poisoning the swapchain or device generation.
+    bool transientAcquireTimeout = false;
 
     // ── Present→ready wall clock ────────────────────────────────────────
     // Mirrors D3D12DirectRenderer::lastFramePresentToReadyNs (see
@@ -1277,6 +1524,17 @@ public:
     static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
     static_assert(MAX_FRAMES_IN_FLIGHT == 2,
                   "PerFrameTiming timing[2] above must be resized in lockstep with MAX_FRAMES_IN_FLIGHT");
+#ifdef _WIN32
+    // Per-slot isolation is required: vkCmdCopyBufferToImage may still read the
+    // other slot while the CPU uploads this frame's new glyph dirty band.
+    struct TextAtlasStagingSlot {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+        void* mapped = nullptr;
+        VkDeviceSize capacity = 0;
+    };
+    TextAtlasStagingSlot textAtlasStagingSlots[MAX_FRAMES_IN_FLIGHT];
+#endif
     struct PerFrameState {
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
         VkFence inFlight = VK_NULL_HANDLE;
@@ -1318,7 +1576,7 @@ public:
         // completes). The frame wait is gated on it so a slot whose frame
         // failed anywhere — including queueSubmit itself failing AFTER the
         // fence reset, which leaves the fence unsignaled with nobody to
-        // signal it — can never park waitForFences(UINT64_MAX) forever.
+        // signal it — can never enter a pointless bounded fence wait.
         bool fencePending = false;
         // Engine batches buffer (vertex+index, host-visible coherent):
         // RenderEngineBatches uploads VkImpellerDrawBatch contents here each
@@ -1334,16 +1592,19 @@ public:
         // Rewound to 0 at DrawFrame/DrawReplayFrame start once this slot's
         // fence has been observed.
         VkDeviceSize engineBatchCursor = 0;
-        // Buffers retired by a mid-frame EnsureEngineBatchBuffer grow. The GPU
-        // may still read them until this slot's fence signals (draws recorded
-        // earlier in the same command buffer bind the OLD handle), so they are
-        // destroyed/freed at the next fence-observed frame start — also the
-        // seed of the E6 upload-buffer graveyard. pair = {buffer, memory}.
+        // Buffers retired by engine-batch/custom-UBO grows, plus a transactionally
+        // replaced general staging buffer. They remain alive until this slot's
+        // next fence and until persistent descriptors have been reset or
+        // rewritten away from the old handle. pair = {buffer, memory}.
         std::vector<std::pair<VkBuffer, VkDeviceMemory>> deferredDestroyBuffers;
         // Imported images referenced by this slot's last replay submission.
         // The slot fence gates their final intrusive release.
         std::vector<VulkanImportedVideoSurface*>
             deferredExternalVideoSurfaces;
+        // Exact ink allocation generations referenced by this slot's replay
+        // submit. Released only after inFlight is observed complete.
+        std::vector<std::shared_ptr<const VulkanInkImageGeneration>>
+            deferredInkImageGenerations;
     };
     PerFrameState perFrameStates_[MAX_FRAMES_IN_FLIGHT];
     uint32_t currentFrame_ = 0;
@@ -1402,7 +1663,14 @@ public:
     void CommitCurrentFrame();
     void EndFrame();
     void DestroyPerFrameResources();
-    void ShrinkPerFrameBuffers();
+    // Destructive memory-pressure primitive. The periodic idle-reclaim API
+    // deliberately does not call this because it drains the whole device and
+    // invalidates hot per-frame allocations.
+    bool ShrinkPerFrameBuffers();
+
+    // Resize-only teardown. These objects reference swapchain-owned images or
+    // bake the swapchain extent, but none of the device-wide graphics state.
+    void DestroySwapchainImageResources();
 
     bool Initialize(const JaliumSurfaceDescriptor& surfaceDescriptor, int32_t width, int32_t height, bool vsync,
                     VulkanBackend* ownerBackend = nullptr);
@@ -1519,6 +1787,9 @@ public:
     /// Destroy all stencil-then-cover scratch resources (images/views/memory,
     /// render pass, framebuffer, sampler, pipelines). Safe to call repeatedly.
     void DestroyStencilCoverResources();
+    // Same-format resize path: keep the compatible render pass, sampler and
+    // four graphics pipelines; release only the extent-sized attachments.
+    void DestroyStencilCoverAttachments();
     /// Lazy-create the screen-sized COLOR|SAMPLED offscreen effect RT + CLEAR/LOAD
     /// render passes + framebuffers + sampler, sized to `extent`. No-op returning
     /// false when effectOffscreenEnabled_ is false. Mirrors EnsureStencilCoverResources.
@@ -1532,7 +1803,9 @@ public:
     void DestroyBlurTempResources();
     uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const;
     bool UpdateFrameDescriptorSet();
+    bool RefreshTransitionImageBindings(VkDescriptorSet set);
     bool UpdateTransitionDescriptorSet();
+    bool RefreshSharedImageDescriptorsForCompletedSlot(uint32_t frameIdx);
     void DestroyUploadImage();
 #ifdef _WIN32
     // ── Dedicated text-glyph pipeline helpers (B4 infrastructure) ──────────
@@ -1545,11 +1818,18 @@ public:
     void DestroyTextAtlasImage();
     // Point both text descriptor sets at the atlas image + their point/linear
     // sampler + the glyph SSBO slice of the staging buffer.
+    bool RefreshTextAtlasImageBindings(VkDescriptorSet pointSet,
+                                       VkDescriptorSet smoothSet);
+    bool RefreshTextGlyphBufferBinding(VkDescriptorSet pointSet,
+                                       VkDescriptorSet smoothSet,
+                                       VkBuffer buffer,
+                                       VkDeviceSize capacity);
     bool UpdateTextDescriptorSet(VkDeviceSize glyphOffset, VkDeviceSize glyphRange);
     // Grow-only host-visible staging buffer for the glyph-atlas dirty-band copy
     // (B4b). Clones EnsureStagingCapacity (HOST_VISIBLE|COHERENT, persistently
-    // mapped into textAtlasStagingMapped). Returns false on allocation failure.
+    // persistently mapped in the selected frame slot). Returns false on failure.
     bool EnsureTextAtlasStaging(VkDeviceSize size);
+    void DestroyTextAtlasStagingSlot(TextAtlasStagingSlot& slot);
     void DestroyTextAtlasStaging();
 #endif
     void DestroyTransitionImages();
@@ -2014,14 +2294,89 @@ JaliumResult VulkanRenderTarget::Resize(int32_t width, int32_t height)
     if (width <= 0 || height <= 0) {
         return JALIUM_ERROR_INVALID_ARGUMENT;
     }
+    if (!lifecycleGate_.TryEnterExclusive()) {
+        return JALIUM_ERROR_BUSY;
+    }
+    auto lifecycleExit = MakeScopeExit([this]() noexcept {
+        (void)lifecycleGate_.LeaveExclusive();
+    });
 
-    width_ = width;
-    height_ = height;
-    ResizeCpuCanvas();
-    fullInvalidation_ = true;
-    dirtyRects_.clear();
-    if (impl_ && impl_->RecreateSwapchain(width, height, vsyncEnabled_)) {
+    // Serialize the complete WSI mutation against ink/video work sharing this
+    // generation. The fixed lock order is driverCallMutex -> queueMutex.
+    std::unique_lock<std::recursive_mutex> driverCallLock;
+    if (impl_ && impl_->deviceGeneration) {
+        driverCallLock = std::unique_lock<std::recursive_mutex>(
+            impl_->deviceGeneration->driverCallMutex);
+        if (!impl_->DeviceUsable()) {
+            return JALIUM_ERROR_DEVICE_LOST;
+        }
+    }
+
+#if defined(_WIN32)
+    // Win32 WSI commonly publishes the new fixed currentExtent slightly after
+    // WM_SIZE. Never commit the requested size while the surface still
+    // advertises a different fixed extent: doing so splits width_/CPU canvas
+    // from the real swapchain extent and causes one-way-growing layouts plus
+    // repeated OUT_OF_DATE rebuilds. BUSY keeps the latest-size retry queued
+    // until WSI catches up. Variable-extent surfaces can use the request.
+    if (impl_ && impl_->initialized && impl_->getSurfaceCapabilities &&
+        impl_->physicalDevice != VK_NULL_HANDLE && impl_->surface != VK_NULL_HANDLE) {
+        VkSurfaceCapabilitiesKHR caps {};
+        const VkResult capsResult = impl_->NoteVk(
+            impl_->getSurfaceCapabilities(impl_->physicalDevice, impl_->surface, &caps),
+            "Resize.getSurfaceCapabilities");
+        if (capsResult != VK_SUCCESS) {
+            return impl_->deviceLost ? JALIUM_ERROR_DEVICE_LOST : JALIUM_ERROR_BUSY;
+        }
+        const bool fixedExtent =
+            caps.currentExtent.width != std::numeric_limits<uint32_t>::max();
+        if (fixedExtent &&
+            (caps.currentExtent.width != static_cast<uint32_t>(width) ||
+             caps.currentExtent.height != static_cast<uint32_t>(height))) {
+            return JALIUM_ERROR_BUSY;
+        }
+    }
+#endif
+
+    // Resize is the authoritative Win32 swapchain rebuild point. Fold any
+    // deferred VSync request into this same recreate so a failed present-mode
+    // switch cannot be retried as a second full rebuild on the next frame.
+    const int32_t vsyncRequest =
+        pendingVSyncEnabled_.exchange(-1, std::memory_order_acq_rel);
+    const bool requestedVSync =
+        vsyncRequest >= 0 ? vsyncRequest != 0 : vsyncEnabled_;
+
+    // Mirror D3D12's same-size fast path, while preserving Vulkan's WSI
+    // recovery semantics. OUT_OF_DATE/SUBOPTIMAL and failed rebuilds latch
+    // swapchainRecreatePending, so a same-size WM_SIZE can still repair the
+    // swapchain. DeviceUsable also prevents a lost device from being reported
+    // as a successful no-op.
+    if (width == width_ && height == height_ &&
+        impl_ && impl_->initialized && impl_->swapchain != VK_NULL_HANDLE &&
+        !impl_->swapchainRecreatePending && impl_->DeviceUsable() &&
+        requestedVSync == vsyncEnabled_) {
         return JALIUM_OK;
+    }
+
+    if (impl_ && impl_->RecreateSwapchain(width, height, requestedVSync)) {
+        // Commit the public/CPU-canvas size only after the native swapchain is
+        // usable. A failed rebuild keeps the previous dimensions so a retry at
+        // the same requested size cannot be mistaken for a successful no-op.
+        width_ = width;
+        height_ = height;
+        vsyncEnabled_ = requestedVSync;
+        ResizeCpuCanvas();
+        fullInvalidation_ = true;
+        dirtyRects_.clear();
+        return JALIUM_OK;
+    }
+    if (vsyncRequest >= 0) {
+        // Preserve a newer concurrent request; otherwise retry this desired
+        // mode at the next authoritative Resize/healthy frame boundary.
+        int32_t noRequest = -1;
+        (void)pendingVSyncEnabled_.compare_exchange_strong(
+            noRequest, vsyncRequest, std::memory_order_release,
+            std::memory_order_relaxed);
     }
     // Mirror the D3D12 Resize classification (ResizeBuffers failure →
     // GetDeviceRemovedReason discrimination): a swapchain rebuild that failed
@@ -2034,6 +2389,20 @@ JaliumResult VulkanRenderTarget::Resize(int32_t width, int32_t height)
 
 JaliumResult VulkanRenderTarget::ReclaimIdleResources()
 {
+    if (!lifecycleGate_.TryEnterExclusive()) {
+        return JALIUM_ERROR_BUSY;
+    }
+    auto lifecycleExit = MakeScopeExit([this]() noexcept {
+        (void)lifecycleGate_.LeaveExclusive();
+    });
+
+    // CompositionTarget.Rendering drives the managed scan, so this call may
+    // arrive every ~60 active frames.  Only reclaim after this particular
+    // target has truly gone quiet, and only once for each idle period.
+    if (!idleReclaimGate_.TryClaim(
+            SteadyClockNanoseconds(), kVulkanIdleReclaimDelayNanoseconds)) {
+        return JALIUM_OK;
+    }
     // The path cache stores payloads as std::shared_ptr — any in-flight GPU
     // command that referenced an entry holds its own strong ref through the
     // PerFrameState lifetime, so dropping the cache lookup table here cannot
@@ -2068,19 +2437,12 @@ JaliumResult VulkanRenderTarget::ReclaimIdleResources()
     }
 #endif
 
-    // Per-frame VkBuffer / VkImage / VkDeviceMemory release (staging buffer,
-    // upload image, engine batch buffer for each MAX_FRAMES_IN_FLIGHT slot).
-    // These grow lazily to accommodate peak desktop captures and Impeller
-    // batch sizes; on a now-idle UI the peak capacity may be tens of MB of
-    // pinned host memory plus the matching GPU-resident texture. Shrinking
-    // here calls vkDeviceWaitIdle (cheap when nothing is in flight) and then
-    // destroys+forgets the per-frame buffers; EnsureStagingCapacity /
-    // EnsureUploadImage / EnsureEngineBatchBuffer re-allocate from scratch
-    // on the next draw. Per-frame fences, semaphores, and command buffers
-    // are intentionally preserved.
-    if (impl_) {
-        impl_->ShrinkPerFrameBuffers();
-    }
+    // Never shrink the per-frame Vulkan ring from this periodic hook. Doing so
+    // requires vkDeviceWaitIdle and forces the next frame to allocate and map
+    // all upload/staging/engine buffers again. On an actively scrolling Gallery
+    // that produced a full queue stall roughly every 60 frames and repeatedly
+    // exercised the display driver's teardown path. The ring is bounded and is
+    // released with the render target/device instead.
 
     return JALIUM_OK;
 }
@@ -2121,6 +2483,17 @@ JaliumResult VulkanRenderTarget::FetchReadback(uint8_t* buf, uint32_t bufStride,
         return JALIUM_ERROR_INVALID_STATE;
     }
     Impl& impl = *impl_;
+    // Protect both the fence wait and the mapped-memory copy. Resize/Destroy
+    // may otherwise unmap or replace readback storage between the ready check
+    // and memcpy even if no Vulkan call is made for a size-only query.
+    std::unique_lock<std::recursive_mutex> driverCallLock;
+    if (impl.deviceGeneration) {
+        driverCallLock = std::unique_lock<std::recursive_mutex>(
+            impl.deviceGeneration->driverCallMutex);
+        if (!impl.DeviceUsable()) {
+            return JALIUM_ERROR_DEVICE_LOST;
+        }
+    }
     if (!impl.readbackReady_ || impl.readbackBuffer_ == VK_NULL_HANDLE || !impl.readbackMapped_ ||
         impl.readbackWidth_ == 0 || impl.readbackHeight_ == 0) {
         return JALIUM_ERROR_INVALID_STATE;
@@ -2269,10 +2642,70 @@ bool VulkanRenderTarget::EnsureVelloEngine()
     return true;
 }
 
+JaliumResult VulkanRenderTarget::SetRenderingEngine(
+    JaliumRenderingEngine engine)
+{
+    const JaliumRenderingEngine resolved =
+        ResolveRenderingEngine(engine, JALIUM_BACKEND_VULKAN);
+    pendingEngineRequest_.store(
+        static_cast<int32_t>(resolved), std::memory_order_release);
+
+    if (!lifecycleGate_.TryEnterExclusive()) {
+        // The next BeginDraw consumes the latest request at a safe boundary.
+        return JALIUM_OK;
+    }
+    auto lifecycleExit = MakeScopeExit([this]() noexcept {
+        (void)lifecycleGate_.LeaveExclusive();
+    });
+
+    const int32_t request =
+        pendingEngineRequest_.exchange(-1, std::memory_order_acq_rel);
+    if (request < 0) {
+        return JALIUM_OK;
+    }
+    std::unique_lock<std::recursive_mutex> driverCallLock;
+    if (impl_ && impl_->deviceGeneration) {
+        driverCallLock = std::unique_lock<std::recursive_mutex>(
+            impl_->deviceGeneration->driverCallMutex);
+        if (!impl_->DeviceUsable()) {
+            return JALIUM_ERROR_DEVICE_LOST;
+        }
+    }
+    pendingEngine_ = static_cast<JaliumRenderingEngine>(request);
+    activeEngine_ = pendingEngine_;
+    if (activeEngine_ == JALIUM_ENGINE_IMPELLER) {
+        EnsureImpellerEngine();
+    } else if (activeEngine_ == JALIUM_ENGINE_VELLO) {
+        EnsureVelloEngine();
+    }
+    return JALIUM_OK;
+}
+
 JaliumResult VulkanRenderTarget::BeginDraw()
 {
-    if (isDrawing_) {
+    if (!lifecycleGate_.TryBeginFrame()) {
+        // BeginDraw is a try-style frame acquisition API.  The managed render
+        // loop treats INVALID_STATE as "skip this frame and retry", whereas
+        // BUSY is reserved for mutating APIs such as Resize.  Returning BUSY
+        // here would turn an ordinary resize overlap into an exception storm.
         return JALIUM_ERROR_INVALID_STATE;
+    }
+    idleReclaimGate_.NoteActivity(SteadyClockNanoseconds());
+    bool beginCommitted = false;
+    auto lifecycleExit = MakeScopeExit([this, &beginCommitted]() noexcept {
+        if (!beginCommitted) {
+            isDrawing_.store(false, std::memory_order_release);
+            (void)lifecycleGate_.AbortBeginFrame();
+        }
+    });
+
+    // BeginDraw may repair/recreate WSI state and lazily initialize Vello.
+    // Hold the generation barrier only for this call; never carry it across
+    // the CPU recording interval between BeginDraw and EndDraw.
+    std::unique_lock<std::recursive_mutex> driverCallLock;
+    if (impl_ && impl_->deviceGeneration) {
+        driverCallLock = std::unique_lock<std::recursive_mutex>(
+            impl_->deviceGeneration->driverCallMutex);
     }
 
     // Device gate (mirror of D3D12RenderTarget::BeginDraw's CheckDeviceStatus
@@ -2285,6 +2718,128 @@ JaliumResult VulkanRenderTarget::BeginDraw()
         return JALIUM_ERROR_DEVICE_LOST;
     }
 
+#if defined(_WIN32)
+    constexpr bool kIsWindowsWsi = true;
+#else
+    constexpr bool kIsWindowsWsi = false;
+#endif
+    if (impl_ && impl_->initialized && impl_->swapchain == VK_NULL_HANDLE &&
+        !impl_->swapchainUnusable) {
+        return JALIUM_ERROR_INVALID_STATE;
+    }
+
+    // Same-extent swapchain repair. An OUT_OF_DATE from acquire/present
+    // retires the swapchain permanently, and the recreate latch used to be
+    // consumed only by Resize — but no RESIZE ever arrives when the surface
+    // was invalidated in place (Android rotation / compositor state change),
+    // so every later frame would report success while presenting nothing.
+    // Rebuild here at the frame boundary instead, through the exact sequence
+    // a same-size Resize runs (RecreateSwapchain owns the deviceWaitIdle and
+    // the teardown/rebuild order). Skipped without touching the failure
+    // streak while the surface cannot produce a nonzero-extent swapchain
+    // (minimized/hidden window) — that state is repaired by the restore-path
+    // Resize and must not escalate to DEVICE_LOST.
+    if (impl_ && impl_->initialized && impl_->swapchainUnusable) {
+        bool attemptRepair = false;
+        if (impl_->getSurfaceCapabilities && impl_->physicalDevice != VK_NULL_HANDLE &&
+            impl_->surface != VK_NULL_HANDLE) {
+            VkSurfaceCapabilitiesKHR caps {};
+            const VkResult capsResult = impl_->NoteVk(
+                impl_->getSurfaceCapabilities(impl_->physicalDevice, impl_->surface, &caps),
+                "BeginDraw.getSurfaceCapabilities");
+            if (capsResult != VK_SUCCESS) {
+                // Counts toward the streak without running the destructive
+                // rebuild sequence — RecreateSwapchain would abort on the
+                // same query after tearing the graphics resources down.
+                ++impl_->swapchainRepairFailures;
+                VK_LOG("[Vulkan] BeginDraw: swapchain repair blocked, surface caps query failed (%d) — consecutive failures %u",
+                       static_cast<int>(capsResult), impl_->swapchainRepairFailures);
+            } else {
+                const bool fixedExtent =
+                    caps.currentExtent.width != std::numeric_limits<uint32_t>::max();
+                const bool nonzeroExtent = fixedExtent
+                    ? (caps.currentExtent.width > 0 && caps.currentExtent.height > 0)
+                    : (caps.maxImageExtent.width > 0 && caps.maxImageExtent.height > 0);
+                attemptRepair = nonzeroExtent &&
+                    vulkan_lifecycle::ShouldAutoRepairSwapchain(
+                        kIsWindowsWsi, fixedExtent,
+                        caps.currentExtent.width == static_cast<uint32_t>(width_) &&
+                            caps.currentExtent.height == static_cast<uint32_t>(height_));
+            }
+        }
+        if (attemptRepair) {
+            // Fold a parked present-mode request into the repair. This avoids
+            // rebuilding once with the old mode and immediately rebuilding
+            // the fresh swapchain a second time for VSync.
+            const int32_t repairVSyncRequest =
+                pendingVSyncEnabled_.exchange(-1, std::memory_order_acq_rel);
+            const bool repairVSync = repairVSyncRequest >= 0
+                ? repairVSyncRequest != 0
+                : vsyncEnabled_;
+            if (impl_->RecreateSwapchain(width_, height_, repairVSync)) {
+                vsyncEnabled_ = repairVSync;
+                // RecreateSwapchain cleared the unusable latch (the failure
+                // streak is cleared only by a truly presented frame). The
+                // frame about to be recorded was already decided against the
+                // OLD swapchain — the host may have clipped its recording to
+                // partial damage — so mark the repair: EndDraw skips this
+                // frame's draw/present and reports PRESENT_FAILED, making
+                // managed repaint the NEXT frame in full onto the fresh
+                // swapchain (see the repair state machine at the Impl flags).
+                // Note: the repair gate in EndDraw clears this latch with the
+                // rest of the frame state — the NEXT frame's full repaint is
+                // guaranteed by the host's PRESENT_FAILED handling, not here.
+                fullInvalidation_ = true;
+                dirtyRects_.clear();
+                impl_->swapchainRepairJustCompleted = true;
+                VK_LOG("[Vulkan] BeginDraw: swapchain repaired in place at %dx%d", width_, height_);
+            } else {
+                if (repairVSyncRequest >= 0) {
+                    int32_t noRequest = -1;
+                    (void)pendingVSyncEnabled_.compare_exchange_strong(
+                        noRequest, repairVSyncRequest,
+                        std::memory_order_release, std::memory_order_relaxed);
+                }
+                ++impl_->swapchainRepairFailures;
+                VK_LOG("[Vulkan] BeginDraw: swapchain repair failed — consecutive failures %u",
+                       impl_->swapchainRepairFailures);
+            }
+        }
+
+        // While live Win32 sizing is changing the surface extent, this parks
+        // the frame for WM_EXITSIZEMOVE's authoritative Resize. On every WSI,
+        // a failed repair is bounded by the existing failure budget instead of
+        // falling through into another VSync rebuild in the same BeginDraw.
+        if (impl_->swapchainUnusable) {
+            if (impl_->deviceLost) {
+                return JALIUM_ERROR_DEVICE_LOST;
+            }
+            return impl_->swapchainRepairFailures >= Impl::kSwapchainRepairFailureLimit
+                ? JALIUM_ERROR_DEVICE_LOST
+                : JALIUM_ERROR_INVALID_STATE;
+        }
+    }
+
+    // Present-mode work is consumed only after WSI is usable. A failed VSync
+    // rebuild retires the swapchain and re-parks the request; the next Begin
+    // goes through the stable-extent/bounded repair above rather than running
+    // vkDeviceWaitIdle plus full teardown on every retry frame.
+    if (!ApplyPendingVSyncRequest()) {
+        return (impl_ && impl_->deviceLost) ? JALIUM_ERROR_DEVICE_LOST
+                                            : JALIUM_ERROR_INVALID_STATE;
+    }
+    if (!ApplyPendingPathMsaaRequest()) {
+        return (impl_ && !impl_->DeviceUsable())
+            ? JALIUM_ERROR_DEVICE_LOST
+            : JALIUM_ERROR_INVALID_STATE;
+    }
+
+    const int32_t engineRequest =
+        pendingEngineRequest_.exchange(-1, std::memory_order_acq_rel);
+    if (engineRequest >= 0) {
+        pendingEngine_ = static_cast<JaliumRenderingEngine>(engineRequest);
+    }
+
     // Apply pending engine switch at frame boundary
     if (pendingEngine_ != activeEngine_) {
         activeEngine_ = pendingEngine_;
@@ -2294,7 +2849,7 @@ JaliumResult VulkanRenderTarget::BeginDraw()
         else if (activeEngine_ == JALIUM_ENGINE_VELLO) EnsureVelloEngine();
     }
 
-    isDrawing_ = true;
+    isDrawing_.store(true, std::memory_order_release);
     ResetGpuReplay();
     // Engine-batch span bookkeeping restarts with the frame: EndDraw consumed
     // and cleared the engines' batch vectors (ClearBatches), so index 0 is the
@@ -2329,6 +2884,13 @@ JaliumResult VulkanRenderTarget::BeginDraw()
     // when something actually needs it.
     cpuRasterNeeded_ = cpuRasterNeededLastFrame_;
 
+    // SetDpi can arrive on the window thread during an open frame.  Apply the
+    // latest request only here, after owning the BeginDraw lifecycle gate, so
+    // EndDraw observes the same DPI pair and pops exactly the transform that
+    // this frame pushed.
+    dpiX_ = pendingDpiX_.load(std::memory_order_acquire);
+    dpiY_ = pendingDpiY_.load(std::memory_order_acquire);
+
     // Push a root DPI scale transform so all draw calls in DIPs are
     // automatically mapped to physical pixels on high-density displays.
     float scaleX = dpiX_ / 96.0f;
@@ -2338,12 +2900,30 @@ JaliumResult VulkanRenderTarget::BeginDraw()
         PushTransform(m);
     }
 
+    if (!lifecycleGate_.CommitBeginFrame()) {
+        return JALIUM_ERROR_INVALID_STATE;
+    }
+    beginCommitted = true;
     return JALIUM_OK;
+}
+
+void VulkanRenderTarget::FinishDrawSession() noexcept
+{
+    isDrawing_.store(false, std::memory_order_release);
+    if (!lifecycleGate_.CompleteEndFrame()) {
+        VK_LOG("[Vulkan] lifecycle gate: failed to complete EndDraw state");
+    }
 }
 
 JaliumResult VulkanRenderTarget::EndDraw()
 {
-    if (!isDrawing_) {
+    if (!lifecycleGate_.TryEndFrame()) {
+        return JALIUM_ERROR_INVALID_STATE;
+    }
+    auto lifecycleExit = MakeScopeExit([this]() noexcept {
+        FinishDrawSession();
+    });
+    if (!isDrawing_.load(std::memory_order_acquire)) {
         return JALIUM_ERROR_INVALID_STATE;
     }
 
@@ -2352,6 +2932,15 @@ JaliumResult VulkanRenderTarget::EndDraw()
     float scaleY = dpiY_ / 96.0f;
     if (scaleX != 1.0f || scaleY != 1.0f) {
         PopTransform();
+    }
+
+    // Consume BeginDraw's in-place-repair marker up front so its one-frame
+    // lifetime holds no matter which exit below is taken; the marked frame
+    // itself is handled by its own gate after the device and surface gates.
+    const bool swapchainRepairedThisFrame =
+        impl_ && impl_->swapchainRepairJustCompleted;
+    if (impl_) {
+        impl_->swapchainRepairJustCompleted = false;
     }
 
     // Device gate (mirror of D3D12RenderTarget::EndDraw's entry guard): the
@@ -2402,6 +2991,54 @@ JaliumResult VulkanRenderTarget::EndDraw()
         return JALIUM_ERROR_PRESENT_FAILED;
     }
 #endif
+
+    // Repaired-swapchain frame gate: BeginDraw rebuilt the swapchain in place
+    // this frame, but everything recorded above was decided against the OLD
+    // swapchain — the host may have clipped the recording to partial damage,
+    // and replaying that onto undefined fresh images would present a
+    // clear-color frame with only the dirty region painted (and capture it
+    // into the retained-frame baseline; the old retain image died with
+    // DestroyGraphicsResources). Skip the draw/present entirely — the screen
+    // keeps the compositor's last good frame — and report PRESENT_FAILED:
+    // managed keeps its damage, marks full invalidation and repaints the next
+    // frame in full onto the new swapchain, re-seeding the retain baseline.
+    // Cleanup mirrors the device/surface gates above; managed returns the
+    // consumed present credit on every non-OK EndDraw, so the skipped present
+    // keeps pacing credits balanced.
+    // Once WSI is known unusable (or a transactional rebuild left no active
+    // swapchain), never issue another acquire/present from this frame.
+    if (impl_ && (impl_->swapchainUnusable ||
+                  impl_->swapchain == VK_NULL_HANDLE)) {
+        if (impellerEngine_) impellerEngine_->ClearBatches();
+        if (velloEngine_) velloEngine_->ClearBatches();
+        ReleaseRecordedExternalVideoSurfaces();
+        gpuReplayCommands_.clear();
+        impl_->readbackPending_ = false;
+        cpuRasterNeededLastFrame_ = cpuRasterNeeded_;
+        isDrawing_.store(false, std::memory_order_release);
+        dirtyRects_.clear();
+        fullInvalidation_ = false;
+        if (impl_->deviceLost ||
+            (impl_->swapchainUnusable &&
+             impl_->swapchainRepairFailures >= Impl::kSwapchainRepairFailureLimit)) {
+            return JALIUM_ERROR_DEVICE_LOST;
+        }
+        return impl_->swapchainUnusable ? JALIUM_ERROR_PRESENT_FAILED
+                                        : JALIUM_ERROR_INVALID_STATE;
+    }
+
+    if (swapchainRepairedThisFrame) {
+        if (impellerEngine_) impellerEngine_->ClearBatches();
+        if (velloEngine_) velloEngine_->ClearBatches();
+        ReleaseRecordedExternalVideoSurfaces();
+        gpuReplayCommands_.clear();
+        if (impl_) impl_->readbackPending_ = false;
+        cpuRasterNeededLastFrame_ = cpuRasterNeeded_;
+        isDrawing_ = false;
+        dirtyRects_.clear();
+        fullInvalidation_ = false;
+        return JALIUM_ERROR_PRESENT_FAILED;
+    }
 
     // Fold any engine batches still pending after the LAST replay command into
     // a tail span: path work at the very end of the frame — or a frame that is
@@ -2472,14 +3109,32 @@ JaliumResult VulkanRenderTarget::EndDraw()
     if (impl_) {
         if (!impl_->initialized) {
             VK_LOG("[Vulkan] EndDraw: impl not initialized, skipping draw");
-        } else if (gpuReplaySupported_ && gpuReplayHasClear_) {
-            ok = impl_->DrawReplayFrame(
-                gpuReplayCommands_, clearColor_, fullInvalidation_,
-                engineBatches, velloScene,
-                &recordedExternalVideoSurfaces_);
         } else {
-            EnsureCpuRasterization();
-            ok = impl_->DrawFrame(pixelBuffer_.data(), static_cast<uint32_t>(width_), static_cast<uint32_t>(height_));
+            const bool useGpuReplay = gpuReplaySupported_ && gpuReplayHasClear_;
+            // CPU replay can read a foreign ink generation. Do it before
+            // locking this RT's generation so two windows cannot form an
+            // A->B / B->A cross-generation lock cycle.
+            if (!useGpuReplay) {
+                EnsureCpuRasterization();
+            }
+
+            std::unique_lock<std::recursive_mutex> driverCallLock;
+            if (impl_->deviceGeneration) {
+                driverCallLock = std::unique_lock<std::recursive_mutex>(
+                    impl_->deviceGeneration->driverCallMutex);
+            }
+            if (!impl_->DeviceUsable()) {
+                ok = false;
+            } else if (useGpuReplay) {
+                ok = impl_->DrawReplayFrame(
+                    gpuReplayCommands_, clearColor_, fullInvalidation_,
+                    engineBatches, velloScene,
+                    &recordedExternalVideoSurfaces_);
+            } else {
+                ok = impl_->DrawFrame(
+                    pixelBuffer_.data(), static_cast<uint32_t>(width_),
+                    static_cast<uint32_t>(height_));
+            }
         }
     }
 
@@ -2503,6 +3158,39 @@ JaliumResult VulkanRenderTarget::EndDraw()
         impl_->readbackPending_ = false;
     }
     if (ok) {
+        if (impl_ && impl_->transientAcquireTimeout) {
+            impl_->transientAcquireTimeout = false;
+            return JALIUM_ERROR_PRESENT_FAILED;
+        }
+        // An OUT_OF_DATE acquire/present frame reports ok=true so a resize in
+        // flight is not misclassified as a hard failure — but the frame never
+        // reached the screen, so it must not be acknowledged as JALIUM_OK
+        // either: managed clears its damage AND resets its DEVICE_LOST
+        // escalation counter on every OK, which used to leave a static UI
+        // with no damage to re-render (the repair never ran) and made the
+        // "2 consecutive DEVICE_LOST → Software fallback" defense
+        // structurally unreachable. Report PRESENT_FAILED instead — managed
+        // keeps the damage, marks full invalidation and retries in ~120 ms
+        // without touching the escalation counter — and once the failure
+        // streak shows the surface is not coming back on its own, escalate
+        // to DEVICE_LOST so the managed recovery chain rebuilds the context
+        // (and can fall back to Software on the next consecutive round).
+        if (impl_ && impl_->swapchainUnusable) {
+            if (impl_->swapchainRepairFailures >= Impl::kSwapchainRepairFailureLimit) {
+                VK_LOG("[Vulkan] EndDraw: swapchain still unusable after %u unrecovered failures — reporting DEVICE_LOST",
+                       impl_->swapchainRepairFailures);
+                return JALIUM_ERROR_DEVICE_LOST;
+            }
+            return JALIUM_ERROR_PRESENT_FAILED;
+        }
+        // A truly presented frame is the ONLY reset point for the repair
+        // failure streak (see the Impl flags): RecreateSwapchain alone no
+        // longer clears it, so a thrash loop (rebuild OK → next acquire
+        // OUT_OF_DATE again) keeps accumulating toward DEVICE_LOST while
+        // any genuine recovery lands here and forgives the history.
+        if (impl_) {
+            impl_->swapchainRepairFailures = 0;
+        }
         return JALIUM_OK;
     }
     // Classify the failure the way D3D12's EndFrame does: only an actual
@@ -2513,8 +3201,15 @@ JaliumResult VulkanRenderTarget::EndDraw()
     // pipeline creation, …) report INVALID_STATE instead: still recoverable
     // (the managed predicate accepts it), but as a same-context retry that
     // can't escalate a healthy device into a permanent Software fallback.
-    return (impl_ && impl_->deviceLost) ? JALIUM_ERROR_DEVICE_LOST
-                                        : JALIUM_ERROR_INVALID_STATE;
+    // An exhausted swapchain-failure streak joins the DEVICE_LOST class: a WSI
+    // that has gone kSwapchainRepairFailureLimit consecutive failure events
+    // without one truly presented frame is indistinguishable from a dead
+    // surface for recovery purposes.
+    return (impl_ && (impl_->deviceLost ||
+                      (impl_->swapchainUnusable &&
+                       impl_->swapchainRepairFailures >= Impl::kSwapchainRepairFailureLimit)))
+               ? JALIUM_ERROR_DEVICE_LOST
+               : JALIUM_ERROR_INVALID_STATE;
 }
 
 void VulkanRenderTarget::Clear(float r, float g, float b, float a)
@@ -3406,15 +4101,6 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     deviceGeneration->destroyDevice           = destroyDevice;
     deviceGeneration->destroyInstance         = destroyInstance;
 
-    // Publish the live device to the backend so backend-owned ink layers /
-    // brush shaders build their GPU objects on the same device this window
-    // composites with (the InkCanvas blit samples them directly). See
-    // VulkanBackend::RegisterDeviceContext.
-    if (backend) {
-        ownerBackend = backend;
-        backend->RegisterDeviceContext(deviceGeneration);
-    }
-
     VkCommandPoolCreateInfo commandPoolInfo {};
     commandPoolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -3490,6 +4176,13 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     initialized = RecreateSwapchain(width, height, vsync);
     if (!initialized) {
         VK_LOG("[Vulkan] Initialize failed: RecreateSwapchain returned false\n");
+    } else if (backend) {
+        // Publish only a fully initialized generation. Publishing immediately
+        // after VkDevice creation let an ink/video caller enter the device
+        // while command resources and the initial swapchain were still being
+        // built, defeating the generation-wide driver-call barrier.
+        ownerBackend = backend;
+        backend->RegisterDeviceContext(deviceGeneration);
     }
     return initialized;
 #endif
@@ -3497,7 +4190,14 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
 
 bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, bool vsync)
 {
-    if (!device || !surface || !createSwapchain) {
+    // Set before every possible failure exit. Only the fully-created
+    // swapchain path at the end clears it, so a later same-size Resize retries
+    // rather than incorrectly taking the no-op fast path.
+    swapchainRecreatePending = true;
+
+    if (!device || !surface || !deviceWaitIdle ||
+        !createSwapchain || !destroySwapchain ||
+        !createSemaphore || !destroySemaphore) {
         return false;
     }
     // Lost device/surface → the rebuild below cannot succeed
@@ -3507,6 +4207,15 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
     if (!DeviceUsable()) {
         return false;
     }
+
+    // Any failure after this point leaves the current presentation state
+    // unsafe to use. This includes a failed idle proof and all failures after
+    // DestroyGraphicsResources but before oldSwapchain is formally retired.
+    // Latch the target into the bounded repair state instead of restoring a
+    // VSync request and repeating deviceWaitIdle + teardown every BeginDraw.
+    auto recreateFailure = MakeScopeExit([this]() noexcept {
+        MarkSwapchainUnusable("RecreateSwapchain.failed");
+    });
 
     // Must drain ALL in-flight GPU work before tearing down any resource the
     // descriptor sets / command buffers reference. Gating this on
@@ -3520,90 +4229,12 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
     // unconditionally as long as the device is alive — Resize is rare so the
     // cost is negligible.
     if (device != VK_NULL_HANDLE && deviceWaitIdle) {
-        // A DEVICE_LOST here (GPU switch landed between frames) latches and
-        // aborts the rebuild before any teardown churn; other failure codes
-        // keep the historic ignore-and-continue behavior.
-        if (NoteVk(deviceWaitIdle(device), "RecreateSwapchain.deviceWaitIdle") != VK_SUCCESS
-            && deviceLost) {
+        // Any failure means idleness was not proved. Never destroy resources.
+        if (WaitDeviceIdleSynchronized(
+                "RecreateSwapchain.deviceWaitIdle") != VK_SUCCESS) {
             return false;
         }
     }
-
-    DestroyGraphicsResources();
-
-    // Readback capture state is tied to the swapchain being torn down: drop
-    // the pending arm and any un-fetched capture, and destroy the buffer
-    // inline — safe here, the deviceWaitIdle above drained every command
-    // buffer that could still reference it. The next armed frame lazily
-    // recreates it at the new extent.
-    InvalidateReadback(/*destroyBufferToo:*/ true);
-
-    // The upload image and its view were created for the old swapchain extent.
-    // After DestroyGraphicsResources the descriptor pool/set are gone, so
-    // UpdateFrameDescriptorSet (called inside EnsureGraphicsResources when the
-    // new pool is allocated) would try to write the stale uploadImageView into
-    // the new descriptor set — which crashes the NVIDIA driver. Destroy the
-    // upload image in *every* per-frame slot (not just the current alias) so
-    // EnsureUploadImage recreates it at the new size when each slot runs.
-    CommitCurrentFrame();
-    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
-        auto& s = perFrameStates_[i];
-        if (s.uploadImage != VK_NULL_HANDLE && s.uploadWidth > 0 && s.uploadHeight > 0) {
-            // Balance EnsureUploadImage's AddGpuResidentBytes for this slot
-            // (shared upload image = the Vulkan GPU-resident approximation).
-            bitmap_stats::AddGpuResidentBytes(-(static_cast<int64_t>(s.uploadWidth) * s.uploadHeight * 4));
-        }
-        if (s.uploadImageView != VK_NULL_HANDLE && destroyImageView) {
-            destroyImageView(device, s.uploadImageView, nullptr);
-        }
-        if (s.uploadImage != VK_NULL_HANDLE && destroyImage) {
-            destroyImage(device, s.uploadImage, nullptr);
-        }
-        if (s.uploadImageMemory != VK_NULL_HANDLE && freeMemory) {
-            freeMemory(device, s.uploadImageMemory, nullptr);
-        }
-        s.uploadImage = VK_NULL_HANDLE;
-        s.uploadImageMemory = VK_NULL_HANDLE;
-        s.uploadImageView = VK_NULL_HANDLE;
-        s.uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        s.uploadWidth = 0;
-        s.uploadHeight = 0;
-
-        // DestroyGraphicsResources just freed frameDescriptorPool (and with
-        // it every descriptor set allocated from it), and zero'd the alias
-        // frameDescriptorSet field. But each per-frame slot also caches the
-        // descriptor set handle it allocated during its own BeginFrame —
-        // those handles point into the now-freed pool. If we leave them set,
-        // the next BeginFrame copies a stale handle into the alias,
-        // EnsureGraphicsResources sees alias != VK_NULL_HANDLE and skips
-        // allocation, and UpdateFrameDescriptorSet writes through the stale
-        // handle. The NVIDIA driver's vkUpdateDescriptorSets then walks the
-        // freed pool's bookkeeping and AVs (typically reading offset 0x104).
-        // Clear them here so EnsureGraphicsResources reallocates from the
-        // newly-created pool on the next frame.
-        s.frameDescriptorSet = VK_NULL_HANDLE;
-        s.frameDescriptorSetNearest = VK_NULL_HANDLE;
-        // Same staleness story for the per-slot text/transition sets: their
-        // pools died in the same DestroyGraphicsResources call.
-#ifdef _WIN32
-        s.textDescriptorSet = VK_NULL_HANDLE;
-        s.textDescriptorSetSmooth = VK_NULL_HANDLE;
-#endif
-        s.transitionDescriptorSet = VK_NULL_HANDLE;
-    }
-    // Clear the current alias too.
-    uploadImage = VK_NULL_HANDLE;
-    uploadImageMemory = VK_NULL_HANDLE;
-    uploadImageView = VK_NULL_HANDLE;
-    uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    uploadWidth = 0;
-    uploadHeight = 0;
-
-    // E6: the deviceWaitIdle above proved every submission idle, so any upload/
-    // text-atlas images still parked on the graveyard (retired by a growth just
-    // before this resize) are safe to free now — don't carry stale entries
-    // across the swapchain rebuild.
-    FlushRetiredImageGraveyard();
 
     VkSurfaceCapabilitiesKHR capabilities {};
     if (NoteVk(getSurfaceCapabilities(physicalDevice, surface, &capabilities),
@@ -3743,6 +4374,13 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
         newExtent.height = ClampExtent(1u, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
     }
 
+    // Minimized Win32 surfaces may transiently report a fixed 0x0 extent.
+    // VkSwapchainCreateInfoKHR::imageExtent must be non-zero; leave the old
+    // handle unretired and let the authoritative restore Resize retry.
+    if (newExtent.width == 0 || newExtent.height == 0) {
+        return false;
+    }
+
     const VkSurfaceTransformFlagBitsKHR chosenPreTransform =
         identitySupported ? VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR : curTransform;
 
@@ -3878,6 +4516,117 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
            static_cast<unsigned>(capabilities.supportedUsageFlags),
            static_cast<unsigned>(imageUsage));
 
+    // All WSI queries and the final format/present-mode selection are complete
+    // before any graphics teardown. A transient query failure therefore leaves
+    // the current graphics object graph intact and the existing bounded repair
+    // latch is the sole failure-state authority.
+    const bool hasPreviousGraphicsGeneration =
+        initialized || swapchain != VK_NULL_HANDLE ||
+        frameRenderPass != VK_NULL_HANDLE || !imageViews.empty();
+    const bool preserveFormatResources =
+        hasPreviousGraphicsGeneration && format == selectedFormat.format;
+
+    if (preserveFormatResources) {
+        // The extent-only path keeps these per-slot pools alive, but their sets
+        // can reference the extent-sized stencil resolve view destroyed below.
+        // Device idleness proves execution complete; reset BOTH pools before
+        // destroying any old image/view so no stale descriptor bookkeeping can
+        // retain that view. A failed reset leaves the old resource graph intact.
+        for (auto pool : velloCompositeDescPools) {
+            if (pool != VK_NULL_HANDLE &&
+                (!resetDescriptorPool ||
+                 NoteVk(resetDescriptorPool(device, pool, 0),
+                        "RecreateSwapchain.resetVelloCompositeDescriptorPool") !=
+                     VK_SUCCESS)) {
+                return false;
+            }
+        }
+    }
+
+    // These are the only objects that directly reference old swapchain-owned
+    // images. The global idle proof above makes immediate destruction legal.
+    DestroySwapchainImageResources();
+    DestroyFrameRetainImage();
+
+    // Captured bytes describe an old backbuffer. The same-format path keeps the
+    // grow-only host buffer, while a format transition uses the conservative
+    // full reset because its channel conversion contract may change.
+    InvalidateReadback(/*destroyBufferToo:*/ !preserveFormatResources);
+
+    if (preserveFormatResources) {
+        // Main render pass/pipelines/layouts/descriptors/samplers and all
+        // content-sized resident resources remain valid across an extent-only
+        // change. Only exact-swapchain-extent scratch attachments are retired.
+        DestroyEffectOffscreenResources();
+        DestroyStencilCoverAttachments();
+    } else {
+        // Descriptor owners whose sets contain frameSampler or an old-format
+        // image view must die before DestroyGraphicsResources destroys the
+        // shared sampler/layout. This ordering also avoids NVIDIA's
+        // previous-image-view descriptor bookkeeping hazard.
+        DestroyAllRetainedLayerImages();
+        DestroyAllBitmapResidentImages();
+        if (destroyDescriptorPool) {
+            for (auto& pool : velloCompositeDescPools) {
+                if (pool != VK_NULL_HANDLE) {
+                    destroyDescriptorPool(device, pool, nullptr);
+                    pool = VK_NULL_HANDLE;
+                }
+            }
+        }
+
+        // DestroyGraphicsResources frees frame/text/transition descriptor
+        // pools before their layouts/samplers. Keep all referenced image views
+        // alive until those pools are gone, then release the old-format images.
+        DestroyGraphicsResources();
+        DestroyTransitionImages();
+
+        CommitCurrentFrame();
+        for (auto& slot : perFrameStates_) {
+            if (slot.uploadImage != VK_NULL_HANDLE &&
+                slot.uploadWidth > 0 && slot.uploadHeight > 0) {
+                bitmap_stats::AddGpuResidentBytes(-(
+                    static_cast<int64_t>(slot.uploadWidth) *
+                    slot.uploadHeight * 4));
+            }
+            if (slot.uploadImageView != VK_NULL_HANDLE && destroyImageView) {
+                destroyImageView(device, slot.uploadImageView, nullptr);
+            }
+            if (slot.uploadImage != VK_NULL_HANDLE && destroyImage) {
+                destroyImage(device, slot.uploadImage, nullptr);
+            }
+            if (slot.uploadImageMemory != VK_NULL_HANDLE && freeMemory) {
+                freeMemory(device, slot.uploadImageMemory, nullptr);
+            }
+            slot.uploadImage = VK_NULL_HANDLE;
+            slot.uploadImageMemory = VK_NULL_HANDLE;
+            slot.uploadImageView = VK_NULL_HANDLE;
+            slot.uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            slot.uploadWidth = 0;
+            slot.uploadHeight = 0;
+
+            // Their owner pools were destroyed above; no stale set handle may
+            // be copied back into an alias by the next BeginFrame.
+            slot.frameDescriptorSet = VK_NULL_HANDLE;
+            slot.frameDescriptorSetNearest = VK_NULL_HANDLE;
+#ifdef _WIN32
+            slot.textDescriptorSet = VK_NULL_HANDLE;
+            slot.textDescriptorSetSmooth = VK_NULL_HANDLE;
+#endif
+            slot.transitionDescriptorSet = VK_NULL_HANDLE;
+        }
+        uploadImage = VK_NULL_HANDLE;
+        uploadImageMemory = VK_NULL_HANDLE;
+        uploadImageView = VK_NULL_HANDLE;
+        uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        uploadWidth = 0;
+        uploadHeight = 0;
+
+        // A format-generation boundary is a safe opportunity to retire old
+        // views parked by grow operations; device idleness is already proved.
+        FlushRetiredImageGraveyard();
+    }
+
     VkSwapchainKHR oldSwapchain = swapchain;
     VkSwapchainCreateInfoKHR swapchainInfo {};
     swapchainInfo.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -3895,9 +4644,23 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
     swapchainInfo.clipped = VK_TRUE;
     swapchainInfo.oldSwapchain = oldSwapchain;
 
+    // Passing oldSwapchain retires it as soon as vkCreateSwapchainKHR is
+    // called, even when creation fails. Detach it from active state first so
+    // no failure path can acquire or reuse the retired handle.
+    swapchain = VK_NULL_HANDLE;
+    images.clear();
+    imageLayouts.clear();
+    swapImageCount = 0;
+    submitted = false;
+
     VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
-    if (NoteVk(createSwapchain(device, &swapchainInfo, nullptr, &newSwapchain),
-               "RecreateSwapchain.createSwapchain") != VK_SUCCESS || newSwapchain == VK_NULL_HANDLE) {
+    const VkResult createResult = NoteVk(
+        createSwapchain(device, &swapchainInfo, nullptr, &newSwapchain),
+        "RecreateSwapchain.createSwapchain");
+    if (oldSwapchain != VK_NULL_HANDLE) {
+        destroySwapchain(device, oldSwapchain, nullptr);
+    }
+    if (createResult != VK_SUCCESS || newSwapchain == VK_NULL_HANDLE) {
         return false;
     }
 
@@ -3910,13 +4673,53 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
 
     std::vector<VkImage> newImages(actualImageCount);
     if (NoteVk(getSwapchainImages(device, newSwapchain, &actualImageCount, newImages.data()),
-               "RecreateSwapchain.getSwapchainImages2") != VK_SUCCESS) {
+               "RecreateSwapchain.getSwapchainImages2") != VK_SUCCESS ||
+        actualImageCount == 0) {
         destroySwapchain(device, newSwapchain, nullptr);
         return false;
     }
+    newImages.resize(actualImageCount);
 
-    if (oldSwapchain != VK_NULL_HANDLE) {
-        destroySwapchain(device, oldSwapchain, nullptr);
+    // Build all per-image synchronization before publishing the swapchain.
+    // A partial semaphore set must never become observable by DrawFrame.
+    std::vector<VkSemaphore> newRenderFinished(newImages.size(), VK_NULL_HANDLE);
+    std::vector<VkSemaphore> newImageAvailable(
+        MAX_FRAMES_IN_FLIGHT, VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo semaphoreInfo {};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    auto destroyNewSemaphores = [&]() noexcept {
+        for (VkSemaphore sem : newRenderFinished) {
+            if (sem != VK_NULL_HANDLE) {
+                destroySemaphore(device, sem, nullptr);
+            }
+        }
+        for (VkSemaphore sem : newImageAvailable) {
+            if (sem != VK_NULL_HANDLE) {
+                destroySemaphore(device, sem, nullptr);
+            }
+        }
+    };
+    for (size_t i = 0; i < newRenderFinished.size(); ++i) {
+        const VkResult semaphoreResult = NoteVk(
+            createSemaphore(device, &semaphoreInfo, nullptr, &newRenderFinished[i]),
+            "RecreateSwapchain.createRenderFinishedSemaphore");
+        if (semaphoreResult != VK_SUCCESS ||
+            newRenderFinished[i] == VK_NULL_HANDLE) {
+            destroyNewSemaphores();
+            destroySwapchain(device, newSwapchain, nullptr);
+            return false;
+        }
+    }
+    for (size_t i = 0; i < newImageAvailable.size(); ++i) {
+        const VkResult semaphoreResult = NoteVk(
+            createSemaphore(device, &semaphoreInfo, nullptr, &newImageAvailable[i]),
+            "RecreateSwapchain.createImageAvailableSemaphore");
+        if (semaphoreResult != VK_SUCCESS ||
+            newImageAvailable[i] == VK_NULL_HANDLE) {
+            destroyNewSemaphores();
+            destroySwapchain(device, newSwapchain, nullptr);
+            return false;
+        }
     }
 
     swapchain = newSwapchain;
@@ -3942,25 +4745,37 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
 
     // Recreate per-image renderFinished semaphores sized to the new image count.
     for (VkSemaphore sem : renderFinishedPerImage) {
-        if (sem != VK_NULL_HANDLE && destroySemaphore) {
+        if (sem != VK_NULL_HANDLE) {
             destroySemaphore(device, sem, nullptr);
         }
     }
-    renderFinishedPerImage.clear();
-    renderFinishedPerImage.resize(images.size(), VK_NULL_HANDLE);
-    VkSemaphoreCreateInfo semaphoreInfo {};
-    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    for (size_t i = 0; i < renderFinishedPerImage.size(); ++i) {
-        if (createSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedPerImage[i]) != VK_SUCCESS ||
-            renderFinishedPerImage[i] == VK_NULL_HANDLE) {
-            VK_LOG("[Vulkan] RecreateSwapchain: failed to create renderFinished semaphore for image %zu\n", i);
-            return false;
+    renderFinishedPerImage = std::move(newRenderFinished);
+    // Recreate the per-frame acquire semaphores too. A command-recording or
+    // submit failure after a successful acquire can leave one signaled with no
+    // pending wait; reusing it in vkAcquireNextImageKHR violates VUID-01286.
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        auto& frame = perFrameStates_[i];
+        if (frame.imageAvailable != VK_NULL_HANDLE) {
+            destroySemaphore(device, frame.imageAvailable, nullptr);
         }
+        frame.imageAvailable = newImageAvailable[i];
+        newImageAvailable[i] = VK_NULL_HANDLE;
     }
+    imageAvailable = perFrameStates_[currentFrame_].imageAvailable;
     // Staging buffer and upload image are lazy — do not create them here. Each
     // per-frame slot will allocate its own copy the first time DrawFrame runs on
     // that slot, avoiding cross-frame alias pollution that would happen if this
     // function (called out of the BeginFrame/EndFrame cycle) wrote into the alias.
+    swapchainRecreatePending = false;
+    swapchainUnusable = false;
+    // swapchainRepairFailures is deliberately NOT reset here: a rebuild that
+    // succeeds is no proof the WSI is healthy again (a thrash loop rebuilds
+    // successfully every round and immediately gets OUT_OF_DATE on the next
+    // acquire — resetting here made that loop escalation-proof). The streak
+    // resets only on an EndDraw whose frame truly presented; Resize /
+    // SetVSyncEnabled callers converge the same way — their next
+    // successfully presented frame clears it.
+    recreateFailure.Release();
     return true;
 }
 
@@ -3974,35 +4789,26 @@ bool VulkanRenderTarget::Impl::EnsureUploadImage(uint32_t width, uint32_t height
         return true;
     }
 
-    // E6: the GPU may still be sampling the current uploadImage / uploadImageView
-    // via an in-flight frameDescriptorSet. Formerly we vkDeviceWaitIdle here so
-    // the old image was provably idle before freeing it — a full pipeline drain
-    // that bubbles this growth frame. Instead, PARK the old image/view/memory on
-    // the fence-gated graveyard (freed after MAX_FRAMES_IN_FLIGHT drained frames,
-    // once both in-flight slots have cycled) and build the replacement now with
-    // NO wait. Keeping the OLD view ALIVE until the drain is also exactly what
-    // the NVIDIA vkUpdateDescriptorSets hazard needs: UpdateFrameDescriptorSet
-    // below rewrites the descriptor to the new view, and the driver's bookkeeping
-    // deref of the descriptor's PREVIOUS view lands on a still-valid handle.
-    //
-    // This path is rare (only when a draw needs an upload image larger than the
-    // cached one), so the graveyard never accumulates more than a couple entries.
-    // Balance EnsureUploadImage's AddGpuResidentBytes for the outgoing image here
-    // (DestroyUploadImage does it on the teardown paths; the graveyard drain frees
-    // the Vulkan objects but does not touch telemetry, so account for it now).
-    if (uploadImage != VK_NULL_HANDLE) {
-        if (uploadWidth > 0 && uploadHeight > 0) {
-            bitmap_stats::AddGpuResidentBytes(-(static_cast<int64_t>(uploadWidth) * uploadHeight * 4));
+    // Build the complete replacement first. Allocation failures must preserve
+    // the live image and its descriptor; otherwise the descriptor's old view is
+    // left pointing at a graveyard entry that will later be destroyed.
+    VkImage candidateImage = VK_NULL_HANDLE;
+    VkDeviceMemory candidateMemory = VK_NULL_HANDLE;
+    VkImageView candidateView = VK_NULL_HANDLE;
+    auto destroyCandidate = [&]() {
+        if (candidateView != VK_NULL_HANDLE && destroyImageView) {
+            destroyImageView(device, candidateView, nullptr);
         }
-        RetireImageToGraveyard(uploadImage, uploadImageView, uploadImageMemory);
-        uploadImage = VK_NULL_HANDLE;
-        uploadImageView = VK_NULL_HANDLE;
-        uploadImageMemory = VK_NULL_HANDLE;
-        uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        uploadWidth = 0;
-        uploadHeight = 0;
-    }
-
+        if (candidateImage != VK_NULL_HANDLE && destroyImage) {
+            destroyImage(device, candidateImage, nullptr);
+        }
+        if (candidateMemory != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, candidateMemory, nullptr);
+        }
+        candidateView = VK_NULL_HANDLE;
+        candidateImage = VK_NULL_HANDLE;
+        candidateMemory = VK_NULL_HANDLE;
+    };
     VkImageCreateInfo imageInfo {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -4017,15 +4823,18 @@ bool VulkanRenderTarget::Impl::EnsureUploadImage(uint32_t width, uint32_t height
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (createImage(device, &imageInfo, nullptr, &uploadImage) != VK_SUCCESS || uploadImage == VK_NULL_HANDLE) {
+    if (createImage(device, &imageInfo, nullptr, &candidateImage) != VK_SUCCESS ||
+        candidateImage == VK_NULL_HANDLE) {
+        destroyCandidate();
         return false;
     }
 
     VkMemoryRequirements memoryRequirements {};
-    getImageMemoryRequirements(device, uploadImage, &memoryRequirements);
+    getImageMemoryRequirements(device, candidateImage, &memoryRequirements);
 
     const uint32_t memoryTypeIndex = FindMemoryType(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (memoryTypeIndex == VK_QUEUE_FAMILY_IGNORED) {
+        destroyCandidate();
         return false;
     }
 
@@ -4033,29 +4842,76 @@ bool VulkanRenderTarget::Impl::EnsureUploadImage(uint32_t width, uint32_t height
     allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocateInfo.allocationSize = memoryRequirements.size;
     allocateInfo.memoryTypeIndex = memoryTypeIndex;
-    if (allocateMemory(device, &allocateInfo, nullptr, &uploadImageMemory) != VK_SUCCESS || uploadImageMemory == VK_NULL_HANDLE) {
+    if (allocateMemory(device, &allocateInfo, nullptr, &candidateMemory) != VK_SUCCESS ||
+        candidateMemory == VK_NULL_HANDLE) {
+        destroyCandidate();
         return false;
     }
 
-    if (bindImageMemory(device, uploadImage, uploadImageMemory, 0) != VK_SUCCESS) {
+    if (bindImageMemory(device, candidateImage, candidateMemory, 0) != VK_SUCCESS) {
+        destroyCandidate();
         return false;
     }
 
     VkImageViewCreateInfo viewInfo {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = uploadImage;
+    viewInfo.image = candidateImage;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = imageInfo.format;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.layerCount = 1;
-    if (createImageView(device, &viewInfo, nullptr, &uploadImageView) != VK_SUCCESS || uploadImageView == VK_NULL_HANDLE) {
+    if (createImageView(device, &viewInfo, nullptr, &candidateView) != VK_SUCCESS ||
+        candidateView == VK_NULL_HANDLE) {
+        destroyCandidate();
         return false;
     }
 
+    if (uploadImage != VK_NULL_HANDLE || uploadImageView != VK_NULL_HANDLE ||
+        uploadImageMemory != VK_NULL_HANDLE) {
+        try {
+            retiredImageGraveyard_.reserve(retiredImageGraveyard_.size() + 1u);
+        } catch (...) {
+            destroyCandidate();
+            return false;
+        }
+    }
+
+    const VkImage oldImage = uploadImage;
+    const VkDeviceMemory oldMemory = uploadImageMemory;
+    const VkImageView oldView = uploadImageView;
+    const VkImageLayout oldLayout = uploadImageLayout;
+    const uint32_t oldWidth = uploadWidth;
+    const uint32_t oldHeight = uploadHeight;
+
+    uploadImage = candidateImage;
+    uploadImageMemory = candidateMemory;
+    uploadImageView = candidateView;
     uploadWidth = width;
     uploadHeight = height;
     uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (!UpdateFrameDescriptorSet()) {
+        uploadImage = oldImage;
+        uploadImageMemory = oldMemory;
+        uploadImageView = oldView;
+        uploadWidth = oldWidth;
+        uploadHeight = oldHeight;
+        uploadImageLayout = oldLayout;
+        destroyCandidate();
+        return false;
+    }
+
+    // The current slot now points at the candidate while the old view is still
+    // alive for the driver's previous-descriptor bookkeeping. Retire only after
+    // the successful rewrite and publish.
+    if (oldImage != VK_NULL_HANDLE || oldView != VK_NULL_HANDLE ||
+        oldMemory != VK_NULL_HANDLE) {
+        if (oldImage != VK_NULL_HANDLE && oldWidth > 0 && oldHeight > 0) {
+            bitmap_stats::AddGpuResidentBytes(-(
+                static_cast<int64_t>(oldWidth) * oldHeight * 4));
+        }
+        RetireImageToGraveyard(oldImage, oldView, oldMemory);
+    }
     // DevTools bitmap telemetry — GPU-resident approximation: Vulkan keeps no
     // per-bitmap resident textures (bitmap pixels ride through this shared
     // per-frame-slot upload image at replay time), so the upload image's
@@ -4068,7 +4924,7 @@ bool VulkanRenderTarget::Impl::EnsureUploadImage(uint32_t width, uint32_t height
     // this add and leaves the dimensions 0, so the destroy side subtracts 0
     // and the counter stays balanced.
     bitmap_stats::AddGpuResidentBytes(static_cast<int64_t>(uploadWidth) * uploadHeight * 4);
-    return uploadImageView == VK_NULL_HANDLE ? true : UpdateFrameDescriptorSet();
+    return true;
 }
 
 bool VulkanRenderTarget::Impl::EnsureUploadImageCapacity(uint32_t width, uint32_t height)
@@ -4315,21 +5171,40 @@ bool VulkanRenderTarget::Impl::EnsureTransitionImagesCapacity(uint32_t width, ui
         return false;
     }
 
-    if (transitionImages[0] != VK_NULL_HANDLE && transitionWidth == width && transitionHeight == height) {
-        return true;
+    if (transitionImages[0] != VK_NULL_HANDLE &&
+        transitionImages[1] != VK_NULL_HANDLE &&
+        transitionImageMemory[0] != VK_NULL_HANDLE &&
+        transitionImageMemory[1] != VK_NULL_HANDLE &&
+        transitionImageViews[0] != VK_NULL_HANDLE &&
+        transitionImageViews[1] != VK_NULL_HANDLE &&
+        transitionWidth == width && transitionHeight == height) {
+        // Each in-flight slot owns its descriptor set. Refresh the current
+        // alias even when another slot created the shared image generation.
+        return UpdateTransitionDescriptorSet();
     }
 
-    // In-flight frames (MAX_FRAMES_IN_FLIGHT=2) may still be sampling the
-    // current transition images through a bound descriptor set — destroying
-    // them without draining is a use-after-free, and the descriptor rewrite
-    // that follows trips the same NVIDIA-driver hazard EnsureUploadImage /
-    // EnsureTextAtlasImage guard against. This path is rare (only when the
-    // max transition tile size changes), so vkDeviceWaitIdle is affordable.
-    if (deviceWaitIdle && transitionImages[0] != VK_NULL_HANDLE) {
-        NoteVk(deviceWaitIdle(device), "EnsureTransitionImagesCapacity.deviceWaitIdle");
-    }
-
-    DestroyTransitionImages();
+    // Build the complete pair off to the side. Publishing either image before
+    // both allocations and both views exist could leave the live descriptor
+    // with a half-old, half-new pair after a recoverable allocation failure.
+    VkImage candidateImages[2] = {};
+    VkDeviceMemory candidateMemory[2] = {};
+    VkImageView candidateViews[2] = {};
+    auto destroyCandidates = [&]() {
+        for (int index = 0; index < 2; ++index) {
+            if (candidateViews[index] != VK_NULL_HANDLE && destroyImageView) {
+                destroyImageView(device, candidateViews[index], nullptr);
+            }
+            if (candidateImages[index] != VK_NULL_HANDLE && destroyImage) {
+                destroyImage(device, candidateImages[index], nullptr);
+            }
+            if (candidateMemory[index] != VK_NULL_HANDLE && freeMemory) {
+                freeMemory(device, candidateMemory[index], nullptr);
+            }
+            candidateViews[index] = VK_NULL_HANDLE;
+            candidateImages[index] = VK_NULL_HANDLE;
+            candidateMemory[index] = VK_NULL_HANDLE;
+        }
+    };
 
     for (int index = 0; index < 2; ++index) {
         VkImageCreateInfo imageInfo {};
@@ -4346,14 +5221,17 @@ bool VulkanRenderTarget::Impl::EnsureTransitionImagesCapacity(uint32_t width, ui
         imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        if (createImage(device, &imageInfo, nullptr, &transitionImages[index]) != VK_SUCCESS || transitionImages[index] == VK_NULL_HANDLE) {
+        if (createImage(device, &imageInfo, nullptr, &candidateImages[index]) != VK_SUCCESS ||
+            candidateImages[index] == VK_NULL_HANDLE) {
+            destroyCandidates();
             return false;
         }
 
         VkMemoryRequirements memoryRequirements {};
-        getImageMemoryRequirements(device, transitionImages[index], &memoryRequirements);
+        getImageMemoryRequirements(device, candidateImages[index], &memoryRequirements);
         const uint32_t memoryTypeIndex = FindMemoryType(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         if (memoryTypeIndex == VK_QUEUE_FAMILY_IGNORED) {
+            destroyCandidates();
             return false;
         }
 
@@ -4361,32 +5239,93 @@ bool VulkanRenderTarget::Impl::EnsureTransitionImagesCapacity(uint32_t width, ui
         allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
         allocateInfo.allocationSize = memoryRequirements.size;
         allocateInfo.memoryTypeIndex = memoryTypeIndex;
-        if (allocateMemory(device, &allocateInfo, nullptr, &transitionImageMemory[index]) != VK_SUCCESS || transitionImageMemory[index] == VK_NULL_HANDLE) {
+        if (allocateMemory(device, &allocateInfo, nullptr, &candidateMemory[index]) != VK_SUCCESS ||
+            candidateMemory[index] == VK_NULL_HANDLE) {
+            destroyCandidates();
             return false;
         }
 
-        if (bindImageMemory(device, transitionImages[index], transitionImageMemory[index], 0) != VK_SUCCESS) {
+        if (bindImageMemory(device, candidateImages[index], candidateMemory[index], 0) != VK_SUCCESS) {
+            destroyCandidates();
             return false;
         }
 
         VkImageViewCreateInfo viewInfo {};
         viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        viewInfo.image = transitionImages[index];
+        viewInfo.image = candidateImages[index];
         viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
         viewInfo.format = imageInfo.format;
         viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         viewInfo.subresourceRange.levelCount = 1;
         viewInfo.subresourceRange.layerCount = 1;
-        if (createImageView(device, &viewInfo, nullptr, &transitionImageViews[index]) != VK_SUCCESS || transitionImageViews[index] == VK_NULL_HANDLE) {
+        if (createImageView(device, &viewInfo, nullptr, &candidateViews[index]) != VK_SUCCESS ||
+            candidateViews[index] == VK_NULL_HANDLE) {
+            destroyCandidates();
             return false;
         }
-
-        transitionImageLayouts[index] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
+    uint32_t retiredCount = 0;
+    for (int index = 0; index < 2; ++index) {
+        if (transitionImages[index] != VK_NULL_HANDLE ||
+            transitionImageViews[index] != VK_NULL_HANDLE ||
+            transitionImageMemory[index] != VK_NULL_HANDLE) {
+            ++retiredCount;
+        }
+    }
+    if (retiredCount > 0) {
+        try {
+            retiredImageGraveyard_.reserve(retiredImageGraveyard_.size() + retiredCount);
+        } catch (...) {
+            destroyCandidates();
+            return false;
+        }
+    }
+
+    VkImage oldImages[2] = { transitionImages[0], transitionImages[1] };
+    VkDeviceMemory oldMemory[2] = {
+        transitionImageMemory[0], transitionImageMemory[1]
+    };
+    VkImageView oldViews[2] = {
+        transitionImageViews[0], transitionImageViews[1]
+    };
+    VkImageLayout oldLayouts[2] = {
+        transitionImageLayouts[0], transitionImageLayouts[1]
+    };
+    const uint32_t oldWidth = transitionWidth;
+    const uint32_t oldHeight = transitionHeight;
+
+    for (int index = 0; index < 2; ++index) {
+        transitionImages[index] = candidateImages[index];
+        transitionImageMemory[index] = candidateMemory[index];
+        transitionImageViews[index] = candidateViews[index];
+        transitionImageLayouts[index] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
     transitionWidth = width;
     transitionHeight = height;
-    return UpdateTransitionDescriptorSet();
+    if (!RefreshTransitionImageBindings(transitionDescriptorSet)) {
+        for (int index = 0; index < 2; ++index) {
+            transitionImages[index] = oldImages[index];
+            transitionImageMemory[index] = oldMemory[index];
+            transitionImageViews[index] = oldViews[index];
+            transitionImageLayouts[index] = oldLayouts[index];
+        }
+        transitionWidth = oldWidth;
+        transitionHeight = oldHeight;
+        destroyCandidates();
+        return false;
+    }
+
+    // The current slot now names the complete replacement while every old view
+    // is still alive. Park the old pair until both descriptor-set slots have
+    // crossed a fence and been proactively rewritten to this generation.
+    for (int index = 0; index < 2; ++index) {
+        RetireImageToGraveyard(oldImages[index], oldViews[index], oldMemory[index]);
+        candidateImages[index] = VK_NULL_HANDLE;
+        candidateMemory[index] = VK_NULL_HANDLE;
+        candidateViews[index] = VK_NULL_HANDLE;
+    }
+    return true;
 }
 
 bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
@@ -6644,6 +7583,98 @@ bool VulkanRenderTarget::Impl::UpdateFrameDescriptorSet()
 }
 
 #ifdef _WIN32
+bool VulkanRenderTarget::Impl::RefreshTextAtlasImageBindings(
+    VkDescriptorSet pointSet, VkDescriptorSet smoothSet)
+{
+    // No set means this slot has never allocated text descriptors, hence it
+    // cannot retain an outgoing atlas view. Likewise, no live atlas means
+    // there is no replacement generation to publish.
+    if (pointSet == VK_NULL_HANDLE && smoothSet == VK_NULL_HANDLE) {
+        return true;
+    }
+    if (textAtlasImageView == VK_NULL_HANDLE) {
+        return true;
+    }
+    if (pointSet == VK_NULL_HANDLE || smoothSet == VK_NULL_HANDLE ||
+        framePointSampler == VK_NULL_HANDLE || frameSampler == VK_NULL_HANDLE ||
+        !updateDescriptorSets) {
+        return false;
+    }
+
+    VkDescriptorImageInfo atlasImageInfo {};
+    atlasImageInfo.imageView = textAtlasImageView;
+    atlasImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    VkDescriptorImageInfo samplerImageInfos[2] {};
+    samplerImageInfos[0].sampler = framePointSampler;
+    samplerImageInfos[1].sampler = frameSampler;
+    for (auto& samplerImageInfo : samplerImageInfos) {
+        // NVIDIA's Windows driver has historically inspected imageView even
+        // for a SAMPLER write. Keep a live view in the ignored field so the
+        // descriptor refresh cannot lead it through a stale/null handle.
+        samplerImageInfo.imageView = textAtlasImageView;
+        samplerImageInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+
+    const VkDescriptorSet sets[2] = { pointSet, smoothSet };
+    VkWriteDescriptorSet writes[4] {};
+    for (uint32_t setIndex = 0; setIndex < 2; ++setIndex) {
+        const uint32_t writeBase = setIndex * 2;
+        writes[writeBase + 0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[writeBase + 0].dstSet = sets[setIndex];
+        writes[writeBase + 0].dstBinding = 0;
+        writes[writeBase + 0].descriptorCount = 1;
+        writes[writeBase + 0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        writes[writeBase + 0].pImageInfo = &atlasImageInfo;
+        writes[writeBase + 1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[writeBase + 1].dstSet = sets[setIndex];
+        writes[writeBase + 1].dstBinding = 1;
+        writes[writeBase + 1].descriptorCount = 1;
+        writes[writeBase + 1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+        writes[writeBase + 1].pImageInfo = &samplerImageInfos[setIndex];
+    }
+    // Deliberately leave binding 2 untouched: it names the slot-local glyph
+    // buffer and is refreshed only when its exact offset/range is known.
+    updateDescriptorSets(device, static_cast<uint32_t>(std::size(writes)), writes,
+                         0, nullptr);
+    return true;
+}
+
+bool VulkanRenderTarget::Impl::RefreshTextGlyphBufferBinding(
+    VkDescriptorSet pointSet, VkDescriptorSet smoothSet,
+    VkBuffer buffer, VkDeviceSize capacity)
+{
+    if (pointSet == VK_NULL_HANDLE && smoothSet == VK_NULL_HANDLE) {
+        return true;
+    }
+    if (pointSet == VK_NULL_HANDLE || smoothSet == VK_NULL_HANDLE ||
+        buffer == VK_NULL_HANDLE || capacity == 0 || !updateDescriptorSets) {
+        return false;
+    }
+
+    // This placeholder binding is never consumed by a text draw: the replay
+    // capacity phase overwrites it with the exact glyph offset/range first. Its
+    // only purpose is to detach both persistent slot sets from the outgoing
+    // staging buffer while that old buffer is still alive.
+    VkDescriptorBufferInfo bufferInfo {};
+    bufferInfo.buffer = buffer;
+    bufferInfo.offset = 0;
+    bufferInfo.range = std::min<VkDeviceSize>(capacity, 16u);
+
+    VkWriteDescriptorSet writes[2] {};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = pointSet;
+    writes[0].dstBinding = 2;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[0].pBufferInfo = &bufferInfo;
+    writes[1] = writes[0];
+    writes[1].dstSet = smoothSet;
+    updateDescriptorSets(device, static_cast<uint32_t>(std::size(writes)), writes,
+                         0, nullptr);
+    return true;
+}
+
 bool VulkanRenderTarget::Impl::UpdateTextDescriptorSet(VkDeviceSize glyphOffset, VkDeviceSize glyphRange)
 {
     if (textDescriptorSet == VK_NULL_HANDLE ||
@@ -6705,13 +7736,19 @@ bool VulkanRenderTarget::Impl::UpdateTextDescriptorSet(VkDeviceSize glyphOffset,
 }
 #endif // _WIN32
 
-bool VulkanRenderTarget::Impl::UpdateTransitionDescriptorSet()
+bool VulkanRenderTarget::Impl::RefreshTransitionImageBindings(VkDescriptorSet set)
 {
-    if (transitionDescriptorSet == VK_NULL_HANDLE ||
-        transitionImageViews[0] == VK_NULL_HANDLE ||
+    if (set == VK_NULL_HANDLE) {
+        return true;
+    }
+    if (transitionImageViews[0] == VK_NULL_HANDLE &&
+        transitionImageViews[1] == VK_NULL_HANDLE) {
+        return true;
+    }
+    if (transitionImageViews[0] == VK_NULL_HANDLE ||
         transitionImageViews[1] == VK_NULL_HANDLE ||
-        frameSampler == VK_NULL_HANDLE) {
-        return transitionDescriptorSet != VK_NULL_HANDLE ? false : true;
+        frameSampler == VK_NULL_HANDLE || !updateDescriptorSets) {
+        return false;
     }
 
     VkDescriptorImageInfo imageInfos[3] {};
@@ -6727,7 +7764,7 @@ bool VulkanRenderTarget::Impl::UpdateTransitionDescriptorSet()
     VkWriteDescriptorSet writes[3] {};
     for (uint32_t index = 0; index < 3; ++index) {
         writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[index].dstSet = transitionDescriptorSet;
+        writes[index].dstSet = set;
         writes[index].dstBinding = index;
         writes[index].descriptorCount = 1;
         writes[index].pImageInfo = &imageInfos[index];
@@ -6736,6 +7773,35 @@ bool VulkanRenderTarget::Impl::UpdateTransitionDescriptorSet()
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     updateDescriptorSets(device, static_cast<uint32_t>(std::size(writes)), writes, 0, nullptr);
+    return true;
+}
+
+bool VulkanRenderTarget::Impl::UpdateTransitionDescriptorSet()
+{
+    return RefreshTransitionImageBindings(transitionDescriptorSet);
+}
+
+bool VulkanRenderTarget::Impl::RefreshSharedImageDescriptorsForCompletedSlot(
+    uint32_t frameIdx)
+{
+    frameIdx %= MAX_FRAMES_IN_FLIGHT;
+    PerFrameState& slot = perFrameStates_[frameIdx];
+    const VkDescriptorSet transitionSet =
+        frameIdx == currentFrame_ ? transitionDescriptorSet
+                                  : slot.transitionDescriptorSet;
+    if (!RefreshTransitionImageBindings(transitionSet)) {
+        return false;
+    }
+#ifdef _WIN32
+    const VkDescriptorSet textPointSet =
+        frameIdx == currentFrame_ ? textDescriptorSet : slot.textDescriptorSet;
+    const VkDescriptorSet textSmoothSet =
+        frameIdx == currentFrame_ ? textDescriptorSetSmooth
+                                  : slot.textDescriptorSetSmooth;
+    if (!RefreshTextAtlasImageBindings(textPointSet, textSmoothSet)) {
+        return false;
+    }
+#endif
     return true;
 }
 
@@ -6749,19 +7815,26 @@ bool VulkanRenderTarget::Impl::EnsureStagingCapacity(VkDeviceSize requiredSize)
         return true;
     }
 
-    if (mappedPixels && unmapMemory && device != VK_NULL_HANDLE && stagingMemory != VK_NULL_HANDLE) {
-        unmapMemory(device, stagingMemory);
-        mappedPixels = nullptr;
-    }
-    if (destroyBuffer && device != VK_NULL_HANDLE && stagingBuffer != VK_NULL_HANDLE) {
-        destroyBuffer(device, stagingBuffer, nullptr);
-        stagingBuffer = VK_NULL_HANDLE;
-    }
-    if (freeMemory && device != VK_NULL_HANDLE && stagingMemory != VK_NULL_HANDLE) {
-        freeMemory(device, stagingMemory, nullptr);
-        stagingMemory = VK_NULL_HANDLE;
-    }
-    mappedPixelCapacity = 0;
+    // Build and map a complete replacement before modifying the current slot.
+    // The persistent text descriptor sets may still name the outgoing staging
+    // buffer at binding 2, even though this slot's GPU fence has completed.
+    VkBuffer candidateBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory candidateMemory = VK_NULL_HANDLE;
+    void* candidateMapped = nullptr;
+    auto destroyCandidate = [&]() {
+        if (candidateMapped && candidateMemory != VK_NULL_HANDLE && unmapMemory) {
+            unmapMemory(device, candidateMemory);
+            candidateMapped = nullptr;
+        }
+        if (candidateBuffer != VK_NULL_HANDLE && destroyBuffer) {
+            destroyBuffer(device, candidateBuffer, nullptr);
+            candidateBuffer = VK_NULL_HANDLE;
+        }
+        if (candidateMemory != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, candidateMemory, nullptr);
+            candidateMemory = VK_NULL_HANDLE;
+        }
+    };
 
     VkBufferCreateInfo bufferInfo {};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
@@ -6779,17 +7852,20 @@ bool VulkanRenderTarget::Impl::EnsureStagingCapacity(VkDeviceSize requiredSize)
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (createBuffer(device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS || stagingBuffer == VK_NULL_HANDLE) {
+    if (createBuffer(device, &bufferInfo, nullptr, &candidateBuffer) != VK_SUCCESS ||
+        candidateBuffer == VK_NULL_HANDLE) {
+        destroyCandidate();
         return false;
     }
 
     VkMemoryRequirements memoryRequirements {};
-    getBufferMemoryRequirements(device, stagingBuffer, &memoryRequirements);
+    getBufferMemoryRequirements(device, candidateBuffer, &memoryRequirements);
 
     const uint32_t memoryTypeIndex = FindMemoryType(
         memoryRequirements.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (memoryTypeIndex == VK_QUEUE_FAMILY_IGNORED) {
+        destroyCandidate();
         return false;
     }
 
@@ -6797,19 +7873,69 @@ bool VulkanRenderTarget::Impl::EnsureStagingCapacity(VkDeviceSize requiredSize)
     allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocateInfo.allocationSize = memoryRequirements.size;
     allocateInfo.memoryTypeIndex = memoryTypeIndex;
-    if (allocateMemory(device, &allocateInfo, nullptr, &stagingMemory) != VK_SUCCESS || stagingMemory == VK_NULL_HANDLE) {
+    if (allocateMemory(device, &allocateInfo, nullptr, &candidateMemory) != VK_SUCCESS ||
+        candidateMemory == VK_NULL_HANDLE) {
+        destroyCandidate();
         return false;
     }
 
-    if (bindBufferMemory(device, stagingBuffer, stagingMemory, 0) != VK_SUCCESS) {
+    if (bindBufferMemory(device, candidateBuffer, candidateMemory, 0) != VK_SUCCESS) {
+        destroyCandidate();
         return false;
     }
 
-    if (mapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &mappedPixels) != VK_SUCCESS || !mappedPixels) {
+    if (mapMemory(device, candidateMemory, 0, VK_WHOLE_SIZE, 0,
+                  &candidateMapped) != VK_SUCCESS || !candidateMapped) {
+        candidateMapped = nullptr;
+        destroyCandidate();
         return false;
     }
 
+    PerFrameState& slot = perFrameStates_[currentFrame_];
+    if (stagingBuffer != VK_NULL_HANDLE || stagingMemory != VK_NULL_HANDLE) {
+        try {
+            slot.deferredDestroyBuffers.reserve(
+                slot.deferredDestroyBuffers.size() + 1u);
+        } catch (...) {
+            destroyCandidate();
+            return false;
+        }
+    }
+
+    const VkBuffer oldBuffer = stagingBuffer;
+    const VkDeviceMemory oldMemory = stagingMemory;
+    void* const oldMapped = mappedPixels;
+    const VkDeviceSize oldCapacity = mappedPixelCapacity;
+
+    stagingBuffer = candidateBuffer;
+    stagingMemory = candidateMemory;
+    mappedPixels = candidateMapped;
     mappedPixelCapacity = requiredSize;
+
+#ifdef _WIN32
+    // Detach both text sets from the outgoing buffer before it enters the
+    // fence-gated list. The precise glyph range is restored before any text
+    // draw; this update exists solely to make the old descriptor reference die
+    // while the old VkBuffer is still valid.
+    if (!RefreshTextGlyphBufferBinding(textDescriptorSet,
+                                       textDescriptorSetSmooth,
+                                       stagingBuffer,
+                                       mappedPixelCapacity)) {
+        stagingBuffer = oldBuffer;
+        stagingMemory = oldMemory;
+        mappedPixels = oldMapped;
+        mappedPixelCapacity = oldCapacity;
+        destroyCandidate();
+        return false;
+    }
+#endif
+
+    if (oldBuffer != VK_NULL_HANDLE || oldMemory != VK_NULL_HANDLE) {
+        slot.deferredDestroyBuffers.emplace_back(oldBuffer, oldMemory);
+        if (oldMapped && oldMemory != VK_NULL_HANDLE && unmapMemory) {
+            unmapMemory(device, oldMemory);
+        }
+    }
     return true;
 }
 
@@ -6877,31 +8003,32 @@ bool VulkanRenderTarget::Impl::EnsureTextAtlasImage(uint32_t width, uint32_t hei
         return false;
     }
 
-    if (textAtlasImage != VK_NULL_HANDLE && textAtlasWidth == width && textAtlasHeight == height) {
+    if (textAtlasImage != VK_NULL_HANDLE &&
+        textAtlasImageMemory != VK_NULL_HANDLE &&
+        textAtlasImageView != VK_NULL_HANDLE &&
+        textAtlasWidth == width && textAtlasHeight == height) {
         return true;
     }
 
-    // E6: the GPU may still be sampling the current textAtlasImage via an
-    // in-flight textDescriptorSet — the same NVIDIA-driver hazard EnsureUpload
-    // Image guards against. Rather than vkDeviceWaitIdle (a full pipeline drain
-    // on the atlas-spill frame), PARK the old image/view/memory on the fence-
-    // gated graveyard and build the replacement immediately. UpdateTextDescriptor
-    // Set later rewrites the descriptor to the new view; the old view stays alive
-    // in the graveyard until both in-flight slots cycle, satisfying the driver's
-    // previous-view deref. Balance the outgoing image's AddGpuResidentBytes here
-    // (the graveyard drain frees the objects but never touches telemetry).
-    if (textAtlasImage != VK_NULL_HANDLE) {
-        if (textAtlasWidth > 0 && textAtlasHeight > 0) {
-            bitmap_stats::AddGpuResidentBytes(-(static_cast<int64_t>(textAtlasWidth) * textAtlasHeight * 4));
+    // Build the replacement completely before touching the live atlas. A failed
+    // grow must leave both the image and every descriptor that names it intact.
+    VkImage candidateImage = VK_NULL_HANDLE;
+    VkDeviceMemory candidateMemory = VK_NULL_HANDLE;
+    VkImageView candidateView = VK_NULL_HANDLE;
+    auto destroyCandidate = [&]() {
+        if (candidateView != VK_NULL_HANDLE && destroyImageView) {
+            destroyImageView(device, candidateView, nullptr);
         }
-        RetireImageToGraveyard(textAtlasImage, textAtlasImageView, textAtlasImageMemory);
-        textAtlasImage = VK_NULL_HANDLE;
-        textAtlasImageView = VK_NULL_HANDLE;
-        textAtlasImageMemory = VK_NULL_HANDLE;
-        textAtlasImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        textAtlasWidth = 0;
-        textAtlasHeight = 0;
-    }
+        if (candidateImage != VK_NULL_HANDLE && destroyImage) {
+            destroyImage(device, candidateImage, nullptr);
+        }
+        if (candidateMemory != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, candidateMemory, nullptr);
+        }
+        candidateView = VK_NULL_HANDLE;
+        candidateImage = VK_NULL_HANDLE;
+        candidateMemory = VK_NULL_HANDLE;
+    };
 
     VkImageCreateInfo imageInfo {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -6919,15 +8046,18 @@ bool VulkanRenderTarget::Impl::EnsureTextAtlasImage(uint32_t width, uint32_t hei
     imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    if (createImage(device, &imageInfo, nullptr, &textAtlasImage) != VK_SUCCESS || textAtlasImage == VK_NULL_HANDLE) {
+    if (createImage(device, &imageInfo, nullptr, &candidateImage) != VK_SUCCESS ||
+        candidateImage == VK_NULL_HANDLE) {
+        destroyCandidate();
         return false;
     }
 
     VkMemoryRequirements memoryRequirements {};
-    getImageMemoryRequirements(device, textAtlasImage, &memoryRequirements);
+    getImageMemoryRequirements(device, candidateImage, &memoryRequirements);
 
     const uint32_t memoryTypeIndex = FindMemoryType(memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     if (memoryTypeIndex == VK_QUEUE_FAMILY_IGNORED) {
+        destroyCandidate();
         return false;
     }
 
@@ -6935,36 +8065,83 @@ bool VulkanRenderTarget::Impl::EnsureTextAtlasImage(uint32_t width, uint32_t hei
     allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocateInfo.allocationSize = memoryRequirements.size;
     allocateInfo.memoryTypeIndex = memoryTypeIndex;
-    if (allocateMemory(device, &allocateInfo, nullptr, &textAtlasImageMemory) != VK_SUCCESS || textAtlasImageMemory == VK_NULL_HANDLE) {
+    if (allocateMemory(device, &allocateInfo, nullptr, &candidateMemory) != VK_SUCCESS ||
+        candidateMemory == VK_NULL_HANDLE) {
+        destroyCandidate();
         return false;
     }
 
-    if (bindImageMemory(device, textAtlasImage, textAtlasImageMemory, 0) != VK_SUCCESS) {
+    if (bindImageMemory(device, candidateImage, candidateMemory, 0) != VK_SUCCESS) {
+        destroyCandidate();
         return false;
     }
 
     VkImageViewCreateInfo viewInfo {};
     viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = textAtlasImage;
+    viewInfo.image = candidateImage;
     viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
     viewInfo.format = imageInfo.format;
     viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     viewInfo.subresourceRange.levelCount = 1;
     viewInfo.subresourceRange.layerCount = 1;
-    if (createImageView(device, &viewInfo, nullptr, &textAtlasImageView) != VK_SUCCESS || textAtlasImageView == VK_NULL_HANDLE) {
+    if (createImageView(device, &viewInfo, nullptr, &candidateView) != VK_SUCCESS ||
+        candidateView == VK_NULL_HANDLE) {
+        destroyCandidate();
         return false;
     }
 
+    if (textAtlasImage != VK_NULL_HANDLE || textAtlasImageView != VK_NULL_HANDLE ||
+        textAtlasImageMemory != VK_NULL_HANDLE) {
+        try {
+            retiredImageGraveyard_.reserve(retiredImageGraveyard_.size() + 1u);
+        } catch (...) {
+            destroyCandidate();
+            return false;
+        }
+    }
+
+    const VkImage oldImage = textAtlasImage;
+    const VkDeviceMemory oldMemory = textAtlasImageMemory;
+    const VkImageView oldView = textAtlasImageView;
+    const VkImageLayout oldLayout = textAtlasImageLayout;
+    const uint32_t oldWidth = textAtlasWidth;
+    const uint32_t oldHeight = textAtlasHeight;
+
+    textAtlasImage = candidateImage;
+    textAtlasImageMemory = candidateMemory;
+    textAtlasImageView = candidateView;
     textAtlasWidth = width;
     textAtlasHeight = height;
     textAtlasImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    // Publish bindings 0/1 while the previous view is still valid. Binding 2
+    // is intentionally left alone here because its slot-local glyph range is
+    // supplied by UpdateTextDescriptorSet later in the frame.
+    if (!RefreshTextAtlasImageBindings(textDescriptorSet,
+                                       textDescriptorSetSmooth)) {
+        textAtlasImage = oldImage;
+        textAtlasImageMemory = oldMemory;
+        textAtlasImageView = oldView;
+        textAtlasWidth = oldWidth;
+        textAtlasHeight = oldHeight;
+        textAtlasImageLayout = oldLayout;
+        destroyCandidate();
+        return false;
+    }
+
+    if (oldImage != VK_NULL_HANDLE || oldView != VK_NULL_HANDLE ||
+        oldMemory != VK_NULL_HANDLE) {
+        if (oldImage != VK_NULL_HANDLE && oldWidth > 0 && oldHeight > 0) {
+            bitmap_stats::AddGpuResidentBytes(-(
+                static_cast<int64_t>(oldWidth) * oldHeight * 4));
+        }
+        RetireImageToGraveyard(oldImage, oldView, oldMemory);
+    }
+
     // DevTools bitmap telemetry: the glyph-atlas image counts toward the
     // GPU-resident approximation (see EnsureUploadImage). Balanced by
     // DestroyTextAtlasImage.
     bitmap_stats::AddGpuResidentBytes(static_cast<int64_t>(width) * height * 4);
-    // Unlike EnsureUploadImage we do NOT touch a descriptor set here: the text
-    // descriptor set is (re)written by UpdateTextDescriptorSet once the per-frame
-    // glyph SSBO offset/range is known (B4b).
     return true;
 }
 
@@ -7011,44 +8188,36 @@ bool VulkanRenderTarget::Impl::EnsureTextAtlasStaging(VkDeviceSize size)
     if (size == 0 || !createBuffer) {
         return false;
     }
-    if (textAtlasStagingBuffer != VK_NULL_HANDLE && textAtlasStagingCapacity >= size) {
+    TextAtlasStagingSlot& slot =
+        textAtlasStagingSlots[currentFrame_ % MAX_FRAMES_IN_FLIGHT];
+    if (slot.buffer != VK_NULL_HANDLE && slot.mapped != nullptr &&
+        slot.capacity >= size) {
         return true;
     }
 
-    // Grow: release the old buffer/mapping before reallocating. The dirty-band
-    // copy that consumes this buffer is recorded into the same command buffer
-    // every frame, and frame-start waitForFences already drained the previous
-    // submission, so the old buffer is safe to destroy here.
-    if (textAtlasStagingMapped && unmapMemory && device != VK_NULL_HANDLE && textAtlasStagingMemory != VK_NULL_HANDLE) {
-        unmapMemory(device, textAtlasStagingMemory);
-        textAtlasStagingMapped = nullptr;
-    }
-    if (destroyBuffer && device != VK_NULL_HANDLE && textAtlasStagingBuffer != VK_NULL_HANDLE) {
-        destroyBuffer(device, textAtlasStagingBuffer, nullptr);
-        textAtlasStagingBuffer = VK_NULL_HANDLE;
-    }
-    if (freeMemory && device != VK_NULL_HANDLE && textAtlasStagingMemory != VK_NULL_HANDLE) {
-        freeMemory(device, textAtlasStagingMemory, nullptr);
-        textAtlasStagingMemory = VK_NULL_HANDLE;
-    }
-    textAtlasStagingCapacity = 0;
-
+    // Allocate transactionally. This slot's fence was observed at frame start,
+    // so its predecessor can be released only after the complete replacement
+    // has been created, bound, and mapped successfully.
+    TextAtlasStagingSlot candidate{};
     VkBufferCreateInfo bufferInfo {};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size;
     bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (createBuffer(device, &bufferInfo, nullptr, &textAtlasStagingBuffer) != VK_SUCCESS || textAtlasStagingBuffer == VK_NULL_HANDLE) {
+    if (createBuffer(device, &bufferInfo, nullptr, &candidate.buffer) != VK_SUCCESS ||
+        candidate.buffer == VK_NULL_HANDLE) {
+        DestroyTextAtlasStagingSlot(candidate);
         return false;
     }
 
     VkMemoryRequirements memoryRequirements {};
-    getBufferMemoryRequirements(device, textAtlasStagingBuffer, &memoryRequirements);
+    getBufferMemoryRequirements(device, candidate.buffer, &memoryRequirements);
 
     const uint32_t memoryTypeIndex = FindMemoryType(
         memoryRequirements.memoryTypeBits,
         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     if (memoryTypeIndex == VK_QUEUE_FAMILY_IGNORED) {
+        DestroyTextAtlasStagingSlot(candidate);
         return false;
     }
 
@@ -7056,44 +8225,74 @@ bool VulkanRenderTarget::Impl::EnsureTextAtlasStaging(VkDeviceSize size)
     allocateInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocateInfo.allocationSize = memoryRequirements.size;
     allocateInfo.memoryTypeIndex = memoryTypeIndex;
-    if (allocateMemory(device, &allocateInfo, nullptr, &textAtlasStagingMemory) != VK_SUCCESS || textAtlasStagingMemory == VK_NULL_HANDLE) {
+    if (allocateMemory(device, &allocateInfo, nullptr, &candidate.memory) != VK_SUCCESS ||
+        candidate.memory == VK_NULL_HANDLE) {
+        DestroyTextAtlasStagingSlot(candidate);
         return false;
     }
-    if (bindBufferMemory(device, textAtlasStagingBuffer, textAtlasStagingMemory, 0) != VK_SUCCESS) {
+    if (bindBufferMemory(device, candidate.buffer, candidate.memory, 0) != VK_SUCCESS) {
+        DestroyTextAtlasStagingSlot(candidate);
         return false;
     }
-    if (mapMemory(device, textAtlasStagingMemory, 0, VK_WHOLE_SIZE, 0, &textAtlasStagingMapped) != VK_SUCCESS || !textAtlasStagingMapped) {
+    if (mapMemory(device, candidate.memory, 0, VK_WHOLE_SIZE, 0,
+                  &candidate.mapped) != VK_SUCCESS || !candidate.mapped) {
+        candidate.mapped = nullptr;
+        DestroyTextAtlasStagingSlot(candidate);
         return false;
     }
 
-    textAtlasStagingCapacity = size;
+    candidate.capacity = size;
+    DestroyTextAtlasStagingSlot(slot);
+    slot = candidate;
     return true;
+}
+
+void VulkanRenderTarget::Impl::DestroyTextAtlasStagingSlot(
+    TextAtlasStagingSlot& slot)
+{
+    if (device == VK_NULL_HANDLE) {
+        slot = {};
+        return;
+    }
+    if (slot.mapped && unmapMemory && slot.memory != VK_NULL_HANDLE) {
+        unmapMemory(device, slot.memory);
+    }
+    if (destroyBuffer && slot.buffer != VK_NULL_HANDLE) {
+        destroyBuffer(device, slot.buffer, nullptr);
+    }
+    if (freeMemory && slot.memory != VK_NULL_HANDLE) {
+        freeMemory(device, slot.memory, nullptr);
+    }
+    slot = {};
 }
 
 void VulkanRenderTarget::Impl::DestroyTextAtlasStaging()
 {
-    if (device == VK_NULL_HANDLE) {
-        textAtlasStagingBuffer = VK_NULL_HANDLE;
-        textAtlasStagingMemory = VK_NULL_HANDLE;
-        textAtlasStagingMapped = nullptr;
-        textAtlasStagingCapacity = 0;
-        return;
+    for (auto& slot : textAtlasStagingSlots) {
+        DestroyTextAtlasStagingSlot(slot);
     }
-    if (textAtlasStagingMapped && unmapMemory && textAtlasStagingMemory != VK_NULL_HANDLE) {
-        unmapMemory(device, textAtlasStagingMemory);
-    }
-    if (destroyBuffer && textAtlasStagingBuffer != VK_NULL_HANDLE) {
-        destroyBuffer(device, textAtlasStagingBuffer, nullptr);
-    }
-    if (freeMemory && textAtlasStagingMemory != VK_NULL_HANDLE) {
-        freeMemory(device, textAtlasStagingMemory, nullptr);
-    }
-    textAtlasStagingBuffer = VK_NULL_HANDLE;
-    textAtlasStagingMemory = VK_NULL_HANDLE;
-    textAtlasStagingMapped = nullptr;
-    textAtlasStagingCapacity = 0;
 }
 #endif // _WIN32
+
+void VulkanRenderTarget::Impl::DestroySwapchainImageResources()
+{
+    // Callers have proved device idleness. Framebuffers must go before their
+    // attachment views, and both must go before the owning old swapchain.
+    if (device != VK_NULL_HANDLE) {
+        for (VkFramebuffer framebuffer : framebuffers) {
+            if (framebuffer != VK_NULL_HANDLE && destroyFramebuffer) {
+                destroyFramebuffer(device, framebuffer, nullptr);
+            }
+        }
+        for (VkImageView imageView : imageViews) {
+            if (imageView != VK_NULL_HANDLE && destroyImageView) {
+                destroyImageView(device, imageView, nullptr);
+            }
+        }
+    }
+    framebuffers.clear();
+    imageViews.clear();
+}
 
 void VulkanRenderTarget::Impl::DestroyTransitionImages()
 {
@@ -7129,7 +8328,6 @@ void VulkanRenderTarget::Impl::DestroyTransitionImages()
 
 void VulkanRenderTarget::Impl::DestroyGraphicsResources()
 {
-    DestroyBlurTempResources();
     // Stencil-then-cover scratch is swap-chain-extent-sized + bound to its own
     // render pass, so it must be rebuilt on resize/teardown like the rest.
     // (Self-guards on device == VK_NULL_HANDLE: just nulls handles when the
@@ -7138,6 +8336,7 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     DestroyEffectOffscreenResources();  // env-gated offscreen effect RT (no-op when off)
 
     if (device == VK_NULL_HANDLE) {
+        DestroyBlurTempResources();
         imageViews.clear();
         framebuffers.clear();
         solidRectPipeline = VK_NULL_HANDLE;
@@ -7308,7 +8507,11 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     }
     if (destroyDescriptorPool && frameDescriptorPool != VK_NULL_HANDLE) {
         destroyDescriptorPool(device, frameDescriptorPool, nullptr);
+        frameDescriptorPool = VK_NULL_HANDLE;
     }
+    // blurTempDescriptorSet is allocated from frameDescriptorPool. Free every
+    // stale descriptor first; only then may its image view be destroyed.
+    DestroyBlurTempResources();
 #ifdef _WIN32
     if (destroyDescriptorPool && textDescriptorPool != VK_NULL_HANDLE) {
         destroyDescriptorPool(device, textDescriptorPool, nullptr);
@@ -7557,6 +8760,9 @@ void VulkanRenderTarget::Impl::DestroyPerFrameResources()
             if (surface) surface->ReleaseForFrame();
         }
         s.deferredExternalVideoSurfaces.clear();
+        // Teardown callers have established device idleness, so every slot's
+        // submitted ink references are now safe to release.
+        s.deferredInkImageGenerations.clear();
         if (s.inFlight != VK_NULL_HANDLE && destroyFence) {
             destroyFence(device, s.inFlight, nullptr);
         }
@@ -7611,23 +8817,21 @@ void VulkanRenderTarget::Impl::DestroyPerFrameResources()
 // of-two it actually needs, which on a now-quiet UI is typically a fraction
 // of the peak.
 //
-// Called from VulkanRenderTarget::ReclaimIdleResources only when the managed
-// reclaimer has confirmed the application is idle (see
-// ResourceReclaimer.ScanAndReclaim). Idle implies in-flight fences have
-// already fired in practice — vkDeviceWaitIdle still runs as a belt-and-
-// braces guard against a frame the GPU has not finished while the UI thread
-// raced ahead between Render and the reclaim tick.
-void VulkanRenderTarget::Impl::ShrinkPerFrameBuffers()
+// This is intentionally not used by the periodic ReclaimIdleResources path:
+// that callback is driven by active rendering ticks and cannot prove device
+// idleness. Keep this primitive isolated for a future explicit memory-pressure
+// path that can accept a synchronous device drain.
+bool VulkanRenderTarget::Impl::ShrinkPerFrameBuffers()
 {
     if (!device || !deviceWaitIdle) {
-        return;
+        return false;
     }
     // Lost RT → never poke the device from the managed idle reclaimer (it
     // keeps ticking ~2s while recovery is throttled). Nothing here has a
     // consumer anymore — BeginDraw's gate rejects all further frames and
     // Destroy() reclaims everything.
     if (!DeviceUsable()) {
-        return;
+        return false;
     }
 
     // Drain all in-flight GPU work so it is safe to destroy the per-frame
@@ -7637,12 +8841,58 @@ void VulkanRenderTarget::Impl::ShrinkPerFrameBuffers()
     // on an idle UI, deferring would only add complexity without saving
     // any wall-clock time — the wait completes immediately when there is
     // nothing in flight.
-    NoteVk(deviceWaitIdle(device), "ShrinkPerFrameBuffers.deviceWaitIdle");
+    if (WaitDeviceIdleSynchronized(
+            "ShrinkPerFrameBuffers.deviceWaitIdle") != VK_SUCCESS) {
+        return false;
+    }
 
     // Make sure the alias slot is written back into perFrameStates_ first,
     // otherwise the iteration below would free stale slot pointers and leak
     // the live alias allocations.
     CommitCurrentFrame();
+
+    // Device idleness proves GPU completion, but the driver can still inspect
+    // a descriptor's previous resource during a later update/reset. Invalidate
+    // every pool that can name an upload view, glyph staging buffer, or retired
+    // custom UBO before destroying any of those objects below.
+    if (frameDescriptorPool != VK_NULL_HANDLE) {
+        if (!resetDescriptorPool ||
+            NoteVk(resetDescriptorPool(device, frameDescriptorPool, 0),
+                   "ShrinkPerFrameBuffers.resetFrameDescriptorPool") != VK_SUCCESS) {
+            return false;
+        }
+        for (auto& s : perFrameStates_) {
+            s.frameDescriptorSet = VK_NULL_HANDLE;
+            s.frameDescriptorSetNearest = VK_NULL_HANDLE;
+            s.blurTempDescriptorSet = VK_NULL_HANDLE;
+        }
+        frameDescriptorSet = VK_NULL_HANDLE;
+        frameDescriptorSetNearest = VK_NULL_HANDLE;
+    }
+#ifdef _WIN32
+    if (textDescriptorPool != VK_NULL_HANDLE) {
+        if (!resetDescriptorPool ||
+            NoteVk(resetDescriptorPool(device, textDescriptorPool, 0),
+                   "ShrinkPerFrameBuffers.resetTextDescriptorPool") != VK_SUCCESS) {
+            return false;
+        }
+        for (auto& s : perFrameStates_) {
+            s.textDescriptorSet = VK_NULL_HANDLE;
+            s.textDescriptorSetSmooth = VK_NULL_HANDLE;
+        }
+        textDescriptorSet = VK_NULL_HANDLE;
+        textDescriptorSetSmooth = VK_NULL_HANDLE;
+    }
+#endif
+    for (auto pool : customShaderDescPools) {
+        if (pool != VK_NULL_HANDLE &&
+            (!resetDescriptorPool ||
+             NoteVk(resetDescriptorPool(device, pool, 0),
+                    "ShrinkPerFrameBuffers.resetCustomShaderDescriptorPool") !=
+                 VK_SUCCESS)) {
+            return false;
+        }
+    }
 
     for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
         auto& s = perFrameStates_[i];
@@ -7718,6 +8968,7 @@ void VulkanRenderTarget::Impl::ShrinkPerFrameBuffers()
     // so EnsureStagingCapacity / EnsureUploadImage / EnsureEngineBatchBuffer
     // see "no buffer" on their next call and lazily re-allocate.
     BeginFrame();
+    return true;
 }
 
 // ============================================================================
@@ -7893,6 +9144,7 @@ void VulkanRenderTarget::Impl::InvalidateReadback(bool destroyBufferToo)
 bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, uint32_t height)
 {
     BeginFrame();
+    transientAcquireTimeout = false;
     // Latched loss → never touch the device again (defense in depth; EndDraw's
     // entry gate normally aborts before reaching here).
     if (!DeviceUsable()) {
@@ -7917,7 +9169,9 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     // frameGpuWaitNs. Mirrors D3D12DirectRenderer::BeginFrame.
     if (fencePending) {
         uint64_t waitStart = MonotonicNowNs();
-        VkResult waitResult = NoteVk(waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max()),
+        VkResult waitResult = NoteVk(waitForFences(
+                                         device, 1, &inFlight, VK_TRUE,
+                                         kVulkanFrameFenceTimeoutNanoseconds),
                                      "DrawFrame.waitForFences");
         accumulatingWaitNs += MonotonicDiffNs(waitStart, MonotonicNowNs());
         if (waitResult == VK_SUCCESS) {
@@ -7925,6 +9179,14 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
         }
         if (waitResult != VK_SUCCESS) {
             VK_LOG("[Vulkan] DrawFrame: waitForFences failed\n");
+            if (waitResult != VK_ERROR_DEVICE_LOST && deviceGeneration) {
+                std::lock_guard<std::mutex> queueLock(
+                    deviceGeneration->queueMutex);
+                if (!deviceGeneration->IsLost()) {
+                    deviceGeneration->MarkAbandoned();
+                }
+                (void)DeviceUsable();
+            }
             // Unlike D3D12 where a failed BeginFrame attempt is part of a
             // retry loop that keeps the accumulator, Vulkan has no
             // per-frame retry — the next DrawFrame call is a fresh logical
@@ -7949,6 +9211,14 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
         lastFramePresentToReadyNs = MonotonicDiffNs(lastSubmitMonotonicNs, MonotonicNowNs());
     }
 
+    // Old custom-shader sets can name a buffer in deferredDestroyBuffers.
+    // Invalidate those sets before releasing any retired buffer.
+    if (!ResetCustomShaderDescriptorPoolForCompletedSlot(
+            currentFrame_, "DrawFrame.resetCustomShaderDescriptorPool")) {
+        EndFrame();
+        return false;
+    }
+
     // Frame-slot engine-batch bookkeeping — see DrawReplayFrame. The CPU path
     // renders no engine batches itself, but the SLOT alternates between the
     // two draw paths, so the cursor rewind and the fence-deferred buffer
@@ -7970,10 +9240,17 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
             if (surface) surface->ReleaseForFrame();
         }
         slot.deferredExternalVideoSurfaces.clear();
+        slot.deferredInkImageGenerations.clear();
     }
     // E6: free upload/text-atlas images a growth retired MAX_FRAMES_IN_FLIGHT
     // drained-frames ago (this slot's fence is observed; the per-entry countdown
-    // covers the OTHER in-flight slot). Mirrors the buffer graveyard above.
+    // covers the OTHER in-flight slot). Rewrite this completed slot's shared
+    // descriptors first, so no descriptor update/reset can make the Windows
+    // driver inspect a previous view after that view has been destroyed.
+    if (!RefreshSharedImageDescriptorsForCompletedSlot(currentFrame_)) {
+        EndFrame();
+        return false;
+    }
     DrainRetiredImageGraveyard();
 
     if (!EnsureStagingBuffer(width, height)) {
@@ -7994,6 +9271,12 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
 
     std::memcpy(mappedPixels, pixels, static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
 
+    bool acquiredImagePendingSubmit = false;
+    auto acquiredImageExit = MakeScopeExit([&]() noexcept {
+        if (acquiredImagePendingSubmit) {
+            MarkSwapchainUnusable("DrawFrame.abandonedAcquire");
+        }
+    });
     uint32_t imageIndex = 0;
     {
         // acquireNextImage shares the frame-pacing accumulator with the
@@ -8005,10 +9288,32 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
         // signature on Vulkan — NoteVk latches it so EndDraw reports
         // DEVICE_LOST instead of a transient failure. OUT_OF_DATE stays the
         // resize signal it always was.
-        const VkResult acquireResult = NoteVk(acquireNextImage(device, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailable, VK_NULL_HANDLE, &imageIndex),
+        const VkResult acquireResult = NoteVk(acquireNextImage(
+            device, swapchain, kVulkanAcquireTimeoutNanoseconds,
+            imageAvailable, VK_NULL_HANDLE, &imageIndex),
                                               "DrawFrame.acquireNextImage");
         accumulatingWaitNs += MonotonicDiffNs(acqStart, MonotonicNowNs());
+        if (acquireResult == VK_TIMEOUT) {
+            transientAcquireTimeout = true;
+            lastFrameWaitNs = accumulatingWaitNs;
+            accumulatingWaitNs = 0;
+            EndFrame();
+            return true;
+        }
+        if (acquireResult != VK_SUCCESS) {
+            // SUBOPTIMAL can still render this frame, but both it and every
+            // failure require the next same-size resize to rebuild the WSI.
+            swapchainRecreatePending = true;
+        }
         if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+            // The swapchain can never vend an image again, and no RESIZE may
+            // ever arrive to consume the pending latch (Android rotation /
+            // compositor reconfiguration invalidates the swapchain in place),
+            // so latch the hard flag for BeginDraw's same-extent repair.
+            // Returning true keeps this frame classified as a benign
+            // resize-in-flight skip; escalation belongs to the repair's
+            // failure streak (see EndDraw).
+            MarkSwapchainUnusable("DrawFrame.acquire.OUT_OF_DATE");
             lastFrameWaitNs = accumulatingWaitNs;
             accumulatingWaitNs = 0;
             EndFrame();
@@ -8021,13 +9326,14 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
             EndFrame();
             return false;
         }
+        acquiredImagePendingSubmit = true;
     }
 
     // NOTE: resetFences deliberately does NOT happen here. It is deferred to
     // right before queueSubmit: any failure exit between an early reset and
     // the submit would leave this slot's fence permanently unsignaled, and the
-    // slot's next waitForFences(UINT64_MAX) would hang the render loop
-    // forever. Between the deferred reset and the submit nothing can fail, so
+    // slot's next fence wait would time out and quarantine a healthy device.
+    // Between the deferred reset and the submit nothing can fail, so
     // the fence is either signaled (no submit happened) or pending (submit
     // owns it) — never orphaned.
 
@@ -8246,7 +9552,8 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     submitInfo.pCommandBuffers = &commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &signalSemaphore;
-    VkResult submitResult = NoteVk(queueSubmit(queue, 1, &submitInfo, inFlight), "DrawFrame.queueSubmit");
+    VkResult submitResult = QueueSubmitSynchronized(
+        1, &submitInfo, inFlight, "DrawFrame.queueSubmit");
     if (submitResult != VK_SUCCESS) {
         // fencePending stays false: the failed submit does not signal the
         // fence (spec) and the fence is now unsignaled from the reset above —
@@ -8255,6 +9562,7 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
         EndFrame();
         return false;
     }
+    acquiredImagePendingSubmit = false;
     fencePending = true;
     // Back-buffer readback armed this frame: the copy recorded above executes
     // under this slot's fence — FetchReadback waits exactly this slot before
@@ -8292,8 +9600,16 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     }
     // Time ONLY the present call itself (parity with D3D12's presentBlockNs).
     const uint64_t presentStartNs = MonotonicNowNs();
-    const VkResult presentResult = NoteVk(queuePresent(queue, &presentInfo), "DrawFrame.queuePresent");
+    const VkResult presentResult = QueuePresentSynchronized(
+        &presentInfo, "DrawFrame.queuePresent");
     lastPresentBlockNs = MonotonicDiffNs(presentStartNs, MonotonicNowNs());
+    if (presentResult != VK_SUCCESS) {
+        swapchainRecreatePending = true;
+    }
+    if (presentResult != VK_SUCCESS &&
+        presentResult != VK_SUBOPTIMAL_KHR) {
+        MarkSwapchainUnusable("DrawFrame.presentFailed");
+    }
     if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR && presentResult != VK_ERROR_OUT_OF_DATE_KHR) {
         VK_LOG("[Vulkan] DrawFrame: queuePresent failed (%d)\n", static_cast<int>(presentResult));
         EndFrame();
@@ -8580,25 +9896,14 @@ bool VulkanRenderTarget::Impl::EnsureEngineBatchBuffer(uint32_t frameIdx, VkDevi
     return true;
 }
 
-void VulkanRenderTarget::Impl::DestroyStencilCoverResources()
+void VulkanRenderTarget::Impl::DestroyStencilCoverAttachments()
 {
     if (device != VK_NULL_HANDLE) {
-        auto destroyPipeline    = LoadDeviceProc<PFN_vkDestroyPipeline>(getDeviceProcAddr, device, "vkDestroyPipeline");
-        auto destroyRenderPass  = LoadDeviceProc<PFN_vkDestroyRenderPass>(getDeviceProcAddr, device, "vkDestroyRenderPass");
         auto destroyFramebuffer = LoadDeviceProc<PFN_vkDestroyFramebuffer>(getDeviceProcAddr, device, "vkDestroyFramebuffer");
         auto destroyImageView   = LoadDeviceProc<PFN_vkDestroyImageView>(getDeviceProcAddr, device, "vkDestroyImageView");
         auto destroyImage       = LoadDeviceProc<PFN_vkDestroyImage>(getDeviceProcAddr, device, "vkDestroyImage");
         auto freeMemory         = LoadDeviceProc<PFN_vkFreeMemory>(getDeviceProcAddr, device, "vkFreeMemory");
-        auto destroySampler     = LoadDeviceProc<PFN_vkDestroySampler>(getDeviceProcAddr, device, "vkDestroySampler");
-        if (destroyPipeline) {
-            if (psoStencilFillEvenOdd) destroyPipeline(device, psoStencilFillEvenOdd, nullptr);
-            if (psoStencilFillNonZero) destroyPipeline(device, psoStencilFillNonZero, nullptr);
-            if (psoStencilCover)       destroyPipeline(device, psoStencilCover, nullptr);
-            if (psoStencilQuad)        destroyPipeline(device, psoStencilQuad, nullptr);
-        }
         if (destroyFramebuffer && stencilCoverFramebuffer) destroyFramebuffer(device, stencilCoverFramebuffer, nullptr);
-        if (destroyRenderPass && stencilCoverRenderPass)   destroyRenderPass(device, stencilCoverRenderPass, nullptr);
-        if (destroySampler && stencilResolveSampler)       destroySampler(device, stencilResolveSampler, nullptr);
         if (destroyImageView) {
             if (stencilMsaaColorView) destroyImageView(device, stencilMsaaColorView, nullptr);
             if (stencilMsaaDsView)    destroyImageView(device, stencilMsaaDsView, nullptr);
@@ -8615,13 +9920,7 @@ void VulkanRenderTarget::Impl::DestroyStencilCoverResources()
             if (stencilResolveMemory)   freeMemory(device, stencilResolveMemory, nullptr);
         }
     }
-    psoStencilFillEvenOdd = VK_NULL_HANDLE;
-    psoStencilFillNonZero = VK_NULL_HANDLE;
-    psoStencilCover = VK_NULL_HANDLE;
-    psoStencilQuad = VK_NULL_HANDLE;
     stencilCoverFramebuffer = VK_NULL_HANDLE;
-    stencilCoverRenderPass = VK_NULL_HANDLE;
-    stencilResolveSampler = VK_NULL_HANDLE;
     stencilMsaaColorView = VK_NULL_HANDLE;
     stencilMsaaDsView = VK_NULL_HANDLE;
     stencilResolveView = VK_NULL_HANDLE;
@@ -8633,6 +9932,42 @@ void VulkanRenderTarget::Impl::DestroyStencilCoverResources()
     stencilResolveMemory = VK_NULL_HANDLE;
     stencilCoverW = 0;
     stencilCoverH = 0;
+}
+
+void VulkanRenderTarget::Impl::DestroyStencilCoverResources()
+{
+    // Attachments are the only extent-dependent part. Destroy them first so
+    // no framebuffer can outlive its render pass below.
+    DestroyStencilCoverAttachments();
+    if (device != VK_NULL_HANDLE) {
+        auto destroyPipeline = LoadDeviceProc<PFN_vkDestroyPipeline>(
+            getDeviceProcAddr, device, "vkDestroyPipeline");
+        auto destroyRenderPass = LoadDeviceProc<PFN_vkDestroyRenderPass>(
+            getDeviceProcAddr, device, "vkDestroyRenderPass");
+        auto destroySampler = LoadDeviceProc<PFN_vkDestroySampler>(
+            getDeviceProcAddr, device, "vkDestroySampler");
+        if (destroyPipeline) {
+            if (psoStencilFillEvenOdd) destroyPipeline(device, psoStencilFillEvenOdd, nullptr);
+            if (psoStencilFillNonZero) destroyPipeline(device, psoStencilFillNonZero, nullptr);
+            if (psoStencilCover)       destroyPipeline(device, psoStencilCover, nullptr);
+            if (psoStencilQuad)        destroyPipeline(device, psoStencilQuad, nullptr);
+        }
+        if (destroyRenderPass && stencilCoverRenderPass) {
+            destroyRenderPass(device, stencilCoverRenderPass, nullptr);
+        }
+        if (destroySampler && stencilResolveSampler) {
+            destroySampler(device, stencilResolveSampler, nullptr);
+        }
+    }
+    psoStencilFillEvenOdd = VK_NULL_HANDLE;
+    psoStencilFillNonZero = VK_NULL_HANDLE;
+    psoStencilCover = VK_NULL_HANDLE;
+    psoStencilQuad = VK_NULL_HANDLE;
+    stencilCoverRenderPass = VK_NULL_HANDLE;
+    stencilResolveSampler = VK_NULL_HANDLE;
+    stencilSampleCount = VK_SAMPLE_COUNT_1_BIT;
+    stencilBuiltForSamples = 0;
+    stencilDsFormat = VK_FORMAT_UNDEFINED;
 }
 
 bool VulkanRenderTarget::Impl::EnsureEffectOffscreenResources(VkExtent2D extent)
@@ -9533,17 +10868,22 @@ void VulkanRenderTarget::Impl::DrainRetiredImageGraveyard()
         retiredImageGraveyard_.clear();
         return;
     }
-    std::vector<RetiredImage> keep;
-    keep.reserve(retiredImageGraveyard_.size());
-    for (auto& r : retiredImageGraveyard_) {
+    // Compact in place. Frame-start cleanup must not introduce a fresh host
+    // allocation failure after the slot fence has already been consumed.
+    size_t keepCount = 0;
+    for (size_t index = 0; index < retiredImageGraveyard_.size(); ++index) {
+        RetiredImage& r = retiredImageGraveyard_[index];
         if (r.retireFramesRemaining > 1) {
             r.retireFramesRemaining--;
-            keep.push_back(r);
+            if (keepCount != index) {
+                retiredImageGraveyard_[keepCount] = r;
+            }
+            ++keepCount;
             continue;
         }
         DestroyRetiredImageInline(r);
     }
-    retiredImageGraveyard_.swap(keep);
+    retiredImageGraveyard_.resize(keepCount);
 }
 
 void VulkanRenderTarget::Impl::FlushRetiredImageGraveyard()
@@ -9575,17 +10915,14 @@ void VulkanRenderTarget::Impl::DestroyAllRetainedLayerImages()
 bool VulkanRenderTarget::Impl::EnsureStencilCoverResources(VkExtent2D extent)
 {
     if (extent.width == 0 || extent.height == 0) return false;
-    // E4: the rebuild key is (width, height, desired MSAA samples). A runtime
-    // path-MSAA knob change flips pathMsaaDesiredSamples, so the cached FB/PSOs
-    // (built at the old count) are torn down and rebuilt at the new count. The
-    // BeginFrame fence wait upstream guarantees the old MSAA scratch + PSOs are
-    // idle, so DestroyStencilCoverResources below is safe at the frame boundary.
+    // E4: the attachment key includes extent; render pass/pipeline compatibility
+    // only includes color/depth formats and sample count. A same-format resize
+    // can therefore retain all four PSOs and rebuild just the attachments.
     if (stencilCoverFramebuffer != VK_NULL_HANDLE && psoStencilCover != VK_NULL_HANDLE
         && stencilCoverW == extent.width && stencilCoverH == extent.height
         && stencilBuiltForSamples == pathMsaaDesiredSamples) {
         return true;  // already built at this size + sample count
     }
-    DestroyStencilCoverResources();
     if (device == VK_NULL_HANDLE || frameRenderPass == VK_NULL_HANDLE) return false;
     // EnsureEngineBatchPipeline owns the shared EngineBatchPushConstants
     // pipeline layout (MVP + rounded-clip channel) we reuse.
@@ -9639,9 +10976,6 @@ bool VulkanRenderTarget::Impl::EnsureStencilCoverResources(VkExtent2D extent)
             if (o.n <= req && (caps & o.bit)) { samples = o.bit; break; }
         }
     }
-    // Record the knob value this build corresponds to (rebuild-key half).
-    stencilBuiltForSamples = pathMsaaDesiredSamples;
-
     // Depth/stencil format: D24S8 preferred, D32S8 fallback.
     VkFormat dsFormat = VK_FORMAT_D24_UNORM_S8_UINT;
     {
@@ -9653,6 +10987,24 @@ bool VulkanRenderTarget::Impl::EnsureStencilCoverResources(VkExtent2D extent)
                 dsFormat = VK_FORMAT_D32_SFLOAT_S8_UINT;
             }
         }
+    }
+
+    const bool pipelineBundleCompatible =
+        stencilCoverRenderPass != VK_NULL_HANDLE &&
+        stencilResolveSampler != VK_NULL_HANDLE &&
+        psoStencilFillEvenOdd != VK_NULL_HANDLE &&
+        psoStencilFillNonZero != VK_NULL_HANDLE &&
+        psoStencilCover != VK_NULL_HANDLE &&
+        psoStencilQuad != VK_NULL_HANDLE &&
+        stencilSampleCount == samples &&
+        stencilDsFormat == dsFormat &&
+        stencilBuiltForSamples == pathMsaaDesiredSamples;
+    if (pipelineBundleCompatible) {
+        DestroyStencilCoverAttachments();
+    } else {
+        // A sample/depth-format key change invalidates render-pass
+        // compatibility, so the full bundle must be rebuilt.
+        DestroyStencilCoverResources();
     }
 
     auto makeImage = [&](VkFormat fmt, VkSampleCountFlagBits s, VkImageUsageFlags usage,
@@ -9707,7 +11059,7 @@ bool VulkanRenderTarget::Impl::EnsureStencilCoverResources(VkExtent2D extent)
                         stencilResolveImage, stencilResolveMemory, stencilResolveView);
     if (!ok) { DestroyStencilCoverResources(); return false; }
 
-    {
+    if (stencilResolveSampler == VK_NULL_HANDLE) {
         VkSamplerCreateInfo si {};
         si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
         si.magFilter = VK_FILTER_NEAREST;   // resolve image is 1:1 with the screen
@@ -9723,7 +11075,7 @@ bool VulkanRenderTarget::Impl::EnsureStencilCoverResources(VkExtent2D extent)
         }
     }
 
-    {
+    if (stencilCoverRenderPass == VK_NULL_HANDLE) {
         VkAttachmentDescription atts[3] {};
         atts[0].format = format;                                  // MSAA color
         atts[0].samples = samples;
@@ -9825,7 +11177,10 @@ bool VulkanRenderTarget::Impl::EnsureStencilCoverResources(VkExtent2D extent)
     // + cover (NOT_EQUAL ref 0 -> write premult color, PassOp ZERO self-clears
     // the stencil so paths within one pass need no per-path clear). All reuse
     // the solid-fill VS/FS + engineBatchPipelineLayout (pixel-space MVP push).
-    {
+    if (psoStencilFillEvenOdd == VK_NULL_HANDLE ||
+        psoStencilFillNonZero == VK_NULL_HANDLE ||
+        psoStencilCover == VK_NULL_HANDLE ||
+        psoStencilQuad == VK_NULL_HANDLE) {
         VkShaderModule vs = VK_NULL_HANDLE, fs = VK_NULL_HANDLE;
         VkShaderModuleCreateInfo vmi {};
         vmi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
@@ -9999,6 +11354,7 @@ bool VulkanRenderTarget::Impl::EnsureStencilCoverResources(VkExtent2D extent)
     stencilCoverW = extent.width;
     stencilCoverH = extent.height;
     stencilSampleCount = samples;
+    stencilBuiltForSamples = pathMsaaDesiredSamples;
     stencilDsFormat = dsFormat;
     return true;
 }
@@ -10703,6 +12059,16 @@ void VulkanRenderTarget::Impl::CompositeVelloOutput(
 // and user DrawShaderEffectFromSource pixel shaders; only the latter's PS is
 // compiled at runtime via DXC. See EnsureCustomShaderBase.
 
+bool VulkanRenderTarget::Impl::ResetCustomShaderDescriptorPoolForCompletedSlot(
+    uint32_t frameIdx, const char* where)
+{
+    frameIdx %= MAX_FRAMES_IN_FLIGHT;
+    VkDescriptorPool pool = customShaderDescPools[frameIdx];
+    if (pool == VK_NULL_HANDLE) return true;
+    if (!resetDescriptorPool) return false;
+    return NoteVk(resetDescriptorPool(device, pool, 0), where) == VK_SUCCESS;
+}
+
 bool VulkanRenderTarget::Impl::EnsureCustomShaderBase()
 {
     if (customShaderBaseReady) return true;
@@ -10938,6 +12304,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                                                    externalVideoSurfaces)
 {
     BeginFrame();
+    transientAcquireTimeout = false;
     // Latched loss → never touch the device again (defense in depth; EndDraw's
     // entry gate normally aborts before reaching here).
     if (!DeviceUsable()) {
@@ -10956,7 +12323,9 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     // rationale — same instrumentation here.
     if (fencePending) {
         uint64_t waitStart = MonotonicNowNs();
-        VkResult waitResult = NoteVk(waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max()),
+        VkResult waitResult = NoteVk(waitForFences(
+                                         device, 1, &inFlight, VK_TRUE,
+                                         kVulkanFrameFenceTimeoutNanoseconds),
                                      "DrawReplayFrame.waitForFences");
         accumulatingWaitNs += MonotonicDiffNs(waitStart, MonotonicNowNs());
         if (waitResult == VK_SUCCESS) {
@@ -10964,6 +12333,14 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
         if (waitResult != VK_SUCCESS) {
             VK_LOG("[Vulkan] DrawReplayFrame: waitForFences failed");
+            if (waitResult != VK_ERROR_DEVICE_LOST && deviceGeneration) {
+                std::lock_guard<std::mutex> queueLock(
+                    deviceGeneration->queueMutex);
+                if (!deviceGeneration->IsLost()) {
+                    deviceGeneration->MarkAbandoned();
+                }
+                (void)DeviceUsable();
+            }
             // See DrawFrame for the accumulator-zeroing rationale.
             lastFrameWaitNs = accumulatingWaitNs;
             accumulatingWaitNs = 0;
@@ -10977,6 +12354,12 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     if (lastSubmitMonotonicNs != 0) {
         lastFramePresentToReadyNs = MonotonicDiffNs(lastSubmitMonotonicNs, MonotonicNowNs());
     }
+    if (!ResetCustomShaderDescriptorPoolForCompletedSlot(
+            currentFrame_, "DrawReplayFrame.resetCustomShaderDescriptorPool")) {
+        EndFrame();
+        return false;
+    }
+
     // ── Frame-slot engine-batch bookkeeping (this slot's fence observed) ────
     // Rewind the append cursor so RenderEngineBatches reuses the buffer from
     // offset 0, and destroy buffers a mid-frame grow retired two frames ago —
@@ -10998,6 +12381,31 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             if (surface) surface->ReleaseForFrame();
         }
         slot.deferredExternalVideoSurfaces.clear();
+        slot.deferredInkImageGenerations.clear();
+    }
+    // Install the exact ink allocation leases into the fence slot before any
+    // swapchain acquire/submit work. This may allocate, but it happens at a
+    // safe CPU boundary: after queueSubmit succeeds there are no allocations
+    // or ownership transfers left that could lose the last image reference.
+    {
+        auto& deferredInk =
+            perFrameStates_[currentFrame_].deferredInkImageGenerations;
+        deferredInk.reserve(commands.size());
+        for (const auto& command : commands) {
+            if (command.kind != GpuReplayCommandKind::InkLayer ||
+                !command.inkLayer.imageGeneration) {
+                continue;
+            }
+            const auto duplicate = std::find_if(
+                deferredInk.begin(), deferredInk.end(),
+                [&command](const auto& existing) {
+                    return existing.get() ==
+                           command.inkLayer.imageGeneration.get();
+                });
+            if (duplicate == deferredInk.end()) {
+                deferredInk.push_back(command.inkLayer.imageGeneration);
+            }
+        }
     }
     // C7: retire per-layer retained GPU images whose owning layer was destroyed (or that
     // were resized). This slot's fence is now observed; the per-entry MAX_FRAMES_IN_FLIGHT
@@ -11008,17 +12416,37 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     // change / LRU eviction (same MAX_FRAMES_IN_FLIGHT discipline).
     DrainBitmapResidentGraveyard();
     // E6: same fence-gated release for upload / text-atlas images retired by a
-    // mid-frame growth (see EnsureUploadImage / EnsureTextAtlasImage).
+    // mid-frame growth (see EnsureUploadImage / EnsureTextAtlasImage). Refresh
+    // every shared-view binding owned by this completed slot before a countdown
+    // can destroy its outgoing generation.
+    if (!RefreshSharedImageDescriptorsForCompletedSlot(currentFrame_)) {
+        EndFrame();
+        return false;
+    }
     DrainRetiredImageGraveyard();
     // Vello/stencil composite descriptor pool: reset ONCE per frame here (the
     // fence wait above proved the previous use of this slot's sets retired)
     // instead of per CompositeVelloOutput call, so the composite can run once
     // per engine-batch span.
-    if (velloCompositeDescPools[currentFrame_] != VK_NULL_HANDLE) {
-        auto resetDescriptorPoolFn = LoadDeviceProc<PFN_vkResetDescriptorPool>(getDeviceProcAddr, device, "vkResetDescriptorPool");
-        if (resetDescriptorPoolFn) {
-            resetDescriptorPoolFn(device, velloCompositeDescPools[currentFrame_], 0);
-        }
+    // This pool is shared by Vello output composites AND the default Impeller
+    // stencil-resolve path, so its completed slot must be reset even when the
+    // optional Vello compute pipeline was never created. Fail closed: do not
+    // allocate another set or release a Vello generation after a failed reset.
+    if (velloCompositeDescPools[currentFrame_] != VK_NULL_HANDLE &&
+        (!resetDescriptorPool ||
+         NoteVk(resetDescriptorPool(
+                    device, velloCompositeDescPools[currentFrame_], 0),
+                "DrawReplayFrame.resetVelloCompositeDescriptorPool") !=
+             VK_SUCCESS)) {
+        EndFrame();
+        return false;
+    }
+    bool velloFrameSlotPrepared = true;
+    if (velloCompute_) {
+        // The external sets no longer retain the Vello output view. Reset the
+        // internal compute pool next; only then may its retired generations die.
+        velloFrameSlotPrepared =
+            velloCompute_->PrepareFrameSlot(currentFrame_);
     }
     if (!EnsureGraphicsResources()) {
         VK_LOG("[Vulkan] DrawReplayFrame: EnsureGraphicsResources failed");
@@ -11040,6 +12468,20 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     std::vector<VkDeviceSize> transitionToOffsets(commands.size(), 0);
     std::vector<VkDeviceSize> vcTriangleOffsets(commands.size(), 0);
     std::vector<VkDeviceSize> customShaderOffsets(commands.size(), 0);
+    // Bitmap staging is planned only after the shared upload-image extent is
+    // known.  A resident hit contributes no CPU staging bytes; repeated uses
+    // of the same immutable shared-pixel buffer reuse one packed range.
+    std::vector<uint8_t> bitmapResidentEligible(commands.size(), 0);
+    std::vector<uint8_t> bitmapResidentHits(commands.size(), 0);
+    std::vector<uint8_t> bitmapNeedsPacking(commands.size(), 0);
+    struct BitmapSharedUseInfo {
+        uint32_t width = 0;
+        uint32_t height = 0;
+        bool lcdCoverage = false;
+        bool consistent = true;
+    };
+    std::unordered_map<const void*, BitmapSharedUseInfo> bitmapSharedUses;
+    bitmapSharedUses.reserve(commands.size());
     uint32_t maxBitmapWidth = 0;
     uint32_t maxBitmapHeight = 0;
     uint32_t maxBackdropWidth = 0;
@@ -11101,13 +12543,33 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 return false;
             }
 
-            const VkDeviceSize bitmapBytes =
-                static_cast<VkDeviceSize>(command.bitmap.pixelWidth) * static_cast<VkDeviceSize>(command.bitmap.pixelHeight) * 4u;
-            bitmapOffsets[index] = totalBitmapBytes;
-            totalBitmapBytes += bitmapBytes;
             maxBitmapWidth = std::max(maxBitmapWidth, command.bitmap.pixelWidth);
             maxBitmapHeight = std::max(maxBitmapHeight, command.bitmap.pixelHeight);
             hasBitmapCommands = true;
+
+            // A sharedPixels pointer is a COW-stable content identity.  Normal
+            // producers also keep its dimensions and packing interpretation
+            // stable.  Detect a malformed mixed use up front so a later MISS
+            // cannot resize/retire an entry that this same frame preflighted as
+            // a HIT, and so repeated commands only share staging when their
+            // packed bytes are provably identical.
+            if (command.bitmap.sharedPixels) {
+                const void* sharedKey =
+                    static_cast<const void*>(command.bitmap.sharedPixels.get());
+                const BitmapSharedUseInfo firstUse {
+                    command.bitmap.pixelWidth,
+                    command.bitmap.pixelHeight,
+                    command.bitmap.lcdCoverage,
+                    true,
+                };
+                auto [useIt, inserted] = bitmapSharedUses.emplace(sharedKey, firstUse);
+                if (!inserted &&
+                    (useIt->second.width != command.bitmap.pixelWidth ||
+                     useIt->second.height != command.bitmap.pixelHeight ||
+                     useIt->second.lcdCoverage != command.bitmap.lcdCoverage)) {
+                    useIt->second.consistent = false;
+                }
+            }
             continue;
         }
 
@@ -11278,6 +12740,107 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
 #endif
     }
 
+    // Resolve the shared upload-image extent before bitmap staging preflight.
+    // This is the same Ensure call the old combined resource/staging branch
+    // made, just separated so the resident byte-identical predicate observes
+    // the actual per-slot uploadWidth/uploadHeight. A slot can retain a larger
+    // grow-only image from an earlier frame; this frame's maxima alone are not
+    // enough to classify a resident hit safely.
+    const bool hasUploadImageCommands =
+        hasBitmapCommands || hasBackdropCommands || hasLiquidGlassCommands ||
+        hasBlurCommands || hasCustomShaderCommands;
+    const uint32_t requestedUploadWidth =
+        std::max(std::max(std::max(std::max(maxBitmapWidth, maxBackdropWidth),
+                                   maxBlurWidth),
+                          maxLiquidGlassWidth),
+                 maxCustomShaderWidth);
+    const uint32_t requestedUploadHeight =
+        std::max(std::max(std::max(std::max(maxBitmapHeight, maxBackdropHeight),
+                                   maxBlurHeight),
+                          maxLiquidGlassHeight),
+                 maxCustomShaderHeight);
+    if (hasUploadImageCommands &&
+        ((hasBitmapCommands && bitmapPipeline == VK_NULL_HANDLE) ||
+         (hasBackdropCommands && backdropPipeline == VK_NULL_HANDLE) ||
+         (hasLiquidGlassCommands && liquidGlassPipeline == VK_NULL_HANDLE) ||
+         (hasBlurCommands && blurPipeline == VK_NULL_HANDLE) ||
+         !EnsureUploadImageCapacity(requestedUploadWidth, requestedUploadHeight) ||
+         !UpdateFrameDescriptorSet())) {
+        // Ensure* helpers can replace per-frame aliases in place. Commit via
+        // EndFrame on failure so a later slot activation cannot revive one.
+        EndFrame();
+        return false;
+    }
+
+    auto findUploadedBitmapResident = [&](const auto& bitmap) -> BitmapResidentImage* {
+        if (!bitmapResidencyEnabled_ || !bitmap.sharedPixels ||
+            bitmap.pixelWidth != uploadWidth || bitmap.pixelHeight != uploadHeight) {
+            return nullptr;
+        }
+
+        const void* key = static_cast<const void*>(bitmap.sharedPixels.get());
+        auto residentIt = bitmapResidentImages_.find(key);
+        if (residentIt == bitmapResidentImages_.end() ||
+            residentIt->second.image == VK_NULL_HANDLE ||
+            residentIt->second.w != bitmap.pixelWidth ||
+            residentIt->second.h != bitmap.pixelHeight ||
+            !residentIt->second.uploaded ||
+            residentIt->second.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            return nullptr;
+        }
+        return &residentIt->second;
+    };
+
+    // Compact only the bitmap portion of staging. Existing uploaded resident
+    // images need no bytes. Repeated commands with one immutable sharedPixels
+    // identity reuse the first miss's packed range, which also leaves every
+    // duplicate a valid shared-upload fallback if resident creation fails.
+    std::unordered_map<const void*, VkDeviceSize> sharedBitmapOffsets;
+    sharedBitmapOffsets.reserve(bitmapSharedUses.size());
+    for (size_t index = 0; index < commands.size(); ++index) {
+        const auto& command = commands[index];
+        if (command.kind != GpuReplayCommandKind::Bitmap ||
+            command.retainedLayerKey != nullptr) {
+            continue;
+        }
+
+        const void* sharedKey = command.bitmap.sharedPixels
+            ? static_cast<const void*>(command.bitmap.sharedPixels.get())
+            : nullptr;
+        bool consistentSharedUse = false;
+        if (sharedKey != nullptr) {
+            auto useIt = bitmapSharedUses.find(sharedKey);
+            consistentSharedUse =
+                useIt != bitmapSharedUses.end() && useIt->second.consistent;
+        }
+
+        const bool residentEligible =
+            bitmapResidencyEnabled_ && consistentSharedUse &&
+            command.bitmap.pixelWidth == uploadWidth &&
+            command.bitmap.pixelHeight == uploadHeight;
+        bitmapResidentEligible[index] = residentEligible ? 1u : 0u;
+        if (residentEligible && findUploadedBitmapResident(command.bitmap) != nullptr) {
+            bitmapResidentHits[index] = 1u;
+            continue;
+        }
+
+        if (consistentSharedUse) {
+            auto [offsetIt, inserted] =
+                sharedBitmapOffsets.emplace(sharedKey, totalBitmapBytes);
+            bitmapOffsets[index] = offsetIt->second;
+            if (!inserted) {
+                continue;
+            }
+        } else {
+            bitmapOffsets[index] = totalBitmapBytes;
+        }
+
+        bitmapNeedsPacking[index] = 1u;
+        totalBitmapBytes +=
+            static_cast<VkDeviceSize>(command.bitmap.pixelWidth) *
+            static_cast<VkDeviceSize>(command.bitmap.pixelHeight) * 4u;
+    }
+
     // Custom-shader commands also upload their (cropped) captured content to the
     // shared upload image and live in the staging buffer's trailing region, so
     // they participate in the upload-image sizing + staging total below.
@@ -11309,41 +12872,18 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
 #else
     const VkDeviceSize totalStagingBytes = nonTextStagingBytes;
 #endif
-    if (hasBitmapCommands || hasBackdropCommands || hasLiquidGlassCommands || hasBlurCommands || hasCustomShaderCommands) {
-        if ((hasBitmapCommands && bitmapPipeline == VK_NULL_HANDLE) ||
-            (hasBackdropCommands && backdropPipeline == VK_NULL_HANDLE) ||
-            (hasLiquidGlassCommands && liquidGlassPipeline == VK_NULL_HANDLE) ||
-            (hasBlurCommands && blurPipeline == VK_NULL_HANDLE) ||
-            !EnsureUploadImageCapacity(
-                std::max(std::max(std::max(std::max(maxBitmapWidth, maxBackdropWidth), maxBlurWidth), maxLiquidGlassWidth), maxCustomShaderWidth),
-                std::max(std::max(std::max(std::max(maxBitmapHeight, maxBackdropHeight), maxBlurHeight), maxLiquidGlassHeight), maxCustomShaderHeight)) ||
-            !UpdateFrameDescriptorSet() ||
-            // totalStagingBytes can legitimately be 0 here: live-scene /
-            // offscreen-sampling Blur and offscreen-sampling CustomShader
-            // commands need the upload image but stage no CPU bytes. Nothing
-            // reads the staging buffer on such frames, so don't fail the frame
-            // on EnsureStagingCapacity(0) (which rejects zero sizes).
-            (totalStagingBytes > 0 && !EnsureStagingCapacity(totalStagingBytes))) {
-            // EndFrame on every failure exit: the Ensure* helpers destroy the
-            // old per-frame resources in place and only rewrite the alias
-            // fields — without CommitCurrentFrame (inside EndFrame) the slot
-            // would keep the destroyed handles and the next frame's
-            // BeginFrame would revive them (use-after-free / double-destroy).
-            EndFrame();
-            return false;
-        }
-    } else if ((hasPolygonCommands || hasTransitionCommands || hasVcTriangleCommands
+    const bool hasStagingCommands =
+        hasUploadImageCommands || hasPolygonCommands || hasTransitionCommands ||
+        hasVcTriangleCommands
 #ifdef _WIN32
-                || hasTextCommands
+        || hasTextCommands
 #endif
-                )
-               // totalStagingBytes can legitimately be 0 here: a GPU-RT slot-image
-               // Transition (useSlotImages) carries no CPU pixels, and a scene whose
-               // captured content is all push-constant SolidRects stages nothing.
-               // EnsureStagingCapacity(0) rejects zero sizes, so only require the
-               // staging buffer when there is something to stage (mirrors the
-               // bitmap/blur/custom-shader branch's totalStagingBytes>0 guard above).
-               && totalStagingBytes > 0 && !EnsureStagingCapacity(totalStagingBytes)) {
+        ;
+    // Resident-only bitmap frames, live/offscreen effects, and slot-image
+    // transitions legitimately stage zero bytes. Do not allocate or touch a
+    // staging buffer for those frames.
+    if (hasStagingCommands && totalStagingBytes > 0 &&
+        !EnsureStagingCapacity(totalStagingBytes)) {
         EndFrame();
         return false;
     }
@@ -11368,9 +12908,11 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     // glyph SSBO slice. EnsureTextAtlasImage MUST precede UpdateTextDescriptorSet
     // because the latter binds textAtlasImageView. glyphAtlas_ is non-null
     // whenever a TextRun was recorded (RenderText created it via EnsureGlyphAtlas).
+    bool textFrameReady = !hasTextCommands;
     if (hasTextCommands && textPipeline != VK_NULL_HANDLE && glyphAtlas_) {
-        EnsureTextAtlasImage(glyphAtlas_->GetWidth(), glyphAtlas_->GetHeight());
-        UpdateTextDescriptorSet(textGlyphStagingBase, totalTextBytes);
+        textFrameReady =
+            EnsureTextAtlasImage(glyphAtlas_->GetWidth(), glyphAtlas_->GetHeight()) &&
+            UpdateTextDescriptorSet(textGlyphStagingBase, totalTextBytes);
     }
 #endif
 
@@ -11415,6 +12957,12 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             // the sizing loop) — GetPixels() is empty and the offset math is meaningless. Skip
             // packing (the dedicated draw-loop branch samples the per-layer image directly).
             if (command.retainedLayerKey != nullptr) {
+                continue;
+            }
+            if (bitmapNeedsPacking[index] == 0u) {
+                // Either an already-uploaded resident hit (zero staging bytes)
+                // or a duplicate sharedPixels use whose first occurrence owns
+                // the common packed range.
                 continue;
             }
             // PREMULTIPLY while packing (straight BGRA -> premul BGRA): the
@@ -11498,14 +13046,56 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
 #endif
     }
 
+    // Revalidate every zero-staging HIT at the last safe CPU boundary, before
+    // acquiring a swapchain image or resetting/recording a command buffer. The
+    // live resident map is render-thread-owned and its LRU eviction runs only
+    // after replay, so a consistent key cannot disappear after this point.
+    // If an invariant is ever broken, fail this frame without touching WSI;
+    // the retry plans that bitmap as a normal staged MISS instead of reading an
+    // offset that was deliberately not allocated.
+    for (size_t index = 0; index < commands.size(); ++index) {
+        if (bitmapResidentHits[index] == 0u) {
+            continue;
+        }
+        const auto& command = commands[index];
+        if (bitmapResidentEligible[index] == 0u ||
+            command.kind != GpuReplayCommandKind::Bitmap ||
+            findUploadedBitmapResident(command.bitmap) == nullptr) {
+            VK_LOG("[Vulkan] DrawReplayFrame: resident bitmap preflight invalidated before acquire");
+            EndFrame();
+            return false;
+        }
+    }
+
+    bool acquiredImagePendingSubmit = false;
+    auto acquiredImageExit = MakeScopeExit([&]() noexcept {
+        if (acquiredImagePendingSubmit) {
+            MarkSwapchainUnusable("DrawReplayFrame.abandonedAcquire");
+        }
+    });
     uint32_t imageIndex = 0;
     {
         uint64_t acqStart = MonotonicNowNs();
         // See DrawFrame — DEVICE_LOST/SURFACE_LOST latch, OUT_OF_DATE = resize.
-        const VkResult acquireResult = NoteVk(acquireNextImage(device, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailable, VK_NULL_HANDLE, &imageIndex),
+        const VkResult acquireResult = NoteVk(acquireNextImage(
+            device, swapchain, kVulkanAcquireTimeoutNanoseconds,
+            imageAvailable, VK_NULL_HANDLE, &imageIndex),
                                               "DrawReplayFrame.acquireNextImage");
         accumulatingWaitNs += MonotonicDiffNs(acqStart, MonotonicNowNs());
+        if (acquireResult == VK_TIMEOUT) {
+            transientAcquireTimeout = true;
+            lastFrameWaitNs = accumulatingWaitNs;
+            accumulatingWaitNs = 0;
+            EndFrame();
+            return true;
+        }
+        if (acquireResult != VK_SUCCESS) {
+            swapchainRecreatePending = true;
+        }
         if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+            // See DrawFrame — latch the hard flag for BeginDraw's same-extent
+            // repair; the true return stays a benign resize-in-flight skip.
+            MarkSwapchainUnusable("DrawReplayFrame.acquire.OUT_OF_DATE");
             lastFrameWaitNs = accumulatingWaitNs;
             accumulatingWaitNs = 0;
             EndFrame();
@@ -11517,11 +13107,12 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             EndFrame();
             return false;
         }
+        acquiredImagePendingSubmit = true;
     }
 
     // resetFences is deferred to right before queueSubmit — see the DrawFrame
     // comment: an early reset plus any later failure exit would orphan this
-    // slot's fence unsignaled and hang the slot's next waitForFences forever.
+    // slot's fence unsignaled and force the next bounded wait to quarantine it.
 
     if (NoteVk(resetCommandBuffer(commandBuffer, 0), "DrawReplayFrame.resetCommandBuffer") != VK_SUCCESS) {
         EndFrame();
@@ -11707,7 +13298,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     // atlas growth in this batch — ConsumeAtlasRecreated() is still drained to keep
     // the recreate flag from accumulating, but the band/extent always fits the
     // current image (RenderText keys the atlas at GetWidth()/GetHeight()).
-    if (hasTextCommands && textPipeline != VK_NULL_HANDLE && textAtlasImage != VK_NULL_HANDLE && glyphAtlas_) {
+    if (textFrameReady && hasTextCommands && textPipeline != VK_NULL_HANDLE &&
+        textAtlasImage != VK_NULL_HANDLE && glyphAtlas_) {
         glyphAtlas_->ConsumeAtlasRecreated();
 
         uint16_t bandMinY = 0, bandMaxY = 0;
@@ -11716,8 +13308,11 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             const uint32_t aw = textAtlasWidth;
             const uint32_t bandRows = static_cast<uint32_t>(bandMaxY - bandMinY);
             const VkDeviceSize bandBytes = static_cast<VkDeviceSize>(aw) * bandRows * 4u;
-            if (aw > 0 && bandRows > 0 && bandMaxY <= textAtlasHeight && EnsureTextAtlasStaging(bandBytes) && textAtlasStagingMapped) {
-                std::memcpy(textAtlasStagingMapped,
+            TextAtlasStagingSlot& atlasStaging =
+                textAtlasStagingSlots[currentFrame_ % MAX_FRAMES_IN_FLIGHT];
+            if (aw > 0 && bandRows > 0 && bandMaxY <= textAtlasHeight &&
+                EnsureTextAtlasStaging(bandBytes) && atlasStaging.mapped) {
+                std::memcpy(atlasStaging.mapped,
                             glyphAtlas_->GetAtlasBitmap() + static_cast<size_t>(bandMinY) * aw * 4u,
                             static_cast<size_t>(bandBytes));
 
@@ -11750,7 +13345,10 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 atlasCopy.imageExtent.width = aw;
                 atlasCopy.imageExtent.height = bandRows;
                 atlasCopy.imageExtent.depth = 1;
-                cmdCopyBufferToImage(commandBuffer, textAtlasStagingBuffer, textAtlasImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &atlasCopy);
+                cmdCopyBufferToImage(commandBuffer, atlasStaging.buffer,
+                                     textAtlasImage,
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                     1, &atlasCopy);
 
                 VkImageMemoryBarrier atlasToShaderRead {};
                 atlasToShaderRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -12036,9 +13634,9 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     // frame slot is safe to reset because waitForFences at frame start already
     // observed its previous use complete.
     bool inkBlitPoolReset = false;
-    // Custom-shader effect: same per-frame transient pattern. The constants
-    // cursor sub-allocates the per-frame user-constants UBO (256-aligned).
-    bool customShaderPoolReset = false;
+    // The custom-shader pool was reset once at the completed-slot boundary,
+    // before any deferred buffer was released. A pool created later in this
+    // frame is already empty, so no mid-command-buffer reset is needed.
     VkDeviceSize customConstantsCursor = 0;
     const VkDeviceSize kCustomConstantsAlign = 256;  // ≥ any minUniformBufferOffsetAlignment
 
@@ -12093,13 +13691,26 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
 
 #ifdef __ANDROID__
-        { static int s_seqFrame = 0; if (index == 0) s_seqFrame++;
-          static int s_seqLines = 0;
-          if (s_seqFrame >= 4 && s_seqLines < 400) { s_seqLines++;
-            float rx=0,ry=0,rw=0,rh=0,ra=-1.0f;
-            if (command.kind == GpuReplayCommandKind::SolidRect || command.kind == GpuReplayCommandKind::ClearRect) { rx=command.solidRect.x; ry=command.solidRect.y; rw=command.solidRect.w; rh=command.solidRect.h; ra=command.solidRect.a; }
-            else if (command.kind == GpuReplayCommandKind::Bitmap) { rx=command.bitmap.x; ry=command.bitmap.y; rw=command.bitmap.w; rh=command.bitmap.h; ra=command.bitmap.opacity; }
-            VK_LOG("[SEQ] f%d #%zu k%d (%.0f,%.0f %.0fx%.0f) a=%.2f", s_seqFrame, index, (int)command.kind, rx, ry, rw, rh, ra); } }
+        if (AndroidReplaySequenceTraceEnabled()) {
+            static int s_seqFrame = 0;
+            if (index == 0) {
+                ++s_seqFrame;
+            }
+            static int s_seqLines = 0;
+            if (s_seqFrame >= 4 && s_seqLines < 400) {
+                ++s_seqLines;
+                float rx = 0, ry = 0, rw = 0, rh = 0, ra = -1.0f;
+                if (command.kind == GpuReplayCommandKind::SolidRect || command.kind == GpuReplayCommandKind::ClearRect) {
+                    rx = command.solidRect.x; ry = command.solidRect.y;
+                    rw = command.solidRect.w; rh = command.solidRect.h; ra = command.solidRect.a;
+                } else if (command.kind == GpuReplayCommandKind::Bitmap) {
+                    rx = command.bitmap.x; ry = command.bitmap.y;
+                    rw = command.bitmap.w; rh = command.bitmap.h; ra = command.bitmap.opacity;
+                }
+                VK_LOG("[SEQ] f%d #%zu k%d (%.0f,%.0f %.0fx%.0f) a=%.2f",
+                       s_seqFrame, index, static_cast<int>(command.kind), rx, ry, rw, rh, ra);
+            }
+        }
 #endif
 
         if (timingSupported) {
@@ -12540,14 +14151,12 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 std::memcpy(pushConstants.innerPerCornerRadiusX, command.innerPerCornerRadiusX, sizeof(pushConstants.innerPerCornerRadiusX));
                 std::memcpy(pushConstants.innerPerCornerRadiusY, command.innerPerCornerRadiusY, sizeof(pushConstants.innerPerCornerRadiusY));
             }
-            // Rotated / skewed rounded rect & fill: forward the LOCAL geometry
-            // into the (free on this path) inner rounded-clip slots and arm
-            // geometryFlags.y so the shader takes its local-space SDF branch.
-            // hasRoundedClip / hasInnerRoundedClip are false here, so the
-            // screen-space clip writes above did NOT touch clipFlags — exactly
-            // what the local path needs (clipFlags stays 0). No push-constant
-            // growth: every field written here already exists in the 224-byte
-            // block.
+            // Rotated / skewed rounded rect & fill: reuse the inner-geometry
+            // slots and arm geometryFlags.y for the local-space SDF branch.
+            // An ancestor may remain armed in roundedClip* / clipFlags.x; the
+            // local geometry writes below are independent of that outer mask.
+            // No push-constant growth: every field already exists in the
+            // 224-byte block.
             if (command.hasLocalRoundedCoverage) {
                 pushConstants.innerRoundedClipRect[0] = command.localOuterW;
                 pushConstants.innerRoundedClipRect[1] = command.localOuterH;
@@ -12555,11 +14164,15 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 pushConstants.innerRoundedClipRect[3] = command.localInnerH;
                 // Per-axis AA pad consumed by the vertex shader to rebuild the
                 // expanded local corner positions for the localPos varying.
-                pushConstants.roundedClipRadius[0] = command.localExpandX;
-                pushConstants.roundedClipRadius[1] = command.localExpandY;
+                pushConstants.padding2[0] = command.localExpandX;
+                pushConstants.padding2[1] = command.localExpandY;
                 std::memcpy(pushConstants.innerPerCornerRadiusX, command.localOuterPerCornerRadius, sizeof(pushConstants.innerPerCornerRadiusX));
                 std::memcpy(pushConstants.innerPerCornerRadiusY, command.localInnerPerCornerRadius, sizeof(pushConstants.innerPerCornerRadiusY));
-                pushConstants.geometryFlags[1] = 1.0f;
+                const bool continuousCorners =
+                    command.localContinuousCornerExponent >= 2.0f;
+                pushConstants.geometryFlags[1] = continuousCorners ? 2.0f : 1.0f;
+                if (continuousCorners)
+                    pushConstants.shadowParams[1] = command.localContinuousCornerExponent;
             }
             if (command.hasCustomQuad) {
                 pushConstants.quadPoint01[0] = command.quadPoint0X;
@@ -13213,14 +14826,14 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                     ? 1.0f
                     : static_cast<float>(command.transition.pixelHeight) / static_cast<float>(transitionHeight);
             }
-            if (command.hasRoundedClip && !command.roundedClipInverse) {
+            if (command.hasRoundedClip) {
                 pushConstants.roundedClipRect[0] = command.roundedClipLeft;
                 pushConstants.roundedClipRect[1] = command.roundedClipTop;
                 pushConstants.roundedClipRect[2] = command.roundedClipRight;
                 pushConstants.roundedClipRect[3] = command.roundedClipBottom;
                 pushConstants.roundedClipRadius[0] = command.roundedClipRadiusX;
                 pushConstants.roundedClipRadius[1] = command.roundedClipRadiusY;
-                pushConstants.clipFlags[0] = 1.0f;
+                pushConstants.clipFlags[0] = command.roundedClipInverse ? 2.0f : 1.0f;
             }
             if (command.hasCustomQuad) {
                 pushConstants.quadPoint01[0] = command.quadPoint0X;
@@ -13272,14 +14885,20 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             pushConstants.color[3] = 1.0f;
             pushConstants.screenSize[0] = static_cast<float>(extent.width);
             pushConstants.screenSize[1] = static_cast<float>(extent.height);
-            if (command.hasRoundedClip && !command.roundedClipInverse) {
+            if (command.hasRoundedClip) {
                 pushConstants.roundedClipRect[0] = command.roundedClipLeft;
                 pushConstants.roundedClipRect[1] = command.roundedClipTop;
                 pushConstants.roundedClipRect[2] = command.roundedClipRight;
                 pushConstants.roundedClipRect[3] = command.roundedClipBottom;
                 pushConstants.roundedClipRadius[0] = command.roundedClipRadiusX;
                 pushConstants.roundedClipRadius[1] = command.roundedClipRadiusY;
-                pushConstants.clipFlags[0] = 1.0f;
+                pushConstants.clipFlags[0] = command.roundedClipInverse ? 2.0f : 1.0f;
+                std::memcpy(pushConstants.perCornerRadiusX,
+                            command.perCornerRadiusX,
+                            sizeof(pushConstants.perCornerRadiusX));
+                std::memcpy(pushConstants.perCornerRadiusY,
+                            command.perCornerRadiusY,
+                            sizeof(pushConstants.perCornerRadiusY));
             }
 
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vcTrianglePipeline);
@@ -13307,7 +14926,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             const VkDescriptorSet selectedTextSet = command.textRun.smoothText
                 ? textDescriptorSetSmooth
                 : textDescriptorSet;
-            if (textPipeline == VK_NULL_HANDLE || selectedTextSet == VK_NULL_HANDLE ||
+            if (!textFrameReady || textPipeline == VK_NULL_HANDLE ||
+                selectedTextSet == VK_NULL_HANDLE ||
                 stagingBuffer == VK_NULL_HANDLE || command.textRun.glyphCount == 0) {
                 continue;
             }
@@ -13382,11 +15002,11 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 sampledOpacity = command.externalVideo.opacity;
                 transitionExternal = video->ConsumeInitialLayoutTransition();
             } else {
-                auto* ink = reinterpret_cast<VulkanInkLayerBitmap*>(
-                    command.inkLayer.inkLayer);
-                if (!ink || ink->DeviceLost() ||
-                    ink->DeviceHandle() != device) continue;
-                sampledView = ink->ImageView();
+                const auto& inkGeneration =
+                    command.inkLayer.imageGeneration;
+                if (!inkGeneration || inkGeneration->DeviceLost() ||
+                    inkGeneration->DeviceHandle() != device) continue;
+                sampledView = inkGeneration->ImageView();
                 sampledX = command.inkLayer.x;
                 sampledY = command.inkLayer.y;
                 sampledW = command.inkLayer.w;
@@ -13613,12 +15233,6 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 cpInfo.pPoolSizes = csSizes;
                 if (createDescriptorPool(device, &cpInfo, nullptr, &csPool) != VK_SUCCESS) { csPool = VK_NULL_HANDLE; continue; }
             }
-            if (!customShaderPoolReset) {
-                resetDescriptorPool(device, csPool, 0);
-                customConstantsCursor = 0;
-                customShaderPoolReset = true;
-            }
-
             // Ensure the per-frame constants UBO (host-visible). One generous
             // allocation reused across frames; the cursor sub-allocates per draw.
             VkBuffer&       cBuf = customShaderConstantsBuffers[currentFrame_];
@@ -13627,27 +15241,75 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             VkDeviceSize&   cCap = customShaderConstantsCapacity[currentFrame_];
             const VkDeviceSize constBytes = std::max<VkDeviceSize>(16, cs.constants.size() * sizeof(float));
             const VkDeviceSize needed = ((customConstantsCursor + constBytes + kCustomConstantsAlign - 1) / kCustomConstantsAlign) * kCustomConstantsAlign;
-            if (cBuf == VK_NULL_HANDLE || cCap < std::max<VkDeviceSize>(needed, 65536)) {
-                if (cMap) { unmapMemory(device, cMem); cMap = nullptr; }
-                if (cBuf != VK_NULL_HANDLE) { destroyBuffer(device, cBuf, nullptr); cBuf = VK_NULL_HANDLE; }
-                if (cMem != VK_NULL_HANDLE) { freeMemory(device, cMem, nullptr); cMem = VK_NULL_HANDLE; }
+            if (cBuf == VK_NULL_HANDLE || cMem == VK_NULL_HANDLE || cMap == nullptr ||
+                cCap < std::max<VkDeviceSize>(needed, 65536)) {
                 const VkDeviceSize cap = std::max<VkDeviceSize>(needed, 65536);
+                VkBuffer newBuffer = VK_NULL_HANDLE;
+                VkDeviceMemory newMemory = VK_NULL_HANDLE;
+                void* newMapped = nullptr;
+                auto destroyCandidate = [&]() {
+                    if (newMapped && newMemory != VK_NULL_HANDLE) {
+                        unmapMemory(device, newMemory);
+                        newMapped = nullptr;
+                    }
+                    if (newBuffer != VK_NULL_HANDLE) {
+                        destroyBuffer(device, newBuffer, nullptr);
+                        newBuffer = VK_NULL_HANDLE;
+                    }
+                    if (newMemory != VK_NULL_HANDLE) {
+                        freeMemory(device, newMemory, nullptr);
+                        newMemory = VK_NULL_HANDLE;
+                    }
+                };
                 VkBufferCreateInfo bInfo{};
                 bInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
                 bInfo.size = cap;
                 bInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
                 bInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-                if (createBuffer(device, &bInfo, nullptr, &cBuf) != VK_SUCCESS) { cBuf = VK_NULL_HANDLE; continue; }
+                if (createBuffer(device, &bInfo, nullptr, &newBuffer) != VK_SUCCESS ||
+                    newBuffer == VK_NULL_HANDLE) {
+                    destroyCandidate();
+                    continue;
+                }
                 VkMemoryRequirements mr{};
-                getBufferMemoryRequirements(device, cBuf, &mr);
-                uint32_t ti = FindMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                getBufferMemoryRequirements(device, newBuffer, &mr);
+                const uint32_t ti = FindMemoryType(
+                    mr.memoryTypeBits,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                        VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                if (ti == UINT32_MAX) {
+                    destroyCandidate();
+                    continue;
+                }
                 VkMemoryAllocateInfo ai{};
                 ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
                 ai.allocationSize = mr.size;
                 ai.memoryTypeIndex = ti;
-                if (allocateMemory(device, &ai, nullptr, &cMem) != VK_SUCCESS) { destroyBuffer(device, cBuf, nullptr); cBuf = VK_NULL_HANDLE; continue; }
-                bindBufferMemory(device, cBuf, cMem, 0);
-                mapMemory(device, cMem, 0, VK_WHOLE_SIZE, 0, &cMap);
+                if (allocateMemory(device, &ai, nullptr, &newMemory) != VK_SUCCESS ||
+                    newMemory == VK_NULL_HANDLE ||
+                    bindBufferMemory(device, newBuffer, newMemory, 0) != VK_SUCCESS ||
+                    mapMemory(device, newMemory, 0, VK_WHOLE_SIZE, 0,
+                              &newMapped) != VK_SUCCESS ||
+                    newMapped == nullptr) {
+                    destroyCandidate();
+                    continue;
+                }
+
+                if (cBuf != VK_NULL_HANDLE || cMem != VK_NULL_HANDLE) {
+                    try {
+                        perFrameStates_[currentFrame_].deferredDestroyBuffers
+                            .emplace_back(cBuf, cMem);
+                    } catch (...) {
+                        destroyCandidate();
+                        continue;
+                    }
+                    if (cMap && cMem != VK_NULL_HANDLE) {
+                        unmapMemory(device, cMem);
+                    }
+                }
+                cBuf = newBuffer;
+                cMem = newMemory;
+                cMap = newMapped;
                 cCap = cap;
             }
             const VkDeviceSize constOffset = ((customConstantsCursor + kCustomConstantsAlign - 1) / kCustomConstantsAlign) * kCustomConstantsAlign;
@@ -13845,19 +15507,19 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         // this every frame; mixed-size frames leave the sub-max bitmaps on the shared
         // path (unchanged pixels). uploadWidth/Height are set by EnsureUploadImageCapacity
         // before this loop, so they are stable for the whole frame here.
-        const bool residentByteIdentical =
-            command.bitmap.pixelWidth == uploadWidth && command.bitmap.pixelHeight == uploadHeight;
         const void* residentKey = command.bitmap.sharedPixels ? static_cast<const void*>(command.bitmap.sharedPixels.get()) : nullptr;
         BitmapResidentImage* rimg = nullptr;
-        if (bitmapResidencyEnabled_ && residentByteIdentical && residentKey != nullptr) {
-            auto rit = bitmapResidentImages_.find(residentKey);
-            if (rit != bitmapResidentImages_.end()
-                && rit->second.image != VK_NULL_HANDLE
-                && rit->second.w == command.bitmap.pixelWidth
-                && rit->second.h == command.bitmap.pixelHeight
-                && rit->second.uploaded
-                && rit->second.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-                rimg = &rit->second;                       // HIT: reuse, skip upload
+        if (bitmapResidentEligible[index] != 0u && residentKey != nullptr) {
+            rimg = findUploadedBitmapResident(command.bitmap);
+            if (bitmapResidentHits[index] != 0u && rimg == nullptr) {
+                // The zero-staging plan was revalidated immediately before
+                // acquire. Reaching this branch means an internal invariant
+                // was violated; abandon safely rather than copy from offset 0.
+                VK_LOG("[Vulkan] DrawReplayFrame: resident bitmap hit invalidated during replay");
+                EndFrame();
+                return false;
+            }
+            if (rimg != nullptr) {
                 rimg->lruTick = ++bitmapResidentLruClock_;
             } else {
                 rimg = EnsureBitmapResidentImage(residentKey, command.bitmap.pixelWidth,
@@ -14143,7 +15805,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     // unverified compute-pipeline restructure. MaybeEmitEngineSpan deliberately
     // excludes compute-mode Vello from spans to keep this the ONLY Vello-compute
     // composite site (see its comment).
-    if (velloScene && velloCompute_ && EnsureVelloCompositePipeline() &&
+    if (velloFrameSlotPrepared && velloScene && velloCompute_ &&
+        EnsureVelloCompositePipeline() &&
         velloCompute_->Record(commandBuffer, *velloScene, currentFrame_)) {
         CompositeVelloOutput(commandBuffer, velloCompute_->OutputView(),
                              velloCompute_->OutputSampler(), extent, currentFrame_,
@@ -14270,11 +15933,14 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     submitInfo.pCommandBuffers = &commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &signalSemaphore;
-    if (NoteVk(queueSubmit(queue, 1, &submitInfo, inFlight), "DrawReplayFrame.queueSubmit") != VK_SUCCESS) {
+    if (QueueSubmitSynchronized(
+            1, &submitInfo, inFlight,
+            "DrawReplayFrame.queueSubmit") != VK_SUCCESS) {
         // fencePending stays false — see DrawFrame's queueSubmit failure note.
         EndFrame();
         return false;
     }
+    acquiredImagePendingSubmit = false;
     fencePending = true;
     if (externalVideoSurfaces && !externalVideoSurfaces->empty()) {
         auto& deferred =
@@ -14315,8 +15981,16 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     }
     // Time ONLY the present call itself (parity with D3D12's presentBlockNs).
     const uint64_t presentStartNs = MonotonicNowNs();
-    const VkResult presentResult = NoteVk(queuePresent(queue, &presentInfo), "DrawReplayFrame.queuePresent");
+    const VkResult presentResult = QueuePresentSynchronized(
+        &presentInfo, "DrawReplayFrame.queuePresent");
     lastPresentBlockNs = MonotonicDiffNs(presentStartNs, MonotonicNowNs());
+    if (presentResult != VK_SUCCESS) {
+        swapchainRecreatePending = true;
+    }
+    if (presentResult != VK_SUCCESS &&
+        presentResult != VK_SUBOPTIMAL_KHR) {
+        MarkSwapchainUnusable("DrawReplayFrame.presentFailed");
+    }
     if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR && presentResult != VK_ERROR_OUT_OF_DATE_KHR) {
         EndFrame();
         return false;
@@ -14330,6 +16004,18 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
 
 void VulkanRenderTarget::Impl::Destroy()
 {
+    // Complete every RT-owned Vulkan teardown under the same generation-wide
+    // barrier used by ink and imported-video operations. Recursive ownership
+    // is required because TryDrain/MarkLost/MarkAbandoned re-enter it. The
+    // barrier is explicitly released before the backend inkMutex is entered
+    // near the end of this function (backend order is inkMutex -> driver).
+    std::unique_lock<std::recursive_mutex> driverCallLock;
+    if (deviceGeneration) {
+        driverCallLock = std::unique_lock<std::recursive_mutex>(
+            deviceGeneration->driverCallMutex);
+    }
+
+    bool mayDestroyGpuObjects = true;
     // Skip the drain only when the VkDevice itself is gone (deviceGone): on a
     // truly lost device there is no in-flight work left and the wait would
     // only poke the torn-down driver — the D3D12 rule of skipping even Close
@@ -14340,17 +16026,36 @@ void VulkanRenderTarget::Impl::Destroy()
     // exact driver-UAF class this hardening removes. NoteVk catches the case
     // where the device died unobserved since the last frame, so the ink
     // destructors that follow (via the generation flag) skip their waits.
-    if (!deviceGone && deviceWaitIdle && device != VK_NULL_HANDLE) {
-        NoteVk(deviceWaitIdle(device), "Destroy.deviceWaitIdle");
+    if (device != VK_NULL_HANDLE && !deviceGone) {
+        if (deviceGeneration) {
+            mayDestroyGpuObjects =
+                deviceGeneration->TryDrainForDestruction();
+            if (deviceGeneration->IsLost()) {
+                deviceLost = true;
+                deviceGone = true;
+            }
+        } else if (!deviceWaitIdle) {
+            mayDestroyGpuObjects = false;
+        } else {
+            const VkResult idleResult =
+                WaitDeviceIdleSynchronized("Destroy.deviceWaitIdle");
+            mayDestroyGpuObjects = idleResult == VK_SUCCESS ||
+                                   idleResult == VK_ERROR_DEVICE_LOST;
+        }
+    }
+    if (!mayDestroyGpuObjects && deviceGeneration) {
+        // Mark the generation before unregistering it. Unregister may release
+        // the backend's last brush-pipeline reference synchronously; its
+        // destructor must already know that every driver call is forbidden.
+        deviceGeneration->MarkAbandoned();
     }
 
-    if (device != VK_NULL_HANDLE) {
+    if (mayDestroyGpuObjects && device != VK_NULL_HANDLE) {
         // Release the Vello GPU compute pipeline + its composite objects while
         // the device is still alive. VulkanRenderTarget declares the engine
         // unique_ptrs before impl_, so impl_ (this) tears down first — doing the
         // GPU release here (rather than relying on member-destruction order)
         // closes the latent use-after-device-destroy the header warns about.
-        velloCompute_.reset();
         {
             auto destroyPipeline = LoadDeviceProc<PFN_vkDestroyPipeline>(getDeviceProcAddr, device, "vkDestroyPipeline");
             auto destroyPipelineLayout = LoadDeviceProc<PFN_vkDestroyPipelineLayout>(getDeviceProcAddr, device, "vkDestroyPipelineLayout");
@@ -14360,6 +16065,14 @@ void VulkanRenderTarget::Impl::Destroy()
                 destroyPipeline(device, velloCompositePipeline, nullptr);
                 velloCompositePipeline = VK_NULL_HANDLE;
             }
+            if (destroyDescriptorPool) {
+                for (auto& pool : velloCompositeDescPools) {
+                    if (pool) { destroyDescriptorPool(device, pool, nullptr); pool = VK_NULL_HANDLE; }
+                }
+            }
+            // External composite sets no longer retain Vello's output view.
+            // Vello now destroys its internal pools before live/retired output.
+            velloCompute_.reset();
             if (destroyPipelineLayout && velloCompositePipelineLayout) {
                 destroyPipelineLayout(device, velloCompositePipelineLayout, nullptr);
                 velloCompositePipelineLayout = VK_NULL_HANDLE;
@@ -14367,11 +16080,6 @@ void VulkanRenderTarget::Impl::Destroy()
             if (destroyDescriptorSetLayout && velloCompositeDescSetLayout) {
                 destroyDescriptorSetLayout(device, velloCompositeDescSetLayout, nullptr);
                 velloCompositeDescSetLayout = VK_NULL_HANDLE;
-            }
-            if (destroyDescriptorPool) {
-                for (auto& pool : velloCompositeDescPools) {
-                    if (pool) { destroyDescriptorPool(device, pool, nullptr); pool = VK_NULL_HANDLE; }
-                }
             }
         }
         DestroyGraphicsResources();
@@ -14426,20 +16134,84 @@ void VulkanRenderTarget::Impl::Destroy()
         }
     }
 
+    if (!mayDestroyGpuObjects) {
+        // No Vulkan entry point is legal below this point. Reclaim only host
+        // ownership and accounting; the VkDevice/VkInstance and every child
+        // allocation intentionally remain in the quarantined generation.
+        if (velloCompute_) {
+            velloCompute_->AbandonDeviceResources();
+            velloCompute_.reset();
+        }
+
+        CommitCurrentFrame();
+        for (auto& slot : perFrameStates_) {
+            if (slot.uploadImage != VK_NULL_HANDLE &&
+                slot.uploadWidth > 0 && slot.uploadHeight > 0) {
+                bitmap_stats::AddGpuResidentBytes(-(
+                    static_cast<int64_t>(slot.uploadWidth) *
+                    slot.uploadHeight * 4));
+            }
+            for (auto* video : slot.deferredExternalVideoSurfaces) {
+                if (video) video->ReleaseForFrame();
+            }
+            slot.deferredExternalVideoSurfaces.clear();
+            // Dropping these shared references is safe: their destructors see
+            // the already-published abandoned flag and skip Vulkan teardown.
+            slot.deferredInkImageGenerations.clear();
+            slot.deferredDestroyBuffers.clear();
+            slot = PerFrameState{};
+        }
+        renderFinishedPerImage.clear();
+
+        auto forgetResidentBitmap = [](BitmapResidentImage& image) {
+            if (image.image != VK_NULL_HANDLE && image.w > 0 && image.h > 0) {
+                bitmap_stats::AddGpuResidentBytes(-(
+                    static_cast<int64_t>(image.w) * image.h * 4));
+            }
+            image.pin.reset();
+        };
+        for (auto& entry : bitmapResidentImages_) {
+            forgetResidentBitmap(entry.second);
+        }
+        for (auto& image : bitmapResidentGraveyard_) {
+            forgetResidentBitmap(image);
+        }
+        bitmapResidentImages_.clear();
+        bitmapResidentGraveyard_.clear();
+        retainedLayerGpuImages_.clear();
+        retainedLayerGpuGraveyard_.clear();
+        retiredImageGraveyard_.clear();
+
+#ifdef _WIN32
+        if (textAtlasImage != VK_NULL_HANDLE &&
+            textAtlasWidth > 0 && textAtlasHeight > 0) {
+            bitmap_stats::AddGpuResidentBytes(-(
+                static_cast<int64_t>(textAtlasWidth) *
+                textAtlasHeight * 4));
+        }
+        glyphAtlas_.reset();
+#endif
+    }
+
     // F9: tear down the validation messenger BEFORE the instance (spec: a
     // messenger must be destroyed while its instance is still alive). This Impl
     // is the sole owner of the messenger; even when the instance is co-owned by
     // ink objects (via deviceGeneration) and outlives this Destroy(), dropping
     // the messenger here is legal — validation simply stops for the ink-only
     // tail. Guarded so a plain (non-validated) run is a no-op.
-    if (destroyDebugMessenger && debugMessenger != VK_NULL_HANDLE && instance != VK_NULL_HANDLE) {
+    if (mayDestroyGpuObjects && destroyDebugMessenger &&
+        debugMessenger != VK_NULL_HANDLE && instance != VK_NULL_HANDLE) {
         destroyDebugMessenger(instance, debugMessenger, nullptr);
     }
     debugMessenger = VK_NULL_HANDLE;
     destroyDebugMessenger = nullptr;
 
-    if (destroySurface && surface != VK_NULL_HANDLE && instance != VK_NULL_HANDLE) {
+    if (mayDestroyGpuObjects && destroySurface &&
+        surface != VK_NULL_HANDLE && instance != VK_NULL_HANDLE) {
         destroySurface(instance, surface, nullptr);
+    }
+    if (driverCallLock.owns_lock()) {
+        driverCallLock.unlock();
     }
     // Unregister from the backend BEFORE dropping our reference: if this RT's
     // generation is the registered one, the backend releases its pin so the
@@ -14456,7 +16228,8 @@ void VulkanRenderTarget::Impl::Destroy()
         // so its destructor never feeds handles of a freed device into the
         // driver — the cross-generation crash chain of the GPU-switch bug.
         deviceGeneration.reset();
-    } else if (destroyInstance && instance != VK_NULL_HANDLE) {
+    } else if (mayDestroyGpuObjects && destroyInstance &&
+               instance != VK_NULL_HANDLE) {
         destroyInstance(instance, nullptr);
     }
 
@@ -14502,10 +16275,9 @@ void VulkanRenderTarget::Impl::Destroy()
     textAtlasImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     textAtlasWidth = 0;
     textAtlasHeight = 0;
-    textAtlasStagingBuffer = VK_NULL_HANDLE;
-    textAtlasStagingMemory = VK_NULL_HANDLE;
-    textAtlasStagingMapped = nullptr;
-    textAtlasStagingCapacity = 0;
+    for (auto& slot : textAtlasStagingSlots) {
+        slot = {};
+    }
 #endif
     blurPipelineLayout = VK_NULL_HANDLE;
     blurPipeline = VK_NULL_HANDLE;
@@ -17219,18 +18991,8 @@ bool VulkanRenderTarget::TryRecordGpuRotatedLocalRoundedRectCommand(const CpuTra
     if (!TryPopulateReplayClip(replayCommand)) {
         return false;
     }
-    // An ancestor rounded clip cannot be modelled by this LOCAL-space path
-    // (it would need its own screen-space subtraction), and its outer slot is
-    // needed for the local geometry below. Dropping the primitive (the old
-    // behaviour) made rotated rounded fills/strokes inside a rounded
-    // ClipToBounds container disappear entirely (CPU fallback is self-gated
-    // on healthy replay frames). Degrade the ancestor to its rectangular
-    // AABB (already folded into the scissor) and hand both slots to the
-    // local geometry, mirroring the axis-aligned fill/stroke degrade.
-    if (replayCommand.hasRoundedClip || replayCommand.hasInnerRoundedClip) {
-        replayCommand.hasRoundedClip = false;
-        replayCommand.hasInnerRoundedClip = false;
-    }
+    // Local geometry occupies the inner slots. The outer slot remains available
+    // for the innermost ancestor rounded include/exclude clip populated above.
     if (replayCommand.scissorRight <= replayCommand.scissorLeft ||
         replayCommand.scissorBottom <= replayCommand.scissorTop) {
         return true;
@@ -17296,8 +19058,8 @@ bool VulkanRenderTarget::TryRecordGpuRotatedLocalRoundedRectCommand(const CpuTra
         return true;
     }
 
-    // LOCAL geometry forwarded into the FREE inner rounded-clip push-constant
-    // slots (see the SolidRect write site). No push-constant growth.
+    // LOCAL geometry reuses the inner-geometry push-constant slots while the
+    // independent outer rounded-clip channel remains available to an ancestor.
     replayCommand.hasLocalRoundedCoverage = true;
     replayCommand.localOuterW = localOuterW;
     replayCommand.localOuterH = localOuterH;
@@ -17334,91 +19096,134 @@ bool VulkanRenderTarget::TryRecordGpuRotatedLocalRoundedRectCommand(const CpuTra
     return true;
 }
 
-bool VulkanRenderTarget::TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush)
+bool VulkanRenderTarget::TryRecordGpuSuperEllipseFillCommand(
+    float x, float y, float w, float h,
+    float tl, float tr, float br, float bl, Brush* brush)
 {
-    // SuperEllipse fills use the same analytic SDF as D3D12 instead of the
-    // single-sample FilledPolygon fallback.  Border.Shape brackets this call
-    // with SetShapeType(1, n), including when CornerRadius is zero, so this
-    // check must precede the square-rect fast path below.
-    if (currentShapeType_ == 1) {
-        if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
-            return false;
-        }
-        if (w == 0.0f || h == 0.0f) {
-            return true;
-        }
-        if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
-            return false;
-        }
-
-        // The SolidRect pipeline carries a single colour.  Keep true gradients
-        // on TryRecordGradientFanInOrder rather than replacing them with their
-        // approximate average colour.
-        uint8_t b = 0, g = 0, r = 0, a = 0;
-        if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
-            return false;
-        }
-
-        const auto transform = GetCurrentTransform();
-        constexpr float kEpsilon = 0.0001f;
-        if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
-            // The analytic branch below evaluates SV_Position against an
-            // axis-aligned rect. Rotated/skewed squircles retain the existing
-            // polygon fallback until the local-position SDF path also carries
-            // a SuperEllipse mode.
-            return false;
-        }
-
-        GpuReplayCommand replayCommand {};
-        replayCommand.kind = GpuReplayCommandKind::SolidRect;
-        if (!TryPopulateReplayClip(replayCommand)) {
-            return false;
-        }
-
-        const float x0 = x * transform.m11 + transform.dx;
-        const float y0 = y * transform.m22 + transform.dy;
-        const float x1 = (x + w) * transform.m11 + transform.dx;
-        const float y1 = (y + h) * transform.m22 + transform.dy;
-
-        replayCommand.solidRect.x = std::min(x0, x1);
-        replayCommand.solidRect.y = std::min(y0, y1);
-        replayCommand.solidRect.w = std::fabs(x1 - x0);
-        replayCommand.solidRect.h = std::fabs(y1 - y0);
-        replayCommand.solidRect.r = static_cast<float>(r) / 255.0f;
-        replayCommand.solidRect.g = static_cast<float>(g) / 255.0f;
-        replayCommand.solidRect.b = static_cast<float>(b) / 255.0f;
-        replayCommand.solidRect.a = (static_cast<float>(a) / 255.0f) *
-            std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
-        if (replayCommand.solidRect.w <= kEpsilon ||
-            replayCommand.solidRect.h <= kEpsilon ||
-            replayCommand.solidRect.a <= 0.0f) {
-            return true;
-        }
-        if (replayCommand.scissorRight <= replayCommand.scissorLeft ||
-            replayCommand.scissorBottom <= replayCommand.scissorTop) {
-            return true;
-        }
-
-        // A negative shadowMode is an internal SolidRect effect tag for the
-        // analytic SuperEllipse branch; shadowSigma carries exponent n.  The
-        // exact shape rect uses the otherwise-free innerRoundedClipRect slot,
-        // leaving roundedClipRect available for an ancestor rounded clip. The
-        // shader multiplies both coverages. solidRect is expanded by one pixel
-        // so the outside half of the fwidth AA ramp is rasterized.
-        replayCommand.shadowMode = -1.0f;
-        replayCommand.shadowSigma = std::max(currentShapeExponent_, 2.0f);
-        replayCommand.hasInnerRoundedClip = true;
-        replayCommand.innerRoundedClipLeft = replayCommand.solidRect.x;
-        replayCommand.innerRoundedClipTop = replayCommand.solidRect.y;
-        replayCommand.innerRoundedClipRight = replayCommand.solidRect.x + replayCommand.solidRect.w;
-        replayCommand.innerRoundedClipBottom = replayCommand.solidRect.y + replayCommand.solidRect.h;
-        replayCommand.solidRect.x -= 1.0f;
-        replayCommand.solidRect.y -= 1.0f;
-        replayCommand.solidRect.w += 2.0f;
-        replayCommand.solidRect.h += 2.0f;
-        RecordReplayCommand(replayCommand);
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
+        return false;
+    }
+    if (w <= 0.0f || h <= 0.0f) {
         return true;
     }
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return false;
+    }
+
+    // Preserve true gradients for the corrected polygon/engine fallback.
+    uint8_t b = 0, g = 0, r = 0, a = 0;
+    if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
+        return false;
+    }
+
+    const float exponent =
+        (currentShapeExponent_ >= 2.0f && currentShapeExponent_ <= 16.0f)
+            ? currentShapeExponent_
+            : 4.0f;
+    const auto transform = GetCurrentTransform();
+    constexpr float kEpsilon = 0.0001f;
+    const bool hasRotationOrSkew =
+        std::fabs(transform.m12) > kEpsilon ||
+        std::fabs(transform.m21) > kEpsilon;
+
+    // Use one LOCAL-space analytic path for axis-aligned and transformed
+    // superellipses. This preserves the same derivative AA and exact curve
+    // equation regardless of transform or ancestor clips.
+    const size_t localOriginalCount = gpuReplayCommands_.size();
+    const bool localRecorded = TryRecordGpuRotatedLocalRoundedRectCommand(
+        transform, x, y, w, h, tl, tr, br, bl,
+        -1.0f /* fill */, brush);
+    if (localRecorded && gpuReplayCommands_.size() > localOriginalCount) {
+        GpuReplayCommand& command = gpuReplayCommands_.back();
+        if (command.kind == GpuReplayCommandKind::SolidRect &&
+            command.hasLocalRoundedCoverage) {
+            command.localContinuousCornerExponent = exponent;
+        }
+    }
+    if (localRecorded) {
+        return true;
+    }
+    if (hasRotationOrSkew) {
+        return false;
+    }
+
+    GpuReplayCommand replayCommand {};
+    replayCommand.kind = GpuReplayCommandKind::SolidRect;
+    if (!TryPopulateReplayClip(replayCommand)) {
+        return false;
+    }
+    if (replayCommand.scissorRight <= replayCommand.scissorLeft ||
+        replayCommand.scissorBottom <= replayCommand.scissorTop) {
+        return true;
+    }
+
+    const float x0 = x * transform.m11 + transform.dx;
+    const float y0 = y * transform.m22 + transform.dy;
+    const float x1 = (x + w) * transform.m11 + transform.dx;
+    const float y1 = (y + h) * transform.m22 + transform.dy;
+    const float shapeLeft = std::min(x0, x1);
+    const float shapeTop = std::min(y0, y1);
+    const float shapeRight = std::max(x0, x1);
+    const float shapeBottom = std::max(y0, y1);
+
+    replayCommand.solidRect.x = shapeLeft;
+    replayCommand.solidRect.y = shapeTop;
+    replayCommand.solidRect.w = shapeRight - shapeLeft;
+    replayCommand.solidRect.h = shapeBottom - shapeTop;
+    replayCommand.solidRect.r = static_cast<float>(r) / 255.0f;
+    replayCommand.solidRect.g = static_cast<float>(g) / 255.0f;
+    replayCommand.solidRect.b = static_cast<float>(b) / 255.0f;
+    replayCommand.solidRect.a = (static_cast<float>(a) / 255.0f) *
+        std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
+    if (replayCommand.solidRect.w <= kEpsilon ||
+        replayCommand.solidRect.h <= kEpsilon ||
+        replayCommand.solidRect.a <= 0.0f) {
+        return true;
+    }
+
+    const float maxRadius = std::min(w, h) * 0.5f;
+    const float localRadii[4] = {
+        std::clamp(tl, 0.0f, maxRadius),
+        std::clamp(tr, 0.0f, maxRadius),
+        std::clamp(br, 0.0f, maxRadius),
+        std::clamp(bl, 0.0f, maxRadius)
+    };
+    const float scaleX = std::fabs(transform.m11);
+    const float scaleY = std::fabs(transform.m22);
+    const bool flipX = transform.m11 < 0.0f;
+    const bool flipY = transform.m22 < 0.0f;
+    const bool screenRight[4] = { false, true, true, false };
+    const bool screenBottom[4] = { false, false, true, true };
+    for (int i = 0; i < 4; ++i) {
+        const bool localRight = flipX ? !screenRight[i] : screenRight[i];
+        const bool localBottom = flipY ? !screenBottom[i] : screenBottom[i];
+        const int source = localBottom
+            ? (localRight ? 2 : 3)
+            : (localRight ? 1 : 0);
+        replayCommand.innerPerCornerRadiusX[i] = localRadii[source] * scaleX;
+        replayCommand.innerPerCornerRadiusY[i] = localRadii[source] * scaleY;
+    }
+
+    // The shape uses the inner slots so the outer rounded-clip slots remain
+    // available for an ancestor ClipToBounds, matching the existing fill path.
+    replayCommand.shadowMode = -1.0f;
+    replayCommand.shadowSigma = exponent;
+    replayCommand.hasInnerRoundedClip = true;
+    replayCommand.innerRoundedClipLeft = shapeLeft;
+    replayCommand.innerRoundedClipTop = shapeTop;
+    replayCommand.innerRoundedClipRight = shapeRight;
+    replayCommand.innerRoundedClipBottom = shapeBottom;
+
+    replayCommand.solidRect.x -= 1.0f;
+    replayCommand.solidRect.y -= 1.0f;
+    replayCommand.solidRect.w += 2.0f;
+    replayCommand.solidRect.h += 2.0f;
+    RecordReplayCommand(replayCommand);
+    return true;
+}
+
+bool VulkanRenderTarget::TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush)
+{
 
     if (rx <= 0.0f && ry <= 0.0f) {
         return TryRecordGpuSolidRectCommand(x, y, w, h, brush);
@@ -17625,6 +19430,74 @@ bool VulkanRenderTarget::TryRecordGpuShadowRectCommand(float x, float y, float w
     return true;
 }
 
+bool VulkanRenderTarget::TryRecordGpuSuperEllipseStrokeCommand(
+    float x, float y, float w, float h,
+    float tl, float tr, float br, float bl,
+    float strokeWidth, Brush* brush)
+{
+    if (strokeWidth <= 0.0f || w <= 0.0f || h <= 0.0f) {
+        return true;
+    }
+
+    // The analytic SolidRect pipeline carries one colour. Keep gradients on
+    // their corrected continuous-corner path fallback.
+    uint8_t b = 0, g = 0, r = 0, a = 0;
+    if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
+        return false;
+    }
+
+    const float exponent =
+        (currentShapeExponent_ >= 2.0f && currentShapeExponent_ <= 16.0f)
+            ? currentShapeExponent_
+            : 4.0f;
+    const auto transform = GetCurrentTransform();
+    constexpr float kEpsilon = 0.0001f;
+    const bool hasRotationOrSkew =
+        std::fabs(transform.m12) > kEpsilon ||
+        std::fabs(transform.m21) > kEpsilon;
+
+    // The local recorder stores symmetric outer/inner extents. The fragment
+    // shader reconstructs the original center-line bounds and evaluates one
+    // distance field, yielding an equal-width band on every side and corner.
+    const size_t localOriginalCount = gpuReplayCommands_.size();
+    const bool localRecorded = TryRecordGpuRotatedLocalRoundedRectCommand(
+        transform, x, y, w, h, tl, tr, br, bl, strokeWidth, brush);
+    if (localRecorded && gpuReplayCommands_.size() > localOriginalCount) {
+        GpuReplayCommand& command = gpuReplayCommands_.back();
+        if (command.kind == GpuReplayCommandKind::SolidRect &&
+            command.hasLocalRoundedCoverage) {
+            command.localContinuousCornerExponent = exponent;
+        }
+    }
+    if (localRecorded) {
+        return true;
+    }
+    if (hasRotationOrSkew) {
+        return false;
+    }
+
+    // Conservative axis-aligned fallback for a renderer that cannot allocate
+    // the local channel.
+    const size_t originalCount = gpuReplayCommands_.size();
+    const bool recorded = TryRecordGpuPerCornerRoundedRectStrokeCommand(
+        x, y, w, h, tl, tr, br, bl, strokeWidth, brush);
+    if (!recorded || gpuReplayCommands_.size() == originalCount) {
+        return recorded;
+    }
+
+    GpuReplayCommand& command = gpuReplayCommands_.back();
+    if (command.kind != GpuReplayCommandKind::SolidRect) {
+        return false;
+    }
+    if (command.hasLocalRoundedCoverage) {
+        command.localContinuousCornerExponent = exponent;
+    } else if (command.hasRoundedClip) {
+        command.shadowMode = -2.0f;
+        command.shadowSigma = exponent;
+    }
+    return true;
+}
+
 bool VulkanRenderTarget::TryRecordGpuRoundedRectStrokeCommand(float x, float y, float w, float h, float rx, float ry, float strokeWidth, Brush* brush)
 {
     if (strokeWidth <= 0.0f) {
@@ -17675,22 +19548,13 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectStrokeCommand(float x, float y, 
         return false;
     }
     if (replayCommand.hasRoundedClip || replayCommand.hasInnerRoundedClip) {
-        // Same slot conflict as TryRecordGpuRoundedRectFillCommand: the
-        // outer/inner rounded-clip slots express THIS stroke's border ring
-        // (assigned below) and an ancestor rounded clip already claimed the
-        // outer one. Dropping the primitive (the old behaviour) made every
-        // rect/rounded stroke inside a rounded ClipToBounds container
-        // disappear. Keep the ancestor's AABB (already in the scissor) and
-        // hand both slots to our own ring geometry.
-        replayCommand.hasRoundedClip = false;
-        replayCommand.hasInnerRoundedClip = false;
-        // The ancestor clip may have armed the per-corner / inverse channel;
-        // both slots now carry OUR ring geometry, so reset them.
-        replayCommand.roundedClipInverse = false;
-        for (int i = 0; i < 4; ++i) {
-            replayCommand.perCornerRadiusX[i] = 0.0f;
-            replayCommand.perCornerRadiusY[i] = 0.0f;
+        // Keep the ancestor in the outer slot and carry this ring through the
+        // local channel. Elliptical rx/ry cannot be represented by that channel.
+        if (std::fabs(rx - ry) > kEpsilon) {
+            return false;
         }
+        return TryRecordGpuRotatedLocalRoundedRectCommand(
+            transform, x, y, w, h, rx, rx, rx, rx, strokeWidth, brush);
     }
 
     const float halfStroke = strokeWidth * 0.5f;
@@ -17812,6 +19676,21 @@ bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectFillCommand(float x, fl
         }
     }
 
+    // Axis-aligned rounded ancestor: keep the ancestor in the outer clip slot
+    // and carry this per-corner fill through the independent local channel.
+    {
+        GpuReplayCommand clipProbe {};
+        clipProbe.kind = GpuReplayCommandKind::SolidRect;
+        if (!TryPopulateReplayClip(clipProbe)) {
+            return false;
+        }
+        if (clipProbe.hasRoundedClip || clipProbe.hasInnerRoundedClip) {
+            return TryRecordGpuRotatedLocalRoundedRectCommand(
+                GetCurrentTransform(), x, y, w, h,
+                tl, tr, br, bl, -1.0f /* fill */, brush);
+        }
+    }
+
     // First do the uniform-radius record using the largest corner — that
     // populates every common field (scissor, brush, rect transform, outer
     // rounded clip rect) for us. We then overwrite the per-corner radii so
@@ -17827,6 +19706,7 @@ bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectFillCommand(float x, fl
     // A successful recorder can still be a culled/no-op draw. In that case
     // the previous replay command belongs to a different element and must not
     // receive this primitive's per-corner radii.
+
     if (gpuReplayCommands_.size() == originalCount) return true;
     GpuReplayCommand& cmd = gpuReplayCommands_.back();
     if (cmd.kind != GpuReplayCommandKind::SolidRect || !cmd.hasRoundedClip) {
@@ -17860,6 +19740,19 @@ bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectStrokeCommand(float x, 
         constexpr float kEpsilon = 0.0001f;
         if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
             return TryRecordGpuRotatedLocalRoundedRectCommand(transform, x, y, w, h,
+                tl, tr, br, bl, strokeWidth, brush);
+        }
+
+        // Axis-aligned rounded ancestor: preserve its outer clip slot and
+        // carry the real per-corner stroke through the local geometry channel.
+        GpuReplayCommand clipProbe {};
+        clipProbe.kind = GpuReplayCommandKind::SolidRect;
+        if (!TryPopulateReplayClip(clipProbe)) {
+            return false;
+        }
+        if (clipProbe.hasRoundedClip || clipProbe.hasInnerRoundedClip) {
+            return TryRecordGpuRotatedLocalRoundedRectCommand(
+                transform, x, y, w, h,
                 tl, tr, br, bl, strokeWidth, brush);
         }
     }
@@ -18246,6 +20139,7 @@ bool VulkanRenderTarget::TryRecordGpuInkLayerCommand(void* inkLayer, float x, fl
     }
 
     auto* ink = reinterpret_cast<VulkanInkLayerBitmap*>(inkLayer);
+    const auto imageGeneration = ink->AcquireImageGeneration();
     // Generation guard: the ink image must live on THIS render target's device
     // to be GPU-sampled — Vulkan device-level handles never cross devices, so
     // feeding a foreign generation's VkImageView into our descriptor set is
@@ -18253,12 +20147,14 @@ bool VulkanRenderTarget::TryRecordGpuInkLayerCommand(void* inkLayer, float x, fl
     // generation is refused outright. Returning false routes the blit to the
     // CPU readback fallback, which is legal cross-device (pixels travel
     // through host memory).
-    if (ink->DeviceLost() || !impl_ || ink->DeviceHandle() != impl_->device) {
+    if (!imageGeneration || imageGeneration->DeviceLost() || !impl_ ||
+        imageGeneration->DeviceHandle() != impl_->device) {
         return false;
     }
-    const uint32_t iw = ink->Width();
-    const uint32_t ih = ink->Height();
-    if (iw == 0 || ih == 0 || ink->ImageView() == VK_NULL_HANDLE) {
+    const uint32_t iw = imageGeneration->Width();
+    const uint32_t ih = imageGeneration->Height();
+    if (iw == 0 || ih == 0 ||
+        imageGeneration->ImageView() == VK_NULL_HANDLE) {
         return false;
     }
     const float w = static_cast<float>(iw);
@@ -18274,7 +20170,7 @@ bool VulkanRenderTarget::TryRecordGpuInkLayerCommand(void* inkLayer, float x, fl
 
     GpuReplayCommand cmd {};
     cmd.kind = GpuReplayCommandKind::InkLayer;
-    cmd.inkLayer.inkLayer = inkLayer;
+    cmd.inkLayer.imageGeneration = imageGeneration;
     cmd.inkLayer.x = std::min(std::min(p0x, p1x), std::min(p2x, p3x));
     cmd.inkLayer.y = std::min(std::min(p0y, p1y), std::min(p2y, p3y));
     cmd.inkLayer.w = std::max(std::max(p0x, p1x), std::max(p2x, p3x)) - cmd.inkLayer.x;
@@ -19047,17 +20943,22 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
     // Sample the gradient at a LOCAL point (bd geometry shares the perimeter's
     // local space), transform to world, then premultiply — the vc pipeline blends
     // premultiplied alpha and opacity is already folded into bd's stop alpha.
-    auto emitVertex = [&](float lx, float ly) {
+    auto emitVertexAtWorld = [&](float lx, float ly,
+                                 float wx, float wy, float coverage) {
         GradientColor gc = SampleBrushGradient(bd, flatStops.data(), lx, ly);
-        float wx = 0.0f, wy = 0.0f;
-        ApplyTransform(transform, lx, ly, wx, wy);
-        const float pa = std::clamp(gc.a, 0.0f, 1.0f);
+        const float pa = std::clamp(gc.a, 0.0f, 1.0f) *
+            std::clamp(coverage, 0.0f, 1.0f);
         cmd.vcTriangles.vertices.push_back(wx);
         cmd.vcTriangles.vertices.push_back(wy);
         cmd.vcTriangles.vertices.push_back(std::clamp(gc.r, 0.0f, 1.0f) * pa);
         cmd.vcTriangles.vertices.push_back(std::clamp(gc.g, 0.0f, 1.0f) * pa);
         cmd.vcTriangles.vertices.push_back(std::clamp(gc.b, 0.0f, 1.0f) * pa);
         cmd.vcTriangles.vertices.push_back(pa);
+    };
+    auto emitVertex = [&](float lx, float ly) {
+        float wx = 0.0f, wy = 0.0f;
+        ApplyTransform(transform, lx, ly, wx, wy);
+        emitVertexAtWorld(lx, ly, wx, wy, 1.0f);
     };
     auto emitTriangle = [&](float ax, float ay, float bx, float by, float tcx, float tcy) {
         emitVertex(ax, ay);
@@ -19236,6 +21137,120 @@ bool VulkanRenderTarget::TryRecordGradientFanInOrder(const std::vector<float>& p
         }
     }
 
+    // The vertex-color replay pipeline is intentionally single-sample. Its old
+    // gradient fan stopped exactly on the tessellated perimeter, producing a
+    // binary triangle edge (most visible on continuous corners). Add the same
+    // one-physical-pixel premultiplied coverage skirt used by the line AA path:
+    // full coverage on the true boundary, zero on a convex outward miter.
+    // Rounded-clip slots stay untouched, so an ancestor clip remains independent.
+    std::vector<float> worldPerimeter(static_cast<size_t>(n) * 2u);
+    double signedAreaTwice = 0.0;
+    for (uint32_t i = 0; i < n; ++i) {
+        float wx = 0.0f, wy = 0.0f;
+        ApplyTransform(transform,
+                       perimeterLocal[i * 2], perimeterLocal[i * 2 + 1],
+                       wx, wy);
+        worldPerimeter[i * 2] = wx;
+        worldPerimeter[i * 2 + 1] = wy;
+    }
+    for (uint32_t i = 0; i < n; ++i) {
+        const uint32_t j = (i + 1u) % n;
+        signedAreaTwice +=
+            static_cast<double>(worldPerimeter[i * 2]) *
+                worldPerimeter[j * 2 + 1] -
+            static_cast<double>(worldPerimeter[j * 2]) *
+                worldPerimeter[i * 2 + 1];
+    }
+
+    if (std::fabs(signedAreaTwice) > 1e-6) {
+        std::vector<float> outerPerimeter(static_cast<size_t>(n) * 2u);
+        const float winding = signedAreaTwice > 0.0 ? 1.0f : -1.0f;
+        constexpr float kFeatherPixels = 1.0f;
+        constexpr float kMinEdgeLength = 1e-4f;
+
+        auto outwardNormalAt = [&](uint32_t vertex, bool incoming,
+                                   float& nx, float& ny) {
+            nx = 0.0f;
+            ny = 0.0f;
+            // Corner arcs can share an endpoint when adjacent radii consume an
+            // entire edge. Skip those duplicate vertices so their skirt miter
+            // uses the nearest real incoming/outgoing edge instead of a zero
+            // normal and cannot produce a four-pixel spike.
+            for (uint32_t step = 1; step < n; ++step) {
+                const uint32_t from = incoming
+                    ? (vertex + n - step) % n
+                    : vertex;
+                const uint32_t to = incoming
+                    ? vertex
+                    : (vertex + step) % n;
+                const float dx =
+                    worldPerimeter[to * 2] - worldPerimeter[from * 2];
+                const float dy =
+                    worldPerimeter[to * 2 + 1] - worldPerimeter[from * 2 + 1];
+                const float len = std::sqrt(dx * dx + dy * dy);
+                if (len <= kMinEdgeLength) {
+                    continue;
+                }
+                // In y-down screen coordinates a positive-area contour is
+                // clockwise, whose outward edge normal is (dy, -dx).
+                nx = winding * dy / len;
+                ny = winding * -dx / len;
+                return;
+            }
+        };
+
+        for (uint32_t i = 0; i < n; ++i) {
+            float pnx = 0.0f, pny = 0.0f;
+            float nnx = 0.0f, nny = 0.0f;
+            outwardNormalAt(i, true, pnx, pny);
+            outwardNormalAt(i, false, nnx, nny);
+
+            float mx = pnx + nnx;
+            float my = pny + nny;
+            float mlen = std::sqrt(mx * mx + my * my);
+            if (mlen <= kMinEdgeLength) {
+                mx = (nnx != 0.0f || nny != 0.0f) ? nnx : pnx;
+                my = (nnx != 0.0f || nny != 0.0f) ? nny : pny;
+                mlen = std::sqrt(mx * mx + my * my);
+            }
+            if (mlen > kMinEdgeLength) {
+                mx /= mlen;
+                my /= mlen;
+            }
+            // Preserve a one-pixel perpendicular skirt on both adjoining
+            // edges and cap pathological near-180-degree miters.
+            const float projection =
+                std::max(mx * nnx + my * nny, 0.25f);
+            const float miterLength =
+                std::min(kFeatherPixels / projection,
+                         kFeatherPixels * 4.0f);
+            outerPerimeter[i * 2] =
+                worldPerimeter[i * 2] + mx * miterLength;
+            outerPerimeter[i * 2 + 1] =
+                worldPerimeter[i * 2 + 1] + my * miterLength;
+        }
+
+        auto emitFringeVertex = [&](uint32_t sampleIndex, bool outer) {
+            const float lx = perimeterLocal[sampleIndex * 2];
+            const float ly = perimeterLocal[sampleIndex * 2 + 1];
+            const std::vector<float>& positions =
+                outer ? outerPerimeter : worldPerimeter;
+            emitVertexAtWorld(lx, ly,
+                              positions[sampleIndex * 2],
+                              positions[sampleIndex * 2 + 1],
+                              outer ? 0.0f : 1.0f);
+        };
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t j = (i + 1u) % n;
+            emitFringeVertex(i, false);
+            emitFringeVertex(j, false);
+            emitFringeVertex(j, true);
+            emitFringeVertex(i, false);
+            emitFringeVertex(j, true);
+            emitFringeVertex(i, true);
+        }
+    }
+
     cmd.vcTriangles.vertexCount = static_cast<uint32_t>(cmd.vcTriangles.vertices.size() / 6u);
     if (cmd.vcTriangles.vertexCount < 3) {
         return false;
@@ -19293,7 +21308,7 @@ bool VulkanRenderTarget::TryFillSuperEllipseInOrder(float x, float y, float w, f
                                                     float tl, float tr, float br, float bl, Brush* brush)
 {
     std::vector<float> poly;
-    BuildSuperEllipsePolygon(x, y, w, h, tl, tr, br, bl, poly);  // squircle boundary (local, convex)
+    BuildSuperEllipsePolygon(x, y, w, h, tl, tr, br, bl, poly);  // local continuous corners (convex)
     const uint32_t n = static_cast<uint32_t>(poly.size() / 2);
     if (n < 3) return false;
 
@@ -19301,7 +21316,7 @@ bool VulkanRenderTarget::TryFillSuperEllipseInOrder(float x, float y, float w, f
     // before the gradient fan / polygon fallbacks so the common Border
     // background gets continuous fwidth coverage instead of a 0/1 edge from
     // the single-sample triangle pipeline.
-    if (TryRecordGpuRoundedRectFillCommand(x, y, w, h, 0.0f, 0.0f, brush)) {
+    if (TryRecordGpuSuperEllipseFillCommand(x, y, w, h, tl, tr, br, bl, brush)) {
         if (cpuRasterNeeded_) {
             const auto transform = GetCurrentTransform();
             std::vector<float> world;
@@ -19351,11 +21366,9 @@ void VulkanRenderTarget::FillRoundedRectangle(float x, float y, float w, float h
 {
     TouchFrame();
 
-    // SuperEllipse shape (Border.Shape == SuperEllipse): an iOS squircle =
-    // straight edges + continuous-curvature (Lamé) corners of the given radius
-    // (BuildSuperEllipsePolygon), drawn IN ORDER (TryFillSuperEllipseInOrder) so
-    // the card background isn't painted over its own on-top content by the late-
-    // draining Impeller batch. rx is the corner radius (uniform overload).
+    // SuperEllipse shape (Border.Shape == SuperEllipse): straight sides plus
+    // four local radius-bounded Lame corners. Draw IN ORDER so a late Impeller
+    // batch cannot paint the card background over its own on-top content.
     if (currentShapeType_ == 1 && brush && w > 0.0f && h > 0.0f) {
         if (TryFillSuperEllipseInOrder(x, y, w, h, rx, rx, rx, rx, brush)) {
             return;
@@ -19423,11 +21436,10 @@ void VulkanRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w
 {
     TouchFrame();
 
-    // SuperEllipse shape: the managed Border draws its squircle background through
-    // the CornerRadius overload of DrawRoundedRectangle, which lands HERE (the
-    // per-corner path). Draw the squircle (straight edges + Lamé corners of the
-    // per-corner radii) IN ORDER so the card background isn't painted over its own
-    // on-top content by the late-draining Impeller batch.
+    // The managed Border transports each continuous-corner radius through this
+    // per-corner API; the exponent controls every local Lame patch.
+    // Draw it IN ORDER so a late Impeller batch cannot paint the background over
+    // the card's own on-top content.
     if (currentShapeType_ == 1 && brush && w > 0.0f && h > 0.0f) {
         if (TryFillSuperEllipseInOrder(x, y, w, h, tl, tr, br, bl, brush)) {
             return;
@@ -19497,11 +21509,15 @@ void VulkanRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w
 
     // SuperEllipse border stroke via the per-corner overload (see the fill above).
     if (currentShapeType_ == 1 && brush && w > 0.0f && h > 0.0f && strokeWidth > 0.0f) {
+        if (TryRecordGpuSuperEllipseStrokeCommand(
+                x, y, w, h, tl, tr, br, bl, strokeWidth, brush)) {
+            return;
+        }
         std::vector<float> poly;
         BuildSuperEllipsePolygon(x, y, w, h, tl, tr, br, bl, poly);
         if (poly.size() >= 6) {
             DrawPolygon(poly.data(), static_cast<uint32_t>(poly.size() / 2), brush, strokeWidth,
-                        /*closed*/ true, /*lineJoin*/ 0, /*miterLimit*/ 10.0f);
+                        /*closed*/ true, /*lineJoin*/ 2, /*miterLimit*/ 10.0f);
             return;
         }
     }
@@ -19516,15 +21532,19 @@ void VulkanRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h
 {
     TouchFrame();
 
-    // SuperEllipse border stroke — mirror the fill path: stroke the tessellated
-    // Lamé-curve outline through DrawPolygon (closed) so a SuperEllipse Border's
-    // BorderBrush follows the squircle edge instead of a circular rounded rect.
+    // SuperEllipse border stroke mirrors the fill path. The analytic recorder is
+    // preferred; DrawPolygon is the local continuous-corner fallback for brushes
+    // the SolidRect pipeline cannot represent.
     if (currentShapeType_ == 1 && brush && w > 0.0f && h > 0.0f && strokeWidth > 0.0f) {
+        if (TryRecordGpuSuperEllipseStrokeCommand(
+                x, y, w, h, rx, rx, rx, rx, strokeWidth, brush)) {
+            return;
+        }
         std::vector<float> poly;
         BuildSuperEllipsePolygon(x, y, w, h, rx, rx, rx, rx, poly);
         if (poly.size() >= 6) {
             DrawPolygon(poly.data(), static_cast<uint32_t>(poly.size() / 2), brush, strokeWidth,
-                        /*closed*/ true, /*lineJoin*/ 0, /*miterLimit*/ 10.0f);
+                        /*closed*/ true, /*lineJoin*/ 2, /*miterLimit*/ 10.0f);
             return;
         }
     }
@@ -20589,8 +22609,9 @@ void VulkanRenderTarget::PopOpacity()
 }
 void VulkanRenderTarget::SetShapeType(int type, float n)
 {
-    currentShapeType_ = type;
-    currentShapeExponent_ = (n > 0.0f) ? n : 4.0f;
+    currentShapeType_ = type == 1 ? 1 : 0;
+    // Comparisons reject NaN and infinities as well as unstable exponents.
+    currentShapeExponent_ = (n >= 2.0f && n <= 16.0f) ? n : 4.0f;
 }
 
 void VulkanRenderTarget::BuildSuperEllipsePolygon(float x, float y, float w, float h,
@@ -20600,64 +22621,181 @@ void VulkanRenderTarget::BuildSuperEllipsePolygon(float x, float y, float w, flo
     pts.clear();
     if (w <= 0.0f || h <= 0.0f) return;
 
-    // Full-rect Lamé superellipse |X/(w/2)|^n + |Y/(h/2)|^n = 1 — the shape
-    // contract every other consumer of shapeType==1 implements: the D3D12 SDF
-    // (sdSuperEllipseRect in sdf_rect.ps.hlsl uses only halfSize + exponent and
-    // ignores cornerRadius entirely) and the managed layout clip
-    // (Border.CreateSuperEllipseGeometry Bezier-approximates the same curve).
-    // The per-corner radii are deliberately IGNORED for parity: an earlier
-    // Vulkan-only variant used them as per-corner Lamé arc radii, so the
-    // default CornerRadius(0) — the common case, since Shape=SuperEllipse
-    // derives its curvature from SuperEllipseN, not CornerRadius — degenerated
-    // every corner to a square point and Border rendered as a sharp-cornered
-    // rectangle on Vulkan while D3D12 showed the full squircle.
-    (void)tl; (void)tr; (void)br; (void)bl;
-
-    const float a  = w * 0.5f;
-    const float b  = h * 0.5f;
-    const float cx = x + a;
-    const float cy = y + b;
-    const float n = std::max(2.0f, currentShapeExponent_);  // 2 = ellipse, 4 = iOS squircle
-    const float e = 2.0f / n;
+    const float exponent =
+        (currentShapeExponent_ >= 2.0f && currentShapeExponent_ <= 16.0f)
+            ? currentShapeExponent_
+            : 4.0f;
     constexpr float kPi = 3.14159265358979323846f;
-    // Segments per quadrant, sized so the chord sagitta stays under ~1/4 px on
-    // the largest half-extent (sagitta ≈ R·θ²/8 with θ = π/(2·kSegQ)).
-    const int kSegQ = std::clamp(static_cast<int>(std::ceil(1.6f * std::sqrt(std::max(a, b)))), 8, 32);
-    const int total = kSegQ * 4;
 
-    // Uniform angular sampling of the Lamé parameterisation
-    // (±a·|cos t|^(2/n), ±b·|sin t|^(2/n)); first point (cx + a, cy), implicit
-    // close — every consumer (gradient fan slicing, FilledPolygon, DrawPolygon
-    // closed=true, RasterizePolygon) wraps (i+1) % count.
-    pts.reserve(static_cast<size_t>(total) * 2u);
-    for (int i = 0; i < total; ++i) {
-        const float t  = (2.0f * kPi) * (static_cast<float>(i) / static_cast<float>(total));
-        const float ct = std::cos(t);
-        const float st = std::sin(t);
-        const float sx = (ct < 0.0f) ? -1.0f : 1.0f;
-        const float sy = (st < 0.0f) ? -1.0f : 1.0f;
-        pts.push_back(cx + sx * std::pow(std::fabs(ct), e) * a);
-        pts.push_back(cy + sy * std::pow(std::fabs(st), e) * b);
-    }
+    auto sanitize = [](float radius) {
+        return std::isfinite(radius) && radius > 0.0f ? radius : 0.0f;
+    };
+    tl = sanitize(tl);
+    tr = sanitize(tr);
+    br = sanitize(br);
+    bl = sanitize(bl);
+
+    auto fitScale = [](float available, float first, float second) {
+        const float sum = first + second;
+        return sum > 0.0f ? std::min(1.0f, available / sum) : 1.0f;
+    };
+    float scale = 1.0f;
+    scale = std::min(scale, fitScale(w, tl, tr));
+    scale = std::min(scale, fitScale(w, bl, br));
+    scale = std::min(scale, fitScale(h, tl, bl));
+    scale = std::min(scale, fitScale(h, tr, br));
+    tl *= scale;
+    tr *= scale;
+    br *= scale;
+    bl *= scale;
+
+    // Sample each local quarter by screen-space polar angle. This avoids the
+    // singular axis derivatives of signed-power parameterization for n > 2,
+    // while retaining exact straight segments between neighbouring corners.
+    const int estimatedSegments = std::clamp(
+        static_cast<int>(std::ceil((tl + tr + br + bl) * kPi)), 24, 256);
+    pts.reserve(static_cast<size_t>(estimatedSegments) * 2u);
+
+    auto arc = [&](float cx, float cy, float radius, float a0, float a1) {
+        if (radius <= 0.0001f) {
+            pts.push_back(cx);
+            pts.push_back(cy);
+            return;
+        }
+        const int segments = std::clamp(
+            static_cast<int>(std::ceil(radius * 0.5f * kPi / 0.5f)), 6, 64);
+        for (int i = 0; i <= segments; ++i) {
+            const float t = a0 + (a1 - a0) *
+                (static_cast<float>(i) / static_cast<float>(segments));
+            const float directionX = std::cos(t);
+            const float directionY = std::sin(t);
+            const float inverseRadius = std::pow(
+                std::pow(std::fabs(directionX), exponent) +
+                std::pow(std::fabs(directionY), exponent),
+                1.0f / exponent) / radius;
+            const float radialDistance = 1.0f / inverseRadius;
+            pts.push_back(cx + directionX * radialDistance);
+            pts.push_back(cy + directionY * radialDistance);
+        }
+    };
+
+    arc(x + tl,     y + tl,     tl, kPi,        1.5f * kPi);
+    arc(x + w - tr, y + tr,     tr, 1.5f * kPi, 2.0f * kPi);
+    arc(x + w - br, y + h - br, br, 0.0f,       0.5f * kPi);
+    arc(x + bl,     y + h - bl, bl, 0.5f * kPi, kPi);
 }
+bool VulkanRenderTarget::ApplyPendingVSyncRequest()
+{
+    const int32_t request =
+        pendingVSyncEnabled_.exchange(-1, std::memory_order_acq_rel);
+    if (request < 0) {
+        return true;
+    }
+    const bool enabled = request != 0;
+    if (vsyncEnabled_ == enabled &&
+        (!impl_ || !impl_->swapchainRecreatePending)) {
+        return true;
+    }
+    if (!impl_ || width_ <= 0 || height_ <= 0) {
+        vsyncEnabled_ = enabled;
+        return true;
+    }
+
+    if (!impl_->RecreateSwapchain(width_, height_, enabled)) {
+        // Preserve a newer concurrent request; otherwise retry this one at the
+        // next BeginDraw safe point.
+        int32_t noRequest = -1;
+        (void)pendingVSyncEnabled_.compare_exchange_strong(
+            noRequest, request, std::memory_order_release,
+            std::memory_order_relaxed);
+        return false;
+    }
+
+    vsyncEnabled_ = enabled;
+    fullInvalidation_ = true;
+    dirtyRects_.clear();
+    // The host may already have selected partial damage for the next frame.
+    // Fresh swapchain images have undefined contents, so skip that frame's
+    // present and make managed schedule one authoritative full repaint.
+    impl_->swapchainRepairJustCompleted = true;
+    return true;
+}
+
+bool VulkanRenderTarget::ApplyPendingPathMsaaRequest()
+{
+    const int32_t request =
+        pendingPathMsaaSampleCount_.exchange(-1, std::memory_order_acq_rel);
+    if (request < 0) return true;
+
+    const bool analyticOnly = request == 0;
+    const uint32_t desiredSamples = analyticOnly
+        ? pathMsaaSampleCount_
+        : static_cast<uint32_t>(request);
+    const bool sampleBundleChanges =
+        !analyticOnly && impl_ &&
+        impl_->pathMsaaDesiredSamples != desiredSamples;
+    const bool hasLiveStencilBundle = impl_ &&
+        (impl_->stencilCoverFramebuffer != VK_NULL_HANDLE ||
+         impl_->stencilCoverRenderPass != VK_NULL_HANDLE ||
+         impl_->psoStencilCover != VK_NULL_HANDLE ||
+         impl_->stencilMsaaColorImage != VK_NULL_HANDLE ||
+         impl_->stencilResolveImage != VK_NULL_HANDLE);
+
+    if (sampleBundleChanges && hasLiveStencilBundle) {
+        // Only this lifecycle-owned frame boundary mutates the shared bundle.
+        // Both in-flight slots must be proven complete before its pipelines,
+        // framebuffer, and attachments can be destroyed.
+        if (impl_->WaitDeviceIdleSynchronized(
+                "BeginDraw.pathMsaa.deviceWaitIdle") != VK_SUCCESS) {
+            (void)impl_->DeviceUsable();
+            // Do not overwrite a newer setter call that arrived while the
+            // lifecycle thread was waiting for the device.
+            int32_t noRequest = -1;
+            (void)pendingPathMsaaSampleCount_.compare_exchange_strong(
+                noRequest, request, std::memory_order_release,
+                std::memory_order_relaxed);
+            return false;
+        }
+        // Composite sets from either in-flight slot can still contain the
+        // stencil resolve view/sampler. Device idleness proves execution is
+        // complete, but invalidate the descriptor bookkeeping before tearing
+        // down that shared bundle. On failure keep the bundle intact and retry
+        // this request unless a newer setter call has already replaced it.
+        for (auto pool : impl_->velloCompositeDescPools) {
+            if (pool != VK_NULL_HANDLE &&
+                (!impl_->resetDescriptorPool ||
+                 impl_->NoteVk(impl_->resetDescriptorPool(
+                                   impl_->device, pool, 0),
+                               "BeginDraw.pathMsaa.resetVelloCompositeDescriptorPool") !=
+                     VK_SUCCESS)) {
+                int32_t noRequest = -1;
+                (void)pendingPathMsaaSampleCount_.compare_exchange_strong(
+                    noRequest, request, std::memory_order_release,
+                    std::memory_order_relaxed);
+                return false;
+            }
+        }
+        impl_->DestroyStencilCoverResources();
+    }
+
+    pathAnalyticOnly_ = analyticOnly;
+    if (!analyticOnly) {
+        pathMsaaSampleCount_ = desiredSamples;
+        if (impl_) impl_->pathMsaaDesiredSamples = desiredSamples;
+    }
+    if (impellerEngine_) impellerEngine_->SetPathAnalyticOnly(pathAnalyticOnly_);
+    if (velloEngine_) velloEngine_->SetPathAnalyticOnly(pathAnalyticOnly_);
+    return true;
+}
+
 void VulkanRenderTarget::SetVSyncEnabled(bool enabled)
 {
-    if (vsyncEnabled_ == enabled) {
-        return;
-    }
-    vsyncEnabled_ = enabled;
-    // Unlike D3D12 (sync interval is a per-Present parameter), the present
-    // mode is baked into the swapchain, so a runtime toggle must rebuild it.
-    // Mirror Resize: rebuild at the current size and force a full repaint.
-    // Previously this only stored the flag, which RecreateSwapchain consumes
-    // on Initialize/Resize - so a DevTools vsync toggle appeared to do
-    // nothing until the window was next resized. A rebuild failure latches
-    // deviceLost and the managed recovery chain picks it up on the next frame.
-    if (impl_ && width_ > 0 && height_ > 0) {
-        fullInvalidation_ = true;
-        dirtyRects_.clear();
-        (void)impl_->RecreateSwapchain(width_, height_, enabled);
-    }
+    // Present mode is baked into the swapchain. Never rebuild synchronously on
+    // the caller (normally the Win32 message/UI thread): vkDeviceWaitIdle and
+    // WSI teardown here used to freeze input and could race a sizing callback.
+    // BeginDraw consumes the latest request at its serialized frame boundary;
+    // Resize also folds it into an already-required rebuild.
+    pendingVSyncEnabled_.store(enabled ? 1 : 0, std::memory_order_release);
 }
 
 // ── F8: TEST-ONLY device-lost injection hooks (see RenderTarget base) ───────
@@ -20746,23 +22884,22 @@ void VulkanRenderTarget::SetPathMsaaSampleCount(uint32_t sampleCount) {
     // density (PathTessellationQualityScale is fixed at 1.0) — D3D12 keeps a fixed
     // flatten tolerance regardless of MSAA, and matching that is what holds the
     // path-fill parity at 0.000%.
-    pathAnalyticOnly_ = (sampleCount == 0);
-
-    if (!pathAnalyticOnly_) {
-        uint32_t clamped = (sampleCount >= 8) ? 8u : (sampleCount >= 4) ? 4u : (sampleCount >= 2) ? 2u : 1u;
-        pathMsaaSampleCount_ = clamped;
-        if (impl_) impl_->pathMsaaDesiredSamples = clamped;
-    }
-    // else: leave pathMsaaSampleCount_ / impl_->pathMsaaDesiredSamples untouched,
-    // so a later toggle back off restores the prior MSAA count (mirrors D3D12,
-    // which leaves pendingPathMsaaSampleCount_ unchanged when analytic-only).
-
-    // Propagate the analytic-only choice to whichever engines exist so their
-    // fill/stroke encoders route correctly on the very next Encode call.
-    if (impellerEngine_) impellerEngine_->SetPathAnalyticOnly(pathAnalyticOnly_);
-    if (velloEngine_)    velloEngine_->SetPathAnalyticOnly(pathAnalyticOnly_);
+    const uint32_t normalized = sampleCount == 0
+        ? 0u
+        : (sampleCount >= 8) ? 8u
+        : (sampleCount >= 4) ? 4u
+        : (sampleCount >= 2) ? 2u
+        : 1u;
+    // This API may arrive concurrently with an open render frame. Publish only
+    // the request here; BeginDraw applies it while owning the lifecycle gate.
+    pendingPathMsaaSampleCount_.store(
+        static_cast<int32_t>(normalized), std::memory_order_release);
 }
-void VulkanRenderTarget::SetDpi(float dpiX, float dpiY) { dpiX_ = dpiX; dpiY_ = dpiY; }
+void VulkanRenderTarget::SetDpi(float dpiX, float dpiY)
+{
+    pendingDpiX_.store(dpiX, std::memory_order_release);
+    pendingDpiY_.store(dpiY, std::memory_order_release);
+}
 // ── Dirty-rect aggregation helpers ───────────────────────────────────────────
 namespace {
 
@@ -21041,7 +23178,8 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     TouchFrame();
 
 #ifdef __ANDROID__
-    static int s_rtDbg = 0; const bool rtDbg = (s_rtDbg++ < 80);
+    static int s_rtDbg = 0;
+    const bool rtDbg = AndroidTextTraceEnabled() && (s_rtDbg++ < 80);
     if (rtDbg) VK_LOG("[TXTDBG] enter len=%u fmt=%p brush=%p x=%.1f y=%.1f w=%.1f h=%.1f gpuReplay=%d hasClear=%d cpuRaster=%d", textLength, (void*)format, (void*)brush, x, y, w, h, (int)gpuReplaySupported_, (int)gpuReplayHasClear_, (int)cpuRasterNeeded_);
 #endif
 
@@ -21153,15 +23291,14 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     // Isotropic DPI is the common case; max() picks the higher-res axis for the
     // rare anisotropic transform.
     // Anisotropic transforms (e.g. liquid-glass squeeze scaleX~0.63, scaleY~2.17)
-    // must rasterize the glyph at the FINAL deformed pixel aspect via the atlas's
-    // per-axis DWRITE_MATRIX path (GenerateGlyphs scaleX/scaleY) - otherwise an
+    // must rasterize at the final vertical ppem and X:Y aspect. Otherwise an
     // isotropic high-res bitmap is point-minified in one axis and thin stems
-    // vanish (the d->c / r->l mosaic). Isotropic DPI keeps the crisp 1:1 path.
+    // vanish. Isotropic DPI keeps the crisp 1:1 path.
     const bool anisoText = std::abs(txScaleX - txScaleY) > 0.01f * std::max(txScaleX, txScaleY);
     float glyphRasterScaleX = 1.0f;
     float glyphRasterScaleY = 1.0f;
     if (anisoText) {
-        impl_->glyphAtlas_->SetDpiScale(1.0f);  // size carried by the per-axis deformation matrix
+        impl_->glyphAtlas_->SetDpiScale(1.0f);  // size carried by the final per-axis scale buckets
         glyphRasterScaleX = txScaleX;
         glyphRasterScaleY = txScaleY;
     } else {

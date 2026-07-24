@@ -188,6 +188,7 @@ public class AnimationVirtualizationTests
         container.SetValue(UIElement.RenderTransformProperty, new TranslateTransform { Y = 12 });
         container.SetValue(UIElement.OpacityProperty, 0.4);
         container.SetValue(UIElement.ClipToBoundsProperty, true);
+        container.SetValue(UIElement.ClipToBoundsEdgesProperty, ClipEdges.Left | ClipEdges.Top);
         container.SetValue(UIElement.VisibilityProperty, Visibility.Hidden);
 
         ScrollPanelTo(host, 3000);
@@ -196,6 +197,7 @@ public class AnimationVirtualizationTests
         Assert.Null(container.GetValue(UIElement.RenderTransformProperty));
         Assert.Equal(1.0, (double)container.GetValue(UIElement.OpacityProperty)!);
         Assert.False((bool)container.GetValue(UIElement.ClipToBoundsProperty)!);
+        Assert.Equal(ClipEdges.All, (ClipEdges)container.GetValue(UIElement.ClipToBoundsEdgesProperty)!);
         Assert.Equal(Visibility.Visible, (Visibility)container.GetValue(UIElement.VisibilityProperty)!);
     }
 

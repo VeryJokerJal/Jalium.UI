@@ -332,6 +332,7 @@ typedef struct JaliumPlatformEvent {
             uint32_t flags;     ///< JaliumPointerFlags
             int32_t  toolType;  ///< JaliumPointerToolType
             uint32_t buttons;   ///< JaliumPointerButtons
+            int64_t  timestampMillis; ///< Monotonic platform event time in milliseconds
         } pointer;
 
         // JALIUM_EVENT_SAFE_AREA_CHANGED

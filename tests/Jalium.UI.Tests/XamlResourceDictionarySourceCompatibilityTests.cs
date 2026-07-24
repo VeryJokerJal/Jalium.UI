@@ -124,8 +124,33 @@ public class XamlResourceDictionarySourceCompatibilityTests
     }
 
     [Theory]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Button.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.TextControls.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.ToggleControls.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.RangeControls.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.SelectionControls.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.TabControl.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Windows.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Navigation.jalxaml")]
     [InlineData("Jalium.UI.Controls.Themes.Controls.Containers.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.TitleBar.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.TreeView.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.DataGrid.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.TreeDataGrid.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.ScrollBar.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Calendar.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Dialogs.jalxaml")]
     [InlineData("Jalium.UI.Controls.Themes.Controls.Primitives.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Media.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.DockLayout.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.MenusToolbars.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Terminal.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.DiffViewer.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.HexEditor.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.JsonTreeViewer.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.PropertyGrid.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Charts.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Maps.jalxaml")]
     public void ThemeControlDictionaries_ShouldParseStandalone(string resourceName)
     {
         var assembly = typeof(Button).Assembly;

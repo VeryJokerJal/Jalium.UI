@@ -3,12 +3,132 @@ using System.Globalization;
 using System.Reflection;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Rendering;
 using Jalium.UI.Media.TextFormatting;
 
 namespace Jalium.UI.Tests;
 
 public sealed class FormattedGlyphParityTests
 {
+    [Fact]
+    public void FormattedTextRenderSnapshotReusesComputedStateAndDetachesRangeWrites()
+    {
+        DrawingObjectPool.Clear();
+        var source = new FormattedText("abcdefgh", "Test Sans", 10)
+        {
+            Foreground = new SolidColorBrush(Colors.Red),
+            MaxTextWidth = 75,
+            MaxTextHeight = 40,
+        };
+        source.SetFontSize(18, 2, 3);
+        source.SetMaxTextWidths([60, 50]);
+        source.Width = 42;
+        source.Height = 24;
+        source.IsMeasured = true;
+
+        var snapshot = DrawingObjectPool.CanonicalizeFormattedText(source);
+        var sourceFormats = GetCharacterFormats(source);
+        var snapshotFormats = GetCharacterFormats(snapshot);
+        var snapshottedRangeFormat = snapshotFormats.GetValue(2);
+
+        Assert.NotSame(source, snapshot);
+        Assert.NotSame(sourceFormats, snapshotFormats);
+        Assert.Same(sourceFormats.GetValue(2), snapshottedRangeFormat);
+        Assert.Equal(source.Width, snapshot.Width);
+        Assert.Equal(source.Height, snapshot.Height);
+        Assert.Equal(source.IsMeasured, snapshot.IsMeasured);
+        Assert.Equal(source.GetMaxTextWidths(), snapshot.GetMaxTextWidths());
+
+        source.SetFontSize(30, 2, 1);
+        source.SetMaxTextWidths([25]);
+
+        Assert.NotSame(snapshottedRangeFormat, GetCharacterFormats(source).GetValue(2));
+        Assert.Equal(18d, GetCharacterFormatEmSize(snapshottedRangeFormat!));
+        Assert.Equal(new[] { 60d, 50d }, snapshot.GetMaxTextWidths());
+
+        DrawingObjectPool.Clear();
+    }
+
+    [Fact]
+    public void FormattedTextDefersCharacterFormatsUntilARangeIsChanged()
+    {
+        var text = new FormattedText("abcdefgh", "Test Sans", 10);
+        Assert.Null(GetRawCharacterFormats(text));
+        Assert.Null(typeof(FormattedText)
+            .GetField("_typeface", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(text));
+
+        text.SetFontSize(20, 3, 2);
+
+        var formats = GetCharacterFormats(text);
+        var defaultFormat = formats.GetValue(0);
+
+        Assert.Same(defaultFormat, formats.GetValue(1));
+        Assert.Same(defaultFormat, formats.GetValue(2));
+        Assert.NotSame(defaultFormat, formats.GetValue(3));
+        Assert.Same(formats.GetValue(3), formats.GetValue(4));
+        Assert.Same(defaultFormat, formats.GetValue(5));
+        Assert.Same(defaultFormat, formats.GetValue(6));
+        Assert.Same(defaultFormat, formats.GetValue(7));
+    }
+
+    [Fact]
+    public void FormattedTextMetricRecomputeDoesNotAllocateLayoutCollections()
+    {
+        var text = new FormattedText("alpha beta gamma\r\nsecond line", "Test Sans", 12);
+
+        for (var index = 0; index < 8; index++)
+        {
+            text.MaxTextWidth = (index & 1) == 0 ? 70 : 90;
+        }
+
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (var index = 0; index < 1_000; index++)
+        {
+            text.MaxTextWidth = (index & 1) == 0 ? 70 : 90;
+        }
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+
+        Assert.True(allocated <= 128, $"Metric recompute allocated {allocated} bytes.");
+        Assert.True(text.LineCount > 1);
+        Assert.True(text.Width > 0);
+    }
+
+    [Fact]
+    public void FontFamilyCreatesCompositeCollectionsOnlyWhenRequested()
+    {
+        var family = new FontFamily("Test Sans");
+        var fields = new[] { "_typefaces", "_familyMaps", "_familyNames" };
+
+        foreach (var fieldName in fields)
+        {
+            Assert.Null(typeof(FontFamily)
+                .GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic)!
+                .GetValue(family));
+        }
+
+        Assert.NotNull(family.FamilyNames);
+        Assert.Null(typeof(FontFamily)
+            .GetField("_typefaces", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(family));
+        Assert.Null(typeof(FontFamily)
+            .GetField("_familyMaps", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(family));
+    }
+
+    private static Array GetCharacterFormats(FormattedText text)
+        => GetRawCharacterFormats(text)!;
+
+    private static Array? GetRawCharacterFormats(FormattedText text)
+        => (Array?)typeof(FormattedText)
+            .GetField("_characterFormats", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(text);
+
+    private static double GetCharacterFormatEmSize(object format)
+        => (double)format.GetType()
+            .GetProperty("EmSize", BindingFlags.Instance | BindingFlags.Public)!
+            .GetValue(format)!;
+
     [Fact]
     public void FormattedTextExposesWpfConstructorsAndReadOnlyMeasurements()
     {

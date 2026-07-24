@@ -196,10 +196,12 @@ public class CalendarItem : Control
     protected override Size ArrangeOverride(Size finalSize)
     {
         var width = finalSize.Width;
+        var navigationButtonWidth = ControlRenderGeometry.GetAvailableLength(28, width / 2.0);
+        var headerWidth = width - navigationButtonWidth * 2.0;
 
-        PreviousButton?.Arrange(new Rect(0, 0, 28, HeaderHeight));
-        HeaderButton?.Arrange(new Rect(28, 0, width - 56, HeaderHeight));
-        NextButton?.Arrange(new Rect(width - 28, 0, 28, HeaderHeight));
+        PreviousButton?.Arrange(new Rect(0, 0, navigationButtonWidth, HeaderHeight));
+        HeaderButton?.Arrange(new Rect(navigationButtonWidth, 0, headerWidth, HeaderHeight));
+        NextButton?.Arrange(new Rect(width - navigationButtonWidth, 0, navigationButtonWidth, HeaderHeight));
 
         var contentY = HeaderHeight + DayHeaderHeight;
         MonthView?.Arrange(new Rect(0, contentY, width, CellSize * RowsInMonthView));

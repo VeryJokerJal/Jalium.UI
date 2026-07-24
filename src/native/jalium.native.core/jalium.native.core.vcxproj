@@ -120,6 +120,9 @@
     <ClCompile Include="src\jalium_text_stats.cpp" />
     <ClCompile Include="src\video_surface.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\continuous_corner.hlsli" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Import Project="..\jalium.native.dev.targets" />
   <ImportGroup Label="ExtensionTargets">

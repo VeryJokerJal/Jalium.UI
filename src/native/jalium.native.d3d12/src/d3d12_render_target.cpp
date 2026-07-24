@@ -871,6 +871,44 @@ bool D3D12RenderTarget::FillBrushToInstance(Brush* brush, SdfRectInstance& inst)
     return false;
 }
 
+bool D3D12RenderTarget::TryDrawContinuousGradientStroke(
+    float x, float y, float w, float h,
+    float tl, float tr, float br, float bl,
+    Brush* brush, float strokeWidth) {
+    if (!brush || !directRenderer_ || strokeWidth <= 0.0f ||
+        directRenderer_->GetShapeType() < 0.5f) {
+        return false;
+    }
+
+    const auto brushType = brush->GetType();
+    if (brushType != JALIUM_BRUSH_LINEAR_GRADIENT &&
+        brushType != JALIUM_BRUSH_RADIAL_GRADIENT) {
+        return false;
+    }
+
+    SdfRectInstance inst = {};
+    if (!FillBrushToInstance(brush, inst) || inst.stopCount == 0) {
+        return false;
+    }
+
+    // Match the solid centered-stroke geometry. paintMode makes the sampled
+    // gradient paint only the outer-minus-inner analytic band in the SDF PS.
+    const float halfStroke = strokeWidth * 0.5f;
+    inst.posX = x - halfStroke;
+    inst.posY = y - halfStroke;
+    inst.sizeX = w + strokeWidth;
+    inst.sizeY = h + strokeWidth;
+    inst.cornerTL = tl + halfStroke;
+    inst.cornerTR = tr + halfStroke;
+    inst.cornerBR = br + halfStroke;
+    inst.cornerBL = bl + halfStroke;
+    inst.borderWidth = strokeWidth;
+    inst.paintMode = 1.0f;
+    inst.opacity = 1.0f;
+    directRenderer_->AddSdfRect(inst);
+    return true;
+}
+
 bool D3D12RenderTarget::ExtractBrushColor(Brush* brush, float& r, float& g, float& b, float& a) {
     if (!brush) return false;
     if (brush->GetType() != JALIUM_BRUSH_SOLID) return false;
@@ -1230,6 +1268,8 @@ void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush*
 void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
     FlushVelloIfNeeded();
+    if (TryDrawContinuousGradientStroke(
+            x, y, w, h, 0.0f, 0.0f, 0.0f, 0.0f, brush, strokeWidth)) return;
     // Gradient outline → TRUE per-pixel gradient stroke via the engine (the SDF
     // border below paints a solid color). Solids fall straight through.
     if (IsImpellerActive() &&
@@ -1280,6 +1320,8 @@ void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h,
 void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
     FlushVelloIfNeeded();
+    if (TryDrawContinuousGradientStroke(
+            x, y, w, h, rx, rx, rx, rx, brush, strokeWidth)) return;
 
     // Gradient outline → TRUE per-pixel gradient stroke via the engine.
     if (IsImpellerActive() &&
@@ -1307,12 +1349,10 @@ void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h,
         // CENTERED stroke (match Vulkan TryRecordGpuRoundedRectStrokeCommand + WPF):
         // the managed Border passes the centre-line rect (box inset by halfBorder)
         // and centre-line radius (corner - halfBorder) with pen.Thickness = full
-        // border. The single-SDF band paints fillAlpha(dist<=0) at the rect's outer
-        // edge minus fillMask(dist<=-borderWidth) inset by the full borderWidth, i.e.
-        // entirely INSIDE the passed rect. Growing the rect + every corner radius by
-        // halfStroke moves the outer edge out to (corner+halfStroke) and leaves the
-        // inner edge at (grown - strokeWidth) = (corner-halfStroke): outer/inner now
-        // straddle the passed centre-line exactly like Vulkan's two-SDF band.
+        // border. Transport the outer bounds/radii here; the pixel shader subtracts
+        // halfStroke to recover this exact centre line and evaluates
+        // abs(centerDistance)-halfStroke once. Both visible edges therefore share
+        // one derivative and stay a constant optical width around every corner.
         const float halfStroke = strokeWidth * 0.5f;
         SdfRectInstance inst = {};
         inst.posX = x - halfStroke; inst.posY = y - halfStroke;
@@ -1344,6 +1384,8 @@ void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w,
     float tl, float tr, float br, float bl, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
     FlushVelloIfNeeded();
+    if (TryDrawContinuousGradientStroke(
+            x, y, w, h, tl, tr, br, bl, brush, strokeWidth)) return;
 
     // Gradient outline → TRUE per-pixel gradient stroke via the engine.
     if (IsImpellerActive() &&
@@ -1370,17 +1412,9 @@ void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w,
 
     float r, g, b, a;
     if (ExtractStrokeColor(brush, r, g, b, a)) {
-        // CENTERED per-corner stroke (match Vulkan
-        // TryRecordGpuPerCornerRoundedRectStrokeCommand, which expands each outer
-        // corner radius by halfStroke and knocks the inner hole out at
-        // (corner-halfStroke)). Grow rect + every corner by halfStroke; the
-        // single-SDF band's outer edge lands at (corner+halfStroke) and the
-        // -borderWidth inner edge at (corner-halfStroke), centred on the passed
-        // centre-line box. Note: the single rounded-box SDF carries ONE radius per
-        // diagonal so the inner edge is a uniform offset of the outer corners —
-        // identical to the uniform DrawRoundedRectangle case and matching Vulkan's
-        // per-corner outer / per-corner inner pair for the symmetric Border that
-        // the managed layer actually emits here.
+        // CENTERED per-corner stroke. Transport the outer rect/radii; the shader
+        // averages them back to the public centre line and evaluates one analytic
+        // band, matching the uniform rounded-rectangle path.
         const float halfStroke = strokeWidth * 0.5f;
         SdfRectInstance inst = {};
         inst.posX = x - halfStroke; inst.posY = y - halfStroke;
@@ -1398,7 +1432,7 @@ void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w,
 // Drawing — Ellipses (true ellipse SDF with analytical AA)
 //
 // Both filled and stroked ellipses go through the SdfRect PSO with
-// shapeType=1 (SuperEllipse) and shapeN=2 (real ellipse equation
+// internal shapeType=2 (full Lam?/ellipse) and shapeN=2 (real ellipse equation
 // |x/a|² + |y/b|² = 1). The pixel shader applies smoothstep(fwidth(dist))
 // analytical anti-aliasing, so edges stay smooth at any rx/ry ratio without
 // MSAA. This beats Impeller's triangle-strip tessellation (which has no AA
@@ -1415,7 +1449,7 @@ void D3D12RenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brus
         inst.sizeX = rx * 2; inst.sizeY = ry * 2;
         inst.cornerTL = rx; inst.cornerTR = rx; inst.cornerBR = rx; inst.cornerBL = rx;
         inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
-        inst.shapeType = 1.0f; // SuperEllipse
+        inst.shapeType = 2.0f; // Internal ellipse primitive (n=2 full-bounds SuperEllipse)
         inst.shapeN = 2.0f;    // real ellipse
         directRenderer_->AddSdfRect(inst);
     }
@@ -1448,7 +1482,7 @@ void D3D12RenderTarget::FillEllipseBatch(const float* data, uint32_t count) {
         inst.cornerTL = rx; inst.cornerTR = rx; inst.cornerBR = rx; inst.cornerBL = rx;
         inst.fillR = r; inst.fillG = g; inst.fillB = b; inst.fillA = a;
         inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
-        inst.shapeType = 1.0f;
+        inst.shapeType = 2.0f;
         inst.shapeN = 2.0f;
         directRenderer_->AddSdfRect(inst);
     }
@@ -1477,7 +1511,7 @@ void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brus
         // CENTERED ring (match Vulkan: DrawEllipse stroke ->
         // TryRecordGpuEllipseStrokeCommand -> TryRecordGpuRoundedRectStrokeCommand(
         // cx-rx, cy-ry, rx*2, ry*2, rx, ry) which centres the band on the radius).
-        // The shader uses shapeType=1 (SuperEllipse, n=2 -> real ellipse), so its
+        // The shader uses internal shapeType=2 (full ellipse, n=2), so its
         // outer iso-surface (dist<=0) follows |x/a|^2+|y/b|^2=1 with the grown
         // half-axes; growing posX/posY/sizeX/sizeY and the (informational, for the
         // rounded-box clamp) corner radii by halfStroke pushes a=rx+halfStroke,
@@ -1493,7 +1527,7 @@ void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brus
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
         inst.borderWidth = strokeWidth;
         inst.opacity = 1.0f;   // AddSdfRect multiplies currentOpacity_ once
-        inst.shapeType = 1.0f;
+        inst.shapeType = 2.0f;
         inst.shapeN = 2.0f;
         directRenderer_->AddSdfRect(inst);
     }

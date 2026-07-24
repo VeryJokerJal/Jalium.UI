@@ -2,11 +2,12 @@
 
 // font_face.h
 //
-// FontFace — the self-hosted replacement for FreeType's FT_Face. Owns the raw
-// font-file bytes (RAII), parses the sfnt metadata tables, and exposes the
-// query surface the rest of the text engine needs: vertical metrics (with
-// FreeType-parity selection so layout stays identical), cmap codepoint->glyph
-// lookup, hmtx advances, and font-unit glyph outline extraction (glyf or CFF).
+// FontFace — the self-hosted replacement for FreeType's FT_Face. Holds the raw
+// font-file bytes (immutable, shareable across faces), parses the sfnt metadata
+// tables, and exposes the query surface the rest of the text engine needs:
+// vertical metrics (with FreeType-parity selection so layout stays identical),
+// cmap codepoint->glyph lookup, hmtx advances, and font-unit glyph outline
+// extraction (glyf, CFF, or CFF2 rendered at its default instance).
 //
 // There is no FontLibrary: FT_Library global state is eliminated. Each FontFace
 // is self-contained. Construction is via the static Parse() factory, which
@@ -50,8 +51,16 @@ struct FontMetrics {
 class FontFace {
 public:
     // Takes ownership of the font-file bytes. faceIndex selects a TTC member
-    // (0 for a bare font). Returns nullptr on malformed/unsupported input.
+    // (0 for a bare font). Returns nullptr on malformed/unsupported input —
+    // including faces with neither an outline source nor color-bitmap tables,
+    // which could never draw anything yet would still win cmap-only fallback
+    // selection.
     static std::unique_ptr<FontFace> Parse(std::vector<uint8_t> bytes, int faceIndex);
+
+    // Same, but shares an immutable byte buffer: every face over one font file
+    // (fallback faces of many text formats, TTC members) references a single
+    // copy of the bytes. The provider's process-wide cache feeds this overload.
+    static std::unique_ptr<FontFace> Parse(std::shared_ptr<const std::vector<uint8_t>> bytes, int faceIndex);
 
     ~FontFace();
     FontFace(const FontFace&) = delete;
@@ -90,8 +99,8 @@ public:
         return (tables_.Has(font::kTag_COLR) && tables_.Has(font::kTag_CPAL)) ||
                (tables_.Has(font::kTag_CBDT) && tables_.Has(font::kTag_CBLC));
     }
-    const uint8_t* RawData() const noexcept { return bytes_.data(); }
-    size_t RawSize() const noexcept { return bytes_.size(); }
+    const uint8_t* RawData() const noexcept { return bytes_ ? bytes_->data() : nullptr; }
+    size_t RawSize() const noexcept { return bytes_ ? bytes_->size() : 0; }
     int FaceIndex() const noexcept { return faceIndex_; }
 
 private:
@@ -99,8 +108,11 @@ private:
     bool ParseInternal(int faceIndex);
     void ResolveMetrics();
 
-    std::vector<uint8_t> bytes_;      // owns the file; all spans view into this
-    font::SfntTables     tables_;
+    // Immutable file bytes, possibly shared with other faces (never written
+    // after Parse, so concurrent readers need no synchronization); all spans
+    // view into this buffer.
+    std::shared_ptr<const std::vector<uint8_t>> bytes_;
+    font::SfntTables tables_;
 
     uint16_t    unitsPerEm_       = 0;
     uint16_t    numGlyphs_        = 0;

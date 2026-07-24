@@ -280,6 +280,7 @@ typedef struct JaliumTextMetrics {
     float descent;         ///< The descent of the font (below baseline)
     float lineGap;         ///< The recommended line gap
     uint32_t lineCount;    ///< The number of lines in the layout
+    float widthIncludingTrailingWhitespace; ///< Width including trailing whitespace advances
 } JaliumTextMetrics;
 
 /// Information about the selected GPU adapter.

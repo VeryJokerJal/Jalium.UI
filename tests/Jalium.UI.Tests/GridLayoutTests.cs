@@ -1,10 +1,51 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
+using System.Reflection;
 
 namespace Jalium.UI.Tests;
 
 public class GridLayoutTests
 {
+    [Fact]
+    public void Grid_RepeatedLayoutReusesImplicitDefinitionsAndTrackBuffers()
+    {
+        var grid = new Grid();
+        grid.Children.Add(new Border { Width = 80, Height = 24 });
+        grid.Measure(new Size(320, 200));
+        grid.Arrange(new Rect(0, 0, 320, 200));
+
+        var fieldNames = new[]
+        {
+            "_effectiveRowDefinitions",
+            "_effectiveColumnDefinitions",
+            "_rowHeights",
+            "_columnWidths",
+            "_rowStarValues",
+            "_columnStarValues",
+            "_rowContent",
+            "_columnContent",
+        };
+        var fields = fieldNames.Select(name => typeof(Grid).GetField(
+            name,
+            BindingFlags.Instance | BindingFlags.NonPublic)!).ToArray();
+        var originalStorage = fields.Select(field => field.GetValue(grid)).ToArray();
+
+        for (var pass = 0; pass < 8; pass++)
+        {
+            var width = (pass & 1) == 0 ? 321 : 320;
+            grid.Measure(new Size(width, 200));
+            grid.Arrange(new Rect(0, 0, width, 200));
+        }
+
+        for (var index = 0; index < fields.Length; index++)
+        {
+            Assert.Same(originalStorage[index], fields[index].GetValue(grid));
+        }
+
+        Assert.False(grid.ShouldSerializeRowDefinitions());
+        Assert.False(grid.ShouldSerializeColumnDefinitions());
+    }
+
     [Fact]
     public void Grid_AutoRow_ShouldTrackChildHeight_AfterFinalCellWidthMeasure()
     {

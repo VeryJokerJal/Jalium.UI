@@ -201,22 +201,25 @@ public class CommandBar : Control
         var height = Math.Max(_primaryItemsPanel?.DesiredSize.Height ?? 0,
                               _moreButton?.DesiredSize.Height ?? 0);
 
+        var desiredHeight = Math.Max(height, 48);
         return new Size(
-            Math.Min(width, availableSize.Width),
-            Math.Clamp(height, 48, availableSize.Height));
+            ControlRenderGeometry.GetAvailableLength(width, availableSize.Width),
+            ControlRenderGeometry.GetAvailableLength(desiredHeight, availableSize.Height));
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var moreButtonWidth = _moreButton?.Visibility == Visibility.Visible ? MoreButtonWidth : 0;
-        var primaryWidth = finalSize.Width - moreButtonWidth;
+        var bounds = new Rect(finalSize);
+        var hasMoreButton = _moreButton?.Visibility == Visibility.Visible;
+        var moreButtonRect = hasMoreButton ? ControlRenderGeometry.GetTrailingRect(bounds, MoreButtonWidth) : Rect.Empty;
+        var primaryRect = new Rect(bounds.X, bounds.Y, bounds.Width - moreButtonRect.Width, bounds.Height);
 
-        _primaryItemsPanel?.Arrange(new Rect(0, 0, primaryWidth, finalSize.Height));
+        _primaryItemsPanel?.Arrange(primaryRect);
 
-        if (_moreButton?.Visibility == Visibility.Visible)
+        if (hasMoreButton)
         {
-            _moreButton.Arrange(new Rect(primaryWidth, 0, MoreButtonWidth, finalSize.Height));
+            _moreButton!.Arrange(moreButtonRect);
         }
 
         return finalSize;

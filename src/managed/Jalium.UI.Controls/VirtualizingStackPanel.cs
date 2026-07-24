@@ -540,25 +540,31 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         if (!_structureDirty && newWindow.Equals(_currentWindow) && _realizedContainers.Count > 0)
         {
             var anyHeightChanged = false;
+            var maxCrossAxis = 0.0;
             for (int i = 0; i < _realizedContainers.Count; i++)
             {
                 var child = _realizedContainers.Values[i];
-                if (!child.IsMeasureValid)
+                var childAvailable = Orientation == Orientation.Vertical
+                    ? new Size(availableSize.Width, double.PositiveInfinity)
+                    : new Size(double.PositiveInfinity, availableSize.Height);
+
+                // Always offer the current cross-axis constraint. UIElement.Measure is
+                // already O(1) when both validity and constraint match, while a window
+                // width change must remeasure realized wrapped rows even though their
+                // IsMeasureValid flag was still true from the previous viewport.
+                child.Measure(childAvailable);
+                var axis = GetAxisSize(child.DesiredSize);
+                maxCrossAxis = Math.Max(maxCrossAxis, GetCrossAxisSize(child.DesiredSize));
+                var idx = _realizedContainers.Keys[i];
+                var oldHeight = _heightIndex.GetHeightAt(idx);
+                if (Math.Abs(axis - oldHeight) > 0.5)
                 {
-                    var childAvailable = Orientation == Orientation.Vertical
-                        ? new Size(availableSize.Width, double.PositiveInfinity)
-                        : new Size(double.PositiveInfinity, availableSize.Height);
-                    child.Measure(childAvailable);
-                    var axis = GetAxisSize(child.DesiredSize);
-                    var idx = _realizedContainers.Keys[i];
-                    var oldHeight = _heightIndex.GetHeightAt(idx);
-                    if (Math.Abs(axis - oldHeight) > 0.5)
-                    {
-                        _heightIndex.SetMeasuredHeight(idx, axis);
-                        anyHeightChanged = true;
-                    }
+                    _heightIndex.SetMeasuredHeight(idx, axis);
+                    anyHeightChanged = true;
                 }
             }
+
+            _maxCrossAxis = maxCrossAxis;
 
             UpdateExtent(itemCount, availableSize);
 

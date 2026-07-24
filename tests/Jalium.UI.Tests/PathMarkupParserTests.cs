@@ -129,6 +129,19 @@ public class PathMarkupParserTests
     }
 
     [Fact]
+    public void Parse_Arc_NegativeRadii_TakeAbsoluteValue()
+    {
+        // SVG out-of-range handling (SVG 1.1 §F.6.2): negative rx/ry are not an error —
+        // the parser must take the absolute value. Regression: they used to flow into
+        // ArcSegment.Size and throw from the Size constructor.
+        var fig = SingleFigure("M0,0 A-5,-7 30 1 0 10,10");
+        var arc = Assert.IsType<ArcSegment>(Assert.Single(fig.Segments));
+        Assert.Equal(new Size(5, 7), arc.Size);
+        Assert.Equal(30, arc.RotationAngle);
+        Assert.Equal(new Point(10, 10), arc.Point);
+    }
+
+    [Fact]
     public void Parse_CloseThenDrawCommand_OpensNewSubpathAtStartPoint()
     {
         var g = PathMarkupParser.Parse("M1,1 L5,1 Z L9,9");

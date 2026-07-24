@@ -15,6 +15,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class TextBox : TextBoxBase, IImeSupport, IAddChild
 {
+    private InputMethodWeakSubscription<TextBox>? _imeSubscription;
     #region Automation
 
     /// <inheritdoc />
@@ -411,9 +412,8 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
         Cursor = Jalium.UI.Input.Cursors.IBeam;
 
         // Subscribe to IME events
-        InputMethod.CompositionStarted += OnImeCompositionStarted;
-        InputMethod.CompositionUpdated += OnImeCompositionUpdated;
-        InputMethod.CompositionEnded += OnImeCompositionEnded;
+        Loaded += OnImeOwnerLoaded;
+        Unloaded += OnImeOwnerUnloaded;
 
         // Subscribe to focus events for IME target management
         AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotFocusHandler));
@@ -422,12 +422,37 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
 
     private void OnGotFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
+        EnsureImeSubscriptionAttached();
         InputMethod.SetTarget(this);
     }
 
     private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         if (InputMethod.CurrentTarget == this)
+        {
+            InputMethod.SetTarget(null);
+        }
+    }
+
+    private void OnImeOwnerLoaded(object? sender, RoutedEventArgs e)
+    {
+        EnsureImeSubscriptionAttached();
+    }
+
+    private void EnsureImeSubscriptionAttached()
+    {
+        _imeSubscription ??= new InputMethodWeakSubscription<TextBox>(
+            this,
+            static (owner, source, args) => owner.OnImeCompositionStarted(source, args),
+            static (owner, source, args) => owner.OnImeCompositionUpdated(source, args),
+            static (owner, source, args) => owner.OnImeCompositionEnded(source, args));
+        _imeSubscription.Attach();
+    }
+
+    private void OnImeOwnerUnloaded(object? sender, RoutedEventArgs e)
+    {
+        _imeSubscription?.Detach();
+        if (ReferenceEquals(InputMethod.CurrentTarget, this))
         {
             InputMethod.SetTarget(null);
         }
@@ -1600,6 +1625,11 @@ public class TextBox : TextBoxBase, IImeSupport, IAddChild
     /// </summary>
     private void RenderTextContentCore(DrawingContext dc, Rect contentRect, double lineHeight)
     {
+        if (contentRect.Width <= 0 || contentRect.Height <= 0)
+        {
+            return;
+        }
+
         // Clip to the original content area — VerticalContentAlignment only
         // shifts where the text is painted inside that rectangle, it must not
         // trim padding off the bottom (selection / caret reuse the same clip).

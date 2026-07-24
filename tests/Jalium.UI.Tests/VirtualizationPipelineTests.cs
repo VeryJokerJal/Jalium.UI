@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel.Design.Serialization;
@@ -334,6 +335,405 @@ public class VirtualizationPipelineTests
     }
 
     [Fact]
+    public void LazyItemsSource_IsNotReenumeratedByVirtualizedResizeOrScroll()
+    {
+        var source = new CountingEnumerable(100);
+        var listBox = new TestListBox
+        {
+            Width = 320,
+            Height = 120,
+            ItemsSource = source,
+        };
+
+        // ItemCollection creates one stable CollectionView snapshot for a non-list
+        // enumerable. The generator must index that view instead of walking the raw
+        // source again for every Count/GetItemAt call.
+        var snapshotMoveNextCount = source.MoveNextCount;
+        Assert.Equal(100, snapshotMoveNextCount);
+
+        listBox.Measure(new Size(320, 120));
+        listBox.Arrange(new Rect(0, 0, 320, 120));
+        var host = Assert.IsType<VirtualizingStackPanel>(listBox.Host);
+
+        host.Measure(new Size(280, 160));
+        host.Arrange(new Rect(0, 0, 280, 160));
+        host.SetVerticalOffset(800);
+        host.Measure(new Size(280, 160));
+        host.Arrange(new Rect(0, 0, 280, 160));
+
+        Assert.Equal(snapshotMoveNextCount, source.MoveNextCount);
+        Assert.Null(listBox.ItemContainerGenerator.ContainerFromIndex(99));
+    }
+
+    [Fact]
+    public void VirtualizingStackPanel_WidthResize_RemeasuresOnlyRealizedRowsWithNewConstraint()
+    {
+        var listBox = new ListBox { Width = 320, Height = 120 };
+        var rows = new List<ConstraintTrackingListBoxItem>();
+        for (int i = 0; i < 100; i++)
+        {
+            var row = new ConstraintTrackingListBoxItem();
+            rows.Add(row);
+            listBox.Items.Add(row);
+        }
+
+        listBox.Measure(new Size(320, 120));
+        listBox.Arrange(new Rect(0, 0, 320, 120));
+        var host = Assert.IsType<VirtualizingStackPanel>(listBox.ItemsHostInternal);
+        var first = Assert.IsType<ConstraintTrackingListBoxItem>(
+            listBox.ItemContainerGenerator.ContainerFromIndex(0));
+
+        host.Measure(new Size(180, 120));
+        host.Arrange(new Rect(0, 0, 180, 120));
+
+        Assert.Equal(180, first.LastAvailableSize.Width);
+        Assert.Equal(180, host.ExtentWidth);
+        Assert.Null(listBox.ItemContainerGenerator.ContainerFromIndex(99));
+        Assert.True(host.Children.Count < 100);
+    }
+
+    [Fact]
+    public void ViewportRecycling_RebindsExistingTemplateSubtrees()
+    {
+        var templateBuildCount = 0;
+        var template = new DataTemplate();
+        template.SetVisualTree(() =>
+        {
+            templateBuildCount++;
+            return new TextBlock();
+        });
+
+        var listBox = new TemplatePresenterVirtualizingItemsControl
+        {
+            Width = 320,
+            Height = 120,
+            ItemTemplate = template,
+            ItemsSource = Enumerable.Range(0, 200).Select(i => $"Item {i}").ToList(),
+        };
+        VirtualizingPanel.SetCacheLength(listBox, new VirtualizationCacheLength(0));
+
+        listBox.Measure(new Size(320, 120));
+        listBox.Arrange(new Rect(0, 0, 320, 120));
+        var host = Assert.IsType<VirtualizingStackPanel>(listBox.Host);
+        Assert.True(listBox.PrepareCount > 0);
+
+        // First jump creates a second viewport, then leaves the first viewport's
+        // detached containers in the recycle pool.
+        host.SetVerticalOffset(900);
+        host.Measure(new Size(320, 120));
+        host.Arrange(new Rect(0, 0, 320, 120));
+        var buildsAfterFirstJump = templateBuildCount;
+        Assert.True(buildsAfterFirstJump > 0);
+        Assert.True(listBox.ClearCount > 0);
+
+        // The next jump consumes that pool. Content changes directly from the old
+        // item to the new item under the same template, so no visual root is rebuilt.
+        host.SetVerticalOffset(1800);
+        host.Measure(new Size(320, 120));
+        host.Arrange(new Rect(0, 0, 320, 120));
+
+        Assert.Equal(buildsAfterFirstJump, templateBuildCount);
+    }
+
+    [Fact]
+    public void ViewportRecyclePool_ReleasesPreservedContentWhenItemsSourceResets()
+    {
+        var template = new DataTemplate();
+        template.SetVisualTree(() => new TextBlock());
+        var control = new TemplatePresenterVirtualizingItemsControl
+        {
+            Width = 320,
+            Height = 120,
+            ItemTemplate = template,
+            ItemsSource = Enumerable.Range(0, 200).Select(i => $"Item {i}").ToList(),
+        };
+        VirtualizingPanel.SetCacheLength(control, new VirtualizationCacheLength(0));
+
+        control.Measure(new Size(320, 120));
+        control.Arrange(new Rect(0, 0, 320, 120));
+        var host = Assert.IsType<VirtualizingStackPanel>(control.Host);
+        var firstViewport = host.Children.OfType<ContentPresenter>().ToArray();
+        Assert.NotEmpty(firstViewport);
+
+        host.SetVerticalOffset(900);
+        host.Measure(new Size(320, 120));
+        host.Arrange(new Rect(0, 0, 320, 120));
+        Assert.All(firstViewport, presenter => Assert.NotNull(presenter.Content));
+
+        control.ItemsSource = Array.Empty<string>();
+
+        Assert.All(firstViewport, presenter =>
+        {
+            Assert.Null(presenter.Content);
+            Assert.Null(presenter.ContentTemplate);
+        });
+    }
+
+    [Fact]
+    public void ViewportRecyclePool_DoesNotClearCustomContainerContentWhenOverrideSkipsBase()
+    {
+        var control = new PersistentContentVirtualizingItemsControl
+        {
+            Width = 320,
+            Height = 120,
+            ItemsSource = Enumerable.Range(0, 200).Select(i => $"Item {i}").ToList(),
+        };
+        VirtualizingPanel.SetCacheLength(control, new VirtualizationCacheLength(0));
+
+        control.Measure(new Size(320, 120));
+        control.Arrange(new Rect(0, 0, 320, 120));
+        var host = Assert.IsType<VirtualizingStackPanel>(control.Host);
+        var firstViewport = host.Children
+            .OfType<PersistentContentContainer>()
+            .Select(container => (Container: container, Content: container.Content))
+            .ToArray();
+        Assert.NotEmpty(firstViewport);
+
+        host.SetVerticalOffset(900);
+        host.Measure(new Size(320, 120));
+        host.Arrange(new Rect(0, 0, 320, 120));
+        control.ItemsSource = Array.Empty<string>();
+
+        Assert.All(firstViewport, entry => Assert.Same(entry.Content, entry.Container.Content));
+    }
+
+    [Fact]
+    public void ViewportRecycling_ReevaluatesContainerStyleForNewItem()
+    {
+        var styleA = new Style(typeof(ContentPresenter));
+        var styleB = new Style(typeof(ContentPresenter));
+        var control = new TemplatePresenterVirtualizingItemsControl
+        {
+            Width = 320,
+            Height = 120,
+            ItemContainerStyleSelector = new PrefixStyleSelector(styleA, styleB),
+            ItemsSource = Enumerable.Range(0, 300)
+                .Select(i => i < 100 ? $"A {i}" : $"B {i}")
+                .ToList(),
+        };
+        VirtualizingPanel.SetCacheLength(control, new VirtualizationCacheLength(0));
+
+        control.Measure(new Size(320, 120));
+        control.Arrange(new Rect(0, 0, 320, 120));
+        var host = Assert.IsType<VirtualizingStackPanel>(control.Host);
+        Assert.All(host.Children.OfType<ContentPresenter>(), presenter => Assert.Same(styleA, presenter.Style));
+
+        // The first jump creates B containers and pools the A viewport. The second jump consumes
+        // those A containers; their old selected style must have been cleared before B is applied.
+        host.SetVerticalOffset(2400);
+        host.Measure(new Size(320, 120));
+        host.Arrange(new Rect(0, 0, 320, 120));
+        host.SetVerticalOffset(4800);
+        host.Measure(new Size(320, 120));
+        host.Arrange(new Rect(0, 0, 320, 120));
+
+        Assert.All(host.Children.OfType<ContentPresenter>(), presenter => Assert.Same(styleB, presenter.Style));
+    }
+
+    [Fact]
+    public void VirtualizingWrapPanel_AutoSize_DoesNotReprobeIndexZeroAfterScroll()
+    {
+        var items = Enumerable.Range(0, 100).Select(i => $"Item {i}").ToList();
+        var control = new TestVirtualizingWrapItemsControl
+        {
+            Width = 320,
+            Height = 120,
+            ItemsSource = items,
+        };
+        VirtualizingPanel.SetCacheLength(control, new VirtualizationCacheLength(0));
+
+        control.Measure(new Size(320, 120));
+        control.Arrange(new Rect(0, 0, 320, 120));
+        var host = Assert.IsType<VirtualizingWrapPanel>(control.Host);
+
+        host.SetVerticalOffset(600);
+        host.Measure(new Size(320, 120));
+        host.Arrange(new Rect(0, 0, 320, 120));
+        Assert.Null(control.ItemContainerGenerator.ContainerFromIndex(0));
+        var indexZeroPrepareCount = control.IndexZeroPrepareCount;
+
+        // Force new layout constraints, as successive WM_SIZE notifications do.
+        // Index zero is outside the realization window and must stay virtualized.
+        host.Measure(new Size(321, 120));
+        host.Arrange(new Rect(0, 0, 321, 120));
+        host.Measure(new Size(322, 120));
+        host.Arrange(new Rect(0, 0, 322, 120));
+
+        Assert.Equal(indexZeroPrepareCount, control.IndexZeroPrepareCount);
+        Assert.Null(control.ItemContainerGenerator.ContainerFromIndex(0));
+    }
+
+    [Fact]
+    public void VirtualizingWrapPanel_ResizeKeepsHundredItemRealizationBounded()
+    {
+        var items = Enumerable.Range(0, 100).Select(i => $"Item {i}").ToList();
+        var control = new TestVirtualizingWrapItemsControl
+        {
+            Width = 176,
+            Height = 86,
+            ItemsSource = items,
+        };
+        VirtualizingPanel.SetCacheLength(control, new VirtualizationCacheLength(0));
+
+        control.Measure(new Size(176, 86));
+        control.Arrange(new Rect(0, 0, 176, 86));
+        var host = Assert.IsType<VirtualizingWrapPanel>(control.Host);
+        host.ItemWidth = 80;
+        host.ItemHeight = 40;
+        host.HorizontalSpacing = 8;
+        host.VerticalSpacing = 6;
+        host.Measure(new Size(176, 86));
+        host.Arrange(new Rect(0, 0, 176, 86));
+
+        var first = Assert.IsAssignableFrom<UIElement>(
+            control.ItemContainerGenerator.ContainerFromIndex(0));
+        var second = Assert.IsAssignableFrom<UIElement>(
+            control.ItemContainerGenerator.ContainerFromIndex(1));
+        var third = Assert.IsAssignableFrom<UIElement>(
+            control.ItemContainerGenerator.ContainerFromIndex(2));
+
+        Assert.Equal(new Rect(0, 0, 80, 40), first.VisualBounds);
+        Assert.Equal(new Rect(88, 0, 80, 40), second.VisualBounds);
+        Assert.Equal(new Rect(0, 46, 80, 40), third.VisualBounds);
+        Assert.Equal(2294, host.ExtentHeight);
+        Assert.True(host.Children.Count < 20);
+        Assert.Null(control.ItemContainerGenerator.ContainerFromIndex(99));
+
+        // Simulate a live window-width change. The number of columns changes,
+        // but work stays proportional to the visible realization window. Expansion is
+        // committed only after the panel itself has received the wider Arrange; the follow-up
+        // measure distinguishes a real resize from a speculative wide parent measure.
+        host.Measure(new Size(264, 86));
+        host.Arrange(new Rect(0, 0, 264, 86));
+        Assert.False(host.IsMeasureValid);
+        host.Measure(new Size(264, 86));
+        host.Arrange(new Rect(0, 0, 264, 86));
+
+        Assert.True(host.Children.Count < 20);
+        Assert.Null(control.ItemContainerGenerator.ContainerFromIndex(99));
+        Assert.Equal(1558, host.ExtentHeight);
+    }
+
+    [Fact]
+    public void VirtualizingWrapPanel_AutoSizeRefreshesWhenRealizedContentChanges()
+    {
+        var items = Enumerable.Range(0, 100)
+            .Select(_ => new MutableAutoSizeElement(new Size(80, 40)))
+            .ToList();
+        var control = new TestVirtualizingWrapItemsControl
+        {
+            Width = 220,
+            Height = 120,
+            ItemsSource = items,
+        };
+        VirtualizingPanel.SetCacheLength(control, new VirtualizationCacheLength(0));
+
+        control.Measure(new Size(220, 120));
+        control.Arrange(new Rect(0, 0, 220, 120));
+        var host = Assert.IsType<VirtualizingWrapPanel>(control.Host);
+        Assert.Equal(80, items[1].VisualBounds.X);
+
+        foreach (var item in items)
+        {
+            item.NaturalSize = new Size(100, 50);
+        }
+
+        // This detached unit-test tree has no LayoutManager to propagate the children's
+        // invalidations upward. In a Window that propagation is automatic; explicitly invalidate
+        // the host here so the test exercises the panel's auto-size refresh branch.
+        host.InvalidateMeasure();
+        host.Measure(new Size(220, 120));
+        host.Arrange(new Rect(0, 0, 220, 120));
+
+        Assert.Equal(100, items[1].VisualBounds.X);
+        Assert.Equal(2500, host.ExtentHeight);
+        Assert.Null(control.ItemContainerGenerator.ContainerFromIndex(99));
+    }
+
+    [Fact]
+    public void VirtualizingWrapPanel_NonVirtualizedHorizontalPathPreservesCellSpacing()
+    {
+        var control = CreateNonVirtualizedWrapControl();
+        var host = Assert.IsType<VirtualizingWrapPanel>(control.Host);
+        host.Orientation = Orientation.Horizontal;
+
+        control.Measure(new Size(176, 200));
+        control.Arrange(new Rect(0, 0, 176, 200));
+
+        Assert.Equal(new Rect(0, 0, 80, 40), host.Children[0].VisualBounds);
+        Assert.Equal(new Rect(88, 0, 80, 40), host.Children[1].VisualBounds);
+        Assert.Equal(new Rect(0, 46, 80, 40), host.Children[2].VisualBounds);
+        Assert.Equal(86, host.ExtentHeight);
+    }
+
+    [Fact]
+    public void VirtualizingWrapPanel_NonVirtualizedVerticalPathPreservesCellSpacing()
+    {
+        var control = CreateNonVirtualizedWrapControl();
+        var host = Assert.IsType<VirtualizingWrapPanel>(control.Host);
+        host.Orientation = Orientation.Vertical;
+
+        control.Measure(new Size(200, 92));
+        control.Arrange(new Rect(0, 0, 200, 92));
+
+        Assert.Equal(new Rect(0, 0, 80, 40), host.Children[0].VisualBounds);
+        Assert.Equal(new Rect(0, 46, 80, 40), host.Children[1].VisualBounds);
+        Assert.Equal(new Rect(88, 0, 80, 40), host.Children[2].VisualBounds);
+        Assert.Equal(168, host.ExtentWidth);
+    }
+
+    [Fact]
+    public void VirtualizingWrapPanel_NonVirtualizedPathUsesExtentForScrolling()
+    {
+        var control = CreateNonVirtualizedWrapControl();
+        var host = Assert.IsType<VirtualizingWrapPanel>(control.Host);
+
+        control.Measure(new Size(80, 40));
+        control.Arrange(new Rect(0, 0, 80, 40));
+        Assert.True(host.ExtentHeight > host.ViewportHeight);
+
+        host.SetVerticalOffset(46);
+        host.Measure(new Size(80, 40));
+        host.Arrange(new Rect(0, 0, 80, 40));
+
+        Assert.Equal(46, host.VerticalOffset);
+        Assert.Equal(-46, host.Children[0].VisualBounds.Y);
+    }
+
+    [Fact]
+    public void VirtualizingWrapPanel_NonVirtualizedResizeClampsStaleOffset()
+    {
+        var control = CreateNonVirtualizedWrapControl();
+        var host = Assert.IsType<VirtualizingWrapPanel>(control.Host);
+
+        control.Measure(new Size(80, 40));
+        control.Arrange(new Rect(0, 0, 80, 40));
+        host.SetVerticalOffset(92);
+        host.Measure(new Size(80, 40));
+        host.Arrange(new Rect(0, 0, 80, 40));
+        Assert.Equal(92, host.VerticalOffset);
+
+        host.Measure(new Size(80, 200));
+        host.Arrange(new Rect(0, 0, 80, 200));
+
+        Assert.Equal(0, host.VerticalOffset);
+        Assert.Equal(0, host.Children[0].VisualBounds.Y);
+    }
+
+    private static TestVirtualizingWrapItemsControl CreateNonVirtualizedWrapControl()
+    {
+        var control = new TestVirtualizingWrapItemsControl();
+        VirtualizingPanel.SetIsVirtualizing(control, false);
+        control.ItemsSource = new[] { "Item 0", "Item 1", "Item 2" };
+        var host = Assert.IsType<VirtualizingWrapPanel>(control.Host);
+        host.ItemWidth = 80;
+        host.ItemHeight = 40;
+        host.HorizontalSpacing = 8;
+        host.VerticalSpacing = 6;
+        return control;
+    }
+
+    [Fact]
     public void ClearContainerForItem_InvokedWhenRealizedItemRemoved()
     {
         // The generator must call ItemsControl.ClearContainerForItem before pooling a recycled
@@ -490,13 +890,26 @@ public class VirtualizationPipelineTests
         host.Measure(new Size(320, 240));
         host.Arrange(new Rect(0, 0, 320, 240));
 
-        // "Item 2" moved to index 10; an item outside the moved span keeps its identity.
+        // "Item 2" moved to index 10 and kept its identity.
         var moved = gen.ContainerFromIndex(10);
         Assert.NotNull(moved);
         Assert.Equal("Item 2", gen.ItemFromContainer(moved!));
-        var outside = gen.ContainerFromIndex(40);
+
+        // The item it vacated shifted up to take its place.
+        var shifted = gen.ContainerFromIndex(2);
+        Assert.NotNull(shifted);
+        Assert.Equal("Item 3", gen.ItemFromContainer(shifted!));
+
+        // Index 11 is the first index past the moved span [2, 11), so it must be untouched.
+        var outside = gen.ContainerFromIndex(11);
         Assert.NotNull(outside);
-        Assert.Equal("Item 40", gen.ItemFromContainer(outside!));
+        Assert.Equal("Item 11", gen.ItemFromContainer(outside!));
+
+        // Routing the change as a Move must not realize the rest of the list: index 40 is
+        // far outside the realization window and stays virtualized. This assertion used to
+        // read Assert.NotNull(ContainerFromIndex(40)), which only held because unthemed
+        // containers measured to ~0 and the panel degenerated into realizing all 50 items.
+        Assert.Null(gen.ContainerFromIndex(40));
     }
 
     [Fact]
@@ -730,9 +1143,191 @@ public class VirtualizationPipelineTests
         Assert.Null(ItemsControl.GetItemsOwner(panel));
     }
 
+    // Containers are pinned to a fixed height so the realization window is identical
+    // whether or not a theme dictionary happens to be loaded in this process.
+    //
+    // Without the pin these tests are a coin flip. Implicit styles resolve through
+    // Application.Current.Resources, so with no Application a ListBoxItem gets no
+    // ControlTemplate and measures to ~0 (ItemHeightIndex clamps it to 1px): 50 rows span
+    // 50px, the 480px realization window swallows the list, and every item realizes —
+    // silently turning the virtualization assertions below into no-ops. Once any earlier
+    // test in the process constructs an Application, the themed style applies
+    // (MinHeight=28 plus font-dependent content) and only the first ~16 rows realize.
+    // Test collections run in a random order — xUnit's DefaultTestCollectionOrderer keys
+    // off ITestCollection.UniqueID, a Guid freshly minted per process — so which state a
+    // run lands in varies between identical runs even though the assembly is serial.
+    //
+    // Height and MinHeight are set as local values: they outrank the theme's implicit
+    // style while leaving it applied. An explicit ItemContainerStyle would instead
+    // displace the theme's default style, leaving the container with no template.
+    private const double ItemHeight = 24;
+
+    private static ListBoxItem CreateFixedHeightContainer()
+        => new() { Height = ItemHeight, MinHeight = ItemHeight };
+
     private sealed class TestListBox : ListBox
     {
         public Panel? Host => ItemsHost;
+
+        protected override FrameworkElement GetContainerForItem(object item)
+            => CreateFixedHeightContainer();
+    }
+
+    private sealed class CountingEnumerable : IEnumerable
+    {
+        private readonly int _count;
+
+        public CountingEnumerable(int count) => _count = count;
+
+        public int MoveNextCount { get; private set; }
+
+        public IEnumerator GetEnumerator()
+        {
+            for (int i = 0; i < _count; i++)
+            {
+                MoveNextCount++;
+                yield return $"Item {i}";
+            }
+        }
+    }
+
+    private sealed class ConstraintTrackingListBoxItem : ListBoxItem
+    {
+        public Size LastAvailableSize { get; private set; }
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            LastAvailableSize = availableSize;
+            return new Size(availableSize.Width, ItemHeight);
+        }
+    }
+
+    private sealed class MutableAutoSizeElement : FrameworkElement
+    {
+        private Size _naturalSize;
+
+        public MutableAutoSizeElement(Size naturalSize) => _naturalSize = naturalSize;
+
+        public Size NaturalSize
+        {
+            get => _naturalSize;
+            set
+            {
+                if (_naturalSize == value)
+                {
+                    return;
+                }
+
+                _naturalSize = value;
+                InvalidateMeasure();
+            }
+        }
+
+        protected override Size MeasureOverride(Size availableSize) => _naturalSize;
+    }
+
+    private sealed class TestVirtualizingWrapItemsControl : ItemsControl
+    {
+        public TestVirtualizingWrapItemsControl()
+        {
+            ItemsPanel = new ItemsPanelTemplate { PanelType = typeof(VirtualizingWrapPanel) };
+        }
+
+        public Panel? Host => ItemsHost;
+        public int IndexZeroPrepareCount { get; private set; }
+
+        protected override FrameworkElement GetContainerForItem(object item)
+            => new Border { Width = 80, Height = 40 };
+
+        protected override void PrepareContainerForItem(FrameworkElement element, object item)
+        {
+            base.PrepareContainerForItem(element, item);
+            if (Equals(item, "Item 0"))
+            {
+                IndexZeroPrepareCount++;
+            }
+        }
+    }
+
+    private sealed class TemplatePresenterVirtualizingItemsControl : ItemsControl
+    {
+        public TemplatePresenterVirtualizingItemsControl()
+        {
+            ItemsPanel = new ItemsPanelTemplate { PanelType = typeof(VirtualizingStackPanel) };
+        }
+
+        public Panel? Host => ItemsHost;
+        public int PrepareCount { get; private set; }
+        public int ClearCount { get; private set; }
+
+        protected override FrameworkElement GetContainerForItem(object item)
+            => new ContentPresenter { Height = 24 };
+
+        protected override void PrepareContainerForItem(FrameworkElement element, object item)
+        {
+            PrepareCount++;
+            base.PrepareContainerForItem(element, item);
+        }
+
+        protected override void ClearContainerForItem(FrameworkElement element, object item)
+        {
+            ClearCount++;
+            base.ClearContainerForItem(element, item);
+        }
+    }
+
+    private sealed class PrefixStyleSelector(Style styleA, Style styleB) : StyleSelector
+    {
+        public override Style? SelectStyle(object item, DependencyObject container)
+            => item is string text && text.StartsWith("A ", StringComparison.Ordinal)
+                ? styleA
+                : styleB;
+    }
+
+    private sealed class PersistentContentVirtualizingItemsControl : ItemsControl
+    {
+        public PersistentContentVirtualizingItemsControl()
+        {
+            ItemsPanel = new ItemsPanelTemplate { PanelType = typeof(VirtualizingStackPanel) };
+        }
+
+        public Panel? Host => ItemsHost;
+
+        protected override FrameworkElement GetContainerForItem(object item)
+            => new PersistentContentContainer();
+
+        protected override void PrepareContainerForItem(FrameworkElement element, object item)
+        {
+            if (element is PersistentContentContainer container)
+            {
+                container.BoundItem = item;
+                return;
+            }
+
+            base.PrepareContainerForItem(element, item);
+        }
+
+        protected override void ClearContainerForItem(FrameworkElement element, object item)
+        {
+            if (element is PersistentContentContainer container)
+            {
+                container.BoundItem = null;
+                return;
+            }
+
+            base.ClearContainerForItem(element, item);
+        }
+    }
+
+    private sealed class PersistentContentContainer : ContentControl
+    {
+        public PersistentContentContainer()
+        {
+            Height = 24;
+            Content = new Border();
+        }
+
+        public object? BoundItem { get; set; }
     }
 
     private sealed class ClearTrackingListBox : ListBox
@@ -740,6 +1335,9 @@ public class VirtualizationPipelineTests
         public Panel? Host => ItemsHost;
 
         public List<object> ClearedItems { get; } = new();
+
+        protected override FrameworkElement GetContainerForItem(object item)
+            => CreateFixedHeightContainer();
 
         protected override void ClearContainerForItem(FrameworkElement element, object item)
         {

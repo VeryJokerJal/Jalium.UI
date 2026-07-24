@@ -28,12 +28,18 @@ public partial class ScrollViewer : ContentControl
     private Pen? _borderPenCached;
     private Brush? _borderPenBrush;
     private double _borderPenThickness;
+    private RectangleGeometry? _layoutClipCache;
     private double _horizontalOffset;
     private double _verticalOffset;
     private double _requestedHorizontalOffset;
     private double _requestedVerticalOffset;
     private double _extentWidth;
     private double _extentHeight;
+    // Non-IScrollInfo content needs a finite probe before its first overflow measure,
+    // but once an axis is known to overflow, keep that axis unconstrained on the next
+    // layout pass. This avoids measuring a large card page twice on every WM_SIZE.
+    private bool _lastMeasureOverflowedHorizontally;
+    private bool _lastMeasureOverflowedVertically;
     private double _viewportWidth;
     private double _viewportHeight;
     private double _lastNotifiedExtentWidth;
@@ -175,6 +181,18 @@ public partial class ScrollViewer : ContentControl
         DependencyProperty.Register(nameof(IsScrollBarAutoHideEnabled), typeof(bool), typeof(ScrollViewer),
             new PropertyMetadata(s_isScrollBarAutoHideEnabledByDefault, OnScrollBarAutoHideEnabledChanged));
 
+    /// <summary>
+    /// Identifies the IsOverlayScrollBarEnabled dependency property.
+    /// Overlay scroll bars render as compact edge indicators and do not reserve
+    /// content space. The default is enabled on mobile operating systems.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty IsOverlayScrollBarEnabledProperty =
+        DependencyProperty.Register(nameof(IsOverlayScrollBarEnabled), typeof(bool), typeof(ScrollViewer),
+            new PropertyMetadata(
+                OperatingSystem.IsAndroid() || OperatingSystem.IsIOS(),
+                OnOverlayScrollBarEnabledChanged));
+
     #endregion
 
     #region CLR Properties
@@ -285,6 +303,17 @@ public partial class ScrollViewer : ContentControl
         set => SetValue(IsScrollBarAutoHideEnabledProperty, value);
     }
 
+    /// <summary>
+    /// Gets or sets whether scroll bars overlay the content as compact mobile
+    /// edge indicators instead of reserving a desktop scroll-bar gutter.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool IsOverlayScrollBarEnabled
+    {
+        get => (bool)GetValue(IsOverlayScrollBarEnabledProperty)!;
+        set => SetValue(IsOverlayScrollBarEnabledProperty, value);
+    }
+
     private static bool DetermineDefaultScrollBarAutoHide()
     {
         var environmentValue = Environment.GetEnvironmentVariable(ScrollBarAutoHideEnvironmentVariable);
@@ -303,6 +332,14 @@ public partial class ScrollViewer : ContentControl
                 case "off":
                     return false;
             }
+        }
+
+        // Mobile scroll bars are transient edge indicators. Keep that platform
+        // default even for Gallery/sample process names; the environment variable
+        // above remains the explicit override for diagnostics.
+        if (OperatingSystem.IsAndroid() || OperatingSystem.IsIOS())
+        {
+            return true;
         }
 
         try
@@ -325,6 +362,8 @@ public partial class ScrollViewer : ContentControl
     /// <inheritdoc />
     protected override void OnContentChanged(object? oldContent, object? newContent)
     {
+        _lastMeasureOverflowedHorizontally = false;
+        _lastMeasureOverflowedVertically = false;
         ScrollInfo = null;
         base.OnContentChanged(oldContent, newContent);
         ScrollInfo = ContentElement as IScrollInfo;
@@ -418,6 +457,9 @@ public partial class ScrollViewer : ContentControl
     /// The default scroll bar width/height.
     /// </summary>
     private const double ScrollBarSize = 12.0;
+    private const double OverlayScrollBarLayoutSize = 40.0;
+    private const double OverlayScrollBarIndicatorThickness = 2.0;
+    private const double OverlayScrollBarIndicatorEdgeInset = 2.0;
 
     // Smooth scroll animation fields
     private DispatcherTimer? _smoothScrollTimer;
@@ -428,9 +470,11 @@ public partial class ScrollViewer : ContentControl
     private bool _isSmoothScrolling;
     private bool _isApplyingSmoothScrollStep;
     private bool _areAutoHideScrollBarsRevealed;
+    private bool _hasInitializedOverlayAutoHide;
     private long _lastSmoothTickTime;
     private const double DefaultScrollInertiaDurationMs = 300.0;
     private const double DefaultScrollBarAutoHideDelayMs = 3000.0;
+    private const double OverlayScrollBarAutoHideDelayMs = 2000.0;
     private const int ScrollBarAutoHidePollIntervalMs = 100;
     private const double SmoothScrollDurationTailRatio = 0.05;
     private const double SmoothScrollSnapThreshold = 0.5;
@@ -467,6 +511,8 @@ public partial class ScrollViewer : ContentControl
     private double _dragStartVerticalOffset;
     private const double InputThumbHitWidth = 16.0;
     private const double InputScrollButtonSize = 16.0;
+    private const double OverlayScrollBarEndInset = 3.0;
+    private const double OverlayScrollBarMinThumbLength = 40.0;
 
     // Touch/stylus panning state
     private bool _isPointerPanningActive;
@@ -477,6 +523,10 @@ public partial class ScrollViewer : ContentControl
     private long _pointerPanningLastTimestamp;
     private double _pointerPanningVelocityX;
     private double _pointerPanningVelocityY;
+    private DispatcherTimer? _pointerPanningCoalesceTimer;
+    private bool _hasPendingPointerPanningDelta;
+    private double _pendingPointerPanningHorizontalDelta;
+    private double _pendingPointerPanningVerticalDelta;
 
     // iOS-style over-scroll: when a finger drags past the scroll bounds the
     // content rubber-bands beyond the viewport and springs back on release.
@@ -492,6 +542,7 @@ public partial class ScrollViewer : ContentControl
     private bool _pointerPanningAxisResolved;
     private bool _pointerPanningAllowHorizontal;
     private bool _pointerPanningAllowVertical;
+    private bool _pointerPanningYieldedToAncestor;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ScrollViewer"/> class.
@@ -520,9 +571,13 @@ public partial class ScrollViewer : ContentControl
         AddHandler(MouseMoveEvent, new Input.MouseEventHandler(HandleMouseMove));
         AddHandler(MouseUpEvent, new Input.MouseButtonEventHandler(HandleMouseUp));
         AddHandler(PointerDownEvent, new Input.PointerDownEventHandler(HandlePointerDown));
-        AddHandler(PointerMoveEvent, new Input.PointerMoveEventHandler(HandlePointerMove));
-        AddHandler(PointerUpEvent, new Input.PointerUpEventHandler(HandlePointerUp));
-        AddHandler(PointerCancelEvent, new Input.PointerCancelEventHandler(HandlePointerCancel));
+        // Nested viewers all see PointerDown and become gesture candidates. An
+        // ancestor must still observe handled moves to keep its baseline in
+        // sync for a boundary hand-off, and must always see Up/Cancel so a
+        // descendant cannot leave its candidate state active indefinitely.
+        AddHandler(PointerMoveEvent, new Input.PointerMoveEventHandler(HandlePointerMove), handledEventsToo: true);
+        AddHandler(PointerUpEvent, new Input.PointerUpEventHandler(HandlePointerUp), handledEventsToo: true);
+        AddHandler(PointerCancelEvent, new Input.PointerCancelEventHandler(HandlePointerCancel), handledEventsToo: true);
 
         // Register keyboard handler
         AddHandler(KeyDownEvent, new Input.KeyEventHandler(HandleKeyDown));
@@ -536,6 +591,7 @@ public partial class ScrollViewer : ContentControl
         var scrollBar = new ScrollBar
         {
             Orientation = orientation,
+            IsOverlayStyle = IsOverlayScrollBarEnabled,
             Focusable = false,
             Cursor = Jalium.UI.Input.Cursors.Arrow,
             Visibility = Visibility.Collapsed,
@@ -581,8 +637,17 @@ public partial class ScrollViewer : ContentControl
         }
 
         var point = e.GetPosition(this);
-        if (point.X < RenderSize.Width - InputThumbHitWidth)
+        if (IsOverlayScrollBarEnabled)
+        {
+            var indicatorEnd = RenderSize.Width - OverlayScrollBarIndicatorEdgeInset;
+            var indicatorStart = indicatorEnd - OverlayScrollBarIndicatorThickness;
+            if (point.X < indicatorStart || point.X > indicatorEnd)
+                return;
+        }
+        else if (point.X < RenderSize.Width - InputThumbHitWidth)
+        {
             return;
+        }
 
         var metrics = GetInputVerticalThumbMetrics();
         if (metrics.ScrollRange <= 0)
@@ -640,6 +705,12 @@ public partial class ScrollViewer : ContentControl
 
     private void HandlePointerMove(object sender, Input.PointerMoveEventArgs e)
     {
+        if (e.Handled)
+        {
+            ObserveHandledDescendantPointerMove(e);
+            return;
+        }
+
         OnPointerMove(e);
     }
 
@@ -650,6 +721,15 @@ public partial class ScrollViewer : ContentControl
 
     private void HandlePointerCancel(object sender, Input.PointerCancelEventArgs e)
     {
+        // handledEventsToo is used for nested-candidate cleanup. Do not let an
+        // unrelated descendant cancellation stop this viewer's independent
+        // wheel/inertia animation when it has no matching pan candidate.
+        if (e.Handled &&
+            (!_isPointerPanningActive || e.Pointer.PointerId != _activePanningPointerId))
+        {
+            return;
+        }
+
         OnPointerCancel(e);
     }
 
@@ -673,11 +753,23 @@ public partial class ScrollViewer : ContentControl
 
     private void OnPointerDown(PointerDownEventArgs e)
     {
+        // Thumb owns touch dragging. The platform intentionally raises pointer
+        // events even after Thumb handled TouchDown, so without this guard a
+        // finger on the mobile indicator would drag both thumb and content.
+        if (IsThumbInteractionSource(e.OriginalSource ?? e.Source))
+            return;
+
         if (!CanStartPointerPanning(e.Pointer))
+            return;
+
+        // A second contact must not steal an in-flight pan or discard its
+        // coalesced delta. The active contact owns this viewer until Up/Cancel.
+        if (_isPointerPanningActive)
             return;
 
         CancelSmoothScroll();
         CancelBounceAnimation();
+        DiscardPendingPointerPanningDelta();
 
         _isPointerPanningActive = true;
         _hasPointerPanningMoved = false;
@@ -687,8 +779,20 @@ public partial class ScrollViewer : ContentControl
         _pointerPanningLastTimestamp = e.Timestamp;
         _pointerPanningVelocityX = 0;
         _pointerPanningVelocityY = 0;
+        _pointerPanningYieldedToAncestor = false;
 
         InitializePointerPanningAxes();
+    }
+
+    private static bool IsThumbInteractionSource(object? source)
+    {
+        for (Visual? current = source as Visual; current != null; current = current.VisualParent)
+        {
+            if (current is Thumb)
+                return true;
+        }
+
+        return false;
     }
 
     private void OnPointerMove(PointerMoveEventArgs e)
@@ -702,6 +806,30 @@ public partial class ScrollViewer : ContentControl
 
         double deltaX = currentPoint.X - _pointerPanningLastPoint.X;
         double deltaY = currentPoint.Y - _pointerPanningLastPoint.Y;
+
+        // Gesture ownership stays with the ancestor after a hand-off. This
+        // prevents a direction reversal from reactivating the child while the
+        // parent still has coalesced movement from the same contact.
+        if (_pointerPanningYieldedToAncestor)
+        {
+            _pointerPanningLastPoint = currentPoint;
+            _pointerPanningLastTimestamp = currentTimestamp;
+            return;
+        }
+
+        // A horizontal child (carousel/list) inside a vertically scrolling
+        // page must not consume a clearly vertical drag merely because the
+        // contact contained a small horizontal wobble, and vice versa.
+        if (ShouldYieldDominantPointerAxisToAncestor(currentPoint))
+        {
+            _pointerPanningYieldedToAncestor = true;
+            _pointerPanningAxisResolved = true;
+            _pointerPanningAllowHorizontal = false;
+            _pointerPanningAllowVertical = false;
+            _pointerPanningLastPoint = currentPoint;
+            _pointerPanningLastTimestamp = currentTimestamp;
+            return;
+        }
 
         if (!_pointerPanningAxisResolved)
         {
@@ -730,21 +858,32 @@ public partial class ScrollViewer : ContentControl
         double horizontalDelta = -deltaX * ratio;
         double verticalDelta = -deltaY * ratio;
 
-        bool moved = ApplyPointerPanningDelta(horizontalDelta, verticalDelta);
-        if (moved)
+        // Split a packet that crosses the inner boundary. The inner viewer
+        // keeps only the distance up to its edge; the same routed packet then
+        // reaches the ancestor with a baseline adjusted to the exact remainder.
+        if (TryHandoffPointerPanningRemainder(
+                horizontalDelta,
+                verticalDelta,
+                currentPoint,
+                currentTimestamp))
         {
-            _hasPointerPanningMoved = true;
-            double blend = 0.35;
-            // Clamp the instantaneous velocity: jittery WM_POINTER packets
-            // can occasionally report a 0.1 ms dt with a 5 DIP delta, blowing
-            // the velocity to absurd values that the inertia integrator then
-            // turns into a multi-screen fling.
-            double instantVelocityX = Math.Clamp(deltaX / dt, -MaxPanningVelocityDipsPerMs, MaxPanningVelocityDipsPerMs);
-            double instantVelocityY = Math.Clamp(deltaY / dt, -MaxPanningVelocityDipsPerMs, MaxPanningVelocityDipsPerMs);
-            _pointerPanningVelocityX = (_pointerPanningVelocityX * (1 - blend)) + (instantVelocityX * blend);
-            _pointerPanningVelocityY = (_pointerPanningVelocityY * (1 - blend)) + (instantVelocityY * blend);
-            e.Handled = true;
+            return;
         }
+
+        ScheduleCoalescedPointerPanningDelta(horizontalDelta, verticalDelta);
+
+        // Velocity remains input-time based rather than frame-time based. MOVE packets can be
+        // coalesced for layout without losing their real timestamps or changing fling distance.
+        double blend = 0.35;
+        // Clamp the instantaneous velocity: jittery WM_POINTER packets
+        // can occasionally report a 0.1 ms dt with a 5 DIP delta, blowing
+        // the velocity to absurd values that the inertia integrator then
+        // turns into a multi-screen fling.
+        double instantVelocityX = Math.Clamp(deltaX / dt, -MaxPanningVelocityDipsPerMs, MaxPanningVelocityDipsPerMs);
+        double instantVelocityY = Math.Clamp(deltaY / dt, -MaxPanningVelocityDipsPerMs, MaxPanningVelocityDipsPerMs);
+        _pointerPanningVelocityX = (_pointerPanningVelocityX * (1 - blend)) + (instantVelocityX * blend);
+        _pointerPanningVelocityY = (_pointerPanningVelocityY * (1 - blend)) + (instantVelocityY * blend);
+        e.Handled = true;
 
         _pointerPanningLastPoint = currentPoint;
         _pointerPanningLastTimestamp = currentTimestamp;
@@ -755,6 +894,12 @@ public partial class ScrollViewer : ContentControl
         if (!_isPointerPanningActive || e.Pointer.PointerId != _activePanningPointerId)
             return;
 
+        // UP is a queue boundary. Commit every MOVE delta before projecting inertia so the
+        // release position is exact even when no CompositionTarget frame occurred in between.
+        _pointerPanningCoalesceTimer?.Stop();
+        CompletePendingPointerPanningDelta();
+
+        bool restartOverlayIdleTimer = _hasPointerPanningMoved && IsOverlayScrollBarEnabled;
         if (_hasPointerPanningMoved)
         {
             // iOS behaviour: rubber-band overscroll trumps inertia — when the
@@ -771,6 +916,10 @@ public partial class ScrollViewer : ContentControl
         }
 
         ResetPointerPanningState();
+        if (restartOverlayIdleTimer)
+        {
+            RevealAutoHideScrollBarsTemporarily();
+        }
     }
 
     // ── Bounce-back animation ──────────────────────────────────────
@@ -808,6 +957,7 @@ public partial class ScrollViewer : ContentControl
             _bounceTimer!.IsEnabled = false;
             InvalidateArrange();
             UpdateScrollBarMetrics();
+            RevealOverlayIndicatorForScrollMovement();
         }
     }
 
@@ -816,6 +966,7 @@ public partial class ScrollViewer : ContentControl
         if (_bounceTimer is { IsEnabled: true } t)
         {
             t.IsEnabled = false;
+            RevealOverlayIndicatorForScrollMovement();
         }
     }
 
@@ -825,8 +976,13 @@ public partial class ScrollViewer : ContentControl
         if (!isActivePointer && !_isSmoothScrolling)
             return;
 
+        bool restartOverlayIdleTimer = isActivePointer && _hasPointerPanningMoved && IsOverlayScrollBarEnabled;
         CancelSmoothScroll();
         ResetPointerPanningState();
+        if (restartOverlayIdleTimer)
+        {
+            RevealAutoHideScrollBarsTemporarily();
+        }
         if (isActivePointer)
         {
             e.Handled = true;
@@ -865,16 +1021,16 @@ public partial class ScrollViewer : ContentControl
         switch (PanningMode)
         {
             case PanningMode.HorizontalOnly:
-                _pointerPanningAllowHorizontal = true;
+                _pointerPanningAllowHorizontal = CanScrollHorizontally;
                 _pointerPanningAllowVertical = false;
                 break;
             case PanningMode.VerticalOnly:
                 _pointerPanningAllowHorizontal = false;
-                _pointerPanningAllowVertical = true;
+                _pointerPanningAllowVertical = CanScrollVertically;
                 break;
             case PanningMode.Both:
-                _pointerPanningAllowHorizontal = true;
-                _pointerPanningAllowVertical = true;
+                _pointerPanningAllowHorizontal = CanScrollHorizontally;
+                _pointerPanningAllowVertical = CanScrollVertically;
                 break;
             case PanningMode.HorizontalFirst:
             case PanningMode.VerticalFirst:
@@ -907,17 +1063,193 @@ public partial class ScrollViewer : ContentControl
         if (PanningMode == PanningMode.HorizontalFirst)
         {
             bool chooseHorizontal = absX >= absY || absY < PointerPanningLockThreshold;
-            _pointerPanningAllowHorizontal = chooseHorizontal;
-            _pointerPanningAllowVertical = !chooseHorizontal;
+            _pointerPanningAllowHorizontal = chooseHorizontal && CanScrollHorizontally;
+            _pointerPanningAllowVertical = !chooseHorizontal && CanScrollVertically;
         }
         else
         {
             bool chooseVertical = absY >= absX || absX < PointerPanningLockThreshold;
-            _pointerPanningAllowHorizontal = !chooseVertical;
-            _pointerPanningAllowVertical = chooseVertical;
+            _pointerPanningAllowHorizontal = !chooseVertical && CanScrollHorizontally;
+            _pointerPanningAllowVertical = chooseVertical && CanScrollVertically;
         }
 
         _pointerPanningAxisResolved = true;
+    }
+
+    private void ObserveHandledDescendantPointerMove(PointerMoveEventArgs e)
+    {
+        if (!_isPointerPanningActive || e.Pointer.PointerId != _activePanningPointerId)
+            return;
+
+        // Do not apply the descendant's packet twice. Keeping the last sample
+        // current means that, if the descendant yields at its boundary, this
+        // viewer consumes only the first unhandled packet rather than the
+        // entire distance since PointerDown.
+        _pointerPanningLastPoint = e.Pointer.Position;
+        _pointerPanningLastTimestamp = e.Timestamp;
+    }
+
+    private bool ShouldYieldDominantPointerAxisToAncestor(Point currentPoint)
+    {
+        var totalDeltaX = currentPoint.X - _pointerPanningStartPoint.X;
+        var totalDeltaY = currentPoint.Y - _pointerPanningStartPoint.Y;
+        var absX = Math.Abs(totalDeltaX);
+        var absY = Math.Abs(totalDeltaY);
+        if (Math.Max(absX, absY) < PointerPanningLockThreshold)
+            return false;
+
+        var horizontalDominant = absX > absY;
+        var canPanDominantAxis = horizontalDominant
+            ? AllowsHorizontalPointerPanning() && CanScrollHorizontally
+            : AllowsVerticalPointerPanning() && CanScrollVertically;
+        if (canPanDominantAxis)
+            return false;
+
+        var ratio = GetEffectivePanningRatio();
+        return horizontalDominant
+            ? HasScrollableAncestorForPointerDelta(-totalDeltaX * ratio, 0)
+            : HasScrollableAncestorForPointerDelta(0, -totalDeltaY * ratio);
+    }
+
+    private bool TryHandoffPointerPanningRemainder(
+        double horizontalDelta,
+        double verticalDelta,
+        Point currentPoint,
+        long currentTimestamp)
+    {
+        var localHorizontalDelta = _pointerPanningAllowHorizontal
+            ? GetLocallyConsumableHorizontalDelta(horizontalDelta)
+            : 0;
+        var localVerticalDelta = _pointerPanningAllowVertical
+            ? GetLocallyConsumableVerticalDelta(verticalDelta)
+            : 0;
+        var remainingHorizontalDelta = horizontalDelta - localHorizontalDelta;
+        var remainingVerticalDelta = verticalDelta - localVerticalDelta;
+
+        if (Math.Abs(remainingHorizontalDelta) <= double.Epsilon &&
+            Math.Abs(remainingVerticalDelta) <= double.Epsilon)
+        {
+            return false;
+        }
+
+        var ancestor = FindScrollableAncestorForPointerDelta(
+            remainingHorizontalDelta,
+            remainingVerticalDelta);
+        if (ancestor == null)
+            return false;
+
+        if (Math.Abs(localHorizontalDelta) > double.Epsilon ||
+            Math.Abs(localVerticalDelta) > double.Epsilon)
+        {
+            ScheduleCoalescedPointerPanningDelta(localHorizontalDelta, localVerticalDelta);
+        }
+
+        // PointerPoint.Position is shared window space. Rebase the receiving
+        // ancestor so its normal OnPointerMove path observes only the physical
+        // finger distance left after this viewer consumed its edge portion.
+        var ratio = GetEffectivePanningRatio();
+        ancestor._pointerPanningLastPoint = new Point(
+            Math.Abs(remainingHorizontalDelta) > double.Epsilon
+                ? currentPoint.X + (remainingHorizontalDelta / ratio)
+                : currentPoint.X,
+            Math.Abs(remainingVerticalDelta) > double.Epsilon
+                ? currentPoint.Y + (remainingVerticalDelta / ratio)
+                : currentPoint.Y);
+
+        _pointerPanningYieldedToAncestor = true;
+        _pointerPanningLastPoint = currentPoint;
+        _pointerPanningLastTimestamp = currentTimestamp;
+        return true;
+    }
+
+    private bool CanConsumeHorizontalPointerDelta(double delta)
+    {
+        return Math.Abs(GetLocallyConsumableHorizontalDelta(delta)) > double.Epsilon;
+    }
+
+    private double GetLocallyConsumableHorizontalDelta(double delta)
+    {
+        var pendingDelta = _hasPendingPointerPanningDelta
+            ? _pendingPointerPanningHorizontalDelta
+            : 0;
+        var projectedOffset = Math.Clamp(_horizontalOffset + pendingDelta, 0, ScrollableWidth);
+        return delta > 0
+            ? Math.Min(delta, Math.Max(0, ScrollableWidth - projectedOffset))
+            : Math.Max(delta, -projectedOffset);
+    }
+
+    private bool CanConsumeVerticalPointerDelta(double delta)
+    {
+        return Math.Abs(GetLocallyConsumableVerticalDelta(delta)) > double.Epsilon;
+    }
+
+    private double GetLocallyConsumableVerticalDelta(double delta)
+    {
+        var pendingDelta = _hasPendingPointerPanningDelta
+            ? _pendingPointerPanningVerticalDelta
+            : 0;
+        var projectedOffset = Math.Clamp(_verticalOffset + pendingDelta, 0, ScrollableHeight);
+        return delta > 0
+            ? Math.Min(delta, Math.Max(0, ScrollableHeight - projectedOffset))
+            : Math.Max(delta, -projectedOffset);
+    }
+
+    private bool HasScrollableAncestorForPointerDelta(double horizontalDelta, double verticalDelta)
+    {
+        return FindScrollableAncestorForPointerDelta(horizontalDelta, verticalDelta) != null;
+    }
+
+    private ScrollViewer? FindScrollableAncestorForPointerDelta(double horizontalDelta, double verticalDelta)
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (!ReferenceEquals(current, this) &&
+                current is ScrollViewer viewer &&
+                viewer._isPointerPanningActive &&
+                viewer._activePanningPointerId == _activePanningPointerId &&
+                !viewer._pointerPanningYieldedToAncestor &&
+                viewer.CanConsumeNestedPointerDelta(horizontalDelta, verticalDelta))
+            {
+                return viewer;
+            }
+        }
+
+        return null;
+    }
+
+    private bool CanConsumeNestedPointerDelta(double horizontalDelta, double verticalDelta)
+    {
+        if (PanningMode == PanningMode.None)
+            return false;
+
+        if (AllowsHorizontalPointerPanning() &&
+            CanScrollHorizontally &&
+            Math.Abs(horizontalDelta) > double.Epsilon &&
+            CanConsumeHorizontalPointerDelta(horizontalDelta))
+        {
+            return true;
+        }
+
+        return AllowsVerticalPointerPanning() &&
+               CanScrollVertically &&
+               Math.Abs(verticalDelta) > double.Epsilon &&
+               CanConsumeVerticalPointerDelta(verticalDelta);
+    }
+
+    private bool AllowsHorizontalPointerPanning()
+    {
+        return PanningMode == PanningMode.Both ||
+               PanningMode == PanningMode.HorizontalOnly ||
+               PanningMode == PanningMode.HorizontalFirst ||
+               PanningMode == PanningMode.VerticalFirst;
+    }
+
+    private bool AllowsVerticalPointerPanning()
+    {
+        return PanningMode == PanningMode.Both ||
+               PanningMode == PanningMode.VerticalOnly ||
+               PanningMode == PanningMode.HorizontalFirst ||
+               PanningMode == PanningMode.VerticalFirst;
     }
 
     private bool ApplyPointerPanningDelta(double horizontalDelta, double verticalDelta)
@@ -940,10 +1272,16 @@ public partial class ScrollViewer : ContentControl
             double remaining = horizontalDelta - consumed;
             if (Math.Abs(remaining) > double.Epsilon)
             {
-                ApplyOverscrollDelta(ref _overscrollX, -remaining);
-                moved = true;
-                InvalidateArrange();
-                UpdateScrollBarMetrics();
+                // In a nested chain the next packet is handed to an ancestor.
+                // Drop this packet's sub-frame residual instead of showing an
+                // inner rubber-band while the parent begins scrolling.
+                if (!HasScrollableAncestorForPointerDelta(remaining, 0))
+                {
+                    ApplyOverscrollDelta(ref _overscrollX, -remaining);
+                    moved = true;
+                    InvalidateArrange();
+                    UpdateScrollBarMetrics();
+                }
             }
         }
 
@@ -959,14 +1297,81 @@ public partial class ScrollViewer : ContentControl
             double remaining = verticalDelta - consumed;
             if (Math.Abs(remaining) > double.Epsilon)
             {
-                ApplyOverscrollDelta(ref _overscrollY, -remaining);
-                moved = true;
-                InvalidateArrange();
-                UpdateScrollBarMetrics();
+                if (!HasScrollableAncestorForPointerDelta(0, remaining))
+                {
+                    ApplyOverscrollDelta(ref _overscrollY, -remaining);
+                    moved = true;
+                    InvalidateArrange();
+                    UpdateScrollBarMetrics();
+                }
             }
         }
 
         return moved;
+    }
+
+    // Direct panning can receive substantially more MOVE packets than the display can present.
+    // Accumulate (rather than replace) their deltas and apply the sum once per rendered frame;
+    // replacing with the latest delta would make scroll distance depend on input sample rate.
+    private void ScheduleCoalescedPointerPanningDelta(double horizontalDelta, double verticalDelta)
+    {
+        _pendingPointerPanningHorizontalDelta += horizontalDelta;
+        _pendingPointerPanningVerticalDelta += verticalDelta;
+        _hasPendingPointerPanningDelta = true;
+
+        // Preserve gesture semantics independently of the frame batch. Two MOVE packets that
+        // cancel to a zero net frame delta still constitute a pan and retain the last sampled
+        // velocity for PointerUp inertia, just as they did before coalescing.
+        _hasPointerPanningMoved = true;
+        if (IsOverlayScrollBarEnabled)
+        {
+            RevealAutoHideScrollBarsTemporarily();
+        }
+
+        if (_pointerPanningCoalesceTimer == null)
+        {
+            _pointerPanningCoalesceTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(SmoothScrollIntervalMs)
+            };
+            _pointerPanningCoalesceTimer.Tick += OnPointerPanningCoalesceTick;
+        }
+
+        if (!_pointerPanningCoalesceTimer.IsEnabled)
+            _pointerPanningCoalesceTimer.Start();
+    }
+
+    private void OnPointerPanningCoalesceTick(object? sender, EventArgs e)
+    {
+        if (!_hasPendingPointerPanningDelta)
+        {
+            _pointerPanningCoalesceTimer?.Stop();
+            return;
+        }
+
+        CompletePendingPointerPanningDelta();
+    }
+
+    private void CompletePendingPointerPanningDelta()
+    {
+        if (!_hasPendingPointerPanningDelta)
+            return;
+
+        double horizontalDelta = _pendingPointerPanningHorizontalDelta;
+        double verticalDelta = _pendingPointerPanningVerticalDelta;
+        _hasPendingPointerPanningDelta = false;
+        _pendingPointerPanningHorizontalDelta = 0;
+        _pendingPointerPanningVerticalDelta = 0;
+
+        ApplyPointerPanningDelta(horizontalDelta, verticalDelta);
+    }
+
+    private void DiscardPendingPointerPanningDelta()
+    {
+        _hasPendingPointerPanningDelta = false;
+        _pendingPointerPanningHorizontalDelta = 0;
+        _pendingPointerPanningVerticalDelta = 0;
+        _pointerPanningCoalesceTimer?.Stop();
     }
 
     /// <summary>
@@ -1021,6 +1426,8 @@ public partial class ScrollViewer : ContentControl
 
     private void ResetPointerPanningState()
     {
+        // CANCEL/capture-loss/reset must never replay a stale drag on a later frame.
+        DiscardPendingPointerPanningDelta();
         _isPointerPanningActive = false;
         _hasPointerPanningMoved = false;
         _activePanningPointerId = 0;
@@ -1032,6 +1439,7 @@ public partial class ScrollViewer : ContentControl
         _pointerPanningAxisResolved = false;
         _pointerPanningAllowHorizontal = false;
         _pointerPanningAllowVertical = false;
+        _pointerPanningYieldedToAncestor = false;
     }
 
     private double GetEffectivePanningRatio()
@@ -1052,20 +1460,77 @@ public partial class ScrollViewer : ContentControl
 
     private (double ThumbTop, double ThumbHeight, double ScrollRange) GetInputVerticalThumbMetrics()
     {
-        var trackHeight = Math.Max(0, RenderSize.Height - (InputScrollButtonSize * 2));
+        var trackInset = IsOverlayScrollBarEnabled
+            ? OverlayScrollBarEndInset
+            : InputScrollButtonSize;
+        var trackHeight = Math.Max(0, RenderSize.Height - (trackInset * 2));
         if (trackHeight <= 0 || ExtentHeight <= 0 || ScrollableHeight <= 0)
             return (0, 0, 0);
 
-        var thumbHeight = Math.Max(20, (ViewportHeight / ExtentHeight) * trackHeight);
+        var minimumThumbLength = IsOverlayScrollBarEnabled
+            ? OverlayScrollBarMinThumbLength
+            : 20.0;
+        var thumbHeight = Math.Min(
+            trackHeight,
+            Math.Max(minimumThumbLength, (ViewportHeight / ExtentHeight) * trackHeight));
         var scrollRange = Math.Max(0, trackHeight - thumbHeight);
-        var thumbTop = InputScrollButtonSize + (VerticalOffset / ScrollableHeight) * scrollRange;
+        var thumbTop = trackInset + (VerticalOffset / ScrollableHeight) * scrollRange;
         return (thumbTop, thumbHeight, scrollRange);
     }
 
     /// <inheritdoc />
     protected override HitTestResult? HitTestCore(Point point)
     {
-        return base.HitTestCore(point);
+        var result = base.HitTestCore(point);
+        if (!IsOverlayScrollBarEnabled ||
+            result?.VisualHit is not Visual visualHit ||
+            ContentElement is not FrameworkElement content ||
+            (!IsVisualDescendantOf(visualHit, _verticalScrollBar) &&
+             !IsVisualDescendantOf(visualHit, _horizontalScrollBar)))
+        {
+            return result;
+        }
+
+        // Overlay bars are arranged after content, so normal reverse-Z hit
+        // testing reaches the parent's bar first. If a nested viewer has a
+        // Thumb at the exact same 2-DIP edge location, prefer the deepest bar;
+        // otherwise the inner mobile scrollbar can never receive its Hold.
+        var localPoint = new Point(point.X - VisualBounds.X, point.Y - VisualBounds.Y);
+        var contentResult = content.HitTest(localPoint);
+        if (contentResult?.VisualHit is Visual contentHit &&
+            FindOverlayScrollBarAncestor(contentHit) is { } nestedScrollBar &&
+            !ReferenceEquals(nestedScrollBar, _verticalScrollBar) &&
+            !ReferenceEquals(nestedScrollBar, _horizontalScrollBar))
+        {
+            return contentResult;
+        }
+
+        // FrameworkElement uses a thread-local reusable HitTestResult. The
+        // content probe above mutates that instance, so preserve the original
+        // overlay hit explicitly when no nested Thumb supersedes it.
+        return new HitTestResult(visualHit);
+    }
+
+    private static bool IsVisualDescendantOf(Visual visual, Visual ancestor)
+    {
+        for (Visual? current = visual; current != null; current = current.VisualParent)
+        {
+            if (ReferenceEquals(current, ancestor))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static ScrollBar? FindOverlayScrollBarAncestor(Visual visual)
+    {
+        for (Visual? current = visual; current != null; current = current.VisualParent)
+        {
+            if (current is ScrollBar { IsOverlayStyle: true } scrollBar)
+                return scrollBar;
+        }
+
+        return null;
     }
 
     /// <inheritdoc />
@@ -1128,8 +1593,45 @@ public partial class ScrollViewer : ContentControl
         if (!IsScrollBarAutoHideEnabled || !HasAutoHideScrollBarCandidates())
             return;
 
+        if (!_areAutoHideScrollBarsRevealed)
+        {
+            _areAutoHideScrollBarsRevealed = true;
+            ApplyScrollBarAutoHideVisualState();
+        }
+        RestartScrollBarAutoHideTimer();
+    }
+
+    private void RevealOverlayIndicatorForScrollMovement()
+    {
+        if (IsOverlayScrollBarEnabled)
+        {
+            RevealAutoHideScrollBarsTemporarily();
+        }
+    }
+
+    private void InitializeOverlayAutoHideIfNeeded()
+    {
+        if (!IsOverlayScrollBarEnabled || !IsScrollBarAutoHideEnabled)
+        {
+            return;
+        }
+
+        if (!HasAutoHideScrollBarCandidates())
+        {
+            // A later content/viewport change may introduce a scrollbar. Treat
+            // that as a fresh first appearance and show it for the initial delay.
+            _hasInitializedOverlayAutoHide = false;
+            return;
+        }
+
+        if (_hasInitializedOverlayAutoHide)
+            return;
+
+        // Show the initial 2-DIP indicator, then let the normal two-second
+        // idle countdown hide it. Without this first-use state it would enter
+        // the already-hidden progress on its first layout.
+        _hasInitializedOverlayAutoHide = true;
         _areAutoHideScrollBarsRevealed = true;
-        ApplyScrollBarAutoHideVisualState();
         RestartScrollBarAutoHideTimer();
     }
 
@@ -1181,6 +1683,15 @@ public partial class ScrollViewer : ContentControl
         if (ReferenceEquals(scrollBar, _verticalScrollBar) && _isDraggingVerticalThumb)
             return true;
 
+        if (scrollBar.IsThumbDragging)
+            return true;
+
+        if (IsOverlayScrollBarEnabled &&
+            (_isPointerPanningActive || _isSmoothScrolling || _bounceTimer is { IsEnabled: true }))
+        {
+            return true;
+        }
+
         return scrollBar.IsMouseOver;
     }
 
@@ -1189,14 +1700,16 @@ public partial class ScrollViewer : ContentControl
         if (!IsScrollBarAutoHideEnabled || !HasAutoHideScrollBarCandidates())
             return;
 
-        _scrollBarAutoHideDeadlineTick = Environment.TickCount64 + (long)DefaultScrollBarAutoHideDelayMs;
+        _scrollBarAutoHideDeadlineTick = Environment.TickCount64 + (long)GetScrollBarAutoHideDelayMs();
 
-        _scrollBarAutoHideTimer ??= new DispatcherTimer
+        if (_scrollBarAutoHideTimer == null)
         {
-            Interval = TimeSpan.FromMilliseconds(ScrollBarAutoHidePollIntervalMs)
-        };
-        _scrollBarAutoHideTimer.Tick -= OnScrollBarAutoHideTimerTick;
-        _scrollBarAutoHideTimer.Tick += OnScrollBarAutoHideTimerTick;
+            _scrollBarAutoHideTimer = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(ScrollBarAutoHidePollIntervalMs)
+            };
+            _scrollBarAutoHideTimer.Tick += OnScrollBarAutoHideTimerTick;
+        }
 
         if (!_scrollBarAutoHideTimer.IsEnabled)
         {
@@ -1216,7 +1729,7 @@ public partial class ScrollViewer : ContentControl
 
         if (ShouldKeepAnyAutoHideScrollBarVisible())
         {
-            _scrollBarAutoHideDeadlineTick = Environment.TickCount64 + (long)DefaultScrollBarAutoHideDelayMs;
+            _scrollBarAutoHideDeadlineTick = Environment.TickCount64 + (long)GetScrollBarAutoHideDelayMs();
             return;
         }
 
@@ -1224,6 +1737,15 @@ public partial class ScrollViewer : ContentControl
         StopScrollBarAutoHideTimer();
         ApplyScrollBarAutoHideVisualState();
     }
+
+    private double GetScrollBarAutoHideDelayMs()
+    {
+        return IsOverlayScrollBarEnabled
+            ? OverlayScrollBarAutoHideDelayMs
+            : DefaultScrollBarAutoHideDelayMs;
+    }
+
+    internal double EffectiveScrollBarAutoHideDelayMs => GetScrollBarAutoHideDelayMs();
 
     private void ApplyScrollBarAutoHideVisualState()
     {
@@ -1240,6 +1762,7 @@ public partial class ScrollViewer : ContentControl
                 scrollBar.IsThumbSlim = false;
             }
 
+            scrollBar.StartAutoHideVisualTransition(0.0);
             return;
         }
 
@@ -1255,6 +1778,7 @@ public partial class ScrollViewer : ContentControl
                 scrollBar.IsThumbSlim = false;
             }
 
+            scrollBar.StartAutoHideVisualTransition(0.0);
             return;
         }
 
@@ -1290,7 +1814,8 @@ public partial class ScrollViewer : ContentControl
     /// </summary>
     internal override Geometry? GetLayoutClip()
     {
-        if (!ClipToBounds)
+        var clipEdges = ClipToBoundsEdges;
+        if (!ClipToBounds || clipEdges == ClipEdges.None)
         {
             return null;
         }
@@ -1298,7 +1823,22 @@ public partial class ScrollViewer : ContentControl
         // Keep the full control unclipped so visual-child scrollbars remain visible.
         // Content clipping is handled by layout offsets and child layering.
         var clipRect = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
-        return new Media.RectangleGeometry(clipRect);
+        var geometryRect = ExpandBoundsClip(clipRect, clipEdges);
+        if (_layoutClipCache is null ||
+            _layoutClipCache.Rect != geometryRect ||
+            _layoutClipCache.BoundsClipRect != clipRect ||
+            _layoutClipCache.BoundsClipEdges != clipEdges)
+        {
+            var geometry = new RectangleGeometry(geometryRect)
+            {
+                BoundsClipEdges = clipEdges,
+                BoundsClipRect = clipRect
+            };
+            geometry.Freeze();
+            _layoutClipCache = geometry;
+        }
+
+        return _layoutClipCache;
     }
 
     #endregion
@@ -1327,6 +1867,7 @@ public partial class ScrollViewer : ContentControl
 
             if (oldOffset != _horizontalOffset)
             {
+                RevealOverlayIndicatorForScrollMovement();
                 InvalidateArrange();
                 RaiseScrollChanged();
                 UpdateScrollBarMetrics();
@@ -1340,6 +1881,7 @@ public partial class ScrollViewer : ContentControl
 
         if (oldOff != _horizontalOffset)
         {
+            RevealOverlayIndicatorForScrollMovement();
             InvalidateArrange();
             RaiseScrollChanged();
             UpdateScrollBarMetrics();
@@ -1368,6 +1910,7 @@ public partial class ScrollViewer : ContentControl
 
             if (oldOffset != _verticalOffset)
             {
+                RevealOverlayIndicatorForScrollMovement();
                 InvalidateArrange();
                 RaiseScrollChanged();
                 UpdateScrollBarMetrics();
@@ -1381,6 +1924,7 @@ public partial class ScrollViewer : ContentControl
 
         if (oldOff != _verticalOffset)
         {
+            RevealOverlayIndicatorForScrollMovement();
             InvalidateArrange();
             RaiseScrollChanged();
             UpdateScrollBarMetrics();
@@ -1541,7 +2085,13 @@ public partial class ScrollViewer : ContentControl
         // The IScrollInfo.ViewportWidth/Height reflects the Measure constraint, which can
         // differ from the final Arrange size and cause scrollbar visibility to flicker.
 
-        if (oldHorizontalOffset != _horizontalOffset || oldVerticalOffset != _verticalOffset ||
+        bool scrollOffsetChanged = oldHorizontalOffset != _horizontalOffset || oldVerticalOffset != _verticalOffset;
+        if (scrollOffsetChanged)
+        {
+            RevealOverlayIndicatorForScrollMovement();
+        }
+
+        if (scrollOffsetChanged ||
             oldExtentWidth != _extentWidth || oldExtentHeight != _extentHeight)
         {
             InvalidateArrange();
@@ -1755,29 +2305,54 @@ public partial class ScrollViewer : ContentControl
             return default(Size);
         }
 
-        // Reserve space for scrollbars if they might be needed
-        var reserveVertical = VerticalScrollBarVisibility == ScrollBarVisibility.Visible ||
-                              VerticalScrollBarVisibility == ScrollBarVisibility.Auto;
-        var reserveHorizontal = HorizontalScrollBarVisibility == ScrollBarVisibility.Visible ||
-                                HorizontalScrollBarVisibility == ScrollBarVisibility.Auto;
+        // Desktop scroll bars reserve a gutter. Mobile overlay indicators are
+        // arranged above the content and therefore leave the full viewport usable.
+        var reserveVertical = !IsOverlayScrollBarEnabled &&
+                              (VerticalScrollBarVisibility == ScrollBarVisibility.Visible ||
+                               VerticalScrollBarVisibility == ScrollBarVisibility.Auto);
+        var reserveHorizontal = !IsOverlayScrollBarEnabled &&
+                                (HorizontalScrollBarVisibility == ScrollBarVisibility.Visible ||
+                                 HorizontalScrollBarVisibility == ScrollBarVisibility.Auto);
 
         // Calculate available space for content (accounting for potential scrollbars)
         var contentAvailableWidth = availableSize.Width - (reserveVertical ? ScrollBarSize : 0);
         var contentAvailableHeight = availableSize.Height - (reserveHorizontal ? ScrollBarSize : 0);
 
-        // First measure with the finite viewport-sized constraint. Measuring immediately with
-        // Infinity for non-IScrollInfo content causes star-grid based forms to blow out to
-        // unbounded width even when the intended layout is viewport-constrained.
+        // The first pass for new/non-overflowing content is finite. Once a non-IScrollInfo
+        // axis has already proven that it overflows, begin the next pass with that axis at
+        // Infinity: the prior implementation always repeated finite -> Infinity on every
+        // resize, so a page containing 100 off-screen cards was fully measured twice.
+        // If the content later shrinks below the viewport, the transition check below runs
+        // one finite correction pass and clears the hint.
         var finiteContentAvailable = new Size(
             Math.Max(0, contentAvailableWidth),
             Math.Max(0, contentAvailableHeight));
 
-        ContentElement.Measure(finiteContentAvailable);
+        bool canOverflowHorizontally =
+            _scrollInfo == null &&
+            HorizontalScrollBarVisibility != ScrollBarVisibility.Disabled &&
+            !double.IsInfinity(finiteContentAvailable.Width);
+        bool canOverflowVertically =
+            _scrollInfo == null &&
+            VerticalScrollBarVisibility != ScrollBarVisibility.Disabled &&
+            !double.IsInfinity(finiteContentAvailable.Height);
+        bool startedWithHorizontalOverflow =
+            canOverflowHorizontally && _lastMeasureOverflowedHorizontally;
+        bool startedWithVerticalOverflow =
+            canOverflowVertically && _lastMeasureOverflowedVertically;
+
+        var initialContentAvailable = new Size(
+            startedWithHorizontalOverflow ? double.PositiveInfinity : finiteContentAvailable.Width,
+            startedWithVerticalOverflow ? double.PositiveInfinity : finiteContentAvailable.Height);
+
+        ContentElement.Measure(initialContentAvailable);
         var contentDesired = ContentElement.DesiredSize;
 
         // Update extent from IScrollInfo or from content desired size
         if (_scrollInfo != null)
         {
+            _lastMeasureOverflowedHorizontally = false;
+            _lastMeasureOverflowedVertically = false;
             SyncExtentFromScrollInfo();
         }
         else
@@ -1789,16 +2364,15 @@ public partial class ScrollViewer : ContentControl
             // reported overflow there. This preserves correct viewport-based form layout while
             // still allowing naturally oversized content to report its scroll extent.
             var needsHorizontalOverflowMeasure =
-                HorizontalScrollBarVisibility != ScrollBarVisibility.Disabled &&
-                !double.IsInfinity(finiteContentAvailable.Width) &&
+                canOverflowHorizontally &&
                 contentDesired.Width > finiteContentAvailable.Width + 0.5;
 
             var needsVerticalOverflowMeasure =
-                VerticalScrollBarVisibility != ScrollBarVisibility.Disabled &&
-                !double.IsInfinity(finiteContentAvailable.Height) &&
+                canOverflowVertically &&
                 contentDesired.Height > finiteContentAvailable.Height + 0.5;
 
-            if (needsHorizontalOverflowMeasure || needsVerticalOverflowMeasure)
+            if (needsHorizontalOverflowMeasure != startedWithHorizontalOverflow ||
+                needsVerticalOverflowMeasure != startedWithVerticalOverflow)
             {
                 var overflowContentAvailable = new Size(
                     needsHorizontalOverflowMeasure ? double.PositiveInfinity : finiteContentAvailable.Width,
@@ -1808,15 +2382,29 @@ public partial class ScrollViewer : ContentControl
                 contentDesired = ContentElement.DesiredSize;
                 _extentWidth = contentDesired.Width;
                 _extentHeight = contentDesired.Height;
+
+                // The correction pass can change the other axis through wrapping.
+                needsHorizontalOverflowMeasure =
+                    canOverflowHorizontally &&
+                    contentDesired.Width > finiteContentAvailable.Width + 0.5;
+                needsVerticalOverflowMeasure =
+                    canOverflowVertically &&
+                    contentDesired.Height > finiteContentAvailable.Height + 0.5;
             }
+
+            _lastMeasureOverflowedHorizontally = needsHorizontalOverflowMeasure;
+            _lastMeasureOverflowedVertically = needsVerticalOverflowMeasure;
         }
 
         // Return the smaller of content size and available size
         var resultWidth = Math.Min(contentDesired.Width + (reserveVertical ? ScrollBarSize : 0), availableSize.Width);
         var resultHeight = Math.Min(contentDesired.Height + (reserveHorizontal ? ScrollBarSize : 0), availableSize.Height);
 
-        _verticalScrollBar.Measure(new Size(ScrollBarSize, Math.Max(0, availableSize.Height)));
-        _horizontalScrollBar.Measure(new Size(Math.Max(0, availableSize.Width), ScrollBarSize));
+        var scrollBarLayoutSize = IsOverlayScrollBarEnabled
+            ? OverlayScrollBarLayoutSize
+            : ScrollBarSize;
+        _verticalScrollBar.Measure(new Size(scrollBarLayoutSize, Math.Max(0, availableSize.Height)));
+        _horizontalScrollBar.Measure(new Size(Math.Max(0, availableSize.Width), scrollBarLayoutSize));
 
         return new Size(resultWidth, resultHeight);
     }
@@ -1845,9 +2433,18 @@ public partial class ScrollViewer : ContentControl
         var needsHorizontalScrollBar = HorizontalScrollBarVisibility == ScrollBarVisibility.Visible ||
                                         (HorizontalScrollBarVisibility == ScrollBarVisibility.Auto && _extentWidth > finalSize.Width);
 
-        // Calculate viewport size (excluding scrollbar space)
-        _viewportWidth = finalSize.Width - (needsVerticalScrollBar ? ScrollBarSize : 0);
-        _viewportHeight = finalSize.Height - (needsHorizontalScrollBar ? ScrollBarSize : 0);
+        // Overlay indicators float above content; desktop bars consume their gutter.
+        var reservedVerticalGutter =
+            !IsOverlayScrollBarEnabled && needsVerticalScrollBar ? ScrollBarSize : 0;
+        var reservedHorizontalGutter =
+            !IsOverlayScrollBarEnabled && needsHorizontalScrollBar ? ScrollBarSize : 0;
+
+        // A live native resize can temporarily make the arranged surface smaller than
+        // the fixed desktop scroll-bar gutter. The viewport is the remaining layout
+        // space, so its lower bound is zero; a negative viewport is not meaningful and
+        // cannot be passed to the content's Arrange rect.
+        _viewportWidth = Math.Max(0, finalSize.Width - reservedVerticalGutter);
+        _viewportHeight = Math.Max(0, finalSize.Height - reservedHorizontalGutter);
 
         if (_scrollInfo == null)
         {
@@ -1887,11 +2484,14 @@ public partial class ScrollViewer : ContentControl
 
         if (needsVerticalScrollBar)
         {
+            var scrollBarLayoutSize = IsOverlayScrollBarEnabled
+                ? OverlayScrollBarLayoutSize
+                : ScrollBarSize;
             _verticalScrollBar.Visibility = Visibility.Visible;
             _verticalScrollBar.Arrange(new Rect(
-                Math.Max(0, finalSize.Width - ScrollBarSize),
+                Math.Max(0, finalSize.Width - scrollBarLayoutSize),
                 0,
-                ScrollBarSize,
+                scrollBarLayoutSize,
                 Math.Max(0, _viewportHeight)));
         }
         else
@@ -1902,12 +2502,15 @@ public partial class ScrollViewer : ContentControl
 
         if (needsHorizontalScrollBar)
         {
+            var scrollBarLayoutSize = IsOverlayScrollBarEnabled
+                ? OverlayScrollBarLayoutSize
+                : ScrollBarSize;
             _horizontalScrollBar.Visibility = Visibility.Visible;
             _horizontalScrollBar.Arrange(new Rect(
                 0,
-                Math.Max(0, finalSize.Height - ScrollBarSize),
+                Math.Max(0, finalSize.Height - scrollBarLayoutSize),
                 Math.Max(0, _viewportWidth),
-                ScrollBarSize));
+                scrollBarLayoutSize));
         }
         else
         {
@@ -1915,6 +2518,7 @@ public partial class ScrollViewer : ContentControl
             _horizontalScrollBar.Arrange(default);
         }
 
+        InitializeOverlayAutoHideIfNeeded();
         ApplyScrollBarAutoHideVisualState();
 
         RaiseScrollChanged();
@@ -2002,6 +2606,25 @@ public partial class ScrollViewer : ContentControl
         if (_scrollInfo != null)
         {
             SyncFromScrollInfo();
+
+            // Match the non-IScrollInfo nested-scroll behavior below: when this
+            // viewport is already at the requested boundary, leave the routed
+            // event untouched so an ancestor ScrollViewer can consume it.
+            // IScrollInfo owns its viewport metrics. ScrollViewer's arranged viewport can
+            // intentionally differ (scrollbar chrome, margins, or a test/provider that has not
+            // been arranged yet), so using ScrollableHeight here can swallow a wheel event at
+            // the provider's real boundary.
+            var providerMaxOffset = Math.Max(
+                0,
+                _scrollInfo.ExtentHeight - _scrollInfo.ViewportHeight);
+            bool atTop = _scrollInfo.VerticalOffset <= 0.5;
+            bool atBottom = _scrollInfo.VerticalOffset >= providerMaxOffset - 0.5;
+            bool scrollingUp = e.Delta > 0;
+            bool scrollingDown = e.Delta < 0;
+            if ((scrollingUp && atTop) || (scrollingDown && atBottom) || e.Delta == 0)
+            {
+                return;
+            }
 
             if (useSmoothWheelInertia)
             {
@@ -2257,6 +2880,7 @@ public partial class ScrollViewer : ContentControl
         // Any in-flight wheel-driven smooth scroll must be cancelled so the direct interaction
         // does not compete with an animation.
         CancelSmoothScroll();
+        RevealOverlayIndicatorForScrollMovement();
 
         HandleScrollBarValueChange(e, isVertical ? ScrollableHeight : ScrollableWidth, isVertical);
     }
@@ -2283,6 +2907,10 @@ public partial class ScrollViewer : ContentControl
             StopDragScrollCoalesce();
             ApplyScrollOffset(isVertical, isVertical ? _deferredVerticalOffset : _deferredHorizontalOffset);
             _isDeferredScrolling = false;
+            // The scrollbar mapping is intentionally frozen for the lifetime of thumb capture.
+            // Thaw it even when the final content offset did not change (and therefore did not
+            // naturally call UpdateScrollBarMetrics).
+            UpdateScrollBarMetrics();
             return;
         }
 
@@ -2306,10 +2934,29 @@ public partial class ScrollViewer : ContentControl
             return;
         }
 
-        // Line/page clicks and thumb release (EndScroll) apply immediately. Stop any in-flight
-        // drag coalescing first so the final position is exact and discrete clicks stay instant.
+        // Line/page clicks and thumb release (EndScroll) apply immediately. During a live drag,
+        // the content offset intentionally trails the thumb by up to one frame. If release lands
+        // before that frame is committed, e.NewValue can still contain the last applied content
+        // offset; the pending ThumbTrack value is the authoritative pointer position.
+        var finalValue = clampedValue;
+        if (e.ScrollEventType == ScrollEventType.EndScroll)
+        {
+            var appliedOffset = isVertical ? VerticalOffset : HorizontalOffset;
+            var endValueIsStaleAppliedOffset = Math.Abs(clampedValue - appliedOffset) <= 0.01;
+            if (endValueIsStaleAppliedOffset && isVertical && _hasPendingDragVerticalScroll)
+                finalValue = Math.Clamp(_pendingDragVerticalOffset, 0, Math.Max(0, maxValue));
+            else if (endValueIsStaleAppliedOffset && !isVertical && _hasPendingDragHorizontalScroll)
+                finalValue = Math.Clamp(_pendingDragHorizontalOffset, 0, Math.Max(0, maxValue));
+        }
+
+        // Stop any in-flight drag coalescing first so discrete clicks stay instant and a stale
+        // timer tick cannot overwrite the just-committed final position.
         StopDragScrollCoalesce();
-        ApplyScrollOffset(isVertical, clampedValue);
+        ApplyScrollOffset(isVertical, finalValue);
+        if (e.ScrollEventType == ScrollEventType.EndScroll)
+        {
+            UpdateScrollBarMetrics();
+        }
     }
 
     private void ApplyScrollOffset(bool isVertical, double value)
@@ -2515,6 +3162,18 @@ public partial class ScrollViewer : ContentControl
         var safeMaxOffset = CoerceFiniteNonNegative(maxOffset);
         var safeViewportSize = CoerceFiniteNonNegative(viewportSize);
         var safeOffset = CoerceFiniteNonNegative(offset);
+
+        // Maximum, ViewportSize, Value and Visibility form one mapping from pointer distance to
+        // scroll offset. Keep the whole mapping immutable while the Thumb owns capture. A
+        // transient virtualized measure can otherwise shrink Maximum (or collapse an Auto bar),
+        // which immediately coerces Value and arranges Track at zero length. Every subsequent
+        // drag delta would then map to the same value and the captured thumb appears frozen.
+        // EndScroll runs after ScrollBar clears IsThumbDragging and synchronizes the latest
+        // metrics in one atomic-looking update.
+        if (scrollBar.IsThumbDragging)
+        {
+            return;
+        }
 
         scrollBar.Minimum = 0;
         scrollBar.Maximum = safeMaxOffset;
@@ -2723,15 +3382,50 @@ public partial class ScrollViewer : ContentControl
 
         if (!scrollViewer.IsScrollBarAutoHideEnabled)
         {
+            scrollViewer._hasInitializedOverlayAutoHide = false;
             scrollViewer._areAutoHideScrollBarsRevealed = true;
             scrollViewer.StopScrollBarAutoHideTimer();
         }
         else
         {
+            scrollViewer._hasInitializedOverlayAutoHide = false;
+            if (scrollViewer.IsOverlayScrollBarEnabled)
+            {
+                scrollViewer._areAutoHideScrollBarsRevealed = false;
+                scrollViewer.InitializeOverlayAutoHideIfNeeded();
+            }
+            else
+            {
+                scrollViewer._areAutoHideScrollBarsRevealed = false;
+                scrollViewer.RestartScrollBarAutoHideTimer();
+            }
+        }
+
+        scrollViewer.ApplyScrollBarAutoHideVisualState();
+    }
+
+    private static void OnOverlayScrollBarEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not ScrollViewer scrollViewer)
+            return;
+
+        var enabled = e.NewValue is true;
+        scrollViewer._hasInitializedOverlayAutoHide = false;
+        scrollViewer._verticalScrollBar.IsOverlayStyle = enabled;
+        scrollViewer._horizontalScrollBar.IsOverlayStyle = enabled;
+
+        if (enabled)
+        {
             scrollViewer._areAutoHideScrollBarsRevealed = false;
+            scrollViewer.InitializeOverlayAutoHideIfNeeded();
+        }
+        else if (scrollViewer.IsScrollBarAutoHideEnabled)
+        {
             scrollViewer.RestartScrollBarAutoHideTimer();
         }
 
+        scrollViewer.InvalidateMeasure();
+        scrollViewer.InvalidateArrange();
         scrollViewer.ApplyScrollBarAutoHideVisualState();
     }
 

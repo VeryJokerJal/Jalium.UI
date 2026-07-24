@@ -8,6 +8,7 @@
     <Style TargetType="Window">
         <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
     </Style>
 
     <!-- ============================================== -->
@@ -16,6 +17,7 @@
     <Style TargetType="Page">
         <Setter Property="Background" Value="{x:Null}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
     </Style>
 
     <!-- ============================================== -->
@@ -24,6 +26,7 @@
     <Style TargetType="Frame">
         <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
     </Style>
 
 </ResourceDictionary>

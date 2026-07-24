@@ -466,6 +466,230 @@ public class WindowRenderSchedulingTests
         }
     }
 
+    [Fact]
+    public void Window_LiveResize_CoalescesNativeResizeAtFrameBoundary()
+    {
+        var window = new Window { Width = 300, Height = 200 };
+        SetPrivateField(window, "_dispatcher", Dispatcher.GetForCurrentThread());
+        SetPrivateField(window, "<Handle>k__BackingField", new nint(0x2120));
+        var native = new RenderTargetTestNative();
+        using var renderTarget = CreateRenderTarget(native, 300, 200, new nint(0x2120));
+        SetPrivateProperty(window, "RenderTarget", renderTarget);
+        SetPrivateField(window, "_isSizing", true);
+
+        try
+        {
+            InvokePrivateMethod(window, "OnSizeChanged", 320, 220);
+            InvokePrivateMethod(window, "OnSizeChanged", 360, 240);
+
+            Assert.Equal(0, native.ResizeCalls);
+            Assert.True(GetPrivateField<bool>(window, "_hasPendingResize"));
+            Assert.Equal(360, GetPrivateField<int>(window, "_pendingResizeWidth"));
+            Assert.Equal(240, GetPrivateField<int>(window, "_pendingResizeHeight"));
+            Assert.Equal(360, window.Width);
+            Assert.Equal(240, window.Height);
+
+            // These assertions happen while _isSizing is still true: the latest
+            // WM_SIZE must already be eligible for a frame before EXITSIZEMOVE.
+            Assert.True(HasRenderFlag(window, RenderFlag_DirtyBetween));
+            InvokePrivateMethod(window, "OnFrameStarting");
+            Assert.True(HasRenderFlag(window, RenderFlag_Scheduled));
+            Assert.False(HasRenderFlag(window, RenderFlag_DirtyBetween));
+
+            // Model RenderFrame's pre-BeginDraw safe point while the interactive
+            // sizing session is still active. Only the latest size is committed.
+            InvokePrivateMethod(window, "FlushPendingRenderTargetResize");
+
+            Assert.Equal(1, native.ResizeCalls);
+            Assert.Equal(new[] { (360, 240) }, native.ResizeSizes);
+            Assert.False(GetPrivateField<bool>(window, "_hasPendingResize"));
+        }
+        finally
+        {
+            SetPrivateField(window, "<Handle>k__BackingField", nint.Zero);
+            SetPrivateField(window, "_renderState", 0);
+        }
+    }
+
+    [Fact]
+    public void Window_ResizeToCurrentTargetSize_DoesNotCallNativeResize()
+    {
+        var window = new Window { Width = 300, Height = 200 };
+        var native = new RenderTargetTestNative();
+        using var renderTarget = CreateRenderTarget(native, 300, 200, new nint(0x2121));
+        SetPrivateProperty(window, "RenderTarget", renderTarget);
+
+        InvokePrivateMethod(window, "TryResizeRenderTarget", 300, 200, "SameSizeTest");
+
+        Assert.Equal(0, native.ResizeCalls);
+        Assert.False(GetPrivateField<bool>(window, "_hasPendingResize"));
+    }
+
+    [Fact]
+    public void Window_SameSizeNotification_DoesNotInvalidateLayout()
+    {
+        var window = new Window { Width = 300, Height = 200 };
+        var native = new RenderTargetTestNative();
+        using var renderTarget = CreateRenderTarget(native, 300, 200, new nint(0x2123));
+        SetPrivateProperty(window, "RenderTarget", renderTarget);
+        window.Measure(new Size(300, 200));
+        Assert.True(window.IsMeasureValid);
+
+        InvokePrivateMethod(window, "OnSizeChanged", 300, 200);
+
+        Assert.True(window.IsMeasureValid);
+        Assert.Equal(0, native.ResizeCalls);
+    }
+
+    [Fact]
+    public void Window_ReentrantResize_KeepsLatestRequestForNextSafePoint()
+    {
+        var window = new Window { Width = 300, Height = 200 };
+        var native = new RenderTargetTestNative();
+        using var renderTarget = CreateRenderTarget(native, 300, 200, new nint(0x2122));
+        SetPrivateProperty(window, "RenderTarget", renderTarget);
+        native.OnResize = (_, _) =>
+        {
+            native.OnResize = null;
+            InvokePrivateMethod(window, "TryResizeRenderTarget", 360, 240, "ReentrantTest");
+        };
+
+        InvokePrivateMethod(window, "TryResizeRenderTarget", 320, 220, "InitialTest");
+
+        Assert.Equal(new[] { (320, 220) }, native.ResizeSizes);
+        Assert.True(GetPrivateField<bool>(window, "_hasPendingResize"));
+
+        InvokePrivateMethod(window, "FlushPendingRenderTargetResize");
+
+        Assert.Equal(new[] { (320, 220), (360, 240) }, native.ResizeSizes);
+        Assert.False(GetPrivateField<bool>(window, "_hasPendingResize"));
+    }
+
+    [Fact]
+    public void Window_OpenDrawSession_DefersResizeWithoutEndingForeignSession()
+    {
+        var window = new Window { Width = 300, Height = 200 };
+        var native = new RenderTargetTestNative();
+        using var renderTarget = CreateRenderTarget(native, 300, 200, new nint(0x2124));
+        SetPrivateProperty(window, "RenderTarget", renderTarget);
+
+        var began = false;
+        var ownerThread = new Thread(() => began = renderTarget.TryBeginDraw());
+        ownerThread.Start();
+        Assert.True(ownerThread.Join(TimeSpan.FromSeconds(5)));
+        Assert.True(began);
+        try
+        {
+            InvokePrivateMethod(window, "TryResizeRenderTarget", 320, 220, "OpenSessionTest");
+            InvokePrivateMethod(window, "FlushPendingRenderTargetResize");
+
+            Assert.Equal(0, native.ResizeCalls);
+            Assert.Equal(0, native.EndDrawCalls);
+            Assert.True(renderTarget.IsDrawing);
+            Assert.True(GetPrivateField<bool>(window, "_hasPendingResize"));
+        }
+        finally
+        {
+            _ = renderTarget.TryEndDraw();
+        }
+
+        InvokePrivateMethod(window, "FlushPendingRenderTargetResize");
+
+        Assert.Equal(new[] { (320, 220) }, native.ResizeSizes);
+        Assert.False(GetPrivateField<bool>(window, "_hasPendingResize"));
+    }
+
+    [Fact]
+    public void Window_SameThreadDrawSession_ClosesBeforeResizeCommit()
+    {
+        var window = new Window { Width = 300, Height = 200 };
+        var native = new RenderTargetTestNative();
+        using var renderTarget = CreateRenderTarget(native, 300, 200, new nint(0x2126));
+        SetPrivateProperty(window, "RenderTarget", renderTarget);
+
+        Assert.True(renderTarget.TryBeginDraw());
+        InvokePrivateMethod(window, "TryResizeRenderTarget", 330, 225, "OwnedSessionTest");
+        Assert.True(GetPrivateField<bool>(window, "_hasPendingResize"));
+
+        InvokePrivateMethod(window, "FlushPendingRenderTargetResize");
+
+        Assert.Equal(1, native.EndDrawCalls);
+        Assert.Equal(new[] { (330, 225) }, native.ResizeSizes);
+        Assert.False(renderTarget.IsDrawing);
+        Assert.False(GetPrivateField<bool>(window, "_hasPendingResize"));
+    }
+
+    [Fact]
+    public void Window_NativeBusyResize_RemainsPendingUntilCommit()
+    {
+        var window = new Window { Width = 300, Height = 200 };
+        var native = new RenderTargetTestNative
+        {
+            ResizeResult = (int)JaliumResult.Busy
+        };
+        using var renderTarget = CreateRenderTarget(native, 300, 200, new nint(0x2125));
+        SetPrivateProperty(window, "RenderTarget", renderTarget);
+
+        InvokePrivateMethod(window, "TryResizeRenderTarget", 340, 230, "BusyTest");
+
+        Assert.Equal(1, native.ResizeCalls);
+        Assert.True(GetPrivateField<bool>(window, "_hasPendingResize"));
+
+        native.ResizeResult = (int)JaliumResult.Ok;
+        InvokePrivateMethod(window, "FlushPendingRenderTargetResize");
+
+        Assert.Equal(new[] { (340, 230), (340, 230) }, native.ResizeSizes);
+        Assert.False(GetPrivateField<bool>(window, "_hasPendingResize"));
+    }
+
+    [Fact]
+    public void Window_FullLayout_ElidesOnlyUiThreadArrangeRectsWithinScope()
+    {
+        var window = new Window { Width = 300, Height = 200 };
+        var probe = new DirtyRectDuringMeasureElement(window);
+        window.Content = probe;
+
+        InvokePrivateMethod(window, "UpdateLayoutForRender");
+
+        var dirtyRects = GetPrivateField<List<Rect>>(window, "_dirtyFreeRects");
+        Assert.DoesNotContain(DirtyRectDuringMeasureElement.UiThreadRect, dirtyRects);
+        Assert.Contains(DirtyRectDuringMeasureElement.BackgroundRect, dirtyRects);
+
+        window.AddDirtyRect(DirtyRectDuringMeasureElement.AfterLayoutRect);
+
+        Assert.Contains(DirtyRectDuringMeasureElement.AfterLayoutRect, dirtyRects);
+        Assert.False(GetPrivateField<bool>(window, "_elideUiThreadDirtyRectsDuringFullLayout"));
+    }
+
+    [Fact]
+    public void Window_FullLayout_AlwaysClearsDirtyRectElisionAfterLayoutFailure()
+    {
+        var window = new Window
+        {
+            Width = 300,
+            Height = 200,
+            Content = new ThrowOnMeasureElement()
+        };
+
+        var exception = Assert.Throws<TargetInvocationException>(
+            () => InvokePrivateMethod(window, "UpdateLayoutForRender"));
+        Assert.IsType<InvalidOperationException>(exception.InnerException);
+        Assert.False(GetPrivateField<bool>(window, "_elideUiThreadDirtyRectsDuringFullLayout"));
+
+        var lateRect = new Rect(5, 6, 7, 8);
+        window.AddDirtyRect(lateRect);
+        Assert.Contains(lateRect, GetPrivateField<List<Rect>>(window, "_dirtyFreeRects"));
+    }
+
+    [Fact]
+    public void Window_BackBufferConvergence_IsOnlyRequiredForPartialD3D12Targets()
+    {
+        Assert.True(Window.RequiresBackBufferConvergence(RenderBackend.D3D12, supportsPartialPresentation: true));
+        Assert.False(Window.RequiresBackBufferConvergence(RenderBackend.D3D12, supportsPartialPresentation: false));
+        Assert.False(Window.RequiresBackBufferConvergence(RenderBackend.Vulkan, supportsPartialPresentation: true));
+        Assert.False(Window.RequiresBackBufferConvergence(RenderBackend.Software, supportsPartialPresentation: true));
+    }
+
     private static RenderTarget CreateRenderTarget(RenderTargetTestNative native, int width, int height, nint hwnd)
     {
         return new RenderTarget(
@@ -500,14 +724,14 @@ public class WindowRenderSchedulingTests
 
     private static void InvokePrivateMethod(object instance, string methodName, params object?[]? arguments)
     {
-        var method = FindInstanceMethod(instance.GetType(), methodName);
+        var method = FindInstanceMethod(instance.GetType(), methodName, arguments);
         Assert.NotNull(method);
         method!.Invoke(instance, arguments);
     }
 
     private static T InvokePrivateMethod<T>(object instance, string methodName, params object?[]? arguments)
     {
-        var method = FindInstanceMethod(instance.GetType(), methodName);
+        var method = FindInstanceMethod(instance.GetType(), methodName, arguments);
         Assert.NotNull(method);
         return (T)method!.Invoke(instance, arguments)!;
     }
@@ -528,13 +752,36 @@ public class WindowRenderSchedulingTests
         return null;
     }
 
-    private static MethodInfo? FindInstanceMethod(Type type, string methodName)
+    private static MethodInfo? FindInstanceMethod(Type type, string methodName, object?[]? arguments)
     {
+        arguments ??= Array.Empty<object?>();
         for (var current = type; current is not null; current = current.BaseType)
         {
-            var method = current.GetMethod(
-                methodName,
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+            var method = current.GetMethods(
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                .FirstOrDefault(candidate =>
+                {
+                    if (candidate.Name != methodName)
+                    {
+                        return false;
+                    }
+
+                    var parameters = candidate.GetParameters();
+                    if (parameters.Length != arguments.Length)
+                    {
+                        return false;
+                    }
+
+                    for (int i = 0; i < parameters.Length; i++)
+                    {
+                        if (arguments[i] != null && !parameters[i].ParameterType.IsInstanceOfType(arguments[i]))
+                        {
+                            return false;
+                        }
+                    }
+
+                    return true;
+                });
             if (method is not null)
             {
                 return method;
@@ -650,5 +897,29 @@ public class WindowRenderSchedulingTests
             _window.Close();
             return new Size(1, 1);
         }
+    }
+
+    private sealed class DirtyRectDuringMeasureElement : FrameworkElement
+    {
+        internal static readonly Rect UiThreadRect = new(10, 20, 30, 40);
+        internal static readonly Rect BackgroundRect = new(50, 60, 70, 80);
+        internal static readonly Rect AfterLayoutRect = new(90, 100, 110, 120);
+
+        private readonly Window _window;
+
+        public DirtyRectDuringMeasureElement(Window window) => _window = window;
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            _window.AddDirtyRect(UiThreadRect);
+            Task.Run(() => _window.AddDirtyRect(BackgroundRect)).GetAwaiter().GetResult();
+            return new Size(100, 100);
+        }
+    }
+
+    private sealed class ThrowOnMeasureElement : FrameworkElement
+    {
+        protected override Size MeasureOverride(Size availableSize) =>
+            throw new InvalidOperationException("Synthetic layout failure");
     }
 }

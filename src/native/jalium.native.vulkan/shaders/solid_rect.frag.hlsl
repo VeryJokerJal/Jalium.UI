@@ -1,3 +1,5 @@
+#include "../../jalium.native.core/shaders/continuous_corner.hlsli"
+
 // Layout must mirror the C++ SolidRectPushConstants struct AND the vertex
 // shader's PushConstants block in lockstep — Vulkan requires all stages
 // that consume the same push-constant range to declare the same block.
@@ -83,16 +85,6 @@ float sdRoundedBoxLocal(float2 p, float2 b, float4 r)
     return min(max(q.x, q.y), 0.0f) + length(max(q, 0.0f)) - r.x;
 }
 
-// Axis-aligned SuperEllipse signed pseudo-distance. This is kept byte-for-byte
-// equivalent to D3D12 sdf_rect.ps.hlsl so Border.Shape=SuperEllipse has the same
-// silhouette and derivative-based edge coverage on both backends.
-float sdSuperEllipseRect(float2 p, float2 halfSize, float n)
-{
-    float2 q = abs(p) / max(halfSize, float2(0.001f, 0.001f));
-    float d = pow(pow(q.x, n) + pow(q.y, n), 1.0f / n) - 1.0f;
-    return d * min(halfSize.x, halfSize.y);
-}
-
 // Coverage of a pixel against a rounded rectangle, on [0, 1].
 //   ≥ 1.0 → fully inside (a clip "yes")
 //     0   → fully outside (a clip "no")
@@ -157,17 +149,17 @@ float CoverageRoundRect(float2 pixel, float4 rect, float2 radius)
     // Convert back to pixel units. The corner is an ellipse, but we treat
     // it as approximately circular for the gradient by scaling by the
     // smaller radius — slightly conservative for thin elliptical corners
-    // but invisible at typical UI radii. This matches D3D12's
-    // sdSuperEllipseRect exactly: d * min(halfSize).
+    // but invisible at typical UI radii. This is the ordinary rounded/elliptical
+    // clip approximation, not the continuous-corner SDF.
     const float radiusScale = min(rx, ry);
     const float pixelDist = signedDist * radiusScale;
     // AA width from the DISTANCE FIELD's own screen-space derivative —
-    // exactly D3D12 sdf_rect's `aa = max(fwidth(dist), 0.0001)`. The previous
+    // It matches D3D12's direction-invariant L2 derivative. The previous
     // constant max(fwidth(pixel), 0.5) ramp ignored the min-axis scaling of
     // pixelDist, so elliptical edges anti-aliased with a direction-dependent
     // mismatch against D3D12 (widest at the long-axis ends — the residual
     // ellipse-scene diff after the geometry fixes was exactly this ring).
-    const float aa = max(fwidth(pixelDist), 0.0001f);
+    const float aa = JaliumSdfAaWidth(pixelDist);
     return 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, pixelDist);
 }
 
@@ -176,6 +168,36 @@ float CoverageRoundRect(float2 pixel, float4 rect, float2 radius)
 // centre the pixel sits in; from there we reuse CoverageRoundRect on a
 // virtual single-radius rect, which is correct because each corner's
 // quadrant only ever depends on its own corner's radius.
+// Signed counterpart of CoverageRoundRect, used when a stroke needs both of
+// its edges from one centre-line field. The ellipse-corner approximation is
+// intentionally identical to CoverageRoundRect near the visible boundary.
+float DistanceRoundRect(float2 pixel, float4 rect, float2 radius)
+{
+    const float2 center = (rect.xy + rect.zw) * 0.5f;
+    const float2 halfSize = max((rect.zw - rect.xy) * 0.5f, 0.0f);
+    const float rx = min(max(radius.x, 0.0f), halfSize.x);
+    const float ry = min(max(radius.y, 0.0f), halfSize.y);
+
+    if (rx <= 0.0f || ry <= 0.0f) {
+        const float2 q = abs(pixel - center) - halfSize;
+        return length(max(q, 0.0f)) + min(max(q.x, q.y), 0.0f);
+    }
+
+    float anchorX;
+    float anchorY;
+    if (pixel.x < rect.x + rx) anchorX = rect.x + rx;
+    else if (pixel.x > rect.z - rx) anchorX = rect.z - rx;
+    else anchorX = pixel.x;
+
+    if (pixel.y < rect.y + ry) anchorY = rect.y + ry;
+    else if (pixel.y > rect.w - ry) anchorY = rect.w - ry;
+    else anchorY = pixel.y;
+
+    const float2 delta =
+        float2((pixel.x - anchorX) / rx, (pixel.y - anchorY) / ry);
+    return (length(delta) - 1.0f) * min(rx, ry);
+}
+
 float CoveragePerCornerRoundRect(float2 pixel, float4 rect, float4 rxs, float4 rys)
 {
     const float midX = (rect.x + rect.z) * 0.5f;
@@ -207,6 +229,48 @@ float CoveragePerCornerRoundRect(float2 pixel, float4 rect, float4 rxs, float4 r
     return CoverageRoundRect(pixel, rect, float2(rx, ry));
 }
 
+float DistancePerCornerRoundRect(
+    float2 pixel,
+    float4 rect,
+    float4 rxs,
+    float4 rys)
+{
+    const float midX = (rect.x + rect.z) * 0.5f;
+    const float midY = (rect.y + rect.w) * 0.5f;
+    float rx;
+    float ry;
+    if (pixel.y < midY) {
+        if (pixel.x < midX) { rx = rxs.x; ry = rys.x; }
+        else                { rx = rxs.y; ry = rys.y; }
+    } else {
+        if (pixel.x >= midX) { rx = rxs.z; ry = rys.z; }
+        else                  { rx = rxs.w; ry = rys.w; }
+    }
+    return DistanceRoundRect(pixel, rect, float2(rx, ry));
+}
+
+// Apply the innermost ancestor rounded include/exclude clip. Keeping this in a
+// helper lets screen-space and local-space primitive geometry share one mask.
+float OuterRoundedClipCoverage(float2 pixel)
+{
+    if (gPushConstants.clipFlags.x <= 0.5f) return 1.0f;
+
+    const float perCornerSum =
+        dot(gPushConstants.perCornerRadiusX, float4(1.0f, 1.0f, 1.0f, 1.0f))
+      + dot(gPushConstants.perCornerRadiusY, float4(1.0f, 1.0f, 1.0f, 1.0f));
+    float cov = perCornerSum > 0.001f
+        ? CoveragePerCornerRoundRect(
+            pixel, gPushConstants.roundedClipRect,
+            gPushConstants.perCornerRadiusX, gPushConstants.perCornerRadiusY)
+        : CoverageRoundRect(
+            pixel, gPushConstants.roundedClipRect,
+            gPushConstants.roundedClipRadius);
+    if (gPushConstants.clipFlags.x > 1.5f) {
+        cov = 1.0f - cov;
+    }
+    return cov;
+}
+
 // erf approximation (Abramowitz & Stegun 7.1.26); max abs error ~1.5e-7 on
 // [-6,6] << 1/255. Ported byte-for-byte from D3D12 sdf_rect.ps.hlsl so the
 // analytic drop-shadow gaussian falloff matches the D3D12 backend exactly.
@@ -232,44 +296,60 @@ float sdRoundBoxUniform(float2 p, float2 halfSize, float radius)
 
 float4 main(PsInput input) : SV_Target
 {
-    // Analytic SuperEllipse fill (shadowParams.x < -0.5). The command stores
-    // the exact shape bounds in innerRoundedClipRect and exponent n in
-    // shadowParams.y; its draw quad has a 1px apron so the outside half of this
-    // smooth coverage ramp is not clipped by triangle top-left raster rules.
-    // Keep every helper lane alive through fwidth(), just like rounded clips.
+    // Analytic continuous-corner geometry. Mode -1 is a fill; mode -2 is a
+    // centered stroke. Each local Lame corner consumes its transported radius,
+    // leaving the intervening control edges exactly straight.
+    // Both modes use a 1px apron and derivative coverage.
     if (gPushConstants.shadowParams.x < -0.5f) {
-        const float2 rc0 = gPushConstants.innerRoundedClipRect.xy;
-        const float2 rc1 = gPushConstants.innerRoundedClipRect.zw;
-        const float2 halfSize = (rc1 - rc0) * 0.5f;
-        const float2 center = (rc0 + rc1) * 0.5f;
-        const float exponent = max(gPushConstants.shadowParams.y, 2.0f);
-        const float dist = sdSuperEllipseRect(input.position.xy - center, halfSize, exponent);
-        const float aa = max(fwidth(dist), 0.0001f);
-        float coverage = 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, dist);
+        const float exponent = JaliumSanitizeContinuousExponent(gPushConstants.shadowParams.y);
+        const bool isStroke = gPushConstants.shadowParams.x < -1.5f;
+        float coverage;
+        if (isStroke && gPushConstants.clipFlags.y > 0.5f) {
+            const float4 outerRect = gPushConstants.roundedClipRect;
+            const float4 innerRect = gPushConstants.innerRoundedClipRect;
+            const float2 center =
+                (outerRect.xy + outerRect.zw + innerRect.xy + innerRect.zw) * 0.25f;
+            const float2 outerHalf = (outerRect.zw - outerRect.xy) * 0.5f;
+            const float2 innerHalf = (innerRect.zw - innerRect.xy) * 0.5f;
+            const float2 centerHalf = (outerHalf + innerHalf) * 0.5f;
+            const float halfStroke = max(
+                ((outerHalf.x - innerHalf.x) + (outerHalf.y - innerHalf.y)) * 0.25f,
+                0.0f);
+            const float2 p = input.position.xy - center;
+            const float4 centerRadiiX = max(
+                gPushConstants.perCornerRadiusX - halfStroke, 0.0f);
+            const float4 centerRadiiY = max(
+                gPushConstants.perCornerRadiusY - halfStroke, 0.0f);
+            const float centerDist = JaliumSdContinuousCornerRect(
+                p, centerHalf, centerRadiiX, centerRadiiY, exponent);
+            const float strokeDist = abs(centerDist) - halfStroke;
+            const float aa = JaliumContinuousCornerAaWidth(
+                p, centerHalf, centerRadiiX, centerRadiiY, exponent);
+            coverage = 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, strokeDist);
+        } else {
+            const float4 outerRect = isStroke
+                ? gPushConstants.roundedClipRect
+                : gPushConstants.innerRoundedClipRect;
+            const float2 center = (outerRect.xy + outerRect.zw) * 0.5f;
+            const float2 halfSize = (outerRect.zw - outerRect.xy) * 0.5f;
+            const float2 p = input.position.xy - center;
+            const float4 radiiX = isStroke
+                ? gPushConstants.perCornerRadiusX
+                : gPushConstants.innerPerCornerRadiusX;
+            const float4 radiiY = isStroke
+                ? gPushConstants.perCornerRadiusY
+                : gPushConstants.innerPerCornerRadiusY;
+            const float dist = JaliumSdContinuousCornerRect(
+                p, halfSize, radiiX, radiiY, exponent);
+            const float aa = JaliumContinuousCornerAaWidth(
+                p, halfSize, radiiX, radiiY, exponent);
+            coverage = 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, dist);
+        }
 
-        // roundedClipRect remains independent and carries an ancestor rounded
-        // include/exclude clip. Preserve the old FilledPolygon behaviour and
-        // D3D12 parity by multiplying that coverage into the shape instead of
-        // degrading the ancestor to its rectangular scissor.
-        if (gPushConstants.clipFlags.x > 0.5f) {
-            const float perCornerSum =
-                  dot(gPushConstants.perCornerRadiusX, float4(1.0f, 1.0f, 1.0f, 1.0f))
-                + dot(gPushConstants.perCornerRadiusY, float4(1.0f, 1.0f, 1.0f, 1.0f));
-            float clipCoverage;
-            if (perCornerSum > 0.001f) {
-                clipCoverage = CoveragePerCornerRoundRect(input.position.xy,
-                                                           gPushConstants.roundedClipRect,
-                                                           gPushConstants.perCornerRadiusX,
-                                                           gPushConstants.perCornerRadiusY);
-            } else {
-                clipCoverage = CoverageRoundRect(input.position.xy,
-                                                  gPushConstants.roundedClipRect,
-                                                  gPushConstants.roundedClipRadius);
-            }
-            if (gPushConstants.clipFlags.x > 1.5f) {
-                clipCoverage = 1.0f - clipCoverage;
-            }
-            coverage *= clipCoverage;
+        // Fill mode leaves roundedClipRect independent for an ancestor rounded
+        // include/exclude clip. Stroke mode consumes that slot for its geometry.
+        if (!isStroke) {
+            coverage *= OuterRoundedClipCoverage(input.position.xy);
         }
 
         if (coverage <= 0.0f) discard;
@@ -308,8 +388,8 @@ float4 main(PsInput input) : SV_Target
     // SV_Position; that is wrong once the quad is rotated/skewed, because the
     // rect is no longer axis-aligned in screen space. Instead, evaluate the
     // rounded-rect SDF in LOCAL (pre-transform) space using the interpolated
-    // input.localPos, exactly like D3D12 sdf_rect.ps.hlsl. fwidth() on the LOCAL
-    // SDF still measures the on-screen pixel footprint, so AA stays a ~1px ramp
+    // input.localPos, exactly like D3D12 sdf_rect.ps.hlsl. Derivatives on the
+    // LOCAL SDF still measure the on-screen pixel footprint, so AA stays a ~1px ramp
     // on screen — do NOT pre-transform localPos here.
     //
     // The local geometry is carried in the (otherwise-free on this path) inner
@@ -317,8 +397,8 @@ float4 main(PsInput input) : SV_Target
     //   innerRoundedClipRect = (localOuterW, localOuterH, localInnerW, localInnerH)
     //   innerPerCornerRadiusX = LOCAL OUTER per-corner radii (TL, TR, BR, BL)
     //   innerPerCornerRadiusY = LOCAL INNER per-corner radii (TL, TR, BR, BL)
-    // A FILL leaves localInnerW/H == 0 (no inner subtraction); a STROKE supplies
-    // the inner band so the outer-minus-inner difference is the ring.
+    // A FILL leaves localInnerW/H == 0. A STROKE supplies its inner geometry so
+    // the shader can reconstruct one constant-width centre-line band.
     if (gPushConstants.geometryFlags.y > 0.5f) {
         const float2 halfOuter = gPushConstants.innerRoundedClipRect.xy * 0.5f;
         const float2 p = input.localPos - halfOuter;
@@ -333,28 +413,65 @@ float4 main(PsInput input) : SV_Target
                                gPushConstants.innerPerCornerRadiusX.w);
         rOuter = min(rOuter, maxROuter);
 
-        const float distOuter = sdRoundedBoxLocal(p, halfOuter, rOuter);
-        const float aaOuter = max(fwidth(distOuter), 0.0001f);
-        float cov = 1.0f - smoothstep(-aaOuter * 0.5f, aaOuter * 0.5f, distOuter);
-
-        // Inner subtraction (stroke band). Only when an inner rect was supplied;
-        // a fill leaves localInnerW/H == 0 and keeps the full outer coverage.
+        const bool continuousCorners = gPushConstants.geometryFlags.y > 1.5f;
         const float2 innerExtent = gPushConstants.innerRoundedClipRect.zw;
-        if (innerExtent.x > 0.0f && innerExtent.y > 0.0f) {
+        const bool hasInner = innerExtent.x > 0.0f && innerExtent.y > 0.0f;
+        float cov;
+
+        if (hasInner) {
+            // Reconstruct one centre-line SDF for every rounded stroke. Two
+            // independently antialiased masks do not form a constant-width ring
+            // at a corner and can differ across helper-lane quads.
             const float2 halfInner = innerExtent * 0.5f;
-            const float maxRInner = min(halfInner.x, halfInner.y);
-            float4 rInner = float4(gPushConstants.innerPerCornerRadiusY.z,
-                                   gPushConstants.innerPerCornerRadiusY.y,
-                                   gPushConstants.innerPerCornerRadiusY.x,
-                                   gPushConstants.innerPerCornerRadiusY.w);
-            rInner = min(rInner, maxRInner);
-            // Inner rect shares the OUTER centre (centred model), so reuse p.
-            const float distInner = sdRoundedBoxLocal(p, halfInner, rInner);
-            const float aaInner = max(fwidth(distInner), 0.0001f);
-            const float covInner = 1.0f - smoothstep(-aaInner * 0.5f, aaInner * 0.5f, distInner);
-            cov = saturate(cov - covInner);
+            const float2 centerHalf = (halfOuter + halfInner) * 0.5f;
+            const float halfStroke = max(
+                ((halfOuter.x - halfInner.x) +
+                 (halfOuter.y - halfInner.y)) * 0.25f,
+                0.0f);
+            const float4 centerRadii = max(
+                gPushConstants.innerPerCornerRadiusX - halfStroke,
+                0.0f);
+            float centerDist;
+            float aa;
+            if (continuousCorners) {
+                centerDist = JaliumSdContinuousCornerRect(
+                    p, centerHalf, centerRadii, centerRadii,
+                    gPushConstants.shadowParams.y);
+                aa = JaliumContinuousCornerAaWidth(
+                    p, centerHalf, centerRadii, centerRadii,
+                    gPushConstants.shadowParams.y);
+            } else {
+                const float maxRCenter = min(centerHalf.x, centerHalf.y);
+                float4 rCenter = float4(
+                    centerRadii.z,
+                    centerRadii.y,
+                    centerRadii.x,
+                    centerRadii.w);
+                rCenter = min(rCenter, maxRCenter);
+                centerDist = sdRoundedBoxLocal(p, centerHalf, rCenter);
+                aa = JaliumSdfAaWidth(centerDist);
+            }
+            const float strokeDist = abs(centerDist) - halfStroke;
+            cov = 1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, strokeDist);
+        } else {
+            const float distOuter = continuousCorners
+                ? JaliumSdContinuousCornerRect(
+                    p, halfOuter,
+                    gPushConstants.innerPerCornerRadiusX,
+                    gPushConstants.innerPerCornerRadiusX,
+                    gPushConstants.shadowParams.y)
+                : sdRoundedBoxLocal(p, halfOuter, rOuter);
+            const float aaOuter = continuousCorners
+                ? JaliumContinuousCornerAaWidth(
+                    p, halfOuter,
+                    gPushConstants.innerPerCornerRadiusX,
+                    gPushConstants.innerPerCornerRadiusX,
+                    gPushConstants.shadowParams.y)
+                : JaliumSdfAaWidth(distOuter);
+            cov = 1.0f - smoothstep(-aaOuter * 0.5f, aaOuter * 0.5f, distOuter);
         }
 
+        cov *= OuterRoundedClipCoverage(input.position.xy);
         if (cov <= 0.0f) discard;
         // Non-premultiplied blend (SRC_ALPHA / ONE_MINUS_SRC_ALPHA): scale only
         // alpha by coverage, matching the axis path's tail return.
@@ -364,7 +481,71 @@ float4 main(PsInput input) : SV_Target
     // Outer rounded clip — typical for rounded rects & ellipses going
     // through this pipeline. Skip the test entirely when not enabled
     // (clipFlags.x ≤ 0.5) so plain rectangles pay zero AA overhead.
-    if (gPushConstants.clipFlags.x > 0.5f) {
+    const bool centeredRoundedStroke =
+        gPushConstants.clipFlags.x > 0.5f &&
+        gPushConstants.clipFlags.x < 1.5f &&
+        gPushConstants.clipFlags.y > 0.5f &&
+        gPushConstants.innerRoundedClipRect.z >
+            gPushConstants.innerRoundedClipRect.x &&
+        gPushConstants.innerRoundedClipRect.w >
+            gPushConstants.innerRoundedClipRect.y;
+
+    if (centeredRoundedStroke) {
+        const float4 outerRect = gPushConstants.roundedClipRect;
+        const float4 innerRect = gPushConstants.innerRoundedClipRect;
+        const float4 centerRect = (outerRect + innerRect) * 0.5f;
+        const float2 outerHalf = (outerRect.zw - outerRect.xy) * 0.5f;
+        const float2 innerHalf = (innerRect.zw - innerRect.xy) * 0.5f;
+        const float halfStroke = max(
+            ((outerHalf.x - innerHalf.x) +
+             (outerHalf.y - innerHalf.y)) * 0.25f,
+            0.0f);
+
+        const float outerPerCornerSum =
+            dot(
+                gPushConstants.perCornerRadiusX,
+                float4(1.0f, 1.0f, 1.0f, 1.0f))
+          + dot(
+                gPushConstants.perCornerRadiusY,
+                float4(1.0f, 1.0f, 1.0f, 1.0f));
+        const float innerPerCornerSum =
+            dot(
+                gPushConstants.innerPerCornerRadiusX,
+                float4(1.0f, 1.0f, 1.0f, 1.0f))
+          + dot(
+                gPushConstants.innerPerCornerRadiusY,
+                float4(1.0f, 1.0f, 1.0f, 1.0f));
+        float centerDist;
+        if (outerPerCornerSum + innerPerCornerSum > 0.001f) {
+            const float4 centerRadiiX =
+                max(
+                    gPushConstants.perCornerRadiusX - halfStroke,
+                    0.0f);
+            const float4 centerRadiiY =
+                max(
+                    gPushConstants.perCornerRadiusY - halfStroke,
+                    0.0f);
+            centerDist = DistancePerCornerRoundRect(
+                input.position.xy,
+                centerRect,
+                centerRadiiX,
+                centerRadiiY);
+        } else {
+            const float2 centerRadius =
+                max(
+                    gPushConstants.roundedClipRadius - halfStroke,
+                    0.0f);
+            centerDist = DistanceRoundRect(
+                input.position.xy,
+                centerRect,
+                centerRadius);
+        }
+
+        const float strokeDist = abs(centerDist) - halfStroke;
+        const float aa = JaliumSdfAaWidth(centerDist);
+        coverage =
+            1.0f - smoothstep(-aa * 0.5f, aa * 0.5f, strokeDist);
+    } else if (gPushConstants.clipFlags.x > 0.5f) {
         // Per-corner mode is implicit: any non-zero entry in
         // perCornerRadiusX/Y switches us off the uniform-radius path.
         // Uniform-radius callers leave both vectors as float4(0).
@@ -388,12 +569,10 @@ float4 main(PsInput input) : SV_Target
         }
     }
 
-    // Inner rounded clip used by border strokes (the "hole" in the middle
-    // of a thick rounded-rect outline). Subtract its coverage from the
-    // outer coverage so the stroke band is smoothly anti-aliased on both
-    // its inner and outer edges. Without the inner half, thick borders
-    // would have a hard inner-edge staircase even after this change.
-    if (gPushConstants.clipFlags.y > 0.5f) {
+    // Fallback inner rounded clip for inverse or degenerate combinations that
+    // cannot use the centred stroke branch above. Normal rounded outlines never
+    // reach this subtraction path; both edges come from one distance field.
+    if (!centeredRoundedStroke && gPushConstants.clipFlags.y > 0.5f) {
         // Per-corner inner edge is implicit, mirroring the outer per-corner
         // gate above: any non-zero inner per-corner radius switches the inner
         // subtraction to CoveragePerCornerRoundRect so each corner's inner arc
@@ -420,7 +599,7 @@ float4 main(PsInput input) : SV_Target
         coverage = saturate(coverage - innerCov);
     }
 
-    // Keep every helper lane alive until all outer/inner fwidth operations
+    // Keep every helper lane alive until all outer/inner derivative operations
     // have completed.  A derivative evaluated after a neighbouring lane was
     // discarded is undefined and can make one edge lose its AA sample.
     if (coverage <= 0.0f) discard;

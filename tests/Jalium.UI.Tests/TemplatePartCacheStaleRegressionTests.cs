@@ -327,7 +327,7 @@ public sealed class TemplatePartCacheStaleRegressionTests
         {
             var grid = new Grid();
             grid.Children.Add(new Border { Name = "PART_SwitchTrack" });
-            grid.Children.Add(new Border { Name = "PART_SwitchThumb" });
+            grid.Children.Add(new Jalium.UI.Shapes.Ellipse { Name = "PART_SwitchThumb" });
             return grid;
         });
 
@@ -342,7 +342,7 @@ public sealed class TemplatePartCacheStaleRegressionTests
         {
             var grid = new Grid();
             grid.Children.Add(new Border { Name = "PART_SwitchTrack" });
-            grid.Children.Add(new Border { Name = "PART_SwitchThumb" });
+            grid.Children.Add(new Jalium.UI.Shapes.Ellipse { Name = "PART_SwitchThumb" });
             return grid;
         });
 

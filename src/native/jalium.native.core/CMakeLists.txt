@@ -32,7 +32,17 @@ set(SOURCES
     src/video_surface.cpp
 )
 
-add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE} ${HEADERS} ${SOURCES})
+set(SHADER_HEADERS
+    shaders/continuous_corner.hlsli
+)
+set_source_files_properties(${SHADER_HEADERS} PROPERTIES HEADER_FILE_ONLY TRUE)
+source_group("Shaders" FILES ${SHADER_HEADERS})
+
+add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE}
+    ${HEADERS}
+    ${SOURCES}
+    ${SHADER_HEADERS}
+)
 
 target_include_directories(${PROJECT_NAME}
     PUBLIC

@@ -354,7 +354,7 @@ public class ComboBoxEditableTests
             host.Measure(new Size(400, 300));
             host.Arrange(new Rect(0, 0, 400, 300));
 
-            var divider = FindNamedDescendant<Border>(comboBox, "PART_DropDownDivider");
+            var divider = FindNamedDescendant<Jalium.UI.Shapes.Rectangle>(comboBox, "PART_DropDownDivider");
 
             Assert.NotNull(divider);
             Assert.Equal(0, divider!.Opacity, 3);

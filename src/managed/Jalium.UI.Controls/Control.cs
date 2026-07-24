@@ -617,13 +617,22 @@ public class Control : FrameworkElement
 
         if (_templateRoot != null)
         {
+            // ContentPresenter can be showing a visual that is logically owned by
+            // this control (for example a Button's StackPanel content or a
+            // NavigationView's page host). Release those visuals while the old
+            // template is still connected. Otherwise the replacement presenter
+            // sees them parented to a presenter in this soon-to-be-detached tree
+            // and ends up rendering through a stale visual-parent chain.
+            ReleasePresentedContentRecursive(_templateRoot);
+
             // Clear the templated-root marker so this visual is treated as a
             // normal child if it's ever re-parented somewhere else after the
             // template is rebuilt (rare, but the flag is conceptually owned
             // by the host control, not by the visual itself).
-            _templateRoot.IsTemplatedRoot = false;
-            RemoveVisualChild(_templateRoot);
+            var root = _templateRoot;
             _templateRoot = null;
+            root.IsTemplatedRoot = false;
+            RemoveVisualChild(root);
         }
 
         // Template names belong to this particular expanded template instance.
@@ -639,6 +648,24 @@ public class Control : FrameworkElement
             }
         }
         _templateRegisteredNames.Clear();
+    }
+
+    private static void ReleasePresentedContentRecursive(Visual visual)
+    {
+        if (visual is ContentPresenter presenter)
+        {
+            presenter.ReleaseContentElementForTemplateTeardown();
+            return;
+        }
+
+        var childCount = VisualTreeHelper.GetChildrenCount(visual);
+        for (var index = 0; index < childCount; index++)
+        {
+            if (VisualTreeHelper.GetChild(visual, index) is Visual child)
+            {
+                ReleasePresentedContentRecursive(child);
+            }
+        }
     }
 
     /// <summary>
@@ -727,10 +754,10 @@ public class Control : FrameworkElement
         }
 
         // Process visual children
-        var childCount = element.VisualChildrenCount;
+        var childCount = element.InternalVisualChildrenCount;
         for (int i = 0; i < childCount; i++)
         {
-            if (element.GetVisualChild(i) is FrameworkElement child)
+            if (element.InternalGetVisualChild(i) is FrameworkElement child)
             {
                 SetTemplatedParentRecursive(child, parent, templateRoot, visited);
             }
@@ -780,10 +807,10 @@ public class Control : FrameworkElement
             return;
 
         // Process visual children
-        var childCount = element.VisualChildrenCount;
+        var childCount = element.InternalVisualChildrenCount;
         for (int i = 0; i < childCount; i++)
         {
-            if (element.GetVisualChild(i) is FrameworkElement child)
+            if (element.InternalGetVisualChild(i) is FrameworkElement child)
             {
                 PromoteTemplateLocalValuesRecursive(child);
             }
@@ -831,10 +858,10 @@ public class Control : FrameworkElement
             return;
 
         // Process visual children
-        var childCount = element.VisualChildrenCount;
+        var childCount = element.InternalVisualChildrenCount;
         for (int i = 0; i < childCount; i++)
         {
-            if (element.GetVisualChild(i) is FrameworkElement child)
+            if (element.InternalGetVisualChild(i) is FrameworkElement child)
             {
                 ReactivateBindingsRecursive(child);
             }

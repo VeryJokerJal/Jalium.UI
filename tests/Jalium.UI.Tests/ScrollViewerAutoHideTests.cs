@@ -104,6 +104,12 @@ public class ScrollViewerAutoHideTests
             IsScrollBarAutoHideEnabled = autoHideEnabled
         };
 
+        // Measure BEFORE faking the scroll metrics: Arrange on a measure-dirty element
+        // re-runs Measure first (WPF measure-dirty guard), and the ScrollViewer measure
+        // pass recomputes the extent from its (empty) content, which would wipe the
+        // reflection-poked values below.
+        viewer.Measure(new Size(200, 120));
+
         SetPrivateField(viewer, "_extentHeight", 1000.0);
         SetPrivateField(viewer, "_extentWidth", 100.0);
         SetPrivateField(viewer, "_verticalOffset", 0.0);

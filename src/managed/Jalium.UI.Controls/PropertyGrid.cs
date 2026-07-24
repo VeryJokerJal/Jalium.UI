@@ -20,14 +20,14 @@ public class PropertyGrid : Control
     private readonly List<PropertyItem> _allPropertyItems = new();
     private readonly Dictionary<PropertyItem, FrameworkElement> _propertyRowMap = new();
 
-    private Border? _toolBar;
-    private Border? _searchBoxBorder;
+    private FrameworkElement? _toolBar;
+    private FrameworkElement? _searchBoxBorder;
     private TextBox? _searchBox;
     private Button? _categorizedButton;
     private Button? _alphabeticalButton;
     private ScrollViewer? _propertiesHost;
     private StackPanel? _propertiesPanel;
-    private Border? _descriptionArea;
+    private Grid? _descriptionArea;
     private TextBlock? _descriptionTitle;
     private TextBlock? _descriptionText;
 
@@ -412,14 +412,14 @@ public class PropertyGrid : Control
             _alphabeticalButton.Click -= OnAlphabeticalButtonClick;
         }
 
-        _toolBar = GetTemplateChild("PART_ToolBar") as Border;
-        _searchBoxBorder = GetTemplateChild("PART_SearchBox") as Border;
+        _toolBar = GetTemplateChild("PART_ToolBar") as FrameworkElement;
+        _searchBoxBorder = GetTemplateChild("PART_SearchBox") as FrameworkElement;
         _searchBox = GetTemplateChild("PART_SearchTextBox") as TextBox;
         _categorizedButton = GetTemplateChild("PART_CategorizedButton") as Button;
         _alphabeticalButton = GetTemplateChild("PART_AlphabeticalButton") as Button;
         _propertiesHost = GetTemplateChild("PART_PropertiesHost") as ScrollViewer;
         _propertiesPanel = GetTemplateChild("PART_PropertiesPanel") as StackPanel;
-        _descriptionArea = GetTemplateChild("PART_DescriptionArea") as Border;
+        _descriptionArea = GetTemplateChild("PART_DescriptionArea") as Grid;
         _descriptionTitle = GetTemplateChild("PART_PropertyNameText") as TextBlock;
         _descriptionText = GetTemplateChild("PART_PropertyDescriptionText") as TextBlock;
 
@@ -694,13 +694,10 @@ public class PropertyGrid : Control
         scrollViewer.Content = _propertiesPanel;
 
         // Description area at the bottom
-        _descriptionArea = new Border
+        _descriptionArea = new Grid
         {
             MinHeight = 50,
-            Background = new SolidColorBrush(Color.FromRgb(38, 38, 38)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(60, 60, 60)),
-            BorderThickness = new Thickness(0, 1, 0, 0),
-            Padding = new Thickness(8, 4, 8, 4)
+            Background = new SolidColorBrush(Color.FromRgb(38, 38, 38))
         };
 
         // Combine into a vertical layout
@@ -1264,7 +1261,9 @@ public class PropertyGrid : Control
         panel.Children.Add(_descriptionTitle);
         panel.Children.Add(_descriptionText);
 
-        _descriptionArea.Child = panel;
+        panel.Margin = new Thickness(8, 4, 8, 4);
+        _descriptionArea.Children.Clear();
+        _descriptionArea.Children.Add(panel);
     }
 
     private void UpdateVisibility()

@@ -48,8 +48,8 @@ public class TextBoxThemeTests
             Assert.NotNull(textBox.BorderBrush);
             Assert.NotNull(textBox.SelectionBrush);
             Assert.NotNull(textBox.CaretBrush);
-            Assert.Equal(32, textBox.MinHeight);
-            Assert.True(textBox.RenderSize.Height >= 32);
+            Assert.Equal(36, textBox.MinHeight);
+            Assert.True(textBox.RenderSize.Height >= 36);
         }
         finally
         {

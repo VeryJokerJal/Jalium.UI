@@ -100,7 +100,9 @@ private:
     std::unordered_map<std::string, std::vector<FontMatch>> fallbackCache_;
 };
 
-/// Android: discovers fonts from /system/fonts/ and fonts.xml
+/// Android: parses the system font configuration (fonts.xml and its
+/// successors/OEM variants) for named families, aliases, and per-locale
+/// fallback chains; scans the font directories when no configuration parses.
 class FontProviderAndroid : public FontProvider {
 public:
     FontProviderAndroid();
@@ -109,22 +111,56 @@ public:
     bool FindFont(const wchar_t* familyName, int32_t weight, int32_t style,
                   std::string& outPath, int& outFaceIndex) override;
     const wchar_t* GetDefaultFontFamily() const override;
+    /// The returned pointer references a string owned by this provider
+    /// (fallbackFamilyName_) and remains valid for the provider's lifetime;
+    /// it is stable once the first call has built the font tables.
     const wchar_t* GetFallbackFontFamily() const override;
 
+    std::vector<FontMatch> FindFallbackFonts(
+        const std::vector<uint32_t>& codepoints,
+        const wchar_t* preferredFamily,
+        int32_t weight,
+        int32_t style) override;
+
 private:
-    void ParseFontsXml();
     struct FontEntry {
         std::string path;
-        int weight;
-        int style; // 0=normal, 1=italic
-        int faceIndex;
+        int weight = 400;
+        int style = 0;        // 0=normal, 1=italic
+        int faceIndex = 0;
+    };
+    struct LangTag {
+        std::string language; // lowercase; "und" for script-only tags
+        std::string script;   // normalized like "Hans"/"Arab"; empty when absent
     };
     struct FontFamily {
-        std::string name;
+        std::string name;     // empty for pure locale-fallback families
+        std::string lang;     // raw lang attribute as written (empty = none)
+        std::vector<LangTag> langTags;
         std::vector<FontEntry> fonts;
     };
-    std::vector<FontFamily> families_;
-    bool parsed_ = false;
+    struct FamilyAlias {
+        std::string target;   // lowercase target family name
+        int weight = -1;      // -1 = no weight restriction
+    };
+
+    void EnsureParsed() const;
+    void BuildFontTables() const;
+    const FontFamily* FindNamedFamily(const std::string& lowerName, int& aliasWeight) const;
+    static const FontEntry* SelectEntry(const FontFamily& family, int32_t weight, int32_t style,
+                                        int restrictWeight);
+    bool FindFontExact(const std::string& lowerFamilyName, int32_t weight, int32_t style,
+                       std::string& outPath, int& outFaceIndex) const;
+
+    // Lazily built once (BuildFontTables), read-only afterwards; mutable so the
+    // const accessors can trigger the parse.
+    mutable std::once_flag parseOnce_;
+    mutable std::vector<FontFamily> families_;
+    mutable std::unordered_map<std::string, FamilyAlias> aliases_;
+    mutable std::vector<FontMatch> scanFallbacks_;  // directory-scan candidates (config-less devices)
+    mutable std::wstring fallbackFamilyName_;
+    mutable std::string localeLanguage_;
+    mutable std::string localeScript_;
 };
 
 } // namespace jalium

@@ -454,7 +454,7 @@ public class JsonTreeViewer : Control
 
     private TextBox? _searchBox;
     private TreeView? _treeView;
-    private Border? _statusBar;
+    private TextBlock? _statusText;
     private StackPanel? _toolBar;
 
     // Maps JsonTreeNode -> TreeViewItem for fast lookup
@@ -499,7 +499,7 @@ public class JsonTreeViewer : Control
 
         _searchBox = GetTemplateChild("PART_SearchBox") as TextBox;
         _treeView = GetTemplateChild("PART_TreeView") as TreeView;
-        _statusBar = GetTemplateChild("PART_StatusBar") as Border;
+        _statusText = GetTemplateChild("PART_StatusText") as TextBlock;
         _toolBar = GetTemplateChild("PART_ToolBar") as StackPanel;
 
         // Hook up search box text changed
@@ -1243,7 +1243,7 @@ public class JsonTreeViewer : Control
     /// </summary>
     private void UpdateStatusBar()
     {
-        if (_statusBar == null)
+        if (_statusText == null)
             return;
 
         string statusText;
@@ -1268,21 +1268,7 @@ public class JsonTreeViewer : Control
             }
         }
 
-        // Try to find or create a TextBlock in the status bar
-        if (_statusBar.Child is TextBlock statusBlock)
-        {
-            statusBlock.Text = statusText;
-        }
-        else
-        {
-            var textBlock = new TextBlock
-            {
-                Text = statusText,
-                Margin = new Thickness(4, 2, 4, 2),
-                VerticalAlignment = VerticalAlignment.Center
-            };
-            _statusBar.Child = textBlock;
-        }
+        _statusText.Text = statusText;
     }
 
     private static int CountNodes(JsonTreeNode node)

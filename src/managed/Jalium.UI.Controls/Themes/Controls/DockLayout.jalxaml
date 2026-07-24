@@ -12,7 +12,7 @@
         <Setter Property="Background" Value="{ThemeResource DockContentBackground}" />
         <Setter Property="TabStripBackground" Value="{ThemeResource DockTabStripBackground}" />
         <Setter Property="TabStripBorderBrush" Value="{ThemeResource DockTabStripBorder}" />
-        <Setter Property="TabStripHeight" Value="28" />
+        <Setter Property="TabStripHeight" Value="32" />
         <Setter Property="FontSize" Value="{ThemeResource CaptionFontSize}" />
     </Style>
 
@@ -22,24 +22,28 @@
         <Setter Property="SelectedBackground" Value="{ThemeResource DockTabItemSelectedBackground}" />
         <Setter Property="HoverBackground" Value="{ThemeResource DockTabItemHoverBackground}" />
         <Setter Property="IndicatorBrush" Value="{ThemeResource AccentBrush}" />
-        <Setter Property="Padding" Value="10,5,10,5" />
+        <Setter Property="Padding" Value="12,7,12,7" />
         <Style.Triggers>
             <Trigger Property="IsSelected" Value="True">
                 <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+            </Trigger>
+            <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="Opacity" Value="0.56" />
             </Trigger>
         </Style.Triggers>
     </Style>
 
     <!-- Dock indicators -->
-    <SolidColorBrush x:Key="DockIndicatorChromeBackground" Color="#E6202020" />
-    <SolidColorBrush x:Key="DockIndicatorChromeBorder" Color="#B4464646" />
-    <SolidColorBrush x:Key="DockIndicatorButtonBackground" Color="#FF323232" />
-    <SolidColorBrush x:Key="DockIndicatorButtonBorder" Color="#A0505050" />
-    <SolidColorBrush x:Key="DockIndicatorButtonHoverBackground" Color="#FF0078D4" />
-    <SolidColorBrush x:Key="DockIndicatorIconForeground" Color="#DCC8C8C8" />
-    <SolidColorBrush x:Key="DockIndicatorIconHoverForeground" Color="#FFFFFFFF" />
-    <SolidColorBrush x:Key="DockIndicatorPreviewBackground" Color="#320078D4" />
-    <SolidColorBrush x:Key="DockIndicatorPreviewBorder" Color="#8C0078D4" />
+    <SolidColorBrush x:Key="DockIndicatorChromeBackground" Color="{ThemeResource LayerOnAcrylicFillColorDefault}" />
+    <SolidColorBrush x:Key="DockIndicatorChromeBorder" Color="{ThemeResource SurfaceStrokeColorFlyout}" />
+    <SolidColorBrush x:Key="DockIndicatorButtonBackground" Color="{ThemeResource ControlFillColorDefault}" />
+    <SolidColorBrush x:Key="DockIndicatorButtonBorder" Color="{ThemeResource ControlStrokeColorDefault}" />
+    <SolidColorBrush x:Key="DockIndicatorButtonHoverBackground" Color="{ThemeResource SystemAccentColor}" />
+    <SolidColorBrush x:Key="DockIndicatorIconForeground" Color="{ThemeResource TextFillColorSecondary}" />
+    <SolidColorBrush x:Key="DockIndicatorIconHoverForeground" Color="{ThemeResource TextOnAccentFillColorPrimary}" />
+    <SolidColorBrush x:Key="DockIndicatorPreviewBackground" Color="{ThemeResource SystemAccentColor}" Opacity="0.20" />
+    <SolidColorBrush x:Key="DockIndicatorPreviewBorder" Color="{ThemeResource SystemAccentColor}" Opacity="0.68" />
 
     <!-- Split (internal) -->
     <Style TargetType="Split">

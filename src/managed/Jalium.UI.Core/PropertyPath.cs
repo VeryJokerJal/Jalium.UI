@@ -13,6 +13,8 @@ public sealed class PropertyPath
 {
     private string _path;
     private readonly Collection<object> _pathParameters;
+    private string[]? _pathSegments;
+    private string[]? _parsedSegments;
 
     /// <summary>
     /// Initializes a new instance of the PropertyPath class.
@@ -65,7 +67,18 @@ public sealed class PropertyPath
     public string Path
     {
         get => _path;
-        set => _path = value ?? string.Empty;
+        set
+        {
+            var normalized = value ?? string.Empty;
+            if (string.Equals(_path, normalized, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _path = normalized;
+            _pathSegments = null;
+            _parsedSegments = null;
+        }
     }
 
     /// <summary>
@@ -76,7 +89,21 @@ public sealed class PropertyPath
     /// <summary>
     /// Gets the path segments (simple dot-separated split).
     /// </summary>
-    public string[] PathSegments => string.IsNullOrEmpty(_path) ? Array.Empty<string>() : _path.Split('.');
+    public string[] PathSegments
+    {
+        get
+        {
+            var segments = CachedPathSegments;
+            return segments.Length == 0 ? segments : (string[])segments.Clone();
+        }
+    }
+
+    /// <summary>
+    /// Allocation-free segment view for framework binding consumers. Callers
+    /// must treat the returned array as immutable.
+    /// </summary>
+    internal string[] CachedPathSegments =>
+        _pathSegments ??= string.IsNullOrEmpty(_path) ? Array.Empty<string>() : _path.Split('.');
 
     /// <summary>
     /// Resolves the value at this path starting from the specified source.
@@ -90,7 +117,7 @@ public sealed class PropertyPath
             return null;
 
         var current = source;
-        var segments = ParsePath(_path);
+        var segments = GetParsedSegments();
 
         foreach (var segment in segments)
         {
@@ -115,7 +142,7 @@ public sealed class PropertyPath
         if (source == null || string.IsNullOrEmpty(_path))
             return false;
 
-        var segments = ParsePath(_path);
+        var segments = GetParsedSegments();
         if (segments.Length == 0)
             return false;
 
@@ -171,6 +198,8 @@ public sealed class PropertyPath
 
         return segments.ToArray();
     }
+
+    private string[] GetParsedSegments() => _parsedSegments ??= ParsePath(_path);
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("PropertyPath segment resolution may walk user types via reflection.")]
     private object? ResolveSegment(object current, string segment)

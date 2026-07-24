@@ -1,20 +1,36 @@
+<div align="center">
+
 # Jalium.UI
 
-**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
+**A GPU-accelerated UI framework for .NET 10**
 
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/VeryJokerJal/Jalium.UI)
+WPF-inspired APIs, JALXAML with Razor extensions, and native rendering on Windows, Linux, and Android.
 
-Jalium.UI is a GPU-accelerated, cross-platform UI framework for .NET 10.
-It combines a WPF-style object model, JALXAML markup with Razor syntax extensions,
-and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
+[![NuGet](https://img.shields.io/nuget/v/Jalium.UI?style=flat-square&logo=nuget&label=NuGet)](https://www.nuget.org/packages/Jalium.UI)
+[![Release](https://img.shields.io/github/v/release/VeryJokerJal/Jalium.UI?style=flat-square&logo=github&label=Release)](https://github.com/VeryJokerJal/Jalium.UI/releases/latest)
+[![Linux CI](https://img.shields.io/github/actions/workflow/status/VeryJokerJal/Jalium.UI/linux.yml?branch=master&style=flat-square&logo=linux&label=Linux)](https://github.com/VeryJokerJal/Jalium.UI/actions/workflows/linux.yml)
+[![License](https://img.shields.io/github/license/VeryJokerJal/Jalium.UI?style=flat-square&label=License)](https://github.com/VeryJokerJal/Jalium.UI/blob/master/LICENSE)
+[![Ask DeepWiki](https://img.shields.io/badge/Ask-DeepWiki-6f42c1?style=flat-square)](https://deepwiki.com/VeryJokerJal/Jalium.UI)
+
+**English** · [简体中文](https://github.com/VeryJokerJal/Jalium.UI/blob/master/README.zh-CN.md) · [日本語](https://github.com/VeryJokerJal/Jalium.UI/blob/master/README.ja.md) · [한국어](https://github.com/VeryJokerJal/Jalium.UI/blob/master/README.ko.md)
+
+[Quick start](#quick-start-c) · [Capabilities](#capability-overview) · [Build](#build-from-source) · [Documentation](#documentation) · [Community](#community)
+
+</div>
 
 ## Project Status
 
-- Active development — v26.10.7 (APIs can still evolve between minor versions)
-- Primary target: Windows 10/11 (x64, ARM64)
-- Cross-platform: Android (arm64-v8a, x86_64), Linux (X11/Wayland; Vulkan or software), macOS (Metal)
-- Runtime target: .NET 10 (`net10.0-windows`, `net10.0-android`, `net10.0`)
-- Rendering: DirectX 12 (Windows), Vulkan (Linux/Android), Metal (macOS), Software fallback
+> [!IMPORTANT]
+> Jalium.UI is under active development. The current source/release line is
+> **v26.10.7**; APIs can still evolve between minor versions. Keep every
+> `Jalium.UI.*` package on the same version.
+
+| Platform | Entry package and runtime | Windowing | Renderer | Current scope |
+| --- | --- | --- | --- | --- |
+| Windows 10/11 | `Jalium.UI.Desktop` · `win-x64`, `win-arm64` package layout | Win32 | DirectX 12, software; optional Vulkan | x64 is the primary source-build target; ARM64 packaging exists but lacks equivalent CI qualification |
+| Linux desktop | `Jalium.UI.Linux` · glibc/musl x64/Arm64 layout | X11, Wayland | Vulkan, software | Shipped; qualification varies by RID—see the [verification matrix](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux-parity-status.md) |
+| Android 7.0+ (API 24+) | `Jalium.UI.Android` · `arm64-v8a`, `x86_64` | Android native activity | Vulkan, software | Shipped platform package |
+| macOS | No entry package | Not implemented | Metal renderer source only | Not a release target yet |
 
 ## Why Jalium.UI
 
@@ -38,12 +54,13 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 | Package | Responsibility |
 | --- | --- |
-| `Jalium.UI.Core` | Dependency property system, visual tree, layout, routed events, binding, animation |
-| `Jalium.UI.Media` | Brushes, geometry, drawing primitives, text formatting, imaging, video, visual effects |
-| `Jalium.UI.Input` | Mouse, keyboard, touch, stylus input abstractions and routing |
+| `Jalium.UI.Managed` | Unified managed implementation for the core, media, input, interop, and controls API surface |
+| `Jalium.UI.Core` | Compatibility facade for core APIs backed by `Jalium.UI.Managed` |
+| `Jalium.UI.Media` | Compatibility facade for media and animation APIs backed by `Jalium.UI.Managed` |
+| `Jalium.UI.Input` | Compatibility facade for input APIs backed by `Jalium.UI.Managed` |
 | `Jalium.UI.Interop` | Managed/native bridge, P/Invoke, runtime native dependency packaging |
 | `Jalium.UI.Gpu` | GPU resource management, render graph, materials, shaders, backend abstraction |
-| `Jalium.UI.Controls` | Controls, panels, templates, windowing, themes, docking, charts, hosting |
+| `Jalium.UI.Controls` | Compatibility facade for controls, windowing, themes, docking, charts, and hosting |
 | `Jalium.UI.Xaml` | JALXAML parse/load pipeline, Razor syntax support, hot reload, markup services |
 | `Jalium.UI.Build` | MSBuild tasks and build assets for JALXAML compilation workflow |
 | `Jalium.UI.Xaml.SourceGenerator` | Roslyn source generator for XAML/code-behind integration |
@@ -56,18 +73,19 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 | Module | Platforms | Responsibility |
 | --- | --- | --- |
-| `jalium.native.core` | All | Native core runtime, backend registry, context management |
+| `jalium.native.core` | Windows, Linux, Android | Native core runtime, backend registry, context management |
 | `jalium.native.d3d12` | Windows | DirectX 12 render target and Vello GPU pipeline |
-| `jalium.native.vulkan` | Linux, Android | Vulkan render backend |
-| `jalium.native.metal` | macOS | Metal render backend |
-| `jalium.native.software` | All | CPU-based software rendering fallback |
-| `jalium.native.platform` | All | Platform abstraction (window, input, events) |
-| `jalium.native.text` | Linux, Android, macOS | Self-hosted text engine (sfnt/cmap/glyf/CFF + OT shaper; fontconfig for discovery on Linux) |
+| `jalium.native.vulkan` | Windows (optional), Linux, Android | Vulkan render backend |
+| `jalium.native.metal` | Source only | Metal renderer implementation; the macOS window/platform host is not implemented |
+| `jalium.native.software` | Windows, Linux, Android | CPU-based software rendering fallback |
+| `jalium.native.platform` | Windows, Linux, Android | Platform abstraction for windows, input, and events |
+| `jalium.native.text` | Linux, Android | Self-hosted text engine (sfnt/cmap/glyf/CFF + OT shaper; fontconfig for discovery on Linux) |
 | `jalium.native.browser` | Windows | WebView2 browser integration |
-| `jalium.native.media.core` | All | Cross-platform media C ABI + shared audio (miniaudio / dr_libs / minimp3 / stb_vorbis) |
+| `jalium.native.media.core` | Windows, Linux, Android | Cross-platform media C ABI + shared audio (miniaudio / dr_libs / minimp3 / stb_vorbis) |
 | `jalium.native.media.windows` | Windows | Media Foundation video / camera / AAC decoder + WIC imaging |
+| `jalium.native.media.linux` | Linux | GStreamer-backed media and camera integration |
 | `jalium.native.media.android` | Android | Android image / video / camera decoders + YUV SIMD (NEON) via the NDK |
-| `jalium.native.aot` | All | NativeAOT aggregator (hard-links media, text, backends) |
+| `jalium.native.aot` | Windows, Linux, Android | NativeAOT aggregator (hard-links media, text, backends) |
 
 ### Platform Packages
 
@@ -76,6 +94,10 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 | `Jalium.UI.Desktop` | `net10.0-windows` — Desktop distribution with per-RID native DLLs (win-x64 / win-arm64) |
 | `Jalium.UI.Android` | `net10.0-android` — Android distribution with native .so libraries |
 | `Jalium.UI.Linux` | `net10.0` — Linux desktop distribution (Wayland/X11, Vulkan + software rendering; linux-x64 / arm64 / musl RIDs) |
+
+The Linux RIDs describe package layout, not equal qualification across every
+architecture and deployment mode. Check the [Linux verification matrix](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux-parity-status.md)
+before publishing.
 
 ## Capability Overview
 
@@ -126,10 +148,10 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 - Per-element `TextOptions.{TextRenderingMode, TextFormattingMode, TextHintingMode}`
   inheritable attached properties — values flow through `FormattedText` → native
   `JaliumTextFormat` and reach the rasterizer:
-  - D3D12: `GlyphKey` includes `(aaMode, hintingMode)`; `RasterizeGlyph` honours `key.mode`.
+  - D3D12: `GlyphKey` includes `(aaMode, hintingMode)`; `RasterizeGlyph` honors `key.mode`.
   - Vulkan / Windows: `LOGFONT.lfQuality` flips between bilevel / smoothed / ClearType;
     font cache + text cache + GDI font pool keys all include `fontQuality`.
-- Process-wide rendering mode override + colour-emoji rasterization.
+- Process-wide rendering mode override + color-emoji rasterization.
 
 ### Input Pipeline
 
@@ -194,7 +216,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 - Opt-in DevTools window (`app.UseDevTools()`, F12 / Ctrl+Shift+C element picker):
   visual / logical / flat tree inspector with virtualization and inline property
   editing, plus Layout, Events, Bindings, Resources, Perf, UIA, Tools
-  (ruler / colour picker / overdraw & dirty-region overlays / screenshot export)
+  (ruler / color picker / overdraw & dirty-region overlays / screenshot export)
   and a live REPL tab.
 - On-screen debug HUD (`app.UseDebugHud()`, F3): frame timings, dirty regions and
   backend info.
@@ -249,17 +271,11 @@ runtime parsing cost in the hot path:
 
 `Setter.Value` is intentionally NOT lowered.
 
-For syntax details and rules, see [`docs/razor-syntax.md`](docs/razor-syntax.md).
+For syntax details and rules, see [`docs/razor-syntax.md`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/razor-syntax.md).
 
 ## Installation
 
-### Recommended (metapackage)
-
-```bash
-dotnet add package Jalium.UI
-```
-
-### Platform-specific
+### Choose a platform (recommended for applications)
 
 ```bash
 # Windows Desktop
@@ -270,6 +286,15 @@ dotnet add package Jalium.UI.Android
 
 # Linux desktop
 dotnet add package Jalium.UI.Linux
+```
+
+### Shared metapackage
+
+Use the generic metapackage when a library needs the shared framework stack and
+the final application selects the platform entry package:
+
+```bash
+dotnet add package Jalium.UI
 ```
 
 ### Granular install (advanced)
@@ -289,37 +314,40 @@ dotnet add package Jalium.UI.Xaml.SourceGenerator
 ## Quick Start (C#)
 
 ```csharp
+using Jalium.UI;
 using Jalium.UI.Controls;
 
-var app = new Application();
-
-var window = new Window
+var builder = AppBuilder.CreateBuilder(args);
+builder.ConfigureApplication(app =>
 {
-    Title = "Hello Jalium.UI",
-    Width = 960,
-    Height = 640,
-    Content = new StackPanel
+    app.MainWindow = new Window
     {
-        Margin = new Thickness(24),
-        Children =
+        Title = "Hello Jalium.UI",
+        Width = 960,
+        Height = 640,
+        Content = new StackPanel
         {
-            new TextBlock { Text = "Jalium.UI", FontSize = 28 },
-            new TextBlock { Text = "GPU-accelerated .NET UI framework", Margin = new Thickness(0, 8, 0, 16) },
-            new Button { Content = "Start" }
+            Margin = new Thickness(24),
+            Children =
+            {
+                new TextBlock { Text = "Jalium.UI", FontSize = 28 },
+                new TextBlock { Text = "GPU-accelerated .NET UI framework", Margin = new Thickness(0, 8, 0, 16) },
+                new Button { Content = "Start" }
+            }
         }
-    }
-};
+    };
+});
 
-app.Run(window);
+using var jalium = builder.Build();
+return jalium.Run();
 ```
 
 ## Quick Start (JALXAML runtime parse)
 
 ```csharp
+using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Markup;
-
-var app = new Application();
 
 var xaml = """
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="JALXAML Window" Width="800" Height="500">
@@ -332,47 +360,56 @@ var xaml = """
 </Window>
 """;
 
-var window = (Window)XamlReader.Parse(xaml);
-app.Run(window);
+var builder = AppBuilder.CreateBuilder(args);
+builder.ConfigureApplication(app =>
+{
+    app.MainWindow = (Window)XamlReader.Parse(xaml);
+});
+
+using var jalium = builder.Build();
+return jalium.Run();
 ```
 
 ## Build From Source
 
 ### Prerequisites
 
-- .NET 10 SDK
-- Visual Studio with C++ workload (for Windows native modules)
-- CMake, Ninja, Clang/GCC, and the X11/Wayland development packages (for Linux native modules; see the [Linux guide](docs/linux.md))
-- Vulkan SDK (optional, for Vulkan backend)
-- Android NDK (optional, for Android builds)
+- A .NET 10 SDK compatible with [`global.json`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/global.json) (the repository currently pins a prerelease feature band)
+- CMake 3.25+ and a C++20 toolchain
+- Visual Studio with the C++ workload and v145 toolset for the standard Windows x64 native solution
+- Vulkan SDK for that standard Windows native solution; reduced custom configurations can omit Vulkan
+- Ninja, Clang/GCC, and X11/Wayland development packages for Linux (see the [Linux guide](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux.md))
+- Android NDK 27.2.12479018 for the default Android build (override deliberately through `JALIUM_ANDROID_NDK_VERSION`)
 
 ### Build
 
 ```bash
-# Build the full framework
+# Build the managed metapackage and its project dependencies
 dotnet build src/packaging/Jalium.UI/Jalium.UI.csproj -c Release
 
-# Run tests
-dotnet test tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj -c Release
-
-# Build native modules (in VS Developer Command Prompt)
+# Build Windows native modules (in a Visual Studio Developer Command Prompt)
 msbuild src/native/Jalium.Native.sln /m /p:Configuration=Release /p:Platform=x64
 
-# Build native modules for Linux (glibc or musl host)
-bash eng/linux/build-native.sh linux-x64 Release
+# Build a Linux native payload and its native test targets on a matching glibc or musl host
+JALIUM_NATIVE_BUILD_TESTS=1 bash eng/linux/build-native.sh linux-x64 Release
 
-# Build for Android
-bash src/native/build-android-deps.sh  # Android native dependencies
-bash src/native/build-android.sh       # Native libraries
+# Build both Android package ABIs (NDK 27.2.12479018 by default)
+bash src/native/build-android.sh all
 ```
+
+> [!NOTE]
+> Run shell scripts from a Linux/WSL checkout that preserves LF line endings.
+> If a Windows checkout rewrites them to CRLF, Bash rejects them before the
+> Jalium build starts.
 
 ### NuGet Packaging
 
 ```bash
+# Pack the shared metapackage; platform release pipelines build stamped native payloads first
 dotnet pack src/packaging/Jalium.UI/Jalium.UI.csproj -c Release -o artifacts/nuget
 ```
 
-For detailed build configuration, see [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md).
+For detailed build configuration, see [`docs/manual-build-configuration.md`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/manual-build-configuration.md).
 
 ## Repository Layout
 
@@ -380,12 +417,13 @@ For detailed build configuration, see [`docs/manual-build-configuration.md`](doc
 Jalium.UI/
   src/
     managed/
-      Jalium.UI.Core/          # Dependency property system, visual tree, layout
-      Jalium.UI.Media/         # Brushes, geometry, drawing, text, imaging, video
-      Jalium.UI.Input/         # Input abstractions and routing
-      Jalium.UI.Interop/       # Native bridge and P/Invoke
+      Jalium.UI.Managed/       # Unified implementation assembly
+      Jalium.UI.Core/          # Core compatibility facade
+      Jalium.UI.Media/         # Media compatibility facade
+      Jalium.UI.Input/         # Input compatibility facade
+      Jalium.UI.Interop/       # Native bridge, P/Invoke, RID assets
       Jalium.UI.Gpu/           # GPU resources, render graph, shaders
-      Jalium.UI.Controls/      # Controls, panels, themes, docking, charts, hosting
+      Jalium.UI.Controls/      # Controls compatibility facade
       Jalium.UI.Xaml/          # JALXAML parser, Razor support, hot reload
       Jalium.UI.Build/         # MSBuild tasks for JALXAML compilation
       Jalium.UI.Xaml.SourceGenerator/  # Roslyn source generator
@@ -394,13 +432,14 @@ Jalium.UI/
       jalium.native.core/      # Native runtime core, backend registry
       jalium.native.d3d12/     # DirectX 12 + Vello GPU backend
       jalium.native.vulkan/    # Vulkan backend
-      jalium.native.metal/     # Metal backend (macOS)
+      jalium.native.metal/     # Metal renderer source (no macOS host yet)
       jalium.native.software/  # CPU software renderer
       jalium.native.platform/  # Platform abstraction layer
       jalium.native.text/      # Self-hosted text engine (non-Windows)
       jalium.native.browser/   # WebView2 integration
       jalium.native.media.core/     # Cross-platform media C ABI + shared audio
       jalium.native.media.windows/  # Media Foundation video / camera + WIC
+      jalium.native.media.linux/    # GStreamer media / camera integration
       jalium.native.media.android/  # Android media decoders + YUV SIMD
       jalium.native.aot/       # NativeAOT aggregator (hard-links media/text/backends)
     packaging/
@@ -408,35 +447,29 @@ Jalium.UI/
       Jalium.UI.Desktop/       # Windows desktop package (win-x64 / win-arm64)
       Jalium.UI.Android/       # Android package
       Jalium.UI.Linux/         # Linux desktop package (linux-x64/arm64, musl)
-  samples/                     # Gallery, DesktopDemo, AndroidDemo, HostingDemo,
-                               #   MillionScroll, AotWindowDemo, BorderlessDemo,
-                               #   TransparentBackdropDemo, LinuxDemo
+  samples/                     # Gallery plus Windows, Linux, Android and AOT demos
   tools/
     Jalium.UI.HotReload.Watcher/  # Standalone JALXAML hot-reload file watcher
+    Jalium.UI.ApiParity/          # Metadata-based compatibility verifier
   tests/
-    Jalium.UI.Tests/           # xUnit test suite (70+ test classes)
-    Jalium.UI.ShaderDemo/      # Shader effects demo
-    Jalium.UI.ParityHarness/   # Backend parity harness
-    Jalium.UI.DeviceLostHarness/  # Device-lost recovery harness
-    Jalium.UI.NuGetTest.Desktop/  # Packaged-desktop smoke test
-    Jalium.UI.NuGetTest.Android/  # Packaged-android smoke test
-  docs/                        # razor-syntax, drawing-api, manual-build-configuration,
-                               #   render-thread-design, present-pacing-design,
-                               #   shell-drag-drop (+ design/ and reference/)
+    Jalium.UI.Tests/              # Main xUnit suite
+    Jalium.UI.Linux.Tests/        # Linux-focused managed tests
+    Jalium.UI.NuGetTest.*/        # Packaged consumer gates
+    Jalium.UI.*Smoke/             # Linux integration smoke apps
+  docs/                           # Syntax, drawing, build, Linux and performance guides
+  eng/linux/                      # Linux build, packaging and qualification scripts
 ```
 
 ## Documentation
 
 | Document | Description |
 | --- | --- |
-| [`docs/razor-syntax.md`](docs/razor-syntax.md) | Razor syntax reference for JALXAML |
-| [`docs/drawing-api.md`](docs/drawing-api.md) | Drawing API (DrawingContext, GPU effects, rendering) |
-| [`docs/manual-build-configuration.md`](docs/manual-build-configuration.md) | Manual build configuration guide |
-| [`docs/linux.md`](docs/linux.md) | Linux desktop guide (runtime dependencies, window systems, packaging) |
-| [`docs/linux-parity-status.md`](docs/linux-parity-status.md) | Verified Linux support matrix, evidence, and remaining boundaries |
-| [`docs/render-thread-design.md`](docs/render-thread-design.md) | Render thread architecture |
-| [`docs/present-pacing-design.md`](docs/present-pacing-design.md) | Present pacing / frame scheduling |
-| [`docs/shell-drag-drop.md`](docs/shell-drag-drop.md) | Shell drag & drop integration |
+| [`docs/razor-syntax.md`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/razor-syntax.md) | Razor syntax reference for JALXAML |
+| [`docs/drawing-api.md`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/drawing-api.md) | Drawing API (DrawingContext, GPU effects, rendering) |
+| [`docs/manual-build-configuration.md`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/manual-build-configuration.md) | Manual build configuration guide |
+| [`docs/linux.md`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux.md) | Linux desktop guide (runtime dependencies, window systems, packaging) |
+| [`docs/linux-parity-status.md`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/linux-parity-status.md) | Verified Linux support matrix, evidence, and remaining boundaries |
+| [`docs/gallery-startup-performance.md`](https://github.com/VeryJokerJal/Jalium.UI/blob/master/docs/gallery-startup-performance.md) | Gallery startup tracing, baselines, and readiness measurements |
 
 ## Visual Studio Extension Notes
 
@@ -469,4 +502,4 @@ For discussions, questions, or community support, you can join the QQ group:
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](https://github.com/VeryJokerJal/Jalium.UI/blob/master/LICENSE).

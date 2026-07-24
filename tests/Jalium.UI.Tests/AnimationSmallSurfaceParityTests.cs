@@ -6,6 +6,30 @@ namespace Jalium.UI.Tests;
 public sealed class AnimationSmallSurfaceParityTests
 {
     [Fact]
+    public void AnimatableAnimationClockStorageIsLazyAndReleasedWhenEmpty()
+    {
+        var animatable = new ProbeAnimatable();
+        FieldInfo clockStorage = typeof(Animatable).GetField(
+            "_animationClocks",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+
+        Assert.Null(clockStorage.GetValue(animatable));
+        Assert.False(animatable.HasAnimatedProperties);
+
+        animatable.ApplyAnimationClock(
+            ProbeAnimatable.ValueProperty,
+            new AnimationClock(new ProbeAnimation()));
+
+        Assert.NotNull(clockStorage.GetValue(animatable));
+        Assert.True(animatable.HasAnimatedProperties);
+
+        animatable.ApplyAnimationClock(ProbeAnimatable.ValueProperty, null);
+
+        Assert.Null(clockStorage.GetValue(animatable));
+        Assert.False(animatable.HasAnimatedProperties);
+    }
+
+    [Fact]
     public void AnimatableCloneAndSerializationHelperUseWpfContracts()
     {
         var original = new ProbeAnimatable();
@@ -66,6 +90,12 @@ public sealed class AnimationSmallSurfaceParityTests
 
     private sealed class ProbeAnimatable : Animatable
     {
+        public static readonly DependencyProperty ValueProperty = DependencyProperty.Register(
+            "Value",
+            typeof(double),
+            typeof(ProbeAnimatable),
+            new PropertyMetadata(0d));
+
         protected override Freezable CreateInstanceCore() => new ProbeAnimatable();
     }
 

@@ -992,7 +992,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
     private StackPanel? _columnHeadersHost;
     private StackPanel? _rowsHost;
-    private Border? _columnHeadersBorder;
+    private FrameworkElement? _columnHeadersBorder;
     private ScrollViewer? _columnHeadersScrollViewer;
     private ScrollViewer? _dataScrollViewer;
     private FrameworkElement? _rowHeaderCorner;
@@ -1070,7 +1070,7 @@ public class DataGrid : MultiSelector, IColumnHeaderHost
 
         _columnHeadersHost = GetTemplateChild("PART_ColumnHeadersHost") as StackPanel;
         _rowsHost = GetTemplateChild("PART_RowsHost") as StackPanel;
-        _columnHeadersBorder = GetTemplateChild("PART_ColumnHeadersBorder") as Border;
+        _columnHeadersBorder = GetTemplateChild("PART_ColumnHeadersBorder") as FrameworkElement;
         _rowHeaderCorner = GetTemplateChild("PART_RowHeaderCorner") as FrameworkElement;
         _columnHeadersScrollViewer = GetTemplateChild("PART_ColumnHeadersScrollViewer") as ScrollViewer;
         _dataScrollViewer = GetTemplateChild("PART_DataScrollViewer") as ScrollViewer;
@@ -6785,7 +6785,7 @@ public abstract class DataGridColumn : DependencyObject
         }
 
         object? current = item;
-        foreach (var part in binding.Path.PathSegments)
+        foreach (var part in binding.Path.CachedPathSegments)
         {
             if (current == null)
             {
@@ -6801,13 +6801,13 @@ public abstract class DataGridColumn : DependencyObject
     protected static bool SetBindingValue(BindingBase? bindingBase, object item, object? value)
     {
         if (bindingBase is not Binding binding || binding.Path == null ||
-            binding.Path.PathSegments.Length == 0)
+            binding.Path.CachedPathSegments.Length == 0)
         {
             return false;
         }
 
         object? target = item;
-        var parts = binding.Path.PathSegments;
+        var parts = binding.Path.CachedPathSegments;
         for (var index = 0; index < parts.Length - 1; index++)
         {
             if (target == null)
@@ -6931,7 +6931,7 @@ public abstract class DataGridBoundColumn : DataGridColumn
         if (Binding is not Binding binding || binding.Path == null) return null;
 
         var current = item;
-        foreach (var part in binding.Path.PathSegments)
+        foreach (var part in binding.Path.CachedPathSegments)
         {
             if (current == null) return null;
             var prop = DataGrid.GetCachedProperty(current.GetType(), part);
@@ -6949,7 +6949,7 @@ public abstract class DataGridBoundColumn : DataGridColumn
     {
         if (Binding is not Binding binding || binding.Path == null) return;
 
-        var parts = binding.Path.PathSegments;
+        var parts = binding.Path.CachedPathSegments;
         var target = dataItem;
 
         // Navigate to the parent object for nested paths

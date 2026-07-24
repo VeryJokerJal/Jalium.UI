@@ -8,13 +8,15 @@ namespace Jalium.UI.Media.Animation;
 /// </summary>
 public abstract class Animatable : Freezable, IAnimatable
 {
-    private readonly Dictionary<DependencyProperty, AnimationClock> _animationClocks = new();
+    // Geometry, brushes, and path segments are Animatable but almost never have a clock attached.
+    // Avoid paying for a dictionary on every short-lived render object.
+    private Dictionary<DependencyProperty, AnimationClock>? _animationClocks;
 
     /// <summary>
     /// Gets a value indicating whether one or more AnimationClock objects are associated
     /// with any of this object's dependency properties.
     /// </summary>
-    public bool HasAnimatedProperties => _animationClocks.Count > 0;
+    public bool HasAnimatedProperties => _animationClocks?.Count > 0;
 
     /// <summary>Creates a modifiable clone with the concrete Animatable return type.</summary>
     public new Animatable Clone() => (Animatable)base.Clone();
@@ -38,17 +40,17 @@ public abstract class Animatable : Freezable, IAnimatable
     {
         if (clock == null)
         {
-            _animationClocks.Remove(dp);
+            RemoveAnimationClock(dp);
         }
         else
         {
             if (handoffBehavior == HandoffBehavior.SnapshotAndReplace)
             {
-                _animationClocks[dp] = clock;
+                (_animationClocks ??= new())[dp] = clock;
             }
             else
             {
-                _animationClocks[dp] = clock;
+                (_animationClocks ??= new())[dp] = clock;
             }
         }
     }
@@ -68,13 +70,22 @@ public abstract class Animatable : Freezable, IAnimatable
     {
         if (animation == null)
         {
-            _animationClocks.Remove(dp);
+            RemoveAnimationClock(dp);
             return;
         }
 
         var clock = (AnimationClock)animation.CreateClock();
         ApplyAnimationClock(dp, clock, handoffBehavior);
         clock.Begin();
+    }
+
+    private void RemoveAnimationClock(DependencyProperty dp)
+    {
+        if (_animationClocks is not { } clocks || !clocks.Remove(dp))
+            return;
+
+        if (clocks.Count == 0 && ReferenceEquals(_animationClocks, clocks))
+            _animationClocks = null;
     }
 
     /// <summary>

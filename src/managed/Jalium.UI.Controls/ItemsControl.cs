@@ -17,6 +17,10 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
     private Panel? _fallbackItemsHost;
     private ItemContainerGenerator? _itemContainerGenerator;
     private bool _generatorItemsChangedSubscribed;
+    private readonly HashSet<FrameworkElement> _containersPreservingGeneratedContent =
+        new(ReferenceEqualityComparer.Instance);
+    private readonly HashSet<FrameworkElement> _containersThatActuallyPreservedGeneratedContent =
+        new(ReferenceEqualityComparer.Instance);
     private static readonly bool s_useLegacyItemsPipeline = string.Equals(
         Environment.GetEnvironmentVariable("JALIUM_USE_LEGACY_ITEMS_PIPELINE"),
         "1",
@@ -406,9 +410,10 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
         // Non-virtualizing path: materialize all containers.
         panel.Children.Clear();
 
-        // Add items from ItemsSource or Items collection.
+        // Add items from the stable ItemCollection view. Walking raw ItemsSource here
+        // re-enumerates lazy/single-pass sources and bypasses sorting/filtering.
         // Batch-add to avoid per-item layout invalidation.
-        var source = ItemsSource ?? Items;
+        var source = (IEnumerable)Items;
         if (source != null)
         {
             panel.Children.BeginBatchUpdate();
@@ -839,17 +844,19 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
     /// for items that are their own container.
     /// </summary>
     /// <remarks>
-    /// For the steady-state scroll-recycle path the content clear is redundant — the recycle-pop
-    /// always re-prepares the container, so <see cref="PrepareContainerForItem"/> overwrites these
-    /// values. It is correctness-bearing for the ORPHANED container case (an item removed, or a
-    /// full reset, where the pooled container is never re-popped) so it does not alias the dead
-    /// item.
+    /// The steady-state scroll-recycle path still invokes this complete virtual lifecycle so
+    /// derived controls can detach handlers and reset selection/owner state. During that call only,
+    /// the base content clear is suppressed for the specific container being recycled; this lets a
+    /// same-template <see cref="ContentPresenter"/> retain and rebind its generated visual subtree.
+    /// Collection mutations use the normal full clear so orphaned containers do not alias dead
+    /// items.
     /// <para>
     /// Framework-level animation hygiene (stopping the container subtree's animations and hard-
     /// discarding the animated value layer back to base values) is performed by the generator's
     /// recycle choke point BEFORE this method runs, so overrides observe base values here. On top
     /// of that, the base implementation resets the visual-state DPs animations commonly leave a
-    /// local value on (RenderTransform / Opacity / ClipToBounds / Visibility) via
+    /// local value on (RenderTransform / Opacity / ClipToBounds /
+    /// ClipToBoundsEdges / Visibility) via
     /// <see cref="DependencyObject.ClearValue(DependencyProperty)"/> only — never SetValue — so style/template values
     /// keep working. These local values are the symmetric counterpart of what Prepare-time code
     /// sets; a custom container that legitimately holds one of them as a constructor-set local
@@ -869,6 +876,73 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
 
         ClearItemContainerStyleAndBindingGroup(element, item);
 
+        if (_containersPreservingGeneratedContent.Contains(element))
+        {
+            // Record that the base implementation actually suppressed a generated-content clear.
+            // A custom container can override ClearContainerForItem and intentionally skip base
+            // (for example, its Content is a constructor-owned row visual); those containers must
+            // not later be treated as holding a retained data-template subtree.
+            if (element is ContentPresenter or ContentControl)
+            {
+                _containersThatActuallyPreservedGeneratedContent.Add(element);
+            }
+        }
+        else
+        {
+            ClearGeneratedContainerContent(element);
+        }
+
+        // Visual-state hygiene for pooled containers: a recycled container must not inherit the
+        // previous item's leftover transform/opacity/clip/visibility local values (typically left
+        // behind by per-container animation code). ClearValue only — back to base.
+        element.ClearValue(UIElement.RenderTransformProperty);
+        element.ClearValue(UIElement.OpacityProperty);
+        element.ClearValue(UIElement.ClipToBoundsProperty);
+        element.ClearValue(UIElement.ClipToBoundsEdgesProperty);
+        element.ClearValue(UIElement.VisibilityProperty);
+    }
+
+    /// <summary>
+    /// Internal wrapper for <see cref="ClearContainerForItem"/> used by ItemContainerGenerator
+    /// before a container is pushed into the recycle pool (or discarded).
+    /// </summary>
+    internal void ClearContainerForItemInternal(FrameworkElement element, object item)
+    {
+        ClearContainerForItemOverride(element, item);
+    }
+
+    /// <summary>
+    /// Runs the same virtual clear lifecycle as a normal removal while preserving only the base
+    /// generated Content/ContentTemplate values for a viewport recycle. A per-element marker keeps
+    /// re-entrant collection clears for other containers on the full-clear path.
+    /// </summary>
+    internal bool RecycleContainerForItemInternal(FrameworkElement element, object item)
+    {
+        _containersThatActuallyPreservedGeneratedContent.Remove(element);
+        _containersPreservingGeneratedContent.Add(element);
+        try
+        {
+            ClearContainerForItemOverride(element, item);
+            return _containersThatActuallyPreservedGeneratedContent.Remove(element);
+        }
+        finally
+        {
+            _containersPreservingGeneratedContent.Remove(element);
+            _containersThatActuallyPreservedGeneratedContent.Remove(element);
+        }
+    }
+
+    /// <summary>
+    /// Releases content retained by a detached viewport-recycle pool entry when a collection
+    /// mutation makes that old logical item ineligible for direct rebinding.
+    /// </summary>
+    internal void ClearPreservedContainerContentInternal(FrameworkElement element)
+    {
+        ClearGeneratedContainerContent(element);
+    }
+
+    private static void ClearGeneratedContainerContent(FrameworkElement element)
+    {
         switch (element)
         {
             case ContentPresenter contentPresenter:
@@ -881,28 +955,6 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
                 contentControl.ClearValue(ContentControl.ContentTemplateSelectorProperty);
                 break;
         }
-
-        // Visual-state hygiene for pooled containers: a recycled container must not inherit the
-        // previous item's leftover transform/opacity/clip/visibility local values (typically left
-        // behind by per-container animation code). ClearValue only — back to base.
-        element.ClearValue(UIElement.RenderTransformProperty);
-        element.ClearValue(UIElement.OpacityProperty);
-        element.ClearValue(UIElement.ClipToBoundsProperty);
-        element.ClearValue(UIElement.VisibilityProperty);
-    }
-
-    /// <summary>
-    /// Internal wrapper for <see cref="ClearContainerForItem"/> used by ItemContainerGenerator
-    /// before a container is pushed into the recycle pool (or discarded). On the scroll-recycle
-    /// path the container has already been removed from the panel's visual tree, so the
-    /// content-clear's measure-invalidation walks up to no parent. On the collection-Reset path
-    /// (generator OnReset recycles realized entries before the panel detaches them) the container
-    /// is still attached, so the clear performs an O(realized) upward invalidation walk — bounded
-    /// by the viewport and short-circuited by already-dirty ancestors.
-    /// </summary>
-    internal void ClearContainerForItemInternal(FrameworkElement element, object item)
-    {
-        ClearContainerForItemOverride(element, item);
     }
 
     /// <summary>
@@ -1443,31 +1495,7 @@ public partial class ItemsControl : Control, Jalium.UI.Markup.IAddChild, IContai
 
     private int GetEffectiveItemCount()
     {
-        if (ItemsSource == null)
-        {
-            return Items.Count;
-        }
-
-        if (ItemsSource is ICollection collection)
-        {
-            return collection.Count;
-        }
-
-        var enumerator = ItemsSource.GetEnumerator();
-        try
-        {
-            var count = 0;
-            while (enumerator.MoveNext())
-            {
-                count++;
-            }
-
-            return count;
-        }
-        finally
-        {
-            (enumerator as IDisposable)?.Dispose();
-        }
+        return Items.Count;
     }
 
     private bool GetIsEffectivelyGrouping()

@@ -15,6 +15,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class EditControl : Control, IImeSupport, IEditorViewMetrics
 {
+    private InputMethodWeakSubscription<EditControl>? _imeSubscription;
     /// <inheritdoc />
     protected override Jalium.UI.Automation.Peers.AutomationPeer? OnCreateAutomationPeer()
         => new Jalium.UI.Automation.Peers.GenericAutomationPeer(this, Jalium.UI.Automation.Peers.AutomationControlType.Edit);
@@ -710,9 +711,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnLostFocusHandler));
 
         // IME
-        InputMethod.CompositionStarted += OnImeCompositionStarted;
-        InputMethod.CompositionUpdated += OnImeCompositionUpdated;
-        InputMethod.CompositionEnded += OnImeCompositionEnded;
+        Loaded += OnImeOwnerLoaded;
+        Unloaded += OnImeOwnerUnloaded;
 
         ApplyLanguageDefaults(Language);
         UpdateFoldingState();
@@ -1841,6 +1841,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     private void OnGotFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
+        EnsureImeSubscriptionAttached();
         InputMethod.SetTarget(this);
         StartCaretTimer();
         _caret.ResetBlink();
@@ -3672,6 +3673,30 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         InvalidateVisual();
     }
 
+    private void OnImeOwnerLoaded(object? sender, RoutedEventArgs e)
+    {
+        EnsureImeSubscriptionAttached();
+    }
+
+    private void EnsureImeSubscriptionAttached()
+    {
+        _imeSubscription ??= new InputMethodWeakSubscription<EditControl>(
+            this,
+            static (owner, source, args) => owner.OnImeCompositionStarted(source, args),
+            static (owner, source, args) => owner.OnImeCompositionUpdated(source, args),
+            static (owner, source, args) => owner.OnImeCompositionEnded(source, args));
+        _imeSubscription.Attach();
+    }
+
+    private void OnImeOwnerUnloaded(object? sender, RoutedEventArgs e)
+    {
+        _imeSubscription?.Detach();
+        if (ReferenceEquals(InputMethod.CurrentTarget, this))
+        {
+            InputMethod.SetTarget(null);
+        }
+    }
+
     private void OnImeCompositionStarted(object? sender, EventArgs e)
     {
         if (InputMethod.CurrentTarget == this)
@@ -5373,17 +5398,17 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             }
             else
             {
-                double trackHeight = finalAvailableHeight;
-                double trackX = Math.Max(0, viewportSize.Width - ScrollBarThickness);
-
-                _verticalScrollTrackRect = new Rect(
-                    trackX,
+                var scrollBounds = new Rect(
                     0,
-                    ScrollBarThickness,
-                    trackHeight);
+                    0,
+                    Math.Max(0, viewportSize.Width),
+                    Math.Max(0, finalAvailableHeight));
+                _verticalScrollTrackRect = ControlRenderGeometry.GetTrailingRect(scrollBounds, ScrollBarThickness);
+                double trackHeight = _verticalScrollTrackRect.Height;
 
                 double extent = Math.Max(1, GetVerticalScrollExtent(_effectiveViewportHeight));
-                double thumbHeight = Math.Clamp(trackHeight * (_effectiveViewportHeight / extent), MinScrollBarThumbSize, trackHeight);
+                double desiredThumbHeight = Math.Max(trackHeight * (_effectiveViewportHeight / extent), MinScrollBarThumbSize);
+                double thumbHeight = ControlRenderGeometry.GetAvailableLength(desiredThumbHeight, trackHeight);
                 double maxOffset = GetMaxVerticalOffset();
                 double travel = Math.Max(0, trackHeight - thumbHeight);
                 double thumbY = _verticalScrollTrackRect.Y + (maxOffset <= 0 ? 0 : (_view.VerticalOffset / maxOffset) * travel);
@@ -5391,31 +5416,33 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 _verticalScrollThumbRect = new Rect(
                     _verticalScrollTrackRect.X,
                     thumbY,
-                    ScrollBarThickness,
+                    _verticalScrollTrackRect.Width,
                     thumbHeight);
             }
         }
 
         if (_isHorizontalScrollBarVisible)
         {
-            double trackWidth = finalAvailableWidth;
+            double trackWidth = Math.Max(0, finalAvailableWidth);
+            double trackHeight = ControlRenderGeometry.GetAvailableLength(ScrollBarThickness, viewportSize.Height);
             _horizontalScrollTrackRect = new Rect(
                 0,
-                Math.Max(0, viewportSize.Height - ScrollBarThickness),
+                Math.Max(0, viewportSize.Height - trackHeight),
                 trackWidth,
-                ScrollBarThickness);
+                trackHeight);
 
             double extent = Math.Max(1, GetDocumentTextContentWidth());
-            double thumbWidth = Math.Clamp(trackWidth * (_effectiveTextViewportWidth / extent), MinScrollBarThumbSize, trackWidth);
+            double desiredThumbWidth = Math.Max(trackWidth * (_effectiveTextViewportWidth / extent), MinScrollBarThumbSize);
+            double thumbWidth = ControlRenderGeometry.GetAvailableLength(desiredThumbWidth, trackWidth);
             double maxOffset = GetMaxHorizontalOffset();
             double travel = Math.Max(0, trackWidth - thumbWidth);
             double thumbX = _horizontalScrollTrackRect.X + (maxOffset <= 0 ? 0 : (_view.HorizontalOffset / maxOffset) * travel);
 
-                _horizontalScrollThumbRect = new Rect(
+            _horizontalScrollThumbRect = new Rect(
                 thumbX,
                 _horizontalScrollTrackRect.Y,
                 thumbWidth,
-                ScrollBarThickness);
+                _horizontalScrollTrackRect.Height);
         }
     }
 

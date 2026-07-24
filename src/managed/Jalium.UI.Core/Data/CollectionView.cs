@@ -21,7 +21,7 @@ public class CollectionView : DispatcherObject, ICollectionView, INotifyProperty
     private readonly List<NotifyCollectionChangedEventArgs> _pendingChanges = new();
     private CultureInfo _culture = CultureInfo.CurrentCulture;
     private Predicate<object>? _filter;
-    private List<object> _internalList = new();
+    private IList _internalList = Array.Empty<object>();
     private object? _currentItem;
     private int _currentPosition = -1;
     private ReadOnlyObservableCollection<object>? _groups;
@@ -769,6 +769,17 @@ public class CollectionView : DispatcherObject, ICollectionView, INotifyProperty
 
     private void RebuildEffectiveItems()
     {
+        var comparer = Comparer;
+        if (_filter == null && comparer == null && !HasActiveGrouping && _sourceCollection is IList sourceList)
+        {
+            // An unshaped IList already is the effective view. Keeping it by reference
+            // preserves O(1) indexed access for virtual/lazy lists and avoids eagerly
+            // enumerating, boxing, and retaining every item in a duplicate snapshot.
+            _internalList = sourceList;
+            _groups = null;
+            return;
+        }
+
         var items = new List<object>();
         foreach (var item in _sourceCollection)
         {
@@ -782,7 +793,6 @@ public class CollectionView : DispatcherObject, ICollectionView, INotifyProperty
             }
         }
 
-        var comparer = Comparer;
         if (comparer != null)
         {
             items.Sort((left, right) => comparer.Compare(left, right));
@@ -806,7 +816,7 @@ public class CollectionView : DispatcherObject, ICollectionView, INotifyProperty
     }
 
     private void BuildGroups(
-        IReadOnlyList<object> items,
+        IEnumerable items,
         CollectionViewGroup? parentGroup,
         int level,
         ObservableCollection<object> targetGroups)
