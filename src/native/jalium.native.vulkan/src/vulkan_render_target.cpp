@@ -3625,6 +3625,21 @@ void VulkanRenderTarget::Clear(float r, float g, float b, float a)
     if (isDrawing_) {
         ResetGpuReplay();
         gpuReplayHasClear_ = true;
+        // Clear() repaints the whole surface, so the frame is a full one by
+        // construction and whatever damage was accumulated for it is moot.
+        // Recording that is what lets the partial-frame baseline gate in
+        // DrawReplayFrame pass on a first frame: sceneValid_ stays false until
+        // a full frame has been rendered into the scene image, so a target's
+        // very first frame — which is always preceded by a Clear — would
+        // otherwise be skipped and reported PRESENT_FAILED instead of reaching
+        // the screen.
+        //
+        // This cannot cost a partial-damage frame its narrowed damage: callers
+        // only reach Clear() on a full render. A partial frame deliberately
+        // paints its background with clip-aware fills instead, because a clear
+        // ignores clips and would destroy content outside the dirty region
+        // (see Window.ClearBackground).
+        SetFullInvalidation();
     }
 }
 
