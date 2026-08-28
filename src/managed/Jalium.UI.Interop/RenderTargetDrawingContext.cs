@@ -1915,29 +1915,39 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         {
             foreach (var figure in pathGeom.Figures)
             {
+                // Whether the route taken below already renders the pen's line caps.
+                // Native StrokePath does (ExpandStrokePath emits round/square caps from
+                // the lineCap argument); native DrawPolygon hard-codes butt caps, and the
+                // managed dash expansion strokes bare segments — those two need the
+                // endpoint cap circles appended manually below. Appending them after
+                // StrokePath too would double-paint the cap, which darkens visibly the
+                // moment the stroke brush is translucent.
+                bool routeRendersCaps;
                 if (hasDash && FigureHasCurves(figure))
                 {
                     // Route dashed curved paths through native StrokePath (Vello handles dash expansion)
                     DrawPathFigureNative(null, pen, figure, pathGeom.FillRule, geoBounds);
+                    routeRendersCaps = true;
                 }
                 else if (hasDash)
                 {
                     // Straight-line dashed paths: managed dash expansion (avoids Vello overhead)
                     DrawDashedPathFigure(pen, figure);
+                    routeRendersCaps = false;
                 }
                 else if (FigureHasCurves(figure))
                 {
                     DrawPathFigureNative(null, pen, figure, pathGeom.FillRule, geoBounds);
+                    routeRendersCaps = true;
                 }
                 else
                 {
                     DrawPathFigurePolygon(null, pen, figure, pathGeom.FillRule, geoBounds);
+                    routeRendersCaps = false;
                 }
 
-                // Draw round caps as circles at endpoints (native StrokePath
-                // only supports flat caps; this avoids the self-intersection
-                // issues caused by DrawWidenedStroke).
-                if (hasNonFlatCaps && !figure.IsClosed && pen.Brush != null)
+                // Endpoint cap circles for the routes that cannot render caps natively.
+                if (!routeRendersCaps && hasNonFlatCaps && !figure.IsClosed && pen.Brush != null)
                 {
                     var capRadius = pen.Thickness / 2;
                     var startPt = figure.StartPoint;
@@ -3434,44 +3444,7 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         var exactRight = offsetBounds.Right;
         var exactBottom = offsetBounds.Bottom;
 
-        // Aliased (scissor-only) clips have NO antialiased mask behind them — the scissor
-        // rectangle is the visual boundary itself — so it must never be looser than the
-        // geometric one. It used to be snapped OUTWARD (Floor start, Ceiling end) on the
-        // premise that drawing operations pixel-snap their origin via Math.Round, and that
-        // premise does not hold: SnapCoordinate is deliberately a no-op so fills keep
-        // sub-pixel motion smooth. So an outward scissor let clipped content survive a full
-        // pixel past the clip at FULL coverage while every sibling fill in the same container
-        // stopped on its own antialiased edge.
-        //
-        // That is exactly the bright 1px line an Image under a gradient scrim shows at the
-        // bottom of a ClipToBounds host: the scrim's last row is a fractional fill and cannot
-        // cover the image row the loosened scissor let through whole, so the seam reads
-        // BRIGHTER than the rows above and below it. (The rounded-clip path below already
-        // learned this and hands the mask the exact rect; this is the square-clip half.)
-        //
-        // Snapping INWARD is the correct direction for a hard clip: a row that was only
-        // fractionally inside the region is dropped rather than painted at full strength,
-        // which is what CSS overflow:hidden and a scissor do anyway. The cost is up to one
-        // pixel of an edge that was never fully inside the clip to begin with.
-        var x = (float)Math.Ceiling(exactLeft);
-        var y = (float)Math.Ceiling(exactTop);
-        var w = (float)Math.Floor(exactRight) - x;
-        var h = (float)Math.Floor(exactBottom) - y;
-
-        // A clip thinner than one pixel must not collapse to nothing: inward snapping would
-        // erase a 0.4px-tall region entirely, and a caller that asked to clip to a hairline
-        // still expects to see the hairline. Fall back to the nearest whole pixel, which is
-        // the smallest region that can be scissored at all.
-        if (w <= 0 && exactRight > exactLeft)
-        {
-            x = (float)Math.Round(exactLeft);
-            w = Math.Max(1f, (float)Math.Round(exactRight) - x);
-        }
-        if (h <= 0 && exactBottom > exactTop)
-        {
-            y = (float)Math.Round(exactTop);
-            h = Math.Max(1f, (float)Math.Round(exactBottom) - y);
-        }
+        var (x, y, w, h) = SnapHardClipRect(exactLeft, exactTop, exactRight, exactBottom);
 
         // Rounded clips get the EXACT rect instead. Their backend counterpart is an
         // antialiased SDF coverage mask evaluated per fragment (rounded_clip.hlsli,
@@ -3527,6 +3500,57 @@ public sealed class RenderTargetDrawingContext : DrawingContextAdapter, IOffsetD
         }
 
         _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
+    }
+
+    /// <summary>
+    /// Snaps a hard (scissor-only) clip rectangle to whole pixels.
+    ///
+    /// Aliased clips have NO antialiased mask behind them — the scissor rectangle is
+    /// the visual boundary itself. An integer scissor cannot represent a fractional
+    /// clip edge, so some rounding is unavoidable, and both fixed directions have
+    /// shipped as visible defects:
+    ///
+    ///  - OUTWARD (Floor start / Ceiling end) let un-antialiased content — bitmap
+    ///    quads sample pixel centers at full coverage — survive a whole row past the
+    ///    clip. That was the bright 1px seam an Image under a gradient scrim showed
+    ///    at the bottom of a ClipToBounds host, pulsing while an animation swept the
+    ///    fraction.
+    ///  - INWARD (Ceiling start / Floor end) shaved the first row/column of content
+    ///    sitting flush against the clip origin. A 1px chip border inside a
+    ///    ScrollViewer whose layout landed on a fractional Y lost its entire top
+    ///    edge: the stroke's only pixel row fell wholly outside the scissor while
+    ///    the bottom/right edges survived, so every sub-pixel layout rendered a
+    ///    border with a missing side.
+    ///
+    /// Round-to-NEAREST bounds both failure modes at half a pixel and matches the
+    /// straight-edge policy the rounded-clip path already settled on (native
+    /// EmitRoundedClipPair): hard clip edges land on the nearest pixel boundary, so
+    /// flush content keeps its first row whenever the majority of that row is inside
+    /// the clip, and leakage past the true edge can never reach a full-coverage row.
+    ///
+    /// A clip thinner than one pixel must not collapse to nothing: rounding both
+    /// edges to the same boundary would erase a 0.4px-tall region entirely, and a
+    /// caller that asked to clip to a hairline still expects to see the hairline.
+    /// Such a rect widens to the one whole pixel a scissor can express.
+    /// </summary>
+    internal static (float X, float Y, float W, float H) SnapHardClipRect(
+        double exactLeft, double exactTop, double exactRight, double exactBottom)
+    {
+        var x = (float)Math.Round(exactLeft);
+        var y = (float)Math.Round(exactTop);
+        var w = (float)Math.Round(exactRight) - x;
+        var h = (float)Math.Round(exactBottom) - y;
+
+        if (w <= 0 && exactRight > exactLeft)
+        {
+            w = 1f;
+        }
+        if (h <= 0 && exactBottom > exactTop)
+        {
+            h = 1f;
+        }
+
+        return (x, y, w, h);
     }
 
     /// <summary>

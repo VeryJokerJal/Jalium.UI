@@ -835,10 +835,19 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
         static_cast<uint32_t>(height) <= swapChainHeight_) {
         width_ = width;
         height_ = height;
-        if (compositionAnchorRightActive_ ||
-            compositionAnchorBottomActive_ ||
-            dcompSwapChainOffsetX_ != 0.0f ||
-            dcompSwapChainOffsetY_ != 0.0f) {
+        // An active anchor means the visual offset is paired with a
+        // capacity-relative copy that lives at the OLD width_ inside the back
+        // buffer. Recomputing the offset from the NEW width_ here would move the
+        // visual to a capacity region that copy never wrote, exposing the whole
+        // difference between the two widths. That pairing is only re-established
+        // in EndDraw, which commits the offset right after recording the copy for
+        // the current size — so leave an active anchor alone and let EndDraw move
+        // it. Returning to offset (0,0) stays safe at any time: the logical frame
+        // always occupies the buffer's top-left corner.
+        if (!compositionAnchorRightActive_ &&
+            !compositionAnchorBottomActive_ &&
+            (dcompSwapChainOffsetX_ != 0.0f ||
+             dcompSwapChainOffsetY_ != 0.0f)) {
             JaliumResult placementResult =
                 CommitCompositionResizePlacement(
                     // EndDraw performs the compositor completion wait after
@@ -1060,7 +1069,7 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
         swapChainHeight_,
         fullInvalidation_ || !dirtyRects_.empty());
 
-    float clearAlpha = isComposition_ ? 0.0f : clearA_;
+    float clearAlpha = ResolveFrameClearAlpha();
     bool ok = directRenderer_->BeginFrame(
         frameIndex_,
         static_cast<UINT>(width_), static_cast<UINT>(height_),
@@ -1517,8 +1526,26 @@ bool D3D12RenderTarget::TryStrokeGradientPath(Brush* brush, float strokeWidth,
 // Drawing — Rectangles
 // ============================================================================
 
+float D3D12RenderTarget::ResolveFrameClearAlpha() const {
+    // The managed ClearBackground already resolves this against the
+    // PREMULTIPLIED contract: an opaque window Background publishes alpha 1,
+    // and only SystemBackdrop / AllowsTransparency publish alpha 0. Forcing 0
+    // here regardless clears the whole reserved capacity buffer to fully
+    // transparent, so every region a frame does not cover — the strip a live
+    // resize just added, or anything outside a partial frame's dirty region —
+    // blends through DWM to the HWND redirection surface the composited path
+    // never paints, which reads as a white block.
+    //
+    // Before the managed layer has published anything, clearA_ is still the
+    // constructor default of 1; keep the old transparent behaviour there so a
+    // backdrop window cannot flash an opaque first frame.
+    if (isComposition_ && !clearColorInitialized_) return 0.0f;
+    return clearA_;
+}
+
 void D3D12RenderTarget::Clear(float r, float g, float b, float a) {
     clearR_ = r; clearG_ = g; clearB_ = b; clearA_ = a;
+    clearColorInitialized_ = true;
     if (isDrawing_ && directRenderer_) {
         auto* cl = directRenderer_->GetCommandList();
         float clearColor[4] = { r, g, b, a };
@@ -3133,7 +3160,7 @@ int32_t D3D12RenderTarget::DebugForceLeakedCommandListResize(int32_t newWidth, i
 
     // Open the command list exactly as BeginDraw does, but DO NOT set isDrawing_:
     // this is the #921 open-gap (cmdListRecording_==true while isDrawing_==false).
-    const float clearAlpha = isComposition_ ? 0.0f : clearA_;
+    const float clearAlpha = ResolveFrameClearAlpha();
     const bool opened = directRenderer_->BeginFrame(
         frameIndex_,
         static_cast<UINT>(width_), static_cast<UINT>(height_),
@@ -3193,7 +3220,7 @@ int32_t D3D12RenderTarget::DebugForceVelloOutputOrphan(int32_t* outAlive) {
 
     // Open the command list exactly as BeginDraw does, but DO NOT set isDrawing_ —
     // the same #921 open-gap so the orphan sequence records into a genuinely open list.
-    const float clearAlpha = isComposition_ ? 0.0f : clearA_;
+    const float clearAlpha = ResolveFrameClearAlpha();
     const bool opened = directRenderer_->BeginFrame(
         frameIndex_,
         static_cast<UINT>(width_), static_cast<UINT>(height_),

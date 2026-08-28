@@ -299,6 +299,10 @@ private:
     void WaitForAllFrames();
     JaliumResult CommitCompositionResizePlacement(bool waitForCompletion);
 
+    // Alpha the per-frame BeginFrame clear must use. See the definition for why
+    // the composition path may not simply force 0.
+    float ResolveFrameClearAlpha() const;
+
     // Flush pending Vello paths before non-Vello draws to maintain correct Z-order.
     // Also commits any deferred clip / transform pushes so the upcoming draw
     // observes the correct scissor and transform stacks. Call this before any
@@ -549,6 +553,10 @@ private:
 
     // Clear color (latched in Clear(), applied in BeginDraw)
     float clearR_ = 0, clearG_ = 0, clearB_ = 0, clearA_ = 1;
+    // Whether the managed layer has published a clear colour yet. Until it has,
+    // clearA_ is still the constructor default and must not be trusted on the
+    // composition path (see ResolveFrameClearAlpha).
+    bool clearColorInitialized_ = false;
 
     // Pre-glass snapshot flag for fused liquid glass panels
     bool preGlassSnapshotCaptured_ = false;

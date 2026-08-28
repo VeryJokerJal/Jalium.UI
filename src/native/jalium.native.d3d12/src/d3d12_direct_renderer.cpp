@@ -3952,6 +3952,14 @@ void D3D12DirectRenderer::RecordDrawCommands()
             D3D12_VIEWPORT fullViewport = { 0, 0, (float)viewportWidth_, (float)viewportHeight_, 0, 1 };
             commandList_->RSSetViewports(1, &fullViewport);
         }
+        // The blit above narrowed the scissor to activePathDamage. Inside the
+        // batch loop the next batch always re-sets it, but the end-of-flush
+        // exitPathMode() call returns straight out of RecordDrawCommands and
+        // would leave that path-sized rect bound for whatever draws next —
+        // silently clipping it to the last path run's damage. Restore the
+        // content extent so a leaked scissor can never survive path mode.
+        D3D12_RECT restoreScissor = { 0, 0, (LONG)pathContentW, (LONG)pathContentH };
+        commandList_->RSSetScissorRects(1, &restoreScissor);
 
         // Reset state-machine knobs so the next path batch in this frame re-binds
         // MSAA and re-clears the scratch (otherwise earlier paths, already resolved
