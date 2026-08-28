@@ -34,6 +34,12 @@
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
+    <!-- Referenced as a normal library, not an analyzer: RazorVirtualizeLoweringTests drives the
+         parser and code generator directly. Mirrors Jalium.UI.Tests so the portable slice keeps
+         compiling the shared source inventory. -->
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj"
+                      Aliases="sg"
+                      UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;SelfContained;RuntimeIdentifier;IsTrimmable;IsAotCompatible" />
   </ItemGroup>
 
   <!--
