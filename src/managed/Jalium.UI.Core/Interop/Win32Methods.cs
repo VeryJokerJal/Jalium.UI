@@ -99,6 +99,23 @@ internal static partial class Win32Methods
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool EndPaint(nint hWnd, ref PAINTSTRUCT lpPaint);
 
+    // ── Background erase (WM_ERASEBKGND) ──────────────────────────────────
+    // The composited backends never paint the HWND's own redirection surface,
+    // so it keeps whatever the desktop compositor allocated it with — usually
+    // white. Any region the composition layer leaves at alpha 0 exposes that
+    // surface through DWM's premultiplied blend. Filling it with the window
+    // background colour makes such a gap indistinguishable from the real
+    // background instead of a white flash.
+    [LibraryImport("user32.dll")]
+    internal static partial int FillRect(nint hDC, ref RECT lprc, nint hbr);
+
+    [LibraryImport("gdi32.dll")]
+    internal static partial nint CreateSolidBrush(uint crColor);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static partial bool DeleteObject(nint ho);
+
     // ── Messages ──────────────────────────────────────────────────────────
     [LibraryImport("user32.dll", EntryPoint = "PostMessageW")]
     [return: MarshalAs(UnmanagedType.Bool)]

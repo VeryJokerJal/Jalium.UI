@@ -240,8 +240,35 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         public readonly Jalium.UI.Diagnostics.FrameHistory FrameHistory = new();
 
+        // Render-thread path only. The present runs on the worker long after
+        // RenderFrame returned, so OnEndDraw's UI-thread stopwatch cannot time it and
+        // was never reached at all — FrameHistory therefore stayed empty for every
+        // window using the render thread (the DEFAULT on Windows), which is exactly why
+        // the DevTools FPS readout sat frozen on the single inline frame drawn during
+        // startup. The worker hands back the split it was given at capture time plus its
+        // own present duration. Deliberately does NOT touch _layoutMs/_renderMs/_presentMs:
+        // the UI thread is already timing the NEXT frame into those.
+        private double _deferredLayoutMs, _deferredRenderMs, _deferredPresentMs;
+
+        public (double LayoutMs, double RenderMs) CaptureSplitForDeferredPresent()
+            => (_layoutMs, Math.Max(0, _renderMs - _layoutMs));
+
+        public void OnDeferredPresent(double layoutMs, double renderMs, double presentMs, int dirtyElements)
+        {
+            double total = layoutMs + renderMs + presentMs;
+            _deferredLayoutMs = layoutMs;
+            _deferredRenderMs = layoutMs + renderMs;
+            _deferredPresentMs = total;
+            _lastFrameMs = total;
+            if (total > _worstFrameMs) _worstFrameMs = total;
+            Interlocked.Increment(ref _frameCount);
+            FrameHistory.Push(new Jalium.UI.Diagnostics.FrameHistory.Sample(
+                layoutMs, renderMs, presentMs, total, dirtyElements));
+        }
+
         public void OnEndDraw()
         {
+            _deferredPresentMs = 0;
             _presentMs = _frameSw.Elapsed.TotalMilliseconds;
             _lastFrameMs = _presentMs;
             if (_lastFrameMs > _worstFrameMs) _worstFrameMs = _lastFrameMs;
@@ -260,9 +287,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
             _dFps = _frameCount / _intervalSw.Elapsed.TotalSeconds;
             _dWorstMs = _worstFrameMs;
-            _dLayoutMs = _layoutMs;
-            _dRenderMs = _renderMs;
-            _dPresentMs = _presentMs;
+            // Prefer the worker's split when this window presents off the UI thread:
+            // _layoutMs/_renderMs/_presentMs only describe a frame that ended inline.
+            bool deferred = _deferredPresentMs > 0;
+            _dLayoutMs = deferred ? _deferredLayoutMs : _layoutMs;
+            _dRenderMs = deferred ? _deferredRenderMs : _renderMs;
+            _dPresentMs = deferred ? _deferredPresentMs : _presentMs;
             _dRenderFrameCalls = _renderFrameCalls;
             _dPaintCalls = _paintCalls;
             _dProcessRenderCalls = _processRenderCalls;
@@ -7220,8 +7250,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     return nint.Zero;
 
                 case WM_ERASEBKGND:
-                    // Return 1 to tell Windows we've handled background erase
-                    // This prevents flickering during resize
+                    // Seed the HWND's own redirection surface with the window
+                    // background colour before claiming the erase. The composited
+                    // backends only ever draw into the DirectComposition layer, so
+                    // without this the surface keeps its undefined allocation
+                    // content; every region the composition layer leaves at
+                    // alpha 0 — a client area that just grew past the last
+                    // rendered frame, most visibly during a live resize — shows
+                    // that surface through DWM's premultiplied blend as white.
+                    window.EraseBackgroundToWindowColor(wParam);
                     return 1;
 
                 case WM_PAINT:
@@ -8491,24 +8528,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // vsync-aligned Present stalls for the whole DWM buffer-retire
             // interval; without the split that stall reads as EndDraw CPU work.
             long presentBlockNs = 0;
+            // Every window in the process publishes into the same static snapshot slots.
+            // With DevTools open that meant its own window (which repaints far more often
+            // than the app being inspected) overwrote the Perf tab's numbers a few times
+            // per second, so the tab was mostly measuring itself. DevTools now pins
+            // StatsOwner to the inspected window; frames from any other window still run
+            // the queries they need for their own bookkeeping but must not publish.
+            bool publishDiagnostics = Jalium.UI.Diagnostics.RenderDiagnostics.ShouldPublishFor(this);
             // GPU resource snapshot (glyph atlas, path cache, textures) for
             // the Perf tab. Best-effort — a backend that hasn't implemented
             // the query just leaves LatestGpuSnapshot unchanged.
             if (renderTarget.TryQueryGpuStats(out var gpuStats))
             {
-                Jalium.UI.Diagnostics.RenderDiagnostics.PublishGpuSnapshot(
-                    gpuStats.GlyphSlotsUsed, gpuStats.GlyphSlotsTotal, gpuStats.GlyphBytes,
-                    gpuStats.PathEntries, gpuStats.PathBytes,
-                    gpuStats.TextureCount, gpuStats.TextureBytes);
-                // Frame-pacing: roll up the managed BeginDraw attempt counters
-                // (incremented inside RenderTarget.TryBeginDraw) with the
-                // native backend's fence-wait + GPU work timings so DevTools
-                // shows one cohesive "Frame pacing" block per frame.
-                Jalium.UI.Diagnostics.RenderDiagnostics.PublishFramePacing(
-                    gpuStats.FrameGpuWaitNs,
-                    gpuStats.SwapBufferCount,
-                    gpuStats.LastFramePresentToReadyNs,
-                    gpuStats.FrameWaitableWaitNs);
+                if (publishDiagnostics)
+                {
+                    Jalium.UI.Diagnostics.RenderDiagnostics.PublishGpuSnapshot(
+                        gpuStats.GlyphSlotsUsed, gpuStats.GlyphSlotsTotal, gpuStats.GlyphBytes,
+                        gpuStats.PathEntries, gpuStats.PathBytes,
+                        gpuStats.TextureCount, gpuStats.TextureBytes);
+                    // Frame-pacing: roll up the managed BeginDraw attempt counters
+                    // (incremented inside RenderTarget.TryBeginDraw) with the
+                    // native backend's fence-wait + GPU work timings so DevTools
+                    // shows one cohesive "Frame pacing" block per frame.
+                    Jalium.UI.Diagnostics.RenderDiagnostics.PublishFramePacing(
+                        gpuStats.FrameGpuWaitNs,
+                        gpuStats.SwapBufferCount,
+                        gpuStats.LastFramePresentToReadyNs,
+                        gpuStats.FrameWaitableWaitNs);
+                }
                 // Cache the live back-buffer count so the FLIP_SEQUENTIAL follow-up
                 // flush (HandlePresentedFrameFlush) covers every buffer even under a
                 // JALIUM_SWAPCHAIN_BUFFERS override (default kDefaultSwapBufferCount=2).
@@ -8527,6 +8574,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (Jalium.UI.Diagnostics.HoverTrace.Enabled)
                 Jalium.UI.Diagnostics.RenderDiagnostics.ApiStatsEnabled = true;
             if (Jalium.UI.Diagnostics.RenderDiagnostics.ApiStatsEnabled &&
+                publishDiagnostics &&
                 renderTarget.TryQueryGpuTiming(out var gpuTiming))
             {
                 Jalium.UI.Diagnostics.RenderDiagnostics.PublishGpuTiming(
@@ -8548,11 +8596,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Per-frame draw-API call counters → DevTools Perf tab. Only
             // publishes when ApiStatsEnabled (set by the Perf tab while it's
             // visible) so production frames pay zero overhead.
-            Jalium.UI.Diagnostics.RenderDiagnostics.PublishAndResetApiStats(beginBlockingWaitNs, presentBlockNs);
+            Jalium.UI.Diagnostics.RenderDiagnostics.PublishAndResetApiStats(
+                publishDiagnostics, beginBlockingWaitNs, presentBlockNs);
             // Native path-rasterization cache hit/miss counters (D3D12 Impeller).
             // Cumulative atomics in native — diff against the previous frame's
             // values to get per-frame deltas.
-            if (Jalium.UI.Diagnostics.RenderDiagnostics.ApiStatsEnabled)
+            if (Jalium.UI.Diagnostics.RenderDiagnostics.ApiStatsEnabled && publishDiagnostics)
             {
                 PublishPathCacheStatsFromNative();
                 PublishTextCacheStatsFromNative();
@@ -8961,6 +9010,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         public long ResizeVersion;
         public bool RequireNativeSameSize;
         public bool SimplifyEffects;
+        // HUD/FrameHistory split measured on the UI thread while producing this capture.
+        // The worker adds its own present time and pushes the completed sample.
+        public double HudLayoutMs;
+        public double HudRecordMs;
+        public int HudDirtyElements;
     }
 
     private Thread? _renderThread;
@@ -9259,6 +9313,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         dc.DrainPendingRetainedLayers();
 
         rt.SetFullInvalidation();
+        long presentStartTimestamp = Stopwatch.GetTimestamp();
         if (!rt.TryBeginDraw())
         {
             // GPU/swap-chain busy. Do NOT silently drop the capture: dirty was
@@ -9299,6 +9354,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // Interlocked + plain bool store — safe from this worker (see
                 // ResetEndDrawInvalidStateTracking for the ordering argument).
                 ResetEndDrawInvalidStateTracking();
+                // Close the frame clock the UI thread started. FrameHistory.Push is
+                // lock-guarded, so the worker may write it directly.
+                _debugHud.OnDeferredPresent(
+                    cap.HudLayoutMs,
+                    cap.HudRecordMs,
+                    Stopwatch.GetElapsedTime(presentStartTimestamp).TotalMilliseconds,
+                    cap.HudDirtyElements);
+            }
+            // Per-frame draw-API counters are accumulated per THREAD, so this worker owns
+            // the ones it just produced: publish (or drop, when another window is the
+            // DevTools target) here — the UI thread's EndDraw never sees this frame.
+            if (Jalium.UI.Diagnostics.RenderDiagnostics.ApiStatsEnabled)
+            {
+                bool publishWorkerDiagnostics =
+                    ended && Jalium.UI.Diagnostics.RenderDiagnostics.ShouldPublishFor(this);
+                Jalium.UI.Diagnostics.RenderDiagnostics.PublishAndResetApiStats(
+                    publishWorkerDiagnostics, 0, 0);
             }
             if (ended && _consecutiveRecoverableRenderFailures != 0)
             {
@@ -9503,6 +9575,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        // Close the UI-thread half of the frame clock here: everything after this point
+        // (BeginDraw wait, Replay, Present) is the worker's, and it reports that back.
+        _debugHud.MarkRender();
+        var (hudLayoutMs, hudRecordMs) = _debugHud.CaptureSplitForDeferredPresent();
+
         var cap = new FrameCapture
         {
             Drawing = drawing,
@@ -9515,6 +9592,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ResizeVersion = captureHasPendingResize ? captureResizeVersion : 0,
             RequireNativeSameSize = captureRequiresNativeSameSize,
             SimplifyEffects = captureSimplifiesEffects,
+            HudLayoutMs = hudLayoutMs,
+            HudRecordMs = hudRecordMs,
+            HudDirtyElements = _dirtyElements.Count,
         };
 
         // Publish and consume dirty state as one lifecycle transaction. If
@@ -11103,6 +11183,42 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// Clears the render target with the window background color.
     /// When a D2D clip is active (retained mode), only the clipped area is cleared.
     /// </summary>
+    /// <summary>
+    /// Paints the HWND's own redirection surface with the opaque window background.
+    /// The composited backends draw exclusively into the DirectComposition layer, so
+    /// this surface is otherwise never written and keeps its undefined allocation
+    /// content. Any area the composition layer leaves at alpha 0 blends straight
+    /// through to it, which is what turns a not-yet-rendered strip into a white block.
+    /// Skipped for windows that genuinely want a transparent background — there the
+    /// alpha-0 area is the intended result.
+    /// </summary>
+    private void EraseBackgroundToWindowColor(nint hdc)
+    {
+        if (hdc == nint.Zero || Handle == nint.Zero || !PlatformFactory.IsWindows)
+            return;
+        if (AllowsTransparency || SystemBackdrop != WindowBackdropType.None)
+            return;
+        if (Background is not SolidColorBrush solid || solid.Color.A != 255)
+            return;
+        if (!GetClientRect(Handle, out RECT clientRect))
+            return;
+        if (clientRect.right <= clientRect.left || clientRect.bottom <= clientRect.top)
+            return;
+
+        var color = solid.Color;
+        nint brush = CreateSolidBrush((uint)(color.R | (color.G << 8) | (color.B << 16)));
+        if (brush == nint.Zero)
+            return;
+        try
+        {
+            _ = FillRect(hdc, ref clientRect, brush);
+        }
+        finally
+        {
+            _ = DeleteObject(brush);
+        }
+    }
+
     private void ClearBackground(RenderTarget renderTarget)
     {
         ClearBackground(renderTarget, clipRegion: null);

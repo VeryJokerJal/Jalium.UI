@@ -3,6 +3,7 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.DevTools;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Diagnostics;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
 
@@ -426,6 +427,66 @@ public class DevToolsWindowTests
         return string.Concat((text ?? string.Empty)
             .Where(char.IsLetterOrDigit))
             .ToUpperInvariant();
+    }
+
+    /// <summary>
+    /// The Perf tab used to turn on process-wide draw-API instrumentation and a 500 ms
+    /// rebuild timer, and undo neither when the user moved to another tab or closed the
+    /// window. The result: every window in the process kept paying per-draw-call timing
+    /// plus a per-frame native GPU-timing readback for the rest of the session, and the
+    /// Perf timer kept rebuilding both panels and re-uploading the graph bitmap twice a
+    /// second — forcing a full DevTools repaint while the user was on the Inspector tab.
+    /// </summary>
+    [Fact]
+    public void PerfTab_LeavingOrClosing_StopsInstrumentationAndItsRefreshTimer()
+    {
+        ResetApplicationState();
+        _ = new Application();
+
+        bool previousEnabled = RenderDiagnostics.ApiStatsEnabled;
+        object? previousOwner = RenderDiagnostics.StatsOwner;
+        try
+        {
+            var host = new Window { Title = "Host", Content = new Button { Content = "One" } };
+            var devTools = new DevToolsWindow(host);
+            try
+            {
+                var tabs = (TabControl)GetPrivateFieldOrNull(devTools, "_rootTabs")!;
+                var perfTab = (TabItem)GetPrivateFieldOrNull(devTools, "_perfTab")!;
+                var inspectorTab = tabs.Items.Cast<TabItem>().First(t => !ReferenceEquals(t, perfTab));
+
+                tabs.SelectedItem = perfTab;
+                Assert.True(RenderDiagnostics.ApiStatsEnabled);
+                Assert.Same(host, RenderDiagnostics.StatsOwner);
+                var timer = (DispatcherTimer?)GetPrivateFieldOrNull(devTools, "_perfRefreshTimer");
+                Assert.NotNull(timer);
+                Assert.True(timer!.IsEnabled);
+
+                tabs.SelectedItem = inspectorTab;
+                Assert.False(RenderDiagnostics.ApiStatsEnabled);
+                Assert.Null(RenderDiagnostics.StatsOwner);
+                Assert.False(timer.IsEnabled);
+
+                // Re-entering must arm it again — stopping on leave must not be one-way.
+                tabs.SelectedItem = perfTab;
+                Assert.True(RenderDiagnostics.ApiStatsEnabled);
+                Assert.True(timer.IsEnabled);
+
+                InvokePrivate(devTools, "OnDevToolsClosing", null, EventArgs.Empty);
+                Assert.False(RenderDiagnostics.ApiStatsEnabled);
+                Assert.Null(RenderDiagnostics.StatsOwner);
+                Assert.False(timer.IsEnabled);
+            }
+            finally
+            {
+                devTools.Close();
+            }
+        }
+        finally
+        {
+            RenderDiagnostics.ApiStatsEnabled = previousEnabled;
+            RenderDiagnostics.StatsOwner = previousOwner;
+        }
     }
 
     private static object? GetPrivateFieldOrNull(object instance, string fieldName)

@@ -735,7 +735,7 @@ public partial class DevToolsWindow : Window
 
     private void OnDevToolsClosing(object? sender, EventArgs e)
     {
-        _searchRefreshTimer.Stop();
+        StopAllRefreshTimers();
         CancelExpandAnimation();
 
         if (_isPickerActive)
@@ -6307,6 +6307,15 @@ public partial class DevToolsWindow : Window
     private Border? _perfGraphHost;
     private DispatcherTimer? _perfRefreshTimer;
     private Image? _perfGraphImage;
+    // Change detection so an idle target window costs nothing. Every panel below is
+    // rebuilt from an immutable snapshot object, so an unchanged reference means the
+    // target produced no new frame and the whole refresh can be skipped — which is the
+    // difference between "DevTools idles" and "DevTools repaints itself twice a second
+    // forever, on every tab, because the Perf timer was never stopped".
+    private object? _perfLastGpuSnapshot;
+    private object? _perfLastApiSnapshot;
+    private long _perfLastGraphStamp = -1;
+    private int _perfLastGraphCount = -1;
     private DevToolsUi.DevToolsButton? _perfEngineAuto;
     private DevToolsUi.DevToolsButton? _perfEngineVello;
     private DevToolsUi.DevToolsButton? _perfEngineImpeller;
@@ -6512,13 +6521,37 @@ public partial class DevToolsWindow : Window
         // renders the snapshot. The flag is the only thing gating the recording
         // overhead — outside DevTools we pay nothing.
         RenderDiagnostics.ApiStatsEnabled = true;
+        // Pin every shared per-frame snapshot slot to the window being inspected.
+        // Without this DevTools' own window (which repaints far more often than the
+        // app) wins the race for those slots and the tab ends up profiling itself.
+        RenderDiagnostics.StatsOwner = _targetWindow;
+        _perfLastGpuSnapshot = null;
+        _perfLastApiSnapshot = null;
+        _perfLastGraphStamp = -1;
+        _perfLastGraphCount = -1;
         RefreshPerfStats();
         if (_perfRefreshTimer == null)
         {
             _perfRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
             _perfRefreshTimer.Tick += (_, _) => RefreshPerfStats();
-            _perfRefreshTimer.Start();
         }
+        _perfRefreshTimer.Start();
+    }
+
+    /// <summary>
+    /// Leaving the Perf tab must undo everything entering it turned on. It previously
+    /// undid nothing: the 500 ms timer kept rebuilding both panels and re-uploading the
+    /// full-resolution graph bitmap forever (so every OTHER tab, Inspector included, got
+    /// a forced repaint twice a second), and ApiStatsEnabled stayed latched on for the
+    /// whole process — leaving every draw call in every window paying the instrumentation
+    /// and the per-frame native GPU-timing readback, for the rest of the session and even
+    /// after DevTools was closed.
+    /// </summary>
+    private void OnPerfTabDeactivated()
+    {
+        _perfRefreshTimer?.Stop();
+        RenderDiagnostics.ApiStatsEnabled = false;
+        RenderDiagnostics.StatsOwner = null;
     }
 
     private void SwitchEngine(RenderingEngine engine)
@@ -6585,49 +6618,85 @@ public partial class DevToolsWindow : Window
         if (_perfEngineImpeller != null) _perfEngineImpeller.IsActive = currentEngine == RenderingEngine.Impeller;
 
         var history = _targetWindow.FrameHistory;
-        var buffer = new FrameHistory.Sample[FrameHistory.Capacity];
+        var buffer = _perfSampleBuffer;
         int count = history.CopyTo(buffer);
-        if (count > 0 && _perfFpsText != null)
-        {
-            double totalMs = 0;
-            double worst = 0;
-            for (int i = 0; i < count; i++)
-            {
-                totalMs += buffer[i].TotalMs;
-                if (buffer[i].TotalMs > worst) worst = buffer[i].TotalMs;
-            }
-            double avg = totalMs / count;
-            double fps = avg > 0 ? 1000.0 / avg : 0;
-            _perfFpsText.Text = $"FPS {fps:F1}   avg {avg:F1} ms   worst {worst:F1} ms";
-            _perfFpsText.Foreground = worst > 16
-                ? DevToolsTheme.Warning
-                : fps >= 55 ? DevToolsTheme.Success : DevToolsTheme.Accent;
 
-            if (_perfFpsHero != null)
+        // FPS is a RATE, so it has to be read against wall-clock, not against the ring
+        // buffer. Averaging the whole ring meant a window that stopped rendering kept
+        // displaying the average of frames it drew minutes ago — a dead number that looks
+        // exactly like a live one. Count only frames from the last second and say "idle"
+        // when there are none.
+        long now = Stopwatch.GetTimestamp();
+        long windowStart = now - Stopwatch.Frequency;   // 1 s
+        int liveCount = 0;
+        double liveTotalMs = 0, liveWorstMs = 0;
+        for (int i = count - 1; i >= 0; i--)
+        {
+            if (buffer[i].TimestampTicks < windowStart) break;
+            liveCount++;
+            liveTotalMs += buffer[i].TotalMs;
+            if (buffer[i].TotalMs > liveWorstMs) liveWorstMs = buffer[i].TotalMs;
+        }
+
+        if (_perfFpsText != null)
+        {
+            if (liveCount > 0)
             {
-                _perfFpsHero.Text = fps > 0 ? fps.ToString("F0") : "—";
-                _perfFpsHero.Foreground = worst > 16
+                double avg = liveTotalMs / liveCount;
+                double fps = liveCount;   // samples inside a one-second window == frames/second
+                var health = liveWorstMs > 16
                     ? DevToolsTheme.Warning
                     : fps >= 55 ? DevToolsTheme.Success : DevToolsTheme.Accent;
+                _perfFpsText.Text = $"FPS {fps:F0}   avg {avg:F1} ms   worst {liveWorstMs:F1} ms";
+                _perfFpsText.Foreground = health;
+                if (_perfFpsHero != null) { _perfFpsHero.Text = fps.ToString("F0"); _perfFpsHero.Foreground = health; }
+                if (_perfFpsSub != null) _perfFpsSub.Text = $"avg {avg:F1} ms";
             }
-            if (_perfFpsSub != null) _perfFpsSub.Text = $"avg {avg:F1} ms";
-        }
-        else if (_perfFpsText != null)
-        {
-            _perfFpsText.Text = "FPS — (enable F3 HUD to collect samples)";
-            _perfFpsText.Foreground = DevToolsTheme.TextMuted;
-            if (_perfFpsHero != null) { _perfFpsHero.Text = "—"; _perfFpsHero.Foreground = DevToolsTheme.TextDisabled; }
-            if (_perfFpsSub != null) _perfFpsSub.Text = "no samples";
+            else if (count > 0)
+            {
+                double idleSec = Stopwatch.GetElapsedTime(buffer[count - 1].TimestampTicks, now).TotalSeconds;
+                _perfFpsText.Text = $"FPS —   idle {idleSec:F1} s   last frame {buffer[count - 1].TotalMs:F1} ms";
+                _perfFpsText.Foreground = DevToolsTheme.TextMuted;
+                if (_perfFpsHero != null) { _perfFpsHero.Text = "—"; _perfFpsHero.Foreground = DevToolsTheme.TextDisabled; }
+                if (_perfFpsSub != null) _perfFpsSub.Text = $"idle {idleSec:F1} s";
+            }
+            else
+            {
+                _perfFpsText.Text = "FPS — (target window has not presented a frame yet)";
+                _perfFpsText.Foreground = DevToolsTheme.TextMuted;
+                if (_perfFpsHero != null) { _perfFpsHero.Text = "—"; _perfFpsHero.Foreground = DevToolsTheme.TextDisabled; }
+                if (_perfFpsSub != null) _perfFpsSub.Text = "no samples";
+            }
         }
 
+        // Everything below is derived from immutable per-frame snapshots. When the target
+        // window is idle those references don't move, so skip the rebuilds entirely
+        // instead of re-allocating a few hundred UIElements and re-uploading a
+        // full-resolution bitmap twice a second for identical data.
+        long newestStamp = count > 0 ? buffer[count - 1].TimestampTicks : 0;
         if (_perfGraphImage != null)
-            _perfGraphImage.Source = RenderPerfGraph(buffer.AsSpan(0, count));
+            _perfGraphImage.Source = RenderPerfGraph(buffer.AsSpan(0, count), newestStamp);
 
         // GPU snapshot + Draw-API panels are rebuilt as real visualisations
         // (stacked bars + hit-rate meters + a data-bar table), not text blobs.
-        RebuildGpuPanel(buffer, count);
-        RebuildApiPanel();
+        var gpuSnapshot = RenderDiagnostics.LatestGpuSnapshot;
+        if (!ReferenceEquals(gpuSnapshot, _perfLastGpuSnapshot) || newestStamp != _perfLastGraphStamp)
+        {
+            _perfLastGpuSnapshot = gpuSnapshot;
+            RebuildGpuPanel(buffer, count);
+        }
+        var apiSnapshot = RenderDiagnostics.LatestDrawApiStats;
+        if (!ReferenceEquals(apiSnapshot, _perfLastApiSnapshot))
+        {
+            _perfLastApiSnapshot = apiSnapshot;
+            RebuildApiPanel();
+        }
+        _perfLastGraphStamp = newestStamp;
+        _perfLastGraphCount = count;
     }
+
+    // Reused across refreshes: a 300-entry Sample[] per tick was pure garbage.
+    private readonly FrameHistory.Sample[] _perfSampleBuffer = new FrameHistory.Sample[FrameHistory.Capacity];
 
     // ── GPU snapshot panel (visualised) ──────────────────────────────────
 
@@ -6964,8 +7033,10 @@ public partial class DevToolsWindow : Window
     // away and re-allocate a new bitmap + native texture each tick.
     private WriteableBitmap? _perfGraphBitmap;
     private byte[]? _perfGraphPixels;
+    private long _perfGraphCacheStamp = -1;
+    private int _perfGraphCacheCount = -1;
 
-    private ImageSource? RenderPerfGraph(ReadOnlySpan<FrameHistory.Sample> samples)
+    private ImageSource? RenderPerfGraph(ReadOnlySpan<FrameHistory.Sample> samples, long newestStamp)
     {
         // Size bitmap to the control's physical pixel dimensions — Image.Stretch.Fill
         // then becomes a 1:1 blit instead of a ~3× upscale, which is what was
@@ -6984,11 +7055,23 @@ public partial class DevToolsWindow : Window
         int width = Math.Max(160, (int)Math.Round(dipW * dpiScale));
         int height = Math.Max(80, (int)Math.Round(dipH * dpiScale));
 
+        if (_perfGraphBitmap != null &&
+            _perfGraphBitmap.PixelWidth == width && _perfGraphBitmap.PixelHeight == height &&
+            _perfGraphCacheStamp == newestStamp && _perfGraphCacheCount == samples.Length)
+        {
+            // Same frames, same size — returning the SAME ImageSource reference makes the
+            // Image.Source set a no-op, so an idle target costs neither the per-pixel
+            // redraw nor the native texture re-upload.
+            return _perfGraphBitmap;
+        }
+
         if (_perfGraphBitmap == null || _perfGraphBitmap.PixelWidth != width || _perfGraphBitmap.PixelHeight != height)
         {
             _perfGraphBitmap = new WriteableBitmap(width, height, 96, 96, Jalium.UI.Media.PixelFormats.Pbgra32, null);
             _perfGraphPixels = new byte[width * height * 4];
         }
+        _perfGraphCacheStamp = newestStamp;
+        _perfGraphCacheCount = samples.Length;
         var bitmap = _perfGraphBitmap!;
         var pixels = _perfGraphPixels!;
 
@@ -7020,14 +7103,18 @@ public partial class DevToolsWindow : Window
                 if (s.TotalMs > maxMs) maxMs = s.TotalMs;
             maxMs = Math.Max(maxMs, 1.0);
 
-            // Map each sample to a contiguous column range so a 300-sample buffer
-            // still covers the full physical width instead of leaving most of it
-            // as background.
-            double colsPerSample = (double)width / Math.Max(samples.Length, 1);
+            // Fixed timeline: one column slot per ring-buffer slot, newest sample pinned
+            // to the right edge. Scaling the columns to the sample COUNT instead meant a
+            // buffer holding a single frame painted that one frame across the whole
+            // control — a solid block that reads as "the app is pinned at 6 FPS" when it
+            // actually means "one frame, ages ago".
+            double colsPerSample = (double)width / FrameHistory.Capacity;
+            int firstSlot = FrameHistory.Capacity - samples.Length;
             for (int i = 0; i < samples.Length; i++)
             {
-                int xStart = (int)Math.Round(i * colsPerSample);
-                int xEnd = (int)Math.Round((i + 1) * colsPerSample);
+                int slot = firstSlot + i;
+                int xStart = (int)Math.Round(slot * colsPerSample);
+                int xEnd = (int)Math.Round((slot + 1) * colsPerSample);
                 if (xEnd <= xStart) xEnd = xStart + 1;
                 if (xEnd > width) xEnd = width;
 
@@ -8331,12 +8418,19 @@ public partial class DevToolsWindow : Window
         if (_rootTabs == null) return;
         var selected = _rootTabs.SelectedItem as TabItem;
         if (selected == null) return;
+        if (ReferenceEquals(selected, _activeTab)) return;
 
         // Every tab activation recreates its UI (stats rows, graph nodes,
         // property cards). Wrap in the ignored-creation scope so those new
         // UIElements are flagged from their field initializer — no
         // constructor-time InvalidateMeasure leaks into Layout stats.
         using var __scope = Jalium.UI.Diagnostics.DiagnosticsScope.BeginIgnoredCreation();
+
+        // A tab that is no longer on screen must stop refreshing itself. Activation
+        // handlers restart whatever the tab still needs (the recording-driven Layout /
+        // Events / Bindings timers re-arm from their own IsRecording state).
+        DeactivateTab(_activeTab);
+        _activeTab = selected;
 
         if (selected == _layoutTab) OnLayoutTabActivated();
         else if (selected == _eventsTab) OnEventsTabActivated();
@@ -8346,6 +8440,39 @@ public partial class DevToolsWindow : Window
         else if (selected == _resourcesTab) OnResourcesTabActivated();
         else if (selected == _toolsTab) OnToolsTabActivated();
         else if (selected == _replTab) OnReplTabActivated();
+    }
+
+    private TabItem? _activeTab;
+
+    private void DeactivateTab(TabItem? tab)
+    {
+        if (tab == null) return;
+        if (tab == _perfTab) OnPerfTabDeactivated();
+        else if (tab == _layoutTab) StopLayoutRefreshTimer();
+        else if (tab == _eventsTab) StopEventsRefreshTimer();
+        else if (tab == _bindingsTab) StopBindingsRefreshTimer();
+    }
+
+    /// <summary>
+    /// Stops every background refresh this window owns. Closing used to stop only the
+    /// search timer, so a DevTools window that had visited Perf / Layout / Events kept
+    /// its timers alive after being closed — each tick still rebuilding UI for a dead
+    /// window, and the static CompositionTarget / timer callbacks kept the whole
+    /// DevTools element tree (and the target window it references) rooted for good.
+    /// </summary>
+    private void StopAllRefreshTimers()
+    {
+        _searchRefreshTimer.Stop();
+        _perfRefreshTimer?.Stop();
+        _resourcesSearchTimer?.Stop();
+        _uiaBuildTimer?.Stop();
+        _focusOverlayTimer?.Stop();
+        _focusOverlayTimer = null;
+        StopLayoutRefreshTimer();
+        StopEventsRefreshTimer();
+        StopBindingsRefreshTimer();
+        RenderDiagnostics.ApiStatsEnabled = false;
+        RenderDiagnostics.StatsOwner = null;
     }
 
     private static Border MakeTabShell(UIElement content)
@@ -9307,7 +9434,7 @@ public partial class DevToolsWindow : Window
         finally
         {
             SelectObject(memDc, oldBmp);
-            DeleteObject(bitmap);
+            Jalium.UI.Interop.Win32.Win32GdiMethods.DeleteObject(bitmap);
             DeleteDC(memDc);
             ReleaseDC(hwnd, windowDc);
         }

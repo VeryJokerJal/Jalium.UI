@@ -227,6 +227,22 @@ public static class RenderDiagnostics
 
     public static bool ApiStatsEnabled { get; set; }
 
+    /// <summary>
+    /// Optional owner filter for the per-frame snapshots below. Every window in the
+    /// process presents into the same static slots, so with DevTools open the target
+    /// app's numbers were being overwritten by DevTools' own frames (its window
+    /// repaints far more often). Setting this to the inspected window makes every
+    /// <c>Publish*</c> caller that honours <see cref="ShouldPublishFor"/> drop frames
+    /// produced by any other window. Null = accept every window (default).
+    /// </summary>
+    public static object? StatsOwner { get; set; }
+
+    /// <summary>
+    /// True when <paramref name="owner"/>'s frame may overwrite the shared snapshot slots.
+    /// </summary>
+    public static bool ShouldPublishFor(object owner)
+        => StatsOwner is null || ReferenceEquals(StatsOwner, owner);
+
     public static DrawApiStats? LatestDrawApiStats => s_latestDrawApiStats;
 
     /// <summary>
@@ -574,23 +590,56 @@ public static class RenderDiagnostics
         };
     }
 
-    // Map name → (count, ticks). Plain dictionary because all access is on UI thread.
-    private static readonly Dictionary<string, (long count, long ticks)> s_currentApiStats = new();
+    // Map name → (count, ticks), ONE PER THREAD.
+    //
+    // This used to be a single shared Dictionary with a "all access is on UI thread"
+    // comment. That assumption is false: the render thread (JALIUM_RENDER_THREAD, ON by
+    // default on Windows) replays and presents a captured frame off the message pump and
+    // issues its own RenderTarget draw calls, so as soon as DevTools turned ApiStatsEnabled
+    // on, the UI thread and one or more render threads mutated the same Dictionary
+    // concurrently. That corrupts the buckets and the next insert throws
+    // InvalidOperationException("Operations that change non-concurrent collections must
+    // have exclusive access") straight out of a draw call -> unhandled -> process exit.
+    //
+    // Per-thread accumulation removes the race without a lock in the draw hot path, and it
+    // is also more correct: a frame is drawn start-to-finish on one thread, so the counters
+    // published at EndDraw now belong to exactly that frame instead of being a mix of every
+    // window that happened to be drawing.
+    [ThreadStatic]
+    private static Dictionary<string, (long count, long ticks)>? t_currentApiStats;
     private static DrawApiStats? s_latestDrawApiStats;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void RecordApi(string name, long elapsedTicks)
     {
         if (!ApiStatsEnabled) return;
+        var map = t_currentApiStats ??= new Dictionary<string, (long count, long ticks)>(StringComparer.Ordinal);
         ref var entry = ref System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrAddDefault(
-            s_currentApiStats, name, out _);
+            map, name, out _);
         entry.count++;
         entry.ticks += elapsedTicks;
     }
 
+    /// <summary>
+    /// Drops the calling thread's accumulated draw-API counters without publishing them.
+    /// Used by frame producers whose frame must not overwrite the shared snapshot
+    /// (see <see cref="ShouldPublishFor"/>) — without this their counters would just
+    /// keep accumulating into the next frame that IS allowed to publish.
+    /// </summary>
+    public static void DiscardApiStats() => t_currentApiStats?.Clear();
+
     public static void PublishAndResetApiStats(long beginBlockingWaitNs = 0, long presentBlockNs = 0)
+        => PublishAndResetApiStats(true, beginBlockingWaitNs, presentBlockNs);
+
+    public static void PublishAndResetApiStats(bool publish, long beginBlockingWaitNs, long presentBlockNs)
     {
-        if (!ApiStatsEnabled || s_currentApiStats.Count == 0) return;
+        var map = t_currentApiStats;
+        if (!ApiStatsEnabled || map == null || map.Count == 0) return;
+        if (!publish)
+        {
+            map.Clear();
+            return;
+        }
 
         // The "BeginDraw" API entry is wall-clock of the whole native BeginDraw
         // P/Invoke, which is dominated by blocking back-pressure — the swap-chain
@@ -615,8 +664,8 @@ public static class RenderDiagnostics
             : 0;
 
         long totalTicks = 0;
-        var entries = new List<DrawApiEntry>(s_currentApiStats.Count + 2);
-        foreach (var kv in s_currentApiStats)
+        var entries = new List<DrawApiEntry>(map.Count + 2);
+        foreach (var kv in map)
         {
             long ticks = kv.Value.ticks;
             totalTicks += ticks;
@@ -653,6 +702,6 @@ public static class RenderDiagnostics
             Entries = entries,
             TotalTicks = totalTicks,
         };
-        s_currentApiStats.Clear();
+        map.Clear();
     }
 }
