@@ -4,6 +4,21 @@
 * text=auto
 
 ###############################################################################
+# Files that must keep LF regardless of platform.
+#
+# The Linux and Android native payloads are built by shell scripts that run in
+# a container (or under the NDK toolchain) over this checkout mounted directly.
+# A CRLF checkout hands the container's bash a trailing CR as part of the
+# command itself, which fails immediately and unhelpfully:
+#     eng/linux/build-native.sh: line 2: set: pipefail
+#     : invalid option name
+###############################################################################
+*.sh            text eol=lf
+*.bash          text eol=lf
+*.Dockerfile    text eol=lf
+Dockerfile      text eol=lf
+
+###############################################################################
 # Set default behavior for command prompt diff.
 #
 # This is need for earlier builds of msysgit that does not have it on by
