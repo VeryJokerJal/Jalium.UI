@@ -18,6 +18,7 @@ public static class HotReloadRuntime
     private static readonly object SyncRoot = new();
     private static readonly Dictionary<string, List<WeakReference<FrameworkElement>>> ComponentsByClass = new(StringComparer.Ordinal);
     private static readonly ConcurrentDictionary<Type, IReadOnlyList<DependencyProperty>> DependencyPropertyCache = new();
+    private static readonly ConcurrentDictionary<Type, HashSet<string>> DpBackedNamesCache = new();
 
     // Per-instance record of the DPs the last patch declared on each live component. ResetDeletedProperties
     // uses it to revert ONLY our previously-set DPs when a later patch drops them — never code-behind /
@@ -725,28 +726,7 @@ public static class HotReloadRuntime
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Hot-reload mirrors DependencyProperty static fields between matched types via reflection.")]
     private static void CopyDependencyProperties(DependencyObject target, DependencyObject source)
     {
-        var dps = DependencyPropertyCache.GetOrAdd(target.GetType(), static type =>
-        {
-            var result = new List<DependencyProperty>();
-            for (var current = type; current != null; current = current.BaseType)
-            {
-                var fields = current.GetFields(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-                foreach (var field in fields)
-                {
-                    if (!typeof(DependencyProperty).IsAssignableFrom(field.FieldType))
-                    {
-                        continue;
-                    }
-
-                    if (field.GetValue(null) is DependencyProperty dp && !result.Contains(dp))
-                    {
-                        result.Add(dp);
-                    }
-                }
-            }
-
-            return result;
-        });
+        var dps = GetDependencyPropertiesForType(target.GetType());
 
         var sourceFe = source as FrameworkElement;
         var targetFe = target as FrameworkElement;
@@ -768,8 +748,12 @@ public static class HotReloadRuntime
 
             // {DynamicResource} in the patch: re-register a LIVE subscription on the target (copying
             // the resolved snapshot alone would leave the value frozen and not theme-reactive).
+            // MUST be the local-layer query: the permissive TryGetDynamicResourceKey also reports the
+            // implicit theme style's subscription, which turned every themed property (e.g.
+            // TextBlock.Foreground) into a "dynamic resource" and silently discarded the literal
+            // value written in the patch.
             if (sourceFe != null && targetFe != null
-                && DynamicResourceBindingOperations.TryGetDynamicResourceKey(sourceFe, dp, out var resourceKey)
+                && DynamicResourceBindingOperations.TryGetLocalDynamicResourceKey(sourceFe, dp, out var resourceKey)
                 && resourceKey != null)
             {
                 DynamicResourceBindingOperations.SetDynamicResource(targetFe, dp, resourceKey);
@@ -784,7 +768,7 @@ public static class HotReloadRuntime
             {
                 if (targetFe != null)
                 {
-                    DynamicResourceBindingOperations.ClearDynamicResource(targetFe, dp);
+                    DynamicResourceBindingOperations.ClearLocalDynamicResource(targetFe, dp);
                 }
                 target.SetBinding(dp, sourceBinding.ParentBinding);
                 continue;
@@ -805,11 +789,13 @@ public static class HotReloadRuntime
                 continue;
             }
 
-            // Replacing a {DynamicResource}-bound value with a literal: drop the stale subscription so
-            // the next theme/resource change does not revert the hot-reloaded value.
+            // Replacing a {DynamicResource}-bound value with a literal: drop the stale LOCAL
+            // subscription so the next theme/resource change does not revert the hot-reloaded value.
+            // Style/template-layer subscriptions (implicit theme style) must survive — the literal
+            // local value outranks them anyway, and they take over again when it is removed.
             if (targetFe != null)
             {
-                DynamicResourceBindingOperations.ClearDynamicResource(targetFe, dp);
+                DynamicResourceBindingOperations.ClearLocalDynamicResource(targetFe, dp);
             }
 
             target.SetValue(dp, sourceValue);
@@ -881,7 +867,7 @@ public static class HotReloadRuntime
 
                 if (targetFe != null)
                 {
-                    DynamicResourceBindingOperations.ClearDynamicResource(targetFe, dp);
+                    DynamicResourceBindingOperations.ClearLocalDynamicResource(targetFe, dp);
                 }
 
                 target.ClearValue(dp);
@@ -890,6 +876,31 @@ public static class HotReloadRuntime
 
         PatchBaseline.AddOrUpdate(target, declared);
     }
+
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Hot-reload reflectively enumerates the type's DependencyProperty fields.")]
+    private static IReadOnlyList<DependencyProperty> GetDependencyPropertiesForType(Type type)
+        => DependencyPropertyCache.GetOrAdd(type, static t =>
+        {
+            var result = new List<DependencyProperty>();
+            for (var current = t; current != null; current = current.BaseType)
+            {
+                var fields = current.GetFields(BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+                foreach (var field in fields)
+                {
+                    if (!typeof(DependencyProperty).IsAssignableFrom(field.FieldType))
+                    {
+                        continue;
+                    }
+
+                    if (field.GetValue(null) is DependencyProperty dp && !result.Contains(dp))
+                    {
+                        result.Add(dp);
+                    }
+                }
+            }
+
+            return result;
+        });
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Hot-reload mirrors public CLR properties between matched types via reflection — opt-in development feature.")]
     private static void CopyClrProperties(object target, object source)
@@ -900,6 +911,24 @@ public static class HotReloadRuntime
         {
             return;
         }
+
+        // DP-backed CLR wrappers must NOT be mirrored here. property.GetValue reads the EFFECTIVE
+        // value — defaults, inherited and styled values included — so mirroring them bakes the
+        // never-shown parse tree's runtime state into the live element as local values: every patch
+        // un-minimized the user's window (WindowState=Normal), reset its position (Left/Top=NaN),
+        // and hardened inherited font values into local ones. Everything DP-backed is already
+        // copied with correct local-only semantics (bindings, dynamic resources, delete-reverts)
+        // by CopyDependencyProperties; this reflection pass exists ONLY for true CLR-only scalars.
+        var dpBackedNames = DpBackedNamesCache.GetOrAdd(targetType, static t =>
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var dp in GetDependencyPropertiesForType(t))
+            {
+                names.Add(dp.Name);
+            }
+
+            return names;
+        });
 
         // Enumerates the SOURCE type's properties. When the target is an x:Class subtype and the source
         // is the parsed base type, subtype-only CLR properties are not mirrored — uncommon for XAML
@@ -917,7 +946,18 @@ public static class HotReloadRuntime
                 continue;
             }
 
-            if (property.Name is "Name" or "Parent" or "VisualParent" or "TemplatedParent")
+            // "Handle"/"RenderTarget" are live-host plumbing, not markup state: the parsed source
+            // tree never owns a native window or a render surface, so its values are always
+            // zero/null. Mirroring them onto a shown window silently freezes presentation — the
+            // compositor treats Handle==0 as an off-screen window and stops presenting frames
+            // (values keep changing, the screen never does).
+            if (property.Name is "Name" or "Parent" or "VisualParent" or "TemplatedParent"
+                or "Handle" or "RenderTarget")
+            {
+                continue;
+            }
+
+            if (dpBackedNames.Contains(property.Name))
             {
                 continue;
             }
@@ -937,6 +977,24 @@ public static class HotReloadRuntime
                 // not scalars — they are patched in place by the dedicated handlers (PatchHeaderIfPresent
                 // etc.). Copying the reference here would reparent/steal the source element and may throw.
                 if (value is UIElement)
+                {
+                    continue;
+                }
+
+                // Only write real differences. Re-setting an equal value is never needed for the
+                // patch and hands every stateful setter (window chrome, IME, focus plumbing …) a
+                // chance to run side effects mid-patch.
+                object? currentValue = null;
+                try
+                {
+                    currentValue = property.GetValue(target);
+                }
+                catch
+                {
+                    // Unreadable on the live instance — fall through and attempt the write.
+                }
+
+                if (Equals(currentValue, value))
                 {
                     continue;
                 }
@@ -969,12 +1027,3 @@ public static class HotReloadRuntime
         public int FailedElements;
     }
 }
-
-/// <summary>
-/// Result for runtime JALXAML patch apply.
-/// </summary>
-public sealed record HotReloadPatchResult(
-    int UpdatedElements,
-    int FallbackReplacements,
-    int FailedElements,
-    string Message);

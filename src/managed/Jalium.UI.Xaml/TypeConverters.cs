@@ -666,10 +666,66 @@ internal sealed class ColorMatrixConverter : TypeConverter
 /// <summary>
 /// Registry of type converters.
 /// </summary>
+/// <summary>
+/// Converts font-weight strings ("Bold", "SemiBold", "700", …) for runtime-parsed JALXAML.
+///
+/// <para>FontWeight/FontStyle/FontStretch are structs, so <see cref="TypeConverterRegistry.ConvertValue"/>'s
+/// generic enum branch never matches them; without these entries the registry returned
+/// <see langword="null"/> and the attribute was silently dropped.
+/// The parsing itself delegates to the WPF-parity <see cref="Jalium.UI.FontWeightConverter"/>
+/// (a System.ComponentModel converter — a different hierarchy this registry cannot store
+/// directly), keeping both paths in agreement. Invalid input yields null (property keeps its
+/// default) matching the other converters here. Compiled markup rendered the weight while the
+/// same markup parsed at runtime (designer preview, hot reload) silently stayed Normal.</para>
+/// </summary>
+internal sealed class FontWeightTypeConverter : TypeConverter
+{
+    private static readonly Jalium.UI.FontWeightConverter Parity = new();
+
+    public override object? ConvertFrom(object? value)
+    {
+        if (value is FontWeight weight) return weight;
+        if (value is not string str || string.IsNullOrWhiteSpace(str)) return null;
+        try { return Parity.ConvertFrom(null, CultureInfo.InvariantCulture, str); }
+        catch (FormatException) { return null; }
+    }
+}
+
+/// <summary>Converts font-style strings ("Italic", "Oblique", "Normal") — see <see cref="FontWeightTypeConverter"/>.</summary>
+internal sealed class FontStyleTypeConverter : TypeConverter
+{
+    private static readonly Jalium.UI.FontStyleConverter Parity = new();
+
+    public override object? ConvertFrom(object? value)
+    {
+        if (value is FontStyle style) return style;
+        if (value is not string str || string.IsNullOrWhiteSpace(str)) return null;
+        try { return Parity.ConvertFrom(null, CultureInfo.InvariantCulture, str); }
+        catch (FormatException) { return null; }
+    }
+}
+
+/// <summary>Converts font-stretch strings ("Condensed", "Expanded", …) — see <see cref="FontWeightTypeConverter"/>.</summary>
+internal sealed class FontStretchTypeConverter : TypeConverter
+{
+    private static readonly Jalium.UI.FontStretchConverter Parity = new();
+
+    public override object? ConvertFrom(object? value)
+    {
+        if (value is FontStretch stretch) return stretch;
+        if (value is not string str || string.IsNullOrWhiteSpace(str)) return null;
+        try { return Parity.ConvertFrom(null, CultureInfo.InvariantCulture, str); }
+        catch (FormatException) { return null; }
+    }
+}
+
 public static class TypeConverterRegistry
 {
     private static readonly Dictionary<Type, TypeConverter> _converters = new()
     {
+        [typeof(FontWeight)] = new FontWeightTypeConverter(),
+        [typeof(FontStyle)] = new FontStyleTypeConverter(),
+        [typeof(FontStretch)] = new FontStretchTypeConverter(),
         [typeof(Thickness)] = new ThicknessConverter(),
         [typeof(CornerRadius)] = new CornerRadiusConverter(),
         [typeof(Brush)] = new BrushConverter(),
@@ -781,6 +837,27 @@ public static class TypeConverterRegistry
         {
             if (Enum.TryParse(targetType, value, ignoreCase: true, out var e))
                 return e;
+        }
+
+        if (targetType == typeof(TimeSpan))
+        {
+            if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out var ts))
+                return ts;
+        }
+
+        // Remaining primitive scalars (long/short/byte/uint/decimal/char …): without this bridge
+        // any DP of such a type silently dropped its attribute in runtime-parsed markup, because
+        // only double/float/int/bool have dedicated branches above and no converter is registered.
+        if (targetType.IsPrimitive || targetType == typeof(decimal))
+        {
+            try
+            {
+                return Convert.ChangeType(value, targetType, CultureInfo.InvariantCulture);
+            }
+            catch (Exception ex) when (ex is FormatException or InvalidCastException or OverflowException)
+            {
+                // Fall through to the converter lookup.
+            }
         }
 
         var converter = GetConverter(targetType);

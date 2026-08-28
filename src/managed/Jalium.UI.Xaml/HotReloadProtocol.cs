@@ -10,6 +10,12 @@ namespace Jalium.UI.Markup;
 /// server / test encodings from drifting apart.
 /// </summary>
 /// <remarks>
+/// This file must stay self-contained (BCL only): out-of-process clients such as
+/// Jalium.UI.HotReload.Watcher compile it via a source link instead of referencing the framework
+/// assemblies, so touching a framework type here would drag the whole module-initializer chain
+/// (ThemeLoader, PackWebRequestRegistration, …) into their process.
+/// </remarks>
+/// <remarks>
 /// Request frame:  <c>[Magic u32][Version u8] xClass filePath content</c><br/>
 /// Result frame:   <c>[Updated i32][Fallback i32][Failed i32] message</c><br/>
 /// where each string is <c>[ByteLength i32][UTF-8 bytes]</c>. All integers little-endian
@@ -117,3 +123,12 @@ public static class HotReloadProtocol
         return Encoding.UTF8.GetString(bytes);
     }
 }
+
+/// <summary>
+/// Result for runtime JALXAML patch apply.
+/// </summary>
+public sealed record HotReloadPatchResult(
+    int UpdatedElements,
+    int FallbackReplacements,
+    int FailedElements,
+    string Message);

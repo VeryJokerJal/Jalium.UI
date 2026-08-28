@@ -12,9 +12,14 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- For the shared HotReloadProtocol (frame encoding) — keeps client / server / test in lock-step
-         so the wire format can never drift between the three. -->
-    <ProjectReference Include="..\..\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
+    <!-- Source-link the shared HotReloadProtocol (frame encoding) instead of referencing
+         Jalium.UI.Xaml: one copy, linked twice, so client / server / test stay in lock-step —
+         while the watcher process never loads a framework assembly. Referencing the assembly
+         runs the framework's [ModuleInitializer] chain (ThemeLoader → Jalium.UI.Managed
+         <Module>.cctor → PackWebRequestRegistration) on first touch, which needs runtime
+         dependencies (System.IO.Packaging) this tool does not deploy. -->
+    <Compile Include="..\..\src\managed\Jalium.UI.Xaml\HotReloadProtocol.cs"
+             Link="HotReloadProtocol.cs" />
   </ItemGroup>
 
 </Project>
