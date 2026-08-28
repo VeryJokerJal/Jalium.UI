@@ -36,6 +36,12 @@ public enum MarkdownBlockKind
 
     /// <summary>由 mermaid 代码块渲染出的图表。</summary>
     Diagram,
+
+    /// <summary>独占一行的图片。</summary>
+    Image,
+
+    /// <summary>脚注定义。</summary>
+    Footnote,
 }
 
 /// <summary>
@@ -824,8 +830,27 @@ public class MarkdownTableCellPresenter : MarkdownBlockPresenter
         DependencyProperty.Register(nameof(ColumnIndex), typeof(int), typeof(MarkdownTableCellPresenter),
             new PropertyMetadata(0));
 
+    /// <summary>
+    /// Identifies the <see cref="ColumnAlignment"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty ColumnAlignmentProperty =
+        DependencyProperty.Register(nameof(ColumnAlignment), typeof(HorizontalAlignment), typeof(MarkdownTableCellPresenter),
+            new PropertyMetadata(HorizontalAlignment.Stretch));
+
     /// <inheritdoc />
     public override MarkdownBlockKind BlockKind => MarkdownBlockKind.TableCell;
+
+    /// <summary>
+    /// 本列的水平对齐，来自 GFM 分隔行里的冒号（<c>:--</c>、<c>:-:</c>、<c>--:</c>）。
+    /// 没写冒号时是 <see cref="HorizontalAlignment.Stretch"/>，即沿用默认排布。
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public HorizontalAlignment ColumnAlignment
+    {
+        get => (HorizontalAlignment)GetValue(ColumnAlignmentProperty)!;
+        set => SetValue(ColumnAlignmentProperty, value);
+    }
 
     /// <summary>是否为表头单元格。默认样式据此加粗并铺表头底色。</summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
@@ -849,6 +874,279 @@ public class MarkdownTableCellPresenter : MarkdownBlockPresenter
     {
         get => (int)GetValue(ColumnIndexProperty)!;
         set => SetValue(ColumnIndexProperty, value);
+    }
+}
+
+/// <summary>
+/// 承载一张独占一行的 Markdown 图片（<c>![alt](src "title")</c>）。
+/// </summary>
+/// <remarks>
+/// 图片本身交给模板里的 <see cref="Image"/> 部件，加载、解码与失败处理都沿用它那一套。
+/// 目标地址解析不出可用的绝对 URI 时（例如没有设 <see cref="Markdown.BaseUri"/> 的相对路径），
+/// <see cref="HasSource"/> 为 <see langword="false"/>，默认模板改为显示 <see cref="Alt"/> 文本。
+/// </remarks>
+public class MarkdownImagePresenter : MarkdownBlockPresenter
+{
+    private static readonly DependencyPropertyKey HasSourcePropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(HasSource), typeof(bool), typeof(MarkdownImagePresenter),
+            new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the <see cref="Source"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public static readonly DependencyProperty SourceProperty =
+        DependencyProperty.Register(nameof(Source), typeof(ImageSource), typeof(MarkdownImagePresenter),
+            new PropertyMetadata(null, OnSourceChanged));
+
+    /// <summary>
+    /// Identifies the <see cref="Alt"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public static readonly DependencyProperty AltProperty =
+        DependencyProperty.Register(nameof(Alt), typeof(string), typeof(MarkdownImagePresenter),
+            new PropertyMetadata(string.Empty));
+
+    /// <summary>
+    /// Identifies the <see cref="ImageTarget"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public static readonly DependencyProperty ImageTargetProperty =
+        DependencyProperty.Register(nameof(ImageTarget), typeof(string), typeof(MarkdownImagePresenter),
+            new PropertyMetadata(string.Empty));
+
+    /// <summary>
+    /// Identifies the <see cref="Caption"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public static readonly DependencyProperty CaptionProperty =
+        DependencyProperty.Register(nameof(Caption), typeof(string), typeof(MarkdownImagePresenter),
+            new PropertyMetadata(string.Empty, OnCaptionChanged));
+
+    /// <summary>
+    /// Identifies the <see cref="CaptionForeground"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty CaptionForegroundProperty =
+        DependencyProperty.Register(nameof(CaptionForeground), typeof(Brush), typeof(MarkdownImagePresenter),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Identifies the <see cref="HasSource"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public static readonly DependencyProperty HasSourceProperty = HasSourcePropertyKey.DependencyProperty;
+
+    private static readonly DependencyPropertyKey HasCaptionPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(HasCaption), typeof(bool), typeof(MarkdownImagePresenter),
+            new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the <see cref="HasCaption"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public static readonly DependencyProperty HasCaptionProperty = HasCaptionPropertyKey.DependencyProperty;
+
+    /// <inheritdoc />
+    public override MarkdownBlockKind BlockKind => MarkdownBlockKind.Image;
+
+    /// <summary>图片源。为 <see langword="null"/> 时默认模板改显 <see cref="Alt"/>。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public ImageSource? Source
+    {
+        get => (ImageSource?)GetValue(SourceProperty);
+        set => SetValue(SourceProperty, value);
+    }
+
+    /// <summary>图片的替代文本，即 <c>![这里](…)</c> 的内容。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public string Alt
+    {
+        get => (string)GetValue(AltProperty)!;
+        set => SetValue(AltProperty, value);
+    }
+
+    /// <summary>源文档里写的目标地址原文（未解析成绝对 URI 的那一份）。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public string ImageTarget
+    {
+        get => (string)GetValue(ImageTargetProperty)!;
+        set => SetValue(ImageTargetProperty, value);
+    }
+
+    /// <summary>图注，来自 <c>![alt](src "这里")</c>。为空时默认模板不显示图注行。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public string Caption
+    {
+        get => (string)GetValue(CaptionProperty)!;
+        set => SetValue(CaptionProperty, value);
+    }
+
+    /// <summary>图注与替代文本的前景画刷。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Brush? CaptionForeground
+    {
+        get => (Brush?)GetValue(CaptionForegroundProperty);
+        set => SetValue(CaptionForegroundProperty, value);
+    }
+
+    /// <summary>是否有可用的图片源。默认模板用它在图片与替代文本之间切换。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public bool HasSource
+    {
+        get => (bool)GetValue(HasSourceProperty)!;
+        private set => SetValue(HasSourcePropertyKey, value);
+    }
+
+    /// <summary>是否有图注。默认模板用它决定要不要占一行显示图注。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public bool HasCaption
+    {
+        get => (bool)GetValue(HasCaptionProperty)!;
+        private set => SetValue(HasCaptionPropertyKey, value);
+    }
+
+    /// <summary>
+    /// 弱引用转发 <see cref="ImageSource.LoadFailed"/>：图片源常常是共享的长寿对象，
+    /// 直接挂事件会把它变成呈现器的强引用根。
+    /// </summary>
+    private sealed class SourceFailureListener
+    {
+        private readonly WeakReference<MarkdownImagePresenter> _owner;
+
+        public SourceFailureListener(MarkdownImagePresenter owner) =>
+            _owner = new WeakReference<MarkdownImagePresenter>(owner);
+
+        public void OnLoadFailed(ImageSource source, Exception error)
+        {
+            if (_owner.TryGetTarget(out var owner))
+            {
+                owner.HasSource = false;
+            }
+            else
+            {
+                source.LoadFailed -= OnLoadFailed;
+            }
+        }
+    }
+
+    private SourceFailureListener? _failureListener;
+
+    private static void OnSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not MarkdownImagePresenter presenter)
+        {
+            return;
+        }
+
+        if (e.OldValue is ImageSource oldSource && presenter._failureListener != null)
+        {
+            oldSource.LoadFailed -= presenter._failureListener.OnLoadFailed;
+        }
+
+        presenter._failureListener = null;
+
+        if (e.NewValue is not ImageSource source)
+        {
+            presenter.HasSource = false;
+            return;
+        }
+
+        // 已经失败过的源不必再等一次事件——坏地址就直接显示替代文本。
+        presenter.HasSource = source.LoadFailure == null;
+        presenter._failureListener = new SourceFailureListener(presenter);
+        source.LoadFailed += presenter._failureListener.OnLoadFailed;
+    }
+
+    private static void OnCaptionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is MarkdownImagePresenter presenter)
+        {
+            presenter.HasCaption = !string.IsNullOrEmpty(e.NewValue as string);
+        }
+    }
+}
+
+/// <summary>
+/// 承载一条 Markdown 脚注定义（<c>[^label]: 正文</c>）。
+/// </summary>
+public class MarkdownFootnotePresenter : MarkdownBlockPresenter
+{
+    /// <summary>
+    /// Identifies the <see cref="Number"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public static readonly DependencyProperty NumberProperty =
+        DependencyProperty.Register(nameof(Number), typeof(int), typeof(MarkdownFootnotePresenter),
+            new PropertyMetadata(1, OnNumberChanged));
+
+    /// <summary>
+    /// Identifies the <see cref="Label"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public static readonly DependencyProperty LabelProperty =
+        DependencyProperty.Register(nameof(Label), typeof(string), typeof(MarkdownFootnotePresenter),
+            new PropertyMetadata(string.Empty));
+
+    private static readonly DependencyPropertyKey MarkerPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(Marker), typeof(string), typeof(MarkdownFootnotePresenter),
+            new PropertyMetadata("1."));
+
+    /// <summary>
+    /// Identifies the <see cref="Marker"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public static readonly DependencyProperty MarkerProperty = MarkerPropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Identifies the <see cref="MarkerForeground"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty MarkerForegroundProperty =
+        DependencyProperty.Register(nameof(MarkerForeground), typeof(Brush), typeof(MarkdownFootnotePresenter),
+            new PropertyMetadata(null));
+
+    /// <inheritdoc />
+    public override MarkdownBlockKind BlockKind => MarkdownBlockKind.Footnote;
+
+    /// <summary>脚注序号，按定义在文档中出现的先后从 1 开始。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public int Number
+    {
+        get => (int)GetValue(NumberProperty)!;
+        set => SetValue(NumberProperty, value);
+    }
+
+    /// <summary>脚注标签，即 <c>[^这里]</c>。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public string Label
+    {
+        get => (string)GetValue(LabelProperty)!;
+        set => SetValue(LabelProperty, value);
+    }
+
+    /// <summary>算好的前导标记文本，默认模板直接显示它。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
+    public string Marker
+    {
+        get => (string)GetValue(MarkerProperty)!;
+        private set => SetValue(MarkerPropertyKey, value);
+    }
+
+    /// <summary>前导标记的前景画刷。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Brush? MarkerForeground
+    {
+        get => (Brush?)GetValue(MarkerForegroundProperty);
+        set => SetValue(MarkerForegroundProperty, value);
+    }
+
+    private static void OnNumberChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is MarkdownFootnotePresenter presenter)
+        {
+            presenter.Marker = $"{presenter.Number}.";
+        }
     }
 }
 

@@ -4,11 +4,18 @@ using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Controls;
 
-internal readonly record struct MarkdownTextStyle(bool Bold, bool Italic, bool Code, Uri? LinkUri);
-internal sealed record MarkdownTextSpan(string Text, MarkdownTextStyle Style, bool IsLineBreak = false);
+internal readonly record struct MarkdownTextStyle(
+    bool Bold, bool Italic, bool Code, Uri? LinkUri, bool Strikethrough = false);
+
+/// <summary>行内图片的描述。加载与绘制由 <see cref="MarkdownTextPresenter"/> 用一个内嵌的 <see cref="Image"/> 完成。</summary>
+internal sealed record MarkdownInlineImage(Uri? Uri, string Alt, string Target, string? Title);
+
+internal sealed record MarkdownTextSpan(
+    string Text, MarkdownTextStyle Style, bool IsLineBreak = false, MarkdownInlineImage? Image = null);
 
 /// <summary>
 /// 排版并绘制一段 Markdown 行内文本（普通文字、粗体、斜体、行内代码、链接）。
@@ -47,6 +54,9 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
     private readonly Dictionary<int, ResolvedFormat> _formatCache = new();
     private int _selectionStart = -1;
     private int _selectionEnd = -1;
+    private readonly List<InlineImageHost> _inlineImages = new();
+    /// <summary>span 下标 → <see cref="_inlineImages"/> 下标；非图片 span 为 -1。</summary>
+    private int[] _spanImageIndex = Array.Empty<int>();
 
     #region Dependency properties
 
@@ -161,6 +171,14 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
     public static readonly DependencyProperty InlineCodeStyleProperty =
         DependencyProperty.Register(nameof(InlineCodeStyle), typeof(MarkdownInlineStyle), typeof(MarkdownTextPresenter),
             new PropertyMetadata(MarkdownInlineStyle.DefaultInlineCode, OnFormatChanged, null, inherits: true));
+
+    /// <summary>
+    /// Identifies the <see cref="StrikethroughStyle"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty StrikethroughStyleProperty =
+        DependencyProperty.Register(nameof(StrikethroughStyle), typeof(MarkdownInlineStyle), typeof(MarkdownTextPresenter),
+            new PropertyMetadata(MarkdownInlineStyle.DefaultStrikethrough, OnFormatChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the <see cref="LinkStyle"/> dependency property.
@@ -317,6 +335,13 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         set => SetValue(LinkStyleProperty, value);
     }
 
+    /// <summary>删除线片段（GFM 的 <c>~~文本~~</c>）的行内样式。</summary>
+    public MarkdownInlineStyle? StrikethroughStyle
+    {
+        get => (MarkdownInlineStyle?)GetValue(StrikethroughStyleProperty);
+        set => SetValue(StrikethroughStyleProperty, value);
+    }
+
     /// <summary>是否自动换行。</summary>
     public TextWrapping TextWrapping
     {
@@ -351,6 +376,7 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
             {
                 // 排版缓存留着，下一次 EnsureLayout 只重排最后一行。
                 _spans = next;
+                SyncInlineImages(next);
                 _pendingExtend = true;
                 InvalidateMeasure();
                 InvalidateVisual();
@@ -358,6 +384,7 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
             }
 
             _spans = next;
+            SyncInlineImages(next);
             InvalidateLayout();
         }
     }
@@ -399,6 +426,14 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         var widthConstraint = Wrap && !double.IsInfinity(availableSize.Width)
             ? Math.Max(0, availableSize.Width)
             : double.PositiveInfinity;
+
+        // 图片是异步解码的：尺寸从 0 变成真实值时排版必须作废重来，否则行高永远停在占位状态。
+        if (MeasureInlineImages(widthConstraint))
+        {
+            _cachedLayout = null;
+            _pendingExtend = false;
+        }
+
         var layout = EnsureLayout(widthConstraint);
         return new Size(layout.Width, layout.Height);
     }
@@ -409,7 +444,7 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         var widthConstraint = Wrap && finalSize.Width > 0
             ? finalSize.Width
             : (Wrap && DesiredSize.Width > 0 ? DesiredSize.Width : double.PositiveInfinity);
-        _ = EnsureLayout(widthConstraint);
+        ArrangeInlineImages(EnsureLayout(widthConstraint));
         return finalSize;
     }
 
@@ -429,6 +464,11 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         {
             foreach (var placement in line.Placements)
             {
+                if (placement.ImageIndex >= 0)
+                {
+                    continue;
+                }
+
                 var format = ResolveFormat(placement.Style);
                 if (format.Background == null)
                 {
@@ -557,7 +597,8 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         var key = (style.Bold ? 1 : 0) |
                   (style.Italic ? 2 : 0) |
                   (style.Code ? 4 : 0) |
-                  (style.LinkUri != null ? 8 : 0);
+                  (style.LinkUri != null ? 8 : 0) |
+                  (style.Strikethrough ? 16 : 0);
 
         if (_formatCache.TryGetValue(key, out var cached))
         {
@@ -597,6 +638,7 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         ApplyInlineStyle(style.Bold ? BoldStyle : null);
         ApplyInlineStyle(style.Italic ? ItalicStyle : null);
         ApplyInlineStyle(style.Code ? InlineCodeStyle : null);
+        ApplyInlineStyle(style.Strikethrough ? StrikethroughStyle : null);
         ApplyInlineStyle(style.LinkUri != null ? LinkStyle : null);
 
         Pen? decorationPen = null;
@@ -887,12 +929,14 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         var newLast = next[current.Count - 1];
         return oldLast.Style == newLast.Style &&
                oldLast.IsLineBreak == newLast.IsLineBreak &&
+               oldLast.Image == newLast.Image &&
                newLast.Text.StartsWith(oldLast.Text, StringComparison.Ordinal);
     }
 
     private static bool SpanEquals(MarkdownTextSpan left, MarkdownTextSpan right) =>
         left.IsLineBreak == right.IsLineBreak &&
         left.Style == right.Style &&
+        left.Image == right.Image &&
         string.Equals(left.Text, right.Text, StringComparison.Ordinal);
 
     private MarkdownTextLayout CreateLayout(double widthConstraint)
@@ -945,6 +989,22 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         ref double y,
         ref double runningMaxWidth)
     {
+        if (token.ImageIndex >= 0)
+        {
+            var imageMeasurement = MeasureImageToken(token);
+            if (Wrap &&
+                !double.IsInfinity(maxWidth) &&
+                currentLine.Width > 0 &&
+                currentLine.Width + imageMeasurement.TotalWidth > maxWidth)
+            {
+                layout.WrappedByWidth = true;
+                CommitLine(layout, ref currentLine, ref y, ref runningMaxWidth, forceEmptyLine: false);
+            }
+
+            PlaceToken(ref currentLine, token.Text, token.Style, imageMeasurement, token.SpanIndex, token.CharOffset, token.ImageIndex);
+            return;
+        }
+
         if (string.IsNullOrEmpty(token.Text))
         {
             return;
@@ -1064,7 +1124,8 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         MarkdownTextStyle style,
         MarkdownTokenMeasurement measurement,
         int spanIndex,
-        int charOffset)
+        int charOffset,
+        int imageIndex = -1)
     {
         if (currentLine.Placements.Count == 0)
         {
@@ -1078,7 +1139,8 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
             new Rect(currentLine.Width, 0, measurement.TotalWidth, measurement.TotalHeight),
             measurement.TextWidth,
             measurement.TextHeight,
-            measurement.TextOffsetX));
+            measurement.TextOffsetX,
+            imageIndex));
         currentLine.Width += measurement.TotalWidth;
         currentLine.Height = Math.Max(currentLine.Height, measurement.TotalHeight);
     }
@@ -1110,10 +1172,14 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
             };
         }
 
-        runningMaxWidth = Math.Max(runningMaxWidth, currentLine.Width);
+        // 行尾空白不计进行宽——和 WPF 的 TextBlock 一样，否则 DesiredSize 会被看不见的空格撑大。
+        // 只有 token 里带着空白的情况（PreserveWhitespace）才原样保留。
+        var lineWidth = PreserveWhitespace ? currentLine.Width : TrimTrailingWhitespaceWidth(placements, currentLine.Width);
+
+        runningMaxWidth = Math.Max(runningMaxWidth, lineWidth);
         layout.Lines.Add(new MarkdownTextLineInfo(
             placements,
-            currentLine.Width,
+            lineWidth,
             currentLine.Height,
             currentLine.StartSpanIndex,
             currentLine.StartCharOffset,
@@ -1122,6 +1188,20 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
             BuildDrawRuns(placements)));
         y += currentLine.Height;
         currentLine = new MarkdownTextLine();
+    }
+
+    private static double TrimTrailingWhitespaceWidth(MarkdownTokenPlacement[] placements, double fallback)
+    {
+        for (var index = placements.Length - 1; index >= 0; index--)
+        {
+            var placement = placements[index];
+            if (placement.ImageIndex >= 0 || !string.IsNullOrWhiteSpace(placement.Text))
+            {
+                return placement.Bounds.X + placement.Bounds.Width;
+            }
+        }
+
+        return placements.Length == 0 ? fallback : 0;
     }
 
     /// <summary>
@@ -1147,6 +1227,18 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         while (index < placements.Length)
         {
             var first = placements[index];
+            if (first.ImageIndex >= 0)
+            {
+                // 图片由内嵌的 Image 元素自己画；只有还没解码出尺寸时才退回画 alt 文本。
+                if (!HasResolvedImage(first.ImageIndex))
+                {
+                    runs.Add(CreateRun(first, first.Text, first.TextWidth));
+                }
+
+                index++;
+                continue;
+            }
+
             var format = ResolveFormat(first.Style);
             var canMerge = s_mergeDrawRuns &&
                            format.Background == null &&
@@ -1160,7 +1252,8 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
                 {
                     var previous = placements[end - 1];
                     var next = placements[end];
-                    if (next.Style != first.Style ||
+                    if (next.ImageIndex >= 0 ||
+                        next.Style != first.Style ||
                         Math.Abs(next.Bounds.X - (previous.Bounds.X + previous.Bounds.Width)) > 0.01 ||
                         Math.Abs(next.TextHeight - first.TextHeight) > 0.01 ||
                         Math.Abs(next.Bounds.Y - first.Bounds.Y) > 0.01 ||
@@ -1220,6 +1313,17 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
                 if (offset == 0)
                 {
                     yield return new MarkdownToken(string.Empty, span.Style, IsWhitespace: false, IsLineBreak: true, spanIndex, 0);
+                }
+                continue;
+            }
+
+            if (span.Image != null)
+            {
+                if (offset == 0)
+                {
+                    yield return new MarkdownToken(
+                        span.Text, span.Style, IsWhitespace: false, IsLineBreak: false, spanIndex, 0,
+                        ImageIndex: spanIndex < _spanImageIndex.Length ? _spanImageIndex[spanIndex] : -1);
                 }
                 continue;
             }
@@ -1344,6 +1448,218 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         }
     }
 
+    /// <summary>一条绘制批次的位置与内容，供排版自检使用。</summary>
+    internal readonly record struct MarkdownDrawRunInfo(string Text, MarkdownTextStyle Style, double X, double Width);
+
+    /// <summary>
+    /// 按当前宽度排一次版，把每行的绘制批次摊平返回。
+    /// </summary>
+    /// <remarks>
+    /// 绘制批次的 x 与宽度是「片段宽度累加」的结果，而真正画到屏幕上的是把批次文本交给
+    /// <c>DrawText</c>。两者一旦对不上，换款式的地方就会重叠——这个钩子让回归测试能直接比对
+    /// 「声明的宽度」与「实测的宽度」，不必去反射内部排版结构。
+    /// </remarks>
+    internal IReadOnlyList<MarkdownDrawRunInfo> DebugGetDrawRuns()
+    {
+        if (Spans.Count == 0)
+        {
+            return Array.Empty<MarkdownDrawRunInfo>();
+        }
+
+        var result = new List<MarkdownDrawRunInfo>();
+        foreach (var line in EnsureLayout(CurrentWidthConstraint()).Lines)
+        {
+            foreach (var run in line.Runs)
+            {
+                result.Add(new MarkdownDrawRunInfo(run.Text, run.Style, run.TextX, run.TextWidth));
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>把一段文本按给定款式实测一次宽度，用于与绘制批次声明的宽度对账。</summary>
+    internal double DebugMeasureRunWidth(string text, MarkdownTextStyle style) =>
+        MeasureToken(text, style).TextWidth;
+
+    #region Inline images
+
+    /// <summary>
+    /// 让内嵌的 <see cref="Image"/> 元素与当前 <see cref="Spans"/> 中的图片一一对应。
+    /// 目标不变的元素原样留用，这样流式追加时已经下载好的图片不会被重新拉一遍。
+    /// </summary>
+    private void SyncInlineImages(IReadOnlyList<MarkdownTextSpan> spans)
+    {
+        var map = _spanImageIndex.Length == spans.Count ? _spanImageIndex : new int[spans.Count];
+        var count = 0;
+
+        for (var index = 0; index < spans.Count; index++)
+        {
+            var image = spans[index].Image;
+            if (image == null)
+            {
+                map[index] = -1;
+                continue;
+            }
+
+            map[index] = count;
+            if (count < _inlineImages.Count)
+            {
+                var existing = _inlineImages[count];
+                if (!string.Equals(existing.Model.Target, image.Target, StringComparison.Ordinal))
+                {
+                    existing.Element.Source = CreateImageSource(image);
+                    existing.LastDesiredSize = default;
+                }
+
+                existing.Model = image;
+            }
+            else
+            {
+                var element = new Image
+                {
+                    Stretch = Stretch.Uniform,
+                    StretchDirection = StretchDirection.DownOnly,
+                    Source = CreateImageSource(image),
+                };
+                AddVisualChild(element);
+                _inlineImages.Add(new InlineImageHost { Model = image, Element = element });
+            }
+
+            count++;
+        }
+
+        for (var index = _inlineImages.Count - 1; index >= count; index--)
+        {
+            RemoveVisualChild(_inlineImages[index].Element);
+            _inlineImages.RemoveAt(index);
+        }
+
+        _spanImageIndex = map;
+    }
+
+    private static ImageSource? CreateImageSource(MarkdownInlineImage image)
+    {
+        if (image.Uri == null || !image.Uri.IsAbsoluteUri)
+        {
+            return null;
+        }
+
+        try
+        {
+            return new BitmapImage(image.Uri);
+        }
+        catch (Exception)
+        {
+            // 坏地址、不支持的协议：当作没有图片，回落到 alt 文本。
+            return null;
+        }
+    }
+
+    /// <summary>测量全部行内图片，返回是否有尺寸发生了变化（异步解码完成的信号）。</summary>
+    private bool MeasureInlineImages(double widthConstraint)
+    {
+        if (_inlineImages.Count == 0)
+        {
+            return false;
+        }
+
+        var slot = new Size(
+            double.IsInfinity(widthConstraint) || widthConstraint <= 0 ? double.PositiveInfinity : widthConstraint,
+            double.PositiveInfinity);
+
+        var changed = false;
+        foreach (var host in _inlineImages)
+        {
+            host.Element.Measure(slot);
+            if (host.Element.DesiredSize != host.LastDesiredSize)
+            {
+                host.LastDesiredSize = host.Element.DesiredSize;
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    private void ArrangeInlineImages(MarkdownTextLayout layout)
+    {
+        if (_inlineImages.Count == 0)
+        {
+            return;
+        }
+
+        Span<bool> arranged = _inlineImages.Count <= 64
+            ? stackalloc bool[_inlineImages.Count]
+            : new bool[_inlineImages.Count];
+
+        foreach (var line in layout.Lines)
+        {
+            foreach (var placement in line.Placements)
+            {
+                if (placement.ImageIndex < 0 || placement.ImageIndex >= _inlineImages.Count)
+                {
+                    continue;
+                }
+
+                var host = _inlineImages[placement.ImageIndex];
+                var size = host.LastDesiredSize;
+                host.Element.Arrange(new Rect(
+                    placement.Bounds.X,
+                    placement.Bounds.Y + Math.Max(0, (placement.Bounds.Height - size.Height) / 2),
+                    size.Width,
+                    size.Height));
+                arranged[placement.ImageIndex] = true;
+            }
+        }
+
+        // 没进这份排版的图片收一个零矩形，免得它停在上一次的位置上继续画。
+        for (var index = 0; index < _inlineImages.Count; index++)
+        {
+            if (!arranged[index])
+            {
+                _inlineImages[index].Element.Arrange(default(Rect));
+            }
+        }
+    }
+
+    private bool HasResolvedImage(int imageIndex) =>
+        imageIndex >= 0 &&
+        imageIndex < _inlineImages.Count &&
+        _inlineImages[imageIndex].LastDesiredSize.Width > 0 &&
+        _inlineImages[imageIndex].LastDesiredSize.Height > 0;
+
+    /// <summary>
+    /// 图片 token 的尺寸取自它的 <see cref="Image"/> 元素。还没解码出来时按 alt 文本占位——
+    /// 解码完成后 <see cref="MeasureOverride"/> 会看到尺寸变化并作废排版，位置随即补正。
+    /// </summary>
+    private MarkdownTokenMeasurement MeasureImageToken(MarkdownToken token)
+    {
+        if (HasResolvedImage(token.ImageIndex))
+        {
+            var size = _inlineImages[token.ImageIndex].LastDesiredSize;
+            return new MarkdownTokenMeasurement(size.Width, size.Height, size.Width, size.Height, 0);
+        }
+
+        return MeasureToken(token.Text.Length > 0 ? token.Text : " ", token.Style);
+    }
+
+    #endregion
+
+    /// <summary>
+    /// 测一个 token 占多宽。
+    /// </summary>
+    /// <remarks>
+    /// ★用 <see cref="FormattedText.WidthIncludingTrailingWhitespace"/> 而不是
+    /// <see cref="FormattedText.Width"/>：后者是 WPF 语义的「不含尾随空白」宽度，对一个纯空格的 token
+    /// 直接给 0。而这里的 token 是排版单位，词与词之间的空白本身就是独立 token——宽度算成 0，
+    /// 后面每个片段的 x 就都少了一截。
+    /// <para>
+    /// 这个错位一整行同款式时看不出来：<see cref="BuildDrawRuns"/> 会把相邻同款式片段并成一次
+    /// <c>DrawText</c>，空格照样画得出来。但换款式的地方（链接、粗体、行内代码）绘制批次断开，
+    /// 下一批的起点仍按 0 宽空格累加出来，于是它的头几个字直接叠在上一批的尾巴上。
+    /// </para>
+    /// </remarks>
     private MarkdownTokenMeasurement MeasureToken(string text, MarkdownTextStyle style)
     {
         Interlocked.Increment(ref DebugTokenMeasurements);
@@ -1351,14 +1667,15 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         var formattedText = CreateFormattedText(text, format);
         TextMeasurement.MeasureText(formattedText);
 
+        var width = formattedText.WidthIncludingTrailingWhitespace;
         var horizontalPadding = format.Padding.Left + format.Padding.Right;
         var verticalPadding = format.Padding.Top + format.Padding.Bottom;
         var totalHeight = Math.Max(DefaultLineHeight, formattedText.Height + verticalPadding);
 
         return new MarkdownTokenMeasurement(
-            formattedText.Width + horizontalPadding,
+            width + horizontalPadding,
             totalHeight,
-            formattedText.Width,
+            width,
             formattedText.Height,
             format.Padding.Left);
     }
@@ -1630,7 +1947,10 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
 
         var formatted = CreateFormattedText(text.Substring(0, count), ResolveFormat(style));
         TextMeasurement.MeasureText(formatted);
-        return formatted.Width;
+
+        // 与 MeasureToken 同理：前缀可能以空格结尾，用会丢掉尾随空白的 Width 会让选区高亮
+        // 和命中测试都短一截。
+        return formatted.WidthIncludingTrailingWhitespace;
     }
 
     private static int ComputeLength(MarkdownTextLayout layout)
@@ -1691,7 +2011,8 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         bool IsWhitespace,
         bool IsLineBreak,
         int SpanIndex,
-        int CharOffset);
+        int CharOffset,
+        int ImageIndex = -1);
 
     private readonly record struct MarkdownTokenMeasurement(double TotalWidth, double TotalHeight, double TextWidth, double TextHeight, double TextOffsetX);
 
@@ -1739,5 +2060,21 @@ public sealed class MarkdownTextPresenter : FrameworkElement, IMarkdownSelectabl
         double TextY,
         double TextWidth,
         double TextHeight);
-    private sealed record MarkdownTokenPlacement(string Text, MarkdownTextStyle Style, Rect Bounds, double TextWidth, double TextHeight, double TextOffsetX);
+    private sealed record MarkdownTokenPlacement(
+        string Text, MarkdownTextStyle Style, Rect Bounds, double TextWidth, double TextHeight, double TextOffsetX,
+        int ImageIndex = -1);
+
+    /// <summary>
+    /// 一张行内图片。加载、解码分级与失败处理全部交给内嵌的 <see cref="Controls.Image"/>——
+    /// 那套逻辑（解码桶、DPI、GPU 缓存回收）在这里重写一遍既没必要，也不可能与它保持一致。
+    /// </summary>
+    private sealed class InlineImageHost
+    {
+        public required MarkdownInlineImage Model { get; set; }
+
+        public required Image Element { get; init; }
+
+        /// <summary>上一次测量得到的尺寸。异步解码完成后它会变，这正是排版作废的信号。</summary>
+        public Size LastDesiredSize { get; set; }
+    }
 }

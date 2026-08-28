@@ -75,6 +75,11 @@ public class Markdown : Control
     private string _parsedText = string.Empty;
     private string[] _lines = Array.Empty<string>();
     private readonly List<int> _blockLineStarts = new();
+    /// <summary>本次解析的链接引用与脚注定义表；增量追加要沿用它，见 <see cref="TryAppendText"/>。</summary>
+    private MarkdownParseContext _parseContext = MarkdownParseContext.Empty(null);
+    /// <summary>视图还「粘」在底部——内容变长时跟着滚。用户手动上滚会把它置为 false。</summary>
+    private bool _isPinnedToEnd = true;
+    private bool _suppressPinTracking;
 
     private readonly List<MarkdownSegment> _segments = new();
     private int _selectionAnchor;
@@ -110,6 +115,48 @@ public class Markdown : Control
     public static readonly DependencyProperty BaseUriProperty =
         DependencyProperty.Register(nameof(BaseUri), typeof(Uri), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownStructureChanged));
+
+    /// <summary>
+    /// Identifies the <see cref="HorizontalScrollBarVisibility"/> dependency property.
+    /// </summary>
+    /// <remarks>
+    /// 默认是 <see cref="ScrollBarVisibility.Auto"/> 而不是 <see cref="ScrollViewer"/> 自己的
+    /// <see cref="ScrollBarVisibility.Disabled"/>：Markdown 里的宽表格与长代码行没法换行，
+    /// 横向滚动是它们唯一的出路。其余滚动行为一律沿用 <see cref="ScrollViewer"/> 的默认值。
+    /// </remarks>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty =
+        DependencyProperty.Register(nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(Markdown),
+            new PropertyMetadata(ScrollBarVisibility.Auto));
+
+    /// <summary>
+    /// Identifies the <see cref="VerticalScrollBarVisibility"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
+        DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(Markdown),
+            new PropertyMetadata(ScrollBarVisibility.Auto));
+
+    /// <summary>
+    /// Identifies the <see cref="IsStreaming"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty IsStreamingProperty =
+        DependencyProperty.Register(nameof(IsStreaming), typeof(bool), typeof(Markdown),
+            new PropertyMetadata(false, OnMarkdownStructureChanged));
+
+    /// <summary>
+    /// Identifies the <see cref="AutoScrollToEnd"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty AutoScrollToEndProperty =
+        DependencyProperty.Register(nameof(AutoScrollToEnd), typeof(bool), typeof(Markdown),
+            new PropertyMetadata(false));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty AutoLinkPlainUrlsProperty =
+        DependencyProperty.Register(nameof(AutoLinkPlainUrls), typeof(bool), typeof(Markdown),
+            new PropertyMetadata(true, OnMarkdownStructureChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty OpenLinksExternallyProperty =
@@ -176,6 +223,16 @@ public class Markdown : Control
             new PropertyMetadata(null, OnContainerStyleChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty ImageStyleProperty =
+        DependencyProperty.Register(nameof(ImageStyle), typeof(Style), typeof(Markdown),
+            new PropertyMetadata(null, OnContainerStyleChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty FootnoteStyleProperty =
+        DependencyProperty.Register(nameof(FootnoteStyle), typeof(Style), typeof(Markdown),
+            new PropertyMetadata(null, OnContainerStyleChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BlockContainerStyleSelectorProperty =
         DependencyProperty.Register(nameof(BlockContainerStyleSelector), typeof(StyleSelector), typeof(Markdown),
             new PropertyMetadata(null, OnContainerStyleChanged));
@@ -219,6 +276,10 @@ public class Markdown : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty LinkStyleProperty =
         MarkdownTextPresenter.LinkStyleProperty.AddOwner(typeof(Markdown));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty StrikethroughStyleProperty =
+        MarkdownTextPresenter.StrikethroughStyleProperty.AddOwner(typeof(Markdown));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
@@ -270,6 +331,66 @@ public class Markdown : Control
     {
         get => (Uri?)GetValue(BaseUriProperty);
         set => SetValue(BaseUriProperty, value);
+    }
+
+    /// <summary>
+    /// 内容还在增长（流式输出）。
+    /// </summary>
+    /// <remarks>
+    /// 开启后，文档末尾那些「话没说完」的结构按已经闭合来解析：<c>**bold</c> 直接是粗体，
+    /// 未闭合的反引号直接是代码，正在打出来的表格分隔行直接立成表格。少了这层处理，逐字渲染会
+    /// 反复改主意——同一个词先是字面量、再变斜体、最后才是粗体。
+    /// <para>
+    /// 流式结束时把它设回 <see langword="false"/>：内容会按最终语义重新解析一次，
+    /// 那些没能真正闭合的记号就退回字面量。
+    /// </para>
+    /// </remarks>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool IsStreaming
+    {
+        get => (bool)GetValue(IsStreamingProperty)!;
+        set => SetValue(IsStreamingProperty, value);
+    }
+
+    /// <summary>
+    /// 内容增长时自动滚到底部。
+    /// </summary>
+    /// <remarks>
+    /// 跟随是「粘」在底部而不是每次都强拉：用户手动往上滚就停止跟随，滚回底部附近又恢复——
+    /// 否则流式输出期间用户根本没法回看前文。
+    /// </remarks>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public bool AutoScrollToEnd
+    {
+        get => (bool)GetValue(AutoScrollToEndProperty)!;
+        set => SetValue(AutoScrollToEndProperty, value);
+    }
+
+    /// <summary>内容超出宽度时横向滚动条的显示策略。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public ScrollBarVisibility HorizontalScrollBarVisibility
+    {
+        get => (ScrollBarVisibility)GetValue(HorizontalScrollBarVisibilityProperty)!;
+        set => SetValue(HorizontalScrollBarVisibilityProperty, value);
+    }
+
+    /// <summary>内容超出高度时纵向滚动条的显示策略。</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public ScrollBarVisibility VerticalScrollBarVisibility
+    {
+        get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty)!;
+        set => SetValue(VerticalScrollBarVisibilityProperty, value);
+    }
+
+    /// <summary>
+    /// 是否把正文里裸写的 <c>https://…</c>、<c>www.…</c> 与邮箱识别成链接（GFM 扩展）。
+    /// 关掉后只有 <c>[文本](地址)</c> 与 <c>&lt;地址&gt;</c> 这类显式写法才算链接。
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public bool AutoLinkPlainUrls
+    {
+        get => (bool)GetValue(AutoLinkPlainUrlsProperty)!;
+        set => SetValue(AutoLinkPlainUrlsProperty, value);
     }
 
     /// <summary>
@@ -362,6 +483,20 @@ public class Markdown : Control
     {
         get => (Style?)GetValue(DiagramStyleProperty);
         set => SetValue(DiagramStyleProperty, value);
+    }
+
+    /// <summary>应用到每个块级图片容器（<see cref="MarkdownImagePresenter"/>）的样式。</summary>
+    public Style? ImageStyle
+    {
+        get => (Style?)GetValue(ImageStyleProperty);
+        set => SetValue(ImageStyleProperty, value);
+    }
+
+    /// <summary>应用到每条脚注定义容器（<see cref="MarkdownFootnotePresenter"/>）的样式。</summary>
+    public Style? FootnoteStyle
+    {
+        get => (Style?)GetValue(FootnoteStyleProperty);
+        set => SetValue(FootnoteStyleProperty, value);
     }
 
     /// <summary>
@@ -470,39 +605,39 @@ public class Markdown : Control
 
     internal StackPanel? DebugContentHost => _contentHost;
 
+    /// <summary>
+    /// 取回模板部件。
+    /// </summary>
+    /// <remarks>
+    /// ★滚动视图与内容宿主都来自模板，不再由这里 <c>new</c> 出来塞进容器。以前那种写法有两个后果：
+    /// 应用级的 <c>&lt;Style TargetType="ScrollViewer"&gt;</c> 够不着它，而且代码里顺手写死的
+    /// <c>IsScrollBarAutoHideEnabled = false</c> 让 Markdown 的滚动条成了全应用唯一不会自动隐藏的那个。
+    /// 现在只有横向滚动策略有自己的默认值（见 <see cref="HorizontalScrollBarVisibilityProperty"/>），
+    /// 其余滚动行为全部跟随 <see cref="ScrollViewer"/>。
+    /// </remarks>
     public override void OnApplyTemplate()
     {
-        if (_container != null && _scrollViewer != null && ReferenceEquals(_container.Child, _scrollViewer))
-        {
-            _container.Child = null;
-        }
-
         base.OnApplyTemplate();
 
         _container = GetTemplateChild("PART_Container") as Border;
-        if (_container == null)
+        _contentHost = GetTemplateChild("PART_ContentHost") as StackPanel;
+
+        if (_scrollViewer != null)
+        {
+            _scrollViewer.ScrollChanged -= OnScrollViewerScrollChanged;
+        }
+
+        _scrollViewer = GetTemplateChild("PART_ScrollViewer") as ScrollViewer;
+        if (_scrollViewer != null)
+        {
+            _scrollViewer.ScrollChanged += OnScrollViewerScrollChanged;
+        }
+
+        if (_contentHost == null)
         {
             return;
         }
 
-        _contentHost = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            TransitionProperty = "None"
-        };
-
-        _scrollViewer = new ScrollViewer
-        {
-            Content = _contentHost,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            CanContentScroll = false,
-            TransitionProperty = "None",
-            IsScrollInertiaEnabled = true,
-            IsScrollBarAutoHideEnabled = false
-        };
-
-        _container.Child = _scrollViewer;
         RebuildVisualTree();
     }
 
@@ -554,7 +689,34 @@ public class Markdown : Control
         }
 
         _lines = MarkdownParser.Normalize(_parsedText).Split('\n');
-        _blocks = MarkdownParser.ParseLines(_lines, BaseUri, _blockLineStarts);
+        _parseContext = MarkdownParseContext.Create(_lines, BaseUri, AutoLinkPlainUrls, IsStreaming);
+        _blocks = MarkdownParser.ParseLines(_lines, _parseContext, _blockLineStarts);
+    }
+
+    /// <summary>
+    /// 把一段内容追加到末尾。
+    /// </summary>
+    /// <remarks>
+    /// 流式输出（模型逐块吐字）用这个，而不是自己拼 <c>Text = Text + chunk</c>：这里保证走的是
+    /// 「只重解析尾部、只重排最后一行」的增量路径，也保证 <see cref="AutoScrollToEnd"/> 的跟随
+    /// 在同一帧里生效。<paramref name="chunk"/> 为空时什么都不做。
+    /// </remarks>
+    public void AppendText(string? chunk)
+    {
+        if (string.IsNullOrEmpty(chunk))
+        {
+            return;
+        }
+
+        SetCurrentValue(TextProperty, (Text ?? string.Empty) + chunk);
+    }
+
+    /// <summary>清空内容，并把滚动位置与选区一起复位。</summary>
+    public void Clear()
+    {
+        SetCurrentValue(TextProperty, string.Empty);
+        _isPinnedToEnd = true;
+        _scrollViewer?.ScrollToTop();
     }
 
     #region Incremental append (streaming)
@@ -569,7 +731,7 @@ public class Markdown : Control
     /// <list type="number">
     ///   <item>只规范化并切分新追加的那一段文本，接到行缓冲末尾；</item>
     ///   <item>只从倒数第二个顶层块的起始行重新解析（顶层块无跨块状态，见
-    ///         <see cref="MarkdownParser.ParseLines"/>）；</item>
+    ///         <c>MarkdownParser.ParseLines</c>）；</item>
     ///   <item>可视树按块结构比对，未变的块连元素带排版缓存一起留用，变了的块优先原地换内容
     ///         而不是重建元素——这样 <see cref="MarkdownTextPresenter"/> 才有机会只重排最后一行。</item>
     /// </list>
@@ -599,7 +761,15 @@ public class Markdown : Control
             return false;
         }
 
-        AppendLines(MarkdownParser.Normalize(newText.AsSpan(_parsedText.Length).ToString()));
+        // 链接引用定义与脚注定义是全文档可见的，块与块之间不再无状态：一条定义能改变文档里任何位置的
+        // 行内解析结果。文档已经带定义、或这次追加引入了新定义时，都交回慢路径重扫一遍定义表。
+        var delta = MarkdownParser.Normalize(newText.AsSpan(_parsedText.Length).ToString());
+        if (_parseContext.HasDefinitions || AppendIntroducesDefinitions(delta))
+        {
+            return false;
+        }
+
+        AppendLines(delta);
         _parsedText = newText;
 
         // 只有最后一个顶层块会被追加的内容延长，这里保守地从倒数第二个块起重解析：多解析一个块几乎不要钱，
@@ -611,7 +781,7 @@ public class Markdown : Control
         Array.Copy(_lines, fromLine, tailLines, 0, tailLines.Length);
 
         var tailStarts = new List<int>();
-        var tailBlocks = MarkdownParser.ParseLines(tailLines, BaseUri, tailStarts);
+        var tailBlocks = MarkdownParser.ParseLines(tailLines, _parseContext, tailStarts);
 
         var merged = new List<MarkdownBlock>(stableBlockCount + tailBlocks.Count);
         for (var index = 0; index < stableBlockCount; index++)
@@ -631,6 +801,89 @@ public class Markdown : Control
         SyncVisualTree(previousBlocks, stableBlockCount);
         return true;
     }
+
+    /// <summary>
+    /// 这次追加会不会让文档里多出（或改出）一条链接引用/脚注定义。第一段续在原末行上，
+    /// 所以那一行要连着旧内容一起重新判定。
+    /// </summary>
+    private bool AppendIntroducesDefinitions(string normalizedDelta)
+    {
+        // 定义行必然带方括号；绝大多数追加片段一个都没有，这一步就把它们全放过去了。
+        if (!normalizedDelta.Contains('[', StringComparison.Ordinal) &&
+            !(_lines.Length > 0 && _lines[^1].Contains('[', StringComparison.Ordinal)))
+        {
+            return false;
+        }
+
+        var parts = normalizedDelta.Split('\n');
+        if (LooksLikeDefinition((_lines.Length > 0 ? _lines[^1] : string.Empty) + parts[0]))
+        {
+            return true;
+        }
+
+        for (var index = 1; index < parts.Length; index++)
+        {
+            if (LooksLikeDefinition(parts[index]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool LooksLikeDefinition(string line)
+    {
+        var trimmed = line.TrimStart();
+        return MarkdownParser.TryParseFootnoteLabel(trimmed, out _) ||
+               MarkdownParser.TryParseLinkDefinitionLine(trimmed, baseUri: null, out _, out _);
+    }
+
+    /// <summary>
+    /// 内容变过之后，如果还「粘」在底部就滚到底。
+    /// </summary>
+    /// <remarks>
+    /// 要等布局跑完才知道新的可滚动高度，所以这里先 <see cref="UIElement.UpdateLayout"/> 再滚。
+    /// </remarks>
+    private void ScrollToEndIfPinned()
+    {
+        if (!AutoScrollToEnd || _scrollViewer == null || !_isPinnedToEnd)
+        {
+            return;
+        }
+
+        UpdateLayout();
+        _suppressPinTracking = true;
+        try
+        {
+            _scrollViewer.ScrollToEnd();
+        }
+        finally
+        {
+            _suppressPinTracking = false;
+        }
+    }
+
+    private void OnScrollViewerScrollChanged(object? sender, ScrollChangedEventArgs e)
+    {
+        // 自己滚出来的那一次不算「用户意图」，否则跟随会把自己关掉。
+        if (_suppressPinTracking || _scrollViewer == null)
+        {
+            return;
+        }
+
+        // 只在用户真的动了纵向位置时重新判断——内容变高会带来 ExtentHeight 变化，那不是用户操作。
+        if (Math.Abs(e.VerticalChange) < 0.5)
+        {
+            return;
+        }
+
+        var distanceToEnd = _scrollViewer.ScrollableHeight - _scrollViewer.VerticalOffset;
+        _isPinnedToEnd = distanceToEnd <= PinToEndThreshold;
+    }
+
+    /// <summary>离底部多近算「还粘着」。留一点余量，免得亚像素误差把跟随关掉。</summary>
+    private const double PinToEndThreshold = 4.0;
 
     /// <summary>把一段已规范化的新文本接到行缓冲末尾——第一段续在原末行上，其余各自成行。</summary>
     private void AppendLines(string normalizedDelta)
@@ -776,12 +1029,15 @@ public class Markdown : Control
         return block switch
         {
             MarkdownHeadingBlock heading => CreateHeadingPresenter(heading, isNested),
-            MarkdownParagraphBlock paragraph => CreateParagraphPresenter(paragraph, isNested),
+            MarkdownParagraphBlock paragraph => TryGetStandaloneImages(paragraph, out var images)
+                ? CreateStandaloneImageBlock(images, isNested)
+                : CreateParagraphPresenter(paragraph, isNested),
             MarkdownListBlock list => CreateListPresenter(list, isNested),
             MarkdownQuoteBlock quote => CreateQuotePresenter(quote, isNested),
             MarkdownCodeBlock code => CreateCodePresenter(code, isNested),
             MarkdownRuleBlock => CreateRulePresenter(isNested),
             MarkdownTableBlock table => CreateTablePresenter(table, isNested),
+            MarkdownFootnoteDefinitionBlock footnote => CreateFootnotePresenter(footnote, isNested),
             _ => CreateEmptyParagraphPresenter(isNested),
         };
     }
@@ -917,15 +1173,16 @@ public class Markdown : Control
             grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         }
 
+        var alignments = table.Alignments;
         var currentRow = 0;
         foreach (var headerRow in table.HeaderRows)
         {
-            AddTableRow(grid, headerRow, currentRow++, isHeader: true);
+            AddTableRow(grid, headerRow, currentRow++, isHeader: true, alignments);
         }
 
         foreach (var bodyRow in table.Rows)
         {
-            AddTableRow(grid, bodyRow, currentRow++, isHeader: false);
+            AddTableRow(grid, bodyRow, currentRow++, isHeader: false, alignments);
         }
 
         var presenter = new MarkdownTablePresenter
@@ -939,7 +1196,12 @@ public class Markdown : Control
         return presenter;
     }
 
-    private void AddTableRow(Grid grid, MarkdownTableRow row, int rowIndex, bool isHeader)
+    private void AddTableRow(
+        Grid grid,
+        MarkdownTableRow row,
+        int rowIndex,
+        bool isHeader,
+        IReadOnlyList<MarkdownColumnAlignment>? alignments)
     {
         for (var columnIndex = 0; columnIndex < row.Cells.Count; columnIndex++)
         {
@@ -948,6 +1210,7 @@ public class Markdown : Control
                 IsHeaderCell = isHeader,
                 RowIndex = rowIndex,
                 ColumnIndex = columnIndex,
+                ColumnAlignment = ResolveColumnAlignment(alignments, columnIndex),
                 IsNested = true,
                 Content = CreateTextPresenter(row.Cells[columnIndex]),
             };
@@ -969,6 +1232,107 @@ public class Markdown : Control
         return host;
     }
 
+    /// <summary>
+    /// 段落里除了图片没有别的内容时，把每张图片提成独立的块级图片。
+    /// </summary>
+    /// <remarks>
+    /// <c>![](shot.png)</c> 独占一行是最常见的写法，作者期待的是一张按容器宽度自适应、可以带图注的图，
+    /// 而不是嵌在一行文字里的小图元。混排的图片（<c>文字 ![icon](i.png) 文字</c>）仍走
+    /// <see cref="MarkdownTextPresenter"/> 的行内图片路径，那里它才应该跟着文字基线走。
+    /// </remarks>
+    private static bool TryGetStandaloneImages(
+        MarkdownParagraphBlock paragraph, out List<MarkdownImageInline> images)
+    {
+        images = null!;
+        var found = new List<MarkdownImageInline>();
+
+        foreach (var inline in paragraph.Inlines)
+        {
+            switch (inline)
+            {
+                case MarkdownImageInline image:
+                    found.Add(image);
+                    continue;
+
+                case MarkdownTextInline text when string.IsNullOrWhiteSpace(text.Text):
+                case MarkdownLineBreakInline:
+                    continue;
+
+                default:
+                    return false;
+            }
+        }
+
+        if (found.Count == 0)
+        {
+            return false;
+        }
+
+        images = found;
+        return true;
+    }
+
+    private UIElement CreateStandaloneImageBlock(List<MarkdownImageInline> images, bool isNested)
+    {
+        if (images.Count == 1)
+        {
+            return CreateImagePresenter(images[0], isNested);
+        }
+
+        var host = new StackPanel { Orientation = Orientation.Vertical };
+        foreach (var image in images)
+        {
+            host.Children.Add(CreateImagePresenter(image, isNested));
+        }
+
+        return host;
+    }
+
+    private MarkdownImagePresenter CreateImagePresenter(MarkdownImageInline image, bool isNested)
+    {
+        var presenter = new MarkdownImagePresenter
+        {
+            IsNested = isNested,
+            Alt = image.Alt,
+            ImageTarget = image.Target,
+            Caption = image.Title ?? string.Empty,
+            Source = CreateImageSource(image.Uri),
+        };
+        ApplyContainerStyle(presenter, ImageStyle);
+        return presenter;
+    }
+
+    private static Jalium.UI.Media.ImageSource? CreateImageSource(Uri? uri)
+    {
+        if (uri == null || !uri.IsAbsoluteUri)
+        {
+            return null;
+        }
+
+        try
+        {
+            return new Jalium.UI.Media.Imaging.BitmapImage(uri);
+        }
+        catch (Exception)
+        {
+            // 坏地址或不支持的协议：交给默认模板显示替代文本。
+            return null;
+        }
+    }
+
+    private MarkdownFootnotePresenter CreateFootnotePresenter(MarkdownFootnoteDefinitionBlock footnote, bool isNested)
+    {
+        var presenter = new MarkdownFootnotePresenter
+        {
+            IsNested = isNested,
+            Number = footnote.Number,
+            Label = footnote.Label,
+            Content = CreateBlockHost(footnote.Blocks, isNested: true),
+        };
+        ApplyContainerStyle(presenter, FootnoteStyle);
+        return presenter;
+    }
+
     private void ApplyContainerStyle(MarkdownBlockPresenter presenter, Style? fallbackStyle)
     {
         var style = BlockContainerStyleSelector?.SelectStyle(presenter, presenter) ?? fallbackStyle;
@@ -976,6 +1340,23 @@ public class Markdown : Control
         {
             presenter.Style = style;
         }
+    }
+
+    private static HorizontalAlignment ResolveColumnAlignment(
+        IReadOnlyList<MarkdownColumnAlignment>? alignments, int columnIndex)
+    {
+        if (alignments == null || columnIndex >= alignments.Count)
+        {
+            return HorizontalAlignment.Stretch;
+        }
+
+        return alignments[columnIndex] switch
+        {
+            MarkdownColumnAlignment.Left => HorizontalAlignment.Left,
+            MarkdownColumnAlignment.Center => HorizontalAlignment.Center,
+            MarkdownColumnAlignment.Right => HorizontalAlignment.Right,
+            _ => HorizontalAlignment.Stretch,
+        };
     }
 
     private MarkdownTextPresenter CreateTextPresenter(IReadOnlyList<MarkdownInline> inlines)
@@ -995,7 +1376,18 @@ public class Markdown : Control
     private void OnInlineLinkClicked(object? sender, MarkdownLinkClickedEventArgs e)
     {
         LinkClicked?.Invoke(this, e);
-        if (e.Handled || !OpenLinksExternally || !e.Uri.IsAbsoluteUri || !s_allowedSchemes.Contains(e.Uri.Scheme))
+        if (e.Handled)
+        {
+            return;
+        }
+
+        // 脚注引用默认滚到对应的定义上；宿主想自己处理，把事件标成 Handled 即可。
+        if (!e.Uri.IsAbsoluteUri && TryBringFootnoteIntoView(e.Uri.OriginalString))
+        {
+            return;
+        }
+
+        if (!OpenLinksExternally || !e.Uri.IsAbsoluteUri || !s_allowedSchemes.Contains(e.Uri.Scheme))
         {
             return;
         }
@@ -1012,6 +1404,43 @@ public class Markdown : Control
         {
             // Ignore navigation failures.
         }
+    }
+
+    /// <summary>脚注引用链接的目标前缀。用相对 URI，这样它永远不会被当成外部地址打开。</summary>
+    private const string FootnoteUriPrefix = "#fn-";
+
+    private bool TryBringFootnoteIntoView(string target)
+    {
+        if (!target.StartsWith(FootnoteUriPrefix, StringComparison.Ordinal) || _contentHost == null)
+        {
+            return false;
+        }
+
+        var label = target[FootnoteUriPrefix.Length..];
+        var presenter = FindFootnotePresenter(_contentHost, label);
+        presenter?.BringIntoView();
+        return presenter != null;
+    }
+
+    private static MarkdownFootnotePresenter? FindFootnotePresenter(DependencyObject root, string label)
+    {
+        if (root is MarkdownFootnotePresenter footnote &&
+            string.Equals(footnote.Label, label, StringComparison.Ordinal))
+        {
+            return footnote;
+        }
+
+        var count = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < count; index++)
+        {
+            if (VisualTreeHelper.GetChild(root, index) is { } child &&
+                FindFootnotePresenter(child, label) is { } found)
+            {
+                return found;
+            }
+        }
+
+        return null;
     }
 
     private IReadOnlyList<MarkdownTextSpan> FlattenInlines(IReadOnlyList<MarkdownInline> inlines)
@@ -1043,8 +1472,28 @@ public class Markdown : Control
                     spans.Add(new MarkdownTextSpan(code.Text, style with { Code = true }));
                     break;
 
+                case MarkdownStrikethroughInline strikethrough:
+                    AppendInlineSpans(spans, strikethrough.Children, style with { Strikethrough = true });
+                    break;
+
                 case MarkdownLinkInline link:
                     AppendInlineSpans(spans, link.Children, style with { LinkUri = link.Uri });
+                    break;
+
+                case MarkdownImageInline image:
+                    spans.Add(new MarkdownTextSpan(
+                        image.Alt,
+                        style,
+                        IsLineBreak: false,
+                        Image: new MarkdownInlineImage(image.Uri, image.Alt, image.Target, image.Title)));
+                    break;
+
+                case MarkdownFootnoteReferenceInline footnote:
+                    // 做成指向脚注定义的相对链接：既拿到了链接样式（一眼看出可点），
+                    // 又因为不是绝对 URI 而绝不会被当成外部地址打开。
+                    spans.Add(new MarkdownTextSpan(
+                        $"[{footnote.Number}]",
+                        style with { LinkUri = new Uri(FootnoteUriPrefix + footnote.Label, UriKind.Relative) }));
                     break;
 
                 case MarkdownLineBreakInline:

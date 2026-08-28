@@ -26,11 +26,17 @@
 | 列表项 | `MarkdownListItemPresenter` | `Markdown.ListItemStyle` |
 | 表格 | `MarkdownTablePresenter` | `Markdown.TableStyle` |
 | 表格单元格 | `MarkdownTableCellPresenter` | `Markdown.TableCellStyle` |
+| 独占一行的图片 | `MarkdownImagePresenter` | `Markdown.ImageStyle` |
+| 脚注定义 `[^n]:` | `MarkdownFootnotePresenter` | `Markdown.FootnoteStyle` |
 | 分隔线 `---` | `MarkdownRulePresenter` | `Markdown.RuleStyle` |
 
 它们都派生自 `MarkdownBlockPresenter`（本身是 `ContentControl`），块的正文放在
 `Content` 里，由模板中的 `ContentPresenter` 呈现。行内文本由
 `MarkdownTextPresenter` 排版，代码块正文由 `MarkdownCodeTextPresenter` 排版。
+
+图片分两种落法：`![](shot.png)` 独占一行时提升成块级的 `MarkdownImagePresenter`
+（按容器宽度自适应、可带图注）；与文字混排的 `文字 ![icon](i.png) 文字` 留在
+`MarkdownTextPresenter` 里跟着文字排，由它内嵌一个 `Image` 元素承载。
 
 ## 三种定制入口
 
@@ -81,7 +87,11 @@
   `IsChecked`、`IsLastItem`、`BulletGlyph`、`NumberFormat`、`TaskCheckedGlyph`、
   `TaskUncheckedGlyph`、`MarkerWidth`、`MarkerMargin`、`MarkerForeground`
 - `MarkdownTablePresenter`：`RowCount`、`ColumnCount`
-- `MarkdownTableCellPresenter`：`IsHeaderCell`、`RowIndex`、`ColumnIndex`
+- `MarkdownTableCellPresenter`：`IsHeaderCell`、`RowIndex`、`ColumnIndex`、`ColumnAlignment`
+  （来自 GFM 分隔行里的冒号，默认模板把它绑到内容的 `HorizontalAlignment`）
+- `MarkdownImagePresenter`：`Source`、`Alt`、`ImageTarget`、`Caption`、`CaptionForeground`、
+  `HasSource`、`HasCaption`（后两个是只读的，默认模板用它们在图片与替代文本之间切换、决定要不要显示图注行）
+- `MarkdownFootnotePresenter`：`Number`、`Label`、`Marker`（只读）、`MarkerForeground`
 - 所有块：`IsNested`（是否嵌在列表项/引用里，默认样式据此收紧间距）
 
 换掉无序列表的项目符号不需要改模板，改字形就行：
@@ -111,7 +121,7 @@
 也能在单个块的样式里覆盖。
 
 **形态**用 `MarkdownInlineStyle` 表达，通过 `BoldStyle`、`ItalicStyle`、
-`InlineCodeStyle`、`LinkStyle` 提供（同样可继承）：
+`InlineCodeStyle`、`StrikethroughStyle`、`LinkStyle` 提供（同样可继承）：
 
 ```csharp
 markdown.InlineCodeStyle = new MarkdownInlineStyle
@@ -173,3 +183,16 @@ trigger 高于普通 setter，所以要关掉一级标题的分隔线，用
 
 `MarkdownCodeBlockView` 更名为 `MarkdownCodeTextPresenter` 并公开，属性
 `Text` / `Language` 更名为 `Code` / `CodeLanguage`。
+
+## 滚动
+
+滚动视图是模板的一部分（`PART_ScrollViewer`），所以应用级的 `<Style TargetType="ScrollViewer">`
+对它同样生效，滚动条的自动隐藏、惯性、覆盖式样式等行为与应用里其它 `ScrollViewer` 完全一致。
+
+`Markdown` 上只有两个滚动相关属性：`HorizontalScrollBarVisibility`（默认 `Auto`，
+因为宽表格和长代码行没法换行，横向滚动是它们唯一的出路）与 `VerticalScrollBarVisibility`
+（默认 `Auto`）。要换掉整个滚动行为就替换模板。
+
+## 支持的语法
+
+解析器对齐 CommonMark 与 GFM，细节见 [markdown-syntax.md](markdown-syntax.md)。

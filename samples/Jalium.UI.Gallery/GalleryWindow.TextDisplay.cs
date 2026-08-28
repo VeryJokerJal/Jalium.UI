@@ -12,6 +12,8 @@ internal static partial class GalleryWindow
         Card("Label", new Label { Content = "Account name" }),
         Card("Markdown", BuildMarkdownDemo(), width: 360),
         Card("Markdown (restyled)", BuildStyledMarkdownDemo(), width: 360),
+        Card("Markdown (GFM)", BuildGfmMarkdownDemo(), width: 360),
+        Card("Markdown (streaming)", BuildStreamingMarkdownDemo(), width: 360),
         Card("FontIcon", BuildFontIconRow()),
         Card("SymbolIcon", BuildSymbolIconRow()),
         Card("PathIcon", BuildPathIconRow()));
@@ -44,6 +46,82 @@ internal static partial class GalleryWindow
             "- First item\n" +
             "- Second item\n" +
             "- Third item\n",
+        Width = 320
+    };
+
+    // 逐字重放一段 Markdown，用来肉眼确认流式渲染不会「改主意」：
+    // 粗体不该先变斜体，代码围栏收尾的 ``` 不该先冒出来再消失，表格不该先以一行原文出现。
+    private static UIElement BuildStreamingMarkdownDemo()
+    {
+        const string script =
+            "## Streaming\n" +
+            "Watch **bold**, `code` and the table settle without flicker.\n\n" +
+            "| step | state |\n" +
+            "| :--- | ----: |\n" +
+            "| 1 | typing |\n" +
+            "| 2 | done |\n\n" +
+            "```csharp\n" +
+            "var x = 1;\n" +
+            "```\n";
+
+        var markdown = new Markdown
+        {
+            Height = 220,
+            AutoScrollToEnd = true,
+        };
+
+        var replay = new Button { Content = "Replay", Margin = new Thickness(0, 8, 0, 0) };
+
+        var timer = new Jalium.UI.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(18) };
+        var cursor = 0;
+
+        timer.Tick += (_, _) =>
+        {
+            if (cursor >= script.Length)
+            {
+                timer.Stop();
+                markdown.IsStreaming = false;   // 收尾：按最终语义再解析一次
+                return;
+            }
+
+            // 一次吐几个字符，更接近模型的分块输出。
+            var take = Math.Min(3, script.Length - cursor);
+            markdown.AppendText(script.Substring(cursor, take));
+            cursor += take;
+        };
+
+        void Restart()
+        {
+            timer.Stop();
+            cursor = 0;
+            markdown.Clear();
+            markdown.IsStreaming = true;
+            timer.Start();
+        }
+
+        replay.Click += (_, _) => Restart();
+        markdown.Loaded += (_, _) => Restart();
+
+        var panel = new StackPanel { Orientation = Orientation.Vertical };
+        panel.Children.Add(markdown);
+        panel.Children.Add(replay);
+        return panel;
+    }
+
+    // GFM 扩展与 CommonMark 里几处容易出错的地方放在一张卡里，方便肉眼回归：
+    // 标识符不该被下划线拆成斜体，表格要认对齐冒号，脚注与裸链接要成形。
+    private static UIElement BuildGfmMarkdownDemo() => new Markdown
+    {
+        Text =
+            "### GFM\n" +
+            "~~Struck out~~, `get_user_name` stays whole, and MAX_INT_VALUE too.\n\n" +
+            "| Left | Center | Right |\n" +
+            "| :--- | :----: | ----: |\n" +
+            "| a | b | c |\n\n" +
+            "- [x] Task done\n" +
+            "- [ ] Task pending\n\n" +
+            "Visit https://jalium.dev for the docs[^1].\n\n" +
+            "[^1]: Footnotes render as their own block.\n",
         Width = 320
     };
 

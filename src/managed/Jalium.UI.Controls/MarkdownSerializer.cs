@@ -54,6 +54,14 @@ internal static class MarkdownSerializer
                 }
                 break;
 
+            case MarkdownFootnoteDefinitionBlock footnote:
+                sb.Append('[').Append(footnote.Number).Append("] ");
+                foreach (var child in footnote.Blocks)
+                {
+                    AppendBlockPlainText(sb, child, indent);
+                }
+                break;
+
             case MarkdownQuoteBlock quote:
                 foreach (var child in quote.Blocks)
                 {
@@ -108,8 +116,11 @@ internal static class MarkdownSerializer
                 case MarkdownTextInline text: sb.Append(text.Text); break;
                 case MarkdownStrongInline strong: AppendInlinesPlainText(sb, strong.Children); break;
                 case MarkdownEmphasisInline emphasis: AppendInlinesPlainText(sb, emphasis.Children); break;
+                case MarkdownStrikethroughInline strike: AppendInlinesPlainText(sb, strike.Children); break;
                 case MarkdownCodeInline code: sb.Append(code.Text); break;
                 case MarkdownLinkInline link: AppendInlinesPlainText(sb, link.Children); break;
+                case MarkdownImageInline image: sb.Append(image.Alt); break;
+                case MarkdownFootnoteReferenceInline footnote: sb.Append('[').Append(footnote.Number).Append(']'); break;
                 case MarkdownLineBreakInline: sb.Append('\n'); break;
             }
         }
@@ -189,13 +200,31 @@ internal static class MarkdownSerializer
                 foreach (var row in table.HeaderRows)
                 {
                     AppendTableRowMarkdown(sb, row);
-                    AppendTableSeparator(sb, row.Cells.Count);
+                    AppendTableSeparator(sb, row.Cells.Count, table.Alignments);
                 }
                 foreach (var row in table.Rows)
                 {
                     AppendTableRowMarkdown(sb, row);
                 }
                 break;
+
+            case MarkdownFootnoteDefinitionBlock footnote:
+                {
+                    var inner = new StringBuilder();
+                    foreach (var child in footnote.Blocks)
+                    {
+                        AppendBlockMarkdown(inner, child);
+                    }
+
+                    var lines = inner.ToString().TrimEnd('\n').Split('\n');
+                    sb.Append("[^").Append(footnote.Label).Append("]: ").Append(lines[0]).Append('\n');
+                    for (var i = 1; i < lines.Length; i++)
+                    {
+                        sb.Append("    ").Append(lines[i]).Append('\n');
+                    }
+
+                    break;
+                }
         }
     }
 
@@ -210,14 +239,30 @@ internal static class MarkdownSerializer
         sb.Append(" |\n");
     }
 
-    private static void AppendTableSeparator(StringBuilder sb, int columns)
+    private static void AppendTableSeparator(
+        StringBuilder sb, int columns, IReadOnlyList<MarkdownColumnAlignment>? alignments)
     {
         sb.Append('|');
         for (var c = 0; c < columns; c++)
         {
-            sb.Append(" --- |");
+            var alignment = alignments != null && c < alignments.Count ? alignments[c] : MarkdownColumnAlignment.None;
+            sb.Append(alignment switch
+            {
+                MarkdownColumnAlignment.Left => " :--- |",
+                MarkdownColumnAlignment.Center => " :---: |",
+                MarkdownColumnAlignment.Right => " ---: |",
+                _ => " --- |",
+            });
         }
         sb.Append('\n');
+    }
+
+    private static void AppendTitleMarkdown(StringBuilder sb, string? title)
+    {
+        if (!string.IsNullOrEmpty(title))
+        {
+            sb.Append(" \"").Append(title!.Replace("\"", "\\\"", StringComparison.Ordinal)).Append('"');
+        }
     }
 
     private static string InlinesToMarkdown(IReadOnlyList<MarkdownInline> inlines)
@@ -236,11 +281,22 @@ internal static class MarkdownSerializer
                 case MarkdownTextInline text: sb.Append(text.Text); break;
                 case MarkdownStrongInline strong: sb.Append("**"); AppendInlinesMarkdown(sb, strong.Children); sb.Append("**"); break;
                 case MarkdownEmphasisInline emphasis: sb.Append('*'); AppendInlinesMarkdown(sb, emphasis.Children); sb.Append('*'); break;
+                case MarkdownStrikethroughInline strike: sb.Append("~~"); AppendInlinesMarkdown(sb, strike.Children); sb.Append("~~"); break;
                 case MarkdownCodeInline code: sb.Append('`').Append(code.Text).Append('`'); break;
                 case MarkdownLinkInline link:
                     sb.Append('[');
                     AppendInlinesMarkdown(sb, link.Children);
-                    sb.Append("](").Append(link.Target).Append(')');
+                    sb.Append("](").Append(link.Target);
+                    AppendTitleMarkdown(sb, link.Title);
+                    sb.Append(')');
+                    break;
+                case MarkdownImageInline image:
+                    sb.Append("![").Append(image.Alt).Append("](").Append(image.Target);
+                    AppendTitleMarkdown(sb, image.Title);
+                    sb.Append(')');
+                    break;
+                case MarkdownFootnoteReferenceInline footnote:
+                    sb.Append("[^").Append(footnote.Label).Append(']');
                     break;
                 case MarkdownLineBreakInline: sb.Append("  \n"); break;
             }
@@ -343,6 +399,13 @@ internal static class MarkdownSerializer
                 sb.Append("<hr>\n");
                 break;
 
+            case MarkdownFootnoteDefinitionBlock footnote:
+                sb.Append("<div class=\"footnote\" id=\"fn-").Append(HtmlEscape(footnote.Label)).Append("\">")
+                  .Append("<sup>").Append(footnote.Number).Append("</sup> ");
+                AppendBlocksHtml(sb, footnote.Blocks);
+                sb.Append("</div>\n");
+                break;
+
             case MarkdownTableBlock table:
                 sb.Append("<table>\n");
                 if (table.HeaderRows.Count > 0)
@@ -350,27 +413,40 @@ internal static class MarkdownSerializer
                     sb.Append("<thead>\n");
                     foreach (var row in table.HeaderRows)
                     {
-                        AppendTableRowHtml(sb, row, "th");
+                        AppendTableRowHtml(sb, row, "th", table.Alignments);
                     }
                     sb.Append("</thead>\n");
                 }
                 sb.Append("<tbody>\n");
                 foreach (var row in table.Rows)
                 {
-                    AppendTableRowHtml(sb, row, "td");
+                    AppendTableRowHtml(sb, row, "td", table.Alignments);
                 }
                 sb.Append("</tbody>\n</table>\n");
                 break;
         }
     }
 
-    private static void AppendTableRowHtml(StringBuilder sb, MarkdownTableRow row, string cellTag)
+    private static void AppendTableRowHtml(
+        StringBuilder sb, MarkdownTableRow row, string cellTag, IReadOnlyList<MarkdownColumnAlignment>? alignments)
     {
         sb.Append("<tr>");
-        foreach (var cell in row.Cells)
+        for (var column = 0; column < row.Cells.Count; column++)
         {
-            sb.Append('<').Append(cellTag).Append('>');
-            AppendInlinesHtml(sb, cell);
+            sb.Append('<').Append(cellTag);
+            var alignment = alignments != null && column < alignments.Count
+                ? alignments[column]
+                : MarkdownColumnAlignment.None;
+            if (alignment != MarkdownColumnAlignment.None)
+            {
+                sb.Append(" style=\"text-align:")
+                  .Append(alignment == MarkdownColumnAlignment.Left ? "left"
+                      : alignment == MarkdownColumnAlignment.Center ? "center" : "right")
+                  .Append("\"");
+            }
+
+            sb.Append('>');
+            AppendInlinesHtml(sb, row.Cells[column]);
             sb.Append("</").Append(cellTag).Append('>');
         }
         sb.Append("</tr>\n");
@@ -385,14 +461,35 @@ internal static class MarkdownSerializer
                 case MarkdownTextInline text: sb.Append(HtmlEscape(text.Text)); break;
                 case MarkdownStrongInline strong: sb.Append("<strong>"); AppendInlinesHtml(sb, strong.Children); sb.Append("</strong>"); break;
                 case MarkdownEmphasisInline emphasis: sb.Append("<em>"); AppendInlinesHtml(sb, emphasis.Children); sb.Append("</em>"); break;
+                case MarkdownStrikethroughInline strike: sb.Append("<del>"); AppendInlinesHtml(sb, strike.Children); sb.Append("</del>"); break;
                 case MarkdownCodeInline code: sb.Append("<code>").Append(HtmlEscape(code.Text)).Append("</code>"); break;
                 case MarkdownLinkInline link:
-                    sb.Append("<a href=\"").Append(HtmlEscape(link.Target)).Append("\">");
+                    sb.Append("<a href=\"").Append(HtmlEscape(link.Target)).Append('"');
+                    AppendTitleHtml(sb, link.Title);
+                    sb.Append('>');
                     AppendInlinesHtml(sb, link.Children);
                     sb.Append("</a>");
                     break;
+                case MarkdownImageInline image:
+                    sb.Append("<img src=\"").Append(HtmlEscape(image.Target))
+                      .Append("\" alt=\"").Append(HtmlEscape(image.Alt)).Append('"');
+                    AppendTitleHtml(sb, image.Title);
+                    sb.Append('>');
+                    break;
+                case MarkdownFootnoteReferenceInline footnote:
+                    sb.Append("<sup><a href=\"#fn-").Append(HtmlEscape(footnote.Label)).Append("\">")
+                      .Append(footnote.Number).Append("</a></sup>");
+                    break;
                 case MarkdownLineBreakInline: sb.Append("<br>"); break;
             }
+        }
+    }
+
+    private static void AppendTitleHtml(StringBuilder sb, string? title)
+    {
+        if (!string.IsNullOrEmpty(title))
+        {
+            sb.Append(" title=\"").Append(HtmlEscape(title!)).Append('"');
         }
     }
 
@@ -490,6 +587,22 @@ internal static class MarkdownSerializer
                 sb.Append(@"\par").Append('\n');
                 break;
 
+            case MarkdownFootnoteDefinitionBlock footnote:
+                sb.Append(@"{\fs18 ").Append('[').Append(footnote.Number).Append("] ");
+                foreach (var child in footnote.Blocks)
+                {
+                    if (child is MarkdownParagraphBlock paragraphBlock)
+                    {
+                        AppendInlinesRtf(sb, paragraphBlock.Inlines);
+                    }
+                    else
+                    {
+                        AppendBlockRtf(sb, child);
+                    }
+                }
+                sb.Append(@"\par}").Append('\n');
+                break;
+
             case MarkdownTableBlock table:
                 foreach (var row in table.HeaderRows)
                 {
@@ -524,8 +637,13 @@ internal static class MarkdownSerializer
                 case MarkdownTextInline text: sb.Append(RtfEscape(text.Text)); break;
                 case MarkdownStrongInline strong: sb.Append(@"{\b "); AppendInlinesRtf(sb, strong.Children); sb.Append('}'); break;
                 case MarkdownEmphasisInline emphasis: sb.Append(@"{\i "); AppendInlinesRtf(sb, emphasis.Children); sb.Append('}'); break;
+                case MarkdownStrikethroughInline strike: sb.Append(@"{\strike "); AppendInlinesRtf(sb, strike.Children); sb.Append('}'); break;
                 case MarkdownCodeInline code: sb.Append(@"{\f1 ").Append(RtfEscape(code.Text)).Append('}'); break;
                 case MarkdownLinkInline link: AppendInlinesRtf(sb, link.Children); break;
+                case MarkdownImageInline image: sb.Append(RtfEscape(image.Alt)); break;
+                case MarkdownFootnoteReferenceInline footnote:
+                    sb.Append(@"{\super ").Append(footnote.Number).Append('}');
+                    break;
                 case MarkdownLineBreakInline: sb.Append(@"\line "); break;
             }
         }

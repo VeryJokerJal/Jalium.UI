@@ -27,7 +27,15 @@
                         BorderThickness="{TemplateBinding BorderThickness}"
                         CornerRadius="{TemplateBinding CornerRadius}"
                         Padding="{TemplateBinding Padding}"
-                        ClipToBounds="True" />
+                        ClipToBounds="True">
+                    <ScrollViewer Name="PART_ScrollViewer"
+                                  HorizontalScrollBarVisibility="{TemplateBinding HorizontalScrollBarVisibility}"
+                                  VerticalScrollBarVisibility="{TemplateBinding VerticalScrollBarVisibility}">
+                        <StackPanel Name="PART_ContentHost"
+                                    Orientation="Vertical"
+                                    TransitionProperty="None" />
+                    </ScrollViewer>
+                </Border>
             </ControlTemplate>
         </Setter>
 
@@ -295,7 +303,7 @@
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
                         Padding="{TemplateBinding Padding}">
-                    <ContentPresenter HorizontalAlignment="Stretch" />
+                    <ContentPresenter HorizontalAlignment="{TemplateBinding ColumnAlignment}" />
                 </Border>
                 <ControlTemplate.Triggers>
                     <Trigger Property="IsHeaderCell" Value="True">
@@ -309,6 +317,79 @@
                 <Setter Property="FontWeight" Value="Bold" />
             </Trigger>
         </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- 块级图片                                        -->
+    <!-- ============================================== -->
+    <Style TargetType="MarkdownImagePresenter">
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="CaptionForeground" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="HorizontalAlignment" Value="Left" />
+        <Setter Property="Margin" Value="0,0,0,12" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MarkdownImagePresenter">
+                <StackPanel Orientation="Vertical" Margin="{TemplateBinding Padding}">
+                    <Image Name="PART_Image"
+                           Source="{TemplateBinding Source}"
+                           Stretch="Uniform"
+                           StretchDirection="DownOnly"
+                           HorizontalAlignment="Left" />
+                    <TextBlock Name="PART_Alt"
+                               Text="{TemplateBinding Alt}"
+                               Foreground="{TemplateBinding CaptionForeground}"
+                               FontStyle="Italic"
+                               TextWrapping="Wrap"
+                               Visibility="Collapsed" />
+                    <TextBlock Name="PART_Caption"
+                               Text="{TemplateBinding Caption}"
+                               Foreground="{TemplateBinding CaptionForeground}"
+                               FontSize="12"
+                               Margin="0,4,0,0"
+                               TextWrapping="Wrap"
+                               Visibility="Collapsed" />
+                </StackPanel>
+                <ControlTemplate.Triggers>
+                    <Trigger Property="HasSource" Value="False">
+                        <Setter TargetName="PART_Image" Property="Visibility" Value="Collapsed" />
+                        <Setter TargetName="PART_Alt" Property="Visibility" Value="Visible" />
+                    </Trigger>
+                    <Trigger Property="HasCaption" Value="True">
+                        <Setter TargetName="PART_Caption" Property="Visibility" Value="Visible" />
+                    </Trigger>
+                </ControlTemplate.Triggers>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- 脚注定义                                        -->
+    <!-- ============================================== -->
+    <Style TargetType="MarkdownFootnotePresenter">
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="MarkerForeground" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="Margin" Value="0,0,0,4" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MarkdownFootnotePresenter">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Name="PART_Marker"
+                               Grid.Column="0"
+                               Text="{TemplateBinding Marker}"
+                               Foreground="{TemplateBinding MarkerForeground}"
+                               MinWidth="28"
+                               Margin="0,0,10,0"
+                               VerticalAlignment="Top"
+                               TextWrapping="NoWrap" />
+                    <ContentPresenter Grid.Column="1" HorizontalAlignment="Stretch" />
+                </Grid>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
 </ResourceDictionary>

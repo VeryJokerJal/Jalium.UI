@@ -121,6 +121,7 @@ public class MarkdownInlineStyle : DependencyObject
     internal static readonly MarkdownInlineStyle DefaultItalic = CreateItalic();
     internal static readonly MarkdownInlineStyle DefaultInlineCode = CreateInlineCode();
     internal static readonly MarkdownInlineStyle DefaultLink = CreateLink();
+    internal static readonly MarkdownInlineStyle DefaultStrikethrough = CreateStrikethrough();
 
     /// <summary>
     /// 覆盖字体族。<see langword="null"/> 时行内代码使用
@@ -252,4 +253,10 @@ public class MarkdownInlineStyle : DependencyObject
     /// </summary>
     public static MarkdownInlineStyle CreateLink() =>
         new() { Decorations = MarkdownTextDecorations.Underline };
+
+    /// <summary>
+    /// 创建与内置默认一致的删除线样式（GFM 的 <c>~~文本~~</c>），便于在其基础上微调。
+    /// </summary>
+    public static MarkdownInlineStyle CreateStrikethrough() =>
+        new() { Decorations = MarkdownTextDecorations.Strikethrough };
 }
