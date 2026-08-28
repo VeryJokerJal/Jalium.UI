@@ -17,6 +17,14 @@ internal sealed class TextBoxContentHost : FrameworkElement
     // wraps to the (narrower) arrange width.
     private double _lastMeasureWidth = double.NaN;
 
+    // Convergence state for the corrective re-measure below. The arrange width the
+    // last request was made for, and how many requests have been made without the
+    // layout ever settling.
+    private double _remeasureRequestedForArrangeWidth = double.NaN;
+    private int _unsettledRemeasureRequests;
+
+    private const int MaxUnsettledRemeasureRequests = 3;
+
     /// <summary>
     /// Initializes a new instance of the TextBoxContentHost class.
     /// </summary>
@@ -37,6 +45,14 @@ internal sealed class TextBoxContentHost : FrameworkElement
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // A different constraint from the parent is new information: whatever we
+        // concluded about the previous constraint no longer applies, so allow the
+        // corrective request below to fire again.
+        if (!WidthsMatch(_lastMeasureWidth, availableSize.Width))
+        {
+            _remeasureRequestedForArrangeWidth = double.NaN;
+        }
+
         _lastMeasureWidth = availableSize.Width;
         return _owner.MeasureTextContent(availableSize);
     }
@@ -50,18 +66,57 @@ internal sealed class TextBoxContentHost : FrameworkElement
         // and may produce more (or fewer) rows than we reported. Ask for
         // another measure pass so the enclosing ScrollViewer/parent picks up
         // the correct height and the user can scroll to the end of wrapped
-        // content. Guard against infinite re-measure loops with a small
-        // tolerance and by only triggering when either side is finite.
-        bool measureFinite = !double.IsNaN(_lastMeasureWidth) && !double.IsInfinity(_lastMeasureWidth);
-        bool arrangeFinite = !double.IsInfinity(finalSize.Width);
-        if ((measureFinite || arrangeFinite)
-            && (double.IsInfinity(_lastMeasureWidth) || Math.Abs(_lastMeasureWidth - finalSize.Width) > 0.5))
+        // content.
+        //
+        // That request MUST be self-limiting. Asking unconditionally is only safe
+        // when the parent then measures us with the width it arranged us at — and a
+        // parent that measures with Infinity (any ScrollViewer that allows
+        // horizontal scrolling, which is what a TextBox template wraps
+        // PART_ContentHost in) never will. It re-measures with Infinity, arranges at
+        // the same finite width, and the mismatch is back: arrange invalidates
+        // measure, the frame's layout pass re-measures and re-arranges, arrange
+        // invalidates measure again — a layout loop that never settles and pins the
+        // UI thread at 100% of a core for the lifetime of the window. (Observed as
+        // "DevTools' first page is very laggy": the Inspector's filter box hits this
+        // the moment the tab is re-shown, and every window on that thread — the
+        // inspected app included — then competes with a spinning layout pass.)
+        //
+        // So: at most one request per arrange width, and at most a few before giving
+        // up entirely. A parent that honours the request settles on the first pass;
+        // one that does not simply stops being asked. Either way layout terminates.
+        bool mismatched = !double.IsNaN(_lastMeasureWidth) && !WidthsMatch(_lastMeasureWidth, finalSize.Width);
+
+        if (mismatched)
         {
-            InvalidateMeasure();
+            bool alreadyRequestedForThisWidth = WidthsMatch(_remeasureRequestedForArrangeWidth, finalSize.Width);
+            if (!alreadyRequestedForThisWidth && _unsettledRemeasureRequests < MaxUnsettledRemeasureRequests)
+            {
+                _remeasureRequestedForArrangeWidth = finalSize.Width;
+                _unsettledRemeasureRequests++;
+                InvalidateMeasure();
+            }
+        }
+        else
+        {
+            // Measure and arrange agree — the layout settled, so the budget resets and
+            // a genuine later change gets its corrective pass again.
+            _remeasureRequestedForArrangeWidth = double.NaN;
+            _unsettledRemeasureRequests = 0;
         }
 
         _owner.ArrangeTextContent(finalSize);
         return finalSize;
+    }
+
+    /// <summary>
+    /// Width comparison that treats Infinity as its own distinct value: an infinite
+    /// measure and a finite arrange never "match", and NaN (no pass yet) matches nothing.
+    /// </summary>
+    private static bool WidthsMatch(double a, double b)
+    {
+        if (double.IsNaN(a) || double.IsNaN(b)) return false;
+        if (double.IsInfinity(a) || double.IsInfinity(b)) return double.IsInfinity(a) && double.IsInfinity(b);
+        return Math.Abs(a - b) <= 0.5;
     }
 
     /// <inheritdoc />
