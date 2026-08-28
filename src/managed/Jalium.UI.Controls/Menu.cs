@@ -138,6 +138,8 @@ public class MenuItem : HeaderedItemsControl
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_disabledBrush = new(Color.FromRgb(128, 128, 128));
     private static readonly SolidColorBrush s_gestureBrush = new(Color.FromRgb(160, 160, 160));
+    private static readonly SolidColorBrush s_submenuFallbackBackground = new(Color.FromRgb(45, 45, 48));
+    private static readonly SolidColorBrush s_submenuFallbackBorder = new(Color.FromRgb(67, 67, 70));
     private static readonly ItemContainerTemplateSelector s_defaultItemContainerTemplateSelector =
         new DefaultMenuItemContainerTemplateSelector();
 
@@ -554,6 +556,8 @@ public class MenuItem : HeaderedItemsControl
     private Popup? _submenuPopup;
     private Border? _submenuBorder;
     private MenuPopupScrollHost? _submenuScrollHost;
+    // 装着本项的那一级弹出框外框（由展开它的父项在搬运时登记；顶层项为 null，走 OwnerMenu）。
+    private Border? _hostPopupBorder;
     private const double IconColumnWidth = 24;
     private const double GestureColumnWidth = 80;
     private const double ArrowColumnWidth = 16;
@@ -1319,13 +1323,9 @@ public class MenuItem : HeaderedItemsControl
         _submenuScrollHost = new MenuPopupScrollHost();
         _submenuBorder = new Border
         {
-            Background = ResolveMenuBrush("MenuFlyoutPresenterBackground", new SolidColorBrush(Color.FromRgb(45, 45, 48))),
-            BorderBrush = ResolveMenuBrush("MenuFlyoutPresenterBorderBrush", new SolidColorBrush(Color.FromRgb(67, 67, 70))),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(4),
-            Padding = new Thickness(2),
             Child = _submenuScrollHost
         };
+        ApplySubmenuChrome();
 
         _submenuPopup = new Popup
         {
@@ -1342,6 +1342,68 @@ public class MenuItem : HeaderedItemsControl
 
         // When popup is closed externally (e.g., light dismiss), sync IsSubmenuOpen
         _submenuPopup.Closed += OnSubmenuPopupClosed;
+    }
+
+    /// <summary>
+    /// The border that frames this item's submenu popup, once the submenu has been created.
+    /// </summary>
+    internal Border? SubmenuFrame => _submenuBorder;
+
+    /// <summary>
+    /// Gives this item's submenu popup the same frame as the level that hosts the item.
+    /// </summary>
+    /// <remarks>
+    /// 每一级子菜单都是自己建的独立弹出框，以前这里写死 CornerRadius=4 / Padding=2，而
+    /// ContextMenu 的主题 Style 给的是 14 / 5 —— 同一次交互里一级是大圆角、二级几乎是直角。
+    /// 改成向宿主取造型后整条链一致；每次展开都重取，主题切换 / 宿主换样式都跟得上。
+    /// </remarks>
+    private void ApplySubmenuChrome()
+    {
+        if (_submenuBorder == null) return;
+
+        ResolveSubmenuChrome().ApplyTo(_submenuBorder);
+    }
+
+    private MenuPopupChrome ResolveSubmenuChrome()
+    {
+        // 承载「我」的那个弹出框就是上一级子菜单的外框：直接照抄，造型逐级向下传。
+        if ((_hostPopupBorder ?? FindParentMenuItem()?._submenuBorder) is { } hostBorder)
+        {
+            return MenuPopupChrome.FromBorder(hostBorder);
+        }
+
+        // 顶层项：跟宿主菜单自己的弹出框走（ContextMenu 有；常驻菜单栏没有，返回 null）。
+        if (FindOwnerMenu()?.GetPopupChrome() is { } ownerChrome)
+        {
+            return ownerChrome;
+        }
+
+        return MenuPopupChrome.CreateDefault(
+            ResolveMenuBrush("MenuFlyoutPresenterBackground", s_submenuFallbackBackground),
+            ResolveMenuBrush("MenuFlyoutPresenterBorderBrush", s_submenuFallbackBorder));
+    }
+
+    /// <summary>
+    /// Walks up the submenu chain to the top-level item and returns the menu that hosts it.
+    /// </summary>
+    private MenuBase? FindOwnerMenu()
+    {
+        var item = this;
+        while (true)
+        {
+            if (item.OwnerMenu != null)
+            {
+                return item.OwnerMenu;
+            }
+
+            var parent = item.FindParentMenuItem();
+            if (parent == null)
+            {
+                return null;
+            }
+
+            item = parent;
+        }
     }
 
     /// <summary>
@@ -1382,6 +1444,15 @@ public class MenuItem : HeaderedItemsControl
                 {
                     element.DetachFromVisualParent();
                 }
+
+                // 告诉子项它现在被哪一级弹出框装着：子项展开自己的子菜单时照着这个外框做，
+                // 整条链的圆角 / 内边距才不会各写各的。视觉父链此时还没接上（popup 尚未实体化），
+                // 只能像 ContextMenu 登记 OwnerMenu 那样在搬运时直接交底。
+                if (element is MenuItem hostedItem)
+                {
+                    hostedItem._hostPopupBorder = _submenuBorder;
+                }
+
                 panel.Children.Add(element);
             }
         }
@@ -1621,6 +1692,8 @@ public class MenuItem : HeaderedItemsControl
                 {
                     menuItem.EnsureSubmenuPopup();
                     menuItem.PopulateSubmenuPopup();
+                    // 每次展开重取外框造型：首次建 popup 时上一级可能还没成型，之后主题 / 宿主样式也会变。
+                    menuItem.ApplySubmenuChrome();
                     menuItem._submenuPopup!.IsOpen = true;
                     menuItem.OnSubmenuOpened(new RoutedEventArgs(SubmenuOpenedEvent, menuItem));
                 }

@@ -117,6 +117,19 @@ internal sealed class MenuFlyoutPresenter : Control
         dc.DrawRoundedRectangle(background, pen, new Rect(RenderSize), cornerRadius, cornerRadius);
     }
 
+    /// <summary>
+    /// Hands this level's frame to the submenus opened from it, so the whole chain matches.
+    /// </summary>
+    internal MenuPopupChrome GetChrome()
+    {
+        return new MenuPopupChrome(
+            new CornerRadius(GetEffectiveCornerRadius()),
+            GetEffectivePadding(),
+            GetEffectiveBorderThickness(),
+            Background ?? ResolveBrush("OnePopupBackground", "MenuFlyoutPresenterBackground", s_fallbackBackgroundBrush),
+            BorderBrush ?? ResolveBrush("OnePopupBorder", "MenuFlyoutPresenterBorderBrush", s_fallbackBorderBrush));
+    }
+
     private Brush ResolveBrush(string primaryKey, string secondaryKey, Brush fallback)
     {
         if (TryFindResource(primaryKey) is Brush primary)

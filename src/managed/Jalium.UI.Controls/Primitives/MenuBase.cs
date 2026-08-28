@@ -125,6 +125,20 @@ public abstract class MenuBase : ItemsControl
 
     #endregion
 
+    #region Popup Chrome
+
+    /// <summary>
+    /// Gets the chrome of this menu's own popup, or <see langword="null"/> when it has none.
+    /// </summary>
+    /// <remarks>
+    /// 子菜单由 <see cref="MenuItem"/> 自己建弹出框，看不到宿主菜单的 Style，只能反过来向宿主取
+    /// 造型；靠这个钩子让整条级联链共用一套圆角 / 内边距 / 描边。ContextMenu 覆写它交出自己的
+    /// popup 造型，常驻的菜单栏没有弹出框，保持 null（子菜单退回框架默认）。
+    /// </remarks>
+    internal virtual MenuPopupChrome? GetPopupChrome() => null;
+
+    #endregion
+
     #region Private Fields
 
     private int _currentIndex = -1;

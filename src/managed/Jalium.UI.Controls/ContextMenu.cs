@@ -439,11 +439,24 @@ public class ContextMenu : MenuBase
         if (_popupBorder == null)
             return;
 
-        _popupBorder.Background = ResolvePopupBackgroundBrush();
-        _popupBorder.BorderBrush = ResolvePopupBorderBrush();
-        _popupBorder.BorderThickness = BorderThickness;
-        _popupBorder.CornerRadius = CornerRadius;
-        _popupBorder.Padding = Padding;
+        BuildPopupChrome().ApplyTo(_popupBorder);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// 二级及以后的子菜单是 <see cref="MenuItem"/> 自己的弹出框，它们照这里给的造型建外框，
+    /// 于是整条链跟着 ContextMenu 的 Style（圆角 14 / 内边距 5）走，而不是各写各的常量。
+    /// </remarks>
+    internal override MenuPopupChrome? GetPopupChrome() => BuildPopupChrome();
+
+    private MenuPopupChrome BuildPopupChrome()
+    {
+        return new MenuPopupChrome(
+            CornerRadius,
+            Padding,
+            BorderThickness,
+            ResolvePopupBackgroundBrush(),
+            ResolvePopupBorderBrush());
     }
 
     private Brush ResolvePopupBackgroundBrush()

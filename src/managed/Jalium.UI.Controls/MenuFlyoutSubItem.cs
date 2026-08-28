@@ -18,6 +18,8 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
     private Border? _subPopupBorder;
     private MenuPopupScrollHost? _subPopupScrollHost;
     private Popup? _hostPopup;
+    // 装着本项的那一级子菜单外框（由展开它的父项登记；一级项为 null，走视觉树找 presenter）。
+    private Border? _hostPopupBorder;
 
     /// <summary>
     /// Gets the collection of menu elements in the sub-menu.
@@ -74,6 +76,8 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
         CloseSiblingSubMenus();
         EnsureSubPopup();
         PopulateSubPopup();
+        // 每次展开重取外框造型：首次建 popup 时上一级可能还没成型，之后主题 / 宿主样式也会变。
+        ApplySubMenuChrome();
         AttachHostPopup();
         _subPopup!.IsOpen = true;
         InvalidateVisual();
@@ -135,14 +139,10 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
         _subPopupScrollHost = new MenuPopupScrollHost();
         _subPopupBorder = new Border
         {
-            Background = ResolveBrush("OnePopupBackground", "MenuFlyoutPresenterBackground", s_fallbackBackgroundBrush),
-            BorderBrush = ResolveBrush("OnePopupBorder", "MenuFlyoutPresenterBorderBrush", s_fallbackBorderBrush),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(4),
             Child = _subPopupScrollHost,
             MinWidth = 160
         };
+        ApplySubMenuChrome();
 
         _subPopup = new Popup
         {
@@ -158,6 +158,57 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
         _subPopup.Closed += OnSubPopupClosed;
     }
 
+    /// <summary>
+    /// The border that frames this item's sub-menu popup, once the sub-menu has been created.
+    /// </summary>
+    internal Border? SubMenuFrame => _subPopupBorder;
+
+    /// <summary>
+    /// Gives this sub-menu the same frame as the level that hosts the item.
+    /// </summary>
+    /// <remarks>
+    /// 各级弹出框各建各的外框，写死常量就会跟宿主脱节（应用改了 MenuFlyout 的圆角，子菜单还是 8）。
+    /// 这里向上取承载本项的那一级：一级是 MenuFlyoutPresenter，二级以后是上一级子菜单的 Border。
+    /// </remarks>
+    private void ApplySubMenuChrome()
+    {
+        if (_subPopupBorder == null)
+            return;
+
+        ResolveSubMenuChrome().ApplyTo(_subPopupBorder);
+    }
+
+    private MenuPopupChrome ResolveSubMenuChrome()
+    {
+        // 更深层的子菜单：父项搬运时已经把自己的外框交过来了，直接照抄。
+        if (_hostPopupBorder is { } registered)
+        {
+            return MenuPopupChrome.FromBorder(registered);
+        }
+
+        // 视觉父链：本项 → ItemsPanel →（ScrollViewer 模板内部若干层）→ MenuPopupScrollHost →
+        // 承载这一级的外框（MenuFlyout 一级是 presenter，二级以后是上一级子菜单的 Border）。
+        // 只认 scroll host 的直接父级 —— 见 Border 就取会撞上 ScrollViewer 模板内部那层透明无圆角的 Border。
+        DependencyObject? node = VisualParent;
+        while (node != null && node is not PopupRoot)
+        {
+            if (node is MenuPopupScrollHost host)
+            {
+                if (host.VisualParent is MenuFlyoutPresenter presenter)
+                    return presenter.GetChrome();
+                if (host.VisualParent is Border hostBorder)
+                    return MenuPopupChrome.FromBorder(hostBorder);
+                break;
+            }
+
+            node = node.VisualParent;
+        }
+
+        return MenuPopupChrome.CreateDefault(
+            ResolveBrush("OnePopupBackground", "MenuFlyoutPresenterBackground", s_fallbackBackgroundBrush),
+            ResolveBrush("OnePopupBorder", "MenuFlyoutPresenterBorderBrush", s_fallbackBorderBrush));
+    }
+
     private void PopulateSubPopup()
     {
         var panel = _subPopupScrollHost?.ItemsPanel;
@@ -171,6 +222,13 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
             {
                 item.DetachFromVisualParent();
             }
+
+            // 更深一级的子菜单照着这一级的外框做（视觉父链此刻还没接上，只能搬运时直接交底）。
+            if (item is MenuFlyoutSubItem nested)
+            {
+                nested._hostPopupBorder = _subPopupBorder;
+            }
+
             panel.Children.Add(item);
         }
     }
