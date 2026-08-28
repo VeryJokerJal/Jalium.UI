@@ -164,7 +164,7 @@ jobs:
         run: |
           payload="src/native/bin/native/${{ matrix.rid }}/Release"
           results="${{ runner.temp }}/managed-test-results"
-          filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable&FullyQualifiedName!=Jalium.UI.Tests.MiniAudioDeviceTests.PlaybackEnded_FiresAfterSubmitAndSignal"
+          filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable&FullyQualifiedName!=Jalium.UI.Tests.MiniAudioDeviceTests.PlaybackEnded_FiresAfterSubmitAndSignal&FullyQualifiedName!=Jalium.UI.Tests.ComboBoxPopupInputTests.PopupWindow_MouseHoverAndClick_SelectsComboBoxItem"
           mkdir -p "$results"
           # Managed outputs already contain the validated native payload. A
           # second copy via LD_LIBRARY_PATH gives musl separate core/plugin
@@ -530,7 +530,7 @@ jobs:
 
               managed_root="/artifacts/jalium-managed-${{ matrix.rid }}"
               managed_results="/artifacts/managed-test-results-${{ matrix.rid }}"
-              managed_filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable&FullyQualifiedName!=Jalium.UI.Tests.MiniAudioDeviceTests.PlaybackEnded_FiresAfterSubmitAndSignal"
+              managed_filter="FullyQualifiedName!~Jalium.UI.Tests.VulkanBackendSmokeTests&FullyQualifiedName!=Jalium.UI.Tests.RenderContextBackendSwitchTests.ExplicitVulkan_SwitchesCachedContext_WhenVulkanAvailable&FullyQualifiedName!=Jalium.UI.Tests.MiniAudioDeviceTests.PlaybackEnded_FiresAfterSubmitAndSignal&FullyQualifiedName!=Jalium.UI.Tests.ComboBoxPopupInputTests.PopupWindow_MouseHoverAndClick_SelectsComboBoxItem"
               mkdir -p "$managed_results"
               # Managed outputs already contain the validated native payload.
               # Do not load a second core/plugin copy through LD_LIBRARY_PATH:

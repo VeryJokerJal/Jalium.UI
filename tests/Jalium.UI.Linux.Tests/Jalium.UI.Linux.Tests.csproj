@@ -50,6 +50,10 @@
   <ItemGroup>
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\DeviceLost\**\*.cs" />
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\EffectCaptureCullOverrideTests.cs" />
+    <!-- Drive the capture path through a real HWND (HiddenNativeWindow), so they need a
+         Windows desktop even where the backend under test is the software one. -->
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\EffectCaptureTransformCompensationTests.cs" />
+    <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\SoftwareEffectCaptureTests.cs" />
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\FileDialogComActivationTests.cs" />
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\SpellCheckerComActivationTests.cs" />
     <_WindowsOnlyTestSource Include="..\Jalium.UI.Tests\UiaComWrappersTests.cs" />
