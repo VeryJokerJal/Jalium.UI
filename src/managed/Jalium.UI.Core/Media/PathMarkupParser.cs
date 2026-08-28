@@ -96,6 +96,12 @@ public static class PathMarkupParser
                 // After a MoveTo, additional coordinate sets are implicit LineTo's.
                 if (command == 'M') command = 'L';
                 else if (command == 'm') command = 'l';
+                // Z takes no coordinates, so it can never be implicitly repeated. Falling
+                // through with 'Z' would consume nothing and loop forever on input like
+                // "M0 0 L5 5Z 3 3" — a malformed path must fail, not hang the thread.
+                else if (command is 'Z' or 'z')
+                    throw new FormatException(
+                        $"Coordinates are not allowed after 'Z' without a new command at position {ctx.Position}.");
             }
 
             bool isRelative = char.IsLower(command);

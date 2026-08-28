@@ -94,26 +94,46 @@ public sealed class SvgImage : ImageSource, IDisposable
     }
 
     /// <summary>
-    /// Creates an SvgImage from a byte array containing SVG content.
+    /// Creates an SvgImage from a byte array containing SVG content
+    /// (plain XML or gzip-compressed .svgz).
     /// </summary>
     public static SvgImage FromBytes(byte[] data)
     {
         var image = new SvgImage();
-        var svgContent = System.Text.Encoding.UTF8.GetString(data);
-        image.LoadFromString(svgContent);
+        image.LoadFromString(DecodeSvgText(data));
         return image;
     }
 
     /// <summary>
-    /// Creates an SvgImage from a stream containing SVG content.
+    /// Creates an SvgImage from a stream containing SVG content
+    /// (plain XML or gzip-compressed .svgz).
     /// </summary>
     public static SvgImage FromStream(Stream stream)
     {
-        using var reader = new StreamReader(stream, System.Text.Encoding.UTF8);
-        var svgContent = reader.ReadToEnd();
+        using var buffer = new MemoryStream();
+        stream.CopyTo(buffer);
         var image = new SvgImage();
-        image.LoadFromString(svgContent);
+        image.LoadFromString(DecodeSvgText(buffer.ToArray()));
         return image;
+    }
+
+    /// <summary>
+    /// Turns raw SVG bytes into markup text, transparently inflating gzip-compressed
+    /// payloads (.svgz — magic bytes 1F 8B). Reading an .svgz with a text decoder
+    /// produced garbage that failed XML parsing, so the extension was advertised by
+    /// <see cref="IsSvgFile"/> but never actually loadable.
+    /// </summary>
+    private static string DecodeSvgText(byte[] data)
+    {
+        if (data.Length >= 2 && data[0] == 0x1F && data[1] == 0x8B)
+        {
+            using var input = new MemoryStream(data);
+            using var gzip = new System.IO.Compression.GZipStream(input, System.IO.Compression.CompressionMode.Decompress);
+            using var reader = new StreamReader(gzip, System.Text.Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(data);
     }
 
     private void LoadFromString(string svgContent)
@@ -161,8 +181,10 @@ public sealed class SvgImage : ImageSource, IDisposable
 
         try
         {
-            var svgContent = System.IO.File.ReadAllText(filePath, System.Text.Encoding.UTF8);
-            LoadFromString(svgContent);
+            // Bytes first so gzip-compressed .svgz files inflate instead of being fed
+            // to the XML parser as mojibake.
+            var bytes = System.IO.File.ReadAllBytes(filePath);
+            LoadFromString(DecodeSvgText(bytes));
         }
         catch (Exception ex)
         {
@@ -229,8 +251,9 @@ public sealed class SvgImage : ImageSource, IDisposable
             {
                 using var stream = assembly.GetManifestResourceStream(match);
                 if (stream is null) continue;
-                using var reader = new System.IO.StreamReader(stream, System.Text.Encoding.UTF8);
-                LoadFromString(reader.ReadToEnd());
+                using var buffer = new System.IO.MemoryStream();
+                stream.CopyTo(buffer);
+                LoadFromString(DecodeSvgText(buffer.ToArray()));
                 return;
             }
             catch (Exception ex)

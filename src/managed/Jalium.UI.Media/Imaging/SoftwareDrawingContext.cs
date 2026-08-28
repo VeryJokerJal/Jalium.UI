@@ -279,23 +279,51 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
         }
 
         var flattened = geometry.GetFlattenedPathGeometry();
-        var polygons = BuildPolygons(flattened, geometryTransform);
-        if (polygons.Count == 0) return;
+        var figures = BuildFigurePolylines(flattened, geometryTransform);
+        if (figures.Count == 0) return;
 
         if (brush != null)
         {
-            FillPolygons(polygons, flattened.FillRule, brush, geometry.Bounds);
+            // Filling always treats a figure as closed, exactly like WPF; the scanline
+            // walks adjacent point pairs, so the closing edge must be an explicit point.
+            var fillPolygons = new List<List<Point>>(figures.Count);
+            foreach (var figure in figures)
+            {
+                var points = figure.Points;
+                if (points.Count < 3) continue;
+
+                var polygon = new List<Point>(points.Count + 1);
+                polygon.AddRange(points);
+                if (polygon[0] != polygon[^1]) polygon.Add(polygon[0]);
+                fillPolygons.Add(polygon);
+            }
+
+            if (fillPolygons.Count > 0)
+            {
+                FillPolygons(fillPolygons, flattened.FillRule, brush, geometry.Bounds);
+            }
         }
 
         if (pen?.Brush != null && pen.Thickness > 0)
         {
             // No joins or caps: every flattened edge is stroked as its own capsule. At the
-            // hairline widths icons actually use, the difference is invisible.
-            foreach (var polygon in polygons)
+            // hairline widths icons actually use, the difference is invisible. Unlike the
+            // fill above, the stroke must respect the figure's own topology: a two-point
+            // line segment is a legitimate stroke (lucide icons are full of them), and an
+            // OPEN figure must not grow a phantom closing edge back to its start point.
+            foreach (var figure in figures)
             {
-                for (var i = 0; i + 1 < polygon.Count; i++)
+                var points = figure.Points;
+                if (points.Count < 2) continue;
+
+                for (var i = 0; i + 1 < points.Count; i++)
                 {
-                    FillShape(ShapeDesc.FromSegment(polygon[i], polygon[i + 1]), pen.Brush, pen.Thickness / 2.0);
+                    FillShape(ShapeDesc.FromSegment(points[i], points[i + 1]), pen.Brush, pen.Thickness / 2.0);
+                }
+
+                if (figure.IsClosed && points.Count >= 3 && points[0] != points[^1])
+                {
+                    FillShape(ShapeDesc.FromSegment(points[^1], points[0]), pen.Brush, pen.Thickness / 2.0);
                 }
             }
         }
@@ -717,29 +745,33 @@ internal sealed class SoftwareDrawingContext : DrawingContextAdapter,
     }
 
     /// <summary>Flattens a path geometry into closed offset-space polylines.</summary>
-    private List<List<Point>> BuildPolygons(PathGeometry geometry, Transform? geometryTransform)
+    private readonly record struct FigurePolyline(List<Point> Points, bool IsClosed);
+
+    /// <summary>
+    /// Flattens each figure into its raw open polyline plus its closed flag. Callers apply
+    /// their own topology: fill closes every ≥3-point figure, stroke keeps two-point line
+    /// segments and only closes figures that are actually marked closed.
+    /// </summary>
+    private List<FigurePolyline> BuildFigurePolylines(PathGeometry geometry, Transform? geometryTransform)
     {
-        var result = new List<List<Point>>();
+        var result = new List<FigurePolyline>();
         var extra = geometryTransform?.Value;
 
         foreach (var figure in geometry.Figures)
         {
             if (figure.Segments.Count == 0) continue;
 
-            var polygon = new List<Point> { MapToOffsetSpace(figure.StartPoint, extra) };
+            var polyline = new List<Point> { MapToOffsetSpace(figure.StartPoint, extra) };
             foreach (var segment in figure.Segments)
             {
                 foreach (var point in segment.GetPoints())
                 {
-                    polygon.Add(MapToOffsetSpace(point, extra));
+                    polyline.Add(MapToOffsetSpace(point, extra));
                 }
             }
 
-            if (polygon.Count < 3) continue;
-
-            // Filling always treats a figure as closed, exactly like WPF.
-            if (polygon[0] != polygon[^1]) polygon.Add(polygon[0]);
-            result.Add(polygon);
+            if (polyline.Count < 2) continue;
+            result.Add(new FigurePolyline(polyline, figure.IsClosed));
         }
 
         return result;

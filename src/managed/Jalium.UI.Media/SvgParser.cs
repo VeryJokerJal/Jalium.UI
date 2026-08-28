@@ -14,6 +14,24 @@ internal static class SvgParser
     private static readonly XNamespace XlinkNs = "http://www.w3.org/1999/xlink";
 
     /// <summary>
+    /// Guards <c>&lt;use&gt;</c> expansion against reference cycles (a → b → a), which
+    /// otherwise recurse without bound and kill the process with a StackOverflowException —
+    /// one malformed document must never crash the host. 32 levels is far beyond any
+    /// legitimate nesting. Thread-static because parsing is a synchronous single-threaded
+    /// recursion rooted at <see cref="Parse"/>; the entry point resets it.
+    /// </summary>
+    [ThreadStatic] private static int t_useDepth;
+    private const int MaxUseDepth = 32;
+
+    /// <summary>
+    /// Viewport size percentage lengths resolve against (SVG: width/x percentages →
+    /// viewport width, height/y → viewport height, undirected lengths like r → the
+    /// normalized diagonal). Set once by <see cref="Parse"/> before children parse.
+    /// </summary>
+    [ThreadStatic] private static double t_viewportWidth;
+    [ThreadStatic] private static double t_viewportHeight;
+
+    /// <summary>
     /// Parses an SVG document string into a DrawingGroup with optional viewport dimensions.
     /// </summary>
     public static (DrawingGroup Drawing, double Width, double Height) Parse(string svgContent)
@@ -28,6 +46,12 @@ internal static class SvgParser
 
         // Parse viewBox and dimensions
         ParseViewBoxAndDimensions(svgElement, out var width, out var height, out var viewBox);
+
+        // Percentage lengths inside the document resolve against the viewport, which is
+        // the explicit width/height when present, else the viewBox size.
+        t_useDepth = 0;
+        t_viewportWidth = width > 0 ? width : (viewBox?.Width ?? 0);
+        t_viewportHeight = height > 0 ? height : (viewBox?.Height ?? 0);
 
         var group = new DrawingGroup();
         ParseChildren(svgElement, group, defs);
@@ -55,9 +79,17 @@ internal static class SvgParser
         }
         else if (viewBox != null && (width <= 0 || height <= 0))
         {
-            // No explicit width/height; use viewBox dimensions
-            width = viewBox.Value.Width;
-            height = viewBox.Value.Height;
+            // No explicit width/height; the viewBox supplies the viewport size — and its
+            // min-x/min-y still shifts user space. Skipping the translation painted all
+            // content offset by (minX, minY), i.e. fully outside the viewport for
+            // documents like viewBox="100 200 24 24".
+            var vb = viewBox.Value;
+            width = vb.Width;
+            height = vb.Height;
+            if (vb.X != 0 || vb.Y != 0)
+            {
+                group.Transform = new TranslateTransform { X = -vb.X, Y = -vb.Y };
+            }
         }
 
         return (group, width, height);
@@ -124,12 +156,17 @@ internal static class SvgParser
     {
         var localName = element.Name.LocalName;
 
-        // Check display:none or visibility:hidden
+        // display:none removes the element (checked via GetAttribute — display is NOT
+        // inheritable); visibility:hidden/collapse hides it and IS inheritable, so it
+        // resolves through the ancestor chain like fill/stroke do.
         var style = GetAttribute(element, "style");
         if (style != null && (style.Contains("display:none") || style.Contains("display: none")))
             return;
         var display = GetAttribute(element, "display");
         if (display == "none")
+            return;
+        var visibility = GetResolvedAttribute(element, "visibility");
+        if (visibility is "hidden" or "collapse")
             return;
 
         switch (localName)
@@ -271,7 +308,10 @@ internal static class SvgParser
         {
             StartPoint = new Point(numbers[0], numbers[1]),
             IsClosed = closed,
-            IsFilled = closed
+            // SVG fills an open <polyline> as if implicitly closed (the fill and the
+            // stroke have independent topology); whether anything is actually painted
+            // is decided by the resolved fill brush, not by the figure flag.
+            IsFilled = true
         };
 
         for (int i = 2; i + 1 < numbers.Count; i += 2)
@@ -428,6 +468,11 @@ internal static class SvgParser
 
         if (!defs.TryGetValue(href, out var referenced)) return;
 
+        // Reference cycles (a → b → a) recurse forever and a StackOverflowException
+        // cannot be caught — cap the expansion depth so a malformed document degrades
+        // to partial output instead of killing the process.
+        if (t_useDepth >= MaxUseDepth) return;
+
         var useGroup = new DrawingGroup();
 
         // Apply x/y translation
@@ -441,14 +486,22 @@ internal static class SvgParser
         // Apply transform on the <use> element itself
         ApplyTransform(element, useGroup);
 
-        // Parse the referenced element
-        if (referenced.Name.LocalName == "symbol")
+        t_useDepth++;
+        try
         {
-            ParseChildren(referenced, useGroup, defs);
+            // Parse the referenced element
+            if (referenced.Name.LocalName == "symbol")
+            {
+                ParseChildren(referenced, useGroup, defs);
+            }
+            else
+            {
+                ParseElement(referenced, useGroup, defs);
+            }
         }
-        else
+        finally
         {
-            ParseElement(referenced, useGroup, defs);
+            t_useDepth--;
         }
 
         if (useGroup.Children.Count > 0)
@@ -565,8 +618,10 @@ internal static class SvgParser
         var fill = ResolveFillBrush(element, defs);
         var pen = ResolveStrokePen(element, defs);
 
-        // Default SVG behavior: if no fill specified and no fill="none", default is black
-        if (fill == null && pen == null)
+        // SVG's initial value for fill is black, independent of stroke: a shape that
+        // declares only a stroke still paints a black interior. The old code skipped the
+        // default whenever a pen existed, leaving <rect stroke="red"/> hollow.
+        if (fill == null)
         {
             var fillAttr = GetResolvedAttribute(element, "fill");
             if (fillAttr == null) // No fill attribute at all = default black
@@ -609,12 +664,24 @@ internal static class SvgParser
 
     #region Fill & Stroke Resolution
 
+    /// <summary>
+    /// Resolves the CSS <c>currentColor</c> keyword against the inherited SVG
+    /// <c>color</c> property (falling back to black per the CSS initial value),
+    /// so icon sets authored as <c>stroke="currentColor"</c> pick up the color
+    /// set on an ancestor instead of always rendering black.
+    /// </summary>
+    private static string ResolveCurrentColor(XElement element, string value)
+        => value == "currentColor"
+            ? GetResolvedAttribute(element, "color") ?? "black"
+            : value;
+
     private static Brush? ResolveFillBrush(XElement element, Dictionary<string, XElement> defs)
     {
         var fillStr = GetResolvedAttribute(element, "fill");
         if (fillStr == null) return null;
         if (fillStr == "none") return null;
 
+        fillStr = ResolveCurrentColor(element, fillStr);
         var brush = ResolveBrush(fillStr, defs);
         if (brush != null)
         {
@@ -630,6 +697,7 @@ internal static class SvgParser
         var strokeStr = GetResolvedAttribute(element, "stroke");
         if (string.IsNullOrEmpty(strokeStr) || strokeStr == "none") return null;
 
+        strokeStr = ResolveCurrentColor(element, strokeStr);
         var strokeBrush = ResolveBrush(strokeStr, defs);
         if (strokeBrush == null) return null;
 
@@ -741,12 +809,50 @@ internal static class SvgParser
         return null;
     }
 
+    /// <summary>
+    /// Parses one gradient geometry attribute with SVG percentage support and
+    /// xlink:href fallback to the parent gradient. Percentages are fractions of the
+    /// object bounding box in the default gradientUnits (50% → 0.5); under
+    /// userSpaceOnUse they resolve against the viewport axis instead. The previous
+    /// plain double parse silently rejected "50%", so every gradient authored with
+    /// percentage coordinates fell back to the default direction.
+    /// </summary>
+    private static double ParseGradientCoordinate(
+        XElement element, XElement? parent, string attribute,
+        bool userSpace, double viewportBasis, double defaultValue)
+    {
+        var str = GetAttribute(element, attribute) ?? (parent != null ? GetAttribute(parent, attribute) : null);
+        if (str == null) return defaultValue;
+
+        str = str.Trim();
+        if (str.EndsWith('%'))
+        {
+            if (double.TryParse(str.AsSpan(0, str.Length - 1), CultureInfo.InvariantCulture, out var pct))
+            {
+                var fraction = pct / 100.0;
+                return userSpace ? fraction * viewportBasis : fraction;
+            }
+            return defaultValue;
+        }
+
+        if (str.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+            str = str.Substring(0, str.Length - 2);
+        return double.TryParse(str, CultureInfo.InvariantCulture, out var val) ? val : defaultValue;
+    }
+
+    /// <summary>Normalized diagonal (SVG spec basis for undirected percentage lengths like r).</summary>
+    private static double ViewportDiagonal()
+        => Math.Sqrt((t_viewportWidth * t_viewportWidth + t_viewportHeight * t_viewportHeight) / 2.0);
+
     private static LinearGradientBrush ParseLinearGradient(XElement element, XElement? parent, Dictionary<string, XElement> defs)
     {
-        var x1 = ParseDoubleAttribute(element, "x1", parent != null ? ParseDoubleAttribute(parent, "x1", 0) : 0);
-        var y1 = ParseDoubleAttribute(element, "y1", parent != null ? ParseDoubleAttribute(parent, "y1", 0) : 0);
-        var x2 = ParseDoubleAttribute(element, "x2", parent != null ? ParseDoubleAttribute(parent, "x2", 1) : 1);
-        var y2 = ParseDoubleAttribute(element, "y2", parent != null ? ParseDoubleAttribute(parent, "y2", 0) : 0);
+        var unitsAttr = element.Attribute("gradientUnits")?.Value ?? parent?.Attribute("gradientUnits")?.Value;
+        var userSpace = unitsAttr == "userSpaceOnUse";
+
+        var x1 = ParseGradientCoordinate(element, parent, "x1", userSpace, t_viewportWidth, 0);
+        var y1 = ParseGradientCoordinate(element, parent, "y1", userSpace, t_viewportHeight, 0);
+        var x2 = ParseGradientCoordinate(element, parent, "x2", userSpace, t_viewportWidth, 1);
+        var y2 = ParseGradientCoordinate(element, parent, "y2", userSpace, t_viewportHeight, 0);
 
         var brush = new LinearGradientBrush
         {
@@ -755,8 +861,7 @@ internal static class SvgParser
         };
 
         // gradientUnits
-        var units = element.Attribute("gradientUnits")?.Value ?? parent?.Attribute("gradientUnits")?.Value;
-        if (units == "userSpaceOnUse")
+        if (userSpace)
             brush.MappingMode = BrushMappingMode.Absolute;
 
         // Spread method
@@ -786,11 +891,14 @@ internal static class SvgParser
 
     private static RadialGradientBrush ParseRadialGradient(XElement element, XElement? parent, Dictionary<string, XElement> defs)
     {
-        var cx = ParseDoubleAttribute(element, "cx", parent != null ? ParseDoubleAttribute(parent, "cx", 0.5) : 0.5);
-        var cy = ParseDoubleAttribute(element, "cy", parent != null ? ParseDoubleAttribute(parent, "cy", 0.5) : 0.5);
-        var r = ParseDoubleAttribute(element, "r", parent != null ? ParseDoubleAttribute(parent, "r", 0.5) : 0.5);
-        var fx = ParseDoubleAttribute(element, "fx", parent != null ? ParseDoubleAttribute(parent, "fx", cx) : cx);
-        var fy = ParseDoubleAttribute(element, "fy", parent != null ? ParseDoubleAttribute(parent, "fy", cy) : cy);
+        var unitsAttr = element.Attribute("gradientUnits")?.Value ?? parent?.Attribute("gradientUnits")?.Value;
+        var userSpace = unitsAttr == "userSpaceOnUse";
+
+        var cx = ParseGradientCoordinate(element, parent, "cx", userSpace, t_viewportWidth, 0.5);
+        var cy = ParseGradientCoordinate(element, parent, "cy", userSpace, t_viewportHeight, 0.5);
+        var r = ParseGradientCoordinate(element, parent, "r", userSpace, ViewportDiagonal(), 0.5);
+        var fx = ParseGradientCoordinate(element, parent, "fx", userSpace, t_viewportWidth, cx);
+        var fy = ParseGradientCoordinate(element, parent, "fy", userSpace, t_viewportHeight, cy);
 
         var brush = new RadialGradientBrush
         {
@@ -801,8 +909,7 @@ internal static class SvgParser
         };
 
         // gradientUnits
-        var units = element.Attribute("gradientUnits")?.Value ?? parent?.Attribute("gradientUnits")?.Value;
-        if (units == "userSpaceOnUse")
+        if (userSpace)
             brush.MappingMode = BrushMappingMode.Absolute;
 
         // Spread method
@@ -839,9 +946,17 @@ internal static class SvgParser
         if (stopElements.Count == 0 && parent != null)
             stopElements = parent.Elements().Where(e => e.Name.LocalName == "stop").ToList();
 
+        // SVG stop-offset rules: clamp into [0,1], and force the sequence
+        // non-decreasing — an out-of-order stop is promoted to the largest
+        // offset seen so far, matching browser behaviour. Passing raw values
+        // through produced reversed/garbled ramps on sloppy exports.
+        double runningMax = 0;
         foreach (var stopEl in stopElements)
         {
-            var offset = ParseStopOffset(stopEl);
+            var offset = Math.Clamp(ParseStopOffset(stopEl), 0.0, 1.0);
+            if (offset < runningMax) offset = runningMax;
+            runningMax = offset;
+
             var color = ParseStopColor(stopEl);
             stops.Add(new GradientStop { Offset = offset, Color = color });
         }
@@ -1080,9 +1195,15 @@ internal static class SvgParser
         if (transforms.Count == 0) return null;
         if (transforms.Count == 1) return transforms[0];
 
+        // SVG composes a transform list right-to-left: in "translate(10) scale(2)" the
+        // scale applies to the content first, then the translation. TransformGroup is
+        // row-vector — Children[0] acts on the point first — so the list must be added
+        // REVERSED. Appending in source order scaled the translation ("translate(10)
+        // scale(2)" moved content by 20 instead of 10), skewing every multi-function
+        // transform attribute exported by Figma / Illustrator.
         var group = new TransformGroup();
-        foreach (var t in transforms)
-            group.Add(t);
+        for (int i = transforms.Count - 1; i >= 0; i--)
+            group.Add(transforms[i]);
         return group;
     }
 
@@ -1248,10 +1369,14 @@ internal static class SvgParser
         var attr = element.Attribute(name)?.Value;
         if (attr != null) return attr;
 
-        // Inherit from parent (for inheritable properties like fill, stroke, etc.)
+        // Inherit from ancestors, INCLUDING the root <svg> element. Presentation
+        // attributes placed on the root are the standard authoring form for stroke
+        // icon sets (lucide/feather put fill="none" stroke="..." stroke-width="2"
+        // there and leave every <path> bare) — stopping short of the root dropped
+        // the stroke entirely and let the fill default to black. Recursion ends
+        // naturally at the document root, whose Parent is null.
         var parent = element.Parent;
-        if (parent != null && parent.Name.LocalName != "svg" &&
-            IsInheritableProperty(name))
+        if (parent != null && IsInheritableProperty(name))
         {
             return GetResolvedAttribute(parent, name);
         }
@@ -1259,13 +1384,17 @@ internal static class SvgParser
         return null;
     }
 
+    // Which presentation attributes resolve through the ancestor chain. Mirrors the CSS
+    // "Inherited: yes" table — notably `opacity` is NOT inherited: it is a group effect
+    // applied once per element. Treating it as inheritable made a child inside
+    // <g opacity="0.5"> pick up 0.5 again and render at 0.25.
     private static bool IsInheritableProperty(string name) => name switch
     {
         "fill" or "stroke" or "stroke-width" or "stroke-linecap" or "stroke-linejoin" or
         "stroke-miterlimit" or "stroke-dasharray" or "stroke-dashoffset" or
-        "fill-rule" or "fill-opacity" or "stroke-opacity" or "opacity" or
+        "fill-rule" or "fill-opacity" or "stroke-opacity" or
         "font-size" or "font-family" or "font-weight" or "font-style" or
-        "text-anchor" or "color" => true,
+        "text-anchor" or "color" or "visibility" => true,
         _ => false
     };
 
@@ -1289,7 +1418,32 @@ internal static class SvgParser
     private static double ParseDouble(XElement element, string attribute)
     {
         var str = element.Attribute(attribute)?.Value;
-        if (str != null && double.TryParse(str, CultureInfo.InvariantCulture, out var val))
+        if (str == null) return 0;
+
+        str = str.Trim();
+
+        // Percentage lengths resolve against the viewport axis the attribute measures
+        // along (SVG 1.1 §7.10): horizontal ones against its width, vertical against
+        // its height, undirected (r) against the normalized diagonal. Rejecting the
+        // percent form made <rect width="100%" height="100%"> — the standard SVG
+        // background idiom — parse as 0×0 and vanish.
+        if (str.EndsWith('%'))
+        {
+            if (!double.TryParse(str.AsSpan(0, str.Length - 1), CultureInfo.InvariantCulture, out var pct))
+                return 0;
+            var basis = attribute switch
+            {
+                "x" or "cx" or "x1" or "x2" or "width" or "rx" or "dx" => t_viewportWidth,
+                "y" or "cy" or "y1" or "y2" or "height" or "ry" or "dy" => t_viewportHeight,
+                _ => ViewportDiagonal(),
+            };
+            return pct / 100.0 * basis;
+        }
+
+        if (str.EndsWith("px", StringComparison.OrdinalIgnoreCase))
+            str = str.Substring(0, str.Length - 2);
+
+        if (double.TryParse(str, CultureInfo.InvariantCulture, out var val))
             return val;
         return 0;
     }

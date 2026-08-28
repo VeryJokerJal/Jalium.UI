@@ -141,20 +141,240 @@ internal static class SoftwareVectorRasterizer
         var flatGeometry = GetFlattenedGeometry(drawing.Geometry, tolerance);
         if (flatGeometry == null) return;
 
-        // Fill — extract a representative color from any brush type
+        // Fill — gradients get true per-pixel sampling; everything else extracts a
+        // representative color.
         if (drawing.Brush != null)
         {
-            var (fb, fg, fr, fa) = ExtractBrushColor(drawing.Brush, geoCtx, flatGeometry);
-            if (fa > 0)
-                FillGeometry(flatGeometry, geoCtx, fb, fg, fr, fa);
+            var fillPaint = GradientPaint.TryCreate(drawing.Brush, geoCtx, flatGeometry);
+            if (fillPaint != null)
+            {
+                FillGeometry(flatGeometry, geoCtx, 0, 0, 0, 255, fillPaint);
+            }
+            else
+            {
+                var (fb, fg, fr, fa) = ExtractBrushColor(drawing.Brush, geoCtx, flatGeometry);
+                if (fa > 0)
+                    FillGeometry(flatGeometry, geoCtx, fb, fg, fr, fa);
+            }
         }
 
         // Stroke
-        if (drawing.Pen?.Brush != null && drawing.Pen.Thickness > 0)
+        if (drawing.Pen is { Brush: not null } pen && pen.Thickness > 0)
         {
-            var (sb, sg, sr, sa) = ExtractBrushColor(drawing.Pen.Brush, geoCtx, flatGeometry);
-            if (sa > 0)
-                StrokeGeometry(flatGeometry, geoCtx, sb, sg, sr, sa, drawing.Pen.Thickness);
+            var strokePaint = GradientPaint.TryCreate(pen.Brush, geoCtx, flatGeometry);
+            if (strokePaint != null)
+            {
+                StrokeGeometry(flatGeometry, geoCtx, 0, 0, 0, 255, pen, strokePaint);
+            }
+            else
+            {
+                var (sb, sg, sr, sa) = ExtractBrushColor(pen.Brush, geoCtx, flatGeometry);
+                if (sa > 0)
+                    StrokeGeometry(flatGeometry, geoCtx, sb, sg, sr, sa, pen);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Per-pixel gradient sampler for the software rasterizer. Device pixels are mapped
+    /// back through the context (and gradientTransform) into brush space, projected to a
+    /// gradient parameter t, and interpolated across the sorted stop ramp. Replaces the
+    /// old behaviour of flattening every gradient to one offset-weighted average colour,
+    /// which turned any gradient-filled SVG artwork into a flat slab.
+    /// </summary>
+    private sealed class GradientPaint
+    {
+        private readonly double[] _offsets;
+        private readonly (byte B, byte G, byte R, byte A)[] _colors;
+        private readonly GradientSpreadMethod _spread;
+        private readonly double _opacity;
+        private readonly Matrix _deviceToBrush;
+        private readonly bool _isRadial;
+
+        // Linear: projection onto start→end. Radial: focal ray solve in unit space.
+        private readonly double _startX, _startY, _dirX, _dirY, _lengthSq;
+        private readonly double _centerX, _centerY, _radiusX, _radiusY, _focusX, _focusY;
+
+        private GradientPaint(
+            GradientBrush brush, double opacity, Matrix deviceToBrush,
+            bool isRadial,
+            double startX, double startY, double dirX, double dirY,
+            double centerX, double centerY, double radiusX, double radiusY,
+            double focusX, double focusY)
+        {
+            var stops = brush.GradientStops.OrderBy(static s => s.Offset).ToArray();
+            _offsets = new double[stops.Length];
+            _colors = new (byte, byte, byte, byte)[stops.Length];
+            for (int i = 0; i < stops.Length; i++)
+            {
+                _offsets[i] = stops[i].Offset;
+                var c = stops[i].Color;
+                _colors[i] = (c.B, c.G, c.R, c.A);
+            }
+
+            _spread = brush.SpreadMethod;
+            _opacity = opacity;
+            _deviceToBrush = deviceToBrush;
+            _isRadial = isRadial;
+            _startX = startX; _startY = startY;
+            _dirX = dirX; _dirY = dirY;
+            _lengthSq = dirX * dirX + dirY * dirY;
+            _centerX = centerX; _centerY = centerY;
+            _radiusX = radiusX; _radiusY = radiusY;
+            _focusX = focusX; _focusY = focusY;
+        }
+
+        /// <summary>
+        /// Returns a sampler for a linear/radial gradient with at least two stops, or null
+        /// when per-pixel evaluation is not possible (caller falls back to the flat
+        /// average). Geometry-relative coordinates resolve against the flattened
+        /// geometry's bounds, absolute ones against source space.
+        /// </summary>
+        public static GradientPaint? TryCreate(Brush brush, in SoftwareRenderContext ctx, PathGeometry geometry)
+        {
+            if (brush is not GradientBrush gradient || gradient.GradientStops.Count < 2)
+                return null;
+            if (brush is not LinearGradientBrush && brush is not RadialGradientBrush)
+                return null;
+
+            double opacity = Math.Clamp(ctx.Opacity * gradient.Opacity, 0.0, 1.0);
+            if (opacity <= 0) return null;
+
+            // Device → source. The scanline hands us device pixels; brush geometry lives
+            // in source space (optionally warped by gradientTransform).
+            if (!ctx.Matrix.TryInvert(out var deviceToSource))
+                return null;
+
+            var deviceToBrush = deviceToSource;
+            if (gradient.Transform is { } gt && !gt.Value.IsIdentity)
+            {
+                if (!gt.Value.TryInvert(out var brushInverse))
+                    return null;
+                // p_brush = p_source * inverse(gradientTransform)  (row vectors), so the
+                // full chain is device → source → brush space.
+                deviceToBrush = Matrix.Multiply(deviceToSource, brushInverse);
+            }
+
+            var bounds = geometry.Bounds;
+            bool relative = gradient.MappingMode == BrushMappingMode.RelativeToBoundingBox;
+            double bw = Math.Max(bounds.Width, 1e-9);
+            double bh = Math.Max(bounds.Height, 1e-9);
+
+            Point MapPoint(Point p) => relative
+                ? new Point(bounds.X + p.X * bw, bounds.Y + p.Y * bh)
+                : p;
+
+            if (brush is LinearGradientBrush linear)
+            {
+                var s = MapPoint(linear.StartPoint);
+                var e = MapPoint(linear.EndPoint);
+                return new GradientPaint(
+                    linear, opacity, deviceToBrush,
+                    isRadial: false,
+                    s.X, s.Y, e.X - s.X, e.Y - s.Y,
+                    0, 0, 0, 0, 0, 0);
+            }
+
+            var radial = (RadialGradientBrush)brush;
+            var center = MapPoint(radial.Center);
+            var origin = MapPoint(radial.GradientOrigin);
+            double rx = relative ? radial.RadiusX * bw : radial.RadiusX;
+            double ry = relative ? radial.RadiusY * bh : radial.RadiusY;
+            rx = Math.Abs(rx);
+            ry = Math.Abs(ry);
+
+            // Normalize the focal point into the unit circle so the ray solve below
+            // always has a real root.
+            double fx = rx > 1e-12 ? (origin.X - center.X) / rx : 0.0;
+            double fy = ry > 1e-12 ? (origin.Y - center.Y) / ry : 0.0;
+            double focusLen = Math.Sqrt(fx * fx + fy * fy);
+            if (focusLen > 0.99)
+            {
+                fx *= 0.99 / focusLen;
+                fy *= 0.99 / focusLen;
+            }
+
+            return new GradientPaint(
+                radial, opacity, deviceToBrush,
+                isRadial: true,
+                0, 0, 0, 0,
+                center.X, center.Y, rx, ry, fx, fy);
+        }
+
+        public (byte B, byte G, byte R, byte A) Sample(float deviceX, float deviceY)
+        {
+            var m = _deviceToBrush;
+            double x = deviceX * m.M11 + deviceY * m.M21 + m.OffsetX;
+            double y = deviceX * m.M12 + deviceY * m.M22 + m.OffsetY;
+
+            double t;
+            if (!_isRadial)
+            {
+                t = _lengthSq > 1e-12
+                    ? ((x - _startX) * _dirX + (y - _startY) * _dirY) / _lengthSq
+                    : 0.0;
+            }
+            else if (_radiusX <= 1e-12 || _radiusY <= 1e-12)
+            {
+                t = 1.0;
+            }
+            else
+            {
+                double px = (x - _centerX) / _radiusX;
+                double py = (y - _centerY) / _radiusY;
+                double dx = px - _focusX;
+                double dy = py - _focusY;
+                double a = dx * dx + dy * dy;
+                if (a <= 1e-12)
+                {
+                    t = 0.0;
+                }
+                else
+                {
+                    double b = 2.0 * (_focusX * dx + _focusY * dy);
+                    double c = _focusX * _focusX + _focusY * _focusY - 1.0;
+                    double disc = Math.Max(b * b - 4.0 * a * c, 0.0);
+                    double s = (-b + Math.Sqrt(disc)) / (2.0 * a);
+                    t = s > 1e-12 ? 1.0 / s : 0.0;
+                }
+            }
+
+            t = _spread switch
+            {
+                GradientSpreadMethod.Repeat => t - Math.Floor(t),
+                GradientSpreadMethod.Reflect => Reflect(t),
+                _ => Math.Clamp(t, 0.0, 1.0),
+            };
+
+            var offsets = _offsets;
+            var colors = _colors;
+            if (t <= offsets[0]) return Apply(colors[0]);
+            if (t >= offsets[^1]) return Apply(colors[^1]);
+
+            for (int i = 1; i < offsets.Length; i++)
+            {
+                if (t > offsets[i]) continue;
+                double span = offsets[i] - offsets[i - 1];
+                double local = span > 1e-12 ? (t - offsets[i - 1]) / span : 0.0;
+                var from = colors[i - 1];
+                var to = colors[i];
+                return (
+                    (byte)(from.B + (to.B - from.B) * local + 0.5),
+                    (byte)(from.G + (to.G - from.G) * local + 0.5),
+                    (byte)(from.R + (to.R - from.R) * local + 0.5),
+                    (byte)((from.A + (to.A - from.A) * local) * _opacity + 0.5));
+            }
+
+            return Apply(colors[^1]);
+        }
+
+        private (byte B, byte G, byte R, byte A) Apply((byte B, byte G, byte R, byte A) c)
+            => (c.B, c.G, c.R, (byte)(c.A * _opacity + 0.5));
+
+        private static double Reflect(double t)
+        {
+            var wrapped = Math.Abs(t) % 2.0;
+            return wrapped > 1.0 ? 2.0 - wrapped : wrapped;
         }
     }
 
@@ -470,7 +690,7 @@ internal static class SoftwareVectorRasterizer
     #region Coverage-AA Fill / Stroke / Clip
 
     private static void FillGeometry(PathGeometry geometry, in SoftwareRenderContext ctx,
-        byte b, byte g, byte r, byte a)
+        byte b, byte g, byte r, byte a, GradientPaint? paint = null)
     {
         if (a == 0) return;
 
@@ -492,13 +712,15 @@ internal static class SoftwareVectorRasterizer
         // to nonzero; the previous code hard-coded even-odd for the single-figure case,
         // which hollowed out self-intersecting single paths (stars, knots, ...).
         bool nonZero = geometry.FillRule == FillRule.Nonzero;
-        RasterizeCoverage(ctx, contours, nonZero, isMax: false, b, g, r, a);
+        RasterizeCoverage(ctx, contours, nonZero, isMax: false, b, g, r, a, paint);
     }
 
     private static void StrokeGeometry(PathGeometry geometry, in SoftwareRenderContext ctx,
-        byte b, byte g, byte r, byte a, double strokeWidth)
+        byte b, byte g, byte r, byte a, Pen pen, GradientPaint? paint = null)
     {
         if (a == 0) return;
+
+        double strokeWidth = pen.Thickness;
 
         // Device-space half-width. Using the geometric mean of the transform's scale
         // (sqrt|det|) tracks non-uniform scale far better than the old max(scaleX,scaleY)
@@ -510,21 +732,43 @@ internal static class SoftwareVectorRasterizer
         double halfW = strokeWidth * avgScale * 0.5;
         if (halfW < 0.5) halfW = 0.5;
 
+        // Dash pattern in device pixels. DashStyle stores dash lengths in multiples of
+        // the pen thickness (WPF semantics), so scale by thickness × device scale.
+        // Ignoring the pattern painted every dashed SVG stroke as a solid line.
+        double[]? devDashes = null;
+        double devDashOffset = 0;
+        if (pen.DashStyle?.Dashes is { Count: > 0 } dashes)
+        {
+            double unit = strokeWidth * avgScale;
+            // SVG: an odd-length dash array repeats itself once so on/off alternation
+            // stays consistent ("4 2 1" ≡ "4 2 1 4 2 1").
+            int patternLength = dashes.Count % 2 == 0 ? dashes.Count : dashes.Count * 2;
+            double total = 0;
+            devDashes = new double[patternLength];
+            for (int i = 0; i < patternLength; i++)
+            {
+                devDashes[i] = Math.Max(0, dashes[i % dashes.Count]) * unit;
+                total += devDashes[i];
+            }
+            if (total <= 1e-6) devDashes = null;   // all-zero pattern = solid per SVG
+            else devDashOffset = pen.DashStyle.Offset * unit;
+        }
+
         // Build all stroke geometry (one quad per segment + a round join/cap disk at
         // every vertex) as device-space contours, then composite with max-coverage so
         // overlapping pieces never double-darken the seam.
         var contours = new List<List<(float X, float Y)>>();
-        foreach (var figure in geometry.Figures)
+
+        void EmitPolyline(List<(float X, float Y)> pts, bool isClosed)
         {
-            var pts = GetTransformedPoints(figure, ctx);
             if (pts.Count < 2)
             {
                 // Degenerate single-point figure with round cap → a dot.
                 if (pts.Count == 1) AddDisk(contours, pts[0], halfW);
-                continue;
+                return;
             }
 
-            int segCount = figure.IsClosed ? pts.Count : pts.Count - 1;
+            int segCount = isClosed ? pts.Count : pts.Count - 1;
             for (int i = 0; i < segCount; i++)
             {
                 var p0 = pts[i];
@@ -535,7 +779,7 @@ internal static class SoftwareVectorRasterizer
             // Round joins at every interior vertex (and the closing vertex for closed
             // figures); round caps at the two open endpoints. Round joins/caps need no
             // miter-limit math and never leave a gap.
-            if (figure.IsClosed)
+            if (isClosed)
             {
                 for (int i = 0; i < pts.Count; i++) AddDisk(contours, pts[i], halfW);
             }
@@ -547,8 +791,94 @@ internal static class SoftwareVectorRasterizer
             }
         }
 
+        foreach (var figure in geometry.Figures)
+        {
+            var pts = GetTransformedPoints(figure, ctx);
+            if (devDashes == null)
+            {
+                EmitPolyline(pts, figure.IsClosed);
+                continue;
+            }
+
+            // Dashed: walk the (closed → wrapped) polyline by arc length and emit each
+            // "on" run as its own open sub-polyline, capped like any open stroke end.
+            foreach (var sub in SplitByDashes(pts, figure.IsClosed, devDashes, devDashOffset))
+                EmitPolyline(sub, isClosed: false);
+        }
+
         if (contours.Count == 0) return;
-        RasterizeCoverage(ctx, contours, nonZero: false, isMax: true, b, g, r, a);
+        RasterizeCoverage(ctx, contours, nonZero: false, isMax: true, b, g, r, a, paint);
+    }
+
+    /// <summary>
+    /// Splits a device-space polyline into the "on" runs of a dash pattern (device
+    /// units). A closed figure is walked with its wrap-around edge included.
+    /// </summary>
+    private static List<List<(float X, float Y)>> SplitByDashes(
+        List<(float X, float Y)> pts, bool isClosed, double[] dashes, double dashOffset)
+    {
+        var result = new List<List<(float X, float Y)>>();
+        if (pts.Count < 2) return result;
+
+        double total = 0;
+        foreach (var d in dashes) total += d;
+
+        // Normalize the starting offset into the pattern.
+        double offset = dashOffset % total;
+        if (offset < 0) offset += total;
+        int dashIndex = 0;
+        double remaining = dashes[0];
+        while (offset > 0)
+        {
+            if (offset < remaining) { remaining -= offset; break; }
+            offset -= remaining;
+            dashIndex = (dashIndex + 1) % dashes.Length;
+            remaining = dashes[dashIndex];
+        }
+        bool isOn = dashIndex % 2 == 0;
+
+        List<(float X, float Y)>? current = isOn ? new List<(float, float)> { pts[0] } : null;
+
+        int edgeCount = isClosed ? pts.Count : pts.Count - 1;
+        for (int i = 0; i < edgeCount; i++)
+        {
+            var p0 = pts[i];
+            var p1 = pts[(i + 1) % pts.Count];
+            double dx = p1.X - p0.X, dy = p1.Y - p0.Y;
+            double segLen = Math.Sqrt(dx * dx + dy * dy);
+            if (segLen <= 1e-9) continue;
+
+            double consumed = 0;
+            while (consumed < segLen)
+            {
+                double step = Math.Min(segLen - consumed, remaining);
+                double t1 = (consumed + step) / segLen;
+                var end = ((float)(p0.X + dx * t1), (float)(p0.Y + dy * t1));
+
+                if (isOn)
+                {
+                    current ??= new List<(float, float)>
+                    {
+                        ((float)(p0.X + dx * (consumed / segLen)), (float)(p0.Y + dy * (consumed / segLen)))
+                    };
+                    current.Add(end);
+                }
+
+                consumed += step;
+                remaining -= step;
+                if (remaining <= 1e-9)
+                {
+                    if (isOn && current is { Count: >= 2 }) result.Add(current);
+                    current = null;
+                    dashIndex = (dashIndex + 1) % dashes.Length;
+                    remaining = dashes[dashIndex];
+                    isOn = dashIndex % 2 == 0;
+                }
+            }
+        }
+
+        if (isOn && current is { Count: >= 2 }) result.Add(current);
+        return result;
     }
 
     /// <summary>Appends the 4-point quad spanning <paramref name="p0"/>→<paramref name="p1"/>
@@ -593,7 +923,8 @@ internal static class SoftwareVectorRasterizer
     /// </summary>
     private static void RasterizeCoverage(
         in SoftwareRenderContext ctx, List<List<(float X, float Y)>> contours,
-        bool nonZero, bool isMax, byte b, byte g, byte r, byte a)
+        bool nonZero, bool isMax, byte b, byte g, byte r, byte a,
+        GradientPaint? paint = null)
     {
         byte[] pixels = ctx.Pixels;
         int width = ctx.Width, height = ctx.Height, stride = ctx.Stride;
@@ -650,9 +981,18 @@ internal static class SoftwareVectorRasterizer
                     if (cm == 0) continue;
                     if (cm != 255) c *= cm / 255f;
                 }
-                byte aa = c >= 0.999f ? a : (byte)(a * c + 0.5f);
+
+                byte pb = b, pg = g, pr = r, pa = a;
+                if (paint != null)
+                {
+                    // Per-pixel gradient color, sampled at the pixel center; the sampled
+                    // alpha already folds in stop alpha, brush opacity and group opacity.
+                    (pb, pg, pr, pa) = paint.Sample(px + 0.5f, row + 0.5f);
+                }
+
+                byte aa = c >= 0.999f ? pa : (byte)(pa * c + 0.5f);
                 if (aa == 0) continue;
-                BlendPixel(pixels, stride, px, row, b, g, r, aa);
+                BlendPixel(pixels, stride, px, row, pb, pg, pr, aa);
             }
         }
     }
