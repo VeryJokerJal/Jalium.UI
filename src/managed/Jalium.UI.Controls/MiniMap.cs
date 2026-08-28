@@ -85,6 +85,16 @@ public class MiniMap : FrameworkElement
     private static readonly SolidColorBrush s_borderBrush = new(Color.FromRgb(180, 180, 180));
     private static readonly SolidColorBrush s_defaultMarkerBrush = new(Color.FromRgb(220, 50, 50));
 
+    // MiniMap 拖动定位期间每次指针移动都整块重画。下面两处颜色/线宽都是编译期常量，
+    // 提成 static 后不再每帧往渲染后端那份按画刷实例身份键控的原生缓存里塞新条目。
+    private static readonly SolidColorBrush s_simplifiedChildBrush = new(Color.FromArgb(60, 100, 100, 100));
+    private static readonly Pen s_outlineStrokePen = new(s_outlineStrokeBrush, 0.5);
+
+    // 边框/视口框的画刷来自依赖属性或主题，实例本身稳定，复用画笔省的是 Pen 这个
+    // 带 8 个依赖属性的 DependencyObject 的每帧分配。
+    private RenderPenCache _chromeBorderPen;
+    private RenderPenCache _viewportBorderPen;
+
     #region Dependency Properties
 
     /// <summary>
@@ -425,7 +435,7 @@ public class MiniMap : FrameworkElement
         var border = BorderBrush ?? s_borderBrush;
         var borderThickness = BorderThickness.Left > 0 ? BorderThickness.Left : 1;
         var radius = CornerRadius.TopLeft > 0 ? CornerRadius.TopLeft : 3;
-        dc.DrawRoundedRectangle(bg, new Pen(border, borderThickness), bounds, radius, radius);
+        dc.DrawRoundedRectangle(bg, _chromeBorderPen.Get(border, borderThickness), bounds, radius, radius);
 
         var contentArea = ControlRenderGeometry.GetContentRect(bounds, new Thickness(2));
         if (contentArea.Width <= 0 || contentArea.Height <= 0)
@@ -478,7 +488,7 @@ public class MiniMap : FrameworkElement
         double scale = Math.Min(scaleX, scaleY);
 
         var brush = ContentBrush ?? s_defaultContentBrush;
-        var pen = new Pen(s_outlineStrokeBrush, 0.5);
+        var pen = s_outlineStrokePen;
 
         switch (mode)
         {
@@ -542,7 +552,7 @@ public class MiniMap : FrameworkElement
 
         // Walk visual children and draw them as filled rectangles with slightly different shading
         var children = GetVisualChildren(target);
-        var childBrush = new SolidColorBrush(Color.FromArgb(60, 100, 100, 100));
+        var childBrush = s_simplifiedChildBrush;
 
         for (int i = 0; i < children.Count; i++)
         {
@@ -572,7 +582,7 @@ public class MiniMap : FrameworkElement
 
         var fillBrush = ViewportBrush ?? s_defaultViewportBrush;
         var borderBrush = ViewportBorderBrush ?? s_defaultViewportBorderBrush;
-        var borderPen = new Pen(borderBrush, ViewportBorderThickness);
+        var borderPen = _viewportBorderPen.Get(borderBrush, ViewportBorderThickness);
 
         dc.DrawRectangle(fillBrush, borderPen, viewportRect);
     }

@@ -835,7 +835,61 @@ public sealed class GradientStopCollection : Animatable, IList<GradientStop>, IL
             stop.PropertyChangedInternal -= OnStopPropertyChanged;
     }
 
-    private void OnStopPropertyChanged(DependencyProperty property, object? oldValue, object? newValue) => OnChanged();
+    private int _stopChangeDeferralDepth;
+    private bool _stopChangePending;
+
+    private void OnStopPropertyChanged(DependencyProperty property, object? oldValue, object? newValue)
+    {
+        if (_stopChangeDeferralDepth > 0)
+        {
+            _stopChangePending = true;
+            return;
+        }
+
+        OnChanged();
+    }
+
+    /// <summary>
+    /// 把作用域内所有停靠点属性变更合并成退出时的一次变更通知。
+    /// </summary>
+    /// <remarks>
+    /// 每个停靠点的变更都会一路传播到画刷的 render owner 失效——遍历持有者表并逐个标脏。
+    /// 重新着色一支两停靠点的渐变本是一次逻辑变更，逐点通知会把整条传播链跑两遍。
+    /// 运行时改调色板（拖动取色器实时更新强调色）每帧都在做这件事，因此值得合并。
+    /// 只覆盖停靠点的属性变更；集合结构变更（增删、替换）仍然逐次通知。
+    /// </remarks>
+    internal IDisposable DeferStopChangeNotifications() => new StopChangeDeferralScope(this);
+
+    private sealed class StopChangeDeferralScope : IDisposable
+    {
+        private GradientStopCollection? _owner;
+
+        internal StopChangeDeferralScope(GradientStopCollection owner)
+        {
+            _owner = owner;
+            owner._stopChangeDeferralDepth++;
+        }
+
+        public void Dispose()
+        {
+            if (_owner is not { } owner)
+            {
+                return;
+            }
+
+            _owner = null;
+            if (--owner._stopChangeDeferralDepth > 0)
+            {
+                return;
+            }
+
+            if (owner._stopChangePending)
+            {
+                owner._stopChangePending = false;
+                owner.OnChanged();
+            }
+        }
+    }
 
     private void CopyFrom(GradientStopCollection source, Func<GradientStop, GradientStop> clone)
     {

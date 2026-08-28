@@ -148,6 +148,11 @@ public class InkCanvas : FrameworkElement, IAddChild
     private bool _isStylusInverted;
 
     private static readonly object s_clipboardGate = new();
+
+    // 选择框颜色是编译期常量，而选择拖动期间每次指针移动都要重画一遍整块 adorner。
+    // 提成 static 后所有 InkCanvas 实例在渲染后端只占一条画刷缓存条目。
+    private static readonly SolidColorBrush s_selectionAccentBrush = new(Color.FromArgb(220, 30, 120, 220));
+    private static readonly Pen s_selectionAccentPen = new(s_selectionAccentBrush, 1.0);
     private static InkCanvasClipboardPayload? s_clipboardPayload;
 
     /// <summary>
@@ -1173,8 +1178,8 @@ public class InkCanvas : FrameworkElement, IAddChild
         if (bounds.IsEmpty)
             return;
 
-        var accent = new SolidColorBrush(Color.FromArgb(220, 30, 120, 220));
-        drawingContext.DrawRectangle(null, new Pen(accent, 1.0), bounds);
+        var accent = s_selectionAccentBrush;
+        drawingContext.DrawRectangle(null, s_selectionAccentPen, bounds);
         if (!ResizeEnabled)
             return;
 

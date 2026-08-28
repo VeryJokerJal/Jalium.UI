@@ -300,7 +300,21 @@ public abstract class GradientBrush : Brush
         GradientStops = gradientStopCollection;
     }
 
-    private void OnGradientStopsChanged(object? sender, EventArgs e) => InvalidateContentHash();
+    /// <summary>
+    /// 停靠点集合的任何变更（增删、重新着色、移动 offset）既要让内容哈希失效——渲染后端
+    /// 据此重建原生画刷——也要走一次 <see cref="Freezable.WritePostscript"/>。
+    /// </summary>
+    /// <remarks>
+    /// 只失效哈希是不够的：哈希只在**已经决定重绘**的元素下一次录制时才被读到。使用这支
+    /// 画刷的元素本身没有被标脏，就没有那次录制，改色在屏幕上不会出现。WritePostscript
+    /// 走 <see cref="Brush.OnChanged"/> → InvalidateRenderOwners，把每个持有者标脏，
+    /// 与直接改 <see cref="SolidColorBrush.Color"/> 的行为对齐。
+    /// </remarks>
+    private void OnGradientStopsChanged(object? sender, EventArgs e)
+    {
+        InvalidateContentHash();
+        WritePostscript();
+    }
 
     /// <summary>
     /// Gets or sets how the gradient is drawn outside the [0, 1] range.

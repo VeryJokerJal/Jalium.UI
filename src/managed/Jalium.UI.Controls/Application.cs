@@ -730,6 +730,22 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         }
     }
 
+    /// <summary>
+    /// 只发布「应用资源变了」这一个事件，不做任何树遍历。
+    /// </summary>
+    /// <remarks>
+    /// 定向刷新（带精确键集合）自己就把值送到了每一个受影响的订阅，不需要全树广播。
+    /// 但 <see cref="ResourcesChanged"/> 是对外的公开事件，宿主可能挂着自己的手工刷新逻辑，
+    /// 所以「有没有全树广播」这个内部优化不该改变它是否触发。
+    /// </remarks>
+    internal void RaiseResourcesChangedWithoutBroadcast()
+    {
+        // 刻意不在这里失效查找缓存：发布这个事件时，引发它的那次字典变更早已在
+        // RaiseChanged 里失效过一次，而定向刷新随后又把缓存重新填热。再 bump 一次
+        // 只会把刚建好的缓存整个作废，让下一帧退回冷查找。
+        ResourcesChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     private void OnApplicationResourcesChanged()
     {
         ResourceLookup.InvalidateResourceCache();

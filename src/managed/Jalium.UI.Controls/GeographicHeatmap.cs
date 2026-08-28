@@ -21,6 +21,13 @@ public class GeographicHeatmap : FrameworkElement
     private static readonly SolidColorBrush s_legendBackground = new(Color.FromArgb(200, 255, 255, 255));
     private static readonly SolidColorBrush s_legendBorder = new(Color.FromRgb(180, 180, 180));
     private static readonly SolidColorBrush s_legendTextBrush = new(Color.FromRgb(60, 60, 60));
+    private static readonly Pen s_legendBorderPen = new(s_legendBorder, 0.5);
+
+    // 图例的渐变条按 1px 高的横条画，条数 = legendHeight = 120。原本每次绘制都新建 120 支画刷，
+    // 而渲染后端那份原生画刷缓存上限只有 256 条 —— 一次图例绘制就能把近半数条目挤掉。
+    // 改成一条一支、跨帧复用只改颜色：条目稳定命中，且每支画刷每帧只被改一次色、只画一次，
+    // 录制型 DrawingContext 回放时拿到的仍是本条应有的颜色。
+    private SolidColorBrush[]? _legendSliceBrushes;
 
     // Cached heatmap image
     private ImageSource? _cachedHeatmapImage;
@@ -461,7 +468,7 @@ public class GeographicHeatmap : FrameworkElement
 
         // Draw background
         var bgRect = new Rect(x, y, totalWidth, totalHeight);
-        dc.DrawRoundedRectangle(s_legendBackground, new Pen(s_legendBorder, 0.5), bgRect, 3, 3);
+        dc.DrawRoundedRectangle(s_legendBackground, s_legendBorderPen, bgRect, 3, 3);
 
         // Draw title
         var titleText = new FormattedText("Intensity", FrameworkElement.DefaultFontFamilyName, fontSize)
@@ -480,17 +487,36 @@ public class GeographicHeatmap : FrameworkElement
         var lut = gradient.BuildLookupTable();
 
         // Draw the gradient bar as horizontal slices
-        for (int i = 0; i < (int)barH; i++)
+        int sliceCount = (int)barH;
+        var sliceBrushes = _legendSliceBrushes;
+        if (sliceBrushes is null || sliceBrushes.Length != sliceCount)
+        {
+            sliceBrushes = new SolidColorBrush[sliceCount];
+            _legendSliceBrushes = sliceBrushes;
+        }
+
+        for (int i = 0; i < sliceCount; i++)
         {
             double t = 1.0 - (i / barH); // Top = high, bottom = low
             int lutIndex = (int)(t * 255);
             var color = lut[Math.Clamp(lutIndex, 0, 255)];
-            var sliceBrush = new SolidColorBrush(color);
+
+            var sliceBrush = sliceBrushes[i];
+            if (sliceBrush is null || sliceBrush.IsFrozen)
+            {
+                sliceBrush = new SolidColorBrush(color);
+                sliceBrushes[i] = sliceBrush;
+            }
+            else
+            {
+                sliceBrush.Color = color;
+            }
+
             dc.DrawRectangle(sliceBrush, null, new Rect(barX, barY + i, legendWidth, 1));
         }
 
         // Draw border around gradient bar
-        dc.DrawRectangle(null, new Pen(s_legendBorder, 0.5), new Rect(barX, barY, legendWidth, barH));
+        dc.DrawRectangle(null, s_legendBorderPen, new Rect(barX, barY, legendWidth, barH));
 
         // Draw labels
         double labelX = barX + legendWidth + 4;

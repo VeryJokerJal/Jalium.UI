@@ -25,6 +25,16 @@ public partial class Stroke : INotifyPropertyChanged
     private int _cachedEllipseBatchCount;
     private bool _renderCacheDirty = true;
 
+    // 渲染后端按 Brush 实例身份缓存原生画刷。湿笔迹每采样到一个点就把整份渲染缓存重建一次，
+    // 所以「每次重建都 new」等于每帧往那份缓存里塞一条新条目，把别的控件的有效条目挤掉。
+    // 这两个实例跨重建复用、只改颜色/线宽；冻结实例改不了，退回新建。
+    private SolidColorBrush? _renderBrush;
+    private Pen? _renderPen;
+
+    // 粒子批处理专用：颜色逐粒子变化，但批处理快路径当场把颜色打包进 float 缓冲，
+    // 不进画刷缓存，因此一个实例反复改色是安全的。
+    private SolidColorBrush? _batchBrush;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="Stroke"/> class.
     /// </summary>
@@ -313,7 +323,9 @@ public partial class Stroke : INotifyPropertyChanged
                 // Direct native batch: single P/Invoke for all particles.
                 // Reuse a single SolidColorBrush to avoid per-particle allocation.
                 rtdc.BeginEllipseBatch(_cachedEllipseBatchCount);
-                var reusableBrush = new SolidColorBrush();
+                var reusableBrush = _batchBrush;
+                if (reusableBrush is null || reusableBrush.IsFrozen)
+                    reusableBrush = _batchBrush = new SolidColorBrush();
                 for (int i = 0; i < _cachedEllipseBatchCount; i++)
                 {
                     var off = i * 5;
@@ -396,8 +408,10 @@ public partial class Stroke : INotifyPropertyChanged
                 });
             }
 
+            // DynamicRenderer 的湿笔迹预览每次指针移动都重跑这里。整组共用一个颜色，
+            // 而调用方每次都拿走一份新的 GeometryGroup，所以画刷跟着复用是安全的。
             int packedColor = BitConverter.SingleToInt32Bits(_cachedEllipseBatchData[4]);
-            fillBrush = new SolidColorBrush(Color.FromArgb(
+            fillBrush = GetRenderBrush(Color.FromArgb(
                 (byte)((packedColor >> 24) & 0xFF),
                 (byte)(packedColor & 0xFF),
                 (byte)((packedColor >> 8) & 0xFF),
@@ -409,6 +423,52 @@ public partial class Stroke : INotifyPropertyChanged
         geometry = null!;
         fillBrush = null!;
         return false;
+    }
+
+    /// <summary>
+    /// 返回本笔迹复用的填充画刷，只把颜色改成 <paramref name="color"/>。
+    /// </summary>
+    /// <remarks>
+    /// 复用的前提是同一时刻只有一条渲染路径在用它：<see cref="BuildRenderCache"/> 每次重建都会
+    /// 先把 _cachedGeometry / _cachedBrush / _cachedPen / _cachedDrawing 清空再走其中一条分支，
+    /// 而 <see cref="DrawRoundBrush"/> 只在三份缓存都没建起来时才作为回退跑。
+    /// </remarks>
+    private SolidColorBrush GetRenderBrush(Color color)
+    {
+        var brush = _renderBrush;
+        if (brush is null || brush.IsFrozen)
+        {
+            brush = new SolidColorBrush(color);
+            _renderBrush = brush;
+            return brush;
+        }
+
+        brush.Color = color;
+        return brush;
+    }
+
+    /// <summary>返回本笔迹复用的描边画笔（圆头圆角），只更新画刷与线宽。</summary>
+    private Pen GetRenderPen(Brush brush, double thickness)
+    {
+        var pen = _renderPen;
+        if (pen is null || pen.IsFrozen)
+        {
+            pen = new Pen(brush, thickness)
+            {
+                StartLineCap = PenLineCap.Round,
+                EndLineCap = PenLineCap.Round,
+                LineJoin = PenLineJoin.Round,
+            };
+            _renderPen = pen;
+            return pen;
+        }
+
+        pen.Brush = brush;
+        pen.Thickness = thickness;
+        pen.StartLineCap = PenLineCap.Round;
+        pen.EndLineCap = PenLineCap.Round;
+        pen.LineJoin = PenLineJoin.Round;
+        return pen;
     }
 
     /// <summary>
@@ -472,13 +532,7 @@ public partial class Stroke : INotifyPropertyChanged
         }
 
         // Uniform-width stroke: use thick Pen on a polyline path
-        var brush = new SolidColorBrush(color);
-        var pen = new Pen(brush, _drawingAttributes.Width)
-        {
-            StartLineCap = PenLineCap.Round,
-            EndLineCap = PenLineCap.Round,
-            LineJoin = PenLineJoin.Round
-        };
+        var pen = GetRenderPen(GetRenderBrush(color), _drawingAttributes.Width);
 
         var geometry = new StreamGeometry();
         using (var ctx = geometry.Open())
@@ -524,7 +578,7 @@ public partial class Stroke : INotifyPropertyChanged
                 var animatedRadius = ApplyAnimationScale(radiusX, radiusY, 0.0);
                 var ellipse = new EllipseGeometry { Center = point, RadiusX = animatedRadius.X, RadiusY = animatedRadius.Y };
                 _cachedGeometry = ellipse;
-                _cachedBrush = new SolidColorBrush(color);
+                _cachedBrush = GetRenderBrush(color);
             }
             return;
         }
@@ -574,9 +628,11 @@ public partial class Stroke : INotifyPropertyChanged
         _cachedEllipseBatchCount = collector.Count;
 
         // Also build a DrawingGroup fallback for non-GPU contexts
+        // 整组椭圆共用一个颜色，而这份 DrawingGroup 每次重建都整体丢弃重录，
+        // 所以复用实例不会让旧 group 拿到新颜色。
         _cachedDrawing = new DrawingGroup();
         using var cacheDc = _cachedDrawing.Open();
-        var brush = new SolidColorBrush(color);
+        var brush = GetRenderBrush(color);
         for (int i = 0; i < collector.Count; i++)
         {
             var off = i * 5;
@@ -592,15 +648,9 @@ public partial class Stroke : INotifyPropertyChanged
     private void BuildCalligraphyPathCache()
     {
         var color = _drawingAttributes.Color;
-        var brush = new SolidColorBrush(color);
 
         // Calligraphy uses a flattened pen nib - thin in Y direction
-        var pen = new Pen(brush, _drawingAttributes.Width)
-        {
-            StartLineCap = PenLineCap.Round,
-            EndLineCap = PenLineCap.Round,
-            LineJoin = PenLineJoin.Round
-        };
+        var pen = GetRenderPen(GetRenderBrush(color), _drawingAttributes.Width);
 
         var geometry = new StreamGeometry();
         using (var ctx = geometry.Open())
@@ -850,9 +900,9 @@ public partial class Stroke : INotifyPropertyChanged
     private void DrawRoundBrush(DrawingContext dc)
     {
         var baseColor = _drawingAttributes.Color;
-        var brush = new SolidColorBrush(_drawingAttributes.Color);
-        if (_drawingAttributes.IsHighlighter)
-            brush = new SolidColorBrush(Color.FromArgb(128, baseColor.R, baseColor.G, baseColor.B));
+        var brush = GetRenderBrush(_drawingAttributes.IsHighlighter
+            ? Color.FromArgb(128, baseColor.R, baseColor.G, baseColor.B)
+            : baseColor);
 
         var radiusX = _drawingAttributes.Width / 2;
         var radiusY = _drawingAttributes.Height / 2;

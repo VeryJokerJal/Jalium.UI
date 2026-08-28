@@ -330,16 +330,42 @@ public static class ThemeManager
     /// <summary>
     /// Applies a runtime accent color and regenerates derived accent tokens.
     /// </summary>
+    /// <remarks>
+    /// 这条路径是「拖动取色器实时改主题」的每帧成本所在，因此按两个原则实现：
+    /// <list type="number">
+    ///   <item>颜色没变就直接返回。指针在同一像素上抖动、或调用方按帧重发当前值时，
+    ///         整条重算链路完全不该启动。</item>
+    ///   <item>就地更新既有的 accent 字典，而不是构造新字典去替换合并列表里的槽位。
+    ///         替换槽位是**结构性**变化，通知里带不出键集合，上层只能按「所有键都变了」
+    ///         处理——即整棵可视树重新求值隐式样式（本机 861 元素的窗口上 2.4 ms）。
+    ///         就地更新发出的是精确键集合，动态资源订阅按键定向刷新，隐式样式一步不动。</item>
+    /// </list>
+    /// </remarks>
     public static void ApplyAccent(Color accent)
     {
+        if (_accentDictionary != null && CurrentAccentColor == accent)
+            return;
+
         CurrentAccentColor = accent;
 
         if (_application == null)
             return;
 
-        ReplaceManagedDictionary(ref _accentDictionary, BuildAccentDictionary(accent));
-        // The dictionary replacement already notified every live root.
-        ForceThemeRefresh(notifyLiveRoots: false);
+        if (_accentDictionary is { } existing)
+        {
+            UpdateAccentDictionaryInPlace(existing, accent);
+
+            // 就地更新发出的是精确键集合，Application 据此做定向刷新；那一遍已经扫过全局
+            // 注册表（含 detached / 未显示的树），不需要再补一次 unloaded 扫描。
+            CompleteTargetedThemeRefresh();
+        }
+        else
+        {
+            // 首次挂载 accent 字典是结构性变化，通知退化为「全部键」，只覆盖活根，
+            // 因此仍需补扫 detached / 未显示的注册。
+            ReplaceManagedDictionary(ref _accentDictionary, BuildAccentDictionary(accent));
+            ForceThemeRefresh(notifyLiveRoots: false);
+        }
     }
 
     /// <summary>
@@ -401,7 +427,15 @@ public static class ThemeManager
             _suppressRefresh = false;
         }
 
-        // Disposing the outer resource deferral already notified every live root once.
+        // 这里刻意不再补一次全树广播。
+        //
+        // ApplyTheme 改的是 CurrentThemeKey，它不产生任何字典条目变更，却会改变**每一个**
+        // ThemeResource 的解析结果——所以这一批操作确实需要一次全量刷新。而它已经有了：
+        // ApplyTypography 走的是「整本替换合并字典」，那是结构性变化，延迟作用域结束时
+        // 发出的是「所有键都变了」，Application 据此走全树广播并刷新每一个订阅。
+        // 再加一次就是把每个活根重新求值两遍。
+        // （回归测试：ThemeRuntimeSwitchTests.ApplyBrandTheme_ShouldReevaluateEachLiveRoot_ExactlyOnce
+        //   钉住次数；ThemeRuntimeSwitchTests 里的变体绑定用例钉住主题键变化确实传播到了活树。）
         ForceThemeRefresh(notifyLiveRoots: false);
     }
 
@@ -589,6 +623,26 @@ public static class ThemeManager
         }
     }
 
+    /// <summary>
+    /// 收尾一次「已经通过精确键集合完成定向刷新」的调色板更新。
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ForceThemeRefresh"/> 的 <c>RefreshUnloaded</c> 是为「全树广播只覆盖活根、
+    /// detached / 未显示的树够不着」这个前提准备的补扫。定向刷新走的是全局注册表，
+    /// loaded 与否一视同仁，补扫因此变成对同一批订阅的第二次遍历——在本机 861 元素的
+    /// 窗口上，紧跟一次缓存失效之后的这遍冷扫描要 1.7 ms，比更新字典本身还贵。
+    /// </remarks>
+    private static void CompleteTargetedThemeRefresh()
+    {
+        if (_application == null || _suppressRefresh)
+            return;
+
+        // 定向刷新已经把新值送到了每一个受影响的订阅，但公开的 Application.ResourcesChanged
+        // 仍要照常触发——宿主可能挂着自己的手工刷新逻辑，不该因为框架内部换了刷新策略而失灵。
+        _application.RaiseResourcesChangedWithoutBroadcast();
+        _themeVersion++;
+    }
+
     private static void ForceThemeRefresh(bool notifyLiveRoots)
     {
         if (_application == null || _suppressRefresh)
@@ -616,164 +670,286 @@ public static class ThemeManager
 
     private static ResourceDictionary BuildAccentDictionary(Color accent)
     {
+        var dictionary = new ResourceDictionary();
+        PopulateAccentDictionary(dictionary, accent);
+        return dictionary;
+    }
+
+    /// <summary>
+    /// 就地把既有 accent 字典刷新到新的强调色，并只发布实际变化的键。
+    /// </summary>
+    /// <remarks>
+    /// <para>画刷条目走「复用实例、只改颜色」：字典里的值引用不变，所以这些键**不进**通知集合。
+    /// 重绘由 <c>Brush</c> 自身的 render-owner 机制驱动——只有真正把这支画刷绑到某个属性上的
+    /// 元素被标脏，比让每个动态资源订阅重新求值精确得多，也不产生一次性画刷垃圾。
+    /// 只有画刷被冻结、缺失或类型不符时才退回替换实例，那时才需要发键通知。</para>
+    /// <para>颜色（值类型）条目无法就地更新，必须换值并发键通知。</para>
+    /// <para>变体字典（<see cref="ResourceDictionary.ThemeDictionaries"/> 的值）不是合并字典，
+    /// 它的条目变更不会自行冒泡，所以在延迟通知的作用域内把变体键补进宿主的待发集合，
+    /// 由宿主在作用域结束时一次性发出完整键集合。</para>
+    /// </remarks>
+    private static void UpdateAccentDictionaryInPlace(ResourceDictionary dictionary, Color accent)
+    {
+        var variantKeys = new HashSet<object>();
+        using var notifications = dictionary.DeferNotifications();
+        PopulateAccentDictionary(dictionary, accent, variantKeys);
+        if (variantKeys.Count > 0)
+        {
+            dictionary.NotifyKeysChanged(variantKeys);
+        }
+    }
+
+    /// <summary>
+    /// 构建与就地更新共用的唯一填充点。对空字典调用等价于构建，对既有字典调用等价于刷新。
+    /// </summary>
+    /// <param name="variantChangedKeys">
+    /// 非 null 时收集变体字典里实际变化的键，供调用方补发通知（构建路径传 null：整本字典
+    /// 是新的，宿主会按结构性变化处理）。
+    /// </param>
+    private static void PopulateAccentDictionary(
+        ResourceDictionary dictionary,
+        Color accent,
+        ICollection<object>? variantChangedKeys = null)
+    {
         var hover = Blend(accent, Color.White, 0.18);
         var pressed = Blend(accent, Color.Black, 0.24);
-        var light1 = Blend(accent, Color.White, 0.18);
+
+        var selection = Color.FromArgb(0x99, accent.R, accent.G, accent.B);
+        var weakSelection = Color.FromArgb(0x4D, accent.R, accent.G, accent.B);
+
+        // 顶层字典的写入会自行累积键，不需要外部收集。
+        SetColorEntry(dictionary, "SystemAccentColor", accent, null);
+        SetColorEntry(dictionary, "SystemAccentColorLight1", Blend(accent, Color.White, 0.18), null);
+        SetColorEntry(dictionary, "SystemAccentColorLight2", Blend(accent, Color.White, 0.34), null);
+        SetColorEntry(dictionary, "SystemAccentColorLight3", Blend(accent, Color.White, 0.52), null);
+        SetColorEntry(dictionary, "SystemAccentColorDark1", Blend(accent, Color.Black, 0.12), null);
+        SetColorEntry(dictionary, "SystemAccentColorDark2", Blend(accent, Color.Black, 0.24), null);
+        SetColorEntry(dictionary, "SystemAccentColorDark3", Blend(accent, Color.Black, 0.36), null);
+        SetColorEntry(dictionary, "AccentFillColorSelectedTextBackground", accent, null);
+        SetGradientBrushEntry(dictionary, "AccentBrush", accent, null);
+        SetGradientBrushEntry(dictionary, "AccentBrushHover", hover, null);
+        SetGradientBrushEntry(dictionary, "AccentBrushPressed", pressed, null);
+        SetSolidBrushEntry(dictionary, "AccentFillColorSelectedTextBackgroundBrush", accent, null);
+        SetSolidBrushEntry(dictionary, "SelectionBackground", selection, null);
+        SetSolidBrushEntry(dictionary, "SelectionBackgroundWeak", weakSelection, null);
+        SetSolidBrushEntry(dictionary, "AppBarButtonForeground", accent, null);
+        SetSolidBrushEntry(dictionary, "ProgressRingForeground", accent, null);
+        SetSolidBrushEntry(dictionary, "BrandPrimaryAccentBrush", accent, null);
+        SetSolidBrushEntry(dictionary, "BrandSecondaryAccentBrush", DefaultSecondaryAccentColor, null);
+        SetColorEntry(dictionary, "BrandPrimaryAccentColor", accent, null);
+        SetColorEntry(dictionary, "BrandSecondaryAccentColor", DefaultSecondaryAccentColor, null);
+
+        PopulateAccentVariant(
+            GetOrCreateVariant(dictionary, ThemeVariant.Dark.ToString()), accent, ThemeVariant.Dark, variantChangedKeys);
+        PopulateAccentVariant(
+            GetOrCreateVariant(dictionary, ThemeVariant.Light.ToString()), accent, ThemeVariant.Light, variantChangedKeys);
+
+        if (!dictionary.ThemeDictionaries.ContainsKey("HighContrast"))
+        {
+            // 高对比度变体全部是固定值，与强调色无关，只在缺失时构建一次。
+            dictionary.ThemeDictionaries["HighContrast"] = BuildHighContrastVariant();
+        }
+    }
+
+    /// <summary>
+    /// 写入一个颜色条目。值类型无法就地更新，只在值真的变了时写入并登记键。
+    /// </summary>
+    private static void SetColorEntry(
+        ResourceDictionary dictionary, object key, Color color, ICollection<object>? changedKeys)
+    {
+        if (dictionary.TryGetOwnValue(key, out var existing) && existing is Color current && current == color)
+        {
+            return;
+        }
+
+        dictionary[key] = color;
+        changedKeys?.Add(key);
+    }
+
+    /// <summary>
+    /// 写入一个纯色画刷条目，优先就地改色以保住实例身份。
+    /// </summary>
+    private static void SetSolidBrushEntry(
+        ResourceDictionary dictionary, object key, Color color, ICollection<object>? changedKeys)
+    {
+        if (dictionary.TryGetOwnValue(key, out var existing) &&
+            existing is SolidColorBrush { IsFrozen: false } brush)
+        {
+            // 实例身份不变 ⇒ 不进通知集合；重绘由 render owner 机制负责。
+            brush.Color = color;
+            return;
+        }
+
+        dictionary[key] = new SolidColorBrush(color);
+        changedKeys?.Add(key);
+    }
+
+    /// <summary>
+    /// 写入一个强调色渐变画刷条目，优先就地改两个停靠点的颜色以保住实例身份。
+    /// </summary>
+    private static void SetGradientBrushEntry(
+        ResourceDictionary dictionary, object key, Color color, ICollection<object>? changedKeys)
+    {
+        var start = Blend(color, Color.Black, 0.06);
+        var end = Blend(color, Color.White, 0.06);
+
+        if (dictionary.TryGetOwnValue(key, out var existing) &&
+            existing is LinearGradientBrush { IsFrozen: false } brush)
+        {
+            var stops = brush.GradientStops;
+            if (stops.Count == 2 && !stops[0].IsFrozen && !stops[1].IsFrozen)
+            {
+                // 两个停靠点是一次逻辑变更：合并通知，否则画刷持有者会被标脏两遍。
+                using var batch = stops.DeferStopChangeNotifications();
+                stops[0].Color = start;
+                stops[1].Color = end;
+                return;
+            }
+        }
+
+        dictionary[key] = AccentGradient(color);
+        changedKeys?.Add(key);
+    }
+
+    private static ResourceDictionary GetOrCreateVariant(ResourceDictionary dictionary, string key)
+    {
+        if (dictionary.ThemeDictionaries.TryGetValue(key, out var existing))
+        {
+            return existing;
+        }
+
+        var created = new ResourceDictionary();
+        dictionary.ThemeDictionaries[key] = created;
+        return created;
+    }
+
+    /// <summary>
+    /// Every AccentBrush flavor ships as a top-to-bottom gradient so the
+    /// default palette yields the #207245 -> #1C8043 look (and custom
+    /// accents automatically get a subtle two-stop gradient in the same
+    /// style). The start stop is the accent darkened ~5% and the end stop
+    /// is the accent lightened ~5% so the midpoint matches <paramref name="color"/>.
+    /// </summary>
+    private static LinearGradientBrush AccentGradient(Color color)
+    {
+        var start = Blend(color, Color.Black, 0.06);
+        var end = Blend(color, Color.White, 0.06);
+        var brush = new LinearGradientBrush
+        {
+            StartPoint = new Point(0, 0),
+            EndPoint = new Point(1, 0),
+        };
+        brush.GradientStops.Add(new GradientStop(start, 0));
+        brush.GradientStops.Add(new GradientStop(end, 1));
+        return brush;
+    }
+
+    private static void PopulateAccentVariant(
+        ResourceDictionary variant,
+        Color accent,
+        ThemeVariant theme,
+        ICollection<object>? changedKeys)
+    {
+        using var notifications = variant.DeferNotifications();
+
+        var darkTheme = theme == ThemeVariant.Dark;
         var light2 = Blend(accent, Color.White, 0.34);
         var light3 = Blend(accent, Color.White, 0.52);
         var dark1 = Blend(accent, Color.Black, 0.12);
         var dark2 = Blend(accent, Color.Black, 0.24);
         var dark3 = Blend(accent, Color.Black, 0.36);
 
-        // Every AccentBrush flavor ships as a top-to-bottom gradient so the
-        // default palette yields the #207245 -> #1C8043 look (and custom
-        // accents automatically get a subtle two-stop gradient in the same
-        // style). The start stop is the accent darkened ~5% and the end stop
-        // is the accent lightened ~5% so the midpoint matches `accent`.
-        static LinearGradientBrush Gradient(Color color)
-        {
-            var start = Blend(color, Color.Black, 0.06);
-            var end = Blend(color, Color.White, 0.06);
-            var brush = new LinearGradientBrush
-            {
-                StartPoint = new Point(0, 0),
-                EndPoint = new Point(1, 0),
-            };
-            brush.GradientStops.Add(new GradientStop(start, 0));
-            brush.GradientStops.Add(new GradientStop(end, 1));
-            return brush;
-        }
-        var selection = Color.FromArgb(0x99, accent.R, accent.G, accent.B);
-        var weakSelection = Color.FromArgb(0x4D, accent.R, accent.G, accent.B);
+        var disabledBlendTarget = darkTheme
+            ? Color.FromRgb(0x66, 0x66, 0x66)
+            : Color.FromRgb(0xB8, 0xB8, 0xB8);
+        var disabled = Blend(accent, disabledBlendTarget, 0.58);
+        var accentFillDefault = darkTheme ? light2 : dark1;
+        var accentFillSecondary = Color.FromArgb(
+            0xE6,
+            accentFillDefault.R,
+            accentFillDefault.G,
+            accentFillDefault.B);
+        var accentFillTertiary = Color.FromArgb(
+            0xCC,
+            accentFillDefault.R,
+            accentFillDefault.G,
+            accentFillDefault.B);
+        var accentTextPrimary = darkTheme ? light3 : dark2;
+        var accentTextSecondary = darkTheme ? light3 : dark3;
+        var accentTextTertiary = darkTheme ? light2 : dark1;
+        var systemFillAttention = darkTheme ? light2 : accent;
 
-        var dictionary = new ResourceDictionary
+        SetColorEntry(variant, "AccentTextFillColorPrimary", accentTextPrimary, changedKeys);
+        SetColorEntry(variant, "AccentTextFillColorSecondary", accentTextSecondary, changedKeys);
+        SetColorEntry(variant, "AccentTextFillColorTertiary", accentTextTertiary, changedKeys);
+        SetColorEntry(variant, "AccentTextFillColorDisabled", disabled, changedKeys);
+        SetColorEntry(variant, "AccentFillColorDefault", accentFillDefault, changedKeys);
+        SetColorEntry(variant, "AccentFillColorSecondary", accentFillSecondary, changedKeys);
+        SetColorEntry(variant, "AccentFillColorTertiary", accentFillTertiary, changedKeys);
+        SetColorEntry(variant, "AccentFillColorDisabled", disabled, changedKeys);
+        SetColorEntry(variant, "SystemFillColorAttention", systemFillAttention, changedKeys);
+        SetGradientBrushEntry(variant, "AccentBrushDisabled", disabled, changedKeys);
+        SetSolidBrushEntry(variant, "AccentTextFillColorPrimaryBrush", accentTextPrimary, changedKeys);
+        SetSolidBrushEntry(variant, "AccentTextFillColorSecondaryBrush", accentTextSecondary, changedKeys);
+        SetSolidBrushEntry(variant, "AccentTextFillColorTertiaryBrush", accentTextTertiary, changedKeys);
+        SetSolidBrushEntry(variant, "AccentTextFillColorDisabledBrush", disabled, changedKeys);
+        SetSolidBrushEntry(variant, "AccentFillColorDefaultBrush", accentFillDefault, changedKeys);
+        SetSolidBrushEntry(variant, "AccentFillColorSecondaryBrush", accentFillSecondary, changedKeys);
+        SetSolidBrushEntry(variant, "AccentFillColorTertiaryBrush", accentFillTertiary, changedKeys);
+        SetSolidBrushEntry(variant, "AccentFillColorDisabledBrush", disabled, changedKeys);
+        SetSolidBrushEntry(variant, "SystemFillColorAttentionBrush", systemFillAttention, changedKeys);
+        SetSolidBrushEntry(variant, "AppBarButtonForegroundDisabled", disabled, changedKeys);
+    }
+
+    private static ResourceDictionary BuildHighContrastVariant()
+    {
+        var accentColor = Color.FromRgb(0xFF, 0xFF, 0x00);
+        var pressedColor = Color.White;
+        var disabledColor = Color.FromRgb(0x7F, 0x7F, 0x7F);
+        var onAccentColor = Color.Black;
+
+        return new ResourceDictionary
         {
-            ["SystemAccentColor"] = accent,
-            ["SystemAccentColorLight1"] = light1,
-            ["SystemAccentColorLight2"] = light2,
-            ["SystemAccentColorLight3"] = light3,
-            ["SystemAccentColorDark1"] = dark1,
-            ["SystemAccentColorDark2"] = dark2,
-            ["SystemAccentColorDark3"] = dark3,
-            ["AccentFillColorSelectedTextBackground"] = accent,
-            ["AccentBrush"] = Gradient(accent),
-            ["AccentBrushHover"] = Gradient(hover),
-            ["AccentBrushPressed"] = Gradient(pressed),
-            ["AccentFillColorSelectedTextBackgroundBrush"] = new SolidColorBrush(accent),
-            ["SelectionBackground"] = new SolidColorBrush(selection),
-            ["SelectionBackgroundWeak"] = new SolidColorBrush(weakSelection),
-            ["AppBarButtonForeground"] = new SolidColorBrush(accent),
-            ["ProgressRingForeground"] = new SolidColorBrush(accent),
-            ["BrandPrimaryAccentBrush"] = new SolidColorBrush(accent),
-            ["BrandSecondaryAccentBrush"] = new SolidColorBrush(DefaultSecondaryAccentColor),
-            ["BrandPrimaryAccentColor"] = accent,
-            ["BrandSecondaryAccentColor"] = DefaultSecondaryAccentColor
+            ["SystemAccentColor"] = accentColor,
+            ["SystemAccentColorLight1"] = accentColor,
+            ["SystemAccentColorLight2"] = accentColor,
+            ["SystemAccentColorLight3"] = accentColor,
+            ["SystemAccentColorDark1"] = accentColor,
+            ["SystemAccentColorDark2"] = accentColor,
+            ["SystemAccentColorDark3"] = accentColor,
+            ["AccentTextFillColorPrimary"] = accentColor,
+            ["AccentTextFillColorSecondary"] = accentColor,
+            ["AccentTextFillColorTertiary"] = accentColor,
+            ["AccentTextFillColorDisabled"] = disabledColor,
+            ["AccentFillColorDefault"] = accentColor,
+            ["AccentFillColorSecondary"] = accentColor,
+            ["AccentFillColorTertiary"] = accentColor,
+            ["AccentFillColorDisabled"] = disabledColor,
+            ["AccentFillColorSelectedTextBackground"] = accentColor,
+            ["SystemFillColorAttention"] = accentColor,
+            ["AccentBrush"] = new SolidColorBrush(accentColor),
+            ["AccentBrushHover"] = new SolidColorBrush(accentColor),
+            ["AccentBrushPressed"] = new SolidColorBrush(pressedColor),
+            ["AccentBrushDisabled"] = new SolidColorBrush(disabledColor),
+            ["AccentTextFillColorPrimaryBrush"] = new SolidColorBrush(accentColor),
+            ["AccentTextFillColorSecondaryBrush"] = new SolidColorBrush(accentColor),
+            ["AccentTextFillColorTertiaryBrush"] = new SolidColorBrush(accentColor),
+            ["AccentTextFillColorDisabledBrush"] = new SolidColorBrush(disabledColor),
+            ["AccentFillColorDefaultBrush"] = new SolidColorBrush(accentColor),
+            ["AccentFillColorSecondaryBrush"] = new SolidColorBrush(accentColor),
+            ["AccentFillColorTertiaryBrush"] = new SolidColorBrush(accentColor),
+            ["AccentFillColorDisabledBrush"] = new SolidColorBrush(disabledColor),
+            ["AccentFillColorSelectedTextBackgroundBrush"] = new SolidColorBrush(accentColor),
+            ["SystemFillColorAttentionBrush"] = new SolidColorBrush(accentColor),
+            ["SelectionBackground"] = new SolidColorBrush(accentColor),
+            ["SelectionBackgroundWeak"] = new SolidColorBrush(accentColor),
+            ["AppBarButtonForeground"] = new SolidColorBrush(accentColor),
+            ["AppBarButtonForegroundDisabled"] = new SolidColorBrush(disabledColor),
+            ["ProgressRingForeground"] = new SolidColorBrush(accentColor),
+            ["BrandPrimaryAccentBrush"] = new SolidColorBrush(accentColor),
+            ["BrandPrimaryAccentColor"] = accentColor,
+            ["TextOnAccent"] = new SolidColorBrush(onAccentColor),
         };
-
-        dictionary.ThemeDictionaries[ThemeVariant.Dark.ToString()] = BuildVariant(ThemeVariant.Dark);
-        dictionary.ThemeDictionaries[ThemeVariant.Light.ToString()] = BuildVariant(ThemeVariant.Light);
-        dictionary.ThemeDictionaries["HighContrast"] = BuildHighContrastVariant();
-
-        return dictionary;
-
-        ResourceDictionary BuildVariant(ThemeVariant theme)
-        {
-            var darkTheme = theme == ThemeVariant.Dark;
-            var disabledBlendTarget = darkTheme
-                ? Color.FromRgb(0x66, 0x66, 0x66)
-                : Color.FromRgb(0xB8, 0xB8, 0xB8);
-            var disabled = Blend(accent, disabledBlendTarget, 0.58);
-            var accentFillDefault = darkTheme ? light2 : dark1;
-            var accentFillSecondary = Color.FromArgb(
-                0xE6,
-                accentFillDefault.R,
-                accentFillDefault.G,
-                accentFillDefault.B);
-            var accentFillTertiary = Color.FromArgb(
-                0xCC,
-                accentFillDefault.R,
-                accentFillDefault.G,
-                accentFillDefault.B);
-            var accentTextPrimary = darkTheme ? light3 : dark2;
-            var accentTextSecondary = darkTheme ? light3 : dark3;
-            var accentTextTertiary = darkTheme ? light2 : dark1;
-            var systemFillAttention = darkTheme ? light2 : accent;
-
-            return new ResourceDictionary
-            {
-                ["AccentTextFillColorPrimary"] = accentTextPrimary,
-                ["AccentTextFillColorSecondary"] = accentTextSecondary,
-                ["AccentTextFillColorTertiary"] = accentTextTertiary,
-                ["AccentTextFillColorDisabled"] = disabled,
-                ["AccentFillColorDefault"] = accentFillDefault,
-                ["AccentFillColorSecondary"] = accentFillSecondary,
-                ["AccentFillColorTertiary"] = accentFillTertiary,
-                ["AccentFillColorDisabled"] = disabled,
-                ["SystemFillColorAttention"] = systemFillAttention,
-                ["AccentBrushDisabled"] = Gradient(disabled),
-                ["AccentTextFillColorPrimaryBrush"] = new SolidColorBrush(accentTextPrimary),
-                ["AccentTextFillColorSecondaryBrush"] = new SolidColorBrush(accentTextSecondary),
-                ["AccentTextFillColorTertiaryBrush"] = new SolidColorBrush(accentTextTertiary),
-                ["AccentTextFillColorDisabledBrush"] = new SolidColorBrush(disabled),
-                ["AccentFillColorDefaultBrush"] = new SolidColorBrush(accentFillDefault),
-                ["AccentFillColorSecondaryBrush"] = new SolidColorBrush(accentFillSecondary),
-                ["AccentFillColorTertiaryBrush"] = new SolidColorBrush(accentFillTertiary),
-                ["AccentFillColorDisabledBrush"] = new SolidColorBrush(disabled),
-                ["SystemFillColorAttentionBrush"] = new SolidColorBrush(systemFillAttention),
-                ["AppBarButtonForegroundDisabled"] = new SolidColorBrush(disabled),
-            };
-        }
-
-        static ResourceDictionary BuildHighContrastVariant()
-        {
-            var accentColor = Color.FromRgb(0xFF, 0xFF, 0x00);
-            var pressedColor = Color.White;
-            var disabledColor = Color.FromRgb(0x7F, 0x7F, 0x7F);
-            var onAccentColor = Color.Black;
-
-            return new ResourceDictionary
-            {
-                ["SystemAccentColor"] = accentColor,
-                ["SystemAccentColorLight1"] = accentColor,
-                ["SystemAccentColorLight2"] = accentColor,
-                ["SystemAccentColorLight3"] = accentColor,
-                ["SystemAccentColorDark1"] = accentColor,
-                ["SystemAccentColorDark2"] = accentColor,
-                ["SystemAccentColorDark3"] = accentColor,
-                ["AccentTextFillColorPrimary"] = accentColor,
-                ["AccentTextFillColorSecondary"] = accentColor,
-                ["AccentTextFillColorTertiary"] = accentColor,
-                ["AccentTextFillColorDisabled"] = disabledColor,
-                ["AccentFillColorDefault"] = accentColor,
-                ["AccentFillColorSecondary"] = accentColor,
-                ["AccentFillColorTertiary"] = accentColor,
-                ["AccentFillColorDisabled"] = disabledColor,
-                ["AccentFillColorSelectedTextBackground"] = accentColor,
-                ["SystemFillColorAttention"] = accentColor,
-                ["AccentBrush"] = new SolidColorBrush(accentColor),
-                ["AccentBrushHover"] = new SolidColorBrush(accentColor),
-                ["AccentBrushPressed"] = new SolidColorBrush(pressedColor),
-                ["AccentBrushDisabled"] = new SolidColorBrush(disabledColor),
-                ["AccentTextFillColorPrimaryBrush"] = new SolidColorBrush(accentColor),
-                ["AccentTextFillColorSecondaryBrush"] = new SolidColorBrush(accentColor),
-                ["AccentTextFillColorTertiaryBrush"] = new SolidColorBrush(accentColor),
-                ["AccentTextFillColorDisabledBrush"] = new SolidColorBrush(disabledColor),
-                ["AccentFillColorDefaultBrush"] = new SolidColorBrush(accentColor),
-                ["AccentFillColorSecondaryBrush"] = new SolidColorBrush(accentColor),
-                ["AccentFillColorTertiaryBrush"] = new SolidColorBrush(accentColor),
-                ["AccentFillColorDisabledBrush"] = new SolidColorBrush(disabledColor),
-                ["AccentFillColorSelectedTextBackgroundBrush"] = new SolidColorBrush(accentColor),
-                ["SystemFillColorAttentionBrush"] = new SolidColorBrush(accentColor),
-                ["SelectionBackground"] = new SolidColorBrush(accentColor),
-                ["SelectionBackgroundWeak"] = new SolidColorBrush(accentColor),
-                ["AppBarButtonForeground"] = new SolidColorBrush(accentColor),
-                ["AppBarButtonForegroundDisabled"] = new SolidColorBrush(disabledColor),
-                ["ProgressRingForeground"] = new SolidColorBrush(accentColor),
-                ["BrandPrimaryAccentBrush"] = new SolidColorBrush(accentColor),
-                ["BrandPrimaryAccentColor"] = accentColor,
-                ["TextOnAccent"] = new SolidColorBrush(onAccentColor),
-            };
-        }
     }
 
     private static ResourceDictionary BuildTypographyDictionary(string display, string body, string mono, double bodyFontSize)

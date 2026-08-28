@@ -418,6 +418,12 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
     private WpfD3DImage? _d3dImage;
     private bool _videoSurfacePathUnsupported;  // sticky:once create fails, don't keep retrying
     private readonly SolidColorBrush _backgroundBrush = new(Color.FromRgb(0, 0, 0));
+
+    // OnRender 里这几处颜色都是编译期常量。字幕叠加层随视频每帧重跑（30~60fps），
+    // 每帧新建画刷会往渲染后端那份按实例身份键控的原生画刷缓存里塞新条目并触发 LRU 淘汰。
+    private static readonly SolidColorBrush s_placeholderTextBrush = new(Color.FromRgb(200, 200, 200));
+    private static readonly SolidColorBrush s_subtitleForegroundBrush = new(Color.FromRgb(255, 255, 255));
+    private static readonly SolidColorBrush s_subtitleBackgroundBrush = new(Color.FromArgb(180, 0, 0, 0));
     private int _videoWidth;
     private int _videoHeight;
     private double _videoFps;
@@ -937,7 +943,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
             var text = new FormattedText("Audio Only", "Segoe UI", 14)
             {
-                Foreground = new SolidColorBrush(Color.FromRgb(200, 200, 200))
+                Foreground = s_placeholderTextBrush
             };
             dc.DrawText(text, new Point((rect.Width - text.Width) / 2, (rect.Height - text.Height) / 2));
             return;
@@ -984,7 +990,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
         {
             var text = new FormattedText("Loading...", "Segoe UI", 14)
             {
-                Foreground = new SolidColorBrush(Color.FromRgb(200, 200, 200))
+                Foreground = s_placeholderTextBrush
             };
             dc.DrawText(text, new Point((rect.Width - text.Width) / 2, (rect.Height - text.Height) / 2));
         }
@@ -999,7 +1005,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
 
         var text = new FormattedText(subtitle, "Sans", 24)
         {
-            Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 255)),
+            Foreground = s_subtitleForegroundBrush,
             MaxTextWidth = Math.Max(1, bounds.Width - 48),
             TextAlignment = TextAlignment.Center,
         };
@@ -1011,8 +1017,7 @@ public class MediaElement : FrameworkElement, IDisposable, IUriContext
             y - 6.0,
             backgroundWidth,
             text.Height + 12.0);
-        drawingContext.DrawRectangle(
-            new SolidColorBrush(Color.FromArgb(180, 0, 0, 0)), null, background);
+        drawingContext.DrawRectangle(s_subtitleBackgroundBrush, null, background);
         drawingContext.DrawText(text, new Point(x, y));
     }
 

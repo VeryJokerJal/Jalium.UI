@@ -31,6 +31,17 @@ public class MapView : Control
     private static readonly SolidColorBrush s_mapBackground = new(Color.FromRgb(228, 232, 238));
     private static readonly SolidColorBrush s_markerLabelForeground = new(Color.FromRgb(30, 30, 30));
 
+    // 标记描边和缩放按钮描边的画刷与线宽都是编译期常量，而标记那支画笔原本在
+    // 逐标记的循环里新建 —— 平移拖动时每次指针移动都要重来一遍整个循环。
+    private static readonly Pen s_markerOutlinePen = new(s_scaleBarBackground, 1.5);
+    private static readonly Pen s_zoomButtonBorderPen = new(s_scaleBarBrush, 0.5);
+
+    // 折线/多边形的描边画刷来自各自的模型对象，同一帧内多数共用同一支默认画刷，
+    // 单槽缓存能吃掉绝大多数分配；画刷真的换了就退回新建。
+    private RenderPenCache _polylinePen;
+    private RenderPenCache _polygonPen;
+    private RenderPenCache _chromeBorderPen;
+
     #region Dependency Properties
 
     /// <summary>
@@ -650,7 +661,7 @@ public class MapView : Control
         return new RectangleGeometry(bounds);
     }
 
-    private static void DrawBorder(DrawingContext dc, Rect bounds, Brush borderBrush,
+    private void DrawBorder(DrawingContext dc, Rect bounds, Brush borderBrush,
         Thickness borderThickness, CornerRadius cornerRadius)
     {
         // Use uniform thickness when all sides are equal — that's the common
@@ -665,7 +676,7 @@ public class MapView : Control
             double half = t / 2.0;
             var inset = new Rect(bounds.X + half, bounds.Y + half,
                 Math.Max(0, bounds.Width - t), Math.Max(0, bounds.Height - t));
-            var pen = new Pen(borderBrush, t);
+            var pen = _chromeBorderPen.Get(borderBrush, t);
             if (cornerRadius.TopLeft > 0)
             {
                 dc.DrawRoundedRectangle(null, pen, inset, cornerRadius.TopLeft, cornerRadius.TopLeft);
@@ -754,7 +765,7 @@ public class MapView : Control
             if (points == null || points.Count < 2) continue;
 
             var strokeBrush = polyline.Stroke ?? s_defaultPolylineBrush;
-            var pen = new Pen(strokeBrush, polyline.StrokeThickness);
+            var pen = _polylinePen.Get(strokeBrush, polyline.StrokeThickness);
 
             var screenPoints = new Point[points.Count];
             for (int j = 0; j < points.Count; j++)
@@ -782,7 +793,7 @@ public class MapView : Control
 
             var fillBrush = polygon.Fill ?? s_defaultPolygonFill;
             var strokeBrush = polygon.Stroke ?? s_defaultPolygonStroke;
-            var pen = new Pen(strokeBrush, polygon.StrokeThickness);
+            var pen = _polygonPen.Get(strokeBrush, polygon.StrokeThickness);
 
             var figure = new PathFigure();
             figure.StartPoint = GeoToScreen(points[0]);
@@ -833,7 +844,7 @@ public class MapView : Control
             double radius = markerSize / 2.0;
 
             // Draw marker pin: a filled circle with a white border
-            dc.DrawEllipse(fillBrush, new Pen(s_scaleBarBackground, 1.5), screen, radius, radius);
+            dc.DrawEllipse(fillBrush, s_markerOutlinePen, screen, radius, radius);
 
             // Draw label if present
             var label = marker.Label;
@@ -955,7 +966,7 @@ public class MapView : Control
 
         // Zoom in button (+)
         var zoomInRect = new Rect(x, y, buttonSize, buttonSize);
-        dc.DrawRoundedRectangle(s_zoomButtonBackground, new Pen(s_scaleBarBrush, 0.5), zoomInRect, 4, 4);
+        dc.DrawRoundedRectangle(s_zoomButtonBackground, s_zoomButtonBorderPen, zoomInRect, 4, 4);
 
         var plusText = new FormattedText("+", FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize)
         {
@@ -969,7 +980,7 @@ public class MapView : Control
         // Zoom out button (-)
         y += buttonSize + spacing;
         var zoomOutRect = new Rect(x, y, buttonSize, buttonSize);
-        dc.DrawRoundedRectangle(s_zoomButtonBackground, new Pen(s_scaleBarBrush, 0.5), zoomOutRect, 4, 4);
+        dc.DrawRoundedRectangle(s_zoomButtonBackground, s_zoomButtonBorderPen, zoomOutRect, 4, 4);
 
         var minusText = new FormattedText("\u2212", FontFamily?.Source ?? FrameworkElement.DefaultFontFamilyName, fontSize)
         {

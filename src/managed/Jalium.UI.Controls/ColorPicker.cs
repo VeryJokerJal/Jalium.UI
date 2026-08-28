@@ -225,6 +225,25 @@ public class ColorPicker : Control
     private LinearGradientBrush[]? _hueGradientBrushes;
     private Size _hueGradientSize;
 
+    // 拖动时每一次指针移动都要整块重绘本控件。下面这些画刷/画笔过去是每次 OnRender
+    // 新建的，于是渲染后端按实例身份缓存的原生画刷每帧全部落空并重建，同时把别的控件
+    // 的有效条目挤出那张有上限的缓存。改为复用实例、只改颜色：后端按内容哈希发现变化
+    // 后重建自己的那份，缓存的键集合保持稳定。
+    private readonly SolidColorBrush _spectrumHueBrush = new(Color.Red);
+    private readonly SolidColorBrush _previewBrush = new(Color.Transparent);
+    private LinearGradientBrush? _alphaGradientBrush;
+    private Pen? _borderPen;
+    private Brush? _borderPenBrush;
+    private double _borderPenThickness;
+    private Pen? _selectorPen;
+    private Brush? _selectorPenBrush;
+
+    // 饱和度 / 明度两层叠加是常量渐变，全实例共享一份即可。
+    private static readonly LinearGradientBrush s_saturationGradient =
+        new(Color.White, Color.Transparent, 0);
+    private static readonly LinearGradientBrush s_valueGradient =
+        new(Color.Transparent, Color.Black, 90);
+
     #endregion
 
     #region Constructor
@@ -545,15 +564,14 @@ public class ColorPicker : Control
         var hueColor = Color.FromRgb(r, g, b);
 
         // Draw base color
-        dc.DrawRectangle(new SolidColorBrush(hueColor), null, rect);
+        _spectrumHueBrush.Color = hueColor;
+        dc.DrawRectangle(_spectrumHueBrush, null, rect);
 
         // Draw white-to-transparent gradient (saturation)
-        var satGradient = new LinearGradientBrush(Color.White, Color.Transparent, 0);
-        dc.DrawRectangle(satGradient, null, rect);
+        dc.DrawRectangle(s_saturationGradient, null, rect);
 
         // Draw black-to-transparent gradient (value)
-        var valGradient = new LinearGradientBrush(Color.Transparent, Color.Black, 90);
-        dc.DrawRectangle(valGradient, null, rect);
+        dc.DrawRectangle(s_valueGradient, null, rect);
 
         // Draw border
         dc.DrawRectangle(null, GetBorderPen(), rect);
@@ -609,8 +627,18 @@ public class ColorPicker : Control
         HsvToRgb(_hue, _saturation, _value, out var r, out var g, out var b);
         var transparent = Color.FromArgb(0, r, g, b);
         var opaque = Color.FromArgb(255, r, g, b);
-        var gradient = new LinearGradientBrush(transparent, opaque, 0);
-        dc.DrawRectangle(gradient, null, rect);
+        if (_alphaGradientBrush is { } alphaBrush && alphaBrush.GradientStops.Count == 2)
+        {
+            var stops = alphaBrush.GradientStops;
+            stops[0].Color = transparent;
+            stops[1].Color = opaque;
+        }
+        else
+        {
+            _alphaGradientBrush = new LinearGradientBrush(transparent, opaque, 0);
+        }
+
+        dc.DrawRectangle(_alphaGradientBrush, null, rect);
 
         // Draw border
         dc.DrawRoundedRectangle(null, GetBorderPen(), rect, 2, 2);
@@ -621,19 +649,31 @@ public class ColorPicker : Control
         dc.DrawRoundedRectangle(ResolveForegroundBrush(), null, selectorRect, 2, 2);
     }
 
+    /// <summary>
+    /// 画透明度用的棋盘底。先铺一整块浅色，再只画深色格子——绘制调用数减半。
+    /// </summary>
+    /// <remarks>
+    /// 200x20 的透明度条按 4px 格子原本要 250 次矩形绘制，加上 40x40 的预览块共 350 次，
+    /// 而拖动期间每次指针移动都要重来一遍。
+    /// </remarks>
     private void DrawCheckerboard(DrawingContext dc, Rect rect)
     {
-        var lightBrush = s_checkerLightBrush;
-        var darkBrush = s_checkerDarkBrush;
-        var cellSize = 4;
+        const double CellSize = 4;
 
-        for (double x = rect.X; x < rect.Right; x += cellSize)
+        dc.DrawRectangle(s_checkerLightBrush, null, rect);
+
+        var row = 0;
+        for (double y = rect.Y; y < rect.Bottom; y += CellSize, row++)
         {
-            for (double y = rect.Y; y < rect.Bottom; y += cellSize)
+            var height = Math.Min(CellSize, rect.Bottom - y);
+            // 深色格子在每一行里交错起步，所以按行给出起始偏移，再每隔一格画一个。
+            var startOffset = (row % 2 == 0) ? CellSize : 0;
+            for (double x = rect.X + startOffset; x < rect.Right; x += CellSize * 2)
             {
-                var isLight = ((int)((x - rect.X) / cellSize) + (int)((y - rect.Y) / cellSize)) % 2 == 0;
-                var cellRect = new Rect(x, y, Math.Min(cellSize, rect.Right - x), Math.Min(cellSize, rect.Bottom - y));
-                dc.DrawRectangle(isLight ? lightBrush : darkBrush, null, cellRect);
+                dc.DrawRectangle(
+                    s_checkerDarkBrush,
+                    null,
+                    new Rect(x, y, Math.Min(CellSize, rect.Right - x), height));
             }
         }
     }
@@ -644,8 +684,8 @@ public class ColorPicker : Control
         DrawCheckerboard(dc, rect);
 
         // Draw current color
-        var colorBrush = new SolidColorBrush(Color);
-        dc.DrawRectangle(colorBrush, null, rect);
+        _previewBrush.Color = Color;
+        dc.DrawRectangle(_previewBrush, null, rect);
 
         // Draw border
         dc.DrawRectangle(null, GetBorderPen(), rect);
@@ -655,12 +695,28 @@ public class ColorPicker : Control
     {
         var borderBrush = ResolveBorderBrush();
         var thickness = BorderThickness.Left > 0 ? BorderThickness.Left : 1;
-        return new Pen(borderBrush, thickness);
+        if (_borderPen == null ||
+            !ReferenceEquals(_borderPenBrush, borderBrush) ||
+            _borderPenThickness != thickness)
+        {
+            _borderPen = new Pen(borderBrush, thickness);
+            _borderPenBrush = borderBrush;
+            _borderPenThickness = thickness;
+        }
+
+        return _borderPen;
     }
 
     private Pen GetSelectorPen()
     {
-        return new Pen(ResolveForegroundBrush(), 2);
+        var foreground = ResolveForegroundBrush();
+        if (_selectorPen == null || !ReferenceEquals(_selectorPenBrush, foreground))
+        {
+            _selectorPen = new Pen(foreground, 2);
+            _selectorPenBrush = foreground;
+        }
+
+        return _selectorPen;
     }
 
     private Brush ResolveForegroundBrush()

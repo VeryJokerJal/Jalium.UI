@@ -37,6 +37,26 @@ internal static class DynamicResourceBindingOperations
         public required object ResourceKey { get; init; }
         public required EventHandler Handler { get; init; }
         public DependencyObject.LayerValueSource? LayerSource { get; set; }
+
+        /// <summary>本订阅在键反向索引里的槽位，替换订阅时用来把旧槽位就地作废。</summary>
+        public KeyIndexEntry? IndexEntry { get; set; }
+    }
+
+    /// <summary>
+    /// 键反向索引的一个槽位：「资源键 X 被某个目标的某个订阅使用」。
+    /// </summary>
+    /// <remarks>
+    /// 槽位刻意做成**只增不删 + 使用时验证**：订阅可以从六七条不同的路径被移除
+    /// （属性清除、样式换层、模板重建、目标回收……），要求每一条都记得维护索引，
+    /// 是一定会漏的设计。这里改为在使用时按「注册仍活跃 / 目标仍在 / 该订阅仍存在且键未变」
+    /// 三重校验剔除失效槽位，并在扫描时顺手压缩列表。
+    /// </remarks>
+    private sealed class KeyIndexEntry
+    {
+        public required DynamicResourceTargetRegistration Registration { get; init; }
+        public required SubscriptionKey SubscriptionKey { get; init; }
+        public required object ResourceKey { get; init; }
+        public bool IsActive = true;
     }
 
     private readonly record struct SubscriptionKey(
@@ -55,6 +75,17 @@ internal static class DynamicResourceBindingOperations
     private static readonly List<DynamicResourceTargetRegistration> RegisteredTargets = [];
     private static readonly object RegistryGate = new();
     private static int _inactiveTargetCount;
+
+    /// <summary>
+    /// 资源键 → 使用它的订阅槽位。定向刷新据此只碰真正引用了变更键的订阅。
+    /// </summary>
+    /// <remarks>
+    /// 没有它时，一次带键的刷新仍要走遍全部注册目标：每个目标一次 ConditionalWeakTable
+    /// 查找加一遍订阅扫描。8400 元素的页面上这条「零命中」的空扫描要 2.3 ms——而运行时改
+    /// 调色板每帧都要走一次。索引把代价从「订阅总数」变成「命中订阅数」。
+    /// 读写都在 <see cref="RegistryGate"/> 下。
+    /// </remarks>
+    private static readonly Dictionary<object, List<KeyIndexEntry>> KeyIndex = new();
 
     // Binary compatibility overload for callers compiled against the historical
     // 3-parameter signature (e.g. older Jalium.UI.Xaml binaries).
@@ -87,6 +118,7 @@ internal static class DynamicResourceBindingOperations
             }
 
             target.ResourcesChanged -= existingSubscription.Handler;
+            DeactivateIndexEntry(existingSubscription);
             subscriptions.Remove(subscriptionKey);
         }
 
@@ -113,7 +145,8 @@ internal static class DynamicResourceBindingOperations
         subscriptions[subscriptionKey] = subscription;
 
         target.ResourcesChanged += handler;
-        EnsureTargetRegistered(target);
+        var registration = EnsureTargetRegistered(target);
+        AddToKeyIndex(registration, subscriptionKey, resourceKey, subscription);
         RefreshDynamicResource(target, subscriptionKey);
     }
 
@@ -183,8 +216,62 @@ internal static class DynamicResourceBindingOperations
             if (!subscriptions.Remove(key, out var subscription))
                 continue;
             target.ResourcesChanged -= subscription.Handler;
+            DeactivateIndexEntry(subscription);
         }
 
+        RemoveEmptyTargetRegistration(target, subscriptions);
+    }
+
+    /// <summary>
+    /// Local-expression-only variant of <see cref="TryGetDynamicResourceKey"/>: reports a key only
+    /// when the markup itself declared <c>{DynamicResource}</c> on the property (layer == null),
+    /// never falling back to style/template-layer subscriptions. Hot reload uses this to decide
+    /// whether a patched attribute IS a dynamic resource — the permissive overload also matches the
+    /// implicit theme style's subscription, so under a theme every styled property (e.g.
+    /// TextBlock.Foreground) reported a key and the literal value in the patch was silently
+    /// discarded in favor of re-subscribing the theme resource.
+    /// </summary>
+    internal static bool TryGetLocalDynamicResourceKey(
+        FrameworkElement target, DependencyProperty property, out object? resourceKey)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(property);
+
+        resourceKey = null;
+        if (!Subscriptions.TryGetValue(target, out var subscriptions))
+            return false;
+
+        if (subscriptions.TryGetValue(new SubscriptionKey(property, null), out var subscription))
+        {
+            resourceKey = subscription.ResourceKey;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Removes only the local-expression (layer == null) subscription on the property, leaving
+    /// style/template-layer subscriptions (e.g. the implicit theme style's) alive. Hot reload uses
+    /// this before writing a literal patch value: the layer-agnostic
+    /// <see cref="ClearDynamicResource(FrameworkElement, DependencyProperty)"/> would also tear
+    /// down the theme's subscription, so the property would stop tracking theme changes after the
+    /// literal is later removed again.
+    /// </summary>
+    internal static void ClearLocalDynamicResource(FrameworkElement target, DependencyProperty property)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(property);
+
+        if (!Subscriptions.TryGetValue(target, out var subscriptions))
+            return;
+
+        var key = new SubscriptionKey(property, null);
+        if (!subscriptions.Remove(key, out var subscription))
+            return;
+
+        target.ResourcesChanged -= subscription.Handler;
+        DeactivateIndexEntry(subscription);
         RemoveEmptyTargetRegistration(target, subscriptions);
     }
 
@@ -212,6 +299,7 @@ internal static class DynamicResourceBindingOperations
 
         target.ResourcesChanged -= subscription.Handler;
         subscriptions.Remove(key);
+        DeactivateIndexEntry(subscription);
         RemoveEmptyTargetRegistration(target, subscriptions);
     }
 
@@ -234,11 +322,21 @@ internal static class DynamicResourceBindingOperations
             if (subscriptions.Remove(newKey, out var replaced))
             {
                 target.ResourcesChanged -= replaced.Handler;
+                DeactivateIndexEntry(replaced);
             }
 
             subscriptions.Remove(oldKey);
             subscription.LayerSource = layerSource;
             subscriptions[newKey] = subscription;
+
+            // 换层改的是订阅在字典里的键，而索引条目记的正是那个键。不搬家的话，旧条目
+            // 会在下次校验时被判为失效剔除，而新键从未登记——这条订阅就此**永久掉出**
+            // 定向刷新，主题调色板变化再也到不了它。样式 / 模板应用时会走这条路径，
+            // 掉出的将是整棵树上所有由样式提供的 ThemeResource。
+            DeactivateIndexEntry(subscription);
+            AddToKeyIndex(
+                EnsureTargetRegistered(target), newKey, subscription.ResourceKey, subscription);
+
             RefreshDynamicResource(target, newKey);
         }
     }
@@ -296,6 +394,16 @@ internal static class DynamicResourceBindingOperations
         IReadOnlySet<object>? changedKeys,
         bool unloadedOnly)
     {
+        if (changedKeys != null)
+        {
+            // 定向刷新走键索引，代价与命中数成正比。它扫的是索引而不是注册表，
+            // 天然覆盖 detached / 未显示的目标，所以 unloadedOnly 在这条路径上无意义。
+            RefreshByKeyIndex(changedKeys);
+            return;
+        }
+
+        // 以下是全量路径（主题键切换等，没有可用的键集合）：只能走一遍注册表。
+        //
         // Never enumerate ConditionalWeakTable directly here. Refreshing a resource can
         // instantiate a template, and template construction can register more dynamic
         // resources. A live table enumeration can therefore keep discovering work created
@@ -316,17 +424,9 @@ internal static class DynamicResourceBindingOperations
                 continue;
             }
 
-            var keys = subscriptions.Keys.ToArray();
-            foreach (var key in keys)
+            // 快照后再刷新：刷新可能展开模板并注册新的动态资源，直接在字典上迭代会抛。
+            foreach (var key in subscriptions.Keys.ToArray())
             {
-                if (changedKeys != null)
-                {
-                    // Only refresh if this subscription's key was actually changed
-                    if (!subscriptions.TryGetValue(key, out var sub) ||
-                        !changedKeys.Contains(sub.ResourceKey))
-                        continue;
-                }
-
                 RefreshDynamicResource(target, key);
             }
         }
@@ -343,12 +443,76 @@ internal static class DynamicResourceBindingOperations
                 if (unloadedOnly && subscription.Host.IsLoaded)
                     continue;
 
-                if (changedKeys != null && !changedKeys.Contains(subscription.ResourceKey))
+                RefreshNonVisualDynamicResource(entry.Key, subscription.Property);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 只刷新真正引用了变更键的订阅，代价与命中数成正比，与页面规模无关。
+    /// </summary>
+    private static void RefreshByKeyIndex(IReadOnlySet<object> changedKeys)
+    {
+        foreach (var resourceKey in changedKeys)
+        {
+            var entries = SnapshotKeyIndexEntries(resourceKey);
+            foreach (var entry in entries)
+            {
+                if (!entry.IsActive || !entry.Registration.Target.TryGetTarget(out var target))
+                {
                     continue;
+                }
+
+                // 索引条目只增不删，所以这里必须校验它描述的订阅仍然存在且键没被改过，
+                // 否则会去刷一个早已被换掉的槽位。
+                if (!Subscriptions.TryGetValue(target, out var subscriptions) ||
+                    !subscriptions.TryGetValue(entry.SubscriptionKey, out var subscription) ||
+                    !Equals(subscription.ResourceKey, resourceKey))
+                {
+                    entry.IsActive = false;
+                    continue;
+                }
+
+                RefreshDynamicResource(target, entry.SubscriptionKey);
+            }
+        }
+
+        // 非视觉订阅（画刷 / 变换等 Freezable 上的 ThemeResource）数量很少，不进索引：
+        // 一次弱表快照加一次键过滤就够，不值得再维护一份平行索引。
+        foreach (var entry in NonVisualSubscriptions.ToArray())
+        {
+            var hostSubscriptions = entry.Value;
+            if (hostSubscriptions.Count == 0 ||
+                !HasMatchingNonVisualSubscription(hostSubscriptions, changedKeys))
+            {
+                continue;
+            }
+
+            foreach (var subscription in hostSubscriptions.Values.ToArray())
+            {
+                if (!changedKeys.Contains(subscription.ResourceKey))
+                {
+                    continue;
+                }
 
                 RefreshNonVisualDynamicResource(entry.Key, subscription.Property);
             }
         }
+    }
+
+    private static bool HasMatchingNonVisualSubscription(
+        Dictionary<DependencyProperty, NonVisualDynamicResourceSubscription> subscriptions,
+        IReadOnlySet<object> changedKeys)
+    {
+        foreach (var subscription in subscriptions.Values)
+        {
+            if (changedKeys.Contains(subscription.ResourceKey))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -400,6 +564,7 @@ internal static class DynamicResourceBindingOperations
 
             RegisteredTargets.Clear();
             TargetRegistrations.Clear();
+            KeyIndex.Clear();
             _inactiveTargetCount = 0;
         }
 
@@ -437,14 +602,14 @@ internal static class DynamicResourceBindingOperations
         NonVisualSubscriptions.Clear();
     }
 
-    private static void EnsureTargetRegistered(FrameworkElement target)
+    private static DynamicResourceTargetRegistration EnsureTargetRegistered(FrameworkElement target)
     {
         lock (RegistryGate)
         {
             if (TargetRegistrations.TryGetValue(target, out var existingRegistration))
             {
                 if (existingRegistration.IsActive)
-                    return;
+                    return existingRegistration;
 
                 TargetRegistrations.Remove(target);
             }
@@ -457,6 +622,95 @@ internal static class DynamicResourceBindingOperations
             {
                 CompactRegistryNoLock();
             }
+
+            return registration;
+        }
+    }
+
+    /// <summary>
+    /// 把一个订阅的索引槽位就地作废。订阅被移除或换键时调用。
+    /// </summary>
+    /// <remarks>
+    /// 漏掉某条路径不会导致错刷——槽位在使用时还会做三重校验——但会让失效槽位堆在列表里，
+    /// 直到下一次扫描压缩为止。<see cref="PromoteDynamicResourcesToLayer"/> 是例外：那里
+    /// 必须同时重新登记，否则订阅会掉出索引。
+    /// </remarks>
+    private static void DeactivateIndexEntry(DynamicResourceSubscription? subscription)
+    {
+        if (subscription?.IndexEntry is { } entry)
+        {
+            entry.IsActive = false;
+            subscription.IndexEntry = null;
+        }
+    }
+
+    private static void AddToKeyIndex(
+        DynamicResourceTargetRegistration registration,
+        SubscriptionKey subscriptionKey,
+        object resourceKey,
+        DynamicResourceSubscription subscription)
+    {
+        var entry = new KeyIndexEntry
+        {
+            Registration = registration,
+            SubscriptionKey = subscriptionKey,
+            ResourceKey = resourceKey,
+        };
+
+        subscription.IndexEntry = entry;
+
+        lock (RegistryGate)
+        {
+            if (!KeyIndex.TryGetValue(resourceKey, out var entries))
+            {
+                entries = [];
+                KeyIndex[resourceKey] = entries;
+            }
+
+            entries.Add(entry);
+        }
+    }
+
+    /// <summary>
+    /// 取出某个资源键下仍然有效的订阅槽位快照，并顺手压缩已失效的条目。
+    /// </summary>
+    /// <remarks>
+    /// 必须返回快照而不是就地迭代：刷新一个动态资源可能展开模板，模板构造会注册新的动态
+    /// 资源，从而在同一次调用里改到这张列表。
+    /// </remarks>
+    private static KeyIndexEntry[] SnapshotKeyIndexEntries(object resourceKey)
+    {
+        lock (RegistryGate)
+        {
+            if (!KeyIndex.TryGetValue(resourceKey, out var entries) || entries.Count == 0)
+            {
+                return [];
+            }
+
+            var writeIndex = 0;
+            for (var readIndex = 0; readIndex < entries.Count; readIndex++)
+            {
+                var entry = entries[readIndex];
+                if (!entry.IsActive || !entry.Registration.IsActive)
+                {
+                    continue;
+                }
+
+                entries[writeIndex++] = entry;
+            }
+
+            if (writeIndex < entries.Count)
+            {
+                entries.RemoveRange(writeIndex, entries.Count - writeIndex);
+            }
+
+            if (entries.Count == 0)
+            {
+                KeyIndex.Remove(resourceKey);
+                return [];
+            }
+
+            return entries.ToArray();
         }
     }
 

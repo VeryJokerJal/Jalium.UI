@@ -113,9 +113,14 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     private static readonly Pen s_signaturePopupBorderPen = new(new SolidColorBrush(Color.FromArgb(220, 69, 69, 70)), 1);
     private static readonly SolidColorBrush s_signatureTextBrush = new(Color.FromRgb(220, 220, 220));
     private static readonly SolidColorBrush s_signatureActiveParamBrush = new(Color.FromRgb(86, 156, 214));
+    private static readonly Pen s_signatureActiveParamPen = new(s_signatureActiveParamBrush, 1);
     private static readonly SolidColorBrush s_inlayHintBrush = new(Color.FromArgb(160, 148, 163, 184));
     private static readonly SolidColorBrush s_inlayHintBackgroundBrush = new(Color.FromArgb(32, 148, 163, 184));
     private static readonly SolidColorBrush s_codeLensBrush = new(Color.FromArgb(180, 148, 163, 184));
+
+    // 边框画笔。光标闪烁定时器每个周期都触发一次整控件重绘，BorderBrush 实例本身不变，
+    // 复用画笔省掉这条路径上每帧一个 DependencyObject 的分配。
+    private RenderPenCache _borderPen;
 
     // Input state
     private bool _isDragging;
@@ -793,7 +798,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             if (BorderBrush != null && borderThickness > 0)
             {
                 var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, borderThickness);
-                dc.DrawRectangle(null, new Pen(BorderBrush, borderThickness), borderRect);
+                dc.DrawRectangle(null, _borderPen.Get(BorderBrush, borderThickness), borderRect);
             }
 
             // Focus indicator is painted by FocusVisualManager into the adorner layer.
@@ -7148,7 +7153,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             {
                 double highlightX = popupX + 8 + paramStart * charWidth;
                 double highlightWidth = paramInfo.Label.Length * charWidth;
-                dc.DrawRectangle(null, new Pen(s_signatureActiveParamBrush, 1),
+                dc.DrawRectangle(null, s_signatureActiveParamPen,
                     new Rect(highlightX, textY - 1, highlightWidth, fontSize + 2));
             }
         }

@@ -31,6 +31,7 @@ public class DockTabPanel : Selector
     private Brush? _highlightPenBrush;
     private Pen? _topBorderPen;
     private Brush? _topBorderPenBrush;
+    private RenderPenCache _contentBorderPen;
 
     /// <summary>
     /// Occurs when a tab is explicitly closed via tab close action.
@@ -1329,7 +1330,7 @@ public class DockTabPanel : Selector
 
         if (_contentRect.Width <= 0 || _contentRect.Height <= 0) return;
         var borderBrush = ResolveTabStripBorderBrush();
-        var borderPen = new Pen(borderBrush, 1);
+        var borderPen = _contentBorderPen.Get(borderBrush, 1);
         var half = borderPen.Thickness * 0.5;
         var left = _contentRect.X + half;
         var top = _contentRect.Y + half;

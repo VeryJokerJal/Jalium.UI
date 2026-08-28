@@ -76,6 +76,15 @@ public class RichTextBox : TextBoxBase, IImeSupport
     private DispatcherTimer? _caretTimer;
 
     /// <summary>
+    /// 光标淡入淡出用的画刷。淡变期间每一帧 alpha 都不同，若每帧新建实例，渲染后端那份
+    /// 按实例身份键控的原生画刷缓存就会每帧多一条并触发 LRU 淘汰，把别的控件挤出去。
+    /// </summary>
+    private SolidColorBrush? _caretFadeBrush;
+
+    /// <summary>边框画笔。BorderBrush/厚度不变时跨帧复用，光标闪烁的重绘不再每帧建 Pen。</summary>
+    private RenderPenCache _borderPen;
+
+    /// <summary>
     /// Tick interval during fade phases (ms). Hold phases use longer dynamic intervals.
     /// </summary>
     private const int CaretAnimationTickMs = 33;
@@ -1346,7 +1355,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
         // Draw border
         if (BorderBrush != null && BorderThickness.Left > 0)
         {
-            dc.DrawRectangle(null, new Pen(BorderBrush, BorderThickness.Left), bounds);
+            dc.DrawRectangle(null, _borderPen.Get(BorderBrush, BorderThickness.Left), bounds);
         }
 
         // Focus indicator is painted by FocusVisualManager into the adorner layer.
@@ -1577,12 +1586,7 @@ public class RichTextBox : TextBoxBase, IImeSupport
             return;
 
         // Apply opacity for animation
-        if (_caretOpacity < 1.0 && caretBrush is SolidColorBrush solidBrush)
-        {
-            var color = solidBrush.Color;
-            caretBrush = new SolidColorBrush(Color.FromArgb(
-                (byte)(color.A * _caretOpacity), color.R, color.G, color.B));
-        }
+        caretBrush = ApplyCaretFade(caretBrush, _caretOpacity);
 
         dc.DrawRectangle(caretBrush, null,
             new Rect(caretPos.Value.X, caretPos.Value.Y, 2, lineHeight));
@@ -1803,6 +1807,34 @@ public class RichTextBox : TextBoxBase, IImeSupport
 
         return SelectionBrush
             ?? ResolveThemeBrush("SelectionBackground", s_defaultSelectionBrush, "AccentFillColorSelectedTextBackgroundBrush");
+    }
+
+    /// <summary>
+    /// 把光标画刷按 <paramref name="opacity"/> 淡化。淡变期间每一帧 alpha 都不同，但这里
+    /// 复用同一支画刷实例只改颜色——渲染后端那份原生画刷缓存按实例身份键控，每帧新建会
+    /// 让它每帧落空、无休止地新增条目并触发 LRU 把别的控件挤掉。
+    /// 每次绘制只改一次色、只画一次，所以录制型 DrawingContext 回放时拿到的也是本帧应有的颜色。
+    /// </summary>
+    private Brush ApplyCaretFade(Brush caretBrush, double opacity)
+    {
+        if (opacity >= 1.0 || caretBrush is not SolidColorBrush solidBrush)
+            return caretBrush;
+
+        var color = solidBrush.Color;
+        var faded = Color.FromArgb((byte)(color.A * opacity), color.R, color.G, color.B);
+
+        var fadeBrush = _caretFadeBrush;
+        if (fadeBrush is null || fadeBrush.IsFrozen)
+        {
+            fadeBrush = new SolidColorBrush(faded);
+            _caretFadeBrush = fadeBrush;
+        }
+        else
+        {
+            fadeBrush.Color = faded;
+        }
+
+        return fadeBrush;
     }
 
     private new Brush? ResolveCaretBrush()

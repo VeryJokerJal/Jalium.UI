@@ -1906,38 +1906,46 @@ public sealed class RectangleGeometry : Geometry
             figure.Segments.Add(new LineSegment(new Point(r.Right - rx, r.Y)));
             // Top-right corner
             FlattenArcToSegments(figure, new Point(r.Right - rx, r.Y), new Point(r.Right, r.Y + ry),
-                rx, ry, tolerance);
+                new Point(r.Right - rx, r.Y + ry), rx, ry, tolerance);
             // Right edge
             figure.Segments.Add(new LineSegment(new Point(r.Right, r.Bottom - ry)));
             // Bottom-right corner
             FlattenArcToSegments(figure, new Point(r.Right, r.Bottom - ry), new Point(r.Right - rx, r.Bottom),
-                rx, ry, tolerance);
+                new Point(r.Right - rx, r.Bottom - ry), rx, ry, tolerance);
             // Bottom edge
             figure.Segments.Add(new LineSegment(new Point(r.X + rx, r.Bottom)));
             // Bottom-left corner
             FlattenArcToSegments(figure, new Point(r.X + rx, r.Bottom), new Point(r.X, r.Bottom - ry),
-                rx, ry, tolerance);
+                new Point(r.X + rx, r.Bottom - ry), rx, ry, tolerance);
             // Left edge
             figure.Segments.Add(new LineSegment(new Point(r.X, r.Y + ry)));
             // Top-left corner
             FlattenArcToSegments(figure, new Point(r.X, r.Y + ry), new Point(r.X + rx, r.Y),
-                rx, ry, tolerance);
+                new Point(r.X + rx, r.Y + ry), rx, ry, tolerance);
         }
 
         geom.Figures.Add(figure);
         return geom;
     }
 
+    /// <summary>
+    /// Appends a quarter-corner elliptical arc from <paramref name="start"/> to
+    /// <paramref name="end"/> around the EXPLICIT <paramref name="center"/>.
+    /// </summary>
+    /// <remarks>
+    /// The center must be passed in, not derived: the old min/max guess picked the
+    /// rectangle's OUTER corner point for three of the four corners, which swept a
+    /// concave arc (a bite taken out of the corner) — and for the bottom-right corner
+    /// the guessed center coincided with the start point, so the arc did not even land
+    /// on <paramref name="end"/>, leaving the outline discontinuous. Fills mostly hid
+    /// this at icon radii; a stroke amplified every wrong corner into a visible spur.
+    /// </remarks>
     private static void FlattenArcToSegments(PathFigure figure, Point start, Point end,
-        double rx, double ry, double tolerance)
+        Point center, double rx, double ry, double tolerance)
     {
         var segments = Math.Max(4, (int)(Math.PI / 2 * Math.Max(rx, ry) / tolerance));
-        var cx = (start.X < end.X) ? end.X : start.X;
-        if (Math.Abs(start.X - end.X) < 1e-10)
-            cx = start.X;
-        var cy = (start.Y < end.Y) ? start.Y : end.Y;
-        if (Math.Abs(start.Y - end.Y) < 1e-10)
-            cy = start.Y;
+        var cx = center.X;
+        var cy = center.Y;
 
         // Determine start angle from the start point relative to the center
         var startAngle = Math.Atan2((start.Y - cy) / ry, (start.X - cx) / rx);

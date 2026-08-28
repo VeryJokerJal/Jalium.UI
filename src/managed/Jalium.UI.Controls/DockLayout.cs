@@ -22,6 +22,11 @@ public class DockLayout : ContentControl
 
     private bool _isDockHighlighted;
 
+    // 边框/高亮框的画刷来自主题资源，实例稳定；复用画笔省掉 OnRender 里两个
+    // 带 8 个依赖属性的 DependencyObject 的每帧分配。
+    private RenderPenCache _borderPen;
+    private RenderPenCache _accentPen;
+
     /// <summary>
     /// Controls whether dock items in this layout can be torn off into standalone windows.
     /// </summary>
@@ -62,7 +67,7 @@ public class DockLayout : ContentControl
 
         base.OnRender(drawingContextObj);
 
-        var borderPen = new Pen(ResolveBorderBrush(), 1);
+        var borderPen = _borderPen.Get(ResolveBorderBrush(), 1);
         var half = borderPen.Thickness * 0.5;
         var borderRect = new Rect(
             half,
@@ -76,7 +81,7 @@ public class DockLayout : ContentControl
 
         if (IsDockHighlighted)
         {
-            var accentPen = new Pen(ResolveAccentBrush(), 2);
+            var accentPen = _accentPen.Get(ResolveAccentBrush(), 2);
             var inset = accentPen.Thickness * 0.5 + 1;
             var accentRect = new Rect(
                 inset,

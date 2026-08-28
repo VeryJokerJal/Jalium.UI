@@ -676,6 +676,17 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
         canCache = true;
     }
 
+    /// <summary>
+    /// 只读取本字典自己的条目，不下探合并字典，也不按 <see cref="CurrentThemeKey"/> 走
+    /// <see cref="ThemeDictionaries"/>。就地刷新调色板时必须用它：普通查找在当前主题变体
+    /// 也定义了同名键时会返回变体里的那份，于是「更新既有值」会改到错误的字典上。
+    /// </summary>
+    internal bool TryGetOwnValue(object key, out object? value)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        return TryGetLocalValue(key, out value);
+    }
+
     private bool TryGetLocalValue(object key, out object? value)
     {
         if (!_innerDictionary.TryGetValue(key, out value))
@@ -764,6 +775,48 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
         RaiseChanged(new ResourcesChangedEventArgs(keys));
     }
 
+    /// <summary>
+    /// 批量发布一组键的变更，语义与逐个调用 <see cref="OnChangedForKey"/> 相同，
+    /// 但只产生一次通知。
+    /// </summary>
+    private void OnChangedForKeys(IEnumerable<object> keys)
+    {
+        if (_notificationDeferralDepth > 0)
+        {
+            InvalidateMergedLookupCaches();
+            _notificationPending = true;
+            if (!_pendingAllChanged)
+            {
+                _pendingChangedKeys ??= new HashSet<object>();
+                foreach (var key in keys)
+                {
+                    _pendingChangedKeys.Add(key);
+                }
+            }
+
+            return;
+        }
+
+        var set = keys as HashSet<object> ?? new HashSet<object>(keys);
+        if (set.Count == 0)
+        {
+            return;
+        }
+
+        RaiseChanged(new ResourcesChangedEventArgs(set));
+    }
+
+    /// <summary>
+    /// 发布一组键的变更，供在本字典之外持有的嵌套内容（例如
+    /// <see cref="ThemeDictionaries"/> 中的变体字典）就地更新后补发通知使用。
+    /// 变体字典不是合并字典，它的条目变更不会自行冒泡到宿主。
+    /// </summary>
+    internal void NotifyKeysChanged(IEnumerable<object> keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        OnChangedForKeys(keys);
+    }
+
     private void OnChanged()
     {
         if (_notificationDeferralDepth > 0)
@@ -809,19 +862,31 @@ public class ResourceDictionary : IDictionary, ISupportInitialize, Jalium.UI.Mar
 
     private void OnMergedDictionaryAdded(ResourceDictionary dictionary)
     {
-        dictionary.Changed += OnMergedDictionaryChanged;
+        // ChangedWithKeys 而不是 Changed：子字典改单个键时同样携带键集合，订阅无键的
+        // Changed 会在冒泡这一步把键信息丢掉，让每一次合并子字典的条目更新都退化成
+        // 「全部键都变了」。上层（Application）据此走全树隐式样式重评估，代价与主题
+        // 整体替换相同——而运行时调色板更新（accent / typography）恰好全部走合并字典。
+        dictionary.ChangedWithKeys += OnMergedDictionaryChangedWithKeys;
         Diagnostics.ResourceDictionaryDiagnosticsStore.LinkMergedDictionary(this, dictionary);
     }
 
     private void OnMergedDictionaryRemoved(ResourceDictionary dictionary)
     {
-        dictionary.Changed -= OnMergedDictionaryChanged;
+        dictionary.ChangedWithKeys -= OnMergedDictionaryChangedWithKeys;
         Diagnostics.ResourceDictionaryDiagnosticsStore.UnlinkMergedDictionary(this, dictionary);
     }
 
-    private void OnMergedDictionaryChanged(object? sender, EventArgs e)
+    private void OnMergedDictionaryChangedWithKeys(object? sender, ResourcesChangedEventArgs e)
     {
-        OnChanged();
+        if (e.ChangedKeys is { Count: > 0 } keys)
+        {
+            OnChangedForKeys(keys);
+        }
+        else
+        {
+            // 结构性变化（合并列表增删、Clear、整本替换）仍然是「全部键」。
+            OnChanged();
+        }
     }
 
     private sealed class MergedDictionaryCollection : Collection<ResourceDictionary>
