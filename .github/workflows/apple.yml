@@ -1,0 +1,43 @@
+name: Apple
+
+on:
+  push:
+    branches: [ main, preview-26.10.9, 'Jal/**' ]
+  pull_request:
+
+jobs:
+  native-and-packages:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.300
+      - name: Install pinned Apple workloads
+        run: dotnet workload install ios tvos macos --version 10.0.300.2
+      - name: Build Apple native slices
+        run: |
+          eng/apple/build-native.sh macos Release
+          eng/apple/build-native.sh ios Release
+          eng/apple/build-native.sh iossimulator Release
+          eng/apple/build-native.sh tvos Release
+          eng/apple/build-native.sh tvossimulator Release
+          eng/apple/build-native.sh visionos Release
+          eng/apple/build-native.sh visionsimulator Release
+      - name: Check D3D12 to Metal capability surface
+        run: python3 tools/metal_parity_check.py
+      - name: Assemble static XCFramework
+        run: eng/apple/package-xcframework.sh Release
+      - name: Build Apple entry packages
+        run: |
+          dotnet build src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj -c Release -p:JaliumPlatform=macos
+          dotnet build src/packaging/Jalium.UI.iOS/Jalium.UI.iOS.csproj -c Release -f net10.0-ios -p:JaliumPlatform=ios
+          dotnet build src/packaging/Jalium.UI.tvOS/Jalium.UI.tvOS.csproj -c Release -f net10.0-tvos -p:JaliumPlatform=tvos
+      - name: Upload Apple native artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JaliumNative-Apple
+          path: src/native/artifacts/apple/JaliumNative.xcframework

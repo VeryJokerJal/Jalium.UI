@@ -28,7 +28,8 @@ public enum SystemEnvironmentKind
     TvOS = 1 << 8,
     Wasi = 1 << 9,
     WatchOS = 1 << 10,
-    VirtualMachine = 1 << 11
+    VirtualMachine = 1 << 11,
+    VisionOS = 1 << 12
 }
 
 /// <summary>
@@ -135,6 +136,11 @@ public static partial class SystemParameters
     /// Gets a value indicating whether the current environment is watchOS.
     /// </summary>
     public static bool IsWatchOS => HasEnvironment(SystemEnvironmentKind.WatchOS);
+
+    /// <summary>
+    /// Gets a value indicating whether the current environment is visionOS.
+    /// </summary>
+    public static bool IsVisionOS => HasEnvironment(SystemEnvironmentKind.VisionOS);
 
     /// <summary>
     /// Gets a value indicating whether the current process is running in a virtual machine.
@@ -308,6 +314,14 @@ public static partial class SystemParameters
         if (OperatingSystem.IsWatchOS())
         {
             environment |= SystemEnvironmentKind.WatchOS;
+        }
+
+        if (RuntimeInformation.RuntimeIdentifier?.Contains(
+                "visionos", StringComparison.OrdinalIgnoreCase) == true ||
+            RuntimeInformation.RuntimeIdentifier?.Contains(
+                "xros", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            environment |= SystemEnvironmentKind.VisionOS;
         }
 
         if (DetectIsVirtualMachine())

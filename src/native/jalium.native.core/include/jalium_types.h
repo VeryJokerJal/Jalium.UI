@@ -134,7 +134,11 @@ typedef enum JaliumPlatform {
     JALIUM_PLATFORM_LINUX_X11 = 2,
     JALIUM_PLATFORM_ANDROID = 3,
     JALIUM_PLATFORM_MACOS = 4,
-    JALIUM_PLATFORM_LINUX_WAYLAND = 5
+    JALIUM_PLATFORM_LINUX_WAYLAND = 5,
+    // Append-only: JaliumSurfaceDescriptor crosses the managed/native ABI.
+    JALIUM_PLATFORM_IOS = 6,
+    JALIUM_PLATFORM_TVOS = 7,
+    JALIUM_PLATFORM_VISIONOS = 8
 } JaliumPlatform;
 
 /// Surface descriptor kind used when creating render targets in a platform-neutral way.

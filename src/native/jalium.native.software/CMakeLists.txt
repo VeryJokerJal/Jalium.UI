@@ -14,6 +14,20 @@ set(SOURCES
 
 add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE} ${HEADERS} ${SOURCES})
 
+if(APPLE)
+    set_source_files_properties(src/software_backend.cpp PROPERTIES LANGUAGE OBJCXX)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        "-framework Foundation"
+        "-framework CoreGraphics"
+        "-framework QuartzCore")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework AppKit")
+    else()
+        target_link_libraries(${PROJECT_NAME} PRIVATE "-framework UIKit")
+    endif()
+    target_compile_options(${PROJECT_NAME} PRIVATE -fobjc-arc)
+endif()
+
 target_include_directories(${PROJECT_NAME}
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

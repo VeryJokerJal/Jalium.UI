@@ -37,6 +37,15 @@
     <Project Path="src/packaging/Jalium.UI.Desktop/Jalium.UI.Desktop.csproj" />
     <Project Path="src/packaging/Jalium.UI.Android/Jalium.UI.Android.csproj" />
     <Project Path="src/packaging/Jalium.UI.Linux/Jalium.UI.Linux.csproj" />
+    <Project Path="src/packaging/Jalium.UI.MacOS/Jalium.UI.MacOS.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="src/packaging/Jalium.UI.iOS/Jalium.UI.iOS.csproj">
+      <Build Project="false" />
+    </Project>
+    <Project Path="src/packaging/Jalium.UI.tvOS/Jalium.UI.tvOS.csproj">
+      <Build Project="false" />
+    </Project>
   </Folder>
   <Folder Name="/src/tools/">
     <Project Path="src/managed/Jalium.UI.Build/Jalium.UI.Build.csproj">

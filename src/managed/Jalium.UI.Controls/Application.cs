@@ -40,6 +40,9 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
     private bool _isActive;
     private IDisposable? _linuxSessionMonitor;
     private int _cleanupStarted;
+    private int _hostedStartState;
+    private int _hostedStopState;
+    private int _hostedExitCode;
     private int _lastSystemColorScheme;
 #pragma warning disable WPF0001 // Backing storage for the experimental public ThemeMode API.
     private ThemeMode _themeMode = ThemeMode.None;
@@ -914,7 +917,36 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
     /// </summary>
     public int Run(string[] args)
     {
+        StartHosted(args);
+        var exitCode = 0;
+        try
+        {
+            exitCode = RunHostedMessageLoop();
+        }
+        finally
+        {
+            exitCode = StopHosted(exitCode);
+        }
+
+        return exitCode;
+    }
+
+    /// <summary>
+    /// Starts application state and shows the startup window without taking
+    /// ownership of the operating-system message loop.
+    /// </summary>
+    /// <remarks>
+    /// Apple application delegates use this path because AppKit/UIKit own the
+    /// process run loop. The method is one-shot and must be called on the
+    /// Jalium UI dispatcher thread.
+    /// </remarks>
+    internal void StartHosted(string[] args)
+    {
         ArgumentNullException.ThrowIfNull(args);
+        VerifyAccess();
+
+        if (Interlocked.CompareExchange(ref _hostedStartState, 1, 0) != 0)
+            throw new InvalidOperationException("The application has already been started.");
 
         using (StartupDiagnostics.Begin("Application.StartupHandlers", blocksUiThread: true))
         {
@@ -926,57 +958,66 @@ public partial class Application : Jalium.UI.Threading.DispatcherObject, IQueryA
         {
             startupWindow = ResolveStartupWindow();
         }
-        if (startupWindow != null)
+        if (startupWindow == null)
+            return;
+
+        if (startupWindow.Handle == nint.Zero)
         {
-            if (startupWindow.Handle == nint.Zero)
+            using (StartupDiagnostics.Begin("Application.ShowMainWindow", blocksUiThread: true))
             {
-                using (StartupDiagnostics.Begin("Application.ShowMainWindow", blocksUiThread: true))
-                {
-                    startupWindow.Show();
-                }
-
-                StartupDiagnostics.Mark("MainWindowShowReturned", blocksUiThread: true);
+                startupWindow.Show();
             }
 
-            if (StartupDiagnostics.IsEnabled)
-            {
-                _ = startupWindow.Dispatcher.BeginInvoke(
-                    DispatcherPriority.Input,
-                    () => StartupDiagnostics.Mark(
-                        "MainWindowFirstInputReady",
-                        blocksUiThread: false));
-            }
+            StartupDiagnostics.Mark("MainWindowShowReturned", blocksUiThread: true);
         }
 
-        var exitCode = 0;
-        try
+        if (StartupDiagnostics.IsEnabled)
         {
-            if (PlatformFactory.IsWindows)
-            {
-                // Input-first Win32 pump owned by the dispatcher (see
-                // Dispatcher.RunMainMessageLoop). Unlike the classic GetMessage loop
-                // this replaces, a posted dispatcher wake (WM_DISPATCHER_INVOKE) no
-                // longer outranks hardware input, so continuous rendering/animation
-                // cannot starve mouse/keyboard input. Returns the WM_QUIT exit code.
-                var dispatcher = Dispatcher.MainDispatcher ?? Dispatcher.CurrentDispatcher;
-                exitCode = dispatcher.RunMainMessageLoop();
-            }
-            else
-            {
-                // Cross-platform message loop (Linux X11 / Android)
-                exitCode = PlatformFactory.RunMessageLoop();
-            }
+            _ = startupWindow.Dispatcher.BeginInvoke(
+                DispatcherPriority.Input,
+                () => StartupDiagnostics.Mark(
+                    "MainWindowFirstInputReady",
+                    blocksUiThread: false));
         }
-        finally
+    }
+
+    /// <summary>Runs the framework-owned platform loop after <see cref="StartHosted"/>.</summary>
+    internal int RunHostedMessageLoop()
+    {
+        VerifyAccess();
+        if (Volatile.Read(ref _hostedStartState) == 0)
+            throw new InvalidOperationException("The application has not been started.");
+
+        if (PlatformFactory.IsWindows)
         {
-            // Fire Exit event before cleanup so handlers can still access application
-            // state. Handlers may override the final exit code via ExitEventArgs.
-            var exitArgs = new ExitEventArgs(exitCode);
-            OnExit(exitArgs);
-            exitCode = exitArgs.ApplicationExitCode;
-            Cleanup();
+            // Input-first Win32 pump owned by the dispatcher (see
+            // Dispatcher.RunMainMessageLoop). Unlike the classic GetMessage loop
+            // this replaces, a posted dispatcher wake no longer outranks hardware input.
+            var dispatcher = Dispatcher.MainDispatcher ?? Dispatcher.CurrentDispatcher;
+            return dispatcher.RunMainMessageLoop();
         }
 
+        return PlatformFactory.RunMessageLoop();
+    }
+
+    /// <summary>
+    /// Raises Exit and tears down application state for an externally hosted
+    /// message loop. Repeated calls are harmless and return the first exit code.
+    /// </summary>
+    internal int StopHosted(int exitCode)
+    {
+        VerifyAccess();
+        if (Volatile.Read(ref _hostedStartState) == 0)
+            return exitCode;
+        if (Interlocked.CompareExchange(ref _hostedStopState, 1, 0) != 0)
+            return Volatile.Read(ref _hostedExitCode);
+
+        // Fire Exit before cleanup so handlers can still access application state.
+        var exitArgs = new ExitEventArgs(exitCode);
+        OnExit(exitArgs);
+        exitCode = exitArgs.ApplicationExitCode;
+        Volatile.Write(ref _hostedExitCode, exitCode);
+        Cleanup();
         return exitCode;
     }
 

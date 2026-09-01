@@ -13,7 +13,7 @@ namespace Jalium.UI.Media.Native;
 /// </remarks>
 internal static partial class NativeMediaInterop
 {
-    internal const string MediaLib = "jalium.native.media";
+    internal const string MediaLib = JaliumNativeLibraryNames.Media;
 
     // ----- 原生 struct（必须与 jalium_media.h 完全对齐）---------------------
 

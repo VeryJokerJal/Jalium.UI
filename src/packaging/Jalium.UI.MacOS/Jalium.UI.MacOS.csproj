@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-macos</TargetFramework>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifier>osx-arm64</RuntimeIdentifier>
+    <RootNamespace>Jalium.UI.MacOS</RootNamespace>
+    <AssemblyName>Jalium.UI.MacOS</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>Jalium.UI.MacOS</PackageId>
+    <Description>Jalium.UI native AppKit and Metal entry package for Apple Silicon macOS.</Description>
+    <JaliumPlatform>macos</JaliumPlatform>
+    <JaliumMacNativeRoot Condition="'$(JaliumMacNativeRoot)' == ''">$(MSBuildThisFileDirectory)..\..\native\bin\native\osx-arm64\$(Configuration)</JaliumMacNativeRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Input\Jalium.UI.Input.csproj" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Managed\Jalium.UI.Managed.csproj" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(JaliumMacNativeRoot)/.jalium-native-complete')">
+    <Content Include="$(JaliumMacNativeRoot)/*.dylib" Pack="true"
+             PackagePath="runtimes/osx-arm64/native" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="$(JaliumMacNativeRoot)/*.metallib" Pack="true"
+             PackagePath="runtimes/osx-arm64/native" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(MSBuildThisFileDirectory)..\..\native\artifacts\apple\slices\osx-arm64\$(Configuration)\jalium_vello.metallib')">
+    <BundleResource Include="$(MSBuildThisFileDirectory)..\..\native\artifacts\apple\slices\osx-arm64\$(Configuration)\jalium_vello.metallib"
+                    LogicalName="jalium_vello.metallib" />
+  </ItemGroup>
+</Project>

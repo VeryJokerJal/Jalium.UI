@@ -92,13 +92,13 @@ public struct TextHitTestResult
 /// </summary>
 internal static partial class NativeMethods
 {
-    private const string CoreLib = "jalium.native.core";
-    private const string D3D12Lib = "jalium.native.d3d12";
-    private const string VulkanLib = "jalium.native.vulkan";
-    private const string MetalLib = "jalium.native.metal";
-    private const string SoftwareLib = "jalium.native.software";
-    private const string PlatformLib = "jalium.native.platform";
-    private const string TextLib = "jalium.native.text";
+    private const string CoreLib = JaliumNativeLibraryNames.Core;
+    private const string D3D12Lib = JaliumNativeLibraryNames.D3D12;
+    private const string VulkanLib = JaliumNativeLibraryNames.Vulkan;
+    private const string MetalLib = JaliumNativeLibraryNames.Metal;
+    private const string SoftwareLib = JaliumNativeLibraryNames.Software;
+    private const string PlatformLib = JaliumNativeLibraryNames.Platform;
+    private const string TextLib = JaliumNativeLibraryNames.Text;
 
     [LibraryImport(TextLib, EntryPoint = "jalium_text_get_system_font_family_count")]
     internal static partial int TextGetSystemFontFamilyCount();

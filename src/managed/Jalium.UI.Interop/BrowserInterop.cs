@@ -100,6 +100,14 @@ internal static class BrowserInterop
             return new WindowsBrowserInteropBackend();
         }
 
+        // The Apple native module intentionally preserves the WebView2-shaped
+        // ABI while implementing it with WKWebView. tvOS has no public WKWebView.
+        if ((OperatingSystem.IsMacOS() || OperatingSystem.IsIOS()) &&
+            !OperatingSystem.IsMacCatalyst())
+        {
+            return new WindowsBrowserInteropBackend();
+        }
+
         return new UnsupportedBrowserInteropBackend();
     }
 

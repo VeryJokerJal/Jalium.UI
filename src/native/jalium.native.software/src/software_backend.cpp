@@ -24,8 +24,15 @@ using Microsoft::WRL::ComPtr;
 #endif
 
 #ifdef __APPLE__
-#include <CoreGraphics/CoreGraphics.h>
-#include <CoreText/CoreText.h>
+#import <TargetConditionals.h>
+#import <CoreGraphics/CoreGraphics.h>
+#import <CoreText/CoreText.h>
+#import <QuartzCore/QuartzCore.h>
+#if TARGET_OS_OSX
+#import <AppKit/AppKit.h>
+#else
+#import <UIKit/UIKit.h>
+#endif
 #endif
 
 #ifdef __ANDROID__
@@ -1461,6 +1468,51 @@ JaliumResult SoftwareRenderTarget::EndDraw()
         }
     }
 #else
+#ifdef __APPLE__
+    if ((surfaceDescriptor_.platform == JALIUM_PLATFORM_MACOS ||
+         surfaceDescriptor_.platform == JALIUM_PLATFORM_IOS ||
+         surfaceDescriptor_.platform == JALIUM_PLATFORM_TVOS ||
+         surfaceDescriptor_.platform == JALIUM_PLATFORM_VISIONOS) &&
+        surfaceDescriptor_.handle0 != 0)
+    {
+        id view = (__bridge id)reinterpret_cast<void*>(surfaceDescriptor_.handle0);
+        CALayer* layer = nil;
+#if TARGET_OS_OSX
+        if ([view isKindOfClass:[NSView class]]) {
+            ((NSView*)view).wantsLayer = YES;
+            layer = ((NSView*)view).layer;
+        }
+#else
+        if ([view isKindOfClass:[UIView class]]) layer = ((UIView*)view).layer;
+#endif
+        if (!layer) return JALIUM_ERROR_PRESENT_FAILED;
+        CFDataRef bytes = CFDataCreate(kCFAllocatorDefault, fb_.pixels.data(),
+            static_cast<CFIndex>(fb_.pixels.size()));
+        CGDataProviderRef provider = bytes
+            ? CGDataProviderCreateWithCFData(bytes) : nullptr;
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGImageRef image = provider ? CGImageCreate(width_, height_, 8, 32,
+            static_cast<size_t>(width_) * 4, colorSpace,
+            kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little,
+            provider, nullptr, false, kCGRenderingIntentDefault) : nullptr;
+        if (image) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            layer.contents = (__bridge id)image;
+            layer.contentsGravity = kCAGravityTopLeft;
+            layer.contentsScale = scaleX_;
+            [CATransaction commit];
+        }
+        if (image) CGImageRelease(image);
+        if (colorSpace) CGColorSpaceRelease(colorSpace);
+        if (provider) CGDataProviderRelease(provider);
+        if (bytes) CFRelease(bytes);
+        if (!image) return JALIUM_ERROR_OUT_OF_MEMORY;
+        fullInvalidation_ = false;
+        hasDirtyRect_ = false;
+        return JALIUM_OK;
+    }
+#endif
 #ifdef JALIUM_SOFTWARE_WAYLAND_PRESENT
     if (surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_WAYLAND &&
         surfaceDescriptor_.handle0 != 0 && surfaceDescriptor_.handle1 != 0)

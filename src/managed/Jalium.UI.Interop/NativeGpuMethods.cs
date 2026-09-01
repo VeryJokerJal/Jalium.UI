@@ -110,7 +110,7 @@ public struct PresentInfo
 /// </summary>
 internal static class NativeGpuMethods
 {
-    private const string CoreLib = "jalium.native.core";
+    private const string CoreLib = JaliumNativeLibraryNames.Core;
 
     [DllImport(CoreLib, EntryPoint = "jalium_context_set_gpu_preference", ExactSpelling = true)]
     internal static extern int ContextSetGpuPreference(nint context, GpuPreference gpuPreference);

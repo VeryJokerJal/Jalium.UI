@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-tvos</TargetFramework>
+    <SupportedOSPlatformVersion>18.0</SupportedOSPlatformVersion>
+    <RuntimeIdentifiers>tvos-arm64;tvossimulator-arm64</RuntimeIdentifiers>
+    <RootNamespace>Jalium.UI.tvOS</RootNamespace>
+    <AssemblyName>Jalium.UI.tvOS</AssemblyName>
+    <IsPackable>true</IsPackable>
+    <PackageId>Jalium.UI.tvOS</PackageId>
+    <Description>Jalium.UI tvOS scene, remote/focus and statically linked Metal entry package.</Description>
+    <JaliumPlatform>tvos</JaliumPlatform>
+    <JaliumAppleNativeRoot Condition="'$(JaliumAppleNativeRoot)' == ''">$(MSBuildThisFileDirectory)..\..\native\artifacts\apple</JaliumAppleNativeRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Jalium.UI.Managed\Jalium.UI.Managed.csproj" AdditionalProperties="JaliumPlatform=tvos" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" AdditionalProperties="JaliumPlatform=tvos" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" AdditionalProperties="JaliumPlatform=tvos" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" AdditionalProperties="JaliumPlatform=tvos" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(JaliumAppleNativeRoot)/JaliumNative.xcframework')">
+    <NativeReference Include="$(JaliumAppleNativeRoot)/JaliumNative.xcframework"
+                     Kind="Framework" ForceLoad="true" IsCxx="true"
+                     Frameworks="Metal QuartzCore CoreGraphics CoreText CoreVideo ImageIO IOSurface AVFoundation VideoToolbox CoreMedia AudioToolbox UIKit" />
+  </ItemGroup>
+  <ItemGroup Condition="Exists('$(JaliumAppleNativeRoot)/slices/$(RuntimeIdentifier)/$(Configuration)/jalium_vello.metallib')">
+    <BundleResource Include="$(JaliumAppleNativeRoot)/slices/$(RuntimeIdentifier)/$(Configuration)/jalium_vello.metallib"
+                    LogicalName="jalium_vello.metallib" />
+  </ItemGroup>
+</Project>

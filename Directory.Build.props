@@ -36,6 +36,10 @@
     <TargetFramework Condition="'$(JaliumPlatform)' == 'windows'">net10.0-windows</TargetFramework>
     <TargetFramework Condition="'$(JaliumPlatform)' == 'linux'">net10.0</TargetFramework>
     <TargetFramework Condition="'$(JaliumPlatform)' == 'android'">net10.0-android</TargetFramework>
+    <TargetFramework Condition="'$(JaliumPlatform)' == 'macos'">net10.0-macos</TargetFramework>
+    <TargetFramework Condition="'$(JaliumPlatform)' == 'ios'">net10.0-ios</TargetFramework>
+    <TargetFramework Condition="'$(JaliumPlatform)' == 'tvos'">net10.0-tvos</TargetFramework>
+    <DefineConstants Condition="'$(JaliumPlatform)' == 'ios' or '$(JaliumPlatform)' == 'tvos'">$(DefineConstants);JALIUM_APPLE_STATIC</DefineConstants>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>preview</LangVersion>
